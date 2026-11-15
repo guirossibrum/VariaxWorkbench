@@ -183,25 +183,22 @@ That dword is the only absolute reference to `0x85650` in the Monkey image.
 The function adds `0x21c` to `this` and assigns the argument through
 `L6DevSmartPtr<L6DeviceControlBase>::operator=`. A search for PC-relative
 `call` and `jmp` instructions found none whose displacement names `0x85650`.
-That search does not resolve a Mach-O indirect-symbol or lazy-symbol stub.
-A call to a bound stub can reach this function without naming its virtual
-address.
+The Monkey image has no symbol-table entry for this function, so no
+indirect-symbol or lazy stub binds that address. The PODxt Live assignment
+is the virtual call in the factory section below.
 
 The five `GetDeviceDesc` call sites use the returned description for its
 fields. The one direct caller of the description finder at `0x1482cc` stores
 the pointer into another interface object and does not call slot `+0x0c`.
 The image also contains 154 `call *0x0c(reg)` instructions. Those sites were
-not each attributed to a class. The traced producers of an
-`L6DeviceDescription` do not make that call. Absence of a PC-relative call
-is not proof that no assignment exists, including an assignment through a
-symbol stub.
+not each attributed to a class. `traced_virtual_call_found` stays false for
+those earlier producers. The PID `0x4650` path is a separate producer.
 
 `L6TWX_u.dylib` contains the same class names and its own description vtable.
 Its slot `+0x0c` is `0x54240`, and that function also assigns `this+0x21c`.
 A PC-relative search in that image found no call that names `0x54240`.
-Indirect-symbol and lazy stubs in that image were not resolved, so this
-does not add a caller for the Monkey setter and does not prove the dylib
-setter is uncalled.
+That image also has no symbol-table entry for the setter, so no stub binds
+`0x54240`.
 
 ## Cache index 0 on one control class
 
@@ -214,13 +211,15 @@ table handles indexes 0 through 11. Index 0 allocates `0x10` bytes, calls
 thunk `0x8ad80`, and stores the allocated pointer at cache index 0. The thunk
 calls `0x8adc0`, which installs kernel vptr `0x1c1838`. The only PC-relative
 call found for `0x8ad80` is this index-0 arm. Stub calls were not resolved.
-This producer is useful evidence. Its association with the PODxt Live
-description remains unproven.
+This producer is useful evidence. The PID `0x4650` path constructs this
+control and passes it to the description setter. The kernel object stored
+at cache index 0 is still not shown on that path.
 
-The only store of vptr `0x1c18b8` found by address is the `lea` at `0x8c893`,
-reached from vtable slot `+0x04` at `0x8c810`. No PC-relative caller of that
-function was found. Nothing in the traced PODxt Live path stores an
-`L6XTAudioControlMac` into the description smart pointer at `+0x21c`.
+Two PIC computations store vptr `0x1c18b8`. The PID `0x4650` constructor
+body at `0x8c740` pops `0x8c74c` and adds `0x13516c`, and the store is at
+`0x8c774`. The other computation is the `lea` at `0x8c893`
+(`0x8c88c + 0x13502c`), reached from vtable slot `+0x04` at `0x8c810`.
+The PID path reaches the first constructor through `0x8c700`.
 
 The kernel version slot at `0x8b810` does not embed the userspace builder
 fields `0xC0`, `0x67`, and `0x0011`. `0x8c040` stays the userspace builder.
@@ -240,6 +239,8 @@ an approved live read.
 | `l6podxt.dll` | 151040 | `c9ef3db97f10935fc4f28aa69a639aa4684bce6697dde506ca83592e2b41c69a` | no matching class-name strings |
 | `l6podlv.dll` | 151040 | `91cf569bd191a771f3fa3bd62177128dc3bff7fe680d375b72234a9d11ca03e6` | no matching class-name strings |
 | `l6podxtpro.dll` | 151040 | `98b6b0d0fb7c76c4c22ae7faeae256420ac9e0132bded5ba238c7d94b5ee129c` | no matching class-name strings |
+| Line 6 License Manager | 1895712 | `15517a66e0306d9f54920b6d9b53165c9078415d083cdd3bdff9f767c0c49e4b` | named DriverAdded path; setter symbol has no stub entry |
+| L6MIDIJava i386 slice | 511468 | `902713ed5e4819021a73ff8a4f2d6a35521a99a96af7253dc53ef153e3789a8f` | named DriverAdded path; `cmpl $0x4650`; setter symbol has no stub entry |
 
 No image was executed, loaded, or installed. The Windows executable is not
 confirmation of the macOS setter. The signed and unsigned audio kexts, the
@@ -247,19 +248,76 @@ MIDI plugin, and the PODxt userspace libraries contain no matching class-name
 strings for these types. That observation does not exclude a stripped binary
 or a different-ABI implementation of the same behavior.
 
-Unknown edges that remain:
+## Stub bindings and the PODxt Live control association
 
-- A virtual `call *0x0c(reg)` whose object is an `L6DeviceDescription` obtained
-  through an inlined list walk was not separately attributed.
-- The description smart pointer at `+0x21c` has no shown assignment to
-  `L6XTAudioControlMac`.
-- The kernel version method's other call targets were not identified, and they
-  were not recorded as a second request.
-- PC-relative searches did not resolve Mach-O indirect-symbol or lazy-symbol
-  stubs. A call to a bound stub can reach a constructor or setter without
-  naming its virtual address. The next bounded offline edge search resolves
-  those stubs for the constructors and setters together with direct
-  PC-relative calls.
+The bounded stub search covered `SetDeviceControl` and the description and
+XT-audio constructors in the Monkey executable, `L6TWX_u.dylib`, Line 6
+License Manager, and the L6MIDIJava i386 slice. Monkey and `L6TWX_u.dylib`
+have no symbol-table entry for the setter, so no indirect-symbol or lazy
+stub binds those addresses. License Manager defines
+`L6DeviceDescription::SetDeviceControl` at `0x96ee0`. The L6MIDIJava i386
+slice defines it at `0x1d8da`. Each of those symbols has no direct
+PC-relative caller and no indirect-symbol-table entry. The calls inside the
+setter bodies are the smart-pointer copy, assignment, and destructor.
+Those instructions are calls made by the setter. The setter symbol has no
+stub entry.
+
+In the Monkey image, USB PID `0x4650` is an equality at `0x953a6`
+(`subl $0x4650` / `je 0x9541d`). That branch allocates `0x418` bytes and
+calls `0x8c700` at `0x9544a`. `0x8c700` calls `0x8c740`, which stores vptr
+`0x1c18b8` (`L6XTAudioControlMac`). The object is saved at stack slot
+`-0x34`. Instruction `0x9555d` calls control slot `+0x18`. When the returned
+status has bit `0x80000000` clear, instruction `0x955f1` calls helper
+`0x95e10` with the manager and that control. The helper allocates `0x26c`
+bytes and calls `0x852f0` at `0x960e9`. That wrapper's only direct caller is
+`0x960e9`, and its call at `0x85302` enters `0x85310`, which stores
+description vptr `0x1c1598`. The helper writes description offsets including
+`+0x108` from manager slot `+0x14`, `+0x4` from slot `+0x2c`, a pointer at
+`+0x214`, the word at `+0x104` from slot `+0x34`, and the word at `+0x106`
+from slot `+0x38`. The caller then loads the returned object's slot `+0x0c`
+and calls it at `0x95616` with the XT-audio control. Slot `+0x0c` of the
+description vtable is setter `0x85650`, which assigns the smart pointer at
+`+0x21c`. After that call the same function stores a pointer at description
+`+0x210` and a pointer at `+0x218`.
+
+The helper has two other direct callers, `0x95065` and `0x967e3`. This pass
+did not trace them.
+
+Line 6 License Manager repeats the shape under symbols. `DriverAdded` at
+`0xa6cf0` compares PID `0x4650` at `0xa6ee6` with the same `subl` / `je`
+encoding and allocates `0x418` bytes for `L6XTAudioControlMac::C1` at
+`0x9df70`. Slot `+0x18` is called at `0xa709d`. When bit `0x80000000` is
+clear, `GetDescription` at `0xa7950` runs and the virtual call at `0xa7156`
+loads description slot `+0x0c`. The setter at `0x96ee0` adds `0x21c` and
+assigns the smart pointer. License Manager names XT slot `+0x18` `Init` and
+XT slot `+0x0c` `AcquireService`. Those names belong to the License Manager
+vtable. Monkey slot `+0x0c` of this control remains the cache filler
+`0x8dd20`.
+
+The L6MIDIJava i386 slice repeats the named shape. `DriverAdded` at
+`0x2af7a` compares PID `0x4650` at `0x2b0e6` with `cmpl` / `je`, allocates
+`0x418` bytes, and calls `L6XTAudioControlMac::C1` at `0x22ebc`. On a
+non-negative result from control slot `+0x18`, it calls `GetDescription` at
+`0x2a58a` and then description slot `+0x0c` at `0x2b28a`. The setter symbol
+at `0x1d8da` has no direct caller and no indirect-symbol entry. These
+addresses belong to the L6MIDIJava slice.
+
+The index-0 kernel fill remains useful evidence. This path does not show
+that fill running, and the class stored at cache index 0 remains
+unidentified. The five recorded userspace fields stay unapproved for any
+live read. The transfer must not be sent.
+
+Edges that remain:
+
+- The index-0 kernel service class is still unidentified.
+- Helper `0x95e10` callers `0x95065` and `0x967e3` were not traced.
+- Symbolicated description consumers `L6BrandiHW`, `CreateUSBMonkeyDevices`,
+  `L6MnkyDevice`, and `L6MIDIHW` were located and were not disassembled for
+  a setter call in this pass.
+- The kernel version method's other call targets were not identified, and
+  they were not recorded as a second request.
+- Missing class-name strings remain a search observation. That observation
+  leaves a stripped binary or a different-ABI implementation possible.
 
 The transfer must not be sent. A recovered shape is not a device reply, and it
 does not authorize a read or an update. `src/pod_usb_firmware.rs` stores the
@@ -294,28 +352,24 @@ does not give a firmware version. No driver was installed.
 - Applicable USB-firmware image: none identified in the local archive.
 - Installed USB-component version: unknown. No device reply was captured.
 - Version-query shape: the userspace service builder above is recovered and
-  was not sent. The description setter is virtual slot `+0x0c` at `0x85650`.
-  Traced description producers do not call it through a PC-relative
-  instruction that names the setter. `L6XTAudioControlMac` stores a kernel
-  Brandi service at cache index 0. That producer is useful evidence, and its
-  PODxt Live association remains unproven. The class of the PODxt Live cached
-  service is still open.
+  was not sent. USB PID `0x4650` constructs an `L6XTAudioControlMac` and,
+  when control slot `+0x18` returns without the failure bit, virtually calls
+  description slot `+0x0c` at `0x85650` with that control. No symbol stub
+  binds the setter. The index-0 kernel fill is not shown on this path, and
+  the class stored there is still open.
 - `bcdDevice` 0.01: unexplained, and it was not read again.
 
 ## Future check
 
-1. Offline: resolve whether the description's control is
-   `L6XTAudioControlMac` before selecting a PODxt Live request. The setter
-   slot is recovered. The traced producers do not call it through a
-   PC-relative instruction that names the setter. The next bounded edge
-   search resolves Mach-O indirect-symbol and lazy-symbol stubs for the
-   constructors and setters as well as those direct PC-relative calls. A
-   call to a bound symbol stub can reach the defined function without naming
-   its virtual address. Cache index 0 on `L6XTAudioControlMac` stores the
-   kernel Brandi service. That producer is useful evidence, and its PODxt
-   Live association remains unproven. The recorded userspace builder is still
-   unselected. Leave it unsent, including the ruled-out frame above. The
-   missing USB-firmware image and unknown installed version also remain open.
+1. Offline: the stub search is complete for the setter and the description
+   and XT-audio constructors. No indirect-symbol or lazy stub binds the
+   setter. USB PID `0x4650` passes an `L6XTAudioControlMac` to description
+   slot `+0x0c` when control slot `+0x18` returns without the failure bit.
+   The remaining offline question is the class stored at that control's
+   cache index 0. That fill is not shown on the PID path, and the recorded
+   userspace builder stays unselected. Leave the transfer unsent, including
+   the ruled-out frame above. The missing USB-firmware image and unknown
+   installed version also remain open.
 2. A live read still needs a separate explicit authorization. No reply has
    been captured. The five recorded fields are not an approved live read.
 3. After the service class is resolved, a separate authorization is still
@@ -335,3 +389,8 @@ learned later would still not authorize an update.
   live read. The crate keeps a portable data record and does not take IOKit,
   Monkey, or a driver as a dependency.
 - No USB-firmware image is claimed to be inside the main `.xtf` container.
+- The PID `0x4650` virtual call runs when control slot `+0x18` succeeds.
+  Whether that is enough to treat `L6XTAudioControlMac` as the description
+  control for the next offline pass is left open. The index-0 kernel service
+  class is still unidentified, and the five userspace fields stay unapproved.
+- This pass found that association, so reserved issue #21 was not started.
