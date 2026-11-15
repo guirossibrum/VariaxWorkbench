@@ -1,5 +1,10 @@
 # Work plan and hardware safety boundary
 
+The pending topics are tracked as [25 GitHub issues](docs/github-backlog.md).
+Each issue has acceptance criteria and dependencies; GitHub issue state is the
+source of truth for work status. The checklist below preserves the investigation
+record and hardware boundary.
+
 ## Critical requirement
 
 The PODxt Live and Variax 600 are irreplaceable legacy equipment. The user has
@@ -117,7 +122,7 @@ An experimental broader DSP read timed out and did not produce a DSP backup.
   a separate decision, never an automatic consequence of version checking.
 
 Current offline ledger: [consolidated report](docs/report.md). The full coefficient
-engine, authenticated firmware artifacts, factory bank and recovery simulation
+engine, factory bank and recovery simulation
 remain incomplete; this phase does not authorize live access.
 
 Coefficient-engine implementation sequence and acceptance criteria:

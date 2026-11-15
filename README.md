@@ -61,3 +61,6 @@ remain local and ignored. No updater or installer was executed.
 Details: [preset formats](docs/preset-files.md), [body definitions](docs/body-definitions.md),
 [artwork](docs/ui-assets.md), [factory/firmware investigation](docs/factory-reference.md),
 [initial investigation](docs/investigation.md), [native analysis](docs/native-analysis.md).
+
+Pending work is tracked in [GitHub issues](https://github.com/guirossibrum/VariaxWorkbench/issues)
+and the [dependency-linked backlog](docs/github-backlog.md). The default branch is `master`.
