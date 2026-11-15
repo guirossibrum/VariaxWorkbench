@@ -9,8 +9,8 @@ pickup artwork recovered from Workbench 1.75.
 
 This is an independent, reverse-engineered project developed with AI assistance.
 It is not an official Line 6 product and is not affiliated with, endorsed by, or
-supported by Line 6, Yamaha, or any equipment manufacturer. No technical support,
-maintenance, recovery service, or continued development is promised.
+supported by Line 6, Yamaha, or any equipment manufacturer. No technical support is provided, and no maintenance, recovery service, or
+continued development is promised.
 
 The software is provided **“as is”, without warranty of any kind**. Its output,
 sound, timing, controls and other behavior may differ from the original software.
@@ -20,6 +20,14 @@ unusable devices, or **permanent damage to or complete destruction of connected
 hardware**. Tests, backups and the current hardware locks do not guarantee safety
 or recoverability. Anyone who downloads, modifies, builds or uses this project
 does so entirely at their own risk and assumes responsibility for that decision.
+
+**Contributors and testers are subject to the same risks during development.**
+Use offline tests, saved data and simulations with the equipment disconnected
+from the computer; keep the USB cable unplugged. Do not connect hardware merely
+to try a change or because tests pass. Connecting a POD, Variax or other device,
+including for identification or supposedly read-only testing, is entirely at
+your own risk. A contribution, test result or project issue does not authorize
+live device access or establish that a connection is safe.
 
 **To the maximum extent permitted by applicable law, the project owner, authors
 and contributors disclaim all warranties and accept no responsibility or
@@ -74,6 +82,8 @@ python scripts/verify_bundle_compatibility.py
 .tools/python/bin/python scripts/verify_native_resonators.py
 .tools/python/bin/python scripts/verify_native_pickups.py
 .tools/python/bin/python scripts/verify_native_bodies.py
+.tools/python/bin/python scripts/verify_body_rust.py
+.tools/python/bin/python scripts/verify_body_plans.py
 ```
 
 Reference checks require the locally extracted original application. REA was
