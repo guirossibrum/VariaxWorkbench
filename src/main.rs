@@ -57,6 +57,43 @@ fn run() -> Result<(), String> {
                 args[1]
             );
         }
+        Some("host-generate-batch") if args.len() == 4 => {
+            let raw = fs::read(&args[1]).map_err(|e| e.to_string())?;
+            if raw.is_empty() || !raw.len().is_multiple_of(192) || raw.len() > 192 * 4096 {
+                return Err("expected 1..4096 complete 192-byte native input records".into());
+            }
+            let library = variax_workbench::host::ModelLibrary::load_manifest(
+                std::path::Path::new(&args[2]),
+            )?;
+            let mut engine = variax_workbench::host::HostEngine::new(&library);
+            let mut packed = Vec::new();
+            for (i, native) in raw.as_chunks::<192>().0.iter().enumerate() {
+                let output = engine
+                    .generate(&variax_workbench::host::WorkbenchSettings {
+                        native: *native,
+                        block_mask: u32::MAX,
+                    })
+                    .map_err(|e| format!("host record {i}: {e}"))?;
+                packed.extend_from_slice(&output.packed());
+            }
+            write_new(&args[3], &packed)?;
+        }
+        Some("host-generate") if args.len() == 4 => {
+            let raw = fs::read(&args[1]).map_err(|e| e.to_string())?;
+            let native = raw
+                .try_into()
+                .map_err(|_| "expected exactly 192 native input bytes")?;
+            let library = variax_workbench::host::ModelLibrary::load_manifest(
+                std::path::Path::new(&args[2]),
+            )?;
+            let output = variax_workbench::host::HostEngine::new(&library).generate(
+                &variax_workbench::host::WorkbenchSettings {
+                    native,
+                    block_mask: u32::MAX,
+                },
+            )?;
+            write_new(&args[3], &output.packed())?;
+        }
         Some("inspect") if args.len() == 2 => {
             print!("{}", read_preset(&args[1])?.summary());
         }

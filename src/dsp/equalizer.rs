@@ -116,9 +116,12 @@ pub fn equalizer_coefficients(p: EqParameters, rate: f32) -> Result<[f32; 5], St
         }
         _ => [0., 0., 1., 0., 0.],
     };
-    out[4] = p.mix * out[4] - out[1] * (p.mix - 1.0);
-    out[3] = p.mix * out[3] - out[0] * (p.mix - 1.0);
-    out[2] = p.mix * out[2] + (1.0 - p.mix);
+    // Native instructions narrow the wet product to float, then combine with
+    // a double dry complement/product before the final float narrowing.
+    let complement = f64::from(p.mix) - 1.0;
+    out[4] = (f64::from(p.mix * out[4]) - f64::from(out[1]) * complement) as f32;
+    out[3] = (f64::from(p.mix * out[3]) - f64::from(out[0]) * complement) as f32;
+    out[2] = (f64::from(p.mix * out[2]) + (1.0 - f64::from(p.mix))) as f32;
     Ok(out)
 }
 fn parameters<const N: usize>(bands: &EqBands<N>, index: usize) -> EqParameters {
@@ -246,7 +249,10 @@ mod tests {
     use super::*;
     #[test]
     fn mixed_precision_coefficients_match_original_library() {
-        for line in include_str!("../../tests/fixtures/native-dsp-equalizer.txt").lines() {
+        for line in include_str!("../../tests/fixtures/native-dsp-equalizer.txt")
+            .lines()
+            .chain(include_str!("../../tests/fixtures/native-dsp-eq-mixing.txt").lines())
+        {
             let v: Vec<_> = line
                 .split_whitespace()
                 .map(|v| u32::from_str_radix(v, 16).unwrap())

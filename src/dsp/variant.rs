@@ -61,6 +61,21 @@ impl NativePatch {
         rate: f32,
         options: RenderOptions<'_>,
     ) -> Result<Self, String> {
+        Self::render_body_variant(body, rate, options, false)
+    }
+    pub(crate) fn from_interpolated_body_variant(
+        body: &BodyVariant,
+        rate: f32,
+        options: RenderOptions<'_>,
+    ) -> Result<Self, String> {
+        Self::render_body_variant(body, rate, options, true)
+    }
+    fn render_body_variant(
+        body: &BodyVariant,
+        rate: f32,
+        options: RenderOptions<'_>,
+        derived: bool,
+    ) -> Result<Self, String> {
         let mut patch = Self::default();
         patch.write_body_resonance(&body.body_resonance, rate)?;
         patch.write_low_cut(&body.low_cut, rate)?;
@@ -71,7 +86,11 @@ impl NativePatch {
         patch.write_reverb(&body.reverb, rate)?;
         patch.write_volume(&body.volume, options.volume_trim_db)?;
         patch.write_twelve_string_eq(&body.twelve_string_eq, rate)?;
-        patch.write_sitar(&body.sitar_buzz, rate)?;
+        if derived {
+            patch.write_interpolated_sitar(&body.sitar_buzz, rate)?;
+        } else {
+            patch.write_sitar(&body.sitar_buzz, rate)?;
+        }
         patch.write_pitch_shift(&body.pitch_shift, rate)?;
         patch.write_drone(&body.drone, rate)?;
         let calculated;

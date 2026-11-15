@@ -134,13 +134,35 @@ impl NativePatch {
         Ok(())
     }
     pub fn write_sitar(&mut self, block: &SitarBuzz, rate: f32) -> Result<(), String> {
+        self.write_sitar_inner(block, rate, false)
+    }
+    // Original logarithmic interpolation of zero frequencies at an endpoint can
+    // yield NaN even with finite source definitions. Only the internal host
+    // path accepts those derived frequencies; public numeric inputs stay strict.
+    pub(crate) fn write_interpolated_sitar(
+        &mut self,
+        block: &SitarBuzz,
+        rate: f32,
+    ) -> Result<(), String> {
+        self.write_sitar_inner(block, rate, true)
+    }
+    fn write_sitar_inner(
+        &mut self,
+        block: &SitarBuzz,
+        rate: f32,
+        derived: bool,
+    ) -> Result<(), String> {
         if !rate.is_finite()
             || !(1.0..=384000.0).contains(&rate)
+            || (!derived
+                && block
+                    .start_frequency
+                    .iter()
+                    .chain(block.stop_frequency.iter())
+                    .any(|v| !v.is_finite()))
             || block
                 .decay
                 .iter()
-                .chain(block.start_frequency.iter())
-                .chain(block.stop_frequency.iter())
                 .chain(block.q.iter())
                 .chain(block.mix.iter())
                 .any(|v| !v.is_finite())
@@ -159,17 +181,27 @@ impl NativePatch {
                 / f64::from(rate)) as f32;
             // The original uses double exp after a float32 rate*time product.
             let decay = (-1.0 / f64::from(rate * block.decay[i])).exp() as f32;
+            // Direct original-instruction comparisons: NaN conversion retains
+            // logical word 0x1000000, masked to zero by Pack. Do not infer the
+            // unordered floating-point branch from decompiler comparisons.
+            let frequency_word_input = |v: f32| if v.is_nan() { 0.0 } else { v.clamp(-1.0, 1.0) };
             next.apply_block_coefficients(
                 "sitar-string",
                 &[
                     i as u32,
                     decay.clamp(-1.0, 1.0).to_bits(),
-                    difference.clamp(-1.0, 1.0).to_bits(),
-                    stop.clamp(-1.0, 1.0).to_bits(),
+                    frequency_word_input(difference).to_bits(),
+                    frequency_word_input(stop).to_bits(),
                     damping.clamp(-1.0, 1.0).to_bits(),
                     mix.to_bits(),
                 ],
             )?;
+            if difference.is_nan() {
+                next.words[0x8c8 / 4 + i] = 0x1000000;
+            }
+            if stop.is_nan() {
+                next.words[0x8e0 / 4 + i] = 0x1000000;
+            }
         }
         *self = next;
         Ok(())
@@ -317,6 +349,53 @@ mod tests {
             assert!(write_resonance_analysis(&mut patch, kind, &bytes).is_err());
             assert_eq!(patch, before);
         }
+    }
+    #[test]
+    fn derived_sitar_nan_words_match_original_without_accepting_public_nan_inputs() {
+        let mut count = 0;
+        for line in include_str!("../../tests/fixtures/native-dsp-derived-sitar.txt").lines() {
+            let (input, output) = line.split_once(" => ").unwrap();
+            let (seed, encoded) = input.split_once(' ').unwrap();
+            let bytes: Vec<_> = (0..encoded.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&encoded[i..i + 2], 16).unwrap())
+                .collect();
+            let value = |o| f32::from_le_bytes(bytes[o..o + 4].try_into().unwrap());
+            let block = SitarBuzz {
+                enabled: bytes[4] != 0,
+                decay: std::array::from_fn(|i| value(0xc + i * 4)),
+                start_frequency: std::array::from_fn(|i| value(0x24 + i * 4)),
+                stop_frequency: std::array::from_fn(|i| value(0x3c + i * 4)),
+                q: std::array::from_fn(|i| value(0x54 + i * 4)),
+                mix: std::array::from_fn(|i| value(0x6c + i * 4)),
+            };
+            let mut seed = u32::from_str_radix(seed, 16).unwrap();
+            let mut patch = NativePatch::default();
+            for word in &mut patch.words {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                *word = seed;
+            }
+            let mut expected = patch.words;
+            for changed in output.split_whitespace() {
+                let (i, v) = changed.split_once(':').unwrap();
+                expected[usize::from_str_radix(i, 16).unwrap()] =
+                    u32::from_str_radix(v, 16).unwrap();
+            }
+            if block
+                .start_frequency
+                .iter()
+                .chain(block.stop_frequency.iter())
+                .any(|v| v.is_nan())
+            {
+                let before = patch.clone();
+                assert!(patch.write_sitar(&block, value(8)).is_err());
+                assert_eq!(patch, before);
+            }
+            patch.write_interpolated_sitar(&block, value(8)).unwrap();
+            assert_eq!(patch.words, expected, "derived case {count}");
+            count += 1;
+        }
+        assert_eq!(count, 48);
     }
     #[test]
     fn malformed_sitar_input_cannot_partially_change_words() {
