@@ -60,7 +60,9 @@ fn run() -> Result<(), String> {
         Some("inspect") if args.len() == 2 => {
             print!("{}", read_preset(&args[1])?.summary());
         }
-        Some(command @ ("dsp-block" | "dsp-filter-block")) if args.len() == 4 => {
+        Some(
+            command @ ("dsp-block" | "dsp-filter-block" | "dsp-resonance-block" | "dsp-eq-block"),
+        ) if args.len() == 4 => {
             let mut seed = u32::from_str_radix(&args[1], 16).map_err(|e| e.to_string())?;
             let mut patch = variax_workbench::dsp::NativePatch::default();
             for word in &mut patch.words {
@@ -70,8 +72,12 @@ fn run() -> Result<(), String> {
             let bytes = fs::read(&args[3]).map_err(|e| e.to_string())?;
             if command == "dsp-block" {
                 variax_workbench::dsp::write_simple_analysis(&mut patch, &args[2], &bytes)?;
-            } else {
+            } else if command == "dsp-filter-block" {
                 variax_workbench::dsp::write_filter_analysis(&mut patch, &args[2], &bytes)?;
+            } else if command == "dsp-resonance-block" {
+                variax_workbench::dsp::write_resonance_analysis(&mut patch, &args[2], &bytes)?;
+            } else {
+                variax_workbench::dsp::write_eq_analysis(&mut patch, &args[2], &bytes)?;
             }
             println!(
                 "{}",
@@ -79,6 +85,51 @@ fn run() -> Result<(), String> {
                     .words
                     .iter()
                     .map(|v| format!("{v:08x}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+        }
+        Some("dsp-body-variant") if args.len() == 4 => {
+            let body = variax_workbench::body::BodyDefinition::parse(
+                &fs::read(&args[1]).map_err(|e| e.to_string())?,
+            )?;
+            let index = args[2].parse::<usize>().map_err(|e| e.to_string())?;
+            let variant = body
+                .variants
+                .get(index)
+                .ok_or("body variant index exceeds five")?;
+            let patch = variax_workbench::dsp::NativePatch::from_body_variant(
+                variant,
+                variax_workbench::dsp::LEGACY_SAMPLE_RATE,
+                Default::default(),
+            )?;
+            write_new(
+                &args[3],
+                &patch
+                    .words
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect::<Vec<_>>(),
+            )?;
+        }
+        Some("dsp-equalizer") if args.len() == 7 => {
+            let values = args[1..]
+                .iter()
+                .map(|v| u32::from_str_radix(v, 16))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            let p = variax_workbench::dsp::EqParameters {
+                kind: values[0],
+                frequency: f32::from_bits(values[1]),
+                q: f32::from_bits(values[2]),
+                gain_db: f32::from_bits(values[3]),
+                mix: f32::from_bits(values[4]),
+            };
+            let c = variax_workbench::dsp::equalizer_coefficients(p, f32::from_bits(values[5]))?;
+            println!(
+                "{}",
+                c.iter()
+                    .map(|v| format!("{:08x}", v.to_bits()))
                     .collect::<Vec<_>>()
                     .join(" ")
             );
