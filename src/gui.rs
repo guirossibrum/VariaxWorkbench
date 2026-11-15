@@ -1057,12 +1057,11 @@ impl Workbench {
                     .iter()
                     .flat_map(|pixel| pixel.to_array())
                     .collect();
-                if let Err(error) = image::save_buffer(
+                if let Err(error) = save_screenshot(
                     &path,
                     &pixels,
                     capture.size[0] as u32,
                     capture.size[1] as u32,
-                    image::ColorType::Rgba8,
                 ) {
                     self.error = Some(format!("Screenshot: {error}"));
                 } else {
@@ -1210,6 +1209,15 @@ impl Drop for Workbench {
 }
 
 const USAGE: &str = "Usage: variax-workbench-gui [FILE | --preset FILE] [--data-dir DIRECTORY] [--artwork EDITOR_IMAGE_FOLDER] [--tab body|pickups|tuning|controls] [--screenshot OUTPUT.png]";
+
+fn save_screenshot(path: &Path, pixels: &[u8], width: u32, height: u32) -> Result<(), String> {
+    use image::ImageEncoder;
+    let mut bytes = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut bytes)
+        .write_image(pixels, width, height, image::ColorType::Rgba8.into())
+        .map_err(|e| e.to_string())?;
+    variax_workbench::document::save_new(path, &bytes)
+}
 
 struct GuiOptions {
     preset: Option<PathBuf>,
@@ -1790,6 +1798,17 @@ mod tests {
         assert!(parse(&["one.vwm", "two.vwm"]).is_err());
         assert!(parse(&["one.vwm", "--preset", "two.vwm"]).is_err());
         assert!(parse(&["--data-dir"]).is_err());
+    }
+
+    #[test]
+    fn screenshot_output_creates_a_png_and_never_replaces_existing_data() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("preview.png");
+        save_screenshot(&path, &[0, 0, 0, 255], 1, 1).unwrap();
+        let original = fs::read(&path).unwrap();
+        assert!(original.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(save_screenshot(&path, &[255, 0, 0, 255], 1, 1).is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
     }
 
     #[test]
