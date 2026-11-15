@@ -245,7 +245,8 @@ The method locks the word at `this+4`. An index of 12 or more skips the fill.
 A nonzero refcount at `this+0x38+index*4` is the hit, at `0x8e67b`, and the
 fill is skipped. A zero refcount is the miss. The miss calls
 `FindDriverService` at `0x8e720`. The value it returns is overwritten before
-the jump table. This pass did not follow that callee's stores.
+the jump table. The store that call performs is
+[FindDriverService and selector 6](#finddriverservice-and-sharedxt-selector-6).
 
 Index 0 of the table is `0x8ddd0`. The arm clears `this+8` and calls
 `FindServiceNamed` at `0x8e980` with `com_line6_driver_sharedxt`. A non-null
@@ -287,7 +288,98 @@ connection word at the kernel service returns status `0x80007000`.
 
 The kernel slot does not contain `0xC0`, `0x67`, or `0x0011`. Those fields
 remain on userspace builder `0x8c040`. They are not an approved live read.
-No device reply was captured.
+No device reply was captured. The kernel handler that selector 6 reaches is
+the next section.
+
+## FindDriverService and sharedxt selector 6
+
+`FindDriverService` at Monkey `0x8e720` matches License
+`L6XTAudioControlMac::FindDriverService` at `0x9ff90`. The only direct
+caller in each image is the AcquireService miss: Monkey `0x8dd9d`, License
+`0x9f60d`. Both calls are `e8 7e 09 00 00`. AcquireService overwrites the
+return register. The function's effect is a store.
+
+The Monkey stubs, named by the indirect-symbol table, are `_IOMasterPort`
+at `0x167a1c`, `_IOServiceMatching` at `0x167a88`,
+`_IOServiceGetMatchingServices` at `0x167a82`, `_IOIteratorNext` at
+`0x167a16`, `_IORegistryEntrySearchCFProperty` at `0x167a64`,
+`_CFGetTypeID` at `0x16753c`, `_CFStringGetTypeID` at `0x1675cc`,
+`_CFStringGetCString` at `0x1675b4`, `_CFRelease` at `0x167560`, `_strcmp`
+at `0x1693c0`, and `_IOObjectRelease` at `0x167a3a`. The stack check is
+`___stack_chk_fail` at `0x1691ce`.
+
+The match dictionary is the C string `com_line6_audio`. That is the audio
+class, not `com_line6_driver_sharedxt`. The search walks that iterator. For
+each entry it reads the `UniqueID` property in the `IOService` plane with
+options immediate `3`. When the property is a CFString, it copies at most
+`0xff` bytes with encoding immediate `0` and compares the copy with the
+bytes at `this+0x16b`. A match stores that entry at `this+0x278` and stops.
+The store does not release the previous word. A non-match releases the
+entry and continues. If nothing matches, `this+0x278` is left as it was.
+The iterator is released on the way out.
+
+The XT constructor body at `0x8c740` stores its first integer argument at
+`0x8c799` (`this+0x278`) and writes a zero byte at `0x8c7c7`
+(`this+0x16b`). License `C2(unsigned int, unsigned long)` does the same at
+`0x9e009` and `0x9e037`. License `DriverAdded` calls that constructor at
+`0xa6f8a`. The first argument is the `_IOIteratorNext` result taken from
+the notification iterator. The second argument is stored at `this+0x294`.
+Those License addresses are not Monkey addresses.
+
+`Init` reads `this+0x278`. It copies the `USB Product Name` property into
+`this+0x6c`, then `GetUniqueIDfromDevice` copies `UniqueID` into
+`this+0x16b`. `Init` does not call `FindDriverService`. On the PID path,
+slot `+0x18` is that `Init`, and the version query's miss runs later. The
+miss can therefore compare `this+0x16b` with a UniqueID that `Init` already
+copied, then replace `this+0x278`. This is a static order. It is not an
+observed registry walk.
+
+`FindServiceNamed` at `0x8e980` loads `this+0x278` at `0x8e9bd`. It creates
+an iterator in the `IOService` plane with options immediate `1`, using
+`_IORegistryEntryCreateIterator` at `0x167a52`. Each child is named with
+`_IORegistryEntryGetName` at `0x167a5e` into the buffer at `this+0x298`.
+`_strcmp` at `0x1693c0` compares that name with the caller argument. A
+match calls `_IOObjectRetain` at `0x167a40`. The loop then releases the
+iterator's reference and continues, so the returned pointer is the last
+match. No match returns null. The index-0 arm passes
+`com_line6_driver_sharedxt`. The object it keeps is the child with that
+registry name, or null.
+
+Selector 6 is the other side of the userspace
+`IOConnectCallScalarMethod` call. In the signed Line6Audio kext,
+`com_line6_driver_sharedxt_UserClient::externalMethod` at `0x272e` indexes
+`sMethods` at `0xa2100` while the selector is below 9. Each entry is 24
+bytes. Entry 6 points at `sVersionStatusCommand` (`0x2818`), with scalar
+input count 0, structure input size 0, scalar output count 2, and structure
+output size 0. That action loads the service from the user client at
+`+0xd8` and calls `com_line6_driver_sharedxt::VersionStatusCommand` at
+`0x13892`. Entry 7 is `sGetIOPVersion`, and `GetIOPVersion` at `0x1370e`
+calls `com_line6_driver_kev::GetIOPVersion`. Selector 6 is not that method,
+and it is not `L6SP_GetVersion`.
+
+`VersionStatusCommand` reads the USB interface at `this+0xa8`. A null
+interface returns `0xe00002cd`. Otherwise it builds an `IOUSBDevRequest` on
+the stack: `bmRequestType` `0xC0`, `bRequest` `0x67`, `wValue` `0x0011`,
+`wIndex` `0`, `wLength` `3`, and a three-byte buffer. It calls
+`com_line6_kusbinterface::DeviceRequest` at `0x1412e` with both timeouts
+`0x3e8` and a null completion. `DeviceRequest` does not write those fields.
+It forwards the same request pointer through a virtual call. On a zero
+return, `VersionStatusCommand` stores byte 1 shifted left by 8, plus byte
+0, as the uint16, and stores byte 2 as the status byte. The unsigned kext
+has the same bytes at `0x272e`, `0xa2100`, and `0x13892`. No kext was
+loaded or installed.
+
+Those five immediates are the fields already recorded for the userspace
+builder. The kernel handler is the static site that places them in a device
+request. The handler does not name a firmware file, and it does not say
+what the device puts in the three bytes. The userspace string "USB Firmware
+Version:" remains display text. The fields stay unapproved. No device reply
+was captured.
+
+The signed kext personality `PODxtLive` matches vendor 3649, product 18000,
+and interface 0 with class `com_line6_audio`. That is the class name
+`FindDriverService` iterates. The personality does not by itself limit
+selector 6 to PODxt Live, and it still does not give a firmware version.
 
 ## Images searched for the setter and the cache fill
 
@@ -377,8 +469,9 @@ Edges that remain:
   `L6MnkyDevice`, and `L6MIDIHW` were located and were not disassembled for
   a setter call in this pass.
 - `FindDriverService` at `0x8e720` runs on a cache miss. Its return value is
-  overwritten before the jump table. This pass did not follow that callee's
-  stores.
+  overwritten before the jump table. The match store at `this+0x278` is
+  recorded in
+  [FindDriverService and selector 6](#finddriverservice-and-sharedxt-selector-6).
 - A cache hit returns the resident pointer and does not identify a class
   again. A null `FindServiceNamed` result leaves the slot null.
 - Missing class-name strings remain a search observation. That observation
@@ -423,7 +516,10 @@ does not give a firmware version. No driver was installed.
   binds the setter. A later `AcquireService(0)` miss stores an
   `L6KernelBrandiServiceMac`, and the base acquire call returns that cache
   slot. Kernel `GetVersion` calls `IOConnectCallScalarMethod` selector `6`.
-  That is a static branch. The five userspace fields stay unapproved.
+  Sharedxt selector 6 builds the same five fields in an `IOUSBDevRequest`
+  and forwards that pointer. That handler is not `GetIOPVersion` and does
+  not identify a firmware image. That is a static branch. The five fields
+  stay unapproved.
 - `bcdDevice` 0.01: unexplained, and it was not read again.
 
 ## Future check
@@ -433,10 +529,12 @@ does not give a firmware version. No driver was installed.
    slot `+0x18` returns without the failure bit. `AcquireService(0)` on that
    control stores the kernel service on a cache miss, and the base call
    returns that slot. Kernel `GetVersion` reaches `IOConnectCallScalarMethod`
-   selector `6` through the stubs named above. The userspace builder stays
-   unselected. Leave the transfer unsent, including the ruled-out frame
-   above. The missing USB-firmware image and unknown installed version remain
-   open. A cache hit and a null service name are also still open.
+   selector `6` through the stubs named above. Sharedxt selector 6 builds
+   the same five fields and forwards that request pointer. It does not
+   identify a firmware image. The userspace builder stays unselected. Leave
+   the transfer unsent, including the ruled-out frame above. The missing
+   USB-firmware image and unknown installed version remain open. A cache hit
+   and a null service name are also still open.
 2. A live read still needs a separate explicit authorization. No reply has
    been captured. The five recorded fields are not an approved live read.
 3. The kernel version slot is identified on the static branch. A separate
@@ -459,6 +557,7 @@ learned later would still not authorize an update.
 - The reviewed decision stands: on the static success branch,
   `L6XTAudioControlMac` is the description control. That is not an observed
   hardware state. A successful `AcquireService(0)` miss returns the kernel
-  service, and kernel `GetVersion` is the slot the version call uses. The
-  five userspace fields stay unapproved.
-- This pass found that return path, so reserved issue #21 was not started.
+  service, and kernel `GetVersion` is the slot the version call uses.
+  Sharedxt selector 6 builds the recorded device request. The five fields
+  stay unapproved.
+- This pass found that kernel request, so reserved issue #21 was not started.

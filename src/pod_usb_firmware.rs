@@ -213,8 +213,10 @@ pub const SIBLING_CONTROL_ASSOCIATIONS: &[SiblingControlAssociation] = &[
 /// The index-0 miss arm stores the kernel service. It does not return that
 /// pointer. `base_acquire_va` reads the cache slot after the support bit is
 /// set and returns it when the pointer is non-null. A hit returns the
-/// resident pointer and does not construct again. Nothing here builds or
-/// submits a transfer, and `approved_live_read` stays false.
+/// resident pointer and does not construct again.
+/// [`FIND_DRIVER_STORE`] is the registry entry that miss reads.
+/// [`SHAREDXT_SELECTOR`] is the kernel handler for selector 6. Nothing here
+/// builds or submits a transfer, and `approved_live_read` stays false.
 pub const VERSION_PATH_SERVICE: VersionPathService = VersionPathService {
     acquire_va: 0x8dd20,
     license_acquire_va: 0x9f590,
@@ -260,6 +262,71 @@ pub const VERSION_PATH_SERVICE: VersionPathService = VersionPathService {
     approved_live_read: false,
 };
 
+/// Registry store inside `FindDriverService`. The AcquireService miss calls
+/// it and then ignores the return register. A UniqueID match stores the
+/// `com_line6_audio` entry at `driver_offset`. `FindServiceNamed` reads that
+/// word and returns the child whose registry name is
+/// [`VersionPathService::service_name`]. The constructor first stores its
+/// integer argument at the same offset and zeroes the UniqueID byte.
+/// License addresses name the bodies. They are not Monkey addresses.
+/// Nothing here opens a registry entry.
+pub const FIND_DRIVER_STORE: FindDriverServiceStore = FindDriverServiceStore {
+    find_driver_va: 0x8e720,
+    license_va: 0x9ff90,
+    monkey_call_va: 0x8dd9d,
+    license_call_va: 0x9f60d,
+    driver_offset: 0x278,
+    unique_id_offset: 0x16b,
+    name_buffer_offset: 0x298,
+    matching_name: "com_line6_audio",
+    registry_plane: "IOService",
+    property_key: "UniqueID",
+    search_options: 3,
+    child_iterator_options: 1,
+    constructor_body_va: 0x8c740,
+    constructor_store_va: 0x8c799,
+    license_constructor_store_va: 0x9e009,
+    license_constructor_call_va: 0xa6f8a,
+    find_service_load_va: 0x8e9bd,
+    result_consumed: false,
+    stores_matching_entry: true,
+    releases_previous_entry: false,
+    observed_hardware_state: false,
+};
+
+/// Selector 6 on `com_line6_driver_sharedxt_UserClient` in Line6Audio.
+/// The dispatch entry allows no scalar or structure input and two scalar
+/// outputs. Its action calls `VersionStatusCommand`, which fills an
+/// `IOUSBDevRequest` with [`USB_VERSION_CONTROL`] and passes that pointer to
+/// `DeviceRequest`. Selector 7 is `GetIOPVersion` and is a different method.
+/// The same bytes are at these addresses in the unsigned kext. This is not
+/// an observed device reply, and `approved_live_read` stays false.
+pub const SHAREDXT_SELECTOR: SharedxtSelectorHandler = SharedxtSelectorHandler {
+    external_method_va: 0x272e,
+    method_table_va: 0xa2100,
+    selector: 6,
+    entry_stride: 24,
+    scalar_input_count: 0,
+    structure_input_size: 0,
+    scalar_output_count: 2,
+    structure_output_size: 0,
+    action_va: 0x2818,
+    command_va: 0x13892,
+    interface_offset: 0xa8,
+    missing_interface_status: 0xe000_02cd,
+    device_request_va: 0x1412e,
+    request_timeout: 0x3e8,
+    completion_is_null: true,
+    request_rewritten_before_forward: false,
+    iop_selector: 7,
+    iop_command_va: 0x1370e,
+    matches_recorded_fields: true,
+    identifies_firmware_image: false,
+    same_bytes_in_unsigned_image: true,
+    observed_hardware_state: false,
+    approved_live_read: false,
+};
+
 /// Earlier `lsusb` text in `analysis/reports/podxt-live-usb-descriptors.txt`.
 /// It was not collected again for this record.
 pub const SAVED_DESCRIPTOR: SavedDescriptor = SavedDescriptor {
@@ -299,7 +366,7 @@ pub const USB_COMPONENT_QUERY: QueryRecovery = QueryRecovery::StaticControlTrans
 pub const FUTURE_PLAN: &[PlanStep] = &[
     PlanStep {
         id: "static-request-recorded",
-        detail: "PODxt Live USB PID 0x4650 matches product 0x0003000a. In the Monkey image that equality constructs an L6XTAudioControlMac and, when control slot +0x18 returns without the failure bit, virtually calls description slot +0x0c with that control. No Mach-O indirect-symbol or lazy stub binds the setter. AcquireService(0) on that control stores an L6KernelBrandiServiceMac on a cache miss, and the base acquire call returns that cache slot. Kernel GetVersion uses an IOConnectCallScalarMethod stub with selector 6. The recorded transfer must not be sent, and its fields are not an approved live read. No USB-firmware image is in the local inventory, and the installed version is not closed.",
+        detail: "PODxt Live USB PID 0x4650 matches product 0x0003000a. In the Monkey image that equality constructs an L6XTAudioControlMac and, when control slot +0x18 returns without the failure bit, virtually calls description slot +0x0c with that control. No Mach-O indirect-symbol or lazy stub binds the setter. AcquireService(0) on that control stores an L6KernelBrandiServiceMac on a cache miss, and the base acquire call returns that cache slot. Kernel GetVersion uses an IOConnectCallScalarMethod stub with selector 6. Sharedxt user-client selector 6 builds the same five fields in a device request and forwards that pointer. That handler is not GetIOPVersion and does not identify a firmware image. The recorded transfer must not be sent, and its fields are not an approved live read. No USB-firmware image is in the local inventory, and the installed version is not closed.",
         gate: PlanGate::OfflineNext,
     },
     PlanStep {
@@ -487,6 +554,69 @@ pub struct VersionPathService {
     pub sem_post_stub_va: u32,
     pub empty_connection_status: u32,
     pub userspace_fields_used: bool,
+    pub observed_hardware_state: bool,
+    pub approved_live_read: bool,
+}
+
+/// `FindDriverService` on the XT control. `monkey_call_va` is the only
+/// direct caller in the Monkey image. `license_call_va` is the matching
+/// caller in License Manager. `result_consumed` stays false because
+/// AcquireService overwrites the return register. `releases_previous_entry`
+/// stays false because a match overwrites `driver_offset` without an
+/// `IOObjectRelease` of the old word.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FindDriverServiceStore {
+    pub find_driver_va: u32,
+    pub license_va: u32,
+    pub monkey_call_va: u32,
+    pub license_call_va: u32,
+    pub driver_offset: u16,
+    pub unique_id_offset: u16,
+    pub name_buffer_offset: u16,
+    pub matching_name: &'static str,
+    pub registry_plane: &'static str,
+    pub property_key: &'static str,
+    pub search_options: u32,
+    pub child_iterator_options: u32,
+    pub constructor_body_va: u32,
+    pub constructor_store_va: u32,
+    pub license_constructor_store_va: u32,
+    pub license_constructor_call_va: u32,
+    pub find_service_load_va: u32,
+    pub result_consumed: bool,
+    pub stores_matching_entry: bool,
+    pub releases_previous_entry: bool,
+    pub observed_hardware_state: bool,
+}
+
+/// Kernel dispatch for the userspace selector-6 call. The five request
+/// fields stay the recorded [`USB_VERSION_CONTROL`] values.
+/// `matches_recorded_fields` means the handler stores those immediates.
+/// It does not approve them. `identifies_firmware_image` stays false: the
+/// handler names a version word and a status byte, not a firmware file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SharedxtSelectorHandler {
+    pub external_method_va: u32,
+    pub method_table_va: u32,
+    pub selector: u8,
+    pub entry_stride: u8,
+    pub scalar_input_count: u8,
+    pub structure_input_size: u32,
+    pub scalar_output_count: u8,
+    pub structure_output_size: u32,
+    pub action_va: u32,
+    pub command_va: u32,
+    pub interface_offset: u16,
+    pub missing_interface_status: u32,
+    pub device_request_va: u32,
+    pub request_timeout: u16,
+    pub completion_is_null: bool,
+    pub request_rewritten_before_forward: bool,
+    pub iop_selector: u8,
+    pub iop_command_va: u32,
+    pub matches_recorded_fields: bool,
+    pub identifies_firmware_image: bool,
+    pub same_bytes_in_unsigned_image: bool,
     pub observed_hardware_state: bool,
     pub approved_live_read: bool,
 }
@@ -779,6 +909,67 @@ pub fn validate_record() -> Result<(), String> {
         || VERSION_PATH_SERVICE.kernel_getversion_va == SLOT_FORWARD.request_builder_va
     {
         return Err("version path collapsed the kernel return into the userspace builder".into());
+    }
+    if !FIND_DRIVER_STORE.stores_matching_entry
+        || FIND_DRIVER_STORE.result_consumed
+        || FIND_DRIVER_STORE.releases_previous_entry
+        || FIND_DRIVER_STORE.observed_hardware_state
+        || FIND_DRIVER_STORE.find_driver_va != VERSION_PATH_SERVICE.find_driver_va
+        || FIND_DRIVER_STORE.license_va == FIND_DRIVER_STORE.find_driver_va
+        || FIND_DRIVER_STORE.license_va != 0x9ff90
+        || FIND_DRIVER_STORE.monkey_call_va != 0x8dd9d
+        || FIND_DRIVER_STORE.license_call_va == FIND_DRIVER_STORE.monkey_call_va
+        || FIND_DRIVER_STORE.license_call_va != 0x9f60d
+        || FIND_DRIVER_STORE.driver_offset != 0x278
+        || FIND_DRIVER_STORE.unique_id_offset != 0x16b
+        || FIND_DRIVER_STORE.name_buffer_offset != 0x298
+        || FIND_DRIVER_STORE.matching_name == VERSION_PATH_SERVICE.service_name
+        || FIND_DRIVER_STORE.matching_name != "com_line6_audio"
+        || FIND_DRIVER_STORE.registry_plane != "IOService"
+        || FIND_DRIVER_STORE.property_key != "UniqueID"
+        || FIND_DRIVER_STORE.search_options != 3
+        || FIND_DRIVER_STORE.child_iterator_options != 1
+        || FIND_DRIVER_STORE.constructor_body_va
+            != PODXT_LIVE_SETTER_ASSOCIATION.constructor_body_va
+        || FIND_DRIVER_STORE.constructor_store_va != 0x8c799
+        || FIND_DRIVER_STORE.license_constructor_store_va == FIND_DRIVER_STORE.constructor_store_va
+        || FIND_DRIVER_STORE.license_constructor_call_va != 0xa6f8a
+        || FIND_DRIVER_STORE.find_service_load_va != 0x8e9bd
+        || FIND_DRIVER_STORE.result_consumed != VERSION_PATH_SERVICE.find_driver_result_consumed
+    {
+        return Err("find-driver store lost the registry match or consumed the return".into());
+    }
+    if !SHAREDXT_SELECTOR.matches_recorded_fields
+        || SHAREDXT_SELECTOR.identifies_firmware_image
+        || SHAREDXT_SELECTOR.observed_hardware_state
+        || SHAREDXT_SELECTOR.approved_live_read
+        || SHAREDXT_SELECTOR.request_rewritten_before_forward
+        || !SHAREDXT_SELECTOR.completion_is_null
+        || !SHAREDXT_SELECTOR.same_bytes_in_unsigned_image
+        || SHAREDXT_SELECTOR.selector != VERSION_PATH_SERVICE.iokit_selector
+        || SHAREDXT_SELECTOR.selector == USB_VERSION_CONTROL.b_request
+        || SHAREDXT_SELECTOR.scalar_input_count != 0
+        || SHAREDXT_SELECTOR.scalar_output_count != VERSION_PATH_SERVICE.scalar_output_count
+        || SHAREDXT_SELECTOR.structure_input_size != 0
+        || SHAREDXT_SELECTOR.structure_output_size != 0
+        || SHAREDXT_SELECTOR.entry_stride != 24
+        || SHAREDXT_SELECTOR.external_method_va != 0x272e
+        || SHAREDXT_SELECTOR.method_table_va != 0xa2100
+        || SHAREDXT_SELECTOR.action_va != 0x2818
+        || SHAREDXT_SELECTOR.command_va != 0x13892
+        || SHAREDXT_SELECTOR.action_va == SHAREDXT_SELECTOR.command_va
+        || SHAREDXT_SELECTOR.interface_offset != 0xa8
+        || SHAREDXT_SELECTOR.missing_interface_status != 0xe000_02cd
+        || SHAREDXT_SELECTOR.device_request_va != 0x1412e
+        || SHAREDXT_SELECTOR.request_timeout != 0x3e8
+        || SHAREDXT_SELECTOR.iop_selector == SHAREDXT_SELECTOR.selector
+        || SHAREDXT_SELECTOR.iop_selector != 7
+        || SHAREDXT_SELECTOR.iop_command_va != 0x1370e
+        || SHAREDXT_SELECTOR.iop_command_va == SHAREDXT_SELECTOR.command_va
+    {
+        return Err(
+            "sharedxt selector collapsed into the userspace builder or an IOP version".into(),
+        );
     }
     if SIBLING_CONTROL_ASSOCIATIONS.len() != 2 {
         return Err("sibling control associations changed".into());
