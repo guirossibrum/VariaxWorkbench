@@ -193,6 +193,15 @@ Use the prior workspace's coefficient-cache directory containing the generated
 not replace a failed replay receipt or promote fixtures. Slow or constrained
 hosts can still stop at the bounds and should retain the resulting diagnostics.
 
+A third completely fresh, uninterrupted replay at commit `92710c4` completed
+all 39 stages successfully, including the same 110 generator cases, 110 unchanged
+word-map outputs, 144 complete Java/native preset files, bank/collection checks
+and parameter-domain checks. Its receipt is
+`reference-replay-68b592692fedadf2.json`, with no failed step and no fixture
+digest changes. The extraction receipt is
+`research-extraction-ba98dfed91e3f14e.json`. The two earlier failed attempts
+remain preserved; this success does not retrospectively classify their causes.
+
 The setup guards also exposed a Windows-specific ZIP-name normalization issue in
 CI. Validation now checks the original archive member name before normalization,
 and synthetic backslash/NUL cases run on all three platforms. The legitimate
