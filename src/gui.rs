@@ -119,11 +119,11 @@ struct Workbench {
 }
 
 impl Workbench {
-    fn new(cc: &eframe::CreationContext<'_>, preset: PathBuf, artwork: PathBuf) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, preset: Option<PathBuf>, artwork: PathBuf) -> Self {
         Self::with_context(&cc.egui_ctx, preset, artwork)
     }
 
-    fn with_context(ctx: &egui::Context, preset: PathBuf, artwork: PathBuf) -> Self {
+    fn with_context(ctx: &egui::Context, preset: Option<PathBuf>, artwork: PathBuf) -> Self {
         ctx.set_visuals(egui::Visuals::dark());
         let mut style = (*ctx.style()).clone();
         style.spacing.item_spacing = Vec2::new(10.0, 10.0);
@@ -165,7 +165,9 @@ impl Workbench {
             read_receiver: None,
             read_worker: None,
         };
-        app.load(&preset);
+        if let Some(preset) = preset {
+            app.load(&preset);
+        }
         app
     }
 
@@ -668,7 +670,6 @@ impl Workbench {
             }
             Err(_) => {
                 self.missing_textures.insert(relative.to_owned());
-                self.error.get_or_insert_with(|| format!("Original artwork not found at {}. Choose the editor image folder with Artwork folder.", self.artwork.display()));
                 None
             }
         }
@@ -782,7 +783,11 @@ impl Workbench {
                 .size(23.0)
                 .strong(),
         );
-        ui.weak("Original Workbench artwork · drag pickups to position them");
+        if self.textures.is_empty() {
+            ui.weak("Artwork is optional. Choose an extracted editor image folder to show the original graphics. All parameter controls remain available.");
+        } else {
+            ui.weak("Original Workbench artwork · drag pickups to position them");
+        }
     }
 
     fn controls(&mut self, ui: &mut egui::Ui) {
@@ -1204,10 +1209,10 @@ impl Drop for Workbench {
     }
 }
 
-const USAGE: &str = "Usage: variax-workbench-gui [--preset FILE.vwm] [--artwork EDITOR_IMAGE_FOLDER] [--tab body|pickups|tuning|controls] [--screenshot OUTPUT.png]";
+const USAGE: &str = "Usage: variax-workbench-gui [FILE | --preset FILE] [--data-dir DIRECTORY] [--artwork EDITOR_IMAGE_FOLDER] [--tab body|pickups|tuning|controls] [--screenshot OUTPUT.png]";
 
 struct GuiOptions {
-    preset: PathBuf,
+    preset: Option<PathBuf>,
     artwork: PathBuf,
     screenshot: Option<PathBuf>,
     tab: Tab,
@@ -1215,19 +1220,27 @@ struct GuiOptions {
 
 fn parse_options(
     arguments: impl IntoIterator<Item = String>,
-    root: &Path,
+    data_root: &Path,
 ) -> Result<GuiOptions, String> {
     let mut options = GuiOptions {
-        preset: root.join("analysis/extracted/windows-app/modules/variax/device/Default Patch.vwm"),
-        artwork: root.join("assets/original-ui/modules/variax/editor/images"),
+        preset: None,
+        artwork: data_root.join("artwork"),
         screenshot: None,
         tab: Tab::Body,
     };
+    let mut data_root = data_root.to_owned();
+    let mut artwork = None;
     let mut args = arguments.into_iter();
     while let Some(arg) = args.next() {
+        if !arg.starts_with('-') {
+            if options.preset.replace(PathBuf::from(arg)).is_some() {
+                return Err("Open one file at a time".into());
+            }
+            continue;
+        }
         if !matches!(
             arg.as_str(),
-            "--preset" | "--artwork" | "--screenshot" | "--tab"
+            "--preset" | "--data-dir" | "--artwork" | "--screenshot" | "--tab"
         ) {
             return Err(format!("Unknown argument: {arg}"));
         }
@@ -1236,8 +1249,13 @@ fn parse_options(
             .filter(|value| !value.starts_with("--"))
             .ok_or_else(|| format!("{arg} requires a value"))?;
         match arg.as_str() {
-            "--preset" => options.preset = PathBuf::from(value),
-            "--artwork" => options.artwork = PathBuf::from(value),
+            "--preset" => {
+                if options.preset.replace(PathBuf::from(value)).is_some() {
+                    return Err("Open one file at a time".into());
+                }
+            }
+            "--data-dir" => data_root = PathBuf::from(value),
+            "--artwork" => artwork = Some(PathBuf::from(value)),
             "--screenshot" => {
                 let path = PathBuf::from(value);
                 if path.extension().and_then(|e| e.to_str()) != Some("png") {
@@ -1257,7 +1275,35 @@ fn parse_options(
             _ => unreachable!(),
         }
     }
+    options.artwork = artwork.unwrap_or_else(|| data_root.join("artwork"));
     Ok(options)
+}
+
+fn default_data_root() -> PathBuf {
+    let absolute_env = |key| {
+        std::env::var_os(key)
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+    };
+    if let Some(path) = absolute_env("VARIAX_WORKBENCH_DATA_DIR") {
+        return path;
+    }
+    #[cfg(target_os = "windows")]
+    if let Some(path) = absolute_env("LOCALAPPDATA") {
+        return path.join("VariaxWorkbench");
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    if let Some(path) = absolute_env("XDG_DATA_HOME") {
+        return path.join("variax-workbench");
+    }
+    if let Some(home) = absolute_env("HOME") {
+        #[cfg(target_os = "macos")]
+        return home.join("Library/Application Support/VariaxWorkbench");
+        #[cfg(not(target_os = "macos"))]
+        return home.join(".local/share/variax-workbench");
+    }
+    // This is only an optional artwork lookup; never create or write this path.
+    std::env::temp_dir().join("variax-workbench")
 }
 
 fn main() -> eframe::Result {
@@ -1266,7 +1312,7 @@ fn main() -> eframe::Result {
         println!("{USAGE}");
         return Ok(());
     }
-    let arguments = match parse_options(arguments, Path::new(env!("CARGO_MANIFEST_DIR"))) {
+    let arguments = match parse_options(arguments, &default_data_root()) {
         Ok(options) => options,
         Err(error) => {
             eprintln!("{error}\n{USAGE}");
@@ -1301,7 +1347,7 @@ mod tests {
         let context = egui::Context::default();
         let mut app = Workbench::with_context(
             &context,
-            root.join("tests/fixtures/editor-preset.vwm"),
+            Some(root.join("tests/fixtures/editor-preset.vwm")),
             root.join("assets/original-ui/modules/variax/editor/images"),
         );
         // These tests exercise egui directly, without a display or theme polling.
@@ -1555,7 +1601,7 @@ mod tests {
         assert!(app.texture(&context, "missing-test.png").is_none());
         app.artwork_dialog();
         assert_eq!(app.artwork, old);
-        assert!(app.error.is_some());
+        assert!(app.error.is_none());
         assert_eq!(app.missing_textures.len(), 1);
         app.artwork_dialog();
         assert_eq!(app.artwork, directory.path());
@@ -1664,7 +1710,7 @@ mod tests {
         assert!(app.texture(&context, path).is_none());
         assert_eq!(app.missing_textures.len(), 1);
         assert_eq!(app.document.as_ref().unwrap().preset().as_bytes(), before);
-        assert!(app.error.as_deref().unwrap().contains("Original artwork"));
+        assert!(app.error.is_none());
     }
 
     #[test]
@@ -1694,7 +1740,56 @@ mod tests {
         )
         .unwrap();
         assert_eq!(options.tab, Tab::Controls);
-        assert_eq!(options.preset, Path::new("model.vwm"));
+        assert_eq!(options.preset.as_deref(), Some(Path::new("model.vwm")));
+    }
+
+    #[test]
+    fn fresh_install_without_assets_or_default_preset_can_open_a_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let options = parse_options(Vec::new(), directory.path()).unwrap();
+        assert!(options.preset.is_none());
+        let context = egui::Context::default();
+        let mut app = Workbench::with_context(&context, options.preset, options.artwork);
+        app.theme_polled = Instant::now();
+        let _ = context.run(egui::RawInput::default(), |ctx| app.render(ctx));
+        assert!(app.error.is_none());
+        assert!(app.document.is_none());
+        assert!(app.read_worker.is_none());
+        assert!(app.textures.is_empty());
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+        app.dialogs = Box::new(FakeDialogs {
+            open: [Some(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/editor-preset.vwm"),
+            )]
+            .into(),
+            ..Default::default()
+        });
+        app.open_dialog();
+        assert!(app.document.is_some());
+        assert!(app.error.is_none());
+        let before = app.document.as_ref().unwrap().as_bytes().to_vec();
+        let _ = context.run(egui::RawInput::default(), |ctx| app.render(ctx));
+        assert!(app.error.is_none());
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), before);
+        assert!(!app.dirty());
+    }
+
+    #[test]
+    fn desktop_file_argument_and_explicit_artwork_override_data_directory() {
+        let root = Path::new("user-data");
+        let parse = |args: &[&str]| parse_options(args.iter().map(|s| (*s).to_owned()), root);
+        let options = parse(&["a preset.vwm", "--data-dir", "chosen"]).unwrap();
+        assert_eq!(options.preset.as_deref(), Some(Path::new("a preset.vwm")));
+        assert_eq!(options.artwork, Path::new("chosen/artwork"));
+        for args in [
+            vec!["--artwork", "images", "--data-dir", "chosen"],
+            vec!["--data-dir", "chosen", "--artwork", "images"],
+        ] {
+            assert_eq!(parse(&args).unwrap().artwork, Path::new("images"));
+        }
+        assert!(parse(&["one.vwm", "two.vwm"]).is_err());
+        assert!(parse(&["one.vwm", "--preset", "two.vwm"]).is_err());
+        assert!(parse(&["--data-dir"]).is_err());
     }
 
     #[test]
