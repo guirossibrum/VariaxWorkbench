@@ -57,6 +57,65 @@ fn run() -> Result<(), String> {
                 args[1]
             );
         }
+        Some("render-preset") if matches!(args.len(), 4 | 5) => {
+            let preset = read_preset(&args[1])?;
+            let parameters = variax_workbench::host::HostParameters::from_preset(&preset)?;
+            let settings = parameters.map(variax_workbench::host::HostOptions {
+                muted: if args.len() == 5 {
+                    match args[4].as_str() {
+                        "muted" => true,
+                        _ => return Err("optional mode must be muted".into()),
+                    }
+                } else {
+                    false
+                },
+                ..Default::default()
+            })?;
+            let library = variax_workbench::host::ModelLibrary::load_manifest(
+                std::path::Path::new(&args[2]),
+            )?;
+            let generated =
+                variax_workbench::host::HostEngine::new(&library).generate(&settings)?;
+            let output = parameters.finish(preset.name(), &settings, generated.packed());
+            write_new(&args[3], &output)?;
+        }
+        Some("host-generate-batch") if args.len() == 4 => {
+            let raw = fs::read(&args[1]).map_err(|e| e.to_string())?;
+            if raw.is_empty() || !raw.len().is_multiple_of(192) || raw.len() > 192 * 4096 {
+                return Err("expected 1..4096 complete 192-byte native input records".into());
+            }
+            let library = variax_workbench::host::ModelLibrary::load_manifest(
+                std::path::Path::new(&args[2]),
+            )?;
+            let mut engine = variax_workbench::host::HostEngine::new(&library);
+            let mut packed = Vec::new();
+            for (i, native) in raw.as_chunks::<192>().0.iter().enumerate() {
+                let output = engine
+                    .generate(&variax_workbench::host::WorkbenchSettings {
+                        native: *native,
+                        block_mask: u32::MAX,
+                    })
+                    .map_err(|e| format!("host record {i}: {e}"))?;
+                packed.extend_from_slice(&output.packed());
+            }
+            write_new(&args[3], &packed)?;
+        }
+        Some("host-generate") if args.len() == 4 => {
+            let raw = fs::read(&args[1]).map_err(|e| e.to_string())?;
+            let native = raw
+                .try_into()
+                .map_err(|_| "expected exactly 192 native input bytes")?;
+            let library = variax_workbench::host::ModelLibrary::load_manifest(
+                std::path::Path::new(&args[2]),
+            )?;
+            let output = variax_workbench::host::HostEngine::new(&library).generate(
+                &variax_workbench::host::WorkbenchSettings {
+                    native,
+                    block_mask: u32::MAX,
+                },
+            )?;
+            write_new(&args[3], &output.packed())?;
+        }
         Some("inspect") if args.len() == 2 => {
             print!("{}", read_preset(&args[1])?.summary());
         }
@@ -694,7 +753,7 @@ fn run() -> Result<(), String> {
         }
         _ => {
             return Err(
-                "Usage: variax-workbench preview | decode FIRST.syx SECOND.syx | inspect PRESET.vwm | pickup-response INPUT.bin FREQ_BITS VOL_BITS TONE_BITS | pickup-filter1 INPUT.bin VOL_BITS TONE_BITS | combine-pickups LEFT.bin RIGHT.bin series|parallel | interpolate-body INPUT.bin OUTPUT.bin X_BITS_HEX Y_BITS_HEX | blend-body INPUT.bin OUTPUT.bin LEFT_INDEX RIGHT_INDEX WEIGHT_BITS_HEX | body-roundtrip INPUT.bin OUTPUT.bin | normalize-body INPUT.bin POSITION_BITS_HEX | body-plan MODE X_BITS_HEX Y_BITS_HEX | inspect-bundle BANK.vwb | extract-preset BANK.vwb OUTPUT.vwm BANK_INDEX PRESET_INDEX | roundtrip INPUT OUTPUT | rename INPUT OUTPUT NAME | set INPUT OUTPUT SLOT_HEX PARAM_HEX int|float VALUE\nAll commands are offline. Output files must not exist. Parameter values are not checked against model-specific ranges.".into(),
+                "Usage: variax-workbench preview | decode FIRST.syx SECOND.syx | inspect PRESET.vwm | render-preset INPUT.vwm MODELS.tsv NEW.packed [muted] | pickup-response INPUT.bin FREQ_BITS VOL_BITS TONE_BITS | pickup-filter1 INPUT.bin VOL_BITS TONE_BITS | combine-pickups LEFT.bin RIGHT.bin series|parallel | interpolate-body INPUT.bin OUTPUT.bin X_BITS_HEX Y_BITS_HEX | blend-body INPUT.bin OUTPUT.bin LEFT_INDEX RIGHT_INDEX WEIGHT_BITS_HEX | body-roundtrip INPUT.bin OUTPUT.bin | normalize-body INPUT.bin POSITION_BITS_HEX | body-plan MODE X_BITS_HEX Y_BITS_HEX | inspect-bundle BANK.vwb | extract-preset BANK.vwb OUTPUT.vwm BANK_INDEX PRESET_INDEX | roundtrip INPUT OUTPUT | rename INPUT OUTPUT NAME | set INPUT OUTPUT SLOT_HEX PARAM_HEX int|float VALUE\nAll commands are offline. Output files must not exist. Parameter values are not checked against model-specific ranges.".into(),
             );
         }
     }

@@ -10,6 +10,7 @@ pub mod bundle;
 pub mod document;
 pub mod dsp;
 pub mod firmware;
+pub mod host;
 pub mod manual_check;
 pub mod midi;
 pub mod models;
