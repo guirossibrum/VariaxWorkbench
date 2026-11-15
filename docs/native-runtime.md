@@ -62,5 +62,9 @@ Vendor files and outputs stay ignored and local. Reproduce with:
 After the startup change, the body component was checked again: **252 vendor-body
 outputs and 84 synthetic outputs**, and **600 routing-plan comparisons**, still
 pass. The independent raw pickup response/primary-fit fixtures also pass Rust
-regression tests. Historical math/runtime parity remains open in issue #5; the
-remaining pickup tables/geometry stay open in issue #2.
+regression tests. Pickup tables/geometry and the Rust host pipeline have since
+been integrated in issues #2 and #4. Historical math/runtime parity remains open
+in issue #5. See the [math-runtime audit](math-runtime-audit.md) for measured
+glibc/MPFR differences, a separately recompiled Apple source candidate, and the
+bounded original Windows math harness. These comparisons preserve this runtime's
+strict startup checks and canonical references.

@@ -5,7 +5,7 @@ and the project remain the progress/dependency source of truth; this file record
 ownership and integration boundaries, not a replacement task queue.
 
 - Codex owns the coefficient engine and all issues other than those reserved below.
-  Current implementation: #3, then the dependent engine/application work.
+  Current implementation: #5 math/runtime evidence; #3 and #4 are integrated.
 - Grok is reserved #17, #12, #20 and #21, in that order, after the user gives it the
   handoff prompt. Reservation does not mean the agent has started.
 

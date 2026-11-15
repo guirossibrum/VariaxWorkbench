@@ -56,6 +56,32 @@ demonstrate why a historical source tag cannot be silently adopted as canonical.
 Apple sources, license, helpers and original-derived outputs remain local and
 ignored; no vendor source or binary is included in this repository.
 
+## Original Windows math comparison
+
+All 206,228 observed tuples complete in each of three explicitly selected modes:
+original CPU dispatch initialization with 53-bit and 64-bit x87 precision, and
+the image's uninitialized dispatch flag with 53-bit x87 precision. These modes
+are comparison conditions, not observations from a running historical JVM.
+
+| Mode | Differing result counts versus glibc |
+| --- | --- |
+| Initialized SSE dispatch, 53-bit | `tan`: 5; `powf`: 3; `cosf`: 1,195; `sinf`: 1,349 |
+| Initialized SSE dispatch, 64-bit | Same counts as 53-bit |
+| Image-default x87 dispatch, 53-bit | `pow`: 194; `powf`: 3; `exp`: 36; `log`: 298; `cosf`: 1,195; `sinf`: 1,349 |
+
+With the initialized 53-bit Windows math adapter, all 110 Mac-generator cases
+complete. One packed output differs from glibc at the same four coefficient words
+and checksum listed above; all 110 packed outputs match the MPFR-256 candidate.
+This is agreement for this corpus, not a mathematical or cross-platform guarantee.
+Float aliases use the Mac import's float32 input/output width around the Windows
+double intrinsic; complete Windows compiler arithmetic is not represented.
+
+The image-default x87 adapter produces startup constants
+`0.0009999999999999987` and `0.009999999999999997`, rather than the canonical
+`0.001` and `0.01`. The unchanged startup guard rejects this state. Its individual
+math comparisons are complete; **its whole-generator comparison did not run**.
+The failed first audit attempt and completed second report remain locally saved.
+
 ## Reproduction and boundaries
 
 The optional analysis helpers require Linux x86_64, a C compiler, LLVM tools,

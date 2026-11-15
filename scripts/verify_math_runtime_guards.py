@@ -5,13 +5,17 @@ import unittest
 from pathlib import Path
 from coefficient_oracle import CoefficientOracle,ROOT
 from windows_math_oracle import WindowsMathOracle
-from math_backends import MPFRMath,AppleSourceMath,FUNCTIONS
+from math_backends import MPFRMath,WindowsIntrinsicMath,FUNCTIONS
 
 
 class RuntimeGuards(unittest.TestCase):
     def test_alternate_math_cannot_reuse_a_canonical_namespace(self):
         for kwargs in [{'runtime_version':'other'},{'math_backend':object()},{'math_backend':object(),'runtime_version':CoefficientOracle.RUNTIME_VERSION}]:
             with self.assertRaises(ValueError):CoefficientOracle(**kwargs)
+    def test_noncanonical_startup_stops_without_changing_expected_constants(self):
+        backend=WindowsIntrinsicMath(0x27f,'image-default-x87')
+        with self.assertRaisesRegex(RuntimeError,'unexpected initialized knob constants'):
+            CoefficientOracle(math_backend=backend,runtime_version='guard-test-x87-only')
     def test_original_windows_wrapper_switches_functions_and_result_widths(self):
         oracle=WindowsMathOracle()
         for _ in range(3):
