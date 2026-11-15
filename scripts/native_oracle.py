@@ -8,8 +8,9 @@ import hashlib
 import json
 from pathlib import Path
 import struct
+import time
 
-from unicorn import Uc, UC_ARCH_X86, UC_MODE_32
+from unicorn import Uc, UC_ARCH_X86, UC_MODE_32, UC_QUERY_TIMEOUT
 from unicorn.x86_const import UC_X86_REG_ESP, UC_X86_REG_EIP
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -91,9 +92,15 @@ class NativeOracle:
         stack = self.STACK + 0xf000
         self.cpu.mem_write(stack, struct.pack('<' + 'I'*(len(arguments)+1), self.RETURN, *arguments))
         self.cpu.reg_write(UC_X86_REG_ESP, stack)
+        started = time.monotonic()
         self.cpu.emu_start(address, self.RETURN, timeout=timeout_us, count=instruction_limit)
+        elapsed = time.monotonic() - started
         stopped = self.cpu.reg_read(UC_X86_REG_EIP)
-        assert stopped == self.RETURN, f'{address:#x} did not return: pc={stopped:#x}, instruction budget={instruction_limit}, timeout_us={timeout_us}'
+        assert stopped == self.RETURN, (
+            f'{address:#x} did not return: pc={stopped:#x}, instruction budget={instruction_limit}, '
+            f'timeout_us={timeout_us}, wall_timeout_hit={bool(self.cpu.query(UC_QUERY_TIMEOUT))}, '
+            f'elapsed_seconds={elapsed:.6f}'
+        )
         return address
 
     def write(self, address, data):
