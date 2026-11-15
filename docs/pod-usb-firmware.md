@@ -4,9 +4,11 @@ Partial research milestone for [#20](https://github.com/guirossibrum/VariaxWorkb
 The installed USB-component version is unknown. No USB-firmware image was found.
 macOS Monkey 1.78 has a userspace service method that builds a USB vendor IN
 control transfer. PODxt Live's USB product id selects device-manager
-construction. The class of the service object installed for that device is
-still open. The transfer was not sent. No device was opened, and no update
-was run.
+construction. The version path then reaches an `L6DeviceDescription`, and
+that object's slot returns a pointer already cached on a device-control
+object. It does not construct either Brandi service. The class of the cached
+service is still open. The transfer was not sent. No device was opened, and
+no update was run.
 
 The main flash revision and the USB firmware component are different things.
 
@@ -128,8 +130,9 @@ runs at `0x1429a4`. The constructor at `0x148790` stores that device object at
 `DevMgr+0x110`.
 
 `QueryInterface` type `0x100` then constructs `L6BrandiImpl_DevMgr` with
-`this+0xc` equal to `DevMgr+0x110`. Slot `+0x14` of the Brandi object
-(`0x145356`) calls slot `+0x14` of that stored device object and keeps the
+`this+0xc` equal to `DevMgr+0x110`. That stored object is the
+`L6DeviceDescription` returned by `GetDeviceDesc`. Slot `+0x14` of the Brandi
+object (`0x145356`) calls slot `+0x14` of the description and keeps the
 returned pointer at Brandi `+0x10` when the out-status is non-negative. Slot
 `0x28` tail-calls slot `+0x14` of the returned pointer.
 
@@ -137,10 +140,43 @@ returned pointer at Brandi `+0x10` when the out-status is non-negative. Slot
 
 The returned pointer is the service object whose version method runs. The
 userspace constructor that installs vptr `0x1c1878` has no PC-relative call in
-this image; its address appears in a data table. This pass does not show that
-the device object's slot `+0x14` returns an `L6BrandiServiceMac` rather than
-the kernel service. Until that return is identified, `0x8c040` is the
-userspace builder and is not yet the closed PODxt Live query.
+this image; its address appears in a data table. The kernel constructor at
+`0x8adc0` installs vptr `0x1c1838`. The version-path call chain below does not
+call either constructor.
+
+## Description object and cached service
+
+`L6DeviceMgrBase::GetDeviceDesc(unsigned long)` is in this image at `0x142b72`.
+The matcher calls it at `0x142615` after the USB vendor compare. The method
+walks the list at the manager object `+8` and returns the pointer stored in
+each list node. That pointer is an `L6DeviceDescription`.
+
+The description constructor at `0x85310` installs vptr `0x1c1598`. It clears
+the word at `+0x104` and the word at `+0x106`, sets the dword at `+0x208` to
+`0xffffffff`, and default-constructs two null
+`L6DevSmartPtr<L6DeviceControlBase>` values at `+0x21c` and `+0x22c`. The
+matcher reads those three fields: `+0x104` against the descriptor dword whose
+low half is USB vendor `0x0e41`, `+0x106` as the USB product id, and `+0x208`
+as the product id compared with `0x0003000a`.
+
+`L6BrandiImpl_DevMgr` slot `+0x14` at `0x145356` calls slot `+0x14` of the
+object at `this+0xc` with argument `0`. For this description, that slot is
+`0x85800`. If the smart pointer at `+0x21c` is null, `0x85800` returns a null
+pointer and status `0x80007004`. Otherwise it uses the smart pointer at
+`+0x22c`, copying `+0x21c` into `+0x22c` when `+0x22c` is null, and calls slot
+`+0x0c` of that device-control object with the same argument `0`.
+
+Slot `+0x0c` of `L6DeviceControlBase` and of `L6DeviceControlBaseMac` is
+`0x85150`. For index `0` it returns the pointer already stored at the control
+object `+8`. It does not construct a service. `L6BrandiControlMac` overrides
+that slot at `0x9b770`; the override's create path is index `1`, and index
+`0` falls through to `0x85150`. The description setter that writes `+0x21c`
+is virtual slot `+0x0c` at `0x85650`, and this image has no direct call to it.
+
+The service cached at control `+8` is therefore not shown to be
+`L6BrandiServiceMac` or the kernel service. `0x8c040` stays the userspace
+builder. It is not the closed PODxt Live query, and the five recorded fields
+are not an approved live read.
 
 A byte scan of the Windows Monkey executable did not establish this instruction
 sequence. The finding is the macOS Monkey 1.78 image only.
@@ -178,20 +214,25 @@ does not give a firmware version. No driver was installed.
 - Applicable USB-firmware image: none identified in the local archive.
 - Installed USB-component version: unknown. No device reply was captured.
 - Version-query shape: the userspace service builder above is recovered and
-  was not sent. The PODxt Live service-class link is still open. The Windows
-  image was not shown to match the builder.
+  was not sent. `GetDeviceDesc` returns an `L6DeviceDescription`, and that
+  object's version slot returns a cached device-control pointer. The class of
+  that cached service is still open. The Windows image was not shown to match
+  the builder.
 - `bcdDevice` 0.01: unexplained, and it was not read again.
 
 ## Future check
 
 1. Offline: resolve the actual service-class link before selecting a PODxt Live
-   request. The recorded userspace builder is still a candidate. Leave it
-   unsent, including the ruled-out frame above. The missing USB-firmware image
-   and unknown installed version also remain open.
+   request. The next gap is the device-control object stored on the
+   description and the service cached at that object's `+8`. The recorded
+   userspace builder is still a candidate. Leave it unsent, including the
+   ruled-out frame above. The missing USB-firmware image and unknown installed
+   version also remain open.
 2. A live read still needs a separate explicit authorization. No reply has
-   been captured.
-3. Only after that authorization, send the reviewed read once. Do not update,
-   reset, switch banks, or install a driver.
+   been captured. The five recorded fields are not an approved live read.
+3. After the service class is resolved, a separate authorization is still
+   required before any read. Do not update, reset, switch banks, or install a
+   driver.
 
 Until that authorization exists, there is no justified live query. A version
 learned later would still not authorize an update.
@@ -202,6 +243,7 @@ learned later would still not authorize an update.
 - The combined acceptance line stays open because the artifact, the installed
   version, and the PODxt Live service class are still unknown.
 - `bcdDevice` 0.01 stays an unexplained descriptor field.
-- The recorded transfer stays unsent. The crate keeps a portable data record
-  and does not take IOKit, Monkey, or a driver as a dependency.
+- The recorded transfer stays unsent. Its five fields are not an approved
+  live read. The crate keeps a portable data record and does not take IOKit,
+  Monkey, or a driver as a dependency.
 - No USB-firmware image is claimed to be inside the main `.xtf` container.
