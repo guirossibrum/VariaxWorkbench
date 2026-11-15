@@ -72,7 +72,7 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 
 - [x] Rust CLI and offline GUI build, including optimized release builds.
 - [x] Short guided-check **offline rehearsal** app: five prompts, cancellation/skip handling and protected report saving. Run `cargo run --bin variax-check -- plan`; see [usage and limits](docs/manual-check.md).
-- [x] **106 Rust tests**, Clippy with warnings denied, and formatting checks.
+- [x] **108 Rust tests**, Clippy with warnings denied, and formatting checks.
 - [x] Individual preset parsing/editing and protected copy saves: **6 original-Java compatibility checks**.
 - [x] L6BA/L6CO bank inspection and preset extraction: **both formats compared with original Java**.
 - [x] Offline GUI with recovered artwork, preset controls, undo/redo and guarded document operations; selected headless tests and rendering smoke checks pass.
