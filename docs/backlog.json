@@ -1,0 +1,217 @@
+{
+  "repository": "guirossibrum/VariaxWorkbench",
+  "items": [
+    {
+      "key": "body-engine",
+      "title": "Port complete body schema and interpolation to Rust",
+      "phase": "offline",
+      "dependencies": [],
+      "body": "Body serialization is verified across 28 definitions, but 2,710 bytes per variant remain opaque in Rust and interpolation semantics are unported.\n\n## Acceptance criteria\n\n- [ ] Type the remaining variant fields and document units, constants and interpolation modes from native evidence.\n- [ ] Implement interpolation endpoints and transitions, including bodies without a middle pickup.\n- [ ] Compare intermediate and final results against the original native oracle for all 28 definitions.\n\n## References\n\n- `src/body.rs`\n- `docs/body-definitions.md`\n- `docs/coefficient-engine-plan.md`\n- `scripts/coefficient_oracle.py`\n\n## Hardware boundary\n\nNo USB/MIDI traffic, device writes, reset, preset switching, or firmware installation is authorized. Keep all source-level hardware locks enabled; no runtime unlock. Use local artifacts, synthetic inputs, fake transports and CPU emulation only."
+    },
+    {
+      "key": "pickup-engine",
+      "title": "Port pickup response and electronics calculations to Rust",
+      "phase": "offline",
+      "dependencies": [],
+      "body": "All 43 pickup layouts are verified; response tables, geometry and wiring/electronics calculations still run only in the original library.\n\n## Acceptance criteria\n\n- [ ] Implement pickup position, normalized angle, pole/coil geometry and level calculations.\n- [ ] Implement parallel/series/phase combinations, volume/tone resistance, capacitance, taper and load behavior.\n- [ ] Differentially compare response tables and complete outputs, including internal pickup combinations and edge values.\n\n## References\n\n- `src/models.rs`\n- `docs/coefficient-engine-plan.md`\n- `scripts/test_coefficient_generator.py`\n\n## Hardware boundary\n\nNo USB/MIDI traffic, device writes, reset, preset switching, or firmware installation is authorized. Keep all source-level hardware locks enabled; no runtime unlock. Use local artifacts, synthetic inputs, fake transports and CPU emulation only."
+    },
+    {
+      "key": "remaining-dsp",
+      "title": "Port remaining DSP blocks, tuning and fixed-point conversions",
+      "phase": "offline",
+      "dependencies": [
+        "body-engine",
+        "pickup-engine"
+      ],
+      "body": "Rust supports the packer and a resonator conversion; other block calculations, tuning/detune, string processing and scaling remain incomplete.\n\n## Acceptance criteria\n\n- [ ] Inventory every generator block and emitted word, and identify unsupported functions explicitly.\n- [ ] Port required body/EQ/filter/decay/volume/tuning/string/sitar processing and conversion rules.\n- [ ] Verify sample-rate constants, rounding, saturation, enabled/disabled states and nonfinite-input behavior against native reference outputs.\n\n## References\n\n- `src/dsp.rs`\n- `docs/coefficient-engine-plan.md`\n- `scripts/coefficient_oracle.py`\n\nDependencies: body-engine, pickup-engine.\n\n## Hardware boundary\n\nNo USB/MIDI traffic, device writes, reset, preset switching, or firmware installation is authorized. Keep all source-level hardware locks enabled; no runtime unlock. Use local artifacts, synthetic inputs, fake transports and CPU emulation only."
+    },
+    {
+      "key": "java-pipeline",
+      "title": "Reproduce Java preset conversion, model adjustments and final patch assembly",
+      "phase": "offline",
+      "dependencies": [
+        "remaining-dsp"
+      ],
+      "body": "The native oracle bypasses Java ApplyHacks, pickup-combination selection, capacitance overrides, unit conversions, name/metadata overlay and final Java checksum handling.\n\n## Acceptance criteria\n\n- [ ] Reproduce original preset-to-native mappings, normalized angles, acoustic/12-string/sitar flags and model-specific adjustments.\n- [ ] Implement name and metadata placement, block mask, packing and final checksum ordering.\n- [ ] Compare full assembled patch bytes with isolated original Java/native behavior; do not provide a device upload path.\n\n## References\n\n- `docs/offline-generator-results.md`\n- `src/preset.rs`\n- `src/dsp.rs`\n- `scripts/verify_coefficient_jni.py`\n\nDependencies: remaining-dsp.\n\n## Hardware boundary\n\nNo USB/MIDI traffic, device writes, reset, preset switching, or firmware installation is authorized. Keep all source-level hardware locks enabled; no runtime unlock. Use local artifacts, synthetic inputs, fake transports and CPU emulation only."
+    },
+    {
+      "key": "math-parity",
+      "title": "Validate native oracle math and historical runtime rounding",
+      "phase": "offline",
+      "dependencies": [],
+      "body": "Complete native generation uses host libm adapters, which may differ from historical macOS math at quantization boundaries.\n\n## Acceptance criteria\n\n- [ ] Record oracle math/runtime dependencies and floating-point control settings reproducibly.\n- [ ] Compare sensitive transcendental functions and conversions with an independent original-runtime reference where feasible.\n- [ ] Quantify and resolve output differences near quantization thresholds; document any unresolved accuracy limits.\n\n## References\n\n- `scripts/coefficient_oracle.py`\n- `scripts/native_oracle.py`\n- `docs/offline-generator-results.md`\n\n## Hardware boundary\n\nNo USB/MIDI traffic, device writes, reset, preset switching, or firmware installation is authorized. Keep all source-level hardware locks enabled; no runtime unlock. Use local artifacts, synthetic inputs, fake transports and CPU emulation only."
+    },
+    {
+      "key": "engine-validation",
+      "title": "Build complete Rust/native differential validation matrix",
+      "phase": "offline",
+      "dependencies": [
+        "java-pipeline",
+        "math-parity"
+      ],
+      "body": "The original generator passes 110 cases with 98 distinct outputs and four JNI comparisons, but complete Rust output parity has not been established.\n\n## Acceptance criteria\n\n- [ ] Run the same complete-patch corpus through Rust and original reference generation.\n- [ ] Extend coverage across models, pairings, wiring, tuning, endpoints, deterministic sweeps and invalid inputs.\n- [ ] Require exact final-byte matches or explain and resolve each difference; test repeatability and regression cases.\n\n## References\n\n- `scripts/test_coefficient_generator.py`\n- `scripts/verify_coefficient_jni.py`\n- `docs/offline-generator-results.md`\n\nDependencies: java-pipeline, math-parity.\n\n## Hardware boundary\n\nNo USB/MIDI traffic, device writes, reset, preset switching, or firmware installation is authorized. Keep all source-level hardware locks enabled; no runtime unlock. Use local artifacts, synthetic inputs, fake transports and CPU emulation only."
+    },
+    {
+      "key": "parameter-validation",
+      "title": "Validate model-specific parameter ranges and combinations",
+      "phase": "offline",
+      "dependencies": [],
+      "body": "CLI parameter editing checks stored types and finite floats but does not enforce every model-specific range or valid combination.\n\n## Acceptance criteria\n\n- [ ] Recover accepted units, ranges, discrete choices and model restrictions from original code.\n- [ ] Apply shared validation to CLI and GUI while preserving unknown fields losslessly.\n- [ ] Test rejected edits leave documents unchanged and valid boundary edits remain compatible with original readers.\n\n## References\n\n- `src/preset.rs`\n- `src/document.rs`\n- `src/main.rs`\n- `src/gui.rs`\n- `docs/preset-files.md`\n\n## Hardware boundary\n\nNo USB/MIDI traffic, device writes, reset, preset switching, or firmware installation is authorized. Keep all source-level hardware locks enabled; no runtime unlock. Use local artifacts, synthetic inputs, fake transports and CPU emulation only."
+    },
+    {
+      "key": "bank-editor",
+      "title": "Complete bank/collection editing and GUI bank workflow",
+      "phase": "offline",
+      "dependencies": [],
+      "body": "L6BA/L6CO parsing and extraction agree with Java; replacement has synthetic coverage and the GUI edits individual presets only.\n\n## Acceptance criteria\n\n- [ ] Expand original-Java compatibility checks for multi-bank/multi-preset files, replacement and unknown chunk preservation.\n- [ ] Add GUI browsing/editing and atomic non-overwriting save-copy workflows for banks.\n- [ ] Document supported historical variants and explicitly reject unsupported containers without data loss.\n\n## References\n\n- `src/bundle.rs`\n- `src/gui.rs`\n- `scripts/verify_bundle_compatibility.py`\n- `docs/preset-files.md`\n\n## Hardware boundary\n\nNo USB/MIDI traffic, device writes, reset, preset switching, or firmware installation is authorized. Keep all source-level hardware locks enabled; no runtime unlock. Use local artifacts, synthetic inputs, fake transports and CPU emulation only."
+    },
+    {
+      "key": "gui-tests",
+      "title": "Complete offline GUI interaction and dirty-document tests",
+      "phase": "offline",
+      "dependencies": [],
+      "body": "Existing tests cover selected GUI guards, missing assets and argument errors; file dialogs and the full edit workflow are not exhaustively exercised.\n\n## Acceptance criteria\n\n- [ ] Test open/save/cancel with dirty documents, undo/redo and grouped drags.\n- [ ] Cover active-operation interruption, error recovery, missing artwork and document preservation.\n- [ ] Keep tests headless/offline where practical and document remaining manual checks.\n\n## References\n\n- `src/gui.rs`\n- `src/document.rs`\n- `tests/document.rs`\n- `docs/report.md`\n\n## Hardware boundary\n\nNo USB/MIDI traffic, device writes, reset, preset switching, or firmware installation is authorized. Keep all source-level hardware locks enabled; no runtime unlock. Use local artifacts, synthetic inputs, fake transports and CPU emulation only."
+    },
+    {
+      "key": "reproducibility",
+      "title": "Make local extraction, tool setup and oracle generation reproducible",
+      "phase": "offline",
+      "dependencies": [],
+      "body": "Reference scripts currently depend on ignored local tools, extracted vendor artifacts, schemas and model catalogs that are absent from a fresh clone.\n\n## Acceptance criteria\n\n- [ ] Document and automate artifact hashing, extraction, model catalog/schema generation and local tool setup without executing installers.\n- [ ] Provide dependency/version checks and clear errors for missing original artifacts.\n- [ ] Document fixture provenance and reproduce reference outputs without committing vendor code, images, firmware or personal captures.\n\n## References\n\n- `scripts/inventory.py`\n- `scripts/split_macho.py`\n- `scripts/rea`\n- `scripts/native_oracle.py`\n- `tests/fixtures/README.md`\n- `README.md`\n\n## Hardware boundary\n\nNo USB/MIDI traffic, device writes, reset, preset switching, or firmware installation is authorized. Keep all source-level hardware locks enabled; no runtime unlock. Use local artifacts, synthetic inputs, fake transports and CPU emulation only."
+    },
+    {
+      "key": "packaging",
+      "title": "Package the Rust offline editor for Linux",
+      "phase": "offline",
+      "dependencies": [
+        "reproducibility"
+      ],
+      "body": "Release binaries build, but artwork/default paths depend on the development checkout and there is no desktop package.\n\n## Acceptance criteria\n\n- [ ] Define configurable data paths and a usable fresh-install state when vendor assets are absent.\n- [ ] Package the Rust binary with desktop integration and reproducible installation/uninstallation.\n- [ ] Keep vendor artwork out of redistribution and preserve source-level hardware locks in packaged builds.\n\n## References\n\n- `Cargo.toml`\n- `src/gui.rs`\n- `README.md`\n- `docs/ui-assets.md`\n\nDependencies: reproducibility.\n\n## Hardware boundary\n\nNo USB/MIDI traffic, device writes, reset, preset switching, or firmware installation is authorized. Keep all source-level hardware locks enabled; no runtime unlock. Use local artifacts, synthetic inputs, fake transports and CPU emulation only."
+    },
+    {
+      "key": "artifact-provenance",
+      "title": "Finish offline updater acquisition and artifact provenance records",
+      "phase": "offline",
+      "dependencies": [],
+      "body": "Workbench/Monkey/Central, both firmware images and POD drivers are archived locally. User-provided download URLs were not captured; updater acquisition metadata needs a reproducible record.\n\n## Acceptance criteria\n\n- [ ] Document exact product/version/source URLs, sizes and cryptographic hashes for preserved packages where source evidence is available.\n- [ ] Consolidate Monkey/Central offline catalog/download behavior without accessing credentials or live hardware.\n- [ ] Distinguish catalog/hash agreement from signature verification and record remaining acquisition gaps.\n\n## References\n\n- `docs/factory-reference.md`\n- `docs/offline-generator-results.md`\n- `scripts/inspect_firmware.py`\n\n## Hardware boundary\n\nNo USB/MIDI traffic, device writes, reset, preset switching, or firmware installation is authorized. Keep all source-level hardware locks enabled; no runtime unlock. Use local artifacts, synthetic inputs, fake transports and CPU emulation only."
+    },
+    {
+      "key": "firmware-map",
+      "title": "Map firmware architectures, regions and integrity mechanisms",
+      "phase": "offline",
+      "dependencies": [],
+      "body": "Both FORM/L6FF files unpack and pass embedded MD5/region coverage checks. Region-type meanings, executable architectures and authenticity mechanisms remain unknown.\n\n## Acceptance criteria\n\n- [ ] Map PODxt Live and Variax 300/600 regions, CPU/DSP instructions, vectors and executable/data boundaries using static evidence.\n- [ ] Identify checksums, signatures or other integrity/product/version checks and their limits.\n- [ ] Retain source/region digests and document evidence versus inference without executing firmware on hardware.\n\n## References\n\n- `scripts/inspect_firmware.py`\n- `docs/offline-generator-results.md`\n\n## Hardware boundary\n\nNo USB/MIDI traffic, device writes, reset, preset switching, or firmware installation is authorized. Keep all source-level hardware locks enabled; no runtime unlock. Use local artifacts, synthetic inputs, fake transports and CPU emulation only."
+    },
+    {
+      "key": "factory-calibration",
+      "title": "Recover factory preset and calibration data layouts",
+      "phase": "offline",
+      "dependencies": [
+        "firmware-map"
+      ],
+      "body": "No complete authenticated Variax 600 factory bank or calibration backup has been recovered. Workbench Default Patch is not the factory bank.\n\n## Acceptance criteria\n\n- [ ] Identify preset/model and calibration structures in the exact 300/600 firmware and relevant static code.\n- [ ] Extract an offline factory reference if present, preserving raw bytes, offsets, version and provenance.\n- [ ] Validate extracted structures independently and keep calibration/device-unique data distinct from transferable preset data.\n\n## References\n\n- `docs/factory-reference.md`\n- `docs/body-definitions.md`\n- `docs/offline-generator-results.md`\n\nDependencies: firmware-map.\n\n## Hardware boundary\n\nNo USB/MIDI traffic, device writes, reset, preset switching, or firmware installation is authorized. Keep all source-level hardware locks enabled; no runtime unlock. Use local artifacts, synthetic inputs, fake transports and CPU emulation only."
+    },
+    {
+      "key": "factory-comparison",
+      "title": "Establish versioned factory reference and compare saved settings",
+      "phase": "offline",
+      "dependencies": [
+        "factory-calibration"
+      ],
+      "body": "Main firmware versions match current official listings, but that does not establish factory presets or the guitar's original shipping state.\n\n## Acceptance criteria\n\n- [ ] Distinguish defaults for firmware 3.10 from earlier shipping defaults and document unavailable provenance.\n- [ ] Compare a trustworthy reference with the existing local Reso-5 metadata capture without transmitting it.\n- [ ] Define a later full-bank comparison workflow that stays blocked pending a separately authorized backup.\n\n## References\n\n- `docs/factory-reference.md`\n- `docs/report.md`\n\nDependencies: factory-calibration.\n\n## Hardware boundary\n\nNo USB/MIDI traffic, device writes, reset, preset switching, or firmware installation is authorized. Keep all source-level hardware locks enabled; no runtime unlock. Use local artifacts, synthetic inputs, fake transports and CPU emulation only."
+    },
+    {
+      "key": "update-recovery",
+      "title": "Reverse engineer update and recovery protocols offline",
+      "phase": "offline",
+      "dependencies": [
+        "firmware-map"
+      ],
+      "body": "Monkey symbols and firmware containers are available, but a safe recovery path and updater/bootloader protocol have not been reconstructed.\n\n## Acceptance criteria\n\n- [ ] Map product checks, transfer sequencing, integrity checks, acknowledgment/error handling and preservation options from static updater/driver/firmware evidence.\n- [ ] Identify recovery/bootloader entry and failure behavior without entering recovery on either device.\n- [ ] Document unknowns and state transitions; do not implement or execute a live updater.\n\n## References\n\n- `docs/factory-reference.md`\n- `docs/offline-generator-results.md`\n- `docs/report.md`\n\nDependencies: firmware-map.\n\n## Hardware boundary\n\nNo USB/MIDI traffic, device writes, reset, preset switching, or firmware installation is authorized. Keep all source-level hardware locks enabled; no runtime unlock. Use local artifacts, synthetic inputs, fake transports and CPU emulation only."
+    },
+    {
+      "key": "firmware-parser",
+      "title": "Implement hardened Rust firmware inspection and rejection tests",
+      "phase": "offline",
+      "dependencies": [],
+      "body": "A bounded Python L6FF inspector validates the supplied images and rejects 396 synthetic corrupt/truncated inputs. A Rust parser and broader wrong-product/version cases remain pending.\n\n## Acceptance criteria\n\n- [ ] Implement offline Rust container inspection with bounded decompression, exact stream/chunk checks, region coverage and checksum reporting.\n- [ ] Add synthetic wrong-product, wrong-version, oversized, overlapping, duplicate and corrupted-image fixtures.\n- [ ] Separate integrity from authenticity and expose no flashing or device-access API.\n\n## References\n\n- `scripts/inspect_firmware.py`\n- `docs/offline-generator-results.md`\n\n## Hardware boundary\n\nNo USB/MIDI traffic, device writes, reset, preset switching, or firmware installation is authorized. Keep all source-level hardware locks enabled; no runtime unlock. Use local artifacts, synthetic inputs, fake transports and CPU emulation only."
+    },
+    {
+      "key": "device-simulation",
+      "title": "Build offline receiver, update and recovery simulations",
+      "phase": "offline",
+      "dependencies": [
+        "update-recovery",
+        "firmware-parser"
+      ],
+      "body": "The current fake transport tests metadata read sessions; it does not emulate device DSP firmware or bootloader/update behavior.\n\n## Acceptance criteria\n\n- [ ] Model the statically established receiver/update states and document unsupported behavior.\n- [ ] Test corruption, wrong product/version, truncation, timeout, disconnect and power-loss/recovery scenarios entirely in memory.\n- [ ] Keep simulated success distinct from physical safety and preserve all live-access locks.\n\n## References\n\n- `src/read_session.rs`\n- `docs/report.md`\n- `docs/coefficient-engine-plan.md`\n\nDependencies: update-recovery, firmware-parser.\n\n## Hardware boundary\n\nNo USB/MIDI traffic, device writes, reset, preset switching, or firmware installation is authorized. Keep all source-level hardware locks enabled; no runtime unlock. Use local artifacts, synthetic inputs, fake transports and CPU emulation only."
+    },
+    {
+      "key": "firmware-improvements",
+      "title": "Assess firmware improvement feasibility without flashing",
+      "phase": "offline",
+      "dependencies": [
+        "firmware-map",
+        "update-recovery"
+      ],
+      "body": "Firmware improvements are a research goal; neither feasibility nor a recoverable deployment path is established.\n\n## Acceptance criteria\n\n- [ ] Identify potential improvements grounded in mapped code/data and document architectural constraints.\n- [ ] Assess model/calibration compatibility, integrity mechanisms and recovery implications.\n- [ ] Publish a feasibility report with evidence and unknowns; do not flash or generate deployable experimental firmware in this task.\n\n## References\n\n- `TODO.md`\n- `docs/report.md`\n\nDependencies: firmware-map, update-recovery.\n\n## Hardware boundary\n\nNo USB/MIDI traffic, device writes, reset, preset switching, or firmware installation is authorized. Keep all source-level hardware locks enabled; no runtime unlock. Use local artifacts, synthetic inputs, fake transports and CPU emulation only."
+    },
+    {
+      "key": "pod-usb-version",
+      "title": "Determine PODxt Live USB firmware version requirements",
+      "phase": "offline",
+      "dependencies": [],
+      "body": "POD main flash 3.01 is verified; the separate USB firmware component remains unverified.\n\n## Acceptance criteria\n\n- [ ] Identify USB firmware artifacts, applicable versions and version-query protocol from offline packages/source evidence.\n- [ ] Document what the previously captured identity does and does not establish.\n- [ ] Prepare a narrowly scoped future verification plan; perform no live query or update.\n\n## References\n\n- `docs/factory-reference.md`\n- `docs/report.md`\n- `docs/offline-generator-results.md`\n\n## Hardware boundary\n\nNo USB/MIDI traffic, device writes, reset, preset switching, or firmware installation is authorized. Keep all source-level hardware locks enabled; no runtime unlock. Use local artifacts, synthetic inputs, fake transports and CPU emulation only."
+    },
+    {
+      "key": "linux-transport",
+      "title": "Investigate Linux Variax identity matching and POD bridge behavior",
+      "phase": "offline",
+      "dependencies": [],
+      "body": "Earlier captures support an identity-matching mismatch in Linux's Variax interface. The downloaded drivers add USB/interface and Variax routing references.\n\n## Acceptance criteria\n\n- [ ] Compare kernel matching/routing code with saved replies and Windows/macOS static driver evidence.\n- [ ] Add offline identity/routing fixtures and establish the smallest justified Linux transport/driver change.\n- [ ] Document interface ownership, framing and cleanup risks; install no driver patch and make no live probe.\n\n## References\n\n- `src/usb.rs`\n- `src/midi.rs`\n- `src/read_session.rs`\n- `docs/offline-generator-results.md`\n- `docs/report.md`\n\n## Hardware boundary\n\nNo USB/MIDI traffic, device writes, reset, preset switching, or firmware installation is authorized. Keep all source-level hardware locks enabled; no runtime unlock. Use local artifacts, synthetic inputs, fake transports and CPU emulation only."
+    },
+    {
+      "key": "validation-gate",
+      "title": "Complete offline readiness ledger and hardware-operation review gate",
+      "phase": "offline",
+      "dependencies": [
+        "engine-validation",
+        "device-simulation",
+        "linux-transport"
+      ],
+      "body": "Existing validation records substantial progress but there is no complete coefficient port, complete backup or proven recovery path. Conditions for device writes are not met.\n\n## Acceptance criteria\n\n- [ ] Maintain a current passed/failed/unverified ledger linked to exact code and reference artifact hashes.\n- [ ] Review all potential outbound opcodes and failure/cleanup paths, including read-session state changes.\n- [ ] Define any proposed future operation precisely and retain source-level locks until explicit user authorization; general project permission is insufficient.\n\n## References\n\n- `AGENTS.md`\n- `TODO.md`\n- `docs/report.md`\n- `docs/offline-generator-results.md`\n\nDependencies: engine-validation, device-simulation, linux-transport.\n\n## Hardware boundary\n\nNo USB/MIDI traffic, device writes, reset, preset switching, or firmware installation is authorized. Keep all source-level hardware locks enabled; no runtime unlock. Use local artifacts, synthetic inputs, fake transports and CPU emulation only."
+    },
+    {
+      "key": "full-backup",
+      "title": "Plan and obtain comprehensive verified device backups after authorization",
+      "phase": "future-hardware",
+      "dependencies": [
+        "validation-gate",
+        "update-recovery"
+      ],
+      "body": "The local Reso-5 capture is one preset's settings metadata, not a full bank, DSP, calibration, flash or recovery backup.\n\n## Acceptance criteria\n\n- [ ] Specify required backup scope, non-overwriting storage, verification and recovery prerequisites before any live work.\n- [ ] Obtain explicit authorization for the exact capture procedure after reviewing offline evidence.\n- [ ] If authorized later, capture and independently verify the permitted data, recording omissions and failures; do not reset, switch banks or write firmware implicitly.\n\n## References\n\n- `AGENTS.md`\n- `docs/report.md`\n- `docs/factory-reference.md`\n\nDependencies: validation-gate, update-recovery.\n\n## Hardware boundary\n\nNo USB/MIDI traffic, device writes, reset, preset switching, or firmware installation is authorized. Keep all source-level hardware locks enabled; no runtime unlock. This issue is blocked until the user explicitly approves a precisely scoped hardware operation after offline validation and review. Planning this issue is not permission to execute it."
+    },
+    {
+      "key": "staged-read",
+      "title": "Plan staged read-only integration after explicit authorization",
+      "phase": "future-hardware",
+      "dependencies": [
+        "validation-gate",
+        "linux-transport"
+      ],
+      "body": "Live access is currently locked, including identity/metadata reads because they transmit data and may change session state.\n\n## Acceptance criteria\n\n- [ ] Define a minimal read-only integration plan with explicit expected outbound messages, cleanup and stop conditions.\n- [ ] Obtain fresh authorization for the precise operation; do not add runtime unlocks.\n- [ ] Only if authorized later, validate the reviewed transport behavior and record results without preset uploads, flashing, resets or implicit bank switching.\n\n## References\n\n- `AGENTS.md`\n- `src/usb.rs`\n- `src/read_session.rs`\n- `docs/report.md`\n\nDependencies: validation-gate, linux-transport.\n\n## Hardware boundary\n\nNo USB/MIDI traffic, device writes, reset, preset switching, or firmware installation is authorized. Keep all source-level hardware locks enabled; no runtime unlock. This issue is blocked until the user explicitly approves a precisely scoped hardware operation after offline validation and review. Planning this issue is not permission to execute it."
+    },
+    {
+      "key": "write-design",
+      "title": "Define a future preset-write safety design without enabling writes",
+      "phase": "offline",
+      "dependencies": [
+        "engine-validation",
+        "device-simulation",
+        "full-backup",
+        "staged-read"
+      ],
+      "body": "The eventual editor needs a device-programming design, but no preset writer or firmware writer is currently authorized or implemented.\n\n## Acceptance criteria\n\n- [ ] Specify validated patch/product/version constraints, transaction boundaries, backup prerequisites and failure handling.\n- [ ] Validate candidate packet transcripts and rejection paths in the offline receiver model.\n- [ ] Keep implementation/live activation blocked on complete validation, verified backups, a documented recovery path and separate explicit user approval; firmware flashing remains a separate decision.\n\n## References\n\n- `AGENTS.md`\n- `docs/coefficient-engine-plan.md`\n- `docs/report.md`\n\nDependencies: engine-validation, device-simulation, full-backup, staged-read.\n\n## Hardware boundary\n\nNo USB/MIDI traffic, device writes, reset, preset switching, or firmware installation is authorized. Keep all source-level hardware locks enabled; no runtime unlock. Use local artifacts, synthetic inputs, fake transports and CPU emulation only."
+    }
+  ]
+}

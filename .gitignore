@@ -1,0 +1,13 @@
+# Local tools, vendor packages, extracted/decompiled material and user captures.
+/.tools/
+/vendor/
+/analysis/
+/assets/original-ui/
+/backups/
+
+# Build products, local credentials and caches.
+/target/
+__pycache__/
+*.pyc
+.env
+.env.*

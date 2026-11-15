@@ -1,0 +1,32 @@
+[package]
+name = "variax-workbench"
+version = "0.1.0"
+edition = "2024"
+description = "Linux Variax 600 editor investigation and offline protocol tools"
+publish = false
+
+[lib]
+name = "variax_workbench"
+
+[[bin]]
+name = "variax-workbench"
+path = "src/main.rs"
+
+[[bin]]
+name = "variax-workbench-gui"
+path = "src/gui.rs"
+required-features = ["gui"]
+
+[features]
+default = []
+gui = ["usb", "dep:eframe", "dep:image", "dep:rfd", "dep:serde", "dep:serde_json"]
+usb = ["dep:rusb"]
+
+[dependencies]
+tempfile = "3"
+rusb = { version = "0.9.4", optional = true }
+eframe = { version = "=0.33.3", optional = true, default-features = false, features = ["default_fonts", "glow", "wayland", "x11", "__screenshot"] }
+image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
+rfd = { version = "0.18", optional = true }
+serde = { version = "1", optional = true, features = ["derive"] }
+serde_json = { version = "1", optional = true }

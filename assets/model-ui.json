@@ -1,0 +1,362 @@
+[
+  {
+    "kind": "body",
+    "id": 51380225,
+    "name": "T-Model",
+    "image": "bodies/tele.png"
+  },
+  {
+    "kind": "body",
+    "id": 51380224,
+    "name": "T-Model Custom",
+    "image": "bodies/telecustom.png"
+  },
+  {
+    "kind": "body",
+    "id": 51380226,
+    "name": "T-Model F-Hole",
+    "image": "bodies/thinline.png"
+  },
+  {
+    "kind": "body",
+    "id": 51380227,
+    "name": "Spank",
+    "image": "bodies/strat.png"
+  },
+  {
+    "kind": "body",
+    "id": 51380228,
+    "name": "Lester Flametop",
+    "image": "bodies/lester.png"
+  },
+  {
+    "kind": "body",
+    "id": 51380229,
+    "name": "Lester Goldtop",
+    "image": "bodies/lestergoldtop.png"
+  },
+  {
+    "kind": "body",
+    "id": 51380230,
+    "name": "Lester Custom",
+    "image": "bodies/lesterblack.png"
+  },
+  {
+    "kind": "body",
+    "id": 51380231,
+    "name": "Special Junior",
+    "image": "bodies/lpjunior.png"
+  },
+  {
+    "kind": "body",
+    "id": 51380232,
+    "name": "Special Special",
+    "image": "bodies/special.png"
+  },
+  {
+    "kind": "body",
+    "id": 51380233,
+    "name": "Special Bird",
+    "image": "bodies/firebird.png"
+  },
+  {
+    "kind": "body",
+    "id": 51380234,
+    "name": "R-Billy G-Brand",
+    "image": "bodies/countrygent.png"
+  },
+  {
+    "kind": "body",
+    "id": 51380235,
+    "name": "R-Billy Sparkletop",
+    "image": "bodies/sparklejet.png"
+  },
+  {
+    "kind": "body",
+    "id": 51380236,
+    "name": "Chime FullCircle",
+    "image": "bodies/ricky.png"
+  },
+  {
+    "kind": "body",
+    "id": 51380237,
+    "name": "Chime FullCircle-12",
+    "image": "bodies/ricky.png"
+  },
+  {
+    "kind": "body",
+    "id": 51380238,
+    "name": "Semi BluesKing",
+    "image": "bodies/es335.png"
+  },
+  {
+    "kind": "body",
+    "id": 51380239,
+    "name": "Semi Pokerface",
+    "image": "bodies/casino.png"
+  },
+  {
+    "kind": "body",
+    "id": 51380240,
+    "name": "Jazz Seventy Five",
+    "image": "bodies/es175.png"
+  },
+  {
+    "kind": "body",
+    "id": 51380241,
+    "name": "Jazz Super Four",
+    "image": "bodies/super400.png"
+  },
+  {
+    "kind": "body",
+    "id": 51380242,
+    "name": "Acoustic Dreadtop",
+    "image": "bodies/acoustic.png"
+  },
+  {
+    "kind": "body",
+    "id": 51380243,
+    "name": "Acoustic Dreadtop-12",
+    "image": "bodies/acoustic.png"
+  },
+  {
+    "kind": "body",
+    "id": 51380244,
+    "name": "Acoustic Parlor",
+    "image": "bodies/acoustic.png"
+  },
+  {
+    "kind": "body",
+    "id": 51380245,
+    "name": "Acoustic Jumbo-12",
+    "image": "bodies/acoustic.png"
+  },
+  {
+    "kind": "body",
+    "id": 51380246,
+    "name": "Acoustic Jumbo",
+    "image": "bodies/acoustic.png"
+  },
+  {
+    "kind": "body",
+    "id": 51380247,
+    "name": "Resonator Biscuit Bridge",
+    "image": "bodies/dobro.png"
+  },
+  {
+    "kind": "body",
+    "id": 51380248,
+    "name": "Electric Sitar",
+    "image": "bodies/sitar.png"
+  },
+  {
+    "kind": "body",
+    "id": 51380249,
+    "name": "Masonite Plank",
+    "image": "bodies/danelectro.png"
+  },
+  {
+    "kind": "body",
+    "id": 51380250,
+    "name": "Lester's Banjo",
+    "image": "bodies/banjo.png"
+  },
+  {
+    "kind": "body",
+    "id": 51380251,
+    "name": "Tricone Resonator",
+    "image": "bodies/tricone.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51445761,
+    "name": "T-Model Bridge",
+    "image": "pickups/telebridge.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51445760,
+    "name": "T-Model Neck",
+    "image": "pickups/teleneck.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51445764,
+    "name": "Spank Single Coil Bridge",
+    "image": "pickups/strat.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51445763,
+    "name": "Spank Single Coil Middle",
+    "image": "pickups/strat.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51445762,
+    "name": "Spank Single Coil Neck",
+    "image": "pickups/strat.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51478529,
+    "name": "Lester Bridge",
+    "image": "pickups/chromepaf_b.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51478528,
+    "name": "Lester Neck",
+    "image": "pickups/chromepaf_n.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51478537,
+    "name": "Lester Custom Bridge",
+    "image": "pickups/goldpaf_b.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51478536,
+    "name": "Lester Custom Neck",
+    "image": "pickups/goldpaf_n.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51445781,
+    "name": "Lester Goldtop",
+    "image": "pickups/cremep90.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51445766,
+    "name": "Special 90 Bridge",
+    "image": "pickups/cremep90.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51445765,
+    "name": "Special 90 Neck",
+    "image": "pickups/cremep90.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51445767,
+    "name": "Junior 90",
+    "image": "pickups/blackp90.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51478535,
+    "name": "Mini Humbucker Bridge",
+    "image": "pickups/mini.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51478534,
+    "name": "Mini Humbucker Neck",
+    "image": "pickups/mini.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51445771,
+    "name": "R-Billy Tron Bridge",
+    "image": "pickups/filtertron.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51445770,
+    "name": "R-Billy Tron Neck",
+    "image": "pickups/filtertron.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51445773,
+    "name": "R-Billy D'Almond Bridge",
+    "image": "pickups/dearmond.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51445772,
+    "name": "R-Billy D'Almond Neck",
+    "image": "pickups/dearmond.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51445775,
+    "name": "Chime Toaster Bridge",
+    "image": "pickups/toaster.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51445774,
+    "name": "Chime Toaster Neck",
+    "image": "pickups/toaster.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51478531,
+    "name": "Semi Humbucker Bridge",
+    "image": "pickups/chromepaf_b.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51478530,
+    "name": "Semi Humbucker Neck",
+    "image": "pickups/chromepaf_n.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51445769,
+    "name": "Semi 90 Bridge",
+    "image": "pickups/chromep90.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51445768,
+    "name": "Semi 90 Neck",
+    "image": "pickups/chromep90.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51445779,
+    "name": "Jazz 90 Bridge",
+    "image": "pickups/blackp90.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51445778,
+    "name": "Jazz 90 Neck",
+    "image": "pickups/blackp90.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51478533,
+    "name": "Jazz Humbucker Bridge",
+    "image": "pickups/goldpaf_b.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51478532,
+    "name": "Jazz Humbucker Neck",
+    "image": "pickups/goldpaf_n.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51445777,
+    "name": "Lipgloss Bridge",
+    "image": "pickups/lipstick.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51445776,
+    "name": "Lipgloss Neck",
+    "image": "pickups/lipstick.png"
+  },
+  {
+    "kind": "pickup",
+    "id": 51445780,
+    "name": "Sitar",
+    "image": "pickups/lipstick.png"
+  }
+]
