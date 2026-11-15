@@ -95,5 +95,17 @@ class SetupGuards(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'not an approved'):
                 setup.references(['read_variax_usb'])
 
+    def test_atomic_save_race_preserves_competing_file_and_removes_temporary_copy(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);target=root/'output'
+            def raced_link(source,destination):
+                Path(destination).write_bytes(b'competing owner')
+                raise FileExistsError('simulated race')
+            with patch.object(setup.os,'link',side_effect=raced_link):
+                with self.assertRaisesRegex(ValueError,'raced replacement'):
+                    setup.write_new(target,b'new bytes')
+            self.assertEqual(target.read_bytes(),b'competing owner')
+            self.assertEqual(list(root.iterdir()),[target])
+
 
 if __name__=='__main__':unittest.main()

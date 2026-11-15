@@ -51,11 +51,25 @@ def write_new(path, data):
         if path.is_symlink() or path.read_bytes() != data:
             raise ValueError(f'refusing to replace different data: {path}')
         return
-    with path.open('xb') as output:
-        output.write(data)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent,delete=False) as output:
+            temporary=Path(output.name)
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+        try:
+            os.link(temporary,path)
+        except FileExistsError:
+            if path.is_symlink() or path.read_bytes()!=data:
+                raise ValueError(f'refusing a raced replacement: {path}')
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def receipt(name, value):
+    value = dict(value, recipe_sha256=sha(Path(__file__)))
     data = (json.dumps(value, indent=2, sort_keys=True) + '\n').encode()
     path = ROOT / 'analysis/reports' / (name + '-' + hashlib.sha256(data).hexdigest()[:16] + '.json')
     write_new(path, data)

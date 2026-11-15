@@ -145,8 +145,8 @@ hashes and reference log hashes. The fresh-workspace replay is distinct from
 historical Mac authentication, full Windows generator/JVM equivalence, audio
 equivalence or a hardware recovery test. Nothing here authorizes live traffic.
 
-`python scripts/test_research_setup.py` runs seven synthetic guard tests without
+`python scripts/test_research_setup.py` runs nine synthetic guard tests without
 vendor archives, emulation or external tools. They check truncated CPIO prefixes,
 path traversal, symlink redirection, retained data/executable modes, archive
-identity mismatches, file replacement refusal and conflicting procedure indexes.
+identity mismatches, file replacement refusal, a competing-save race and conflicting procedure indexes.
 The core CI runs these guards on all three product platforms.
