@@ -5,6 +5,7 @@ synthetic inputs. They contain no downloaded firmware, vendor model assets,
 guitar captures or factory presets.
 
 - `editor-preset.vwm`: synthetic minimal Workbench-format preset named Synthetic.
+- `synthetic-l6ff-python.bin`: 390-byte synthetic FORM/L6FF container. Its image is `bytes(range(256))` repeated four times, not a product firmware file. The Python inspector rejects all 390 prefixes and six damaged fields of this layout.
 - `native-body-definition.bin`: generated values across the recovered body schema.
 - `native-pickup-definition.bin`: generated electrical/geometry values.
 - `native-pack-input.bin`, `native-pack-output.bin`: deterministic synthetic words

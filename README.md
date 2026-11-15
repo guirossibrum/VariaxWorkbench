@@ -85,6 +85,7 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 - [x] Pickup electronics: **2,322 raw responses + 387 primary fits + 282 secondary fits**, **900 biquad checks**, **280 complete tables** and **252 smoothed-response comparisons**. Synthetic fixtures pass debug/release; full host-pipeline integration remains pending.
 - [x] Rust DSP packing/checksum, selected resonator conversions, **1,012 VX encodings and 315 scalar-setter cases** match original-machine-code fixtures. **2,145 coefficient-writer cases**, **1,320 complete pickup block cases** and **1,008 simple-block cases** pass. A further **600 biquad checks and 864 filter-block cases** pass. All **17 DSP block paths** now have parameter-to-word implementations: a further **2,304 EQ coefficient cases**, **432 EQ block cases**, **288 sitar cases**, **432 body/string-tone cases**, and **216 complete raw-body assemblies** match the original instructions under the documented host-libm adapters. Scope is [documented](docs/dsp-implementation.md); the [observed word map](docs/dsp-word-map.md) distinguishes 748 written words from 343 still-unknown words.
 - [x] Firmware inspection: both supplied images unpack with matching embedded MD5 and complete region coverage; **396 corrupt/truncated synthetic inputs rejected**.
+- [x] Offline Rust FORM/L6FF inspector (`variax-firmware-inspect`): bounded decompression, chunk and stream termination checks, region coverage, MD5 integrity and SHA-256 reporting. Synthetic rejection covers the same **390 prefixes and 6 damaged fields**, plus wrong-product, wrong-version, oversized, overlapping, duplicate, and corrupted-image fixtures. MD5 agreement is not authenticity. No flashing or device API. Details: [firmware containers](docs/firmware-container.md) — [#17](https://github.com/guirossibrum/VariaxWorkbench/issues/17).
 - [x] Simulated read-session fragmentation, cancellation, timeout, disconnect and cleanup failures; physical-access locks remain tested and enabled.
 
 ### Pending implementation or validation
@@ -97,7 +98,7 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 - [ ] Model-specific parameter validation, complete bank GUI workflows and broader GUI interaction tests — [#7](https://github.com/guirossibrum/VariaxWorkbench/issues/7)–[#9](https://github.com/guirossibrum/VariaxWorkbench/issues/9).
 - [ ] Reproducible fresh-clone tool/artifact setup, Linux packaging and provenance completion — [#10](https://github.com/guirossibrum/VariaxWorkbench/issues/10)–[#12](https://github.com/guirossibrum/VariaxWorkbench/issues/12).
 - [ ] Firmware architecture/region mapping, factory/calibration extraction and trustworthy factory comparison — [#13](https://github.com/guirossibrum/VariaxWorkbench/issues/13)–[#15](https://github.com/guirossibrum/VariaxWorkbench/issues/15).
-- [ ] Static recovery/update reconstruction, hardened Rust firmware inspection and virtual device/update simulation — [#16](https://github.com/guirossibrum/VariaxWorkbench/issues/16)–[#18](https://github.com/guirossibrum/VariaxWorkbench/issues/18).
+- [ ] Static recovery/update reconstruction and virtual device/update simulation — [#16](https://github.com/guirossibrum/VariaxWorkbench/issues/16), [#18](https://github.com/guirossibrum/VariaxWorkbench/issues/18). Rust container inspection is [#17](https://github.com/guirossibrum/VariaxWorkbench/issues/17).
 - [ ] Firmware-improvement feasibility, separate POD USB-firmware verification and Linux bridge investigation — [#19](https://github.com/guirossibrum/VariaxWorkbench/issues/19)–[#21](https://github.com/guirossibrum/VariaxWorkbench/issues/21).
 - [ ] Late-stage synthetic test expansion to **at least 5x distinct samples**, including body-dependent sustain/note decay, continuous string bends/vibrato, bends during decay and alternate/custom tuning in combination — [#33](https://github.com/guirossibrum/VariaxWorkbench/issues/33). Audio behavior stays unverified without a suitable independent DSP/audio reference.
 - [ ] Readiness review, comprehensive backups and any future authorized hardware integration/write design — [#22](https://github.com/guirossibrum/VariaxWorkbench/issues/22)–[#25](https://github.com/guirossibrum/VariaxWorkbench/issues/25).
@@ -151,6 +152,7 @@ prints recovered request bytes without transmitting them.
 ```sh
 cargo test --all-features
 cargo clippy --all-features --all-targets -- -D warnings
+cargo run --bin variax-firmware-inspect -- --self-test
 python scripts/verify_preset_compatibility.py
 python scripts/verify_bundle_compatibility.py
 .tools/python/bin/python scripts/verify_native_pack.py
