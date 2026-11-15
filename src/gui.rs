@@ -54,6 +54,8 @@ struct Workbench {
     theme_text: String,
     screenshot: Option<PathBuf>,
     frame_count: u32,
+    #[cfg(test)]
+    bank_rows: HashMap<(usize, usize), Rect>,
     read_receiver:
         Option<std::sync::mpsc::Receiver<Result<variax_workbench::usb::CurrentPreset, String>>>,
     read_worker: Option<(
@@ -96,6 +98,8 @@ impl Workbench {
             theme_text: String::new(),
             screenshot: None,
             frame_count: 0,
+            #[cfg(test)]
+            bank_rows: HashMap::new(),
             read_receiver: None,
             read_worker: None,
         };
@@ -229,7 +233,10 @@ impl Workbench {
             return;
         }
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Variax model", &["vwm"])
+            .add_filter(
+                "Workbench model, bank or collection",
+                &["vwm", "vwb", "l6c"],
+            )
             .pick_file()
         {
             if self.dirty() {
@@ -259,9 +266,10 @@ impl Workbench {
                 }
             })
             .collect();
-        let name = format!("{name} - edited.vwm");
+        let extension = document.extension();
+        let name = format!("{name} - edited.{extension}");
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Variax model", &["vwm"])
+            .add_filter("Workbench document", &[extension])
             .set_file_name(name)
             .save_file()
         {
@@ -269,6 +277,77 @@ impl Workbench {
                 Ok(()) => {
                     self.error = None;
                     self.status = format!("Saved copy: {}", path.display());
+                }
+                Err(error) => self.error = Some(error),
+            }
+        }
+    }
+
+    fn bank_browser(&mut self, ctx: &egui::Context) {
+        #[cfg(test)]
+        self.bank_rows.clear();
+        let Some(document) = &self.document else {
+            return;
+        };
+        let Some(banks) = document.banks() else {
+            return;
+        };
+        let selection = document.selection();
+        let labels: Vec<_> = banks
+            .iter()
+            .map(|b| {
+                (
+                    b.name.clone(),
+                    b.presets()
+                        .iter()
+                        .map(|p| p.name().to_owned())
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        let mut next = None;
+        egui::SidePanel::left("bank-browser")
+            .default_width(210.)
+            .show(ctx, |ui| {
+                ui.heading("Banks and presets");
+                ui.add_enabled_ui(!self.is_reading(), |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for (bank, (name, presets)) in labels.iter().enumerate() {
+                            egui::CollapsingHeader::new(format!("{} · {}", bank + 1, name))
+                                .id_salt(("bank", bank))
+                                .default_open(true)
+                                .show(ui, |ui| {
+                                    if presets.is_empty() {
+                                        ui.weak("Empty bank");
+                                    }
+                                    for (preset, name) in presets.iter().enumerate() {
+                                        let response = ui.selectable_label(
+                                            selection == Some((bank, preset)),
+                                            format!("{} · {}", preset + 1, name),
+                                        );
+                                        #[cfg(test)]
+                                        self.bank_rows.insert((bank, preset), response.rect);
+                                        if response.clicked() {
+                                            next = Some((bank, preset));
+                                        }
+                                    }
+                                });
+                        }
+                    });
+                });
+            });
+        if let Some((bank, preset)) = next
+            && let Some(document) = &mut self.document
+        {
+            match document.select(bank, preset) {
+                Ok(()) => {
+                    self.drag_origin = None;
+                    self.error = None;
+                    self.status = format!(
+                        "Bank {}, preset {}. Edits stay in this bank copy.",
+                        bank + 1,
+                        preset + 1
+                    );
                 }
                 Err(error) => self.error = Some(error),
             }
@@ -915,9 +994,10 @@ impl Workbench {
                 }
             });
         });
+        self.bank_browser(ctx);
         egui::CentralPanel::default().show(ctx, |ui| {
             let Some(document) = &self.document else {
-                ui.heading("Open a Variax preset to begin"); return;
+                ui.heading("Open a Variax preset, bank or collection to begin"); return;
             };
             let mut name = document.preset().name().to_owned();
             let editable = matches!(document.preset().device_id(), 0x70000 | 0x70004);
@@ -1252,5 +1332,78 @@ mod tests {
         .unwrap();
         assert_eq!(options.tab, Tab::Controls);
         assert_eq!(options.preset, Path::new("model.vwm"));
+    }
+
+    #[test]
+    fn bank_browser_clicks_preserve_edits_and_active_operation_blocks_browsing() {
+        fn frame(context: &egui::Context, app: &mut Workbench, events: Vec<egui::Event>) {
+            let _ = context.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1120., 900.))),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| app.bank_browser(ctx),
+            );
+        }
+        fn click(context: &egui::Context, app: &mut Workbench, row: (usize, usize)) {
+            let pos = app.bank_rows[&row].center();
+            frame(
+                context,
+                app,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: Default::default(),
+                    },
+                ],
+            );
+            frame(
+                context,
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                }],
+            );
+        }
+        for name in ["synthetic-bank.vwb", "synthetic-collection.l6c"] {
+            let (context, mut app) = app();
+            context.style_mut(|style| style.animation_time = 0.);
+            app.load(
+                &Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures")
+                    .join(name),
+            );
+            frame(&context, &mut app, vec![]);
+            assert_eq!(app.bank_rows.len(), 5);
+            assert_eq!(app.document.as_ref().unwrap().selection(), Some((1, 0)));
+            click(&context, &mut app, (2, 1));
+            assert_eq!(app.document.as_ref().unwrap().selection(), Some((2, 1)));
+            app.change(|p| p.rename("Edited bank preset"));
+            click(&context, &mut app, (1, 0));
+            let doc = app.document.as_ref().unwrap();
+            assert_eq!(doc.selection(), Some((1, 0)));
+            assert_eq!(
+                doc.banks().unwrap()[2].presets()[1].name(),
+                "Edited bank preset"
+            );
+            assert!(doc.is_dirty());
+            let (sender, receiver) = std::sync::mpsc::channel();
+            app.read_receiver = Some(receiver);
+            click(&context, &mut app, (2, 1));
+            assert_eq!(app.document.as_ref().unwrap().selection(), Some((1, 0)));
+            sender
+                .send(Err("offline simulated failure".into()))
+                .unwrap();
+            app.poll_read();
+            app.undo();
+            assert!(!app.document.as_ref().unwrap().is_dirty());
+        }
     }
 }
