@@ -65,3 +65,16 @@ Workbench HD/JTV-69, POD HD500X and additional independently verified models.
 See docs/product-vision.md. Do not assume cross-family format/firmware or audio
 compatibility. Roadmap scope does not authorize hardware access: opening audio
 capture/playback streams also requires separate explicit user authorization.
+
+## Long-term portability — user requirement
+
+Prefer a self-contained Rust core for longevity across Linux, Windows and macOS.
+Keep coefficient math, preset formats and protocol behavior controlled/versioned;
+do not treat the host OS's transcendental math as a cross-platform compatibility
+contract. Research-only Linux/MPFR/historical-runtime helpers must remain separate
+from application runtime dependencies. Evaluate dependency maintenance, portability,
+pinning and replacement paths before adopting new production dependencies.
+Keep USB, audio and desktop OS interfaces behind thin replaceable adapters.
+Normal application operation must not require Line 6 services or external apps.
+A self-contained core does not imply that OS integration can have no OS dependency,
+or relax any hardware-access boundary.

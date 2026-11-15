@@ -84,3 +84,18 @@ POD edits and firmware updates share the same risk boundary as guitar control.
 Full device/audio emulation and successful offline tests cannot guarantee safety
 on real equipment; any later connection or operation requires separate explicit
 authorization after the relevant evidence, backups and recovery prerequisites.
+
+## Longevity and self-contained operation
+
+The user prioritizes long-term reliability as operating systems, external
+libraries and vendor services change. Build a self-contained Rust core with
+versioned coefficient mathematics, preset formats and protocol logic. Avoid
+relying on host libm behavior for consistent cross-platform outputs. Evaluate
+maintenance and portability of dependencies; pin the selected versions and keep
+them replaceable. Research runtimes are comparison tools, not automatic product
+dependencies. Normal use should work offline without Line 6 servers or external
+applications. Keep OS USB/audio/desktop interfaces at narrow adapter boundaries;
+those unavoidable platform interfaces must not own the coefficient algorithms.
+Preserve independent synthetic/offline regressions and documented formats so a
+future maintainer can rebuild and validate the core. This requirement does not
+authorize publishing original assets or contacting hardware.
