@@ -120,3 +120,42 @@ registrations are checked. A new versioned 110-case host-libm generator sweep an
 four original-JNI comparisons pass; the old outputs remain invalidated. See
 [native runtime evidence and remaining limits](native-runtime.md). Historical
 math parity is still pending in #5; complete pickup tables/geometry remain in #2.
+
+## Complete electrical tables and smoothing
+
+The Rust electrical-response stage now includes original bandpass transformation,
+float32 complex response, residual secondary fitting, the 64-double response
+tables and CalculateResponse smoothing/conversion. New differential passes:
+
+- 180 bandpass transforms and 720 complex responses, synthetic inputs at three
+  sample rates (900 comparisons).
+- 282 secondary fits across 43 bundled definitions and four synthetic circuits.
+- 248 complete 64-double tables: all 43 definitions, selected two-pickup pairs,
+  four synthetic circuits, both wiring modes and both volume tapers.
+- 188 calculated-response outputs, each comparing all 83 assigned float fields,
+  across all 43 definitions, synthetic pairs, both tapers and positive/negative
+  tone-capacitance handling (the original frozen-tone convention).
+
+Only synthetic inputs/outputs are committed: 900 biquad, 24 secondary-fit,
+32 table and 16 calculated-response vectors. They pass both debug and optimized
+Rust regression tests. Native comparisons use the initialized v2 host-libm
+harness and are not historical macOS rounding or audio-equivalence proof.
+
+The native table generator's backward search can read before its gain array
+when no gain exceeds 0.2. Rust bounds this search and preserves the resulting
+skipped-fill outcome. Inactive circuits return None rather than emitting tables
+from uninitialized stack data. Supported analysis sample rates are bounded to
+1..=384000 Hz; this numerical bound is not a device support claim.
+
+The first residual-fit comparison exposed reversed derivative bounds in the new
+port. Correcting the branch direction restored all comparisons; no tolerance was
+added. The original primary/secondary search quirks, float32 complex multiply,
+positive-imaginary Reciprocal and smoothing behavior are retained.
+
+Pickup placement/pole/coil geometry, phase projection, level/trim orchestration,
+host model overrides and final packed engine integration remain pending. The
+electrical module does not generate audio or authorize hardware traffic.
+
+Reproduce with `scripts/verify_pickup_biquad.py`,
+`scripts/verify_pickup_secondary.py`, `scripts/verify_pickup_tables.py`,
+and `scripts/verify_pickup_calculated.py` using the local Python environment.

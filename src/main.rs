@@ -60,6 +60,168 @@ fn run() -> Result<(), String> {
         Some("inspect") if args.len() == 2 => {
             print!("{}", read_preset(&args[1])?.summary());
         }
+        Some(command @ ("pickup-tables" | "pickup-calculated"))
+            if (command == "pickup-tables" && args.len() == 6)
+                || (command == "pickup-calculated" && args.len() == 7) =>
+        {
+            use variax_workbench::{
+                models::{PickupCircuit, PickupDefinition, PickupWiring},
+                pickup::{TableSettings, VolumeTaper, WiringProperties},
+            };
+            let left = PickupCircuit::from(&PickupDefinition::parse(
+                &fs::read(&args[1]).map_err(|e| e.to_string())?,
+            )?);
+            let right = PickupCircuit::from(&PickupDefinition::parse(
+                &fs::read(&args[2]).map_err(|e| e.to_string())?,
+            )?);
+            let wiring_mode = match args[3].as_str() {
+                "series" => PickupWiring::Series,
+                "parallel" => PickupWiring::Parallel,
+                _ => return Err("expected series or parallel".into()),
+            };
+            let taper = match args[4].as_str() {
+                "linear" => VolumeTaper::Linear,
+                "log" => VolumeTaper::Logarithmic,
+                _ => return Err("expected linear or log taper".into()),
+            };
+            let sample_rate =
+                f32::from_bits(u32::from_str_radix(&args[5], 16).map_err(|e| e.to_string())?);
+            let wiring = WiringProperties {
+                load_capacitance: 3.5e-10,
+                load_resistance: 1e6,
+                tone_resistance: 500000.,
+                volume_resistance: 500000.,
+                tone_capacitance: 2.2e-8,
+            };
+            if command == "pickup-calculated" {
+                let mut wiring = wiring;
+                wiring.tone_capacitance =
+                    f64::from_bits(u64::from_str_radix(&args[6], 16).map_err(|e| e.to_string())?);
+                match left.calculated_response(
+                    right,
+                    wiring,
+                    TableSettings {
+                        sample_rate,
+                        wiring: wiring_mode,
+                        taper,
+                    },
+                )? {
+                    Some(response) => println!(
+                        "{}",
+                        response
+                            .fields()
+                            .iter()
+                            .map(|(offset, bits)| format!("{offset:x}:{bits:08x}"))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    ),
+                    None => println!("inactive"),
+                }
+                return Ok(());
+            }
+            match left.response_tables(
+                right,
+                wiring,
+                TableSettings {
+                    sample_rate,
+                    wiring: wiring_mode,
+                    taper,
+                },
+            )? {
+                Some(table) => println!(
+                    "{}",
+                    table
+                        .0
+                        .iter()
+                        .map(|v| format!("{:016x}", v.to_bits()))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ),
+                None => println!("inactive"),
+            }
+        }
+        Some("pickup-filter2") if args.len() == 9 => {
+            let definition = variax_workbench::models::PickupDefinition::parse(
+                &fs::read(&args[1]).map_err(|e| e.to_string())?,
+            )?;
+            let rate =
+                f32::from_bits(u32::from_str_radix(&args[2], 16).map_err(|e| e.to_string())?);
+            let values = args[3..]
+                .iter()
+                .map(|v| u64::from_str_radix(v, 16).map(f64::from_bits))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            let primary = variax_workbench::pickup::FilterParameters {
+                frequency: values[3],
+                q: values[4],
+                gain: values[5],
+            };
+            let settings = variax_workbench::pickup::SecondaryFit {
+                sample_rate: rate,
+                volume: values[0],
+                tone: values[1],
+                frequency_limit: values[2],
+            };
+            let wiring = variax_workbench::pickup::WiringProperties {
+                load_capacitance: 3.5e-10,
+                load_resistance: 1e6,
+                tone_resistance: 500000.,
+                volume_resistance: 500000.,
+                tone_capacitance: 2.2e-8,
+            };
+            let result = variax_workbench::models::PickupCircuit::from(&definition)
+                .fit_secondary_filter(wiring, primary, settings)?;
+            println!(
+                "{:016x} {:016x} {:016x}",
+                result.frequency.to_bits(),
+                result.q.to_bits(),
+                result.gain.to_bits()
+            );
+        }
+        Some("pickup-bandpass") if args.len() == 5 => {
+            let rate =
+                f32::from_bits(u32::from_str_radix(&args[1], 16).map_err(|e| e.to_string())?);
+            let values = args[2..]
+                .iter()
+                .map(|v| u64::from_str_radix(v, 16).map(f64::from_bits))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            let result = variax_workbench::pickup::Biquad::bandpass(
+                rate,
+                variax_workbench::pickup::FilterParameters {
+                    frequency: values[0],
+                    q: values[1],
+                    gain: values[2],
+                },
+            );
+            println!(
+                "{}",
+                result
+                    .0
+                    .iter()
+                    .map(|v| format!("{:016x}", v.to_bits()))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+        }
+        Some("pickup-biquad-response") if args.len() == 8 => {
+            let rate =
+                f32::from_bits(u32::from_str_radix(&args[1], 16).map_err(|e| e.to_string())?);
+            let values = args[2..]
+                .iter()
+                .map(|v| u64::from_str_radix(v, 16).map(f64::from_bits))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            let coefficients: [f64; 5] = values[1..]
+                .try_into()
+                .map_err(|e: std::array::TryFromSliceError| e.to_string())?;
+            let response = variax_workbench::pickup::Biquad(coefficients).response(rate, values[0]);
+            println!(
+                "{:016x} {:016x}",
+                response.real.to_bits(),
+                response.imaginary.to_bits()
+            );
+        }
         Some(command @ ("pickup-response" | "pickup-filter1"))
             if (command == "pickup-response" && args.len() == 5)
                 || (command == "pickup-filter1" && args.len() == 4) =>

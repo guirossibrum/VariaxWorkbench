@@ -1,5 +1,13 @@
 //! Offline pickup circuit transfer calculations recovered from Workbench.
 use crate::models::PickupCircuit;
+mod biquad;
+mod calculated;
+pub use calculated::CalculatedResponse;
+mod secondary;
+mod tables;
+pub use biquad::Biquad;
+pub use secondary::SecondaryFit;
+pub use tables::{ResponseTables, TableSettings, VolumeTaper};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ComplexResponse {

@@ -25,3 +25,12 @@ vendor artifacts and the ignored analysis/tool directories.
 - `native-pickup-combinations.txt`: 128 synthetic raw electrical pairings and original-machine-code float64 output bits/active flags, including IEEE arithmetic edge cases.
 
 - `native-pickup-response.txt`: 540 synthetic complex-transfer/primary-fit inputs and exact original-instruction outputs across varied wiring; no vendor definitions.
+
+`native-pickup-biquad.txt` contains 900 synthetic bandpass/float32 response vectors;
+`native-pickup-secondary.txt` contains 24 synthetic residual-fit vectors;
+`native-pickup-tables.txt` contains 32 complete 64-double tables;
+`native-pickup-calculated.txt` contains 16 sets of 83 assigned response fields.
+All use synthetic circuit/control data and original instructions with the
+initialized v2 private-runtime/host-libm adapters. No bundled definitions, user
+presets, or hardware captures are included. See `scripts/verify_pickup_*.py` and
+`docs/pickup-response.md` for scope and limits.

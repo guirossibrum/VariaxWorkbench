@@ -71,7 +71,7 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 
 - [x] Rust CLI and offline GUI build, including optimized release builds.
 - [x] Short guided-check **offline rehearsal** app: five prompts, cancellation/skip handling and protected report saving. Run `cargo run --bin variax-check -- plan`; see [usage and limits](docs/manual-check.md).
-- [x] **47 Rust tests**, Clippy with warnings denied, and formatting checks.
+- [x] **52 Rust tests**, Clippy with warnings denied, and formatting checks.
 - [x] Individual preset parsing/editing and protected copy saves: **6 original-Java compatibility checks**.
 - [x] L6BA/L6CO bank inspection and preset extraction: **both formats compared with original Java**.
 - [x] Offline GUI with recovered artwork, preset controls, undo/redo and guarded document operations; selected headless tests and rendering smoke checks pass.
@@ -81,7 +81,7 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 - [x] Actual Rust body-field interpolation: **252 vendor-body outputs + 84 synthetic outputs** match every serialized field in debug and release under the documented host-libm oracle.
 - [x] Initialized original-library reference harness: **26 startup routines, 52 complex constants, 110 generator cases and four JNI mapping comparisons** pass with disclosed host-libm adapters. This is reference execution, not full Rust or audio parity; [scope and evidence](docs/native-runtime.md).
 - [x] Raw Rust pickup circuit combination: **3,826 bit-exact comparisons** with the native routine; full response tables/geometry remain pending.
-- [x] Complex pickup transfer and primary frequency/Q/gain fitting: **2,322 response comparisons + 387 fits**, with 540 synthetic vectors; full response tables remain pending.
+- [x] Pickup electronics: **2,322 raw responses + 387 primary fits + 282 secondary fits**, **900 biquad checks**, **248 complete tables** and **188 smoothed-response comparisons**. Synthetic fixtures pass debug/release; geometry and host-pipeline integration remain pending.
 - [x] Rust DSP packing/checksum and selected resonator conversions match original-machine-code fixtures.
 - [x] Firmware inspection: both supplied images unpack with matching embedded MD5 and complete region coverage; **396 corrupt/truncated synthetic inputs rejected**.
 - [x] Simulated read-session fragmentation, cancellation, timeout, disconnect and cleanup failures; physical-access locks remain tested and enabled.
@@ -90,7 +90,7 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 
 - [ ] Historical macOS math parity and full Rust/native validation remain pending. The old uninitialized whole-generator/JNI baseline stays invalidated; use only the versioned candidates described in [native runtime evidence](docs/native-runtime.md).
 
-- [ ] Complete Rust pickup/electronics response calculations (circuit combination verified; response tables and geometry pending) — [#2](https://github.com/guirossibrum/VariaxWorkbench/issues/2).
+- [ ] Complete Rust pickup geometry and host integration (electrical tables and smoothing verified) — [#2](https://github.com/guirossibrum/VariaxWorkbench/issues/2).
 - [ ] Remaining DSP blocks, tuning and complete patch assembly, including Java adjustments and metadata — [#3](https://github.com/guirossibrum/VariaxWorkbench/issues/3), [#4](https://github.com/guirossibrum/VariaxWorkbench/issues/4).
 - [ ] Historical math-runtime parity and complete Rust/native generator validation — [#5](https://github.com/guirossibrum/VariaxWorkbench/issues/5), [#6](https://github.com/guirossibrum/VariaxWorkbench/issues/6).
 - [ ] Model-specific parameter validation, complete bank GUI workflows and broader GUI interaction tests — [#7](https://github.com/guirossibrum/VariaxWorkbench/issues/7)–[#9](https://github.com/guirossibrum/VariaxWorkbench/issues/9).
