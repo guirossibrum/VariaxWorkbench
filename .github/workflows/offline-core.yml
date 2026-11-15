@@ -52,8 +52,11 @@ jobs:
         run: |
           rustc -vV
           cargo run --locked --no-default-features --features portable-math --bin variax-workbench -- math-profile
-      # No USB or GUI feature, original library, personal capture or device API
-      # is needed. Cargo tests use only committed synthetic fixtures.
+      # No USB or GUI feature, original library, personal capture, or device API
+      # is needed. Preset, DSP, and Variax message fixtures are synthetic.
+      # The Variax prefix instructions are committed GPL-2.0-only Linux
+      # reference bytes under third_party/. They are test data, not a runtime
+      # dependency.
       - name: Debug core and file tests
         run: cargo test --locked --no-default-features --features portable-math
       - name: Release core and file tests

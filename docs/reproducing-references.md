@@ -1,6 +1,9 @@
 # Reproducing the offline reference workspace
 
-Normal Rust builds/tests use committed synthetic fixtures and do not require
+Normal Rust builds/tests use committed synthetic fixtures, plus the
+GPL-2.0-only Linux object-code excerpts at `[0x160, 0x240)` recorded in
+[third_party](../third_party/README.md). Those excerpts are kernel reference
+bytes. The message buffers in that test are synthetic. The tests do not require
 vendor installers, REA, Java or an emulator. The following separate research
 workflow reconstructs private inputs and regenerates their reference results.
 It is currently verified on Linux x86-64. Product core CI covers Linux, Windows

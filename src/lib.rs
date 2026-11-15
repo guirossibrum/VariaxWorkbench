@@ -13,6 +13,8 @@ pub mod edit;
 pub mod firmware;
 pub mod host;
 pub mod linux_transport;
+#[cfg(test)]
+pub mod linux_variax_prefix;
 pub mod manual_check;
 pub mod math;
 pub mod midi;
