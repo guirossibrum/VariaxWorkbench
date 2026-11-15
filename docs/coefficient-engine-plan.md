@@ -66,3 +66,9 @@ validation ledger. Java ApplyHacks/metadata overlay and historical-libm rounding
 remain outside this reference milestone. Rust interpolation/electronics/complete
 assembly remain unported. Both firmware files now unpack with matching embedded
 image MD5; physical access stays locked.
+
+Issue #1 progress: all body fields are now typed, pickup normalization matches
+748 native comparisons, and routing/nesting matches 600 traced native plans.
+The plan deliberately does not execute per-field blending; implementing and
+validating InterpolateBetween remains the next sequential task. See
+[body-definitions.md](body-definitions.md).

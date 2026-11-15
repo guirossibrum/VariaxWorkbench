@@ -10,6 +10,8 @@ guitar captures or factory presets.
 - `native-pack-input.bin`, `native-pack-output.bin`: deterministic synthetic words
   and the original native packer's output for those words.
 - `native-resonator-vectors.txt`: finite synthetic boundary values and native outputs.
+- `native-body-normalization.txt`: synthetic pickup-position inputs and native float32 results.
+- `native-body-interpolation-plans.txt`: synthetic mode/coordinate inputs and traced native routing trees; per-field blending is deliberately bypassed.
 - `original-java-word-encoding.txt`: synthetic integer inputs and Java encoder results.
 
 Reference scripts under `scripts/verify_*` document generation and verification.

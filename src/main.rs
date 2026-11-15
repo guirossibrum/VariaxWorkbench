@@ -60,6 +60,31 @@ fn run() -> Result<(), String> {
         Some("inspect") if args.len() == 2 => {
             print!("{}", read_preset(&args[1])?.summary());
         }
+        Some("body-roundtrip") if args.len() == 3 => {
+            let body = variax_workbench::body::BodyDefinition::parse(
+                &fs::read(&args[1]).map_err(|e| e.to_string())?,
+            )?;
+            write_new(&args[2], &body.canonical_bytes())?;
+        }
+        Some("normalize-body") if args.len() == 3 => {
+            let body = variax_workbench::body::BodyDefinition::parse(
+                &fs::read(&args[1]).map_err(|e| e.to_string())?,
+            )?;
+            let normalized =
+                body.normalized_pickup_position(f32::from_bits(parse_id(&args[2])?))?;
+            println!("{:08x}", normalized.to_bits());
+        }
+        Some("body-plan") if args.len() == 4 => {
+            let mode = args[1]
+                .parse::<u32>()
+                .map_err(|_| "expected numeric interpolation mode")?;
+            let plan = variax_workbench::body::BodyBlendPlan::from_normalized(
+                mode,
+                f32::from_bits(parse_id(&args[2])?),
+                f32::from_bits(parse_id(&args[3])?),
+            )?;
+            println!("{plan}");
+        }
         Some("inspect-bundle") if args.len() == 2 => {
             let bundle = variax_workbench::bundle::BundleFile::parse(
                 fs::read(&args[1]).map_err(|e| e.to_string())?,
@@ -118,7 +143,7 @@ fn run() -> Result<(), String> {
         }
         _ => {
             return Err(
-                "Usage: variax-workbench preview | decode FIRST.syx SECOND.syx | inspect PRESET.vwm | inspect-bundle BANK.vwb | extract-preset BANK.vwb OUTPUT.vwm BANK_INDEX PRESET_INDEX | roundtrip INPUT OUTPUT | rename INPUT OUTPUT NAME | set INPUT OUTPUT SLOT_HEX PARAM_HEX int|float VALUE\nAll commands are offline. Output files must not exist. Parameter values are not checked against model-specific ranges.".into(),
+                "Usage: variax-workbench preview | decode FIRST.syx SECOND.syx | inspect PRESET.vwm | body-roundtrip INPUT.bin OUTPUT.bin | normalize-body INPUT.bin POSITION_BITS_HEX | body-plan MODE X_BITS_HEX Y_BITS_HEX | inspect-bundle BANK.vwb | extract-preset BANK.vwb OUTPUT.vwm BANK_INDEX PRESET_INDEX | roundtrip INPUT OUTPUT | rename INPUT OUTPUT NAME | set INPUT OUTPUT SLOT_HEX PARAM_HEX int|float VALUE\nAll commands are offline. Output files must not exist. Parameter values are not checked against model-specific ranges.".into(),
             );
         }
     }

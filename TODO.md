@@ -142,3 +142,15 @@ extracted and inventoried, not installed.
   Host libm/Java-wrapper limitations remain documented; Rust parity is pending.
 - [x] Unpack both L6FF firmware containers with bounded decompression, validate
   embedded MD5 and complete region coverage; retain all regions locally.
+
+## Sequential implementation progress
+
+Project: https://github.com/users/guirossibrum/projects/17; all 25 issues added
+with explicit order/phase and 24 native dependency relationships.
+
+Issue #1 is In Progress. Complete typed body decoding and pickup normalization
+are implemented; 28 vendor bodies plus a synthetic fixture roundtrip against the
+original serializer, and 748 normalization comparisons match bit-for-bit.
+Interpolation routing matches 600 traced native plans. Actual per-field numeric
+blending remains pending, so #1 stays open and #2 has not been started.
+See [body-definitions.md](docs/body-definitions.md) for the exact boundaries.

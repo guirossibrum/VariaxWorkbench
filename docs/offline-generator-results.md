@@ -1,3 +1,8 @@
+> Subsequent issue #1 progress: complete typed body decoding, native pickup
+> normalization and interpolation routing are now verified. See
+> [body-definitions.md](body-definitions.md). Actual per-field blending remains
+> unported.
+
 # Offline generator tests and PODxt Live downloads
 
 Date: 2026-11-15. No hardware access, driver installation or updater execution.
