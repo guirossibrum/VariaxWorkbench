@@ -7,7 +7,7 @@ the private project with an explicit Order and Phase. Their 24 dependencies are
 native GitHub blocked-by relationships, not only issue-body links.
 
 Work sequentially in Order, respecting dependencies and the authorization phase.
-Issue #1 is complete; the next sequential implementation topic is #2.
+Issue #1 is complete and #2 is In Progress. Consult the GitHub project for current status.
 
 All issues remain subject to [AGENTS.md](../AGENTS.md). Live USB/MIDI access
 is locked; creating an issue does not authorize its hardware steps.

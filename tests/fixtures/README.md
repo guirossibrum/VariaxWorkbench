@@ -21,3 +21,5 @@ vendor artifacts and the ignored analysis/tool directories.
 
 - `native-body-interpolation-input.bin`: six generated variants varying all sections, with safe in-memory coil counts and artificial boundary values.
 - `native-body-interpolated-cases.txt`, `native-body-interpolated-output.bin`: 84 synthetic routing/direct-blending cases and complete original-machine-code outputs; no vendor bodies are embedded.
+
+- `native-pickup-combinations.txt`: 128 synthetic raw electrical pairings and original-machine-code float64 output bits/active flags, including IEEE arithmetic edge cases.

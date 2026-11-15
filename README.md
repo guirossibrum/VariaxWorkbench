@@ -52,12 +52,12 @@ tracking; [AGENTS.md](AGENTS.md) records the hardware boundary.
 Keep this checklist current as issues progress. Checked items passed the stated
 offline checks; they do not certify physical safety or hardware/audio equivalence.
 Detailed evidence and limitations: [body interpolation](docs/body-definitions.md),
-[generator results](docs/offline-generator-results.md), and [backlog](docs/github-backlog.md).
+[pickup response](docs/pickup-response.md), [generator results](docs/offline-generator-results.md), and [backlog](docs/github-backlog.md).
 
 ### Verified and passing
 
 - [x] Rust CLI and offline GUI build, including optimized release builds.
-- [x] **40 Rust tests**, Clippy with warnings denied, and formatting checks.
+- [x] **41 Rust tests**, Clippy with warnings denied, and formatting checks.
 - [x] Individual preset parsing/editing and protected copy saves: **6 original-Java compatibility checks**.
 - [x] L6BA/L6CO bank inspection and preset extraction: **both formats compared with original Java**.
 - [x] Offline GUI with recovered artwork, preset controls, undo/redo and guarded document operations; selected headless tests and rendering smoke checks pass.
@@ -66,13 +66,14 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 - [x] Rust body interpolation routing: **600 native routing-plan comparisons**.
 - [x] Actual Rust body-field interpolation: **252 vendor-body outputs + 84 synthetic outputs** match every serialized field in debug and release under the documented host-libm oracle.
 - [x] Original computer-side coefficient generator runs in isolated CPU emulation: **110 cases**, **98 distinct outputs**, plus **4 JNI comparisons** across 53 fields. This is a reference oracle, not the completed Rust generator.
+- [x] Raw Rust pickup circuit combination: **3,826 bit-exact comparisons** with the native routine; full response tables/geometry remain pending.
 - [x] Rust DSP packing/checksum and selected resonator conversions match original-machine-code fixtures.
 - [x] Firmware inspection: both supplied images unpack with matching embedded MD5 and complete region coverage; **396 corrupt/truncated synthetic inputs rejected**.
 - [x] Simulated read-session fragmentation, cancellation, timeout, disconnect and cleanup failures; physical-access locks remain tested and enabled.
 
 ### Pending implementation or validation
 
-- [ ] Complete Rust pickup/electronics response calculations — [#2](https://github.com/guirossibrum/VariaxWorkbench/issues/2).
+- [ ] Complete Rust pickup/electronics response calculations (circuit combination verified; response tables and geometry pending) — [#2](https://github.com/guirossibrum/VariaxWorkbench/issues/2).
 - [ ] Remaining DSP blocks, tuning and complete patch assembly, including Java adjustments and metadata — [#3](https://github.com/guirossibrum/VariaxWorkbench/issues/3), [#4](https://github.com/guirossibrum/VariaxWorkbench/issues/4).
 - [ ] Historical math-runtime parity and complete Rust/native generator validation — [#5](https://github.com/guirossibrum/VariaxWorkbench/issues/5), [#6](https://github.com/guirossibrum/VariaxWorkbench/issues/6).
 - [ ] Model-specific parameter validation, complete bank GUI workflows and broader GUI interaction tests — [#7](https://github.com/guirossibrum/VariaxWorkbench/issues/7)–[#9](https://github.com/guirossibrum/VariaxWorkbench/issues/9).
@@ -132,6 +133,7 @@ python scripts/verify_bundle_compatibility.py
 .tools/python/bin/python scripts/verify_body_rust.py
 .tools/python/bin/python scripts/verify_body_plans.py
 .tools/python/bin/python scripts/verify_body_interpolation.py
+.tools/python/bin/python scripts/verify_pickup_combinations.py
 ```
 
 Reference checks require the locally extracted original application. REA was

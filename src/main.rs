@@ -60,6 +60,29 @@ fn run() -> Result<(), String> {
         Some("inspect") if args.len() == 2 => {
             print!("{}", read_preset(&args[1])?.summary());
         }
+        Some("combine-pickups") if args.len() == 4 => {
+            use variax_workbench::models::{PickupCircuit, PickupDefinition, PickupWiring};
+            let load = |path: &str| -> Result<PickupCircuit, String> {
+                Ok(PickupCircuit::from(&PickupDefinition::parse(
+                    &fs::read(path).map_err(|e| e.to_string())?,
+                )?))
+            };
+            let wiring = match args[3].as_str() {
+                "series" => PickupWiring::Series,
+                "parallel" => PickupWiring::Parallel,
+                _ => return Err("expected series or parallel".into()),
+            };
+            let result = load(&args[1])?.combine(load(&args[2])?, wiring);
+            let c = result.circuit;
+            println!(
+                "{} {:016x} {:016x} {:016x} {:016x}",
+                u8::from(result.active),
+                c.dc_resistance.to_bits(),
+                c.magnetic_resistance.to_bits(),
+                c.inductance.to_bits(),
+                c.capacitance.to_bits()
+            );
+        }
         Some("blend-body") if args.len() == 6 => {
             let body = variax_workbench::body::BodyDefinition::parse(
                 &fs::read(&args[1]).map_err(|e| e.to_string())?,
@@ -174,7 +197,7 @@ fn run() -> Result<(), String> {
         }
         _ => {
             return Err(
-                "Usage: variax-workbench preview | decode FIRST.syx SECOND.syx | inspect PRESET.vwm | interpolate-body INPUT.bin OUTPUT.bin X_BITS_HEX Y_BITS_HEX | blend-body INPUT.bin OUTPUT.bin LEFT_INDEX RIGHT_INDEX WEIGHT_BITS_HEX | body-roundtrip INPUT.bin OUTPUT.bin | normalize-body INPUT.bin POSITION_BITS_HEX | body-plan MODE X_BITS_HEX Y_BITS_HEX | inspect-bundle BANK.vwb | extract-preset BANK.vwb OUTPUT.vwm BANK_INDEX PRESET_INDEX | roundtrip INPUT OUTPUT | rename INPUT OUTPUT NAME | set INPUT OUTPUT SLOT_HEX PARAM_HEX int|float VALUE\nAll commands are offline. Output files must not exist. Parameter values are not checked against model-specific ranges.".into(),
+                "Usage: variax-workbench preview | decode FIRST.syx SECOND.syx | inspect PRESET.vwm | combine-pickups LEFT.bin RIGHT.bin series|parallel | interpolate-body INPUT.bin OUTPUT.bin X_BITS_HEX Y_BITS_HEX | blend-body INPUT.bin OUTPUT.bin LEFT_INDEX RIGHT_INDEX WEIGHT_BITS_HEX | body-roundtrip INPUT.bin OUTPUT.bin | normalize-body INPUT.bin POSITION_BITS_HEX | body-plan MODE X_BITS_HEX Y_BITS_HEX | inspect-bundle BANK.vwb | extract-preset BANK.vwb OUTPUT.vwm BANK_INDEX PRESET_INDEX | roundtrip INPUT OUTPUT | rename INPUT OUTPUT NAME | set INPUT OUTPUT SLOT_HEX PARAM_HEX int|float VALUE\nAll commands are offline. Output files must not exist. Parameter values are not checked against model-specific ranges.".into(),
             );
         }
     }
