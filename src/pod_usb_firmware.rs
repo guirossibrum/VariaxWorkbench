@@ -1,11 +1,14 @@
 #![forbid(unsafe_code)]
 //! PODxt Live USB-firmware component, kept separate from main flash.
 //!
-//! Partial offline record. The version-query shape was recovered from the
-//! macOS Monkey 1.78 image as a USB vendor control transfer. The fields are
-//! plain data in this crate. Nothing here links IOKit, Monkey, or a driver,
-//! and nothing opens a device, sends the transfer, or installs firmware.
-//! The USB-firmware image and the installed version are still unknown.
+//! Partial offline record. macOS Monkey 1.78 contains a userspace service
+//! whose version slot builds a USB vendor control transfer. PODxt Live's
+//! USB product id selects `L6USBDevice_DevMgr` construction. The class of
+//! the service object installed for that device is still open, so this
+//! record does not treat the transfer as a completed PODxt Live query.
+//! The fields are plain data. Nothing here links IOKit, Monkey, or a
+//! driver, and nothing opens a device, sends the transfer, or installs
+//! firmware. The USB-firmware image and the installed version are unknown.
 
 use crate::firmware::PODXT_LIVE_PRODUCT_ID;
 use crate::midi::Identity;
@@ -49,6 +52,29 @@ pub const USB_VERSION_CONTROL: StaticControlFields = StaticControlFields {
 /// No transfer was sent, and no device reply was captured.
 pub const DEVICE_REPLY_OBSERVED: bool = false;
 
+/// Static match that constructs `L6USBDevice_DevMgr` for PODxt Live.
+/// Addresses are virtual addresses in the macOS Monkey 1.78 image.
+pub const PODXT_LIVE_DEV_MGR_SELECTION: DevMgrSelection = DevMgrSelection {
+    vendor_compare_va: 0x1425d6,
+    vendor_id: 0x0e41,
+    product_compare_va: 0x142805,
+    usb_product_id: 0x4650,
+    expected_product_id: PODXT_LIVE_PRODUCT_ID,
+    constructor_call_va: 0x1429a4,
+    constructor_va: 0x148790,
+};
+
+/// Userspace and kernel service vtables. `returned_class_identified` stays
+/// false until the object stored for the version call is one of these.
+pub const SERVICE_CLASS_LINK: ServiceClassLink = ServiceClassLink {
+    mac_constructor_va: 0x9bb70,
+    mac_vptr: 0x1c1878,
+    mac_version_slot_va: 0x8c150,
+    kernel_vptr: 0x1c1838,
+    kernel_version_slot_va: 0x8b810,
+    returned_class_identified: false,
+};
+
 /// Earlier `lsusb` text in `analysis/reports/podxt-live-usb-descriptors.txt`.
 /// It was not collected again for this record.
 pub const SAVED_DESCRIPTOR: SavedDescriptor = SavedDescriptor {
@@ -88,7 +114,7 @@ pub const USB_COMPONENT_QUERY: QueryRecovery = QueryRecovery::StaticControlTrans
 pub const FUTURE_PLAN: &[PlanStep] = &[
     PlanStep {
         id: "static-request-recorded",
-        detail: "macOS Monkey 1.78 fills the USB Firmware Version cache from a vendor IN control transfer (bmRequestType 0xC0, bRequest 0x67, wValue 0x0011, wIndex 0, wLength 3). That shape is recorded and must not be sent. No USB-firmware image is in the local inventory, and the installed version is unknown.",
+        detail: "PODxt Live USB PID 0x4650 matches product 0x0003000a and that match constructs L6USBDevice_DevMgr. Interface 0x100 constructs L6BrandiImpl_DevMgr, whose slot 0x28 forwards to the object returned by the stored device object's slot +0x14. L6BrandiServiceMac's constructor installs the vtable whose slot +0x14 builds a vendor IN transfer (bmRequestType 0xC0, bRequest 0x67, wValue 0x0011, wIndex 0, wLength 3) when the product word is not 0x534D. The returned service class is not closed. The transfer must not be sent. No USB-firmware image is in the local inventory, and the installed version is unknown.",
         gate: PlanGate::OfflineNext,
     },
     PlanStep {
@@ -126,6 +152,27 @@ pub struct SlotForward {
     pub request_builder_va: u32,
     pub interface_function_offset: u8,
     pub interface_type: u16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DevMgrSelection {
+    pub vendor_compare_va: u32,
+    pub vendor_id: u16,
+    pub product_compare_va: u32,
+    pub usb_product_id: u16,
+    pub expected_product_id: u32,
+    pub constructor_call_va: u32,
+    pub constructor_va: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ServiceClassLink {
+    pub mac_constructor_va: u32,
+    pub mac_vptr: u32,
+    pub mac_version_slot_va: u32,
+    pub kernel_vptr: u32,
+    pub kernel_version_slot_va: u32,
+    pub returned_class_identified: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -259,6 +306,29 @@ pub fn validate_record() -> Result<(), String> {
         || SLOT_FORWARD.interface_type != 0x100
     {
         return Err("slot forward no longer matches the static trace".into());
+    }
+    if PODXT_LIVE_DEV_MGR_SELECTION.vendor_compare_va != 0x1425d6
+        || PODXT_LIVE_DEV_MGR_SELECTION.vendor_id != SAVED_DESCRIPTOR.vendor_id
+        || PODXT_LIVE_DEV_MGR_SELECTION.product_compare_va != 0x142805
+        || PODXT_LIVE_DEV_MGR_SELECTION.usb_product_id != SAVED_DESCRIPTOR.product_id
+        || PODXT_LIVE_DEV_MGR_SELECTION.expected_product_id != PODXT_LIVE_PRODUCT_ID
+        || PODXT_LIVE_DEV_MGR_SELECTION.constructor_call_va != 0x1429a4
+        || PODXT_LIVE_DEV_MGR_SELECTION.constructor_va != 0x148790
+    {
+        return Err("PODxt Live device-manager selection changed".into());
+    }
+    if SERVICE_CLASS_LINK.returned_class_identified
+        || SERVICE_CLASS_LINK.mac_constructor_va != 0x9bb70
+        || SERVICE_CLASS_LINK.mac_vptr != 0x1c1878
+        || SERVICE_CLASS_LINK.mac_version_slot_va != SLOT_FORWARD.mac_get_version_va
+        || SERVICE_CLASS_LINK.kernel_vptr != 0x1c1838
+        || SERVICE_CLASS_LINK.kernel_version_slot_va != 0x8b810
+        || SERVICE_CLASS_LINK.kernel_version_slot_va == SERVICE_CLASS_LINK.mac_version_slot_va
+    {
+        return Err("service class link was closed or the vtables were collapsed".into());
+    }
+    if !FUTURE_PLAN[0].detail.contains("not closed") {
+        return Err("plan no longer records the open service class".into());
     }
     let sample = static_reply_layout([0x34, 0x12, 0xab]);
     if sample.version_word != 0x1234 || sample.trailing_byte != 0xab {

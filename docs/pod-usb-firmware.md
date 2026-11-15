@@ -2,9 +2,11 @@
 
 Partial research milestone for [#20](https://github.com/guirossibrum/VariaxWorkbench/issues/20).
 The installed USB-component version is unknown. No USB-firmware image was found.
-The version-query shape is a static finding from macOS Monkey 1.78: a USB vendor
-IN control transfer. That transfer was not sent. No device was opened, and no
-update was run.
+macOS Monkey 1.78 has a userspace service method that builds a USB vendor IN
+control transfer. PODxt Live's USB product id selects device-manager
+construction. The class of the service object installed for that device is
+still open. The transfer was not sent. No device was opened, and no update
+was run.
 
 The main flash revision and the USB firmware component are different things.
 
@@ -78,9 +80,11 @@ no message bytes. It tail-calls slot `+0x14` of the service pointer stored on
 the Brandi object.
 
 `L6BrandiService::GetVersion` at `0x9bcd0` returns `0x80000005` and builds no
-request. The userspace override is `L6BrandiServiceMac` slot `+0x14` at
-`0x8c150`. When the product word read there is `0x534D`, that function takes
-another branch. PODxt Live USB product `0x4650` takes `0x8c040` instead.
+request. `L6BrandiServiceMac::C2` at `0x9bb70` installs vptr `0x1c1878`. Slot
+`+0x14` of that vtable is `0x8c150`. When the product word read there is
+`0x534D`, that function takes another branch. Any other product word, including
+a word equal to USB PID `0x4650`, takes `0x8c040`. Taking that branch requires
+the object to be this userspace service.
 
 `0x8c040` fills one control transfer and calls function offset `0x68` on the
 device interface stored in the service. That offset matches `DeviceRequest` on
@@ -104,10 +108,36 @@ word returns; the rewrite is display post-processing. No device returned a
 buffer, so the word is not an installed version, not placeholder `0.00`, and
 not `bcdDevice` 0.01.
 
-The same image contains a kernel Brandi class whose immediates differ. That
-class is a separate implementation. A byte scan of the Windows Monkey
-executable did not establish this instruction sequence. The finding is the
-macOS Monkey 1.78 image only.
+The kernel service vptr is `0x1c1838`. Its slot `+0x14` is `0x8b810`, a
+different function. Its `PreLoadKey` relocation sits at vtable offset `+0x24`,
+as does the userspace `PreLoadKey`. Those slots are not the version slot.
+
+## PODxt Live device-manager construction
+
+Before the device manager exists, one matcher requires USB vendor `0x0e41`
+(`0x1425d6`). USB PID `0x4650` at `0x142805` sets the expected product id to
+`0x0003000a` and jumps to `0x142976`. When that value equals the id at the
+device object `+0x208`, the only call to the `L6USBDevice_DevMgr` constructor
+runs at `0x1429a4`. The constructor at `0x148790` stores that device object at
+`DevMgr+0x110`.
+
+`QueryInterface` type `0x100` then constructs `L6BrandiImpl_DevMgr` with
+`this+0xc` equal to `DevMgr+0x110`. Slot `+0x14` of the Brandi object
+(`0x145356`) calls slot `+0x14` of that stored device object and keeps the
+returned pointer at Brandi `+0x10` when the out-status is non-negative. Slot
+`0x28` tail-calls slot `+0x14` of the returned pointer.
+
+## Service class still open
+
+The returned pointer is the service object whose version method runs. The
+userspace constructor that installs vptr `0x1c1878` has no PC-relative call in
+this image; its address appears in a data table. This pass does not show that
+the device object's slot `+0x14` returns an `L6BrandiServiceMac` rather than
+the kernel service. Until that return is identified, `0x8c040` is the
+userspace builder and is not yet the closed PODxt Live query.
+
+A byte scan of the Windows Monkey executable did not establish this instruction
+sequence. The finding is the macOS Monkey 1.78 image only.
 
 The transfer must not be sent. A recovered shape is not a device reply, and it
 does not authorize a read or an update. `src/pod_usb_firmware.rs` stores the
@@ -141,8 +171,9 @@ does not give a firmware version. No driver was installed.
 
 - Applicable USB-firmware image: none identified in the local archive.
 - Installed USB-component version: unknown. No device reply was captured.
-- Version-query shape: recovered from macOS Monkey 1.78 as the control transfer
-  above. It was not sent. The Windows image was not shown to match it.
+- Version-query shape: the userspace service builder above is recovered and
+  was not sent. The PODxt Live service-class link is still open. The Windows
+  image was not shown to match the builder.
 - `bcdDevice` 0.01: unexplained, and it was not read again.
 
 ## Future check
@@ -161,8 +192,8 @@ learned later would still not authorize an update.
 ## Decisions left for review
 
 - Issue #20 stays open. This document is a partial milestone.
-- The combined acceptance line stays open because the artifact and the
-  applicable installed version are still unknown.
+- The combined acceptance line stays open because the artifact, the installed
+  version, and the PODxt Live service class are still unknown.
 - `bcdDevice` 0.01 stays an unexplained descriptor field.
 - The recorded transfer stays unsent. The crate keeps a portable data record
   and does not take IOKit, Monkey, or a driver as a dependency.
