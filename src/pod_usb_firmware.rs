@@ -296,13 +296,19 @@ pub const FIND_DRIVER_STORE: FindDriverServiceStore = FindDriverServiceStore {
 
 /// Selector 6 on `com_line6_driver_sharedxt_UserClient` in Line6Audio.
 /// The dispatch entry allows no scalar or structure input and two scalar
-/// outputs. Its action calls `VersionStatusCommand`, which fills an
-/// `IOUSBDevRequest` with [`USB_VERSION_CONTROL`] and passes that pointer to
-/// `DeviceRequest`. Selector 7 is `GetIOPVersion` and is a different method.
-/// The same bytes are at these addresses in the unsigned kext. This is not
-/// an observed device reply, and `approved_live_read` stays false.
+/// outputs. `externalMethod` loads the service from the user client at
+/// `user_client_service_offset` and supplies that object as the target.
+/// The action loads the target vtable and tail-calls `slot_offset`.
+/// The qword at `slot_qword_va` is `VersionStatusCommand`. `direct_call`
+/// stays false. `VersionStatusCommand` fills an `IOUSBDevRequest` with
+/// [`USB_VERSION_CONTROL`], and `DeviceRequest` forwards that pointer.
+/// Selector 7 is `GetIOPVersion` and is a different method. The unsigned
+/// kext has the same bytes at these addresses, including the vtable slot.
+/// This is not an observed device reply, and `approved_live_read` stays false.
 pub const SHAREDXT_SELECTOR: SharedxtSelectorHandler = SharedxtSelectorHandler {
     external_method_va: 0x272e,
+    service_load_va: 0x275f,
+    user_client_service_offset: 0xd8,
     method_table_va: 0xa2100,
     selector: 6,
     entry_stride: 24,
@@ -311,10 +317,21 @@ pub const SHAREDXT_SELECTOR: SharedxtSelectorHandler = SharedxtSelectorHandler {
     scalar_output_count: 2,
     structure_output_size: 0,
     action_va: 0x2818,
+    vtable_load_va: 0x281c,
+    slot_load_va: 0x281f,
+    tail_call_va: 0x282f,
+    slot_offset: 0x890,
+    vtable_symbol_va: 0xa8ec0,
+    address_point_delta: 0x10,
+    slot_qword_va: 0xa9760,
+    direct_call: false,
     command_va: 0x13892,
     interface_offset: 0xa8,
     missing_interface_status: 0xe000_02cd,
     device_request_va: 0x1412e,
+    request_pointer_move_va: 0x141a6,
+    request_forward_call_va: 0x141b2,
+    request_forward_slot: 0x978,
     request_timeout: 0x3e8,
     completion_is_null: true,
     request_rewritten_before_forward: false,
@@ -594,9 +611,13 @@ pub struct FindDriverServiceStore {
 /// `matches_recorded_fields` means the handler stores those immediates.
 /// It does not approve them. `identifies_firmware_image` stays false: the
 /// handler names a version word and a status byte, not a firmware file.
+/// `service_load_va` belongs to `externalMethod`. `tail_call_va` belongs
+/// to the action. `direct_call` stays false.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SharedxtSelectorHandler {
     pub external_method_va: u32,
+    pub service_load_va: u32,
+    pub user_client_service_offset: u16,
     pub method_table_va: u32,
     pub selector: u8,
     pub entry_stride: u8,
@@ -605,10 +626,21 @@ pub struct SharedxtSelectorHandler {
     pub scalar_output_count: u8,
     pub structure_output_size: u32,
     pub action_va: u32,
+    pub vtable_load_va: u32,
+    pub slot_load_va: u32,
+    pub tail_call_va: u32,
+    pub slot_offset: u16,
+    pub vtable_symbol_va: u32,
+    pub address_point_delta: u16,
+    pub slot_qword_va: u32,
+    pub direct_call: bool,
     pub command_va: u32,
     pub interface_offset: u16,
     pub missing_interface_status: u32,
     pub device_request_va: u32,
+    pub request_pointer_move_va: u32,
+    pub request_forward_call_va: u32,
+    pub request_forward_slot: u16,
     pub request_timeout: u16,
     pub completion_is_null: bool,
     pub request_rewritten_before_forward: bool,
@@ -954,13 +986,40 @@ pub fn validate_record() -> Result<(), String> {
         || SHAREDXT_SELECTOR.structure_output_size != 0
         || SHAREDXT_SELECTOR.entry_stride != 24
         || SHAREDXT_SELECTOR.external_method_va != 0x272e
+        || SHAREDXT_SELECTOR.service_load_va != 0x275f
+        || SHAREDXT_SELECTOR.service_load_va <= SHAREDXT_SELECTOR.external_method_va
+        || SHAREDXT_SELECTOR.service_load_va >= SHAREDXT_SELECTOR.action_va
+        || SHAREDXT_SELECTOR.user_client_service_offset != 0xd8
+        || SHAREDXT_SELECTOR.user_client_service_offset == SHAREDXT_SELECTOR.interface_offset
         || SHAREDXT_SELECTOR.method_table_va != 0xa2100
         || SHAREDXT_SELECTOR.action_va != 0x2818
+        || SHAREDXT_SELECTOR.vtable_load_va != 0x281c
+        || SHAREDXT_SELECTOR.slot_load_va != 0x281f
+        || SHAREDXT_SELECTOR.tail_call_va != 0x282f
+        || SHAREDXT_SELECTOR.vtable_load_va <= SHAREDXT_SELECTOR.action_va
+        || SHAREDXT_SELECTOR.slot_load_va <= SHAREDXT_SELECTOR.vtable_load_va
+        || SHAREDXT_SELECTOR.tail_call_va <= SHAREDXT_SELECTOR.slot_load_va
+        || SHAREDXT_SELECTOR.slot_offset != 0x890
+        || SHAREDXT_SELECTOR.vtable_symbol_va != 0xa8ec0
+        || SHAREDXT_SELECTOR.address_point_delta != 0x10
+        || SHAREDXT_SELECTOR.slot_qword_va != 0xa9760
+        || SHAREDXT_SELECTOR.slot_qword_va
+            != SHAREDXT_SELECTOR.vtable_symbol_va
+                + u32::from(SHAREDXT_SELECTOR.address_point_delta)
+                + u32::from(SHAREDXT_SELECTOR.slot_offset)
+        || SHAREDXT_SELECTOR.direct_call
         || SHAREDXT_SELECTOR.command_va != 0x13892
         || SHAREDXT_SELECTOR.action_va == SHAREDXT_SELECTOR.command_va
+        || SHAREDXT_SELECTOR.tail_call_va == SHAREDXT_SELECTOR.command_va
+        || SHAREDXT_SELECTOR.slot_qword_va == SHAREDXT_SELECTOR.command_va
         || SHAREDXT_SELECTOR.interface_offset != 0xa8
         || SHAREDXT_SELECTOR.missing_interface_status != 0xe000_02cd
         || SHAREDXT_SELECTOR.device_request_va != 0x1412e
+        || SHAREDXT_SELECTOR.request_pointer_move_va != 0x141a6
+        || SHAREDXT_SELECTOR.request_forward_call_va != 0x141b2
+        || SHAREDXT_SELECTOR.request_forward_slot != 0x978
+        || SHAREDXT_SELECTOR.request_pointer_move_va <= SHAREDXT_SELECTOR.device_request_va
+        || SHAREDXT_SELECTOR.request_forward_call_va <= SHAREDXT_SELECTOR.request_pointer_move_va
         || SHAREDXT_SELECTOR.request_timeout != 0x3e8
         || SHAREDXT_SELECTOR.iop_selector == SHAREDXT_SELECTOR.selector
         || SHAREDXT_SELECTOR.iop_selector != 7

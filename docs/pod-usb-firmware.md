@@ -351,23 +351,39 @@ Selector 6 is the other side of the userspace
 `sMethods` at `0xa2100` while the selector is below 9. Each entry is 24
 bytes. Entry 6 points at `sVersionStatusCommand` (`0x2818`), with scalar
 input count 0, structure input size 0, scalar output count 2, and structure
-output size 0. That action loads the service from the user client at
-`+0xd8` and calls `com_line6_driver_sharedxt::VersionStatusCommand` at
-`0x13892`. Entry 7 is `sGetIOPVersion`, and `GetIOPVersion` at `0x1370e`
-calls `com_line6_driver_kev::GetIOPVersion`. Selector 6 is not that method,
-and it is not `L6SP_GetVersion`.
+output size 0. For selectors 2 through 8, `externalMethod` loads the
+service at `0x275f` from the user client at `+0xd8` and supplies that
+object as the dispatch target. The action at `0x2818` leaves that offset
+alone. At `0x281c` it loads the target vtable, at `0x281f` it loads slot
+`+0x890`, and at `0x282f` it tail-calls that slot. The tail-call is a
+virtual dispatch. A direct call to `VersionStatusCommand` is absent.
+
+The sharedxt vtable symbol `__ZTV25com_line6_driver_sharedxt` is at
+`0xa8ec0`. Its address point is the symbol plus `0x10` (`0xa8ed0`). Slot
+`+0x890` is the qword at `0xa9760`, and that qword holds `0x13892`,
+`com_line6_driver_sharedxt::VersionStatusCommand`. The unsigned kext has
+the same qword at `0xa9760`. The neighboring qword at `0xa9758` is
+`0x13918` (`PollCommand`). The qword at `0xa9768` is `0x1370e`
+(`GetIOPVersion`).
+
+Entry 7 is `sGetIOPVersion`. `GetIOPVersion` at `0x1370e` calls
+`com_line6_driver_kev::GetIOPVersion`. Selector 6 and selector 7 are
+different methods. Selector 6 is also a different method from
+`L6SP_GetVersion`.
 
 `VersionStatusCommand` reads the USB interface at `this+0xa8`. A null
 interface returns `0xe00002cd`. Otherwise it builds an `IOUSBDevRequest` on
 the stack: `bmRequestType` `0xC0`, `bRequest` `0x67`, `wValue` `0x0011`,
 `wIndex` `0`, `wLength` `3`, and a three-byte buffer. It calls
 `com_line6_kusbinterface::DeviceRequest` at `0x1412e` with both timeouts
-`0x3e8` and a null completion. `DeviceRequest` does not write those fields.
-It forwards the same request pointer through a virtual call. On a zero
-return, `VersionStatusCommand` stores byte 1 shifted left by 8, plus byte
-0, as the uint16, and stores byte 2 as the status byte. The unsigned kext
-has the same bytes at `0x272e`, `0xa2100`, and `0x13892`. No kext was
-loaded or installed.
+`0x3e8` and a null completion. `DeviceRequest` leaves those fields
+unchanged. At `0x141a6` it moves the request pointer into the second
+argument, and at `0x141b2` it calls through slot `+0x978`. The wrapper
+forwards that pointer. On a zero return, `VersionStatusCommand` stores byte
+1 shifted left by 8, plus byte 0, as the uint16, and stores byte 2 as the
+status byte. The unsigned kext has the same bytes at `0x272e`, `0x275f`,
+`0x2818`, `0x282f`, `0xa2100`, `0xa9760`, `0x13892`, `0x141a6`, and
+`0x141b2`. No kext was loaded or installed.
 
 Those five immediates are the fields already recorded for the userspace
 builder. The kernel handler is the static site that places them in a device
@@ -558,6 +574,9 @@ learned later would still not authorize an update.
   `L6XTAudioControlMac` is the description control. That is not an observed
   hardware state. A successful `AcquireService(0)` miss returns the kernel
   service, and kernel `GetVersion` is the slot the version call uses.
-  Sharedxt selector 6 builds the recorded device request. The five fields
-  stay unapproved.
+  Sharedxt selector 6 builds the recorded device request.
+  `externalMethod` at `0x275f` supplies the service from the user client at
+  `+0xd8`. The selector-6 action tail-calls vtable slot `+0x890` at
+  `0x282f`. The qword at `0xa9760` holds `VersionStatusCommand`. That
+  dispatch is virtual. The five fields stay unapproved.
 - This pass found that kernel request, so reserved issue #21 was not started.
