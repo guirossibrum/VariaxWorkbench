@@ -82,6 +82,49 @@ The image-default x87 adapter produces startup constants
 math comparisons are complete; **its whole-generator comparison did not run**.
 The failed first audit attempt and completed second report remain locally saved.
 
+## Software-only Rust candidate
+
+An optional research helper uses the pinned
+[`libm` 0.2.16 Rust implementation](https://docs.rs/libm/0.2.16/libm/), with default
+features disabled and `force-soft-floats` enabled. Cargo resolution must identify
+the checked source tree, exactly that feature, and no transitive dependencies.
+The build verifies all 155 archived source files against the preserved crate
+archive, whose SHA-256 is
+`b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981`.
+This version was already present in the application's dependency lockfile; the
+experiment adds no application dependency or math backend. Upstream source and
+its MIT license stay in the local cache, outside this repository.
+
+All 206,228 observed math inputs produce identical bits in Linux x86_64 debug and
+release helper builds. There are 996 differing results versus MPFR-256, each at
+most one finite ULP. Substitution into the original Mac generator changes **96
+of 110 packed outputs**, with 266 changed words including checksums, versus the
+canonical glibc adapter. This candidate is therefore **not adopted** as a
+compatibility replacement. Software implementation alone does not establish the
+rounding behavior the original application used.
+
+An additional experimental strategy preserves float32 inputs, evaluates those
+operations with the software float64 functions, then rounds the results to
+float32. All **203,217 observed float32 input tuples** now match MPFR-256; 94
+double-precision results still differ by one ULP (`tan`: 18, `pow`: 44, `log`: 32).
+Debug/release agree on all 206,228 inputs. All **110 packed outputs match the
+MPFR-256 and initialized Windows-math candidates**, including the one series
+case whose four coefficient words differ from glibc. This does not guarantee
+correct rounding for arbitrary float32 inputs: double rounding can still occur.
+No production backend is selected by this experiment.
+
+The helper's undefined-symbol audit rejects imports of the tested host math
+functions, square root and FMA. The Linux FFI/helper runtime still has ordinary
+OS dependencies; this is evidence about math algorithms, not an OS-independent
+executable. Compiler identity, source/license/helper hashes, dependency resolution,
+features, lockfile and import lists are preserved in build receipts. Three
+synthetic regression tests cover both strategies' FFI dispatch/input width,
+signed zero, domain/infinity behavior and subnormal/boundary profile repeatability.
+The audit rejects non-nearest host rounding or subnormal flushing. Other
+OS/architecture/compiler combinations and complete Rust-engine substitution have
+not been tested. A future production choice needs controlled compatibility
+profiles, source/license preservation and those additional checks.
+
 ## Reproduction and boundaries
 
 The optional analysis helpers require Linux x86_64, a C compiler, LLVM tools,
@@ -95,6 +138,25 @@ over HTTPS if absent. These are research tools, not application runtime needs.
 .tools/python/bin/python scripts/audit_windows_math.py
 .tools/python/bin/python scripts/verify_math_runtime_guards.py
 ```
+
+For the separate software-Rust experiment, the exact crate archive/source must
+already be cached; its build runs Cargo offline and locked with an independent
+helper manifest and target directory. The prior trace and MPFR helper are needed:
+
+```sh
+.tools/python/bin/python scripts/audit_rust_math.py
+.tools/python/bin/python scripts/audit_rust_math.py --widen-float
+.tools/python/bin/python scripts/verify_rust_math_reference.py
+```
+
+Its report is `analysis/reports/rust-software-math-audit-v2.json`. The first
+candidate report remains preserved; v2 adds verified Cargo source/feature
+resolution and maximum finite ULP measurements. Neither replaces earlier outputs.
+The wider-float report is
+`analysis/reports/rust-software-widened-float-audit-v1.json`. Its first attempt
+saved calculated outputs but failed writing the report due to a variable-name
+collision; the corrected replay completed. That failed log and those outputs
+remain preserved locally.
 
 Reports retain source/helper/library hashes, compiler commands, precision and
 CPU controls. The canonical emulated Mac uses x87 control `0x037f`, empty x87

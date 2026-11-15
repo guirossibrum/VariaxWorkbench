@@ -117,3 +117,20 @@ class WindowsIntrinsicMath:
     def __getattr__(self,name):
         if name not in self.methods:raise RuntimeError('unrecovered original Windows intrinsic: '+name)
         return self.methods[name]
+
+
+class RustSoftwareMath:
+    """Pinned force-soft-floats helper; optional research, never a fallback."""
+    def __init__(self,path,*,widen_float=False):
+        self.library=ctypes.CDLL(str(path));method=self.library.audit_rust_math
+        method.argtypes=[ctypes.c_int,ctypes.c_double,ctypes.c_double,ctypes.c_int];method.restype=ctypes.c_double
+        self.methods={}
+        for name,(operation,arity,single) in FUNCTIONS.items():
+            def evaluate(*values,operation=operation,arity=arity,single=single):
+                if len(values)!=arity:raise ValueError('incorrect math arity')
+                if single and widen_float:
+                    values=tuple(ctypes.c_float(v).value for v in values)
+                    return ctypes.c_float(method(operation,values[0],values[1] if arity==2 else 0.,0)).value
+                return method(operation,values[0],values[1] if arity==2 else 0.,int(single))
+            self.methods[name]=AdapterFunction(evaluate)
+    def __getattr__(self,name):return self.methods[name]
