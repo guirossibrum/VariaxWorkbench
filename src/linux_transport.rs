@@ -230,10 +230,11 @@ pub fn startup_state_after_identity(packet: &[u8], current_state: i32) -> i32 {
 
 /// Object encoding of `buf[10] == 0x00 || buf[10] == 0x04`.
 ///
-/// The patched rebuild keeps the family `cmpq`, then checks this byte with
-/// `testb` and [`PATCHED_MODEL_TEST_MASK`]. A following `cmpb` still requires
-/// the model high byte and the reserved byte to be zero. Those are separate
-/// from this mask.
+/// That byte is the model low byte. The patched rebuild keeps the family
+/// `cmpq`, then checks it with `testb` and [`PATCHED_MODEL_TEST_MASK`].
+/// Separate `cmpb $0` checks require the family high byte at offset 9 and the
+/// model high byte at offset 11 to be zero. This mask does not cover those
+/// bytes.
 pub fn patched_object_accepts_model_byte(byte: u8) -> bool {
     byte & PATCHED_MODEL_TEST_MASK == 0
 }

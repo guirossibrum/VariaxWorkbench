@@ -234,9 +234,10 @@ from `variax_startup` onward match the unpatched object. The difference is
 inside `line6_variax_process_message`.
 
 The patched family compare is still `cmpq` of `7E 7F 06 02 00 01 0C 07` at
-offset 1. A local `je` then reaches three byte checks: `cmpb $0` at offset 9,
-`testb $0xfb` at offset 10, and `cmpb $0` at offset 11. The mask `0xfb` leaves
-only bit 2 clear, so the model byte passes only for `0x00` and `0x04`. The
+offset 1. A local `je` then reaches three byte checks: `cmpb $0` at offset 9
+(family high), `testb $0xfb` at offset 10 (model low), and `cmpb $0` at offset
+11 (model high). The mask `0xfb` leaves only bit 2 clear, so the model-low
+byte passes only for `0x00` and `0x04`. The
 progress store is unchanged: load the dword at `0x2128`, `testl` / `jg`, then
 `movl $1` and delay immediate `0x64`. The init-done arm still compares with
 `1` and skips when the value is greater than 1. Relocated `e8` and `e9`
