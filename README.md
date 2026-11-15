@@ -72,7 +72,8 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 
 - [x] Rust CLI and offline GUI build, including optimized release builds.
 - [x] Short guided-check **offline rehearsal** app: five prompts, cancellation/skip handling and protected report saving. Run `cargo run --bin variax-check -- plan`; see [usage and limits](docs/manual-check.md).
-- [x] **110 Rust tests per math profile** (host configuration and experimental software configuration), Clippy with warnings denied, and formatting checks on Linux.
+- [x] **117 Rust tests per math profile** (host configuration and experimental software configuration), Clippy with warnings denied, and formatting checks on Linux.
+- [x] Shared CLI/GUI edit validation for **34 parameters**, 28 body and 32 pickup choices; **84 original-Java endpoint/choice cases** and **1,792 body/pickup/slot selections** pass. Imported unknown/out-of-range values survive rendering/copying; see [domains and limits](docs/parameter-domains.md).
 - [x] Individual preset parsing/editing and protected copy saves: **6 original-Java compatibility checks**.
 - [x] L6BA/L6CO bank inspection and preset extraction: **both formats compared with original Java**.
 - [x] Offline GUI with recovered artwork, preset controls, undo/redo and guarded document operations; selected headless tests and rendering smoke checks pass.
@@ -100,7 +101,7 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 - [ ] Historical macOS math parity and full Rust/native validation remain pending. The old uninitialized whole-generator/JNI baseline stays invalidated; use only the versioned candidates described in [native runtime evidence](docs/native-runtime.md).
 
 - [ ] Historical math-runtime parity, cross-target/default-rollout review of the experimental portable profile, and broader complete Rust/native validation — [#5](https://github.com/guirossibrum/VariaxWorkbench/issues/5), [#6](https://github.com/guirossibrum/VariaxWorkbench/issues/6). The synthetic-only core now passes Windows/macOS/Linux CI; other targets and full application integration remain pending.
-- [ ] Model-specific parameter validation, complete bank GUI workflows and broader GUI interaction tests — [#7](https://github.com/guirossibrum/VariaxWorkbench/issues/7)–[#9](https://github.com/guirossibrum/VariaxWorkbench/issues/9).
+- [ ] Complete bank GUI workflows and broader GUI interaction tests — [#8](https://github.com/guirossibrum/VariaxWorkbench/issues/8)–[#9](https://github.com/guirossibrum/VariaxWorkbench/issues/9).
 - [ ] Reproducible fresh-clone tool/artifact setup and Linux packaging — [#10](https://github.com/guirossibrum/VariaxWorkbench/issues/10), [#11](https://github.com/guirossibrum/VariaxWorkbench/issues/11).
 - [ ] Firmware architecture/region mapping, factory/calibration extraction and trustworthy factory comparison — [#13](https://github.com/guirossibrum/VariaxWorkbench/issues/13)–[#15](https://github.com/guirossibrum/VariaxWorkbench/issues/15).
 - [ ] Static recovery/update reconstruction and virtual device/update simulation — [#16](https://github.com/guirossibrum/VariaxWorkbench/issues/16), [#18](https://github.com/guirossibrum/VariaxWorkbench/issues/18). Rust container inspection is [#17](https://github.com/guirossibrum/VariaxWorkbench/issues/17).
@@ -153,7 +154,7 @@ cargo run --bin variax-workbench -- extract-preset BANK.vwb EXTRACTED.vwm 0 0
 ```
 
 Output paths must not already exist. `set` takes hexadecimal model-local IDs;
-its values are type-checked but not validated against every model's ranges.
+explicit edits use the [recovered parameter domains and body restrictions](docs/parameter-domains.md). Imported unknown and dormant values remain lossless.
 `decode FIRST.syx SECOND.syx` decodes two captured metadata replies. `preview`
 prints recovered request bytes without transmitting them.
 
