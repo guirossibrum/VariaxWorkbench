@@ -191,3 +191,16 @@ Issue #21 stays open.
   from this guitar's USB `0x4650` and MIDI `0x00070004`.
 - `bcdDevice` 0.01 in the saved descriptor remains a different number from
   MIDI revision 3.10.
+
+## Integration review
+
+PR #57 was squash merged as `002471c` after reviewing rebased head
+`0385e0107d50cf9beb7cc3ec3048ddd823896b26`. The exact upstream
+[source file](https://github.com/gregkh/linux/blob/497791a0a96b866d90add64041c47acdff49cae6/sound/usb/line6/variax.c)
+matched the recorded SHA-256, and the patch passed a dry run against a detached
+copy. The installed compressed module matched its recorded digest, and its
+identity/state branches matched the documented disassembly. Local checks passed
+128 all-feature tests, 115 core tests, nine setup guards, Clippy and formatting;
+the exact-head three-platform core CI also passed. The saved frame is absent
+from the rewritten branch and was not reintroduced into master history.
+Issue #21 remains open; this review is no proof of live connectivity or safety.
