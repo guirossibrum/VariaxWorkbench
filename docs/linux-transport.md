@@ -159,11 +159,9 @@ existing progress gate, and accepts model `0x0000` or `0x0004`. The diff is
 file. It is not applied to the installed tree.
 
 Recovering this source, and building or patching a detached module, are
-inside the authorized offline work. This pass did not produce a `.ko`.
-The installed headers omit `driver.h` and the other line6 objects, so
-linking the module needs an unpacked kernel tree. Installation, loading,
-binding, and probing still require explicit authorization and remain
-prohibited.
+inside the authorized offline work. Installation, loading, binding, and
+probing still require explicit authorization and remain prohibited. The
+detached build below was not installed.
 
 Issue #21 stays open.
 
@@ -204,3 +202,48 @@ identity/state branches matched the documented disassembly. Local checks passed
 the exact-head three-platform core CI also passed. The saved frame is absent
 from the rewritten branch and was not reintroduced into master history.
 Issue #21 remains open; this review is no proof of live connectivity or safety.
+
+## Detached rebuild
+
+The installed headers omit every Line 6 C file except `Kconfig`. They do
+contain the generic kernel headers, `sound/core.h`, `.config`, `Module.symvers`,
+and `vmlinux`. `variax.c` includes `driver.h`, and that header includes
+`midi.h`, which includes `midibuf.h`. Those three headers from commit
+`497791a0a96b866d90add64041c47acdff49cae6` were enough. Their SHA-256 values
+are `6bdbf42547971ee457d67a02b742ef342ffc7ca9a675d5f298ef21f6e1c3f8cf`,
+`8928524fc89e772aec5cfabf6eb568d33f43cd0216a195bdaf44cd9a9209e060`, and
+`c56dfe4fe244119b98dbcae55197d60267533be0d512e4c22d6ec9d613599f80`. The full
+kernel tarball, `driver.c`, and the PCM objects were not required. The upstream
+Makefile already builds `snd-usb-variax` from `variax.o` alone.
+
+`make modules` used `/lib/modules/7.2.15-1-omarchy/build` and wrote only under
+a temporary directory. The host compiler is the same `gcc (GCC) 16.2.1 20260810`
+recorded in that tree's `include/generated/compile.h`. Both objects report
+vermagic `7.2.15-1-omarchy SMP preempt mod_unload`. Their `srcversion` values
+are `D89A1DD411DBFCF34E2F6C2` and `8D7F8A31C939F5CEAB036CE`, not the installed
+`1885465675CE02E68674BB5`, so the rebuilt files are not drop-in copies of the
+packaged module. The whole `.ko` files also differ because the detached link
+keeps the build's debug information.
+
+The unpatched `.text` is 793 bytes (`0x319`) and its SHA-256 is
+`3eae27ccbea3a6ca067a86faf4ade9c713702234b369df20e1391fbe4ff9849d`. That is
+the installed module's `.text` as well. The patched `.text` has the same size
+and SHA-256
+`3d3aa8f53ab2dc4a97bfffa37e73cffea55d4354ab31bbffdb4186b75c058454`. Bytes
+from `variax_startup` onward match the unpatched object. The difference is
+inside `line6_variax_process_message`.
+
+The patched family compare is still `cmpq` of `7E 7F 06 02 00 01 0C 07` at
+offset 1. A local `je` then reaches three byte checks: `cmpb $0` at offset 9
+(family high), `testb $0xfb` at offset 10 (model low), and `cmpb $0` at offset
+11 (model high). The mask `0xfb` leaves only bit 2 clear, so the model-low
+byte passes only for `0x00` and `0x04`. The
+progress store is unchanged: load the dword at `0x2128`, `testl` / `jg`, then
+`movl $1` and delay immediate `0x64`. The init-done arm still compares with
+`1` and skips when the value is greater than 1. Relocated `e8` and `e9`
+slots are zero in the object file; their displayed targets are not callees.
+The local `74`, `75`, and `7f` displacements are the branch evidence.
+
+Neither object was copied into `/lib/modules`, and neither was passed to
+`modules_install`, `depmod`, or a module loader. This rebuild is not a live
+driver trace and it is not connectivity. Issue #21 stays open.
