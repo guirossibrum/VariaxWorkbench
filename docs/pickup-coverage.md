@@ -16,8 +16,8 @@ be relabeled as height without original evidence.
 | --- | --- | --- |
 | Virtual pickup model | All 43 bundled definitions in relevant component comparisons | Full host combination-selection/override matrix |
 | Position | Native normalization, body offsets and selected placements/endpoints | All UI-range transitions and model combinations |
-| Inclination/angle | Selected native distance-domain angle/phase placements | Complete Java degree conversion and UI-range sweep |
-| Output level/trim | 216 synthetic gain/trim cases, positive/negative paths and swaps | Full per-model UI-range/host matrix |
+| Inclination/angle | Selected native distance-domain angle/phase placements | Broader coefficient/audio sweep; UI degree bounds and Java conversion are recovered |
+| Output level/trim | 216 synthetic gain/trim cases, positive/negative paths and swaps | Broader coefficient interaction matrix; UI endpoints/choices now validated |
 | Pole offsets/coil spacing | Typed definitions, pole interpolation, 120 projections and synthetic placements | Full geometry cross-product |
 | Enable/phase/series-parallel | Circuit pairings and selected one/two-coil, phase and alternate-tuning collapse paths | Full interaction matrix |
 | Electrical controls | Varied R/C loads, both tapers, raw/fitted/smoothed responses | Complete admissible ranges and pairwise/multi-variable coverage |
@@ -33,7 +33,10 @@ the existing -1/0/+1 placement tests must not be described as degree-limit tests
 The current component corpus covers selected values, boundaries and meaningful
 combinations, **not an exhaustive Cartesian product** of floating-point inputs.
 
-Full parameter domains/interactions remain [#7](https://github.com/guirossibrum/VariaxWorkbench/issues/7),
+Shared explicit edit domains and original UI body restrictions are implemented;
+all 34 scalar fields have endpoint/invalid-input tests and 84 original-Java reader
+comparisons. These do not complete the coefficient/audio cross-product. See
+[parameter domains](parameter-domains.md). Broader parameter interactions remain [#7](https://github.com/guirossibrum/VariaxWorkbench/issues/7),
 Java/native conversion and orchestration [#4](https://github.com/guirossibrum/VariaxWorkbench/issues/4),
 whole-engine parity [#6](https://github.com/guirossibrum/VariaxWorkbench/issues/6),
 and late synthetic audio testing [#33](https://github.com/guirossibrum/VariaxWorkbench/issues/33).

@@ -19,8 +19,9 @@ model slots, or parameter IDs are rejected rather than silently edited.
 that capacity, containing NUL, or splitting surrogate pairs are not written.
 `set` modifies only the four stored value bytes of an existing parameter, retaining
 its integer/float type. Parameter editing is limited to legacy electric Variax
-device IDs `0x00070000` and `0x00070004`; model-specific value ranges are not yet
-enforced. CLI float input must be finite. There is no device transmission.
+device IDs `0x00070000` and `0x00070004`; explicit edits enforce the recovered
+[parameter domains and original UI body restrictions](parameter-domains.md).
+Imported unknown/out-of-domain fields remain lossless until explicitly edited. There is no device transmission.
 
 CLI commands:
 

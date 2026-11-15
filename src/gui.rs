@@ -286,6 +286,12 @@ impl Workbench {
         }
     }
 
+    fn can_edit(&self, slot: u32, id: Option<u32>) -> bool {
+        self.document
+            .as_ref()
+            .is_some_and(|d| d.preset().edit_availability(slot, id).is_ok())
+    }
+
     fn model_id(&self, slot: u32) -> Option<u32> {
         self.document.as_ref()?.preset().model(slot).map(|m| m.id)
     }
@@ -304,18 +310,32 @@ impl Workbench {
         (p.value_type == 0).then_some(p.bits as i32)
     }
 
-    fn float_control(
-        &mut self,
-        ui: &mut egui::Ui,
-        slot: u32,
-        id: u32,
-        label: &str,
-        range: std::ops::RangeInclusive<f32>,
-        suffix: &str,
-    ) {
+    fn float_control(&mut self, ui: &mut egui::Ui, slot: u32, id: u32, label: &str, suffix: &str) {
         if let Some(mut value) = self.float(slot, id) {
-            let response = ui.add(
-                egui::Slider::new(&mut value, range)
+            let Some(variax_workbench::edit::Domain::Float { min, max, .. }) =
+                variax_workbench::edit::domain(slot, id)
+            else {
+                return;
+            };
+            if !value.is_finite() {
+                ui.horizontal(|ui| {
+                    ui.label(format!("{label}: {value} (stored)"));
+                    if ui
+                        .add_enabled(
+                            self.can_edit(slot, Some(id)),
+                            egui::Button::new("Reset to minimum"),
+                        )
+                        .clicked()
+                    {
+                        self.change(|p| p.set_parameter(slot, id, 1, min.to_bits()));
+                    }
+                });
+                return;
+            }
+            let response = ui.add_enabled(
+                self.can_edit(slot, Some(id)),
+                egui::Slider::new(&mut value, min..=max)
+                    .clamping(egui::SliderClamping::Edits)
                     .text(label)
                     .suffix(suffix),
             );
@@ -334,10 +354,44 @@ impl Workbench {
             }
         }
     }
+    fn float_drag_control(&mut self, ui: &mut egui::Ui, slot: u32, id: u32) {
+        let Some(mut value) = self.float(slot, id) else {
+            ui.label("—");
+            return;
+        };
+        let Some(variax_workbench::edit::Domain::Float { min, max, .. }) =
+            variax_workbench::edit::domain(slot, id)
+        else {
+            return;
+        };
+        if !value.is_finite() {
+            ui.label(format!("{value} (stored)"));
+            return;
+        }
+        if ui
+            .add_enabled(
+                self.can_edit(slot, Some(id)),
+                egui::DragValue::new(&mut value)
+                    .range(min..=max)
+                    .clamp_existing_to_range(false)
+                    .speed(0.01),
+            )
+            .changed()
+        {
+            self.change(|p| p.set_parameter(slot, id, 1, value.to_bits()));
+        }
+    }
+
     fn boolean_control(&mut self, ui: &mut egui::Ui, slot: u32, id: u32, label: &str) {
         if let Some(value) = self.integer(slot, id) {
             let mut checked = value != 0;
-            if ui.checkbox(&mut checked, label).changed() {
+            if ui
+                .add_enabled(
+                    self.can_edit(slot, Some(id)),
+                    egui::Checkbox::new(&mut checked, label),
+                )
+                .changed()
+            {
                 self.change(|p| p.set_parameter(slot, id, 0, u32::from(checked)));
             }
         }
@@ -397,7 +451,13 @@ impl Workbench {
     fn enabled_control(&mut self, ui: &mut egui::Ui, slot: u32, label: &str) {
         if let Some(model) = self.document.as_ref().and_then(|d| d.preset().model(slot)) {
             let mut enabled = model.enabled;
-            if ui.checkbox(&mut enabled, label).changed() {
+            if ui
+                .add_enabled(
+                    self.can_edit(slot, None),
+                    egui::Checkbox::new(&mut enabled, label),
+                )
+                .changed()
+            {
                 self.change(|p| p.set_enabled(slot, enabled));
             }
         }
@@ -480,8 +540,14 @@ impl Workbench {
                 .unwrap_or_else(|| "pickups/unknown.png".into());
             let position = self.float(slot, 0x200000).unwrap_or(2.0);
             let angle = self.float(slot, 0x200001).unwrap_or(0.0).to_radians();
-            let center =
-                rect.min + Vec2::new(68.0 + 318.0 * ((position - 0.1) / 9.4), 215.0) * scale;
+            if !position.is_finite() || !angle.is_finite() {
+                continue;
+            }
+            let center = rect.min
+                + Vec2::new(
+                    68.0 + 318.0 * ((position.clamp(0.1, 9.5) - 0.1) / 9.4),
+                    215.0,
+                ) * scale;
             if let Some(texture) = self.texture(ui.ctx(), &artwork) {
                 let dimension = texture.size_vec2() * scale;
                 let rotation = egui::emath::Rot2::from_angle(angle);
@@ -511,7 +577,11 @@ impl Workbench {
                     .interact(
                         Rect::from_center_size(center, dimension + Vec2::splat(12.0)),
                         egui::Id::new(("pickup-drag", slot)),
-                        Sense::drag(),
+                        if self.can_edit(slot, Some(0x200000)) {
+                            Sense::drag()
+                        } else {
+                            Sense::hover()
+                        },
                     )
                     .on_hover_text(
                         "Drag horizontally to move this pickup. Adjust rotation in Pickups.",
@@ -558,7 +628,20 @@ impl Workbench {
             }
         });
         ui.separator();
-        match self.tab {
+        let slot = match self.tab {
+            Tab::Body => BODY,
+            Tab::Pickups => PICKUP1,
+            Tab::Tuning => TUNING,
+            Tab::Controls => variax_workbench::edit::SYSTEM,
+        };
+        let availability = self
+            .document
+            .as_ref()
+            .map(|d| d.preset().edit_availability(slot, None));
+        if let Some(Err(reason)) = &availability {
+            ui.label(reason);
+        }
+        ui.add_enabled_ui(availability.is_some_and(|a| a.is_ok()), |ui| { match self.tab {
             Tab::Body => {
                 ui.heading("Guitar body");
                 ui.label("Choose the modeled instrument body.");
@@ -575,9 +658,9 @@ impl Workbench {
                     ui.heading(title);
                     self.enabled_control(ui, slot, "Enabled");
                     self.model_control(ui, slot, "pickup");
-                    self.float_control(ui, slot, 0x200000, "Position", 0.1..=9.5, " in");
-                    self.float_control(ui, slot, 0x200001, "Angle", -45.0..=45.0, "°");
-                    self.float_control(ui, slot, 0x200003, "Level", -18.0..=6.0, " dB");
+                    self.float_control(ui, slot, 0x200000, "Position", " in");
+                    self.float_control(ui, slot, 0x200001, "Angle", "°");
+                    self.float_control(ui, slot, 0x200003, "Level", " dB");
                     ui.add_space(12.0);
                 }
                 self.boolean_control(ui, PICKUP2, 0x200002, "Reverse pickup 2 phase");
@@ -591,6 +674,7 @@ impl Workbench {
                     ui.strong("String");
                     ui.strong("Semitones");
                     ui.strong("Detune (cents)");
+                    ui.strong("Mix");
                     ui.end_row();
                     for (i, label) in [
                         "6 · Low E",
@@ -606,7 +690,7 @@ impl Workbench {
                         ui.label(label);
                         if let Some(mut value) = self.integer(TUNING, 0x200000 + i as u32) {
                             if ui
-                                .add(egui::DragValue::new(&mut value).range(-12..=12))
+                                .add(egui::DragValue::new(&mut value).range(-12..=12).clamp_existing_to_range(false))
                                 .changed()
                             {
                                 self.change(|p| {
@@ -616,27 +700,17 @@ impl Workbench {
                         } else {
                             ui.label("—");
                         }
-                        if let Some(mut value) = self.float(TUNING, 0x200006 + i as u32) {
-                            if ui
-                                .add(
-                                    egui::DragValue::new(&mut value)
-                                        .range(-100.0..=100.0)
-                                        .speed(0.1),
-                                )
-                                .changed()
-                            {
-                                self.change(|p| {
-                                    p.set_parameter(TUNING, 0x200006 + i as u32, 1, value.to_bits())
-                                });
-                            }
-                        } else {
-                            ui.label("—");
-                        }
+                        self.float_drag_control(ui, TUNING, 0x200006 + i as u32);
+                        self.float_drag_control(ui, TUNING, 0x20000c + i as u32);
                         ui.end_row();
                     }
                 });
+                self.float_control(ui, TUNING, 0x200012, "String spread", "");
             }
             Tab::Controls => {
+                let availability = self.document.as_ref().unwrap().preset().edit_availability(WIRING, None);
+                if let Err(reason) = &availability { ui.label(reason); }
+                ui.add_enabled_ui(availability.is_ok(), |ui| {
                 ui.heading("Volume and tone");
                 let resistances = [
                     (25.0, "25 kΩ"),
@@ -665,12 +739,14 @@ impl Workbench {
                         (-0.047, "Filter"),
                     ],
                 );
-                self.float_control(ui, WIRING, 0x200004, "Tone position", 0.0..=1.0, "");
+                self.float_control(ui, WIRING, 0x200004, "Tone position", "");
                 self.boolean_control(ui, WIRING, 0x200005, "Save tone-knob position");
+                });
                 ui.add_space(12.0);
-                self.float_control(ui, 0x02010000, 0x200000, "Output trim", -20.0..=6.0, " dB");
+                self.float_control(ui, 0x02010000, 0x200000, "Output trim", " dB");
             }
         }
+        });
     }
 
     fn refresh_theme(&mut self, ctx: &egui::Context) {
@@ -1098,6 +1174,41 @@ mod tests {
         app.launch_read();
         assert!(!app.is_reading());
         assert!(app.read_worker.is_none());
+    }
+
+    #[test]
+    fn rendering_imported_out_of_range_values_does_not_edit_or_create_history() {
+        let (context, mut app) = app();
+        let mut bytes = include_bytes!("../tests/fixtures/synthetic-host-preset.vwm").to_vec();
+        for (id, kind, old, new) in [
+            (0x3f200000u32, 1u32, 6f32.to_bits(), f32::NAN.to_bits()),
+            (0x3f200001, 1, 45f32.to_bits(), 95f32.to_bits()),
+            (0x3f200000, 0, (-2i32) as u32, 1000),
+            (0x3f200006, 1, 50f32.to_bits(), 200f32.to_bits()),
+        ] {
+            let pattern = [id.to_be_bytes(), kind.to_be_bytes(), old.to_be_bytes()].concat();
+            let offset = bytes
+                .windows(pattern.len())
+                .position(|w| w == pattern)
+                .unwrap();
+            bytes[offset + 8..offset + 12].copy_from_slice(&new.to_be_bytes());
+        }
+        app.document = Some(EditorDocument::from_preset(
+            PresetFile::parse(bytes.clone()).unwrap(),
+            "imported.vwm".into(),
+        ));
+        for tab in [Tab::Body, Tab::Pickups, Tab::Tuning, Tab::Controls] {
+            app.tab = tab;
+            for _ in 0..2 {
+                let _ = context.run(egui::RawInput::default(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| app.controls(ui));
+                });
+            }
+            let doc = app.document.as_ref().unwrap();
+            assert_eq!(doc.preset().as_bytes(), bytes);
+            assert!(!doc.is_dirty());
+            assert!(!doc.can_undo());
+        }
     }
 
     #[test]

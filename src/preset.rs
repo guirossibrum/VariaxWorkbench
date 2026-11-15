@@ -339,13 +339,9 @@ impl PresetFile {
 
     pub fn select_model(&mut self, slot: u32, id: u32) -> Result<(), String> {
         self.require_legacy_electric()?;
-        let family = match slot {
-            0x02010001 | 0x02010002 => 0x311,
-            0x02010003 => 0x310,
-            _ => return Err("model selection requires a body or pickup slot".into()),
-        };
-        if id >> 16 != family {
-            return Err("model ID does not belong to this slot's family".into());
+        self.edit_availability(slot, None)?;
+        if !crate::edit::model_allowed(slot, id) {
+            return Err("model ID is not an original UI choice for this slot".into());
         }
         let model = self
             .models
@@ -359,6 +355,13 @@ impl PresetFile {
 
     pub fn set_enabled(&mut self, slot: u32, enabled: bool) -> Result<(), String> {
         self.require_legacy_electric()?;
+        if !matches!(
+            slot,
+            crate::edit::PICKUP1 | crate::edit::PICKUP2 | crate::edit::TUNING
+        ) {
+            return Err("only pickup and alternate-tuning enables are editable".into());
+        }
+        self.edit_availability(slot, None)?;
         let model = self
             .models
             .iter_mut()
@@ -372,6 +375,19 @@ impl PresetFile {
     fn require_legacy_electric(&self) -> Result<(), String> {
         if !matches!(self.device_id, 0x70000 | 0x70004) {
             return Err("parameter editing is limited to legacy electric Variax presets".into());
+        }
+        Ok(())
+    }
+
+    pub fn edit_availability(&self, slot: u32, id: Option<u32>) -> Result<(), String> {
+        crate::edit::availability(self.model(crate::edit::BODY).map(|m| m.id), slot, id)?;
+        if slot == crate::edit::WIRING
+            && id == Some(0x200004)
+            && !self
+                .parameter(slot, 0x200005)
+                .is_some_and(|p| p.value_type == 0 && p.bits == 1)
+        {
+            return Err("enable saved tone-knob position before editing it".into());
         }
         Ok(())
     }
@@ -391,7 +407,8 @@ impl PresetFile {
     }
 
     /// Update one existing parameter, retaining its declared value type.
-    /// Values are file values, not checked against guitar-specific model ranges.
+    /// Validate only the explicit edit. Existing unknown/out-of-domain fields
+    /// remain lossless on import, rename and copy; failures do not mutate bytes.
     pub fn set_parameter(
         &mut self,
         slot: u32,
@@ -400,6 +417,10 @@ impl PresetFile {
         bits: u32,
     ) -> Result<(), String> {
         self.require_legacy_electric()?;
+        self.edit_availability(slot, Some(id))?;
+        crate::edit::domain(slot, id)
+            .ok_or("parameter has no recovered editable domain")?
+            .validate(value_type, bits)?;
         let parameter = self
             .models
             .iter_mut()
@@ -514,6 +535,34 @@ mod tests {
         );
         assert!(patch.rename(&"🎸".repeat(17)).is_err());
         assert!(patch.rename("bad\0name").is_err());
+    }
+
+    #[test]
+    fn imported_unknown_and_out_of_domain_fields_are_preserved_without_becoming_editable() {
+        let mut patch = PresetFile::parse(example()).unwrap();
+        let offset = patch.models[0].parameters[0].value_offset;
+        patch.bytes[offset..offset + 4].copy_from_slice(&f32::NAN.to_bits().to_be_bytes());
+        let mut imported = PresetFile::parse(patch.bytes).unwrap();
+        let before = imported.as_bytes().to_vec();
+        assert!(
+            imported
+                .set_parameter(0x02010001, 0x200000, 1, f32::INFINITY.to_bits())
+                .is_err()
+        );
+        assert_eq!(imported.as_bytes(), before);
+        imported.rename("Preserved").unwrap();
+        assert!(f32::from_bits(imported.parameter(0x02010001, 0x200000).unwrap().bits).is_nan());
+        imported.bytes[offset - 8..offset - 4].copy_from_slice(&0x3fffffffu32.to_be_bytes());
+        imported.bytes[offset - 4..offset].copy_from_slice(&77u32.to_be_bytes());
+        let mut unknown = PresetFile::parse(imported.bytes).unwrap();
+        let before = unknown.as_bytes().to_vec();
+        assert!(unknown.set_parameter(0x02010001, 0xffffff, 77, 0).is_err());
+        assert_eq!(unknown.as_bytes(), before);
+        unknown.rename("Unknown retained").unwrap();
+        assert_eq!(
+            &unknown.as_bytes()[offset - 8..offset + 4],
+            &before[offset - 8..offset + 4]
+        );
     }
 
     #[test]
