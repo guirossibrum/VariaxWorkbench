@@ -3,9 +3,11 @@
 //!
 //! Partial offline record. macOS Monkey 1.78 contains a userspace service
 //! whose version slot builds a USB vendor control transfer. PODxt Live's
-//! USB product id selects `L6USBDevice_DevMgr` construction. The class of
-//! the service object installed for that device is still open, so this
-//! record does not treat the transfer as a completed PODxt Live query.
+//! USB product id selects `L6USBDevice_DevMgr` construction. The version
+//! path then reaches an `L6DeviceDescription`, whose slot returns a pointer
+//! already cached on a device-control object. That slot does not construct
+//! either Brandi service, so the installed service class is still open and
+//! this record does not treat the transfer as a completed PODxt Live query.
 //! The fields are plain data. Nothing here links IOKit, Monkey, or a
 //! driver, and nothing opens a device, sends the transfer, or installs
 //! firmware. The USB-firmware image and the installed version are unknown.
@@ -66,6 +68,8 @@ pub const PODXT_LIVE_DEV_MGR_SELECTION: DevMgrSelection = DevMgrSelection {
 
 /// Userspace and kernel service vtables. `returned_class_identified` stays
 /// false until the object stored for the version call is one of these.
+/// [`DESCRIPTION_SERVICE_HOP`] is the call that would have to return one of
+/// them, and that call does not construct either service.
 pub const SERVICE_CLASS_LINK: ServiceClassLink = ServiceClassLink {
     mac_constructor_va: 0x9bb70,
     mac_vptr: 0x1c1878,
@@ -73,6 +77,27 @@ pub const SERVICE_CLASS_LINK: ServiceClassLink = ServiceClassLink {
     kernel_vptr: 0x1c1838,
     kernel_version_slot_va: 0x8b810,
     returned_class_identified: false,
+};
+
+/// `L6DeviceMgrBase::GetDeviceDesc` returns an `L6DeviceDescription`.
+/// The version slot on that object returns a cached device-control pointer.
+/// `service_constructed_on_path` stays false: neither Brandi constructor runs
+/// in this hop, and the cached class is not identified.
+pub const DESCRIPTION_SERVICE_HOP: DescriptionServiceHop = DescriptionServiceHop {
+    get_device_desc_va: 0x142b72,
+    matcher_call_va: 0x142615,
+    constructor_va: 0x85310,
+    vptr: 0x1c1598,
+    vendor_product_dword_offset: 0x104,
+    usb_product_offset: 0x106,
+    midi_product_offset: 0x208,
+    control_pointer_offset: 0x21c,
+    active_control_offset: 0x22c,
+    version_slot_va: 0x85800,
+    control_getter_va: 0x85150,
+    control_service_index: 0,
+    cached_service_offset: 0x8,
+    service_constructed_on_path: false,
 };
 
 /// Earlier `lsusb` text in `analysis/reports/podxt-live-usb-descriptors.txt`.
@@ -114,17 +139,17 @@ pub const USB_COMPONENT_QUERY: QueryRecovery = QueryRecovery::StaticControlTrans
 pub const FUTURE_PLAN: &[PlanStep] = &[
     PlanStep {
         id: "static-request-recorded",
-        detail: "PODxt Live USB PID 0x4650 matches product 0x0003000a and that match constructs L6USBDevice_DevMgr. Interface 0x100 constructs L6BrandiImpl_DevMgr, whose slot 0x28 forwards to the object returned by the stored device object's slot +0x14. L6BrandiServiceMac's constructor installs the vtable whose slot +0x14 builds a vendor IN transfer (bmRequestType 0xC0, bRequest 0x67, wValue 0x0011, wIndex 0, wLength 3) when the product word is not 0x534D. The returned service class is not closed. The transfer must not be sent. No USB-firmware image is in the local inventory, and the installed version is unknown.",
+        detail: "PODxt Live USB PID 0x4650 matches product 0x0003000a and that match constructs L6USBDevice_DevMgr. GetDeviceDesc returns an L6DeviceDescription. Its slot +0x14 returns the service already cached on a device-control object and does not construct L6BrandiServiceMac or the kernel service. The returned service class is not closed. The recorded transfer must not be sent, and its fields are not an approved live read. No USB-firmware image is in the local inventory, and the installed version is unknown.",
         gate: PlanGate::OfflineNext,
     },
     PlanStep {
         id: "review-before-any-read",
-        detail: "The request shape is already in the offline record. No device reply has been captured. A live read still needs a separate explicit authorization.",
+        detail: "The recorded fields are not an approved live read. No device reply has been captured. Resolve the cached service class before selecting any request. A live read still needs a separate explicit authorization.",
         gate: PlanGate::RequiresSeparateAuthorization,
     },
     PlanStep {
         id: "one-reviewed-read",
-        detail: "Only after that authorization, send the reviewed read once. Do not update, reset, switch banks, or install a driver.",
+        detail: "The recorded control fields are not an approved live read. After the service class is resolved, a separate authorization is still required before any read. Do not update, reset, switch banks, or install a driver.",
         gate: PlanGate::RequiresSeparateAuthorization,
     },
 ];
@@ -173,6 +198,27 @@ pub struct ServiceClassLink {
     pub kernel_vptr: u32,
     pub kernel_version_slot_va: u32,
     pub returned_class_identified: bool,
+}
+
+/// Addresses in the macOS Monkey 1.78 image. Offsets are bytes from the
+/// start of an `L6DeviceDescription` or, for `cached_service_offset`, from
+/// the device-control object. Nothing here builds or submits a transfer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DescriptionServiceHop {
+    pub get_device_desc_va: u32,
+    pub matcher_call_va: u32,
+    pub constructor_va: u32,
+    pub vptr: u32,
+    pub vendor_product_dword_offset: u16,
+    pub usb_product_offset: u16,
+    pub midi_product_offset: u16,
+    pub control_pointer_offset: u16,
+    pub active_control_offset: u16,
+    pub version_slot_va: u32,
+    pub control_getter_va: u32,
+    pub control_service_index: u8,
+    pub cached_service_offset: u8,
+    pub service_constructed_on_path: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -327,8 +373,32 @@ pub fn validate_record() -> Result<(), String> {
     {
         return Err("service class link was closed or the vtables were collapsed".into());
     }
+    if DESCRIPTION_SERVICE_HOP.service_constructed_on_path
+        || DESCRIPTION_SERVICE_HOP.get_device_desc_va != 0x142b72
+        || DESCRIPTION_SERVICE_HOP.matcher_call_va != 0x142615
+        || DESCRIPTION_SERVICE_HOP.constructor_va != 0x85310
+        || DESCRIPTION_SERVICE_HOP.vptr != 0x1c1598
+        || DESCRIPTION_SERVICE_HOP.vendor_product_dword_offset != 0x104
+        || DESCRIPTION_SERVICE_HOP.usb_product_offset != 0x106
+        || DESCRIPTION_SERVICE_HOP.midi_product_offset != 0x208
+        || DESCRIPTION_SERVICE_HOP.control_pointer_offset != 0x21c
+        || DESCRIPTION_SERVICE_HOP.active_control_offset != 0x22c
+        || DESCRIPTION_SERVICE_HOP.version_slot_va != 0x85800
+        || DESCRIPTION_SERVICE_HOP.control_getter_va != 0x85150
+        || DESCRIPTION_SERVICE_HOP.control_service_index != 0
+        || DESCRIPTION_SERVICE_HOP.cached_service_offset != 0x8
+        || DESCRIPTION_SERVICE_HOP.control_getter_va == SERVICE_CLASS_LINK.mac_constructor_va
+    {
+        return Err("description hop constructs a service or lost its addresses".into());
+    }
     if !FUTURE_PLAN[0].detail.contains("not closed") {
         return Err("plan no longer records the open service class".into());
+    }
+    if !FUTURE_PLAN
+        .iter()
+        .any(|step| step.detail.contains("not an approved"))
+    {
+        return Err("plan treats the recorded fields as an approved live read".into());
     }
     let sample = static_reply_layout([0x34, 0x12, 0xab]);
     if sample.version_word != 0x1234 || sample.trailing_byte != 0xab {
