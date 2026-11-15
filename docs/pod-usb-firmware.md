@@ -58,6 +58,12 @@ executed. Addresses below are virtual addresses in that Mach-O i386 image.
 Symbol names from the disassembler are unreliable in this region, so the
 findings are tied to addresses.
 
+The reviewed i386 executable has SHA-256
+`47417308c9697456eeed59720ec97281ec226139c707347e4cad3ce787491a37`.
+The public interface layout used to interpret the function-table offsets is
+Apple's [IOUSBDeviceStruct182 declaration](https://github.com/apple-oss-distributions/IOUSBFamily/blob/main/IOUSBFamily/Headers/IOUSBLib.h).
+Neither that header nor IOKit is a runtime dependency of this project.
+
 The diagnostic printer at `0x3233a` has one reference to the string "USB
 Firmware Version:" (`0x14e494`), at instruction `0x3295b`. It prints the string
 already stored at diagnostic-object offset `0x2c`. "Device Version:" is a
@@ -178,9 +184,10 @@ does not give a firmware version. No driver was installed.
 
 ## Future check
 
-1. Offline: the request shape is recorded. Leave it unsent, including the
-   ruled-out frame above. The open offline gap is the missing USB-firmware
-   image and the unknown installed version.
+1. Offline: resolve the actual service-class link before selecting a PODxt Live
+   request. The recorded userspace builder is still a candidate. Leave it
+   unsent, including the ruled-out frame above. The missing USB-firmware image
+   and unknown installed version also remain open.
 2. A live read still needs a separate explicit authorization. No reply has
    been captured.
 3. Only after that authorization, send the reviewed read once. Do not update,
