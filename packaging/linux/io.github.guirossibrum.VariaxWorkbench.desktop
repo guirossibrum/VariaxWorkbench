@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Variax Workbench (Offline)
+Comment=Edit legacy Variax preset files offline
+Exec=variax-workbench-gui --display x11 %f
+TryExec=variax-workbench-gui
+Icon=io.github.guirossibrum.VariaxWorkbench
+Terminal=false
+Categories=AudioVideo;Audio;
+MimeType=application/x-variax-workbench;
+StartupWMClass=variax-workbench
