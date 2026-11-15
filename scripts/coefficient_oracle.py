@@ -218,7 +218,7 @@ class CoefficientOracle(NativeOracle):
             raise RuntimeError(f'unsupported import {name} at caller {self.read(stack,4).hex()}')
         cpu.reg_write(UC_X86_REG_EAX, result)
 
-    def load_models(self):
+    def load_models(self, records=None):
         """Use already native-verified serialization offsets, then native AddModel.
 
         Bucket storage is preallocated so vector growth needs no C++ runtime.
@@ -226,7 +226,8 @@ class CoefficientOracle(NativeOracle):
         """
         import hashlib
         import json
-        records = json.loads((ROOT / 'analysis/reports/model-catalog.json').read_text())
+        if records is None:
+            records = json.loads((ROOT / 'analysis/reports/model-catalog.json').read_text())
         schema = json.loads((ROOT / 'analysis/reports/native-body-schema.json').read_text())
         self.model_objects = {}
         self.call('0x6770', self.OBJECT)

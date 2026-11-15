@@ -56,7 +56,9 @@ def main():
         preserve(ROOT/'tests/fixtures/original-java-host-pipeline.txt',output.encode())
         hashes={str(p.relative_to(original)):hashlib.sha256(p.read_bytes()).hexdigest() for p in [original/'modules/variax/device/L6VariaxMIDITranscoder.class',original/'modules/variax/device/coefeng/L6VariaxCoefEngine.class']}
         preserve(ROOT/'analysis/reports/java-host-pipeline-v1.json',(json.dumps({'cases':len(lines),'original_class_sha256':hashes,'scope':'Original Java GeneratePatch, ApplyHacks and metadata/checksum overlay; fake coefficient engine returns seeded synthetic bytes; no native generation or device construction'},indent=2)+'\n').encode())
-    subprocess.run(['cargo','test','--lib','host::'],cwd=ROOT,check=True)
+    check=subprocess.run(['cargo','test','--lib','host::'],cwd=ROOT,check=True,text=True,capture_output=True)
+    assert 'original_java_mapping_hacks_metadata_and_checksum_match_240_cases ... ok' in check.stdout,check.stdout
+    print(check.stdout,end='')
     print('PASS: 240 original Java host mapping/overlay cases')
 
 

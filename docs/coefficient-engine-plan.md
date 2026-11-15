@@ -102,3 +102,14 @@ hardware audio rate is inferred from it. See [DSP evidence](dsp-implementation.m
 Historical progress above records earlier states, not the current remaining scope.
 Next: #4 Java/preset/model orchestration and final host metadata, then independent
 runtime/full-engine validation. Physical access remains locked.
+
+
+## Host pipeline implemented
+
+Issue #4 now joins the body/pickup/DSP components with Java/model conversions,
+stateful legacy orchestration and final metadata/checksum ordering. 110 stateful
+native cases, 144 complete original Java/native final outputs and 48 exclusively
+synthetic full-engine outputs match exactly under initialized host-libm adapters.
+See [host pipeline](host-pipeline.md). Independent historical-runtime parity and
+broader full-engine/domain/audio coverage remain #5–#7 and #33; no hardware access
+is authorized or unlocked.

@@ -80,3 +80,20 @@ resource serializer. Their default internal rate is 39062.5 Hz. Reference helper
 `verify_dsp_body_variants.py`, generator: `synthetic_dsp_body.py`. Comparisons use
 the initialized v2/host-libm reference and do not establish historic libm or audio
 parity. No live hardware is used.
+
+
+Host pipeline fixtures: `original-java-host-pipeline.txt` contains 240 synthetic
+logical-parameter cases, original Java native-field mapping, block masks and
+complete metadata overlays onto seeded synthetic buffers. `native-dsp-eq-mixing.txt`
+adds 300 fractional mixing cases; `native-dsp-derived-sitar.txt` contains 48 seeded
+original logical outputs including internally derived frequency NaNs. Public APIs
+still reject nonfinite numeric inputs.
+
+`native-host-pickups.bin` contains four independently generated 85-byte pickup
+resources, used with the existing eight synthetic body resources.
+`native-host-inputs.bin` contains 48 native 192-byte input records;
+`native-host-outputs.bin` contains their complete original 3276-byte outputs in
+stateful sequence order. `synthetic-host-preset.vwm` and `.packed` provide one
+complete original Java-reader/native/Java-overlay result using only those
+synthetic resources. The CLI tests compare every byte and verify protected saves.
+No original model assets, hardware captures or special vendor tables are embedded.

@@ -72,7 +72,7 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 
 - [x] Rust CLI and offline GUI build, including optimized release builds.
 - [x] Short guided-check **offline rehearsal** app: five prompts, cancellation/skip handling and protected report saving. Run `cargo run --bin variax-check -- plan`; see [usage and limits](docs/manual-check.md).
-- [x] **93 Rust tests**, Clippy with warnings denied, and formatting checks.
+- [x] **103 Rust tests**, Clippy with warnings denied, and formatting checks.
 - [x] Individual preset parsing/editing and protected copy saves: **6 original-Java compatibility checks**.
 - [x] L6BA/L6CO bank inspection and preset extraction: **both formats compared with original Java**.
 - [x] Offline GUI with recovered artwork, preset controls, undo/redo and guarded document operations; selected headless tests and rendering smoke checks pass.
@@ -82,8 +82,10 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 - [x] Actual Rust body-field interpolation: **252 vendor-body outputs + 84 synthetic outputs** match every serialized field in debug and release under the documented host-libm oracle.
 - [x] Initialized original-library reference harness: **26 startup routines, 52 complex constants, 110 generator cases and four JNI mapping comparisons** pass with disclosed host-libm adapters. This is reference execution, not full Rust or audio parity; [scope and evidence](docs/native-runtime.md).
 - [x] Raw Rust pickup circuit combination: **3,826 bit-exact comparisons** with the native routine.
-- [x] Pickup electronics: **2,322 raw responses + 387 primary fits + 282 secondary fits**, **900 biquad checks**, **280 complete tables** and **252 smoothed-response comparisons**. Synthetic fixtures pass debug/release; full host-pipeline integration remains pending.
+- [x] Pickup electronics: **2,322 raw responses + 387 primary fits + 282 secondary fits**, **900 biquad checks**, **280 complete tables** and **252 smoothed-response comparisons**. Synthetic fixtures pass debug/release; host integration is covered below.
 - [x] Rust DSP packing/checksum, selected resonator conversions, **1,012 VX encodings and 315 scalar-setter cases** match original-machine-code fixtures. **2,145 coefficient-writer cases**, **1,320 complete pickup block cases** and **1,008 simple-block cases** pass. A further **600 biquad checks and 864 filter-block cases** pass. All **17 DSP block paths** now have parameter-to-word implementations: a further **2,304 EQ coefficient cases**, **432 EQ block cases**, **288 sitar cases**, **432 body/string-tone cases**, and **216 complete raw-body assemblies** match the original instructions under the documented host-libm adapters. Scope is [documented](docs/dsp-implementation.md); the [observed word map](docs/dsp-word-map.md) distinguishes 748 written words from 343 still-unknown words.
+- [x] Pickup geometry and electric level primitives: **261 pole-offset outputs, 120 projection traces, 129 bundled-model placements, 72 synthetic host cases and 216 level/trim cases** match the documented native paths — [#2](https://github.com/guirossibrum/VariaxWorkbench/issues/2).
+- [x] Offline Rust preset renderer: **240 Java mapping/overlay cases**, **110 complete stateful native cases**, **144 complete Java/native final-byte comparisons** (including 24 special-combination cases), and **48 synthetic full-engine outputs** pass. Extra regressions cover **300 fractional EQ mixes**, **48 derived-frequency sitar cases**, state retention, atomic errors and protected file output. External model resources remain private. Historical libm/audio parity remains pending; see [host pipeline scope](docs/host-pipeline.md) — [#4](https://github.com/guirossibrum/VariaxWorkbench/issues/4).
 - [x] Firmware inspection: both supplied images unpack with matching embedded MD5 and complete region coverage; **396 corrupt/truncated synthetic inputs rejected**.
 - [x] Offline Rust FORM/L6FF inspector (`variax-firmware-inspect`): bounded decompression, chunk and stream termination checks, region coverage, MD5 integrity and SHA-256 reporting. Synthetic rejection covers the same **390 prefixes and 6 damaged fields**, plus wrong-product, wrong-version, oversized, overlapping, duplicate, and corrupted-image fixtures. MD5 agreement is not authenticity. No flashing or device API. Details: [firmware containers](docs/firmware-container.md) — [#17](https://github.com/guirossibrum/VariaxWorkbench/issues/17).
 - [x] Simulated read-session fragmentation, cancellation, timeout, disconnect and cleanup failures; physical-access locks remain tested and enabled.
@@ -92,8 +94,6 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 
 - [ ] Historical macOS math parity and full Rust/native validation remain pending. The old uninitialized whole-generator/JNI baseline stays invalidated; use only the versioned candidates described in [native runtime evidence](docs/native-runtime.md).
 
-- [x] Pickup geometry and electric level primitives: **261 pole-offset outputs, 120 projection traces, 129 bundled-model placements, 72 synthetic host cases and 216 level/trim cases** match the documented native paths — [#2](https://github.com/guirossibrum/VariaxWorkbench/issues/2). Complete Java/native host orchestration remains #4.
-- [ ] Complete preset-to-patch host orchestration, including Java/model adjustments and metadata — [#4](https://github.com/guirossibrum/VariaxWorkbench/issues/4).
 - [ ] Historical math-runtime parity and complete Rust/native generator validation — [#5](https://github.com/guirossibrum/VariaxWorkbench/issues/5), [#6](https://github.com/guirossibrum/VariaxWorkbench/issues/6).
 - [ ] Model-specific parameter validation, complete bank GUI workflows and broader GUI interaction tests — [#7](https://github.com/guirossibrum/VariaxWorkbench/issues/7)–[#9](https://github.com/guirossibrum/VariaxWorkbench/issues/9).
 - [ ] Reproducible fresh-clone tool/artifact setup, Linux packaging and provenance completion — [#10](https://github.com/guirossibrum/VariaxWorkbench/issues/10)–[#12](https://github.com/guirossibrum/VariaxWorkbench/issues/12).
@@ -130,7 +130,7 @@ cargo run --features gui --bin variax-workbench-gui -- --preset backups/current-
 The local extracted artwork lives in `assets/original-ui/`. The editor supports
 body/pickup selection and placement, tuning and electronics controls, undo/redo,
 and saving a new copy. Originals and existing output files are protected.
-A saved preset cannot yet be sent to the guitar; full DSP generation is unfinished.
+A saved preset cannot yet be sent to the guitar. Offline host generation is implemented; historical-runtime, broader full-engine and audio validation remain pending.
 
 ## Offline command line
 

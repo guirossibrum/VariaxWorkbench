@@ -16,6 +16,8 @@ public class VerifyHostPipeline {
     static int seed;
     static byte[] mapped;
     static int mask;
+    static byte[] engineOutputs;
+    static int caseIndex;
     static class MapInput extends L6ParamMap {
         Map<Integer,Integer> values = new HashMap<>();
         public boolean SetParam(L6Patch p,int id,int bits) { values.put(id,bits);return true; }
@@ -35,6 +37,7 @@ public class VerifyHostPipeline {
                     else out.putInt(offset,f[2].equals("F")?Float.floatToRawIntBits(field.getFloat(p)):field.getInt(p));
                 }
                 mask=p.m_block_mask;
+                if(engineOutputs!=null) return Arrays.copyOfRange(engineOutputs,caseIndex*3276,(caseIndex+1)*3276);
                 byte[] packed=new byte[3276];int state=seed;
                 for(int i=0;i<packed.length;i++) {state=state*1664525+1013904223;packed[i]=(byte)(state>>>24);}
                 return packed;
@@ -49,14 +52,20 @@ public class VerifyHostPipeline {
         Field engine=L6VariaxMIDITranscoder.class.getDeclaredField("m_coefeng");engine.setAccessible(true);engine.set(transcoder,new FakeEngine());
         Method generate=L6VariaxMIDITranscoder.class.getDeclaredMethod("GeneratePatch",L6Patch.class,L6ParamMap.class,boolean.class);generate.setAccessible(true);
         HexFormat hex=HexFormat.of();
+        if(args.length>2) engineOutputs=Files.readAllBytes(Path.of(args[2]));
         for(String line:Files.readAllLines(Path.of(args[0]))) {
             String[] f=line.split(" ");String name=new String(hex.parseHex(f[0]),StandardCharsets.UTF_8);
             int flags=Integer.parseInt(f[1]);L6VariaxDevice.ENABLE_ALL_12STR=(flags&1)!=0;
             L6VariaxMIDITranscoder.OPT_BLOCK_MASK=(int)Long.parseLong(f[2],16);seed=(int)Long.parseLong(f[3],16);
             MapInput values=new MapInput();
             for(int i=4;i<f.length;i++) {String[] pair=f[i].split(":");values.values.put((int)Long.parseLong(pair[0],16),(int)Long.parseLong(pair[1],16));}
-            byte[] result=(byte[])generate.invoke(transcoder,new L6Patch(name,0x70004,0x310),values,(flags&2)!=0);
+            L6Patch patch=args.length>3?L6PatchUtils.LoadPatch(Path.of(args[3],caseIndex+".vwm").toFile()):new L6Patch(name,0x70004,0x310);
+            L6ParamMap map=args.length>3?new L6VariaxParamMap():values;
+            if(patch==null) throw new AssertionError("original reader rejected synthetic preset");
+            byte[] result=(byte[])generate.invoke(transcoder,patch,map,(flags&2)!=0);
             System.out.println(line+" => "+hex.formatHex(mapped)+" "+Integer.toUnsignedString(mask,16)+" "+hex.formatHex(result));
+            caseIndex++;
         }
+        if(engineOutputs!=null && engineOutputs.length!=caseIndex*3276) throw new AssertionError("native output count mismatch");
     }
 }

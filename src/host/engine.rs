@@ -12,7 +12,7 @@ use crate::{
 use std::collections::BTreeMap;
 
 /// Definitions must be supplied from the user's local files; none are bundled.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct ModelLibrary {
     pub bodies: BTreeMap<u32, BodyDefinition>,
     pub pickups: BTreeMap<u32, PickupDefinition>,
@@ -33,12 +33,36 @@ impl<'a> HostEngine<'a> {
     }
     pub fn generate(&mut self, settings: &WorkbenchSettings) -> Result<NativePatch, String> {
         let s = settings;
+        if [0, 1, 8, 9, 48, 49, 50, 76, 156, 164]
+            .into_iter()
+            .any(|i| s.native[i] > 1)
+            || (24..48)
+                .step_by(4)
+                .chain((56..76).step_by(4))
+                .chain((80..156).step_by(4))
+                .chain((168..192).step_by(4))
+                .any(|i| !s.float(i).is_finite())
+        {
+            return Err("noncanonical flag or nonfinite host input".into());
+        }
         let library = self.library;
         let body = library
             .bodies
             .get(&s.word(4))
             .or_else(|| library.bodies.get(&0x3100003))
             .ok_or("requested body and native fallback body are unavailable")?;
+        if body.variants.iter().any(|v| {
+            v.sitar_buzz
+                .start_frequency
+                .iter()
+                .chain(v.sitar_buzz.stop_frequency.iter())
+                .any(|x| !x.is_finite())
+        }) {
+            return Err(
+                "nonfinite source sitar frequency; only internally derived NaNs are supported"
+                    .into(),
+            );
+        }
         let acoustic = s.native[0] != 0;
         let selected: [Option<&PickupDefinition>; 2] = std::array::from_fn(|i| {
             if acoustic || s.native[8 + i] == 0 || s.word(12 + i * 4) == u32::MAX {
@@ -189,7 +213,7 @@ impl<'a> HostEngine<'a> {
                 3 => -15.5,
                 _ => 0.,
             };
-            trim = (patch.volume.continuous_gain + analog + s.float(188)).min(0.);
+            trim = (patch.volume.continuous_gain + (analog + s.float(188))).min(0.);
         }
         patch.volume.enabled = true;
         // Native local_d8c counts newly placed electric coils, not the body's
@@ -335,5 +359,139 @@ impl ModelLibrary {
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    const BODY_IDS: [u32; 8] = [
+        0x3100003, 0x310000d, 0x3100012, 0x3100013, 0x3100015, 0x3100018, 0x310001b, 0x3100011,
+    ];
+    fn synthetic_library() -> ModelLibrary {
+        let mut out = ModelLibrary::default();
+        for (i, body) in include_bytes!("../../tests/fixtures/native-dsp-body-inputs.bin")
+            .as_chunks::<17483>()
+            .0
+            .iter()
+            .enumerate()
+        {
+            out.bodies
+                .insert(BODY_IDS[i], BodyDefinition::parse(body).unwrap());
+        }
+        for (id, bytes) in [0x3110001, 0x3110000, (-2i32) as u32, (-3i32) as u32]
+            .into_iter()
+            .zip(
+                include_bytes!("../../tests/fixtures/native-host-pickups.bin")
+                    .as_chunks::<85>()
+                    .0,
+            )
+        {
+            out.pickups
+                .insert(id, PickupDefinition::parse(bytes).unwrap());
+        }
+        out
+    }
+    fn settings(index: usize) -> WorkbenchSettings {
+        let bytes = include_bytes!("../../tests/fixtures/native-host-inputs.bin");
+        WorkbenchSettings {
+            native: bytes[index * 192..(index + 1) * 192].try_into().unwrap(),
+            block_mask: u32::MAX,
+        }
+    }
+    #[test]
+    fn complete_stateful_host_engine_matches_48_original_synthetic_outputs() {
+        let library = synthetic_library();
+        let mut engine = HostEngine::new(&library);
+        let expected = include_bytes!("../../tests/fixtures/native-host-outputs.bin");
+        assert_eq!(expected.len(), 48 * 3276);
+        for (i, packed) in expected.as_chunks::<3276>().0.iter().enumerate() {
+            assert_eq!(
+                &engine.generate(&settings(i)).unwrap().packed(),
+                packed,
+                "synthetic preset {i}"
+            );
+        }
+    }
+    #[test]
+    fn failed_input_and_missing_special_tables_leave_engine_state_unchanged() {
+        let library = synthetic_library();
+        let mut engine = HostEngine::new(&library);
+        let mut control = HostEngine::new(&library);
+        for i in 0..2 {
+            assert_eq!(
+                engine.generate(&settings(i)).unwrap(),
+                control.generate(&settings(i)).unwrap()
+            );
+        }
+        let mut invalid = settings(2);
+        invalid.native[8] = 2;
+        assert!(engine.generate(&invalid).is_err());
+        invalid = settings(2);
+        invalid.native[24..28].copy_from_slice(&f32::NAN.to_le_bytes());
+        assert!(engine.generate(&invalid).is_err());
+        invalid = settings(1);
+        invalid.native[20..24].copy_from_slice(&(-3i32).to_le_bytes());
+        for (offset, value) in [(56, 1e6_f32), (60, 1e6), (64, 2.2e-8)] {
+            invalid.native[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        assert!(
+            engine
+                .generate(&invalid)
+                .unwrap_err()
+                .contains("special-combination")
+        );
+        assert_eq!(
+            engine.generate(&settings(2)).unwrap(),
+            control.generate(&settings(2)).unwrap()
+        );
+    }
+    #[test]
+    fn host_block_mask_preserves_the_native_always_enabled_bits() {
+        let library = synthetic_library();
+        let mut all = HostEngine::new(&library);
+        let mut masked = HostEngine::new(&library);
+        let mut input = settings(1);
+        let mut expected = all.generate(&input).unwrap();
+        input.block_mask = 0;
+        let actual = masked.generate(&input).unwrap();
+        assert_eq!(actual.block_status(), 0x883);
+        expected.words[1] = 0x883;
+        assert_eq!(actual, expected);
+    }
+    #[test]
+    fn manifest_rejects_ambiguous_ids_bad_resource_sizes_and_wrong_special_rate() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = dir.path().join("models.tsv");
+        let model = dir.path().join("pickup.bin");
+        std::fs::write(
+            &model,
+            &include_bytes!("../../tests/fixtures/native-host-pickups.bin")[..85],
+        )
+        .unwrap();
+        std::fs::write(
+            &manifest,
+            "pickup\t03110001\tpickup.bin\npickup\t03110001\tpickup.bin\n",
+        )
+        .unwrap();
+        assert!(
+            ModelLibrary::load_manifest(&manifest)
+                .unwrap_err()
+                .contains("duplicate")
+        );
+        std::fs::write(&model, [0; 84]).unwrap();
+        std::fs::write(&manifest, "pickup\t03110001\tpickup.bin\n").unwrap();
+        assert!(
+            ModelLibrary::load_manifest(&manifest)
+                .unwrap_err()
+                .contains("required size")
+        );
+        std::fs::write(&model, [0; 360]).unwrap();
+        std::fs::write(&manifest, "special\tfffffffd\tpickup.bin\n").unwrap();
+        assert!(
+            ModelLibrary::load_manifest(&manifest)
+                .unwrap_err()
+                .contains("wrong internal rate")
+        );
     }
 }
