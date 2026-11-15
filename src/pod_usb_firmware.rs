@@ -6,11 +6,12 @@
 //! USB product id selects `L6USBDevice_DevMgr` construction. The version
 //! path then reaches an `L6DeviceDescription`, whose slot returns a pointer
 //! already cached on a device-control object. The description setter is a
-//! virtual slot and no traced producer calls it. `L6XTAudioControlMac` can
-//! store a kernel Brandi service at cache index 0, and that control is not
-//! shown to be the description's object. The installed service class is
-//! still open, and this record does not treat the transfer as a completed
-//! PODxt Live query.
+//! virtual slot. No traced producer calls it through a PC-relative
+//! instruction that names the setter. `L6XTAudioControlMac` can store a
+//! kernel Brandi service at cache index 0. That fill is useful evidence,
+//! and its PODxt Live association remains unproven. The installed service
+//! class is still open, and this record does not treat the transfer as a
+//! completed PODxt Live query.
 //! The fields are plain data. Nothing here links IOKit, Monkey, or a
 //! driver, and nothing opens a device, sends the transfer, or installs
 //! firmware. The USB-firmware image and the installed version are unknown.
@@ -105,7 +106,10 @@ pub const DESCRIPTION_SERVICE_HOP: DescriptionServiceHop = DescriptionServiceHop
 
 /// Virtual setter that writes the description's device-control smart pointer.
 /// The function address appears only in this vtable slot. Traced producers
-/// of an `L6DeviceDescription` do not call the slot.
+/// of an `L6DeviceDescription` do not call the slot through a PC-relative
+/// instruction. `direct_call_found` covers that PC-relative search only.
+/// A Mach-O indirect-symbol or lazy stub can reach the setter without
+/// naming its virtual address, and those stubs are not resolved here.
 pub const DESCRIPTION_SETTER: DescriptionSetter = DescriptionSetter {
     vptr: 0x1c1598,
     slot_offset: 0x0c,
@@ -116,9 +120,10 @@ pub const DESCRIPTION_SETTER: DescriptionSetter = DescriptionSetter {
 };
 
 /// `L6XTAudioControlMac` slot `+0x0c` stores a kernel Brandi service at
-/// cache index 0 when that slot's refcount is zero. `selected_for_podxt_live`
-/// stays false: nothing shows this control in the description smart pointer.
-/// The kernel version slot does not embed the userspace builder fields.
+/// cache index 0 when that slot's refcount is zero. That producer is useful
+/// evidence. `selected_for_podxt_live` stays false because its association
+/// with the PODxt Live description remains unproven. The kernel version
+/// slot does not embed the userspace builder fields.
 pub const XT_AUDIO_INDEX0_FILL: XtAudioIndex0Fill = XtAudioIndex0Fill {
     control_vptr: 0x1c18b8,
     cache_slot_va: 0x8dd20,
@@ -170,12 +175,12 @@ pub const USB_COMPONENT_QUERY: QueryRecovery = QueryRecovery::StaticControlTrans
 pub const FUTURE_PLAN: &[PlanStep] = &[
     PlanStep {
         id: "static-request-recorded",
-        detail: "PODxt Live USB PID 0x4650 matches product 0x0003000a and that match constructs L6USBDevice_DevMgr. The description setter is virtual slot +0x0c, and no traced description producer calls it. L6XTAudioControlMac can store a kernel Brandi service at cache index 0, and that control is not shown to be the description's object. The returned service class is not closed. The recorded transfer must not be sent, and its fields are not an approved live read. No USB-firmware image is in the local inventory, and the installed version is unknown.",
+        detail: "PODxt Live USB PID 0x4650 matches product 0x0003000a and that match constructs L6USBDevice_DevMgr. The description setter is virtual slot +0x0c, and no traced description producer calls it through a PC-relative instruction that names the setter. The next offline edge search resolves Mach-O indirect-symbol and lazy stubs for the constructors and setters as well as those direct calls. L6XTAudioControlMac can store a kernel Brandi service at cache index 0. That producer is useful evidence, and its PODxt Live association remains unproven. The returned service class is not closed. The recorded transfer must not be sent, and its fields are not an approved live read. No USB-firmware image is in the local inventory, and the installed version is unknown.",
         gate: PlanGate::OfflineNext,
     },
     PlanStep {
         id: "review-before-any-read",
-        detail: "The recorded fields are not an approved live read. No device reply has been captured. The description setter is recovered, and the open gap is whether the description holds the control that fills cache index 0. A live read still needs a separate explicit authorization.",
+        detail: "The recorded fields are not an approved live read. No device reply has been captured. The description setter is recovered. The index-0 kernel producer is useful evidence, and its PODxt Live association remains unproven. A live read still needs a separate explicit authorization.",
         gate: PlanGate::RequiresSeparateAuthorization,
     },
     PlanStep {
