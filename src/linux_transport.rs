@@ -3,8 +3,10 @@
 //!
 //! Module bytes come from kernel `7.2.15-1-omarchy`. The matching
 //! `sound/usb/line6/variax.c` is Linux tag `v7.2.15`. Installed headers ship
-//! `Kconfig` only for that directory. Nothing here loads a module, binds a
-//! driver, probes a device, or builds a USB transfer.
+//! `Kconfig` only inside that directory. A detached rebuild can use the rest
+//! of those headers plus recovered `driver.h`, `midi.h`, and `midibuf.h`.
+//! Nothing here loads a module, binds a driver, probes a device, or builds a
+//! USB transfer.
 
 use crate::midi::Identity;
 use crate::midi_enable;
@@ -39,6 +41,37 @@ pub const PACKAGING_COMMIT: &str = "326470ed1eca0141d687c701a4faf11694c3358d";
 /// Patch files in that recipe. None mention `variax` or `sound/usb/line6`.
 pub const PACKAGING_PATCHES_SCANNED: u32 = 188;
 pub const PACKAGING_PATCHES_TOUCH_VARIAX_C: bool = false;
+
+/// SHA-256 of `driver.h` from [`UPSTREAM_VARIAX_C_COMMIT`]. Not vendored.
+pub const UPSTREAM_DRIVER_H_SHA256: &str =
+    "6bdbf42547971ee457d67a02b742ef342ffc7ca9a675d5f298ef21f6e1c3f8cf";
+/// SHA-256 of `midi.h` from the same commit. `driver.h` includes it.
+pub const UPSTREAM_MIDI_H_SHA256: &str =
+    "8928524fc89e772aec5cfabf6eb568d33f43cd0216a195bdaf44cd9a9209e060";
+/// SHA-256 of `midibuf.h` from the same commit. `midi.h` includes it.
+pub const UPSTREAM_MIDIBUF_H_SHA256: &str =
+    "c56dfe4fe244119b98dbcae55197d60267533be0d512e4c22d6ec9d613599f80";
+
+/// `.text` size of the installed module and of both detached rebuilds.
+pub const VARIAX_TEXT_SIZE: usize = 0x319;
+/// SHA-256 of that installed `.text`. The detached unpatched rebuild matched it.
+pub const INSTALLED_VARIAX_TEXT_SHA256: &str =
+    "3eae27ccbea3a6ca067a86faf4ade9c713702234b369df20e1391fbe4ff9849d";
+/// SHA-256 of `.text` from the detached rebuild of unmodified `variax.c`.
+pub const DETACHED_UNPATCHED_TEXT_SHA256: &str =
+    "3eae27ccbea3a6ca067a86faf4ade9c713702234b369df20e1391fbe4ff9849d";
+/// SHA-256 of `.text` after `docs/linux-variax-model-bytes.patch`.
+pub const DETACHED_PATCHED_TEXT_SHA256: &str =
+    "3d3aa8f53ab2dc4a97bfffa37e73cffea55d4354ab31bbffdb4186b75c058454";
+/// `srcversion` of the detached unpatched object. It is not the installed module.
+pub const DETACHED_UNPATCHED_SRCVERSION: &str = "D89A1DD411DBFCF34E2F6C2";
+/// `srcversion` of the detached patched object.
+pub const DETACHED_PATCHED_SRCVERSION: &str = "8D7F8A31C939F5CEAB036CE";
+/// The detached `make modules` finished. The objects were not installed.
+pub const DETACHED_MODULE_BUILT: bool = true;
+pub const DETACHED_MODULE_INSTALLED: bool = false;
+/// Immediate in `testb $0xfb, buf[10]`. Only model bytes `0x00` and `0x04` pass.
+pub const PATCHED_MODEL_TEST_MASK: u8 = 0xfb;
 
 /// One `usb_device_id` row. `bInterfaceNumber` is byte offset 16.
 /// `driver_info` is the aligned `kernel_ulong_t` at offset 24.
@@ -195,6 +228,16 @@ pub fn startup_state_after_identity(packet: &[u8], current_state: i32) -> i32 {
     }
 }
 
+/// Object encoding of `buf[10] == 0x00 || buf[10] == 0x04`.
+///
+/// The patched rebuild keeps the family `cmpq`, then checks this byte with
+/// `testb` and [`PATCHED_MODEL_TEST_MASK`]. A following `cmpb` still requires
+/// the model high byte and the reserved byte to be zero. Those are separate
+/// from this mask.
+pub fn patched_object_accepts_model_byte(byte: u8) -> bool {
+    byte & PATCHED_MODEL_TEST_MASK == 0
+}
+
 /// Offline compare from `docs/linux-variax-model-bytes.patch`.
 ///
 /// Family `0x0007`, then model `0x0000` or `0x0004`. The progress gate is the
@@ -246,8 +289,32 @@ pub fn validate() -> Result<(), &'static str> {
         || PACKAGING_COMMIT.len() != 40
         || PACKAGING_PATCHES_SCANNED != 188
         || PACKAGING_PATCHES_TOUCH_VARIAX_C
+        || UPSTREAM_DRIVER_H_SHA256.len() != 64
+        || UPSTREAM_MIDI_H_SHA256.len() != 64
+        || UPSTREAM_MIDIBUF_H_SHA256.len() != 64
+        || UPSTREAM_DRIVER_H_SHA256 == UPSTREAM_MIDI_H_SHA256
+        || UPSTREAM_MIDI_H_SHA256 == UPSTREAM_MIDIBUF_H_SHA256
+        || VARIAX_TEXT_SIZE != 0x319
+        || INSTALLED_VARIAX_TEXT_SHA256.len() != 64
+        || DETACHED_UNPATCHED_TEXT_SHA256 != INSTALLED_VARIAX_TEXT_SHA256
+        || DETACHED_PATCHED_TEXT_SHA256.len() != 64
+        || DETACHED_PATCHED_TEXT_SHA256 == INSTALLED_VARIAX_TEXT_SHA256
+        || DETACHED_UNPATCHED_SRCVERSION == VARIAX_SRCVERSION
+        || DETACHED_PATCHED_SRCVERSION == VARIAX_SRCVERSION
+        || DETACHED_UNPATCHED_SRCVERSION == DETACHED_PATCHED_SRCVERSION
+        || !DETACHED_MODULE_BUILT
+        || DETACHED_MODULE_INSTALLED
+        || PATCHED_MODEL_TEST_MASK != 0xfb
     {
         return Err("module identity record lost the installed build or the recovered variax.c");
+    }
+    if (0u8..=255).any(|byte| {
+        let mut packet = SYNTHETIC_MEMBER_ZERO_IDENTITY;
+        packet[10] = byte;
+        patched_object_accepts_model_byte(byte) != (byte == 0x00 || byte == 0x04)
+            || matches_patched_startup_identity(&packet) != patched_object_accepts_model_byte(byte)
+    }) {
+        return Err("patched object mask disagreed with the model-0 and model-4 compare");
     }
     if VARIAX_PODXT_LIVE.vendor_id != 0x0e41
         || VARIAX_PODXT_LIVE.product_id != 0x4650
@@ -380,6 +447,7 @@ pub fn validate() -> Result<(), &'static str> {
     }
     if SOURCE_FILE_ARCHIVED
         || DRIVER_PATCH_INSTALLED
+        || DETACHED_MODULE_INSTALLED
         || LIVE_PROBE_PERFORMED
         || IN_REPO_TRANSPORT_CHANGED
     {
