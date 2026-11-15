@@ -12,6 +12,7 @@ pub mod dsp;
 pub mod edit;
 pub mod firmware;
 pub mod host;
+pub mod linux_transport;
 pub mod manual_check;
 pub mod math;
 pub mod midi;

@@ -1,0 +1,17 @@
+--- a/sound/usb/line6/variax.c
++++ b/sound/usb/line6/variax.c
+@@ -122,8 +122,13 @@
+ 		break;
+ 
+ 	case LINE6_SYSEX_BEGIN:
++		/*
++		 * Family 0x0007, then model 0x0000 or 0x0004.
++		 * variax_init_version hard-codes model 0x0000.
++		 */
+ 		if (memcmp(buf + 1, variax_init_version + 1,
+-			   sizeof(variax_init_version) - 1) == 0) {
++			   sizeof(variax_init_version) - 3) == 0 &&
++		    (buf[10] == 0x00 || buf[10] == 0x04) && buf[11] == 0x00) {
+ 			if (variax->startup_progress >= VARIAX_STARTUP_ACTIVATE)
+ 				break;
+ 			variax->startup_progress = VARIAX_STARTUP_ACTIVATE;
