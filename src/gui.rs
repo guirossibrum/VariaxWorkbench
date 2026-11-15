@@ -37,7 +37,57 @@ enum Pending {
     Quit,
 }
 
+trait FileDialogs {
+    fn open(&mut self) -> Option<PathBuf>;
+    fn save(&mut self, suggested: &str, extension: &str) -> Option<PathBuf>;
+    fn artwork(&mut self) -> Option<PathBuf>;
+}
+
+#[cfg(not(test))]
+struct NativeDialogs;
+#[cfg(not(test))]
+impl FileDialogs for NativeDialogs {
+    fn open(&mut self) -> Option<PathBuf> {
+        rfd::FileDialog::new()
+            .add_filter(
+                "Workbench model, bank or collection",
+                &["vwm", "vwb", "l6c"],
+            )
+            .pick_file()
+    }
+    fn save(&mut self, suggested: &str, extension: &str) -> Option<PathBuf> {
+        rfd::FileDialog::new()
+            .add_filter("Workbench document", &[extension])
+            .set_file_name(suggested)
+            .save_file()
+    }
+    fn artwork(&mut self) -> Option<PathBuf> {
+        rfd::FileDialog::new().pick_folder()
+    }
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct FakeDialogs {
+    open: std::collections::VecDeque<Option<PathBuf>>,
+    save: std::collections::VecDeque<Option<PathBuf>>,
+    artwork: std::collections::VecDeque<Option<PathBuf>>,
+}
+#[cfg(test)]
+impl FileDialogs for FakeDialogs {
+    fn open(&mut self) -> Option<PathBuf> {
+        self.open.pop_front().expect("unexpected open dialog")
+    }
+    fn save(&mut self, _: &str, _: &str) -> Option<PathBuf> {
+        self.save.pop_front().expect("unexpected save dialog")
+    }
+    fn artwork(&mut self) -> Option<PathBuf> {
+        self.artwork.pop_front().expect("unexpected artwork dialog")
+    }
+}
+
 struct Workbench {
+    dialogs: Box<dyn FileDialogs>,
     document: Option<EditorDocument>,
     catalog: Vec<ModelArt>,
     artwork: PathBuf,
@@ -56,6 +106,10 @@ struct Workbench {
     frame_count: u32,
     #[cfg(test)]
     bank_rows: HashMap<(usize, usize), Rect>,
+    #[cfg(test)]
+    pending_buttons: HashMap<&'static str, Rect>,
+    #[cfg(test)]
+    pickup_slider: Option<Rect>,
     read_receiver:
         Option<std::sync::mpsc::Receiver<Result<variax_workbench::usb::CurrentPreset, String>>>,
     read_worker: Option<(
@@ -82,6 +136,10 @@ impl Workbench {
         let catalog = serde_json::from_str(include_str!("../assets/model-ui.json"))
             .expect("bundled model catalog");
         let mut app = Self {
+            #[cfg(not(test))]
+            dialogs: Box::new(NativeDialogs),
+            #[cfg(test)]
+            dialogs: Box::new(FakeDialogs::default()),
             document: None,
             catalog,
             artwork,
@@ -100,6 +158,10 @@ impl Workbench {
             frame_count: 0,
             #[cfg(test)]
             bank_rows: HashMap::new(),
+            #[cfg(test)]
+            pending_buttons: HashMap::new(),
+            #[cfg(test)]
+            pickup_slider: None,
             read_receiver: None,
             read_worker: None,
         };
@@ -138,6 +200,7 @@ impl Workbench {
 
     fn undo(&mut self) {
         if !self.is_reading()
+            && self.pending.is_none()
             && let Some(document) = &mut self.document
         {
             document.undo();
@@ -146,6 +209,7 @@ impl Workbench {
 
     fn redo(&mut self) {
         if !self.is_reading()
+            && self.pending.is_none()
             && let Some(document) = &mut self.document
         {
             document.redo();
@@ -228,17 +292,26 @@ impl Workbench {
         }
     }
 
+    fn artwork_dialog(&mut self) {
+        if self.is_reading() || self.pending.is_some() {
+            return;
+        }
+        if let Some(path) = self.dialogs.artwork() {
+            self.artwork = path;
+            self.textures.clear();
+            self.missing_textures.clear();
+            self.error = None;
+        }
+    }
+
     fn open_dialog(&mut self) {
         if self.is_reading() {
             return;
         }
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter(
-                "Workbench model, bank or collection",
-                &["vwm", "vwb", "l6c"],
-            )
-            .pick_file()
-        {
+        if self.pending.is_some() {
+            return;
+        }
+        if let Some(path) = self.dialogs.open() {
             if self.dirty() {
                 self.pending = Some(Pending::Open(path));
             } else {
@@ -247,12 +320,12 @@ impl Workbench {
         }
     }
 
-    fn save_dialog(&mut self) {
+    fn save_dialog(&mut self) -> bool {
         if self.is_reading() {
-            return;
+            return false;
         }
         let Some(document) = &mut self.document else {
-            return;
+            return false;
         };
         let name: String = document
             .preset()
@@ -268,18 +341,31 @@ impl Workbench {
             .collect();
         let extension = document.extension();
         let name = format!("{name} - edited.{extension}");
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Workbench document", &[extension])
-            .set_file_name(name)
-            .save_file()
-        {
+        if let Some(path) = self.dialogs.save(&name, extension) {
             match document.save_copy(&path) {
                 Ok(()) => {
                     self.error = None;
                     self.status = format!("Saved copy: {}", path.display());
+                    return true;
                 }
                 Err(error) => self.error = Some(error),
             }
+        }
+        false
+    }
+
+    fn continue_pending(&mut self, ctx: &egui::Context) {
+        if self.is_reading() {
+            return;
+        }
+        match self.pending.take() {
+            Some(Pending::Open(path)) => self.load(&path),
+            Some(Pending::ReadCurrent) => self.launch_read(),
+            Some(Pending::Quit) => {
+                self.permit_close = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            None => {}
         }
     }
 
@@ -310,7 +396,7 @@ impl Workbench {
             .default_width(210.)
             .show(ctx, |ui| {
                 ui.heading("Banks and presets");
-                ui.add_enabled_ui(!self.is_reading(), |ui| {
+                ui.add_enabled_ui(!self.is_reading() && self.pending.is_none(), |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         for (bank, (name, presets)) in labels.iter().enumerate() {
                             egui::CollapsingHeader::new(format!("{} · {}", bank + 1, name))
@@ -355,7 +441,7 @@ impl Workbench {
     }
 
     fn change(&mut self, change: impl FnOnce(&mut PresetFile) -> Result<(), String>) {
-        if self.is_reading() {
+        if self.is_reading() || self.pending.is_some() {
             return;
         }
         if let Some(document) = &mut self.document
@@ -418,6 +504,10 @@ impl Workbench {
                     .text(label)
                     .suffix(suffix),
             );
+            #[cfg(test)]
+            if slot == PICKUP1 && id == 0x200000 {
+                self.pickup_slider = Some(response.rect);
+            }
             if response.drag_started()
                 && let Some(document) = &mut self.document
             {
@@ -880,6 +970,66 @@ impl eframe::App for Workbench {
 }
 
 impl Workbench {
+    fn pending_dialog(&mut self, ctx: &egui::Context) {
+        #[cfg(test)]
+        self.pending_buttons.clear();
+        if self.pending.is_some() {
+            let mut discard = false;
+            let mut save_continue = false;
+            let mut cancel = false;
+            egui::Window::new("Unsaved changes")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.label("Save a copy to keep your changes before continuing.");
+                    ui.horizontal(|ui| {
+                        let response = ui.button("Save copy and continue…");
+                        #[cfg(test)]
+                        self.pending_buttons.insert("save", response.rect);
+                        if response.clicked() {
+                            save_continue = true;
+                        }
+                        let response = ui.button("Keep editing");
+                        #[cfg(test)]
+                        self.pending_buttons.insert("cancel", response.rect);
+                        if response.clicked() {
+                            cancel = true;
+                        }
+                        let response = ui.button("Discard changes");
+                        #[cfg(test)]
+                        self.pending_buttons.insert("discard", response.rect);
+                        if response.clicked() {
+                            discard = true;
+                        }
+                    });
+                });
+            if cancel {
+                self.pending = None;
+            }
+            if save_continue {
+                discard = self.save_dialog();
+            }
+            if discard {
+                self.continue_pending(ctx);
+            }
+        }
+    }
+
+    fn request_close(&mut self, ctx: &egui::Context) {
+        if self.is_reading() {
+            self.cancel_read();
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        } else if self.pending.is_some() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        } else if self.dirty() && !self.permit_close {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.pending = Some(Pending::Quit);
+        } else {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
     fn render(&mut self, ctx: &egui::Context) {
         self.refresh_theme(ctx);
         self.poll_read();
@@ -928,7 +1078,7 @@ impl Workbench {
         if open {
             self.open_dialog();
         }
-        if save {
+        if save && self.pending.is_none() {
             self.save_dialog();
         }
         if undo {
@@ -941,12 +1091,7 @@ impl Workbench {
             self.help = !self.help;
         }
         if quit || ctx.input(|i| i.viewport().close_requested()) {
-            if self.dirty() && !self.permit_close {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                self.pending = Some(Pending::Quit);
-            } else {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
+            self.request_close(ctx);
         }
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
             ui.add_space(8.0);
@@ -957,7 +1102,7 @@ impl Workbench {
                     if ui.button("? Shortcuts").clicked() {
                         self.help = true;
                     }
-                    if ui.add_enabled(!self.is_reading(), egui::Button::new("Save copy…")).clicked() {
+                    if ui.add_enabled(!self.is_reading() && self.pending.is_none(), egui::Button::new("Save copy…")).clicked() {
                         self.save_dialog();
                     }
                     if ui
@@ -970,7 +1115,7 @@ impl Workbench {
                     {
                         self.start_read();
                     }
-                    if ui.add_enabled(!self.is_reading(), egui::Button::new("Open…")).clicked() {
+                    if ui.add_enabled(!self.is_reading() && self.pending.is_none(), egui::Button::new("Open…")).clicked() {
                         self.open_dialog();
                     }
                 });
@@ -1002,7 +1147,7 @@ impl Workbench {
             let mut name = document.preset().name().to_owned();
             let editable = matches!(document.preset().device_id(), 0x70000 | 0x70004);
             let dirty = document.is_dirty();
-            let can_edit = editable && !self.is_reading();
+            let can_edit = editable && !self.is_reading() && self.pending.is_none();
             let can_undo = document.can_undo(); let can_redo = document.can_redo();
             ui.horizontal(|ui| {
                 ui.label("Preset");
@@ -1017,8 +1162,9 @@ impl Workbench {
                 egui::Frame::group(columns[0].style()).show(&mut columns[0], |ui| {
                     ui.add_enabled_ui(can_edit, |ui| self.guitar(ui));
                     ui.add_space(12.0);
-                    if ui.small_button("Artwork folder…").clicked()
-                        && let Some(path) = rfd::FileDialog::new().pick_folder() { self.artwork = path; self.textures.clear(); self.missing_textures.clear(); self.error = None; }
+                    if ui.add_enabled(!self.is_reading() && self.pending.is_none(), egui::Button::new("Artwork folder…").small()).clicked() {
+                        self.artwork_dialog();
+                    }
                 });
                 egui::Frame::group(columns[1].style()).show(&mut columns[1], |ui| {
                     ui.add_enabled_ui(can_edit, |ui| { egui::ScrollArea::vertical().show(ui, |ui| self.controls(ui)); });
@@ -1045,46 +1191,7 @@ impl Workbench {
                     }
                 });
         }
-        if self.pending.is_some() {
-            let mut discard = false;
-            let mut save_continue = false;
-            let mut cancel = false;
-            egui::Window::new("Unsaved changes")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-                .show(ctx, |ui| {
-                    ui.label("Save a copy to keep your changes before continuing.");
-                    ui.horizontal(|ui| {
-                        if ui.button("Save copy and continue…").clicked() {
-                            save_continue = true;
-                        }
-                        if ui.button("Keep editing").clicked() {
-                            cancel = true;
-                        }
-                        if ui.button("Discard changes").clicked() {
-                            discard = true;
-                        }
-                    });
-                });
-            if cancel {
-                self.pending = None;
-            }
-            if save_continue {
-                self.save_dialog();
-                discard = !self.dirty();
-            }
-            if discard {
-                match self.pending.take().unwrap() {
-                    Pending::Open(path) => self.load(&path),
-                    Pending::ReadCurrent => self.launch_read(),
-                    Pending::Quit => {
-                        self.permit_close = true;
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                }
-            }
-        }
+        self.pending_dialog(ctx);
     }
 }
 
@@ -1200,6 +1307,262 @@ mod tests {
         // These tests exercise egui directly, without a display or theme polling.
         app.theme_polled = Instant::now();
         (context, app)
+    }
+
+    fn prompt_frame(context: &egui::Context, app: &mut Workbench, events: Vec<egui::Event>) {
+        let _ = context.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1120., 760.))),
+                events,
+                ..Default::default()
+            },
+            |ctx| app.pending_dialog(ctx),
+        );
+    }
+
+    fn click_prompt(context: &egui::Context, app: &mut Workbench, action: &'static str) {
+        // Center anchoring uses the previous frame's measured window size.
+        prompt_frame(context, app, vec![]);
+        let pos = app.pending_buttons[action].center();
+        prompt_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        prompt_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
+    #[test]
+    fn dirty_open_cancel_failed_save_retry_and_discard_follow_actual_prompt_buttons() {
+        let dir = tempfile::tempdir().unwrap();
+        let next = dir.path().join("next.vwm");
+        let saved = dir.path().join("saved.vwm");
+        let mut preset =
+            PresetFile::parse(include_bytes!("../tests/fixtures/editor-preset.vwm").to_vec())
+                .unwrap();
+        preset.rename("Next document").unwrap();
+        std::fs::write(&next, preset.as_bytes()).unwrap();
+        let (context, mut app) = app();
+        context.style_mut(|s| s.animation_time = 0.);
+        app.dialogs = Box::new(FakeDialogs {
+            open: [None, Some(next.clone()), Some(next.clone())].into(),
+            save: [None, Some(next.clone()), Some(saved.clone())].into(),
+            ..Default::default()
+        });
+        app.change(|p| p.rename("Keep me"));
+        let before = app.document.as_ref().unwrap().as_bytes().to_vec();
+        app.open_dialog();
+        assert!(app.pending.is_none());
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), before);
+        app.open_dialog();
+        assert!(matches!(app.pending, Some(Pending::Open(_))));
+        app.change(|p| p.rename("Behind prompt"));
+        app.undo();
+        app.redo();
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), before);
+        prompt_frame(&context, &mut app, vec![]);
+        click_prompt(&context, &mut app, "save");
+        assert!(app.pending.is_some());
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), before);
+        click_prompt(&context, &mut app, "save"); // Existing destination is refused.
+        assert!(app.pending.is_some());
+        assert!(app.error.is_some());
+        assert_eq!(std::fs::read(&next).unwrap(), preset.as_bytes());
+        click_prompt(&context, &mut app, "save");
+        assert!(app.pending.is_none());
+        assert_eq!(std::fs::read(saved).unwrap(), before);
+        assert_eq!(
+            app.document.as_ref().unwrap().preset().name(),
+            "Next document"
+        );
+        assert!(app.error.is_none());
+        app.change(|p| p.rename("Discard me"));
+        app.open_dialog();
+        prompt_frame(&context, &mut app, vec![]);
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pending.is_none());
+        assert_eq!(app.document.as_ref().unwrap().preset().name(), "Discard me");
+        app.pending = Some(Pending::Open(next));
+        prompt_frame(&context, &mut app, vec![]);
+        click_prompt(&context, &mut app, "discard");
+        assert_eq!(
+            app.document.as_ref().unwrap().preset().name(),
+            "Next document"
+        );
+    }
+
+    #[test]
+    fn clean_document_save_cancellation_does_not_continue_an_existing_prompt() {
+        let (context, mut app) = app();
+        context.style_mut(|s| s.animation_time = 0.);
+        app.dialogs = Box::new(FakeDialogs {
+            save: [None].into(),
+            ..Default::default()
+        });
+        app.pending = Some(Pending::Quit);
+        assert!(!app.dirty());
+        prompt_frame(&context, &mut app, vec![]);
+        click_prompt(&context, &mut app, "save");
+        assert!(matches!(app.pending, Some(Pending::Quit)));
+        assert!(!app.permit_close);
+        click_prompt(&context, &mut app, "discard");
+        assert!(app.permit_close);
+        assert!(app.pending.is_none());
+    }
+
+    #[test]
+    fn failed_open_and_missing_save_directory_preserve_dirty_document_and_history() {
+        let (context, mut app) = app();
+        let dir = tempfile::tempdir().unwrap();
+        let bad = dir.path().join("bad.vwb");
+        std::fs::write(&bad, b"invalid container").unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            open: [Some(bad)].into(),
+            save: [Some(dir.path().join("missing/copy.vwm"))].into(),
+            ..Default::default()
+        });
+        app.change(|p| p.rename("Retained"));
+        let before = app.document.as_ref().unwrap().as_bytes().to_vec();
+        assert!(!app.save_dialog());
+        assert!(app.error.is_some());
+        app.open_dialog();
+        app.continue_pending(&context);
+        assert!(app.error.is_some());
+        assert!(app.dirty());
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), before);
+        app.undo();
+        assert!(!app.dirty());
+        app.redo();
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), before);
+    }
+
+    #[test]
+    fn close_during_fake_operation_cancels_it_and_retains_document_after_disconnect() {
+        let (context, mut app) = app();
+        app.change(|p| p.rename("Retained"));
+        let before = app.document.as_ref().unwrap().as_bytes().to_vec();
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        app.read_receiver = Some(receiver);
+        app.read_worker = Some((cancel.clone(), std::thread::spawn(|| {})));
+        app.request_close(&context);
+        assert!(cancel.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(!app.permit_close);
+        assert!(app.pending.is_none());
+        app.open_dialog();
+        assert!(!app.save_dialog()); // Fake adapter panics if invoked.
+        drop(sender);
+        app.poll_read();
+        assert!(!app.is_reading());
+        assert!(app.read_worker.is_none());
+        assert!(app.error.as_deref().unwrap().contains("unexpectedly"));
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), before);
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::Quit)));
+        app.continue_pending(&context);
+        assert!(app.permit_close);
+    }
+
+    #[test]
+    fn actual_pickup_slider_drag_is_one_undo_group() {
+        fn frame(context: &egui::Context, app: &mut Workbench, events: Vec<egui::Event>) {
+            let _ = context.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800., 600.))),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        app.float_control(ui, PICKUP1, 0x200000, "Position", " in")
+                    });
+                },
+            );
+        }
+        let (context, mut app) = app();
+        context.style_mut(|style| style.spacing.slider_width = 200.);
+        app.load(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/synthetic-host-preset.vwm"),
+        );
+        let before = app.document.as_ref().unwrap().as_bytes().to_vec();
+        frame(&context, &mut app, vec![]);
+        let rect = app.pickup_slider.unwrap();
+        let start = Pos2::new(rect.left() + 30., rect.center().y);
+        let end = start + Vec2::new(90., 0.);
+        frame(
+            &context,
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        for pos in [start + Vec2::new(40., 0.), end] {
+            frame(&context, &mut app, vec![egui::Event::PointerMoved(pos)]);
+        }
+        frame(
+            &context,
+            &mut app,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+        let changed = app.document.as_ref().unwrap().as_bytes().to_vec();
+        assert_ne!(changed, before);
+        app.undo();
+        let doc = app.document.as_ref().unwrap();
+        assert_eq!(doc.as_bytes(), before);
+        assert!(!doc.can_undo());
+        app.redo();
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), changed);
+    }
+
+    #[test]
+    fn artwork_dialog_cancel_and_folder_recovery_preserve_document() {
+        let (context, mut app) = app();
+        let directory = tempfile::tempdir().unwrap();
+        let before = app.document.as_ref().unwrap().as_bytes().to_vec();
+        let old = app.artwork.clone();
+        app.dialogs = Box::new(FakeDialogs {
+            artwork: [None, Some(directory.path().to_owned())].into(),
+            ..Default::default()
+        });
+        assert!(app.texture(&context, "missing-test.png").is_none());
+        app.artwork_dialog();
+        assert_eq!(app.artwork, old);
+        assert!(app.error.is_some());
+        assert_eq!(app.missing_textures.len(), 1);
+        app.artwork_dialog();
+        assert_eq!(app.artwork, directory.path());
+        assert!(app.error.is_none());
+        assert!(app.missing_textures.is_empty());
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), before);
+        assert!(!app.dirty());
     }
 
     #[test]
