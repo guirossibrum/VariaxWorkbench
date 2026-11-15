@@ -1,19 +1,27 @@
 #![forbid(unsafe_code)]
 //! PODxt Live USB-firmware component, kept separate from main flash.
 //!
-//! The records below come from saved captures, Monkey's shipped catalog, and
-//! one earlier descriptor listing. This module does not open a device, send a
-//! version query, or install firmware.
+//! This is a partial offline record. Monkey's shipped catalog and one earlier
+//! descriptor listing are included. The version-query request bytes are still
+//! unrecovered. This module does not open a device, send a version query, or
+//! install firmware.
 
 use crate::firmware::PODXT_LIVE_PRODUCT_ID;
 use crate::midi::Identity;
 use crate::read_session::IDENTITY_REQUEST;
 
-/// Saved `analysis/captures/podxt-identity.syx`. Universal identity reply only.
-pub const CAPTURED_PODXT_LIVE_IDENTITY: [u8; 17] = [
-    0xf0, 0x7e, 0x7f, 0x06, 0x02, 0x00, 0x01, 0x0c, 0x03, 0x00, 0x0a, 0x00, 0x00, 0x03, 0x00, 0x01,
-    0xf7,
-];
+/// Static finding from the Monkey 1.78 i386 image. Addresses are virtual
+/// addresses in that Mach-O. The request bytes behind `virtual_slot` were not
+/// recovered, so this does not describe a message that can be sent.
+pub const PRINT_SITE: PrintSite = PrintSite {
+    printer_va: 0x3233a,
+    label_instruction_va: 0x3295b,
+    displayed_field_offset: 0x2c,
+    getter_va: 0x678a,
+    formatter_va: 0x65aa,
+    virtual_slot: 0x28,
+    request_bytes_recovered: false,
+};
 
 /// Earlier `lsusb` text in `analysis/reports/podxt-live-usb-descriptors.txt`.
 /// It was not collected again for this record.
@@ -54,7 +62,7 @@ pub const USB_COMPONENT_QUERY: QueryRecovery = QueryRecovery::NotRecovered;
 pub const FUTURE_PLAN: &[PlanStep] = &[
     PlanStep {
         id: "recover-request-offline",
-        detail: "Statically locate the Monkey code that prints the USB Firmware Version label and record the request bytes. Do not send them while doing that.",
+        detail: "The USB Firmware Version label prints a cached string. The cache is filled from driver vtable slot 0x28, and that method body is still unrecovered. Record the request bytes from that method. Do not send any candidate.",
         gate: PlanGate::OfflineNext,
     },
     PlanStep {
@@ -68,6 +76,17 @@ pub const FUTURE_PLAN: &[PlanStep] = &[
         gate: PlanGate::RequiresSeparateAuthorization,
     },
 ];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PrintSite {
+    pub printer_va: u32,
+    pub label_instruction_va: u32,
+    pub displayed_field_offset: u8,
+    pub getter_va: u32,
+    pub formatter_va: u32,
+    pub virtual_slot: u8,
+    pub request_bytes_recovered: bool,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SavedDescriptor {
@@ -129,8 +148,16 @@ pub fn usb_component_version_from_identity(_identity: &Identity) -> Option<u32> 
 }
 
 pub fn validate_record() -> Result<(), String> {
-    if USB_COMPONENT_QUERY.recovered() {
+    if USB_COMPONENT_QUERY.recovered() || PRINT_SITE.request_bytes_recovered {
         return Err("USB component query is marked recovered".into());
+    }
+    if PRINT_SITE.displayed_field_offset != 0x2c
+        || PRINT_SITE.virtual_slot != 0x28
+        || PRINT_SITE.printer_va == 0
+        || PRINT_SITE.getter_va == 0
+        || PRINT_SITE.formatter_va == 0
+    {
+        return Err("print site no longer points at the cached USB version field".into());
     }
     if USB_FIRMWARE_PLACEHOLDER.is_an_image
         || !USB_FIRMWARE_PLACEHOLDER.url_empty
@@ -167,26 +194,42 @@ pub fn validate_record() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::firmware::PODXT_LIVE_VERSION;
     use crate::midi::Identity;
 
-    #[test]
-    fn captured_identity_matches_main_flash_and_not_the_usb_component() {
-        validate_record().expect("usb firmware record");
-        let identity = Identity::parse(&CAPTURED_PODXT_LIVE_IDENTITY).expect("identity");
-        assert_eq!(identity.product_id(), PODXT_LIVE_PRODUCT_ID);
-        assert_eq!(identity.version, Some(PODXT_LIVE_VERSION));
-        assert_eq!(identity.version_string(), "3.01");
-        assert!(usb_component_version_from_identity(&identity).is_none());
-        assert_ne!(identity.version_string(), SAVED_DESCRIPTOR.bcd_device);
-        assert_ne!(USB_FIRMWARE_PLACEHOLDER.version, identity.version_string());
+    fn synthetic(family: u16, model: u16, revision: [u8; 4], version: Option<u32>) -> Identity {
+        Identity {
+            family,
+            model,
+            revision,
+            version,
+        }
     }
 
     #[test]
-    fn universal_inquiry_is_not_a_usb_component_query() {
-        assert!(!USB_COMPONENT_QUERY.recovered());
+    fn synthetic_identity_has_no_usb_component_version() {
+        validate_record().expect("usb firmware record");
+        let artificial_revision = synthetic(0x0003, 0x000a, [9, 8, 7, 6], Some(0x0908_0000));
+        let unrelated = synthetic(0x1111, 0x2222, [0xaa, 0xbb, 0xcc, 0xdd], None);
+        assert_eq!(artificial_revision.product_id(), PODXT_LIVE_PRODUCT_ID);
+        assert_eq!(artificial_revision.version_string(), "9.08");
+        assert_ne!(
+            artificial_revision.version_string(),
+            USB_FIRMWARE_PLACEHOLDER.version
+        );
+        assert_ne!(
+            artificial_revision.version_string(),
+            SAVED_DESCRIPTOR.bcd_device
+        );
+        assert!(usb_component_version_from_identity(&artificial_revision).is_none());
+        assert!(usb_component_version_from_identity(&unrelated).is_none());
+        assert!(unrelated.version_string().contains("aa"));
+    }
+
+    #[test]
+    fn version_query_remains_unrecovered() {
+        validate_record().expect("usb firmware record");
         assert_eq!(IDENTITY_REQUEST.len(), 6);
-        assert_eq!(CAPTURED_PODXT_LIVE_IDENTITY.len(), 17);
+        assert!(FUTURE_PLAN[0].detail.contains("unrecovered"));
         assert!(FUTURE_PLAN.iter().any(|step| {
             step.gate == PlanGate::RequiresSeparateAuthorization && step.id == "one-reviewed-read"
         }));
