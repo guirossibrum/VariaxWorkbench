@@ -18,7 +18,7 @@ VERSION='0.2.16'
 ARCHIVE_SHA256='b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981'
 
 
-def build():
+def verify_cached_source():
     cargo_home=Path(os.environ.get('CARGO_HOME',Path.home()/'.cargo'))
     candidates=list((cargo_home/'registry/src').glob(f'*/libm-{VERSION}'))
     if len(candidates)!=1:raise RuntimeError('one cached libm-0.2.16 source tree is required; no automatic download')
@@ -34,6 +34,11 @@ def build():
             expected=tar.extractfile(member).read()
             if (source/Path(*path.parts[1:])).read_bytes()!=expected:raise RuntimeError('cached crate source checksum mismatch: '+member.name)
             files+=1
+    return source,files
+
+
+def build():
+    source,files=verify_cached_source()
     directory=ROOT/'.tools/rust-math-reference';directory.mkdir(parents=True,exist_ok=True)
     manifest='''[package]
 name = "variax-math-research"

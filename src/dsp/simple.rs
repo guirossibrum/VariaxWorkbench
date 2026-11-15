@@ -1,6 +1,7 @@
 //! DSP parameter conversions and complete word writes for simple blocks.
 use super::{NativePatch, TableKind};
 use crate::body::{Drone, GlobalDecay, MicPosition, PitchShift, Volume};
+use crate::math::EngineFloat as _;
 
 fn rate_valid(rate: f32) -> Result<(), String> {
     if rate.is_finite() && (1.0..=384000.0).contains(&rate) {
@@ -17,7 +18,7 @@ impl NativePatch {
             if !trim.is_finite() {
                 return Err("nonfinite volume trim".into());
             }
-            next.set_trim_level(10.0_f32.powf(trim / 20.0))?;
+            next.set_trim_level(10.0_f32.engine_powf(trim / 20.0))?;
         } else {
             next.set_analog_level(block.analog_gain);
         }
@@ -42,8 +43,8 @@ impl NativePatch {
             if !block.hold_off[i].is_finite() || !block.decay[i].is_finite() {
                 return Err("nonfinite decay duration".into());
             }
-            let hold = (-1.0 / (block.hold_off[i] * rate)).exp();
-            let decay = (-1.0 / (block.decay[i] * rate)).exp();
+            let hold = (-1.0 / (block.hold_off[i] * rate)).engine_exp();
+            let decay = (-1.0 / (block.decay[i] * rate)).engine_exp();
             next.apply_block_coefficients(
                 "global-decay",
                 &[

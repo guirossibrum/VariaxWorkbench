@@ -1,10 +1,11 @@
 # Math runtime compatibility
 
 This is an offline sensitivity audit for issue [#5](https://github.com/guirossibrum/VariaxWorkbench/issues/5).
-It does not establish audio equivalence or device safety. Production Rust math
-still depends on platform implementations of transcendental functions; a controlled,
-portable production backend remains pending. No Linux math library was added to
-the application's dependencies.
+It does not establish audio equivalence or device safety. The default Rust math
+profile still uses host standard functions. An explicitly selected experimental
+`portable-math` build now compiles pinned Rust algorithms into the coefficient
+engine; see [math profiles](math-profiles.md). Historical and cross-target
+validation remains pending. No Linux math runtime was added to the application.
 
 ## What the originals use
 
@@ -111,7 +112,9 @@ Debug/release agree on all 206,228 inputs. All **110 packed outputs match the
 MPFR-256 and initialized Windows-math candidates**, including the one series
 case whose four coefficient words differ from glibc. This does not guarantee
 correct rounding for arbitrary float32 inputs: double rounding can still occur.
-No production backend is selected by this experiment.
+The follow-up [math profile implementation](math-profiles.md) makes this wider
+strategy available as an explicit experimental build. The default profile stays
+unchanged.
 
 The helper's undefined-symbol audit rejects imports of the tested host math
 functions, square root and FMA. The Linux FFI/helper runtime still has ordinary
@@ -121,9 +124,10 @@ features, lockfile and import lists are preserved in build receipts. Three
 synthetic regression tests cover both strategies' FFI dispatch/input width,
 signed zero, domain/infinity behavior and subnormal/boundary profile repeatability.
 The audit rejects non-nearest host rounding or subnormal flushing. Other
-OS/architecture/compiler combinations and complete Rust-engine substitution have
-not been tested. A future production choice needs controlled compatibility
-profiles, source/license preservation and those additional checks.
+OS/architecture/compiler combinations were not tested in that initial experiment.
+The [follow-up](math-profiles.md) checks complete Rust-engine and preset-file paths,
+preserves dependency notices and adds a cross-target core workflow. Its actual
+workflow results must be recorded separately; the feature remains experimental.
 
 ## Reproduction and boundaries
 
@@ -183,8 +187,9 @@ precision modes and alternate-reference namespace separation.
 ## Remaining work
 
 Historical Mac binary parity, complete Windows coefficient/JVM execution,
-arithmetic outside math calls, wider boundary coverage and a versioned portable
-Rust production math implementation remain unresolved. In particular, substituting
+arithmetic outside math calls and wider boundary coverage remain unresolved.
+The experimental portable Rust implementation still needs platform/default-rollout
+review. In particular, substituting
 Windows math results into the Mac generator does not reproduce the Windows
 compiler's x87 expressions. Do not bless either host OS's results, or the Apple
 source candidate, as universally correct. Keep issue #5 open until the remaining

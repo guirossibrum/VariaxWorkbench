@@ -1,5 +1,6 @@
 //! Original table smoothing and float32 control-response conversion (0x262c0).
 use super::{ResponseTables, TableSettings, WiringProperties};
+use crate::math::EngineFloat as _;
 use crate::models::PickupCircuit;
 
 /// Values written by CalculateResponse, ordered by ascending native offsets.
@@ -58,7 +59,7 @@ fn smooth(values: &mut [f64]) {
                 let db = if values[index] <= 0.0 {
                     f64::from(1e-9_f32)
                 } else {
-                    f64::from((values[index] as f32).log10() * 20.0)
+                    f64::from((values[index] as f32).engine_log10() * 20.0)
                 };
                 total += db * weight;
                 weights += weight;
@@ -66,7 +67,7 @@ fn smooth(values: &mut [f64]) {
             total / weights
         });
         for (i, target) in targets.iter().enumerate() {
-            let amplitude = f64::from(10.0_f32.powf(*target as f32 / 20.0));
+            let amplitude = f64::from(10.0_f32.engine_powf(*target as f32 / 20.0));
             values[i + 1] += (amplitude - values[i + 1]) * f64::from(0.4_f32);
         }
     }
@@ -89,7 +90,8 @@ impl PickupCircuit {
         smooth(&mut data[45..54]);
         let frequency = data[63] as f32;
         let frequency_coefficient = |value: f32| {
-            (1.0 / f64::from((value * std::f32::consts::PI) / settings.sample_rate).tan()) as f32
+            (1.0 / f64::from((value * std::f32::consts::PI) / settings.sample_rate).engine_tan())
+                as f32
         };
         let lowpass_frequency = std::array::from_fn(|i| data[i] as f32);
         let primary_frequency = std::array::from_fn(|i| data[9 + i] as f32);
@@ -105,7 +107,8 @@ impl PickupCircuit {
             primary_q: std::array::from_fn(|i| data[27 + i] as f32),
             primary_frequency,
             lowpass_coefficient: std::array::from_fn(|i| {
-                ((lowpass_frequency[i] * -std::f32::consts::TAU) / settings.sample_rate).exp()
+                ((lowpass_frequency[i] * -std::f32::consts::TAU) / settings.sample_rate)
+                    .engine_exp()
             }),
             secondary_frequency_coefficient: frequency_coefficient(frequency),
             primary_frequency_coefficient: primary_frequency.map(frequency_coefficient),
@@ -119,9 +122,11 @@ mod tests {
     use crate::{models::PickupWiring, pickup::VolumeTaper};
     #[test]
     fn all_assigned_fields_match_original_after_smoothing_and_freeze() {
-        for line in include_str!("../../tests/fixtures/native-pickup-calculated.txt")
+        for line in crate::math::fixture!(include_str, "native-pickup-calculated.txt")
             .lines()
-            .chain(include_str!("../../tests/fixtures/native-pickup-calculated-wiring.txt").lines())
+            .chain(
+                crate::math::fixture!(include_str, "native-pickup-calculated-wiring.txt").lines(),
+            )
         {
             let fields: Vec<_> = line.split_whitespace().collect();
             assert_eq!(fields.len(), 99);

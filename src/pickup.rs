@@ -1,4 +1,5 @@
 //! Offline pickup circuit transfer calculations recovered from Workbench.
+use crate::math::EngineFloat as _;
 use crate::models::PickupCircuit;
 mod biquad;
 mod levels;
@@ -40,7 +41,7 @@ impl ComplexResponse {
         Self::new(self.real / denominator, -self.imaginary / denominator)
     }
     pub fn magnitude(self) -> f64 {
-        (self.real * self.real + self.imaginary * self.imaginary).sqrt()
+        (self.real * self.real + self.imaginary * self.imaginary).engine_sqrt()
     }
 }
 fn determinant3(m: [[ComplexResponse; 3]; 3]) -> ComplexResponse {

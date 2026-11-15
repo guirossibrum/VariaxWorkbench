@@ -1,6 +1,7 @@
 //! Native generic biquad helper and block parameter preparation.
 use super::{NativePatch, TableKind};
 use crate::body::{Compressor, LowCut, PickFilter, Reverb};
+use crate::math::EngineFloat as _;
 
 /// Original helper coefficient order: a1, a2, b0, b1, b2. Only modes 4..7
 /// have formulas in the recovered helper; every other mode returns identity.
@@ -21,11 +22,11 @@ pub fn biquad_coefficients(
     let omega = (fraction + fraction) * std::f32::consts::PI;
     Ok(match kind {
         4 | 5 => {
-            let pole = (-omega).exp();
+            let pole = (-omega).engine_exp();
             [if kind == 4 { pole } else { -pole }, 0., 1. - pole, 0., 0.]
         }
         6 | 7 => {
-            let k = (omega * 0.5).tan();
+            let k = (omega * 0.5).engine_tan();
             let square = k * k;
             let inverse = 1.0 / (k / q + square + 1.0);
             let a1 = (1.0 - square) * -2.0 * inverse;
@@ -58,7 +59,7 @@ impl NativePatch {
         if !block.frequency.is_finite() {
             return Err("nonfinite low-cut frequency".into());
         }
-        let k = ((block.frequency * std::f32::consts::PI) / rate).tan();
+        let k = ((block.frequency * std::f32::consts::PI) / rate).engine_tan();
         let denominator = k * 1.4144272 + 1.0 + k * k;
         let second = ((1.0 - k * 1.4144272) + k * k) / denominator;
         let first = ((k + k) * k - 2.0) / denominator;
@@ -74,7 +75,7 @@ impl NativePatch {
         if !block.decay.is_finite() {
             return Err("nonfinite pick-filter decay".into());
         }
-        let decay = (-1.0 / (block.decay * rate)).exp();
+        let decay = (-1.0 / (block.decay * rate)).engine_exp();
         let mut next = self.clone();
         next.set_block_enabled(0x200000, block.enabled);
         next.apply_block_coefficients(
@@ -94,8 +95,8 @@ impl NativePatch {
         if !block.attack_time.is_finite() || !block.release_time.is_finite() {
             return Err("nonfinite compressor times".into());
         }
-        let attack = (-1.0 / (block.attack_time * rate)).exp();
-        let release = (-1.0 / (block.release_time * rate)).exp();
+        let attack = (-1.0 / (block.attack_time * rate)).engine_exp();
+        let release = (-1.0 / (block.release_time * rate)).engine_exp();
         let mut next = self.clone();
         next.set_block_enabled(0x20000, block.enabled);
         next.apply_block_coefficients("compressor", &[attack.to_bits(), release.to_bits()])?;
@@ -124,7 +125,7 @@ impl NativePatch {
         for (tank, multiplier) in [2237., 2399., 2621., 3169.].into_iter().enumerate() {
             let values = std::array::from_fn(|i| {
                 let factor = -3.0 / ((block.tank_decay[i] / 1000.) * rate);
-                10.0_f32.powf(factor * multiplier)
+                10.0_f32.engine_powf(factor * multiplier)
             });
             next.set_table(TableKind::ReverbFeedback(tank), values)?;
         }
@@ -212,7 +213,7 @@ mod tests {
     use super::*;
     #[test]
     fn generic_biquad_modes_match_original_sse_arithmetic() {
-        for line in include_str!("../../tests/fixtures/native-dsp-biquad.txt").lines() {
+        for line in crate::math::fixture!(include_str, "native-dsp-biquad.txt").lines() {
             let v: Vec<_> = line
                 .split_whitespace()
                 .map(|v| u32::from_str_radix(v, 16).unwrap())

@@ -1,6 +1,7 @@
 //! Compatibility implementation of the original patch-field interpolator.
 //! Discrete fields begin as a copy of the left input, matching native memcpy.
 use super::*;
+use crate::math::EngineFloat as _;
 
 fn linear(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
@@ -8,9 +9,9 @@ fn linear(a: f32, b: f32, t: f32) -> f32 {
 fn logarithmic(a: f32, b: f32, t: f32) -> f32 {
     // Disassembly shows double log and double products; only the sum is
     // rounded to float before expf. The complement itself is float32.
-    let left = (a as f64).ln();
-    let right = (b as f64).ln();
-    ((left * (1.0 - t) as f64 + right * t as f64) as f32).exp()
+    let left = (a as f64).engine_ln();
+    let right = (b as f64).engine_ln();
+    ((left * (1.0 - t) as f64 + right * t as f64) as f32).engine_exp()
 }
 fn array<const N: usize>(a: &[f32; N], b: &[f32; N], t: f32) -> [f32; N] {
     std::array::from_fn(|i| linear(a[i], b[i], t))

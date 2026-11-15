@@ -26,6 +26,9 @@ fn parse_id(value: &str) -> Result<u32, String> {
 fn run() -> Result<(), String> {
     let args: Vec<_> = env::args().skip(1).collect();
     match args.first().map(String::as_str) {
+        Some("math-profile") if args.len() == 1 => {
+            println!("{}", variax_workbench::math::PROFILE);
+        }
         Some("preview") if args.len() == 1 => {
             println!("Offline byte preview; no device opened. Live access is locked.");
             println!("PODxt routing enable: {}", hex(&PODXT_ROUTING_ENABLE));
@@ -761,7 +764,16 @@ fn run() -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
-    match run() {
+    // The debug coefficient/parser frames exceed the Windows main-thread stack.
+    // Keep the CLI's bounded workspace independent of the platform default.
+    let result = std::thread::Builder::new()
+        .name("variax-offline-command".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(run)
+        .map_err(|error| format!("cannot start command worker: {error}"))
+        .and_then(|worker| worker.join().map_err(|_| "command worker panicked".into()))
+        .and_then(|result| result);
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");

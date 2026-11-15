@@ -4,6 +4,7 @@ import json
 import struct
 import subprocess
 import tempfile
+import argparse
 from pathlib import Path
 from coefficient_oracle import CoefficientOracle,ROOT,default_settings
 from inspect_firmware import preserve
@@ -38,9 +39,12 @@ def run_java(temp,casefile,layout,native=None,presets=None):
     return [line.split(' => ')[1].split() for line in output.splitlines()]
 
 
-def main():
-    subprocess.run(['cargo','build'],cwd=ROOT,check=True)
-    oracle=CoefficientOracle();models=oracle.load_models();initial=oracle.read(oracle.OBJECT,0x1134)
+def verify(binary=None,*,math_backend=None,runtime_version=None,reference_namespace='host-complete-v1'):
+    if binary is None:
+        subprocess.run(['cargo','build'],cwd=ROOT,check=True)
+        binary=ROOT/'target/debug/variax-workbench'
+    binary=Path(binary).resolve()
+    oracle=CoefficientOracle(math_backend=math_backend,runtime_version=runtime_version);models=oracle.load_models();initial=oracle.read(oracle.OBJECT,0x1134)
     with tempfile.TemporaryDirectory(prefix='variax-host-complete-') as temp:
         temp=Path(temp);lines=[]
         for line in cases():
@@ -61,10 +65,11 @@ def main():
         mapped=run_java(temp,casefile,layout);assert len(mapped)==len(lines)==144
         manifest=temp/'models.tsv';entries=[f'{r["kind"]}\t{r["id"]&0xffffffff:08x}\t{ROOT/r["path"]}' for r in models]
         # Keep these original special-table snapshots local, never in fixtures.
+        special_hashes={}
         for id,resistance,cap in [(-3,1e6,2.2e-8),(-7,500000.,4.7e-8)]:
             oracle.write(oracle.OBJECT,initial);s=default_settings();struct.pack_into('<I',s,0x14,id&0xffffffff)
             for off,value in [(0x38,resistance),(0x3c,resistance),(0x40,cap)]:struct.pack_into('<f',s,off,value)
-            oracle.generate(s);path=temp/f'special-{id}.bin';path.write_bytes(oracle.read(oracle.OBJECT+0xdd0,360));entries.append(f'special\t{id&0xffffffff:08x}\t{path}')
+            oracle.generate(s);path=temp/f'special-{id}.bin';snapshot=oracle.read(oracle.OBJECT+0xdd0,360);path.write_bytes(snapshot);special_hashes[str(id)]=hashlib.sha256(snapshot).hexdigest();entries.append(f'special\t{id&0xffffffff:08x}\t{path}')
         manifest.write_text('\n'.join(entries)+'\n')
         outputs=[]
         for i,(line,fields) in enumerate(zip(lines,mapped)):
@@ -77,7 +82,7 @@ def main():
         for i,(line,expected_fields) in enumerate(zip(lines,final)):
             # Original file parser/ParamMap must agree with direct logical-map input.
             assert expected_fields[:2]==mapped[i][:2],('original file mapping differs',i)
-            output=temp/f'{i}.packed';command=[str(ROOT/'target/debug/variax-workbench'),'render-preset',str(temp/f'{i}.vwm'),str(manifest),str(output)]
+            output=temp/f'{i}.packed';command=[str(binary),'render-preset',str(temp/f'{i}.vwm'),str(manifest),str(output)]
             if int(line.split()[1])&2:command.append('muted')
             result=subprocess.run(command,text=True,capture_output=True)
             assert result.returncode==0,(i,result.stderr)
@@ -86,11 +91,27 @@ def main():
                 diff=[(n,actual[n],expected[n]) for n in range(3276) if actual[n]!=expected[n]]
                 raise AssertionError((i,len(diff),diff[:20]))
             results.append({'case':i,'sha256':hashlib.sha256(actual).hexdigest(),'bytes':len(actual)})
-            private=ROOT/'analysis/extracted/host-complete-v1';private.mkdir(parents=True,exist_ok=True)
+            private=ROOT/'analysis/extracted'/reference_namespace;private.mkdir(parents=True,exist_ok=True)
             preserve(private/f'{i}.vwm',(temp/f'{i}.vwm').read_bytes());preserve(private/f'{i}.packed',actual)
             print('PASS: complete preset',i,hashlib.sha256(actual).hexdigest(),flush=True)
-        preserve(ROOT/'analysis/reports/host-complete-v1.json',(json.dumps({'source_sha256':oracle.sha256,'runtime_version':oracle.RUNTIME_VERSION,'cases':len(results),'scope':'Original Java preset reader and ParamMap, mapping/ApplyHacks, original native instructions, final original Java metadata overlay versus Rust render-preset. Fresh engine per preset; external vendor resources stay private. No audio/device equivalence.', 'special_combinations':24,'results':results},indent=2)+'\n').encode())
+        report={'source_sha256':oracle.sha256,'runtime_version':oracle.RUNTIME_VERSION,'cases':len(results),'scope':'Original Java preset reader and ParamMap, mapping/ApplyHacks, original native instructions, final original Java metadata overlay versus Rust render-preset. Fresh engine per preset; external vendor resources stay private. No audio/device equivalence.', 'special_combinations':24,'results':results}
+        if math_backend is not None:
+            report.update({'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),'special_response_sha256':special_hashes})
+        preserve(ROOT/'analysis/reports'/f'{reference_namespace}.json',(json.dumps(report,indent=2)+'\n').encode())
     print('PASS: 144 complete original Java/native vs Rust final preset byte arrays')
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--binary',type=Path);parser.add_argument('--software-wide',action='store_true');parser.add_argument('--run-id');args=parser.parse_args()
+    if args.software_wide:
+        if args.binary is None or not args.run_id or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789-_' for c in args.run_id):parser.error('software comparison requires --binary and a lowercase --run-id')
+        if subprocess.check_output([str(args.binary.resolve()),'math-profile'],text=True).strip()!='software-wide-v1/libm-0.2.16':parser.error('binary is not the software-wide-v1 profile')
+        from math_backends import RustSoftwareMath
+        backend=RustSoftwareMath((ROOT/'.tools/rust-math-reference/target/release/libvariax_math_research.so').resolve(),widen_float=True)
+        verify(args.binary,math_backend=backend,runtime_version='initialized-software-wide-host-complete-v1',reference_namespace=args.run_id)
+    else:
+        if args.run_id:parser.error('--run-id is reserved for an alternate math profile')
+        verify(args.binary)
 
 
 if __name__=='__main__':main()

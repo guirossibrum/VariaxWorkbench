@@ -1,6 +1,7 @@
 //! Resonant block parameter-to-word conversions, without an audio renderer.
 use super::NativePatch;
 use crate::body::{BodyResonance, SitarBuzz, StringTone, StringToneString};
+use crate::math::EngineFloat as _;
 impl NativePatch {
     pub fn write_body_resonance(&mut self, block: &BodyResonance, rate: f32) -> Result<(), String> {
         if !rate.is_finite()
@@ -18,7 +19,7 @@ impl NativePatch {
         {
             return Err("unsupported body-resonance parameters".into());
         }
-        let master = 10.0_f32.powf(block.master / 20.0);
+        let master = 10.0_f32.engine_powf(block.master / 20.0);
         let mut next = self.clone();
         next.set_block_enabled(0x200, block.enabled);
         let mut count = 0;
@@ -30,11 +31,11 @@ impl NativePatch {
             if !frequency.is_finite() || !q.is_finite() || q <= 0.0 || !gain.is_finite() {
                 return Err("unsupported body resonator".into());
             }
-            let k = ((f64::from(frequency) * std::f64::consts::PI) / f64::from(rate)).tan();
+            let k = ((f64::from(frequency) * std::f64::consts::PI) / f64::from(rate)).engine_tan();
             let square = k * k;
             let damping = k / f64::from(q);
             let inverse = 1.0 / (square + damping + 1.0);
-            let b2 = (-damping * inverse * 10.0_f64.powf(f64::from(gain) / 20.0)) as f32;
+            let b2 = (-damping * inverse * 10.0_f64.engine_powf(f64::from(gain) / 20.0)) as f32;
             let a1 = (inverse * ((1.0 - square) + (1.0 - square))) as f32;
             let a2 = (((damping - 1.0) - square) * inverse) as f32;
             next.apply_block_coefficients(
@@ -52,8 +53,8 @@ impl NativePatch {
         for i in count..12 {
             next.apply_block_coefficients("body-resonator", &[i, 0, 0, 0])?;
         }
-        let treble = -((block.treble_frequency / rate) * -std::f32::consts::TAU).exp();
-        let roll = ((block.rolloff_frequency / rate) * -std::f32::consts::TAU).exp();
+        let treble = -((block.treble_frequency / rate) * -std::f32::consts::TAU).engine_exp();
+        let roll = ((block.rolloff_frequency / rate) * -std::f32::consts::TAU).engine_exp();
         next.apply_block_coefficients(
             "body-treble",
             &[
@@ -83,9 +84,9 @@ impl NativePatch {
             {
                 return Err("nonfinite string-tone parameters".into());
             }
-            let master = 10.0_f32.powf(input.master / 20.0);
-            let hold = (-1.0 / f64::from(input.hold_off * rate)).exp() as f32;
-            let decay = (-1.0 / f64::from(input.decay * rate)).exp() as f32;
+            let master = 10.0_f32.engine_powf(input.master / 20.0);
+            let hold = (-1.0 / f64::from(input.hold_off * rate)).engine_exp() as f32;
+            let decay = (-1.0 / f64::from(input.decay * rate)).engine_exp() as f32;
             next.apply_block_coefficients(
                 "string-tone",
                 &[
@@ -111,11 +112,11 @@ impl NativePatch {
                 if !frequency.is_finite() || !q.is_finite() || q <= 0.0 || !gain.is_finite() {
                     return Err("unsupported string resonator".into());
                 }
-                let k = ((frequency * std::f32::consts::PI) / rate).tan();
+                let k = ((frequency * std::f32::consts::PI) / rate).engine_tan();
                 let square = k * k;
                 let damping = k / q;
                 let inverse = 1.0 / (square + damping + 1.0);
-                let b2 = 10.0_f32.powf(gain / 20.0) * (-damping * inverse);
+                let b2 = 10.0_f32.engine_powf(gain / 20.0) * (-damping * inverse);
                 let a2 = ((damping - 1.0) - square) * inverse;
                 let a1 = inverse * ((1.0 - square) + (1.0 - square));
                 next.apply_block_coefficients(
@@ -180,7 +181,7 @@ impl NativePatch {
                 * std::f64::consts::TAU)
                 / f64::from(rate)) as f32;
             // The original uses double exp after a float32 rate*time product.
-            let decay = (-1.0 / f64::from(rate * block.decay[i])).exp() as f32;
+            let decay = (-1.0 / f64::from(rate * block.decay[i])).engine_exp() as f32;
             // Direct original-instruction comparisons: NaN conversion retains
             // logical word 0x1000000, masked to zero by Pack. Do not infer the
             // unordered floating-point branch from decompiler comparisons.

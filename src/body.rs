@@ -656,7 +656,7 @@ mod tests {
             "../tests/fixtures/native-body-interpolation-input.bin"
         ))
         .unwrap();
-        let bytes = include_bytes!("../tests/fixtures/native-body-interpolated-output.bin");
+        let bytes = crate::math::fixture!(include_bytes, "native-body-interpolated-output.bin");
         let cases: Vec<_> = include_str!("../tests/fixtures/native-body-interpolated-cases.txt")
             .lines()
             .collect();

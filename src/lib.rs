@@ -12,6 +12,7 @@ pub mod dsp;
 pub mod firmware;
 pub mod host;
 pub mod manual_check;
+pub mod math;
 pub mod midi;
 pub mod models;
 pub mod pickup;

@@ -1,5 +1,6 @@
 //! Native 64-double electrical response tables; no hardware patch assembly.
 use super::{FilterParameters, SecondaryFit, WiringProperties};
+use crate::math::EngineFloat as _;
 use crate::models::{PickupCircuit, PickupWiring};
 
 #[derive(Clone, Copy, Debug)]
@@ -34,12 +35,15 @@ impl PickupCircuit {
         let circuit = combined.circuit;
         let mut data = [0.0; 64];
         data[63] = 1.0
-            / (((circuit.capacitance + wiring.tone_capacitance) * circuit.inductance).sqrt()
+            / (((circuit.capacitance + wiring.tone_capacitance) * circuit.inductance)
+                .engine_sqrt()
                 * std::f64::consts::TAU);
         for index in (0..9).rev() {
             let volume = match settings.taper {
                 VolumeTaper::Linear => (index + 1) as f64 / 9.0,
-                VolumeTaper::Logarithmic => 0.01 * (1.0_f64 / 0.01).powf(index as f64 * 0.125),
+                VolumeTaper::Logarithmic => {
+                    0.01 * (1.0_f64 / 0.01).engine_powf(index as f64 * 0.125)
+                }
             };
             let primary = circuit.fit_primary_filter(wiring, volume, 1.0)?;
             data[9 + index] = primary.frequency;
@@ -61,7 +65,7 @@ impl PickupCircuit {
                 let tone = if tone_index == 0 {
                     0.0
                 } else {
-                    (1.0_f64 / 0.001).powf(tone_index as f64 * 0.125) * 0.001
+                    (1.0_f64 / 0.001).engine_powf(tone_index as f64 * 0.125) * 0.001
                 };
                 let gain = data[26] / circuit.response(wiring, data[17], volume, tone).magnitude();
                 data[36 + tone_index] = gain;
@@ -116,9 +120,9 @@ mod tests {
     use super::*;
     #[test]
     fn complete_tables_match_original_synthetic_outputs() {
-        for line in include_str!("../../tests/fixtures/native-pickup-tables.txt")
+        for line in crate::math::fixture!(include_str, "native-pickup-tables.txt")
             .lines()
-            .chain(include_str!("../../tests/fixtures/native-pickup-tables-wiring.txt").lines())
+            .chain(crate::math::fixture!(include_str, "native-pickup-tables-wiring.txt").lines())
         {
             let fields: Vec<_> = line.split_whitespace().collect();
             assert_eq!(fields.len(), 80);

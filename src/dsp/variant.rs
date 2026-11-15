@@ -1,5 +1,6 @@
 //! All-block assembly from a typed body variant, in original native call order.
 use super::{NativePatch, PickupResponseControls};
+use crate::math::EngineFloat as _;
 use crate::{
     body::{BodyVariant, PickupResponse},
     pickup::{CalculatedResponse, GeometryInput, GeometryProjection},
@@ -36,7 +37,7 @@ fn from_body_response(body: &PickupResponse, rate: f32) -> Result<CalculatedResp
         return Err("unsupported body pickup-response frequencies".into());
     }
     let coefficient =
-        |freq: f32| (1.0 / f64::from((freq * std::f32::consts::PI) / rate).tan()) as f32;
+        |freq: f32| (1.0 / f64::from((freq * std::f32::consts::PI) / rate).engine_tan()) as f32;
     Ok(CalculatedResponse {
         lowpass_frequency: body.lowpass_frequency,
         secondary_gain: body.tone2_gain,
@@ -48,7 +49,7 @@ fn from_body_response(body: &PickupResponse, rate: f32) -> Result<CalculatedResp
         primary_frequency: body.tone_off_frequency,
         lowpass_coefficient: body
             .lowpass_frequency
-            .map(|f| ((f * -std::f32::consts::TAU) / rate).exp()),
+            .map(|f| ((f * -std::f32::consts::TAU) / rate).engine_exp()),
         secondary_frequency_coefficient: coefficient(body.tone2_frequency),
         primary_frequency_coefficient: body.tone_off_frequency.map(coefficient),
     })

@@ -1,0 +1,54 @@
+{
+  "profile": "software-wide-v1/libm-0.2.16",
+  "original_machine_code_sha256": "3aa232329d467101637764397b77a7b8ffa6af0ccd72ec380d02f145477ba9fe",
+  "math_archive_sha256": "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981",
+  "float_strategy": "float32 input, software float64 evaluation, float32 result; float64 remains float64",
+  "emulated_x87_control": "0x037f",
+  "emulated_mxcsr": "0x1f80",
+  "input_fixtures_sha256": {
+    "native-dsp-biquad.txt": "e0fa19ffc1ce569efa5e546d2b2be70c831a243272bfe04216b3553820084e7c",
+    "native-pickup-tables.txt": "0cfb40321ee7794c8c1ba52b95dd5383b419d4de63f02bc5a6d25e6d5bd5435e",
+    "native-pickup-tables-wiring.txt": "055bda0d4658021f002b1678db18cdf8cb44c73f86abeddbddd6df2a78ba3bb2",
+    "native-pickup-calculated.txt": "e9b24793bd4c505254e4c55a57c42651775dffe72e6fa88dac44c289d02908b4",
+    "native-pickup-calculated-wiring.txt": "d69f3c77a6b724bc444203238c77c75fcbc7d0186be5f9203f35d5f166fde701",
+    "native-body-interpolation-input.bin": "b0a9ee681744f003cecc1896e57f94a83c270b1cb0d6eec91fa2fd1ae5390305",
+    "native-body-interpolated-cases.txt": "ce1899e6e9d274a731b2dd76b44081881955bfd4d925bd36dc2ed4cfc5fc9256",
+    "native-body-interpolated-output.bin": "62fd4297a7cae65343b2adddb5e4347084873eb335a9a11b4382a0f53113cb87"
+  },
+  "expected_output_sha256": {
+    "native-dsp-biquad.txt": "c3591b353d51c4ec07c4a328554fec97fca6bb6158337e21e25c7db729f4b8dd",
+    "native-pickup-tables.txt": "931345e68b04d9c2dee78445e8cfca0be116cf24db8a95c839827745e25a591d",
+    "native-pickup-tables-wiring.txt": "7cc98f52d5a8d2cfb966268611b87882068b33cb7b0f0ed0f76f93e68507bfbd",
+    "native-pickup-calculated.txt": "047bd227ff4d42636d9ebcb87ea5d46c40faefe3b02240713192fb48cc1d660a",
+    "native-pickup-calculated-wiring.txt": "d69f3c77a6b724bc444203238c77c75fcbc7d0186be5f9203f35d5f166fde701",
+    "native-body-interpolated-output.bin": "2c3f114003b12763bdad5b13c3195948459bbb1bcbe919d3393cf89e77440572"
+  },
+  "results": {
+    "biquad": {
+      "cases": 600,
+      "changed_from_legacy": 8
+    },
+    "native-pickup-tables.txt": {
+      "cases": 32,
+      "changed_from_legacy": 26
+    },
+    "native-pickup-tables-wiring.txt": {
+      "cases": 32,
+      "changed_from_legacy": 22
+    },
+    "native-pickup-calculated.txt": {
+      "cases": 16,
+      "changed_from_legacy": 2
+    },
+    "native-pickup-calculated-wiring.txt": {
+      "cases": 64,
+      "changed_from_legacy": 0
+    },
+    "body": {
+      "cases": 84,
+      "changed_from_legacy": 1,
+      "schema_sha256": "0103fda9e3428b8dfc2e5d2576723822a64cc3c30c5b8355c7d6a1cd567d222a"
+    }
+  },
+  "scope": "Synthetic existing inputs, original instructions with explicit Rust software-math adapters. Not authenticated historical Mac mathematics, audio parity or hardware readiness."
+}
