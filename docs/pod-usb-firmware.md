@@ -6,9 +6,12 @@ macOS Monkey 1.78 has a userspace service method that builds a USB vendor IN
 control transfer. PODxt Live's USB product id selects device-manager
 construction. The version path then reaches an `L6DeviceDescription`, and
 that object's slot returns a pointer already cached on a device-control
-object. It does not construct either Brandi service. The class of the cached
-service is still open. The transfer was not sent. No device was opened, and
-no update was run.
+object. The description setter is virtual slot `+0x0c`, and the traced
+producers of that object do not call it. `L6XTAudioControlMac` can store a
+kernel Brandi service at cache index 0. That control is not shown to be the
+object stored on the description. The class of the cached service on the
+PODxt Live path is still open. The transfer was not sent. No device was
+opened, and no update was run.
 
 The main flash revision and the USB firmware component are different things.
 
@@ -170,16 +173,77 @@ Slot `+0x0c` of `L6DeviceControlBase` and of `L6DeviceControlBaseMac` is
 `0x85150`. For index `0` it returns the pointer already stored at the control
 object `+8`. It does not construct a service. `L6BrandiControlMac` overrides
 that slot at `0x9b770`; the override's create path is index `1`, and index
-`0` falls through to `0x85150`. The description setter that writes `+0x21c`
-is virtual slot `+0x0c` at `0x85650`, and this image has no direct call to it.
+`0` falls through to `0x85150`.
 
-The service cached at control `+8` is therefore not shown to be
-`L6BrandiServiceMac` or the kernel service. `0x8c040` stays the userspace
-builder. It is not the closed PODxt Live query, and the five recorded fields
-are not an approved live read.
+## Description setter slot
 
-A byte scan of the Windows Monkey executable did not establish this instruction
-sequence. The finding is the macOS Monkey 1.78 image only.
+The description vtable at vptr `0x1c1598` stores `0x85650` at slot `+0x0c`.
+That dword is the only absolute reference to `0x85650` in the Monkey image.
+The function adds `0x21c` to `this` and assigns the argument through
+`L6DevSmartPtr<L6DeviceControlBase>::operator=`. A direct-call search found
+no `call` or `jmp` to `0x85650`.
+
+The five `GetDeviceDesc` call sites use the returned description for its
+fields. The one direct caller of the description finder at `0x1482cc` stores
+the pointer into another interface object and does not call slot `+0x0c`.
+The image also contains 154 `call *0x0c(reg)` instructions. Those sites were
+not each attributed to a class. The traced producers of an
+`L6DeviceDescription` do not make that call, so absence of a direct call is
+not treated as proof that no virtual assignment exists.
+
+`L6TWX_u.dylib` contains the same class names and its own description vtable.
+Its slot `+0x0c` is `0x54240`, and that function also assigns `this+0x21c`.
+A direct-call search in that image found no call to `0x54240`. It does not
+add a caller for the Monkey setter.
+
+## Cache index 0 on one control class
+
+`L6DeviceControlBase`'s constructor at `0x85020` writes zero through all 12
+cache slots at `+8` and the matching refcounts at `+0x38`.
+
+`L6XTAudioControlMac` (vptr `0x1c18b8`) overrides slot `+0x0c` at `0x8dd20`.
+When the index is below 12 and the refcount at that index is zero, a jump
+table handles indexes 0 through 11. Index 0 allocates `0x10` bytes, calls
+thunk `0x8ad80`, and stores the allocated pointer at cache index 0. The thunk
+calls `0x8adc0`, which installs kernel vptr `0x1c1838`. The only direct call
+to `0x8ad80` is this index-0 arm.
+
+The only store of vptr `0x1c18b8` is the `lea` at `0x8c893`, reached from
+vtable slot `+0x04` at `0x8c810`. That function has no direct caller. Nothing
+in the traced PODxt Live path stores an `L6XTAudioControlMac` into the
+description smart pointer at `+0x21c`.
+
+The kernel version slot at `0x8b810` does not embed the userspace builder
+fields `0xC0`, `0x67`, and `0x0011`. `0x8c040` stays the userspace builder.
+It is not the closed PODxt Live query, and the five recorded fields are not
+an approved live read.
+
+## Images searched for the setter and the cache fill
+
+| Image | Bytes | SHA-256 | Class names |
+| --- | --- | --- | --- |
+| macOS Monkey 1.78 executable | 2378528 | `47417308c9697456eeed59720ec97281ec226139c707347e4cad3ce787491a37` | description, both Brandi services, and the control classes |
+| `L6TWX_u.dylib` | 691160 | `131780a80db09bb9f49486a0f7dcdb6568877e4033f06b1dc1dee6db6720819a` | same class names; setter duplicated, no direct call |
+| Windows `Line 6 Monkey.exe` | 4178432 | `eb06a7ffaed9cd13119ca8fd4783fddfd03d4e22e23f2fbb3aa9524e272b2cde` | class-name strings only; Itanium type names absent; slot not recovered |
+| Signed `Line6Audio` | 1196736 | `728a52a0a79e7457ed2df733cf4cc50ea0cd5b37cfdb85f838555ed239ac462e` | none of these class names |
+| Unsigned `Line6Audio` | 1181576 | `721df4f65fcd28f8724be3e131349becab71da4b63db147811b8d1a7b3610886` | none of these class names |
+| `Line6MIDI` | 86600 | `92bccafbff4dec45cd05d1eb027b9ea672b9db596e16094638fd50c788647998` | none of these class names |
+| `l6podxt.dll` | 151040 | `c9ef3db97f10935fc4f28aa69a639aa4684bce6697dde506ca83592e2b41c69a` | none of these class names |
+| `l6podlv.dll` | 151040 | `91cf569bd191a771f3fa3bd62177128dc3bff7fe680d375b72234a9d11ca03e6` | none of these class names |
+| `l6podxtpro.dll` | 151040 | `98b6b0d0fb7c76c4c22ae7faeae256420ac9e0132bded5ba238c7d94b5ee129c` | none of these class names |
+
+No image was executed, loaded, or installed. The Windows executable is not
+confirmation of the macOS setter. The audio kext, MIDI plugin, and PODxt
+userspace libraries do not contain this C++ object model.
+
+Unknown edges that remain:
+
+- A virtual `call *0x0c(reg)` whose object is an `L6DeviceDescription` obtained
+  through an inlined list walk was not separately attributed.
+- The description smart pointer at `+0x21c` has no shown assignment to
+  `L6XTAudioControlMac`.
+- The kernel version method's other call targets were not identified, and they
+  were not recorded as a second request.
 
 The transfer must not be sent. A recovered shape is not a device reply, and it
 does not authorize a read or an update. `src/pod_usb_firmware.rs` stores the
@@ -214,18 +278,19 @@ does not give a firmware version. No driver was installed.
 - Applicable USB-firmware image: none identified in the local archive.
 - Installed USB-component version: unknown. No device reply was captured.
 - Version-query shape: the userspace service builder above is recovered and
-  was not sent. `GetDeviceDesc` returns an `L6DeviceDescription`, and that
-  object's version slot returns a cached device-control pointer. The class of
-  that cached service is still open. The Windows image was not shown to match
-  the builder.
+  was not sent. The description setter is virtual slot `+0x0c` at `0x85650`.
+  Traced description producers do not call it. `L6XTAudioControlMac` stores a
+  kernel Brandi service at cache index 0, and that control is not shown on
+  the description. The class of the PODxt Live cached service is still open.
 - `bcdDevice` 0.01: unexplained, and it was not read again.
 
 ## Future check
 
-1. Offline: resolve the actual service-class link before selecting a PODxt Live
-   request. The next gap is the device-control object stored on the
-   description and the service cached at that object's `+8`. The recorded
-   userspace builder is still a candidate. Leave it unsent, including the
+1. Offline: resolve whether the description's control is
+   `L6XTAudioControlMac` before selecting a PODxt Live request. The setter
+   slot is recovered, and the traced producers do not call it. Cache index 0
+   on that one control class stores the kernel Brandi service. The recorded
+   userspace builder is still unselected. Leave it unsent, including the
    ruled-out frame above. The missing USB-firmware image and unknown installed
    version also remain open.
 2. A live read still needs a separate explicit authorization. No reply has
