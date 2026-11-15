@@ -70,7 +70,8 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 ### Verified and passing
 
 - [x] Rust CLI and offline GUI build, including optimized release builds.
-- [x] **43 Rust tests**, Clippy with warnings denied, and formatting checks.
+- [x] Short guided-check **offline rehearsal** app: five prompts, cancellation/skip handling and protected report saving. Run `cargo run --bin variax-check -- plan`; see [usage and limits](docs/manual-check.md).
+- [x] **47 Rust tests**, Clippy with warnings denied, and formatting checks.
 - [x] Individual preset parsing/editing and protected copy saves: **6 original-Java compatibility checks**.
 - [x] L6BA/L6CO bank inspection and preset extraction: **both formats compared with original Java**.
 - [x] Offline GUI with recovered artwork, preset controls, undo/redo and guarded document operations; selected headless tests and rendering smoke checks pass.
@@ -107,6 +108,7 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 
 ### Currently unavailable or not working
 
+- [ ] Guided check does not yet read switches/knobs, record audio or measure notes/bends/tuning. Future integration is [#34](https://github.com/guirossibrum/VariaxWorkbench/issues/34); the current app rehearses prompts only.
 - [ ] Whole-generator oracle startup is incomplete: native volume/tone globals are uninitialized. Generation is blocked pending the runtime audit in #5.
 - [ ] **Live device access is intentionally disabled**, including identity/metadata reads. No runtime unlock exists.
 - [ ] Sending edited presets to the guitar, firmware flashing and factory restoration are unavailable; no live writer is implemented or authorized.

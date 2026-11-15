@@ -17,6 +17,10 @@ name = "variax-workbench-gui"
 path = "src/gui.rs"
 required-features = ["gui"]
 
+[[bin]]
+name = "variax-check"
+path = "src/check_app.rs"
+
 [features]
 default = []
 gui = ["usb", "dep:eframe", "dep:image", "dep:rfd", "dep:serde", "dep:serde_json"]

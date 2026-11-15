@@ -2,8 +2,8 @@
 
 Repository: https://github.com/guirossibrum/VariaxWorkbench. Default branch: `master`.
 
-Project: https://github.com/users/guirossibrum/projects/17. All 33 issues are on
-the private project with an explicit Order and Phase. Their 42 dependencies are
+Project: https://github.com/users/guirossibrum/projects/17. All 34 issues are on
+the private project with an explicit Order and Phase. Their 44 dependencies are
 native GitHub blocked-by relationships, not only issue-body links.
 
 Work sequentially in project Order, respecting dependencies and the authorization phase.
@@ -72,6 +72,9 @@ the current implementation remains sequential with #2 In Progress.
   Depends on #22, #16.
 - [ ] [#24: Plan staged read-only integration after explicit authorization](https://github.com/guirossibrum/VariaxWorkbench/issues/24)
   Depends on #22, #21.
+
+- [ ] [#34: Add a short guided hardware and playing check](https://github.com/guirossibrum/VariaxWorkbench/issues/34)
+  Depends on #24, #28. The [offline rehearsal app](manual-check.md) exists; control recognition and audio measurement remain pending. Target roughly five minutes, with selectors/knobs, a small note sample, bends and optional existing alternate tuning.
 
 Issue bodies contain acceptance criteria, code/document references and the
 hardware boundary. `docs/backlog.json` preserves the topic keys, dependencies
