@@ -21,7 +21,13 @@ class CoefficientOracle(NativeOracle):
     HEAP_SIZE = 0x1000000
     SHIMS = 0x1300000
 
-    def __init__(self):
+    def __init__(self, *, math_backend=None, runtime_version=None):
+        if math_backend is None and runtime_version is not None:
+            raise ValueError('a distinct runtime version requires an explicit math backend')
+        if math_backend is not None:
+            if not runtime_version or runtime_version == self.RUNTIME_VERSION:
+                raise ValueError('alternate math requires a distinct reference namespace')
+            self.RUNTIME_VERSION = runtime_version
         super().__init__()
         self.cpu.mem_map(self.HEAP, self.HEAP_SIZE)
         self.cpu.mem_map(self.SHIMS, 0x10000)
@@ -37,7 +43,7 @@ class CoefficientOracle(NativeOracle):
         self.cpu.reg_write(UC_X86_REG_FPCW, 0x37f)
         self.cpu.reg_write(UC_X86_REG_FPTAG, 0xffff)
         self.cpu.reg_write(UC_X86_REG_MXCSR, 0x1f80)
-        self.libm = ctypes.CDLL(ctypes.util.find_library('m'))
+        self.libm = math_backend if math_backend is not None else ctypes.CDLL(ctypes.util.find_library('m'))
         self._resolve_imports()
         self.cpu.hook_add(UC_HOOK_CODE, self._dispatch,
                           begin=self.SHIMS, end=self.SHIMS + 0xffff)
