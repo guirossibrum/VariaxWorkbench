@@ -64,3 +64,7 @@ Details: [preset formats](docs/preset-files.md), [body definitions](docs/body-de
 
 Pending work is tracked in [GitHub issues](https://github.com/guirossibrum/VariaxWorkbench/issues)
 and the [dependency-linked backlog](docs/github-backlog.md). The default branch is `master`.
+
+The [VariaxWorkbench project](https://github.com/users/guirossibrum/projects/17)
+tracks execution order, phase and status, with native issue dependencies. Work
+proceeds one issue at a time; hardware access stays locked.

@@ -2,6 +2,13 @@
 
 Repository: https://github.com/guirossibrum/VariaxWorkbench. Default branch: `master`.
 
+Project: https://github.com/users/guirossibrum/projects/17. All 25 issues are on
+the private project with an explicit Order and Phase. Their 24 dependencies are
+native GitHub blocked-by relationships, not only issue-body links.
+
+Work sequentially in Order, respecting dependencies and the authorization phase.
+Issue #1 is In Progress; no second implementation issue has been started.
+
 All issues remain subject to [AGENTS.md](../AGENTS.md). Live USB/MIDI access
 is locked; creating an issue does not authorize its hardware steps.
 
