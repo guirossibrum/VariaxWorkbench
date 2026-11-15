@@ -1,5 +1,6 @@
 """Evaluate a portable software-math candidate without changing product math."""
 import collections
+import argparse
 import hashlib
 import json
 import struct
@@ -14,8 +15,15 @@ VERSION='rust-software-math-audit-v2'
 
 
 def main():
-    libraries,receipt=build();backends={k:RustSoftwareMath(v) for k,v in libraries.items()}
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--widen-float',action='store_true');options=parser.parse_args()
+    version='rust-software-widened-float-audit-v1' if options.widen_float else VERSION
+    libraries,receipt=build();backends={k:RustSoftwareMath(v,widen_float=options.widen_float) for k,v in libraries.items()}
     mpfr=MPFRMath((ROOT/'.tools/math-reference/libmpfr-reference.so').resolve())
+    def check_environment():
+        env=mpfr.environment()
+        if env['host_rounding_mode']!=0 or env['host_mxcsr']&0xffc0!=0x1f80:
+            raise RuntimeError('audit requires nearest rounding with subnormal flushing disabled')
+    check_environment()
     trace=json.loads((ROOT/'analysis/extracted/math-runtime-audit-v1/observed-math-inputs.json').read_text())
     statistics=collections.defaultdict(collections.Counter);differences=[]
     for i,row in enumerate(trace):
@@ -30,11 +38,11 @@ def main():
         ulp=finite_ulp(release,reference,single)
         if ulp is not None:info['max_finite_ulp_vs_mpfr256']=max(info['max_finite_ulp_vs_mpfr256'],ulp)
         if host_changed or mpfr_changed:differences.append({**row,'rust_bits':bits(release,single),'mpfr256_bits':bits(reference,single)})
-    directory=ROOT/'analysis/extracted'/VERSION;directory.mkdir(parents=True,exist_ok=True)
+    directory=ROOT/'analysis/extracted'/version;directory.mkdir(parents=True,exist_ok=True)
     preserve(directory/'differences.json',(json.dumps(differences,indent=2)+'\n').encode())
     print('INPUTS COMPLETE',len(trace),'debug/release identical',flush=True)
     full=[]
-    try:oracle=CoefficientOracle(math_backend=backends['release'],runtime_version='initialized-'+VERSION)
+    try:oracle=CoefficientOracle(math_backend=backends['release'],runtime_version='initialized-'+version)
     except RuntimeError as error:full.append({'status':'initialization-failed','error':str(error)})
     else:
         models=oracle.load_models();baseline_dir=ROOT/'analysis/extracted/coefficient-reference'/oracle.sha256/'initialized-host-libm-v2'
@@ -53,7 +61,10 @@ def main():
     report={'scope':'Software-only Rust math comparison; no production backend adoption or cross-target parity claim',
         'build':receipt,'input_count':len(trace),'debug_release_input_results_identical':True,'functions':dict(statistics),'full_mac_generator_substitution':full,
         'limitations':['Linux x86_64 only; Windows/macOS and other architectures/compilers are untested','Candidate is not authenticated historical Mac math','Full generator substitutes math imports into original Mac code; it is not complete Rust compiler arithmetic','Canonical references and hardware locks are unchanged; no production dependency was added']}
-    preserve(ROOT/'analysis/reports'/f'{VERSION}.json',(json.dumps(report,indent=2)+'\n').encode());print('RUST SOFTWARE MATH AUDIT COMPLETE',flush=True)
+    if options.widen_float:
+        report['float_strategy']='float32 input -> software float64 math -> float32 result; possible double rounding, not guaranteed correctly rounded'
+    check_environment()
+    preserve(ROOT/'analysis/reports'/f'{version}.json',(json.dumps(report,indent=2)+'\n').encode());print('RUST SOFTWARE MATH AUDIT COMPLETE',flush=True)
 
 
 if __name__=='__main__':main()

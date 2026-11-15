@@ -103,13 +103,24 @@ canonical glibc adapter. This candidate is therefore **not adopted** as a
 compatibility replacement. Software implementation alone does not establish the
 rounding behavior the original application used.
 
+An additional experimental strategy preserves float32 inputs, evaluates those
+operations with the software float64 functions, then rounds the results to
+float32. All **203,217 observed float32 input tuples** now match MPFR-256; 94
+double-precision results still differ by one ULP (`tan`: 18, `pow`: 44, `log`: 32).
+Debug/release agree on all 206,228 inputs. All **110 packed outputs match the
+MPFR-256 and initialized Windows-math candidates**, including the one series
+case whose four coefficient words differ from glibc. This does not guarantee
+correct rounding for arbitrary float32 inputs: double rounding can still occur.
+No production backend is selected by this experiment.
+
 The helper's undefined-symbol audit rejects imports of the tested host math
 functions, square root and FMA. The Linux FFI/helper runtime still has ordinary
 OS dependencies; this is evidence about math algorithms, not an OS-independent
 executable. Compiler identity, source/license/helper hashes, dependency resolution,
 features, lockfile and import lists are preserved in build receipts. Three
-synthetic regression tests cover FFI dispatch/input width, signed zero,
-domain/infinity behavior and subnormal/boundary profile repeatability. Other
+synthetic regression tests cover both strategies' FFI dispatch/input width,
+signed zero, domain/infinity behavior and subnormal/boundary profile repeatability.
+The audit rejects non-nearest host rounding or subnormal flushing. Other
 OS/architecture/compiler combinations and complete Rust-engine substitution have
 not been tested. A future production choice needs controlled compatibility
 profiles, source/license preservation and those additional checks.
@@ -134,12 +145,18 @@ helper manifest and target directory. The prior trace and MPFR helper are needed
 
 ```sh
 .tools/python/bin/python scripts/audit_rust_math.py
+.tools/python/bin/python scripts/audit_rust_math.py --widen-float
 .tools/python/bin/python scripts/verify_rust_math_reference.py
 ```
 
 Its report is `analysis/reports/rust-software-math-audit-v2.json`. The first
 candidate report remains preserved; v2 adds verified Cargo source/feature
 resolution and maximum finite ULP measurements. Neither replaces earlier outputs.
+The wider-float report is
+`analysis/reports/rust-software-widened-float-audit-v1.json`. Its first attempt
+saved calculated outputs but failed writing the report due to a variable-name
+collision; the corrected replay completed. That failed log and those outputs
+remain preserved locally.
 
 Reports retain source/helper/library hashes, compiler commands, precision and
 CPU controls. The canonical emulated Mac uses x87 control `0x037f`, empty x87
