@@ -347,12 +347,16 @@ pub const SHAREDXT_SELECTOR: SharedxtSelectorHandler = SharedxtSelectorHandler {
 /// Where `com_line6_kusbinterface::DeviceRequest` sends the request pointer.
 /// `initWithUSBInterface` stores its `IOUSBInterface*` argument at
 /// `interface_member_offset`. `GetDevice` and the call inside `DeviceRequest`
-/// both use `provider_slot` on that pointer. Slot
-/// [`SharedxtSelectorHandler::request_forward_slot`] is then called on the
-/// returned object. `callee_archived` stays false: the signed kext imports
-/// only USB metaClass symbols, and no IOUSBFamily binary is in the local
-/// archive. `device_bytes_interpreted` stays false. Nothing here builds or
-/// submits a transfer.
+/// both use `provider_slot` on that pointer. The result of that call is in
+/// RAX. `vptr_load_va` loads its vptr into R9, and `forward_object_va` passes
+/// that object as RDI. The preserved request pointer is the next argument.
+/// `deleting_destructor_va` is the deleting-destructor entry. `object_size_va`
+/// is the size immediate inside that function, not the entry. `object_size`
+/// does not identify which object receives the forwarded slot.
+/// `size_identifies_forward_target` stays false. `callee_archived` stays
+/// false: the signed kext imports only USB metaClass symbols, and no
+/// IOUSBFamily binary is in the local archive. `device_bytes_interpreted`
+/// stays false. Nothing here builds or submits a transfer.
 pub const USB_INTERFACE_FORWARD: UsbInterfaceForward = UsbInterfaceForward {
     init_va: 0x14518,
     interface_store_va: 0x14578,
@@ -361,8 +365,12 @@ pub const USB_INTERFACE_FORWARD: UsbInterfaceForward = UsbInterfaceForward {
     get_device_tail_va: 0x1407d,
     provider_slot: 0x8a8,
     provider_call_va: 0x1419a,
+    vptr_load_va: 0x141a0,
+    forward_object_va: 0x141a3,
+    deleting_destructor_va: 0x146c2,
     object_size: 0x58,
     object_size_va: 0x146e0,
+    size_identifies_forward_target: false,
     callee_archived: false,
     device_bytes_interpreted: false,
     same_bytes_in_unsigned_image: true,
@@ -681,8 +689,13 @@ pub struct SharedxtSelectorHandler {
 
 /// Forwarding sites inside `com_line6_kusbinterface`. `interface_member_offset`
 /// is the stored `IOUSBInterface*`, distinct from the sharedxt service's
-/// kusbinterface pointer. `callee_archived` stays false. The three returned
-/// bytes are not interpreted here.
+/// kusbinterface pointer. The provider call's result is in RAX. `vptr_load_va`
+/// loads that vptr into R9, and `forward_object_va` passes that object as RDI.
+/// `deleting_destructor_va` is the deleting-destructor entry. `object_size_va`
+/// is the size immediate inside it. `size_identifies_forward_target` stays
+/// false: the instance size does not choose the object that receives the slot.
+/// `callee_archived` stays false. The three returned bytes are not interpreted
+/// here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UsbInterfaceForward {
     pub init_va: u32,
@@ -692,8 +705,12 @@ pub struct UsbInterfaceForward {
     pub get_device_tail_va: u32,
     pub provider_slot: u16,
     pub provider_call_va: u32,
+    pub vptr_load_va: u32,
+    pub forward_object_va: u32,
+    pub deleting_destructor_va: u32,
     pub object_size: u16,
     pub object_size_va: u32,
+    pub size_identifies_forward_target: bool,
     pub callee_archived: bool,
     pub device_bytes_interpreted: bool,
     pub same_bytes_in_unsigned_image: bool,
@@ -1096,10 +1113,16 @@ pub fn validate_record() -> Result<(), String> {
         || USB_INTERFACE_FORWARD.provider_call_va != 0x1419a
         || USB_INTERFACE_FORWARD.provider_call_va <= SHAREDXT_SELECTOR.device_request_va
         || USB_INTERFACE_FORWARD.provider_call_va >= SHAREDXT_SELECTOR.request_forward_call_va
+        || USB_INTERFACE_FORWARD.vptr_load_va != 0x141a0
+        || USB_INTERFACE_FORWARD.forward_object_va != 0x141a3
+        || USB_INTERFACE_FORWARD.vptr_load_va <= USB_INTERFACE_FORWARD.provider_call_va
+        || USB_INTERFACE_FORWARD.forward_object_va <= USB_INTERFACE_FORWARD.vptr_load_va
+        || USB_INTERFACE_FORWARD.forward_object_va >= SHAREDXT_SELECTOR.request_pointer_move_va
+        || USB_INTERFACE_FORWARD.deleting_destructor_va != 0x146c2
         || USB_INTERFACE_FORWARD.object_size != 0x58
         || USB_INTERFACE_FORWARD.object_size_va != 0x146e0
-        || u32::from(USB_INTERFACE_FORWARD.object_size)
-            >= u32::from(SHAREDXT_SELECTOR.request_forward_slot)
+        || USB_INTERFACE_FORWARD.object_size_va <= USB_INTERFACE_FORWARD.deleting_destructor_va
+        || USB_INTERFACE_FORWARD.size_identifies_forward_target
         || SHAREDXT_SELECTOR.identifies_firmware_image
     {
         return Err(

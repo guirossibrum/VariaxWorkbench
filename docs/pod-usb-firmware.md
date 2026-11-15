@@ -382,10 +382,12 @@ argument, and at `0x141b2` it calls through slot `+0x978`. The wrapper
 forwards that pointer. `initWithUSBInterface` at `0x14518` stores its
 `IOUSBInterface*` argument at `this+0x10` (`0x14578`). `GetDevice` at
 `0x14068` tail-calls slot `+0x8a8` on that pointer (`0x1407d`).
-`DeviceRequest` makes the same call at `0x1419a` and then uses slot
-`+0x978` on the object that call returns. The destructor at `0x146e0`
-sizes this kusbinterface object at `0x58`, so slot `+0x978` is on the
-returned object. The signed kext imports `IOUSBDevice`, `IOUSBInterface`,
+`DeviceRequest` makes the same call at `0x1419a`. The result is in RAX.
+`0x141a0` loads that object's vptr into R9. `0x141a3` passes that object
+as RDI. `0x141a6` passes the preserved request pointer. `0x141b2` calls
+slot `+0x978`. The deleting destructor starts at `0x146c2`. The immediate
+`0x58` at `0x146e0` is inside that function, and it does not identify which
+object receives the slot. The signed kext imports `IOUSBDevice`, `IOUSBInterface`,
 and `IOUSBControllerV2` metaClass symbols. It does not import a
 `DeviceRequest` symbol. No IOUSBFamily binary is in the local archive, so
 the callee body is not available here. The three returned bytes stay
