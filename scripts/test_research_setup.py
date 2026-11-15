@@ -42,7 +42,12 @@ class SetupGuards(unittest.TestCase):
             root=Path(d)
             for name in ['../outside','/outside','C:/outside','a\\outside']:
                 data=io.BytesIO()
-                with zipfile.ZipFile(data,'w') as z:z.writestr(name,b'data')
+                # ZipInfo's constructor normalizes OS separators. Set raw names
+                # afterward so the malicious corpus is identical on Windows.
+                member=zipfile.ZipInfo('placeholder');member.filename=name;member.orig_filename=name
+                with zipfile.ZipFile(data,'w') as z:z.writestr(member,b'data')
+                data.seek(0)
+                with zipfile.ZipFile(data) as z:self.assertEqual(z.infolist()[0].orig_filename,name)
                 data.seek(0)
                 with self.assertRaises(ValueError):setup.unzip(data,root)
             data=io.BytesIO();member=zipfile.ZipInfo('link');member.create_system=3;member.external_attr=0o120777<<16

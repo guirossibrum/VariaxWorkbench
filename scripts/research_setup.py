@@ -91,7 +91,9 @@ def unzip(source, output):
         if len(archive.infolist()) > 100_000 or sum(i.file_size for i in archive.infolist()) > LIMIT:
             raise ValueError('ZIP exceeds research extraction limits')
         for member in archive.infolist():
-            path = destination(output, member.filename)
+            # ZipInfo.filename may normalize backslashes on Windows and remove
+            # NUL suffixes. Validate the original archive name on every host.
+            path = destination(output, member.orig_filename)
             if stat.S_ISLNK(member.external_attr >> 16):
                 raise ValueError('ZIP symbolic links are not accepted')
             if member.is_dir():
