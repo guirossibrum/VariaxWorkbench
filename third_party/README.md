@@ -21,14 +21,19 @@ continued upstream maintenance or OS compatibility. See `docs/math-profiles.md`.
 
 ## Linux Variax prefix reference bytes
 
-`src/linux_variax_prefix.rs` embeds two compiled excerpts of Linux
-`line6_variax_process_message`, virtual addresses `[0x160, 0x240)`. Upstream
-identifies that source as `SPDX-License-Identifier: GPL-2.0-only`, Copyright
-(C) 2004-2010 Markus Grabner. The pinned file is `sound/usb/line6/variax.c` at
-commit `497791a0a96b866d90add64041c47acdff49cae6`. The license text is
+`src/linux_variax_prefix.rs` embeds compiled excerpts of Linux
+`line6_variax_process_message` at `[0x160, 0x240)`, `variax_startup` at
+`[0x250, 0x309)`, and `line6_variax_process_message.cold` at `[0x309, 0x319)`.
+Upstream identifies that source as `SPDX-License-Identifier: GPL-2.0-only`,
+Copyright (C) 2004-2010 Markus Grabner. The pinned file is
+`sound/usb/line6/variax.c` at commit
+`497791a0a96b866d90add64041c47acdff49cae6`. The license text is
 `notices/GPL-2.0-only.txt`. Provenance, the compiler, and the detached build
-recipe are in `notices/linux-variax-prefix-NOTICE.txt`.
+recipe are in `notices/linux-variax-prefix-NOTICE.txt`. The model-byte patch
+does not change the startup or cold windows, so both detached objects contain
+those bytes.
 
 These bytes are test reference data. They are not a Cargo dependency and they
 are not linked into the application. Message buffers passed to the interpreter
-are separate synthetic inputs.
+are separate synthetic inputs. The activate buffer is the committed
+`VARIAX_ACTIVATE` constant.

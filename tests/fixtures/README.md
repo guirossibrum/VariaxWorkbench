@@ -4,9 +4,10 @@ These fixtures contain synthetic inputs and reference outputs produced from thos
 synthetic inputs. They contain no downloaded firmware, vendor model assets,
 guitar captures or factory presets. They also do not contain the Linux
 `line6_variax_process_message` reference bytes. Those bytes are compiled
-GPL-2.0-only kernel code at `[0x160, 0x240)` in `src/linux_variax_prefix.rs`,
-with the notice under `third_party/`. The prefix test feeds them synthetic
-message buffers.
+GPL-2.0-only kernel code at `[0x160, 0x240)`, `[0x250, 0x309)`, and
+`[0x309, 0x319)` in `src/linux_variax_prefix.rs`, with the notice under
+`third_party/`. The prefix test feeds them synthetic message buffers. The
+activate buffer is the committed `VARIAX_ACTIVATE` constant.
 
 - `editor-preset.vwm`: synthetic minimal Workbench-format preset named Synthetic.
 - `synthetic-l6ff-python.bin`: 390-byte synthetic FORM/L6FF container. Its image is `bytes(range(256))` repeated four times, not a product firmware file. The Python inspector rejects all 390 prefixes and six damaged fields of this layout.

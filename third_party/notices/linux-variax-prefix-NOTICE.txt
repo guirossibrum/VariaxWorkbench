@@ -1,16 +1,26 @@
 Linux Variax prefix reference bytes
 ====================================
 
-This notice covers the two 224-byte instruction arrays in
-src/linux_variax_prefix.rs and nothing else in VariaxWorkbench. Those arrays
-are test reference data. They are not a runtime dependency. The application
-does not link them. The Rust module that holds them is compiled only for tests.
+This notice covers the instruction arrays in src/linux_variax_prefix.rs and
+nothing else in VariaxWorkbench. Those arrays are test reference data. They
+are not a runtime dependency. The application does not link them. The Rust
+module that holds them is compiled only for tests.
 
-The arrays are compiled excerpts of line6_variax_process_message from Linux
-sound/usb/line6/variax.c. Each excerpt is the half-open virtual-address window
-[0x160, 0x240). They are open-source kernel object code. The message buffers
-fed to the interpreter are separate synthetic inputs authored in this
-repository.
+The arrays are compiled excerpts of Linux sound/usb/line6/variax.c. They are
+open-source kernel object code. The message buffers and the activate-template
+copy fed to the interpreter are separate inputs. The activate template is the
+already committed VARIAX_ACTIVATE constant. The instruction arrays are not
+synthetic fixtures.
+
+Windows, each half-open:
+
+- line6_variax_process_message, unpatched and patched, [0x160, 0x240),
+  224 bytes each.
+- variax_startup, [0x250, 0x309), 185 bytes. The model-byte patch does not
+  change this function, so both detached objects contain the same bytes.
+- line6_variax_process_message.cold, [0x309, 0x319), 16 bytes. Both detached
+  objects contain the same bytes. The 16-byte nop prefix at [0x240, 0x250)
+  is not part of either function.
 
 Upstream
 --------
@@ -75,5 +85,16 @@ Patched .text SHA-256:
 Excerpt SHA-256, window [0x160, 0x240):
 unpatched 68dea14f9600a5c5cb820c35f2a9ab3a65e71f112b0dbc5017d8e0146ad3d7a1
 patched   e9ef1f53b7e6ce3c52ac39581dd4fe1bdccd634d56b4358c505916b301cd1a6b
+
+Excerpt SHA-256, window [0x250, 0x309), both objects:
+82e84447105d6a8db79880fa7f340b969f7efa8ff14713a419ddaf3238a65db2
+
+Excerpt SHA-256, window [0x309, 0x319), both objects:
+e2134e1ab91cd5c4c2735fb7f5030aa3b8b351bfe574ff083a671501ac3c6401
+
+The cold body's `movq` immediate is the unresolved relocation
+R_X86_64_32S `.rodata+0x158`. The source literal at that site is
+"VARIAX reset\n". This repository does not vendor that string. The harness
+keeps the object immediate, which is zero, and does not load `.rodata`.
 
 The generated .ko files stay outside this repository.
