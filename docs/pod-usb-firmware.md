@@ -140,13 +140,15 @@ object (`0x145356`) calls slot `+0x14` of the description and keeps the
 returned pointer at Brandi `+0x10` when the out-status is non-negative. Slot
 `0x28` tail-calls slot `+0x14` of the returned pointer.
 
-## Service class still open
+## Service returned on the version path
 
 The returned pointer is the service object whose version method runs. The
 userspace constructor that installs vptr `0x1c1878` has no PC-relative call in
 this image; its address appears in a data table. The kernel constructor at
-`0x8adc0` installs vptr `0x1c1838`. The version-path call chain below does not
-call either constructor.
+`0x8adc0` installs vptr `0x1c1838`. On a cache miss, the XT control's
+`AcquireService(0)` calls that kernel constructor. The userspace constructor
+stays off this path. The section below records the hit, the miss, and the
+pointer the base call returns.
 
 ## Description object and cached service
 
@@ -170,10 +172,13 @@ pointer and status `0x80007004`. Otherwise it uses the smart pointer at
 `+0x22c`, copying `+0x21c` into `+0x22c` when `+0x22c` is null, and calls slot
 `+0x0c` of that device-control object with the same argument `0`.
 
-Slot `+0x0c` of `L6DeviceControlBase` and of `L6DeviceControlBaseMac` is
-`0x85150`. For index `0` it returns the pointer already stored at the control
-object `+8`. It does not construct a service. `L6BrandiControlMac` overrides
-that slot at `0x9b770`; the override's create path is index `1`, and index
+Slot `+0x0c` of `L6DeviceControlBase` is `0x85150`. The body matches Line 6
+License Manager `L6DeviceControlBase::AcquireService` at `0x969c0`. It calls
+slot `+0x08`. When that call's low bit is set and the index is below 12, it
+returns the pointer at `this+8+index*4` and increments the refcount at
+`this+0x38+index*4`. A null pointer returns null and status `0x80007301`.
+The function does not construct a service. `L6BrandiControlMac` overrides
+the slot at `0x9b770`; that override's create path is index `1`, and index
 `0` falls through to `0x85150`.
 
 ## Description setter slot
@@ -210,10 +215,10 @@ When the index is below 12 and the refcount at that index is zero, a jump
 table handles indexes 0 through 11. Index 0 allocates `0x10` bytes, calls
 thunk `0x8ad80`, and stores the allocated pointer at cache index 0. The thunk
 calls `0x8adc0`, which installs kernel vptr `0x1c1838`. The only PC-relative
-call found for `0x8ad80` is this index-0 arm. Stub calls were not resolved.
-This producer is useful evidence. The PID `0x4650` path constructs this
-control and passes it to the description setter. The kernel object stored
-at cache index 0 is still not shown on that path.
+call found for `0x8ad80` is this index-0 arm. The allocation uses the
+`__Znwm` stub at `0x169162`. The PID `0x4650` setter path constructs this
+control and does not itself run the fill. The return of that cache slot
+is [AcquireService index 0](#acquireservice-index-0-and-kernel-getversion).
 
 Two PIC computations store vptr `0x1c18b8`. The PID `0x4650` constructor
 body at `0x8c740` pops `0x8c74c` and adds `0x13516c`, and the store is at
@@ -225,6 +230,64 @@ The kernel version slot at `0x8b810` does not embed the userspace builder
 fields `0xC0`, `0x67`, and `0x0011`. `0x8c040` stays the userspace builder.
 It is not the closed PODxt Live query, and the five recorded fields are not
 an approved live read.
+
+## AcquireService index 0 and kernel GetVersion
+
+The reviewed PID `0x4650` branch treats the constructed `L6XTAudioControlMac`
+as the description control on that static success path. This is not an
+observed hardware state.
+
+Monkey `0x8dd20` matches Line 6 License Manager
+`L6XTAudioControlMac::AcquireService(unsigned long, long*)` at `0x9f590`.
+The License addresses name the bodies. They are not Monkey addresses.
+
+The method locks the word at `this+4`. An index of 12 or more skips the fill.
+A nonzero refcount at `this+0x38+index*4` is the hit, at `0x8e67b`, and the
+fill is skipped. A zero refcount is the miss. The miss calls
+`FindDriverService` at `0x8e720`. The value it returns is overwritten before
+the jump table. This pass did not follow that callee's stores.
+
+Index 0 of the table is `0x8ddd0`. The arm clears `this+8` and calls
+`FindServiceNamed` at `0x8e980` with `com_line6_driver_sharedxt`. A non-null
+result calls the `__Znwm` stub at `0x169162` with size `0x10`, then thunk
+`0x8ad80`. The allocated pointer is stored at `this+8`. The named service is
+released through the `_IOObjectRelease` stub at `0x167a3a`. A null name leaves
+the slot null. This arm stores the kernel object. It does not return the
+pointer, and it does not call `GetVersion`.
+
+The hit and the miss both continue at `0x8e680`, which calls `0x85150`.
+That is the base `AcquireService` body. It calls slot `+0x08`. On this
+control that slot is `0x8cf10`. Index 0 of its table, at `0x8cf5e`, sets the
+low bit. That arm has no product-id compare. When the bit is set and the
+cached pointer is non-null, `0x85150` increments the refcount and returns
+`this+8+index*4`. A null slot returns null and status `0x80007301`.
+Description `AcquireService` returns that pointer. Brandi slot `+0x14` keeps
+it at Brandi `+0x10` when the status is non-negative. Slot `0x28` then calls
+slot `+0x14` of the kept pointer.
+
+A miss that stored the kernel object therefore hands that object to the
+version call. Its vptr is `0x1c1838`. A hit returns the pointer already in
+the slot and does not run the constructor again. The userspace vptr
+`0x1c1878` is the other Brandi class. The index-0 arm does not construct it.
+
+Kernel slot `+0x14` at `0x8b810` calls `0x8b750`. That body matches
+`L6KernelBrandiServiceMac::GetVersionAndStatus`. The License copy is
+`0x9d080` for `GetVersion` and `0x9cfc0` for `GetVersionAndStatus`. `0x8b750`
+calls the local semaphore helper at `0x8b360` with timeout `0x5dc`. The
+non-negative arm of that helper uses the `_sem_trywait` stub at `0x169366`,
+the `___error` stub at `0x1691bc`, and the `_usleep$UNIX2003` stub at
+`0x16941a`. After a clear failure bit, `0x8b750` calls `0x88350`, which
+matches `L6KIOBrandi::GetVersionStatus`. `0x88350` calls the
+`_IOConnectCallScalarMethod` stub at `0x1679b0` with selector `6`, no scalar
+inputs, and an output count initialized to `2`. A zero return stores a
+uint16 from the first output scalar and a byte from the second. `0x8b750`
+then calls the `_sem_post` stub at `0x169360`. Each of those stubs is a
+six-byte indirect jump named by the Mach-O indirect-symbol table. A null
+connection word at the kernel service returns status `0x80007000`.
+
+The kernel slot does not contain `0xC0`, `0x67`, or `0x0011`. Those fields
+remain on userspace builder `0x8c040`. They are not an approved live read.
+No device reply was captured.
 
 ## Images searched for the setter and the cache fill
 
@@ -290,9 +353,8 @@ encoding and allocates `0x418` bytes for `L6XTAudioControlMac::C1` at
 clear, `GetDescription` at `0xa7950` runs and the virtual call at `0xa7156`
 loads description slot `+0x0c`. The setter at `0x96ee0` adds `0x21c` and
 assigns the smart pointer. License Manager names XT slot `+0x18` `Init` and
-XT slot `+0x0c` `AcquireService`. Those names belong to the License Manager
-vtable. Monkey slot `+0x0c` of this control remains the cache filler
-`0x8dd20`.
+XT slot `+0x0c` `AcquireService` at `0x9f590`. That body matches Monkey
+`0x8dd20`. The License address is not a Monkey address.
 
 The L6MIDIJava i386 slice repeats the named shape. `DriverAdded` at
 `0x2af7a` compares PID `0x4650` at `0x2b0e6` with `cmpl` / `je`, allocates
@@ -302,20 +364,23 @@ non-negative result from control slot `+0x18`, it calls `GetDescription` at
 at `0x1d8da` has no direct caller and no indirect-symbol entry. These
 addresses belong to the L6MIDIJava slice.
 
-The index-0 kernel fill remains useful evidence. This path does not show
-that fill running, and the class stored at cache index 0 remains
-unidentified. The five recorded userspace fields stay unapproved for any
-live read. The transfer must not be sent.
+The setter path still does not execute the index-0 fill. The fill and the
+returned pointer are recorded in
+[AcquireService index 0 and kernel GetVersion](#acquireservice-index-0-and-kernel-getversion).
+The five recorded userspace fields stay unapproved for any live read. The
+transfer must not be sent.
 
 Edges that remain:
 
-- The index-0 kernel service class is still unidentified.
 - Helper `0x95e10` callers `0x95065` and `0x967e3` were not traced.
 - Symbolicated description consumers `L6BrandiHW`, `CreateUSBMonkeyDevices`,
   `L6MnkyDevice`, and `L6MIDIHW` were located and were not disassembled for
   a setter call in this pass.
-- The kernel version method's other call targets were not identified, and
-  they were not recorded as a second request.
+- `FindDriverService` at `0x8e720` runs on a cache miss. Its return value is
+  overwritten before the jump table. This pass did not follow that callee's
+  stores.
+- A cache hit returns the resident pointer and does not identify a class
+  again. A null `FindServiceNamed` result leaves the slot null.
 - Missing class-name strings remain a search observation. That observation
   leaves a stripped binary or a different-ABI implementation possible.
 
@@ -355,26 +420,28 @@ does not give a firmware version. No driver was installed.
   was not sent. USB PID `0x4650` constructs an `L6XTAudioControlMac` and,
   when control slot `+0x18` returns without the failure bit, virtually calls
   description slot `+0x0c` at `0x85650` with that control. No symbol stub
-  binds the setter. The index-0 kernel fill is not shown on this path, and
-  the class stored there is still open.
+  binds the setter. A later `AcquireService(0)` miss stores an
+  `L6KernelBrandiServiceMac`, and the base acquire call returns that cache
+  slot. Kernel `GetVersion` calls `IOConnectCallScalarMethod` selector `6`.
+  That is a static branch. The five userspace fields stay unapproved.
 - `bcdDevice` 0.01: unexplained, and it was not read again.
 
 ## Future check
 
-1. Offline: the stub search is complete for the setter and the description
-   and XT-audio constructors. No indirect-symbol or lazy stub binds the
-   setter. USB PID `0x4650` passes an `L6XTAudioControlMac` to description
-   slot `+0x0c` when control slot `+0x18` returns without the failure bit.
-   The remaining offline question is the class stored at that control's
-   cache index 0. That fill is not shown on the PID path, and the recorded
-   userspace builder stays unselected. Leave the transfer unsent, including
-   the ruled-out frame above. The missing USB-firmware image and unknown
-   installed version also remain open.
+1. Offline: the setter has no indirect-symbol or lazy stub. USB PID `0x4650`
+   passes an `L6XTAudioControlMac` to description slot `+0x0c` when control
+   slot `+0x18` returns without the failure bit. `AcquireService(0)` on that
+   control stores the kernel service on a cache miss, and the base call
+   returns that slot. Kernel `GetVersion` reaches `IOConnectCallScalarMethod`
+   selector `6` through the stubs named above. The userspace builder stays
+   unselected. Leave the transfer unsent, including the ruled-out frame
+   above. The missing USB-firmware image and unknown installed version remain
+   open. A cache hit and a null service name are also still open.
 2. A live read still needs a separate explicit authorization. No reply has
    been captured. The five recorded fields are not an approved live read.
-3. After the service class is resolved, a separate authorization is still
-   required before any read. Do not update, reset, switch banks, or install a
-   driver.
+3. The kernel version slot is identified on the static branch. A separate
+   authorization is still required before any read. Do not update, reset,
+   switch banks, or install a driver.
 
 Until that authorization exists, there is no justified live query. A version
 learned later would still not authorize an update.
@@ -382,15 +449,16 @@ learned later would still not authorize an update.
 ## Decisions left for review
 
 - Issue #20 stays open. This document is a partial milestone.
-- The combined acceptance line stays open because the artifact, the installed
-  version, and the PODxt Live service class are still unknown.
+- The combined acceptance line stays open because the USB-firmware artifact
+  and the installed version are still unknown.
 - `bcdDevice` 0.01 stays an unexplained descriptor field.
 - The recorded transfer stays unsent. Its five fields are not an approved
   live read. The crate keeps a portable data record and does not take IOKit,
   Monkey, or a driver as a dependency.
 - No USB-firmware image is claimed to be inside the main `.xtf` container.
-- The PID `0x4650` virtual call runs when control slot `+0x18` succeeds.
-  Whether that is enough to treat `L6XTAudioControlMac` as the description
-  control for the next offline pass is left open. The index-0 kernel service
-  class is still unidentified, and the five userspace fields stay unapproved.
-- This pass found that association, so reserved issue #21 was not started.
+- The reviewed decision stands: on the static success branch,
+  `L6XTAudioControlMac` is the description control. That is not an observed
+  hardware state. A successful `AcquireService(0)` miss returns the kernel
+  service, and kernel `GetVersion` is the slot the version call uses. The
+  five userspace fields stay unapproved.
+- This pass found that return path, so reserved issue #21 was not started.
