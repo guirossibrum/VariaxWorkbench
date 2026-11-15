@@ -72,7 +72,7 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 
 - [x] Rust CLI and offline GUI build, including optimized release builds.
 - [x] Short guided-check **offline rehearsal** app: five prompts, cancellation/skip handling and protected report saving. Run `cargo run --bin variax-check -- plan`; see [usage and limits](docs/manual-check.md).
-- [x] **106 Rust tests**, Clippy with warnings denied, and formatting checks.
+- [x] **108 Rust tests**, Clippy with warnings denied, and formatting checks.
 - [x] Individual preset parsing/editing and protected copy saves: **6 original-Java compatibility checks**.
 - [x] L6BA/L6CO bank inspection and preset extraction: **both formats compared with original Java**.
 - [x] Offline GUI with recovered artwork, preset controls, undo/redo and guarded document operations; selected headless tests and rendering smoke checks pass.
@@ -100,7 +100,8 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 - [ ] Reproducible fresh-clone tool/artifact setup and Linux packaging — [#10](https://github.com/guirossibrum/VariaxWorkbench/issues/10), [#11](https://github.com/guirossibrum/VariaxWorkbench/issues/11).
 - [ ] Firmware architecture/region mapping, factory/calibration extraction and trustworthy factory comparison — [#13](https://github.com/guirossibrum/VariaxWorkbench/issues/13)–[#15](https://github.com/guirossibrum/VariaxWorkbench/issues/15).
 - [ ] Static recovery/update reconstruction and virtual device/update simulation — [#16](https://github.com/guirossibrum/VariaxWorkbench/issues/16), [#18](https://github.com/guirossibrum/VariaxWorkbench/issues/18). Rust container inspection is [#17](https://github.com/guirossibrum/VariaxWorkbench/issues/17).
-- [ ] Firmware-improvement feasibility, separate POD USB-firmware verification and Linux bridge investigation — [#19](https://github.com/guirossibrum/VariaxWorkbench/issues/19)–[#21](https://github.com/guirossibrum/VariaxWorkbench/issues/21).
+- [ ] PODxt Live USB-component artifact, installed version, and version-query protocol remain unmet. The partial offline record is [PODxt Live USB firmware](docs/pod-usb-firmware.md). The installed USB version is unknown — [#20](https://github.com/guirossibrum/VariaxWorkbench/issues/20).
+- [ ] Firmware-improvement feasibility and the Linux Variax bridge/identity investigation — [#19](https://github.com/guirossibrum/VariaxWorkbench/issues/19), [#21](https://github.com/guirossibrum/VariaxWorkbench/issues/21).
 - [ ] Late-stage synthetic test expansion to **at least 5x distinct samples**, including body-dependent sustain/note decay, continuous string bends/vibrato, bends during decay and alternate/custom tuning in combination — [#33](https://github.com/guirossibrum/VariaxWorkbench/issues/33). Audio behavior stays unverified without a suitable independent DSP/audio reference.
 - [ ] Readiness review, comprehensive backups and any future authorized hardware integration/write design — [#22](https://github.com/guirossibrum/VariaxWorkbench/issues/22)–[#25](https://github.com/guirossibrum/VariaxWorkbench/issues/25).
 
