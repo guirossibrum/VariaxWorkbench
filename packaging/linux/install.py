@@ -156,6 +156,7 @@ def install(package, prefix):
         for path, info, expected in reversed(created):
             if (not path.is_symlink() and path.is_file()
                     and (path.stat().st_dev, path.stat().st_ino) == (info.st_dev, info.st_ino)
+                    and (path.stat().st_mode & 0o777) == (info.st_mode & 0o777)
                     and digest(path) == expected):
                 path.unlink()
         for directory in sorted(made_dirs, key=lambda p: len(p.parts), reverse=True):

@@ -77,18 +77,24 @@ class PackageGuards(unittest.TestCase):
             self.assertTrue((prefix/install.RECEIPT).exists());self.assertEqual(changed.read_bytes(),b'owner edit')
 
     def test_late_collision_rolls_back_only_the_files_created_by_this_install(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root=Path(temporary);payload=root/'package';package(payload);prefix=root/'prefix'
-            original=install.create_new;calls=[]
-            def collide(path,data,mode):
-                calls.append(path)
-                if len(calls)==2:
-                    path.write_bytes(b'competing owner');raise FileExistsError('synthetic late collision')
-                return original(path,data,mode)
-            with patch.object(install,'create_new',side_effect=collide):
-                with self.assertRaises(FileExistsError):install.install(payload,prefix)
-            self.assertFalse(calls[0].exists());self.assertEqual(calls[1].read_bytes(),b'competing owner')
-            self.assertFalse((prefix/install.RECEIPT).exists())
+        for alteration in ['none', 'bytes', 'mode']:
+            with self.subTest(alteration=alteration), tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary);payload=root/'package';package(payload);prefix=root/'prefix'
+                original=install.create_new;calls=[]
+                def collide(path,data,mode):
+                    calls.append(path)
+                    if len(calls)==2:
+                        if alteration=='bytes':calls[0].write_bytes(b'owner edit')
+                        if alteration=='mode':calls[0].chmod(0o600)
+                        path.write_bytes(b'competing owner');raise FileExistsError('synthetic late collision')
+                    return original(path,data,mode)
+                with patch.object(install,'create_new',side_effect=collide):
+                    with self.assertRaises(FileExistsError):install.install(payload,prefix)
+                self.assertEqual(calls[0].exists(),alteration!='none')
+                if alteration=='bytes':self.assertEqual(calls[0].read_bytes(),b'owner edit')
+                if alteration=='mode':self.assertEqual(calls[0].stat().st_mode & 0o777,0o600)
+                self.assertEqual(calls[1].read_bytes(),b'competing owner')
+                self.assertFalse((prefix/install.RECEIPT).exists())
 
     def test_symlink_redirect_is_rejected_without_touching_the_target(self):
         with tempfile.TemporaryDirectory() as temporary:
