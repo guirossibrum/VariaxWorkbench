@@ -94,13 +94,23 @@ The first cross-target run passed Linux but found a Windows debug CLI stack
 overflow and ARM NaN-sign differences in two exact-value tests. The CLI now runs
 its command on an explicit 8 MiB worker stack, and the software profile defines
 computed NaN bits as described above. Two regression tests cover finite/NaN
-normalization and verbatim sole-pickup copies. The fixes are awaiting CI replay.
+normalization and verbatim sole-pickup copies. The corrected replay passes on all three platforms.
 
-Evidence above is local Linux x86_64 evidence. The new `Offline core` workflow
-checks the software profile's synthetic-only core/file tests in debug and release
-on Ubuntu, Windows and macOS runners with a pinned Rust compiler. Cross-target
-results are pending until that workflow actually completes. It does not compile
-USB/GUI features, obtain vendor artifacts, or contact a device.
+The device-free core workflow passed on all three targets with Rust 1.99.1:
+
+| Runner | Rust target | Debug tests | Release tests | Clippy |
+| --- | --- | ---: | ---: | --- |
+| Ubuntu 24.04 | `x86_64-unknown-linux-gnu` | 105 | 105 | pass |
+| Windows 2025 | `x86_64-pc-windows-msvc` | 105 | 105 | pass |
+| macOS 15 | `aarch64-apple-darwin` | 105 | 105 | pass |
+
+[CI run 43753969448](https://github.com/guirossibrum/VariaxWorkbench/actions/runs/43753969448)
+tests the NaN/stack fix at `6da3e45`; the initial failed run
+[43752773871](https://github.com/guirossibrum/VariaxWorkbench/actions/runs/43752773871)
+is retained. This scope excludes GUI/USB features and proprietary resources.
+It obtains no vendor artifact and contacts no device. Full GUI/platform
+packaging, other targets/compilers, broader parameter domains and real audio
+remain separate work.
 
 ## Reproduction and remaining limits
 
