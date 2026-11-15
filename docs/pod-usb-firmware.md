@@ -2,8 +2,9 @@
 
 Partial research milestone for [#20](https://github.com/guirossibrum/VariaxWorkbench/issues/20).
 The installed USB-component version is unknown. No USB-firmware image was found.
-The version-query request bytes are still unrecovered. No device was opened, no
-version query was sent, and no update was run.
+The version-query shape is a static finding from macOS Monkey 1.78: a USB vendor
+IN control transfer. That transfer was not sent. No device was opened, and no
+update was run.
 
 The main flash revision and the USB firmware component are different things.
 
@@ -67,9 +68,50 @@ a 16-bit value from virtual slot `0x28` on the session's driver object and
 formats that word into the cache. On failure it logs "Failed to get firmware
 version."
 
-The body of virtual slot `0x28` was not located in this executable. The bytes
-of the version query are therefore still unknown. No live read is justified
-until those bytes have been recovered and reviewed.
+## Recovered request shape
+
+Interface type `0x100` on `L6USBDevice_DevMgr` constructs `L6BrandiImpl_DevMgr`.
+For USB vendor `0x0e41` and USB product `0x4650`, the static
+`IsInterfaceSupported` compare at `0x1482aa` reaches the return-true path.
+Virtual slot `0x28` of `L6BrandiImpl_DevMgr` is `0x145466`. That method holds
+no message bytes. It tail-calls slot `+0x14` of the service pointer stored on
+the Brandi object.
+
+`L6BrandiService::GetVersion` at `0x9bcd0` returns `0x80000005` and builds no
+request. The userspace override is `L6BrandiServiceMac` slot `+0x14` at
+`0x8c150`. When the product word read there is `0x534D`, that function takes
+another branch. PODxt Live USB product `0x4650` takes `0x8c040` instead.
+
+`0x8c040` fills one control transfer and calls function offset `0x68` on the
+device interface stored in the service. That offset matches `DeviceRequest` on
+the public `IOUSBDeviceStruct182` layout, which submits on the default control
+pipe. This record does not link IOKit, Monkey, or a driver. The fields are:
+
+| Field | Value |
+| --- | --- |
+| bmRequestType | `0xC0` (device-to-host, vendor, device) |
+| bRequest | `0x67` |
+| wValue | `0x0011` |
+| wIndex | `0` |
+| wLength | `3` |
+
+The builder leaves the transfer unissued when a readiness flag at the service
+is clear or the interface pointer is null. After the call, the first two bytes
+of the three-byte buffer become a little-endian word, and the third byte is
+stored separately. The formatter turns that word into the "USB Firmware
+Version:" string. A display rewrite for some product ids can run after that
+word returns; the rewrite is display post-processing. No device returned a
+buffer, so the word is not an installed version, not placeholder `0.00`, and
+not `bcdDevice` 0.01.
+
+The same image contains a kernel Brandi class whose immediates differ. That
+class is a separate implementation. A byte scan of the Windows Monkey
+executable did not establish this instruction sequence. The finding is the
+macOS Monkey 1.78 image only.
+
+The transfer must not be sent. A recovered shape is not a device reply, and it
+does not authorize a read or an update. `src/pod_usb_firmware.rs` stores the
+fields as plain data and exposes no submit function.
 
 ## Candidate that does not fill the version field
 
@@ -98,27 +140,30 @@ does not give a firmware version. No driver was installed.
 ## Gaps
 
 - Applicable USB-firmware image: none identified in the local archive.
-- Installed USB-component version: unknown.
-- Version-query request and reply layout: unrecovered. The remaining offline
-  target is the driver method at virtual slot `0x28`.
+- Installed USB-component version: unknown. No device reply was captured.
+- Version-query shape: recovered from macOS Monkey 1.78 as the control transfer
+  above. It was not sent. The Windows image was not shown to match it.
 - `bcdDevice` 0.01: unexplained, and it was not read again.
 
 ## Future check
 
-1. Offline: recover the driver method at virtual slot `0x28` and write down the
-   request bytes. Do not send any candidate while doing that, including the
-   ruled-out frame above.
-2. Review those bytes and the expected reply in the offline ledger. A live read
-   still needs a separate explicit authorization.
+1. Offline: the request shape is recorded. Leave it unsent, including the
+   ruled-out frame above. The open offline gap is the missing USB-firmware
+   image and the unknown installed version.
+2. A live read still needs a separate explicit authorization. No reply has
+   been captured.
 3. Only after that authorization, send the reviewed read once. Do not update,
    reset, switch banks, or install a driver.
 
-Until step 1 exists, there is no justified live query. A version learned later
-would still not authorize an update.
+Until that authorization exists, there is no justified live query. A version
+learned later would still not authorize an update.
 
 ## Decisions left for review
 
 - Issue #20 stays open. This document is a partial milestone.
+- The combined acceptance line stays open because the artifact and the
+  applicable installed version are still unknown.
 - `bcdDevice` 0.01 stays an unexplained descriptor field.
-- The next offline step is the unrecovered virtual method, not a device read.
+- The recorded transfer stays unsent. The crate keeps a portable data record
+  and does not take IOKit, Monkey, or a driver as a dependency.
 - No USB-firmware image is claimed to be inside the main `.xtf` container.
