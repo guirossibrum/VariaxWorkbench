@@ -1,8 +1,13 @@
 #![forbid(unsafe_code)]
 //! Interpreter for the compiled `line6_variax_process_message` prefix.
 //!
-//! The bytes are the detached rebuild whose `.text` hashes are recorded in
-//! [`crate::linux_transport`]. External calls, tail jumps, and the relocated
+//! The instruction arrays are Linux object code for virtual addresses
+//! `[0x160, 0x240)`. Upstream `sound/usb/line6/variax.c` is
+//! `SPDX-License-Identifier: GPL-2.0-only`, Copyright (C) 2004-2010 Markus
+//! Grabner, pinned at commit `497791a0a96b866d90add64041c47acdff49cae6`.
+//! The notice and license are under `third_party/`. These arrays are test
+//! reference bytes, not a runtime dependency. Message buffers passed in are
+//! separate synthetic inputs. External calls, tail jumps, and the relocated
 //! cold branch stop or return here. This does not load a module or enter
 //! kernel code.
 
@@ -33,6 +38,9 @@ pub const UNPATCHED_PREFIX_SHA256: &str =
 /// SHA-256 of the patched function bytes below.
 pub const PATCHED_PREFIX_SHA256: &str =
     "e9ef1f53b7e6ce3c52ac39581dd4fe1bdccd634d56b4358c505916b301cd1a6b";
+
+const PREFIX_NOTICE: &str = include_str!("../third_party/notices/linux-variax-prefix-NOTICE.txt");
+const GPL_TEXT: &str = include_str!("../third_party/notices/GPL-2.0-only.txt");
 
 /// What a relocated site does. None of these transfer into kernel code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,7 +85,8 @@ const PATCHED_EXTERNALS: &[(u64, External)] = &[
     (0x23a, External::QueueDelayedWork),
 ];
 
-/// Unpatched function body, virtual address `0x160` through `0x240`.
+/// Unpatched Linux object code for `[0x160, 0x240)`. See
+/// `third_party/notices/linux-variax-prefix-NOTICE.txt`.
 const UNPATCHED_PREFIX: [u8; 224] = [
     0xf3, 0x0f, 0x1e, 0xfa, 0xe8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x8b, 0x47, 0x50, 0x0f, 0xb6, 0x10,
     0x80, 0xfa, 0xf0, 0x74, 0x0e, 0x80, 0xfa, 0xff, 0x0f, 0x84, 0x00, 0x00, 0x00, 0x00, 0xe9, 0x00,
@@ -95,7 +104,7 @@ const UNPATCHED_PREFIX: [u8; 224] = [
     0x00, 0x00, 0x00, 0x66, 0x90, 0x66, 0x66, 0x2e, 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
-/// Patched function body, same address window.
+/// Patched Linux object code for the same `[0x160, 0x240)` window.
 const PATCHED_PREFIX: [u8; 224] = [
     0xf3, 0x0f, 0x1e, 0xfa, 0xe8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x8b, 0x47, 0x50, 0x0f, 0xb6, 0x10,
     0x80, 0xfa, 0xf0, 0x74, 0x0e, 0x80, 0xfa, 0xff, 0x0f, 0x84, 0x00, 0x00, 0x00, 0x00, 0xe9, 0x00,
@@ -713,6 +722,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(bytes))
 }
 
+/// Synthetic SysEx input. This buffer is not the Linux instruction array.
 fn identity_packet(family_low: u8, family_high: u8, model_low: u8, model_high: u8) -> [u8; 16] {
     let mut packet = [0u8; 16];
     packet[0] = 0xf0;
@@ -789,6 +799,18 @@ fn check_prefixes() -> Result<(), Reject> {
     {
         return Err(Reject(
             "compiled prefix bytes no longer match the recorded hashes",
+        ));
+    }
+    if !PREFIX_NOTICE.contains("SPDX-License-Identifier: GPL-2.0-only")
+        || !PREFIX_NOTICE.contains(linux_transport::UPSTREAM_VARIAX_C_COMMIT)
+        || !PREFIX_NOTICE.contains("Copyright (C) 2004-2010 Markus Grabner")
+        || !PREFIX_NOTICE.contains("[0x160, 0x240)")
+        || !PREFIX_NOTICE.contains("not a runtime dependency")
+        || !GPL_TEXT.contains("GNU GENERAL PUBLIC LICENSE")
+        || !GPL_TEXT.contains("Version 2, June 1991")
+    {
+        return Err(Reject(
+            "kernel reference-byte notice lost its GPL-2.0-only attribution",
         ));
     }
     let boundaries = [i32::MIN, -1, 0, 1, 2, i32::MAX];

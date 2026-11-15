@@ -250,15 +250,28 @@ driver trace and it is not connectivity. Issue #21 stays open.
 
 ## Compiled prefix harness
 
-`src/linux_variax_prefix.rs` is a Rust test. It interprets `line6_variax_process_message` from
-virtual address `0x160` through `0x240`. That window is 224 bytes in both
-detached objects. The unpatched slice SHA-256 is
-`68dea14f9600a5c5cb820c35f2a9ab3a65e71f112b0dbc5017d8e0146ad3d7a1`. The patched
-slice SHA-256 is
+`src/linux_variax_prefix.rs` is a Rust test. It interprets
+`line6_variax_process_message` over the half-open window `[0x160, 0x240)`.
+That window is 224 bytes in both detached objects. The unpatched slice SHA-256
+is `68dea14f9600a5c5cb820c35f2a9ab3a65e71f112b0dbc5017d8e0146ad3d7a1`. The
+patched slice SHA-256 is
 `e9ef1f53b7e6ce3c52ac39581dd4fe1bdccd634d56b4358c505916b301cd1a6b`. Both sit
-inside the 793-byte `.text` images recorded above. The interpreter is safe
-Rust. It decodes the local compares, stores, and short branches. It does not
-map a module and it does not follow a relocated immediate into kernel code.
+inside the 793-byte `.text` images recorded above.
+
+Those instruction arrays are compiled Linux reference bytes. Upstream
+`sound/usb/line6/variax.c` declares `SPDX-License-Identifier: GPL-2.0-only`
+and Copyright (C) 2004-2010 Markus Grabner. The pinned commit is
+`497791a0a96b866d90add64041c47acdff49cae6`. The patched array is that file
+plus `docs/linux-variax-model-bytes.patch`, built with
+`gcc (GCC) 16.2.1 20260810` by the detached `make modules` recipe above.
+The license and the full recipe are in
+[third_party](../third_party/README.md). The bytes are test reference data.
+They add no runtime dependency. Message buffers in the sweep are synthetic
+inputs, separate from the instruction arrays.
+
+The interpreter is safe Rust. It decodes the local compares, stores, and short
+branches. It does not map a module and it does not follow a relocated
+immediate into kernel code.
 
 These sites stop or continue inside the harness:
 

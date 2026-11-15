@@ -1,0 +1,79 @@
+Linux Variax prefix reference bytes
+====================================
+
+This notice covers the two 224-byte instruction arrays in
+src/linux_variax_prefix.rs and nothing else in VariaxWorkbench. Those arrays
+are test reference data. They are not a runtime dependency. The application
+does not link them. The Rust module that holds them is compiled only for tests.
+
+The arrays are compiled excerpts of line6_variax_process_message from Linux
+sound/usb/line6/variax.c. Each excerpt is the half-open virtual-address window
+[0x160, 0x240). They are open-source kernel object code. The message buffers
+fed to the interpreter are separate synthetic inputs authored in this
+repository.
+
+Upstream
+--------
+
+SPDX-License-Identifier: GPL-2.0-only
+Copyright (C) 2004-2010 Markus Grabner (line6@grabner-graz.at)
+
+The source file also contains MODULE_LICENSE("GPL"). The SPDX identifier
+selects GNU GPL version 2 only. The "any later version" example in the GPL
+appendix does not apply to this file. The license text is
+third_party/notices/GPL-2.0-only.txt.
+
+Pinned source: https://github.com/gregkh/linux
+Tag: v7.2.15
+Commit: 497791a0a96b866d90add64041c47acdff49cae6
+Path: sound/usb/line6/variax.c
+SHA-256: f623cd628440ee3208f857a97a462799260c068633774e4b3ff2cad9107c62af
+
+That commit is the corresponding source for the unpatched excerpt. This
+repository does not vendor variax.c. The same commit supplies driver.h,
+midi.h, and midibuf.h, which variax.c includes. Those headers use the same
+SPDX identifier and copyright. Their SHA-256 values are
+6bdbf42547971ee457d67a02b742ef342ffc7ca9a675d5f298ef21f6e1c3f8cf,
+8928524fc89e772aec5cfabf6eb568d33f43cd0216a195bdaf44cd9a9209e060, and
+c56dfe4fe244119b98dbcae55197d60267533be0d512e4c22d6ec9d613599f80.
+
+Patched excerpt
+---------------
+
+The second array is the same function after
+docs/linux-variax-model-bytes.patch. That patch was recorded in commit
+002471c655378b84f31b72ea92eb76db9280942b on 2026-11-15. It is the local
+modification of the pinned file. Apply it to the pinned variax.c to recover
+the source of the patched bytes.
+
+Build recipe
+------------
+
+Both objects were produced by a detached module build. It wrote only under a
+temporary directory and did not install the module.
+
+Compiler, from the installed tree include/generated/compile.h:
+gcc (GCC) 16.2.1 20260810
+
+Command:
+make -C /lib/modules/7.2.15-1-omarchy/build M=<temporary-directory> modules
+
+Out-of-tree makefile:
+obj-m += snd-usb-variax.o
+snd-usb-variax-y := variax.o
+
+Both objects report vermagic:
+7.2.15-1-omarchy SMP preempt mod_unload
+
+The unpatched object was the unmodified pinned file. The patched object was
+that file plus the patch above. Each .text image is 793 bytes (0x319).
+Unpatched .text SHA-256:
+3eae27ccbea3a6ca067a86faf4ade9c713702234b369df20e1391fbe4ff9849d
+Patched .text SHA-256:
+3d3aa8f53ab2dc4a97bfffa37e73cffea55d4354ab31bbffdb4186b75c058454
+
+Excerpt SHA-256, window [0x160, 0x240):
+unpatched 68dea14f9600a5c5cb820c35f2a9ab3a65e71f112b0dbc5017d8e0146ad3d7a1
+patched   e9ef1f53b7e6ce3c52ac39581dd4fe1bdccd634d56b4358c505916b301cd1a6b
+
+The generated .ko files stay outside this repository.
