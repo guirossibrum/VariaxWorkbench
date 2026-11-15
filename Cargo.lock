@@ -2465,6 +2465,7 @@ dependencies = [
  "eframe",
  "flate2",
  "image",
+ "libm",
  "md-5",
  "rfd",
  "rusb",

@@ -1,4 +1,5 @@
 //! Pickup geometry primitives and original normalized pole projection.
+use crate::math::EngineFloat as _;
 use crate::{body::BodyDefinition, models::PickupDefinition};
 
 impl BodyDefinition {
@@ -141,7 +142,7 @@ impl GeometryInput {
             magnetic_aperture: self.magnetic_aperture,
             coil_gains: self
                 .coil_gain_db
-                .map(|db| 10.0_f32.powf(db / 20.0) * 0.0625),
+                .map(|db| 10.0_f32.engine_powf(db / 20.0) * 0.0625),
             poles,
         })
     }

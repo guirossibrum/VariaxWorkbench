@@ -26,6 +26,9 @@ fn parse_id(value: &str) -> Result<u32, String> {
 fn run() -> Result<(), String> {
     let args: Vec<_> = env::args().skip(1).collect();
     match args.first().map(String::as_str) {
+        Some("math-profile") if args.len() == 1 => {
+            println!("{}", variax_workbench::math::PROFILE);
+        }
         Some("preview") if args.len() == 1 => {
             println!("Offline byte preview; no device opened. Live access is locked.");
             println!("PODxt routing enable: {}", hex(&PODXT_ROUTING_ENABLE));

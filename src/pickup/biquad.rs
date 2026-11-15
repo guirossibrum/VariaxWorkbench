@@ -1,5 +1,6 @@
 //! Original pickup-response filter arithmetic, including float32 complex math.
 use super::{ComplexResponse, FilterParameters};
+use crate::math::EngineFloat as _;
 
 /// Native memory order is [a2, a1, b2, b1, b0]. Feedback signs follow the
 /// original denominator 1 + a1*z + a2*z², not packed hardware conventions.
@@ -30,8 +31,8 @@ impl Complex32 {
 }
 impl Biquad {
     pub fn bandpass(sample_rate: f32, parameters: FilterParameters) -> Self {
-        let inverse =
-            1.0 / ((parameters.frequency * std::f64::consts::PI) / f64::from(sample_rate)).tan();
+        let inverse = 1.0
+            / ((parameters.frequency * std::f64::consts::PI) / f64::from(sample_rate)).engine_tan();
         let square = inverse * inverse;
         let scaled = inverse / parameters.q;
         let denominator = 1.0 / (square + scaled + 1.0);
@@ -45,7 +46,7 @@ impl Biquad {
     /// host-library response must not be substituted for an audio DSP renderer.
     pub fn response(self, sample_rate: f32, frequency: f64) -> ComplexResponse {
         let theta = (frequency / f64::from(sample_rate)) as f32 * std::f32::consts::TAU;
-        let mut z = Complex32(theta.cos(), theta.sin());
+        let mut z = Complex32(theta.engine_cos(), theta.engine_sin());
         let inverse = 1.0 / (z.0 * z.0 + z.1 * z.1);
         z = Complex32(z.0 * inverse, z.1 * inverse);
         let z2 = z.multiply(z);

@@ -1,6 +1,7 @@
 //! Original mixed-precision string EQ calculations and packed-band ordering.
 use super::NativePatch;
 use crate::body::{EqBands, StringEq, TwelveStringEq};
+use crate::math::EngineFloat as _;
 
 #[derive(Clone, Copy, Debug)]
 pub struct EqParameters {
@@ -31,10 +32,10 @@ pub fn equalizer_coefficients(p: EqParameters, rate: f32) -> Result<[f32; 5], St
     } else {
         p.gain_db / 20.0
     };
-    let gain = 10.0_f64.powf(f64::from(exponent)) - 1.0;
+    let gain = 10.0_f64.engine_powf(f64::from(exponent)) - 1.0;
     let mut out = match p.kind {
         1 => {
-            let k = f64::from(((p.frequency * std::f32::consts::PI) / rate).tan());
+            let k = f64::from(((p.frequency * std::f32::consts::PI) / rate).engine_tan());
             let (a1, a2, term) = if p.gain_db < 0.0 {
                 let product = (gain + 1.0) * damping * k;
                 let inverse = 1.0 / (product + 1.0 + k * k);
@@ -61,7 +62,7 @@ pub fn equalizer_coefficients(p: EqParameters, rate: f32) -> Result<[f32; 5], St
             ]
         }
         2 => {
-            let r = f64::from(((p.frequency * -std::f32::consts::TAU) / rate).exp());
+            let r = f64::from(((p.frequency * -std::f32::consts::TAU) / rate).engine_exp());
             let (a1, positive, negative) = if p.gain_db < 0.0 {
                 let sum = r + 1.0;
                 let inverse = 1.0 / (2.0 / sum + gain);
@@ -82,7 +83,7 @@ pub fn equalizer_coefficients(p: EqParameters, rate: f32) -> Result<[f32; 5], St
             ]
         }
         3 => {
-            let r = f64::from(((p.frequency * -std::f32::consts::TAU) / rate).exp());
+            let r = f64::from(((p.frequency * -std::f32::consts::TAU) / rate).engine_exp());
             let (a1, term) = if p.gain_db < 0.0 {
                 let inverse = 1.0 / ((gain + 1.0) - gain * r);
                 (-r * inverse, (r - 1.0) * inverse)
@@ -98,7 +99,7 @@ pub fn equalizer_coefficients(p: EqParameters, rate: f32) -> Result<[f32; 5], St
             ]
         }
         4 => {
-            let k = f64::from(((p.frequency * std::f32::consts::PI) / rate).tan());
+            let k = f64::from(((p.frequency * std::f32::consts::PI) / rate).engine_tan());
             let square = 1.0 / (k * k);
             let inverse = 1.0 / (square + damping / k + 1.0);
             let a2 = ((square - damping / k) + 1.0) * inverse;
@@ -106,7 +107,7 @@ pub fn equalizer_coefficients(p: EqParameters, rate: f32) -> Result<[f32; 5], St
             [((term + term) * inverse) as f32, a2 as f32, 1., -2., 1.]
         }
         5 => {
-            let k = f64::from(((p.frequency * std::f32::consts::PI) / rate).tan());
+            let k = f64::from(((p.frequency * std::f32::consts::PI) / rate).engine_tan());
             let square = 1.0 / (k * k);
             let inverse = 1.0 / (square + damping / k + 1.0);
             let term = -1.0 / (k * k) + 1.0;

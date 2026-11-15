@@ -35,10 +35,7 @@ def batch(binary,inputs,records):
         return [data[i:i+3276] for i in range(0,len(data),3276)]
 
 
-def main():
-    directory,source,environment,receipt=prepare();binaries={}
-    for name,software,release in [('identity-debug',False,False),('software-debug',True,False),('software-release',True,True)]:
-        binaries[name]=build(directory,source,environment,software=software,release=release)
+def verify(binaries,directory,receipt,*,scope='Generated complete Rust engine source variant; not production adoption, historical Mac authentication, cross-target or audio parity'):
     mpfr=MPFRMath((ROOT/'.tools/math-reference/libmpfr-reference.so').resolve())
     env=mpfr.environment()
     if env['host_rounding_mode']!=0 or env['host_mxcsr']&0xffc0!=0x1f80:raise RuntimeError('nearest rounding without subnormal flushing required')
@@ -61,7 +58,7 @@ def main():
         outputs=batch(binary,inputs,models);records=[]
         for i,(name,actual) in enumerate(zip(names,outputs)):
             diff=changed_words(actual,original[i]);soft_diff=changed_words(actual,software_original[i])
-            if label=='identity-debug' and diff:raise RuntimeError(('identity rewrite changed canonical behavior',name,diff))
+            if label.startswith('identity-') and diff:raise RuntimeError(('identity rewrite changed canonical behavior',name,diff))
             records.append({'case':name,'sha256':hashlib.sha256(actual).hexdigest(),'changed_words_vs_canonical':diff,'changed_words_vs_original_software_math':soft_diff})
         preserve(result_directory/f'{label}.bin',b''.join(outputs));results[label]=records
         print(label,'CASES',len(records),'canonical matches',sum(not r['changed_words_vs_canonical'] for r in records),'software-oracle matches',sum(not r['changed_words_vs_original_software_math'] for r in records),flush=True)
@@ -82,9 +79,12 @@ def main():
     for i,settings in enumerate(synthetic_inputs):
         expected.append(reference.generate(settings));print('SYNTHETIC ORACLE',i+1,flush=True)
     preserve(result_directory/'synthetic-original-software.bin',b''.join(expected));synthetic={}
-    for label in ['software-debug','software-release']:
+    legacy=(ROOT/'tests/fixtures/native-host-outputs.bin').read_bytes()
+    if len(legacy)!=48*3276:raise RuntimeError('legacy synthetic output size changed')
+    for label in binaries:
         outputs=batch(binaries[label],synthetic_inputs,records)
-        synthetic[label]=[{'case':i,'changed_words':changed_words(a,b),'sha256':hashlib.sha256(a).hexdigest()} for i,(a,b) in enumerate(zip(outputs,expected))]
+        profile_expected=expected if label.startswith('software-') else [legacy[i:i+3276] for i in range(0,len(legacy),3276)]
+        synthetic[label]=[{'case':i,'changed_words':changed_words(a,b),'sha256':hashlib.sha256(a).hexdigest()} for i,(a,b) in enumerate(zip(outputs,profile_expected))]
         preserve(result_directory/f'synthetic-{label}.bin',b''.join(outputs));print('SYNTHETIC',label,'matches',sum(not r['changed_words'] for r in synthetic[label]),'/',len(outputs),flush=True)
     host_math={}
     forbidden={'sin','sinf','cos','cosf','tan','tanf','exp','expf','log','logf','log10','log10f','pow','powf','atan2','atan2f','sqrt','sqrtf','fma','fmaf'}
@@ -92,14 +92,21 @@ def main():
         undefined=subprocess.check_output(['llvm-nm','--undefined-only',str(binary)],text=True)
         names={line.split()[-1].split('@')[0] for line in undefined.splitlines() if line.split()}
         host_math[label]=sorted(names&forbidden)
-    report={'scope':'Generated complete Rust engine source variant; not production adoption, historical Mac authentication, cross-target or audio parity',
+    report={'scope':scope,
         'source':receipt,'audit_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'environment':env,'host_math_imports':host_math,'binaries':{k:{'path':str(p),'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for k,p in binaries.items()},
         'full_vendor_resource_cases':results,'synthetic_cases':synthetic,'software_debug_release_vendor_outputs_equal':True,
         'limitations':['44 counted method aliases, with identity behavior checked before candidate results','Software square root is also substituted; original Mac sqrt instructions are not an imported math adapter','Input corpus is unchanged; this is not new distinct-sample coverage for issue #33','No original assets or actual device traffic are published or used live','Product core/manifest/default behavior stay unchanged; wider-float double rounding and cross-platform compiler behavior remain unverified']}
     data=(json.dumps(report,indent=2)+'\n').encode();path=directory/f'engine-math-report-{hashlib.sha256(data).hexdigest()[:16]}.json';preserve(path,data)
-    if any(r['changed_words_vs_original_software_math'] for label,rows in results.items() if label!='identity-debug' for r in rows) or any(r['changed_words'] for rows in synthetic.values() for r in rows) or any(host_math[label] for label in ['software-debug','software-release']):
+    if any(r['changed_words_vs_original_software_math'] for label,rows in results.items() if label.startswith('software-') for r in rows) or any(r['changed_words'] for rows in synthetic.values() for r in rows) or any(host_math[label] for label in ['software-debug','software-release']):
         raise AssertionError(('software engine mismatch or host-math import; inspect report',str(path)))
     print('ENGINE MATH AUDIT COMPLETE',path,flush=True)
+
+
+def main():
+    directory,source,environment,receipt=prepare();binaries={}
+    for name,software,release in [('identity-debug',False,False),('software-debug',True,False),('software-release',True,True)]:
+        binaries[name]=build(directory,source,environment,software=software,release=release)
+    verify(binaries,directory,receipt)
 
 
 if __name__=='__main__':main()

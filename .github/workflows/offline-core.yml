@@ -1,0 +1,49 @@
+name: Offline core
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/offline-core.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: offline-core-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  portable-core:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Coefficient math boundary
+        run: python scripts/check_coefficient_math.py
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
+        with:
+          toolchain: "1.99.1"
+          components: clippy
+      - name: Record compiler and math profile
+        run: |
+          rustc -vV
+          cargo run --locked --no-default-features --features portable-math --bin variax-workbench -- math-profile
+      # No USB or GUI feature, original library, personal capture or device API
+      # is needed. Cargo tests use only committed synthetic fixtures.
+      - name: Debug core and file tests
+        run: cargo test --locked --no-default-features --features portable-math
+      - name: Release core and file tests
+        run: cargo test --locked --release --no-default-features --features portable-math
+      - name: Core lint
+        run: cargo clippy --locked --no-default-features --features portable-math --all-targets -- -D warnings

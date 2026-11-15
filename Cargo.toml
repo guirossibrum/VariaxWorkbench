@@ -27,10 +27,13 @@ path = "src/firmware_inspect.rs"
 
 [features]
 default = []
+# Experimental, versioned software mathematics; normal builds retain host math.
+portable-math = ["dep:libm"]
 gui = ["usb", "dep:eframe", "dep:image", "dep:rfd", "dep:serde", "dep:serde_json"]
 usb = ["dep:rusb"]
 
 [dependencies]
+libm = { version = "=0.2.16", optional = true, default-features = false, features = ["force-soft-floats"] }
 tempfile = "3"
 rusb = { version = "0.9.4", optional = true }
 eframe = { version = "=0.33.3", optional = true, default-features = false, features = ["default_fonts", "glow", "wayland", "x11", "__screenshot"] }

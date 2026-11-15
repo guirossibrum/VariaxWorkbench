@@ -72,7 +72,7 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 
 - [x] Rust CLI and offline GUI build, including optimized release builds.
 - [x] Short guided-check **offline rehearsal** app: five prompts, cancellation/skip handling and protected report saving. Run `cargo run --bin variax-check -- plan`; see [usage and limits](docs/manual-check.md).
-- [x] **108 Rust tests**, Clippy with warnings denied, and formatting checks.
+- [x] **108 Rust tests per math profile** (host configuration and experimental software configuration), Clippy with warnings denied, and formatting checks on Linux.
 - [x] Individual preset parsing/editing and protected copy saves: **6 original-Java compatibility checks**.
 - [x] L6BA/L6CO bank inspection and preset extraction: **both formats compared with original Java**.
 - [x] Offline GUI with recovered artwork, preset controls, undo/redo and guarded document operations; selected headless tests and rendering smoke checks pass.
@@ -83,7 +83,7 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 - [x] Initialized original-library reference harness: **26 startup routines, 52 complex constants, 110 generator cases and four JNI mapping comparisons** pass with disclosed host-libm adapters. This is reference execution, not full Rust or audio parity; [scope and evidence](docs/native-runtime.md).
 - [x] Offline math sensitivity audit: **206,228 distinct math inputs** agree between MPFR-256/512 after target-width rounding; glibc differs by up to one ULP on some inputs. MPFR substitution changes four coefficient words in one of 110 packed cases. A separately recompiled Apple source candidate is not an authenticated Mac runtime. See [math runtime evidence and limits](docs/math-runtime-audit.md).
 - [x] Original embedded Windows math instructions: **206,228 inputs in each of three explicit CPU/precision modes** complete offline. Initialized SSE math substitution into the Mac generator matches all 110 MPFR-256 packed candidates. This isolates math effects; it is not full Windows generator/JVM parity.
-- [x] Optional software-only Rust math experiment: **206,228 debug/release input results agree per strategy**. Direct float32 math changes 96 of 110 packed cases versus glibc; experimental wider-float math matches all **110 MPFR-256/Windows-math packed candidates**. Cross-target and broader validation remain pending; production math and dependencies are unchanged. See [candidate evidence](docs/math-runtime-audit.md#software-only-rust-candidate).
+- [x] Experimental `portable-math` build: pinned Rust algorithms, **44 centralized math call sites**, **110 complete numeric patches**, **48 synthetic-resource cases**, **828 raw component cases**, and **144 complete Java/native preset-file cases** match corresponding original-instruction software-math references in debug/release. Software CLI binaries import none of the tested host math functions. The default profile remains host math; [profile contract, dependency and limits](docs/math-profiles.md).
 - [x] Raw Rust pickup circuit combination: **3,826 bit-exact comparisons** with the native routine.
 - [x] Pickup electronics: **2,322 raw responses + 387 primary fits + 282 secondary fits**, **900 biquad checks**, **280 complete tables** and **252 smoothed-response comparisons**. Synthetic fixtures pass debug/release; host integration is covered below.
 - [x] Rust DSP packing/checksum, selected resonator conversions, **1,012 VX encodings and 315 scalar-setter cases** match original-machine-code fixtures. **2,145 coefficient-writer cases**, **1,320 complete pickup block cases** and **1,008 simple-block cases** pass. A further **600 biquad checks and 864 filter-block cases** pass. All **17 DSP block paths** now have parameter-to-word implementations: a further **2,304 EQ coefficient cases**, **432 EQ block cases**, **288 sitar cases**, **432 body/string-tone cases**, and **216 complete raw-body assemblies** match the original instructions under the documented host-libm adapters. Scope is [documented](docs/dsp-implementation.md); the [observed word map](docs/dsp-word-map.md) distinguishes 748 written words from 343 still-unknown words.
@@ -98,7 +98,7 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 
 - [ ] Historical macOS math parity and full Rust/native validation remain pending. The old uninitialized whole-generator/JNI baseline stays invalidated; use only the versioned candidates described in [native runtime evidence](docs/native-runtime.md).
 
-- [ ] Historical math-runtime parity, controlled portable Rust math and complete Rust/native generator validation — [#5](https://github.com/guirossibrum/VariaxWorkbench/issues/5), [#6](https://github.com/guirossibrum/VariaxWorkbench/issues/6).
+- [ ] Historical math-runtime parity, cross-target/default-rollout review of the experimental portable profile, and broader complete Rust/native validation — [#5](https://github.com/guirossibrum/VariaxWorkbench/issues/5), [#6](https://github.com/guirossibrum/VariaxWorkbench/issues/6). The new core CI workflow has not yet established Windows/macOS results.
 - [ ] Model-specific parameter validation, complete bank GUI workflows and broader GUI interaction tests — [#7](https://github.com/guirossibrum/VariaxWorkbench/issues/7)–[#9](https://github.com/guirossibrum/VariaxWorkbench/issues/9).
 - [ ] Reproducible fresh-clone tool/artifact setup and Linux packaging — [#10](https://github.com/guirossibrum/VariaxWorkbench/issues/10), [#11](https://github.com/guirossibrum/VariaxWorkbench/issues/11).
 - [ ] Firmware architecture/region mapping, factory/calibration extraction and trustworthy factory comparison — [#13](https://github.com/guirossibrum/VariaxWorkbench/issues/13)–[#15](https://github.com/guirossibrum/VariaxWorkbench/issues/15).
@@ -116,7 +116,7 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 
 ### Currently unavailable or not working
 
-- [ ] The image-default Windows x87 math substitution fails the Mac generator's strict startup-constant check; its complete-generator replay stops. Historical Mac parity and a portable production math backend remain unresolved.
+- [ ] The image-default Windows x87 math substitution fails the Mac generator's strict startup-constant check; its complete-generator replay stops. Historical Mac parity remains unresolved, and the optional portable profile is experimental.
 - [ ] Guided check does not yet read switches/knobs, record audio or measure notes/bends/tuning. Future integration is [#34](https://github.com/guirossibrum/VariaxWorkbench/issues/34); the current app rehearses prompts only.
 - [ ] **Live device access is intentionally disabled**, including identity/metadata reads. No runtime unlock exists.
 - [ ] Sending edited presets to the guitar, firmware flashing and factory restoration are unavailable; no live writer is implemented or authorized.
@@ -137,6 +137,9 @@ The local extracted artwork lives in `assets/original-ui/`. The editor supports
 body/pickup selection and placement, tuning and electronics controls, undo/redo,
 and saving a new copy. Originals and existing output files are protected.
 A saved preset cannot yet be sent to the guitar. Offline host generation is implemented; historical-runtime, broader full-engine and audio validation remain pending.
+
+The build's coefficient math profile can be inspected with `math-profile`.
+The optional software profile and its offline checks are [documented](docs/math-profiles.md).
 
 ## Offline command line
 
