@@ -247,3 +247,69 @@ The local `74`, `75`, and `7f` displacements are the branch evidence.
 Neither object was copied into `/lib/modules`, and neither was passed to
 `modules_install`, `depmod`, or a module loader. This rebuild is not a live
 driver trace and it is not connectivity. Issue #21 stays open.
+
+## Compiled prefix harness
+
+`src/linux_variax_prefix.rs` is a Rust test. It interprets `line6_variax_process_message` from
+virtual address `0x160` through `0x240`. That window is 224 bytes in both
+detached objects. The unpatched slice SHA-256 is
+`68dea14f9600a5c5cb820c35f2a9ab3a65e71f112b0dbc5017d8e0146ad3d7a1`. The patched
+slice SHA-256 is
+`e9ef1f53b7e6ce3c52ac39581dd4fe1bdccd634d56b4358c505916b301cd1a6b`. Both sit
+inside the 793-byte `.text` images recorded above. The interpreter is safe
+Rust. It decodes the local compares, stores, and short branches. It does not
+map a module and it does not follow a relocated immediate into kernel code.
+
+These sites stop or continue inside the harness:
+
+- `__fentry__` is recorded, then the prefix continues.
+- `cancel_delayed_work` is recorded when `rdi` is the device plus `0x20b0`,
+  then the prefix continues.
+- The `system_percpu_wq` load sets its destination register to zero. The
+  harness does not dereference that pointer.
+- `__x86_return_thunk` stops the prefix.
+- `queue_delayed_work_on` records `ecx` as the delay and `edi` as the cpu
+  value `0x2000`, then stops. The recorded identity delay is `0x64`. The
+  recorded init-done delay is `0`.
+- A taken cold `je` toward `.text+0x305` stops. The bytes at that address are
+  not decoded, so this harness does not establish what the cold body stores.
+
+The check runs both images. Every model-low byte from `0x00` through `0xff` is
+crossed with progress values `i32::MIN`, `-1`, `0`, `1`, `2`, and `i32::MAX`.
+Model-low `0x00` and `0x04` are also crossed with every family-low, family-high,
+and model-high byte at progress 0. The dword stored at `0x2128` matches the
+Rust gate for that image. The unpatched compare still requires model
+`0x0000`. The patched `testb $0xfb` still accepts only model-low `0x00` and
+`0x04`, and only when family high and model high are zero. A match stores `1`
+and queues delay `0x64` only while the signed progress is not greater than 0.
+
+Init-done uses the same progress boundaries. It queues delay `0` when the
+signed progress is not greater than 1, and it leaves the stored dword
+unchanged. A non-SysEx first byte returns through the thunk. A first byte
+`0xff` stops on the cold branch before that body runs.
+
+## Offline acceptance and remaining gaps
+
+The written #21 criteria are an offline investigation. The kernel identity
+compare is now checked against the compiled bytes, the saved product
+`0x00070004` and version `0x03100000` remain derived scalars, and the Windows
+INF and macOS personalities remain the static routing evidence already
+recorded. The offline fixtures and the model-byte patch are the smallest
+justified change. Interface ownership, framing, and cleanup limits are
+documented above. No driver patch was installed and no live probe was made.
+Those prohibitions are satisfied. Connectivity is a later phase and needs its
+own authorization. It is not a missing step in this investigation.
+
+Issue #21 stays open. These offline gaps are still specific:
+
+- `variax_startup`, the function the queue would run after the delay, is not
+  interpreted. The delay values above are register arguments in this prefix.
+  They are not an observed timer. The version request and the activate command
+  stay unsent.
+- The cold body at `.text+0x305` is not interpreted.
+- `src/usb.rs` is unchanged. The live-access lock stays on. The patched object
+  keeps a different `srcversion` and the detached link keeps its debug
+  information, so it is not a substitute for the installed module.
+- `bcdDevice` 0.01 remains a different number from the MIDI revision scalar.
+  USB product `0x534D` remains a different match from this guitar's USB
+  `0x4650` and MIDI product `0x00070004`.
