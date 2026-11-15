@@ -70,23 +70,25 @@ pub const PODXT_LIVE_DEV_MGR_SELECTION: DevMgrSelection = DevMgrSelection {
     constructor_va: 0x148790,
 };
 
-/// Userspace and kernel service vtables. `returned_class_identified` stays
-/// false until the object stored for the version call is one of these.
-/// [`DESCRIPTION_SERVICE_HOP`] is the call that would have to return one of
-/// them, and that call does not construct either service.
+/// Userspace and kernel service vtables. `returned_class_identified` is true
+/// for the successful index-0 cache miss on [`VERSION_PATH_SERVICE`]: that
+/// return is the kernel object. The userspace vptr is a different class.
+/// The flag is not an observed device state.
 pub const SERVICE_CLASS_LINK: ServiceClassLink = ServiceClassLink {
     mac_constructor_va: 0x9bb70,
     mac_vptr: 0x1c1878,
     mac_version_slot_va: 0x8c150,
     kernel_vptr: 0x1c1838,
     kernel_version_slot_va: 0x8b810,
-    returned_class_identified: false,
+    returned_class_identified: true,
 };
 
 /// `L6DeviceMgrBase::GetDeviceDesc` returns an `L6DeviceDescription`.
-/// The version slot on that object returns a cached device-control pointer.
-/// `service_constructed_on_path` stays false: neither Brandi constructor runs
-/// in this hop, and the cached class is not identified.
+/// Description slot `+0x14` calls the control's slot `+0x0c` with index 0.
+/// `service_constructed_on_path` is true because that callee's cache miss
+/// runs the kernel constructor. The description body itself does not.
+/// `control_getter_va` is the base `AcquireService` body, which returns the
+/// cached pointer and does not construct.
 pub const DESCRIPTION_SERVICE_HOP: DescriptionServiceHop = DescriptionServiceHop {
     get_device_desc_va: 0x142b72,
     matcher_call_va: 0x142615,
@@ -101,7 +103,7 @@ pub const DESCRIPTION_SERVICE_HOP: DescriptionServiceHop = DescriptionServiceHop
     control_getter_va: 0x85150,
     control_service_index: 0,
     cached_service_offset: 0x8,
-    service_constructed_on_path: false,
+    service_constructed_on_path: true,
 };
 
 /// Virtual setter that writes the description's device-control smart pointer.
@@ -122,11 +124,11 @@ pub const DESCRIPTION_SETTER: DescriptionSetter = DescriptionSetter {
 };
 
 /// `L6XTAudioControlMac` slot `+0x0c` stores a kernel Brandi service at
-/// cache index 0 when that slot's refcount is zero. That producer is useful
-/// evidence. `selected_for_podxt_live` stays false: the PID `0x4650` path
-/// passes this control to the description setter, and it does not show this
-/// kernel fill running. The kernel version slot does not embed the userspace
-/// builder fields.
+/// cache index 0 when that slot's refcount is zero. That producer is the
+/// index-0 miss arm. `selected_for_podxt_live` stays false: the PID setter
+/// path does not itself run the fill. [`VERSION_PATH_SERVICE`] records the
+/// later return of that cache slot. The kernel version slot does not embed
+/// the userspace builder fields.
 pub const XT_AUDIO_INDEX0_FILL: XtAudioIndex0Fill = XtAudioIndex0Fill {
     control_vptr: 0x1c18b8,
     cache_slot_va: 0x8dd20,
@@ -145,7 +147,9 @@ pub const XT_AUDIO_INDEX0_FILL: XtAudioIndex0Fill = XtAudioIndex0Fill {
 /// [`PodxtLiveSetterAssociation::control_vptr`]. When control slot `+0x18`
 /// returns with bit `0x80000000` clear, the helper calls the description
 /// constructor and the caller invokes setter slot `+0x0c` with that control.
-/// `kernel_fill_shown` stays false. Nothing here builds or submits a transfer.
+/// `kernel_fill_shown` stays false: this setter path does not execute the
+/// index-0 fill. [`VERSION_PATH_SERVICE`] is the later cache return.
+/// Nothing here builds or submits a transfer.
 pub const PODXT_LIVE_SETTER_ASSOCIATION: PodxtLiveSetterAssociation = PodxtLiveSetterAssociation {
     product_compare_va: 0x953a6,
     usb_product_id: 0x4650,
@@ -172,8 +176,8 @@ pub const PODXT_LIVE_SETTER_ASSOCIATION: PodxtLiveSetterAssociation = PodxtLiveS
 
 /// Symbolicated copies of the same PID association. Each image keeps its own
 /// virtual addresses. Monkey addresses stay on [`PODXT_LIVE_SETTER_ASSOCIATION`].
-/// In these images, control slot `+0x0c` is a different method from the Monkey
-/// cache filler at `0x8dd20`.
+/// License Manager names XT slot `+0x0c` `AcquireService`. That body matches
+/// Monkey `0x8dd20`; the License address is [`VERSION_PATH_SERVICE`].
 pub const SIBLING_CONTROL_ASSOCIATIONS: &[SiblingControlAssociation] = &[
     SiblingControlAssociation {
         image: "Line 6 License Manager",
@@ -200,6 +204,61 @@ pub const SIBLING_CONTROL_ASSOCIATIONS: &[SiblingControlAssociation] = &[
         stub_binding_found: false,
     },
 ];
+
+/// Index-0 hit and miss on the XT control, and the kernel version handler
+/// the returned object exposes. Monkey addresses are the PODxt image.
+/// `license_acquire_va` and `license_getversion_va` name the same bodies in
+/// Line 6 License Manager and are not Monkey addresses.
+///
+/// The index-0 miss arm stores the kernel service. It does not return that
+/// pointer. `base_acquire_va` reads the cache slot after the support bit is
+/// set and returns it when the pointer is non-null. A hit returns the
+/// resident pointer and does not construct again. Nothing here builds or
+/// submits a transfer, and `approved_live_read` stays false.
+pub const VERSION_PATH_SERVICE: VersionPathService = VersionPathService {
+    acquire_va: 0x8dd20,
+    license_acquire_va: 0x9f590,
+    service_index: 0,
+    refcount_offset: 0x38,
+    cache_object_offset: 0x8,
+    hit_branch_va: 0x8e67b,
+    index0_arm_va: 0x8ddd0,
+    service_name: "com_line6_driver_sharedxt",
+    find_driver_va: 0x8e720,
+    find_driver_result_consumed: false,
+    find_service_va: 0x8e980,
+    allocation_size: 0x10,
+    operator_new_stub_va: 0x169162,
+    kernel_thunk_va: 0x8ad80,
+    release_stub_va: 0x167a3a,
+    base_acquire_va: 0x85150,
+    null_cache_status: 0x8000_7301,
+    support_va: 0x8cf10,
+    support_index0_arm_va: 0x8cf5e,
+    index0_supported: true,
+    index0_support_checks_product: false,
+    miss_stores_kernel_service: true,
+    return_reads_cache_slot: true,
+    successful_miss_returns_kernel: true,
+    hit_reconstructs: false,
+    kernel_getversion_va: 0x8b810,
+    license_getversion_va: 0x9d080,
+    getversion_and_status_va: 0x8b750,
+    semaphore_helper_va: 0x8b360,
+    semaphore_timeout: 0x5dc,
+    kio_getversion_status_va: 0x88350,
+    iokit_stub_va: 0x1679b0,
+    iokit_selector: 6,
+    scalar_output_count: 2,
+    sem_trywait_stub_va: 0x169366,
+    error_stub_va: 0x1691bc,
+    usleep_stub_va: 0x16941a,
+    sem_post_stub_va: 0x169360,
+    empty_connection_status: 0x8000_7000,
+    userspace_fields_used: false,
+    observed_hardware_state: false,
+    approved_live_read: false,
+};
 
 /// Earlier `lsusb` text in `analysis/reports/podxt-live-usb-descriptors.txt`.
 /// It was not collected again for this record.
@@ -240,17 +299,17 @@ pub const USB_COMPONENT_QUERY: QueryRecovery = QueryRecovery::StaticControlTrans
 pub const FUTURE_PLAN: &[PlanStep] = &[
     PlanStep {
         id: "static-request-recorded",
-        detail: "PODxt Live USB PID 0x4650 matches product 0x0003000a. In the Monkey image that equality constructs an L6XTAudioControlMac and, when control slot +0x18 returns without the failure bit, virtually calls description slot +0x0c with that control. No Mach-O indirect-symbol or lazy stub binds the setter, and no PC-relative call names it. The index-0 kernel service class is not closed, and that fill is not shown on this path. The recorded transfer must not be sent, and its fields are not an approved live read. No USB-firmware image is in the local inventory, and the installed version is unknown.",
+        detail: "PODxt Live USB PID 0x4650 matches product 0x0003000a. In the Monkey image that equality constructs an L6XTAudioControlMac and, when control slot +0x18 returns without the failure bit, virtually calls description slot +0x0c with that control. No Mach-O indirect-symbol or lazy stub binds the setter. AcquireService(0) on that control stores an L6KernelBrandiServiceMac on a cache miss, and the base acquire call returns that cache slot. Kernel GetVersion uses an IOConnectCallScalarMethod stub with selector 6. The recorded transfer must not be sent, and its fields are not an approved live read. No USB-firmware image is in the local inventory, and the installed version is not closed.",
         gate: PlanGate::OfflineNext,
     },
     PlanStep {
         id: "review-before-any-read",
-        detail: "The recorded fields are not an approved live read. No device reply has been captured. The description setter is recovered. USB PID 0x4650 passes an L6XTAudioControlMac to that setter when control slot +0x18 returns without the failure bit. The index-0 kernel service class remains unidentified. A live read still needs a separate explicit authorization.",
+        detail: "The recorded fields are not an approved live read. No device reply has been captured. A successful AcquireService(0) miss returns the kernel service on the static branch. A live read still needs a separate explicit authorization.",
         gate: PlanGate::RequiresSeparateAuthorization,
     },
     PlanStep {
         id: "one-reviewed-read",
-        detail: "The recorded control fields are not an approved live read. After the service class is resolved, a separate authorization is still required before any read. Do not update, reset, switch banks, or install a driver.",
+        detail: "The recorded control fields are not an approved live read. The kernel version slot is identified on the static branch. A separate authorization is still required before any read. Do not update, reset, switch banks, or install a driver.",
         gate: PlanGate::RequiresSeparateAuthorization,
     },
 ];
@@ -379,6 +438,56 @@ pub struct PodxtLiveSetterAssociation {
     pub stub_binding_found: bool,
     pub direct_call_found: bool,
     pub kernel_fill_shown: bool,
+    pub approved_live_read: bool,
+}
+
+/// Monkey-image record of `AcquireService(0)` on `L6XTAudioControlMac` and
+/// the kernel `GetVersion` slot of the object that call returns. License
+/// Manager addresses are named separately. Nothing here builds or submits
+/// a transfer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VersionPathService {
+    pub acquire_va: u32,
+    pub license_acquire_va: u32,
+    pub service_index: u8,
+    pub refcount_offset: u8,
+    pub cache_object_offset: u8,
+    pub hit_branch_va: u32,
+    pub index0_arm_va: u32,
+    pub service_name: &'static str,
+    pub find_driver_va: u32,
+    pub find_driver_result_consumed: bool,
+    pub find_service_va: u32,
+    pub allocation_size: u8,
+    pub operator_new_stub_va: u32,
+    pub kernel_thunk_va: u32,
+    pub release_stub_va: u32,
+    pub base_acquire_va: u32,
+    pub null_cache_status: u32,
+    pub support_va: u32,
+    pub support_index0_arm_va: u32,
+    pub index0_supported: bool,
+    pub index0_support_checks_product: bool,
+    pub miss_stores_kernel_service: bool,
+    pub return_reads_cache_slot: bool,
+    pub successful_miss_returns_kernel: bool,
+    pub hit_reconstructs: bool,
+    pub kernel_getversion_va: u32,
+    pub license_getversion_va: u32,
+    pub getversion_and_status_va: u32,
+    pub semaphore_helper_va: u32,
+    pub semaphore_timeout: u16,
+    pub kio_getversion_status_va: u32,
+    pub iokit_stub_va: u32,
+    pub iokit_selector: u8,
+    pub scalar_output_count: u8,
+    pub sem_trywait_stub_va: u32,
+    pub error_stub_va: u32,
+    pub usleep_stub_va: u32,
+    pub sem_post_stub_va: u32,
+    pub empty_connection_status: u32,
+    pub userspace_fields_used: bool,
+    pub observed_hardware_state: bool,
     pub approved_live_read: bool,
 }
 
@@ -543,17 +652,18 @@ pub fn validate_record() -> Result<(), String> {
     {
         return Err("PODxt Live device-manager selection changed".into());
     }
-    if SERVICE_CLASS_LINK.returned_class_identified
+    if !SERVICE_CLASS_LINK.returned_class_identified
         || SERVICE_CLASS_LINK.mac_constructor_va != 0x9bb70
         || SERVICE_CLASS_LINK.mac_vptr != 0x1c1878
         || SERVICE_CLASS_LINK.mac_version_slot_va != SLOT_FORWARD.mac_get_version_va
         || SERVICE_CLASS_LINK.kernel_vptr != 0x1c1838
         || SERVICE_CLASS_LINK.kernel_version_slot_va != 0x8b810
         || SERVICE_CLASS_LINK.kernel_version_slot_va == SERVICE_CLASS_LINK.mac_version_slot_va
+        || SERVICE_CLASS_LINK.kernel_vptr == SERVICE_CLASS_LINK.mac_vptr
     {
-        return Err("service class link was closed or the vtables were collapsed".into());
+        return Err("service class link lost the kernel return or collapsed the vtables".into());
     }
-    if DESCRIPTION_SERVICE_HOP.service_constructed_on_path
+    if !DESCRIPTION_SERVICE_HOP.service_constructed_on_path
         || DESCRIPTION_SERVICE_HOP.get_device_desc_va != 0x142b72
         || DESCRIPTION_SERVICE_HOP.matcher_call_va != 0x142615
         || DESCRIPTION_SERVICE_HOP.constructor_va != 0x85310
@@ -569,7 +679,7 @@ pub fn validate_record() -> Result<(), String> {
         || DESCRIPTION_SERVICE_HOP.cached_service_offset != 0x8
         || DESCRIPTION_SERVICE_HOP.control_getter_va == SERVICE_CLASS_LINK.mac_constructor_va
     {
-        return Err("description hop constructs a service or lost its addresses".into());
+        return Err("description hop lost the kernel miss or its addresses".into());
     }
     if DESCRIPTION_SETTER.direct_call_found
         || DESCRIPTION_SETTER.traced_virtual_call_found
@@ -620,6 +730,55 @@ pub fn validate_record() -> Result<(), String> {
         return Err(
             "PODxt Live setter association closed the kernel fill or lost its addresses".into(),
         );
+    }
+    if !VERSION_PATH_SERVICE.miss_stores_kernel_service
+        || !VERSION_PATH_SERVICE.return_reads_cache_slot
+        || !VERSION_PATH_SERVICE.successful_miss_returns_kernel
+        || !VERSION_PATH_SERVICE.index0_supported
+        || VERSION_PATH_SERVICE.hit_reconstructs
+        || VERSION_PATH_SERVICE.find_driver_result_consumed
+        || VERSION_PATH_SERVICE.index0_support_checks_product
+        || VERSION_PATH_SERVICE.userspace_fields_used
+        || VERSION_PATH_SERVICE.observed_hardware_state
+        || VERSION_PATH_SERVICE.approved_live_read
+        || VERSION_PATH_SERVICE.acquire_va != XT_AUDIO_INDEX0_FILL.cache_slot_va
+        || VERSION_PATH_SERVICE.license_acquire_va == VERSION_PATH_SERVICE.acquire_va
+        || VERSION_PATH_SERVICE.service_index != XT_AUDIO_INDEX0_FILL.service_index
+        || VERSION_PATH_SERVICE.refcount_offset != 0x38
+        || VERSION_PATH_SERVICE.cache_object_offset != DESCRIPTION_SERVICE_HOP.cached_service_offset
+        || VERSION_PATH_SERVICE.hit_branch_va != 0x8e67b
+        || VERSION_PATH_SERVICE.index0_arm_va != 0x8ddd0
+        || VERSION_PATH_SERVICE.service_name != "com_line6_driver_sharedxt"
+        || VERSION_PATH_SERVICE.find_driver_va != 0x8e720
+        || VERSION_PATH_SERVICE.find_service_va != 0x8e980
+        || VERSION_PATH_SERVICE.allocation_size != XT_AUDIO_INDEX0_FILL.allocation_size
+        || VERSION_PATH_SERVICE.operator_new_stub_va != 0x169162
+        || VERSION_PATH_SERVICE.kernel_thunk_va != XT_AUDIO_INDEX0_FILL.kernel_thunk_va
+        || VERSION_PATH_SERVICE.release_stub_va != 0x167a3a
+        || VERSION_PATH_SERVICE.base_acquire_va != DESCRIPTION_SERVICE_HOP.control_getter_va
+        || VERSION_PATH_SERVICE.null_cache_status != 0x8000_7301
+        || VERSION_PATH_SERVICE.support_va != 0x8cf10
+        || VERSION_PATH_SERVICE.support_index0_arm_va != 0x8cf5e
+        || VERSION_PATH_SERVICE.kernel_getversion_va != SERVICE_CLASS_LINK.kernel_version_slot_va
+        || VERSION_PATH_SERVICE.license_getversion_va == VERSION_PATH_SERVICE.kernel_getversion_va
+        || VERSION_PATH_SERVICE.license_getversion_va != 0x9d080
+        || VERSION_PATH_SERVICE.license_acquire_va != 0x9f590
+        || VERSION_PATH_SERVICE.getversion_and_status_va != 0x8b750
+        || VERSION_PATH_SERVICE.semaphore_helper_va != 0x8b360
+        || VERSION_PATH_SERVICE.semaphore_timeout != 0x5dc
+        || VERSION_PATH_SERVICE.kio_getversion_status_va != 0x88350
+        || VERSION_PATH_SERVICE.iokit_stub_va != 0x1679b0
+        || VERSION_PATH_SERVICE.iokit_selector != 6
+        || VERSION_PATH_SERVICE.iokit_selector == USB_VERSION_CONTROL.b_request
+        || VERSION_PATH_SERVICE.scalar_output_count != 2
+        || VERSION_PATH_SERVICE.sem_trywait_stub_va != 0x169366
+        || VERSION_PATH_SERVICE.error_stub_va != 0x1691bc
+        || VERSION_PATH_SERVICE.usleep_stub_va != 0x16941a
+        || VERSION_PATH_SERVICE.sem_post_stub_va != 0x169360
+        || VERSION_PATH_SERVICE.empty_connection_status != 0x8000_7000
+        || VERSION_PATH_SERVICE.kernel_getversion_va == SLOT_FORWARD.request_builder_va
+    {
+        return Err("version path collapsed the kernel return into the userspace builder".into());
     }
     if SIBLING_CONTROL_ASSOCIATIONS.len() != 2 {
         return Err("sibling control associations changed".into());
