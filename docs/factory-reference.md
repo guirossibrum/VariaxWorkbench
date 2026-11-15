@@ -4,7 +4,7 @@ Investigation date: 2026-11-15. All work described here was offline analysis of 
 
 ## What can currently be established
 
-The official [Variax 300/600 flash listing](https://line6.com/software/index.html?hardware=Variax%20300%2F600&name=Flash%20Memory&os=All&submit_form=set&submit_query=Show) lists **3.10**, released **2006-01-06**, release ID **1062**. This matches the guitar's previously observed firmware version. The Central release catalog further identifies this exact model's image as **124,208 bytes**, vendor MD5 **8b64eddd73f1d4a1eaa72c8dbd98ece5**. A matching binary has **not** been obtained; this checksum is catalog metadata, not a locally verified download.
+The official [Variax 300/600 flash listing](https://line6.com/software/index.html?hardware=Variax%20300%2F600&name=Flash%20Memory&os=All&submit_form=set&submit_query=Show) lists **3.10**, released **2006-01-06**, release ID **1062**. This matches the guitar's previously observed firmware version. The Central release catalog further identifies this exact model's image as **124,208 bytes**, vendor MD5 **8b64eddd73f1d4a1eaa72c8dbd98ece5**. A user-supplied file now matches that size and MD5. The match is catalog agreement, not a signature, and its download URL was not captured. The consolidated record is [artifact provenance](artifact-provenance.md).
 
 The official [PODxt Live flash listing](https://line6.com/software/index.html?hardware=PODxt%20Live&name=Flash%20Memory&os=All&submit_form=set&submit_query=Show) lists **3.01**, released **2006-04-20**, release ID **1224**, approximately **411 KB**. Its only other listed version is 2.14. The previously observed POD version 3.01 therefore matches the latest flash version in that listing. USB firmware is a separate component and is not established by this comparison.
 
@@ -44,6 +44,8 @@ Public web searches for `.vxf`, factory `.vwb`, release 1062 and `3.10.vxf`, plu
 ## Remaining offline work
 
 Obtain the exact public/account-authorized release 1062 and PODxt Live release 1224 files without touching hardware; verify provenance, declared size and available checksums, then record local SHA-256 hashes. Identify their container format, unpack firmware and any default preset tables, and compare those against the recovered Workbench model definitions. Add the factory reference and captured current bank to simulated transport tests before considering any live access. No reset or reflash is part of this investigation.
+
+Local files for Variax release 1062 and the PODxt Live 3.01 main-firmware container are now archived. Their source URLs were not captured, a catalog MD5 was saved only for the Variax file, and neither file has a signature check. Container inspection is a separate result. No download was repeated for the provenance record.
 
 ## User-supplied firmware acquired after the initial report
 

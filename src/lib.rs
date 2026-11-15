@@ -15,6 +15,7 @@ pub mod midi;
 pub mod models;
 pub mod pickup;
 pub mod preset;
+pub mod provenance;
 pub mod read_session;
 #[cfg(feature = "usb")]
 pub mod usb;
