@@ -8,7 +8,7 @@ native GitHub blocked-by relationships, not only issue-body links.
 
 Work sequentially in project Order, respecting dependencies and the authorization phase.
 Project Order is a topological ordering; issue numbers are identifiers, not execution order.
-Issue #1 is complete and #2 is In Progress. Consult the GitHub project for current status.
+Issues #1 and #2 are complete; #3 is In Progress. Consult the GitHub project for current status.
 
 All issues remain subject to [AGENTS.md](../AGENTS.md). Live USB/MIDI access
 is locked; creating an issue does not authorize its hardware steps.
@@ -16,7 +16,7 @@ is locked; creating an issue does not authorize its hardware steps.
 ## Offline implementation and research
 
 - [x] [#1: Port complete body schema and interpolation to Rust](https://github.com/guirossibrum/VariaxWorkbench/issues/1)
-- [ ] [#2: Port pickup response and electronics calculations to Rust](https://github.com/guirossibrum/VariaxWorkbench/issues/2)
+- [x] [#2: Port pickup response and electronics calculations to Rust](https://github.com/guirossibrum/VariaxWorkbench/issues/2)
 - [ ] [#3: Port remaining DSP blocks, tuning and fixed-point conversions](https://github.com/guirossibrum/VariaxWorkbench/issues/3)
   Depends on #1, #2.
 - [ ] [#4: Reproduce Java preset conversion, model adjustments and final patch assembly](https://github.com/guirossibrum/VariaxWorkbench/issues/4)
@@ -61,7 +61,7 @@ is locked; creating an issue does not authorize its hardware steps.
 - [#32: Research and add POD HD500X backend](https://github.com/guirossibrum/VariaxWorkbench/issues/32)
 
 See [product vision](product-vision.md). These are unimplemented roadmap targets;
-the current implementation remains sequential with #2 In Progress.
+the current implementation remains sequential with #3 In Progress.
 
 - [#33: Expand late-stage synthetic testing at least 5x, including bends and alternate tunings](https://github.com/guirossibrum/VariaxWorkbench/issues/33)
   Depends on #6, #18, #28, #29; required before #22. Includes body-dependent sustain/note decay, continuous bends/vibrato (also during decay), per-string custom tunings, their combined audio behavior and independently verified pitch/artifact checks. Unsupported audio behavior stays unverified.

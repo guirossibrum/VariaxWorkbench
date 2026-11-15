@@ -159,3 +159,41 @@ electrical module does not generate audio or authorize hardware traffic.
 Reproduce with `scripts/verify_pickup_biquad.py`,
 `scripts/verify_pickup_secondary.py`, `scripts/verify_pickup_tables.py`,
 and `scripts/verify_pickup_calculated.py` using the local Python environment.
+
+## Geometry, level balancing and varied wiring
+
+The component port is complete for issue #2's pickup/electronics primitives.
+Additional original-code comparisons pass:
+
+- 261 body pole-offset outputs (28 bodies plus one synthetic definition, nine
+  normalized locations each).
+- 120 synthetic projection traces, comparing 61 setter arguments per case:
+  zero through four coils, scale lengths, apertures, dB-to-linear gains, pole
+  sorting, reversed phase, negative positions and signed zero. Native setters
+  are replaced by argument recorders; fixed-point packing is not tested here.
+- 129 original host placements across all 43 definitions and three position/angle/
+  phase combinations; 72 synthetic host cases additionally cover two humbuckers
+  and alternate-tuning single-coil collapse. There are 48 unique synthetic
+  placement vectors. Electrical fitting and final hardware setters are bypassed
+  only for these modular geometry comparisons.
+- 216 electric level/trim cases, covering synthetic model offsets, combined-model
+  overrides, body gains, positive/negative trim and position-dependent gain swaps.
+  The inactive second pickup's intermediate level is explicitly unobserved in
+  108 cases; fixtures do not claim it was independently measured.
+- A further 32 complete tables and 64 calculated responses vary load resistance,
+  capacitance, volume/tone resistance, sample rate (31250/44100 Hz), tapers,
+  series/parallel wiring and frozen tone. Together with the previous milestone,
+  280 full tables and 252 calculated responses match every assigned value.
+
+Only synthetic fixtures are committed, including geometry input/output, observed
+level fields and the varied-wiring tables. All component fixtures pass debug and
+release tests. Java angle/unit conversion, combination selection/stock overrides,
+acoustic host orchestration, all-block patch assembly and whole-engine parity
+remain in #3/#4/#6. Parameter-domain/model coverage continues in #7. This milestone
+is not audio rendering, sustain or bend validation, hardware readiness or evidence
+that a device operation is safe.
+
+New helpers: `verify_pickup_geometry.py`, `verify_pickup_placement.py`,
+`verify_pickup_levels.py` and `verify_pickup_wiring.py`. The analysis CLI uses
+169-byte little-endian geometry inputs and optional 40-byte wiring inputs; neither
+format is a hardware message or vendor preset.

@@ -60,9 +60,118 @@ fn run() -> Result<(), String> {
         Some("inspect") if args.len() == 2 => {
             print!("{}", read_preset(&args[1])?.summary());
         }
+        Some("pickup-levels") if args.len() == 9 => {
+            use variax_workbench::pickup::{BalancedLevels, PickupLevel};
+            let value = |i: usize| -> Result<f32, String> {
+                Ok(f32::from_bits(
+                    u32::from_str_radix(&args[i], 16).map_err(|e| e.to_string())?,
+                ))
+            };
+            let offset = |i: usize| -> Result<Option<f32>, String> {
+                if args[i] == "none" {
+                    Ok(None)
+                } else {
+                    Ok(Some(value(i)?))
+                }
+            };
+            let swap = match args[8].as_str() {
+                "0" => false,
+                "1" => true,
+                _ => return Err("swap must be 0 or 1".into()),
+            };
+            let r = BalancedLevels::electric(
+                PickupLevel {
+                    model_offset_db: offset(1)?,
+                    level_db: value(3)?,
+                },
+                PickupLevel {
+                    model_offset_db: offset(2)?,
+                    level_db: value(4)?,
+                },
+                offset(5)?,
+                value(6)?,
+                value(7)?,
+                swap,
+            )?;
+            println!(
+                "{:08x} {:08x} {:08x}",
+                r.pickup_db[0].to_bits(),
+                r.pickup_db[1].to_bits(),
+                r.trim_db.to_bits()
+            );
+        }
+        Some("pickup-place") if args.len() == 7 => {
+            let pickup = variax_workbench::models::PickupDefinition::parse(
+                &fs::read(&args[1]).map_err(|e| e.to_string())?,
+            )?;
+            let body = variax_workbench::body::BodyDefinition::parse(
+                &fs::read(&args[2]).map_err(|e| e.to_string())?,
+            )?;
+            let f = |i: usize| -> Result<f32, String> {
+                Ok(f32::from_bits(
+                    u32::from_str_radix(&args[i], 16).map_err(|e| e.to_string())?,
+                ))
+            };
+            let phase = match args[5].as_str() {
+                "0" => false,
+                "1" => true,
+                _ => return Err("phase must be 0 or 1".into()),
+            };
+            let single = match args[6].as_str() {
+                "0" => false,
+                "1" => true,
+                _ => return Err("single must be 0 or 1".into()),
+            };
+            let position = f(3)?;
+            let offsets = body.pole_offsets_at(body.normalized_pickup_position(position)?)?;
+            let placed = pickup.place_coils(offsets, position, f(4)?, phase, single)?;
+            let mut words = vec![placed.positions.len() as u32];
+            for coil in placed.positions {
+                words.extend(coil.map(f32::to_bits));
+                words.extend([u32::from(placed.reverse_phase); 6]);
+            }
+            println!(
+                "{}",
+                words
+                    .iter()
+                    .map(|v| format!("{v:08x}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+        }
+        Some("pickup-project") if args.len() == 2 => {
+            let input = variax_workbench::pickup::GeometryInput::parse(
+                &fs::read(&args[1]).map_err(|e| e.to_string())?,
+            )?;
+            let projection = input.project()?;
+            println!(
+                "{}",
+                projection
+                    .words()
+                    .iter()
+                    .map(|v| format!("{v:08x}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+        }
+        Some("body-pole-offsets") if args.len() == 3 => {
+            let body = variax_workbench::body::BodyDefinition::parse(
+                &fs::read(&args[1]).map_err(|e| e.to_string())?,
+            )?;
+            let position =
+                f32::from_bits(u32::from_str_radix(&args[2], 16).map_err(|e| e.to_string())?);
+            println!(
+                "{}",
+                body.pole_offsets_at(position)?
+                    .iter()
+                    .map(|v| format!("{:08x}", v.to_bits()))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+        }
         Some(command @ ("pickup-tables" | "pickup-calculated"))
-            if (command == "pickup-tables" && args.len() == 6)
-                || (command == "pickup-calculated" && args.len() == 7) =>
+            if (command == "pickup-tables" && (6..=7).contains(&args.len()))
+                || (command == "pickup-calculated" && (7..=8).contains(&args.len())) =>
         {
             use variax_workbench::{
                 models::{PickupCircuit, PickupDefinition, PickupWiring},
@@ -92,6 +201,23 @@ fn run() -> Result<(), String> {
                 tone_resistance: 500000.,
                 volume_resistance: 500000.,
                 tone_capacitance: 2.2e-8,
+            };
+            let extra = if command == "pickup-calculated" { 7 } else { 6 };
+            let wiring = if let Some(path) = args.get(extra) {
+                let raw = fs::read(path).map_err(|e| e.to_string())?;
+                if raw.len() != 40 {
+                    return Err("expected 40-byte little-endian wiring analysis input".into());
+                }
+                let value = |i| f64::from_le_bytes(raw[i..i + 8].try_into().unwrap());
+                WiringProperties {
+                    load_capacitance: value(0),
+                    load_resistance: value(8),
+                    tone_resistance: value(16),
+                    volume_resistance: value(24),
+                    tone_capacitance: value(32),
+                }
+            } else {
+                wiring
             };
             if command == "pickup-calculated" {
                 let mut wiring = wiring;

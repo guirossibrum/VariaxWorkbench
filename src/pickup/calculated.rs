@@ -119,7 +119,10 @@ mod tests {
     use crate::{models::PickupWiring, pickup::VolumeTaper};
     #[test]
     fn all_assigned_fields_match_original_after_smoothing_and_freeze() {
-        for line in include_str!("../../tests/fixtures/native-pickup-calculated.txt").lines() {
+        for line in include_str!("../../tests/fixtures/native-pickup-calculated.txt")
+            .lines()
+            .chain(include_str!("../../tests/fixtures/native-pickup-calculated-wiring.txt").lines())
+        {
             let fields: Vec<_> = line.split_whitespace().collect();
             assert_eq!(fields.len(), 99);
             let value = |i| f64::from_bits(u64::from_str_radix(fields[i], 16).unwrap());

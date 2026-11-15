@@ -1,6 +1,10 @@
 //! Offline pickup circuit transfer calculations recovered from Workbench.
 use crate::models::PickupCircuit;
 mod biquad;
+mod levels;
+pub use levels::{BalancedLevels, PickupLevel};
+mod geometry;
+pub use geometry::{GeometryInput, GeometryProjection, PlacedCoils};
 mod calculated;
 pub use calculated::CalculatedResponse;
 mod secondary;

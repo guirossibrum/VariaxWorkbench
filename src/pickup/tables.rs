@@ -116,7 +116,10 @@ mod tests {
     use super::*;
     #[test]
     fn complete_tables_match_original_synthetic_outputs() {
-        for line in include_str!("../../tests/fixtures/native-pickup-tables.txt").lines() {
+        for line in include_str!("../../tests/fixtures/native-pickup-tables.txt")
+            .lines()
+            .chain(include_str!("../../tests/fixtures/native-pickup-tables-wiring.txt").lines())
+        {
             let fields: Vec<_> = line.split_whitespace().collect();
             assert_eq!(fields.len(), 80);
             let bits = |i| u64::from_str_radix(fields[i], 16).unwrap();
