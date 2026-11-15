@@ -49,7 +49,7 @@ def archive(directory, output, epoch):
         staged.unlink(missing_ok=True)
 
 
-def build(output, math_profile):
+def build(output, math_profile, desktop_backend='x11'):
     if platform.system() != 'Linux':
         raise ValueError('this package profile builds on Linux only')
     if output.exists():
@@ -91,7 +91,10 @@ def build(output, math_profile):
             put('bin/'+name, (ROOT/'target/release'/name).read_bytes(), 0o755)
         for folder, suffix in [('applications','desktop'), ('icons/hicolor/scalable/apps','svg'), ('mime/packages','xml')]:
             name = DESKTOP_ID+'.'+suffix
-            put(f'share/{folder}/{name}', (ROOT/'packaging/linux'/name).read_bytes())
+            data = (ROOT/'packaging/linux'/name).read_bytes()
+            if suffix == 'desktop':
+                data = data.replace(b'--display x11', ('--display '+desktop_backend).encode())
+            put(f'share/{folder}/{name}', data)
         for name in ['README.md', 'Cargo.lock', 'docs/math-profiles.md', 'docs/linux-package.md']:
             put(f'share/doc/{APP}/'+Path(name).name, (ROOT/name).read_bytes())
         for source in sorted((ROOT/'third_party').rglob('*')):
@@ -114,7 +117,7 @@ def build(output, math_profile):
                                  'notice_files':notices})
         put(f'share/doc/{APP}/dependencies.json', (json.dumps(dependencies, indent=2, sort_keys=True)+'\n').encode())
         manifest = {'application':APP, 'format':1, 'version':version, 'revision':revision,
-                    'target':target, 'rustc':rustc, 'math_profile':profile, 'source_date_epoch':epoch,
+                    'target':target, 'rustc':rustc, 'math_profile':profile, 'desktop_backend':desktop_backend, 'source_date_epoch':epoch,
                     'hardware_access_locked':True, 'vendor_resources_included':False,
                     'files':sorted(records, key=lambda x:x['path'])}
         entries(manifest)
@@ -130,7 +133,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--math-profile', choices=['host', 'software'], default='host')
+    parser.add_argument('--desktop-backend', choices=['x11', 'auto', 'wayland'], default='x11')
     args = parser.parse_args()
-    try: build(args.output.absolute(), args.math_profile)
+    try: build(args.output.absolute(), args.math_profile, args.desktop_backend)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         raise SystemExit(str(error))

@@ -77,6 +77,11 @@ def check_prefix(prefix):
 
 
 def desktop_content(data, prefix):
+    lines = data.decode().splitlines()
+    value = next(line.removeprefix('Exec=') for line in lines if line.startswith('Exec='))
+    tail = value.removeprefix('variax-workbench-gui')
+    if tail not in [' %f', ' --display auto %f', ' --display x11 %f', ' --display wayland %f']:
+        raise ValueError('unrecognized desktop command')
     executable = str(prefix/'bin/variax-workbench-gui')
     # The Desktop Entry specification applies string escaping before Exec
     # argument quoting. This is data for a launcher, never a shell command.
@@ -84,11 +89,11 @@ def desktop_content(data, prefix):
     quoted = '"'+quoted.replace('\\', '\\\\')+'"'
     string_value = lambda s: str(s).replace('\\', '\\\\')
     replacements = {
-        'Exec':quoted+' %f', 'TryExec':string_value(executable),
+        'Exec':quoted+tail, 'TryExec':string_value(executable),
         'Icon':string_value(prefix/f'share/icons/hicolor/scalable/apps/{DESKTOP_ID}.svg'),
     }
     return ('\n'.join(k+'='+replacements[k] if (k:=line.partition('=')[0]) in replacements else line
-                      for line in data.decode().splitlines())+'\n').encode()
+                      for line in lines)+'\n').encode()
 
 
 def create_new(path, data, mode):

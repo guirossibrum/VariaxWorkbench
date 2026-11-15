@@ -1208,7 +1208,7 @@ impl Drop for Workbench {
     }
 }
 
-const USAGE: &str = "Usage: variax-workbench-gui [FILE | --preset FILE] [--data-dir DIRECTORY] [--artwork EDITOR_IMAGE_FOLDER] [--tab body|pickups|tuning|controls] [--screenshot OUTPUT.png]";
+const USAGE: &str = "Usage: variax-workbench-gui [FILE | --preset FILE] [--data-dir DIRECTORY] [--artwork EDITOR_IMAGE_FOLDER] [--tab body|pickups|tuning|controls] [--display auto|x11|wayland (Linux)] [--screenshot OUTPUT.png]";
 
 fn save_screenshot(path: &Path, pixels: &[u8], width: u32, height: u32) -> Result<(), String> {
     use image::ImageEncoder;
@@ -1224,6 +1224,7 @@ struct GuiOptions {
     artwork: PathBuf,
     screenshot: Option<PathBuf>,
     tab: Tab,
+    display: String,
 }
 
 fn parse_options(
@@ -1235,6 +1236,7 @@ fn parse_options(
         artwork: data_root.join("artwork"),
         screenshot: None,
         tab: Tab::Body,
+        display: "auto".into(),
     };
     let mut data_root = data_root.to_owned();
     let mut artwork = None;
@@ -1248,7 +1250,7 @@ fn parse_options(
         }
         if !matches!(
             arg.as_str(),
-            "--preset" | "--data-dir" | "--artwork" | "--screenshot" | "--tab"
+            "--preset" | "--data-dir" | "--artwork" | "--screenshot" | "--tab" | "--display"
         ) {
             return Err(format!("Unknown argument: {arg}"));
         }
@@ -1264,6 +1266,15 @@ fn parse_options(
             }
             "--data-dir" => data_root = PathBuf::from(value),
             "--artwork" => artwork = Some(PathBuf::from(value)),
+            "--display" => {
+                if !matches!(value.as_str(), "auto" | "x11" | "wayland") {
+                    return Err(format!("Unknown display backend: {value}"));
+                }
+                if !cfg!(target_os = "linux") && value != "auto" {
+                    return Err("Explicit X11/Wayland selection is Linux-only".into());
+                }
+                options.display = value;
+            }
             "--screenshot" => {
                 let path = PathBuf::from(value);
                 if path.extension().and_then(|e| e.to_str()) != Some("png") {
@@ -1334,6 +1345,25 @@ fn main() -> eframe::Result {
             .with_min_inner_size([960.0, 680.0]),
         ..Default::default()
     };
+    #[cfg(target_os = "linux")]
+    let options = {
+        let mut options = options;
+        let backend = arguments.display.clone();
+        options.event_loop_builder = Some(Box::new(move |builder| match backend.as_str() {
+            "x11" => {
+                use winit::platform::x11::EventLoopBuilderExtX11;
+                builder.with_x11();
+            }
+            "wayland" => {
+                use winit::platform::wayland::EventLoopBuilderExtWayland;
+                builder.with_wayland();
+            }
+            _ => {}
+        }));
+        options
+    };
+    #[cfg(not(target_os = "linux"))]
+    let _ = &arguments.display;
     eframe::run_native(
         "Variax Workbench",
         options,
@@ -1730,6 +1760,7 @@ mod tests {
             vec!["--unknown"],
             vec!["--tab", "invalid"],
             vec!["--screenshot", "image.jpg"],
+            vec!["--display", "unknown"],
         ] {
             assert!(parse_options(args.into_iter().map(str::to_owned), root).is_err());
         }

@@ -31,12 +31,12 @@ class PackageGuards(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);payload=root/'package';manifest=package(payload);prefix=root/'a prefix'
             name=f'share/applications/{install.DESKTOP_ID}.desktop'
-            data=b'[Desktop Entry]\nType=Application\nExec=variax-workbench-gui %f\nTryExec=variax-workbench-gui\nIcon=original\n'
+            data=b'[Desktop Entry]\nType=Application\nExec=variax-workbench-gui --display x11 %f\nTryExec=variax-workbench-gui\nIcon=original\n'
             path=payload/'files'/name;path.parent.mkdir(parents=True);path.write_bytes(data);path.chmod(0o644)
             manifest['files'].append({'path':name,'sha256':hashlib.sha256(data).hexdigest(),'size':len(data),'mode':0o644})
             (payload/'manifest.json').write_text(json.dumps(manifest));install.install(payload,prefix)
             text=(prefix/name).read_text()
-            self.assertIn(f'Exec="{prefix}/bin/variax-workbench-gui" %f\n',text)
+            self.assertIn(f'Exec="{prefix}/bin/variax-workbench-gui" --display x11 %f\n',text)
             self.assertIn(f'TryExec={prefix}/bin/variax-workbench-gui\n',text)
             receipt=json.loads((prefix/install.RECEIPT).read_text())
             self.assertTrue(all(install.matches(prefix/e['path'],e) for e in receipt['files']))

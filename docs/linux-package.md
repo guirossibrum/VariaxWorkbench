@@ -23,6 +23,13 @@ profile, Git revision, compiler, target triple and file hashes are recorded.
 Output must be a new archive path. Hardware locks are checked before compilation;
 the builder runs no hardware command.
 
+The Linux desktop launcher selects the tested X11 backend (including XWayland).
+`--desktop-backend auto` or `--desktop-backend wayland` can select another
+launcher policy at build time. The choice is recorded separately from the math
+profile. The GUI also accepts `--display auto|x11|wayland` on Linux. Its window
+adapter uses the same pinned winit 0.30.13 already required by eframe; no new
+dependency version was introduced. Other platforms keep their native selection.
+
 Archive ordering, ownership, modes and timestamps are normalized. Identical
 payloads and `SOURCE_DATE_EPOCH` produce identical archive bytes. Different
 compilers/system libraries/build hosts need not emit identical binaries. The
@@ -79,7 +86,7 @@ a file association or one file argument. Parameter editing works without images;
 missing artwork is informational and does not change the document.
 
 ```sh
-variax-workbench-gui "a preset.vwm"
+variax-workbench-gui --display x11 "a preset.vwm"
 variax-workbench-gui --preset "a bank.vwb" --artwork /ABS/EXTRACTED/EDITOR/IMAGES
 ```
 
@@ -105,3 +112,13 @@ opening a file, positional arguments, artwork overrides and protected PNG output
 Actual build/staging and desktop validation are recorded at issue completion.
 These tests do not establish device connectivity, physical safety, sound
 equivalence, recording or firmware recovery. README device restrictions apply.
+
+The first staged package passed install/removal, desktop validation, CLI
+inspection of a synthetic preset, and native X11 screenshots of welcome and
+synthetic-preset screens, without vendor assets. A native Wayland screenshot
+attempt timed out; a debugger showed Mesa waiting in a Wayland buffer swap.
+That failure is retained, not classified as a Rust document/engine error, and
+Wayland rendering remains unverified in this session. Final X11-launcher package
+validation follows the explicit backend change. Native Windows/macOS GUI checks
+remain separate. The eight package guards run on Linux CI; research guards and
+Rust core CI also cover Windows and macOS.
