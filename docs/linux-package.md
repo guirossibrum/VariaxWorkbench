@@ -119,6 +119,24 @@ synthetic-preset screens, without vendor assets. A native Wayland screenshot
 attempt timed out; a debugger showed Mesa waiting in a Wayland buffer swap.
 That failure is retained, not classified as a Rust document/engine error, and
 Wayland rendering remains unverified in this session. Final X11-launcher package
-validation follows the explicit backend change. Native Windows/macOS GUI checks
-remain separate. The eight package guards run on Linux CI; research guards and
+validation passed after the explicit backend change, for both math profiles.
+At source revision `1c2e22e`, both archives contained 366 explicitly hashed
+payload files. Each passed staged install/removal, desktop validation, all four
+tools on synthetic inputs, and native X11 welcome/preset PNG captures with the
+original Wayland environment still present. User-artwork markers survived
+removal; no optional artwork directory was created by launch. Reports are
+`package-verification-96lmdjhj/validation.json` (host) and
+`package-verification-5xiw1ole/validation.json` (software), under ignored `.tools/`.
+The Rust suite passed 131 all-feature tests and 131 host-profile tests on Linux,
+including 15 headless GUI tests, with Clippy and formatting clean.
+
+Reproduce staging with the tested Python 3.14.8 environment and a package built
+from the current checkout revision:
+
+```sh
+python scripts/verify_linux_package.py .tools/packages/workbench-host.tar.gz --screenshots
+```
+
+This verifier preserves a new evidence directory even on failure. Native
+Windows/macOS GUI checks remain separate. The eight package guards run on Linux CI; research guards and
 Rust core CI also cover Windows and macOS.

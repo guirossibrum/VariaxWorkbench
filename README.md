@@ -72,8 +72,8 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 
 - [x] Rust CLI and offline GUI build, including optimized release builds.
 - [x] Short guided-check **offline rehearsal** app: five prompts, cancellation/skip handling and protected report saving. Run `cargo run --bin variax-check -- plan`; see [usage and limits](docs/manual-check.md).
-- [x] **128 Rust tests per math profile** (host configuration and experimental software configuration), Clippy with warnings denied, and formatting checks on Linux.
-- [x] **12 headless GUI tests** cover actual dirty-prompt/bank-row clicks, save cancellation/failure/retry, grouped slider drags, operation cancellation/error recovery, artwork recovery and document preservation. Native OS dialogs/window behavior still need manual platform checks; see [GUI scope](docs/gui-validation.md).
+- [x] **131 Rust tests per math profile** (host configuration and experimental software configuration), Clippy with warnings denied, and formatting checks on Linux.
+- [x] **15 headless GUI tests** cover actual dirty-prompt/bank-row clicks, save cancellation/failure/retry, grouped slider drags, operation cancellation/error recovery, artwork recovery and document preservation. Native OS dialogs/window behavior still need manual platform checks; see [GUI scope](docs/gui-validation.md).
 - [x] Shared CLI/GUI edit validation for **34 parameters**, 28 body and 32 pickup choices; **84 original-Java endpoint/choice cases** and **1,792 body/pickup/slot selections** pass. Imported unknown/out-of-range values survive rendering/copying; see [domains and limits](docs/parameter-domains.md).
 - [x] Individual preset parsing/editing and protected copy saves: **6 original-Java compatibility checks**.
 - [x] L6BA/L6CO browsing, editing, whole-bank undo/redo and protected save-copy in the GUI; **three banks/five presets per format compared with original Java**, including resized replacement. [Bank scope and limits](docs/bank-editor.md).
@@ -87,6 +87,7 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 - [x] Original embedded Windows math instructions: **206,228 inputs in each of three explicit CPU/precision modes** complete offline. Initialized SSE math substitution into the Mac generator matches all 110 MPFR-256 packed candidates. This isolates math effects; it is not full Windows generator/JVM parity.
 - [x] Experimental `portable-math` build: pinned Rust algorithms, **44 centralized math call sites**, **110 complete numeric patches**, **48 synthetic-resource cases**, **828 raw component cases**, and **144 complete Java/native preset-file cases** match corresponding original-instruction software-math references in debug/release. Software CLI binaries import none of the tested host math functions. The default profile remains host math; [profile contract, dependency and limits](docs/math-profiles.md).
 - [x] Fresh offline research setup: digest-checked archive extraction, isolated hash-locked Python environment, 28-body/43-pickup catalog, eight native slices, derived procedure metadata and an ordered 39-stage reference recipe. Nine synthetic setup guards pass on Linux/Windows/macOS. A fresh uninterrupted replay passed all 39 stages without fixture changes. Replay evidence and retained bounded-run failures are [documented](docs/reproducing-references.md); the Linux research environment is separate from application dependencies.
+- [x] Linux offline package builder, explicit digest manifest, desktop/MIME integration and protected install/removal. Both math-profile packages passed staged checks, all four tools on synthetic inputs and native X11 welcome/preset captures; eight package guards pass. Vendor resources are excluded; [build/install and limits](docs/linux-package.md) — [#11](https://github.com/guirossibrum/VariaxWorkbench/issues/11).
 - [x] Software-profile core/file CI: **115 tests in debug and release per target** on Linux x86-64, Windows x86-64 and macOS ARM, with Clippy clean. Cross-target checks found and fixed Windows CLI stack exhaustion and ARM NaN-sign differences; GUI/USB integration is outside this CI scope.
 - [x] Raw Rust pickup circuit combination: **3,826 bit-exact comparisons** with the native routine.
 - [x] Pickup electronics: **2,322 raw responses + 387 primary fits + 282 secondary fits**, **900 biquad checks**, **280 complete tables** and **252 smoothed-response comparisons**. Synthetic fixtures pass debug/release; host integration is covered below.
@@ -103,7 +104,6 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 - [ ] Historical macOS math parity and full Rust/native validation remain pending. The old uninitialized whole-generator/JNI baseline stays invalidated; use only the versioned candidates described in [native runtime evidence](docs/native-runtime.md).
 
 - [ ] Historical math-runtime parity, cross-target/default-rollout review of the experimental portable profile, and broader complete Rust/native validation — [#5](https://github.com/guirossibrum/VariaxWorkbench/issues/5), [#6](https://github.com/guirossibrum/VariaxWorkbench/issues/6). The synthetic-only core now passes Windows/macOS/Linux CI; other targets and full application integration remain pending.
-- [ ] Linux packaging and installation paths — [#11](https://github.com/guirossibrum/VariaxWorkbench/issues/11).
 - [ ] Firmware architecture/region mapping, factory/calibration extraction and trustworthy factory comparison — [#13](https://github.com/guirossibrum/VariaxWorkbench/issues/13)–[#15](https://github.com/guirossibrum/VariaxWorkbench/issues/15).
 - [ ] Static recovery/update reconstruction and virtual device/update simulation — [#16](https://github.com/guirossibrum/VariaxWorkbench/issues/16), [#18](https://github.com/guirossibrum/VariaxWorkbench/issues/18). Rust container inspection is [#17](https://github.com/guirossibrum/VariaxWorkbench/issues/17).
 - [ ] PODxt Live USB-component artifact and installed version remain unmet. A macOS Monkey userspace builder shape was recorded and was not sent. USB PID `0x4650` constructs an `L6XTAudioControlMac` and, when control slot `+0x18` succeeds, virtually calls description slot `+0x0c` with that control. No symbol stub binds the setter. A later `AcquireService(0)` miss stores an `L6KernelBrandiServiceMac`, and the base acquire call returns that cache slot. Kernel `GetVersion` calls `IOConnectCallScalarMethod` selector 6. Sharedxt selector 6 builds the same five fields in a device request and forwards that pointer. That handler is not `GetIOPVersion` and does not identify a firmware image. The forwarded callee at slot `+0x978` is not in the local archive, so the three returned bytes stay uninterpreted. That is a static branch. The five fields stay unapproved. The partial record is [PODxt Live USB firmware](docs/pod-usb-firmware.md). The installed USB version is unknown — [#20](https://github.com/guirossibrum/VariaxWorkbench/issues/20).
@@ -129,15 +129,18 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 - [ ] Linux did not expose this guitar's Variax ALSA port in earlier observations; the identity-matching issue remains unresolved and no driver patch is installed.
 - [ ] No complete authenticated Variax 600 factory bank or proven recovery path is available.
 - [ ] The original Java reader rejects the tested odd-length unknown bank extensions with `EOFException`; Rust preserves them, but Java compatibility is unverified for such files. Entirely empty bank/collection GUI editing and bank/preset creation/deletion are unavailable. See [bank limits](docs/bank-editor.md).
-- [ ] A fresh clone lacks proprietary artwork, vendor binaries and personal captures by design; original-library reference tests and the illustrated GUI need separately supplied local artifacts. No packaged standalone distribution exists yet.
+- [ ] Native Wayland screenshot validation timed out inside Mesa buffer swap in this session; the Linux package launcher uses the tested X11 path. Wayland rendering and native Windows/macOS GUI checks remain unverified; see [package validation](docs/linux-package.md).
+- [ ] Original-library reference tests and illustrated artwork need separately supplied private artifacts. The Linux package opens without them; Windows/macOS desktop packages are not implemented.
 
 ## Run the offline editor
 
 ```sh
-cargo run --features gui --bin variax-workbench-gui -- --preset backups/current-variax-600.vwm
+cargo run --features gui --bin variax-workbench-gui -- --display x11
 ```
 
-The local extracted artwork lives in `assets/original-ui/`. The editor supports
+Open a file with **Open** or `--preset FILE`. Optional extracted artwork can be
+selected with **Artwork folder** or `--artwork EDITOR_IMAGE_FOLDER`; see
+[package paths](docs/linux-package.md). The editor supports
 body/pickup selection and placement, tuning and electronics controls, undo/redo,
 and saving a new copy. Originals and existing output files are protected.
 A saved preset cannot yet be sent to the guitar. Offline host generation is implemented; historical-runtime, broader full-engine and audio validation remain pending.
