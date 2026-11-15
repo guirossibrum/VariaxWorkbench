@@ -60,24 +60,46 @@ fn run() -> Result<(), String> {
         Some("inspect") if args.len() == 2 => {
             print!("{}", read_preset(&args[1])?.summary());
         }
-        Some("dsp-block") if args.len() == 4 => {
+        Some(command @ ("dsp-block" | "dsp-filter-block")) if args.len() == 4 => {
             let mut seed = u32::from_str_radix(&args[1], 16).map_err(|e| e.to_string())?;
             let mut patch = variax_workbench::dsp::NativePatch::default();
             for word in &mut patch.words {
                 seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
                 *word = seed;
             }
-            variax_workbench::dsp::write_simple_analysis(
-                &mut patch,
-                &args[2],
-                &fs::read(&args[3]).map_err(|e| e.to_string())?,
-            )?;
+            let bytes = fs::read(&args[3]).map_err(|e| e.to_string())?;
+            if command == "dsp-block" {
+                variax_workbench::dsp::write_simple_analysis(&mut patch, &args[2], &bytes)?;
+            } else {
+                variax_workbench::dsp::write_filter_analysis(&mut patch, &args[2], &bytes)?;
+            }
             println!(
                 "{}",
                 patch
                     .words
                     .iter()
                     .map(|v| format!("{v:08x}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+        }
+        Some("dsp-biquad") if args.len() == 5 => {
+            let values = args[1..]
+                .iter()
+                .map(|v| u32::from_str_radix(v, 16))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            let output = variax_workbench::dsp::biquad_coefficients(
+                values[0],
+                f32::from_bits(values[1]),
+                f32::from_bits(values[2]),
+                f32::from_bits(values[3]),
+            )?;
+            println!(
+                "{}",
+                output
+                    .iter()
+                    .map(|v| format!("{:08x}", v.to_bits()))
                     .collect::<Vec<_>>()
                     .join(" ")
             );

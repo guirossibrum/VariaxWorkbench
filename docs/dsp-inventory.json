@@ -72,7 +72,7 @@
     },
     {
       "name": "L6VariaxLoCut",
-      "status": "DSP port pending (typed model/interpolation already available)",
+      "status": "component conversions/word assembly verified under documented adapters; full-engine/audio parity pending",
       "functions": [
         {
           "address": "0x1cbd0",
@@ -270,7 +270,7 @@
     },
     {
       "name": "L6VariaxReverb",
-      "status": "DSP port pending (typed model/interpolation already available)",
+      "status": "component conversions/word assembly verified under documented adapters; full-engine/audio parity pending",
       "functions": [
         {
           "address": "0x26c90",
@@ -778,7 +778,7 @@
     },
     {
       "name": "L6VariaxPickFilter",
-      "status": "DSP port pending (typed model/interpolation already available)",
+      "status": "component conversions/word assembly verified under documented adapters; full-engine/audio parity pending",
       "functions": [
         {
           "address": "0x294e0",
@@ -832,7 +832,7 @@
     },
     {
       "name": "L6VariaxCompressor",
-      "status": "DSP port pending (typed model/interpolation already available)",
+      "status": "component conversions/word assembly verified under documented adapters; full-engine/audio parity pending",
       "functions": [
         {
           "address": "0x297f0",
@@ -1286,5 +1286,5 @@
       "name": "L6VariaxStringEQBase::L6VariaxStringEQBase"
     }
   ],
-  "unmapped_words": "All-block word ownership remains pending; do not claim coverage from procedure counts."
+  "unmapped_words": "All 1091 words indexed in dsp-word-map.json: 748 observed instruction writes; 343 unobserved/semantically unknown, zero in the 110-case corpus. This is not proof of reserved/unused words."
 }

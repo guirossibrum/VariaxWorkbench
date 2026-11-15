@@ -1,0 +1,465 @@
+{
+  "source_sha256": "3aa232329d467101637764397b77a7b8ffa6af0ccd72ec380d02f145477ba9fe",
+  "runtime_version": "initialized-host-libm-v2",
+  "cases": 110,
+  "scope": "Observed native instruction writes during initialized whole-generator calls, excluding constructor zeroing and checksum. Emulation API writes from adapters may not trigger CPU hooks; unobserved is not proof of unused/reserved hardware words.",
+  "observed_words": 748,
+  "unobserved_words": 343,
+  "unobserved_nonzero_words_in_corpus": [],
+  "ranges": [
+    {
+      "first_word": 0,
+      "last_word": 0,
+      "writers": [],
+      "state": "no CPU instruction write observed; semantics unknown"
+    },
+    {
+      "first_word": 1,
+      "last_word": 1,
+      "writers": [
+        "L6VariaxHWPatch::SetBlockEnable",
+        "L6VariaxHWPatch::SetBlockStatusWord"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 2,
+      "last_word": 3,
+      "writers": [
+        "L6VariaxHWPatch::SetMicPositionNotchDepthTable",
+        "L6VariaxHWPatch::SetPickupScaleLength"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 4,
+      "last_word": 4,
+      "writers": [
+        "L6VariaxHWPatch::SetMicPositionNotchDepthTable",
+        "L6VariaxHWPatch::SetPickupNumCoils"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 5,
+      "last_word": 10,
+      "writers": [
+        "L6VariaxHWPatch::SetMicPositionNotchDepthTable",
+        "L6VariaxHWPatch::SetPickupPolePiecePositionAndPhase"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 11,
+      "last_word": 19,
+      "writers": [
+        "L6VariaxHWPatch::SetMicPositionTable",
+        "L6VariaxHWPatch::SetPickupPolePiecePositionAndPhase"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 20,
+      "last_word": 28,
+      "writers": [
+        "L6VariaxHWPatch::SetMicPositionRandomLevelTable",
+        "L6VariaxHWPatch::SetPickupPolePiecePositionAndPhase"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 29,
+      "last_word": 34,
+      "writers": [
+        "L6VariaxHWPatch::SetPickupMagneticAperture"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 35,
+      "last_word": 35,
+      "writers": [],
+      "state": "no CPU instruction write observed; semantics unknown"
+    },
+    {
+      "first_word": 36,
+      "last_word": 36,
+      "writers": [
+        "L6VariaxHWPatch::SetToneKnobFunction",
+        "L6VariaxHWPatch::SetToneKnobPosition"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 37,
+      "last_word": 38,
+      "writers": [
+        "L6VariaxHWPatch::SetPickFilterCoefs",
+        "L6VariaxHWPatch::SetPickupResponseTone2FreqCoef"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 39,
+      "last_word": 47,
+      "writers": [
+        "L6VariaxHWPatch::SetPickFilterGainTable",
+        "L6VariaxHWPatch::SetPickupResponseLowpassFreqCoefTable"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 48,
+      "last_word": 49,
+      "writers": [
+        "L6VariaxHWPatch::SetPickFilterCoefs",
+        "L6VariaxHWPatch::SetPickupResponseToneOffQTable"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 50,
+      "last_word": 58,
+      "writers": [
+        "L6VariaxHWPatch::SetCompressorPostGainTable",
+        "L6VariaxHWPatch::SetPickupResponseToneOffQTable"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 59,
+      "last_word": 60,
+      "writers": [
+        "L6VariaxHWPatch::SetCompressorCoefs",
+        "L6VariaxHWPatch::SetPickupResponseToneOffQTable"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 61,
+      "last_word": 65,
+      "writers": [
+        "L6VariaxHWPatch::SetPickupResponseToneOffQTable"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 66,
+      "last_word": 83,
+      "writers": [
+        "L6VariaxHWPatch::SetPickupResponseToneOffFreqCoefTable"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 84,
+      "last_word": 101,
+      "writers": [
+        "L6VariaxHWPatch::SetPickupResponseToneOffGainTable"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 102,
+      "last_word": 119,
+      "writers": [
+        "L6VariaxHWPatch::SetPickupResponseTone1GainTable"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 120,
+      "last_word": 137,
+      "writers": [
+        "L6VariaxHWPatch::SetPickupResponseTone2QTable"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 138,
+      "last_word": 155,
+      "writers": [
+        "L6VariaxHWPatch::SetPickupResponseTone2GainTable"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 156,
+      "last_word": 157,
+      "writers": [
+        "L6VariaxHWPatch::SetBodyMixCoefs"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 158,
+      "last_word": 158,
+      "writers": [],
+      "state": "no CPU instruction write observed; semantics unknown"
+    },
+    {
+      "first_word": 159,
+      "last_word": 160,
+      "writers": [
+        "L6VariaxHWPatch::SetBodyTrebleCoefs"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 161,
+      "last_word": 161,
+      "writers": [],
+      "state": "no CPU instruction write observed; semantics unknown"
+    },
+    {
+      "first_word": 162,
+      "last_word": 163,
+      "writers": [
+        "L6VariaxHWPatch::SetBodyTrebleCoefs"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 164,
+      "last_word": 164,
+      "writers": [
+        "L6VariaxHWPatch::SetNumBodyResonators"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 165,
+      "last_word": 200,
+      "writers": [
+        "L6VariaxHWPatch::SetBodyResonatorCoefs"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 201,
+      "last_word": 201,
+      "writers": [
+        "L6VariaxHWPatch::SetLoCut4thOrderEnable"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 202,
+      "last_word": 203,
+      "writers": [
+        "L6VariaxHWPatch::SetLoCutCoefs"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 204,
+      "last_word": 209,
+      "writers": [
+        "L6VariaxHWPatch::SetStringToneStringCoefs"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 210,
+      "last_word": 317,
+      "writers": [
+        "L6VariaxHWPatch::SetStringToneResoCoefs"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 318,
+      "last_word": 329,
+      "writers": [
+        "L6VariaxHWPatch::SetStringToneStringCoefs"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 330,
+      "last_word": 347,
+      "writers": [
+        "L6VariaxHWPatch::SetGlobalDecayCoefs"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 348,
+      "last_word": 353,
+      "writers": [
+        "L6VariaxHWPatch::SetStringEQStringGain"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 354,
+      "last_word": 359,
+      "writers": [
+        "L6VariaxHWPatch::SetStringEQNumBands"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 360,
+      "last_word": 539,
+      "writers": [
+        "L6VariaxHWPatch::SetStringEQBandCoefs"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 540,
+      "last_word": 545,
+      "writers": [
+        "L6VariaxHWPatch::SetSumToMonoLevel"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 546,
+      "last_word": 554,
+      "writers": [
+        "L6VariaxHWPatch::SetVolumeCurve"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 555,
+      "last_word": 555,
+      "writers": [
+        "FUN_0001aaa5"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 556,
+      "last_word": 585,
+      "writers": [
+        "L6VariaxHWPatch::SetSitarBuzzStringCoefs"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 586,
+      "last_word": 586,
+      "writers": [
+        "FUN_0001ad15"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 587,
+      "last_word": 587,
+      "writers": [
+        "L6VariaxHWPatch::SetDroneNumDroneStrings"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 588,
+      "last_word": 611,
+      "writers": [
+        "L6VariaxHWPatch::SetDroneStringCoefs"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 612,
+      "last_word": 627,
+      "writers": [],
+      "state": "no CPU instruction write observed; semantics unknown"
+    },
+    {
+      "first_word": 628,
+      "last_word": 631,
+      "writers": [
+        "L6VariaxHWPatch::SetReverbAllpassDelay"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 632,
+      "last_word": 640,
+      "writers": [
+        "L6VariaxHWPatch::SetReverbAllpassDensityTable"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 641,
+      "last_word": 641,
+      "writers": [
+        "L6VariaxHWPatch::SetReverbControlSources"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 642,
+      "last_word": 642,
+      "writers": [
+        "L6VariaxHWPatch::SetReverbPreDelay"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 643,
+      "last_word": 678,
+      "writers": [
+        "L6VariaxHWPatch::SetReverbTankDelayFeedbackCoefTable"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 679,
+      "last_word": 679,
+      "writers": [
+        "L6VariaxHWPatch::SetReverbControlSources"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 680,
+      "last_word": 691,
+      "writers": [
+        "L6VariaxHWPatch::SetPitchShiftStringParams"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 692,
+      "last_word": 751,
+      "writers": [
+        "L6VariaxHWPatch::Set12StringEQBandCoefs"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 752,
+      "last_word": 763,
+      "writers": [
+        "L6VariaxHWPatch::Set12StringEQStringWetDry"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 764,
+      "last_word": 770,
+      "writers": [],
+      "state": "no CPU instruction write observed; semantics unknown"
+    },
+    {
+      "first_word": 771,
+      "last_word": 774,
+      "writers": [
+        "L6VariaxHWPatch::SetPickupCoilGain"
+      ],
+      "state": "observed instruction write"
+    },
+    {
+      "first_word": 775,
+      "last_word": 1090,
+      "writers": [],
+      "state": "no CPU instruction write observed; semantics unknown"
+    }
+  ]
+}

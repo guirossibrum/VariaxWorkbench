@@ -58,3 +58,8 @@ assembly cases for six further blocks, with separate microphone parameter and
 prepared-field paths. Every snapshot/input is synthetic; original instruction
 outputs are recorded with the disclosed host-libm/private-runtime adapters where
 needed. Assertions include all 1,091 words, not only changed fields.
+
+`native-dsp-biquad.txt` contains 600 original generic-helper outputs.
+`native-dsp-filter-blocks.txt` contains 864 complete low-cut/pick-filter/compressor/
+reverb cases, with synthetic parameters and all native word mutations. Reference
+helper: `verify_dsp_filters.py`; scope/remaining limits are in `docs/dsp-implementation.md`.

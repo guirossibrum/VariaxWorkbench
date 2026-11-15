@@ -77,3 +77,19 @@ Additional reference scripts are `verify_dsp_tables.py`,
 `verify_dsp_coefficients.py`, `verify_dsp_pickup_blocks.py` and
 `verify_dsp_simple_blocks.py`. Analysis snapshots are private numeric layouts,
 not a supported preset or upload format. Hardware locks remain enabled.
+
+## Filter and word-map follow-up
+
+The generic filter helper matches 600 cases using the original register/SSE ABI.
+Low-cut, pick-filter, compressor and reverb parameter-to-word paths match 864
+more complete seeded patches (216 cases per block). This includes the original
+low-cut constant/order behavior, float32 tangent/exponential arithmetic, compressor
+attack/release preparation, reverb millisecond/sample conversions and all four
+feedback tables. All synthetic regression vectors pass debug and release.
+
+The [observed word map](dsp-word-map.md) indexes all 1,091 words and retains
+overlapping writers. 748 words have instruction-write evidence; 343 remain
+semantically unknown and were zero in the tested corpus. Full-engine call-order
+validation remains pending. The next unfinished parameter-calculation blocks are
+body resonance, string EQ/tone, twelve-string EQ and sitar. The current count is
+69 passing Rust tests. This does not validate rendered guitar audio.

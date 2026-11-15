@@ -5,13 +5,15 @@
 //! intermediate buffer is not, by itself, a finished uploadable guitar patch.
 
 mod coefficients;
+mod filters;
+pub use filters::{biquad_coefficients, write_filter_analysis};
 mod patch;
-mod simple;
-pub use simple::write_simple_analysis;
 mod pickup;
-pub use pickup::{PickupResponseControls, response_from_analysis};
+mod simple;
 mod tables;
 pub use patch::{NativePatch, vx_float_words};
+pub use pickup::{PickupResponseControls, response_from_analysis};
+pub use simple::write_simple_analysis;
 pub use tables::{TableKind, signed_q23};
 
 pub const DATA_WORDS: usize = 1091;
@@ -24,18 +26,10 @@ pub fn body_resonator_words(coefficients: [f32; 3]) -> Result<[u32; 3], String> 
     if coefficients.iter().any(|value| !value.is_finite()) {
         return Err("resonator coefficients must be finite".into());
     }
-    fn convert(value: f32) -> u32 {
-        let scaled = (value * 0.5).clamp(-1.0, 1.0);
-        if scaled < 0.0 {
-            0x1000000 - ((scaled * -8388607.0 - 0.5).max(0.0) as u32)
-        } else {
-            (scaled * 8388607.0 + 0.5).max(0.0) as u32
-        }
-    }
     Ok([
-        convert(coefficients[0]),
-        convert(coefficients[2]),
-        convert(coefficients[1]),
+        signed_q23(coefficients[0] * 0.5)?,
+        signed_q23(coefficients[2] * 0.5)?,
+        signed_q23(coefficients[1] * 0.5)?,
     ])
 }
 
