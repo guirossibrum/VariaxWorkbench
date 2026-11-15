@@ -379,11 +379,24 @@ the stack: `bmRequestType` `0xC0`, `bRequest` `0x67`, `wValue` `0x0011`,
 `0x3e8` and a null completion. `DeviceRequest` leaves those fields
 unchanged. At `0x141a6` it moves the request pointer into the second
 argument, and at `0x141b2` it calls through slot `+0x978`. The wrapper
-forwards that pointer. On a zero return, `VersionStatusCommand` stores byte
+forwards that pointer. `initWithUSBInterface` at `0x14518` stores its
+`IOUSBInterface*` argument at `this+0x10` (`0x14578`). `GetDevice` at
+`0x14068` tail-calls slot `+0x8a8` on that pointer (`0x1407d`).
+`DeviceRequest` makes the same call at `0x1419a`. The result is in RAX.
+`0x141a0` loads that object's vptr into R9. `0x141a3` passes that object
+as RDI. `0x141a6` passes the preserved request pointer. `0x141b2` calls
+slot `+0x978`. The deleting destructor starts at `0x146c2`. The immediate
+`0x58` at `0x146e0` is inside that function, and it does not identify which
+object receives the slot. The signed kext imports `IOUSBDevice`, `IOUSBInterface`,
+and `IOUSBControllerV2` metaClass symbols. It does not import a
+`DeviceRequest` symbol. No IOUSBFamily binary is in the local archive, so
+the callee body is not available here. The three returned bytes stay
+uninterpreted. The display label does not identify a firmware image. On a zero
+return, `VersionStatusCommand` stores byte
 1 shifted left by 8, plus byte 0, as the uint16, and stores byte 2 as the
 status byte. The unsigned kext has the same bytes at `0x272e`, `0x275f`,
-`0x2818`, `0x282f`, `0xa2100`, `0xa9760`, `0x13892`, `0x141a6`, and
-`0x141b2`. No kext was loaded or installed.
+`0x2818`, `0x282f`, `0xa2100`, `0xa9760`, `0x13892`, `0x1407d`, `0x1419a`,
+`0x141a6`, `0x141b2`, and `0x14578`. No kext was loaded or installed.
 
 Those five immediates are the fields already recorded for the userspace
 builder. The kernel handler is the static site that places them in a device
@@ -534,8 +547,9 @@ does not give a firmware version. No driver was installed.
   slot. Kernel `GetVersion` calls `IOConnectCallScalarMethod` selector `6`.
   Sharedxt selector 6 builds the same five fields in an `IOUSBDevRequest`
   and forwards that pointer. That handler is not `GetIOPVersion` and does
-  not identify a firmware image. That is a static branch. The five fields
-  stay unapproved.
+  not identify a firmware image. The forwarded callee at slot `+0x978` is
+  not in the local archive, so the three returned bytes stay uninterpreted.
+  That is a static branch. The five fields stay unapproved.
 - `bcdDevice` 0.01: unexplained, and it was not read again.
 
 ## Future check
@@ -547,7 +561,9 @@ does not give a firmware version. No driver was installed.
    returns that slot. Kernel `GetVersion` reaches `IOConnectCallScalarMethod`
    selector `6` through the stubs named above. Sharedxt selector 6 builds
    the same five fields and forwards that request pointer. It does not
-   identify a firmware image. The userspace builder stays unselected. Leave
+   identify a firmware image. The USB interface callee is not in the local
+   archive, and the three returned bytes stay uninterpreted. The userspace
+   builder stays unselected. Leave
    the transfer unsent, including the ruled-out frame above. The missing
    USB-firmware image and unknown installed version remain open. A cache hit
    and a null service name are also still open.
@@ -579,4 +595,10 @@ learned later would still not authorize an update.
   `+0xd8`. The selector-6 action tail-calls vtable slot `+0x890` at
   `0x282f`. The qword at `0xa9760` holds `VersionStatusCommand`. That
   dispatch is virtual. The five fields stay unapproved.
-- This pass found that kernel request, so reserved issue #21 was not started.
+- The selector-6 pass found that kernel request, so issue #21 was not started
+  for that pass.
+- `DeviceRequest` forwards the pointer through an external virtual slot.
+  The callee body is not in the local archive, and the three returned bytes
+  stay uninterpreted. The display label and the five fields do not identify
+  a firmware image. Issue #20 stays open on that limit. Reserved issue #21
+  follows it.
