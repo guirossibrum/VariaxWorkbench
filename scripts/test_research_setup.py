@@ -40,7 +40,7 @@ class SetupGuards(unittest.TestCase):
     def test_zip_paths_and_symbolic_links_cannot_escape_output(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d)
-            for name in ['../outside','/outside','C:/outside','a\\outside']:
+            for name in ['../outside','/outside','C:/outside','a\\outside','a\0hidden']:
                 data=io.BytesIO()
                 # ZipInfo's constructor normalizes OS separators. Set raw names
                 # afterward so the malicious corpus is identical on Windows.
