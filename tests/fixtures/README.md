@@ -18,7 +18,10 @@ guitar captures or factory presets.
 Reference scripts under `scripts/verify_*` document generation and verification.
 The ordinary Rust tests use only these fixtures and do not need vendor files or
 hardware. Full original-library reference tests require separately obtained local
-vendor artifacts and the ignored analysis/tool directories.
+vendor artifacts and the ignored analysis/tool directories. See the
+[fresh-workspace recipe and validation limits](../../docs/reproducing-references.md)
+for hash-checked extraction and reference regeneration. The runner rejects any
+fixture digest change; generated expectations are never promoted automatically.
 
 - `native-body-interpolation-input.bin`: six generated variants varying all sections, with safe in-memory coil counts and artificial boundary values.
 - `native-body-interpolated-cases.txt`, `native-body-interpolated-output.bin`: 84 synthetic routing/direct-blending cases and complete original-machine-code outputs; no vendor bodies are embedded.
