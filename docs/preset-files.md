@@ -6,7 +6,7 @@
 electric and acoustic default `.vwm` presets extracted from Workbench 1.75.
 A separate `src/bundle.rs` reader supports big-endian `L6BA` banks and `L6CO`
 collections, preset extraction, and lossless embedded-preset replacement.
-Little-endian variants and other FORM types remain unsupported. It does not modify the guitar or generate DSP coefficients.
+Little-endian variants and other FORM types remain unsupported. These file operations do not contact the guitar. Separate offline coefficient rendering is documented in [host pipeline](host-pipeline.md).
 
 The reader validates file/container lengths and the required information chunks,
 then exposes the preset name, device ID/version, model slots/IDs, enabled flags,
@@ -117,4 +117,4 @@ create both fixed L6BA and non-fixed L6CO containers with a Unicode bank name.
 Both original Java and Rust summaries agree, and Rust extracts a preset with the
 same model/parameter summary as the input. Both checks passed. Embedded replacement
 has synthetic Rust coverage; exhaustive vendor-bank variants remain unverified.
-The GUI currently edits individual presets; bank operations are CLI/library features.
+The GUI now browses and edits existing presets within banks/collections and saves protected whole-container copies; see [bank editing and reference checks](bank-editor.md).

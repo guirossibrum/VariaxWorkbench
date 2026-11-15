@@ -721,6 +721,20 @@ fn run() -> Result<(), String> {
                 .ok_or("bank/preset index is out of range")?;
             write_new(&args[2], preset.as_bytes())?;
         }
+        Some("replace-preset") if args.len() == 6 => {
+            let mut bundle = variax_workbench::bundle::BundleFile::parse(
+                fs::read(&args[1]).map_err(|e| e.to_string())?,
+            )?;
+            let preset = read_preset(&args[2])?;
+            let bank = args[4]
+                .parse::<usize>()
+                .map_err(|_| "expected bank index")?;
+            let index = args[5]
+                .parse::<usize>()
+                .map_err(|_| "expected preset index")?;
+            bundle.replace(bank, index, &preset)?;
+            write_new(&args[3], bundle.as_bytes())?;
+        }
         Some("roundtrip") if args.len() == 3 => {
             let preset = read_preset(&args[1])?;
             write_new(&args[2], preset.as_bytes())?;
@@ -756,7 +770,7 @@ fn run() -> Result<(), String> {
         }
         _ => {
             return Err(
-                "Usage: variax-workbench preview | decode FIRST.syx SECOND.syx | inspect PRESET.vwm | render-preset INPUT.vwm MODELS.tsv NEW.packed [muted] | pickup-response INPUT.bin FREQ_BITS VOL_BITS TONE_BITS | pickup-filter1 INPUT.bin VOL_BITS TONE_BITS | combine-pickups LEFT.bin RIGHT.bin series|parallel | interpolate-body INPUT.bin OUTPUT.bin X_BITS_HEX Y_BITS_HEX | blend-body INPUT.bin OUTPUT.bin LEFT_INDEX RIGHT_INDEX WEIGHT_BITS_HEX | body-roundtrip INPUT.bin OUTPUT.bin | normalize-body INPUT.bin POSITION_BITS_HEX | body-plan MODE X_BITS_HEX Y_BITS_HEX | inspect-bundle BANK.vwb | extract-preset BANK.vwb OUTPUT.vwm BANK_INDEX PRESET_INDEX | roundtrip INPUT OUTPUT | rename INPUT OUTPUT NAME | set INPUT OUTPUT SLOT_HEX PARAM_HEX int|float VALUE\nAll commands are offline. Output files must not exist. Parameter values are not checked against model-specific ranges.".into(),
+                "Usage: variax-workbench preview | decode FIRST.syx SECOND.syx | inspect PRESET.vwm | render-preset INPUT.vwm MODELS.tsv NEW.packed [muted] | pickup-response INPUT.bin FREQ_BITS VOL_BITS TONE_BITS | pickup-filter1 INPUT.bin VOL_BITS TONE_BITS | combine-pickups LEFT.bin RIGHT.bin series|parallel | interpolate-body INPUT.bin OUTPUT.bin X_BITS_HEX Y_BITS_HEX | blend-body INPUT.bin OUTPUT.bin LEFT_INDEX RIGHT_INDEX WEIGHT_BITS_HEX | body-roundtrip INPUT.bin OUTPUT.bin | normalize-body INPUT.bin POSITION_BITS_HEX | body-plan MODE X_BITS_HEX Y_BITS_HEX | inspect-bundle BANK.vwb | extract-preset BANK.vwb OUTPUT.vwm BANK_INDEX PRESET_INDEX | replace-preset BANK PRESET NEW_BANK BANK_INDEX PRESET_INDEX | roundtrip INPUT OUTPUT | rename INPUT OUTPUT NAME | set INPUT OUTPUT SLOT_HEX PARAM_HEX int|float VALUE\nAll commands are offline. Output files must not exist. Explicit edits enforce recovered legacy UI domains; imported unknown settings remain lossless.".into(),
             );
         }
     }

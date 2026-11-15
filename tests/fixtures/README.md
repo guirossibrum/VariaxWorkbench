@@ -97,3 +97,15 @@ stateful sequence order. `synthetic-host-preset.vwm` and `.packed` provide one
 complete original Java-reader/native/Java-overlay result using only those
 synthetic resources. The CLI tests compare every byte and verify protected saves.
 No original model assets, hardware captures or special vendor tables are embedded.
+
+## Synthetic bank browser fixtures
+
+`synthetic-bank.vwb` and `synthetic-collection.l6c` contain three synthetic banks
+with 0, 2 and 3 copies of `synthetic-host-preset.vwm`. Names become `Bank i` and
+`Preset i:j` in fixed-width UTF-16 fields. The root contains version-one HEAD and
+`JUNK` payload `root unknown`; each bank adds `JUNK` payload `bank unknown!` with
+nonzero 0xa7 word padding. `tests/bank_document.rs::bundle` gives the complete
+construction recipe and independent expected replacement bytes. They contain
+no vendor banks, factory settings or personal captures. Their odd extensions
+are Rust preservation/browser fixtures, not original-Java oracle outputs; the
+original-Java compatibility corpus uses even extensions (see bank-editor.md).
