@@ -17,7 +17,7 @@ to work on this project is not authorization to unlock devices.
 No preset upload, flash write, firmware install, reset, or bank switching has been
 authorized. Firmware downloads, version comparison, static extraction and offline
 reverse engineering are authorized. Latest firmware availability must not cause
-an automatic update. See TODO.md for the agreed work plan.
+an automatic update. GitHub issues and the linked project contain the work plan.
 
 ## Implementation
 
@@ -44,3 +44,10 @@ hardware features, unimplemented features, observed failures, original-library
 oracle results and completed Rust behavior. Do not mark simulation success as
 physical safety, audio equivalence, recovery capability or permission to unlock
 hardware. Keep issue links and status consistent with actual completion.
+
+## Work tracking
+
+GitHub issues and the VariaxWorkbench project are the work-tracking source of
+truth. Do not recreate or use TODO.md. README.md contains the requested concise
+validation/implementation/failure summary; it is not a second task queue. Keep
+only one implementation issue In Progress and respect native dependencies.

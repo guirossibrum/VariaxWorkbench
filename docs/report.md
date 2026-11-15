@@ -183,7 +183,7 @@ run and is not recommended for the current phase.
 Firmware unpacking, firmware disassembly and offline recovery simulation remain
 pending the exact artifacts. No firmware improvement or safe recovery capability
 has been established. See [factory-reference.md](factory-reference.md) for exact
-sources, hashes, acquisition failures and product distinctions, and [TODO.md](../TODO.md)
+sources, hashes, acquisition failures and product distinctions, and [GitHub issues](https://github.com/guirossibrum/VariaxWorkbench/issues)
 for the preserved firmware/recovery tasks.
 
 ## Validation ledger

@@ -43,7 +43,9 @@ probes produced one current-preset settings capture, not a full guitar backup.
 
 Read [the latest generator/firmware results](docs/offline-generator-results.md),
 [the full report](docs/report.md) for changes, validation, risks and remaining
-work, and [TODO.md](TODO.md) for the hardware boundary and next steps.
+work. Use [GitHub issues](https://github.com/guirossibrum/VariaxWorkbench/issues)
+and the [project](https://github.com/users/guirossibrum/projects/17) for work
+tracking; [AGENTS.md](AGENTS.md) records the hardware boundary.
 
 ## Implementation and validation checklist
 
