@@ -31,6 +31,13 @@ do not guarantee correct rounding for arbitrary float32 inputs: double rounding
 remains possible. Tests assume normal nearest rounding with subnormal flushing
 disabled, as do the reference audits.
 
+The software profile canonicalizes NaN results at math-function and computed
+passive-combination boundaries to negative quiet NaNs (`0xffc00000` for float32,
+`0xfff8000000000000` for float64), matching the reference fixtures. This removes
+the observed ARM/x86 NaN-sign difference. Within this normalization, finite values, signed zeros and
+infinities retain their bits. A sole active pickup is still copied verbatim,
+including any supplied NaN payload; it does not undergo computed normalization.
+
 The optional dependency is exactly `libm` 0.2.16, with default features disabled
 and `force-soft-floats` enabled. The algorithms compile into the program; they
 do not require Linux libm, MPFR, Python, Java, Monkey or an original Line 6
@@ -55,8 +62,8 @@ algorithms, not the math library against itself. Separate MPFR and embedded
 Windows CRT comparisons provide additional mathematical/runtime evidence;
 see [the runtime audit](math-runtime-audit.md).
 
-- All **108 Rust tests** pass with `--all-features` (software profile), and all
-  **108 pass with `--features gui,usb`** (host profile). Clippy with warnings
+- All **110 Rust tests** pass with `--all-features` (software profile), and all
+  **110 pass with `--features gui,usb`** (host profile). Clippy with warnings
   denied and formatting pass. The six profile-specific expected-output files
   preserve exact comparisons; the original host-profile fixtures are unchanged.
 - Both debug and release product binaries match **110 complete numeric patches**
@@ -82,6 +89,12 @@ see [the runtime audit](math-runtime-audit.md).
   tested host transcendental, square-root or FMA functions. The host-profile
   control binaries retain their expected math imports. This is not a claim that
   the executable has no ordinary OS runtime dependencies.
+
+The first cross-target run passed Linux but found a Windows debug CLI stack
+overflow and ARM NaN-sign differences in two exact-value tests. The CLI now runs
+its command on an explicit 8 MiB worker stack, and the software profile defines
+computed NaN bits as described above. Two regression tests cover finite/NaN
+normalization and verbatim sole-pickup copies. The fixes are awaiting CI replay.
 
 Evidence above is local Linux x86_64 evidence. The new `Offline core` workflow
 checks the software profile's synthetic-only core/file tests in debug and release

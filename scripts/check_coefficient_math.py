@@ -9,7 +9,7 @@ CALL=re.compile(r'\.(?:'+FUNCTIONS+r')\s*\(|(?:f32|f64|libm)::(?:'+FUNCTIONS+r')
 
 def main():
     paths=[]
-    for name in ['body','dsp','pickup','host']:
+    for name in ['body','dsp','pickup','host','models']:
         paths.append(ROOT/'src'/f'{name}.rs');paths.extend(sorted((ROOT/'src'/name).rglob('*.rs')))
     failures=[]
     for path in paths:

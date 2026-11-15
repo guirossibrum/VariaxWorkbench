@@ -1,4 +1,5 @@
-//! Physical pickup definition files recovered from the native serial reader.
+//! Virtual pickup definition files recovered from the native serial reader.
+use crate::math::EngineFloat as _;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PickupDefinition {
@@ -77,23 +78,28 @@ impl PickupCircuit {
             self
         } else if wiring == PickupWiring::Series {
             Self {
-                dc_resistance: self.dc_resistance + other.dc_resistance,
-                magnetic_resistance: self.magnetic_resistance.abs()
-                    + other.magnetic_resistance.abs(),
-                inductance: self.inductance + other.inductance,
-                capacitance: (self.capacitance * other.capacitance)
-                    / (self.capacitance + other.capacitance),
+                dc_resistance: (self.dc_resistance + other.dc_resistance).engine_canonical(),
+                magnetic_resistance: (self.magnetic_resistance.abs()
+                    + other.magnetic_resistance.abs())
+                .engine_canonical(),
+                inductance: (self.inductance + other.inductance).engine_canonical(),
+                capacitance: ((self.capacitance * other.capacitance)
+                    / (self.capacitance + other.capacitance))
+                    .engine_canonical(),
             }
         } else {
             Self {
-                dc_resistance: (self.dc_resistance * other.dc_resistance)
-                    / (self.dc_resistance + other.dc_resistance),
-                magnetic_resistance: (self.magnetic_resistance.abs()
+                dc_resistance: ((self.dc_resistance * other.dc_resistance)
+                    / (self.dc_resistance + other.dc_resistance))
+                    .engine_canonical(),
+                magnetic_resistance: ((self.magnetic_resistance.abs()
                     * other.magnetic_resistance.abs())
-                    / (self.magnetic_resistance.abs() + other.magnetic_resistance.abs()),
-                inductance: (self.inductance * other.inductance)
-                    / (self.inductance + other.inductance),
-                capacitance: self.capacitance + other.capacitance,
+                    / (self.magnetic_resistance.abs() + other.magnetic_resistance.abs()))
+                .engine_canonical(),
+                inductance: ((self.inductance * other.inductance)
+                    / (self.inductance + other.inductance))
+                    .engine_canonical(),
+                capacitance: (self.capacitance + other.capacitance).engine_canonical(),
             }
         };
         CombinedPickup {
@@ -106,6 +112,34 @@ impl PickupCircuit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sole_active_pickup_copies_nan_payloads_without_arithmetic() {
+        let circuit = PickupCircuit {
+            dc_resistance: f64::from_bits(0x7ff8_0000_0000_0042),
+            magnetic_resistance: f64::from_bits(0xfff8_0000_0000_0123),
+            inductance: 1.,
+            capacitance: 0.,
+        };
+        let disabled = PickupCircuit {
+            inductance: 0.,
+            ..circuit
+        };
+        for result in [
+            circuit.combine(disabled, PickupWiring::Parallel),
+            disabled.combine(circuit, PickupWiring::Series),
+        ] {
+            assert!(result.active);
+            assert_eq!(
+                result.circuit.dc_resistance.to_bits(),
+                circuit.dc_resistance.to_bits()
+            );
+            assert_eq!(
+                result.circuit.magnetic_resistance.to_bits(),
+                circuit.magnetic_resistance.to_bits()
+            );
+        }
+    }
 
     #[test]
     fn matches_fixture_verified_by_original_native_reader() {

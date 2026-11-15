@@ -764,7 +764,16 @@ fn run() -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
-    match run() {
+    // The debug coefficient/parser frames exceed the Windows main-thread stack.
+    // Keep the CLI's bounded workspace independent of the platform default.
+    let result = std::thread::Builder::new()
+        .name("variax-offline-command".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(run)
+        .map_err(|error| format!("cannot start command worker: {error}"))
+        .and_then(|worker| worker.join().map_err(|_| "command worker panicked".into()))
+        .and_then(|result| result);
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
