@@ -2,8 +2,8 @@
 
 Repository: https://github.com/guirossibrum/VariaxWorkbench. Default branch: `master`.
 
-Project: https://github.com/users/guirossibrum/projects/17. All 25 issues are on
-the private project with an explicit Order and Phase. Their 24 dependencies are
+Project: https://github.com/users/guirossibrum/projects/17. All 32 issues are on
+the private project with an explicit Order and Phase. Their 37 dependencies are
 native GitHub blocked-by relationships, not only issue-body links.
 
 Work sequentially in Order, respecting dependencies and the authorization phase.
@@ -48,6 +48,19 @@ is locked; creating an issue does not authorize its hardware steps.
   Depends on #6, #18, #21.
 - [ ] [#25: Define a future preset-write safety design without enabling writes](https://github.com/guirossibrum/VariaxWorkbench/issues/25)
   Depends on #6, #18, #23, #24.
+
+## Unified application and future device families
+
+- [#26: Design one Rust app with per-device capabilities and independent backends](https://github.com/guirossibrum/VariaxWorkbench/issues/26)
+- [#27: Recover and validate PODxt Live USB audio routing on Linux](https://github.com/guirossibrum/VariaxWorkbench/issues/27)
+- [#28: Add integrated guitar recording and DAW interoperability](https://github.com/guirossibrum/VariaxWorkbench/issues/28)
+- [#29: Implement PODxt Live preset editing and librarian within the unified app](https://github.com/guirossibrum/VariaxWorkbench/issues/29)
+- [#30: Integrate device-specific firmware inspection and maintenance workflows](https://github.com/guirossibrum/VariaxWorkbench/issues/30)
+- [#31: Research and add Workbench HD / James Tyler Variax JTV-69 backend](https://github.com/guirossibrum/VariaxWorkbench/issues/31)
+- [#32: Research and add POD HD500X backend](https://github.com/guirossibrum/VariaxWorkbench/issues/32)
+
+See [product vision](product-vision.md). These are unimplemented roadmap targets;
+the current implementation remains sequential with #2 In Progress.
 
 ## Future hardware work — explicit authorization required
 

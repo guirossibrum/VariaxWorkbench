@@ -1,0 +1,86 @@
+# Product objective: one application for the connected guitar rig
+
+The final objective is **one Rust application** for guitar editing, POD editing,
+preset/library management, USB audio recording and device maintenance. The present
+VariaxWorkbench repository and GUI are the starting point, not a commitment to a
+guitar-only application. This is a target architecture and roadmap, not a claim
+that these features already work.
+
+## First complete rig
+
+Target the user's Variax 600 → VDI → PODxt Live → USB → Linux setup:
+
+- Guitar models, pickups, wiring, tuning and preset libraries.
+- PODxt Live amp/cab/effect controls, presets and librarian functions.
+- USB audio routing, recording into the app and interoperability with external
+  recording software; processed/clean capture and monitoring where supported.
+- Shared device information, applicable firmware versions, offline image
+  inspection, backups and evidence-based recovery/maintenance workflows.
+- A coordinated view of both devices without confusing the guitar and POD
+  endpoints, model identities, data formats or firmware images.
+
+Line 6's [GearBox recording guide](https://line6.com/media/support/toneporthelp/GearBox2_OnlineSupport_Recording_Rev03.pdf)
+explicitly describes PODxt Live processing feeding Record Send 1-2 digitally over
+USB (printed page 10), and processed versus unprocessed recording and re-amping
+routing for the PODxt family (printed pages 21–22). The original USB driver
+therefore supported audio use, not only preset/control traffic.
+
+This confirms the historical hardware capability. It does **not** establish
+current Linux capture, playback, VDI-source routing, rates, bit depths, buffering
+or latency. Those must be recovered and validated. Investigate the existing Linux
+audio driver/stack first; the downloaded Windows/macOS drivers are reference
+material and cannot simply be loaded into Linux. Audio and control-interface
+ownership must coexist without reset, unexpected routing changes or interference
+with a DAW. Opening a real recording/playback stream is live hardware access and
+is not authorized in the present phase.
+
+Initial recording acceptance should include explicit input/route selection,
+levels, start/stop/cancel, non-overwriting audio saves, file integrity and bounded
+buffers, using synthetic/file-backed streams before any real input. Recover
+monitoring, processed/clean and re-amping limitations from device-specific evidence.
+
+## Shared application, independent device implementations
+
+Provide common Guitar, POD, Recording, Library and Maintenance workflows with a
+shared device/session and capability registry. Each backend declares what it can
+actually do, with exact supported model/firmware/transport combinations.
+
+Keep codecs, coefficient engines, controls, artwork mappings, firmware containers,
+update protocols and audio capabilities specific to their device families. A
+shared screen must never imply preset interchangeability, firmware compatibility
+or identical audio behavior. Unsupported operations should be explicit, with no
+automatic fallback to another model or unsafe generic device operation.
+
+Preserve the current source-level physical-access locks. Device discovery,
+control, recording/playback and maintenance need independent operation policies
+and simulation coverage. Firmware availability must not trigger an update;
+entering a recording page must not open a stream automatically.
+
+## Future families under the same roof
+
+Future targets explicitly include:
+
+- Workbench HD functionality and James Tyler Variax **JTV-69**.
+- **POD HD500X**, including its editing, library and audio capabilities.
+- Additional Variax, POD and related models through independently verified
+  backend adapters and a published capability/support matrix.
+
+Original Variax 600/Workbench and HD-generation behavior must not be presumed
+compatible. First acquire the appropriate artifacts and product/version evidence,
+then recover and test each family's formats, algorithms and protocols offline.
+No future model is currently claimed as implemented or hardware-tested.
+
+## Work tracking and safety
+
+GitHub issues and the linked project remain the work-tracking source of truth.
+New scope is recorded as distinct issues with native dependencies and project
+ordering. Existing implementation continues sequentially; adding these targets
+does not start multiple implementation issues or authorize any device operation.
+The README checklist summarizes verified passes, pending features and unavailable
+behavior; it must not present these product objectives as working features.
+
+All current tests remain offline, with equipment disconnected. Recording, playback,
+POD edits and firmware updates share the same risk boundary as guitar control.
+Full device/audio emulation and successful offline tests cannot guarantee safety
+on real equipment; any later connection or operation requires separate explicit
+authorization after the relevant evidence, backups and recovery prerequisites.

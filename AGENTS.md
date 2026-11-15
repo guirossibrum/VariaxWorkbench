@@ -51,3 +51,13 @@ GitHub issues and the VariaxWorkbench project are the work-tracking source of
 truth. Do not recreate or use TODO.md. README.md contains the requested concise
 validation/implementation/failure summary; it is not a second task queue. Keep
 only one implementation issue In Progress and respect native dependencies.
+
+## Product scope
+
+The final objective is one Rust app for guitar editing, POD editing, USB audio
+recording/DAW integration, libraries and device-specific maintenance/update
+workflows. Initial rig: Variax 600 + PODxt Live on Linux. Future targets include
+Workbench HD/JTV-69, POD HD500X and additional independently verified models.
+See docs/product-vision.md. Do not assume cross-family format/firmware or audio
+compatibility. Roadmap scope does not authorize hardware access: opening audio
+capture/playback streams also requires separate explicit user authorization.

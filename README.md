@@ -5,6 +5,19 @@ connected by VDI through a PODxt Live. The current milestone is an **offline
 preset editor and reverse-engineering toolkit**, with the original guitar and
 pickup artwork recovered from Workbench 1.75.
 
+## Final product target
+
+One Rust application for **guitar + POD + USB recording + device maintenance**.
+The first complete rig is Variax 600 through PODxt Live on Linux. Future backends
+will bring Workbench HD/JTV-69, POD HD500X and other models into the same app,
+with independently verified capabilities and device-specific implementations.
+These are roadmap targets, not current support claims. See the
+[product vision](docs/product-vision.md).
+
+PODxt Live historically supports USB guitar recording, including processed/clean
+routing, as documented in [Line 6's recording guide](https://line6.com/media/support/toneporthelp/GearBox2_OnlineSupport_Recording_Rev03.pdf).
+Linux recording, playback and routing remain unimplemented/unverified here.
+
 ## Experimental software — use entirely at your own risk
 
 This is an independent, reverse-engineered project developed with AI assistance.
@@ -83,10 +96,17 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 - [ ] Firmware-improvement feasibility, separate POD USB-firmware verification and Linux bridge investigation — [#19](https://github.com/guirossibrum/VariaxWorkbench/issues/19)–[#21](https://github.com/guirossibrum/VariaxWorkbench/issues/21).
 - [ ] Readiness review, comprehensive backups and any future authorized hardware integration/write design — [#22](https://github.com/guirossibrum/VariaxWorkbench/issues/22)–[#25](https://github.com/guirossibrum/VariaxWorkbench/issues/25).
 
+- [ ] Shared multi-device application architecture and capability registry — [#26](https://github.com/guirossibrum/VariaxWorkbench/issues/26).
+- [ ] PODxt Live USB audio routing, in-app recording and external DAW interoperability — [#27](https://github.com/guirossibrum/VariaxWorkbench/issues/27), [#28](https://github.com/guirossibrum/VariaxWorkbench/issues/28).
+- [ ] PODxt Live preset/effect editing and librarian workflows — [#29](https://github.com/guirossibrum/VariaxWorkbench/issues/29).
+- [ ] Shared, device-specific firmware/backup/recovery/maintenance UI; real updates remain separately gated — [#30](https://github.com/guirossibrum/VariaxWorkbench/issues/30).
+- [ ] Workbench HD/JTV-69 and POD HD500X backends; other models added only with independent verification — [#31](https://github.com/guirossibrum/VariaxWorkbench/issues/31), [#32](https://github.com/guirossibrum/VariaxWorkbench/issues/32).
+
 ### Currently unavailable or not working
 
 - [ ] **Live device access is intentionally disabled**, including identity/metadata reads. No runtime unlock exists.
 - [ ] Sending edited presets to the guitar, firmware flashing and factory restoration are unavailable; no live writer is implemented or authorized.
+- [ ] Live USB audio capture/playback and recording controls are not implemented or validated; no audio stream has been opened.
 - [ ] Full PODxt Live/Variax firmware and audio/DSP emulation is not implemented. Existing host-library emulation is not device emulation.
 - [ ] The earlier experimental full-DSP read timed out; no complete DSP/bank/calibration backup was obtained. The captured “Reso-5” file is one preset's settings only.
 - [ ] Linux did not expose this guitar's Variax ALSA port in earlier observations; the identity-matching issue remains unresolved and no driver patch is installed.

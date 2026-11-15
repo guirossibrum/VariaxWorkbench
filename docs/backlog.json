@@ -288,6 +288,95 @@
       "issue_number": 25,
       "issue_url": "https://github.com/guirossibrum/VariaxWorkbench/issues/25",
       "order": 25
+    },
+    {
+      "key": "unified-architecture",
+      "title": "Design one Rust app with per-device capabilities and independent backends",
+      "phase": "offline",
+      "dependencies": [],
+      "body": "This issue implements the user's final objective: one Rust application for guitar, POD, USB recording and device maintenance, with future HD-family expansion. This is a target, not a claim of current support.\n\n## Acceptance criteria\n\n- [ ] Define shared sessions, device registry, model identities and capability/version matrix for guitar editing, POD editing, recording, library and maintenance.\n- [ ] Keep device-family codecs, DSP algorithms, firmware formats and transports separate behind shared interfaces; reject unsupported operations explicitly.\n- [ ] Cover original Variax/PODxt first and extension points for Workbench HD/JTV-69, POD HD500X and other models; preserve all live-access locks.\n\n## References\n\n- `docs/product-vision.md`\n- `README.md`\n- `AGENTS.md`\n\nDependencies: none.\n\n## Hardware boundary\n\nOffline work only. No USB/MIDI/audio streaming, device writes, reset, preset switching or firmware installation is authorized. Keep hardware disconnected and source locks enabled. Connecting audio equipment or starting capture/playback also requires separate explicit approval.\n\nBacklog key: `unified-architecture`. Phase: `offline`.\n",
+      "issue_number": 26,
+      "issue_url": "https://github.com/guirossibrum/VariaxWorkbench/issues/26",
+      "order": 26
+    },
+    {
+      "key": "pod-usb-audio",
+      "title": "Recover and validate PODxt Live USB audio routing on Linux",
+      "phase": "offline",
+      "dependencies": [
+        "unified-architecture",
+        "linux-transport"
+      ],
+      "body": "This issue implements the user's final objective: one Rust application for guitar, POD, USB recording and device maintenance, with future HD-family expansion. This is a target, not a claim of current support.\n\n## Acceptance criteria\n\n- [ ] Document original stereo Record Send 1-2, processed/clean recording, playback/monitoring and re-amping capabilities from primary documentation and driver evidence.\n- [ ] Investigate existing Linux audio-driver and audio-stack support offline before proposing custom driver work; Windows/macOS packages remain static references.\n- [ ] Build synthetic stream/format/buffering/routing tests, including coexistence with POD and Variax control; opening a real audio stream requires separate authorization.\n\nPrimary reference: https://line6.com/media/support/toneporthelp/GearBox2_OnlineSupport_Recording_Rev03.pdf (PODxt Live connections and PODxt audio routing sections).\n\n## References\n\n- `docs/product-vision.md`\n- `README.md`\n- `AGENTS.md`\n\nDependencies: #26, #21.\n\n## Hardware boundary\n\nOffline work only. No USB/MIDI/audio streaming, device writes, reset, preset switching or firmware installation is authorized. Keep hardware disconnected and source locks enabled. Connecting audio equipment or starting capture/playback also requires separate explicit approval.\n\nBacklog key: `pod-usb-audio`. Phase: `offline`.\n",
+      "issue_number": 27,
+      "issue_url": "https://github.com/guirossibrum/VariaxWorkbench/issues/27",
+      "order": 27
+    },
+    {
+      "key": "recording-ui",
+      "title": "Add integrated guitar recording and DAW interoperability",
+      "phase": "offline",
+      "dependencies": [
+        "pod-usb-audio",
+        "unified-architecture"
+      ],
+      "body": "This issue implements the user's final objective: one Rust application for guitar, POD, USB recording and device maintenance, with future HD-family expansion. This is a target, not a claim of current support.\n\n## Acceptance criteria\n\n- [ ] Provide a recording workflow inside the same application with input/route selection, level display, explicit recording controls and non-overwriting audio-file saves.\n- [ ] Support integration with external recording software and document supported rates/formats, monitoring, latency and processed/clean limitations per device.\n- [ ] Test synthetic/file-backed streams, dropouts, cancellation, file integrity and bounded buffers offline; never enable live streams implicitly.\n\n## References\n\n- `docs/product-vision.md`\n- `README.md`\n- `AGENTS.md`\n\nDependencies: #27, #26.\n\n## Hardware boundary\n\nOffline work only. No USB/MIDI/audio streaming, device writes, reset, preset switching or firmware installation is authorized. Keep hardware disconnected and source locks enabled. Connecting audio equipment or starting capture/playback also requires separate explicit approval.\n\nBacklog key: `recording-ui`. Phase: `offline`.\n",
+      "issue_number": 28,
+      "issue_url": "https://github.com/guirossibrum/VariaxWorkbench/issues/28",
+      "order": 28
+    },
+    {
+      "key": "pod-editor",
+      "title": "Implement PODxt Live preset editing and librarian within the unified app",
+      "phase": "offline",
+      "dependencies": [
+        "unified-architecture",
+        "linux-transport"
+      ],
+      "body": "This issue implements the user's final objective: one Rust application for guitar, POD, USB recording and device maintenance, with future HD-family expansion. This is a target, not a claim of current support.\n\n## Acceptance criteria\n\n- [ ] Recover POD-specific preset/model/effect formats and controls with original-code references and synthetic fixtures.\n- [ ] Implement offline POD preset inspection/editing/library workflows alongside guitar editing without confusing their formats or targets.\n- [ ] Test compatibility, unknown-field preservation, backups and target-specific operation rejection; live transmission remains gated separately.\n\n## References\n\n- `docs/product-vision.md`\n- `README.md`\n- `AGENTS.md`\n\nDependencies: #26, #21.\n\n## Hardware boundary\n\nOffline work only. No USB/MIDI/audio streaming, device writes, reset, preset switching or firmware installation is authorized. Keep hardware disconnected and source locks enabled. Connecting audio equipment or starting capture/playback also requires separate explicit approval.\n\nBacklog key: `pod-editor`. Phase: `offline`.\n",
+      "issue_number": 29,
+      "issue_url": "https://github.com/guirossibrum/VariaxWorkbench/issues/29",
+      "order": 29
+    },
+    {
+      "key": "unified-updates",
+      "title": "Integrate device-specific firmware inspection and maintenance workflows",
+      "phase": "offline",
+      "dependencies": [
+        "unified-architecture",
+        "update-recovery",
+        "firmware-parser",
+        "device-simulation",
+        "validation-gate"
+      ],
+      "body": "This issue implements the user's final objective: one Rust application for guitar, POD, USB recording and device maintenance, with future HD-family expansion. This is a target, not a claim of current support.\n\n## Acceptance criteria\n\n- [ ] Provide firmware inventory/version applicability, offline validation, backup/recovery evidence and explicit operation planning within the same app.\n- [ ] Keep per-device updater/bootloader implementations distinct; reject wrong-product, wrong-version and unsupported images.\n- [ ] Do not auto-update, connect, reset or flash. Any future real maintenance operation requires its own explicit authorization and fulfilled safety prerequisites.\n\n## References\n\n- `docs/product-vision.md`\n- `README.md`\n- `AGENTS.md`\n\nDependencies: #26, #16, #17, #18, #22.\n\n## Hardware boundary\n\nOffline work only. No USB/MIDI/audio streaming, device writes, reset, preset switching or firmware installation is authorized. Keep hardware disconnected and source locks enabled. Connecting audio equipment or starting capture/playback also requires separate explicit approval.\n\nBacklog key: `unified-updates`. Phase: `offline`.\n",
+      "issue_number": 30,
+      "issue_url": "https://github.com/guirossibrum/VariaxWorkbench/issues/30",
+      "order": 30
+    },
+    {
+      "key": "hd-variax",
+      "title": "Research and add Workbench HD / James Tyler Variax JTV-69 backend",
+      "phase": "offline",
+      "dependencies": [
+        "unified-architecture"
+      ],
+      "body": "This issue implements the user's final objective: one Rust application for guitar, POD, USB recording and device maintenance, with future HD-family expansion. This is a target, not a claim of current support.\n\n## Acceptance criteria\n\n- [ ] Acquire and inventory appropriate artifacts with hashes/provenance and establish exact supported models/firmware versions.\n- [ ] Recover HD-specific models, preset formats, artwork, tuning and protocol capabilities independently of the original Variax 600 engine.\n- [ ] Design offline fixtures, differential references and simulated integration in the shared app; do not assume preset or firmware interchangeability and do not contact hardware.\n\n## References\n\n- `docs/product-vision.md`\n- `README.md`\n- `AGENTS.md`\n\nDependencies: #26.\n\n## Hardware boundary\n\nOffline work only. No USB/MIDI/audio streaming, device writes, reset, preset switching or firmware installation is authorized. Keep hardware disconnected and source locks enabled. Connecting audio equipment or starting capture/playback also requires separate explicit approval.\n\nBacklog key: `hd-variax`. Phase: `offline`.\n",
+      "issue_number": 31,
+      "issue_url": "https://github.com/guirossibrum/VariaxWorkbench/issues/31",
+      "order": 31
+    },
+    {
+      "key": "hd500x",
+      "title": "Research and add POD HD500X backend",
+      "phase": "offline",
+      "dependencies": [
+        "unified-architecture"
+      ],
+      "body": "This issue implements the user's final objective: one Rust application for guitar, POD, USB recording and device maintenance, with future HD-family expansion. This is a target, not a claim of current support.\n\n## Acceptance criteria\n\n- [ ] Establish POD HD500X-specific identities, editor/driver/firmware artifacts, preset formats, model/effect capabilities and USB-audio routing from primary evidence.\n- [ ] Implement independent offline backend and tests connected to the shared editor/library/recording/maintenance interfaces.\n- [ ] Track compatibility with JTV/HD Variax separately from PODxt/original Variax; no cross-flash, automatic conversion or live access.\n\n## References\n\n- `docs/product-vision.md`\n- `README.md`\n- `AGENTS.md`\n\nDependencies: #26.\n\n## Hardware boundary\n\nOffline work only. No USB/MIDI/audio streaming, device writes, reset, preset switching or firmware installation is authorized. Keep hardware disconnected and source locks enabled. Connecting audio equipment or starting capture/playback also requires separate explicit approval.\n\nBacklog key: `hd500x`. Phase: `offline`.\n",
+      "issue_number": 32,
+      "issue_url": "https://github.com/guirossibrum/VariaxWorkbench/issues/32",
+      "order": 32
     }
   ],
   "project": {
