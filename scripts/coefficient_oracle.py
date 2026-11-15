@@ -16,6 +16,7 @@ from native_oracle import NativeOracle, ROOT
 
 
 class CoefficientOracle(NativeOracle):
+    RUNTIME_VERSION = 'initialized-host-libm-v2'
     HEAP = 0x2000000
     HEAP_SIZE = 0x1000000
     SHIMS = 0x1300000
@@ -30,6 +31,9 @@ class CoefficientOracle(NativeOracle):
         self.diagnostics = []
         self.adapters = {}
         self.last_pc = None
+        self.destructor_registrations = []
+        self.initializers_completed = []
+        self.runtime_initialized = False
         self.cpu.reg_write(UC_X86_REG_FPCW, 0x37f)
         self.cpu.reg_write(UC_X86_REG_FPTAG, 0xffff)
         self.cpu.reg_write(UC_X86_REG_MXCSR, 0x1f80)
@@ -39,6 +43,27 @@ class CoefficientOracle(NativeOracle):
                           begin=self.SHIMS, end=self.SHIMS + 0xffff)
         self.cpu.hook_add(UC_HOOK_CODE, self._dispatch, begin=0, end=1)
         self.cpu.hook_add(UC_HOOK_MEM_INVALID, self._bad_memory)
+        self._initialize_modules()
+
+    def _initialize_modules(self):
+        # This local compatibility wrapper would otherwise register callbacks
+        # with the original process runtime. Capture only; never use host atexit.
+        assert self.sha256 == '3aa232329d467101637764397b77a7b8ffa6af0ccd72ec380d02f145477ba9fe'
+        assert len(self.module_initializers) == 26
+        assert self.read(0x1759, 6) == bytes.fromhex('5589e583ec28')
+        shim = self.SHIMS + 0xd000
+        self.adapters[shim] = 'oracle_capture_cxa_atexit'
+        self.write(shim, b'\xc3')
+        self.write(0x1759, b'\xe9' + struct.pack('<i', shim - 0x1759 - 5))
+        for address in self.module_initializers:
+            self.call_initializer(address)
+            self.initializers_completed.append(address)
+        tone, volume = struct.unpack('<2d', self.read(0x3d798, 16))
+        if (tone, volume) != (0.001, 0.01):
+            raise RuntimeError(f'unexpected initialized knob constants: {(tone, volume)}')
+        if len(self.destructor_registrations) != 53:
+            raise RuntimeError('incomplete module destructor registrations')
+        self.runtime_initialized = True
 
     def _bad_memory(self, cpu, access, address, size, value, context):
         raise RuntimeError(f'Unmapped memory access {access} at {address:#x}, size {size}, pc={cpu.reg_read(UC_X86_REG_EIP):#x}')
@@ -129,7 +154,11 @@ class CoefficientOracle(NativeOracle):
         args = struct.unpack('<6I', self.read(stack+4, 24))
         result = 0
         short = name.lstrip('_')
-        if short in ('malloc', 'Znwm', 'Znwj', 'Znam', 'Znaj'):
+        if short == 'oracle_capture_cxa_atexit':
+            if len(self.destructor_registrations) >= 53 or not (0 < args[0] < 0x34000):
+                raise RuntimeError('unexpected private destructor registration')
+            self.destructor_registrations.append(tuple(args[:3]))
+        elif short in ('malloc', 'Znwm', 'Znwj', 'Znam', 'Znaj'):
             result = self.allocate(args[0])
         elif short == 'calloc':
             result = self.allocate(args[0]*args[1])
@@ -234,13 +263,13 @@ class CoefficientOracle(NativeOracle):
         # Whole-library reference output is invalid without this module's
         # constructor. Partial body/circuit oracles do not use these globals.
         tone, volume = struct.unpack('<2d', self.read(0x3d798, 16))
-        if tone == 0.0 or volume == 0.0:
-            raise RuntimeError('whole-generator reference blocked: native knob constants are uninitialized; module-constructor/runtime audit required (issue #5)')
+        if not self.runtime_initialized or (tone, volume) != (0.001, 0.01):
+            raise RuntimeError('whole-generator reference blocked: native module initialization is incomplete or knob constants changed (issue #5)')
         patch = self.OUTPUT + 0x2000
         self.write(patch, bytes(settings))
         self.call('0x180a0', self.OUTPUT)
         self.call('0x2c40', self.OBJECT, self.OUTPUT, patch,
-                  instruction_limit=20_000_000, timeout_us=10_000_000)
+                  instruction_limit=200_000_000, timeout_us=10_000_000)
         self.call('0x1bd10', self.OUTPUT, self.OUTPUT + 0x4000)
         return self.read(self.OUTPUT + 0x4000, 3276)
 

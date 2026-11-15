@@ -111,3 +111,12 @@ This finding does not affect the standalone body interpolation, raw combination,
 complex transfer or primary-fit comparisons: their recovered code paths do not
 use those globals. It also does not change any hardware state; all work remains
 inside private emulator memory and offline files.
+
+## Initialized reference follow-up
+
+The startup defect above is now fixed by executing all 26 original initializer
+entries. All 52 translation-unit complex constants and 53 captured destructor
+registrations are checked. A new versioned 110-case host-libm generator sweep and
+four original-JNI comparisons pass; the old outputs remain invalidated. See
+[native runtime evidence and remaining limits](native-runtime.md). Historical
+math parity is still pending in #5; complete pickup tables/geometry remain in #2.

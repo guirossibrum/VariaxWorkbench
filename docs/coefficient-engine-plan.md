@@ -6,7 +6,9 @@ Updated 2026-11-15. This plan does not authorize any USB/MIDI traffic.
 
 The previous whole-generator/JNI output baseline is invalidated: the loader omitted
 native module initialization, leaving the tone/volume taper constants zero.
-Generation is blocked pending the constructor/runtime audit in issue #5. Standalone
+All 26 native initializers now execute; 110 versioned host-libm generator cases
+and four JNI/direct comparisons pass. Historical runtime rounding remains open
+in #5. See [current evidence](native-runtime.md). Standalone
 body, circuit combination, complex transfer and primary filter-fit checks retain
 their documented scope. See [the finding](pickup-response.md#whole-generator-reference-invalidation).
 

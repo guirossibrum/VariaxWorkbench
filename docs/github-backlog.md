@@ -64,7 +64,7 @@ See [product vision](product-vision.md). These are unimplemented roadmap targets
 the current implementation remains sequential with #2 In Progress.
 
 - [#33: Expand late-stage synthetic testing at least 5x, including bends and alternate tunings](https://github.com/guirossibrum/VariaxWorkbench/issues/33)
-  Depends on #6, #18, #28, #29; required before #22. Includes continuous bends/vibrato, per-string custom tunings, their combined audio behavior and independently verified pitch/artifact checks. Unsupported audio behavior stays unverified.
+  Depends on #6, #18, #28, #29; required before #22. Includes body-dependent sustain/note decay, continuous bends/vibrato (also during decay), per-string custom tunings, their combined audio behavior and independently verified pitch/artifact checks. Unsupported audio behavior stays unverified.
 
 ## Future hardware work — explicit authorization required
 

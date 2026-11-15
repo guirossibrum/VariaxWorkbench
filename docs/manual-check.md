@@ -2,8 +2,10 @@
 
 The future commissioning routine targets about five minutes. It checks the guitar's
 physical model selector and pickup switch, volume/tone sweeps, an 18-note spot
-sample, bends/vibrato, and optionally an existing alternate tuning. A full neck
-sweep is optional. No preset must be created or uploaded for this routine.
+sample with low/high-note sustain tails, bends/vibrato, and optionally an existing alternate tuning. A full neck
+sweep is optional. Let selected notes ring as part of the existing sample; no long
+manual sustain sweep is required. The synthetic matrix covers longer decays across
+bodies and bends during sustained notes. No preset must be created or uploaded for this routine.
 
 The initial Rust terminal app is an **offline workflow rehearsal**. It displays
 instructions and records whether you understood them, had a problem or skipped.

@@ -11,6 +11,7 @@ import struct
 from unicorn import UC_HOOK_CODE
 from unicorn.x86_const import UC_X86_REG_ESP, UC_X86_REG_EAX
 from coefficient_oracle import CoefficientOracle, default_settings, ROOT
+from inspect_firmware import preserve
 
 FIELD_LAYOUT = {
     'm_is_acoustic':(0,'Z'), 'm_use_existing_12str':(1,'Z'),
@@ -104,8 +105,8 @@ def main():
         assert direct==actual,f'original JNI and manual input path differ: {name}'
         records.append({'case':name,'status':'pass','output_sha256':hashlib.sha256(actual).hexdigest()})
         print(f'PASS: original JNI mapping matches direct generation: {name}',flush=True)
-    (ROOT/'analysis/reports/coefficient-jni-agreement.json').write_text(json.dumps({'source_sha256':oracle.sha256,'fields_checked':len(FIELD_LAYOUT)+1,
+    preserve(ROOT/f'analysis/reports/coefficient-jni-agreement-{oracle.RUNTIME_VERSION}.json', (json.dumps({'source_sha256':oracle.sha256,'runtime_version':oracle.RUNTIME_VERSION,'fields_checked':len(FIELD_LAYOUT)+1,
         'scope':'Original JNI/native instructions with private named-field/byte-array adapters and host libm; no JVM, Java ApplyHacks, final metadata overlay or device',
-        'records':records},indent=2)+'\n')
+        'records':records},indent=2)+'\n').encode())
 
 if __name__=='__main__': main()

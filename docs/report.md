@@ -1,3 +1,8 @@
+> Current follow-up: all 26 native startup routines now execute, and a separate
+> versioned 110-case generator sweep plus four JNI comparisons pass. Historical
+> math rounding remains unverified; the old baseline stays invalidated. See
+> [native runtime evidence](native-runtime.md).
+
 > Runtime correction: [whole-generator reference invalidation](pickup-response.md#whole-generator-reference-invalidation). Earlier execution counts do not validate initialized-library behavior.
 
 > Later milestone: [offline generator and POD download results](offline-generator-results.md).

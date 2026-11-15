@@ -37,6 +37,9 @@ class NativeOracle:
                 assert fileoff + filesize <= len(binary) and filesize <= vmsize
                 segments.append((vmaddr, vmsize, fileoff, filesize))
             cursor += size
+        self.binary = binary
+        self.segments = segments
+        self.module_initializers = self._module_initializers(binary)
         self.cpu = Uc(UC_ARCH_X86, UC_MODE_32)
         image_end = max(address + size for address, size, _, _ in segments)
         self.cpu.mem_map(0, (image_end + 4095) & ~4095)
@@ -48,17 +51,49 @@ class NativeOracle:
         self.cpu.mem_write(self.STACK, bytes(0x10000))
 
     def call(self, name, *arguments, instruction_limit=1_000_000, timeout_us=2_000_000):
-        assert 0 < instruction_limit <= 20_000_000
+        assert 0 < instruction_limit <= 200_000_000
         assert 0 < timeout_us <= 10_000_000
         matches = [f for f in self.index["functions"] if
                    (f["name"] == name or f["address"] == name) and f["status"] == "written"]
         assert len(matches) == 1, (name, len(matches))
         address = int(matches[0]["address"], 16)
+        return self._execute(address, arguments, instruction_limit, timeout_us)
+
+    def _module_initializers(self, binary):
+        """Read the artifact's initializer table, never add fabricated REA entries."""
+        cursor, entries, executable = 28, [], []
+        for _ in range(struct.unpack_from('<I', binary, 16)[0]):
+            command, size = struct.unpack_from('<II', binary, cursor)
+            if command == 1:
+                vmaddr, vmsize = struct.unpack_from('<II', binary, cursor + 24)
+                initprot = struct.unpack_from('<I', binary, cursor + 44)[0]
+                if initprot & 4:
+                    executable.append((vmaddr, vmaddr + vmsize))
+                for i in range(struct.unpack_from('<I', binary, cursor + 48)[0]):
+                    section = cursor + 56 + i * 68
+                    assert section + 68 <= cursor + size
+                    address, length, offset = struct.unpack_from('<III', binary, section + 32)
+                    flags = struct.unpack_from('<I', binary, section + 56)[0]
+                    if flags & 255 == 9:  # S_MOD_INIT_FUNC_POINTERS
+                        assert length % 4 == 0 and offset + length <= len(binary)
+                        entries.extend(struct.unpack_from('<' + 'I' * (length // 4), binary, offset))
+            cursor += size
+        assert len(entries) == len(set(entries)), 'duplicate module initializer'
+        assert all(any(start <= entry < end for start, end in executable) for entry in entries)
+        return tuple(entries)
+
+    def call_initializer(self, address):
+        if address not in self.module_initializers:
+            raise ValueError('entry is not in the artifact module-initializer table')
+        return self._execute(address, (), 1_000_000, 2_000_000)
+
+    def _execute(self, address, arguments, instruction_limit, timeout_us):
         stack = self.STACK + 0xf000
-        self.cpu.mem_write(stack, struct.pack("<" + "I"*(len(arguments)+1), self.RETURN, *arguments))
+        self.cpu.mem_write(stack, struct.pack('<' + 'I'*(len(arguments)+1), self.RETURN, *arguments))
         self.cpu.reg_write(UC_X86_REG_ESP, stack)
         self.cpu.emu_start(address, self.RETURN, timeout=timeout_us, count=instruction_limit)
-        assert self.cpu.reg_read(UC_X86_REG_EIP) == self.RETURN, f"{name} did not return"
+        stopped = self.cpu.reg_read(UC_X86_REG_EIP)
+        assert stopped == self.RETURN, f'{address:#x} did not return: pc={stopped:#x}, instruction budget={instruction_limit}, timeout_us={timeout_us}'
         return address
 
     def write(self, address, data):

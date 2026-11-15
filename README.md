@@ -79,6 +79,7 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 - [x] Complete typed Rust body decoding and **748 bit-exact pickup-normalization comparisons**.
 - [x] Rust body interpolation routing: **600 native routing-plan comparisons**.
 - [x] Actual Rust body-field interpolation: **252 vendor-body outputs + 84 synthetic outputs** match every serialized field in debug and release under the documented host-libm oracle.
+- [x] Initialized original-library reference harness: **26 startup routines, 52 complex constants, 110 generator cases and four JNI mapping comparisons** pass with disclosed host-libm adapters. This is reference execution, not full Rust or audio parity; [scope and evidence](docs/native-runtime.md).
 - [x] Raw Rust pickup circuit combination: **3,826 bit-exact comparisons** with the native routine; full response tables/geometry remain pending.
 - [x] Complex pickup transfer and primary frequency/Q/gain fitting: **2,322 response comparisons + 387 fits**, with 540 synthetic vectors; full response tables remain pending.
 - [x] Rust DSP packing/checksum and selected resonator conversions match original-machine-code fixtures.
@@ -87,7 +88,7 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 
 ### Pending implementation or validation
 
-- [ ] Whole-generator/JNI reference validation must be rebuilt after native module initialization is corrected. Earlier 110-case execution results are **invalidated as a reference baseline**; see [the runtime finding](docs/pickup-response.md#whole-generator-reference-invalidation).
+- [ ] Historical macOS math parity and full Rust/native validation remain pending. The old uninitialized whole-generator/JNI baseline stays invalidated; use only the versioned candidates described in [native runtime evidence](docs/native-runtime.md).
 
 - [ ] Complete Rust pickup/electronics response calculations (circuit combination verified; response tables and geometry pending) — [#2](https://github.com/guirossibrum/VariaxWorkbench/issues/2).
 - [ ] Remaining DSP blocks, tuning and complete patch assembly, including Java adjustments and metadata — [#3](https://github.com/guirossibrum/VariaxWorkbench/issues/3), [#4](https://github.com/guirossibrum/VariaxWorkbench/issues/4).
@@ -97,7 +98,7 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 - [ ] Firmware architecture/region mapping, factory/calibration extraction and trustworthy factory comparison — [#13](https://github.com/guirossibrum/VariaxWorkbench/issues/13)–[#15](https://github.com/guirossibrum/VariaxWorkbench/issues/15).
 - [ ] Static recovery/update reconstruction, hardened Rust firmware inspection and virtual device/update simulation — [#16](https://github.com/guirossibrum/VariaxWorkbench/issues/16)–[#18](https://github.com/guirossibrum/VariaxWorkbench/issues/18).
 - [ ] Firmware-improvement feasibility, separate POD USB-firmware verification and Linux bridge investigation — [#19](https://github.com/guirossibrum/VariaxWorkbench/issues/19)–[#21](https://github.com/guirossibrum/VariaxWorkbench/issues/21).
-- [ ] Late-stage synthetic test expansion to **at least 5x distinct samples**, including continuous string bends/vibrato and alternate/custom tuning in combination — [#33](https://github.com/guirossibrum/VariaxWorkbench/issues/33). Audio behavior stays unverified without a suitable independent DSP/audio reference.
+- [ ] Late-stage synthetic test expansion to **at least 5x distinct samples**, including body-dependent sustain/note decay, continuous string bends/vibrato, bends during decay and alternate/custom tuning in combination — [#33](https://github.com/guirossibrum/VariaxWorkbench/issues/33). Audio behavior stays unverified without a suitable independent DSP/audio reference.
 - [ ] Readiness review, comprehensive backups and any future authorized hardware integration/write design — [#22](https://github.com/guirossibrum/VariaxWorkbench/issues/22)–[#25](https://github.com/guirossibrum/VariaxWorkbench/issues/25).
 
 - [ ] Shared multi-device application architecture and capability registry — [#26](https://github.com/guirossibrum/VariaxWorkbench/issues/26).
@@ -109,7 +110,6 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 ### Currently unavailable or not working
 
 - [ ] Guided check does not yet read switches/knobs, record audio or measure notes/bends/tuning. Future integration is [#34](https://github.com/guirossibrum/VariaxWorkbench/issues/34); the current app rehearses prompts only.
-- [ ] Whole-generator oracle startup is incomplete: native volume/tone globals are uninitialized. Generation is blocked pending the runtime audit in #5.
 - [ ] **Live device access is intentionally disabled**, including identity/metadata reads. No runtime unlock exists.
 - [ ] Sending edited presets to the guitar, firmware flashing and factory restoration are unavailable; no live writer is implemented or authorized.
 - [ ] Live USB audio capture/playback and recording controls are not implemented or validated; no audio stream has been opened.

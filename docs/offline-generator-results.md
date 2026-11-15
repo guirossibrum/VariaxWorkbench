@@ -1,3 +1,8 @@
+> Current follow-up: all 26 native startup routines now execute, and a separate
+> versioned 110-case generator sweep plus four JNI comparisons pass. Historical
+> math rounding remains unverified; the old baseline stays invalidated. See
+> [native runtime evidence](native-runtime.md).
+
 > Correction: earlier whole-generator/JNI output validation is invalidated as a
 > reference baseline because a required native module initializer was missing.
 > Generation is now guarded. See [the runtime finding](pickup-response.md#whole-generator-reference-invalidation).

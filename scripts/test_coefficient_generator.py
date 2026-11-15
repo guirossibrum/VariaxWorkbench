@@ -63,7 +63,7 @@ def cases(records):
 def main():
     oracle=CoefficientOracle()
     models=oracle.load_models()
-    directory=ROOT/'analysis/extracted/coefficient-reference'/oracle.sha256
+    directory=ROOT/'analysis/extracted/coefficient-reference'/oracle.sha256/oracle.RUNTIME_VERSION
     directory.mkdir(parents=True,exist_ok=True)
     records=[]
     baseline_output=None
@@ -91,7 +91,8 @@ def main():
         assert len(set(saved_tone))==3, 'saved tone positions failed to vary complete output'
         fresh=CoefficientOracle();fresh.load_models()
         assert fresh.generate(default_settings())==baseline_output, 'fresh-instance baseline mismatch'
-    report={'source_sha256':oracle.sha256,'scope':'Original complete native generation and packing; not a Rust port, Java metadata overlay or hardware test',
+    report={'source_sha256':oracle.sha256,'runtime_version':oracle.RUNTIME_VERSION,'instruction_budget':200_000_000,
+            'module_initializers_completed':len(oracle.initializers_completed),'destructor_registrations_captured':len(oracle.destructor_registrations),'scope':'Original complete native generation and packing; not a Rust port, Java metadata overlay or hardware test',
             'runtime_adapters':'Private allocation/memory and local host libm, Mach-O symbol resolution; unknown imports fail closed',
             'host':{'python':sys.version,'platform':platform.platform(),'libm':ctypes.util.find_library('m')},
             'models_loaded':len(models),'fixture_directory':str(directory.relative_to(ROOT)),
@@ -101,8 +102,8 @@ def main():
                            'Synthetic native inputs bypass Java ApplyHacks and final metadata overlay',
                            'Internal negative-ID pickup combinations are exercised as synthetic primary pickups',
                            'Checksum and successful execution do not prove audio validity or Rust parity']}
-    (ROOT/'analysis/reports/coefficient-generator-tests.json').write_text(json.dumps(report,indent=2)+'\n')
-    print(f'{report["passed"]} passed; {report["failed"]} failed; report: analysis/reports/coefficient-generator-tests.json',flush=True)
+    preserve(ROOT/f'analysis/reports/coefficient-generator-tests-{oracle.RUNTIME_VERSION}-budget200m.json', (json.dumps(report,indent=2)+'\n').encode())
+    print(f'{report["passed"]} passed; {report["failed"]} failed; runtime: {oracle.RUNTIME_VERSION}',flush=True)
     if report['failed']: raise SystemExit(1)
 
 if __name__=='__main__':

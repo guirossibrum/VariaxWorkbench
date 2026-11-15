@@ -20,8 +20,8 @@ pub const STEPS: [Step; 5] = [
     },
     Step {
         title: "Short note sample (~60 seconds)",
-        request: "On one agreed model/body and switch position, play each of the six strings open, at fret 5 and at fret 12, one note at a time. This is an 18-note spot check, not every note on the neck. A complete neck sweep is optional later.",
-        evidence: "Recorded audio with the model, tuning, string/fret and expected versus measured pitch. Mixed USB audio may not expose individual string telemetry; do not claim it does. Pickup/model timbre needs an independent audio reference.",
+        request: "On one agreed model/body and switch position, play each of the six strings open, at fret 5 and at fret 12, one note at a time. This is an 18-note spot check, not every note on the neck. Let one low and one high note ring out and listen to their tails; if convenient, compare a second existing body preset. A complete neck sweep is optional later.",
+        evidence: "Recorded audio with the model, tuning, string/fret and expected versus measured pitch. Mixed USB audio may not expose individual string telemetry; do not claim it does. Record sustain/decay envelopes and premature cutoffs separately for each body; quiet tails need sufficient capture length. Pickup/model timbre and expected decay need an independent audio reference.",
     },
     Step {
         title: "Bend and release (~30 seconds)",
