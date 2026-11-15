@@ -148,5 +148,54 @@ equivalence or a hardware recovery test. Nothing here authorizes live traffic.
 `python scripts/test_research_setup.py` runs nine synthetic guard tests without
 vendor archives, emulation or external tools. They check truncated CPIO prefixes,
 path traversal, symlink redirection, retained data/executable modes, archive
-identity mismatches, file replacement refusal, a competing-save race and conflicting procedure indexes.
+identity mismatches, file replacement refusal, a competing-save race and conflicting
+procedure indexes.
 The core CI runs these guards on all three product platforms.
+
+
+## Validation history and limits
+
+Fresh detached worktrees were prepared from the two archived installers, trusted
+local tools and the hash-locked wheel cache. Each got its own Python environment,
+extracted files, model catalog, derived index and generated reports. The catalog
+matches the earlier private catalog, and the eight native-slice records match
+regardless of list order. No existing extracted directory was attached.
+
+The first replay exposed a missing prerequisite: `verify_dsp_word_map` needs the
+whole-generator outputs. The recipe now runs `test_coefficient_generator` before
+that step. All 39 distinct reference stages passed across the original run and
+its documented continuation, including 110 whole-generator cases and 144 complete
+original-Java/native preset comparisons. The continuation receipt is
+`reference-replay-859a1ef72fb82168.json`; fixture digests remained unchanged.
+The initial failed log remains private with that workspace.
+
+A second fresh replay passed the first 29 stages, then the generator stopped on
+case 69 (pickup ID `fffffff7`) within its existing 200-million-instruction / ten-
+second call limits. Its earlier error did not distinguish the two stop reasons;
+this is not classified as a numerical mismatch or a proven wall timeout. The
+failure is retained in `reference-replay-2f02d0fe401fb70c.json`. A fresh emulator
+retry under the same limits passed all 110 cases byte-for-byte against the first
+workspace's native outputs; its slowest call was 7.600205 seconds, at case 69.
+That retry is `generator-limits-97b8ac763dd25af3.json`. Prior native outputs are
+regression evidence, not an independent historical-math or audio oracle.
+
+`native_oracle.py` now includes elapsed time and Unicorn's timeout flag in a
+non-return error. Neither execution limit nor any numerical expectation was
+relaxed. An optional diagnostic replay keeps the same bounds and stops at its
+first failure:
+
+```sh
+.tools/python/bin/python scripts/profile_generator_limits.py --expected-dir /ABS/PREVIOUS/NATIVE/OUTPUTS
+```
+
+Use the prior workspace's coefficient-cache directory containing the generated
+`.packed.bin` files. The diagnostic writes a new content-addressed report; it does
+not replace a failed replay receipt or promote fixtures. Slow or constrained
+hosts can still stop at the bounds and should retain the resulting diagnostics.
+
+The setup guards also exposed a Windows-specific ZIP-name normalization issue in
+CI. Validation now checks the original archive member name before normalization,
+and synthetic backslash/NUL cases run on all three platforms. The legitimate
+Workbench archives have no such names. Linux, Windows and macOS CI passed all
+nine setup guards plus 114 software-profile Rust core tests in debug and release.
+The private extraction/emulation workflow itself remains Linux x86-64 only.
