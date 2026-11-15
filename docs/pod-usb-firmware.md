@@ -351,8 +351,8 @@ Selector 6 is the other side of the userspace
 `sMethods` at `0xa2100` while the selector is below 9. Each entry is 24
 bytes. Entry 6 points at `sVersionStatusCommand` (`0x2818`), with scalar
 input count 0, structure input size 0, scalar output count 2, and structure
-output size 0. For selectors 2 through 8, `externalMethod` loads the
-service at `0x275f` from the user client at `+0xd8` and supplies that
+output size 0. When the incoming dispatch target is null, for selectors
+2 through 8 `externalMethod` loads the service at `0x275f` from the user client at `+0xd8` and supplies that
 object as the dispatch target. The action at `0x2818` leaves that offset
 alone. At `0x281c` it loads the target vtable, at `0x281f` it loads slot
 `+0x890`, and at `0x282f` it tail-calls that slot. The tail-call is a
