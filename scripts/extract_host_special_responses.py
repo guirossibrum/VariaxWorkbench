@@ -21,7 +21,7 @@ def main():
         assert struct.unpack_from('<f',snapshot,8)[0]==39062.5
         output=directory/f'{id}.bin';preserve(output,snapshot)
         records.append({'alternate_id':id,'file':str(output.relative_to(ROOT)),'sha256':hashlib.sha256(snapshot).hexdigest()})
-        print(f'special\t{id&0xffffffff:08x}\t{output}')
+        print(f'special\t{id&0xffffffff:08x}\t{output.resolve()}')
     preserve(directory/'provenance.json',(json.dumps({'source_sha256':oracle.sha256,'runtime_version':oracle.RUNTIME_VERSION,'internal_rate':39062.5,'scope':'Local original host table snapshots only; not firmware, audio equivalence or hardware readiness. Keep these vendor-derived tables private.','records':records},indent=2)+'\n').encode())
 
 

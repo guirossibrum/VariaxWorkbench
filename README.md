@@ -72,7 +72,7 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 
 - [x] Rust CLI and offline GUI build, including optimized release builds.
 - [x] Short guided-check **offline rehearsal** app: five prompts, cancellation/skip handling and protected report saving. Run `cargo run --bin variax-check -- plan`; see [usage and limits](docs/manual-check.md).
-- [x] **103 Rust tests**, Clippy with warnings denied, and formatting checks.
+- [x] **106 Rust tests**, Clippy with warnings denied, and formatting checks.
 - [x] Individual preset parsing/editing and protected copy saves: **6 original-Java compatibility checks**.
 - [x] L6BA/L6CO bank inspection and preset extraction: **both formats compared with original Java**.
 - [x] Offline GUI with recovered artwork, preset controls, undo/redo and guarded document operations; selected headless tests and rendering smoke checks pass.
@@ -88,6 +88,7 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 - [x] Offline Rust preset renderer: **240 Java mapping/overlay cases**, **110 complete stateful native cases**, **144 complete Java/native final-byte comparisons** (including 24 special-combination cases), and **48 synthetic full-engine outputs** pass. Extra regressions cover **300 fractional EQ mixes**, **48 derived-frequency sitar cases**, state retention, atomic errors and protected file output. External model resources remain private. Historical libm/audio parity remains pending; see [host pipeline scope](docs/host-pipeline.md) — [#4](https://github.com/guirossibrum/VariaxWorkbench/issues/4).
 - [x] Firmware inspection: both supplied images unpack with matching embedded MD5 and complete region coverage; **396 corrupt/truncated synthetic inputs rejected**.
 - [x] Offline Rust FORM/L6FF inspector (`variax-firmware-inspect`): bounded decompression, chunk and stream termination checks, region coverage, MD5 integrity and SHA-256 reporting. Synthetic rejection covers the same **390 prefixes and 6 damaged fields**, plus wrong-product, wrong-version, oversized, overlapping, duplicate, and corrupted-image fixtures. MD5 agreement is not authenticity. No flashing or device API. Details: [firmware containers](docs/firmware-container.md) — [#17](https://github.com/guirossibrum/VariaxWorkbench/issues/17).
+- [x] Offline artifact provenance: product, version, size, MD5, SHA-256, and a source URL only where one was captured. Variax 300/600 3.10 size and MD5 agree with Central release 1062. That agreement is not a signature. Details: [artifact provenance](docs/artifact-provenance.md) — [#12](https://github.com/guirossibrum/VariaxWorkbench/issues/12).
 - [x] Simulated read-session fragmentation, cancellation, timeout, disconnect and cleanup failures; physical-access locks remain tested and enabled.
 
 ### Pending implementation or validation
@@ -96,7 +97,7 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 
 - [ ] Historical math-runtime parity and complete Rust/native generator validation — [#5](https://github.com/guirossibrum/VariaxWorkbench/issues/5), [#6](https://github.com/guirossibrum/VariaxWorkbench/issues/6).
 - [ ] Model-specific parameter validation, complete bank GUI workflows and broader GUI interaction tests — [#7](https://github.com/guirossibrum/VariaxWorkbench/issues/7)–[#9](https://github.com/guirossibrum/VariaxWorkbench/issues/9).
-- [ ] Reproducible fresh-clone tool/artifact setup, Linux packaging and provenance completion — [#10](https://github.com/guirossibrum/VariaxWorkbench/issues/10)–[#12](https://github.com/guirossibrum/VariaxWorkbench/issues/12).
+- [ ] Reproducible fresh-clone tool/artifact setup and Linux packaging — [#10](https://github.com/guirossibrum/VariaxWorkbench/issues/10), [#11](https://github.com/guirossibrum/VariaxWorkbench/issues/11).
 - [ ] Firmware architecture/region mapping, factory/calibration extraction and trustworthy factory comparison — [#13](https://github.com/guirossibrum/VariaxWorkbench/issues/13)–[#15](https://github.com/guirossibrum/VariaxWorkbench/issues/15).
 - [ ] Static recovery/update reconstruction and virtual device/update simulation — [#16](https://github.com/guirossibrum/VariaxWorkbench/issues/16), [#18](https://github.com/guirossibrum/VariaxWorkbench/issues/18). Rust container inspection is [#17](https://github.com/guirossibrum/VariaxWorkbench/issues/17).
 - [ ] Firmware-improvement feasibility, separate POD USB-firmware verification and Linux bridge investigation — [#19](https://github.com/guirossibrum/VariaxWorkbench/issues/19)–[#21](https://github.com/guirossibrum/VariaxWorkbench/issues/21).

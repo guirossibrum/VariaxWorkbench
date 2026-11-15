@@ -53,7 +53,7 @@ of caller-supplied model resources is not established by these comparisons.
 
 48 complete original-instruction outputs from exclusively synthetic model resources
 are committed for ordinary tests, plus one complete synthetic preset/final-byte
-fixture. The latter exercises the CLI and non-overwriting output. 103 all-feature
+fixture. The latter exercises the CLI and non-overwriting output. 106 all-feature
 Rust tests pass. Invalid flags/nonfinite inputs, ambiguous manifests, missing
 special tables and wrong snapshot rates reject without committing engine state.
 The synthetic corpus also exposed the acoustic trim grouping: native adds analog
