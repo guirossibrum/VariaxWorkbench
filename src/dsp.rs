@@ -1,8 +1,11 @@
-//! Verified low-level native DSP packing primitive, not a coefficient engine.
+//! Native logical-word packing and selected conversions, not a complete engine.
 //!
 //! Matches L6VariaxHWPatch::Pack (i386 Mac library, address 0x1bd10).
 //! Java overlays metadata and recomputes its checksum later. Therefore this
 //! intermediate buffer is not, by itself, a finished uploadable guitar patch.
+
+mod patch;
+pub use patch::{NativePatch, vx_float_words};
 
 pub const DATA_WORDS: usize = 1091;
 pub const PACKED_BYTES: usize = 3276;

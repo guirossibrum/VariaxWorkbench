@@ -1,0 +1,1290 @@
+{
+  "source_sha256": "3aa232329d467101637764397b77a7b8ffa6af0ccd72ec380d02f145477ba9fe",
+  "scope": "Static recovered procedure inventory. Names and addresses do not establish word ownership, execution coverage or audio equivalence.",
+  "data_words": 1091,
+  "checksum_words": 1,
+  "blocks": [
+    {
+      "name": "L6VariaxBodyResonance",
+      "status": "DSP port pending (typed model/interpolation already available)",
+      "functions": [
+        {
+          "address": "0x16e00",
+          "name": "L6VariaxBodyResonance::Clear"
+        },
+        {
+          "address": "0x16e50",
+          "name": "L6VariaxBodyResonance::SetMixLevels"
+        },
+        {
+          "address": "0x16e70",
+          "name": "L6VariaxBodyResonance::SetMaster"
+        },
+        {
+          "address": "0x16ec0",
+          "name": "L6VariaxBodyResonance::SetNumResonators"
+        },
+        {
+          "address": "0x16ee0",
+          "name": "L6VariaxBodyResonance::~L6VariaxBodyResonance"
+        },
+        {
+          "address": "0x16f00",
+          "name": "L6VariaxBodyResonance::~L6VariaxBodyResonance"
+        },
+        {
+          "address": "0x16f20",
+          "name": "L6VariaxBodyResonance::~L6VariaxBodyResonance"
+        },
+        {
+          "address": "0x16f40",
+          "name": "L6VariaxBodyResonance::UpdateHWPatch"
+        },
+        {
+          "address": "0x17080",
+          "name": "L6VariaxBodyResonance::GetResponse"
+        },
+        {
+          "address": "0x17550",
+          "name": "L6VariaxBodyResonance::ProcessMono"
+        },
+        {
+          "address": "0x17710",
+          "name": "L6VariaxBodyResonance::SetResonator"
+        },
+        {
+          "address": "0x17880",
+          "name": "L6VariaxBodyResonance::SetTreble"
+        },
+        {
+          "address": "0x17940",
+          "name": "L6VariaxBodyResonance::L6VariaxBodyResonance"
+        },
+        {
+          "address": "0x17a30",
+          "name": "L6VariaxBodyResonance::L6VariaxBodyResonance"
+        },
+        {
+          "address": "0x17a40",
+          "name": "L6VariaxBodyResonance::UpdateCoefs"
+        }
+      ]
+    },
+    {
+      "name": "L6VariaxLoCut",
+      "status": "DSP port pending (typed model/interpolation already available)",
+      "functions": [
+        {
+          "address": "0x1cbd0",
+          "name": "L6VariaxLoCut::Clear"
+        },
+        {
+          "address": "0x1cbf0",
+          "name": "L6VariaxLoCut::Set4thOrder"
+        },
+        {
+          "address": "0x1cc40",
+          "name": "L6VariaxLoCut::~L6VariaxLoCut"
+        },
+        {
+          "address": "0x1cc60",
+          "name": "L6VariaxLoCut::~L6VariaxLoCut"
+        },
+        {
+          "address": "0x1cc80",
+          "name": "L6VariaxLoCut::~L6VariaxLoCut"
+        },
+        {
+          "address": "0x1cca0",
+          "name": "L6VariaxLoCut::UpdateHWPatch"
+        },
+        {
+          "address": "0x1cd00",
+          "name": "L6VariaxLoCut::ProcessMono"
+        },
+        {
+          "address": "0x1ce10",
+          "name": "L6VariaxLoCut::SetFreq"
+        },
+        {
+          "address": "0x1cf00",
+          "name": "L6VariaxLoCut::L6VariaxLoCut"
+        },
+        {
+          "address": "0x1cf70",
+          "name": "L6VariaxLoCut::UpdateCoefs"
+        },
+        {
+          "address": "0x1cfe0",
+          "name": "L6VariaxLoCut::L6VariaxLoCut"
+        }
+      ]
+    },
+    {
+      "name": "L6VariaxStringEQ",
+      "status": "DSP port pending (typed model/interpolation already available)",
+      "functions": [
+        {
+          "address": "0x27e10",
+          "name": "L6VariaxStringEQ::UpdateHWPatch"
+        }
+      ]
+    },
+    {
+      "name": "L6VariaxStringTone",
+      "status": "DSP port pending (typed model/interpolation already available)",
+      "functions": [
+        {
+          "address": "0x28560",
+          "name": "L6VariaxStringTone::GetResonatorPtr"
+        },
+        {
+          "address": "0x28590",
+          "name": "L6VariaxStringTone::~L6VariaxStringTone"
+        },
+        {
+          "address": "0x285b0",
+          "name": "L6VariaxStringTone::~L6VariaxStringTone"
+        },
+        {
+          "address": "0x285d0",
+          "name": "L6VariaxStringTone::SetNumResonators"
+        },
+        {
+          "address": "0x28600",
+          "name": "L6VariaxStringTone::Clear"
+        },
+        {
+          "address": "0x28650",
+          "name": "L6VariaxStringTone::ProcessHex"
+        },
+        {
+          "address": "0x28890",
+          "name": "L6VariaxStringTone::SetStringResonatorParams"
+        },
+        {
+          "address": "0x28a00",
+          "name": "L6VariaxStringTone::UpdateHWPatch"
+        },
+        {
+          "address": "0x28b50",
+          "name": "L6VariaxStringTone::SetStringParams"
+        },
+        {
+          "address": "0x28c40",
+          "name": "L6VariaxStringTone::UpdateCoefs"
+        },
+        {
+          "address": "0x28d00",
+          "name": "L6VariaxStringTone::L6VariaxStringTone"
+        },
+        {
+          "address": "0x28de0",
+          "name": "L6VariaxStringTone::L6VariaxStringTone"
+        }
+      ]
+    },
+    {
+      "name": "L6VariaxGlobalDecay",
+      "status": "DSP port pending (typed model/interpolation already available)",
+      "functions": [
+        {
+          "address": "0x17e40",
+          "name": "L6VariaxGlobalDecay::L6VariaxGlobalDecay"
+        },
+        {
+          "address": "0x17e70",
+          "name": "L6VariaxGlobalDecay::~L6VariaxGlobalDecay"
+        },
+        {
+          "address": "0x17e90",
+          "name": "L6VariaxGlobalDecay::~L6VariaxGlobalDecay"
+        },
+        {
+          "address": "0x17eb0",
+          "name": "L6VariaxGlobalDecay::UpdateHWPatch"
+        },
+        {
+          "address": "0x17f20",
+          "name": "L6VariaxGlobalDecay::Clear"
+        },
+        {
+          "address": "0x17f30",
+          "name": "L6VariaxGlobalDecay::ProcessHex"
+        },
+        {
+          "address": "0x17f80",
+          "name": "L6VariaxGlobalDecay::SetStringDecayParams"
+        },
+        {
+          "address": "0x18020",
+          "name": "L6VariaxGlobalDecay::UpdateCoefs"
+        },
+        {
+          "address": "0x18070",
+          "name": "L6VariaxGlobalDecay::L6VariaxGlobalDecay"
+        }
+      ]
+    },
+    {
+      "name": "L6VariaxSumToMono",
+      "status": "DSP port pending (typed model/interpolation already available)",
+      "functions": [
+        {
+          "address": "0x28df0",
+          "name": "L6VariaxSumToMono::SetLevel"
+        },
+        {
+          "address": "0x28e10",
+          "name": "L6VariaxSumToMono::~L6VariaxSumToMono"
+        },
+        {
+          "address": "0x28e30",
+          "name": "L6VariaxSumToMono::~L6VariaxSumToMono"
+        },
+        {
+          "address": "0x28e50",
+          "name": "L6VariaxSumToMono::UpdateHWPatch"
+        },
+        {
+          "address": "0x28eb0",
+          "name": "L6VariaxSumToMono::Clear"
+        },
+        {
+          "address": "0x28ec0",
+          "name": "L6VariaxSumToMono::ProcessHex"
+        },
+        {
+          "address": "0x28f10",
+          "name": "L6VariaxSumToMono::L6VariaxSumToMono"
+        },
+        {
+          "address": "0x28f50",
+          "name": "L6VariaxSumToMono::UpdateCoefs"
+        },
+        {
+          "address": "0x28f70",
+          "name": "L6VariaxSumToMono::L6VariaxSumToMono"
+        }
+      ]
+    },
+    {
+      "name": "L6VariaxReverb",
+      "status": "DSP port pending (typed model/interpolation already available)",
+      "functions": [
+        {
+          "address": "0x26c90",
+          "name": "L6VariaxReverb::L6VariaxReverb"
+        },
+        {
+          "address": "0x26cc0",
+          "name": "L6VariaxReverb::~L6VariaxReverb"
+        },
+        {
+          "address": "0x26ce0",
+          "name": "L6VariaxReverb::~L6VariaxReverb"
+        },
+        {
+          "address": "0x26d00",
+          "name": "L6VariaxReverb::SetAllpassDensityTablePoint"
+        },
+        {
+          "address": "0x26d20",
+          "name": "L6VariaxReverb::SetControlSources"
+        },
+        {
+          "address": "0x26d40",
+          "name": "L6VariaxReverb::SetTankDecayTimeTablePoint"
+        },
+        {
+          "address": "0x26e30",
+          "name": "L6VariaxReverb::UpdateHWPatch"
+        },
+        {
+          "address": "0x26f30",
+          "name": "L6VariaxReverb::Clear"
+        },
+        {
+          "address": "0x26f40",
+          "name": "L6VariaxReverb::ProcessMono"
+        },
+        {
+          "address": "0x26f90",
+          "name": "L6VariaxReverb::SetAllpassDelay"
+        },
+        {
+          "address": "0x27030",
+          "name": "L6VariaxReverb::SetPreDelay"
+        },
+        {
+          "address": "0x270c0",
+          "name": "L6VariaxReverb::L6VariaxReverb"
+        },
+        {
+          "address": "0x270f0",
+          "name": "L6VariaxReverb::UpdateCoefs"
+        }
+      ]
+    },
+    {
+      "name": "L6VariaxVolume",
+      "status": "DSP port pending (typed model/interpolation already available)",
+      "functions": [
+        {
+          "address": "0x28fb0",
+          "name": "L6VariaxVolume::SetVolumeCurvePoint"
+        },
+        {
+          "address": "0x28fd0",
+          "name": "L6VariaxVolume::SetAnalogVolume"
+        },
+        {
+          "address": "0x28ff0",
+          "name": "L6VariaxVolume::SetTrimEnabled"
+        },
+        {
+          "address": "0x29000",
+          "name": "L6VariaxVolume::~L6VariaxVolume"
+        },
+        {
+          "address": "0x29020",
+          "name": "L6VariaxVolume::~L6VariaxVolume"
+        },
+        {
+          "address": "0x29040",
+          "name": "L6VariaxVolume::SetTrim"
+        },
+        {
+          "address": "0x29050",
+          "name": "L6VariaxVolume::UpdateCoefs"
+        },
+        {
+          "address": "0x29060",
+          "name": "L6VariaxVolume::UpdateHWPatch"
+        },
+        {
+          "address": "0x29110",
+          "name": "L6VariaxVolume::Clear"
+        },
+        {
+          "address": "0x29120",
+          "name": "L6VariaxVolume::ProcessMono"
+        },
+        {
+          "address": "0x29170",
+          "name": "L6VariaxVolume::L6VariaxVolume"
+        },
+        {
+          "address": "0x29200",
+          "name": "L6VariaxVolume::L6VariaxVolume"
+        }
+      ]
+    },
+    {
+      "name": "L6Variax12StringEQ",
+      "status": "DSP port pending (typed model/interpolation already available)",
+      "functions": [
+        {
+          "address": "0x16b30",
+          "name": "L6Variax12StringEQ::UpdateHWPatch"
+        }
+      ]
+    },
+    {
+      "name": "L6VariaxSitarBuzz",
+      "status": "DSP port pending (typed model/interpolation already available)",
+      "functions": [
+        {
+          "address": "0x27240",
+          "name": "L6VariaxSitarBuzz::L6VariaxSitarBuzz"
+        },
+        {
+          "address": "0x27270",
+          "name": "L6VariaxSitarBuzz::~L6VariaxSitarBuzz"
+        },
+        {
+          "address": "0x27290",
+          "name": "L6VariaxSitarBuzz::~L6VariaxSitarBuzz"
+        },
+        {
+          "address": "0x272b0",
+          "name": "L6VariaxSitarBuzz::SetSitarStringParams"
+        },
+        {
+          "address": "0x27300",
+          "name": "L6VariaxSitarBuzz::UpdateCoefs"
+        },
+        {
+          "address": "0x27310",
+          "name": "L6VariaxSitarBuzz::UpdateHWPatch"
+        },
+        {
+          "address": "0x27420",
+          "name": "L6VariaxSitarBuzz::Clear"
+        },
+        {
+          "address": "0x27430",
+          "name": "L6VariaxSitarBuzz::ProcessHex"
+        },
+        {
+          "address": "0x27480",
+          "name": "L6VariaxSitarBuzz::L6VariaxSitarBuzz"
+        }
+      ]
+    },
+    {
+      "name": "L6VariaxPitchShift",
+      "status": "DSP port pending (typed model/interpolation already available)",
+      "functions": [
+        {
+          "address": "0x269b0",
+          "name": "L6VariaxPitchShift::L6VariaxPitchShift"
+        },
+        {
+          "address": "0x269e0",
+          "name": "L6VariaxPitchShift::~L6VariaxPitchShift"
+        },
+        {
+          "address": "0x26a00",
+          "name": "L6VariaxPitchShift::~L6VariaxPitchShift"
+        },
+        {
+          "address": "0x26a20",
+          "name": "L6VariaxPitchShift::SetPitchShiftStringParams"
+        },
+        {
+          "address": "0x26a60",
+          "name": "L6VariaxPitchShift::SetPitchShiftStringParams"
+        },
+        {
+          "address": "0x26a90",
+          "name": "L6VariaxPitchShift::SetPitchShiftStringLevel"
+        },
+        {
+          "address": "0x26ab0",
+          "name": "L6VariaxPitchShift::UpdateCoefs"
+        },
+        {
+          "address": "0x26ac0",
+          "name": "L6VariaxPitchShift::UpdateHWPatch"
+        },
+        {
+          "address": "0x26c00",
+          "name": "L6VariaxPitchShift::Clear"
+        },
+        {
+          "address": "0x26c10",
+          "name": "L6VariaxPitchShift::ProcessHex"
+        },
+        {
+          "address": "0x26c60",
+          "name": "L6VariaxPitchShift::L6VariaxPitchShift"
+        }
+      ]
+    },
+    {
+      "name": "L6VariaxDrone",
+      "status": "DSP port pending (typed model/interpolation already available)",
+      "functions": [
+        {
+          "address": "0x17ae0",
+          "name": "L6VariaxDrone::SetNumDroneStrings"
+        },
+        {
+          "address": "0x17b00",
+          "name": "L6VariaxDrone::~L6VariaxDrone"
+        },
+        {
+          "address": "0x17b20",
+          "name": "L6VariaxDrone::~L6VariaxDrone"
+        },
+        {
+          "address": "0x17b40",
+          "name": "L6VariaxDrone::SetDroneStringParams"
+        },
+        {
+          "address": "0x17be0",
+          "name": "L6VariaxDrone::SetLevel"
+        },
+        {
+          "address": "0x17bf0",
+          "name": "L6VariaxDrone::UpdateHWPatch"
+        },
+        {
+          "address": "0x17cc0",
+          "name": "L6VariaxDrone::Clear"
+        },
+        {
+          "address": "0x17cd0",
+          "name": "L6VariaxDrone::ProcessMono"
+        },
+        {
+          "address": "0x17d20",
+          "name": "L6VariaxDrone::L6VariaxDrone"
+        },
+        {
+          "address": "0x17d50",
+          "name": "L6VariaxDrone::L6VariaxDrone"
+        },
+        {
+          "address": "0x17d80",
+          "name": "L6VariaxDrone::UpdateCoefs"
+        }
+      ]
+    },
+    {
+      "name": "L6VariaxPickupResponse",
+      "status": "pickup component math complete; final word assembly pending",
+      "functions": [
+        {
+          "address": "0x238d0",
+          "name": "L6VariaxPickupResponse::SetToneKnobSaved"
+        },
+        {
+          "address": "0x238e0",
+          "name": "L6VariaxPickupResponse::SetToneKnobFunction"
+        },
+        {
+          "address": "0x238f0",
+          "name": "L6VariaxPickupResponse::~L6VariaxPickupResponse"
+        },
+        {
+          "address": "0x23910",
+          "name": "L6VariaxPickupResponse::~L6VariaxPickupResponse"
+        },
+        {
+          "address": "0x23930",
+          "name": "L6VariaxPickupResponse::SetTone2GainTablePoint"
+        },
+        {
+          "address": "0x23950",
+          "name": "L6VariaxPickupResponse::SetTone2QTablePoint"
+        },
+        {
+          "address": "0x23970",
+          "name": "L6VariaxPickupResponse::SetTone1GainTablePoint"
+        },
+        {
+          "address": "0x23990",
+          "name": "L6VariaxPickupResponse::SetToneOffGainTablePoint"
+        },
+        {
+          "address": "0x239b0",
+          "name": "L6VariaxPickupResponse::SetToneOffQTablePoint"
+        },
+        {
+          "address": "0x239d0",
+          "name": "L6VariaxPickupResponse::SetToneOffGainScalar"
+        },
+        {
+          "address": "0x239f0",
+          "name": "L6VariaxPickupResponse::SetToneKnobPosition"
+        },
+        {
+          "address": "0x23a00",
+          "name": "L6VariaxPickupResponse::UpdateHWPatch"
+        },
+        {
+          "address": "0x23b10",
+          "name": "L6VariaxPickupResponse::Clear"
+        },
+        {
+          "address": "0x23b20",
+          "name": "L6VariaxPickupResponse::ProcessMono"
+        },
+        {
+          "address": "0x23b30",
+          "name": "L6VariaxPickupResponse::CombinePickups"
+        },
+        {
+          "address": "0x23d00",
+          "name": "L6VariaxPickupResponse::ComplexMagnitude"
+        },
+        {
+          "address": "0x23d30",
+          "name": "L6VariaxPickupResponse::GetBiquadResponse"
+        },
+        {
+          "address": "0x23fc0",
+          "name": "L6VariaxPickupResponse::InvComplex"
+        },
+        {
+          "address": "0x24010",
+          "name": "L6VariaxPickupResponse::MultComplex"
+        },
+        {
+          "address": "0x24060",
+          "name": "L6VariaxPickupResponse::SubComplex"
+        },
+        {
+          "address": "0x24090",
+          "name": "L6VariaxPickupResponse::AddComplex"
+        },
+        {
+          "address": "0x240c0",
+          "name": "L6VariaxPickupResponse::expComplex"
+        },
+        {
+          "address": "0x24140",
+          "name": "L6VariaxPickupResponse::Det3x3Complex"
+        },
+        {
+          "address": "0x243c0",
+          "name": "L6VariaxPickupResponse::Det4x4Complex"
+        },
+        {
+          "address": "0x24780",
+          "name": "L6VariaxPickupResponse::SetLowpassFreqTablePoint"
+        },
+        {
+          "address": "0x247e0",
+          "name": "L6VariaxPickupResponse::SetTone2Freq"
+        },
+        {
+          "address": "0x24850",
+          "name": "L6VariaxPickupResponse::SetToneOffFreqTablePoint"
+        },
+        {
+          "address": "0x248d0",
+          "name": "L6VariaxPickupResponse::GetLowpassCenterFreq"
+        },
+        {
+          "address": "0x24960",
+          "name": "L6VariaxPickupResponse::BilinearTransform_Bandpass"
+        },
+        {
+          "address": "0x24a20",
+          "name": "L6VariaxPickupResponse::L6VariaxPickupResponse"
+        },
+        {
+          "address": "0x24a50",
+          "name": "L6VariaxPickupResponse::SetTone2GainTable"
+        },
+        {
+          "address": "0x24a80",
+          "name": "L6VariaxPickupResponse::SetTone2QTable"
+        },
+        {
+          "address": "0x24ab0",
+          "name": "L6VariaxPickupResponse::SetTone1GainTable"
+        },
+        {
+          "address": "0x24ae0",
+          "name": "L6VariaxPickupResponse::SetToneOffGainTable"
+        },
+        {
+          "address": "0x24b10",
+          "name": "L6VariaxPickupResponse::SetToneOffQTable"
+        },
+        {
+          "address": "0x24b40",
+          "name": "L6VariaxPickupResponse::L6VariaxPickupResponse"
+        },
+        {
+          "address": "0x24b70",
+          "name": "L6VariaxPickupResponse::SetLowpassFreqTable"
+        },
+        {
+          "address": "0x24be0",
+          "name": "L6VariaxPickupResponse::CalcPickupCircuitResponse"
+        },
+        {
+          "address": "0x252b0",
+          "name": "L6VariaxPickupResponse::FindFilter2Params"
+        },
+        {
+          "address": "0x259a0",
+          "name": "L6VariaxPickupResponse::FindFilter1Params"
+        },
+        {
+          "address": "0x25d40",
+          "name": "L6VariaxPickupResponse::GeneratePickupResponseTables"
+        },
+        {
+          "address": "0x262c0",
+          "name": "L6VariaxPickupResponse::CalculateResponse"
+        },
+        {
+          "address": "0x26850",
+          "name": "L6VariaxPickupResponse::SetToneOffFreqTable"
+        },
+        {
+          "address": "0x268d0",
+          "name": "L6VariaxPickupResponse::UpdateCoefs"
+        }
+      ]
+    },
+    {
+      "name": "L6VariaxPickupPosition",
+      "status": "pickup component math complete; final word assembly pending",
+      "functions": [
+        {
+          "address": "0x23340",
+          "name": "L6VariaxPickupPosition::SetNumCoils"
+        },
+        {
+          "address": "0x23360",
+          "name": "L6VariaxPickupPosition::SetScaleLength"
+        },
+        {
+          "address": "0x23370",
+          "name": "L6VariaxPickupPosition::SetCoilGain"
+        },
+        {
+          "address": "0x23390",
+          "name": "L6VariaxPickupPosition::~L6VariaxPickupPosition"
+        },
+        {
+          "address": "0x233b0",
+          "name": "L6VariaxPickupPosition::~L6VariaxPickupPosition"
+        },
+        {
+          "address": "0x233d0",
+          "name": "L6VariaxPickupPosition::Sort"
+        },
+        {
+          "address": "0x234f0",
+          "name": "L6VariaxPickupPosition::SetPolePositionAndPhase"
+        },
+        {
+          "address": "0x23530",
+          "name": "L6VariaxPickupPosition::SetMagneticAperture"
+        },
+        {
+          "address": "0x23560",
+          "name": "L6VariaxPickupPosition::UpdateCoefs"
+        },
+        {
+          "address": "0x23570",
+          "name": "L6VariaxPickupPosition::Clear"
+        },
+        {
+          "address": "0x23580",
+          "name": "L6VariaxPickupPosition::ProcessHex"
+        },
+        {
+          "address": "0x235d0",
+          "name": "L6VariaxPickupPosition::L6VariaxPickupPosition"
+        },
+        {
+          "address": "0x23620",
+          "name": "L6VariaxPickupPosition::L6VariaxPickupPosition"
+        },
+        {
+          "address": "0x23670",
+          "name": "L6VariaxPickupPosition::UpdateHWPatch"
+        }
+      ]
+    },
+    {
+      "name": "L6VariaxPickFilter",
+      "status": "DSP port pending (typed model/interpolation already available)",
+      "functions": [
+        {
+          "address": "0x294e0",
+          "name": "L6VariaxPickFilter::Clear"
+        },
+        {
+          "address": "0x294f0",
+          "name": "L6VariaxPickFilter::SetDecay"
+        },
+        {
+          "address": "0x29540",
+          "name": "L6VariaxPickFilter::SetGainTablePoint"
+        },
+        {
+          "address": "0x29560",
+          "name": "L6VariaxPickFilter::~L6VariaxPickFilter"
+        },
+        {
+          "address": "0x29580",
+          "name": "L6VariaxPickFilter::~L6VariaxPickFilter"
+        },
+        {
+          "address": "0x295a0",
+          "name": "L6VariaxPickFilter::~L6VariaxPickFilter"
+        },
+        {
+          "address": "0x295c0",
+          "name": "L6VariaxPickFilter::UpdateHWPatch"
+        },
+        {
+          "address": "0x29620",
+          "name": "L6VariaxPickFilter::ProcessHex"
+        },
+        {
+          "address": "0x29670",
+          "name": "L6VariaxPickFilter::SetFilterParams"
+        },
+        {
+          "address": "0x296b0",
+          "name": "L6VariaxPickFilter::L6VariaxPickFilter"
+        },
+        {
+          "address": "0x29770",
+          "name": "L6VariaxPickFilter::L6VariaxPickFilter"
+        },
+        {
+          "address": "0x29780",
+          "name": "L6VariaxPickFilter::UpdateCoefs"
+        }
+      ]
+    },
+    {
+      "name": "L6VariaxCompressor",
+      "status": "DSP port pending (typed model/interpolation already available)",
+      "functions": [
+        {
+          "address": "0x297f0",
+          "name": "L6VariaxCompressor::Clear"
+        },
+        {
+          "address": "0x29800",
+          "name": "L6VariaxCompressor::SetRelease"
+        },
+        {
+          "address": "0x29850",
+          "name": "L6VariaxCompressor::SetPostGainTablePoint"
+        },
+        {
+          "address": "0x29870",
+          "name": "L6VariaxCompressor::~L6VariaxCompressor"
+        },
+        {
+          "address": "0x29890",
+          "name": "L6VariaxCompressor::~L6VariaxCompressor"
+        },
+        {
+          "address": "0x298b0",
+          "name": "L6VariaxCompressor::~L6VariaxCompressor"
+        },
+        {
+          "address": "0x298d0",
+          "name": "L6VariaxCompressor::UpdateCoefs"
+        },
+        {
+          "address": "0x298e0",
+          "name": "L6VariaxCompressor::UpdateHWPatch"
+        },
+        {
+          "address": "0x29940",
+          "name": "L6VariaxCompressor::ProcessMono"
+        },
+        {
+          "address": "0x29990",
+          "name": "L6VariaxCompressor::SetAttack"
+        },
+        {
+          "address": "0x299e0",
+          "name": "L6VariaxCompressor::L6VariaxCompressor"
+        },
+        {
+          "address": "0x29a60",
+          "name": "L6VariaxCompressor::L6VariaxCompressor"
+        }
+      ]
+    },
+    {
+      "name": "L6VariaxMicPosition",
+      "status": "DSP port pending (typed model/interpolation already available)",
+      "functions": [
+        {
+          "address": "0x29a70",
+          "name": "L6VariaxMicPosition::Clear"
+        },
+        {
+          "address": "0x29a80",
+          "name": "L6VariaxMicPosition::~L6VariaxMicPosition"
+        },
+        {
+          "address": "0x29aa0",
+          "name": "L6VariaxMicPosition::~L6VariaxMicPosition"
+        },
+        {
+          "address": "0x29ac0",
+          "name": "L6VariaxMicPosition::~L6VariaxMicPosition"
+        },
+        {
+          "address": "0x29ae0",
+          "name": "L6VariaxMicPosition::SetNotchDepthTablePoint"
+        },
+        {
+          "address": "0x29b00",
+          "name": "L6VariaxMicPosition::SetMicPositionTablePoint"
+        },
+        {
+          "address": "0x29b30",
+          "name": "L6VariaxMicPosition::SetRandomLevelTablePoint"
+        },
+        {
+          "address": "0x29b50",
+          "name": "L6VariaxMicPosition::SetScaleLength"
+        },
+        {
+          "address": "0x29b70",
+          "name": "L6VariaxMicPosition::UpdateHWPatch"
+        },
+        {
+          "address": "0x29bd0",
+          "name": "L6VariaxMicPosition::ProcessHex"
+        },
+        {
+          "address": "0x29c20",
+          "name": "L6VariaxMicPosition::L6VariaxMicPosition"
+        },
+        {
+          "address": "0x29c50",
+          "name": "L6VariaxMicPosition::L6VariaxMicPosition"
+        },
+        {
+          "address": "0x29c80",
+          "name": "L6VariaxMicPosition::UpdateCoefs"
+        }
+      ]
+    }
+  ],
+  "hardware_patch_functions": [
+    {
+      "address": "0x180a0",
+      "name": "L6VariaxHWPatch::L6VariaxHWPatch",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x180d0",
+      "name": "L6VariaxHWPatch::L6VariaxHWPatch",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x18100",
+      "name": "L6VariaxHWPatch::FloatToVXFloat",
+      "status": "implemented, documented primitive comparisons pass"
+    },
+    {
+      "address": "0x18160",
+      "name": "L6VariaxHWPatch::ComputeChecksum",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x18190",
+      "name": "L6VariaxHWPatch::SetName",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x182a0",
+      "name": "L6VariaxHWPatch::SetBlockStatusWord",
+      "status": "implemented, documented primitive comparisons pass"
+    },
+    {
+      "address": "0x182c0",
+      "name": "L6VariaxHWPatch::GetBlockStatusWord",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x182d0",
+      "name": "L6VariaxHWPatch::SetBlockEnable",
+      "status": "implemented, documented primitive comparisons pass"
+    },
+    {
+      "address": "0x18300",
+      "name": "L6VariaxHWPatch::SetNumBodyResonators",
+      "status": "implemented, documented primitive comparisons pass"
+    },
+    {
+      "address": "0x18320",
+      "name": "L6VariaxHWPatch::SetLoCut4thOrderEnable",
+      "status": "implemented, documented primitive comparisons pass"
+    },
+    {
+      "address": "0x18340",
+      "name": "L6VariaxHWPatch::SetStringEQNumBands",
+      "status": "implemented, documented primitive comparisons pass"
+    },
+    {
+      "address": "0x18360",
+      "name": "L6VariaxHWPatch::SetAnalogLevel",
+      "status": "implemented, documented primitive comparisons pass"
+    },
+    {
+      "address": "0x18380",
+      "name": "L6VariaxHWPatch::SetReverbAllpassDelay",
+      "status": "implemented, documented primitive comparisons pass"
+    },
+    {
+      "address": "0x183a0",
+      "name": "L6VariaxHWPatch::SetReverbPreDelay",
+      "status": "implemented, documented primitive comparisons pass"
+    },
+    {
+      "address": "0x183c0",
+      "name": "L6VariaxHWPatch::SetReverbControlSources",
+      "status": "implemented, documented primitive comparisons pass"
+    },
+    {
+      "address": "0x183e0",
+      "name": "L6VariaxHWPatch::SetDroneNumDroneStrings",
+      "status": "implemented, documented primitive comparisons pass"
+    },
+    {
+      "address": "0x18400",
+      "name": "L6VariaxHWPatch::SetToneKnobPosition",
+      "status": "implemented, documented primitive comparisons pass"
+    },
+    {
+      "address": "0x184b0",
+      "name": "L6VariaxHWPatch::SetToneKnobFunction",
+      "status": "implemented, documented primitive comparisons pass"
+    },
+    {
+      "address": "0x184d0",
+      "name": "L6VariaxHWPatch::SetPickupNumCoils",
+      "status": "implemented, documented primitive comparisons pass"
+    },
+    {
+      "address": "0x184e0",
+      "name": "L6VariaxHWPatch::SetPickupMagneticAperture",
+      "status": "implemented, documented primitive comparisons pass"
+    },
+    {
+      "address": "0x18500",
+      "name": "L6VariaxHWPatch::SetMicPositionRandomLevelTable",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x18670",
+      "name": "L6VariaxHWPatch::SetBodyResonatorCoefs",
+      "status": "implemented, documented primitive comparisons pass"
+    },
+    {
+      "address": "0x189c0",
+      "name": "L6VariaxHWPatch::SetBodyTrebleCoefs",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x18dc0",
+      "name": "L6VariaxHWPatch::SetBodyMixCoefs",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x18ff0",
+      "name": "L6VariaxHWPatch::SetLoCutCoefs",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x19230",
+      "name": "L6VariaxHWPatch::SetStringEQBandCoefs",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x197b0",
+      "name": "L6VariaxHWPatch::SetStringEQStringGain",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x198e0",
+      "name": "L6VariaxHWPatch::Set12StringEQBandCoefs",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x19e60",
+      "name": "L6VariaxHWPatch::Set12StringEQStringWetDry",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x1a090",
+      "name": "L6VariaxHWPatch::SetStringToneStringCoefs",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x1a2d0",
+      "name": "L6VariaxHWPatch::SetStringToneResoCoefs",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x1a620",
+      "name": "L6VariaxHWPatch::SetGlobalDecayCoefs",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x1a970",
+      "name": "L6VariaxHWPatch::SetSumToMonoLevel",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x1aaa0",
+      "name": "L6VariaxHWPatch::SetTrimLevel",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x1abd0",
+      "name": "L6VariaxHWPatch::SetDroneStringCoefs",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x1ad10",
+      "name": "L6VariaxHWPatch::SetDroneLevel",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x1ae40",
+      "name": "L6VariaxHWPatch::SetSitarBuzzStringCoefs",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x1b3b0",
+      "name": "L6VariaxHWPatch::SetPitchShiftStringParams",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x1b4f0",
+      "name": "L6VariaxHWPatch::SetPickupCoilGain",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x1b620",
+      "name": "L6VariaxHWPatch::SetPickupPolePiecePositionAndPhase",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x1b770",
+      "name": "L6VariaxHWPatch::SetPickFilterCoefs",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x1bae0",
+      "name": "L6VariaxHWPatch::SetCompressorCoefs",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x1bd10",
+      "name": "L6VariaxHWPatch::Pack",
+      "status": "implemented, documented primitive comparisons pass"
+    },
+    {
+      "address": "0x1bd80",
+      "name": "L6VariaxHWPatch::SetPickupResponseTone2FreqCoef",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x1be10",
+      "name": "L6VariaxHWPatch::SetPickupResponseToneOffFreqCoefTable",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x1bea0",
+      "name": "L6VariaxHWPatch::SetPickupScaleLength",
+      "status": "implemented, documented primitive comparisons pass"
+    },
+    {
+      "address": "0x1bf30",
+      "name": "L6VariaxHWPatch::SetVolumeCurve",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x1c060",
+      "name": "L6VariaxHWPatch::SetReverbAllpassDensityTable",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x1c190",
+      "name": "L6VariaxHWPatch::SetReverbTankDelayFeedbackCoefTable",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x1c2d0",
+      "name": "L6VariaxHWPatch::SetPickupResponseLowpassFreqCoefTable",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x1c400",
+      "name": "L6VariaxHWPatch::SetPickFilterGainTable",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x1c570",
+      "name": "L6VariaxHWPatch::SetCompressorPostGainTable",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x1c6a0",
+      "name": "L6VariaxHWPatch::SetMicPositionNotchDepthTable",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x1c7d0",
+      "name": "L6VariaxHWPatch::SetMicPositionTable",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x1c900",
+      "name": "L6VariaxHWPatch::SetPickupResponseTone2GainTable",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x1c990",
+      "name": "L6VariaxHWPatch::SetPickupResponseTone2QTable",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x1ca20",
+      "name": "L6VariaxHWPatch::SetPickupResponseTone1GainTable",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x1cab0",
+      "name": "L6VariaxHWPatch::SetPickupResponseToneOffGainTable",
+      "status": "pending independent port/validation"
+    },
+    {
+      "address": "0x1cb40",
+      "name": "L6VariaxHWPatch::SetPickupResponseToneOffQTable",
+      "status": "pending independent port/validation"
+    }
+  ],
+  "shared_helpers": [
+    {
+      "address": "0x274b0",
+      "name": "L6VariaxStringEQBase::SetStringParams"
+    },
+    {
+      "address": "0x27520",
+      "name": "L6VariaxStringEQBase::GetBandPtr"
+    },
+    {
+      "address": "0x27550",
+      "name": "L6VariaxStringEQBase::~L6VariaxStringEQBase"
+    },
+    {
+      "address": "0x27590",
+      "name": "L6VariaxStringEQBase::~L6VariaxStringEQBase"
+    },
+    {
+      "address": "0x275d0",
+      "name": "L6VariaxStringEQBase::ProcessHex"
+    },
+    {
+      "address": "0x27730",
+      "name": "L6VariaxStringEQBase::SetStringEQBandParams"
+    },
+    {
+      "address": "0x27f80",
+      "name": "L6VariaxStringEQBase::GetResponse"
+    },
+    {
+      "address": "0x282b0",
+      "name": "L6VariaxStringEQBase::Clear"
+    },
+    {
+      "address": "0x28310",
+      "name": "L6VariaxStringEQBase::UpdateCoefs"
+    },
+    {
+      "address": "0x28410",
+      "name": "L6VariaxStringEQBase::L6VariaxStringEQBase"
+    },
+    {
+      "address": "0x28550",
+      "name": "L6VariaxStringEQBase::L6VariaxStringEQBase"
+    }
+  ],
+  "unmapped_words": "All-block word ownership remains pending; do not claim coverage from procedure counts."
+}

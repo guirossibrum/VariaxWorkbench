@@ -60,6 +60,34 @@ fn run() -> Result<(), String> {
         Some("inspect") if args.len() == 2 => {
             print!("{}", read_preset(&args[1])?.summary());
         }
+        Some("dsp-scalar") if args.len() >= 3 => {
+            let mut seed = u32::from_str_radix(&args[1], 16).map_err(|e| e.to_string())?;
+            let mut patch = variax_workbench::dsp::NativePatch::default();
+            for word in &mut patch.words {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                *word = seed;
+            }
+            let values = args[3..]
+                .iter()
+                .map(|v| u32::from_str_radix(v, 16))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            patch.apply_scalar(&args[2], &values)?;
+            println!(
+                "{}",
+                patch
+                    .words
+                    .iter()
+                    .map(|v| format!("{v:08x}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+        }
+        Some("vx-float") if args.len() == 2 => {
+            let bits = u32::from_str_radix(&args[1], 16).map_err(|e| e.to_string())?;
+            let result = variax_workbench::dsp::vx_float_words(f32::from_bits(bits));
+            println!("{:08x} {:08x}", result[0], result[1]);
+        }
         Some("pickup-levels") if args.len() == 9 => {
             use variax_workbench::pickup::{BalancedLevels, PickupLevel};
             let value = |i: usize| -> Result<f32, String> {
