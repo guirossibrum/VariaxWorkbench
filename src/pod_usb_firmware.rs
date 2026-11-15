@@ -5,9 +5,13 @@
 //! whose version slot builds a USB vendor control transfer. PODxt Live's
 //! USB product id selects `L6USBDevice_DevMgr` construction. The version
 //! path then reaches an `L6DeviceDescription`, whose slot returns a pointer
-//! already cached on a device-control object. That slot does not construct
-//! either Brandi service, so the installed service class is still open and
-//! this record does not treat the transfer as a completed PODxt Live query.
+//! already cached on a device-control object. The description setter is a
+//! virtual slot. No traced producer calls it through a PC-relative
+//! instruction that names the setter. `L6XTAudioControlMac` can store a
+//! kernel Brandi service at cache index 0. That fill is useful evidence,
+//! and its PODxt Live association remains unproven. The installed service
+//! class is still open, and this record does not treat the transfer as a
+//! completed PODxt Live query.
 //! The fields are plain data. Nothing here links IOKit, Monkey, or a
 //! driver, and nothing opens a device, sends the transfer, or installs
 //! firmware. The USB-firmware image and the installed version are unknown.
@@ -100,6 +104,38 @@ pub const DESCRIPTION_SERVICE_HOP: DescriptionServiceHop = DescriptionServiceHop
     service_constructed_on_path: false,
 };
 
+/// Virtual setter that writes the description's device-control smart pointer.
+/// The function address appears only in this vtable slot. Traced producers
+/// of an `L6DeviceDescription` do not call the slot through a PC-relative
+/// instruction. `direct_call_found` covers that PC-relative search only.
+/// A Mach-O indirect-symbol or lazy stub can reach the setter without
+/// naming its virtual address, and those stubs are not resolved here.
+pub const DESCRIPTION_SETTER: DescriptionSetter = DescriptionSetter {
+    vptr: 0x1c1598,
+    slot_offset: 0x0c,
+    setter_va: 0x85650,
+    smart_pointer_offset: 0x21c,
+    direct_call_found: false,
+    traced_virtual_call_found: false,
+};
+
+/// `L6XTAudioControlMac` slot `+0x0c` stores a kernel Brandi service at
+/// cache index 0 when that slot's refcount is zero. That producer is useful
+/// evidence. `selected_for_podxt_live` stays false because its association
+/// with the PODxt Live description remains unproven. The kernel version
+/// slot does not embed the userspace builder fields.
+pub const XT_AUDIO_INDEX0_FILL: XtAudioIndex0Fill = XtAudioIndex0Fill {
+    control_vptr: 0x1c18b8,
+    cache_slot_va: 0x8dd20,
+    service_index: 0,
+    allocation_size: 0x10,
+    kernel_thunk_va: 0x8ad80,
+    kernel_constructor_va: 0x8adc0,
+    stored_vptr: 0x1c1838,
+    userspace_builder_embedded: false,
+    selected_for_podxt_live: false,
+};
+
 /// Earlier `lsusb` text in `analysis/reports/podxt-live-usb-descriptors.txt`.
 /// It was not collected again for this record.
 pub const SAVED_DESCRIPTOR: SavedDescriptor = SavedDescriptor {
@@ -139,12 +175,12 @@ pub const USB_COMPONENT_QUERY: QueryRecovery = QueryRecovery::StaticControlTrans
 pub const FUTURE_PLAN: &[PlanStep] = &[
     PlanStep {
         id: "static-request-recorded",
-        detail: "PODxt Live USB PID 0x4650 matches product 0x0003000a and that match constructs L6USBDevice_DevMgr. GetDeviceDesc returns an L6DeviceDescription. Its slot +0x14 returns the service already cached on a device-control object and does not construct L6BrandiServiceMac or the kernel service. The returned service class is not closed. The recorded transfer must not be sent, and its fields are not an approved live read. No USB-firmware image is in the local inventory, and the installed version is unknown.",
+        detail: "PODxt Live USB PID 0x4650 matches product 0x0003000a and that match constructs L6USBDevice_DevMgr. The description setter is virtual slot +0x0c, and no traced description producer calls it through a PC-relative instruction that names the setter. The next offline edge search resolves Mach-O indirect-symbol and lazy stubs for the constructors and setters as well as those direct calls. L6XTAudioControlMac can store a kernel Brandi service at cache index 0. That producer is useful evidence, and its PODxt Live association remains unproven. The returned service class is not closed. The recorded transfer must not be sent, and its fields are not an approved live read. No USB-firmware image is in the local inventory, and the installed version is unknown.",
         gate: PlanGate::OfflineNext,
     },
     PlanStep {
         id: "review-before-any-read",
-        detail: "The recorded fields are not an approved live read. No device reply has been captured. Resolve the cached service class before selecting any request. A live read still needs a separate explicit authorization.",
+        detail: "The recorded fields are not an approved live read. No device reply has been captured. The description setter is recovered. The index-0 kernel producer is useful evidence, and its PODxt Live association remains unproven. A live read still needs a separate explicit authorization.",
         gate: PlanGate::RequiresSeparateAuthorization,
     },
     PlanStep {
@@ -219,6 +255,35 @@ pub struct DescriptionServiceHop {
     pub control_service_index: u8,
     pub cached_service_offset: u8,
     pub service_constructed_on_path: bool,
+}
+
+/// Addresses in the macOS Monkey 1.78 image. `slot_offset` is the byte
+/// offset of the setter in the description vtable. Nothing here builds or
+/// submits a transfer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DescriptionSetter {
+    pub vptr: u32,
+    pub slot_offset: u8,
+    pub setter_va: u32,
+    pub smart_pointer_offset: u16,
+    pub direct_call_found: bool,
+    pub traced_virtual_call_found: bool,
+}
+
+/// Addresses in the macOS Monkey 1.78 image. `allocation_size` is the heap
+/// size passed to the kernel Brandi constructor before the pointer is stored
+/// at the control's cache slot. Nothing here builds or submits a transfer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct XtAudioIndex0Fill {
+    pub control_vptr: u32,
+    pub cache_slot_va: u32,
+    pub service_index: u8,
+    pub allocation_size: u8,
+    pub kernel_thunk_va: u32,
+    pub kernel_constructor_va: u32,
+    pub stored_vptr: u32,
+    pub userspace_builder_embedded: bool,
+    pub selected_for_podxt_live: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -390,6 +455,28 @@ pub fn validate_record() -> Result<(), String> {
         || DESCRIPTION_SERVICE_HOP.control_getter_va == SERVICE_CLASS_LINK.mac_constructor_va
     {
         return Err("description hop constructs a service or lost its addresses".into());
+    }
+    if DESCRIPTION_SETTER.direct_call_found
+        || DESCRIPTION_SETTER.traced_virtual_call_found
+        || DESCRIPTION_SETTER.vptr != DESCRIPTION_SERVICE_HOP.vptr
+        || DESCRIPTION_SETTER.slot_offset != 0x0c
+        || DESCRIPTION_SETTER.setter_va != 0x85650
+        || DESCRIPTION_SETTER.smart_pointer_offset != DESCRIPTION_SERVICE_HOP.control_pointer_offset
+    {
+        return Err("description setter slot was called or lost its address".into());
+    }
+    if XT_AUDIO_INDEX0_FILL.selected_for_podxt_live
+        || XT_AUDIO_INDEX0_FILL.userspace_builder_embedded
+        || XT_AUDIO_INDEX0_FILL.control_vptr != 0x1c18b8
+        || XT_AUDIO_INDEX0_FILL.cache_slot_va != 0x8dd20
+        || XT_AUDIO_INDEX0_FILL.service_index != 0
+        || XT_AUDIO_INDEX0_FILL.allocation_size != 0x10
+        || XT_AUDIO_INDEX0_FILL.kernel_thunk_va != 0x8ad80
+        || XT_AUDIO_INDEX0_FILL.kernel_constructor_va != 0x8adc0
+        || XT_AUDIO_INDEX0_FILL.stored_vptr != SERVICE_CLASS_LINK.kernel_vptr
+        || XT_AUDIO_INDEX0_FILL.cache_slot_va == SLOT_FORWARD.request_builder_va
+    {
+        return Err("index 0 cache fill was selected for PODxt Live or lost its addresses".into());
     }
     if !FUTURE_PLAN[0].detail.contains("not closed") {
         return Err("plan no longer records the open service class".into());
