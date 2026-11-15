@@ -18,3 +18,6 @@ Reference scripts under `scripts/verify_*` document generation and verification.
 The ordinary Rust tests use only these fixtures and do not need vendor files or
 hardware. Full original-library reference tests require separately obtained local
 vendor artifacts and the ignored analysis/tool directories.
+
+- `native-body-interpolation-input.bin`: six generated variants varying all sections, with safe in-memory coil counts and artificial boundary values.
+- `native-body-interpolated-cases.txt`, `native-body-interpolated-output.bin`: 84 synthetic routing/direct-blending cases and complete original-machine-code outputs; no vendor bodies are embedded.

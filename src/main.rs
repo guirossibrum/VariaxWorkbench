@@ -60,6 +60,37 @@ fn run() -> Result<(), String> {
         Some("inspect") if args.len() == 2 => {
             print!("{}", read_preset(&args[1])?.summary());
         }
+        Some("blend-body") if args.len() == 6 => {
+            let body = variax_workbench::body::BodyDefinition::parse(
+                &fs::read(&args[1]).map_err(|e| e.to_string())?,
+            )?;
+            let first = args[3]
+                .parse::<usize>()
+                .map_err(|_| "expected variant index")?;
+            let second = args[4]
+                .parse::<usize>()
+                .map_err(|_| "expected variant index")?;
+            let left = body
+                .variants
+                .get(first)
+                .ok_or("body variant index out of range")?;
+            let right = body
+                .variants
+                .get(second)
+                .ok_or("body variant index out of range")?;
+            let result = left.interpolate_with(right, f32::from_bits(parse_id(&args[5])?))?;
+            write_new(&args[2], &result.canonical_bytes())?;
+        }
+        Some("interpolate-body") if args.len() == 5 => {
+            let body = variax_workbench::body::BodyDefinition::parse(
+                &fs::read(&args[1]).map_err(|e| e.to_string())?,
+            )?;
+            let variant = body.interpolate_normalized(
+                f32::from_bits(parse_id(&args[3])?),
+                f32::from_bits(parse_id(&args[4])?),
+            )?;
+            write_new(&args[2], &variant.canonical_bytes())?;
+        }
         Some("body-roundtrip") if args.len() == 3 => {
             let body = variax_workbench::body::BodyDefinition::parse(
                 &fs::read(&args[1]).map_err(|e| e.to_string())?,
@@ -143,7 +174,7 @@ fn run() -> Result<(), String> {
         }
         _ => {
             return Err(
-                "Usage: variax-workbench preview | decode FIRST.syx SECOND.syx | inspect PRESET.vwm | body-roundtrip INPUT.bin OUTPUT.bin | normalize-body INPUT.bin POSITION_BITS_HEX | body-plan MODE X_BITS_HEX Y_BITS_HEX | inspect-bundle BANK.vwb | extract-preset BANK.vwb OUTPUT.vwm BANK_INDEX PRESET_INDEX | roundtrip INPUT OUTPUT | rename INPUT OUTPUT NAME | set INPUT OUTPUT SLOT_HEX PARAM_HEX int|float VALUE\nAll commands are offline. Output files must not exist. Parameter values are not checked against model-specific ranges.".into(),
+                "Usage: variax-workbench preview | decode FIRST.syx SECOND.syx | inspect PRESET.vwm | interpolate-body INPUT.bin OUTPUT.bin X_BITS_HEX Y_BITS_HEX | blend-body INPUT.bin OUTPUT.bin LEFT_INDEX RIGHT_INDEX WEIGHT_BITS_HEX | body-roundtrip INPUT.bin OUTPUT.bin | normalize-body INPUT.bin POSITION_BITS_HEX | body-plan MODE X_BITS_HEX Y_BITS_HEX | inspect-bundle BANK.vwb | extract-preset BANK.vwb OUTPUT.vwm BANK_INDEX PRESET_INDEX | roundtrip INPUT OUTPUT | rename INPUT OUTPUT NAME | set INPUT OUTPUT SLOT_HEX PARAM_HEX int|float VALUE\nAll commands are offline. Output files must not exist. Parameter values are not checked against model-specific ranges.".into(),
             );
         }
     }

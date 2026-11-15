@@ -3,6 +3,8 @@
 //! Verified against the original i386 reader; see docs/body-definitions.md.
 //! Decoded values are a view of the input. The original bytes remain unchanged.
 
+mod interpolation;
+
 pub const BODY_DEFINITION_BYTES: usize = 17_483;
 pub const BODY_VARIANT_BYTES: usize = 2_897;
 pub const BODY_VARIANT_NAMES: [&str; 6] = ["bb", "mb", "nb", "mm", "nm", "nn"];
@@ -292,7 +294,7 @@ fn floats<const N: usize>(bytes: &[u8], offset: usize) -> [f32; N] {
 }
 
 /// The exact nested interpolation operations selected by the native routing
-/// helpers. This is a plan, not an implementation of per-field DSP blending.
+/// helpers. Field evaluation is implemented separately by evaluate().
 #[derive(Debug, Clone, PartialEq)]
 pub enum BodyBlendPlan {
     Variant(usize),
@@ -458,7 +460,7 @@ impl BodyDefinition {
     }
 
     /// Plan using physical positions in the resource's stored units. Blending
-    /// the selected variant fields is still a separate, unported operation.
+    /// the selected fields is performed separately by BodyBlendPlan::evaluate.
     pub fn interpolation_plan(&self, first: f32, second: f32) -> Result<BodyBlendPlan, String> {
         BodyBlendPlan::from_normalized(
             self.interpolation_mode,
@@ -647,5 +649,63 @@ mod tests {
             assert!(BodyBlendPlan::from_normalized(4, bad, 0.5).is_err());
             assert!(BodyBlendPlan::from_normalized(4, 0.5, bad).is_err());
         }
+    }
+    #[test]
+    fn full_interpolation_matches_original_machine_code_synthetic_results() {
+        let body = BodyDefinition::parse(include_bytes!(
+            "../tests/fixtures/native-body-interpolation-input.bin"
+        ))
+        .unwrap();
+        let bytes = include_bytes!("../tests/fixtures/native-body-interpolated-output.bin");
+        let cases: Vec<_> = include_str!("../tests/fixtures/native-body-interpolated-cases.txt")
+            .lines()
+            .collect();
+        assert_eq!(bytes.len(), cases.len() * BODY_VARIANT_BYTES);
+        for (line, expected) in cases.iter().zip(bytes.as_chunks::<BODY_VARIANT_BYTES>().0) {
+            let c: Vec<_> = line.split_whitespace().collect();
+            let parameter = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+            let result = if c[0] == "blend" {
+                body.variants[c[1].parse::<usize>().unwrap()]
+                    .interpolate_with(
+                        &body.variants[c[2].parse::<usize>().unwrap()],
+                        parameter(c[3]),
+                    )
+                    .unwrap()
+            } else {
+                BodyBlendPlan::from_normalized(
+                    c[1].parse().unwrap(),
+                    parameter(c[2]),
+                    parameter(c[3]),
+                )
+                .unwrap()
+                .evaluate(&body.variants)
+                .unwrap()
+            };
+            assert_eq!(
+                result.canonical_bytes(),
+                expected,
+                "native mismatch for {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn interpolation_rejects_invalid_weights_indices_and_coil_counts() {
+        let body = BodyDefinition::parse(include_bytes!(
+            "../tests/fixtures/native-body-interpolation-input.bin"
+        ))
+        .unwrap();
+        for invalid in [f32::NAN, f32::INFINITY, -0.001, 1.001] {
+            assert!(
+                body.variants[0]
+                    .interpolate_with(&body.variants[1], invalid)
+                    .is_err()
+            );
+        }
+        assert!(BodyBlendPlan::Variant(6).evaluate(&body.variants).is_err());
+        let mut invalid = body.variants[0].clone();
+        invalid.pickup_position.num_coils = 5;
+        assert!(invalid.interpolate_with(&body.variants[1], 0.5).is_err());
+        assert!(body.variants[1].interpolate_with(&invalid, 0.5).is_err());
     }
 }

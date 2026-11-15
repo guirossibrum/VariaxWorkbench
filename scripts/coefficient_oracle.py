@@ -11,7 +11,7 @@ import ctypes
 import ctypes.util
 import struct
 from unicorn import UC_HOOK_CODE, UC_HOOK_MEM_INVALID
-from unicorn.x86_const import UC_X86_REG_EAX, UC_X86_REG_ESP, UC_X86_REG_EIP, UC_X86_REG_FPCW
+from unicorn.x86_const import UC_X86_REG_EAX, UC_X86_REG_ESP, UC_X86_REG_EIP, UC_X86_REG_FPCW, UC_X86_REG_FPTAG, UC_X86_REG_MXCSR
 from native_oracle import NativeOracle, ROOT
 
 
@@ -27,9 +27,12 @@ class CoefficientOracle(NativeOracle):
         self.heap_cursor = self.HEAP
         self.allocations = {}
         self.import_calls = collections.Counter()
+        self.diagnostics = []
         self.adapters = {}
         self.last_pc = None
         self.cpu.reg_write(UC_X86_REG_FPCW, 0x37f)
+        self.cpu.reg_write(UC_X86_REG_FPTAG, 0xffff)
+        self.cpu.reg_write(UC_X86_REG_MXCSR, 0x1f80)
         self.libm = ctypes.CDLL(ctypes.util.find_library('m'))
         self._resolve_imports()
         self.cpu.hook_add(UC_HOOK_CODE, self._dispatch,
@@ -151,6 +154,9 @@ class CoefficientOracle(NativeOracle):
                     break
                 raw.append(byte)
             self.write(args[0], bytes(raw).ljust(args[2], b'\0')); result = args[0]
+        elif short == 'puts':
+            # Capture diagnostics only; never call host stdout or a device.
+            self.diagnostics.append(self.cstring(args[0]).decode('ascii', errors='replace'))
         elif short == 'strlen':
             result = len(self.cstring(args[0]))
         elif short in ('strcmp', 'strncmp'):
@@ -193,6 +199,7 @@ class CoefficientOracle(NativeOracle):
         import json
         records = json.loads((ROOT / 'analysis/reports/model-catalog.json').read_text())
         schema = json.loads((ROOT / 'analysis/reports/native-body-schema.json').read_text())
+        self.model_objects = {}
         self.call('0x6770', self.OBJECT)
         for field in (0x1120, 0x1128):
             table = struct.unpack('<I', self.read(self.OBJECT + field, 4))[0]
@@ -220,6 +227,7 @@ class CoefficientOracle(NativeOracle):
                 self.write(obj+0x28, b''.join(payload[i:i+4][::-1] for i in range(37, 61, 4)))
                 self.write(obj+0x44, b''.join(payload[i:i+4][::-1] for i in range(61, 85, 4)))
                 self.call('0x7790', self.OBJECT, record['id'] & 0xffffffff, obj)
+            self.model_objects[(record['kind'], record['id'])] = obj
         return records
 
     def generate(self, settings):

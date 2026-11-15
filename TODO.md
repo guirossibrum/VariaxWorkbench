@@ -148,9 +148,9 @@ extracted and inventoried, not installed.
 Project: https://github.com/users/guirossibrum/projects/17; all 25 issues added
 with explicit order/phase and 24 native dependency relationships.
 
-Issue #1 is In Progress. Complete typed body decoding and pickup normalization
-are implemented; 28 vendor bodies plus a synthetic fixture roundtrip against the
-original serializer, and 748 normalization comparisons match bit-for-bit.
-Interpolation routing matches 600 traced native plans. Actual per-field numeric
-blending remains pending, so #1 stays open and #2 has not been started.
-See [body-definitions.md](docs/body-definitions.md) for the exact boundaries.
+Issue #1 is complete: typed body decoding and normalization are verified against
+all 28 vendor bodies plus synthetic fixtures, with 748 normalization comparisons.
+Actual field interpolation matches 252 vendor-body and 84 synthetic outputs in
+debug/release. All 40 Rust tests and complete generator/JNI/routing regressions
+pass. Hardware access remains locked. Next sequential topic: issue #2
+pickup/electronics response. See [body-definitions.md](docs/body-definitions.md).

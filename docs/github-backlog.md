@@ -7,14 +7,14 @@ the private project with an explicit Order and Phase. Their 24 dependencies are
 native GitHub blocked-by relationships, not only issue-body links.
 
 Work sequentially in Order, respecting dependencies and the authorization phase.
-Issue #1 is In Progress; no second implementation issue has been started.
+Issue #1 is complete; the next sequential implementation topic is #2.
 
 All issues remain subject to [AGENTS.md](../AGENTS.md). Live USB/MIDI access
 is locked; creating an issue does not authorize its hardware steps.
 
 ## Offline implementation and research
 
-- [ ] [#1: Port complete body schema and interpolation to Rust](https://github.com/guirossibrum/VariaxWorkbench/issues/1)
+- [x] [#1: Port complete body schema and interpolation to Rust](https://github.com/guirossibrum/VariaxWorkbench/issues/1)
 - [ ] [#2: Port pickup response and electronics calculations to Rust](https://github.com/guirossibrum/VariaxWorkbench/issues/2)
 - [ ] [#3: Port remaining DSP blocks, tuning and fixed-point conversions](https://github.com/guirossibrum/VariaxWorkbench/issues/3)
   Depends on #1, #2.

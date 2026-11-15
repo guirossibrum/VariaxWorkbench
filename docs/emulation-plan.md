@@ -84,8 +84,9 @@ coefficient parity (#6) supplies the host-side reference for later DSP/audio wor
 The readiness review (#22), backups (#23) and any live read-only integration (#24)
 remain gated separately.
 
-Issue #1 remains the sole implementation issue In Progress. Documenting this plan
-does not start a second implementation issue or change the sequential order.
+Follow the project execution order and keep only one implementation issue In
+Progress. Issue #1 is now complete; documenting this plan does not start #18 or
+change the sequential order.
 No additional guitar capture is required to start the offline protocol model or
 continue coefficient work; some device-specific unknowns may remain unresolved
 without further independent evidence.

@@ -72,3 +72,11 @@ Issue #1 progress: all body fields are now typed, pickup normalization matches
 The plan deliberately does not execute per-field blending; implementing and
 validating InterpolateBetween remains the next sequential task. See
 [body-definitions.md](body-definitions.md).
+
+## Body interpolation completed
+
+Issue #1 now includes actual field evaluation, verified bit-for-bit for 252
+vendor-body outputs and 84 synthetic outputs in debug and release. All 17 sections,
+disabled transitions and native arithmetic order are covered; the host-libm
+limitation remains explicit. See [body-definitions.md](body-definitions.md).
+Next sequential implementation topic: pickup/electronics response (#2).

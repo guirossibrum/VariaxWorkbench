@@ -29,7 +29,7 @@ Integers and IEEE-754 floating-point values are big endian. Booleans occupy one 
 | 97 | 4 | interpolation mode, unsigned raw representation |
 | 101 | 6 × 2,897 | variants named `bb`, `mb`, `nb`, `mm`, `nm`, `nn` by the original reader |
 
-Each pickup default consists of position float32, angle float32, then six pole-offset float32 values. Defaults are serialized even for pickups the model does not contain. Interpolation-mode values 0 through 4 occur in bundled resources. Their selection/weight rules are now verified against the native routing helpers, as described below; the actual per-field blending operation remains unported.
+Each pickup default consists of position float32, angle float32, then six pole-offset float32 values. Defaults are serialized even for pickups the model does not contain. Interpolation-mode values 0 through 4 occur in bundled resources. Their selection/weight rules are now verified against the native routing helpers, as described below; the per-field operation is now implemented separately in `src/body/interpolation.rs`.
 
 The native object's pickup defaults begin at `0x4b50`, `0x4b70`, `0x4b90`, its mode at `0x4b4c`, and `has_middle` at `0x4bb0`. Native variants begin at object offsets `4 + i * 0xc8c`. Native structure size/padding must not be used as serialized size.
 
@@ -90,7 +90,7 @@ outside positions and bodies with/without a middle pickup. Normalization execute
 original instructions without math/runtime adapters. An x87 return-capture stub
 runs only in private memory. No original normalization instruction is patched.
 
-## Interpolation routing, not field blending
+## Interpolation routing and field evaluation
 
 `BodyBlendPlan` represents the exact nested calls selected by original helpers:
 
@@ -118,10 +118,10 @@ coordinates, variant indices and traced weights.
 Frequency/Q/gain names, arrays and integer discriminants are preserved from the
 native serializer. Their complete DSP-specific units, enums and blending rules
 must still be established per block; typed decoding is not an assertion that all
-physical semantics are known. The next work in issue #1 is the native
-`L6VariaxPatch::InterpolateBetween` operation, including logarithmic frequency
-interpolation and enabled/disabled block transitions, followed by full output
-comparison on all 28 definitions. No second implementation issue is in progress.
+physical semantics are known. The native `L6VariaxPatch::InterpolateBetween` operation is now ported, including
+logarithmic frequency interpolation and enabled/disabled transitions. The separate
+full-output comparisons below cover all 28 definitions. Host-library compatibility
+does not establish device DSP execution or physical audio equivalence.
 Factory presets and calibration remain separate evidence/recovery topics.
 
 ## Reproduce
@@ -131,6 +131,8 @@ cargo test --all-features
 cargo clippy --all-features --all-targets -- -D warnings
 .tools/python/bin/python scripts/verify_body_rust.py
 .tools/python/bin/python scripts/verify_body_plans.py
+.tools/python/bin/python scripts/verify_body_interpolation.py
+.tools/python/bin/python scripts/verify_body_interpolation.py --release
 ```
 
 Local reports: `analysis/reports/body-rust-native-agreement.json` and
@@ -139,3 +141,57 @@ replay the committed synthetic fixtures without any vendor files or hardware.
 Analysis CLI commands `body-roundtrip`, `normalize-body` and `body-plan` expose
 the same code for reference checks. File output uses the shared atomic,
 non-overwriting save function; it never writes to an input file or device.
+
+## Complete field interpolation milestone
+
+`BodyBlendPlan::evaluate` and `BodyDefinition::interpolate_normalized` evaluate
+all selected fields. An analysis CLI can save an interpolated variant locally:
+`interpolate-body INPUT.bin OUTPUT.bin X_BITS_HEX Y_BITS_HEX`. `blend-body` exposes
+a direct two-variant comparison. Both use atomic, non-overwriting saves and have
+no device-access path.
+
+The port preserves the native left-copy rule for discrete flags/control sources,
+frequency interpolation, gain/mix transitions, filter-type mismatch behavior,
+integer conversions and the native single-wrap pickup-coil rule. It does not
+replace those behaviors with a generic arithmetic average. A disabled low-cut
+transitions through the native constant 20; a fading resonator uses the native
+stored-gain target -100. Other integer/table units are preserved as represented
+by the original code; unconfirmed physical interpretations are not invented.
+
+Disassembly corrected an ambiguous decompiler result: logarithms and weighted
+products remain **float64**, with the complement weight first computed in float32.
+The sum rounds to float32 before `expf`. Prematurely rounding each logarithm to
+float32 caused measurable mismatches and was corrected. Linear interpolation
+uses separate float32 subtraction, multiplication and addition.
+
+`verify_body_interpolation.py` executes the actual original field interpolation
+and routing; unlike the routing-only tracer, it does **not** replace field
+calculations. Its explicit private memory/libm adapters also capture original
+filter-type mismatch diagnostics without invoking host stdout or device APIs.
+The CPU's x87 control/tag and MXCSR are initialized explicitly for reproducibility;
+the earlier full-generator baseline and all 110 regression cases remain unchanged.
+
+Validation in both debug and optimized release builds:
+
+- **252 full outputs** from all 28 vendor bodies, every serialized field bit-exact.
+- **84 full synthetic outputs** varying all sections, disabled transitions,
+  signed-integer boundaries, filter types, coil counts and zero-frequency cases.
+- **40 Rust tests**, Clippy with warnings denied and formatting checks pass.
+- The **110-case** original generator regression, **4 JNI** comparisons and
+  **600 routing** plans still pass.
+
+Only synthetic input/output fixtures are committed. Vendor-derived outputs and
+per-case evidence remain local under `analysis/reports/`.
+
+Compatibility deliberately includes native numerical quirks: zero-frequency
+logarithms can produce NaNs at endpoints, and an interpolation endpoint need not
+be a byte-identical source copy. Raw nonfinite data can still be decoded; weights,
+normalized coordinates and coil counts are checked at the calculation API.
+Future complete-patch validation must decide which results are acceptable for
+its intended context. No result here is an upload authorization or evidence of
+physical safety. Historical macOS libm parity remains the separate math issue;
+these comparisons use the disclosed host-libm oracle on this Linux system.
+
+Issue #1 acceptance is satisfied for this declared scope. Completing the remaining
+pickup/electronics and DSP/assembly components is still necessary before a full
+Rust Workbench coefficient engine exists.

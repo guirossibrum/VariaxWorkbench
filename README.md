@@ -45,6 +45,51 @@ Read [the latest generator/firmware results](docs/offline-generator-results.md),
 [the full report](docs/report.md) for changes, validation, risks and remaining
 work, and [TODO.md](TODO.md) for the hardware boundary and next steps.
 
+## Implementation and validation checklist
+
+Keep this checklist current as issues progress. Checked items passed the stated
+offline checks; they do not certify physical safety or hardware/audio equivalence.
+Detailed evidence and limitations: [body interpolation](docs/body-definitions.md),
+[generator results](docs/offline-generator-results.md), and [backlog](docs/github-backlog.md).
+
+### Verified and passing
+
+- [x] Rust CLI and offline GUI build, including optimized release builds.
+- [x] **40 Rust tests**, Clippy with warnings denied, and formatting checks.
+- [x] Individual preset parsing/editing and protected copy saves: **6 original-Java compatibility checks**.
+- [x] L6BA/L6CO bank inspection and preset extraction: **both formats compared with original Java**.
+- [x] Offline GUI with recovered artwork, preset controls, undo/redo and guarded document operations; selected headless tests and rendering smoke checks pass.
+- [x] All **43 pickup definitions** and **28 body definitions** verified against original native serialization.
+- [x] Complete typed Rust body decoding and **748 bit-exact pickup-normalization comparisons**.
+- [x] Rust body interpolation routing: **600 native routing-plan comparisons**.
+- [x] Actual Rust body-field interpolation: **252 vendor-body outputs + 84 synthetic outputs** match every serialized field in debug and release under the documented host-libm oracle.
+- [x] Original computer-side coefficient generator runs in isolated CPU emulation: **110 cases**, **98 distinct outputs**, plus **4 JNI comparisons** across 53 fields. This is a reference oracle, not the completed Rust generator.
+- [x] Rust DSP packing/checksum and selected resonator conversions match original-machine-code fixtures.
+- [x] Firmware inspection: both supplied images unpack with matching embedded MD5 and complete region coverage; **396 corrupt/truncated synthetic inputs rejected**.
+- [x] Simulated read-session fragmentation, cancellation, timeout, disconnect and cleanup failures; physical-access locks remain tested and enabled.
+
+### Pending implementation or validation
+
+- [ ] Complete Rust pickup/electronics response calculations — [#2](https://github.com/guirossibrum/VariaxWorkbench/issues/2).
+- [ ] Remaining DSP blocks, tuning and complete patch assembly, including Java adjustments and metadata — [#3](https://github.com/guirossibrum/VariaxWorkbench/issues/3), [#4](https://github.com/guirossibrum/VariaxWorkbench/issues/4).
+- [ ] Historical math-runtime parity and complete Rust/native generator validation — [#5](https://github.com/guirossibrum/VariaxWorkbench/issues/5), [#6](https://github.com/guirossibrum/VariaxWorkbench/issues/6).
+- [ ] Model-specific parameter validation, complete bank GUI workflows and broader GUI interaction tests — [#7](https://github.com/guirossibrum/VariaxWorkbench/issues/7)–[#9](https://github.com/guirossibrum/VariaxWorkbench/issues/9).
+- [ ] Reproducible fresh-clone tool/artifact setup, Linux packaging and provenance completion — [#10](https://github.com/guirossibrum/VariaxWorkbench/issues/10)–[#12](https://github.com/guirossibrum/VariaxWorkbench/issues/12).
+- [ ] Firmware architecture/region mapping, factory/calibration extraction and trustworthy factory comparison — [#13](https://github.com/guirossibrum/VariaxWorkbench/issues/13)–[#15](https://github.com/guirossibrum/VariaxWorkbench/issues/15).
+- [ ] Static recovery/update reconstruction, hardened Rust firmware inspection and virtual device/update simulation — [#16](https://github.com/guirossibrum/VariaxWorkbench/issues/16)–[#18](https://github.com/guirossibrum/VariaxWorkbench/issues/18).
+- [ ] Firmware-improvement feasibility, separate POD USB-firmware verification and Linux bridge investigation — [#19](https://github.com/guirossibrum/VariaxWorkbench/issues/19)–[#21](https://github.com/guirossibrum/VariaxWorkbench/issues/21).
+- [ ] Readiness review, comprehensive backups and any future authorized hardware integration/write design — [#22](https://github.com/guirossibrum/VariaxWorkbench/issues/22)–[#25](https://github.com/guirossibrum/VariaxWorkbench/issues/25).
+
+### Currently unavailable or not working
+
+- [ ] **Live device access is intentionally disabled**, including identity/metadata reads. No runtime unlock exists.
+- [ ] Sending edited presets to the guitar, firmware flashing and factory restoration are unavailable; no live writer is implemented or authorized.
+- [ ] Full PODxt Live/Variax firmware and audio/DSP emulation is not implemented. Existing host-library emulation is not device emulation.
+- [ ] The earlier experimental full-DSP read timed out; no complete DSP/bank/calibration backup was obtained. The captured “Reso-5” file is one preset's settings only.
+- [ ] Linux did not expose this guitar's Variax ALSA port in earlier observations; the identity-matching issue remains unresolved and no driver patch is installed.
+- [ ] No complete authenticated Variax 600 factory bank or proven recovery path is available.
+- [ ] A fresh clone lacks proprietary artwork, vendor binaries and personal captures by design; original-library reference tests and the illustrated GUI need separately supplied local artifacts. No packaged standalone distribution exists yet.
+
 ## Run the offline editor
 
 ```sh
@@ -84,6 +129,7 @@ python scripts/verify_bundle_compatibility.py
 .tools/python/bin/python scripts/verify_native_bodies.py
 .tools/python/bin/python scripts/verify_body_rust.py
 .tools/python/bin/python scripts/verify_body_plans.py
+.tools/python/bin/python scripts/verify_body_interpolation.py
 ```
 
 Reference checks require the locally extracted original application. REA was

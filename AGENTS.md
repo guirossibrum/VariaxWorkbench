@@ -34,3 +34,13 @@ captures as partial; current-preset metadata is not a full backup.
 Run `cargo test --all-features`, `cargo clippy --all-features --all-targets -- -D
 warnings`, and appropriate offline compatibility/reference tests. Tests must not
 open USB/MIDI devices or require the guitar to be connected.
+
+## README status ledger
+
+Keep README.md's checked offline passes, pending implementation, and currently
+unavailable/not-working checklist current whenever work changes those states.
+Attach precise test scope and counts where supported. Distinguish disabled
+hardware features, unimplemented features, observed failures, original-library
+oracle results and completed Rust behavior. Do not mark simulation success as
+physical safety, audio equivalence, recovery capability or permission to unlock
+hardware. Keep issue links and status consistent with actual completion.
