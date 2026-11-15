@@ -67,3 +67,47 @@ cargo test --release --lib models::
 ```
 
 Keep equipment disconnected and every source-level hardware lock enabled.
+
+## Complex transfer and primary filter fitting
+
+`src/pickup.rs` now implements the complex circuit transfer (original `0x24be0`)
+and the primary peak/half-power frequency/Q/gain search (`0x259a0`). The circuit
+solver preserves native complex determinant grouping, explicit zero terms and
+addition order. A one-bit matrix mismatch identified an association difference;
+that was fixed using disassembly rather than a numeric tolerance.
+
+New independent comparisons:
+
+- **2,322 complex transfer outputs** across all 43 vendor definitions, six
+  frequencies and nine volume/tone combinations: both float64 components exact.
+- **387 primary filter fits**: frequency, Q and gain all bit-exact.
+- **540 synthetic vectors** across different circuit/wiring values are replayed
+  in Rust tests. Only generated values and their outputs are committed.
+
+These routines execute original SSE arithmetic without external runtime imports;
+they do not depend on the uninitialized globals described below. The primary fit
+requires finite volume in (0,1] and tone in [0,1], preserves the original bounded
+search and numerical edge behavior, and does not certify physical/audio validity.
+CLI `pickup-response` and `pickup-filter1` expose the fixed-wiring analysis cases.
+
+Secondary fitting, full response tables, control taper handling, geometry and
+complete pipeline integration remain pending. Verify with
+`.tools/python/bin/python scripts/verify_pickup_response.py`.
+
+## Whole-generator reference invalidation
+
+During the secondary/table investigation, static initializer `0x33780` was found
+in the original Mach-O initializer table. It initializes `kMultVolume` to
+`pow(10,-2)` and `kMultTone` to `pow(10,-3)`, as well as translation-unit constants.
+The existing whole-generator oracle had not executed that module constructor;
+these values remained zero. Its earlier 110 completed executions are therefore
+**not valid initialized-library reference results**. The prior report is archived
+locally and marked invalidated. The generate entry point now rejects zero knob
+globals rather than silently emitting misleading reference data.
+
+Issue #5 must audit/implement required native module initialization and rebuild
+whole-generator/JNI reference evidence before those outputs are used as a baseline.
+This finding does not affect the standalone body interpolation, raw combination,
+complex transfer or primary-fit comparisons: their recovered code paths do not
+use those globals. It also does not change any hardware state; all work remains
+inside private emulator memory and offline files.

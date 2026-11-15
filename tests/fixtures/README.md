@@ -23,3 +23,5 @@ vendor artifacts and the ignored analysis/tool directories.
 - `native-body-interpolated-cases.txt`, `native-body-interpolated-output.bin`: 84 synthetic routing/direct-blending cases and complete original-machine-code outputs; no vendor bodies are embedded.
 
 - `native-pickup-combinations.txt`: 128 synthetic raw electrical pairings and original-machine-code float64 output bits/active flags, including IEEE arithmetic edge cases.
+
+- `native-pickup-response.txt`: 540 synthetic complex-transfer/primary-fit inputs and exact original-instruction outputs across varied wiring; no vendor definitions.

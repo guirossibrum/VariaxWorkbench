@@ -1,3 +1,5 @@
+> Runtime correction: [whole-generator reference invalidation](pickup-response.md#whole-generator-reference-invalidation). Earlier execution counts do not validate initialized-library behavior.
+
 > Later milestone: [offline generator and POD download results](offline-generator-results.md).
 > Both firmware images are now acquired/unpacked, and original native generation
 > runs with runtime adapters. The initial-report limitations below are historical;

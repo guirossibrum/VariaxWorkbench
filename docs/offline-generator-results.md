@@ -1,3 +1,10 @@
+> Correction: earlier whole-generator/JNI output validation is invalidated as a
+> reference baseline because a required native module initializer was missing.
+> Generation is now guarded. See [the runtime finding](pickup-response.md#whole-generator-reference-invalidation).
+> Standalone body/circuit/primary-fit checks are independently validated and do
+> not use the affected globals. Historical execution counts below are not proof
+> of correct native startup.
+
 > Subsequent issue #1 progress: complete typed body decoding, native pickup
 > normalization, interpolation routing and full field blending are now verified. See
 > [body-definitions.md](body-definitions.md). The full pickup/DSP/assembly engine

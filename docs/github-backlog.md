@@ -2,11 +2,12 @@
 
 Repository: https://github.com/guirossibrum/VariaxWorkbench. Default branch: `master`.
 
-Project: https://github.com/users/guirossibrum/projects/17. All 32 issues are on
-the private project with an explicit Order and Phase. Their 37 dependencies are
+Project: https://github.com/users/guirossibrum/projects/17. All 33 issues are on
+the private project with an explicit Order and Phase. Their 42 dependencies are
 native GitHub blocked-by relationships, not only issue-body links.
 
-Work sequentially in Order, respecting dependencies and the authorization phase.
+Work sequentially in project Order, respecting dependencies and the authorization phase.
+Project Order is a topological ordering; issue numbers are identifiers, not execution order.
 Issue #1 is complete and #2 is In Progress. Consult the GitHub project for current status.
 
 All issues remain subject to [AGENTS.md](../AGENTS.md). Live USB/MIDI access
@@ -45,7 +46,7 @@ is locked; creating an issue does not authorize its hardware steps.
 - [ ] [#20: Determine PODxt Live USB firmware version requirements](https://github.com/guirossibrum/VariaxWorkbench/issues/20)
 - [ ] [#21: Investigate Linux Variax identity matching and POD bridge behavior](https://github.com/guirossibrum/VariaxWorkbench/issues/21)
 - [ ] [#22: Complete offline readiness ledger and hardware-operation review gate](https://github.com/guirossibrum/VariaxWorkbench/issues/22)
-  Depends on #6, #18, #21.
+  Depends on #6, #18, #21, #33.
 - [ ] [#25: Define a future preset-write safety design without enabling writes](https://github.com/guirossibrum/VariaxWorkbench/issues/25)
   Depends on #6, #18, #23, #24.
 
@@ -61,6 +62,9 @@ is locked; creating an issue does not authorize its hardware steps.
 
 See [product vision](product-vision.md). These are unimplemented roadmap targets;
 the current implementation remains sequential with #2 In Progress.
+
+- [#33: Expand late-stage synthetic testing at least 5x, including bends and alternate tunings](https://github.com/guirossibrum/VariaxWorkbench/issues/33)
+  Depends on #6, #18, #28, #29; required before #22. Includes continuous bends/vibrato, per-string custom tunings, their combined audio behavior and independently verified pitch/artifact checks. Unsupported audio behavior stays unverified.
 
 ## Future hardware work — explicit authorization required
 

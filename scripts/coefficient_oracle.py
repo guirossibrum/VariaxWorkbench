@@ -231,6 +231,11 @@ class CoefficientOracle(NativeOracle):
         return records
 
     def generate(self, settings):
+        # Whole-library reference output is invalid without this module's
+        # constructor. Partial body/circuit oracles do not use these globals.
+        tone, volume = struct.unpack('<2d', self.read(0x3d798, 16))
+        if tone == 0.0 or volume == 0.0:
+            raise RuntimeError('whole-generator reference blocked: native knob constants are uninitialized; module-constructor/runtime audit required (issue #5)')
         patch = self.OUTPUT + 0x2000
         self.write(patch, bytes(settings))
         self.call('0x180a0', self.OUTPUT)

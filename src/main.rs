@@ -60,6 +60,46 @@ fn run() -> Result<(), String> {
         Some("inspect") if args.len() == 2 => {
             print!("{}", read_preset(&args[1])?.summary());
         }
+        Some(command @ ("pickup-response" | "pickup-filter1"))
+            if (command == "pickup-response" && args.len() == 5)
+                || (command == "pickup-filter1" && args.len() == 4) =>
+        {
+            use variax_workbench::{
+                models::{PickupCircuit, PickupDefinition},
+                pickup::WiringProperties,
+            };
+            let pickup = PickupCircuit::from(&PickupDefinition::parse(
+                &fs::read(&args[1]).map_err(|e| e.to_string())?,
+            )?);
+            let value = |index: usize| -> Result<f64, String> {
+                Ok(f64::from_bits(
+                    u64::from_str_radix(&args[index], 16).map_err(|_| "expected float64 bits")?,
+                ))
+            };
+            let wiring = WiringProperties {
+                load_capacitance: 3.5e-10,
+                load_resistance: 1e6,
+                tone_resistance: 500000.0,
+                volume_resistance: 500000.0,
+                tone_capacitance: 2.2e-8,
+            };
+            if command == "pickup-filter1" {
+                let filter = pickup.fit_primary_filter(wiring, value(2)?, value(3)?)?;
+                println!(
+                    "{:016x} {:016x} {:016x}",
+                    filter.frequency.to_bits(),
+                    filter.q.to_bits(),
+                    filter.gain.to_bits()
+                );
+            } else {
+                let response = pickup.response(wiring, value(2)?, value(3)?, value(4)?);
+                println!(
+                    "{:016x} {:016x}",
+                    response.real.to_bits(),
+                    response.imaginary.to_bits()
+                );
+            }
+        }
         Some("combine-pickups") if args.len() == 4 => {
             use variax_workbench::models::{PickupCircuit, PickupDefinition, PickupWiring};
             let load = |path: &str| -> Result<PickupCircuit, String> {
@@ -197,7 +237,7 @@ fn run() -> Result<(), String> {
         }
         _ => {
             return Err(
-                "Usage: variax-workbench preview | decode FIRST.syx SECOND.syx | inspect PRESET.vwm | combine-pickups LEFT.bin RIGHT.bin series|parallel | interpolate-body INPUT.bin OUTPUT.bin X_BITS_HEX Y_BITS_HEX | blend-body INPUT.bin OUTPUT.bin LEFT_INDEX RIGHT_INDEX WEIGHT_BITS_HEX | body-roundtrip INPUT.bin OUTPUT.bin | normalize-body INPUT.bin POSITION_BITS_HEX | body-plan MODE X_BITS_HEX Y_BITS_HEX | inspect-bundle BANK.vwb | extract-preset BANK.vwb OUTPUT.vwm BANK_INDEX PRESET_INDEX | roundtrip INPUT OUTPUT | rename INPUT OUTPUT NAME | set INPUT OUTPUT SLOT_HEX PARAM_HEX int|float VALUE\nAll commands are offline. Output files must not exist. Parameter values are not checked against model-specific ranges.".into(),
+                "Usage: variax-workbench preview | decode FIRST.syx SECOND.syx | inspect PRESET.vwm | pickup-response INPUT.bin FREQ_BITS VOL_BITS TONE_BITS | pickup-filter1 INPUT.bin VOL_BITS TONE_BITS | combine-pickups LEFT.bin RIGHT.bin series|parallel | interpolate-body INPUT.bin OUTPUT.bin X_BITS_HEX Y_BITS_HEX | blend-body INPUT.bin OUTPUT.bin LEFT_INDEX RIGHT_INDEX WEIGHT_BITS_HEX | body-roundtrip INPUT.bin OUTPUT.bin | normalize-body INPUT.bin POSITION_BITS_HEX | body-plan MODE X_BITS_HEX Y_BITS_HEX | inspect-bundle BANK.vwb | extract-preset BANK.vwb OUTPUT.vwm BANK_INDEX PRESET_INDEX | roundtrip INPUT OUTPUT | rename INPUT OUTPUT NAME | set INPUT OUTPUT SLOT_HEX PARAM_HEX int|float VALUE\nAll commands are offline. Output files must not exist. Parameter values are not checked against model-specific ranges.".into(),
             );
         }
     }

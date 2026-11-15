@@ -2,6 +2,14 @@
 
 Updated 2026-11-15. This plan does not authorize any USB/MIDI traffic.
 
+## Current reference limitation
+
+The previous whole-generator/JNI output baseline is invalidated: the loader omitted
+native module initialization, leaving the tone/volume taper constants zero.
+Generation is blocked pending the constructor/runtime audit in issue #5. Standalone
+body, circuit combination, complex transfer and primary filter-fit checks retain
+their documented scope. See [the finding](pickup-response.md#whole-generator-reference-invalidation).
+
 ## Inputs already available
 
 Workbench 1.75 Java code, original i386 coefficient library, all bundled model
