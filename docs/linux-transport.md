@@ -367,8 +367,14 @@ The written #21 criteria are an offline investigation:
    recorded above. `DRIVER_PATCH_INSTALLED` and `LIVE_PROBE_PERFORMED` stay
    false. `src/usb.rs` is unchanged and `LIVE_ACCESS_LOCKED` stays on.
 
-That is the offline scope of the three criteria. The acceptance boxes stay
-unchecked until review accepts this assessment. Issue #21 stays open.
+Review accepted all three offline criteria after PR #62 merged as `9c8cceac7bc6e4981eb9477707b8d29d871f47a0`.
+Independent checks compared the startup/cold slices and relocation targets with
+both linked modules, and passed 132 all-feature tests, Clippy and formatting.
+The exact PR head passed three-platform core CI. Issue #21 is complete as an
+offline investigation. This does not claim live connectivity, authorize a driver
+installation or unlock equipment. Earlier open-status milestones above are
+historical. The activate byte starts at zero in the fake buffer to make the
+compiled store of one observable; the real init template already contains one.
 
 `bcdDevice` 0.01 and the USB component version remain on issue #20. USB
 product `0x534D` remains a separate Workbench match from this guitar's USB
