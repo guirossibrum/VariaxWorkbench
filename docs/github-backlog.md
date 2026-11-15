@@ -59,3 +59,6 @@ is locked; creating an issue does not authorize its hardware steps.
 Issue bodies contain acceptance criteria, code/document references and the
 hardware boundary. `docs/backlog.json` preserves the topic keys, dependencies
 and GitHub issue mapping. GitHub issue state is the source of truth for progress.
+
+The [emulation plan](emulation-plan.md) describes the proposed virtual POD/guitar
+control path, firmware/DSP feasibility work and pre-hardware test gate for #18.
