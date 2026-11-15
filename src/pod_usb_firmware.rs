@@ -344,6 +344,32 @@ pub const SHAREDXT_SELECTOR: SharedxtSelectorHandler = SharedxtSelectorHandler {
     approved_live_read: false,
 };
 
+/// Where `com_line6_kusbinterface::DeviceRequest` sends the request pointer.
+/// `initWithUSBInterface` stores its `IOUSBInterface*` argument at
+/// `interface_member_offset`. `GetDevice` and the call inside `DeviceRequest`
+/// both use `provider_slot` on that pointer. Slot
+/// [`SharedxtSelectorHandler::request_forward_slot`] is then called on the
+/// returned object. `callee_archived` stays false: the signed kext imports
+/// only USB metaClass symbols, and no IOUSBFamily binary is in the local
+/// archive. `device_bytes_interpreted` stays false. Nothing here builds or
+/// submits a transfer.
+pub const USB_INTERFACE_FORWARD: UsbInterfaceForward = UsbInterfaceForward {
+    init_va: 0x14518,
+    interface_store_va: 0x14578,
+    interface_member_offset: 0x10,
+    get_device_va: 0x14068,
+    get_device_tail_va: 0x1407d,
+    provider_slot: 0x8a8,
+    provider_call_va: 0x1419a,
+    object_size: 0x58,
+    object_size_va: 0x146e0,
+    callee_archived: false,
+    device_bytes_interpreted: false,
+    same_bytes_in_unsigned_image: true,
+    observed_hardware_state: false,
+    approved_live_read: false,
+};
+
 /// Earlier `lsusb` text in `analysis/reports/podxt-live-usb-descriptors.txt`.
 /// It was not collected again for this record.
 pub const SAVED_DESCRIPTOR: SavedDescriptor = SavedDescriptor {
@@ -383,7 +409,7 @@ pub const USB_COMPONENT_QUERY: QueryRecovery = QueryRecovery::StaticControlTrans
 pub const FUTURE_PLAN: &[PlanStep] = &[
     PlanStep {
         id: "static-request-recorded",
-        detail: "PODxt Live USB PID 0x4650 matches product 0x0003000a. In the Monkey image that equality constructs an L6XTAudioControlMac and, when control slot +0x18 returns without the failure bit, virtually calls description slot +0x0c with that control. No Mach-O indirect-symbol or lazy stub binds the setter. AcquireService(0) on that control stores an L6KernelBrandiServiceMac on a cache miss, and the base acquire call returns that cache slot. Kernel GetVersion uses an IOConnectCallScalarMethod stub with selector 6. Sharedxt user-client selector 6 builds the same five fields in a device request and forwards that pointer. That handler is not GetIOPVersion and does not identify a firmware image. The recorded transfer must not be sent, and its fields are not an approved live read. No USB-firmware image is in the local inventory, and the installed version is not closed.",
+        detail: "PODxt Live USB PID 0x4650 matches product 0x0003000a. In the Monkey image that equality constructs an L6XTAudioControlMac and, when control slot +0x18 returns without the failure bit, virtually calls description slot +0x0c with that control. No Mach-O indirect-symbol or lazy stub binds the setter. AcquireService(0) on that control stores an L6KernelBrandiServiceMac on a cache miss, and the base acquire call returns that cache slot. Kernel GetVersion uses an IOConnectCallScalarMethod stub with selector 6. Sharedxt user-client selector 6 builds the same five fields in a device request and forwards that pointer. That handler is not GetIOPVersion and does not identify a firmware image. The kusbinterface forward calls an external virtual slot on the object returned from the stored IOUSBInterface pointer. That callee is not in the local archive, and the three returned bytes are not interpreted as a firmware image. The recorded transfer must not be sent, and its fields are not an approved live read. No USB-firmware image is in the local inventory, and the installed version is not closed.",
         gate: PlanGate::OfflineNext,
     },
     PlanStep {
@@ -648,6 +674,28 @@ pub struct SharedxtSelectorHandler {
     pub iop_command_va: u32,
     pub matches_recorded_fields: bool,
     pub identifies_firmware_image: bool,
+    pub same_bytes_in_unsigned_image: bool,
+    pub observed_hardware_state: bool,
+    pub approved_live_read: bool,
+}
+
+/// Forwarding sites inside `com_line6_kusbinterface`. `interface_member_offset`
+/// is the stored `IOUSBInterface*`, distinct from the sharedxt service's
+/// kusbinterface pointer. `callee_archived` stays false. The three returned
+/// bytes are not interpreted here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UsbInterfaceForward {
+    pub init_va: u32,
+    pub interface_store_va: u32,
+    pub interface_member_offset: u16,
+    pub get_device_va: u32,
+    pub get_device_tail_va: u32,
+    pub provider_slot: u16,
+    pub provider_call_va: u32,
+    pub object_size: u16,
+    pub object_size_va: u32,
+    pub callee_archived: bool,
+    pub device_bytes_interpreted: bool,
     pub same_bytes_in_unsigned_image: bool,
     pub observed_hardware_state: bool,
     pub approved_live_read: bool,
@@ -1028,6 +1076,35 @@ pub fn validate_record() -> Result<(), String> {
     {
         return Err(
             "sharedxt selector collapsed into the userspace builder or an IOP version".into(),
+        );
+    }
+    if USB_INTERFACE_FORWARD.callee_archived
+        || USB_INTERFACE_FORWARD.device_bytes_interpreted
+        || USB_INTERFACE_FORWARD.observed_hardware_state
+        || USB_INTERFACE_FORWARD.approved_live_read
+        || !USB_INTERFACE_FORWARD.same_bytes_in_unsigned_image
+        || USB_INTERFACE_FORWARD.init_va != 0x14518
+        || USB_INTERFACE_FORWARD.interface_store_va != 0x14578
+        || USB_INTERFACE_FORWARD.interface_store_va <= USB_INTERFACE_FORWARD.init_va
+        || USB_INTERFACE_FORWARD.interface_member_offset != 0x10
+        || USB_INTERFACE_FORWARD.interface_member_offset == SHAREDXT_SELECTOR.interface_offset
+        || USB_INTERFACE_FORWARD.get_device_va != 0x14068
+        || USB_INTERFACE_FORWARD.get_device_tail_va != 0x1407d
+        || USB_INTERFACE_FORWARD.get_device_tail_va <= USB_INTERFACE_FORWARD.get_device_va
+        || USB_INTERFACE_FORWARD.provider_slot != 0x8a8
+        || USB_INTERFACE_FORWARD.provider_slot == SHAREDXT_SELECTOR.request_forward_slot
+        || USB_INTERFACE_FORWARD.provider_call_va != 0x1419a
+        || USB_INTERFACE_FORWARD.provider_call_va <= SHAREDXT_SELECTOR.device_request_va
+        || USB_INTERFACE_FORWARD.provider_call_va >= SHAREDXT_SELECTOR.request_forward_call_va
+        || USB_INTERFACE_FORWARD.object_size != 0x58
+        || USB_INTERFACE_FORWARD.object_size_va != 0x146e0
+        || u32::from(USB_INTERFACE_FORWARD.object_size)
+            >= u32::from(SHAREDXT_SELECTOR.request_forward_slot)
+        || SHAREDXT_SELECTOR.identifies_firmware_image
+    {
+        return Err(
+            "usb interface forward claimed an archived callee or interpreted the device bytes"
+                .into(),
         );
     }
     if SIBLING_CONTROL_ASSOCIATIONS.len() != 2 {
