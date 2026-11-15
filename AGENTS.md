@@ -49,8 +49,12 @@ hardware. Keep issue links and status consistent with actual completion.
 
 GitHub issues and the VariaxWorkbench project are the work-tracking source of
 truth. Do not recreate or use TODO.md. README.md contains the requested concise
-validation/implementation/failure summary; it is not a second task queue. Keep
-only one implementation issue In Progress and respect native dependencies.
+validation/implementation/failure summary; it is not a second task queue. Respect native dependencies and keep at most one implementation issue In Progress
+per agent. The user explicitly authorized parallel agents on separate issues:
+use a disposable implementation worktree/branch per issue, preserve the main
+checkout, and merge each completed issue only after review and offline checks.
+Read `docs/parallel-work.md` for current issue ownership; do not duplicate another
+agent's reserved issues or remove another agent's worktree.
 
 ## Product scope
 
