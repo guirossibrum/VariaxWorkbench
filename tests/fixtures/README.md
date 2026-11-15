@@ -63,3 +63,19 @@ needed. Assertions include all 1,091 words, not only changed fields.
 `native-dsp-filter-blocks.txt` contains 864 complete low-cut/pick-filter/compressor/
 reverb cases, with synthetic parameters and all native word mutations. Reference
 helper: `verify_dsp_filters.py`; scope/remaining limits are in `docs/dsp-implementation.md`.
+
+
+`native-dsp-equalizer.txt` contains 2,304 mixed-precision band coefficient cases.
+`native-dsp-eq-blocks.txt` contains 432 complete string/twelve-string EQ cases.
+`native-dsp-sitar.txt` contains 288 complete sitar cases, including finite zero-Q
+and signed-zero duration inputs. `native-dsp-resonance-blocks.txt` contains 432
+body/string-tone cases. All are synthetic numeric snapshots with native outputs.
+
+`native-dsp-body-inputs.bin` is eight independently generated synthetic resources
+(17,483 bytes each); `native-dsp-body-outputs.bin` holds their 48 native all-block
+outputs (1,091 little-endian u32 words each) in body/variant order. These contain
+no vendor model assets. Each input was also validated by the original native
+resource serializer. Their default internal rate is 39062.5 Hz. Reference helper:
+`verify_dsp_body_variants.py`, generator: `synthetic_dsp_body.py`. Comparisons use
+the initialized v2/host-libm reference and do not establish historic libm or audio
+parity. No live hardware is used.

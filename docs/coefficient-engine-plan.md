@@ -90,3 +90,15 @@ vendor-body outputs and 84 synthetic outputs in debug and release. All 17 sectio
 disabled transitions and native arithmetic order are covered; the host-libm
 limitation remains explicit. See [body-definitions.md](body-definitions.md).
 Next sequential implementation topic: pickup/electronics response (#2).
+
+
+## DSP component port completed
+
+Issues #1–#3 now provide complete typed body interpolation, pickup components,
+and all 17 block parameter-to-word paths. The final DSP milestone matches all
+1,091 words for 216 raw-body variants, with 48 synthetic outputs committed for
+fresh-clone regressions. The recovered native default rate is 39062.5 Hz; no
+hardware audio rate is inferred from it. See [DSP evidence](dsp-implementation.md).
+Historical progress above records earlier states, not the current remaining scope.
+Next: #4 Java/preset/model orchestration and final host metadata, then independent
+runtime/full-engine validation. Physical access remains locked.

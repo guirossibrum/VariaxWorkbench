@@ -5,6 +5,12 @@
 //! intermediate buffer is not, by itself, a finished uploadable guitar patch.
 
 mod coefficients;
+mod variant;
+pub use variant::RenderOptions;
+mod resonance;
+pub use resonance::write_resonance_analysis;
+mod equalizer;
+pub use equalizer::{EqParameters, equalizer_coefficients, write_eq_analysis};
 mod filters;
 pub use filters::{biquad_coefficients, write_filter_analysis};
 mod patch;
@@ -15,6 +21,10 @@ pub use patch::{NativePatch, vx_float_words};
 pub use pickup::{PickupResponseControls, response_from_analysis};
 pub use simple::write_simple_analysis;
 pub use tables::{TableKind, signed_q23};
+
+/// Default stored by the original host coefficient-engine constructors. This
+/// is not a claim about POD USB recording rates or measured hardware clocks.
+pub const LEGACY_SAMPLE_RATE: f32 = 39062.5;
 
 pub const DATA_WORDS: usize = 1091;
 pub const PACKED_BYTES: usize = 3276;
