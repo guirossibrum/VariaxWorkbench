@@ -28,7 +28,7 @@ def main():
     for v in (0,1,12):cases.append(('resonators',0x18300,[v]))
     for v in (0,1):cases.append(('fourth-order',0x18320,[v]))
     for i in range(6):
-        for v in (0,1,5):cases.append(('eq-bands',0x18340,[i,v]))
+        for v in (0,1,5,6):cases.append(('eq-bands',0x18340,[i,v]))
     for v in (0,1,2,3,0xffffffff):cases.append(('analog',0x18360,[v]))
     for i in range(4):cases.append(('allpass-delay',0x18380,[i,rng.getrandbits(32)]))
     for v in (0,1,999,0xffffffff):cases.append(('pre-delay',0x183a0,[v]))
@@ -49,8 +49,8 @@ def main():
             changes=' '.join(f'{i:x}:{v:08x}' for i,v in enumerate(expected) if v!=words[i])
             fixtures.append(' '.join([f'{seed:08x}',name,*[f'{v:08x}' for v in args]])+' => '+changes);total+=1
     preserve(ROOT/'tests/fixtures/native-vx-float.txt', ('\n'.join(float_vectors)+'\n').encode())
-    preserve(ROOT/'tests/fixtures/native-dsp-scalar.txt', ('\n'.join(fixtures)+'\n').encode())
-    preserve(ROOT/'analysis/reports/dsp-scalar-v1.json',(json.dumps({'source_sha256':oracle.sha256,'float_encoding_cases':len(inputs),'scalar_setter_cases':total,'scalar_functions':len(set(c[0] for c in cases)),'scope':'Original bit encoding and scalar setters with seeded surrounding words; full 1091-word equality; no DSP block calculations or device operations'},indent=2)+'\n').encode())
+    preserve(ROOT/'tests/fixtures/native-dsp-scalar-v2.txt', ('\n'.join(fixtures)+'\n').encode())
+    preserve(ROOT/'analysis/reports/dsp-scalar-v2.json',(json.dumps({'source_sha256':oracle.sha256,'float_encoding_cases':len(inputs),'scalar_setter_cases':total,'scalar_functions':len(set(c[0] for c in cases)),'scope':'Original bit encoding and scalar setters with seeded surrounding words; full 1091-word equality; no DSP block calculations or device operations'},indent=2)+'\n').encode())
     print('PASS:',len(inputs),'VX encodings;',total,'full-word setter comparisons')
 
 

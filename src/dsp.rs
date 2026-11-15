@@ -4,8 +4,15 @@
 //! Java overlays metadata and recomputes its checksum later. Therefore this
 //! intermediate buffer is not, by itself, a finished uploadable guitar patch.
 
+mod coefficients;
 mod patch;
+mod simple;
+pub use simple::write_simple_analysis;
+mod pickup;
+pub use pickup::{PickupResponseControls, response_from_analysis};
+mod tables;
 pub use patch::{NativePatch, vx_float_words};
+pub use tables::{TableKind, signed_q23};
 
 pub const DATA_WORDS: usize = 1091;
 pub const PACKED_BYTES: usize = 3276;

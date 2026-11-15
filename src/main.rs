@@ -60,7 +60,71 @@ fn run() -> Result<(), String> {
         Some("inspect") if args.len() == 2 => {
             print!("{}", read_preset(&args[1])?.summary());
         }
-        Some("dsp-scalar") if args.len() >= 3 => {
+        Some("dsp-block") if args.len() == 4 => {
+            let mut seed = u32::from_str_radix(&args[1], 16).map_err(|e| e.to_string())?;
+            let mut patch = variax_workbench::dsp::NativePatch::default();
+            for word in &mut patch.words {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                *word = seed;
+            }
+            variax_workbench::dsp::write_simple_analysis(
+                &mut patch,
+                &args[2],
+                &fs::read(&args[3]).map_err(|e| e.to_string())?,
+            )?;
+            println!(
+                "{}",
+                patch
+                    .words
+                    .iter()
+                    .map(|v| format!("{v:08x}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+        }
+        Some("dsp-response") if args.len() == 3 => {
+            let mut seed = u32::from_str_radix(&args[1], 16).map_err(|e| e.to_string())?;
+            let (response, controls) = variax_workbench::dsp::response_from_analysis(
+                &fs::read(&args[2]).map_err(|e| e.to_string())?,
+            )?;
+            let mut patch = variax_workbench::dsp::NativePatch::default();
+            for word in &mut patch.words {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                *word = seed;
+            }
+            patch.write_pickup_response(&response, controls)?;
+            println!(
+                "{}",
+                patch
+                    .words
+                    .iter()
+                    .map(|v| format!("{v:08x}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+        }
+        Some("dsp-geometry") if args.len() == 3 => {
+            let mut seed = u32::from_str_radix(&args[1], 16).map_err(|e| e.to_string())?;
+            let input = variax_workbench::pickup::GeometryInput::parse(
+                &fs::read(&args[2]).map_err(|e| e.to_string())?,
+            )?;
+            let mut patch = variax_workbench::dsp::NativePatch::default();
+            for word in &mut patch.words {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                *word = seed;
+            }
+            patch.write_pickup_geometry(&input.project()?)?;
+            println!(
+                "{}",
+                patch
+                    .words
+                    .iter()
+                    .map(|v| format!("{v:08x}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+        }
+        Some(command @ ("dsp-scalar" | "dsp-coefficient")) if args.len() >= 3 => {
             let mut seed = u32::from_str_radix(&args[1], 16).map_err(|e| e.to_string())?;
             let mut patch = variax_workbench::dsp::NativePatch::default();
             for word in &mut patch.words {
@@ -72,7 +136,11 @@ fn run() -> Result<(), String> {
                 .map(|v| u32::from_str_radix(v, 16))
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| e.to_string())?;
-            patch.apply_scalar(&args[2], &values)?;
+            if command == "dsp-scalar" {
+                patch.apply_scalar(&args[2], &values)?;
+            } else {
+                patch.apply_coefficient(&args[2], &values)?;
+            }
             println!(
                 "{}",
                 patch

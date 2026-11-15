@@ -70,7 +70,7 @@ impl NativePatch {
         self.words[0x324 / 4] = u32::from(enabled);
     }
     pub fn set_string_eq_band_count(&mut self, string: usize, count: u32) -> Result<(), String> {
-        if string >= 6 || count > 5 {
+        if string >= 6 || count > 6 {
             return Err("unsupported string or EQ band count".into());
         }
         self.words[0x588 / 4 + string] = count;
@@ -173,7 +173,7 @@ mod tests {
     }
     #[test]
     fn scalar_setters_preserve_every_unrelated_native_word() {
-        for line in include_str!("../../tests/fixtures/native-dsp-scalar.txt").lines() {
+        for line in include_str!("../../tests/fixtures/native-dsp-scalar-v2.txt").lines() {
             let (input, output) = line.split_once(" => ").unwrap();
             let fields: Vec<_> = input.split_whitespace().collect();
             let mut seed = u32::from_str_radix(fields[0], 16).unwrap();
@@ -203,7 +203,7 @@ mod tests {
             ("aperture", vec![6, 1]),
             ("resonators", vec![13]),
             ("eq-bands", vec![6, 1]),
-            ("eq-bands", vec![0, 6]),
+            ("eq-bands", vec![0, 7]),
             ("allpass-delay", vec![4, 1]),
             ("drone-count", vec![13]),
             ("tone-function", vec![65536]),

@@ -12,7 +12,7 @@ verified separately. No complete coefficient engine or uploadable host patch is
 claimed; Java metadata and host orchestration are separate later stages.
 
 New original-machine-code evidence: 1,012 IEEE bit patterns (including signed
-zeros, subnormals, infinities and NaNs) match VX encoding exactly. 297 scalar
+zeros, subnormals, infinities and NaNs) match VX encoding exactly. 315 scalar
 setter cases span three seeded surrounding-word states and compare the entire
 1,091-word array. Synthetic fixtures record native changed words while tests
 also assert that every other word remains unchanged.
@@ -36,3 +36,44 @@ Reproduce the new primitive evidence with:
 cargo test --all-features
 cargo test --release --lib dsp::
 ```
+
+## Coefficient writers and block assembly
+
+The next milestone passes 927 table/scalar coefficient cases and 1,218 block
+coefficient cases (16 additional routines), all comparing the full seeded
+1,091-word array. 54 of the 59 inventoried hardware-word procedures now have
+implemented primitives with documented native comparisons. Constructor/checksum/
+name/getter-specific procedure coverage remains separate from those counts.
+
+Native word ranges overlap between some blocks; the Rust writers retain the
+original offsets rather than assuming each named block has disjoint storage.
+The native trim writer always sets bit 0x800000, including small negative values
+whose Q23 rounding retains a carry bit. A failing native comparison identified
+that detail and it is now preserved. The original six-band string-EQ capacity
+also corrected the preliminary five-band analysis guard; the versioned scalar
+fixture now includes the sixth band and passes 315 cases.
+
+Complete pickup UpdateHWPatch assembly passes 360 geometry and 960 response
+cases with unmodified original setters. Source snapshots are synthetic only;
+all 1,091 words are compared, including surrounding state. Invalid block inputs
+leave the previous Rust patch unchanged.
+
+Volume, mono mix, global-decay, drone, pitch-shift and microphone-position
+assembly/preparation pass a further 1,008 cases at 31250/44100/48000 Hz. These
+include enabled/disabled states, volume trim/analog branches, drone-count
+clamping, drone zero/negative frequencies, fractional/clamped semitone offsets,
+minimum/large integer delays, wet/dry mixing and microphone-position scale
+normalization. The microphone cases distinguish runtime prepared-field writes
+from raw-position preparation; both stages have their own comparisons.
+
+66 all-feature Rust tests, Clippy, formatting, release DSP fixtures and optimized
+builds pass. Body resonance, low-cut, string EQ/tone, 12-string EQ, sitar, reverb,
+pick filter and compressor DSP parameter calculations still require porting and
+validation. Full word ownership, call-order overlays and all-block assembly remain
+pending. Passing decay/pitch parameter-to-word tests is not audio sustain/bend
+validation; that remains the independent audio matrix in #33.
+
+Additional reference scripts are `verify_dsp_tables.py`,
+`verify_dsp_coefficients.py`, `verify_dsp_pickup_blocks.py` and
+`verify_dsp_simple_blocks.py`. Analysis snapshots are private numeric layouts,
+not a supported preset or upload format. Hardware locks remain enabled.
