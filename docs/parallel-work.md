@@ -5,7 +5,7 @@ and the project remain the progress/dependency source of truth; this file record
 ownership and integration boundaries, not a replacement task queue.
 
 - Codex owns the coefficient engine and all issues other than those reserved below.
-  Current implementation: #11 Linux packaging. #10 research reproducibility is integrated. #7 parameter domains, #8 bank/collection editing and #9 offline GUI workflow coverage are integrated. #5 portable-math implementation is integrated; its historical-runtime/default-rollout validation remains open. #3 and #4 are integrated.
+  Current implementation: #13 firmware architecture/region mapping. #10 research reproducibility and #11 Linux packaging are integrated. #7 parameter domains, #8 bank/collection editing and #9 offline GUI workflow coverage are integrated. #5 portable-math implementation is integrated; its historical-runtime/default-rollout validation remains open. #3 and #4 are integrated.
 - Grok is reserved #17, #12, #20 and #21, in that order, after the user gives it the
   handoff prompt. Reservation does not mean the agent has started.
 
