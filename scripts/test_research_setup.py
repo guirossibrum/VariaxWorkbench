@@ -77,5 +77,23 @@ class SetupGuards(unittest.TestCase):
                 path.unlink()
                 with self.assertRaisesRegex(ValueError,'missing original artifact'):setup.checked_artifact(root,'app.exe')
 
+    def test_conflicting_derived_index_is_refused_without_overwriting_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);(root/'research').mkdir()
+            metadata={'target_sha256':'synthetic target','functions':[{'address':'0x10','name':'synthetic','status':'written','body':{'ranges':[{'start':'0x10','end':'0x20'}]}}]}
+            (root/'research/native-functions.json').write_text(json.dumps(metadata))
+            with patch.object(setup,'ROOT',root):
+                setup.index()
+                path=root/'analysis/decompiled/native-coef/decompile-index.json'
+                self.assertEqual(json.loads(path.read_text()),metadata)
+                changed=dict(metadata,target_sha256='different target');path.write_text(json.dumps(changed));before=path.read_bytes()
+                with self.assertRaisesRegex(ValueError,'differs'):setup.index()
+                self.assertEqual(path.read_bytes(),before)
+
+    def test_device_probe_or_unlisted_script_is_rejected_before_any_process(self):
+        with patch.object(setup.subprocess,'run',side_effect=AssertionError('must not run')):
+            with self.assertRaisesRegex(ValueError,'not an approved'):
+                setup.references(['read_variax_usb'])
+
 
 if __name__=='__main__':unittest.main()

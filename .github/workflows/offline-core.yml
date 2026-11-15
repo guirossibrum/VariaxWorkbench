@@ -7,6 +7,10 @@ on:
       - "tests/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "research/**"
+      - "scripts/research_setup.py"
+      - "scripts/test_research_setup.py"
+      - "scripts/rea"
       - ".github/workflows/offline-core.yml"
   workflow_dispatch:
 
@@ -31,6 +35,8 @@ jobs:
           persist-credentials: false
       - name: Coefficient math boundary
         run: python scripts/check_coefficient_math.py
+      - name: Synthetic research setup guards
+        run: python scripts/test_research_setup.py
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
         with:
           toolchain: "1.99.1"

@@ -9,8 +9,10 @@ import gzip
 import io
 import hashlib
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
+import platform
 import stat
 import subprocess
 import sys
@@ -32,7 +34,7 @@ REFERENCES = [
     'verify_dsp_tables', 'verify_dsp_filters', 'verify_dsp_resonance',
     'verify_dsp_simple_blocks', 'verify_dsp_equalizer', 'verify_dsp_eq_blocks',
     'verify_dsp_pickup_blocks', 'verify_dsp_body_variants', 'verify_dsp_sitar',
-    'verify_dsp_word_map', 'verify_host_pipeline', 'verify_host_synthetic',
+    'test_coefficient_generator', 'verify_dsp_word_map', 'verify_host_pipeline', 'verify_host_synthetic',
     'verify_host_engine', 'verify_host_edge_cases', 'verify_host_complete',
     'verify_preset_compatibility', 'verify_bundle_matrix', 'verify_edit_domains',
 ]
@@ -227,7 +229,7 @@ def index():
 
 
 def doctor(tools, installers):
-    failures, checks = [], {}
+    failures, checks = [], {'host': {'system': platform.system(), 'machine': platform.machine(), 'python': sys.version, 'libc': platform.libc_ver()}}
     for name, args in [('jdk',['-version']), ('python',['--version']), ('7zip',[])]:
         relative = {'jdk':'jdk/bin/java','python':'python/bin/python','7zip':'7zip/7zz'}[name]
         path = tools/relative
@@ -243,6 +245,14 @@ def doctor(tools, installers):
                 failures.append('reference JDK differs from tested 17.0.21; verify it before reproducing')
             if name == '7zip' and '26.06' not in text:
                 failures.append('extractor differs from tested 7-Zip 26.06; verify it before reproducing')
+    for command in [['rustc','--version'],['cargo','--version'],['cc','--version']]:
+        try:
+            result=subprocess.run(command,capture_output=True,text=True,timeout=30,check=True)
+            checks[command[0]]=result.stdout.strip().splitlines()[:1]
+            if command[0]=='rustc' and not result.stdout.startswith('rustc 1.99.1 '):
+                failures.append('compiler differs from the tested Rust 1.99.1 profile')
+        except (OSError,subprocess.SubprocessError) as error:
+            failures.append(f'missing/unusable build tool {command[0]}: {error}')
     for name in ['Variax Workbench 1.75.dmg','Variax Workbench v1.75 Installer.exe']:
         try:
             checks[name] = sha(checked_artifact(installers,name))
@@ -254,6 +264,8 @@ def doctor(tools, installers):
 
 
 def references(steps):
+    if any(name not in REFERENCES for name in steps):
+        raise ValueError('not an approved offline reference step; no command was run')
     python = ROOT/'.tools/python/bin/python'
     if not python.is_file():
         raise ValueError('missing .tools/python; bootstrap or attach the pinned research environment first')
@@ -269,7 +281,8 @@ def references(steps):
     before = {str(p.relative_to(ROOT)):sha(p) for p in (ROOT/'tests/fixtures').rglob('*') if p.is_file()}
     directory = ROOT/'analysis/reports/reference-replay'
     directory.mkdir(parents=True,exist_ok=True)
-    completed = []
+    completed, failed = [], None
+    environment = dict(os.environ, CARGO_NET_OFFLINE='true', PYTHONDONTWRITEBYTECODE='1')
     for name in steps:
         if name not in REFERENCES:
             raise ValueError(f'not an approved offline reference step: {name}')
@@ -278,12 +291,21 @@ def references(steps):
             raise ValueError(f'replay log exists; use a fresh workspace: {log}')
         print(f'Running {name}; log: {log}',flush=True)
         with log.open('x') as output:
-            subprocess.run([str(python),str(ROOT/'scripts'/f'{name}.py')],cwd=ROOT,
-                           stdout=output,stderr=subprocess.STDOUT,check=True,timeout=1800)
+            try:
+                subprocess.run([str(python),str(ROOT/'scripts'/f'{name}.py')],cwd=ROOT,
+                               stdout=output,stderr=subprocess.STDOUT,check=True,timeout=1800,env=environment)
+            except (subprocess.CalledProcessError,subprocess.TimeoutExpired) as error:
+                failed={'step':name,'error':type(error).__name__,'exit_code':getattr(error,'returncode',None)}
+        if failed:
+            failed['log_sha256']=sha(log)
+            break
         completed.append({'step':name,'log_sha256':sha(log)})
     after = {str(p.relative_to(ROOT)):sha(p) for p in (ROOT/'tests/fixtures').rglob('*') if p.is_file()}
     changes = [name for name in sorted(before.keys()|after.keys()) if before.get(name)!=after.get(name)]
-    receipt('reference-replay',{'completed':completed,'fixture_changes':changes,'device_access':False})
+    receipt('reference-replay',{'completed':completed,'failed':failed,'fixture_changes':changes,
+                               'recipe_sha256':sha(Path(__file__)),'device_access':False})
+    if failed:
+        raise ValueError(f"reference {failed['step']} failed; retained log: {directory/(failed['step']+'.log')}")
     if changes:
         raise ValueError('fixture outputs changed in the disposable workspace; review receipt, do not promote automatically')
 
@@ -305,9 +327,11 @@ def main():
     elif args.command == 'index': index()
     elif args.command == 'references': references(args.steps or REFERENCES)
     elif args.command == 'attach-tools':
-        for name in ['jdk','jdk25','node','7zip']:
+        for name in ['jdk','7zip','jdk25','node','ghidra']:
             source = (args.source/name).resolve();target = ROOT/'.tools'/name
-            if not source.is_dir(): raise ValueError(f'missing tool directory: {source}')
+            if not source.is_dir():
+                if name in ['jdk','7zip']: raise ValueError(f'missing tool directory: {source}')
+                continue
             target.parent.mkdir(parents=True,exist_ok=True)
             if target.exists():
                 if target.resolve()!=source: raise ValueError(f'refusing to replace tool: {target}')

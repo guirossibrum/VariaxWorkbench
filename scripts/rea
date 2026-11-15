@@ -1,7 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 project_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+common_git_dir="$(git -C "$project_root" rev-parse --path-format=absolute --git-common-dir)"
+shared_checkout="$(dirname -- "$common_git_dir")"
+rea_checkout="${VARIAX_REA_CHECKOUT:-$(dirname -- "$shared_checkout")/rea}"
+if [[ ! -f "$rea_checkout/scripts/rea.mjs" ]]; then
+  echo "Missing built REA checkout: $rea_checkout. Set VARIAX_REA_CHECKOUT; see docs/reproducing-references.md." >&2
+  exit 1
+fi
+if [[ ! -x "$project_root/.tools/node/bin/node" ]]; then
+  echo "Missing local Node toolchain. Attach the research tools; see docs/reproducing-references.md." >&2
+  exit 1
+fi
 export PATH="$project_root/.tools/node/bin:$project_root/.tools/jdk25/bin:$PATH"
 export JAVA_HOME="$project_root/.tools/jdk25"
-export GHIDRA_INSTALL_DIR="$project_root/.tools/ghidra/ghidra_12.2_PUBLIC"
-exec "$project_root/.tools/node/bin/node" "$project_root/../rea/scripts/rea.mjs" "$@"
+export GHIDRA_INSTALL_DIR="${VARIAX_GHIDRA_DIR:-$project_root/.tools/ghidra/ghidra_12.2_PUBLIC}"
+exec "$project_root/.tools/node/bin/node" "$rea_checkout/scripts/rea.mjs" "$@"
