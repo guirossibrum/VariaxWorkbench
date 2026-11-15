@@ -5,6 +5,29 @@ connected by VDI through a PODxt Live. The current milestone is an **offline
 preset editor and reverse-engineering toolkit**, with the original guitar and
 pickup artwork recovered from Workbench 1.75.
 
+## Experimental software — use entirely at your own risk
+
+This is an independent, reverse-engineered project developed with AI assistance.
+It is not an official Line 6 product and is not affiliated with, endorsed by, or
+supported by Line 6, Yamaha, or any equipment manufacturer. No technical support,
+maintenance, recovery service, or continued development is promised.
+
+The software is provided **“as is”, without warranty of any kind**. Its output,
+sound, timing, controls and other behavior may differ from the original software.
+Errors, incomplete reverse engineering, AI-generated mistakes or incompatibilities
+may cause lost presets or calibration data, unexpected or damaging audio output,
+unusable devices, or **permanent damage to or complete destruction of connected
+hardware**. Tests, backups and the current hardware locks do not guarantee safety
+or recoverability. Anyone who downloads, modifies, builds or uses this project
+does so entirely at their own risk and assumes responsibility for that decision.
+
+**To the maximum extent permitted by applicable law, the project owner, authors
+and contributors disclaim all warranties and accept no responsibility or
+liability for any claim, loss, damage, injury, expense or other consequence arising
+from this project or its use**, whether direct, indirect, incidental or
+consequential, including equipment damage, loss of data or loss of use, even if
+they have been advised that such consequences are possible.
+
 **Hardware access is locked before device enumeration or opening.** The GUI,
 Rust USB backend and Python probe have no runtime unlock. No preset uploads,
 flash writes or firmware updates have been performed. Earlier identity/metadata
