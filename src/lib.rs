@@ -15,6 +15,7 @@ pub mod manual_check;
 pub mod midi;
 pub mod models;
 pub mod pickup;
+pub mod pod_usb_firmware;
 pub mod preset;
 pub mod provenance;
 pub mod read_session;
