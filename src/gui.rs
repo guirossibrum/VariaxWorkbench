@@ -50,6 +50,7 @@ trait FileDialogs {
     fn artwork(&mut self) -> Option<PathBuf>;
     fn open_wav(&mut self) -> Option<PathBuf>;
     fn save_wav(&mut self, suggested: &str) -> Option<PathBuf>;
+    fn save_aiff(&mut self, suggested: &str) -> Option<PathBuf>;
     fn open_pod_tone(&mut self) -> Option<PathBuf>;
     fn save_pod_tone(&mut self, suggested: &str) -> Option<PathBuf>;
 }
@@ -83,6 +84,12 @@ impl FileDialogs for NativeDialogs {
     fn save_wav(&mut self, suggested: &str) -> Option<PathBuf> {
         rfd::FileDialog::new()
             .add_filter("PCM WAV", &["wav"])
+            .set_file_name(suggested)
+            .save_file()
+    }
+    fn save_aiff(&mut self, suggested: &str) -> Option<PathBuf> {
+        rfd::FileDialog::new()
+            .add_filter("Exact-clock AIFF", &["aiff", "aif"])
             .set_file_name(suggested)
             .save_file()
     }
@@ -120,6 +127,9 @@ impl FileDialogs for FakeDialogs {
     }
     fn save_wav(&mut self, _: &str) -> Option<PathBuf> {
         self.save.pop_front().expect("unexpected audio save dialog")
+    }
+    fn save_aiff(&mut self, _: &str) -> Option<PathBuf> {
+        self.save.pop_front().expect("unexpected AIFF save dialog")
     }
     fn open_pod_tone(&mut self) -> Option<PathBuf> {
         self.pod_open
@@ -1189,7 +1199,8 @@ impl Workbench {
             self.continue_pending(ctx);
             return;
         }
-        let can_save = self.recorder.take_can_save_wav();
+        let native = self.recorder.take_can_save_aiff();
+        let can_save = self.recorder.take_can_save_wav() || native;
         let mut save = false;
         let mut discard = false;
         let mut cancel = false;
@@ -1201,12 +1212,12 @@ impl Workbench {
             .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
             .show(ctx, |ui| {
                 ui.label("This in-memory test take has not been saved.");
-                if !can_save {
-                    ui.label("This take uses source clock 78125/2. Exact-clock file export is not implemented. Keep editing or explicitly discard it.");
+                if native {
+                    ui.label("Exact-clock AIFF preserves 78125/2. Other software may round this rate; verify imports.");
                 }
                 ui.label(self.recorder.message());
                 ui.horizontal(|ui| {
-                    let response = ui.add_enabled(can_save, egui::Button::new("Stop and save copy…"));
+                    let response = ui.add_enabled(can_save, egui::Button::new(if native { "Stop and save AIFF copy…" } else { "Stop and save WAV copy…" }));
                     #[cfg(test)]
                     self.pending_buttons.insert("save", response.rect);
                     save = response.clicked();
@@ -1600,7 +1611,12 @@ impl Workbench {
                 {
                     self.recorder.note(error.to_string());
                 }
-                if self.record_button(ui, "save", "Save copy…") {
+                let label = if self.recorder.take_can_save_aiff() {
+                    "Save exact-clock AIFF…"
+                } else {
+                    "Save WAV copy…"
+                };
+                if self.record_button(ui, "save", label) {
                     self.save_recording();
                 }
                 #[cfg(test)]
@@ -1933,12 +1949,23 @@ impl Workbench {
             self.recorder.note("Stop the take before saving.");
             return false;
         }
-        let Some(path) = self.dialogs.save_wav("offline-test-take.wav") else {
+        let native = self.recorder.take_can_save_aiff();
+        let destination = if native {
+            self.dialogs.save_aiff("exact-clock-test-take.aiff")
+        } else {
+            self.dialogs.save_wav("offline-test-take.wav")
+        };
+        let Some(path) = destination else {
             self.recorder.note("Save cancelled. No file was written.");
             return false;
         };
-        match self.recorder.save(&path) {
-            Ok(_) => true,
+        let result = if native {
+            self.recorder.save_aiff(&path).map(|_| ())
+        } else {
+            self.recorder.save(&path).map(|_| ())
+        };
+        match result {
+            Ok(()) => true,
             Err(error) => {
                 self.recorder.note(error.to_string());
                 false
@@ -2617,13 +2644,17 @@ mod tests {
     }
 
     #[test]
-    fn native_clock_quit_disables_save_and_requires_an_explicit_discard() {
+    fn native_clock_quit_cancelled_save_retains_the_take_until_explicit_discard() {
         let (context, mut app) = app();
         context.style_mut(|style| style.animation_time = 0.0);
         prepare_quit_take(&mut app, ClockSelection::NativePodxt);
+        app.dialogs = Box::new(FakeDialogs {
+            save: [None].into(),
+            ..Default::default()
+        });
         app.recorder.stop().unwrap();
         app.request_close(&context);
-        click_prompt(&context, &mut app, "save"); // disabled: no file picker
+        click_prompt(&context, &mut app, "save"); // cancelled AIFF picker
         assert!(matches!(app.pending, Some(Pending::QuitRecording)));
         assert!(app.recorder.has_unsaved_take());
         assert!(!app.permit_close);
@@ -2637,6 +2668,50 @@ mod tests {
         assert!(app.pending.is_none());
         assert!(app.permit_close);
         assert!(!app.recorder.device_opened());
+    }
+
+    #[test]
+    fn native_recording_quit_saves_an_exact_clock_file_and_retains_its_source() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("native.aiff");
+        app.dialogs = Box::new(FakeDialogs {
+            save: [Some(path.clone())].into(),
+            ..Default::default()
+        });
+        prepare_quit_take(&mut app, ClockSelection::NativePodxt);
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "save");
+        assert!(app.pending.is_none());
+        assert!(app.permit_close);
+        assert!(!app.recorder.has_unsaved_take());
+        assert_eq!(app.recorder.phase(), recording::Phase::Stopped);
+        let bytes = std::fs::read(&path).unwrap();
+        let source = recording::aiff::decode(&bytes).unwrap();
+        assert_eq!(source.len(), 256 * 6);
+        assert!(
+            source
+                .as_chunks::<6>()
+                .0
+                .iter()
+                .all(|frame| *frame == [0xe8, 3, 0, 0x30, 0xf8, 0xff])
+        );
+        let metadata: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(recording::sidecar_path(&path).unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(metadata["native_clock_exported"], true);
+        assert_eq!(metadata["source_clock"]["denominator"], 2);
+        app.permit_close = false;
+        app.recorder.cancel().unwrap();
+        prepare_quit_take(&mut app, ClockSelection::NativePodxt);
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitRecording)));
+        assert!(!app.permit_close);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert!(app.read_worker.is_none());
+        assert_eq!(app.recording_capture_attempts, 0);
     }
 
     #[test]

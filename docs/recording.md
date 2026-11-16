@@ -46,8 +46,9 @@ The PODxt source clock remains the rational `78125/2`. `rate_min` 39062 and
 `rate_max` 39063 stay the integer fields beside that knot. They are not open
 parameters and they are not written as a WAV sample rate. 78125 is the
 numerator, not a sample rate. Exporting `78125/2` as PCM WAV is rejected.
-There is no resampler and no other container that has been verified to store
-that rational exactly.
+There is no resampler. The explicit [AIFF export](exact-clock-aiff.md) stores
+that rational exactly with 24-bit samples, independently checked with SoX_ng.
+Other readers may round it; DAW imports are unverified.
 
 Software that reads canonical 16-bit stereo WAV can import an integer-rate
 file this recorder writes. This repository has not opened a DAW. Nothing here
@@ -59,8 +60,8 @@ Each save uses the existing non-overwriting file creation. It writes a new
 `.wav` and a sibling `.wav.recording.json` sidecar. If either path already
 exists, nothing is replaced. The sidecar records the route, the integer rate,
 dropout gaps, integer peaks, the PCM and WAV SHA-256 values, and the explicit
-statement that this is not a device recording. Native-clock takes are not
-saved.
+statement that this is not a device recording. Native-clock takes use the separate explicit AIFF export with a rational-clock
+sidecar; they are never saved as integer-rate WAV.
 
 ## Bounds
 
@@ -122,10 +123,9 @@ picker leaves a stopped, unsaved take. Background recording/POD editors are
 inactive while an unsaved-changes prompt is pending. Closing the recorder window
 still retains its take; quitting the application is guarded separately.
 
-The native 78125/2 source-clock take cannot currently be exported as WAV. Its
-quit prompt explains the missing exact-clock export and disables Save; it requires
-Keep editing or an explicit Discard. There is no rounding, resampling, automatic
-save, stream, device operation or implicit monitoring change. Exact-clock export
-remains #69. These protections cover normal application close paths, including
+The native 78125/2 source-clock take cannot be exported as WAV. Its quit prompt
+now offers explicit exact-clock AIFF, Keep editing or Discard. Cancelled/failed
+AIFF saves retain the take. There is no rounding, resampling, automatic save,
+stream, device operation or implicit monitoring change. See [AIFF scope](exact-clock-aiff.md) (#69). These protections cover normal application close paths, including
 screenshot completion; a process crash or forced termination can still lose
 in-memory data. Save a file copy to persist it.
