@@ -1445,20 +1445,21 @@ impl Workbench {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "audio.wav".into());
-        match fs::metadata(&path) {
-            Err(error) => self.recorder.note(error.to_string()),
-            Ok(meta) if meta.len() > recording::TAKE_BYTES_CEILING => {
+        match recording::read_regular_bytes(
+            recording::path_facts(&path),
+            recording::TAKE_BYTES_CEILING,
+            || fs::read(&path),
+        ) {
+            Ok(bytes) => {
+                if let Err(error) = self.recorder.load_wav(&label, &bytes) {
+                    self.recorder.note(error.to_string());
+                }
+            }
+            Err(recording::TakeError::CapExceeded) => {
                 self.recorder
                     .note("That file is larger than the offline take ceiling. It was not loaded.");
             }
-            Ok(_) => match fs::read(&path) {
-                Ok(bytes) => {
-                    if let Err(error) = self.recorder.load_wav(&label, &bytes) {
-                        self.recorder.note(error.to_string());
-                    }
-                }
-                Err(error) => self.recorder.note(error.to_string()),
-            },
+            Err(error) => self.recorder.note(error.to_string()),
         }
     }
 
@@ -2076,6 +2077,28 @@ mod tests {
         assert!(app.read_worker.is_none());
         app.start_read();
         assert!(app.read_worker.is_none());
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn load_recording_wav_refuses_a_nonregular_path_without_opening_it() {
+        let (_context, mut app) = app();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("not-a-regular-wav");
+        std::fs::create_dir(&path).unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            wav: [Some(path)].into(),
+            ..Default::default()
+        });
+        app.load_recording_wav();
+        assert!(app.recorder.message().contains("regular file"));
+        assert!(app.recorder.message().contains("not opened"));
+        assert!(app.read_worker.is_none());
+        assert!(!app.is_reading());
+        assert_eq!(app.recording_capture_attempts, 0);
+        assert!(!app.recorder.device_opened());
         const {
             assert!(LIVE_ACCESS_LOCKED);
         }

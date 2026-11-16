@@ -46,7 +46,8 @@ pub const NO_AUTO_START: &str = "Opening this window does not start a take, chan
 pub const PHASE_IDLE: &str = "Idle. Device capture is locked.";
 pub const PHASE_RECORDING: &str = "Recording test audio in memory. No device is open.";
 pub const PHASE_STOPPED: &str = "Stopped. A file is written only when you save.";
-pub const PHASE_CANCELLED: &str = "Cancelled. No audio file was written.";
+pub const PHASE_CANCELLED: &str =
+    "Cancelled. The in-memory take was discarded. Copies saved earlier remain.";
 
 const PANEL_TAKE_BYTES: u64 = 1024 * 1024;
 const LABEL_CHARS_MAX: usize = 240;
@@ -142,15 +143,33 @@ pub struct SavedTake {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TakeError {
     SelectionMissing(&'static str),
-    FalseIntegerStandIn { hz: u32 },
-    IntegerRateNotWav { hz: u32 },
-    RationalClockNotWav { numerator: u32, denominator: u32 },
-    NativeClockRejected { numerator: u32, denominator: u32 },
+    FalseIntegerStandIn {
+        hz: u32,
+    },
+    IntegerRateNotWav {
+        hz: u32,
+    },
+    RationalClockNotWav {
+        numerator: u32,
+        denominator: u32,
+    },
+    NativeClockRejected {
+        numerator: u32,
+        denominator: u32,
+    },
     FormatClockMismatch,
-    RateMismatch { header: u32, selected: u32 },
-    ChunkTooLarge { len: usize },
+    RateMismatch {
+        header: u32,
+        selected: u32,
+    },
+    ChunkTooLarge {
+        len: usize,
+    },
     ChunkEmpty,
-    ChunkNotFrameAligned { len: usize, frame_bytes: usize },
+    ChunkNotFrameAligned {
+        len: usize,
+        frame_bytes: usize,
+    },
     ChunkRejected(PlanError),
     CapExceeded,
     TakeCapInvalid,
@@ -158,6 +177,10 @@ pub enum TakeError {
     NotStopped,
     AlreadyStarted,
     Cancelled,
+    /// `metadata` said this path is not a regular file. The reader was not called.
+    NotARegularFile,
+    /// `start_frame + index` does not fit in `u64`. Nothing was allocated.
+    FrameIndexOverflow,
     Busy,
     NothingLeft,
     DropoutEmpty,
@@ -231,9 +254,15 @@ impl std::fmt::Display for TakeError {
             Self::AlreadyStarted => formatter.write_str(
                 "a take is already in progress or waiting to be saved. Cancel it before starting another.",
             ),
-            Self::Cancelled => {
-                formatter.write_str("the take was cancelled. No audio file was written.")
-            }
+            Self::Cancelled => formatter.write_str(
+                "the take was cancelled. This save writes nothing. Copies saved earlier remain.",
+            ),
+            Self::NotARegularFile => formatter.write_str(
+                "only a regular file can be loaded. Pipes, sockets, and device nodes are not opened.",
+            ),
+            Self::FrameIndexOverflow => formatter.write_str(
+                "the synthetic frame index overflows. Nothing was allocated.",
+            ),
             Self::Busy => formatter.write_str(
                 "cancel the current take before changing the route, clock, or input",
             ),
@@ -383,7 +412,8 @@ impl Take {
         Ok(())
     }
 
-    /// Discards the audio. A later save creates no file.
+    /// Drops the in-memory audio. A later save writes nothing. Files already
+    /// saved stay where they are.
     pub fn cancel(&mut self) -> Result<(), TakeError> {
         if !matches!(self.phase, Phase::Recording | Phase::Stopped) {
             return Err(TakeError::NotRecording);
@@ -613,14 +643,47 @@ impl Take {
     }
 }
 
-pub fn render_pcm_s16(pattern: SyntheticPattern, start_frame: u64, frames: u32) -> Vec<u8> {
-    let mut pcm = Vec::with_capacity(frames as usize * WAV_FRAME_BYTES);
+/// Byte length of a synthetic render that fits in one streaming chunk.
+///
+/// The chunk ceiling is checked before any allocation. `start_frame + index`
+/// is checked for the whole span before the first frame is visited.
+fn render_span_bytes(
+    start_frame: u64,
+    frames: u32,
+    frame_bytes: usize,
+) -> Result<usize, TakeError> {
+    let width = u32::try_from(frame_bytes).map_err(|_| TakeError::ChunkTooLarge {
+        len: STREAM_CHUNK_BYTES_MAX.saturating_add(1),
+    })?;
+    let len = match frames.checked_mul(width) {
+        Some(bytes) => usize::try_from(bytes).unwrap_or(STREAM_CHUNK_BYTES_MAX.saturating_add(1)),
+        None => STREAM_CHUNK_BYTES_MAX.saturating_add(1),
+    };
+    if len > STREAM_CHUNK_BYTES_MAX {
+        return Err(TakeError::ChunkTooLarge { len });
+    }
+    if frames > 0 && start_frame.checked_add(u64::from(frames - 1)).is_none() {
+        return Err(TakeError::FrameIndexOverflow);
+    }
+    Ok(len)
+}
+
+pub fn render_pcm_s16(
+    pattern: SyntheticPattern,
+    start_frame: u64,
+    frames: u32,
+) -> Result<Vec<u8>, TakeError> {
+    let len = render_span_bytes(start_frame, frames, WAV_FRAME_BYTES)?;
+    let mut pcm = Vec::with_capacity(len);
     for index in 0..frames {
-        let (left, right) = sample_s16(pattern, start_frame + u64::from(index));
+        let frame = start_frame
+            .checked_add(u64::from(index))
+            .ok_or(TakeError::FrameIndexOverflow)?;
+        let (left, right) = sample_s16(pattern, frame);
         pcm.extend_from_slice(&left.to_le_bytes());
         pcm.extend_from_slice(&right.to_le_bytes());
     }
-    pcm
+    Ok(pcm)
 }
 
 pub fn render_pod_s24(
@@ -628,14 +691,52 @@ pub fn render_pod_s24(
     start_frame: u64,
     frames: u32,
 ) -> Result<Vec<u8>, TakeError> {
-    let mut pcm = Vec::with_capacity(frames as usize * FRAME_BYTES as usize);
+    let len = render_span_bytes(start_frame, frames, FRAME_BYTES as usize)?;
+    let mut pcm = Vec::with_capacity(len);
     for index in 0..frames {
-        let (left, right) = sample_s16(pattern, start_frame + u64::from(index));
+        let frame = start_frame
+            .checked_add(u64::from(index))
+            .ok_or(TakeError::FrameIndexOverflow)?;
+        let (left, right) = sample_s16(pattern, frame);
         let packed =
             pack_stereo(i32::from(left), i32::from(right)).map_err(TakeError::ChunkRejected)?;
         pcm.extend_from_slice(&packed);
     }
     Ok(pcm)
+}
+
+/// Facts from [`std::fs::metadata`]. That call does not open the path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PathFacts {
+    pub regular_file: bool,
+    pub len: u64,
+}
+
+pub fn path_facts(path: &Path) -> std::io::Result<PathFacts> {
+    let meta = std::fs::metadata(path)?;
+    Ok(PathFacts {
+        regular_file: meta.is_file(),
+        len: meta.len(),
+    })
+}
+
+/// Reads only after `facts` names a regular file at or under `ceiling`.
+///
+/// A pipe, socket, or device node is refused first, including when its
+/// reported length is zero. `read` is not called in that case.
+pub fn read_regular_bytes(
+    facts: std::io::Result<PathFacts>,
+    ceiling: u64,
+    read: impl FnOnce() -> std::io::Result<Vec<u8>>,
+) -> Result<Vec<u8>, TakeError> {
+    let facts = facts.map_err(|error| TakeError::Save(error.to_string()))?;
+    if !facts.regular_file {
+        return Err(TakeError::NotARegularFile);
+    }
+    if facts.len > ceiling {
+        return Err(TakeError::CapExceeded);
+    }
+    read().map_err(|error| TakeError::Save(error.to_string()))
 }
 
 pub fn write_wav(sample_rate_hz: u32, pcm: &[u8]) -> Result<Vec<u8>, TakeError> {
@@ -1198,7 +1299,7 @@ impl Panel {
                     .min(loaded.data.len());
                 loaded.data[start..end].to_vec()
             }
-            (FrameFormat::PcmS16Le, _) => render_pcm_s16(self.pattern, self.cursor, FEED_FRAMES),
+            (FrameFormat::PcmS16Le, _) => render_pcm_s16(self.pattern, self.cursor, FEED_FRAMES)?,
             (FrameFormat::PodS24_3Le, _) => render_pod_s24(self.pattern, self.cursor, FEED_FRAMES)?,
         };
         if bytes.is_empty() {
@@ -1222,7 +1323,8 @@ impl Panel {
 
     pub fn stop(&mut self) -> Result<(), TakeError> {
         self.take.as_mut().ok_or(TakeError::NotRecording)?.stop()?;
-        self.message = "Stopped. Save writes a new file, or cancel discards it.".into();
+        self.message =
+            "Stopped. Save writes a new copy. Cancel discards only the in-memory take.".into();
         Ok(())
     }
 
@@ -1305,7 +1407,8 @@ mod tests {
             },
             0,
             4,
-        );
+        )
+        .unwrap();
         take.push(&chunk).unwrap();
         take.stop().unwrap();
         let saved = take.save(&path).unwrap();
@@ -1360,7 +1463,7 @@ mod tests {
         .unwrap();
         reamp_take.start().unwrap();
         reamp_take
-            .push(&render_pcm_s16(SyntheticPattern::Ramp, 0, 1))
+            .push(&render_pcm_s16(SyntheticPattern::Ramp, 0, 1).unwrap())
             .unwrap();
         reamp_take.stop().unwrap();
         let reamp_saved = reamp_take.save(&reamp).unwrap();
@@ -1449,7 +1552,7 @@ mod tests {
 
     #[test]
     fn file_backed_wav_round_trip_keeps_rate_and_bytes() {
-        let pcm = render_pcm_s16(SyntheticPattern::Ramp, 0, 300);
+        let pcm = render_pcm_s16(SyntheticPattern::Ramp, 0, 300).unwrap();
         let encoded = write_wav(48_000, &pcm).unwrap();
         let mut with_fact = Vec::new();
         with_fact.extend_from_slice(&encoded[..36]);
@@ -1523,7 +1626,8 @@ mod tests {
             },
             0,
             4,
-        );
+        )
+        .unwrap();
         take.push(&tone).unwrap();
         take.note_dropout(2).unwrap();
         take.push(&tone).unwrap();
@@ -1567,14 +1671,40 @@ mod tests {
         assert!(matches!(take.cancel(), Err(TakeError::NotRecording)));
         assert!(matches!(take.save(&path), Err(TakeError::NotStopped)));
         take.start().unwrap();
-        take.push(&render_pcm_s16(SyntheticPattern::Ramp, 0, 8))
+        take.push(&render_pcm_s16(SyntheticPattern::Ramp, 0, 8).unwrap())
             .unwrap();
         take.cancel().unwrap();
         assert_eq!(take.phase(), Phase::Cancelled);
         assert!(take.pcm().is_empty());
         assert!(matches!(take.save(&path), Err(TakeError::Cancelled)));
+        assert!(take.save(&path).unwrap_err().to_string().contains("remain"));
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
         assert!(!take.device_opened());
+        assert!(!PHASE_CANCELLED.contains("No audio file was written"));
+    }
+
+    #[test]
+    fn cancel_after_save_discards_memory_and_keeps_the_copy() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("kept.wav");
+        let mut take =
+            Take::prepare(integer_request(RecordRoute::SendCleanGuitar, 44_100, 4_096)).unwrap();
+        take.start().unwrap();
+        take.push(&render_pcm_s16(SyntheticPattern::Ramp, 0, 4).unwrap())
+            .unwrap();
+        take.stop().unwrap();
+        take.save(&path).unwrap();
+        let wav = std::fs::read(&path).unwrap();
+        take.cancel().unwrap();
+        assert_eq!(take.phase_label(), PHASE_CANCELLED);
+        assert!(take.pcm().is_empty());
+        assert_eq!(std::fs::read(&path).unwrap(), wav);
+        assert!(sidecar_path(&path).unwrap().exists());
+        let again = directory.path().join("again.wav");
+        let error = take.save(&again).unwrap_err();
+        assert!(matches!(error, TakeError::Cancelled));
+        assert!(error.to_string().contains("Copies saved earlier remain"));
+        assert!(!again.exists());
     }
 
     #[test]
@@ -1598,7 +1728,7 @@ mod tests {
         ))
         .unwrap();
         take.start().unwrap();
-        let small = render_pcm_s16(SyntheticPattern::Ramp, 0, 3);
+        let small = render_pcm_s16(SyntheticPattern::Ramp, 0, 3).unwrap();
         assert_eq!(small.len(), 12);
         take.push(&small).unwrap();
         let block = vec![1u8; STREAM_CHUNK_BYTES_MAX];
@@ -1674,7 +1804,7 @@ mod tests {
         assert_eq!(levels.left_peak, 32_768);
         assert_eq!(levels.chunk_left_peak, 32_768);
         assert_eq!(levels.right_peak, 100);
-        let quiet = render_pcm_s16(SyntheticPattern::Constant { left: 1, right: 1 }, 0, 1);
+        let quiet = render_pcm_s16(SyntheticPattern::Constant { left: 1, right: 1 }, 0, 1).unwrap();
         let later = take.push(&quiet).unwrap();
         assert_eq!(later.left_peak, 32_768);
         assert_eq!(later.chunk_left_peak, 1);
@@ -1686,7 +1816,11 @@ mod tests {
     #[test]
     fn malformed_wav_files_are_rejected() {
         assert!(matches!(parse_wav(b"nope"), Err(TakeError::Wav(_))));
-        let valid = write_wav(44_100, &render_pcm_s16(SyntheticPattern::Ramp, 0, 1)).unwrap();
+        let valid = write_wav(
+            44_100,
+            &render_pcm_s16(SyntheticPattern::Ramp, 0, 1).unwrap(),
+        )
+        .unwrap();
         let mut truncated = valid.clone();
         truncated.pop();
         assert!(parse_wav(&truncated).is_err());
@@ -1720,6 +1854,115 @@ mod tests {
     }
 
     #[test]
+    fn render_rejects_one_past_the_chunk_ceiling_and_an_overflowing_index() {
+        let pcm_frames = (STREAM_CHUNK_BYTES_MAX / WAV_FRAME_BYTES) as u32;
+        let pod_frames = STREAM_CHUNK_BYTES_MAX as u32 / FRAME_BYTES;
+        assert!(render_pcm_s16(SyntheticPattern::Ramp, 0, pcm_frames).is_ok());
+        assert!(matches!(
+            render_pcm_s16(SyntheticPattern::Ramp, 0, pcm_frames + 1),
+            Err(TakeError::ChunkTooLarge { len })
+                if len == (pcm_frames as usize + 1) * WAV_FRAME_BYTES
+        ));
+        assert!(
+            render_pod_s24(
+                SyntheticPattern::Constant { left: 0, right: 0 },
+                0,
+                pod_frames
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            render_pod_s24(
+                SyntheticPattern::Constant { left: 0, right: 0 },
+                0,
+                pod_frames + 1
+            ),
+            Err(TakeError::ChunkTooLarge { len }) if len > STREAM_CHUNK_BYTES_MAX
+        ));
+        assert!(matches!(
+            render_pcm_s16(SyntheticPattern::Ramp, u64::MAX, 2),
+            Err(TakeError::FrameIndexOverflow)
+        ));
+        assert!(matches!(
+            render_pod_s24(
+                SyntheticPattern::Constant { left: 1, right: 1 },
+                u64::MAX,
+                2
+            ),
+            Err(TakeError::FrameIndexOverflow)
+        ));
+        assert!(render_pcm_s16(SyntheticPattern::Ramp, u64::MAX, 1).is_ok());
+        assert_eq!(
+            render_pcm_s16(SyntheticPattern::Ramp, u64::MAX, 0)
+                .unwrap()
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn zero_length_nonregular_path_is_not_read() {
+        let mut reads = 0u32;
+        let injected = read_regular_bytes(
+            Ok(PathFacts {
+                regular_file: false,
+                len: 0,
+            }),
+            TAKE_BYTES_CEILING,
+            || {
+                reads += 1;
+                Ok(Vec::new())
+            },
+        );
+        let error = injected.unwrap_err();
+        assert!(matches!(error, TakeError::NotARegularFile));
+        assert_eq!(reads, 0);
+        assert!(error.to_string().contains("not opened"));
+
+        let mut oversized = 0u32;
+        let too_big = read_regular_bytes(
+            Ok(PathFacts {
+                regular_file: true,
+                len: TAKE_BYTES_CEILING + 1,
+            }),
+            TAKE_BYTES_CEILING,
+            || {
+                oversized += 1;
+                Ok(Vec::new())
+            },
+        );
+        assert!(matches!(too_big, Err(TakeError::CapExceeded)));
+        assert_eq!(oversized, 0);
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("offline-nonregular.wav");
+        #[cfg(unix)]
+        {
+            let status = std::process::Command::new("mkfifo")
+                .arg(&path)
+                .status()
+                .expect("mkfifo");
+            assert!(status.success());
+            let meta = std::fs::metadata(&path).unwrap();
+            assert!(!meta.is_file());
+            assert_eq!(meta.len(), 0);
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::create_dir(&path).unwrap();
+            assert!(!std::fs::metadata(&path).unwrap().is_file());
+        }
+        let mut opened = 0u32;
+        let from_path = read_regular_bytes(path_facts(&path), TAKE_BYTES_CEILING, || {
+            opened += 1;
+            Ok(Vec::new())
+        });
+        assert!(matches!(from_path, Err(TakeError::NotARegularFile)));
+        assert_eq!(opened, 0);
+        assert!(!directory.path().join("should-not-exist.wav").exists());
+    }
+
+    #[test]
     fn panel_stays_idle_until_start_and_names_the_offline_take() {
         let mut panel = Panel::new();
         assert_eq!(panel.phase(), Phase::Idle);
@@ -1746,6 +1989,8 @@ mod tests {
         panel.cancel().unwrap();
         assert_eq!(panel.phase(), Phase::Idle);
         assert_eq!(panel.message(), PHASE_CANCELLED);
+        assert!(panel.message().contains("in-memory"));
+        assert!(panel.message().contains("remain"));
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
 
         panel.start().unwrap();
@@ -1759,8 +2004,11 @@ mod tests {
         assert!(sidecar.contains(OFFLINE_BANNER) || sidecar.contains("offline-test-recording"));
         assert!(sidecar.contains("\"device_recording\": false"));
         assert!(matches!(panel.save(&path), Err(TakeError::AlreadyExists)));
-
         panel.cancel().unwrap();
+        assert_eq!(panel.message(), PHASE_CANCELLED);
+        assert_eq!(std::fs::read(&path).unwrap(), wav);
+        assert!(sidecar_path(&path).unwrap().exists());
+
         panel.select_clock(ClockSelection::NativePodxt).unwrap();
         panel.select_input(InputSelection::Synthetic).unwrap();
         panel.start().unwrap();

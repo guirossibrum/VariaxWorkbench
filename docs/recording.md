@@ -6,8 +6,8 @@ PODxt Live, the Variax, or the host sound server.
 
 Opening the test-recording window does not start a take, select a route on a
 device, or change monitoring or re-amping. Start, Feed, Stop, Cancel, and Save
-are separate controls. Save runs only after Stop. Cancel discards the take and
-creates no file.
+are separate controls. Save runs only after Stop. Cancel discards the
+in-memory take and writes nothing new. Copies saved earlier remain.
 
 Device capture and playback stay locked. `StartAudioCapture` stays a physical
 operation. `LIVE_BACKEND_INITIALIZER` stays `None`. No ALSA, PipeWire,
@@ -23,7 +23,7 @@ The user picks both pieces before Start:
 | --- | --- |
 | Record route | One of the four GearBox Record Send 1-2 labels from `src/pod_audio.rs`. The label is stored with the take. It does not send `PODXT_ROUTING_ENABLE` and it does not change a live monitor or re-amp mix. |
 | Synthetic generator | A deterministic 16-bit stereo pattern at an integer clock. |
-| WAV file | A canonical 16-bit stereo PCM file whose header rate matches the selected integer clock. |
+| WAV file | A regular canonical 16-bit stereo PCM file whose header rate matches the selected integer clock. A pipe, socket, or device node is refused before it is opened, including when its reported length is zero. |
 | Native source clock | Linux `pod_ratden` `78125/2`, packed as declared S24_3LE frames in memory. |
 
 Guitar `SelectRecordRoute` stays unsupported. Workbench HD, JTV-69, and POD
@@ -77,15 +77,20 @@ when Feed is clicked.
 
 ## Tests
 
-`src/recording.rs` has ten tests: truthful WAV save and refusal to overwrite,
+`src/recording.rs` has thirteen tests: truthful WAV save and refusal to overwrite,
 rejection of `78125/2` without rounding, rejection of 39062, 39063, and 78125
 as WAV rates, file round-trip, dropout zeros and sidecar integrity, cancel
-with no file, separate chunk and take bounds, integer peaks including
-`i16::MIN`, malformed WAV rejection, and an idle panel until Start.
+before any save, cancel after a save keeping that copy, separate chunk and
+take bounds, integer peaks including `i16::MIN`, malformed WAV rejection, an
+idle panel until Start, synthetic renders one frame past the chunk ceiling and
+an overflowing frame index, and a zero-length non-regular path whose reader is
+not called.
 
 `offline_recording_gate_does_not_call_capture_or_open_a_stream` checks the
-session gate. One headless GUI test opens the window, checks the offline
-wording, and runs Start, Feed, Stop, and Save without starting a worker.
+session gate. Two headless GUI tests cover the window. One checks the offline
+wording and runs Start, Feed, Stop, and Save without starting a worker. The
+other asks to load a directory path and checks that the message refuses it
+before any device open.
 
 Passing these tests does not authorize a later connection.
 
