@@ -56,12 +56,28 @@ impl EditorDocument {
     pub fn open(path: &Path) -> Result<Self, String> {
         let bytes = fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
         if matches!(bytes.get(8..12), Some(b"L6BA" | b"L6CO")) {
-            Self::from_bundle(BundleFile::parse(bytes)?, path.to_owned())
+            let file = BundleFile::parse(bytes)?;
+            if file
+                .banks()
+                .iter()
+                .flat_map(|bank| bank.presets())
+                .any(PresetFile::is_podxt_live_target)
+            {
+                return Err(
+                    "this bank contains a PODxt Live tone; the guitar editor does not open it"
+                        .into(),
+                );
+            }
+            Self::from_bundle(file, path.to_owned())
         } else {
-            Ok(Self::from_preset(
-                PresetFile::parse(bytes)?,
-                path.to_owned(),
-            ))
+            let preset = PresetFile::parse(bytes)?;
+            if preset.is_podxt_live_target() {
+                return Err(
+                    "this file is a PODxt Live tone, not a Variax preset. Use the offline POD librarian"
+                        .into(),
+                );
+            }
+            Ok(Self::from_preset(preset, path.to_owned()))
         }
     }
 
@@ -209,6 +225,36 @@ impl EditorDocument {
         {
             self.undo.push(base);
             self.redo.clear();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guitar_document_rejects_a_podxt_live_tone_and_a_bank_that_contains_one() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("pod.vwm");
+        let mut bytes = include_bytes!("../tests/fixtures/editor-preset.vwm").to_vec();
+        bytes[24..28].copy_from_slice(&0x0003_000au32.to_be_bytes());
+        std::fs::write(&path, &bytes).unwrap();
+        match EditorDocument::open(&path) {
+            Err(error) => assert!(error.contains("PODxt Live"), "{error}"),
+            Ok(_) => panic!("opened a PODxt Live tone as a guitar document"),
+        }
+        let bank_path = directory.path().join("pod.vwb");
+        let mut bank = include_bytes!("../tests/fixtures/synthetic-bank.vwb").to_vec();
+        let at = bank
+            .windows(4)
+            .position(|item| item == 0x0007_0004u32.to_be_bytes())
+            .expect("bank fixture has a Variax 300/600 id");
+        bank[at..at + 4].copy_from_slice(&0x0003_000au32.to_be_bytes());
+        std::fs::write(&bank_path, bank).unwrap();
+        match EditorDocument::open(&bank_path) {
+            Err(error) => assert!(error.contains("PODxt Live"), "{error}"),
+            Ok(_) => panic!("opened a bank that contains a PODxt Live tone"),
         }
     }
 }

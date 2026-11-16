@@ -46,6 +46,18 @@ pub struct GuitarPresetSummary {
     pub models: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PodToneSummary {
+    pub name: String,
+    pub device_id: u32,
+    pub device_version: u32,
+    pub container: &'static str,
+    pub amp_model_id: Option<u32>,
+    pub cab_model_id: Option<u32>,
+    pub undecoded_slots: usize,
+    pub undecoded_parameter_chunks: usize,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GuitarBankSummary {
     pub banks: usize,
@@ -187,6 +199,34 @@ impl Session {
     pub fn save_guitar_copy(self, path: &Path, bytes: &[u8]) -> Result<(), Rejection> {
         self.require(RoleKind::Guitar, Operation::SaveGuitarCopy)?;
         backend::save_guitar_copy(path, bytes)
+    }
+
+    /// Opens one PODxt Live tone file in memory. The returned summary carries
+    /// raw amp and cab ids. Parameter payloads are not decoded.
+    pub fn open_pod_preset(
+        self,
+        role: RoleKind,
+        bytes: &[u8],
+    ) -> Result<PodToneSummary, Rejection> {
+        self.require(role, Operation::OpenPodPreset)?;
+        backend::open_pod_preset(bytes)
+    }
+
+    /// Renames the PINF name and returns the updated file bytes. Nothing is sent.
+    pub fn rename_pod_preset(
+        self,
+        role: RoleKind,
+        bytes: &[u8],
+        name: &str,
+    ) -> Result<Vec<u8>, Rejection> {
+        self.require(role, Operation::EditPodPreset)?;
+        backend::rename_pod_preset(bytes, name)
+    }
+
+    /// Writes a new copy through the non-overwriting save. It does not upload.
+    pub fn save_pod_copy(self, role: RoleKind, path: &Path, bytes: &[u8]) -> Result<(), Rejection> {
+        self.require(role, Operation::EditPodPreset)?;
+        backend::save_pod_copy(path, bytes)
     }
 
     pub fn inspect_firmware(

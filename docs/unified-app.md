@@ -2,7 +2,7 @@
 
 Issue #26 defines one offline Rust session for the initial rig and names the
 later profiles without treating them as supported. This is not connectivity,
-a live audio stream, POD editing, or a firmware update. Record-route planning
+a live audio stream, effect-parameter editing, or a firmware update. Record-route planning
 is offline and is described in [POD USB audio](pod-usb-audio.md).
 
 ## Initial rig
@@ -31,7 +31,7 @@ for every profile, including Workbench HD, JTV-69, and POD HD500X.
 | Open, browse, or save a guitar file | Offline | Unsupported | Unverified |
 | Family-math identity gate | Offline, original id only | Unsupported | Unverified |
 | FORM/L6FF inspection | Offline, archived 300/600 target | Offline, archived PODxt Live target | Unverified |
-| POD preset open/edit | Unsupported | Planned, #29 | Unverified |
+| POD preset open/edit | Unsupported | Offline, bounded tone file, #29 | Unverified |
 | Record-route selection | Unsupported | Offline, in-memory plan only | Unverified |
 | Enumerate, MIDI, audio, send, flash, reset, bank switch, module install, bind, USB-component read | Locked | Locked | Locked |
 
@@ -43,11 +43,14 @@ inspector and then requires that role's archived product and version. Embedded
 MD5 agreement is not authentication. Saving a guitar copy uses the existing
 non-overwriting file save and does not upload.
 
-POD preset bytes are not parsed with the guitar codec. PODxt Live record-route
+PODxt Live tone files are parsed by the separate librarian in
+[POD presets](pod-presets.md), not by the guitar codec. Open and PINF-name edit
+are offline for that role. Effect parameters, asset names, and device
+transmission stay unimplemented. PODxt Live record-route
 selection is the offline planner in [POD USB audio](pod-usb-audio.md): one
 documented Record Send 1-2 mode and a synthetic buffer, with capture still
 locked. Offline test recording is the recorder in [recording files](recording.md)
-and does not open that capture path. POD editing stays on #29. Maintenance
+and does not open that capture path. Maintenance
 beyond offline inspection stays on #30.
 
 ## Versions
