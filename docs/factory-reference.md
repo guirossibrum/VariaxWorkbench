@@ -77,3 +77,12 @@ The POD driver packages were also located and extracted. These later results
 supersede the earlier acquisition/driver-location limitations above; see
 [offline-generator-results.md](offline-generator-results.md). No factory-bank
 recovery, firmware execution or device access was performed.
+
+## Later source-bound extraction
+
+The exact archive now yields 50 compact templates and 60 complete slot programs.
+All program checksums validate; all 60 decoded settings agree with the original
+Java metadata decoder. [Factory extraction](factory-extraction.md) supersedes
+the earlier no-factory-reference finding for firmware **3.10 defaults only**.
+Earlier shipping defaults, current-unit contents and device-unique calibration
+remain unestablished. No reset, update or device access follows from extraction.

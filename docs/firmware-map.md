@@ -42,7 +42,10 @@ data regions. All 50 template records occur byte-for-byte at slots 5 through 54.
 Four other slot prefixes also match templates exactly; six differ. This is
 evidence of a template/slot relationship, not a backup of the owner's current
 guitar. The current host renderer emits 3,276-byte outputs, so these 2,619-byte
-records must not be treated as interchangeable upload artifacts.
+records must not be treated as interchangeable upload artifacts. Subsequent
+[factory extraction](factory-extraction.md) identifies complete 3,276-byte
+programs inside the 4,096-byte slots and validates their checksums. This resolves
+the record-boundary question while leaving upload behavior unverified.
 
 The partial prefix view of region 0 consumes only 168 bytes; the rest remains
 unclassified. Its apparent header must not be assumed to be the chip ROM's boot
