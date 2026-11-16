@@ -307,9 +307,23 @@ fn physical_claims_and_planned_work_do_not_start_a_backend() {
         Ok(Capability {
             profile: ProductProfile::PodxtLive,
             operation: Operation::EditPodPreset,
-            state: CapabilityState::Planned { issue: 29 },
+            state: CapabilityState::Offline,
             note: capability::capability(ProductProfile::PodxtLive, Operation::EditPodPreset).note,
         })
+    );
+    assert_eq!(
+        session
+            .capability(RoleKind::Pod, Operation::OpenPodPreset)
+            .expect("pod open")
+            .state,
+        CapabilityState::Offline
+    );
+    assert_eq!(
+        session
+            .capability(RoleKind::Guitar, Operation::OpenPodPreset)
+            .expect("guitar pod open")
+            .state,
+        CapabilityState::Unsupported
     );
     assert_eq!(
         session
@@ -386,6 +400,122 @@ fn pod_record_route_stays_offline_while_capture_stays_locked() {
         Err(Rejection::Format {
             detail: "period byte count is not a multiple of the 6-byte frame".into(),
         })
+    );
+}
+
+#[test]
+fn pod_tone_open_rename_and_save_stay_offline_and_reject_variax() {
+    let session = Session::initial_rig();
+    assert!(LIVE_BACKEND_INITIALIZER.is_none());
+    assert!(session.live_backend_is_absent());
+    let original = crate::pod_preset::fixture(
+        crate::pod_preset::ContainerKind::L6as,
+        PODXT_LIVE_PRODUCT_ID,
+        0x0102_0304,
+        &[
+            (crate::pod_preset::AMP_SLOT, 0x1111_0002),
+            (crate::pod_preset::CAB_SLOT, 0x2222_0003),
+            (0x0003_00aa, 0x3333_0004),
+        ],
+    );
+    let summary = session
+        .open_pod_preset(RoleKind::Pod, &original)
+        .expect("pod tone");
+    assert_eq!(summary.container, "L6AS");
+    assert_eq!(summary.device_id, PODXT_LIVE_PRODUCT_ID);
+    assert_eq!(summary.device_version, 0x0102_0304);
+    assert_ne!(summary.device_version, PODXT_LIVE_VERSION);
+    assert_eq!(summary.amp_model_id, Some(0x1111_0002));
+    assert_eq!(summary.cab_model_id, Some(0x2222_0003));
+    assert_eq!(summary.undecoded_slots, 1);
+    assert_eq!(summary.undecoded_parameter_chunks, 6);
+    assert_eq!(
+        session.open_pod_preset(RoleKind::Guitar, &original),
+        Err(Rejection::Unsupported {
+            profile: ProductProfile::Variax600,
+            operation: Operation::OpenPodPreset,
+        })
+    );
+    assert_eq!(
+        session.open_pod_preset(RoleKind::Pod, PRESET),
+        Err(Rejection::CrossFamily {
+            from: DeviceFamily::VariaxWorkbench,
+            to: DeviceFamily::PodXt,
+            operation: Operation::OpenPodPreset,
+        })
+    );
+    let bass = crate::pod_preset::fixture(
+        crate::pod_preset::ContainerKind::L6pa,
+        0x0003_000b,
+        1,
+        &[(crate::pod_preset::AMP_SLOT, 1)],
+    );
+    assert!(matches!(
+        session.open_pod_preset(RoleKind::Pod, &bass),
+        Err(Rejection::Format { detail }) if detail.contains("0003000b")
+    ));
+    let extension = Session::extension(ProductProfile::PodHd500x).expect("extension");
+    assert_eq!(
+        extension.open_pod_preset(RoleKind::Pod, &original),
+        Err(Rejection::Unverified {
+            profile: ProductProfile::PodHd500x,
+            operation: Operation::OpenPodPreset,
+        })
+    );
+    let renamed = session
+        .rename_pod_preset(RoleKind::Pod, &original, "Stage")
+        .expect("rename");
+    assert_ne!(renamed, original);
+    let again = session
+        .open_pod_preset(RoleKind::Pod, &renamed)
+        .expect("renamed");
+    assert_eq!(again.name, "Stage");
+    assert_eq!(again.amp_model_id, Some(0x1111_0002));
+    assert!(
+        session
+            .rename_pod_preset(RoleKind::Pod, PRESET, "Nope")
+            .is_err()
+    );
+    let directory = tempfile::tempdir().expect("temp dir");
+    let copy = directory.path().join("tone.bin");
+    session
+        .save_pod_copy(RoleKind::Pod, &copy, &renamed)
+        .expect("new copy");
+    assert!(
+        session
+            .save_pod_copy(RoleKind::Pod, &copy, &renamed)
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&copy).expect("copy"), renamed);
+    assert!(
+        session
+            .save_pod_copy(RoleKind::Guitar, &copy, &renamed)
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&copy).expect("copy remains"), renamed);
+    let mut attempts = 0;
+    let locked = session.reject_physical(
+        RoleKind::Pod,
+        Operation::SendControl,
+        Some(CapabilityState::Offline),
+        || {
+            attempts += 1;
+            Ok(())
+        },
+    );
+    assert_eq!(attempts, 0);
+    assert_eq!(
+        locked,
+        Err(Rejection::Locked {
+            operation: Operation::SendControl,
+        })
+    );
+    assert_eq!(
+        session
+            .capability(RoleKind::Pod, Operation::SwitchBank)
+            .expect("bank")
+            .state,
+        CapabilityState::Locked
     );
 }
 

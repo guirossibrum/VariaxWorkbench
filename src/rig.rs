@@ -19,7 +19,7 @@ pub use model::{Component, DeviceFamily, ProductProfile, RoleKind, VersionKnowle
 pub use registry::{INITIAL_HOST, LogicalRole, PhysicalHost, WORKBENCH_USB_IS_A_SEPARATE_MATCH};
 pub use session::{
     FirmwareSummary, GuitarBankSummary, GuitarPresetSummary, LIVE_BACKEND_INITIALIZER,
-    OfflineRecordingGate, Rejection, Session,
+    OfflineRecordingGate, PodToneSummary, Rejection, Session,
 };
 
 #[cfg(test)]

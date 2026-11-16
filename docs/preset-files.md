@@ -23,6 +23,10 @@ device IDs `0x00070000` and `0x00070004`; explicit edits enforce the recovered
 [parameter domains and original UI body restrictions](parameter-domains.md).
 Imported unknown/out-of-domain fields remain lossless until explicitly edited. There is no device transmission.
 
+A PINF target of `0x0003000A` is a PODxt Live tone, not a Variax preset. The
+guitar editor does not open or rename it. That librarian is documented in
+[POD presets](pod-presets.md).
+
 CLI commands:
 
 ```sh

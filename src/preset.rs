@@ -325,6 +325,11 @@ impl PresetFile {
     pub fn device_id(&self) -> u32 {
         self.device_id
     }
+
+    /// PODxt Live tones share the FORM/L6PA container and are not guitar presets.
+    pub fn is_podxt_live_target(&self) -> bool {
+        self.device_id == 0x0003_000a
+    }
     pub fn device_version(&self) -> u32 {
         self.device_version
     }
@@ -396,6 +401,12 @@ impl PresetFile {
     }
 
     pub fn rename(&mut self, name: &str) -> Result<(), String> {
+        if self.is_podxt_live_target() {
+            return Err(
+                "the guitar editor does not rename a PODxt Live tone; use the offline POD librarian"
+                    .into(),
+            );
+        }
         let units: Vec<u16> = name.encode_utf16().collect();
         if units.len() > 32 || units.contains(&0) {
             return Err("name must contain at most 32 UTF-16 code units and no NUL".into());
@@ -566,6 +577,20 @@ mod tests {
             &unknown.as_bytes()[offset - 8..offset + 4],
             &before[offset - 8..offset + 4]
         );
+    }
+
+    #[test]
+    fn guitar_editor_does_not_rename_a_podxt_live_tone() {
+        let mut bytes = example();
+        bytes[24..28].copy_from_slice(&0x0003_000au32.to_be_bytes());
+        let mut preset = PresetFile::parse(bytes).unwrap();
+        assert!(preset.is_podxt_live_target());
+        let before = preset.as_bytes().to_vec();
+        let error = preset.rename("Nope").unwrap_err();
+        assert!(error.contains("PODxt Live"));
+        assert_eq!(preset.as_bytes(), before);
+        assert!(preset.set_parameter(0x02010001, 0x200000, 1, 0).is_err());
+        assert_eq!(preset.as_bytes(), before);
     }
 
     #[test]
