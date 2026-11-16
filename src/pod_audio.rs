@@ -127,12 +127,14 @@ pub enum SampleFormat {
     S24LE,
 }
 
+/// A period plan that has passed [`plan_buffer`]. Fields stay private so a
+/// caller cannot raise the capacity after validation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BufferPlan {
-    pub period_bytes: u32,
-    pub periods: u32,
-    pub buffer_bytes: u32,
-    pub frames_per_period: u32,
+    period_bytes: u32,
+    periods: u32,
+    buffer_bytes: u32,
+    frames_per_period: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -231,6 +233,7 @@ pub enum PlanError {
     PeriodCountOutOfRange,
     BufferAboveDeclaredMaximum,
     PeriodLengthMismatch,
+    InconsistentCapacity,
     BufferFull,
     BufferCancelled,
     SampleOutOfRange,
@@ -252,6 +255,9 @@ impl std::fmt::Display for PlanError {
             Self::PeriodCountOutOfRange => "period count is outside the declared 1..=1024 range",
             Self::BufferAboveDeclaredMaximum => "buffer exceeds the declared 60000-byte maximum",
             Self::PeriodLengthMismatch => "synthetic period length does not match the plan",
+            Self::InconsistentCapacity => {
+                "buffer plan fields do not match one validated period and capacity"
+            }
             Self::BufferFull => "synthetic buffer is full",
             Self::BufferCancelled => "synthetic buffer is cancelled",
             Self::SampleOutOfRange => "sample does not fit in signed 24-bit",
@@ -404,8 +410,12 @@ pub fn accept_format(format: SampleFormat) -> Result<(), PlanError> {
     }
 }
 
-/// Accepts the single `pod_ratden` fraction. The integer `rate_min` and
-/// `rate_max` fields are not extra rates.
+/// Accepts the source rational `78125/2` as offline timing evidence.
+///
+/// `rate_min` 39062 and `rate_max` 39063 are the integer fields beside that
+/// knot. They are not proven OS or device-open parameters. A later recorder
+/// must keep this rational and its source provenance. Live negotiation stays
+/// unverified.
 pub fn accept_rate(numerator: u32, denominator: u32) -> Result<(), PlanError> {
     if numerator == RATE_NUMERATOR && denominator == RATE_DENOMINATOR {
         Ok(())
@@ -437,6 +447,24 @@ pub fn plan_buffer(period_bytes: u32, periods: u32) -> Result<BufferPlan, PlanEr
         buffer_bytes,
         frames_per_period: period_bytes / FRAME_BYTES,
     })
+}
+
+impl BufferPlan {
+    pub const fn period_bytes(self) -> u32 {
+        self.period_bytes
+    }
+
+    pub const fn periods(self) -> u32 {
+        self.periods
+    }
+
+    pub const fn buffer_bytes(self) -> u32 {
+        self.buffer_bytes
+    }
+
+    pub const fn frames_per_period(self) -> u32 {
+        self.frames_per_period
+    }
 }
 
 /// `_open_device` is part of the signature so a caller can prove it is not invoked.
@@ -481,13 +509,19 @@ pub fn max_packet_size() -> Result<u16, PlanError> {
 }
 
 impl SyntheticBuffer {
-    pub fn new(plan: &BufferPlan) -> Self {
-        Self {
-            period_bytes: plan.period_bytes as usize,
-            capacity: plan.buffer_bytes as usize,
+    /// Rebuilds the plan through [`plan_buffer`] and rejects a capacity or
+    /// frame count that does not match that result. This does not open a device.
+    pub fn try_new(plan: &BufferPlan) -> Result<Self, PlanError> {
+        let validated = plan_buffer(plan.period_bytes, plan.periods)?;
+        if validated != *plan {
+            return Err(PlanError::InconsistentCapacity);
+        }
+        Ok(Self {
+            period_bytes: validated.period_bytes as usize,
+            capacity: validated.buffer_bytes as usize,
             data: Vec::new(),
             cancelled: false,
-        }
+        })
     }
 
     pub fn write_period(&mut self, period: &[u8]) -> Result<(), PlanError> {
@@ -642,8 +676,8 @@ mod tests {
         );
 
         let tight = plan_buffer(66, 909).expect("66 * 909 fits");
-        assert_eq!(tight.buffer_bytes, 59_994);
-        assert_eq!(tight.frames_per_period, 11);
+        assert_eq!(tight.buffer_bytes(), 59_994);
+        assert_eq!(tight.frames_per_period(), 11);
         assert_eq!(
             plan_buffer(66, 910),
             Err(PlanError::BufferAboveDeclaredMaximum)
@@ -653,8 +687,8 @@ mod tests {
             Err(PlanError::BufferAboveDeclaredMaximum)
         );
         let wide = plan_buffer(8_190, 7).expect("8190 * 7 fits");
-        assert_eq!(wide.frames_per_period, 1_365);
-        assert_eq!(wide.buffer_bytes, 57_330);
+        assert_eq!(wide.frames_per_period(), 1_365);
+        assert_eq!(wide.buffer_bytes(), 57_330);
         assert_eq!(
             plan_buffer(8_190, 8),
             Err(PlanError::BufferAboveDeclaredMaximum)
@@ -681,7 +715,7 @@ mod tests {
         assert_eq!(unpack_stereo(pack_stereo(0, -1).unwrap()), (0, -1));
 
         let planned = plan_buffer(66, 2).unwrap();
-        let mut buffer = SyntheticBuffer::new(&planned);
+        let mut buffer = SyntheticBuffer::try_new(&planned).unwrap();
         let period = vec![0x11; 66];
         buffer.write_period(&period).unwrap();
         buffer.write_period(&period).unwrap();
@@ -698,6 +732,48 @@ mod tests {
             Err(PlanError::BufferCancelled)
         );
         assert!(!buffer.device_was_opened());
+    }
+
+    #[test]
+    fn forged_plans_cannot_raise_capacity_past_validation() {
+        let over_cap = BufferPlan {
+            period_bytes: 66,
+            periods: 910,
+            buffer_bytes: 60_060,
+            frames_per_period: 11,
+        };
+        assert_eq!(
+            SyntheticBuffer::try_new(&over_cap),
+            Err(PlanError::BufferAboveDeclaredMaximum)
+        );
+
+        let inflated_capacity = BufferPlan {
+            period_bytes: 66,
+            periods: 2,
+            buffer_bytes: 100_000,
+            frames_per_period: 11,
+        };
+        assert_eq!(
+            SyntheticBuffer::try_new(&inflated_capacity),
+            Err(PlanError::InconsistentCapacity)
+        );
+
+        let wrong_frames = BufferPlan {
+            period_bytes: 66,
+            periods: 2,
+            buffer_bytes: 132,
+            frames_per_period: 1,
+        };
+        assert_eq!(
+            SyntheticBuffer::try_new(&wrong_frames),
+            Err(PlanError::InconsistentCapacity)
+        );
+
+        let valid = plan_buffer(66, 2).expect("valid");
+        let buffer = SyntheticBuffer::try_new(&valid).expect("revalidated");
+        assert_eq!(buffer.as_bytes().len(), 0);
+        assert!(!buffer.device_was_opened());
+        assert_eq!(valid.buffer_bytes(), 132);
     }
 
     #[test]

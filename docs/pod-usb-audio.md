@@ -111,10 +111,12 @@ Control endpoints differ: guitar `0x86` / `0x05`, POD `0x84` / `0x03`. The
 guitar properties field `ctrl_if` 0 is still not interface 1. Listing the same
 audio endpoint numbers on the guitar row does not assign that row a PCM device.
 
-`pod_pcm_properties` declares one knot, `78125/2`, with integer fields
-`rate_min` 39062 and `rate_max` 39063. Those integers are the fields beside
-the knot. The planner accepts only `78125/2`. It rejects 39062 Hz, 39063 Hz,
-44100 Hz, and 48000 Hz as rates. Format is `SNDRV_PCM_FMTBIT_S24_3LE`,
+`pod_ratden` is the offline timing evidence: numerator 78125, denominator 2.
+The integer fields `rate_min` 39062 and `rate_max` 39063 sit beside that knot.
+They are not proven OS or device-open parameters. `accept_rate` accepts only
+`78125/2` and rejects 39062, 39063, 44100, and 48000. A later recorder must
+keep this rational and its source provenance. Live rate negotiation stays
+unverified. Format is `SNDRV_PCM_FMTBIT_S24_3LE`,
 `bytes_per_channel` 3, and both channel counts are 2, so one interleaved frame
 is 6 bytes. The declared byte window is period 64..=8192, buffer at most
 60000, and period count 1..=1024. Playback info includes pause. Capture info
@@ -187,7 +189,10 @@ ALSA and is not this audio path.
 ## Synthetic planner
 
 `src/pod_audio.rs` plans a route, a 6-byte S24_3LE frame, and a bounded
-in-memory buffer. A period is accepted only when it is a multiple of 6, inside
+in-memory buffer. `BufferPlan` keeps its fields private. `SyntheticBuffer::try_new`
+runs the same `plan_buffer` checks and rejects a struct whose stored capacity
+or frame count disagrees with that result, including a capacity above 60000.
+A period is accepted only when it is a multiple of 6, inside
 64..=8192, the period count is inside 1..=1024, and the product is at most
 60000. The smallest accepted period is 66 bytes. `66 * 909` fits. `66 * 910`
 and `66 * 1024` do not. A full buffer rejects another period. Cancel keeps the
