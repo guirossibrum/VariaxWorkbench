@@ -171,8 +171,10 @@ tool failure and inaccurate decompilation. Both remain under the ignored
 `analysis/pod-farm-258/native-edge/`; no proprietary instructions, pseudocode,
 examples or symbol dumps are committed. The framework hash remained unchanged.
 
-The next source edge is descriptor population or the located patch-object reader,
-not calling the property export: field names/scaling/defaults/model applicability
-and PODxt target support remain unknown. Publication is still separately held;
+The subsequent [descriptor population trace](pod-farm-descriptor-population.md)
+maps one named system-control seed and the generic scalar metadata producer.
+Complete domains, defaults, model applicability and PODxt target support remain
+unknown. The located patch-object reader remains another source edge.
+Publication is still separately held;
 required command-v1 checks and independent review remain pending publication
 authority. #40 remains open and #29 remains held.
