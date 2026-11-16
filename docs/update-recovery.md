@@ -1,9 +1,12 @@
 # Static update and recovery research
 
-Issue #16 remains in progress. No updater, vendor DLL or device firmware has
-been executed, and no device was contacted. The findings below are static
-file/code relationships. They do not authorize any live packet, reset, erase,
-update or recovery entry. All hardware source locks remain enabled.
+Issue #16 remains in progress. Static analysis is now supplemented by selected
+original host-updater methods running inside an isolated emulated i386 CPU.
+Every transport, event and helper call is intercepted by a memory-only adapter;
+unknown code or imports stop the experiment. No vendor code runs natively,
+no DLL entry point or device firmware runs, and no device is contacted. These
+findings do not authorize a live packet, reset, erase, update or recovery entry.
+All hardware source locks remain enabled.
 
 ## Variax boot-region structure
 
@@ -59,7 +62,8 @@ The DLL is x86 PE, image base 0x10000000. REA 6.9.0 with Ghidra 12.2 is analyzin
 it in source-immutable static mode. Its exported function named
 `doOfflineFirmwareUpdate` is **not** a hardware-free analysis function; the
 vendor's word "offline" must not be interpreted as permission to invoke it.
-It has not been invoked, nor has any other vendor entry point.
+It has not been invoked. The separately selected internal methods below run
+only under the bounded emulator, without a Windows loader or OS forwarding.
 
 An independently checked native function at 0x100D4B10 has a product-0x00070004
 branch and a test of object byte +0x44 bit 0 leading to a patch-erase abort log.
@@ -71,6 +75,100 @@ preservation, or a reason to attempt an erase.
 
 Original vendor files, packets, strings/disassembly and analysis databases stay
 private. Product IDs, hashes and derived relationships are the public record.
+
+## Bounded host-method oracle
+
+`scripts/native_updater_oracle.py` requires the exact DLL fingerprint above. It
+maps PE sections into private Unicorn memory, replaces imports and virtual
+transport calls with traps, and permits only audited method ranges and explicit
+helper adapters. It never loads the DLL into the host process. Guest instruction,
+time, payload and accumulated output limits remain enabled. Unicorn is an
+existing pinned research dependency, not an application dependency.
+
+The code sender at 0x100D46F0 agrees with an independent Python description for
+synthetic payloads of 0, 1, 2, 31, 32, 33, 64 and 65 24-bit words: transfer count
+includes the checksum word, payload chunks contain at most 32 words, each word
+uses six low-first nibbles, and the additive checksum wraps at 24 bits. Four
+non-word-aligned inputs confirm that this host method ignores trailing bytes;
+that observation does not approve such inputs for a receiver. Its caller's
+input validation remains under review.
+
+Two cases with the preservation flag clear exercise a simulated erase delegate:
+a negative delegate result prevents sending, and zero permits the code transfer.
+The concrete virtual-method binding and the owner's preservation choice are
+not established by those cases. A negative send-status adapter reaches the
+normal-body boundary and stops before unmodeled exception handling. The first
+test expected a later exception import; the strict boundary stopped earlier at
+0x100D4AA5. That expectation was corrected without expanding the allowlist, and
+the interrupted guest CPU was discarded. The failed research log is retained.
+
+Four erase-method cases cover user/factory selection, its boot-flag guard and a
+simulated wait timeout. The method returns zero for the boot guard without
+sending, and also returns zero after a timeout. Consequently its return value
+alone cannot prove acknowledgment or completion. The event, status, erase
+delegate, message pump and security-cookie helpers are simulated; this is not
+an end-to-end updater or flash model. Windows documents zero as the signaled
+wait result and 0x102 as timeout. [WaitForSingleObject reference](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject).
+
+The source-bound private report `native-updater-oracle-b5912a17c67bddd1.json`
+records these 19 passing cases. Output contains derived lengths, hashes and
+adapter events; original binary bytes and emitted buffers are not published.
+
+## Preset-slot traversal corroboration
+
+The user-patch sender at 0x100D4BF0 traverses three groups of 20 slots. For
+product 0x00070004 and versions above 0x0303FFFF, the source stride is 4096 bytes;
+only the first 3276 bytes of each slot are encoded. Earlier versions use a
+3276-byte stride and skip another 16 source bytes after each group. A generated
+16-byte trailer follows each group. This independently supports the archived
+3.10 slot interpretation in [factory extraction](factory-extraction.md); it
+does not establish a physical switch-position map or safe preset replacement.
+
+Two additional guest-CPU cases use distinct synthetic per-slot data for 3.10
+and 3.03 layouts. Both agree byte for byte with an independent traversal,
+including all 60 slots and three generated trailers: 2105 fake send calls per
+case, each at most 192 bytes, under fixed guest and output limits. The MSVC stack
+probe is another explicit guest-memory adapter; no host stack operation or
+allocator is forwarded. The private report
+`native-updater-oracle-9c8dbddab8d9f0da.json` records all 21 passing cases. These
+cases contain no archived preset bytes.
+
+This patch-writing method requests the simulated user-erase delegate regardless
+of the code sender's preservation flag. That is a method-level observation:
+which update stages the caller selects, and how it restores saved settings,
+still require tracing. It would be incorrect to infer that the UI's keep-presets
+choice is ignored or that calibration is preserved.
+
+The oracle is an opt-in research command using the existing pinned environment:
+
+```sh
+.tools/python/bin/python scripts/native_updater_oracle.py /path/to/UpdaterV3EngineDLL.dll
+```
+
+The source file must be a bounded regular local file with the recorded exact
+fingerprint. Reports are saved without overwriting under ignored
+`analysis/reports`. No original DLL is distributed or required by the Rust app.
+
+## Response callbacks and virtual-method evidence
+
+Static constructor code at 0x100CEFBE installs vtable 0x1026AB50. For objects
+using that table, slot +0x24 points to erase method 0x100D4B10 and slot +0x20 to
+the update-sequencing method at 0x100D3D60. This closes the method-slot binding
+for that class; it does not prove a connected unit or selected caller state.
+The oracle still uses a simulated delegate to isolate the transfer methods.
+
+Registration code at 0x100D3B80 associates response commands 0x70 and 0x71
+with callback 0x100D5E40, commands 0x72 and 0x73 with 0x100D5E70, and command
+0x6E with 0x100D5EA0, using selector 0x0007007F. The callbacks store status at
+object +0x14C (respectively 0, -3022 and -3038) and signal its event if present.
+The transport's selector matching remains outside this trace; these registrations
+must not be treated as a verified standalone packet decoder.
+
+Three additional isolated guest cases execute those callbacks against synthetic
+objects and a fake SetEvent adapter. Each stores the expected status and emits
+no transport bytes. The combined private report
+`native-updater-oracle-00f50264c735f759.json` has 24 passing cases. They support
+host callback behavior, not receiver state, durability, or a physical reset.
 
 ## Work still required
 
