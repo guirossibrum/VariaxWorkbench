@@ -207,3 +207,8 @@ Its **11 evidence files** comprise eight static Ghidra reports, two raw classifi
 ranges (one truncated) and one combined focused-test log. This count is separate
 from the **22 test methods**. Combined test-log SHA-256:
 `0bd70ea0dc7425e5bfed60e6390636a9da302335e76f40b05b2316e764e99661`.
+
+The [direct conversion pass](pod-farm-conversion-transforms.md) subsequently
+recovers selected scalar/ID transformations, table provenance, destructive model
+replacement and the runtime availability-list boundary. Its eight new owned
+methods bring the four focused suites to30 methods, separately from evidence files.
