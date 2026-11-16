@@ -78,3 +78,12 @@ Keep USB, audio and desktop OS interfaces behind thin replaceable adapters.
 Normal application operation must not require Line 6 services or external apps.
 A self-contained core does not imply that OS integration can have no OS dependency,
 or relax any hardware-access boundary.
+
+## Agent-coordinator workflow
+
+When this checkout is managed by agent-coordinator, read
+[AGENT_COORDINATOR.md](AGENT_COORDINATOR.md) and the installed
+`agent-coordination` skill before receiving work. Use the exact registered scoped
+client and the repository context in the receipt. Cloning or reading this guide
+does not activate a session, assign work, authorize CI or change any safety rule
+above. Keep machine-specific settings and credentials outside tracked files.
