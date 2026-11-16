@@ -72,7 +72,7 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 
 - [x] Rust CLI and offline GUI build, including optimized release builds.
 - [x] Short guided-check **offline rehearsal** app: five prompts, cancellation/skip handling and protected report saving. Run `cargo run --bin variax-check -- plan`; see [usage and limits](docs/manual-check.md).
-- [x] **200 Rust tests per math profile** (host configuration and experimental software configuration), Clippy with warnings denied, and formatting checks on Linux.
+- [x] **204 Rust tests per math profile** (host configuration and experimental software configuration), Clippy with warnings denied, and formatting checks on Linux.
 - [x] **19 headless GUI tests** cover actual dirty-prompt/bank-row clicks, save cancellation/failure/retry, grouped slider drags, operation cancellation/error recovery, artwork recovery, document preservation and offline recording controls/file rejection and POD tone quit protection. Native OS dialogs/window behavior still need manual platform checks; see [GUI scope](docs/gui-validation.md).
 - [x] Shared CLI/GUI edit validation for **34 parameters**, 28 body and 32 pickup choices; **84 original-Java endpoint/choice cases** and **1,792 body/pickup/slot selections** pass. Imported unknown/out-of-range values survive rendering/copying; see [domains and limits](docs/parameter-domains.md).
 - [x] Individual preset parsing/editing and protected copy saves: **6 original-Java compatibility checks**.
