@@ -17,6 +17,9 @@ from native_oracle import NativeOracle, ROOT
 
 class CoefficientOracle(NativeOracle):
     RUNTIME_VERSION = 'initialized-host-libm-v2'
+    # A research subclass may specify independently established constants for
+    # a pinned original runtime. The existing reference contract stays exact.
+    EXPECTED_KNOB_CONSTANTS = (0.001, 0.01)
     HEAP = 0x2000000
     HEAP_SIZE = 0x1000000
     SHIMS = 0x1300000
@@ -65,7 +68,7 @@ class CoefficientOracle(NativeOracle):
             self.call_initializer(address)
             self.initializers_completed.append(address)
         tone, volume = struct.unpack('<2d', self.read(0x3d798, 16))
-        if (tone, volume) != (0.001, 0.01):
+        if (tone, volume) != self.EXPECTED_KNOB_CONSTANTS:
             raise RuntimeError(f'unexpected initialized knob constants: {(tone, volume)}')
         if len(self.destructor_registrations) != 53:
             raise RuntimeError('incomplete module destructor registrations')
@@ -270,7 +273,7 @@ class CoefficientOracle(NativeOracle):
         # Whole-library reference output is invalid without this module's
         # constructor. Partial body/circuit oracles do not use these globals.
         tone, volume = struct.unpack('<2d', self.read(0x3d798, 16))
-        if not self.runtime_initialized or (tone, volume) != (0.001, 0.01):
+        if not self.runtime_initialized or (tone, volume) != self.EXPECTED_KNOB_CONSTANTS:
             raise RuntimeError('whole-generator reference blocked: native module initialization is incomplete or knob constants changed (issue #5)')
         patch = self.OUTPUT + 0x2000
         self.write(patch, bytes(settings))

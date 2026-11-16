@@ -140,3 +140,8 @@ settings, audio/DSP behavior and hardware safety remain unverified. The software
 feature is experimental and does not authorize a preset upload or update. Issue
 #5 remains open while its remaining runtime/platform limits are tracked; #6
 continues broader engine validation after its dependencies are satisfied.
+
+The optional [historical Apple 88.3.9 candidate](apple-tiger-math.md) agrees with
+the existing MPFR packed candidates on 110 cases. Its source-specific startup
+contract and x87 emulator limitations are separate from this product profile;
+it does not change the default or establish full historical-runtime parity.
