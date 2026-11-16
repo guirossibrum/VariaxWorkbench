@@ -636,6 +636,7 @@ mod tests {
         for id in [
             "hd500x-flash-2.62-not-obtained",
             "hd500x-editor-not-obtained",
+            "hd500x-independent-bytes-are-not-a-product",
         ] {
             assert!(
                 provenance::ACQUISITION_GAPS.iter().any(|gap| gap.id == id),

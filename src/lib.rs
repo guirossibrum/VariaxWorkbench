@@ -26,6 +26,7 @@ pub mod pickup;
 pub mod pod_assets;
 pub mod pod_audio;
 pub mod pod_hd500x;
+pub mod pod_hd_independent;
 pub mod pod_preset;
 pub mod pod_usb_firmware;
 pub mod preset;

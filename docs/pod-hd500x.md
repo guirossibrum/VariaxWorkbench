@@ -196,6 +196,52 @@ parameter range was recovered from these archives. PODxt Live tones and
 original Variax files opened through this profile stay `Unverified`. They are
 not rewritten into another format.
 
+## Independent files were measured and do not name the product
+
+No Edit installer was used. A public author page,
+`https://www.jzab.de/content/pod-hd-preset-tool/`, returned HTTP 200 on
+Mon, 16 Nov 2026 05:07:21 GMT, 23665 bytes, SHA-256
+`84b3ba20ae3bbb407ac08b5f0220cd028c4abe290d96eea62cc7496cc8ce82e5`.
+That page links `https://github.com/johanneszab/podhd/` and its releases.
+The local no-checkout clone is pinned at
+`58e95d5b514b44ae667dd5463ec63c8bafa6735a`. Its `LICENSE` file is the GNU GPL
+version 2 text. `src/mainwindow.cpp` at that commit is SHA-256
+`6656f6a6cfa4304b6a85164f9a3437c6bcf00b631809c82b1b582b77f0dfc597`.
+None of that conversion code is copied here. The source was not built or run.
+It is not an original POD HD500X Edit oracle.
+
+The same commit's file filters name `.h5e` and `.h5s`. The fetched files use
+`.5xe` and `.5xs`. Those suffixes are not a product id.
+
+Four files were fetched from
+`https://www.foobazaar.com/podhd/patches/HD500X/` on 2026-11-16. The copies
+stay in the ignored `.tools/issue-32-continuation/` directory. Tests do not
+reopen them.
+
+| File | Bytes | SHA-256 | Fetched |
+| --- | --- | --- | --- |
+| `7S_Das_Pod_L.5xe` | 4136 | `4e651fe1830952993ff803720a566e76587a367159a4d774ebfd8843edeee797` | Mon, 16 Nov 2026 04:59:41 GMT |
+| `BS_Clean_L.5xe` | 4136 | `d13d20d1fca31bbc699fde60be6c7af3ae6e5ed2a9aa25242c480469adb50714` | Mon, 16 Nov 2026 04:59:42 GMT |
+| `CL_ChmpCln_N.5xe` | 4136 | `ca1e4f5dc81c2c78ffbe1fcee1878f102f2cf004877d0733f9748f0043691176` | Mon, 16 Nov 2026 04:59:42 GMT |
+| `MAB_Final.5xs` | 264782 | `bcf81c9a495e959129e967c0840fc57ad1714903b20073eb9844b72997e1f400` | Mon, 16 Nov 2026 04:59:42 GMT |
+
+Each `.5xe` file is 4136 bytes and begins with ASCII `H5EP`. The three directory files have byte 0x0b equal to 0x2e. At offsets `0x0b`, `0x0c`,
+`0x0d`, `0x13`, `0x14`, and `0x15` they contain `2e 02 26 06 02 62`. The
+pinned source writes those six values in the branch named `ProX`. The source comment at offset 0x0b labels `0x2e` as HD ProX and `0x2d` as HD 500X. Neither label is registered. The directory name and the .5xe suffix do not prove a POD HD500X product.
+
+The `.5xs` file is 264782 bytes and begins with ASCII `H5ES`. Its header byte
+0x17 is `0x2d`. That offset is not the preset offset 0x0b. The header byte at
+0x0b is `0x05`. Sixty-four `H5EP` records start at offset 56 and repeat every
+4136 bytes. `56 + 64 * 4136 + 22 = 264782`. Each embedded record has byte 0x0b
+equal to `0x2d`. The six offsets above contain `2d 02 26 05 00 00` in every
+embedded record. The source branch named `500X` writes `2d 02 26 05 02 62`,
+so offsets `0x14` and `0x15` differ. The embedded records are not treated as
+that branch's output.
+
+`preset_container_recovered`, `model_ids_recovered`, and `effect_ids_recovered`
+stay false. A synthetic buffer with these lengths is rejected by
+`Session::open_pod_preset` as `Unverified` before any product parse.
+
 ## What remains open
 
 No Edit 2.27 installer is available locally. The unauthenticated readeula HEAD requests redirected to login, and the release-id directory HEAD requests returned 404. A directory 404 can coexist with a public named object. An owner-supplied original installer would unblock this static-extraction approach. Wider availability and other independent sources remain unknown. This crate does not store credentials and does not retry the routes already requested or flash release 6260.

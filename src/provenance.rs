@@ -634,6 +634,10 @@ pub const ACQUISITION_GAPS: &[Gap] = &[
         id: "hd500x-editor-not-obtained",
         detail: "POD HD500X Edit releases 9781 and 8559 were not downloaded. On 2026-11-16 unauthenticated HEAD requests for both readeula links returned HTTP 302 to the account login page, and HEAD requests for the CDN directories media/software/9781/ and media/software/8559/ returned HTTP 404. No preset container, model id, or effect id was extracted.",
     },
+    Gap {
+        id: "hd500x-independent-bytes-are-not-a-product",
+        detail: "Independent H5EP and H5ES measurements are not a POD HD500X product id. Three files from a directory named HD500X have byte 0x0b equal to 0x2e. A pinned GPL comment labels 0x2e as HD ProX and 0x2d as HD 500X. Those labels are not registered.",
+    },
 ];
 
 pub fn artifact_by_id(id: &str) -> Option<&'static LocalArtifact> {
@@ -829,6 +833,7 @@ pub fn validate_catalog() -> Result<(), String> {
         "app-identifier-omitted",
         "hd500x-flash-2.62-not-obtained",
         "hd500x-editor-not-obtained",
+        "hd500x-independent-bytes-are-not-a-product",
     ];
     for id in required {
         if !ACQUISITION_GAPS.iter().any(|gap| gap.id == id) {
