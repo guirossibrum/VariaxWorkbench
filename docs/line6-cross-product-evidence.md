@@ -147,12 +147,59 @@ only a shallow `FORM/WB2P` plus first-`PINF` check, not full validation. Static
 decompilation report:
 `.tools/issue-61-analysis/wb2-param-contract-531bbcf1a187afe4243c9e48af491acb64841f3986383bb099c69fd9a0be1fe8.txt`.
 
-The code evidence is from the macOS executable only; resource equality does not
-prove the Windows implementation behaves identically. Ghidra analysis was
+The preceding `WB2P` preset-handler evidence is from the macOS executable only;
+resource equality does not prove Windows `WB2P` behavior. A separate,
+narrowly matched tuning serializer is described next. Ghidra analysis was
 offline and static. No vendor application/library code was executed and no
 device, USB/MIDI/audio, service, or network was contacted. No Rust preset
 backend, editor compatibility, transfer behavior, validation oracle, or
 physical recovery claim follows from this finding. Issue #61 remains partial.
+
+### Workbench HD tuning record (static Windows/macOS match)
+
+Static analysis of the same macOS executable found named `WB2AltTuning`
+handlers: `FromStream` (`0x100007ece`), `ToStream` (`0x100007d4e`),
+`SetTune` (`0x100007c5a`), `GetTune` (`0x100007c92`), and
+`WriteStringParams` (`0x100007e6e`). `ToStream` writes `LIST/TUNE` with a
+`THDR` name chunk followed by six `STRG` chunks. Each `STRG` payload is exactly
+8 bytes: a slot index byte, three zeroed padding bytes, and a big-endian
+IEEE-754 float. `SetTune` accepts slot indices 0 through 5 and maps slot `i`
+to internal group parameter index `i + 1` with type tag 1. `SetParam` rejects
+indices outside the configured count (`0x80000008`) and a type mismatch
+(`0x80000009`); `SetTune` rejects index 6 or higher (`0x80000002`). The stream
+does not carry a type tag: the reader assigns type 1 to the float. The macOS
+reader skips out-of-range slot bytes; a wrong-sized `STRG` fails the
+exact-length `ReadChunkOfType` call. Handling of a different child tag remains
+unresolved in this pass. The code does not establish physical string
+orientation, float units/range, or a mapping from this standalone `LIST/TUNE`
+object to the preset `ALTT` group.
+
+The Windows PE has no PDB or symbol table, so these function labels are
+inferred from static instruction flow rather than trusted debug names. In the
+Windows executable (SHA-256
+`be268d1a7e22ce792e9055152a81bb013edd8047fb87c2236dd4bce057f8a3cd`, image
+base `0x00400000`), `0x00405390` writes `LIST/TUNE` and six records via
+`0x00405b60`; `0x004055a0` reads the same container and calls `0x00415540` for
+each slot. The writer helper emits 8-byte `STRG` payloads; the reader helper
+maps to internal index `i + 1`, enforces type 1, and stores the 32-bit float
+bits. For index 6 or higher, Windows helper `0x00415540` returns
+`0x80000002`, which the reader propagates as a failure; this differs from the
+macOS reader's skip behavior. This is a bounded static comparison for the
+tuning path only; it does not establish equivalence of other Windows and
+macOS code or any device transfer behavior.
+
+The Windows executable hash is for
+`.tools/issue-61-analysis/01/Workbench HD/Workbench HD.exe`; the macOS
+executable and hash are listed in the preceding section. Ghidra reports and
+source-guided pure-data reference are preserved privately under
+`.tools/issue-61-analysis/`, especially
+`wb2-tuning-trace-531bbcf1-be268d1a.txt` and
+`wb2_tune_reference.py`. Six synthetic checks passed for truncation, chunk
+length, missing header, index/count/type errors, unknown chunks, and a writer
+round trip. The private reference rejects unknown child tags rather than
+guessing at the unresolved vendor behavior. The checks are CPU reference
+checks, not original-library oracle or product parser tests. No vendor binary
+was executed. Issue #61 remains partial.
 
 ### Central's firmware/update evidence
 
