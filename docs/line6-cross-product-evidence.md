@@ -318,12 +318,27 @@ checks for `USB`/`usb` and parses the `VID_` field. The discovery path at
 product ID to `0x100029e0` before allocating a device-description record and
 storing the VID/PID fields at offsets `+0x08` and `+0x0c`. The product helper
 searches a tree rooted at manager offset `+0x0c` by product ID and copies the
-matching record's descriptor data. The set's entries and initialization path
-were not recovered: the binary contains `l6config.xml` and `ProductId` strings,
-but the prepared package inventory contains only `L6ConfigAmplifi.xml`, which
-does not establish the tree contents. Thus the traced filter is VID plus a
-product-ID registry lookup, while the exact accepted product IDs and
-capability/descriptor rows remain unknown. A separate
+matching record's descriptor data. Further tracing resolves the tree's
+constructor and insertion path: `InterposerDeviceManager` constructor
+`0x10003fb0` initializes an `L6Map<unsigned_int,L6StringEx>`; config parser
+`0x10002270` converts the XML `ProductId` attribute with base-16 `strtol`, then
+inserts that key and the row's `library` value via `0x100035a0` into the map at
+manager offset `+0x08` (root pointer at `+0x0c`). The scan worker
+`0x10004270` traverses a caller-supplied configuration container through
+`0x10002860` before it enumerates USB interfaces with `0x10004750`.
+
+The parser checks candidate item names against separate `l6config` and `.xml`
+string tokens; `l6config.xml` is not a literal in the binary. Its callback
+parses the supplied XML data and visits row attributes named `ProductId` and
+`library`. The container producer and records supplied to this callback remain
+unresolved. The only matching config XML in the prepared Windows Central
+package is `L6ConfigAmplifi.xml` (1,195 bytes, SHA-256
+`6c4e44397a671422cb93087d408e8a2e6a4e11d9173fbd8881560df86455551f`); its
+`Configuration` root contains five `Device` records with `ProductId`,
+`library`, `VendorId`, `ProductName`, and `BusType` attributes. This confirms
+that two fields read by the parser occur in that package's schema, but those
+Amplifi records do not establish Variax product IDs. The exact accepted Variax
+product IDs and capability/descriptor rows remain unknown. A separate
 notification setup path registers for device arrival at `0x10003b50`; enumeration
 and removal paths destroy their SetupAPI device-information sets. Functions
 `0x10004590` and `0x10004750` also inspect parent/ancestor relations using
@@ -333,10 +348,11 @@ identity mapping remain unresolved. In particular, the vendor-ID comparison
 does not by itself prove the supplied standalone bridge PID `0x534D` is accepted
 by this interposer.
 
-Ghidra static decompilation of these five functions is preserved privately at
-`.tools/issue-61-analysis/central-interposer-selection.txt`; the reproducible
-analysis script is `.tools/issue-61-analysis/CentralInterposerSelection.java`.
-Function labels are inferred, and the report is bounded to those targets.
+Ghidra static decompilation reports for the bounded Windows trace are private
+under `.tools/issue-61-analysis/central-interposer-*.txt`; scripts are
+`.tools/issue-61-analysis/CentralInterposerSelection.java`,
+`CentralInterposerConfig.java`, and `CentralInterposerConfigRefs.java`. Function
+labels are inferred, and reports are bounded to named targets.
 
 The managed `Line 6 Central.exe` contains the `EngineCLIWrapper` assembly name.
 That wrapper imports `createEngine`, `initialize`, `start`, typed parameter
@@ -344,11 +360,27 @@ getters/setters, `doOfflineFirmwareUpdate`, and `setDeviceIdentity` from
 `UpdaterV3EngineDLL.dll`. This establishes an app-to-engine API surface for
 generic parameters and maintenance identity/update operations; the exact app
 call sequence from managed code to the wrapper was not traced. This does not
-establish that the updater engine is the same consumer as `Interposer.dll`, or
-that the generic engine API exposes Variax editing. The native updater DLL
-imports libusb enumeration/transfer calls, SetupAPI device enumeration,
-`cyusbserial` I2C calls, and Windows MIDI APIs; these are dependencies, not proof
-that a particular path is active for Variax or safe to call.
+establish that the generic engine API exposes Variax editing. A bounded static
+trace of `UpdaterV3EngineDLL.dll` (SHA-256
+`d24bb48b0f13d9b46c6dd514e712c347ff9a00d4763555614f700c22634bebc7`) finds
+imports for `LoadLibraryA`, `LoadLibraryExA`, `GetProcAddress`, and
+`FreeLibrary`; the x86 code at `0x101befd0` copies the `Interposer.dll` module
+name from `0x1047dc88` and passes the constructed string to a loader helper at
+`0x10140350`. The DLL also contains `L6DeviceCenter_Win` error strings for
+`enumerateInterposerDevices()` / `InterposerGetDescriptors()` and
+`refreshDeviceListsWin()` / `InterposerGetDescriptors()`, plus
+`HandleDeviceToHostRequest()` and `HandleQueueOutPkt()` failures from
+`InterposerMessage()`. Corresponding error branches are present near
+`0x101ba767`, `0x101bface`, `0x101c6ee2`, and `0x101c7391`; the latter two
+invoke an indirect function-pointer call through `0x104baad8` before logging failure.
+These strings, references, loader imports, and branches support a Windows
+updater-engine interposer enumeration/message integration. The exact
+`GetProcAddress` symbol-to-function wiring, successful data flow, payload
+framing, session/error contract, and relationship to a Variax editor remain
+unresolved. The native updater DLL also imports libusb enumeration/transfer
+calls, SetupAPI device enumeration, `cyusbserial` I2C calls, and Windows MIDI
+APIs; imports alone do not establish that a path is active for Variax or safe
+to call. All of this is static analysis; the DLL was not executed.
 
 ### Central macOS device-manager evidence (bounded string/dependency scan)
 
@@ -363,10 +395,13 @@ and factory patches. This supports that the Mac build has native device-manager
 and firmware-update components with a Variax scanner/update path. The bounded
 string/dependency scan does not recover their call graph, product-selection
 predicate, corresponding consumer or wire/session behavior; it cannot establish
-Variax preset editing parity with Windows. A static Ghidra attempt on the full
-universal executable produced broad unresolved-instruction/decompiler warnings
-and was stopped before yielding a reliable call trace. No vendor code was
-executed.
+Variax preset editing parity with Windows. Static Ghidra attempts on both the
+full universal executable and its separately extracted x86_64 slice
+(`21bf512d07ae507929cf1581cdc07491605e5dcac58d115e6a59e230d7f95b76`) using
+processor `x86:LE:64:default` produced unresolved-instruction/decompiler
+warnings before a reliable scanner call trace was available. The slice analysis
+was stopped without treating those warnings as absence evidence. No vendor
+code was executed.
 
 ## Explicitly unresolved
 
