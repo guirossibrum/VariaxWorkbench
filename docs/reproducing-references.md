@@ -102,6 +102,50 @@ On Windows use the installed
 MSVC C++ build tools and Windows SDK; on macOS use the installed Xcode Command
 Line Tools. These host tools are separate from pip and Cargo packages.
 
+### Pinned LLVM symbol tool for Linux research
+
+The libm research helper and selected native audits call `llvm-nm`; GNU `nm`
+does not satisfy that executable contract. For Ubuntu 24.04 amd64, the exact
+tool pin is LLVM 23.1.6 from the signed `llvm-toolchain-noble-23` repository.
+On 2026-11-16 the signed apt metadata identified package
+`llvm-23=1:23.1.6~++20261116013850+5b10d2d74929-1~exp1~20261116133903.98`,
+size 21,328,480 bytes, SHA-256
+`1b513e3fbe8857f9d7a9a7ad7999e346d4f71c7d5cc6cdddec5f89f8ea4c7866`. The
+repository InRelease signature verified with key fingerprint
+`6084 F3CF 814B 57C1 CF12 EFD5 15CF 4D18 AF4F 7421`; its SHA-256 is
+`b52799690e1d8bda4dd7d04309b38a8e7764197f13fae842001e878026dbee9e`, and the
+`Packages.gz` index SHA-256 is
+`b1bdd1f5c12749a7b8fad6efcf8f6950ee44a5a0441d2646e2b88aa72c7965a3`. The
+verified package archive contains `/usr/lib/llvm-23/bin/llvm-nm` and
+`/usr/bin/llvm-nm-23`. The official package instructions and signing-key
+fingerprint are published by [apt.llvm.org](https://apt.llvm.org/); the exact
+[Ubuntu amd64 package](https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-23/llvm-23_23.1.6~++20261116013850+5b10d2d74929-1~exp1~20261116133903.98_amd64.deb)
+is pinned here for post-merge provisioning.
+
+For a matching Ubuntu 24.04 image, verify the key fingerprint before adding
+the repository, install the exact package version, then expose its versioned
+binary directory to scripts that invoke `llvm-nm`:
+
+```sh
+curl -fsSLo /tmp/llvm-snapshot.gpg.key https://apt.llvm.org/llvm-snapshot.gpg.key
+gpg --show-keys --with-fingerprint /tmp/llvm-snapshot.gpg.key
+sudo install -d -m 0755 /usr/share/keyrings
+gpg --dearmor --output /tmp/llvm-snapshot.gpg /tmp/llvm-snapshot.gpg.key
+sudo install -m 0644 /tmp/llvm-snapshot.gpg /usr/share/keyrings/llvm-snapshot.gpg
+echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/llvm-snapshot.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main' | sudo tee /etc/apt/sources.list.d/llvm-23.list
+sudo apt-get update
+sudo apt-get install 'llvm-23=1:23.1.6~++20261116013850+5b10d2d74929-1~exp1~20261116133903.98'
+export PATH="/usr/lib/llvm-23/bin:$PATH"
+dpkg-query -W -f='${Version}\n' llvm-23
+llvm-nm --version
+```
+
+Expect the package version above and LLVM 23.1.6 from `llvm-nm --version`.
+This apt package is not installed by this task. Other distributions or
+architectures need their own exact repository/package version and authenticated
+digest before they are called pinned; the Ubuntu package pin must not be treated
+as a universal LLVM installation recipe.
+
 `research/artifacts.json` identifies the archived installer/firmware files by
 size and SHA-256. The Workbench recipe requires the two exact 1.75 installers:
 
@@ -117,9 +161,9 @@ not inputs to the coefficient-reference extraction recipe.
 The tested research tools are CPython 3.14.8, Temurin JDK 17.0.21, 7-Zip 26.06,
 Unicorn 2.1.4 and Rust 1.99.1, with a Linux C linker/compiler available as `cc`.
 Python 3.11+ is needed by the setup helper. `doctor` checks tool availability,
-the tested JDK/extractor/compiler versions and both original archive identities,
-and records the host/Python/libc versions. A missing/mismatched prerequisite
-stops with a setup error. The default reference adapter uses the research
+the tested JDK/extractor/compiler versions, pinned LLVM 23.1.6 `llvm-nm`, and
+both original archive identities, and records the host/Python/libc versions. A
+missing/mismatched prerequisite stops with a setup error. The default reference adapter uses the research
 host's libm; changed runtime rounding is a test failure to investigate, not
 permission to replace expectations. See [math profiles](math-profiles.md).
 

@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import verify_dependency_manifest as check
 import research_setup
+from dependency_tools import verify_llvm_nm
 
 
 class DependencyManifestTests(unittest.TestCase):
@@ -21,6 +22,9 @@ class DependencyManifestTests(unittest.TestCase):
             shutil.copy2(check.ROOT / name, self.root / name)
         (self.root / "scripts").mkdir()
         shutil.copy2(check.ROOT / "scripts/research_setup.py", self.root / "scripts/research_setup.py")
+        shutil.copy2(check.ROOT / "scripts/dependency_tools.py", self.root / "scripts/dependency_tools.py")
+        for name in ["build_rust_math_reference.py", "verify_native_startup.py", "verify_coefficient_jni.py", "audit_engine_math.py"]:
+            shutil.copy2(check.ROOT / "scripts" / name, self.root / "scripts" / name)
         (self.root / "docs").mkdir()
         for name in ["reproducing-references.md", "native-analysis.md"]:
             shutil.copy2(check.ROOT / "docs" / name, self.root / "docs" / name)
@@ -45,10 +49,10 @@ class DependencyManifestTests(unittest.TestCase):
         path.write_text(path.read_text(encoding="utf-8").replace(check.LIBM_SHA256, "0" * 64), encoding="utf-8")
         self.assertTrue(any("Cargo.lock" in error for error in check.validate(self.root)))
 
-    def test_missing_tool_provenance_must_remain_explicit(self):
+    def test_changed_llvm_package_pin_cannot_drift_from_signed_metadata(self):
         path = self.root / "requirements-tools.json"
         data = json.loads(path.read_text(encoding="utf-8"))
-        data["known_gaps"] = [gap for gap in data["known_gaps"] if "llvm-nm" not in gap]
+        data["profiles"]["linux_x86_64_research"]["required"]["llvm-nm"]["package_sha256"] = "0" * 64
         path.write_text(json.dumps(data), encoding="utf-8")
         self.assertTrue(any("llvm-nm" in error for error in check.validate(self.root)))
 
@@ -58,6 +62,19 @@ class DependencyManifestTests(unittest.TestCase):
         data["profiles"]["linux_x86_64_research"]["optional"]["ghidra_rea"]["jdk"] = "25.0.6"
         path.write_text(json.dumps(data), encoding="utf-8")
         self.assertTrue(any("JDK 25" in error for error in check.validate(self.root)))
+
+    def test_llvm_version_probe_rejects_missing_or_wrong_binary(self):
+        def good(_command, **_kwargs):
+            return subprocess.CompletedProcess([], 0, "LLVM version 23.1.6\n", "")
+        def wrong(_command, **_kwargs):
+            return subprocess.CompletedProcess([], 0, "LLVM version 23.1.5\n", "")
+        def missing(_command, **_kwargs):
+            raise FileNotFoundError("llvm-nm")
+        self.assertIn("23.1.6", verify_llvm_nm(good))
+        with self.assertRaisesRegex(RuntimeError, "expected llvm-nm 23.1.6"):
+            verify_llvm_nm(wrong)
+        with self.assertRaisesRegex(RuntimeError, "missing or unusable"):
+            verify_llvm_nm(missing)
 
     def _doctor_inputs(self, omit=()):
         tools = self.root / "tools"
@@ -87,6 +104,8 @@ class DependencyManifestTests(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, "cargo 1.99.1 (test)\n", "")
         if command == ["cc", "--version"]:
             return subprocess.CompletedProcess(command, 0, "cc (test compiler) 1\n", "")
+        if command == ["llvm-nm", "--version"]:
+            return subprocess.CompletedProcess(command, 0, "LLVM version 23.1.6\n", "")
         raise AssertionError(f"doctor attempted an unlisted command: {command!r}")
 
     def test_doctor_fails_closed_for_missing_tool_without_running_other_commands(self):
@@ -98,7 +117,7 @@ class DependencyManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "prerequisites incomplete"):
                 research_setup.doctor(tools, installers)
         self.assertIn("missing 7zip", output.getvalue())
-        self.assertEqual(run.call_count, 5)
+        self.assertEqual(run.call_count, 6)
 
     def test_doctor_rejects_wrong_tool_version(self):
         tools, installers = self._doctor_inputs()

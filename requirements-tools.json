@@ -48,8 +48,22 @@
         "cc": "C compiler/linker driver required by the optional MPFR and native x87 helpers; exact compiler build is host-image-specific.",
         "nm": "GNU nm is used by the optional native x87 helper; record the installed binutils version.",
         "llvm-nm": {
-          "version": null,
-          "reason": "Required by the libm helper and selected native audits; exact version provenance is not in the tracked workflow or prepared tool inventory. Do not substitute GNU nm without a separately reviewed code change."
+          "version": "23.1.6",
+          "platform": "Ubuntu 24.04 amd64",
+          "package": "llvm-23",
+          "package_version": "1:23.1.6~++20261116013850+5b10d2d74929-1~exp1~20261116133903.98",
+          "package_sha256": "1b513e3fbe8857f9d7a9a7ad7999e346d4f71c7d5cc6cdddec5f89f8ea4c7866",
+          "package_size": 21328480,
+          "package_url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-23/llvm-23_23.1.6~++20261116013850+5b10d2d74929-1~exp1~20261116133903.98_amd64.deb",
+          "repository": "https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main",
+          "signing_key_fingerprint": "6084F3CF814B57C1CF12EFD515CF4D18AF4F7421",
+          "verified_metadata": {
+            "date": "2026-11-16",
+            "inrelease_sha256": "b52799690e1d8bda4dd7d04309b38a8e7764197f13fae842001e878026dbee9e",
+            "packages_gz_sha256": "b1bdd1f5c12749a7b8fad6efcf8f6950ee44a5a0441d2646e2b88aa72c7965a3"
+          },
+          "binary": "/usr/lib/llvm-23/bin/llvm-nm",
+          "scope": "Install the exact package from the signed LLVM apt.llvm.org Ubuntu 24.04 amd64 repository, then add its versioned bin directory to PATH. The package archive hash was checked against the signed Packages index and the archive contains llvm-nm. Other distros/architectures need a separately verified package pin; do not substitute GNU nm."
         },
         "jdk17": {
           "version": "17.0.21",
@@ -126,8 +140,7 @@
     "no_device_access": true
   },
   "known_gaps": [
-    "llvm-nm is required by scripts/build_rust_math_reference.py, scripts/verify_native_startup.py, scripts/verify_coefficient_jni.py, and related audits, but no exact executable version/hash or installable artifact is recorded and it is absent from the prepared tool inventory. GNU nm availability does not satisfy this contract.",
     "The repository does not lock distro-specific GUI/USB SDK package revisions or immutable container image digests. Record these from the post-merge AC container baseline before claiming byte-for-byte environment reproduction.",
-    "The repository has no upstream archive hash for Temurin JDK, 7-Zip, Ghidra, Node, CFR 0.152, or Pillow; pip itself also lacks an exact pin. The private coordinator inventory records file hashes for supplied tools, but those machine-local entries are not copied into this tracked manifest. The Unicorn wheel and Cargo registry checksums are the reproducible package artifact hashes recorded here."
+    "The exact llvm-nm package pin covers Ubuntu 24.04 amd64 only; other distro/architecture packages need their own verified repository metadata. The repository has no upstream archive hash for Temurin JDK, 7-Zip, Ghidra, Node, CFR 0.152, or Pillow; pip itself also lacks an exact pin. The private coordinator inventory records file hashes for supplied tools, but those machine-local entries are not copied into this tracked manifest. The Ubuntu LLVM package, Unicorn wheel, and Cargo registry checksums are the reproducible package artifact hashes recorded here."
   ]
 }

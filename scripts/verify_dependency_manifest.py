@@ -9,6 +9,10 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 LIBM_SHA256 = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 UNICORN_SHA256 = "9d6e6dea140560de4ebd8446661f7ef84a357d428c14a3ef09dacd306ec8c239"
+LLVM23_PACKAGE_VERSION = "1:23.1.6~++20261116013850+5b10d2d74929-1~exp1~20261116133903.98"
+LLVM23_PACKAGE_SHA256 = "1b513e3fbe8857f9d7a9a7ad7999e346d4f71c7d5cc6cdddec5f89f8ea4c7866"
+LLVM23_INRELEASE_SHA256 = "b52799690e1d8bda4dd7d04309b38a8e7764197f13fae842001e878026dbee9e"
+LLVM23_PACKAGES_SHA256 = "b1bdd1f5c12749a7b8fad6efcf8f6950ee44a5a0441d2646e2b88aa72c7965a3"
 
 
 def _requirements(path: Path) -> list[str]:
@@ -27,6 +31,13 @@ def validate(root: Path = ROOT) -> list[str]:
         lock = tomllib.loads((root / "Cargo.lock").read_text(encoding="utf-8"))
         workflow = (root / ".github/workflows/offline-core.yml").read_text(encoding="utf-8")
         setup_source = (root / "scripts/research_setup.py").read_text(encoding="utf-8")
+        tool_checks = (root / "scripts/dependency_tools.py").read_text(encoding="utf-8")
+        llvm_callers = [
+            (root / "scripts/build_rust_math_reference.py").read_text(encoding="utf-8"),
+            (root / "scripts/verify_native_startup.py").read_text(encoding="utf-8"),
+            (root / "scripts/verify_coefficient_jni.py").read_text(encoding="utf-8"),
+            (root / "scripts/audit_engine_math.py").read_text(encoding="utf-8")
+        ]
         reproduction = (root / "docs/reproducing-references.md").read_text(encoding="utf-8")
         native_analysis = (root / "docs/native-analysis.md").read_text(encoding="utf-8")
     except (OSError, ValueError, tomllib.TOMLDecodeError) as error:
@@ -62,6 +73,25 @@ def validate(root: Path = ROOT) -> list[str]:
         errors.append("JDK 17 pin must agree with the tested doctor and reference profile")
     if research.get("7zip", {}).get("version") != "26.06" or "26.06" not in reproduction or "26.06" not in setup_source:
         errors.append("7-Zip pin must agree with the tested doctor and reference profile")
+    llvm = research.get("llvm-nm", {})
+    if (llvm.get("version") != "23.1.6" or llvm.get("package") != "llvm-23"
+            or llvm.get("platform") != "Ubuntu 24.04 amd64"
+            or llvm.get("package_version") != LLVM23_PACKAGE_VERSION
+            or llvm.get("package_sha256") != LLVM23_PACKAGE_SHA256
+            or llvm.get("package_size") != 21328480
+            or llvm.get("package_url") != "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-23/llvm-23_23.1.6~++20261116013850+5b10d2d74929-1~exp1~20261116133903.98_amd64.deb"
+            or llvm.get("signing_key_fingerprint") != "6084F3CF814B57C1CF12EFD515CF4D18AF4F7421"
+            or llvm.get("verified_metadata", {}).get("inrelease_sha256") != LLVM23_INRELEASE_SHA256
+            or llvm.get("verified_metadata", {}).get("packages_gz_sha256") != LLVM23_PACKAGES_SHA256
+            or llvm.get("binary") != "/usr/lib/llvm-23/bin/llvm-nm"):
+        errors.append("llvm-nm must retain the verified Ubuntu 24.04 amd64 LLVM 23.1.6 package pin")
+    if (LLVM23_PACKAGE_VERSION not in reproduction or LLVM23_PACKAGE_SHA256 not in reproduction
+            or LLVM23_PACKAGE_VERSION not in str(llvm.get("package_version"))):
+        errors.append("llvm-nm provisioning docs must match its verified apt package version and hash")
+    if 'LLVM_NM_VERSION = "23.1.6"' not in tool_checks or "verify_llvm_nm" not in setup_source:
+        errors.append("research setup must fail closed on missing or wrong llvm-nm version")
+    if any("verify_llvm_nm()" not in source for source in llvm_callers):
+        errors.append("every direct llvm-nm research caller must check the pinned version first")
     optional = manifest.get("profiles", {}).get("linux_x86_64_research", {}).get("optional", {})
     reanalysis = optional.get("ghidra_rea", {})
     for key, source, label in [
@@ -85,8 +115,8 @@ def validate(root: Path = ROOT) -> list[str]:
     required_categories = {"rust_ci", "linux_x86_64_research"}
     if not required_categories.issubset(manifest.get("profiles", {})):
         errors.append("tool manifest is missing a required contributor profile")
-    if not any("llvm-nm" in gap and "absent" in gap for gap in manifest.get("known_gaps", [])):
-        errors.append("tool manifest must disclose the unprovisioned, unpinned llvm-nm gap")
+    if not any("other distro/architecture" in gap for gap in manifest.get("known_gaps", [])):
+        errors.append("tool manifest must scope the llvm-nm pin to its verified distro and architecture")
     return errors
 
 

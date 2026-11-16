@@ -14,6 +14,7 @@ from build_engine_math_variant import prepare,build
 from coefficient_oracle import CoefficientOracle,ROOT
 from inspect_firmware import preserve
 from math_backends import RustSoftwareMath,MPFRMath
+from dependency_tools import verify_llvm_nm
 from test_coefficient_generator import cases
 from verify_host_synthetic import BODY_IDS
 
@@ -36,6 +37,7 @@ def batch(binary,inputs,records):
 
 
 def verify(binaries,directory,receipt,*,scope='Generated complete Rust engine source variant; not production adoption, historical Mac authentication, cross-target or audio parity'):
+    verify_llvm_nm()
     mpfr=MPFRMath((ROOT/'.tools/math-reference/libmpfr-reference.so').resolve())
     env=mpfr.environment()
     if env['host_rounding_mode']!=0 or env['host_mxcsr']&0xffc0!=0x1f80:raise RuntimeError('nearest rounding without subnormal flushing required')
@@ -103,6 +105,7 @@ def verify(binaries,directory,receipt,*,scope='Generated complete Rust engine so
 
 
 def main():
+    verify_llvm_nm()
     directory,source,environment,receipt=prepare();binaries={}
     for name,software,release in [('identity-debug',False,False),('software-debug',True,False),('software-release',True,True)]:
         binaries[name]=build(directory,source,environment,software=software,release=release)
