@@ -1,28 +1,44 @@
 #![forbid(unsafe_code)]
-//! Interpreter for the compiled `line6_variax_process_message` prefix.
+//! Interpreter for compiled Linux Variax startup code.
 //!
-//! The instruction arrays are Linux object code for virtual addresses
-//! `[0x160, 0x240)`. Upstream `sound/usb/line6/variax.c` is
-//! `SPDX-License-Identifier: GPL-2.0-only`, Copyright (C) 2004-2010 Markus
-//! Grabner, pinned at commit `497791a0a96b866d90add64041c47acdff49cae6`.
-//! The notice and license are under `third_party/`. These arrays are test
-//! reference bytes, not a runtime dependency. Message buffers passed in are
-//! separate synthetic inputs. External calls, tail jumps, and the relocated
-//! cold branch stop or return here. This does not load a module or enter
-//! kernel code.
+//! The instruction arrays are Linux object code for `line6_variax_process_message`
+//! at `[0x160, 0x240)`, `variax_startup` at `[0x250, 0x309)`, and
+//! `line6_variax_process_message.cold` at `[0x309, 0x319)`. Upstream
+//! `sound/usb/line6/variax.c` is `SPDX-License-Identifier: GPL-2.0-only`,
+//! Copyright (C) 2004-2010 Markus Grabner, pinned at commit
+//! `497791a0a96b866d90add64041c47acdff49cae6`. The notice and license are
+//! under `third_party/`. These arrays are test reference bytes, not a runtime
+//! dependency. Message buffers and the activate template passed in are
+//! separate synthetic inputs. Version request, activation, scheduling, ALSA
+//! registration, logging, and `__fentry__` stay inside this harness. This
+//! does not load a module or enter kernel code.
 
-use crate::linux_transport::{self, INIT_DONE_PREFIX, STARTUP_ACTIVATE, STARTUP_STATE_OFFSET};
+use crate::linux_transport::{
+    self, INIT_DONE_PREFIX, STARTUP_ACTIVATE, STARTUP_SETUP, STARTUP_STATE_OFFSET, VARIAX_ACTIVATE,
+};
 
 const PREFIX_BASE: u64 = 0x160;
+const STARTUP_BASE: u64 = 0x250;
+const COLD_BASE: u64 = 0x309;
 const DEVICE_BASE: u64 = 0x10_0000;
 const DEVICE_SIZE: usize = 0x3000;
 const MSG_BASE: u64 = 0x20_0000;
 const STACK_BASE: u64 = 0x30_0000;
 const STACK_SIZE: usize = 0x400;
+const ACTIVATE_BASE: u64 = 0x40_0000;
 const MSG_PTR_OFFSET: usize = 0x50;
+const IFCDEV_OFFSET: usize = 0x20;
+const CARD_OFFSET: usize = 0x28;
+const ACTIVATE_PTR_OFFSET: usize = 0x2120;
 const WORK_DISPLACEMENT: u64 = 0x20b0;
 /// `movl $0x2000, %edi` before `queue_delayed_work_on`.
 const QUEUE_CPU: u64 = 0x2000;
+/// Object immediate for `VARIAX_STARTUP_DELAY1` (1000 ms).
+const VERSION_DELAY: u64 = 0x3e8;
+/// Object immediate for the 100 ms activate reschedule.
+const ACTIVATE_DELAY: u64 = 0x64;
+const IFCDEV_SENTINEL: u64 = 0x51fc_0000;
+const CARD_SENTINEL: u64 = 0x5ca4_0000;
 const STEP_LIMIT: u32 = 80;
 
 const RAX: usize = 0;
@@ -32,12 +48,24 @@ const RSP: usize = 4;
 const RSI: usize = 6;
 const RDI: usize = 7;
 
+#[derive(Clone, Copy)]
+struct Rex {
+    r: bool,
+    b: bool,
+}
+
+const REX_NONE: Rex = Rex { r: false, b: false };
+
 /// SHA-256 of the unpatched `line6_variax_process_message` bytes below.
 pub const UNPATCHED_PREFIX_SHA256: &str =
     "68dea14f9600a5c5cb820c35f2a9ab3a65e71f112b0dbc5017d8e0146ad3d7a1";
 /// SHA-256 of the patched function bytes below.
 pub const PATCHED_PREFIX_SHA256: &str =
     "e9ef1f53b7e6ce3c52ac39581dd4fe1bdccd634d56b4358c505916b301cd1a6b";
+/// SHA-256 of `variax_startup` at `[0x250, 0x309)`. Both detached objects match.
+pub const STARTUP_SHA256: &str = "82e84447105d6a8db79880fa7f340b969f7efa8ff14713a419ddaf3238a65db2";
+/// SHA-256 of the cold body at `[0x309, 0x319)`. Both detached objects match.
+pub const COLD_SHA256: &str = "e2134e1ab91cd5c4c2735fb7f5030aa3b8b351bfe574ff083a671501ac3c6401";
 
 const PREFIX_NOTICE: &str = include_str!("../third_party/notices/linux-variax-prefix-NOTICE.txt");
 const GPL_TEXT: &str = include_str!("../third_party/notices/GPL-2.0-only.txt");
@@ -47,7 +75,7 @@ const GPL_TEXT: &str = include_str!("../third_party/notices/GPL-2.0-only.txt");
 enum External {
     /// `call __fentry__`. Recorded, then the prefix continues.
     Fentry,
-    /// `je` to the cold copy. Taken means stop. Not taken skips the branch.
+    /// `je` whose relocation resolves to the cold body at `0x309`.
     ColdBranch,
     /// `jmp __x86_return_thunk`.
     ReturnThunk,
@@ -57,7 +85,31 @@ enum External {
     WorkqueuePointer,
     /// `jmp queue_delayed_work_on`.
     QueueDelayedWork,
+    /// `call queue_delayed_work_on`. Recorded, then execution continues.
+    QueueDelayedWorkCall,
+    /// Tail `jmp line6_version_request_async`.
+    VersionRequest,
+    /// Tail `jmp snd_card_register`.
+    AlsaRegister,
+    /// `call line6_send_raw_message_async`. Recorded, then execution continues.
+    SendRawMessage,
+    /// Tail `jmp _dev_info`.
+    DevInfo,
 }
+
+/// Sites in `variax_startup` and the cold body. Both objects share them.
+const STARTUP_COLD_EXTERNALS: &[(u64, External)] = &[
+    (0x254, External::Fentry),
+    (0x275, External::WorkqueuePointer),
+    (0x291, External::QueueDelayedWorkCall),
+    (0x29e, External::VersionRequest),
+    (0x2ab, External::AlsaRegister),
+    (0x2cb, External::SendRawMessage),
+    (0x2d9, External::WorkqueuePointer),
+    (0x2fb, External::QueueDelayedWork),
+    (0x304, External::ReturnThunk),
+    (0x314, External::DevInfo),
+];
 
 const UNPATCHED_EXTERNALS: &[(u64, External)] = &[
     (0x164, External::Fentry),
@@ -122,11 +174,46 @@ const PATCHED_PREFIX: [u8; 224] = [
     0x00, 0xbf, 0x00, 0x20, 0x00, 0x00, 0x48, 0x83, 0xc4, 0x08, 0xe9, 0x00, 0x00, 0x00, 0x00, 0x90,
 ];
 
+/// `variax_startup` at `[0x250, 0x309)`. The model-byte patch does not change
+/// this function, so both detached objects contain these bytes.
+const STARTUP_TEXT: [u8; 185] = [
+    0xf3, 0x0f, 0x1e, 0xfa, 0xe8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x83, 0xec, 0x08, 0x8b, 0x87, 0x28,
+    0x21, 0x00, 0x00, 0x83, 0xf8, 0x01, 0x74, 0x48, 0x83, 0xf8, 0x02, 0x74, 0x36, 0x85, 0xc0, 0x0f,
+    0x85, 0x8b, 0x00, 0x00, 0x00, 0x48, 0x8b, 0x35, 0x00, 0x00, 0x00, 0x00, 0x48, 0x89, 0x3c, 0x24,
+    0xb9, 0xe8, 0x03, 0x00, 0x00, 0x48, 0x8d, 0x97, 0xb0, 0x20, 0x00, 0x00, 0xbf, 0x00, 0x20, 0x00,
+    0x00, 0xe8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x8b, 0x3c, 0x24, 0x48, 0x83, 0xc4, 0x08, 0xe9, 0x00,
+    0x00, 0x00, 0x00, 0x48, 0x8b, 0x7f, 0x28, 0x48, 0x83, 0xc4, 0x08, 0xe9, 0x00, 0x00, 0x00, 0x00,
+    0x48, 0x8b, 0x87, 0x20, 0x21, 0x00, 0x00, 0xba, 0x09, 0x00, 0x00, 0x00, 0x48, 0x89, 0x3c, 0x24,
+    0xc6, 0x40, 0x07, 0x01, 0x48, 0x8b, 0xb7, 0x20, 0x21, 0x00, 0x00, 0xe8, 0x00, 0x00, 0x00, 0x00,
+    0x4c, 0x8b, 0x04, 0x24, 0xb9, 0x64, 0x00, 0x00, 0x00, 0x48, 0x8b, 0x35, 0x00, 0x00, 0x00, 0x00,
+    0xbf, 0x00, 0x20, 0x00, 0x00, 0x41, 0xc7, 0x80, 0x28, 0x21, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+    0x49, 0x8d, 0x90, 0xb0, 0x20, 0x00, 0x00, 0x48, 0x83, 0xc4, 0x08, 0xe9, 0x00, 0x00, 0x00, 0x00,
+    0x48, 0x83, 0xc4, 0x08, 0xe9, 0x00, 0x00, 0x00, 0x00,
+];
+
+/// Cold body at `[0x309, 0x319)`. Same bytes in both detached objects.
+const COLD_TEXT: [u8; 16] = [
+    0x48, 0x8b, 0x7f, 0x20, 0x48, 0xc7, 0xc6, 0x00, 0x00, 0x00, 0x00, 0xe9, 0x00, 0x00, 0x00, 0x00,
+];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Stop {
     ReturnThunk,
-    ColdPath,
-    Queue { delay: u64, cpu: u64 },
+    Queue {
+        delay: u64,
+        cpu: u64,
+        work: u64,
+    },
+    VersionRequest,
+    AlsaRegister {
+        card: u64,
+    },
+    /// `format_slot` is the unresolved `.rodata+0x158` immediate. The object
+    /// stores zero there. The harness does not load that string.
+    DevInfo {
+        ifcdev: u64,
+        format_slot: u64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -134,6 +221,17 @@ enum Stub {
     Fentry,
     CancelDelayedWork,
     WorkqueuePointer,
+    QueueDelayedWork {
+        delay: u64,
+        cpu: u64,
+        work: u64,
+    },
+    SendRawMessage {
+        device: u64,
+        buffer: u64,
+        length: u64,
+        activate_at_7: u64,
+    },
 }
 
 struct Image {
@@ -154,6 +252,8 @@ struct Outcome {
     startup: i32,
     stop: Stop,
     stubs: Vec<Stub>,
+    rdi: u64,
+    activate: Vec<u8>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -162,36 +262,47 @@ struct Reject(&'static str);
 struct Machine<'a> {
     image: &'a Image,
     rip: u64,
-    regs: [u64; 8],
+    regs: [u64; 16],
     zf: bool,
     sf: bool,
     of: bool,
     device: Vec<u8>,
     message: Vec<u8>,
     stack: Vec<u8>,
+    activate: Vec<u8>,
     stubs: Vec<Stub>,
     steps: u32,
 }
 
 impl<'a> Machine<'a> {
-    fn new(image: &'a Image, message: &[u8], startup: i32) -> Result<Self, Reject> {
-        if message.len() < 12 {
+    fn new(image: &'a Image, message: &[u8], startup: i32, entry: u64) -> Result<Self, Reject> {
+        if entry == PREFIX_BASE && message.len() < 12 {
             return Err(Reject("message shorter than the comparator reads"));
+        }
+        if entry != PREFIX_BASE && entry != STARTUP_BASE {
+            return Err(Reject("unknown compiled entry"));
         }
         let mut device = vec![0u8; DEVICE_SIZE];
         device[MSG_PTR_OFFSET..MSG_PTR_OFFSET + 8].copy_from_slice(&MSG_BASE.to_le_bytes());
+        device[IFCDEV_OFFSET..IFCDEV_OFFSET + 8].copy_from_slice(&IFCDEV_SENTINEL.to_le_bytes());
+        device[CARD_OFFSET..CARD_OFFSET + 8].copy_from_slice(&CARD_SENTINEL.to_le_bytes());
+        device[ACTIVATE_PTR_OFFSET..ACTIVATE_PTR_OFFSET + 8]
+            .copy_from_slice(&ACTIVATE_BASE.to_le_bytes());
         let startup_at = usize::try_from(STARTUP_STATE_OFFSET).map_err(|_| Reject("offset"))?;
         device[startup_at..startup_at + 4].copy_from_slice(&startup.to_le_bytes());
+        let mut activate = VARIAX_ACTIVATE.to_vec();
+        activate[7] = 0;
         let mut machine = Self {
             image,
-            rip: PREFIX_BASE,
-            regs: [0; 8],
+            rip: entry,
+            regs: [0; 16],
             zf: false,
             sf: false,
             of: false,
             device,
             message: message.to_vec(),
             stack: vec![0u8; STACK_SIZE],
+            activate,
             stubs: Vec::new(),
             steps: 0,
         };
@@ -203,7 +314,7 @@ impl<'a> Machine<'a> {
     fn run(mut self) -> Result<Outcome, Reject> {
         let stop = loop {
             if self.steps >= STEP_LIMIT {
-                return Err(Reject("prefix exceeded the step limit"));
+                return Err(Reject("interpreter exceeded the step limit"));
             }
             self.steps += 1;
             if let Some(stop) = self.step()? {
@@ -214,6 +325,8 @@ impl<'a> Machine<'a> {
             startup: self.startup(),
             stop,
             stubs: self.stubs,
+            rdi: self.regs[RDI],
+            activate: self.activate,
         })
     }
 
@@ -230,9 +343,6 @@ impl<'a> Machine<'a> {
         if let Some(kind) = self.external_at(self.rip) {
             return self.external(kind);
         }
-        if self.rip >= PREFIX_BASE + self.image.bytes.len() as u64 {
-            return Err(Reject("execution left the compiled prefix"));
-        }
         self.decode()
     }
 
@@ -240,6 +350,7 @@ impl<'a> Machine<'a> {
         self.image
             .externals
             .iter()
+            .chain(STARTUP_COLD_EXTERNALS.iter())
             .find(|(at, _)| *at == pc)
             .map(|(_, kind)| *kind)
     }
@@ -279,16 +390,64 @@ impl<'a> Machine<'a> {
                 Ok(Some(Stop::Queue {
                     delay: self.regs[RCX],
                     cpu: self.regs[RDI],
+                    work: self.regs[RDX],
+                }))
+            }
+            External::QueueDelayedWorkCall => {
+                self.expect_bytes(&[0xe8])?;
+                let stub = Stub::QueueDelayedWork {
+                    delay: self.regs[RCX],
+                    cpu: self.regs[RDI],
+                    work: self.regs[RDX],
+                };
+                self.skip(4)?;
+                self.stubs.push(stub);
+                Ok(None)
+            }
+            External::VersionRequest => {
+                self.expect_bytes(&[0xe9])?;
+                if self.regs[RDI] != DEVICE_BASE {
+                    return Err(Reject("version request lost the device pointer"));
+                }
+                Ok(Some(Stop::VersionRequest))
+            }
+            External::AlsaRegister => {
+                self.expect_bytes(&[0xe9])?;
+                Ok(Some(Stop::AlsaRegister {
+                    card: self.regs[RDI],
+                }))
+            }
+            External::SendRawMessage => {
+                self.expect_bytes(&[0xe8])?;
+                let activate_at_7 = self.read(self.regs[RSI].wrapping_add(7), 1)?;
+                let stub = Stub::SendRawMessage {
+                    device: self.regs[RDI],
+                    buffer: self.regs[RSI],
+                    length: self.regs[RDX],
+                    activate_at_7,
+                };
+                self.skip(4)?;
+                self.stubs.push(stub);
+                Ok(None)
+            }
+            External::DevInfo => {
+                self.expect_bytes(&[0xe9])?;
+                Ok(Some(Stop::DevInfo {
+                    ifcdev: self.regs[RDI],
+                    format_slot: self.regs[RSI],
                 }))
             }
             External::ColdBranch => {
                 self.expect_bytes(&[0x0f, 0x84])?;
+                self.skip(4)?;
                 if self.zf {
-                    Ok(Some(Stop::ColdPath))
-                } else {
-                    self.skip(4)?;
-                    Ok(None)
+                    // The immediate in the object is zero. R_X86_64_PC32 at
+                    // 0x17A, addend `.text+0x305`, resolves to VA 0x309.
+                    // Adding that zero would stay in the prefix, and 0x304 is
+                    // the startup return thunk, not this body.
+                    self.rip = COLD_BASE;
                 }
+                Ok(None)
             }
         }
     }
@@ -307,10 +466,11 @@ impl<'a> Machine<'a> {
             0x83 => self.decode_83(),
             0x85 => self.decode_testl(),
             0x8b => self.decode_movl_load(),
-            0xb9 | 0xbf => self.decode_movl_imm(opcode),
-            0xc7 => self.decode_movl_store(),
+            0xb9 | 0xba | 0xbf => self.decode_movl_imm(opcode),
+            0xc6 => self.decode_movb(),
+            0xc7 => self.decode_c7(REX_NONE, false),
             0xf6 => self.decode_testb(),
-            0x48 => self.decode_rex(),
+            0x40..=0x4f => self.decode_after_rex(opcode),
             _ => Err(Reject("unrecognized prefix opcode")),
         }
     }
@@ -335,13 +495,22 @@ impl<'a> Machine<'a> {
     }
 
     fn decode_0f(&mut self) -> Result<Option<Stop>, Reject> {
-        if self.take()? != 0xb6 {
-            return Err(Reject("unrecognized 0f opcode"));
+        match self.take()? {
+            0xb6 => {
+                let (reg, addr) = self.mem_operand(REX_NONE)?;
+                let value = self.read(addr, 1)?;
+                self.write_zero_extend(reg, value, 4);
+                Ok(None)
+            }
+            0x85 => {
+                let rel = self.take_u32()? as i32 as i64;
+                if !self.zf {
+                    self.rip = self.rip.wrapping_add(rel as u64);
+                }
+                Ok(None)
+            }
+            _ => Err(Reject("unrecognized 0f opcode")),
         }
-        let (reg, addr) = self.mem_operand()?;
-        let value = self.read(addr, 1)?;
-        self.write_zero_extend(reg, value, 4);
-        Ok(None)
     }
 
     fn decode_xor(&mut self) -> Result<Option<Stop>, Reject> {
@@ -366,7 +535,7 @@ impl<'a> Machine<'a> {
         if reg != 7 {
             return Err(Reject("80 opcode is not cmp"));
         }
-        let (_reg, addr) = self.mem_operand()?;
+        let (_reg, addr) = self.mem_operand(REX_NONE)?;
         let dest = self.read(addr, 1)?;
         let src = u64::from(self.take()?);
         self.flags_sub(dest, src, 8);
@@ -374,7 +543,7 @@ impl<'a> Machine<'a> {
     }
 
     fn decode_cmpl_imm32(&mut self) -> Result<Option<Stop>, Reject> {
-        let (_reg, addr) = self.mem_operand_expect(7)?;
+        let (_reg, addr) = self.mem_operand_expect(7, REX_NONE)?;
         let dest = self.read(addr, 4)?;
         let src = u64::from(self.take_u32()?);
         self.flags_sub(dest, src, 32);
@@ -382,7 +551,7 @@ impl<'a> Machine<'a> {
     }
 
     fn decode_cmpw_imm(&mut self) -> Result<Option<Stop>, Reject> {
-        let (_reg, addr) = self.mem_operand_expect(7)?;
+        let (_reg, addr) = self.mem_operand_expect(7, REX_NONE)?;
         let dest = self.read(addr, 2)?;
         let src = u64::from(self.take_u16()?);
         self.flags_sub(dest, src, 16);
@@ -392,8 +561,18 @@ impl<'a> Machine<'a> {
     fn decode_83(&mut self) -> Result<Option<Stop>, Reject> {
         let modrm = self.peek()?;
         let op = (modrm >> 3) & 7;
+        if modrm & 0xc0 == 0xc0 {
+            self.take()?;
+            if op != 7 {
+                return Err(Reject("register 83 is not cmp"));
+            }
+            let dest = self.regs[usize::from(modrm & 7)] & 0xffff_ffff;
+            let src = u64::from(self.take()? as i8 as u32);
+            self.flags_sub(dest, src, 32);
+            return Ok(None);
+        }
         if op == 7 {
-            let (_reg, addr) = self.mem_operand()?;
+            let (_reg, addr) = self.mem_operand(REX_NONE)?;
             let dest = self.read(addr, 4)?;
             let src = self.take()? as i8 as u64;
             self.flags_sub(dest, src & 0xffff_ffff, 32);
@@ -413,7 +592,7 @@ impl<'a> Machine<'a> {
     }
 
     fn decode_testb(&mut self) -> Result<Option<Stop>, Reject> {
-        let (_reg, addr) = self.mem_operand_expect(0)?;
+        let (_reg, addr) = self.mem_operand_expect(0, REX_NONE)?;
         let dest = self.read(addr, 1)?;
         let src = u64::from(self.take()?);
         self.flags_test(dest & src, 8);
@@ -421,14 +600,44 @@ impl<'a> Machine<'a> {
     }
 
     fn decode_movl_load(&mut self) -> Result<Option<Stop>, Reject> {
-        let (reg, addr) = self.mem_operand()?;
+        let (reg, addr) = self.mem_operand(REX_NONE)?;
         let value = self.read(addr, 4)?;
         self.write_zero_extend(reg, value, 4);
         Ok(None)
     }
 
-    fn decode_movl_store(&mut self) -> Result<Option<Stop>, Reject> {
-        let (_reg, addr) = self.mem_operand_expect(0)?;
+    fn decode_movb(&mut self) -> Result<Option<Stop>, Reject> {
+        let modrm = self.peek()?;
+        if (modrm >> 3) & 7 != 0 {
+            return Err(Reject("c6 is not a byte move"));
+        }
+        let (_reg, addr) = self.mem_operand(REX_NONE)?;
+        let value = u64::from(self.take()?);
+        self.write(addr, 1, value)?;
+        Ok(None)
+    }
+
+    fn decode_c7(&mut self, rex: Rex, rex_w: bool) -> Result<Option<Stop>, Reject> {
+        let modrm = self.peek()?;
+        if (modrm >> 3) & 7 != 0 {
+            return Err(Reject("c7 is not a move"));
+        }
+        if modrm & 0xc0 == 0xc0 {
+            self.take()?;
+            if !rex_w {
+                return Err(Reject("32-bit register immediate move is absent here"));
+            }
+            let mut rm = usize::from(modrm & 7);
+            if rex.b {
+                rm += 8;
+            }
+            self.regs[rm] = self.take_u32()? as i32 as i64 as u64;
+            return Ok(None);
+        }
+        if rex_w {
+            return Err(Reject("64-bit memory immediate store is absent here"));
+        }
+        let (_reg, addr) = self.mem_operand(rex)?;
         let value = u64::from(self.take_u32()?);
         self.write(addr, 4, value)?;
         Ok(None)
@@ -441,34 +650,48 @@ impl<'a> Machine<'a> {
         Ok(None)
     }
 
-    fn decode_rex(&mut self) -> Result<Option<Stop>, Reject> {
+    fn decode_after_rex(&mut self, rex_byte: u8) -> Result<Option<Stop>, Reject> {
+        if rex_byte & 0x02 != 0 {
+            return Err(Reject("rex index bit is absent from these functions"));
+        }
+        let rex = Rex {
+            r: rex_byte & 0x04 != 0,
+            b: rex_byte & 0x01 != 0,
+        };
+        let rex_w = rex_byte & 0x08 != 0;
         match self.take()? {
-            0x39 => self.decode_cmpq(),
-            0x83 => self.decode_rex_83(),
-            0x89 => self.decode_store_reg(),
-            0x8b => self.decode_movq_load(),
-            0x8d => self.decode_lea(),
+            0x39 => self.decode_cmpq(rex),
+            0x83 => self.decode_rex_83(rex),
+            0x89 => self.decode_store_reg(rex),
+            0x8b => self.decode_movq_load(rex),
+            0x8d => self.decode_lea(rex),
             0xba => {
-                let value = self.take_u64()?;
-                self.regs[RDX] = value;
+                if !rex_w || rex.r || rex.b {
+                    return Err(Reject("movabs form is only 48 ba here"));
+                }
+                self.regs[RDX] = self.take_u64()?;
                 Ok(None)
             }
+            0xc7 => self.decode_c7(rex, rex_w),
             _ => Err(Reject("unrecognized rex opcode")),
         }
     }
 
-    fn decode_cmpq(&mut self) -> Result<Option<Stop>, Reject> {
-        let (reg, addr) = self.mem_operand()?;
+    fn decode_cmpq(&mut self, rex: Rex) -> Result<Option<Stop>, Reject> {
+        let (reg, addr) = self.mem_operand(rex)?;
         let dest = self.read(addr, 8)?;
         let src = self.regs[reg];
         self.flags_sub(dest, src, 64);
         Ok(None)
     }
 
-    fn decode_rex_83(&mut self) -> Result<Option<Stop>, Reject> {
+    fn decode_rex_83(&mut self, rex: Rex) -> Result<Option<Stop>, Reject> {
         let modrm = self.peek()?;
         let op = (modrm >> 3) & 7;
-        let rm = usize::from(modrm & 7);
+        let mut rm = usize::from(modrm & 7);
+        if rex.b {
+            rm += 8;
+        }
         if modrm & 0xc0 != 0xc0 {
             return Err(Reject("rex 83 memory form is not in this prefix"));
         }
@@ -487,29 +710,35 @@ impl<'a> Machine<'a> {
         }
     }
 
-    fn decode_store_reg(&mut self) -> Result<Option<Stop>, Reject> {
+    fn decode_store_reg(&mut self, rex: Rex) -> Result<Option<Stop>, Reject> {
         let modrm = self.peek()?;
         if modrm & 0xc0 == 0xc0 {
             self.take()?;
-            let src = usize::from((modrm >> 3) & 7);
-            let dest = usize::from(modrm & 7);
+            let mut src = usize::from((modrm >> 3) & 7);
+            let mut dest = usize::from(modrm & 7);
+            if rex.r {
+                src += 8;
+            }
+            if rex.b {
+                dest += 8;
+            }
             self.regs[dest] = self.regs[src];
             return Ok(None);
         }
-        let (reg, addr) = self.mem_operand()?;
+        let (reg, addr) = self.mem_operand(rex)?;
         self.write(addr, 8, self.regs[reg])?;
         Ok(None)
     }
 
-    fn decode_movq_load(&mut self) -> Result<Option<Stop>, Reject> {
-        let (reg, addr) = self.mem_operand()?;
+    fn decode_movq_load(&mut self, rex: Rex) -> Result<Option<Stop>, Reject> {
+        let (reg, addr) = self.mem_operand(rex)?;
         let value = self.read(addr, 8)?;
         self.regs[reg] = value;
         Ok(None)
     }
 
-    fn decode_lea(&mut self) -> Result<Option<Stop>, Reject> {
-        let (reg, addr) = self.mem_operand()?;
+    fn decode_lea(&mut self, rex: Rex) -> Result<Option<Stop>, Reject> {
+        let (reg, addr) = self.mem_operand(rex)?;
         self.regs[reg] = addr;
         Ok(None)
     }
@@ -528,31 +757,43 @@ impl<'a> Machine<'a> {
         Ok(None)
     }
 
-    fn mem_operand_expect(&mut self, expect_reg: u8) -> Result<(usize, u64), Reject> {
-        let (reg, addr) = self.mem_operand()?;
+    fn mem_operand_expect(&mut self, expect_reg: u8, rex: Rex) -> Result<(usize, u64), Reject> {
+        let (reg, addr) = self.mem_operand(rex)?;
         if reg != usize::from(expect_reg) {
             return Err(Reject("unexpected modrm register"));
         }
         Ok((reg, addr))
     }
 
-    fn mem_operand(&mut self) -> Result<(usize, u64), Reject> {
+    fn mem_operand(&mut self, rex: Rex) -> Result<(usize, u64), Reject> {
         let modrm = self.take()?;
         let mode = modrm >> 6;
-        let reg = usize::from((modrm >> 3) & 7);
-        let rm = modrm & 7;
+        let mut reg = usize::from((modrm >> 3) & 7);
+        if rex.r {
+            reg += 8;
+        }
+        let rm_low = modrm & 7;
         if mode == 3 {
             return Err(Reject("register modrm where memory was required"));
         }
-        if rm == 4 {
+        if rm_low == 4 {
             let sib = self.take()?;
-            if sib != 0x24 || mode != 0 {
-                return Err(Reject("only [rsp] sib form is in this prefix"));
+            let index = (sib >> 3) & 7;
+            if index != 4 || mode != 0 {
+                return Err(Reject("only [rsp] sib form is in these functions"));
             }
-            return Ok((reg, self.regs[RSP]));
+            let mut base = usize::from(sib & 7);
+            if rex.b {
+                base += 8;
+            }
+            return Ok((reg, self.regs[base]));
         }
-        if mode == 0 && rm == 5 {
+        if mode == 0 && rm_low == 5 {
             return Err(Reject("rip-relative memory is an external site"));
+        }
+        let mut base = usize::from(rm_low);
+        if rex.b {
+            base += 8;
         }
         let disp = match mode {
             0 => 0i64,
@@ -560,7 +801,7 @@ impl<'a> Machine<'a> {
             2 => i64::from(self.take_u32()? as i32),
             _ => return Err(Reject("bad addressing mode")),
         };
-        Ok((reg, self.regs[usize::from(rm)].wrapping_add(disp as u64)))
+        Ok((reg, self.regs[base].wrapping_add(disp as u64)))
     }
 
     fn flags_sub(&mut self, dest: u64, src: u64, bits: u32) {
@@ -612,6 +853,9 @@ impl<'a> Machine<'a> {
             Region::Stack(index) => {
                 self.stack[index..index + bytes].copy_from_slice(&encoded[..bytes]);
             }
+            Region::Activate(index) => {
+                self.activate[index..index + bytes].copy_from_slice(&encoded[..bytes]);
+            }
             Region::Message(_) => return Err(Reject("prefix tried to write the message")),
         }
         Ok(())
@@ -622,6 +866,7 @@ impl<'a> Machine<'a> {
             Region::Device(index) => Ok(&self.device[index..index + bytes]),
             Region::Message(index) => Ok(&self.message[index..index + bytes]),
             Region::Stack(index) => Ok(&self.stack[index..index + bytes]),
+            Region::Activate(index) => Ok(&self.activate[index..index + bytes]),
         }
     }
 
@@ -635,33 +880,35 @@ impl<'a> Machine<'a> {
         if let Some(index) = offset_in(addr, bytes, STACK_BASE, self.stack.len()) {
             return Ok(Region::Stack(index));
         }
+        if let Some(index) = offset_in(addr, bytes, ACTIVATE_BASE, self.activate.len()) {
+            return Ok(Region::Activate(index));
+        }
         Err(Reject(
-            "prefix address is outside the fake device, message, and stack",
+            "address is outside the fake device, message, stack, and activate buffer",
         ))
     }
 
+    fn code_byte(&self, rip: u64) -> Result<u8, Reject> {
+        if let Some(index) = offset_in(rip, 1, PREFIX_BASE, self.image.bytes.len()) {
+            return Ok(self.image.bytes[index]);
+        }
+        if let Some(index) = offset_in(rip, 1, STARTUP_BASE, STARTUP_TEXT.len()) {
+            return Ok(STARTUP_TEXT[index]);
+        }
+        if let Some(index) = offset_in(rip, 1, COLD_BASE, COLD_TEXT.len()) {
+            return Ok(COLD_TEXT[index]);
+        }
+        Err(Reject("read past the compiled windows"))
+    }
+
     fn take(&mut self) -> Result<u8, Reject> {
-        let index = self
-            .rip
-            .checked_sub(PREFIX_BASE)
-            .ok_or(Reject("rip below the prefix"))?;
-        let index = usize::try_from(index).map_err(|_| Reject("rip"))?;
-        let byte = *self
-            .image
-            .bytes
-            .get(index)
-            .ok_or(Reject("read past the compiled prefix"))?;
+        let byte = self.code_byte(self.rip)?;
         self.rip += 1;
         Ok(byte)
     }
 
     fn peek(&self) -> Result<u8, Reject> {
-        let index = usize::try_from(self.rip - PREFIX_BASE).map_err(|_| Reject("rip"))?;
-        self.image
-            .bytes
-            .get(index)
-            .copied()
-            .ok_or(Reject("read past the compiled prefix"))
+        self.code_byte(self.rip)
     }
 
     fn take_u16(&mut self) -> Result<u16, Reject> {
@@ -706,6 +953,7 @@ enum Region {
     Device(usize),
     Message(usize),
     Stack(usize),
+    Activate(usize),
 }
 
 fn offset_in(addr: u64, bytes: usize, base: u64, len: usize) -> Option<usize> {
@@ -715,7 +963,11 @@ fn offset_in(addr: u64, bytes: usize, base: u64, len: usize) -> Option<usize> {
 }
 
 fn run_image(image: &Image, message: &[u8], startup: i32) -> Result<Outcome, Reject> {
-    Machine::new(image, message, startup)?.run()
+    Machine::new(image, message, startup, PREFIX_BASE)?.run()
+}
+
+fn run_startup(progress: i32) -> Result<Outcome, Reject> {
+    Machine::new(&UNPATCHED, &[], progress, STARTUP_BASE)?.run()
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -756,10 +1008,10 @@ fn expect_identity(image_is_patched: bool, packet: &[u8], progress: i32) -> Resu
     }
     let queues = matched && progress < STARTUP_ACTIVATE;
     match outcome.stop {
-        Stop::Queue { delay, cpu } if queues => {
-            if delay != 0x64 || cpu != QUEUE_CPU {
+        Stop::Queue { delay, cpu, work } if queues => {
+            if delay != 0x64 || cpu != QUEUE_CPU || work != DEVICE_BASE + WORK_DISPLACEMENT {
                 return Err(Reject(
-                    "identity queue arguments were not delay 100 and cpu 0x2000",
+                    "identity queue arguments were not delay 100, cpu 0x2000, and the startup work",
                 ));
             }
             if outcome.stubs
@@ -784,6 +1036,9 @@ fn expect_identity(image_is_patched: bool, packet: &[u8], progress: i32) -> Resu
         }
         _ => return Err(Reject("compiled prefix stopped in an unexpected way")),
     }
+    if outcome.activate[7] != 0 {
+        return Err(Reject("prefix wrote the activate template"));
+    }
     if linux_transport::matches_init_done(packet) {
         return Err(Reject("identity fixture collided with init-done"));
     }
@@ -796,15 +1051,21 @@ fn check_prefixes() -> Result<(), Reject> {
     }
     if sha256_hex(&UNPATCHED_PREFIX) != UNPATCHED_PREFIX_SHA256
         || sha256_hex(&PATCHED_PREFIX) != PATCHED_PREFIX_SHA256
+        || sha256_hex(&STARTUP_TEXT) != STARTUP_SHA256
+        || sha256_hex(&COLD_TEXT) != COLD_SHA256
     {
         return Err(Reject(
-            "compiled prefix bytes no longer match the recorded hashes",
+            "compiled windows no longer match the recorded hashes",
         ));
     }
     if !PREFIX_NOTICE.contains("SPDX-License-Identifier: GPL-2.0-only")
         || !PREFIX_NOTICE.contains(linux_transport::UPSTREAM_VARIAX_C_COMMIT)
         || !PREFIX_NOTICE.contains("Copyright (C) 2004-2010 Markus Grabner")
         || !PREFIX_NOTICE.contains("[0x160, 0x240)")
+        || !PREFIX_NOTICE.contains("[0x250, 0x309)")
+        || !PREFIX_NOTICE.contains("[0x309, 0x319)")
+        || !PREFIX_NOTICE.contains(STARTUP_SHA256)
+        || !PREFIX_NOTICE.contains(COLD_SHA256)
         || !PREFIX_NOTICE.contains("not a runtime dependency")
         || !GPL_TEXT.contains("GNU GENERAL PUBLIC LICENSE")
         || !GPL_TEXT.contains("Version 2, June 1991")
@@ -838,8 +1099,8 @@ fn check_prefixes() -> Result<(), Reject> {
             }
             let schedules = linux_transport::init_done_schedules_startup(&init_done, progress);
             match outcome.stop {
-                Stop::Queue { delay, cpu } if schedules => {
-                    if delay != 0 || cpu != QUEUE_CPU {
+                Stop::Queue { delay, cpu, work } if schedules => {
+                    if delay != 0 || cpu != QUEUE_CPU || work != DEVICE_BASE + WORK_DISPLACEMENT {
                         return Err(Reject("init-done queue did not use delay 0"));
                     }
                     if outcome.stubs
@@ -865,8 +1126,93 @@ fn check_prefixes() -> Result<(), Reject> {
             return Err(Reject("non-sysex byte entered the identity compare"));
         }
         let cold = run_image(image, &[0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 0)?;
-        if cold.startup != 0 || cold.stop != Stop::ColdPath || cold.stubs != [Stub::Fentry] {
-            return Err(Reject("cold path was interpreted or changed progress"));
+        if cold.startup != 0
+            || cold.stop
+                != (Stop::DevInfo {
+                    ifcdev: IFCDEV_SENTINEL,
+                    format_slot: 0,
+                })
+            || cold.stubs != [Stub::Fentry]
+            || cold.activate[7] != 0
+        {
+            return Err(Reject("cold body did not stub the reset log"));
+        }
+    }
+    check_startup()
+}
+
+fn check_startup() -> Result<(), Reject> {
+    let work = DEVICE_BASE + WORK_DISPLACEMENT;
+    for progress in [i32::MIN, -1, 0, 1, 2, 3, i32::MAX] {
+        let outcome = run_startup(progress)?;
+        match progress {
+            0 => {
+                if outcome.startup != 0
+                    || outcome.stop != Stop::VersionRequest
+                    || outcome.rdi != DEVICE_BASE
+                    || outcome.stubs
+                        != [
+                            Stub::Fentry,
+                            Stub::WorkqueuePointer,
+                            Stub::QueueDelayedWork {
+                                delay: VERSION_DELAY,
+                                cpu: QUEUE_CPU,
+                                work,
+                            },
+                        ]
+                    || outcome.activate[7] != 0
+                {
+                    return Err(Reject("version-request startup arm changed"));
+                }
+            }
+            1 => {
+                if outcome.startup != STARTUP_SETUP
+                    || outcome.stop
+                        != (Stop::Queue {
+                            delay: ACTIVATE_DELAY,
+                            cpu: QUEUE_CPU,
+                            work,
+                        })
+                    || outcome.stubs
+                        != [
+                            Stub::Fentry,
+                            Stub::SendRawMessage {
+                                device: DEVICE_BASE,
+                                buffer: ACTIVATE_BASE,
+                                length: u64::try_from(VARIAX_ACTIVATE.len())
+                                    .map_err(|_| Reject("activate length"))?,
+                                activate_at_7: 1,
+                            },
+                            Stub::WorkqueuePointer,
+                        ]
+                    || outcome.activate != VARIAX_ACTIVATE
+                {
+                    return Err(Reject("activate startup arm changed"));
+                }
+            }
+            2 => {
+                if outcome.startup != STARTUP_SETUP
+                    || outcome.stop
+                        != (Stop::AlsaRegister {
+                            card: CARD_SENTINEL,
+                        })
+                    || outcome.rdi != CARD_SENTINEL
+                    || outcome.stubs != [Stub::Fentry]
+                    || outcome.activate[7] != 0
+                {
+                    return Err(Reject("ALSA startup arm changed"));
+                }
+            }
+            _ => {
+                if outcome.startup != progress
+                    || outcome.stop != Stop::ReturnThunk
+                    || outcome.rdi != DEVICE_BASE
+                    || outcome.stubs != [Stub::Fentry]
+                    || outcome.activate[7] != 0
+                {
+                    return Err(Reject("other startup progress did not return"));
+                }
+            }
         }
     }
     Ok(())
