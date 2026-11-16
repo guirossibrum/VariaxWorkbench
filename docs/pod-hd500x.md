@@ -84,26 +84,42 @@ playback, and driver bind stay `Locked`.
 
 ## Catalog downloads that were not obtained
 
-The public page
+A GET of
 `https://line6.com/software/index.html?hardware=POD%20HD500X&os=All`
-lists POD HD500X Flash Memory v2.62 as release 6260, estimated 892 KB. The
-page does not state a release date. On 2026-11-16, without an account,
+returns the page shell. That response does not contain the release rows. The
+page script loads rows only after `submit_form=set` and `submit_query=Show`.
+The listing request is a GET of
+`https://line6.com/software/index.html?hardware=POD%20HD500X&os=All&submit_form=set&submit_query=Show`.
+On 2026-11-16 that request returned HTTP 200 and `text/html`, 315367 bytes,
+SHA-256
+`048b200988464d1e73942a36afe657e2af7e9aa933236b6000a452de48fe3657`.
+The ignored copy is
+`analysis/reports/pod-hd500x-public-catalog-2026-11-16.html` in the primary
+checkout. No account and no download token were used.
+
+That saved page lists POD HD500X Flash Memory v2.62 as release 6260. The
+sidebar prints Version 2.62.00 and Released 4/9/15. The estimated size is
+892 KB. The notes say to update USB Firmware (1.04) and Flash Memory (2.62).
+Those are separate labels. No USB-firmware release id or image was obtained.
+The same page also lists Flash Memory v2.61 as release 6237, estimated
+892 KB, and those notes also name USB Firmware (1.04). Release 6237 is not
+the archived-container row. On 2026-11-16, without an account,
 `https://line6.com/software/readeula.html?rid=6260` returned HTTP 302 to
 `/account/login.html?user_attempt=download` and then HTTP 200 login HTML.
 `https://line6.com/getrelease?rid=6260` returned HTTP 403. No image was saved.
-No credential was used.
 
-The same v2.62 notes say to update USB Firmware 1.04 and Flash Memory 2.62.
-Those are separate labels. No USB-firmware release id or image was obtained.
-Neither label is a FORM/L6FF product id or an installed-unit read.
+Neither flash label is a FORM/L6FF product id or an installed-unit read.
 `archived_firmware_product` stays empty. Version queries stay
 `NotEstablished`.
 
-The same page lists POD HD500X Edit release 9781 (macOS heading, estimated
-35 MB) and release 8559 (Windows heading, estimated 37 MB). Those headings do
-not state an editor version. Neither file was downloaded. Older page text
-describes Edit as an editor/librarian and says one build adds HD Model Pack
-support. That text does not include a preset container or a model id.
+The same saved page lists POD HD500X Edit release 9781 (macOS, sidebar
+Version 2.27, Released 8/4/20, estimated 35 MB) and release 8559 (Windows,
+sidebar Version 2.27, Released 9/10/18, estimated 37 MB). Neither file was
+downloaded. The macOS notes mention an installer customization screen. That
+text is not a driver procedure and was not followed. Older rows on the same
+page, including Edit 2.26, are not registered here. One older description
+calls Edit an editor/librarian and says one build adds HD Model Pack support.
+That text does not include a preset container or a model id.
 
 The v2.62 notes name three optional amp/cab packs and eight setlist display
 names, including VARIAX. They also say selecting a preset from that setlist

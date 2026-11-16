@@ -104,13 +104,20 @@ Central listing 1.06, dated 2026-09-17, was not obtained.
 
 ## POD HD500X catalog and driver text
 
-The public POD HD500X page lists Flash Memory v2.62 as release 6260, estimated
-892 KB, with no date and no saved catalog MD5. On 2026-11-16 an
-unauthenticated `readeula.html?rid=6260` request returned HTTP 302 to the
-account login page. `getrelease?rid=6260` returned HTTP 403. No flash image
-was saved. The same notes name USB Firmware 1.04 separately. Edit listings
-9781 and 8559 were not downloaded. Details and the driver-text USB match are
-in [POD HD500X](pod-hd500x.md).
+The POD HD500X release rows are not in the page shell
+`index.html?hardware=POD%20HD500X&os=All`. They are in the GET that adds
+`submit_form=set` and `submit_query=Show`. The 2026-11-16 response is HTTP
+200, 315367 bytes, SHA-256
+`048b200988464d1e73942a36afe657e2af7e9aa933236b6000a452de48fe3657`, saved as
+ignored `analysis/reports/pod-hd500x-public-catalog-2026-11-16.html` in the
+primary checkout. That file lists Flash Memory v2.62 as release 6260, sidebar
+Version 2.62.00, Released 4/9/15, estimated 892 KB, with no catalog MD5. The
+notes name USB Firmware 1.04 separately. Edit 9781 and 8559 both print
+Version 2.27, with sidebar dates 8/4/20 and 9/10/18, and were not downloaded.
+On 2026-11-16 an unauthenticated `readeula.html?rid=6260` request returned
+HTTP 302 to the account login page. `getrelease?rid=6260` returned HTTP 403.
+No flash image was saved. Details and the driver-text USB match are in
+[POD HD500X](pod-hd500x.md).
 
 A 7-Zip data extract of `l6PODHD5SE.inf` from the Windows 4.2.7.7 archive is
 10484 bytes, SHA-256

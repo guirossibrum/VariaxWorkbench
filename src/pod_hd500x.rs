@@ -204,8 +204,10 @@ pub struct EditorListing {
     pub release_id: u32,
     pub platform: &'static str,
     pub size_text: &'static str,
-    /// The current public headings do not state an editor version.
+    /// Sidebar text. Both cited rows print Version 2.27 and different dates.
     pub version_label: Option<&'static str>,
+    /// Sidebar date, copied as printed. Not normalized.
+    pub released_label: &'static str,
     pub downloaded: bool,
 }
 
@@ -214,14 +216,16 @@ pub const EDITORS: &[EditorListing] = &[
         release_id: 9781,
         platform: "macOS listing",
         size_text: "estimated 35 MB",
-        version_label: None,
+        version_label: Some("2.27"),
+        released_label: "8/4/20",
         downloaded: false,
     },
     EditorListing {
         release_id: 8559,
         platform: "Windows listing",
         size_text: "estimated 37 MB",
-        version_label: None,
+        version_label: Some("2.27"),
+        released_label: "9/10/18",
         downloaded: false,
     },
 ];
@@ -394,12 +398,24 @@ mod tests {
         assert_eq!(record.flash.usb_firmware_label, "1.04");
         assert_ne!(record.flash.usb_firmware_label, record.flash.version_label);
         assert!(record.editors.iter().all(|editor| !editor.downloaded));
-        assert!(
+        assert_eq!(
             record
                 .editors
                 .iter()
-                .all(|editor| editor.version_label.is_none())
+                .map(|editor| (
+                    editor.release_id,
+                    editor.version_label,
+                    editor.released_label
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (9781, Some("2.27"), "8/4/20"),
+                (8559, Some("2.27"), "9/10/18"),
+            ]
         );
+        assert_eq!(listing.release_date, "4/9/15");
+        assert!(listing.page_url.contains("submit_form=set"));
+        assert!(listing.page_url.contains("submit_query=Show"));
         for id in [
             "hd500x-flash-2.62-not-obtained",
             "hd500x-editor-not-obtained",
@@ -414,5 +430,12 @@ mod tests {
         assert!(evidence.contains(record.mac_plist.sha256));
         assert!(evidence.contains("HTTP 403"));
         assert!(evidence.contains("6260"));
+        assert!(evidence.contains("submit_form=set"));
+        assert!(evidence.contains("submit_query=Show"));
+        assert!(
+            evidence.contains("048b200988464d1e73942a36afe657e2af7e9aa933236b6000a452de48fe3657")
+        );
+        assert!(evidence.contains("4/9/15"));
+        assert!(evidence.contains("2.62.00"));
     }
 }

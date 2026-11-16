@@ -210,8 +210,7 @@ const CENTRAL_URL: &str =
     "https://l6c-acdn2.line6.net/media/software/12401/Line6CentralInstaller1.00.exe";
 const VARIAX_LISTING_PAGE: &str = "https://line6.com/software/index.html?hardware=Variax%20300%2F600&name=Flash%20Memory&os=All&submit_form=set&submit_query=Show";
 const POD_LISTING_PAGE: &str = "https://line6.com/software/index.html?hardware=PODxt%20Live&name=Flash%20Memory&os=All&submit_form=set&submit_query=Show";
-pub const HD500X_LISTING_PAGE: &str =
-    "https://line6.com/software/index.html?hardware=POD%20HD500X&os=All";
+pub const HD500X_LISTING_PAGE: &str = "https://line6.com/software/index.html?hardware=POD%20HD500X&os=All&submit_form=set&submit_query=Show";
 const MONKEY_HISTORICAL_URL: &str = "https://line6.com/getrelease?rid=8688";
 
 pub const LOCAL_ARTIFACTS: &[LocalArtifact] = &[
@@ -457,7 +456,7 @@ pub const PUBLIC_LISTINGS: &[PublicFlashListing] = &[
         product: "POD HD500X",
         version: "2.62",
         release_id: 6260,
-        release_date: "not stated on the listing page",
+        release_date: "4/9/15",
         size_text: "estimated 892 KB",
         page_url: HD500X_LISTING_PAGE,
         catalog_md5_saved: false,
