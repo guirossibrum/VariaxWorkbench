@@ -110,6 +110,16 @@ research tool, not an application dependency. The source pin, shim and private
 decoder logs are retained in the issue worktree's ignored `.tools/sharc-research`
 and `analysis/reports` directories.
 
+The 128-word vector block decodes without unsupported markers. Of the 5,688
+words in the following block, 28 lines contain an unsupported/TODO/register
+marker; those may reflect decoder limitations or embedded data. They remain
+unclassified. These counts do not certify every word as valid executable code.
+Private decoder-output SHA-256 values are
+`4efd704b9efd085a3d8c85572fe5d8ef79893ce5c0165b18d2b42dc0e52b222d`
+(vectors) and
+`d91cadf0891b4c8774e61d554ac69e31c46eba3d41df427103d6d8e240b18e1f`
+(following block).
+
 The resource directory has 486 big-endian key/pointer pairs plus a final
 `FFFFFFFF` key carrying the end pointer. Converting each pointer to a file
 offset with `2 * (pointer - 0x01000000)` yields strictly increasing record
