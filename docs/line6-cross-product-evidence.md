@@ -267,6 +267,32 @@ steps. This identifies maintenance-oriented app components and static UI/data,
 not a reusable app API or verified bridge protocol. The cached resources also
 contain EULA/update UI content; no remote endpoint was contacted.
 
+### Central Windows device-discovery edge (static native import trace)
+
+The PE32 `Interposer.dll` (`86efd2f9a9d5f5b1de9d60a92a3857e574f299f3a689b144a97b0e324e5eb037`)
+imports `RegisterDeviceNotificationA`, SetupAPI device-set/interface enumeration,
+interface-detail, instance-ID and registry-property calls, plus `CM_Get_Parent`.
+Static references from the imported APIs resolve to native functions at image
+addresses `0x10003b50`, `0x10004410`, `0x10004590`, `0x10004750`, and
+`0x10004d90`. The traced calls show a Windows interface-arrival notification
+registration path and separate device/interface enumeration paths that obtain
+instance IDs, properties and parent relations. This confirms that Central's
+Windows package includes a local PnP discovery adapter in its native interposer;
+the imported API boundary alone does not identify which device interface GUIDs
+are Variax, establish a guitar model behind a bridge, or prove successful
+enumeration in a real session. It does not recover the matching Mac discovery
+selection, session lifecycle, packet framing, or routing to editor controls.
+
+The managed Windows app's static engine strings expose generic typed parameter
+operations (bool/int/float/string), item-name retrieval, range/type errors,
+device arrival/teardown and firmware-version state. These strings establish the
+presence of a generic engine/UI consumer vocabulary, not a concrete Variax
+adapter mapping or supported edit/backup operation. Static analysis did not
+establish transport session ownership, timeouts, retries, error propagation,
+or cross-platform parity. The import trace report is private at
+`.tools/issue-61-analysis/central-interposer-api-xrefs.txt`; no vendor code was
+executed or loaded, and no device or service was contacted.
+
 ## Explicitly unresolved
 
 - The exact instrument identity reported behind bridge PID `0x534D`, supported
