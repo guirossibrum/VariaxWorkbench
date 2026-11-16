@@ -1,0 +1,78 @@
+{
+  "schema": 1,
+  "status": "pass",
+  "decoder": "sox_ng:      SoX_ng v14.8.0.1",
+  "decoder_binary_sha256": "646d899b53c1c3fb94d8f48032a1e5eee549df75b22b4819a6be896af0d36947",
+  "scope": "file-only synthetic exports; no playback or device access",
+  "exact_clock": "78125/2",
+  "resampled": false,
+  "cases": [
+    {
+      "rate": "39062.5",
+      "channels": "2",
+      "bits": "24",
+      "frames": "0",
+      "source_pcm_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "aiff_sha256": "a0322c31237104aa81292fc2b8c5d3e4566d8bee2e0bf281cad45da102f07e07"
+    },
+    {
+      "rate": "39062.5",
+      "channels": "2",
+      "bits": "24",
+      "frames": "1",
+      "source_pcm_sha256": "10487d86ce3584e156874ed9b2650e8d772a8d1fdbb1c9111bf7e2fbcab18ccb",
+      "aiff_sha256": "aba8564dc0f0e117f33f6033ed3c21e51c46d8ff828628ae08241e44e96a7db0"
+    },
+    {
+      "rate": "39062.5",
+      "channels": "2",
+      "bits": "24",
+      "frames": "11",
+      "source_pcm_sha256": "fd05f558d3c6c87de240ead4f4a06fcaae21df98f72467b748324b119cb37f88",
+      "aiff_sha256": "df1b87497120433b7f183b1bfd5734a82f2381ddcc0d332b163c9dc0c8d5d401"
+    },
+    {
+      "rate": "39062.5",
+      "channels": "2",
+      "bits": "24",
+      "frames": "32",
+      "source_pcm_sha256": "bd3a42016c167b3772803fe6c7bd4baeb8f9cfded468e8bb08bb5994fd44f4f8",
+      "aiff_sha256": "03f8d1dd070de1822d280b71c0f028f21700fce74c170b25e516ac71146cc900"
+    },
+    {
+      "rate": "39062.5",
+      "channels": "2",
+      "bits": "24",
+      "frames": "64",
+      "source_pcm_sha256": "41d876bd276f9ba1ef25e33adfb31cae2cd0b8f1c2efad08e4b7b7ee13ecd165",
+      "aiff_sha256": "f02dcaf3a0882a22b594e31759dd0f2031307fa87ae62b8684e31190f8f9626d"
+    },
+    {
+      "rate": "39062.5",
+      "channels": "2",
+      "bits": "24",
+      "frames": "256",
+      "source_pcm_sha256": "5fedb246f1d7483d97a900c0301f4988c1e5c920ec78338637de95c2cac819a2",
+      "aiff_sha256": "704616b80bf5a68ec942a76efa675d28b5a7284c1cb4f23bb9c89fb1b893b0c3"
+    },
+    {
+      "rate": "39062.5",
+      "channels": "2",
+      "bits": "24",
+      "frames": "1025",
+      "source_pcm_sha256": "05425fa9619b3d7d347662d06cef2e339bd1112346708a011d7e34a67abf0022",
+      "aiff_sha256": "a7a98f925acb814e73afebf02b72634367d11cc3e0fff59a5fc7149f43b969a3"
+    },
+    {
+      "rate": "39062.5",
+      "channels": "2",
+      "bits": "24",
+      "frames": "8192",
+      "source_pcm_sha256": "ca1156e9811a5ca7d71c73fb34d9ec3dc9757573117105d6363e8eedec917c2c",
+      "aiff_sha256": "57d22dcb5997ff54fa40f60ab21ab90f4d8267491aa3b9990ed85aca33771821"
+    }
+  ],
+  "limits": [
+    "Other readers may round the clock; no DAW import or live negotiation tested"
+  ]
+}
