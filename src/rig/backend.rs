@@ -57,7 +57,10 @@ pub(crate) fn open_pod_preset(bytes: &[u8]) -> Result<PodToneSummary, Rejection>
         container: tone.container().tag(),
         amp_model_id: tone.amp_model_id(),
         cab_model_id: tone.cab_model_id(),
+        amp_name: tone.amp_asset_name(),
+        cab_name: tone.cab_asset_name(),
         undecoded_slots: tone.undecoded_slots(),
+        recorded_parameter_chunks: tone.recorded_parameter_chunks(),
         undecoded_parameter_chunks: tone.undecoded_parameter_chunks(),
     })
 }

@@ -2,8 +2,8 @@
 
 Issue #29 adds an offline librarian for individual PODxt Live tone files.
 It does not edit a connected POD, send MIDI or USB, switch presets, or write
-firmware. Effect parameters and asset names were not recovered, so those
-payloads stay undecoded.
+firmware. Asset names and the 12-byte model and parameter records recovered
+below are shown. Parameter ranges and value editing are not recovered.
 
 ## What was recovered
 
@@ -22,8 +22,23 @@ class used for other FORM tones. Local sources, kept out of git:
   `UpdateMetaAmpName` reads model slot 196608 (`0x00030000`) for a Sharc tone.
   `UpdateMetaNotesForSetup` reads slot 196609 (`0x00030001`) only when
   `GetType()` is 2. That is the L6AS container. The stored model id is passed
-  to `L6Assets.GetAssetName`. That name table was not recovered, so the
-  librarian shows the raw id.
+  to `L6Assets.GetAssetName`. For device 196618 that call skips the debug
+  table, the Vetta arm, and the bass-only arm. The mac and Windows copies
+  return the same 348 names on the remaining path, including later
+  fall-through switches. An id that path does not return stays raw. The
+  fallback phrase "Unknown model" is not stored as a name.
+- `analysis/decompiled/mac/cmn/l6java/patch/L6Model.java` reads a MINF as
+  model id, slot id, ordinal, two ignored bytes, and an enabled byte
+  (`Read8() > 0`). A chunk shorter than 12 bytes keeps the model and slot
+  only. Bytes after the first 12 stay in the file. The enabled byte is not
+  a bypass flag, and this librarian does not write it.
+- `analysis/decompiled/mac/cmn/l6java/patch/L6ModelParam.java` reads a PARM
+  as three 32-bit words: the low 24 bits of the first word are the id, the
+  second word is the value type (0 int, 1 float), and the third word is the
+  raw value. The stored high byte is kept and is not required to be `0x3F`.
+  Any other length stays opaque. No PODxt knob minimum, maximum, or unit
+  was found. `L6ParamDefinition` is constructed only for Variax and Variax
+  Acoustic.
 - `analysis/decompiled/mac/cmn/l6java/midi/L6MIDIJava/L6MIDIJava.java` defines
   `L6HW_ID_PODXTLIVE` as 18000. That MIDI hardware id is not the PINF target.
 
@@ -47,7 +62,9 @@ tone. The in-memory library is a list of those files. It is not a new bank
 format.
 
 The only edit is the 32-unit PINF name, with the same NUL and length rule as
-the guitar renamer. `document::save_new` writes a new copy and refuses to
+the guitar renamer. Model names, the enabled byte, ordinals, reserved bytes,
+and parameter values are displayed from the recovered records and are not
+edited. `document::save_new` writes a new copy and refuses to
 replace an existing path. The guitar document refuses to open or rename a
 PODxt Live target, including a bank that contains one.
 
@@ -69,16 +86,25 @@ recovered Line 6 limit.
 
 ## What stays undecoded
 
-- Amp and cab asset names.
-- The meaning of every model slot other than the two named above. A cab slot
-  inside L6PA or L6FS is counted, not presented as a cab.
-- PARM and MINF bytes beyond the 8-byte model id and slot. No ranges, effect
-  ids, or bypass rules were recovered.
+- Parameter ranges, units, knob names, and value editing. A decoded PARM
+  shows its id, type, and raw bits, and the display says that no range is
+  known.
+- PARM chunks whose length is not 12 bytes.
+- Model ids the PODxt Live name path does not return. They stay raw.
+- Slot ids outside `kGPXTSlot_*`. A known slot can still hold an unnamed
+  model. A cab slot inside L6PA or L6FS keeps the Cab role and is not
+  presented as the tone's cab model.
+- The MINF enabled byte is shown and is not rewritten. It is not a bypass
+  meaning. Model id `0x7fffffff` has the asset name "Bypass" from
+  `GetAssetName`; that name is a different field.
 - `L6BA` / `L6CO` libraries, `L6TE` templates, and `L6GP` patches.
 - Firmware region 17 and the 486-name resource directory in
   [firmware map](firmware-map.md). Those are image structures, not this tone
   file. They are not edited.
 - Live transmission, preset switching, and device backup.
 
-The firmware resource names "No Amp" and "Bypass" are not the user-preset
-asset table.
+The firmware resource names "No Amp" and "Bypass" are not this asset table.
+Some names in the table, including POD 2.0 ordinals, `BX-` model ids, and
+acoustic-body ids, are returned by fall-through switches in `GetAssetName`.
+They are lookup results for those ids. They are not a claim that PODxt Live
+implements every one of those models.

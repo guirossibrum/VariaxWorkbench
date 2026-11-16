@@ -54,7 +54,11 @@ pub struct PodToneSummary {
     pub container: &'static str,
     pub amp_model_id: Option<u32>,
     pub cab_model_id: Option<u32>,
+    pub amp_name: Option<&'static str>,
+    pub cab_name: Option<&'static str>,
     pub undecoded_slots: usize,
+    pub recorded_parameter_chunks: usize,
+    /// PARM chunks that are not the 12-byte record.
     pub undecoded_parameter_chunks: usize,
 }
 
@@ -201,8 +205,9 @@ impl Session {
         backend::save_guitar_copy(path, bytes)
     }
 
-    /// Opens one PODxt Live tone file in memory. The returned summary carries
-    /// raw amp and cab ids. Parameter payloads are not decoded.
+    /// Opens one PODxt Live tone file in memory. The summary carries amp and
+    /// cab ids, asset names when the PODxt Live table has them, and the
+    /// parameter-record counts. Parameter ranges are not decoded.
     pub fn open_pod_preset(
         self,
         role: RoleKind,
