@@ -92,6 +92,14 @@ pub fn read_current_on(
             })?);
         }
         let replies: [Vec<u8>; 2] = replies.try_into().unwrap();
+        // Replies contain no address or sequence number. Equal payloads cannot
+        // distinguish legitimately equal blocks from a duplicated first reply.
+        // Decline that ambiguity rather than returning a falsely verified read.
+        // This does not establish freshness for other stale/reordered replies.
+        if crate::decode_metadata_reply(&replies[0])? == crate::decode_metadata_reply(&replies[1])?
+        {
+            return Err("metadata blocks are identical; unaddressed replies cannot distinguish equal data from a duplicate, so the read is unverified".into());
+        }
         let metadata = PresetMetadata::from_replies(&replies[0], &replies[1])?;
         Ok(CurrentPreset {
             identity,
@@ -154,16 +162,17 @@ mod tests {
             0xf0, 0x7e, 0x7f, 6, 2, 0, 1, 12, 7, 0, 4, 0, b'0', b'3', b'1', b'0', 0xf7,
         ]
     }
-    fn metadata() -> Vec<u8> {
+    fn metadata(block: u8) -> Vec<u8> {
         let mut m = vec![0; 200];
         m[..7].copy_from_slice(&[0xf0, 0, 1, 12, 7, 4, 0x3c]);
+        m[7] = block;
         m[199] = 0xf7;
         m
     }
     fn fake() -> Fake<'static> {
         Fake {
             sent: vec![],
-            replies: [identity(), metadata(), metadata()]
+            replies: [identity(), metadata(0), metadata(1)]
                 .into_iter()
                 .map(|m| Ok(Some(m)))
                 .collect(),
@@ -245,8 +254,8 @@ mod tests {
     #[test]
     fn fragmented_metadata_replays_through_actual_framer() {
         let mut bytes = identity();
-        bytes.extend(metadata());
-        bytes.extend(metadata());
+        bytes.extend(metadata(0));
+        bytes.extend(metadata(1));
         let packets = bytes.chunks(16).map(|p| p.to_vec()).collect::<Vec<_>>();
         let messages = messages_from_packets(&packets).unwrap();
         assert_eq!(messages.len(), 3);

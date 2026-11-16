@@ -9,9 +9,9 @@ The downloaded firmware helps, but firmware files alone do not describe every
 CPU/DSP, peripheral, memory map, bootloader, calibration or physical behavior.
 
 The existing CPU oracle runs the original **computer-side Workbench library**.
-It does not run the POD firmware or the guitar's DSP firmware. Current fake
-transport tests cover selected read-session outcomes; they are not a complete
-POD or guitar simulator. No existing result establishes complete audio equivalence,
+It does not run the POD firmware or the guitar's DSP firmware. The in-memory Rust model now covers selected metadata sessions and Variax
+receiver stages, with independent updater host-reference hashes. It is not a
+complete POD or guitar simulator. See [implemented scope](receiver-simulation.md). No existing result establishes complete audio equivalence,
 bootloader recovery or physical safety.
 
 ## Layers to build and verify
@@ -21,14 +21,16 @@ bootloader recovery or physical safety.
 | Editor and coefficient generation | Original Java/native code, model resources, golden outputs and synthetic fixtures | Complete Rust/native differential checks, including final metadata/assembly |
 | POD USB/control routing | Saved identities/packets, Linux source, extracted Windows/macOS drivers | A virtual POD with explicit interface/endpoint routing, framing, buffering and failure states |
 | Variax control/preset behavior | One saved current-preset metadata capture and original host protocol code | A separate virtual guitar with session state, modeled preset/DSP memory and independently verified command handling |
-| Firmware update/recovery | Both L6FF images unpack with matching embedded MD5; updater code is available | Establish actual state transitions first, then model rejection, interrupted transfers, corruption, virtual power loss and recovery |
-| Actual firmware execution | Image bytes and region tables; architectures and memory/peripheral maps remain unestablished | Identify instruction sets, loaders, vectors and peripheral contracts; assess whether original firmware can boot and execute in an isolated emulator |
+| Firmware update/recovery | Both L6FF images unpack with matching embedded MD5; selected host/receiver paths are mapped | Bounded stage, corruption and interruption models are implemented; physical helpers, full sequencing and recovery remain unsupported |
+| Actual firmware execution | Variax DSP56300-compatible loaders/instructions and POD SHARC-compatible sections are statically mapped; exact chips/peripherals remain incomplete | Close memory/peripheral contracts before assessing isolated firmware execution |
 | DSP/audio | Host coefficient generator executes offline; device DSP execution is not emulated | Identify the DSP architecture and processing path, then assess instruction/audio emulation and reference comparisons |
 | Physical effects | No complete model of electrical/analog/aged components | Remain explicit limits: power, component condition, flash behavior, physical timing and analog sound cannot be certified by the present software model |
 
 The POD image expands to 1 MiB in 19 regions; the Variax image to 442,402 bytes
-in four regions. Those region counts and integrity checks are established. Numeric
-region-type meanings, executable ISAs and boot/recovery behavior are not.
+in four regions. Those region counts and integrity checks are established. Selected
+region meanings, executable formats and boot receive paths are statically mapped
+in [firmware layout](firmware-map.md) and [update research](update-recovery.md).
+Complete hardware maps and physical boot/recovery behavior are not established.
 
 ## Proposed offline test environment
 
@@ -85,8 +87,8 @@ The readiness review (#22), backups (#23) and any live read-only integration (#2
 remain gated separately.
 
 Follow the project execution order and keep only one implementation issue In
-Progress. Issue #1 is now complete; documenting this plan does not start #18 or
-change the sequential order.
+Progress per agent. Issue #18 now implements the bounded model described above;
+full firmware/audio emulation and physical readiness remain separate work.
 No additional guitar capture is required to start the offline protocol model or
 continue coefficient work; some device-specific unknowns may remain unresolved
 without further independent evidence.

@@ -1,7 +1,8 @@
 //! Recovered Workbench 1.75 protocol. Hardware behavior is not yet validated.
 //!
 //! Sources: L6VariaxDevice, L6VariaxPatchManager, L6VariaxMIDITranscoder.
-//! This crate currently has no hardware transport or persistent-write commands.
+//! Physical access is source-locked. Persistent-operation byte descriptions are
+//! private to memory-only simulation; no physical install/send path is enabled.
 
 use std::collections::BTreeMap;
 
@@ -30,6 +31,7 @@ pub mod provenance;
 pub mod read_session;
 pub mod recording;
 pub mod rig;
+pub mod simulation;
 #[cfg(feature = "usb")]
 pub mod usb;
 
