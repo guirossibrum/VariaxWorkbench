@@ -364,30 +364,63 @@ establish that the generic engine API exposes Variax editing. A bounded static
 trace of `UpdaterV3EngineDLL.dll` (SHA-256
 `d24bb48b0f13d9b46c6dd514e712c347ff9a00d4763555614f700c22634bebc7`) finds
 imports for `LoadLibraryA`, `LoadLibraryExA`, `GetProcAddress`, and
-`FreeLibrary`; the x86 code at `0x101befd0` copies the `Interposer.dll` module
-name from `0x1047dc88` and passes the constructed string to a loader helper at
-`0x10140350`. The DLL also contains `L6DeviceCenter_Win` error strings for
+`FreeLibrary`. Following the actual x86 load path corrects the earlier helper
+interpretation: `0x101bee60` is the `L6DeviceCenter_Win::loadInterposer()`
+routine identified by its own log strings. It builds a path from the process
+current directory, the fixed `\Line 6\Interposer\` component at
+`0x1047dc74`, and `Interposer.dll` at `0x1047dc88`; it obtains the current
+directory with `GetCurrentDirectoryA` at `0x101bf0ff` and `0x101bf122`, then
+calls the `LoadLibraryA` import (`0x103ac194`) at `0x101bf0db` and stores the
+result at object offset `+0x7c`. The nearby `0x10140350` helper only computes a
+string length. The DLL also contains `L6DeviceCenter_Win` error strings for
 `enumerateInterposerDevices()` / `InterposerGetDescriptors()` and
 `refreshDeviceListsWin()` / `InterposerGetDescriptors()`, plus
 `HandleDeviceToHostRequest()` and `HandleQueueOutPkt()` failures from
 `InterposerMessage()`. Corresponding error branches are present near
-`0x101ba767`, `0x101bface`, `0x101c6ee2`, and `0x101c7391`; the latter two
-invoke an indirect function-pointer call through `0x104baad8` before logging failure.
-These strings, references, loader imports, and branches support a Windows
-updater-engine interposer enumeration/message integration. The exact
-`GetProcAddress` symbol-to-function wiring, successful data flow, payload
+`0x101ba767`, `0x101bface`, `0x101c6ee2`, and `0x101c7391`. In the queue-out
+path, `0x101c7382` calls a process-global function pointer at `0x104baad8` and
+the failure branch logs `InterposerMessage()` at `0x101c7391`; the
+device-to-host failure string is referenced at `0x101c6ee3`. These code paths
+establish that the shipped updater engine
+constructs and loads its Interposer module path and has descriptor/message
+consumer code. They do not establish a successful descriptor exchange. The
+managed host handoff is also bounded: Central's .NET metadata/CIL contains
+`ParamValueServer.initialize` and `.start` calls to
+`EngineCLIWrapper.EngineWrapper.initialize` and `.start` (MemberRef tokens
+`0x0a000089` and `0x0a00008a`). Its `initialize` body loads the static
+`appVersionString` field (Field token `0x04000bd4`) as the string argument;
+the wrapper's import table then exposes generic engine methods from this
+updater DLL. This traced host argument is a version string, not a configuration
+directory/list. The precise `GetProcAddress`-to-Interposer-symbol binding,
+configuration-container producer, successful descriptor data flow, payload
 framing, session/error contract, and relationship to a Variax editor remain
 unresolved. The native updater DLL also imports libusb enumeration/transfer
 calls, SetupAPI device enumeration, `cyusbserial` I2C calls, and Windows MIDI
 APIs; imports alone do not establish that a path is active for Variax or safe
-to call. All of this is static analysis; the DLL was not executed.
+to call. All of this is static analysis; no vendor binary or managed assembly
+was executed.
 
-### Central macOS device-manager evidence (bounded string/dependency scan)
+### Central macOS device-manager evidence (bounded x86_64 Mach-O review)
 
 The macOS Central executable is a universal x86_64/arm64 Mach-O
-(`d69d4d5fb959ea460787dcbde748fb43ea6b846a937aa98076c55ba061be4a1f`). Its
-bundle contains `libusb-1.0.0.dylib` and `libcyusbserial.0.1.dylib`. Static
-binary strings include `L6DeviceManagerMac`, `L6USBDeviceManager`,
+(`d69d4d5fb959ea460787dcbde748fb43ea6b846a937aa98076c55ba061be4a1f`): its
+fat header places x86_64 (`cputype 0x01000007`, subtype `3`) at file offset
+`0x4000` (size `0x6db150`) and arm64 (`cputype 0x0100000c`, subtype `0`) at
+`0x6e0000` (size `0x65c230`). The bounded architecture-specific review used
+the x86_64 thin slice (SHA-256
+`21bf512d07ae507929cf1581cdc07491605e5dcac58d115e6a59e230d7f95b76`), whose
+`__TEXT` VM base is `0x100000000`; Ghidra's matching processor is
+`x86:LE:64:default`. That slice's Mach-O section/import metadata and static
+string tables include `L6DeviceManagerMac` (`__TEXT,__cstring` VA
+`0x100577c03`), `L6USBDeviceManager` (`__TEXT,__const` VA `0x1005234b6`),
+`ProductIDs` (VA `0x100545d27`), `tearingDownVariaxScanner` (cstring VA
+`0x10057dda0`, Objective-C method-name VA `0x1005c1a71`), and the
+`getParamValueSetInterposerDelegate` method-name entry (VA `0x1005bd42c`). The
+slice imports CoreMIDI/IOKit symbols and references the bundled libusb and
+cyusbserial dylibs. These architecture-specific facts show macOS device,
+product-ID and Interposer-delegate vocabulary, but not a caller/data-flow trace
+or proof of preset editing. Static binary strings also include
+`L6DeviceManagerMac`, `L6USBDeviceManager`,
 `L6USBDevice_DevMgr`, `L6DeviceDescription`, `L6GenericUpdateEngine`,
 `L6HWUpdateEngineVXFlash`, `tearingDownVariaxScanner`,
 `engineInterfaceConnectedToDevice`, and update failure strings for Variax user
