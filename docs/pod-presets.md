@@ -28,10 +28,15 @@ class used for other FORM tones. Local sources, kept out of git:
   fall-through switches. An id that path does not return stays raw. The
   fallback phrase "Unknown model" is not stored as a name.
 - `analysis/decompiled/mac/cmn/l6java/patch/L6Model.java` reads a MINF as
-  model id, slot id, ordinal, two ignored bytes, and an enabled byte
-  (`Read8() > 0`). A chunk shorter than 12 bytes keeps the model and slot
-  only. Bytes after the first 12 stay in the file. The enabled byte is not
-  a bypass flag, and this librarian does not write it.
+  model id, slot id, ordinal, two ignored bytes, and an enabled byte.
+  `L6Buffer.Read8` returns a Java signed byte (`(byte)(get() & 0xFF)`,
+  mac and Windows lines 345–349). That byte is stored in `int m_ordinal`,
+  so `0x80` is -128 and `0xFF` is -1. Enabled is `Read8() > 0`, so those
+  same bytes are disabled. The Windows `L6Model.AddIFFChunk` copy matches
+  the mac lines 212–215. A chunk shorter than 12 bytes keeps the model and
+  slot only. The file bytes, including the two ignored bytes and any bytes
+  after the first 12, stay as stored. The enabled byte is not a bypass
+  flag, and this librarian does not write it.
 - `analysis/decompiled/mac/cmn/l6java/patch/L6ModelParam.java` reads a PARM
   as three 32-bit words: the low 24 bits of the first word are the id, the
   second word is the value type (0 int, 1 float), and the third word is the
@@ -94,9 +99,11 @@ recovered Line 6 limit.
 - Slot ids outside `kGPXTSlot_*`. A known slot can still hold an unnamed
   model. A cab slot inside L6PA or L6FS keeps the Cab role and is not
   presented as the tone's cab model.
-- The MINF enabled byte is shown and is not rewritten. It is not a bypass
-  meaning. Model id `0x7fffffff` has the asset name "Bypass" from
-  `GetAssetName`; that name is a different field.
+- The MINF enabled flag is the signed `Read8() > 0` result and is not
+  rewritten. Bytes `0x80` through `0xFF` display as disabled. It is not a
+  bypass meaning. Model id `0x7fffffff` has the asset name "Bypass" from
+  `GetAssetName`; that name is a different field. The displayed ordinal is
+  the signed Java value. The stored MINF bytes stay unchanged.
 - `L6BA` / `L6CO` libraries, `L6TE` templates, and `L6GP` patches.
 - Firmware region 17 and the 486-name resource directory in
   [firmware map](firmware-map.md). Those are image structures, not this tone

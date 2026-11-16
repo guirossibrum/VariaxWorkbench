@@ -560,7 +560,7 @@ const SLOT_ROLES: &[(u32, SlotRole)] = &[
 pub fn describe_model(
     slot: u32,
     model_id: u32,
-    ordinal: Option<u8>,
+    ordinal: Option<i8>,
     reserved: Option<[u8; 2]>,
     enabled: Option<bool>,
 ) -> String {

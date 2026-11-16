@@ -8,9 +8,13 @@
 //! (`0x00030000`) for a Sharc tone. `UpdateMetaNotesForSetup` reads slot 196609
 //! (`0x00030001`) only when the patch type is 2 (L6AS). Asset names are the
 //! PODxt Live `GetAssetName` results in `pod_assets`. A 12-byte MINF carries
-//! the ordinal, two reserved bytes, and `m_enabled`. A 12-byte PARM carries an
-//! id, a value type, and raw bits. No parameter range was recovered, and this
-//! module does not edit those values. Other bytes are preserved.
+//! the signed ordinal, two raw reserved bytes, and `m_enabled`. `L6Buffer.Read8`
+//! returns a Java signed byte on both mac and Windows. `L6Model` stores that
+//! byte in `int m_ordinal` and sets enabled from `Read8() > 0`, so bytes
+//! `0x80` through `0xFF` are negative and disabled. The file bytes stay as
+//! stored. A 12-byte PARM carries an id, a value type, and raw bits. No
+//! parameter range was recovered, and this module does not edit those values.
+//! Other bytes are preserved.
 //!
 //! The MIDI hardware id `L6HW_ID_PODXTLIVE` (18000) is a different namespace.
 //! The archived firmware version `0x03010000` is not a requirement of a tone file.
@@ -130,11 +134,13 @@ pub enum ModelParameter {
 pub struct ModelSlot {
     pub slot: u32,
     pub model_id: u32,
-    /// MINF byte 8 when the chunk is at least 12 bytes.
-    pub ordinal: Option<u8>,
+    /// MINF byte 8 as the Java signed byte stored in `int m_ordinal`.
+    /// `0x80` is -128 and `0xFF` is -1. The file byte is not rewritten.
+    pub ordinal: Option<i8>,
     /// MINF bytes 9 and 10 when the chunk is at least 12 bytes. Not rewritten.
     pub reserved: Option<[u8; 2]>,
-    /// MINF byte 11 compared with zero. This is `m_enabled`, not a bypass flag.
+    /// MINF byte 11 as `Read8() > 0`. A byte from `0x80` through `0xFF` is not
+    /// enabled. This is `m_enabled`, not a bypass flag, and it is not rewritten.
     pub enabled: Option<bool>,
     pub parameters: Vec<ModelParameter>,
 }
@@ -256,10 +262,12 @@ impl PodTone {
                 )));
             }
             let (ordinal, reserved, enabled) = if minf.data.len() >= 12 {
+                let ordinal_byte = bytes[minf.data.start + 8];
+                let enabled_byte = bytes[minf.data.start + 11];
                 (
-                    Some(bytes[minf.data.start + 8]),
+                    Some(ordinal_byte as i8),
                     Some([bytes[minf.data.start + 9], bytes[minf.data.start + 10]]),
-                    Some(bytes[minf.data.start + 11] > 0),
+                    Some((enabled_byte as i8) > 0),
                 )
             } else {
                 (None, None, None)
@@ -971,6 +979,68 @@ mod tests {
                 .windows(3)
                 .any(|bytes| bytes == [0x11, 0x22, 0x33])
         );
+    }
+
+    #[test]
+    fn signed_minf_fields_follow_java_read8_and_rename_keeps_the_bytes() {
+        // Java `byte` values of the file bytes 0x00, 0x01, 0x7F, 0x80, and 0xFF.
+        // Both the ordinal and the enabled byte use each value.
+        const TAILS: [[u8; 4]; 5] = [
+            [0x00, 0x5a, 0xa5, 0x00],
+            [0x01, 0x5a, 0xa5, 0x01],
+            [0x7f, 0x5a, 0xa5, 0x7f],
+            [0x80, 0x5a, 0xa5, 0x80],
+            [0xff, 0x5a, 0xa5, 0xff],
+        ];
+        let expected: [(u32, i8, bool); 5] = [
+            (65_536, 0, false),
+            (131_072, 1, true),
+            (131_073, 127, true),
+            (131_074, -128, false),
+            (AMP_SLOT, -1, false),
+        ];
+        let models: Vec<BuiltModel<'_>> = expected
+            .iter()
+            .enumerate()
+            .map(|(index, &(slot, _, _))| BuiltModel {
+                slot,
+                model_id: 0x1111_0002,
+                tail: &TAILS[index],
+                parameters: &[],
+            })
+            .collect();
+        let original = custom_tone(ContainerKind::L6as, &models);
+        let mut tone = PodTone::parse(original.clone()).unwrap();
+        let lines = tone.control_lines();
+        assert_eq!(lines.len(), expected.len());
+        for (index, &(slot, ordinal, enabled)) in expected.iter().enumerate() {
+            let model = &tone.models()[index];
+            assert_eq!(model.slot, slot);
+            assert_eq!(model.ordinal, Some(ordinal));
+            assert_eq!(model.reserved, Some([0x5a, 0xa5]));
+            assert_eq!(model.enabled, Some(enabled));
+            assert!(lines[index].ends_with(&format!("ordinal {ordinal} reserved 5a a5")));
+            if enabled {
+                assert!(lines[index].contains(" enabled"));
+                assert!(!lines[index].contains("disabled"));
+            } else {
+                assert!(lines[index].contains(" disabled"));
+            }
+        }
+        tone.rename("Signed").unwrap();
+        assert_eq!(tone.name(), "Signed");
+        let name_at = tone_name_offset(&original);
+        for (index, (&before, &after)) in original.iter().zip(tone.as_bytes()).enumerate() {
+            if !(name_at..name_at + 64).contains(&index) {
+                assert_eq!(before, after, "byte {index} changed");
+            }
+        }
+        for tail in TAILS {
+            assert!(
+                tone.as_bytes().windows(4).any(|bytes| bytes == tail),
+                "MINF tail {tail:02x?} was not preserved"
+            );
+        }
     }
 
     fn amp_parameters_after_rename(original: &[u8]) -> Vec<ModelParameter> {
