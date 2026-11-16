@@ -1,6 +1,6 @@
 """Bounded i386 code/preset/erase oracle in private Unicorn memory; no device API.
 
-Five transfer/erase methods and three response callbacks execute in an
+Five transfer/erase methods, two predicate helpers and three response callbacks execute in an
 emulated CPU. Every import and helper is trapped; recognized synchronization/transport calls are memory-only stubs. No
 Windows loader, Wine, DLL entry point, driver, OS call or live transport runs.
 This does not execute device firmware or establish update/recovery safety.
@@ -23,6 +23,7 @@ SEND,ERASE=TRAPS+0xF000,TRAPS+0xF010
 SENDER_ENTRY,ERASE_ENTRY,PATCH_ENTRY=0x100D46F0,0x100D4B10,0x100D4BF0
 POD_SEGMENT_ENTRY=0x100D7330
 BOOT_ENTRY=0x100D56A0
+APPLICABILITY_ENTRY,FALLBACK_ENTRY=0x100D3C80,0x100D5C60
 PORT_WAIT=TRAPS+0xF020
 RESPONSE_CALLBACKS={0x100D5E40:0,0x100D5E70:-3022,0x100D5EA0:-3038}
 
@@ -120,18 +121,20 @@ class PrivateUpdaterOracle:
         if address==0x100C9350:self.events.append(['status_adapter',self.normalized_status]);self.ret(0,self.normalized_status);return
         if address in (0x1003BB60,0x10126BBE):
             self.events.append(['pump_or_cookie_adapter',hex(address)])
-            # The successful MSVC cookie check preserves the return register.
+            # Check the same guest cookie value and preserve the return register.
+            if address==0x10126BBE and cpu.reg_read(UC_X86_REG_ECX)!=self.u32(0x1028D330):
+                raise RuntimeError('guest stack cookie mismatch')
             self.ret(result=cpu.reg_read(UC_X86_REG_EAX) if address==0x10126BBE else 0);return
-        if not (SENDER_ENTRY<=address<0x100D4AA5 or ERASE_ENTRY<=address<0x100D4BE0 or PATCH_ENTRY<=address<0x100D5001 or any(start<=address<start+0x27 for start in RESPONSE_CALLBACKS) or POD_SEGMENT_ENTRY<=address<0x100D758E or BOOT_ENTRY<=address<0x100D59A5):
+        if not (SENDER_ENTRY<=address<0x100D4AA5 or ERASE_ENTRY<=address<0x100D4BE0 or PATCH_ENTRY<=address<0x100D5001 or any(start<=address<start+0x27 for start in RESPONSE_CALLBACKS) or POD_SEGMENT_ENTRY<=address<0x100D758E or BOOT_ENTRY<=address<0x100D59A5 or APPLICABILITY_ENTRY<=address<0x100D3D38 or FALLBACK_ENTRY<=address<0x100D5C94):
             raise RuntimeError(f'guest code outside audited method ranges: {address:#x}')
 
-    def call(self,entry,args,keep=True,boot=False,product=0x70004,wait=0,erase_result=0,version=0x03100000):
+    def call(self,entry,args,keep=True,boot=False,product=0x70004,wait=0,erase_result=0,version=0x03100000,cached_version=0x03100000):
         self.frames=[];self.events=[];self.wait_result=wait;self.erase_result=erase_result
         self.cpu.mem_write(HEAP,bytes(0x40000));self.cpu.mem_write(STACK,bytes(0x20000))
         self.cpu.mem_write(0,struct.pack('<I',0xffffffff))
         self.write32(HEAP,HEAP+0x1000);self.write32(HEAP+0x1024,ERASE)
         self.write32(HEAP+0x64,HEAP+0x1100);self.write32(HEAP+0x1140,SEND);self.write32(HEAP+0x112c,PORT_WAIT)
-        self.write32(HEAP+0xc,version);self.write32(HEAP+0x44,int(boot));self.write32(HEAP+0x48,product)
+        self.write32(HEAP+0x4c,cached_version);self.write32(HEAP+0xc,version);self.write32(HEAP+0x44,int(boot));self.write32(HEAP+0x48,product)
         self.write32(HEAP+0x54,int(keep));self.write32(HEAP+0x148,HEAP+0x3100);self.write32(HEAP+0x3100,1)
         if entry in (SENDER_ENTRY,PATCH_ENTRY):
             payload=args[0]
@@ -149,6 +152,8 @@ class PrivateUpdaterOracle:
             self.write32(HEAP+0x2008,0);self.write32(HEAP+0x200c,len(payload))
             arguments=[HEAP+0x4000,HEAP+0x2000,max(1,len(payload)//(3 if entry==BOOT_ENTRY else 2)),HEAP+0x3000]
         elif entry==ERASE_ENTRY:arguments=args
+        elif entry==APPLICABILITY_ENTRY:arguments=[product,HEAP+0x4c]
+        elif entry==FALLBACK_ENTRY:arguments=[]
         elif entry in RESPONSE_CALLBACKS:
             self.write32(HEAP+0x14c,-5);arguments=[0,HEAP]
         else:raise ValueError('only audited methods/callbacks may be entered')
@@ -266,7 +271,17 @@ def main():
     assert outcome['eax']==(-3312)&0xffffffff
     results.append({'case':'boot_sender_timeout','synthetic_bytes':96,
                     'wait_stub_ms':15000,'native_return':-3312})
-    report={'status':'pass','source_sha256':SHA256,'scope':'Five host updater methods and three response callbacks in emulated i386 CPU with synthetic payloads and private fake transport/event/helper adapters. No DLL entry point, native vendor execution, device firmware or hardware.','cases':results,'limits':['OS calls never forwarded; unknown calls/addresses stop','event/status/erase delegate/pump/security-cookie behavior is stubbed','Zero native erase return is not proof of acknowledgment: boot guard and timeout also return zero','Zero-length sender shape is observed only; not approved as a receiver input','No receiver flash, recovery, power-loss or physical behavior is modeled']}
+    for version,cached in [(0x02ffffff,0x02ffffff),(0x03000000,0x02ffffff),
+                           (0x02ffffff,0x03000000),(0x03000000,0x03000000),
+                           (0x03100000,0x03100000)]:
+        transition=oracle.call(APPLICABILITY_ENTRY,[],version=version,cached_version=cached)['eax']&255
+        fallback=oracle.call(FALLBACK_ENTRY,[],version=version,cached_version=cached)['eax']&255
+        assert bool(transition)==((version>=0x03000000)!=(cached>=0x03000000))
+        assert bool(fallback)==(cached>=0x03000000)
+        results.append({'case':'variax_70004_factory_predicates','object_version':hex(version),
+                        'cached_version':hex(cached),'transition':bool(transition),
+                        'fallback':bool(fallback),'factory_stage_selected':bool(transition or fallback)})
+    report={'status':'pass','source_sha256':SHA256,'scope':'Five host updater methods, two predicate helpers and three response callbacks in emulated i386 CPU with synthetic payloads and private fake transport/event/helper adapters. No DLL entry point, native vendor execution, device firmware or hardware.','cases':results,'limits':['OS calls never forwarded; unknown calls/addresses stop','event/status/erase delegate/pump/security-cookie behavior is stubbed','Zero native erase return is not proof of acknowledgment: boot guard and timeout also return zero','Zero-length sender shape is observed only; not approved as a receiver input','No receiver flash, recovery, power-loss or physical behavior is modeled']}
     encoded=(json.dumps(report,indent=2)+'\n').encode();folder=ROOT/'analysis/reports';folder.mkdir(parents=True,exist_ok=True);path=folder/('native-updater-oracle-'+hashlib.sha256(encoded).hexdigest()[:16]+'.json');preserve(path,encoded);print(path)
 
 if __name__=='__main__':main()

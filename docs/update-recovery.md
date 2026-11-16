@@ -182,7 +182,7 @@ not an observed device state:
 | Boot region (raw tag 5) | Selected by flags +0x54 bit 27; first matching region calls 0x100D56A0 before the main-code stage. A product/version-specific erase-range call follows for 0x70004 above 0x0305FFFF. Range units and physical mapping remain unverified. |
 | Main code (raw tag 0) | First matching region calls the code sender 0x100D46F0 for 0x70004. |
 | User patches (raw tag 1) | Calls 0x100D4BF0 only when flags +0x54 bit 0 is clear. |
-| Factory patches (raw tag 2) | A separately computed applicability predicate selects 0x100D5060. Its full version/product predicate is not yet closed. |
+| Factory patches (raw tag 2) | A separately computed applicability predicate selects 0x100D5060. For 0x70004, the two helpers below establish the threshold; other families remain separate. |
 
 The base entry at 0x100D0890 stores its first argument into object +0x54 and
 later invokes update slot +0x20. Thus bit 0's skip-user-patches effect is tied
@@ -256,6 +256,20 @@ Both failed research logs remain local. No instruction or time limit was relaxed
 The final private report `native-updater-oracle-beb6f47dc4cedd2c.json` contains
 **38 passing cases**, over five host methods and three callbacks, with all
 transport, event and helper adapters still explicit. No receiver firmware runs.
+
+Five further cases execute factory-applicability helper 0x100D3C80 and fallback
+0x100D5C60 with product 0x70004. They cover versions immediately below/at
+0x03000000 on each side and the 3.10/3.10 pair. The first helper detects crossing
+the threshold between object version +0x0C and cached version +0x4C; the fallback
+checks cached version at or above it. Their caller ORs those results, selecting
+the factory stage if either version is at or above 0x03000000. This establishes
+the predicate for that class/profile, not a current query or an original UI
+choice. Other product predicates are not inferred from these cases.
+
+The latest private report `native-updater-oracle-18f9cd61392aacca.json` records
+**43 passing cases**, including those two helpers. The cookie adapter now also
+checks the guest cookie against the mapped original value before returning;
+it still does not implement the vendor's failure handler or host initialization.
 
 Static receiver branches distinguish malformed/checksum failures from success
 responses and may reset into an unarchived ROM address after programming.
