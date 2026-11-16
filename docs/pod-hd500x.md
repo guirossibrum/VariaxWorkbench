@@ -140,7 +140,8 @@ redirect returned:
 The login page was not requested. No cookie was stored. Flash release 6260
 was not requested again. The known public CDN object in this crate is Central
 1.00 at `media/software/12401/Line6CentralInstaller1.00.exe`. The Edit cards
-do not name a file, so no Edit object name was guessed.
+do not name a file, so no Edit object name was guessed. A 404 from those
+directory HEAD requests can coexist with a public named object.
 
 Wayback CDX returned HTTP 200 and a 3-byte empty JSON array for
 `line6.com/software/readeula.html?rid=9781` and for
@@ -197,7 +198,7 @@ not rewritten into another format.
 
 ## What remains open
 
-An owner-supplied original Edit 2.27 installer, or an account download the owner chooses to provide for release 9781 or 8559, is still required. This crate does not store credentials and does not retry the login redirect or flash release 6260.
+No Edit 2.27 installer is available locally. The unauthenticated readeula HEAD requests redirected to login, and the release-id directory HEAD requests returned 404. A directory 404 can coexist with a public named object. An owner-supplied original installer would unblock this static-extraction approach. Wider availability and other independent sources remain unknown. This crate does not store credentials and does not retry the routes already requested or flash release 6260.
 
 Preset format, model and effect definitions, a local editor, a local flash
 image, a local USB-firmware image, and USB-audio routing beyond the INF

@@ -438,8 +438,8 @@ pub const LOCAL_INSTALLERS_SCANNED: &[&str] = &[
     "central-windows-1.00",
 ];
 
-/// The remaining way to obtain Edit 2.27 for static extraction.
-pub const EDITOR_OWNER_DECISION: &str = "An owner-supplied original Edit 2.27 installer, or an account download the owner chooses to provide for release 9781 or 8559, is still required. This crate does not store credentials and does not retry the login redirect or flash release 6260.";
+/// Local absence and the routes already requested. Wider sources stay unknown.
+pub const EDITOR_ACQUISITION_LIMIT: &str = "No Edit 2.27 installer is available locally. The unauthenticated readeula HEAD requests redirected to login, and the release-id directory HEAD requests returned 404. A directory 404 can coexist with a public named object. An owner-supplied original installer would unblock this static-extraction approach. Wider availability and other independent sources remain unknown. This crate does not store credentials and does not retry the routes already requested or flash release 6260.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Record {
@@ -710,7 +710,7 @@ mod tests {
             assert!(artifact.bytes > 0);
         }
         assert!(!EDITOR_PLAINTEXT_NEEDLES.is_empty());
-        assert!(evidence.contains(EDITOR_OWNER_DECISION));
+        assert!(evidence.contains(EDITOR_ACQUISITION_LIMIT));
         let editor_gap = provenance::ACQUISITION_GAPS
             .iter()
             .find(|gap| gap.id == "hd500x-editor-not-obtained")

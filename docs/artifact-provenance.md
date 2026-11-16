@@ -116,8 +116,10 @@ notes name USB Firmware 1.04 separately. Edit 9781 and 8559 both print
 Version 2.27, with sidebar dates 8/4/20 and 9/10/18. On 2026-11-16,
 unauthenticated HEAD requests for both Edit readeula links returned HTTP 302
 to the account login page. HEAD requests for the CDN directories
-`media/software/9781/` and `media/software/8559/` returned HTTP 404. The login
-page was not requested. The same day's flash probe remains HTTP 302 for
+`media/software/9781/` and `media/software/8559/` returned HTTP 404. A
+directory 404 can coexist with a public named object. The login page was not
+requested. No local Edit 2.27 installer was obtained. Wider availability
+remains unknown. The same day's flash probe remains HTTP 302 for
 `readeula.html?rid=6260` and HTTP 403 for `getrelease?rid=6260`. No editor
 installer and no flash image were saved. Two public 2013 manuals are hashed in
 [POD HD500X](pod-hd500x.md). Their printed file suffixes disagree, and neither
