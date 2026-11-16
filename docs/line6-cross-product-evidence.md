@@ -353,7 +353,10 @@ under `.tools/issue-61-analysis/central-interposer-*.txt`; scripts are
 `.tools/issue-61-analysis/CentralInterposerSelection.java`,
 `CentralInterposerConfig.java`, and `CentralInterposerConfigRefs.java`. Function
 labels are inferred, and reports are bounded to named targets. The tracked static provenance checker is
-`tools/offline_analysis/check_central_interposer_sources.py`. Invoke it with
+`tools/offline_analysis/check_central_interposer_sources.py`. The detailed
+private x86 disassembly/argument trace is retained at
+`.tools/issue-61-analysis/central-start-dispatch-2026-11-16.txt` (Updater DLL
+SHA-256 `d24bb48b0f13d9b46c6dd514e712c347ff9a00d4763555614f700c22634bebc7`). Invoke it with
 `--inputs-root`, `--mac-app`, and `--mac-x64` pointing to the private local
 inventory; it pins all five input hashes. `--self-test` exercises coordinate
 helpers using synthetic PE/Mach-O bytes. Its hash, string/export-name, delay-import-table, IAT-slot, and
@@ -406,6 +409,52 @@ producer remains unresolved. Export `start` at `0x102643e0` forwards to
 an indirect virtual call through its vtable entry at offset `+0x14` with a
 context field and zero argument. The target and later state transitions are not
 resolved. These are native export-body observations, not runtime behavior.
+
+The start dispatch itself is now resolved to a bounded native path. Export
+`start` at `0x102643e0` jumps to `0x10261f70`, which reads the context created
+by `createEngine` at global `0x104bf054`. On the branch where its initialized
+flag at `+0x40` is clear, it allocates a `0x84`-byte object and calls
+constructor `0x10157430`; after that constructor's base vptr write, start
+writes vptr `0x1047de8c` at `0x10261feb`. The table's entry at `+0x14` is
+`0x1015a100`, the target of the indirect call at `0x10262026`. The target is a
+setter: it stores the call's first argument (`&global_context+4`) at receiver
+offset `+0x5c` and the second argument (`0`) at `+0x60`. The `createEngine`
+export at `0x10264270` fills global context offsets `+4`, `+8`, `+0xc`, `+0x10`,
+and `+0x14` from its five incoming callback arguments. Thus this vtable path
+installs a callback bundle in the engine object; the resolved method is not a
+configuration-container loader.
+
+A related initializer callback path is bounded but its host implementation is
+not. `initialize`'s internal routine `0x102636a0` builds module-relative
+resource paths, then calls `0x10261bc0`. The global createEngine context uses
+vtable `0x10486b08`; slot `+0x18` points to `0x10263340`. In the inspected
+`0x10261bc0` path, that slot is called with string arguments; `0x10263340`
+dereferences the fourth callback object stored at global-context `+0x10`,
+invokes its vtable slot `+0x0c` with string arguments, then passes the result
+to the parent context's vtable slot `+0x24`. This establishes a callback
+query/response edge from native initialization. The host-side producer of that
+fourth callback and its returned values are not established by the available
+managed CIL slice. No data flow joins this callback edge to the Interposer
+parser's caller-fed XML input or its `ProductId`/`library` insertion path.
+
+The updater initialization order is also bounded at the callsites. In
+`0x101ba2db`, it calls the loader entry at `0x101bee50` (body beginning
+`0x101bee60`); on its success branch it calls the no-argument `InterposerInit`
+slot `0x104baaec` at `0x101ba2e6`, then calls
+`InterposerRegisterCallback` slot `0x104baaf4` at `0x101ba2fe`. That
+registration receives callback address `0x1014d190` and context pointer `edi`;
+`0x1014d190` is a zero-return stub. This startup sequence supplies no
+configuration path/list/XML to `InterposerInit`, and the registered stub does
+not implement an XML provider.
+
+A separate call at `0x101ba6e8` uses `InterposerGetDescriptors` slot
+`0x104baaf0`, with an allocated buffer pointer and byte count. On a
+nonnegative result the caller iterates `count` records at stride `0x214` and
+reads fields for its follow-on branch/logging. This is a bounded call/argument
+observation; it does not establish a successful exchange or that the buffer is
+configuration XML. The Interposer parser context producer, its actual XML
+argument source, and any startup ordering connecting the parser worker to this
+updater call remain unresolved.
 The binding is now traced through the PE delay-import data. The delay descriptor
 at VA `0x1049f644` names `Interposer.dll` (name RVA `0x3b5240`), uses module
 handle slot `0x104bab00`, IAT `0x104baad8`, and import-name table `0x1049f684`.
@@ -422,8 +471,9 @@ native `.text` reference scan are
 `0x101c6d2c`, and `0x101c7382`. At queue-out `0x101c7382`, stack arguments
 are the device handle from `[esi+0x1c]`, packet pointer `ecx+8`, then three
 zero values; this establishes the source of the queue-out call arguments, not
-their protocol semantics. Neighboring code calls `InterposerGetDescriptorCount`
-via slot `0x104baae0` after one Message call. This is code and import-table
+their protocol semantics. Neighboring code calls `InterposerClosePipe`
+via slot `0x104baae0` after one Message call. `InterposerGetDescriptorCount`
+uses slot `0x104baadc` (for example, callsite `0x101ba69f`). This is code and import-table
 evidence, not a successful runtime exchange. The configuration-container producer, successful descriptor data flow,
 payload framing, session/error contract, and relationship to a Variax editor
 remain unresolved. The native updater DLL also imports libusb
@@ -495,8 +545,11 @@ of absence. No vendor code was executed.
   not a validated storage or instrument limit.
 - Central's Variax table does not establish whether each guitar/bass is
   recognized, editable, backed up, or updateable in a real session. The bass
-  rows do not imply Workbench HD editor support. The native configuration
-  container producer and successful descriptor data flow remain unresolved;
+  rows do not imply Workbench HD editor support. The native start vtable path
+  resolves to a callback-bundle setter, and initialization dispatches a string
+  query through the fourth `createEngine` callback; the managed callback
+  producer and connection to the Interposer parser's XML source remain
+  unresolved. Successful descriptor data flow remains unresolved;
   the macOS scanner teardown and Objective-C/Interposer delegate targets are
   also unresolved.
 - No Variax bass editor/backend, verified Central catalog/version payload, firmware
