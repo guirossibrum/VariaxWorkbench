@@ -352,7 +352,13 @@ Ghidra static decompilation reports for the bounded Windows trace are private
 under `.tools/issue-61-analysis/central-interposer-*.txt`; scripts are
 `.tools/issue-61-analysis/CentralInterposerSelection.java`,
 `CentralInterposerConfig.java`, and `CentralInterposerConfigRefs.java`. Function
-labels are inferred, and reports are bounded to named targets.
+labels are inferred, and reports are bounded to named targets. The tracked static provenance checker is
+`tools/offline_analysis/check_central_interposer_sources.py`. Invoke it with
+`--inputs-root`, `--mac-app`, and `--mac-x64` pointing to the private local
+inventory; it pins all five input hashes. `--self-test` exercises coordinate
+helpers using synthetic PE/Mach-O bytes. Its hash, string/export-name, delay-import-table, IAT-slot, and
+format-coordinate assertions are provenance checks, not native execution or
+behavior equivalence.
 
 The managed `Line 6 Central.exe` contains the `EngineCLIWrapper` assembly name.
 That wrapper imports `createEngine`, `initialize`, `start`, typed parameter
@@ -388,14 +394,40 @@ managed host handoff is also bounded: Central's .NET metadata/CIL contains
 `ParamValueServer.initialize` and `.start` calls to
 `EngineCLIWrapper.EngineWrapper.initialize` and `.start` (MemberRef tokens
 `0x0a000089` and `0x0a00008a`). Its `initialize` body loads the static
-`appVersionString` field (Field token `0x04000bd4`) as the string argument;
-the wrapper's import table then exposes generic engine methods from this
-updater DLL. This traced host argument is a version string, not a configuration
-directory/list. The precise `GetProcAddress`-to-Interposer-symbol binding,
-configuration-container producer, successful descriptor data flow, payload
-framing, session/error contract, and relationship to a Variax editor remain
-unresolved. The native updater DLL also imports libusb enumeration/transfer
-calls, SetupAPI device enumeration, `cyusbserial` I2C calls, and Windows MIDI
+`appVersionString` field (Field token `0x04000bd4`) as the single string
+argument. The wrapper imports the native `initialize` and `start` exports.
+Updater export `initialize` is at VA `0x10264380`; it copies the incoming C++
+string and calls internal routine `0x102636a0`. That routine calls
+`GetModuleFileNameW` (`0x103ac074`) and performs module-relative resource/path
+setup. No configuration directory/list is passed by the managed call, and
+static flow from the native initializer to the Interposer configuration
+producer remains unresolved. Export `start` at `0x102643e0` forwards to
+`0x10261f70`; this body obtains or allocates a global engine context and makes
+an indirect virtual call through its vtable entry at offset `+0x14` with a
+context field and zero argument. The target and later state transitions are not
+resolved. These are native export-body observations, not runtime behavior.
+The binding is now traced through the PE delay-import data. The delay descriptor
+at VA `0x1049f644` names `Interposer.dll` (name RVA `0x3b5240`), uses module
+handle slot `0x104bab00`, IAT `0x104baad8`, and import-name table `0x1049f684`.
+The nine name-table entries are `InterposerMessage`,
+`InterposerGetDescriptorCount`, `InterposerClosePipe`, `InterposerOpenPipe`,
+`InterposerCleanup`, `InterposerInit`, `InterposerGetDescriptors`,
+`InterposerRegisterCallback`, and `InterposerGetApplicationId`. The first IAT
+slot starts with a resolver thunk at `0x10268a8d`; it passes the slot and the
+delay descriptor to helper `0x102c3d3d`, which reaches the `GetProcAddress`
+import at `0x103ac0a8` (`0x102c3f2f`) and returns the resolved target to the
+thunk. The seven direct callsites to the `InterposerMessage` slot found in the bounded
+native `.text` reference scan are
+`0x10161739`, `0x101b9d24`, `0x101c1574`, `0x101c1fb5`, `0x101c407b`,
+`0x101c6d2c`, and `0x101c7382`. At queue-out `0x101c7382`, stack arguments
+are the device handle from `[esi+0x1c]`, packet pointer `ecx+8`, then three
+zero values; this establishes the source of the queue-out call arguments, not
+their protocol semantics. Neighboring code calls `InterposerGetDescriptorCount`
+via slot `0x104baae0` after one Message call. This is code and import-table
+evidence, not a successful runtime exchange. The configuration-container producer, successful descriptor data flow,
+payload framing, session/error contract, and relationship to a Variax editor
+remain unresolved. The native updater DLL also imports libusb
+enumeration/transfer calls, SetupAPI device enumeration, `cyusbserial` I2C calls, and Windows MIDI
 APIs; imports alone do not establish that a path is active for Variax or safe
 to call. All of this is static analysis; no vendor binary or managed assembly
 was executed.
@@ -417,9 +449,18 @@ string tables include `L6DeviceManagerMac` (`__TEXT,__cstring` VA
 `0x10057dda0`, Objective-C method-name VA `0x1005c1a71`), and the
 `getParamValueSetInterposerDelegate` method-name entry (VA `0x1005bd42c`). The
 slice imports CoreMIDI/IOKit symbols and references the bundled libusb and
-cyusbserial dylibs. These architecture-specific facts show macOS device,
-product-ID and Interposer-delegate vocabulary, but not a caller/data-flow trace
-or proof of preset editing. Static binary strings also include
+cyusbserial dylibs. These architecture-specific facts show macOS device, product-ID and
+Interposer-delegate vocabulary. A raw x86_64 decode cross-check was performed
+with LLVM 22's X86 disassembler API against the pinned thin slice. The raw decoder
+was used as a static analysis tool and did not load vendor code. At `0x10010630e`, a function reads a model/product value
+from a device-context field (offset `+0xa4` or `+0x130`, selected by a context
+flag), branches on product-ID ranges, and selects the `Variax.json` cstring at
+`0x10057a6e5` for one branch. At `0x10010643c` it forms that string address;
+the following direct call at `0x100106447` targets `0x1004e35ac`, after which
+the result is checked and passed to local processing. This is a concrete
+product-selection/configuration path for updater metadata. It does not identify
+the downstream helper's semantic role, establish an Interposer delegate call,
+or prove preset editing. Static binary strings also include
 `L6DeviceManagerMac`, `L6USBDeviceManager`,
 `L6USBDevice_DevMgr`, `L6DeviceDescription`, `L6GenericUpdateEngine`,
 `L6HWUpdateEngineVXFlash`, `tearingDownVariaxScanner`,
@@ -428,13 +469,13 @@ and factory patches. This supports that the Mac build has native device-manager
 and firmware-update components with a Variax scanner/update path. The bounded
 string/dependency scan does not recover their call graph, product-selection
 predicate, corresponding consumer or wire/session behavior; it cannot establish
-Variax preset editing parity with Windows. Static Ghidra attempts on both the
-full universal executable and its separately extracted x86_64 slice
-(`21bf512d07ae507929cf1581cdc07491605e5dcac58d115e6a59e230d7f95b76`) using
-processor `x86:LE:64:default` produced unresolved-instruction/decompiler
-warnings before a reliable scanner call trace was available. The slice analysis
-was stopped without treating those warnings as absence evidence. No vendor
-code was executed.
+Variax preset editing parity with Windows. Static Ghidra attempts on the full
+universal executable and extracted x86_64 slice (processor
+`x86:LE:64:default`) produced unresolved-instruction and decompiler warnings.
+LLVM 22 X86 disassembly independently confirms the product-selection edge
+above; scanner teardown and Objective-C selector/IMP or Interposer-delegate
+target tracing remain unresolved. Ghidra warnings are not treated as evidence
+of absence. No vendor code was executed.
 
 ## Explicitly unresolved
 
@@ -454,7 +495,10 @@ code was executed.
   not a validated storage or instrument limit.
 - Central's Variax table does not establish whether each guitar/bass is
   recognized, editable, backed up, or updateable in a real session. The bass
-  rows do not imply Workbench HD editor support.
+  rows do not imply Workbench HD editor support. The native configuration
+  container producer and successful descriptor data flow remain unresolved;
+  the macOS scanner teardown and Objective-C/Interposer delegate targets are
+  also unresolved.
 - No Variax bass editor/backend, verified Central catalog/version payload, firmware
   image, firmware protocol, installed-unit version, or recovery path was
   established. No audio routing/capture support was established.
