@@ -51,6 +51,13 @@ the guitar renamer. `document::save_new` writes a new copy and refuses to
 replace an existing path. The guitar document refuses to open or rename a
 PODxt Live target, including a bank that contains one.
 
+An applied name is unsaved until that tone's copy is written. Quitting asks
+to save, discard, or keep editing, one tone at a time. Cancel, or a save that
+is cancelled or refused, keeps the edit and leaves the application open.
+Saving or discarding one tone does not clear another. Closing the tone window
+keeps the in-memory library. The guitar unsaved-changes dialog is unchanged,
+and confirming it does not close while a tone is still unsaved.
+
 The session operations `OpenPodPreset` and `EditPodPreset` are offline for the
 PODxt Live role and unsupported for the Variax 600 role. Physical operations
 stay locked. `LIVE_BACKEND_INITIALIZER` stays `None`. The GUI window is

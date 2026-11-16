@@ -39,6 +39,8 @@ enum Pending {
     Open(PathBuf),
     ReadCurrent,
     Quit,
+    /// Quit while at least one PODxt Live tone has an applied unsaved edit.
+    QuitPod,
 }
 
 trait FileDialogs {
@@ -315,6 +317,7 @@ impl Workbench {
     }
 
     fn dirty(&self) -> bool {
+        // Guitar open and read prompts use this. POD tones use the quit guard.
         self.document.as_ref().is_some_and(EditorDocument::is_dirty)
     }
 
@@ -492,9 +495,15 @@ impl Workbench {
         match self.pending.take() {
             Some(Pending::Open(path)) => self.load(&path),
             Some(Pending::ReadCurrent) => self.launch_read(),
-            Some(Pending::Quit) => {
-                self.permit_close = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            Some(Pending::Quit | Pending::QuitPod) => {
+                // Guitar save or discard must not close while a POD tone is unsaved.
+                if self.pod_library.any_dirty() {
+                    self.pending = Some(Pending::QuitPod);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                } else {
+                    self.permit_close = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
             }
             None => {}
         }
@@ -1107,6 +1116,10 @@ impl Workbench {
     fn pending_dialog(&mut self, ctx: &egui::Context) {
         #[cfg(test)]
         self.pending_buttons.clear();
+        if matches!(self.pending, Some(Pending::QuitPod)) {
+            self.pod_quit_dialog(ctx);
+            return;
+        }
         if self.pending.is_some() {
             let mut discard = false;
             let mut save_continue = false;
@@ -1159,8 +1172,108 @@ impl Workbench {
         } else if self.dirty() && !self.permit_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.pending = Some(Pending::Quit);
+        } else if self.pod_library.any_dirty() && !self.permit_close {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.pending = Some(Pending::QuitPod);
         } else {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    fn pod_quit_dialog(&mut self, ctx: &egui::Context) {
+        let Some(index) = self.pod_library.first_dirty() else {
+            self.continue_pending(ctx);
+            return;
+        };
+        let Some(name) = self
+            .pod_library
+            .tone(index)
+            .map(|tone| tone.name().to_owned())
+        else {
+            self.pending = None;
+            return;
+        };
+        let remaining = self.pod_library.dirty_count();
+        let still = if remaining == 1 {
+            "This is the only unsaved tone.".to_owned()
+        } else {
+            format!(
+                "{remaining} tones are unsaved. Saving or discarding this one leaves the others unsaved."
+            )
+        };
+        let mut discard = false;
+        let mut save_continue = false;
+        let mut cancel = false;
+        egui::Window::new("Unsaved PODxt Live tone")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "\"{name}\" has an applied name edit that has not been saved. {still}"
+                ));
+                ui.horizontal(|ui| {
+                    let response = ui.button("Save copy and continue…");
+                    #[cfg(test)]
+                    self.pending_buttons.insert("save", response.rect);
+                    if response.clicked() {
+                        save_continue = true;
+                    }
+                    let response = ui.button("Keep editing");
+                    #[cfg(test)]
+                    self.pending_buttons.insert("cancel", response.rect);
+                    if response.clicked() {
+                        cancel = true;
+                    }
+                    let response = ui.button("Discard this tone");
+                    #[cfg(test)]
+                    self.pending_buttons.insert("discard", response.rect);
+                    if response.clicked() {
+                        discard = true;
+                    }
+                });
+            });
+        if cancel {
+            self.pending = None;
+        } else if save_continue {
+            if self.save_next_dirty_pod() && !self.pod_library.any_dirty() {
+                self.continue_pending(ctx);
+            }
+        } else if discard && self.discard_next_dirty_pod() && !self.pod_library.any_dirty() {
+            self.continue_pending(ctx);
+        }
+    }
+
+    fn save_next_dirty_pod(&mut self) -> bool {
+        let Some(index) = self.pod_library.first_dirty() else {
+            return false;
+        };
+        self.write_pod_copy(index)
+    }
+
+    fn discard_next_dirty_pod(&mut self) -> bool {
+        let Some(index) = self.pod_library.first_dirty() else {
+            return false;
+        };
+        match self.pod_library.revert_unsaved(index) {
+            Ok(()) => {
+                self.refresh_selected_pod_name();
+                self.pod_message =
+                    "Discarded the unsaved name edit for one tone. Nothing was sent.".into();
+                true
+            }
+            Err(error) => {
+                self.pod_message = error.detail();
+                false
+            }
+        }
+    }
+
+    fn refresh_selected_pod_name(&mut self) {
+        if let Some(index) = self.pod_selected
+            && let Some(tone) = self.pod_library.tone(index)
+        {
+            self.pod_name = tone.name().to_owned();
         }
     }
 
@@ -1539,6 +1652,7 @@ impl Workbench {
                     }
                 }
             });
+        // Closing this window keeps the in-memory library, including unsaved names.
         self.pod_open = open;
     }
 
@@ -1609,27 +1723,40 @@ impl Workbench {
             self.pod_message = "Select a tone before saving a copy.".into();
             return;
         };
-        let Some(bytes) = self
+        self.write_pod_copy(index);
+    }
+
+    fn write_pod_copy(&mut self, index: usize) -> bool {
+        let Some((bytes, suggested)) = self
             .pod_library
             .tone(index)
-            .map(|tone| tone.as_bytes().to_vec())
+            .map(|tone| (tone.as_bytes().to_vec(), suggested_tone_name(tone.name())))
         else {
             self.pod_message = "Select a tone before saving a copy.".into();
-            return;
+            return false;
         };
-        let suggested = suggested_tone_name(&self.pod_name);
         let Some(path) = self.dialogs.save_pod_tone(&suggested) else {
             self.pod_message = "Save cancelled. No file was written.".into();
-            return;
+            return false;
         };
         match Session::initial_rig().save_pod_copy(RoleKind::Pod, &path, &bytes) {
-            Ok(()) => {
-                self.pod_message = format!(
-                    "Saved a new copy at {}. Existing files were not replaced. Nothing was sent.",
-                    path.display()
-                );
+            Ok(()) => match self.pod_library.note_saved(index) {
+                Ok(()) => {
+                    self.pod_message = format!(
+                        "Saved a new copy at {}. Existing files were not replaced. Nothing was sent.",
+                        path.display()
+                    );
+                    true
+                }
+                Err(error) => {
+                    self.pod_message = error.detail();
+                    false
+                }
+            },
+            Err(error) => {
+                self.pod_message = rejection_text(&error);
+                false
             }
-            Err(error) => self.pod_message = rejection_text(&error),
         }
     }
 
@@ -2514,6 +2641,182 @@ mod tests {
         assert_eq!(app.pod_library.len(), 1);
         assert_eq!(app.document.as_ref().unwrap().as_bytes(), guitar);
         app.start_read();
+        assert!(app.read_worker.is_none());
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    fn click_pod_window_close(context: &egui::Context, app: &mut Workbench) {
+        recording_frame(context, app, vec![]);
+        let rect = context
+            .memory(|memory| memory.area_rect(egui::Id::new("Offline PODxt Live tones")))
+            .expect("POD window");
+        let pos = Pos2::new(rect.right() - 20.0, rect.top() + 18.0);
+        recording_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
+    fn pod_tone_name(app: &Workbench, index: usize) -> String {
+        app.pod_library.tone(index).expect("tone").name().to_owned()
+    }
+
+    #[test]
+    fn applied_pod_rename_blocks_quit_until_each_tone_is_saved_or_discarded() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let guitar = app.document.as_ref().unwrap().as_bytes().to_vec();
+        let directory = tempfile::tempdir().unwrap();
+        let tone_a = directory.path().join("a.tone");
+        let tone_b = directory.path().join("b.tone");
+        std::fs::write(&tone_a, sample_pod_tone()).unwrap();
+        std::fs::write(&tone_b, sample_pod_tone()).unwrap();
+        let blocked = directory.path().join("blocked.tone");
+        std::fs::write(&blocked, b"keep").unwrap();
+        let alpha = directory.path().join("alpha.tone");
+        let beta = directory.path().join("beta.tone");
+        let guitar_copy = directory.path().join("guitar-copy.vwm");
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(tone_a), Some(tone_b)].into(),
+            pod_save: [
+                None,
+                Some(blocked.clone()),
+                Some(alpha.clone()),
+                Some(beta.clone()),
+            ]
+            .into(),
+            save: [Some(guitar_copy.clone())].into(),
+            ..Default::default()
+        });
+        click_pod(&context, &mut app, "open-pod");
+        click_pod(&context, &mut app, "load-pod");
+        app.pod_name = "Typed only".into();
+        app.request_close(&context);
+        assert!(app.pending.is_none());
+        assert!(!app.permit_close);
+        assert!(!app.pod_library.any_dirty());
+        app.pod_name = "Alpha".into();
+        click_pod(&context, &mut app, "apply-pod-name");
+        click_pod(&context, &mut app, "load-pod");
+        app.pod_name = "Beta".into();
+        click_pod(&context, &mut app, "apply-pod-name");
+        assert!(app.pod_library.is_dirty(0));
+        assert!(app.pod_library.is_dirty(1));
+        assert_eq!(pod_tone_name(&app, 0), "Alpha");
+        assert_eq!(pod_tone_name(&app, 1), "Beta");
+        assert!(!app.dirty());
+        click_pod_window_close(&context, &mut app);
+        assert!(!app.pod_open);
+        assert_eq!(pod_tone_name(&app, 0), "Alpha");
+        assert_eq!(pod_tone_name(&app, 1), "Beta");
+        assert!(app.pod_library.is_dirty(0));
+        assert!(app.pod_library.is_dirty(1));
+
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert!(!app.permit_close);
+        prompt_frame(&context, &mut app, vec![]);
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pending.is_none());
+        assert!(!app.permit_close);
+        assert_eq!(pod_tone_name(&app, 0), "Alpha");
+        assert_eq!(pod_tone_name(&app, 1), "Beta");
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), guitar);
+
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "save");
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert!(!app.permit_close);
+        assert!(app.pod_message.contains("cancelled"));
+        assert!(app.pod_library.is_dirty(0));
+        assert!(app.pod_library.is_dirty(1));
+        assert_eq!(pod_tone_name(&app, 0), "Alpha");
+        click_prompt(&context, &mut app, "save");
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert!(!app.permit_close);
+        assert!(!app.pod_message.starts_with("Saved a new copy"));
+        assert_eq!(std::fs::read(&blocked).unwrap(), b"keep");
+        assert!(app.pod_library.is_dirty(0));
+        assert!(app.pod_library.is_dirty(1));
+        assert_eq!(pod_tone_name(&app, 1), "Beta");
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pending.is_none());
+
+        app.change(|preset| preset.rename("Guitar edit"));
+        assert!(app.dirty());
+        let guitar_edited = app.document.as_ref().unwrap().as_bytes().to_vec();
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::Quit)));
+        assert!(!app.permit_close);
+        prompt_frame(&context, &mut app, vec![]);
+        click_prompt(&context, &mut app, "save");
+        assert!(!app.dirty());
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert!(!app.permit_close);
+        assert_eq!(std::fs::read(&guitar_copy).unwrap(), guitar_edited);
+        assert_eq!(pod_tone_name(&app, 0), "Alpha");
+        assert_eq!(pod_tone_name(&app, 1), "Beta");
+        assert!(app.pod_library.is_dirty(0));
+        assert!(app.pod_library.is_dirty(1));
+
+        click_prompt(&context, &mut app, "save");
+        assert!(!app.pod_library.is_dirty(0));
+        assert!(app.pod_library.is_dirty(1));
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert!(!app.permit_close);
+        assert_eq!(pod_tone_name(&app, 0), "Alpha");
+        assert_eq!(pod_tone_name(&app, 1), "Beta");
+        let saved_alpha = pod_preset::PodTone::parse(std::fs::read(&alpha).unwrap()).unwrap();
+        assert_eq!(saved_alpha.name(), "Alpha");
+        assert_eq!(saved_alpha.amp_model_id(), Some(0x1111_0002));
+        assert!(!beta.exists());
+
+        click_prompt(&context, &mut app, "save");
+        assert!(!app.pod_library.any_dirty());
+        assert!(app.permit_close);
+        assert!(app.pending.is_none());
+        assert_eq!(pod_tone_name(&app, 1), "Beta");
+        let saved_beta = pod_preset::PodTone::parse(std::fs::read(&beta).unwrap()).unwrap();
+        assert_eq!(saved_beta.name(), "Beta");
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), guitar_edited);
+
+        app.permit_close = false;
+        app.pod_selected = Some(0);
+        app.pod_name = "Gamma".into();
+        app.apply_pod_name();
+        assert!(app.pod_library.is_dirty(0));
+        assert!(!app.pod_library.is_dirty(1));
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "discard");
+        assert_eq!(pod_tone_name(&app, 0), "Alpha");
+        assert_eq!(pod_tone_name(&app, 1), "Beta");
+        assert!(!app.pod_library.any_dirty());
+        assert!(app.permit_close);
+        assert!(app.pending.is_none());
+        assert!(app.pod_message.contains("Discarded"));
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), guitar_edited);
         assert!(app.read_worker.is_none());
         const {
             assert!(LIVE_ACCESS_LOCKED);

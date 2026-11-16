@@ -282,16 +282,28 @@ impl PodTone {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StoredTone {
+    tone: PodTone,
+    /// Bytes last imported or successfully saved. Compared with the applied tone.
+    saved: Vec<u8>,
+}
+
 /// In-memory list of individual tone files. This is not a bank format.
+///
+/// Each tone keeps the bytes last imported or successfully saved. An applied
+/// edit that differs from that baseline is unsaved. Saving or discarding one
+/// tone does not change another tone's baseline.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Library {
-    tones: Vec<PodTone>,
+    tones: Vec<StoredTone>,
 }
 
 impl Library {
     pub fn import_bytes(&mut self, bytes: Vec<u8>) -> Result<usize, ToneError> {
         let tone = PodTone::parse(bytes)?;
-        self.tones.push(tone);
+        let saved = tone.as_bytes().to_vec();
+        self.tones.push(StoredTone { tone, saved });
         Ok(self.tones.len() - 1)
     }
 
@@ -304,7 +316,7 @@ impl Library {
     }
 
     pub fn tone(&self, index: usize) -> Option<&PodTone> {
-        self.tones.get(index)
+        self.tones.get(index).map(|entry| &entry.tone)
     }
 
     pub fn replace(&mut self, index: usize, bytes: Vec<u8>) -> Result<(), ToneError> {
@@ -313,7 +325,54 @@ impl Library {
             .tones
             .get_mut(index)
             .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
-        *slot = tone;
+        slot.tone = tone;
+        Ok(())
+    }
+
+    pub fn is_dirty(&self, index: usize) -> bool {
+        self.tones
+            .get(index)
+            .is_some_and(|entry| entry.tone.as_bytes() != entry.saved.as_slice())
+    }
+
+    pub fn any_dirty(&self) -> bool {
+        self.tones
+            .iter()
+            .any(|entry| entry.tone.as_bytes() != entry.saved.as_slice())
+    }
+
+    pub fn dirty_count(&self) -> usize {
+        self.tones
+            .iter()
+            .filter(|entry| entry.tone.as_bytes() != entry.saved.as_slice())
+            .count()
+    }
+
+    pub fn first_dirty(&self) -> Option<usize> {
+        self.tones
+            .iter()
+            .position(|entry| entry.tone.as_bytes() != entry.saved.as_slice())
+    }
+
+    /// Record a successful save of this tone only.
+    pub fn note_saved(&mut self, index: usize) -> Result<(), ToneError> {
+        let entry = self
+            .tones
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
+        entry.saved = entry.tone.as_bytes().to_vec();
+        Ok(())
+    }
+
+    /// Restore one tone to its imported or last-saved bytes.
+    pub fn revert_unsaved(&mut self, index: usize) -> Result<(), ToneError> {
+        let entry = self
+            .tones
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
+        if entry.tone.as_bytes() != entry.saved.as_slice() {
+            entry.tone = PodTone::parse(entry.saved.clone())?;
+        }
         Ok(())
     }
 }
@@ -577,6 +636,8 @@ mod tests {
         let mut edited = library.tone(first).unwrap().clone();
         edited.rename("Guitare 🎸").unwrap();
         library.replace(first, edited.into_bytes()).unwrap();
+        assert!(library.is_dirty(first));
+        assert!(!library.is_dirty(second));
         assert_eq!(library.tone(first).unwrap().name(), "Guitare 🎸");
         assert_eq!(library.tone(second).unwrap().amp_model_id(), Some(9));
         assert_eq!(library.tone(second).unwrap().name(), "A");
@@ -584,11 +645,26 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("copy.tone");
         library.tone(first).unwrap().save_copy(&path).unwrap();
+        assert!(library.is_dirty(first));
+        library.note_saved(first).unwrap();
+        assert!(!library.is_dirty(first));
+        assert!(!library.is_dirty(second));
         let saved = std::fs::read(&path).unwrap();
         assert_eq!(saved, library.tone(first).unwrap().as_bytes());
         assert!(library.tone(first).unwrap().save_copy(&path).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), saved);
+        let mut other = library.tone(second).unwrap().clone();
+        other.rename("Other").unwrap();
+        library.replace(second, other.into_bytes()).unwrap();
+        assert!(!library.is_dirty(first));
+        assert!(library.is_dirty(second));
+        library.revert_unsaved(second).unwrap();
+        assert_eq!(library.tone(second).unwrap().name(), "A");
+        assert!(!library.is_dirty(second));
+        assert_eq!(library.tone(first).unwrap().name(), "Guitare 🎸");
         assert!(library.replace(7, live_tone()).is_err());
+        assert!(library.note_saved(7).is_err());
+        assert!(library.revert_unsaved(7).is_err());
     }
 
     #[test]
