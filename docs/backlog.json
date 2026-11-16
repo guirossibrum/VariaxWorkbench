@@ -211,10 +211,11 @@
         "firmware-map",
         "update-recovery"
       ],
-      "body": "Firmware improvements are a research goal; neither feasibility nor a recoverable deployment path is established.\n\n## Acceptance criteria\n\n- [ ] Identify potential improvements grounded in mapped code/data and document architectural constraints.\n- [ ] Assess model/calibration compatibility, integrity mechanisms and recovery implications.\n- [ ] Publish a feasibility report with evidence and unknowns; do not flash or generate deployable experimental firmware in this task.\n\n## References\n\n- `docs/factory-reference.md`\n- `docs/report.md`\n\nDependencies: firmware-map, update-recovery.\n\n## Hardware boundary\n\nNo USB/MIDI traffic, device writes, reset, preset switching, or firmware installation is authorized. Keep all source-level hardware locks enabled; no runtime unlock. Use local artifacts, synthetic inputs, fake transports and CPU emulation only.",
+      "body": "Firmware improvements are a research goal; neither feasibility nor a recoverable deployment path is established.\n\n## Acceptance criteria\n\n- [x] Identify potential improvements grounded in mapped code/data and document architectural constraints.\n- [x] Assess model/calibration compatibility, integrity mechanisms and recovery implications.\n- [x] Publish a feasibility report with evidence and unknowns; do not flash or generate deployable experimental firmware in this task.\n\n## References\n\n- `docs/factory-reference.md`\n- `docs/report.md`\n\nDependencies: #13, #16.\n\n## Hardware boundary\n\nNo USB/MIDI traffic, device writes, reset, preset switching, or firmware installation is authorized. Keep all source-level hardware locks enabled; no runtime unlock. Use local artifacts, synthetic inputs, fake transports and CPU emulation only.\n\nBacklog key: `firmware-improvements`. Phase: `offline`.\n\n\n## Accepted assessment\n\nMerged in a548391cc32674a7d5085b4796fa0b76a4308cd6 (#75). docs/firmware-feasibility.md assesses concrete mapped candidates and architecture, model/calibration, integrity and recovery constraints. This completes the feasibility-report scope and concludes that no deployable device-firmware modification is justified yet. No experimental image, repacker, installer or physical operation was generated. Source fingerprints and local links were verified; runtime source is unchanged. Hardware locks remain enabled.\n",
       "issue_number": 19,
       "issue_url": "https://github.com/guirossibrum/VariaxWorkbench/issues/19",
-      "order": 19
+      "order": 19,
+      "state": "closed"
     },
     {
       "key": "pod-usb-version",
