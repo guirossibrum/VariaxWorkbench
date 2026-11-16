@@ -177,6 +177,19 @@ impl Session {
         Ok(model::version(profile, component))
     }
 
+    /// Driver-text identity for the POD HD500X extension only.
+    ///
+    /// Workbench HD, JTV-69, and the initial rig do not inherit these ids.
+    pub fn pod_hd500x(
+        self,
+    ) -> Result<&'static crate::pod_hd500x::Record, crate::pod_hd500x::ProfileMiss> {
+        match self.kind {
+            SessionKind::Extension(ProductProfile::PodHd500x) => Ok(crate::pod_hd500x::record()),
+            SessionKind::Extension(_) => Err(crate::pod_hd500x::ProfileMiss::DifferentExtension),
+            SessionKind::InitialRig => Err(crate::pod_hd500x::ProfileMiss::InitialRig),
+        }
+    }
+
     pub fn extension_version(self, component: Component) -> Result<VersionKnowledge, Rejection> {
         match self.kind {
             SessionKind::Extension(profile) => Ok(model::version(profile, component)),

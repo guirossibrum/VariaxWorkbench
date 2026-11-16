@@ -102,6 +102,25 @@ that an update ran. Preserving Monkey and License Manager installers does not
 preserve the transaction server after the announced 2026-04-10 retirement.
 Central listing 1.06, dated 2026-09-17, was not obtained.
 
+## POD HD500X catalog and driver text
+
+The public POD HD500X page lists Flash Memory v2.62 as release 6260, estimated
+892 KB, with no date and no saved catalog MD5. On 2026-11-16 an
+unauthenticated `readeula.html?rid=6260` request returned HTTP 302 to the
+account login page. `getrelease?rid=6260` returned HTTP 403. No flash image
+was saved. The same notes name USB Firmware 1.04 separately. Edit listings
+9781 and 8559 were not downloaded. Details and the driver-text USB match are
+in [POD HD500X](pod-hd500x.md).
+
+A 7-Zip data extract of `l6PODHD5SE.inf` from the Windows 4.2.7.7 archive is
+10484 bytes, SHA-256
+`50080c9e9efb7b104e2520ea577db3eb2c13f9c16fb0cf90c1628ef31f5b1790`.
+Both audio-kext `Info.plist` files reached through the macOS 7.6.8 DMG are
+47343 bytes, SHA-256
+`17f83de2fcfc818e7ea50699406fcbe7ab15ae52dd74db735a5f33e695c14b9a`.
+Those member hashes are not the installer hashes. No driver binary was loaded
+and no installer was run.
+
 ## Checks
 
 ```sh

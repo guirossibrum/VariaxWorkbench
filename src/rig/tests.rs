@@ -613,3 +613,142 @@ fn offline_recording_gate_does_not_call_capture_or_open_a_stream() {
     );
     assert_eq!(attempts, 0);
 }
+
+#[test]
+fn pod_hd500x_identity_stays_on_its_profile_and_does_not_open_other_families() {
+    assert!(LIVE_BACKEND_INITIALIZER.is_none());
+    let session = Session::initial_rig();
+    assert!(session.live_backend_is_absent());
+    assert_eq!(
+        session.pod_hd500x(),
+        Err(crate::pod_hd500x::ProfileMiss::InitialRig)
+    );
+    let host = session.host().expect("initial host");
+    assert_eq!(host.product_id, 0x4650);
+    let hd = Session::extension(ProductProfile::PodHd500x).expect("hd500x");
+    assert!(hd.live_backend_is_absent());
+    assert!(hd.host().is_none());
+    let record = hd.pod_hd500x().expect("hd500x record");
+    assert_ne!(host.product_id, record.usb_product_id);
+    assert_ne!(
+        ProductProfile::PodHd500x.family(),
+        ProductProfile::PodxtLive.family()
+    );
+    assert_ne!(
+        ProductProfile::PodHd500x.family(),
+        ProductProfile::Jtv69.family()
+    );
+    assert_ne!(
+        ProductProfile::PodHd500x.family(),
+        ProductProfile::WorkbenchHd.family()
+    );
+    assert!(
+        ProductProfile::PodHd500x
+            .archived_firmware_product()
+            .is_none()
+    );
+    for profile in [ProductProfile::WorkbenchHd, ProductProfile::Jtv69] {
+        let other = Session::extension(profile).expect("other extension");
+        assert_eq!(
+            other.pod_hd500x(),
+            Err(crate::pod_hd500x::ProfileMiss::DifferentExtension)
+        );
+        let note = capability::capability(profile, Operation::OpenPodPreset).note;
+        assert!(!note.contains("4159"));
+        assert!(!note.contains("48000"));
+    }
+    let open_note =
+        capability::capability(ProductProfile::PodHd500x, Operation::OpenPodPreset).note;
+    let route_note =
+        capability::capability(ProductProfile::PodHd500x, Operation::SelectRecordRoute).note;
+    let firmware_note =
+        capability::capability(ProductProfile::PodHd500x, Operation::InspectFirmware).note;
+    assert!(open_note.contains("preset container"));
+    assert!(route_note.contains("48000"));
+    assert!(route_note.contains("EngineFormatLock"));
+    assert!(firmware_note.contains("6260"));
+    assert!(firmware_note.contains("1.04"));
+    match hd
+        .extension_version(Component::ArchivedContainer)
+        .expect("flash label")
+    {
+        VersionKnowledge::NotEstablished { evidence } => {
+            assert!(evidence.contains("6260"));
+            assert!(!VersionKnowledge::NotEstablished { evidence }.is_known_value());
+        }
+        other => panic!("flash label was {other:?}"),
+    }
+    match hd
+        .extension_version(Component::InstalledUsbFirmware)
+        .expect("usb label")
+    {
+        VersionKnowledge::NotEstablished { evidence } => assert!(evidence.contains("1.04")),
+        other => panic!("usb label was {other:?}"),
+    }
+    let tone = crate::pod_preset::fixture(
+        crate::pod_preset::ContainerKind::L6pa,
+        PODXT_LIVE_PRODUCT_ID,
+        1,
+        &[(crate::pod_preset::AMP_SLOT, 1)],
+    );
+    assert_eq!(
+        hd.open_pod_preset(RoleKind::Pod, &tone),
+        Err(Rejection::Unverified {
+            profile: ProductProfile::PodHd500x,
+            operation: Operation::OpenPodPreset,
+        })
+    );
+    assert_eq!(
+        hd.open_pod_preset(RoleKind::Pod, PRESET),
+        Err(Rejection::Unverified {
+            profile: ProductProfile::PodHd500x,
+            operation: Operation::OpenPodPreset,
+        })
+    );
+    assert_eq!(
+        hd.select_record_route(crate::pod_audio::RecordRoute::SendCleanGuitar, 66, 2),
+        Err(Rejection::Unverified {
+            profile: ProductProfile::PodHd500x,
+            operation: Operation::SelectRecordRoute,
+        })
+    );
+    let pod_image = synthetic_container(PODXT_LIVE_PRODUCT_ID, PODXT_LIVE_VERSION, b"pod-image");
+    let variax_image = synthetic_container(
+        VARIAX_300_600_PRODUCT_ID,
+        VARIAX_300_600_VERSION,
+        b"variax-image",
+    );
+    for image in [&pod_image, &variax_image] {
+        assert_eq!(
+            hd.inspect_extension_firmware(image),
+            Err(Rejection::Unverified {
+                profile: ProductProfile::PodHd500x,
+                operation: Operation::InspectFirmware,
+            })
+        );
+    }
+    let mut attempts = 0;
+    for operation in [
+        Operation::OpenAudioStream,
+        Operation::FlashFirmware,
+        Operation::BindDriver,
+        Operation::EnumerateUsb,
+    ] {
+        assert_eq!(
+            hd.reject_extension_physical(operation, Some(CapabilityState::Offline), || {
+                attempts += 1;
+                Ok(())
+            }),
+            Err(Rejection::Locked { operation })
+        );
+    }
+    assert_eq!(attempts, 0);
+    assert_eq!(
+        capability::resolve(
+            ProductProfile::PodHd500x,
+            Operation::OpenPodPreset,
+            Some(CapabilityState::Offline)
+        ),
+        CapabilityState::Unverified
+    );
+}

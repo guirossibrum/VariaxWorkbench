@@ -177,6 +177,9 @@ fn pod_state(operation: Operation) -> CapabilityState {
 }
 
 fn note(profile: ProductProfile, operation: Operation) -> &'static str {
+    if profile == ProductProfile::PodHd500x && !operation.is_physical() {
+        return hd500x_limit(operation);
+    }
     match (profile, operation) {
         (ProductProfile::Variax600, Operation::OpenGuitarPreset) => {
             "Opens one original-family FORM/L6PA file in memory. Device id 0x00070004 only. Nothing is sent."
@@ -219,6 +222,43 @@ fn note(profile: ProductProfile, operation: Operation) -> &'static str {
         }
         _ => {
             "The static matrix rejects this operation for this profile. Another profile is not substituted."
+        }
+    }
+}
+
+fn hd500x_limit(operation: Operation) -> &'static str {
+    match operation {
+        Operation::OpenGuitarPreset | Operation::OpenGuitarBank | Operation::SaveGuitarCopy => {
+            "No POD HD500X guitar-file identity is registered. Original Variax files are not converted."
+        }
+        Operation::ApplyFamilyMath => {
+            "POD HD500X is a separate family from original Variax and from PODxt. No coefficient identity is registered."
+        }
+        Operation::OpenPodPreset => {
+            "No POD HD500X preset container, editor bytes, or file product id was acquired. A PODxt Live tone is not opened on this profile and is not converted."
+        }
+        Operation::EditPodPreset => {
+            "No POD HD500X model, effect, or parameter definition was recovered. Values are not edited."
+        }
+        Operation::SelectRecordRoute => {
+            "The Windows INF DefaultSampleRate is 48000 and DefaultWordSize is 24, with EngineFormatLock 0. Those are driver defaults. They do not select a PODxt Live record route and do not open a stream."
+        }
+        Operation::InspectFirmware => {
+            "Public listing names Flash Memory v2.62, release 6260, and the notes also name USB Firmware 1.04. Neither image is local. FORM/L6FF inspection is not applied."
+        }
+        Operation::StartAudioCapture
+        | Operation::StopAudioCapture
+        | Operation::OpenAudioStream
+        | Operation::ReadInstalledUsbComponent
+        | Operation::FlashFirmware
+        | Operation::ResetDevice
+        | Operation::SwitchBank
+        | Operation::EnumerateUsb
+        | Operation::OpenMidi
+        | Operation::SendControl
+        | Operation::InstallModule
+        | Operation::BindDriver => {
+            "Physical operation. Locked for every profile, including a session claim that says otherwise. No live backend is constructed."
         }
     }
 }
