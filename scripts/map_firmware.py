@@ -56,6 +56,32 @@ def loader_records(data, exact=True):
         cursor=end
 
 
+
+def variax_boot_stages(raw):
+    """Two file-derived loader candidates separated by FF padding.
+
+    This identifies the archived region's layout, not a physical boot-ROM
+    protocol, boot-mode entry sequence or permission to program that region.
+    """
+    if len(raw)!=16384:
+        raise ValueError('unexpected boot-region profile length')
+    first=loader_records(raw,exact=False)
+    split=0x400
+    if first['consumed_bytes']>split:
+        raise ValueError('first boot prefix overlaps second stage')
+    if raw[first['consumed_bytes']:split]!=b'\xff'*(split-first['consumed_bytes']):
+        raise ValueError('unexpected interstage padding')
+    second=loader_records(raw[split:],exact=False)
+    end=split+second['consumed_bytes']
+    if raw[end:]!=b'\xff'*(len(raw)-end):
+        raise ValueError('unexpected padding after second stage')
+    return {'first_loader_candidate':first,'second_loader_candidate':second,
+            'second_stage_byte_offset':split,
+            'interstage_ff_padding_bytes':split-first['consumed_bytes'],
+            'end_ff_padding_bytes':len(raw)-end,
+            'scope':'File-derived stages only; chip ROM protocol and physical boot/recovery behavior unverified'}
+
+
 def names_and_slots(templates, slots):
     # Compare immutable snapshots even when an analysis caller supplies bytearray.
     templates, slots = bytes(templates), bytes(slots)
@@ -211,6 +237,7 @@ def analyze(data):
         report['variax_310_candidates']={
             'main_loader':loader_records(raw[1]),
             'boot_region_prefix':loader_records(raw[0],exact=False),
+            'boot_region_layout':variax_boot_stages(raw[0]),
             'named_records':names_and_slots(raw[2],raw[3]),
             'architecture_status':'Not validated by this parser; consult source-bound disassembly evidence; exact IC unproven',
             'record_roles_status':'Template/slot relationship observed; restoration/calibration semantics unverified'}

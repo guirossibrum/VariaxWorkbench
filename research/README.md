@@ -14,3 +14,11 @@ full private decompiler exports and tool distributions outside Git. The setup
 recipe reconstructs a separate ignored workspace from explicitly supplied inputs.
 See [the reproduction guide](../docs/reproducing-references.md) and the fixture
 provenance in [tests/fixtures](../tests/fixtures/README.md).
+
+The opt-in `scripts/native_updater_oracle.py` additionally checks
+`updater-oracle-reference.json`: 46 source-fingerprinted synthetic host-method
+case results, with lengths, derived hashes and statuses. No vendor code, captured
+packets, preset data or emitted buffers are included. The baseline may support
+later independent Rust simulation tests; it does not approve receiver inputs,
+provide an updater or establish recovery safety. The helper compares the baseline
+without rewriting it and keeps the full execution reports private.

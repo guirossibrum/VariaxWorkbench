@@ -1,0 +1,424 @@
+{
+  "schema": 1,
+  "source_sha256": "6786a97458a5a6e5d225e5c2d2804281a8e0a082a0d992f558ce041c144ae078",
+  "scope": "Derived results for synthetic host-method inputs in a private emulated i386 CPU. No vendor code, captures, preset data or emitted buffers. Not a live protocol approval or receiver/recovery model.",
+  "cases": [
+    {
+      "case": "code_sender",
+      "words": 0,
+      "frame_lengths": [
+        13,
+        6,
+        1
+      ],
+      "outbound_sha256": "811268b4756f792df5517d0184ced9dcd42fe5ff6c239abc6af59c2f2f907a19"
+    },
+    {
+      "case": "code_sender",
+      "words": 1,
+      "frame_lengths": [
+        13,
+        6,
+        6,
+        1
+      ],
+      "outbound_sha256": "4319b66a35aa6468d73246c0184a4b3507e819e25f5cda208ce5ac36d75c7cff"
+    },
+    {
+      "case": "code_sender",
+      "words": 2,
+      "frame_lengths": [
+        13,
+        12,
+        6,
+        1
+      ],
+      "outbound_sha256": "e79b3b5b5ed060ebdd5b0f9dbc04c01c2b572cfb5c9bec98709defad105b6fe1"
+    },
+    {
+      "case": "code_sender",
+      "words": 31,
+      "frame_lengths": [
+        13,
+        186,
+        6,
+        1
+      ],
+      "outbound_sha256": "1f0608a61f57999fb05252b55f082b60a40018393d41ef59bef48b87a1fb4414"
+    },
+    {
+      "case": "code_sender",
+      "words": 32,
+      "frame_lengths": [
+        13,
+        192,
+        6,
+        1
+      ],
+      "outbound_sha256": "2715be820e29ebe2637b68b5e45a49096b2ab80ffcf5657a2de23aaa6d669fb3"
+    },
+    {
+      "case": "code_sender",
+      "words": 33,
+      "frame_lengths": [
+        13,
+        192,
+        6,
+        6,
+        1
+      ],
+      "outbound_sha256": "b797c8113a9434bddcae148ba7d8f2ba77b158da7c8eb0ae6ef5b72900e9d7ae"
+    },
+    {
+      "case": "code_sender",
+      "words": 64,
+      "frame_lengths": [
+        13,
+        192,
+        192,
+        6,
+        1
+      ],
+      "outbound_sha256": "e5322b114d624d3766fd5fe2da4892c43f4232b3cd9cc09c5553af12b3f374db"
+    },
+    {
+      "case": "code_sender",
+      "words": 65,
+      "frame_lengths": [
+        13,
+        192,
+        192,
+        6,
+        6,
+        1
+      ],
+      "outbound_sha256": "9e4613037528f86b3d0ae616bc5763bf38944828baeb6e29095d36a52376bc34"
+    },
+    {
+      "case": "nonword_sender_input",
+      "bytes": 1,
+      "whole_words_sent": 0,
+      "ignored_trailing_bytes": 1,
+      "frame_lengths": [
+        13,
+        6,
+        1
+      ]
+    },
+    {
+      "case": "nonword_sender_input",
+      "bytes": 2,
+      "whole_words_sent": 0,
+      "ignored_trailing_bytes": 2,
+      "frame_lengths": [
+        13,
+        6,
+        1
+      ]
+    },
+    {
+      "case": "nonword_sender_input",
+      "bytes": 4,
+      "whole_words_sent": 1,
+      "ignored_trailing_bytes": 1,
+      "frame_lengths": [
+        13,
+        6,
+        6,
+        1
+      ]
+    },
+    {
+      "case": "nonword_sender_input",
+      "bytes": 7,
+      "whole_words_sent": 2,
+      "ignored_trailing_bytes": 1,
+      "frame_lengths": [
+        13,
+        12,
+        6,
+        1
+      ]
+    },
+    {
+      "case": "preserve_flag_clear",
+      "erase_delegate_result": 0,
+      "frame_lengths": [
+        13,
+        6,
+        6,
+        1
+      ]
+    },
+    {
+      "case": "preserve_flag_clear",
+      "erase_delegate_result": -1,
+      "frame_lengths": []
+    },
+    {
+      "case": "send_error_handler",
+      "result": "stopped at audited normal-body boundary before unmodeled exception handling; no host forwarding"
+    },
+    {
+      "case": "erase_method",
+      "factory": false,
+      "boot_flag": false,
+      "wait_result_stub": 0,
+      "native_return": 0,
+      "frame_lengths": [
+        8
+      ]
+    },
+    {
+      "case": "erase_method",
+      "factory": true,
+      "boot_flag": false,
+      "wait_result_stub": 0,
+      "native_return": 0,
+      "frame_lengths": [
+        8
+      ]
+    },
+    {
+      "case": "erase_method",
+      "factory": false,
+      "boot_flag": true,
+      "wait_result_stub": 0,
+      "native_return": 0,
+      "frame_lengths": []
+    },
+    {
+      "case": "erase_method",
+      "factory": false,
+      "boot_flag": false,
+      "wait_result_stub": 258,
+      "native_return": 0,
+      "frame_lengths": [
+        8
+      ]
+    },
+    {
+      "case": "user_patch_sender",
+      "version": "0x3100000",
+      "source_stride": 4096,
+      "slots": 60,
+      "bytes_per_slot_sent": 3276,
+      "group_trailers": 3,
+      "send_calls": 2105,
+      "wire_command": 98,
+      "outbound_sha256": "a3eedac9ab4a236ec8002d3e2f413d3164e0ff21783a41036c0d113c514da03f"
+    },
+    {
+      "case": "user_patch_sender",
+      "version": "0x3030000",
+      "source_stride": 3276,
+      "slots": 60,
+      "bytes_per_slot_sent": 3276,
+      "group_trailers": 3,
+      "send_calls": 2105,
+      "wire_command": 98,
+      "outbound_sha256": "a3eedac9ab4a236ec8002d3e2f413d3164e0ff21783a41036c0d113c514da03f"
+    },
+    {
+      "case": "response_callback",
+      "entry": "0x100d5e40",
+      "stored_status": 0,
+      "event_signaled_in_fake_adapter": true,
+      "send_calls": 0
+    },
+    {
+      "case": "response_callback",
+      "entry": "0x100d5e70",
+      "stored_status": -3022,
+      "event_signaled_in_fake_adapter": true,
+      "send_calls": 0
+    },
+    {
+      "case": "response_callback",
+      "entry": "0x100d5ea0",
+      "stored_status": -3038,
+      "event_signaled_in_fake_adapter": true,
+      "send_calls": 0
+    },
+    {
+      "case": "pod_segment_words",
+      "words": 1,
+      "send_calls": 1,
+      "frame_lengths": [
+        11
+      ],
+      "outbound_sha256": "eb71ac84024ac8855a575399be055e034452b72e0b093e9fb32fd53ed445e925"
+    },
+    {
+      "case": "pod_segment_words",
+      "words": 2,
+      "send_calls": 1,
+      "frame_lengths": [
+        14
+      ],
+      "outbound_sha256": "00d824e41de4fd29422c9a0eacf0060a0a7d8864054c8499242eff3e3105951c"
+    },
+    {
+      "case": "pod_segment_words",
+      "words": 63,
+      "send_calls": 1,
+      "frame_lengths": [
+        197
+      ],
+      "outbound_sha256": "5d397165563ac42a43a18deb0f0fb0f8339d67406fe20be15aeb2076209e2969"
+    },
+    {
+      "case": "pod_segment_words",
+      "words": 64,
+      "send_calls": 1,
+      "frame_lengths": [
+        200
+      ],
+      "outbound_sha256": "70d9712e473c740eceecdeceb4dcce341b7952390da33e5778937ea4a62ebb29"
+    },
+    {
+      "case": "pod_segment_words",
+      "words": 65,
+      "send_calls": 2,
+      "frame_lengths": [
+        200,
+        11
+      ],
+      "outbound_sha256": "5c255dcb220380795e8a00834e19881748192821db1a6ff054f1a2476b7dfb11"
+    },
+    {
+      "case": "pod_segment_words",
+      "words": 128,
+      "send_calls": 2,
+      "frame_lengths": [
+        200,
+        200
+      ],
+      "outbound_sha256": "267aa894fbbe4180d7a68e620f1a4c7bdf11a8e957923c3d39cf343ad9defc00"
+    },
+    {
+      "case": "pod_segment_words",
+      "words": 129,
+      "send_calls": 3,
+      "frame_lengths": [
+        200,
+        200,
+        11
+      ],
+      "outbound_sha256": "f6766d05053ef6d9b8c3a121655d024769a19fb1419fc3bb4480eb8efc824a0a"
+    },
+    {
+      "case": "pod_segment_all_ff",
+      "words": 64,
+      "send_calls": 0
+    },
+    {
+      "case": "boot_sender",
+      "synthetic_bytes": 1,
+      "send_calls": 4,
+      "max_payload_bytes_per_chunk": 96,
+      "outbound_sha256": "84854c5e39baaa50a359213986c7b8868480f65178b89cb64719224a05058f36"
+    },
+    {
+      "case": "boot_sender",
+      "synthetic_bytes": 95,
+      "send_calls": 4,
+      "max_payload_bytes_per_chunk": 96,
+      "outbound_sha256": "f5d3ee7cc76a104988d349bbdeaf8cf8bdbd425408f4bb99aa0057f10f45126f"
+    },
+    {
+      "case": "boot_sender",
+      "synthetic_bytes": 96,
+      "send_calls": 4,
+      "max_payload_bytes_per_chunk": 96,
+      "outbound_sha256": "02ed6c794d456a9086474f86d1c742d5b610afe25d0ee1cbb4945562e555fd8b"
+    },
+    {
+      "case": "boot_sender",
+      "synthetic_bytes": 97,
+      "send_calls": 5,
+      "max_payload_bytes_per_chunk": 96,
+      "outbound_sha256": "1e5fb98821c3b76954b96e2b7caa1953a6026336acdbf325b935290abdf58a16"
+    },
+    {
+      "case": "boot_sender",
+      "synthetic_bytes": 16384,
+      "send_calls": 174,
+      "max_payload_bytes_per_chunk": 96,
+      "outbound_sha256": "a085d19e8d16430fba4a899a4c2f6a70de6fcea4823abce9469aead3306babe0"
+    },
+    {
+      "case": "boot_sender_timeout",
+      "synthetic_bytes": 96,
+      "wait_stub_ms": 15000,
+      "native_return": -3312
+    },
+    {
+      "case": "variax_70004_factory_predicates",
+      "object_version": "0x2ffffff",
+      "cached_version": "0x2ffffff",
+      "transition": false,
+      "fallback": false,
+      "factory_stage_selected": false
+    },
+    {
+      "case": "variax_70004_factory_predicates",
+      "object_version": "0x3000000",
+      "cached_version": "0x2ffffff",
+      "transition": true,
+      "fallback": false,
+      "factory_stage_selected": true
+    },
+    {
+      "case": "variax_70004_factory_predicates",
+      "object_version": "0x2ffffff",
+      "cached_version": "0x3000000",
+      "transition": true,
+      "fallback": true,
+      "factory_stage_selected": true
+    },
+    {
+      "case": "variax_70004_factory_predicates",
+      "object_version": "0x3000000",
+      "cached_version": "0x3000000",
+      "transition": false,
+      "fallback": true,
+      "factory_stage_selected": true
+    },
+    {
+      "case": "variax_70004_factory_predicates",
+      "object_version": "0x3100000",
+      "cached_version": "0x3100000",
+      "transition": false,
+      "fallback": true,
+      "factory_stage_selected": true
+    },
+    {
+      "case": "factory_template_sender",
+      "templates": 50,
+      "bytes_per_template": 2619,
+      "erase_delegate_result": 0,
+      "wait_result_stub": 0,
+      "send_calls": 1402,
+      "outbound_sha256": "0d62dd93393f7775450115b9c54532d5e4ea21cddb34c04f2c1dc05e15f2760f"
+    },
+    {
+      "case": "factory_template_sender",
+      "templates": 50,
+      "bytes_per_template": 2619,
+      "erase_delegate_result": -1,
+      "wait_result_stub": 0,
+      "send_calls": 0,
+      "outbound_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "factory_template_sender",
+      "templates": 50,
+      "bytes_per_template": 2619,
+      "erase_delegate_result": 0,
+      "wait_result_stub": 258,
+      "send_calls": 1402,
+      "outbound_sha256": "0d62dd93393f7775450115b9c54532d5e4ea21cddb34c04f2c1dc05e15f2760f"
+    }
+  ]
+}
