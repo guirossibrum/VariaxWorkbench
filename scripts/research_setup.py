@@ -20,6 +20,7 @@ import tempfile
 import venv
 import xml.etree.ElementTree as ET
 import zipfile
+from dependency_tools import verify_llvm_nm
 
 ROOT = Path(__file__).resolve().parents[1]
 LIMIT = 256 * 1024 * 1024
@@ -269,6 +270,10 @@ def doctor(tools, installers):
                 failures.append('compiler differs from the tested Rust 1.99.1 profile')
         except (OSError,subprocess.SubprocessError) as error:
             failures.append(f'missing/unusable build tool {command[0]}: {error}')
+    try:
+        checks['llvm-nm'] = verify_llvm_nm().strip().splitlines()[:2]
+    except RuntimeError as error:
+        failures.append(str(error))
     for name in ['Variax Workbench 1.75.dmg','Variax Workbench v1.75 Installer.exe']:
         try:
             checks[name] = sha(checked_artifact(installers,name))

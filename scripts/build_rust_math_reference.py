@@ -13,6 +13,7 @@ import tarfile
 from pathlib import Path
 from native_oracle import ROOT
 from inspect_firmware import preserve
+from dependency_tools import verify_llvm_nm
 
 VERSION='0.2.16'
 ARCHIVE_SHA256='b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981'
@@ -38,6 +39,7 @@ def verify_cached_source():
 
 
 def build():
+    verify_llvm_nm()
     source,files=verify_cached_source()
     directory=ROOT/'.tools/rust-math-reference';directory.mkdir(parents=True,exist_ok=True)
     manifest='''[package]

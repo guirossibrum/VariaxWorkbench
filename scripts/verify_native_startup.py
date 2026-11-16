@@ -6,9 +6,11 @@ import subprocess
 from coefficient_oracle import CoefficientOracle, ROOT
 from native_oracle import NativeOracle
 from inspect_firmware import preserve
+from dependency_tools import verify_llvm_nm
 
 
 def main():
+    verify_llvm_nm()
     cold = NativeOracle()
     assert cold.read(0x3d798, 16) == bytes(16)
     try:

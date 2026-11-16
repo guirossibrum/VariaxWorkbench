@@ -12,6 +12,7 @@ from unicorn import UC_HOOK_CODE
 from unicorn.x86_const import UC_X86_REG_ESP, UC_X86_REG_EAX
 from coefficient_oracle import CoefficientOracle, default_settings, ROOT
 from inspect_firmware import preserve
+from dependency_tools import verify_llvm_nm
 
 FIELD_LAYOUT = {
     'm_is_acoustic':(0,'Z'), 'm_use_existing_12str':(1,'Z'),
@@ -89,6 +90,7 @@ def via_jni(oracle, settings):
 
 
 def main():
+    verify_llvm_nm()
     records=[]
     oracle=CoefficientOracle();oracle.load_models()
     for name in ['baseline','saved-tone','series-phase','alternate-tuning']:
