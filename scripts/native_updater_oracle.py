@@ -1,6 +1,6 @@
 """Bounded i386 code/preset/erase oracle in private Unicorn memory; no device API.
 
-Four transfer/erase methods and three response callbacks execute in an
+Five transfer/erase methods and three response callbacks execute in an
 emulated CPU. Every import and helper is trapped; recognized synchronization/transport calls are memory-only stubs. No
 Windows loader, Wine, DLL entry point, driver, OS call or live transport runs.
 This does not execute device firmware or establish update/recovery safety.
@@ -22,6 +22,7 @@ STACK,RETURN,TRAPS,HEAP=0x21000000,0x22000000,0x23000000,0x24000000
 SEND,ERASE=TRAPS+0xF000,TRAPS+0xF010
 SENDER_ENTRY,ERASE_ENTRY,PATCH_ENTRY=0x100D46F0,0x100D4B10,0x100D4BF0
 POD_SEGMENT_ENTRY=0x100D7330
+BOOT_ENTRY=0x100D56A0
 PORT_WAIT=TRAPS+0xF020
 RESPONSE_CALLBACKS={0x100D5E40:0,0x100D5E70:-3022,0x100D5EA0:-3038}
 
@@ -118,8 +119,10 @@ class PrivateUpdaterOracle:
         if address in (0x100D3A20,0x100D6A20):self.events.append(['debug_log_stub']);self.ret();return
         if address==0x100C9350:self.events.append(['status_adapter',self.normalized_status]);self.ret(0,self.normalized_status);return
         if address in (0x1003BB60,0x10126BBE):
-            self.events.append(['pump_or_cookie_adapter',hex(address)]);self.ret();return
-        if not (SENDER_ENTRY<=address<0x100D4AA5 or ERASE_ENTRY<=address<0x100D4BE0 or PATCH_ENTRY<=address<0x100D5001 or any(start<=address<start+0x27 for start in RESPONSE_CALLBACKS) or POD_SEGMENT_ENTRY<=address<0x100D758E):
+            self.events.append(['pump_or_cookie_adapter',hex(address)])
+            # The successful MSVC cookie check preserves the return register.
+            self.ret(result=cpu.reg_read(UC_X86_REG_EAX) if address==0x10126BBE else 0);return
+        if not (SENDER_ENTRY<=address<0x100D4AA5 or ERASE_ENTRY<=address<0x100D4BE0 or PATCH_ENTRY<=address<0x100D5001 or any(start<=address<start+0x27 for start in RESPONSE_CALLBACKS) or POD_SEGMENT_ENTRY<=address<0x100D758E or BOOT_ENTRY<=address<0x100D59A5):
             raise RuntimeError(f'guest code outside audited method ranges: {address:#x}')
 
     def call(self,entry,args,keep=True,boot=False,product=0x70004,wait=0,erase_result=0,version=0x03100000):
@@ -138,12 +141,13 @@ class PrivateUpdaterOracle:
                 if len(payload)!=expected_length:raise ValueError('synthetic patch layout length')
             self.cpu.mem_write(HEAP+0x4000,payload);self.write32(HEAP+0x2008,HEAP+0x4000);self.write32(HEAP+0x200c,len(payload))
             arguments=[0,HEAP+0x2000,max(1,len(payload)//3),HEAP+0x3000]
-        elif entry==POD_SEGMENT_ENTRY:
+        elif entry in (POD_SEGMENT_ENTRY,BOOT_ENTRY):
             payload=args[0]
-            if not 2<=len(payload)<=4096 or len(payload)%2:raise ValueError('synthetic POD word span')
+            if entry==POD_SEGMENT_ENTRY and (not 2<=len(payload)<=4096 or len(payload)%2):raise ValueError('synthetic POD word span')
+            if entry==BOOT_ENTRY and not 1<=len(payload)<=16384:raise ValueError('synthetic boot byte span')
             self.cpu.mem_write(HEAP+0x4000,payload)
             self.write32(HEAP+0x2008,0);self.write32(HEAP+0x200c,len(payload))
-            arguments=[HEAP+0x4000,HEAP+0x2000,len(payload)//2,HEAP+0x3000]
+            arguments=[HEAP+0x4000,HEAP+0x2000,max(1,len(payload)//(3 if entry==BOOT_ENTRY else 2)),HEAP+0x3000]
         elif entry==ERASE_ENTRY:arguments=args
         elif entry in RESPONSE_CALLBACKS:
             self.write32(HEAP+0x14c,-5);arguments=[0,HEAP]
@@ -246,7 +250,23 @@ def main():
     outcome=oracle.call(POD_SEGMENT_ENTRY,[bytes([255]*128)])
     assert not outcome['frames'] and not any(event[0]=='port_wait_stub_ms' for event in outcome['events'])
     results.append({'case':'pod_segment_all_ff','words':64,'send_calls':0})
-    report={'status':'pass','source_sha256':SHA256,'scope':'Four host updater methods and three response callbacks in emulated i386 CPU with synthetic payloads and private fake transport/event/helper adapters. No DLL entry point, native vendor execution, device firmware or hardware.','cases':results,'limits':['OS calls never forwarded; unknown calls/addresses stop','event/status/erase delegate/pump/security-cookie behavior is stubbed','Zero native erase return is not proof of acknowledgment: boot guard and timeout also return zero','Zero-length sender shape is observed only; not approved as a receiver input','No receiver flash, recovery, power-loss or physical behavior is modeled']}
+    for length in [1,95,96,97,16384]:
+        payload=bytes((i*17+0xa3)&255 for i in range(length))
+        outcome=oracle.call(BOOT_ENTRY,[payload])
+        chunks=[]
+        for offset in range(0,length,96):
+            chunks.append(bytes(nibble for value in payload[offset:offset+96] for nibble in (value>>4,value&15)))
+        checksum=sum(payload)&255
+        expected=[bytes([240,0,1,12,7,0,111,2])]+chunks+[bytes([checksum>>4,checksum&15]),bytes([247])]
+        assert outcome['frames']==expected and outcome['eax']==0
+        results.append({'case':'boot_sender','synthetic_bytes':length,'send_calls':len(expected),
+                        'max_payload_bytes_per_chunk':96,
+                        'outbound_sha256':hashlib.sha256(b''.join(expected)).hexdigest()})
+    outcome=oracle.call(BOOT_ENTRY,[bytes([0x31]*96)],wait=0x102)
+    assert outcome['eax']==(-3312)&0xffffffff
+    results.append({'case':'boot_sender_timeout','synthetic_bytes':96,
+                    'wait_stub_ms':15000,'native_return':-3312})
+    report={'status':'pass','source_sha256':SHA256,'scope':'Five host updater methods and three response callbacks in emulated i386 CPU with synthetic payloads and private fake transport/event/helper adapters. No DLL entry point, native vendor execution, device firmware or hardware.','cases':results,'limits':['OS calls never forwarded; unknown calls/addresses stop','event/status/erase delegate/pump/security-cookie behavior is stubbed','Zero native erase return is not proof of acknowledgment: boot guard and timeout also return zero','Zero-length sender shape is observed only; not approved as a receiver input','No receiver flash, recovery, power-loss or physical behavior is modeled']}
     encoded=(json.dumps(report,indent=2)+'\n').encode();folder=ROOT/'analysis/reports';folder.mkdir(parents=True,exist_ok=True);path=folder/('native-updater-oracle-'+hashlib.sha256(encoded).hexdigest()[:16]+'.json');preserve(path,encoded);print(path)
 
 if __name__=='__main__':main()

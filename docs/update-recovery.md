@@ -222,6 +222,64 @@ Variax path, without executing either device's firmware. POD boot/recovery entry
 flash durability and preservation remain unverified; the USB-component artifact
 and installed version remain separately unknown on #20.
 
+The POD caller at 0x100D6D20 first registers a test-mode acknowledgment callback,
+then iterates selected image regions. Flags +0x54 bit 0 skips raw tags 1 and 2.
+Otherwise an all-FF region remains selected: the caller issues its erase request
+before the segment writer notices that no payload needs sending. Static timeout
+branches log missing test-mode/erase acknowledgments without themselves making
+the transport status negative. These are caller-code observations, not emulated
+end-to-end results or a model to copy as a safety policy. A future simulator
+must record acknowledgment, transport status and durability as separate facts.
+
+## Boot sender and receiver cross-check
+
+The selected Variax host boot sender at 0x100D56A0 uses high-first nibbles per
+byte, chunks of at most 96 source bytes, and an additive byte checksum modulo
+256. This differs from the main code sender's 24-bit, low-first encoding. It
+waits 15000 ms for the event; its timeout branch returns -3312. The archived
+second boot stream's command-0x6F/operand-2 receive path independently decodes
+high-first nibbles for a 16384-byte region and checks the byte sum and terminator.
+That agreement supports this narrow transfer shape, not an executable recovery
+plan, receiver bounds proof or preservation guarantee.
+
+Five guest cases cover synthetic lengths 1, 95, 96, 97 and 16384; only the last
+has the receiver's traced region length. Short lengths are host-method boundary
+tests and are not approved receiver inputs. A sixth case verifies the explicit
+timeout result. During harness review, the security-cookie adapter was corrected
+to preserve EAX, matching the original successful helper's compare/return path;
+older buffer comparisons remain valid, but no return-value inference is taken
+from their cookie-bearing methods. The erase-method zero-return finding does
+not use that helper. A first one-byte boot fixture also supplied a zero progress
+denominator and faulted; it was corrected to supply a positive caller fixture.
+Both failed research logs remain local. No instruction or time limit was relaxed.
+
+The final private report `native-updater-oracle-beb6f47dc4cedd2c.json` contains
+**38 passing cases**, over five host methods and three callbacks, with all
+transport, event and helper adapters still explicit. No receiver firmware runs.
+
+Static receiver branches distinguish malformed/checksum failures from success
+responses and may reset into an unarchived ROM address after programming.
+Flash helpers use bus ranges and a GPIO-controlled bank. File offsets cannot
+therefore be assumed to be physical flash addresses. Boot ROM, interrupted erase,
+partial programming, reset timing and power-loss recovery remain unknown and
+must produce an unsupported/indeterminate result in later offline simulation.
+
+## Manufacturer documentation and its limits
+
+Line 6 documents a PODxt safe mode selected by a physical control during power-on,
+and a separate keep-presets choice in Monkey. This is historical entry evidence;
+the entry has not been attempted and its ROM/USB behavior is unverified. The same
+article warns about interrupting a VDI-connected Variax during a POD update.
+[PODxt reset/reflash reference](https://kb.line6.com/pod-xt-series-factory-reset-reflash-and-firmware-updates).
+
+Line 6 also describes Variax factory restoration through firmware reinstallation
+and recommends backing up settings separately. That process is destructive
+maintenance, not a read-only factory comparison, and does not prove calibration
+preservation or recovery availability for this unit.
+[Variax reflash reference](https://kb.line6.com/variax-reflash-and-software-update-instructions).
+These pages were consulted as documentation only; no installer or updater was
+started and no hardware entry action is authorized by their instructions.
+
 ## Work still required
 
 Cross-check updater product/image applicability, transfer framing and sequencing,
