@@ -72,8 +72,8 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 
 - [x] Rust CLI and offline GUI build, including optimized release builds.
 - [x] Short guided-check **offline rehearsal** app: five prompts, cancellation/skip handling and protected report saving. Run `cargo run --bin variax-check -- plan`; see [usage and limits](docs/manual-check.md).
-- [x] **204 Rust tests per math profile** (host configuration and experimental software configuration), Clippy with warnings denied, and formatting checks on Linux.
-- [x] **19 headless GUI tests** cover actual dirty-prompt/bank-row clicks, save cancellation/failure/retry, grouped slider drags, operation cancellation/error recovery, artwork recovery, document preservation and offline recording controls/file rejection and POD tone quit protection. Native OS dialogs/window behavior still need manual platform checks; see [GUI scope](docs/gui-validation.md).
+- [x] **209 Rust tests per math profile** (host configuration and experimental software configuration), Clippy with warnings denied, and formatting checks on Linux.
+- [x] **22 headless GUI tests** cover actual dirty-prompt/bank-row clicks, save cancellation/failure/retry, grouped slider drags, operation cancellation/error recovery, artwork recovery, document preservation and offline recording controls/file rejection and POD tone quit protection. Native OS dialogs/window behavior still need manual platform checks; see [GUI scope](docs/gui-validation.md).
 - [x] Shared CLI/GUI edit validation for **34 parameters**, 28 body and 32 pickup choices; **84 original-Java endpoint/choice cases** and **1,792 body/pickup/slot selections** pass. Imported unknown/out-of-range values survive rendering/copying; see [domains and limits](docs/parameter-domains.md).
 - [x] Individual preset parsing/editing and protected copy saves: **6 original-Java compatibility checks**.
 - [x] L6BA/L6CO browsing, editing, whole-bank undo/redo and protected save-copy in the GUI; **three banks/five presets per format compared with original Java**, including resized replacement. [Bank scope and limits](docs/bank-editor.md).
@@ -124,13 +124,14 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 - [ ] Shared, device-specific firmware/backup/recovery/maintenance UI; real updates remain separately gated — [#30](https://github.com/guirossibrum/VariaxWorkbench/issues/30).
 - [ ] Workbench HD/JTV-69 and POD HD500X backends; other models added only with independent verification — [#31](https://github.com/guirossibrum/VariaxWorkbench/issues/31), [#32](https://github.com/guirossibrum/VariaxWorkbench/issues/32).
 
+- [x] Unsaved offline recording takes are protected on quit alongside guitar/POD edits. Cancelled or failed saves retain audio; native-clock takes require keeping or explicitly discarding them until exact-clock export exists. See [recording files](docs/recording.md) — [#72](https://github.com/guirossibrum/VariaxWorkbench/issues/72).
+
 ### Currently unavailable or not working
 
 - [ ] The image-default Windows x87 math substitution fails the Mac generator's strict startup-constant check; its complete-generator replay stops. Historical Mac parity remains unresolved, and the optional portable profile is experimental.
 - [ ] Guided check does not yet read switches/knobs, record audio or measure notes/bends/tuning. Future integration is [#34](https://github.com/guirossibrum/VariaxWorkbench/issues/34); the current app rehearses prompts only.
 - [ ] **Live device access is intentionally disabled**, including identity/metadata reads. No runtime unlock exists.
 - [ ] Sending edited presets to the guitar, firmware flashing and factory restoration are unavailable; no live writer is implemented or authorized.
-- [ ] Unsaved offline recording takes are not yet protected by the application quit prompt — [#72](https://github.com/guirossibrum/VariaxWorkbench/issues/72). Save a copy before quitting.
 - [ ] Live USB audio capture/playback is not implemented or validated; no audio stream has been opened. The offline test recorder does not open a device. See [recording files](docs/recording.md).
 - [ ] PODxt Live parameter ranges, knob domains, and parameter-value editing are not recovered. Firmware region-17 editing and sending a tone to a device are not implemented. See [POD presets](docs/pod-presets.md) — [#29](https://github.com/guirossibrum/VariaxWorkbench/issues/29).
 - [ ] Full PODxt Live/Variax firmware and audio/DSP emulation is not implemented. Existing host-library emulation is not device emulation.

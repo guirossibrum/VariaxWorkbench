@@ -1072,6 +1072,7 @@ pub struct Panel {
     file_label: String,
     pattern: SyntheticPattern,
     take: Option<Take>,
+    take_saved: bool,
     cursor: u64,
     levels: Levels,
     message: String,
@@ -1096,6 +1097,7 @@ impl Panel {
                 right: -2_000,
             },
             take: None,
+            take_saved: false,
             cursor: 0,
             levels: Levels::default(),
             message: "Select a route, an input, and a clock. Nothing starts until you press Start."
@@ -1117,6 +1119,20 @@ impl Panel {
 
     pub fn phase(&self) -> Phase {
         self.take.as_ref().map(Take::phase).unwrap_or(Phase::Idle)
+    }
+
+    /// The current take has not completed a successful file save. Even an
+    /// armed, empty take is protected until explicitly saved or discarded.
+    pub fn has_unsaved_take(&self) -> bool {
+        self.take.is_some() && !self.take_saved
+    }
+
+    /// File capability only; native-clock export remains a separate issue.
+    pub fn take_can_save_wav(&self) -> bool {
+        self.take.as_ref().is_some_and(|take| {
+            matches!(take.clock, SampleClock::Integer { .. })
+                && take.format == FrameFormat::PcmS16Le
+        })
     }
 
     pub fn phase_label(&self) -> &'static str {
@@ -1277,6 +1293,7 @@ impl Panel {
         self.cursor = 0;
         self.levels = Levels::default();
         self.take = Some(take);
+        self.take_saved = false;
         self.message = "Recording armed. Feed a chunk, then stop. Nothing is saved yet.".into();
         Ok(())
     }
@@ -1334,6 +1351,7 @@ impl Panel {
             .ok_or(TakeError::NotRecording)?
             .cancel()?;
         self.take = None;
+        self.take_saved = false;
         self.cursor = 0;
         self.levels = Levels::default();
         self.message = PHASE_CANCELLED.into();
@@ -1346,6 +1364,7 @@ impl Panel {
             .as_ref()
             .ok_or(TakeError::NotStopped)?
             .save(path)?;
+        self.take_saved = true;
         self.message = format!("Saved {}", path.display());
         Ok(saved)
     }
@@ -1390,6 +1409,61 @@ mod tests {
 
     fn header_rate(wav: &[u8]) -> u32 {
         u32::from_le_bytes(wav[24..28].try_into().unwrap())
+    }
+
+    fn armed_panel(clock: ClockSelection) -> Panel {
+        let mut panel = Panel::new();
+        panel.select_route(RecordRoute::SendCleanGuitar).unwrap();
+        panel.select_clock(clock).unwrap();
+        panel.select_input(InputSelection::Synthetic).unwrap();
+        panel.start().unwrap();
+        panel
+    }
+
+    #[test]
+    fn panel_unsaved_status_belongs_to_the_current_successfully_saved_take() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocked = dir.path().join("blocked.wav");
+        let good = dir.path().join("good.wav");
+        std::fs::write(&blocked, b"keep").unwrap();
+        let mut panel = armed_panel(ClockSelection::Integer(44_100));
+        assert!(panel.has_unsaved_take()); // protects an armed, empty take too
+        assert!(panel.take_can_save_wav());
+        panel.feed().unwrap();
+        panel.stop().unwrap();
+        let pcm = panel.take.as_ref().unwrap().pcm().to_vec();
+        assert!(panel.save(&blocked).is_err());
+        assert!(panel.has_unsaved_take());
+        assert_eq!(panel.take.as_ref().unwrap().pcm(), pcm);
+        panel.save(&good).unwrap();
+        assert!(!panel.has_unsaved_take());
+        // A refused second copy does not erase the first successful save.
+        assert!(panel.save(&blocked).is_err());
+        assert!(!panel.has_unsaved_take());
+        panel.cancel().unwrap();
+        panel.start().unwrap();
+        assert!(panel.has_unsaved_take());
+        panel.cancel().unwrap();
+        assert!(!panel.has_unsaved_take());
+        assert!(!panel.take_can_save_wav());
+        assert_eq!(std::fs::read(&blocked).unwrap(), b"keep");
+        assert_eq!(parse_wav(&std::fs::read(&good).unwrap()).unwrap().data, pcm);
+    }
+
+    #[test]
+    fn native_clock_take_stays_unsaved_after_refused_file_export() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("native.wav");
+        let mut panel = armed_panel(ClockSelection::NativePodxt);
+        panel.feed().unwrap();
+        panel.stop().unwrap();
+        let pcm = panel.take.as_ref().unwrap().pcm().to_vec();
+        assert!(!panel.take_can_save_wav());
+        assert!(panel.save(&path).is_err());
+        assert!(panel.has_unsaved_take());
+        assert_eq!(panel.take.as_ref().unwrap().pcm(), pcm);
+        assert!(!path.exists());
+        assert!(!panel.device_opened());
     }
 
     #[test]
