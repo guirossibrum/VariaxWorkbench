@@ -15,7 +15,7 @@ publisher authenticity. The outer region tags remain numeric.
 
 | Region | Raw tag | Bytes | Observed structure |
 | --- | --- | --- | --- |
-| 0 | 5 | 16,384 | A load-record-like prefix; the remainder is not classified |
+| 0 | 5 | 16,384 | Initial prefix, second 41-record stream at 0x400 and FF padding |
 | 1 | 0 | 49,308 | 117 three-u24-header load records and an exact terminator |
 | 2 | 2 | 130,950 | 50 contiguous records of 2,619 bytes |
 | 3 | 1 | 245,760 | 60 slots of 4,096 bytes with a 2,619-byte program prefix |
@@ -47,9 +47,13 @@ records must not be treated as interchangeable upload artifacts. Subsequent
 programs inside the 4,096-byte slots and validates their checksums. This resolves
 the record-boundary question while leaving upload behavior unverified.
 
-The partial prefix view of region 0 consumes only 168 bytes; the rest remains
-unclassified. Its apparent header must not be assumed to be the chip ROM's boot
-protocol. Record roles, slot tails, calibration/preservation behavior, checksums
+The initial prefix view of region 0 consumes 168 bytes. Later static update
+research identifies 856 FF bytes, a second 41-record stream at file offset
+0x400 consuming 11,850 bytes, and 3,510 FF bytes through the end of the region.
+The second stream has nominal entry 0x26C, with a program-word reset jump to that
+address. These are file-derived loader candidates. Their apparent headers must
+not be assumed to be the chip ROM's boot protocol; see
+[update/recovery research](update-recovery.md). Record roles, slot tails, calibration/preservation behavior, checksums
 inside the records and the exact IC variant remain unresolved. No restoration
 or patching operation follows from this analysis.
 
@@ -145,7 +149,7 @@ python scripts/inspect_firmware.py --self-test /ABS/VARIAX.vxf /ABS/POD.xtf
 python scripts/map_firmware.py /ABS/VARIAX.vxf /ABS/POD.xtf
 ```
 
-Eight synthetic layout tests cover every truncated prefix of a two-space loader,
+Ten synthetic layout tests cover every truncated prefix of a two-space loader,
 invalid tags, destination overflow/overlap, unexpected extra data and a retained
 unknown tail; POD record widths, exact load-record consumption, additive checksums,
 word-pointer directory bounds, invalid names and padding. The template/slot test

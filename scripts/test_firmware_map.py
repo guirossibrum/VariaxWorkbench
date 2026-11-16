@@ -1,6 +1,6 @@
 """Synthetic loader-layout rejection checks; no vendor files or hardware."""
 import unittest
-from map_firmware import loader_records, pod_resource_directory, pod_word_section, pod_load_records, names_and_slots
+from map_firmware import loader_records, pod_resource_directory, pod_word_section, pod_load_records, names_and_slots, variax_boot_stages
 
 
 def word(n):return n.to_bytes(3,'little')
@@ -124,6 +124,30 @@ class VariaxSlotChecks(unittest.TestCase):
             with self.assertRaises(ValueError):names_and_slots(short_templates,short_slots)
         invalid=bytearray(source);invalid[2553]=0x80
         with self.assertRaises(ValueError):names_and_slots(invalid,slots)
+
+
+class BootStageChecks(unittest.TestCase):
+    @staticmethod
+    def region():
+        first=record(0x200,0,[0,1])+word(0)+word(0x200)
+        second=record(0x26c,0,[2,3])+record(0x400,1,[4])+word(0)+word(0x26c)
+        raw=bytearray(b'\xff'*16384);raw[:len(first)]=first;raw[1024:1024+len(second)]=second
+        return raw,len(first),len(second)
+
+    def test_separate_loader_candidates_and_padding_account_for_whole_region(self):
+        raw,first,second=self.region();result=variax_boot_stages(raw)
+        self.assertEqual(result['second_loader_candidate']['entry_word_raw'],0x26c)
+        self.assertEqual(len(result['second_loader_candidate']['records']),2)
+        self.assertEqual(first+result['interstage_ff_padding_bytes']+second+result['end_ff_padding_bytes'],len(raw))
+
+    def test_corrupted_padding_missing_payload_and_wrong_shape_fail(self):
+        original,first,second=self.region()
+        for at in [first,1024+second]:
+            bad=bytearray(original);bad[at]=0
+            with self.assertRaises(ValueError):variax_boot_stages(bad)
+        with self.assertRaises(ValueError):variax_boot_stages(original[:-1])
+        bad=bytearray(original);bad[1024:1027]=word(0xffffff)
+        with self.assertRaises(ValueError):variax_boot_stages(bad)
 
 
 if __name__=='__main__':unittest.main()
