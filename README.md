@@ -128,6 +128,7 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 - [ ] Guided check does not yet read switches/knobs, record audio or measure notes/bends/tuning. Future integration is [#34](https://github.com/guirossibrum/VariaxWorkbench/issues/34); the current app rehearses prompts only.
 - [ ] **Live device access is intentionally disabled**, including identity/metadata reads. No runtime unlock exists.
 - [ ] Sending edited presets to the guitar, firmware flashing and factory restoration are unavailable; no live writer is implemented or authorized.
+- [ ] Unsaved offline recording takes are not yet protected by the application quit prompt — [#72](https://github.com/guirossibrum/VariaxWorkbench/issues/72). Save a copy before quitting.
 - [ ] Live USB audio capture/playback is not implemented or validated; no audio stream has been opened. The offline test recorder does not open a device. See [recording files](docs/recording.md).
 - [ ] Full PODxt Live/Variax firmware and audio/DSP emulation is not implemented. Existing host-library emulation is not device emulation.
 - [ ] The earlier experimental full-DSP read timed out; no complete DSP/bank/calibration backup was obtained. The captured “Reso-5” file is one preset's settings only.
