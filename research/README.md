@@ -16,7 +16,7 @@ See [the reproduction guide](../docs/reproducing-references.md) and the fixture
 provenance in [tests/fixtures](../tests/fixtures/README.md).
 
 The opt-in `scripts/native_updater_oracle.py` additionally checks
-`updater-oracle-reference.json`: 43 source-fingerprinted synthetic host-method
+`updater-oracle-reference.json`: 46 source-fingerprinted synthetic host-method
 case results, with lengths, derived hashes and statuses. No vendor code, captured
 packets, preset data or emitted buffers are included. The baseline may support
 later independent Rust simulation tests; it does not approve receiver inputs,

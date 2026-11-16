@@ -1,6 +1,6 @@
 # Static update and recovery research
 
-Issue #16 remains in progress. Static analysis is now supplemented by selected
+This is the bounded offline source map for issue #16. Static analysis is supplemented by selected
 original host-updater methods running inside an isolated emulated i386 CPU.
 Every transport, event and helper call is intercepted by a memory-only adapter;
 unknown code or imports stop the experiment. No vendor code runs natively,
@@ -312,11 +312,51 @@ preservation or recovery availability for this unit.
 These pages were consulted as documentation only; no installer or updater was
 started and no hardware entry action is authorized by their instructions.
 
-## Work still required
+## Factory sender and normal-firmware receiver ledger
 
-Cross-check updater product/image applicability, transfer framing and sequencing,
-integrity coverage, acknowledgment/error paths, preservation choices and recovery
-branches. PODxt Live main-flash and USB-component paths must remain separate;
+Factory sender 0x100D5060 requests the factory-erase delegate, then traverses
+50 compact templates of 2619 bytes, encoding each byte low nibble first. Each
+template is split into sends of at most 192 encoded bytes; the complete stream
+uses 1402 fake sends. It has a final terminator without the main-code sender's
+separate 24-bit checksum word. Source size and template boundaries independently
+agree with the archived factory-region extraction. Three additional host cases
+cover the full synthetic region, negative erase delegate and wait timeout.
+
+The first experimental description assumed the wrong factory command. A static
+read of the prefix at 0x1023EE30 and the guest output both identify command 0x67;
+all payload chunks already agreed. The expectation was corrected from those two
+observations, and the failed log is retained. The final source-bound report
+`native-updater-oracle-c3ee42487fa62d19.json` has **46 passing cases**, including
+six host transfer/erase methods, two predicates and three callbacks. The public
+derived reference was deliberately extended with the three reviewed cases.
+
+The main 3.10 firmware's dispatch table at P:0x14326 supplies an independent
+receiver cross-check. These are static program addresses, not approved traffic:
+
+| Operation | Handler | Observed receive/program order |
+| --- | --- | --- |
+| Code, command 0x60 | P:0x14687 → P:0x127E | Receive low-first words into memory, then check terminator and additive sum before calling P:0x1016. Count lower/upper bounds and physical commit are not established. |
+| User patches, 0x62 | P:0x1474A | 60 iterations of 1092 words (3276 bytes), with 32 extra nibble reads after slots 19, 39 and 59; byte-programming-like helper calls occur during reception, before the final terminator check. |
+| Factory templates, 0x67 | P:0x14798 | 0xAA82 words (130950 bytes); the same programming-like helper is called during reception, before the final terminator check. |
+| User/factory erase, 0x63/0x68 | P:0x146BD / P:0x146C0 | Calls the respective erase-like helper before checking the terminator, then reports 0x70 for the traced valid end. |
+| Boot transfer, 0x6F operand 2 | P:0x1468B → P:0x12C9 | Receives 16384 high-first bytes into memory, then checks byte sum and terminator before calling P:0x1059. |
+
+P:0xF45 emits flash-command-like bus stores, writes the supplied byte, and polls
+readback; P:0xF63 emits sector-erase-like commands and polls. These routines
+contain retry branches and depend on device timing and bank state. They are not
+validated peripheral models or bounded host timeouts. The compact factory and
+user paths do not show a rollback before their shared terminator response.
+
+Consequently a malformed or interrupted transfer cannot be modeled as
+"nothing changed" merely because a final success was absent. Later simulation
+must distinguish buffered data, programming/erase intent, acknowledgment and
+unknown durability. No firmware instruction was executed to obtain this ledger.
+
+## Unsupported behavior and downstream work
+
+The source map covers the initial rig's observed transfer shapes, selected state
+branches and preservation flags. It does not close every historical runtime or
+managed-UI path. PODxt Live main-flash and USB-component paths must remain separate;
 the latter still has the unknowns on #20. Establish simulated behavior only for
 states supported by independent evidence; unsupported behavior must fail rather
 than invent a recovery success. Physical flash mapping, boot-ROM behavior,
@@ -327,7 +367,7 @@ state simulation; #22–#25 retain readiness, backup and physical-operation gate
 
 ## Reproducible derived reference
 
-`research/updater-oracle-reference.json` publishes the 43 synthetic case summaries,
+`research/updater-oracle-reference.json` publishes the 46 synthetic case summaries,
 derived output hashes, lengths and status facts. It includes no vendor code,
 captured packets, preset data or emitted buffers. The opt-in oracle compares its
 results with this baseline and never rewrites it automatically. Full event traces

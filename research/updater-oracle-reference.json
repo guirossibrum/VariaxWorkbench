@@ -392,6 +392,33 @@
       "transition": false,
       "fallback": true,
       "factory_stage_selected": true
+    },
+    {
+      "case": "factory_template_sender",
+      "templates": 50,
+      "bytes_per_template": 2619,
+      "erase_delegate_result": 0,
+      "wait_result_stub": 0,
+      "send_calls": 1402,
+      "outbound_sha256": "0d62dd93393f7775450115b9c54532d5e4ea21cddb34c04f2c1dc05e15f2760f"
+    },
+    {
+      "case": "factory_template_sender",
+      "templates": 50,
+      "bytes_per_template": 2619,
+      "erase_delegate_result": -1,
+      "wait_result_stub": 0,
+      "send_calls": 0,
+      "outbound_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "factory_template_sender",
+      "templates": 50,
+      "bytes_per_template": 2619,
+      "erase_delegate_result": 0,
+      "wait_result_stub": 258,
+      "send_calls": 1402,
+      "outbound_sha256": "0d62dd93393f7775450115b9c54532d5e4ea21cddb34c04f2c1dc05e15f2760f"
     }
   ]
 }
