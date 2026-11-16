@@ -56,6 +56,13 @@
       "name": "Variax300_3.10.vxf",
       "size": 124208,
       "sha256": "e9f471e987b04cf31321e8a0da068f44abcdff2edbb32368385c08f92b999c1a"
+    },
+    {
+      "name": "apple-runtime/MacOSXUpdCombo10.4.11Intel.dmg",
+      "size": 337080169,
+      "sha256": "ba29bcf6f3a0a1ac657eeb712bd7e5d53bcd4dbcadb00f8bac68299db1fd5ebb",
+      "source_url": "https://download.info.apple.com/Mac_OS_X/061-4048.20071114.6Gn4g/MacOSXUpdCombo10.4.11Intel.dmg",
+      "scope": "Optional historical math research only; static extraction by extract_apple_tiger_runtime.py, never installation or native loading."
     }
   ]
 }
