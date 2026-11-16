@@ -123,8 +123,10 @@ remains unknown. The same day's flash probe remains HTTP 302 for
 `readeula.html?rid=6260` and HTTP 403 for `getrelease?rid=6260`. No editor
 installer and no flash image were saved. Two public 2013 manuals are hashed in
 [POD HD500X](pod-hd500x.md). Their printed file suffixes disagree, and neither
-manual is a preset container. Details and the driver-text USB match are in
-that document.
+manual is a preset container. Independently published H5EP and H5ES files
+were measured later. A directory named HD500X supplied files whose byte 0x0b
+is 0x2e. Those measurements are not a product id. Details and the driver-text
+USB match are in that document.
 
 A 7-Zip data extract of `l6PODHD5SE.inf` from the Windows 4.2.7.7 archive is
 10484 bytes, SHA-256

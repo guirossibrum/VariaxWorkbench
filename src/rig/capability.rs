@@ -235,7 +235,7 @@ fn hd500x_limit(operation: Operation) -> &'static str {
             "POD HD500X is a separate family from original Variax and from PODxt. No coefficient identity is registered."
         }
         Operation::OpenPodPreset => {
-            "No POD HD500X preset container, editor bytes, or file product id was acquired. Printed names in the 2013 public manuals are not a byte layout. A PODxt Live tone is not opened on this profile and is not converted."
+            "No POD HD500X preset container, editor bytes, or file product id was acquired. Independent H5EP and H5ES measurements are not a registered container. Printed names in the 2013 public manuals are not a byte layout. A PODxt Live tone is not opened on this profile and is not converted."
         }
         Operation::EditPodPreset => {
             "No POD HD500X model, effect, or parameter definition was recovered. Printed names in the public manuals are not ids. Values are not edited."
