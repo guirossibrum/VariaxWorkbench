@@ -4,8 +4,11 @@ This is a partial offline research result for
 [#40](https://github.com/guirossibrum/VariaxWorkbench/issues/40), not completion of
 its acceptance criteria or the parameter-definition prerequisite for
 [#29](https://github.com/guirossibrum/VariaxWorkbench/issues/29). No Rust runtime
-behavior changes. No vendor executable, installer script, plugin or native library
-was run or loaded. No hardware, audio stream or authorization service was used.
+behavior changes. No vendor executable, installer script or plugin was launched,
+and no vendor native library was loaded into the host. No hardware, audio stream
+or authorization service was used. The subsequent
+[native property edge](pod-farm-parameter-edge.md) adds a separate, bounded
+two-leaf CPU oracle and distinguishes its scope from this static inventory pass.
 
 ## Sources and reproducibility
 
@@ -180,7 +183,8 @@ PINF words, unknown/nested IFF chunks, truncation/trailing data and depth limits
 They test the research reader, not a Rust codec, conversion oracle or vendor
 behavior. A fresh full extraction at `analysis/pod-farm-258-replay/` produced a
 byte-identical private inventory with the hash above. The original hash remained
-unchanged. No native/original-library oracle or CPU execution occurred.
+unchanged. No native/original-library oracle or CPU execution occurred in this
+initial inventory pass; the subsequent two-leaf oracle is scoped separately above.
 
 The required four Rust check identities are submitted separately through the
 coordinator for the actual committed head; the preceding research counts are not
