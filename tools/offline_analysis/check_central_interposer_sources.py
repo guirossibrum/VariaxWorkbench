@@ -2,7 +2,8 @@
 """Read-only static provenance checks for the prepared Central binaries.
 
 This script hashes private inputs and checks PE delay-import metadata and
-Mach-O slice coordinates. It never loads or executes vendor code.
+Mach-O slice coordinates, plus qualified hashes of private code ranges. It
+never stores or executes vendor code.
 """
 from __future__ import annotations
 
@@ -19,11 +20,48 @@ EXPECTED_HASHES = {
     "mac_x64": "21bf512d07ae507929cf1581cdc07491605e5dcac58d115e6a59e230d7f95b76",
 }
 
+# Hashes of bounded code ranges from the whole-file-pinned private inputs.
+# These retain fail-closed source checks without storing vendor instruction or
+# method-body bytes in the repository. Coordinates are PE VAs / Mach-O VMs.
+PRIVATE_CODE_RANGES = {
+    "Central.exe MethodDef 0x0600018a CIL RVA 0x7590": (
+        114, "6968068572fc3cc9bc7e77c2c70150744aa48f663a3fead09a17cbabb1389150"),
+    "EngineCLIWrapper.dll MethodDef 0x060001b9 CIL RVA 0x4aa0": (
+        202, "7bd4392107020edfafe1471583b3aad43cffb8e8c43fc4ce256fa9171f7185ad"),
+    "EngineCLIWrapper.dll createEngine thunk VA 0x1000adeb": (
+        6, "d398445fe29cbec241cdbe6547819995976311accf37f98293e7d483430f9bb4"),
+    "Central macOS x86_64 getter IMP VM 0x10005a347": (
+        25, "a842854809128353370ebb5eb96614cb2f0bddb2e5288f4a051f5181481f82eb"),
+    "Central macOS x86_64 getter initializer VM 0x10014afe2": (
+        13, "aba3e17ec195114448ce0af7126814d77386baec6c51bc24098e4f77e68191b2"),
+    "Central macOS x86_64 teardown selector site VM 0x100429de4": (
+        7, "938a5930553ecc01c66e0042bdbe855ab7b1e79ff52bdbe5c2657698fd86e501"),
+    "Central macOS x86_64 adjacent selector site VM 0x100429e14": (
+        7, "7d49e93dda777ea6868002b6ef8514282df4c73bfd29521fd025543b139ed67b"),
+    "Central macOS x86_64 teardown callsite VM 0x1000d5cca": (
+        7, "2944d89e83db6b44ef66b8876d7ab777a62364a526ac785886da61e7ce15a450"),
+    "Central macOS x86_64 vtable callsite VM 0x1000d5d0e": (
+        3, "dfc75a9fe173bd841f13127fdc9ac24f4e3efa8c016609a95eddea21803af9c4"),
+    "Central macOS x86_64 teardown callsite VM 0x1000f8b82": (
+        7, "f5b39a817cff95d38b60061a083db0d49ec94d7ba755a1ac963d703491f3dcd2"),
+    "Central macOS x86_64 callback vtable callsite VM 0x1000f8b63": (
+        3, "22558207d1d705fcbda49d89be5b34ebe09d409878b0bf88e6819b7724e29e96"),
+    "Central macOS x86_64 vtable callsite VM 0x1000f8bb7": (
+        3, "dfc75a9fe173bd841f13127fdc9ac24f4e3efa8c016609a95eddea21803af9c4"),
+}
+
 def data(path: Path, key: str) -> bytes:
     b = path.read_bytes()
     got = hashlib.sha256(b).hexdigest()
     assert got == EXPECTED_HASHES[key], (key, path, got)
     return b
+
+
+def assert_private_code_range(name: str, code: bytes) -> None:
+    expected_length, expected_hash = PRIVATE_CODE_RANGES[name]
+    got = hashlib.sha256(code).hexdigest()
+    assert len(code) == expected_length and got == expected_hash, (
+        name, len(code), got)
 
 
 def self_test() -> None:
@@ -112,29 +150,14 @@ assert b"?createEngine@Functions@UpdaterV3EngineInterface" in wrapper
 # NativeStringParamValueReceiver and passes callback pointers in native export
 # order: float, int, bool, string, string-array. No assembly is executed.
 host_create = cil_code(host, 0x00407590)  # MethodDef 0x0600018a
-assert host_create == bytes.fromhex(
-    "02 fe 06 8f 01 00 06 73 8c 00 00 0a 28 8d 00 00 0a "
-    "02 fe 06 90 01 00 06 73 8e 00 00 0a 28 8f 00 00 0a "
-    "02 fe 06 91 01 00 06 73 90 00 00 0a 28 91 00 00 0a "
-    "02 fe 06 92 01 00 06 73 92 00 00 0a 28 93 00 00 0a "
-    "02 fe 06 94 01 00 06 73 94 00 00 0a 28 95 00 00 0a "
-    "02 fe 06 93 01 00 06 73 96 00 00 0a 28 97 00 00 0a "
-    "02 73 98 00 00 0a 7d 2e 02 00 04 2a"
-)
+assert_private_code_range("Central.exe MethodDef 0x0600018a CIL RVA 0x7590", host_create)
 wrapper_ctor = cil_code(wrapper, 0x10004aa0)  # MethodDef 0x060001b9
-assert len(wrapper_ctor) == 202
-assert bytes.fromhex(
-    "14 fe 06 cd 01 00 06 73 99 01 00 06 0b 02 07 7d b8 00 00 04 "
-    "07 28 02 00 00 2b 13 06"
-) in wrapper_ctor  # string receiver delegate -> retained field -> pointer local 6
-assert bytes.fromhex(
-    "02 12 09 28 2e 00 00 0a 12 08 28 2e 00 00 0a "
-    "12 07 28 2e 00 00 0a 12 06 28 2e 00 00 0a "
-    "12 05 28 2e 00 00 0a 28 58 01 00 06"
-) in wrapper_ctor
+assert_private_code_range("EngineCLIWrapper.dll MethodDef 0x060001b9 CIL RVA 0x4aa0", wrapper_ctor)
 assert cil_code(wrapper, 0x100037a4)  # NativeStringParamValueReceiver, MethodDef 0x060001cd
 assert b"NativeStringParamValueReceiver" in wrapper and b"stringParamValueDelegate" in wrapper
-assert wrapper[pe_offset(wrapper, 0x1000adeb):pe_offset(wrapper, 0x1000adeb) + 6] == bytes.fromhex("ff 25 b4 b0 00 10")
+thunk_off = pe_offset(wrapper, 0x1000adeb)
+assert_private_code_range("EngineCLIWrapper.dll createEngine thunk VA 0x1000adeb",
+                           wrapper[thunk_off:thunk_off + 6])
 
 # Updater provenance strings and delay-import metadata.
 assert b"\\Line 6\\Interposer\\" in updater
@@ -181,32 +204,39 @@ assert b"getParamValueSetInterposerDelegate" in x64
 # IMP; the IMP dispatches [ParamValueServer sharedInstance]. The initializer
 # sends that getter and stores its retained result in a global delegate slot.
 assert struct.unpack_from("<QQQ", x64, 0x62b9d8) == (0x1005bd42c, 0x1005c2d36, 0x10005a347)
-assert x64[0x5a347:0x5a360] == bytes.fromhex(
-    "55 48 89 e5 48 8b 3d fe 8c 5e 00 48 8b 35 ff 79 5e 00 5d ff 25 68 34 5a 00"
-)
+assert_private_code_range("Central macOS x86_64 getter IMP VM 0x10005a347",
+                          x64[0x5a347:0x5a360])
 assert struct.unpack_from("<Q", x64, 0x643050)[0] == 0x100665d80
 assert struct.unpack_from("<Q", x64, 0x641d58)[0] == 0x1005c15dc
 assert x64[0x5c15dc:0x5c15dc + len(b"sharedInstance\0")] == b"sharedInstance\0"
-assert x64[0x14afe2:0x14afef] == bytes.fromhex("48 8b 35 df 71 4f 00 48 89 c7 41 ff d6")
+assert_private_code_range("Central macOS x86_64 getter initializer VM 0x10014afe2",
+                          x64[0x14afe2:0x14afef])
 assert struct.unpack_from("<QQQ", x64, 0x67c528) == (0x1005c1a71, 0x10058ff40, 0x100429de0)
-assert x64[0x429de4:0x429deb] == bytes.fromhex("48 8d 05 95 3f 15 00")
-assert x64[0x429e14:0x429e1b] == bytes.fromhex("48 8d 05 85 3f 15 00")
+assert_private_code_range("Central macOS x86_64 teardown selector site VM 0x100429de4",
+                          x64[0x429de4:0x429deb])
+assert_private_code_range("Central macOS x86_64 adjacent selector site VM 0x100429e14",
+                          x64[0x429e14:0x429e1b])
 # Two scanner teardown-key sites dispatch through vtable +0x40. The second
 # first takes a callback object from receiver offset +0x1c8 and calls slot +0x18.
-assert x64[0xd5cca:0xd5cd1] == bytes.fromhex("48 8d 35 cf 80 4a 00")
-assert x64[0xd5d0e:0xd5d11] == bytes.fromhex("ff 50 40")
-assert x64[0xf8b82:0xf8b89] == bytes.fromhex("48 8d 35 17 52 48 00")
-assert x64[0xf8b63:0xf8b66] == bytes.fromhex("ff 50 18")
-assert x64[0xf8bb7:0xf8bba] == bytes.fromhex("ff 50 40")
+assert_private_code_range("Central macOS x86_64 teardown callsite VM 0x1000d5cca",
+                          x64[0xd5cca:0xd5cd1])
+assert_private_code_range("Central macOS x86_64 vtable callsite VM 0x1000d5d0e",
+                          x64[0xd5d0e:0xd5d11])
+assert_private_code_range("Central macOS x86_64 teardown callsite VM 0x1000f8b82",
+                          x64[0xf8b82:0xf8b89])
+assert_private_code_range("Central macOS x86_64 callback vtable callsite VM 0x1000f8b63",
+                          x64[0xf8b63:0xf8b66])
+assert_private_code_range("Central macOS x86_64 vtable callsite VM 0x1000f8bb7",
+                          x64[0xf8bb7:0xf8bba])
 # The earlier raw decode documents the Variax.json product-selection edge;
-# these pinned bytes do not resolve runtime virtual targets or behavior.
+# these private-range hashes do not resolve runtime virtual targets or behavior.
 
 
 print("PASS static-only Central interposer provenance checks")
 print("Central/wrapper identity strings include appVersionString, EngineCLIWrapper, and initialize/start/createEngine imports")
-print("Static CIL: fourth createEngine callback targets NativeStringParamValueReceiver; host subscribes setStringValue to SendString")
+print("Qualified private CIL range hashes: callback four maps to NativeStringParamValueReceiver; host subscribes setStringValue to SendString")
 print("Updater source identity includes loadInterposer, current-directory API, Interposer path, and queue-out strings")
 print("Updater delay-import binding: Interposer.dll descriptor, named import table, per-export IAT thunk resolver confirmed")
-print("Mac static metadata: updater delegate resolves to ParamValueServer; two teardown vtable callsites and selector/IMP mismatch pinned")
+print("Mac metadata and qualified private code-range hashes: updater delegate resolves to ParamValueServer; teardown vtable sites and selector/IMP mismatch pinned")
 print("Mac universal slices: x86_64 and arm64 coordinates/hash; product-selection edge remains separately documented")
 print("No vendor code loaded or executed")
