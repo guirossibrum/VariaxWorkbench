@@ -57,6 +57,8 @@ def loader_records(data, exact=True):
 
 
 def names_and_slots(templates, slots):
+    # Compare immutable snapshots even when an analysis caller supplies bytearray.
+    templates, slots = bytes(templates), bytes(slots)
     # Only the observed 3.10 shapes, not a universal Line 6 format.
     if len(templates)!=50*2619 or len(slots)!=60*4096:
         raise ValueError('unexpected 3.10 template/slot lengths')
