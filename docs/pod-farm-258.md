@@ -222,3 +222,7 @@ The [XFP6 section continuation](pod-farm-xfp6-sections.md) resolves the concrete
 settings receiver and mapping/settings frame arithmetic, version acceptance and
 partial mutation. Eight additional strict synthetic audit checks pass; full-state
 roundtrip and unknown-data preservation remain unverified.
+
+The [tone/coverage consolidation](pod-farm-tone-coverage.md) follows the concrete
+child parser and conversion matrix, records nested preservation losses and
+runtime input boundaries, and distinguishes evidence-file counts from test counts.

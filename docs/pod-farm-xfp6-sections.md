@@ -153,3 +153,7 @@ service path was executed; guards and production Rust/dependencies are unchanged
 Private evidence manifest: `sections-evidence-58294b49cebd9bc91d80f546ca8a5896315246fd45f98cb24fca33cc155a7392.json`
 (18 new reports, including rejected selections and the audit test log). Audit
 test log SHA-256: `2a9382a66726fc7d622e74b589e52c196af7ca9fbb5729d3a71967f5c4142daa`.
+
+The [tone/coverage consolidation](pod-farm-tone-coverage.md) follows the concrete
+child parser and conversion matrix, records nested preservation losses and
+runtime input boundaries, and distinguishes evidence-file counts from test counts.
