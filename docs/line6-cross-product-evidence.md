@@ -6,9 +6,9 @@ Capability matrix version: `line6-static-capability-matrix-v1` (2026-11-16).
 This records what the five supplied packages and their bundled documentation say.
 It does not establish a connected device's identity, successful communication,
 physical compatibility, firmware state, audio behavior, or recovery capability.
-The Windows/macOS vendor binaries were not executed or loaded. No installer was
-run, DMG mounted, driver installed, service launched, catalog contacted, or
-USB/MIDI/audio interface opened.
+The Windows/macOS vendor binaries were read for static analysis but not
+executed. No installer was run, DMG mounted, driver installed, service
+launched, catalog contacted, or USB/MIDI/audio interface opened.
 
 ## Artifact identity and integrity
 
@@ -291,7 +291,82 @@ adapter mapping or supported edit/backup operation. Static analysis did not
 establish transport session ownership, timeouts, retries, error propagation,
 or cross-platform parity. The import trace report is private at
 `.tools/issue-61-analysis/central-interposer-api-xrefs.txt`; no vendor code was
-executed or loaded, and no device or service was contacted.
+executed, and no device or service was contacted.
+
+### Interposer device filter and consumer boundary (static Windows x86)
+
+The same `Interposer.dll` exports `InterposerInit`, `InterposerCleanup`,
+`InterposerGetApplicationId`, `InterposerGetDescriptorCount`,
+`InterposerGetDescriptors`, `InterposerGetDevCaps`/`InterposerGetDevCapsSize`,
+`InterposerGetVersion`, `InterposerRegisterCallback`, `InterposerOpenPipe`,
+`InterposerClosePipe`, and `InterposerMessage`. These exports define a concrete
+descriptor/capability/pipe/message consumer boundary, but the message payload,
+pipe endpoint contract, callback/session ownership and error mapping are not
+recovered. The image also contains `InterposerDeviceManager_Win`, `Variax USB
+Interface`, `Unknown Line 6 Device`, `IM_L6_VARIAX`, and
+`IM_CALLBACK_FROM_VARIAX` strings. These labels tie this library's code/data to
+a Variax-oriented interposer path; they do not show that Central uses this API
+for preset editing or that it talks to an attached guitar rather than the USB
+interface.
+
+In the x86 image (base `0x10000000`), the device-interface enumeration path at
+`0x10004750` uses `GUID_DEVINTERFACE_USB_DEVICE` bytes at `0x10038a38`, obtains
+interface detail, and passes device paths to helper `0x10004c70`. That helper
+checks for `USB`/`usb` and parses the `VID_` field. The discovery path at
+`0x10004a40` reads the parsed vendor and product values; its branch at
+`0x10004b4b` admits vendor ID `0x0E41` or `0x1235`, then passes the parsed
+product ID to `0x100029e0` before allocating a device-description record and
+storing the VID/PID fields at offsets `+0x08` and `+0x0c`. The product helper
+searches a tree rooted at manager offset `+0x0c` by product ID and copies the
+matching record's descriptor data. The set's entries and initialization path
+were not recovered: the binary contains `l6config.xml` and `ProductId` strings,
+but the prepared package inventory contains only `L6ConfigAmplifi.xml`, which
+does not establish the tree contents. Thus the traced filter is VID plus a
+product-ID registry lookup, while the exact accepted product IDs and
+capability/descriptor rows remain unknown. A separate
+notification setup path registers for device arrival at `0x10003b50`; enumeration
+and removal paths destroy their SetupAPI device-information sets. Functions
+`0x10004590` and `0x10004750` also inspect parent/ancestor relations using
+opaque constants at `0x10038a48` and `0x10038a58`. The purpose of those two
+constants and the bridge-to-instrument
+identity mapping remain unresolved. In particular, the vendor-ID comparison
+does not by itself prove the supplied standalone bridge PID `0x534D` is accepted
+by this interposer.
+
+Ghidra static decompilation of these five functions is preserved privately at
+`.tools/issue-61-analysis/central-interposer-selection.txt`; the reproducible
+analysis script is `.tools/issue-61-analysis/CentralInterposerSelection.java`.
+Function labels are inferred, and the report is bounded to those targets.
+
+The managed `Line 6 Central.exe` contains the `EngineCLIWrapper` assembly name.
+That wrapper imports `createEngine`, `initialize`, `start`, typed parameter
+getters/setters, `doOfflineFirmwareUpdate`, and `setDeviceIdentity` from
+`UpdaterV3EngineDLL.dll`. This establishes an app-to-engine API surface for
+generic parameters and maintenance identity/update operations; the exact app
+call sequence from managed code to the wrapper was not traced. This does not
+establish that the updater engine is the same consumer as `Interposer.dll`, or
+that the generic engine API exposes Variax editing. The native updater DLL
+imports libusb enumeration/transfer calls, SetupAPI device enumeration,
+`cyusbserial` I2C calls, and Windows MIDI APIs; these are dependencies, not proof
+that a particular path is active for Variax or safe to call.
+
+### Central macOS device-manager evidence (bounded string/dependency scan)
+
+The macOS Central executable is a universal x86_64/arm64 Mach-O
+(`d69d4d5fb959ea460787dcbde748fb43ea6b846a937aa98076c55ba061be4a1f`). Its
+bundle contains `libusb-1.0.0.dylib` and `libcyusbserial.0.1.dylib`. Static
+binary strings include `L6DeviceManagerMac`, `L6USBDeviceManager`,
+`L6USBDevice_DevMgr`, `L6DeviceDescription`, `L6GenericUpdateEngine`,
+`L6HWUpdateEngineVXFlash`, `tearingDownVariaxScanner`,
+`engineInterfaceConnectedToDevice`, and update failure strings for Variax user
+and factory patches. This supports that the Mac build has native device-manager
+and firmware-update components with a Variax scanner/update path. The bounded
+string/dependency scan does not recover their call graph, product-selection
+predicate, corresponding consumer or wire/session behavior; it cannot establish
+Variax preset editing parity with Windows. A static Ghidra attempt on the full
+universal executable produced broad unresolved-instruction/decompiler warnings
+and was stopped before yielding a reliable call trace. No vendor code was
+executed.
 
 ## Explicitly unresolved
 
