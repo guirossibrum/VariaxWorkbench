@@ -18,6 +18,90 @@ scripts, register drivers, mount a device or open USB/MIDI/audio hardware.
 
 ## Inputs and tools
 
+The repository dependency entry points are [requirements.txt](../requirements.txt)
+for the Linux x86-64 pip research profile and
+[requirements-tools.json](../requirements-tools.json) for Python, Rust,
+toolchain, host-package, and private-input boundaries. Validate the declarations
+without installing anything with:
+
+```sh
+python3 scripts/verify_dependency_manifest.py
+```
+
+The root requirements file is valid pip syntax, but intentionally targets only
+Linux x86-64 because the hash-locked Unicorn artifact is that platform's wheel.
+It is not a prerequisite for normal Rust builds or Windows/macOS core CI. For a
+private Linux research venv, prepare a wheelhouse from the declared requirements
+and install offline:
+
+```sh
+python3 -m pip download --only-binary=:all: --no-deps \
+  --require-hashes -r requirements.txt --dest WHEELS
+python3 -m venv .tools/python
+.tools/python/bin/python -m pip install --no-index --find-links WHEELS \
+  --require-hashes -r requirements.txt
+```
+
+The only active Python package is Unicorn 2.1.4; its wheel SHA-256 is recorded
+in `research/requirements-linux-x86_64.txt`. Setup, manifest checks, and ordinary
+script tests otherwise use the Python standard library. Python 3.11 is the
+documented minimum; CPython 3.14.8 is the recorded research baseline, not a
+cross-platform lock. pip itself and distro package revisions have no exact
+tracked pin.
+
+For Rust, install rustc 1.99.1 with Cargo and clippy from that same toolchain.
+The pinned workflow action and `Cargo.lock` are the sources of truth; do not
+copy crate versions into a second list. Populate Cargo's registry cache with
+`cargo fetch --locked` before offline work. The optional software-math helper
+also needs the exact `libm-0.2.16.crate`, its unpacked registry source, and Cargo
+index/cache metadata. The archive checksum is
+`b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981`; the helper
+checks every archived source file (155 in the recorded run), requires
+`force-soft-floats`, disables default features, and rejects transitive
+dependencies. This private cache is not supplied by Cargo.lock itself.
+
+With rustup available, the toolchain/cache setup is:
+
+```sh
+rustup toolchain install 1.99.1 --profile minimal --component clippy
+cargo +1.99.1 fetch --locked
+```
+
+Ordinary Linux GUI/USB builds need the native C linker and the Wayland, XKB and
+X11 development metadata selected by the locked GUI features; check discovery
+with `pkg-config --modversion wayland-client xkbcommon`. Windows GUI builds use
+the MSVC linker/build tools and Windows SDK; macOS builds use Xcode Command Line
+Tools and the selected Apple SDK. Install these through the chosen image's native
+package manager and record exact package/SDK revisions there. Neither Cargo.lock
+nor the current workflow pins distro revisions or an immutable container image,
+so the repository does not claim those OS packages are byte-for-byte reproducible.
+The `rust_ci` commands in `requirements-tools.json` are ordinary product checks;
+the Python/Unicorn/native-analysis stack below is optional research, never an
+application runtime dependency.
+
+For the workflow's Ubuntu 24.04 runner, the native GUI metadata is provided by
+the distro's build-essential, pkg-config, Wayland/XKB and X11 development
+packages (including `libwayland-dev`, `libxkbcommon-dev`, `libxkbcommon-x11-dev`,
+`libx11-dev`, `libxrandr-dev`, `libxi-dev`, `libxcursor-dev`, and
+`libxinerama-dev`). Package revisions are image-supplied; record them with
+`dpkg-query -W` when reproducing a specific image. For example, on Ubuntu 24.04:
+
+```sh
+sudo apt-get install --no-install-recommends build-essential pkg-config \
+  libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-dev \
+  libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev
+pkg-config --modversion wayland-client xkbcommon
+dpkg-query -W build-essential pkg-config libwayland-dev libxkbcommon-dev \
+  libxkbcommon-x11-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev \
+  libxinerama-dev
+```
+
+This command is platform-qualified, but its package revisions follow the
+configured apt sources; the repository does not claim an immutable apt snapshot.
+On Windows use the installed
+MSVC C++ build tools and Windows SDK; on macOS use the installed Xcode Command
+Line Tools. These host tools are separate from pip and Cargo packages.
+
 `research/artifacts.json` identifies the archived installer/firmware files by
 size and SHA-256. The Workbench recipe requires the two exact 1.75 installers:
 

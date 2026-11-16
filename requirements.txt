@@ -1,0 +1,9 @@
+# pip-compatible entry point for the Linux x86-64 offline research profile.
+# It installs the one third-party Python package used by Unicorn CPU emulation.
+# This is not required for ordinary Rust core/GUI checks.
+--require-hashes
+-r research/requirements-linux-x86_64.txt
+
+# Rust toolchain/crates and host tools cannot be installed by pip. Their
+# authoritative pins, profiles, provisioning steps, and known gaps are in
+# requirements-tools.json and docs/reproducing-references.md.
