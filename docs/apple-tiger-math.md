@@ -156,3 +156,25 @@ report under `.tools/apple-product-audit/`; failures retain their report. The
 110 settings are unchanged existing cases and are not additional sample coverage
 for #33. The experiment neither selects a new default nor changes any runtime
 contract or production dependency.
+
+## Single-case factor diagnostic
+
+Eight fresh-state diagnostic runs isolate the observed series-case difference.
+The complete host and Apple controls first reproduce their saved stateful-sweep
+hashes. Substituting only the Apple `sinf` produces the complete Apple result
+(four coefficient words and checksum); `pow`, `powf` and `cosf` alone each
+retain the complete glibc result. The `sinf`+`cosf` and `pow`+`powf` pairs retain
+the corresponding single-factor outcome. Each run enforces the independently
+pinned startup tuple appropriate to its selected `pow`; no profile accepts an
+arbitrary observed constructor state.
+
+```sh
+python scripts/isolate_apple_tiger_case.py "$LIB"
+```
+
+The original library remains CPU-emulated, while the diagnostic host control
+uses system libm as the existing research adapter does. These eight executions
+reuse one existing settings case. They are not new distinct settings for #33,
+not additional product compatibility profiles and not a general assertion that
+other functions cannot matter on other inputs. Their private report records the
+source/input/auditor hashes and output hashes; no vendor output is published.

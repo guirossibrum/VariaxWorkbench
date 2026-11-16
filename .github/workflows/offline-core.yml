@@ -20,6 +20,7 @@ on:
       - "scripts/apple_tiger_math_oracle.py"
       - "scripts/audit_apple_tiger_generator.py"
       - "scripts/audit_apple_tiger_product.py"
+      - "scripts/isolate_apple_tiger_case.py"
       - "scripts/audit_apple_tiger_math.py"
       - "scripts/audit_x87_instruction_reference.py"
       - "scripts/extract_apple_tiger_runtime.py"
@@ -61,7 +62,7 @@ jobs:
         run: |
           python scripts/inspect_firmware.py --self-test
           python scripts/test_firmware_map.py
-          python -m py_compile scripts/native_updater_oracle.py scripts/verify_aiff_export.py scripts/apple_tiger_math_oracle.py scripts/audit_apple_tiger_generator.py scripts/audit_apple_tiger_product.py scripts/audit_apple_tiger_math.py scripts/audit_x87_instruction_reference.py scripts/extract_apple_tiger_runtime.py scripts/native_x87_reference.py scripts/verify_apple_tiger_runtime.py scripts/coefficient_oracle.py
+          python -m py_compile scripts/native_updater_oracle.py scripts/verify_aiff_export.py scripts/apple_tiger_math_oracle.py scripts/audit_apple_tiger_generator.py scripts/audit_apple_tiger_product.py scripts/isolate_apple_tiger_case.py scripts/audit_apple_tiger_math.py scripts/audit_x87_instruction_reference.py scripts/extract_apple_tiger_runtime.py scripts/native_x87_reference.py scripts/verify_apple_tiger_runtime.py scripts/coefficient_oracle.py
           python -c "import json; json.load(open('research/updater-oracle-reference.json', encoding='utf-8'))"
       - name: Synthetic package guards
         if: runner.os == 'Linux'
