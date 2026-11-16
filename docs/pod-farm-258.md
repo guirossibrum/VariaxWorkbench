@@ -211,3 +211,9 @@ conditional signed registry clamping, fixed two-tone L6P2 reconstruction and AU
 dictionary-state error limits. Its 17 reconstruction checks include the earlier
 nine resource/PINF checks. No plugin-state equivalence or active pack state was
 established; #40 remains open and #29 held.
+
+The [plugin-provider trace](pod-farm-plugin-provider.md) subsequently connects
+the concrete AU state receiver to an XFP6 envelope and compares the supplied
+i386 VST/RTAS wrappers. Eight new synthetic prefix/status checks pass. Provider
+binding is static evidence, not observed readiness or a full-state roundtrip;
+deferred AU application and complete cross-product preservation remain unproved.

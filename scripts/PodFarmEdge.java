@@ -48,11 +48,12 @@ public class PodFarmEdge extends GhidraScript {
                     }
                     continue;
                 }
-                if (arg.startsWith("write:")) {
-                    Address target = toAddr(arg.substring(6));
+                if (arg.startsWith("write:") || arg.startsWith("refs:")) {
+                    boolean writesOnly = arg.startsWith("write:");
+                    Address target = toAddr(arg.substring(writesOnly ? 6 : 5));
                     for (Reference ref : getReferencesTo(target)) {
                         println("DATAREF " + target + " FROM " + ref.getFromAddress() + " " + ref.getReferenceType());
-                        if (ref.getReferenceType().isWrite()) {
+                        if (!writesOnly || ref.getReferenceType().isWrite()) {
                             Function owner = getFunctionContaining(ref.getFromAddress());
                             if (owner != null) selected.add(owner);
                         }

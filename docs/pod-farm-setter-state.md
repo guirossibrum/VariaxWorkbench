@@ -6,6 +6,11 @@ full AU's state dictionary entry points. It does not complete #40 or release #29
 All vendor bytes, pseudocode, disassembly and reports remain private/ignored.
 No vendor code or additional emulation ran; no device or audio stream was opened.
 
+The subsequent [plugin-provider pass](pod-farm-plugin-provider.md) resolves the
+concrete AU receiver and XFP6 payload, and traces the supplied i386 VST/RTAS
+state wrappers. Eight new synthetic prefix/status checks supplement the 17 here.
+Deferred AU consumption and full cross-product preservation remain unproved.
+
 ## Sources and coordinates
 
 | Supplied artifact/slice | SHA-256 | Coordinates below |
@@ -177,13 +182,14 @@ and all nested value-type checks are not proved here.
 There are concrete error limits: save can return a dictionary with empty data
 and success after a negative provider serialization result; restore does not
 propagate the provider restore return and can report success. Deferred cached
-state is distinct from successfully applied state. The concrete binding and
-payload format of that provider have not been resolved from these wrapper
-paths; it is not proved to be L6P2, a single tone, or a complete host session.
+state is distinct from successfully applied state. At this milestone the
+provider binding/payload were unresolved. The subsequent provider pass connects
+its constructor and dispatch to an XFP6 state envelope with embedded tone
+sections; it is not a whole L6P2 document or a proved complete host session.
 The AU also contains a two-tone serializer at `0x1a17fc`, reached by a separate
 tone-save path `0xca1fc`; its existence does not connect it to this opaque state
-provider. VST/RTAS state entry points and Windows plugin formats remain outside
-the proven ABI scope of this pass.
+provider at this milestone. Later VST/RTAS entry-point evidence is recorded in
+the provider pass; Windows plugin formats remain unproved.
 
 ## Reproduction, evidence and remaining definitions
 
@@ -228,8 +234,9 @@ The reachable contracts above are consolidated, with these precise gaps:
 - Actual selected resource/pack state and provider availability remain runtime
   inputs. Cache loader `0x252b0` and registry producer `0x23740` are identified;
   authorization filters were neither run nor bypassed. No PODxt applicability follows.
-- AU provider + `0x10`/`+0x18` concrete binding/payload semantics, deferred-state
-  application and cross-format plugin preservation are not established.
+- The follow-up resolves AU provider + `0x10`/`+0x18` binding and the XFP6 prefix.
+  Deferred-state application, complete section semantics and cross-format plugin
+  preservation remain unproved.
 - Whole inner-document unknown preservation, all compatibility conversions,
   units/scaling and other model domains remain incomplete. The proved outer
   losses prevent a blanket lossless backup claim.
