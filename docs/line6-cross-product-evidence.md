@@ -77,6 +77,41 @@ cleanup. The PID `0x534D` is the standalone bridge match; it is not a Variax
 guitar product ID. No macOS standalone-driver package was present among these
 five inputs, so its driver and transport remain unknown here.
 
+#### Standalone Windows bridge driver: PnP removal edge
+
+Static disassembly of the standalone installer's x86 `L6SM.sys` (SHA-256
+`b109c86093a54a33b8eff7f677053f3ca1960c3c304a137ed6ea776f4f17c5d7`, PE
+ImageBase `0x00010000`; `objdump` addresses below are image virtual addresses)
+traces one removal path. Initialization at `0x18552` registers common callback
+`0x105c4` for several major-function slots, registers AddDevice `0x1058a`, and
+registers unload `0x17c06`. The common callback first checks global byte
+`0x17aa4`: its zero branch takes a device-object vtable `+4` path; its other
+branch indexes a major-function table. In that branch, PnP major-function
+slot `0x1b` selects wrapper `0x12cd9`, which uses object vtable slot `+0x7c`.
+The recovered vtable at `0x17400` has handler `0x14b1f` at that slot, and two
+vtable-initialization sites (`0x109cd`, `0x11b41`) install that pointer. Handler
+`0x14b1f` dispatches PnP minor values `0x00..0x17` through a table at
+`0x153e9`; it has a separate `0x87` branch and sends other values above
+`0x17` to its unsupported path. Minor `0x02` routes to `0x14e76`
+(`IRP_MN_REMOVE_DEVICE`).
+
+In that remove case, when context flag bit `0x10` is set and a saved pointer at
+context offset `+0x30` is non-null, code calls helper `0x13030`, which invokes
+the imported `IoDetachDevice` on the saved lower-device pointer, then clears
+`+0x30`. Later conditional branches call `IoDeleteSymbolicLink` and
+`IoDeleteDevice` based on context state. These are static paths, not an observed
+disconnect or proof that every remove reaches all cleanup steps. The traced
+unload routine also calls two indirect global-object methods and a cleanup
+worker whose full session/refcount semantics are unresolved. The standalone
+x64 driver and separate Workbench HD driver binaries are not behaviorally
+covered by this x86 trace. Supporting private disassembly/imports and a compact
+trace report are under `.tools/issue-61-analysis/`, including
+`l6sm-driver-disassembly-standalone-x86-b109c860.txt`,
+`l6sm-driver-imports-standalone-x86-b109c860.txt`, and
+`l6sm-pnp-remove-trace-b109c860.txt`. Static analysis read extracted driver
+bytes; it did not execute/load the driver. No matching standalone macOS driver
+was in the supplied packages, so a platform-paired path cannot be established.
+
 ### Workbench HD editor and formats
 
 The Windows Workbench HD executable's embedded version strings identify 2.15.
