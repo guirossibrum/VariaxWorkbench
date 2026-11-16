@@ -226,3 +226,10 @@ roundtrip and unknown-data preservation remain unverified.
 The [tone/coverage consolidation](pod-farm-tone-coverage.md) follows the concrete
 child parser and conversion matrix, records nested preservation losses and
 runtime input boundaries, and distinguishes evidence-file counts from test counts.
+
+The [consolidated acceptance handoff](pod-farm-acceptance-coverage.md) supersedes
+the initial milestone's unresolved pack/API summaries with packaged identifiers,
+loader eligibility roles, a concrete VST automation path, full capability/DAW
+matrices and unpublished follow-up drafts. Installed/authorized state, complete
+automation migration and #29 control definitions remain unknown. The consolidated
+owned test run is69 methods across eight suites, not native/state/DSP equivalence.
