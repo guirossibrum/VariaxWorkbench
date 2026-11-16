@@ -99,6 +99,61 @@ packages contain byte-identical copies of that manual, `FactoryPresets.bun`,
 package facts do not show that their file bytes or device protocol are
 cross-compatible with original Workbench formats. No conversion is inferred.
 
+### Workbench HD 2.15 preset record structure (static, partial)
+
+The Windows and macOS package copies of `FactoryPresets.bun` are byte-identical
+(74,492 bytes, SHA-256
+`aa39230491ceee7f49db8b1b7aca0d721ab6654d2b433b4e512b81d76fa48d1f`). The
+macOS copy is at
+`.tools/issue-61-payloads/00/Workbench HD.app/Contents/Resources/FactoryPresets.bun`;
+the Windows extraction is at
+`.tools/issue-61-analysis/01/Workbench HD/res/FactoryPresets.bun`. A bounded
+IFF walker checked container boundaries and record counts without retaining
+preset names or parameter values. It observed a `FORM/WB2B` bundle containing
+12 `FORM/WB2K` banks, each with five `FORM/WB2P` presets (60 total). Every
+preset starts with a 12-byte `PINF` and has a `LIST/PRST` with eight parameter
+groups. Across all 60 records the group names and `PARM` counts are: `PUP1`
+(5), `PUP2` (5), `PUP3` (5), `BODY` (11), `STRG` (6), `ALTT` (7), `PIFX`
+(13), and `SYST` (1); every observed `PARM` chunk has a 12-byte payload. Each
+factory record also has `LIST/META` with one `INAM` chunk; its payload is 8 or
+12 bytes. These are measurements of this one factory bundle, not universal
+limits for other versions or files. Recheck script and private output are
+`.tools/issue-61-analysis/check_wb2_factory_platform_pair.py` and
+`.tools/issue-61-analysis/wb2-factory-structure-platform-pair-aa39230491ceee7f49db8b1b7aca0d721ab6654d2b433b4e512b81d76fa48d1f.txt`.
+
+Static analysis of the macOS Workbench HD executable (SHA-256
+`531bbcf1a187afe4243c9e48af491acb64841f3986383bb099c69fd9a0be1fe8`, Mach-O
+image base `0x100000000`) located `WB2Preset::FromStream` at `0x100020d24`,
+`ToStream` at `0x100020994`, `VerifyFile` at `0x1000214a8`, `ReadParamGroup` at
+`0x10002125c`, and `WriteParamGroup` at `0x100020c54`. The reader requires a
+`FORM/WB2P` and first reads a 12-byte `PINF`; it proceeds only when its first
+big-endian word is greater than 2. The writer emits version word 3 and
+preserves two other 32-bit words. In the factory set those words are
+`0x00070005` and `0x0200006A`. `0x00070005` also appears as the Tyler product
+identifier in the Central compatibility data above, but the preset field's
+meaning is not independently named by this code; the third word remains
+opaque. Do not treat either value as a complete instrument identity or
+Workbench HD support table.
+
+The reader dispatches only the eight group IDs observed above, then reads
+12-byte `PARM` payloads as an index, a type tag, and a 32-bit value field.
+`WB2ParamGroup::SetParam` at `0x10000e6d8` rejects an index outside its
+group's parameter count and rejects a type tag that differs from that
+parameter's configured type. The writer walks configured parameter indices
+and emits the same 12-byte shape. This establishes a bounded typed-record
+contract, not names, ranges, units, or model/tuning meanings for the parameter
+IDs or values. The reader skips unrecognized chunks/groups; `VerifyFile` is
+only a shallow `FORM/WB2P` plus first-`PINF` check, not full validation. Static
+decompilation report:
+`.tools/issue-61-analysis/wb2-param-contract-531bbcf1a187afe4243c9e48af491acb64841f3986383bb099c69fd9a0be1fe8.txt`.
+
+The code evidence is from the macOS executable only; resource equality does not
+prove the Windows implementation behaves identically. Ghidra analysis was
+offline and static. No vendor application/library code was executed and no
+device, USB/MIDI/audio, service, or network was contacted. No Rust preset
+backend, editor compatibility, transfer behavior, validation oracle, or
+physical recovery claim follows from this finding. Issue #61 remains partial.
+
 ### Central's firmware/update evidence
 
 The Windows app is a .NET assembly with `UpdaterV3EngineDLL.dll`,
