@@ -5,7 +5,8 @@ Opening a capture or playback stream remains unauthorized. `SelectRecordRoute`
 on the PODxt Live role is offline. `StartAudioCapture`, `StopAudioCapture`,
 and `OpenAudioStream` stay locked. `LIVE_BACKEND_INITIALIZER` stays `None`.
 
-Acceptance on #27 stays open for review. In-app recording, levels, file saves,
+The offline criteria on #27 were accepted after revised PR #65 merged as
+`6318a2e055393d582cbe593aa6d11b4e26eb8bdc`. In-app recording, levels, file saves,
 and DAW routing remain #28. This page does not map firmware regions (#13) and
 does not identify the USB firmware component or `bcdDevice` (#20).
 
