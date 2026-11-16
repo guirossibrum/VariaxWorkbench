@@ -245,3 +245,7 @@ pack/registry state, default/step/unit meaning or PODxt applicability follows.
 No #29 code, production dependency, default math or guard changed. Publication,
 full command-v1 checks and independent exact-head review remain held/required
 under the existing coordinator instruction; this is not acceptance or release.
+
+The subsequent [XFP6 section ledger](pod-farm-xfp6-sections.md) connects the settings
+receiver, resolves mapping/settings framing and narrows section-boundary and
+partial-mutation claims. It adds eight owned strict framing audit checks.

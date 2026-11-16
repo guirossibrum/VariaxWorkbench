@@ -217,3 +217,8 @@ the concrete AU state receiver to an XFP6 envelope and compares the supplied
 i386 VST/RTAS wrappers. Eight new synthetic prefix/status checks pass. Provider
 binding is static evidence, not observed readiness or a full-state roundtrip;
 deferred AU application and complete cross-product preservation remain unproved.
+
+The [XFP6 section continuation](pod-farm-xfp6-sections.md) resolves the concrete
+settings receiver and mapping/settings frame arithmetic, version acceptance and
+partial mutation. Eight additional strict synthetic audit checks pass; full-state
+roundtrip and unknown-data preservation remain unverified.
