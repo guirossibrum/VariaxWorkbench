@@ -167,12 +167,33 @@ IEEE-754 float. `SetTune` accepts slot indices 0 through 5 and maps slot `i`
 to internal group parameter index `i + 1` with type tag 1. `SetParam` rejects
 indices outside the configured count (`0x80000008`) and a type mismatch
 (`0x80000009`); `SetTune` rejects index 6 or higher (`0x80000002`). The stream
-does not carry a type tag: the reader assigns type 1 to the float. The macOS
-reader skips out-of-range slot bytes; a wrong-sized `STRG` fails the
-exact-length `ReadChunkOfType` call. Handling of a different child tag remains
-unresolved in this pass. The code does not establish physical string
-orientation, float units/range, or a mapping from this standalone `LIST/TUNE`
-object to the preset `ALTT` group.
+does not carry a type tag: the reader assigns type 1 to the float. The
+constructor resolves parameter definitions for group ID `ALTT` and creates its
+internal parameter group from that definition. The definition has seven
+entries: index 0 is type 0 with default zero; indices 1–6 are type 1 with
+default zero. Thus TUNE slot `i` maps to preset parameter `ALTT[i + 1]` in this
+macOS object implementation. This is a static object/definition link, not a
+claim that every preset or platform uses the same mapping.
+
+The macOS reader skips out-of-range slot bytes; a wrong-sized `STRG` fails
+with `0x80000007`. An unexpected child tag fails with `0x8000101b` rather than
+being skipped. Duplicate in-range slots overwrite earlier values, so the last
+record wins. The Windows reader uses the same wrong-tag and wrong-size errors,
+but its slot setter rejects an out-of-range slot with `0x80000002` instead of
+skipping it. These are source-code paths, not observed results from running the
+vendor binaries.
+
+The bundled `wb2.xml` lays out String 6 (Low E) through String 1 in descending
+display order. Its panel IDs have low 16-bit indices 6 through 1, and the
+strings-panel controller routes widget actions through `SetParamFromWidget`,
+which uses that low 16-bit value as the parameter index. Combined with the
+TUNE `slot i → ALTT index i + 1` mapping, the static UI association is slot 0
+to String 1 (high E) and slot 5 to String 6 (Low E). This describes the
+Workbench HD UI labels and static parameter wiring; no physical instrument was
+observed. The note controls declare a display range of −12..+12, but their
+recovered parameter curve only converts integer and float representations.
+Neither the stream nor this curve establishes the float's musical unit or
+permitted stored range. Treat semitone interpretation as unverified.
 
 The Windows PE has no PDB or symbol table, so these function labels are
 inferred from static instruction flow rather than trusted debug names. In the
@@ -190,16 +211,16 @@ macOS code or any device transfer behavior.
 
 The Windows executable hash is for
 `.tools/issue-61-analysis/01/Workbench HD/Workbench HD.exe`; the macOS
-executable and hash are listed in the preceding section. Ghidra reports and
-source-guided pure-data reference are preserved privately under
-`.tools/issue-61-analysis/`, especially
-`wb2-tuning-trace-531bbcf1-be268d1a.txt` and
-`wb2_tune_reference.py`. Six synthetic checks passed for truncation, chunk
-length, missing header, index/count/type errors, unknown chunks, and a writer
-round trip. The private reference rejects unknown child tags rather than
-guessing at the unresolved vendor behavior. The checks are CPU reference
-checks, not original-library oracle or product parser tests. No vendor binary
-was executed. Issue #61 remains partial.
+executable and hash are listed in the preceding section. Ghidra reports are
+preserved privately under `.tools/issue-61-analysis/`. The reproducible,
+wholly synthetic CPU reference and tests are
+`scripts/wb2_tune_reference.py` and `scripts/test_wb2_tune_reference.py`; run
+them with `python3 scripts/test_wb2_tune_reference.py`. Six checks cover writer
+round trip, truncation/chunk lengths, missing/short header, record-size
+mismatch, unknown child rejection, duplicate-last-wins and macOS
+out-of-range-slot skip, plus setter index/count/type errors. These checks do
+not execute or copy vendor code and are not an original-library oracle or
+product parser tests. No vendor binary was executed. Issue #61 remains partial.
 
 ### Central's firmware/update evidence
 
@@ -222,6 +243,11 @@ contain EULA/update UI content; no remote endpoint was contacted.
   INF with the same declared version.
 - PODxt Live and POD HD500X are not named in the Workbench HD VDI-host list.
   The presence of generic VDI support does not settle either case.
+- Tuning analysis remains limited to the static Workbench HD object and UI:
+  stored float units and accepted stored-value range are unknown, and the
+  String 1/high E through String 6/Low E association has not been checked on a
+  physical instrument. The XML's −12..+12 control range is a UI declaration,
+  not a validated storage or instrument limit.
 - Central's Variax table does not establish whether each guitar/bass is
   recognized, editable, backed up, or updateable in a real session. The bass
   rows do not imply Workbench HD editor support.
