@@ -1,5 +1,9 @@
 # POD Farm 2.58 descriptor population: one system-control path
 
+This report records an earlier research pass. Its publication/check hold statements
+are historical and superseded by the [current publication and check status](pod-farm-acceptance-coverage.md#current-publication-and-check-status).
+Scientific limits, incomplete acceptance and the #29/hardware boundaries remain.
+
 This continues the [property lookup trace](pod-farm-parameter-edge.md) for #40.
 It establishes a concrete named descriptor and new-patch seed, and the producer
 of its generic scalar metadata. The subsequent

@@ -1,5 +1,9 @@
 # POD Farm 2.58 concrete plugin-state provider
 
+This report records an earlier research pass. Its publication/check hold statements
+are historical and superseded by the [current publication and check status](pod-farm-acceptance-coverage.md#current-publication-and-check-status).
+Scientific limits, incomplete acceptance and the #29/hardware boundaries remain.
+
 This finite pass closes the AU provider binding left open by the
 [setter/state trace](pod-farm-setter-state.md) and compares the supplied full
 i386 VST/RTAS state paths. The provider payload is an **XFP6 state envelope**,

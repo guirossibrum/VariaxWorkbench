@@ -1,5 +1,9 @@
 # POD Farm 2.58 native parameter-property edge
 
+This report records an earlier research pass. Its publication/check hold statements
+are historical and superseded by the [current publication and check status](pod-farm-acceptance-coverage.md#current-publication-and-check-status).
+Scientific limits, incomplete acceptance and the #29/hardware boundaries remain.
+
 This follows the [static inventory](pod-farm-258.md) for
 [#40](https://github.com/guirossibrum/VariaxWorkbench/issues/40). It traces an
 actual descriptor lookup and its exported projection, rather than inferring knob

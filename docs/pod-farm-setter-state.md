@@ -1,5 +1,9 @@
 # POD Farm 2.58 setter and outer state contracts
 
+This report records an earlier research pass. Its publication/check hold statements
+are historical and superseded by the [current publication and check status](pod-farm-acceptance-coverage.md#current-publication-and-check-status).
+Scientific limits, incomplete acceptance and the #29/hardware boundaries remain.
+
 This finite static pass continues the [cache/serialization trace](pod-farm-cache-serialization.md).
 It resolves a conditional setter clamp, the outer two-tone container and the
 full AU's state dictionary entry points. It does not complete #40 or release #29.

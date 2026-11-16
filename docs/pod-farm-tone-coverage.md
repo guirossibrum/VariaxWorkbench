@@ -1,5 +1,9 @@
 # POD Farm 2.58 tone conversion and #40 coverage
 
+This report records an earlier research pass. Its publication/check hold statements
+are historical and superseded by the [current publication and check status](pod-farm-acceptance-coverage.md#current-publication-and-check-status).
+Scientific limits, incomplete acceptance and the #29/hardware boundaries remain.
+
 This finite static continuation follows the concrete XFP6 tone reader, not a new
 inventory sweep. Source: full AU x86-64 slice SHA-256
 `715d30b8fed77d4ea18150050131db759b8e8a27eeaf4e3d9b3872b6bca6fbe0`.

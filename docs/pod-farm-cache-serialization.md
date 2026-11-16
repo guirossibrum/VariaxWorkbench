@@ -1,5 +1,9 @@
 # POD Farm 2.58 cache, override and serialization findings
 
+This report records an earlier research pass. Its publication/check hold statements
+are historical and superseded by the [current publication and check status](pod-farm-acceptance-coverage.md#current-publication-and-check-status).
+Scientific limits, incomplete acceptance and the #29/hardware boundaries remain.
+
 This consolidates the source chains following the
 [descriptor producer trace](pod-farm-descriptor-population.md). One host control
 now has concrete signed integer metadata endpoints, and the patch reader/writer

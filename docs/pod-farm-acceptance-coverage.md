@@ -3,12 +3,31 @@
 This consolidates the supplied original #40 scope after the bounded preset/state/
 conversion traces. It adds packaged pack identifiers, their loader roles, a
 concrete VST automation path and a capability/adaptation assessment. It is a
-**partial research handoff, not acceptance, publication approval or #29 release**.
+**partial research handoff, not issue acceptance or #29 release**.
 No product Rust/default/math/dependency/guard changes were made. No device/audio
 access, vendor execution, authorization/credential inspection, new CPU emulation
 or external service access occurred. Vendor artifacts and original-derived
 reports remain private and ignored. Proposed follow-ups below are drafts for the
-Gatekeeper; no issue/PR was published.
+Gatekeeper; none has been published as a separate follow-up issue or PR.
+
+## Current publication and check status
+
+[PR #84](https://github.com/guirossibrum/VariaxWorkbench/pull/84) is published
+against `master`. The publication/access prerequisite is resolved; no further
+publication/access approval is requested. All four configured required checks
+passed on head `685e75153713041c6483e928ed7650e58c1137be` in coordinator run
+`beb6241a-19d1-4569-b362-5059d76dbe97`: `functional:cargo-all-features`,
+`functional:cargo-gui-usb`, `lint:cargo-clippy` and `format:cargo-fmt`.
+
+Independent review requested a narrow documentation-status correction. Every
+changed head requires fresh configured checks and exact-head review; the pass
+above covers only its named head. Independent review and subsequent merge-result
+CI remain required. #40 remains open with incomplete acceptance criteria, #29
+value editing stays held, and all hardware/private-source boundaries remain.
+Older per-pass publication/check hold statements are historical and superseded
+by this section. The 69 synthetic methods and historical lookup oracle retain
+their separate scopes; product-check success does not establish native/state/DSP
+or hardware equivalence. The follow-up issue texts remain unpublished drafts.
 
 ## Source coordinates and evidence kinds
 
@@ -191,8 +210,8 @@ redistribute models, DSP code or proprietary resources.
 | 4 Packs/entitlements | Eleven asset IDs/selectors, packaged model-layout membership, pre-registration loader roles, companions | User storage schema/runtime installed/available/authorized state and device entitlement transfer unresolved; legitimate read-only inventory limited to package facts |
 | 5 Formats/preservation | PINF/L6P2/XFP6/L6ME/1MA6 and child reader/writer contracts, documented loss and mutation | No complete lossless Rust conversion/host automation migration or PODxt bank/slot codec; originals remain necessary |
 | 6 Modern plugin adaptation | Real architectures/imports plus concrete VST parameter/state paths; feasibility assessment | Initialized host-ID table/count, complete AU/RTAS automation mapping, portable independent DSP and ABI validation missing; no working bridge claim |
-| 7 Offline validation | Eight owned suites,69 synthetic test methods pass; hash-pinned private surveys/reports; no devices | No full product CI or original-state/audio oracle here; fake/file-backed audio is an independent existing scope, not validated by these tests |
-| 8 Delivery/follow-ups | Derived ledgers, matrices, owned helpers/tests and drafts below; README updated | Publication/access decisions unanswered; four exact-head command-v1 checks and independent review still mandatory after explicit unblock; issue remains open/partial |
+| 7 Offline validation | Eight owned suites,69 synthetic test methods pass; hash-pinned private surveys/reports; no devices | Merge-result CI and original-state/audio oracle validation remain outstanding; the required prior-head selection is recorded above. Fake/file-backed audio is an independent existing scope, not validated by these synthetic tests |
+| 8 Delivery/follow-ups | Derived ledgers, matrices, owned helpers/tests and unpublished drafts below; PR #84 published and prior-head required checks passed as recorded above | Changed heads require fresh checks and exact-head review; independent review and merge-result CI remain required. Issue acceptance remains incomplete/open; no publication/access decision is pending for this milestone. |
 
 ## Reproducible checks and units
 
@@ -276,9 +295,12 @@ Dependencies: authoritative per-model processing/parameter definitions, #26
 architecture and #27/#28 audio boundaries. A bridge experiment with proprietary
 binaries requires its own scope; this issue does not authorize vendor execution.
 
-The finite remaining blockers are definition/validation gaps and explicit runtime
-inputs above, plus publication/CI/review holds. No new missing installer, human
-decision card, access poll, cleanup or no-PR acceptance is requested.
+The finite remaining issue-acceptance blockers are the definition/validation gaps
+and explicit runtime inputs above. PR #84 is published, and the required checks
+passed on the head recorded in the current status section. Changed-head checks,
+independent review and merge-result CI remain required; publication/access is
+not an unresolved prerequisite. No new missing installer, human decision card,
+access poll, cleanup or no-PR acceptance is requested.
 
 Private manifest: `acceptance-evidence-5a5c7efa6295133cefd18d0432a768cf151fdb3e8e9450b215f18ff6f2da6a55.json` (16 new evidence files: twelve
 Ghidra logs, two packaged-resource JSON reports, one raw switch range and one
