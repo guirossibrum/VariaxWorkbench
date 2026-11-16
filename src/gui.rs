@@ -7,6 +7,8 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
+use variax_workbench::pod_audio::RecordRoute;
+use variax_workbench::recording::{self, ClockSelection};
 use variax_workbench::{document::EditorDocument, preset::PresetFile};
 
 const PICKUP1: u32 = 0x02010001;
@@ -41,6 +43,8 @@ trait FileDialogs {
     fn open(&mut self) -> Option<PathBuf>;
     fn save(&mut self, suggested: &str, extension: &str) -> Option<PathBuf>;
     fn artwork(&mut self) -> Option<PathBuf>;
+    fn open_wav(&mut self) -> Option<PathBuf>;
+    fn save_wav(&mut self, suggested: &str) -> Option<PathBuf>;
 }
 
 #[cfg(not(test))]
@@ -64,6 +68,17 @@ impl FileDialogs for NativeDialogs {
     fn artwork(&mut self) -> Option<PathBuf> {
         rfd::FileDialog::new().pick_folder()
     }
+    fn open_wav(&mut self) -> Option<PathBuf> {
+        rfd::FileDialog::new()
+            .add_filter("PCM WAV", &["wav"])
+            .pick_file()
+    }
+    fn save_wav(&mut self, suggested: &str) -> Option<PathBuf> {
+        rfd::FileDialog::new()
+            .add_filter("PCM WAV", &["wav"])
+            .set_file_name(suggested)
+            .save_file()
+    }
 }
 
 #[cfg(test)]
@@ -72,6 +87,7 @@ struct FakeDialogs {
     open: std::collections::VecDeque<Option<PathBuf>>,
     save: std::collections::VecDeque<Option<PathBuf>>,
     artwork: std::collections::VecDeque<Option<PathBuf>>,
+    wav: std::collections::VecDeque<Option<PathBuf>>,
 }
 #[cfg(test)]
 impl FileDialogs for FakeDialogs {
@@ -83,6 +99,31 @@ impl FileDialogs for FakeDialogs {
     }
     fn artwork(&mut self) -> Option<PathBuf> {
         self.artwork.pop_front().expect("unexpected artwork dialog")
+    }
+    fn open_wav(&mut self) -> Option<PathBuf> {
+        self.wav.pop_front().expect("unexpected wav dialog")
+    }
+    fn save_wav(&mut self, _: &str) -> Option<PathBuf> {
+        self.save.pop_front().expect("unexpected audio save dialog")
+    }
+}
+
+fn route_button_id(route: RecordRoute) -> &'static str {
+    match route {
+        RecordRoute::SendProcessedGuitar => "route-processed",
+        RecordRoute::SendCleanGuitar => "route-clean",
+        RecordRoute::SendCleanGuitarReampPlayback => "route-reamp-clean",
+        RecordRoute::SendReampPlayback => "route-reamp",
+    }
+}
+
+fn clock_button_id(clock: ClockSelection) -> &'static str {
+    match clock {
+        ClockSelection::Unselected => "clock-none",
+        ClockSelection::Integer(44_100) => "clock-44100",
+        ClockSelection::Integer(48_000) => "clock-48000",
+        ClockSelection::Integer(_) => "clock-other",
+        ClockSelection::NativePodxt => "clock-native",
     }
 }
 
@@ -104,12 +145,20 @@ struct Workbench {
     theme_text: String,
     screenshot: Option<PathBuf>,
     frame_count: u32,
+    recording_open: bool,
+    recorder: recording::Panel,
     #[cfg(test)]
     bank_rows: HashMap<(usize, usize), Rect>,
     #[cfg(test)]
     pending_buttons: HashMap<&'static str, Rect>,
     #[cfg(test)]
     pickup_slider: Option<Rect>,
+    #[cfg(test)]
+    recording_buttons: HashMap<&'static str, Rect>,
+    #[cfg(test)]
+    recording_visible: String,
+    #[cfg(test)]
+    recording_capture_attempts: u32,
     read_receiver:
         Option<std::sync::mpsc::Receiver<Result<variax_workbench::usb::CurrentPreset, String>>>,
     read_worker: Option<(
@@ -156,12 +205,20 @@ impl Workbench {
             theme_text: String::new(),
             screenshot: None,
             frame_count: 0,
+            recording_open: false,
+            recorder: recording::Panel::new(),
             #[cfg(test)]
             bank_rows: HashMap::new(),
             #[cfg(test)]
             pending_buttons: HashMap::new(),
             #[cfg(test)]
             pickup_slider: None,
+            #[cfg(test)]
+            recording_buttons: HashMap::new(),
+            #[cfg(test)]
+            recording_visible: String::new(),
+            #[cfg(test)]
+            recording_capture_attempts: 0,
             read_receiver: None,
             read_worker: None,
         };
@@ -1122,6 +1179,12 @@ impl Workbench {
                     if ui.add_enabled(!self.is_reading() && self.pending.is_none(), egui::Button::new("Open…")).clicked() {
                         self.open_dialog();
                     }
+                    let response = ui.button("Test recording…");
+                    #[cfg(test)]
+                    self.recording_buttons.insert("open-recording", response.rect);
+                    if response.clicked() {
+                        self.recording_open = true;
+                    }
                 });
             });
             ui.add_space(8.0);
@@ -1196,6 +1259,222 @@ impl Workbench {
                 });
         }
         self.pending_dialog(ctx);
+        self.recording_window(ctx);
+    }
+
+    fn recording_window(&mut self, ctx: &egui::Context) {
+        if !self.recording_open {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("Offline test recording")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::LEFT_TOP, egui::vec2(24.0, 64.0))
+            .show(ctx, |ui| {
+                ui.label(recording::OFFLINE_BANNER);
+                ui.label(recording::DEVICE_CAPTURE_LOCKED);
+                ui.label(recording::NO_AUTO_START);
+                ui.label(self.recorder.phase_label());
+                ui.label(self.recorder.meter_line());
+                ui.label(self.recorder.guide_line());
+                ui.label(self.recorder.message());
+                ui.separator();
+                for (route, label) in recording::ROUTE_CHOICES {
+                    if self.record_choice(
+                        ui,
+                        route_button_id(route),
+                        self.recorder.route() == Some(route),
+                        label,
+                    ) && let Err(error) = self.recorder.select_route(route)
+                    {
+                        self.recorder.note(error.to_string());
+                    }
+                }
+                for (clock, label) in recording::CLOCK_CHOICES {
+                    if self.record_choice(
+                        ui,
+                        clock_button_id(clock),
+                        self.recorder.clock() == clock,
+                        label,
+                    ) && let Err(error) = self.recorder.select_clock(clock)
+                    {
+                        self.recorder.note(error.to_string());
+                    }
+                }
+                if self.record_choice(
+                    ui,
+                    "input-synthetic",
+                    self.recorder.input() == recording::InputSelection::Synthetic,
+                    "Synthetic generator",
+                ) && let Err(error) = self
+                    .recorder
+                    .select_input(recording::InputSelection::Synthetic)
+                {
+                    self.recorder.note(error.to_string());
+                }
+                if self.record_choice(
+                    ui,
+                    "input-file",
+                    self.recorder.input() == recording::InputSelection::File,
+                    "WAV file",
+                ) && let Err(error) = self.recorder.select_input(recording::InputSelection::File)
+                {
+                    self.recorder.note(error.to_string());
+                }
+                if self.record_button(ui, "load-wav", "Load test WAV…") {
+                    self.load_recording_wav();
+                }
+                ui.separator();
+                if self.record_button(ui, "start", "Start") {
+                    self.arm_recording();
+                }
+                if self.record_button(ui, "feed", "Feed chunk")
+                    && let Err(error) = self.recorder.feed()
+                {
+                    self.recorder.note(error.to_string());
+                }
+                if self.record_button(ui, "stop", "Stop")
+                    && let Err(error) = self.recorder.stop()
+                {
+                    self.recorder.note(error.to_string());
+                }
+                if self.record_button(ui, "cancel", "Cancel")
+                    && let Err(error) = self.recorder.cancel()
+                {
+                    self.recorder.note(error.to_string());
+                }
+                if self.record_button(ui, "save", "Save copy…") {
+                    self.save_recording();
+                }
+                #[cfg(test)]
+                {
+                    self.recording_visible = format!(
+                        "{}\n{}\n{}\n{}\n{}\n{}",
+                        recording::OFFLINE_BANNER,
+                        recording::DEVICE_CAPTURE_LOCKED,
+                        recording::NO_AUTO_START,
+                        self.recorder.phase_label(),
+                        self.recorder.meter_line(),
+                        self.recorder.guide_line(),
+                    );
+                }
+            });
+        self.recording_open = open;
+    }
+
+    fn record_choice(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: &'static str,
+        selected: bool,
+        label: &str,
+    ) -> bool {
+        let response = ui.selectable_label(selected, label);
+        #[cfg(test)]
+        self.recording_buttons.insert(id, response.rect);
+        #[cfg(not(test))]
+        let _ = id;
+        response.clicked()
+    }
+
+    fn record_button(&mut self, ui: &mut egui::Ui, id: &'static str, label: &str) -> bool {
+        let response = ui.button(label);
+        #[cfg(test)]
+        self.recording_buttons.insert(id, response.rect);
+        #[cfg(not(test))]
+        let _ = id;
+        response.clicked()
+    }
+
+    fn arm_recording(&mut self) {
+        let Some(route) = self.recorder.route() else {
+            self.recorder
+                .note("Select a route, an input, and a clock before starting.");
+            return;
+        };
+        let mut attempts = 0;
+        let gate = variax_workbench::rig::Session::initial_rig().gate_offline_recording(
+            route,
+            recording::OFFLINE_ROUTE_PERIOD_BYTES,
+            recording::OFFLINE_ROUTE_PERIODS,
+            || {
+                attempts += 1;
+                Ok(())
+            },
+        );
+        #[cfg(test)]
+        {
+            self.recording_capture_attempts = attempts;
+        }
+        if attempts != 0 {
+            self.recorder
+                .note("Capture attempt ran. The take was not started.");
+            return;
+        }
+        match gate {
+            Err(error) => {
+                self.recorder
+                    .note(format!("Route gate refused the take: {error:?}"));
+            }
+            Ok(gate)
+                if gate.stream_opened || gate.outbound_len != 0 || !gate.capture_stays_locked =>
+            {
+                self.recorder.note("Route plan opened a stream or produced outbound bytes. The take was not started.");
+            }
+            Ok(_) => {
+                if let Err(error) = self.recorder.start() {
+                    self.recorder.note(error.to_string());
+                }
+            }
+        }
+    }
+
+    fn load_recording_wav(&mut self) {
+        if self.recorder.phase() != recording::Phase::Idle {
+            self.recorder
+                .note("Cancel the current take before loading a file.");
+            return;
+        }
+        let Some(path) = self.dialogs.open_wav() else {
+            self.recorder.note("Load cancelled. No file was read.");
+            return;
+        };
+        let label = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "audio.wav".into());
+        match recording::read_regular_bytes(
+            recording::path_facts(&path),
+            recording::TAKE_BYTES_CEILING,
+            || fs::read(&path),
+        ) {
+            Ok(bytes) => {
+                if let Err(error) = self.recorder.load_wav(&label, &bytes) {
+                    self.recorder.note(error.to_string());
+                }
+            }
+            Err(recording::TakeError::CapExceeded) => {
+                self.recorder
+                    .note("That file is larger than the offline take ceiling. It was not loaded.");
+            }
+            Err(error) => self.recorder.note(error.to_string()),
+        }
+    }
+
+    fn save_recording(&mut self) {
+        if self.recorder.phase() != recording::Phase::Stopped {
+            self.recorder.note("Stop the take before saving.");
+            return;
+        }
+        let Some(path) = self.dialogs.save_wav("offline-test-take.wav") else {
+            self.recorder.note("Save cancelled. No file was written.");
+            return;
+        };
+        if let Err(error) = self.recorder.save(&path) {
+            self.recorder.note(error.to_string());
+        }
     }
 }
 
@@ -1701,6 +1980,128 @@ mod tests {
         app.launch_read();
         assert!(!app.is_reading());
         assert!(app.read_worker.is_none());
+    }
+
+    fn recording_frame(context: &egui::Context, app: &mut Workbench, events: Vec<egui::Event>) {
+        let _ = context.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 900.0))),
+                events,
+                ..Default::default()
+            },
+            |ctx| app.render(ctx),
+        );
+    }
+
+    fn click_recording(context: &egui::Context, app: &mut Workbench, id: &'static str) {
+        recording_frame(context, app, vec![]);
+        let pos = app.recording_buttons[id].center();
+        recording_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
+    #[test]
+    fn offline_test_recording_window_does_not_start_a_device_or_a_worker() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("offline-test-take.wav");
+        app.dialogs = Box::new(FakeDialogs {
+            save: [Some(path.clone())].into(),
+            ..Default::default()
+        });
+        click_recording(&context, &mut app, "open-recording");
+        assert!(app.recording_open);
+        assert!(app.recording_visible.contains(recording::OFFLINE_BANNER));
+        assert!(
+            app.recording_visible
+                .contains(recording::DEVICE_CAPTURE_LOCKED)
+        );
+        assert!(app.recording_visible.contains(recording::NO_AUTO_START));
+        assert!(app.recording_visible.contains(recording::PHASE_IDLE));
+        assert!(app.recording_visible.contains("not a live route change"));
+        assert!(app.read_worker.is_none());
+        assert!(!app.is_reading());
+        assert_eq!(app.recording_capture_attempts, 0);
+        assert_eq!(app.recorder.phase(), recording::Phase::Idle);
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+        click_recording(&context, &mut app, "start");
+        assert_eq!(app.recorder.phase(), recording::Phase::Idle);
+        assert!(app.read_worker.is_none());
+        click_recording(&context, &mut app, "route-clean");
+        click_recording(&context, &mut app, "clock-44100");
+        click_recording(&context, &mut app, "input-synthetic");
+        assert!(app.recording_visible.contains("not a live route change"));
+        assert!(!app.recorder.live_monitor_changed());
+        assert!(!app.recorder.live_route_changed());
+        click_recording(&context, &mut app, "start");
+        assert_eq!(app.recorder.phase(), recording::Phase::Recording);
+        assert_eq!(app.recording_capture_attempts, 0);
+        assert!(app.read_worker.is_none());
+        assert!(!app.recorder.device_opened());
+        click_recording(&context, &mut app, "feed");
+        assert!(app.recording_visible.contains("Left peak 1000"));
+        assert!(app.recording_visible.contains("Right peak 2000"));
+        click_recording(&context, &mut app, "stop");
+        click_recording(&context, &mut app, "save");
+        let wav = std::fs::read(&path).unwrap();
+        assert_eq!(&wav[0..4], b"RIFF");
+        assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 44_100);
+        let sidecar =
+            std::fs::read_to_string(format!("{}.recording.json", path.display())).unwrap();
+        assert!(sidecar.contains("\"device_recording\": false"));
+        assert!(sidecar.contains("\"sample_rate_hz\": 44100"));
+        assert!(!sidecar.contains("39062"));
+        assert!(!sidecar.contains("78125"));
+        assert!(app.read_worker.is_none());
+        app.start_read();
+        assert!(app.read_worker.is_none());
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn load_recording_wav_refuses_a_nonregular_path_without_opening_it() {
+        let (_context, mut app) = app();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("not-a-regular-wav");
+        std::fs::create_dir(&path).unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            wav: [Some(path)].into(),
+            ..Default::default()
+        });
+        app.load_recording_wav();
+        assert!(app.recorder.message().contains("regular file"));
+        assert!(app.recorder.message().contains("not opened"));
+        assert!(app.read_worker.is_none());
+        assert!(!app.is_reading());
+        assert_eq!(app.recording_capture_attempts, 0);
+        assert!(!app.recorder.device_opened());
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
     }
 
     #[test]

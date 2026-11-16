@@ -35,10 +35,11 @@ with a DAW. Opening a real recording/playback stream is live hardware access and
 is not authorized in the present phase. The offline GearBox and Linux-driver
 record is [POD USB audio](pod-usb-audio.md).
 
-Initial recording acceptance should include explicit input/route selection,
-levels, start/stop/cancel, non-overwriting audio saves, file integrity and bounded
-buffers, using synthetic/file-backed streams before any real input. Recover
-monitoring, processed/clean and re-amping limitations from device-specific evidence.
+The offline test recorder in [recording files](recording.md) provides explicit
+input and route selection, integer levels, start/feed/stop/cancel,
+non-overwriting saves, file integrity, and bounded buffers for synthetic and
+file-backed streams. It does not open a live stream. Monitoring, processed/clean,
+and re-amping behavior on a connected device remain unrecovered.
 
 ## Shared application, independent device implementations
 

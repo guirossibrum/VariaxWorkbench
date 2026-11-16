@@ -6,8 +6,9 @@ on the PODxt Live role is offline. `StartAudioCapture`, `StopAudioCapture`,
 and `OpenAudioStream` stay locked. `LIVE_BACKEND_INITIALIZER` stays `None`.
 
 The offline criteria on #27 were accepted after revised PR #65 merged as
-`6318a2e055393d582cbe593aa6d11b4e26eb8bdc`. In-app recording, levels, file saves,
-and DAW routing remain #28. This page does not map firmware regions (#13) and
+`6318a2e055393d582cbe593aa6d11b4e26eb8bdc`. The offline test recorder in
+[recording files](recording.md) keeps the source rational `78125/2` and does not
+write it as an integer WAV rate. Live capture is still closed. This page does not map firmware regions (#13) and
 does not identify the USB firmware component or `bcdDevice` (#20).
 
 ## Evidence classes
@@ -213,3 +214,5 @@ POD HD500X do not receive a PODxt Live record route.
 - The four mode names come from the GearBox guide. The PCM window comes from
   the Linux source and the installed module file.
 - Passing these tests does not authorize a later connection.
+- The offline recorder keeps `78125/2` and rejects WAV export of that clock,
+  including the integer fields 39062 and 39063. See [recording files](recording.md).
