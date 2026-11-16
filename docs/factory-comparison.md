@@ -57,8 +57,9 @@ covers those bytes. No numeric tolerance hides signed-zero, tuning or other raw
 parameter changes. Different products/versions are explicit errors, not automatic
 conversion or a claim that one firmware's defaults apply to another.
 
-Three synthetic core tests cover raw-bit/tuning changes, wrong targets/versions,
-rename distinctions, unknown parameters, duplicate multiplicity and order changes.
+Four synthetic core tests cover raw-bit/tuning changes, wrong targets/versions,
+rename distinctions, unknown parameters, duplicate multiplicity, order changes
+and matching settings with differing unknown container bytes.
 Two CLI tests reject invalid slot arguments before reading files and require the
 exact reference fingerprint before opening subject settings. Actual capture and
 vendor-derived files remain private and are not default test fixtures.

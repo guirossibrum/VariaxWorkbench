@@ -176,6 +176,21 @@ mod tests {
         assert_ne!(a.name(), renamed.name());
     }
     #[test]
+    fn matching_settings_do_not_hide_unknown_container_byte_differences() {
+        let a = make(|_| {});
+        let mut bytes = a.as_bytes().to_vec();
+        bytes.extend_from_slice(b"XTRA");
+        bytes.extend_from_slice(&3u32.to_be_bytes());
+        bytes.extend_from_slice(&[0x11, 0x22, 0x33, 0]);
+        let size = (bytes.len() - 8) as u32;
+        bytes[4..8].copy_from_slice(&size.to_be_bytes());
+        let b = PresetFile::parse(bytes).unwrap();
+        assert!(compare_presets(&a, &b).unwrap().is_empty());
+        assert_eq!(a.name(), b.name());
+        assert_ne!(a.as_bytes(), b.as_bytes());
+    }
+
+    #[test]
     fn snapshots_include_unknown_parameters_and_duplicate_multiplicity() {
         let preset = make(|_| {});
         // Model fields are lossless parser output. Exercise the snapshot logic
