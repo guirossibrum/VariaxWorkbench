@@ -6,10 +6,10 @@ ownership and integration boundaries, not a replacement task queue.
 
 - Codex owns the coefficient engine and all issues other than those reserved below.
   Current implementation: #13 firmware architecture/region mapping. #10 research reproducibility and #11 Linux packaging are integrated. #7 parameter domains, #8 bank/collection editing and #9 offline GUI workflow coverage are integrated. #5 portable-math implementation is integrated; its historical-runtime/default-rollout validation remains open. #3 and #4 are integrated.
-- Grok completed #17, #12 and the offline investigation in #21. #20 remains
+- Grok completed #17, #12 and the offline investigation in #21 and architecture in #26. #20 remains
   reserved with its recorded artifact/version unknowns; new evidence must not
-  cause a live query. Current implementation: #26 unified sessions, capability
-  registry and independent backends, in a new disposable worktree. Codex keeps
+  cause a live query. Current implementation: #27 offline POD USB audio routing and synthetic streams,
+  in a new disposable worktree. Codex keeps
   #13 firmware mapping and the other unreserved issues.
 
 
