@@ -130,7 +130,12 @@ def main():
         reports.append(report)
         print(f'PASS: {path.name}: product {report["product_id"]}, version {report["version_hex"]}, {len(image)} bytes, {len(report["regions"])} regions; embedded MD5 matches')
     if reports:
-        (ROOT/'analysis/reports/firmware-containers.json').write_text(json.dumps(reports,indent=2)+'\n')
+        directory = ROOT/'analysis/reports'
+        directory.mkdir(parents=True,exist_ok=True)
+        data = (json.dumps(reports,indent=2)+'\n').encode()
+        path = directory/('firmware-containers-'+hashlib.sha256(data).hexdigest()[:16]+'.json')
+        preserve(path,data)
+        print(path)
 
 if __name__ == '__main__':
     main()
