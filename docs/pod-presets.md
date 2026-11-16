@@ -96,6 +96,12 @@ The tone API has no parameter-value edit entry point. Raw PARM bits are not
 knob positions. The searches were read-only checks of the local archives.
 No DLL was loaded, no installer was run, and no device was opened.
 
+The subsequent [POD Farm 1.12 source-recovery milestone](pod-farm-112-source-recovery.md)
+uses a separately provisioned original and connects a target-specific packed-tone
+conversion consumer to one typed scalar callback. This establishes conditional
+encoding behavior, not editor domains or units. The property-provider/target
+connection remains unresolved; no value-edit API or hardware release follows.
+
 - `new L6ParamDefinition(` occurs only in
   `analysis/decompiled/mac/modules/variax/device/L6VariaxParamDefs.java`,
   `analysis/decompiled/mac/modules/variaxacoustic/device/L6VariaxAcousticParamDefs.java`,
