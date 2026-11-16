@@ -20,7 +20,11 @@ def main():
     if hashlib.sha256(trace_bytes).hexdigest() != '13dcfbf977114421578f4430f411eb64167a513af6ed774105b3ddb5f0a882ec':
         raise ValueError('requires pinned canonical input trace')
     apple = json.loads(report_bytes)
-    if apple['status'] != 'pass' or apple['requested_distinct_inputs'] != 206228:
+    if (apple['status'] != 'pass' or apple['requested_distinct_inputs'] != 206228
+            or apple['source_sha256'] != '36f2a3fbaa04d2ddc7a7ad600c083c637ff28fcae5aa86252509742b16325358'
+            or apple['trace_sha256'] != hashlib.sha256(trace_bytes).hexdigest()
+            or apple['pilot_per_function'] != 0 or apple['failures']
+            or sum(record['distinct_inputs'] for record in apple['summaries'].values()) != 206228):
         raise ValueError('requires complete Apple guest-math report')
     changes = {(record['function'],tuple(record['input_bits'])):record['apple_tiger_bits'] for record in apple['differences']}
     native = NativeX87()
