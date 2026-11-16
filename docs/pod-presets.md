@@ -89,11 +89,53 @@ the metadata check. A directory, pipe, or device node is not opened.
 Files above 1 MiB are refused. That ceiling is an application bound, not a
 recovered Line 6 limit.
 
+## Parameter domain boundary
+
+No PODxt Live parameter unit, minimum, maximum, or knob name was recovered.
+`parameter_domain` therefore returns no domain, and
+`PodTone::reject_parameter_edit` leaves every file byte unchanged. Raw PARM
+bits are not knob positions. The searches were read-only checks of the local
+archives. No DLL was loaded, no installer was run, and no device was opened.
+
+- `new L6ParamDefinition(` occurs only in
+  `analysis/decompiled/mac/modules/variax/device/L6VariaxParamDefs.java`,
+  `analysis/decompiled/mac/modules/variaxacoustic/device/L6VariaxAcousticParamDefs.java`,
+  and the matching Windows files. Those ranges are the Variax editor in
+  [parameter domains](parameter-domains.md). They are not applied to a PODxt
+  PARM id. `extends L6ParamMap` occurs only in the two matching `ParamMap`
+  classes. `GetParamMap` implementations were found on `L6VariaxDevice` and
+  `L6VariaxAcousticDevice` only.
+- Mac and Windows `L6EditorAppDeviceMap` are identical. Device 196618 is
+  named `modules.sharctone.device.podxt.L6PODxtDevice` and
+  `modules.sharctone.editor.L6SharcToneEditor`. No class or Java file with
+  either name is present under `analysis/extracted/windows-app`,
+  `analysis/extracted/mac-jar`, or `analysis/decompiled`. `unzip -l` of
+  `analysis/extracted/windows-workbench.jar` and the mac
+  `VariaxWorkbench.jar` lists no `sharctone` entry. The packed `modules`
+  trees contain only `variax` and `variaxacoustic`. The named editor was
+  not available to recover a knob table from.
+- Mac and Windows `L6ModelParam.java` are identical. `ReadIFFChunk` keeps
+  the low 24 bits of the first word, the type word, and the raw value bits.
+  The file defines id-class constants and no minimum, maximum, unit, or
+  name. `GetBooleanValue` is `m_value != 0`. That comparison is not a
+  recovered knob domain and is not used as one. The `0x3F` write prefix is
+  a stored tag, not a range. `L6ParamDefinition.java` and
+  `L6ParamFormat.java` also match across mac and Windows.
+  `L6ParamFormat`, `L6SimpleFormat`, `L6FormatPercent`, `L6TwoStateFormat`,
+  and `L6AssociationFormat` are generic formatters. No PODxt id is passed
+  to them. `L6PatchTemplate` returns `L6TE` and contains no PODxt domain.
+- The firmware resource directory in [firmware map](firmware-map.md) has
+  486 name pairs. The first record is "No Amp"/"Bypass". Those are resource
+  names, not PARM units or ranges. This milestone did not re-decode firmware
+  and does not edit region 17.
+- Product icons, driver archives, and PNG panels were not treated as
+  parameter tables.
+
 ## What stays undecoded
 
 - Parameter ranges, units, knob names, and value editing. A decoded PARM
   shows its id, type, and raw bits, and the display says that no range is
-  known.
+  known. A requested value edit is refused.
 - PARM chunks whose length is not 12 bytes.
 - Model ids the PODxt Live name path does not return. They stay raw.
 - Slot ids outside `kGPXTSlot_*`. A known slot can still hold an unnamed

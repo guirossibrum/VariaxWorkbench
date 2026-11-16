@@ -398,6 +398,21 @@ impl PodTone {
         lines
     }
 
+    /// Refuse a PARM value change. No unit or range was recovered, so the
+    /// stored bits are left unchanged and are not treated as a knob position.
+    pub fn reject_parameter_edit(&self, slot: u32, parameter_id: u32) -> Result<(), ToneError> {
+        let model_id = self
+            .models
+            .iter()
+            .find(|model| model.slot == slot)
+            .map(|model| model.model_id)
+            .unwrap_or(0);
+        let _domain = pod_assets::parameter_domain(model_id, parameter_id);
+        Err(ToneError::format(
+            "no PODxt Live parameter domain was recovered; the value was not changed",
+        ))
+    }
+
     /// Hex id, with the asset name in front when the table has one.
     pub fn model_label(id: Option<u32>) -> String {
         match id {
@@ -1041,6 +1056,39 @@ mod tests {
                 "MINF tail {tail:02x?} was not preserved"
             );
         }
+    }
+
+    #[test]
+    fn parameter_value_edits_are_refused_and_raw_bits_stay_unchanged() {
+        let original = custom_tone(
+            ContainerKind::L6as,
+            &[BuiltModel {
+                slot: AMP_SLOT,
+                model_id: 131_073,
+                tail: &[0x04, 0x00, 0x00, 0x01],
+                parameters: &[&[
+                    0x3f, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0x01, 0x3f, 0x80, 0x00, 0x00,
+                ]],
+            }],
+        );
+        let tone = PodTone::parse(original.clone()).unwrap();
+        assert_eq!(pod_assets::RECOVERED_PARAMETER_DOMAIN_COUNT, 0);
+        assert!(pod_assets::parameter_domain(131_073, 7).is_none());
+        let error = tone.reject_parameter_edit(AMP_SLOT, 7).unwrap_err();
+        assert!(error.detail().contains("no PODxt Live parameter domain"));
+        assert!(error.detail().contains("not changed"));
+        assert_eq!(tone.as_bytes(), original);
+        assert!(
+            tone.as_bytes()
+                .windows(4)
+                .any(|bytes| bytes == [0x3f, 0x80, 0x00, 0x00])
+        );
+        let missing = tone
+            .reject_parameter_edit(0x0003_00aa, 0x00cd_ef01)
+            .unwrap_err();
+        assert!(missing.detail().contains("not changed"));
+        assert_eq!(tone.as_bytes(), original);
+        assert!(tone.control_lines()[1].contains("float 3f800000 no range"));
     }
 
     fn amp_parameters_after_rename(original: &[u8]) -> Vec<ModelParameter> {
