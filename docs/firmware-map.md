@@ -1,8 +1,7 @@
 # Static firmware layout research
 
 Issue #13 records a static baseline map with the unknowns listed below. All
-findings come from archived files; no device
-was contacted and no firmware was executed or installed. Source firmware and
+findings come from archived files; no device was contacted and no firmware was executed or installed. Source firmware and
 disassembly remain private. Image offsets are file offsets, and candidate
 loader destinations are word addresses, not approved flash offsets.
 
@@ -133,10 +132,12 @@ python scripts/inspect_firmware.py --self-test /ABS/VARIAX.vxf /ABS/POD.xtf
 python scripts/map_firmware.py /ABS/VARIAX.vxf /ABS/POD.xtf
 ```
 
-Seven synthetic layout tests cover every truncated prefix of a two-space loader,
+Eight synthetic layout tests cover every truncated prefix of a two-space loader,
 invalid tags, destination overflow/overlap, unexpected extra data and a retained
 unknown tail; POD record widths, exact load-record consumption, additive checksums,
-word-pointer directory bounds, invalid names and padding. No vendor bytes are embedded in those tests. The mapper reads the
+word-pointer directory bounds, invalid names and padding. The template/slot test
+distinguishes prefix matches from complete-slot equality. No vendor bytes are
+embedded in those tests. The mapper reads the
 outer envelope using the existing strict inspector and writes only derived
 metadata to content-addressed private reports. It does not execute its inputs.
 
@@ -150,3 +151,8 @@ Initial source-bound reports in the issue worktree are
 The initial Variax report's architecture-status wording was subsequently narrowed:
 the structural parser itself does not validate instructions. Separate private
 decoder logs remain supporting evidence, with no claim of physical behavior.
+
+The current content-addressed reports are `firmware-map-38e608f90ff9d73c.json`
+(Variax) and `firmware-map-684b874c98efd94d.json` (POD). SHA-256 binds every
+region and candidate payload to its source. The synthetic layout tests and the
+396-case outer-container rejection test also run in the three-platform core CI.

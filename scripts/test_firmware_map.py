@@ -1,6 +1,6 @@
 """Synthetic loader-layout rejection checks; no vendor files or hardware."""
 import unittest
-from map_firmware import loader_records, pod_resource_directory, pod_word_section, pod_load_records
+from map_firmware import loader_records, pod_resource_directory, pod_word_section, pod_load_records, names_and_slots
 
 
 def word(n):return n.to_bytes(3,'little')
@@ -101,6 +101,29 @@ class PodLoadChecks(unittest.TestCase):
             bad=bytearray(data);bad[at]^=0x80
             with self.assertRaises(ValueError):pod_word_section(bad)
         with self.assertRaises(ValueError):pod_word_section(data+b'other!')
+
+
+class VariaxSlotChecks(unittest.TestCase):
+    def test_prefix_relationship_does_not_claim_full_slot_equality(self):
+        templates=[]
+        for index in range(50):
+            block=bytearray(2619);block[:3]=word(index)
+            name=f'Synthetic {index}'.ljust(18).encode('ascii')
+            block[2553:2571]=b''.join(name[i:i+3][::-1] for i in range(0,18,3))
+            templates.append(bytes(block))
+        source=b''.join(templates)
+        slots=bytearray(b''.join(templates[i%50]+b'\xff'*(4096-2619) for i in range(60)))
+        slots[4096+2619]=0 # Tail difference does not alter a prefix match.
+        slots[2*4096]=0x80 # This is a genuinely distinct prefix.
+        result=names_and_slots(source,slots)
+        self.assertEqual(result['slot_candidates'][0]['matching_template_indices'],[0])
+        self.assertEqual(result['slot_candidates'][1]['matching_template_indices'],[1])
+        self.assertEqual(result['slot_candidates'][2]['matching_template_indices'],[])
+        self.assertEqual(result['template_candidates'][49]['name'],'Synthetic 49')
+        for short_templates,short_slots in [(source[:-1],slots),(source,slots[:-1])]:
+            with self.assertRaises(ValueError):names_and_slots(short_templates,short_slots)
+        invalid=bytearray(source);invalid[2553]=0x80
+        with self.assertRaises(ValueError):names_and_slots(invalid,slots)
 
 
 if __name__=='__main__':unittest.main()

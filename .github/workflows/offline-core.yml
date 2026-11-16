@@ -11,6 +11,9 @@ on:
       - "scripts/research_setup.py"
       - "scripts/test_research_setup.py"
       - "scripts/rea"
+      - "scripts/inspect_firmware.py"
+      - "scripts/map_firmware.py"
+      - "scripts/test_firmware_map.py"
       - "packaging/**"
       - "scripts/package_linux.py"
       - "scripts/test_linux_package.py"
@@ -41,6 +44,10 @@ jobs:
         run: python scripts/check_coefficient_math.py
       - name: Synthetic research setup guards
         run: python scripts/test_research_setup.py
+      - name: Synthetic firmware layout guards
+        run: |
+          python scripts/inspect_firmware.py --self-test
+          python scripts/test_firmware_map.py
       - name: Synthetic package guards
         if: runner.os == 'Linux'
         run: python scripts/test_linux_package.py
