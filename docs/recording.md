@@ -103,3 +103,28 @@ Passing these tests does not authorize a later connection.
 - The four route names are GearBox guide text.
 - The native frame and period window are the Linux `v7.2.15` declarations
   already recorded in [POD USB audio](pod-usb-audio.md).
+
+
+## Unsaved takes and quitting
+
+Starting a test take marks that take unsaved, including an armed take with no
+frames yet. A complete successful WAV and sidecar save marks that take saved.
+A cancelled picker or failed save retains its audio and unsaved status; a refused
+additional copy does not invalidate an earlier successful save of unchanged data.
+Starting a later take resets the status. Saved files survive in-memory discard.
+
+Quitting now checks guitar edits, applied POD tone edits and the current unsaved
+test take. Guitar/POD save or discard continuations cannot skip the recording
+prompt. The recording prompt offers Stop and save copy, Keep editing, or Discard
+this take. Stop occurs only after that explicit save action; cancelling the file
+picker leaves a stopped, unsaved take. Background recording/POD editors are
+inactive while an unsaved-changes prompt is pending. Closing the recorder window
+still retains its take; quitting the application is guarded separately.
+
+The native 78125/2 source-clock take cannot currently be exported as WAV. Its
+quit prompt explains the missing exact-clock export and disables Save; it requires
+Keep editing or an explicit Discard. There is no rounding, resampling, automatic
+save, stream, device operation or implicit monitoring change. Exact-clock export
+remains #69. These protections cover normal application close paths, including
+screenshot completion; a process crash or forced termination can still lose
+in-memory data. Save a file copy to persist it.
