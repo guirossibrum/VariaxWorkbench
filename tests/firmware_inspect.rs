@@ -149,3 +149,43 @@ fn reference_export_without_a_directory_is_rejected() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("missing directory"));
 }
+
+#[test]
+fn slot_comparison_rejects_invalid_indices_and_missing_settings_before_file_reads() {
+    for arguments in [
+        vec!["--compare-slot", "60", "unused.vwm", "unused.vxf"],
+        vec!["--compare-slot", "-1", "unused.vwm", "unused.vxf"],
+        vec!["--compare-slot", "0"],
+    ] {
+        let output = bin().args(arguments).output().unwrap();
+        assert!(!output.status.success());
+        let text = String::from_utf8_lossy(&output.stderr);
+        assert!(text.contains("slot") || text.contains("settings"));
+        assert!(!text.contains("cannot read"));
+    }
+}
+
+#[test]
+fn slot_comparison_requires_exact_archived_reference_before_reading_settings() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("synthetic.vxf");
+    std::fs::write(
+        &source,
+        synthetic_container(
+            variax_workbench::firmware::VARIAX_300_600_PRODUCT_ID,
+            variax_workbench::firmware::VARIAX_300_600_VERSION,
+            b"not-the-archived-reference",
+        ),
+    )
+    .unwrap();
+    let output = bin()
+        .arg("--compare-slot")
+        .arg("50")
+        .arg(directory.path())
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("SHA-256"));
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+}

@@ -325,6 +325,9 @@ impl PresetFile {
     pub fn device_id(&self) -> u32 {
         self.device_id
     }
+    pub fn device_version(&self) -> u32 {
+        self.device_version
+    }
     pub fn models(&self) -> &[Model] {
         &self.models
     }

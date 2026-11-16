@@ -86,3 +86,8 @@ Java metadata decoder. [Factory extraction](factory-extraction.md) supersedes
 the earlier no-factory-reference finding for firmware **3.10 defaults only**.
 Earlier shipping defaults, current-unit contents and device-unique calibration
 remain unestablished. No reset, update or device access follows from extraction.
+
+The existing saved Reso-5 metadata now compares exactly with the 3.10 firmware
+reference (6 models, 34 parameters). [Factory comparison](factory-comparison.md)
+documents the precise scope, missing shipping provenance and blocked future
+full-bank capture/comparison plan. No current device query was made.

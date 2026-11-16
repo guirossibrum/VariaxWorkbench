@@ -10,6 +10,7 @@ pub mod bundle;
 pub mod document;
 pub mod dsp;
 pub mod edit;
+pub mod factory_comparison;
 pub mod factory_reference;
 pub mod firmware;
 pub mod host;

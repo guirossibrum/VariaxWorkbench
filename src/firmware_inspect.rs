@@ -36,6 +36,7 @@ fn run() -> Result<(), String> {
     }
     let mut json = false;
     let mut reference_dir = None;
+    let mut compare_input = None;
     let mut expect_product = None;
     let mut expect_version = None;
     let mut file = None;
@@ -43,6 +44,23 @@ fn run() -> Result<(), String> {
     while index < args.len() {
         match args[index].as_str() {
             "--json" => json = true,
+            "--compare-slot" => {
+                index += 1;
+                let slot = args
+                    .get(index)
+                    .ok_or("missing slot index after --compare-slot")?
+                    .parse::<usize>()
+                    .map_err(|_| "factory slot index must be a decimal integer in 0..60")?;
+                if slot >= 60 {
+                    return Err("factory slot index must be in 0..60".into());
+                }
+                index += 1;
+                let settings = args
+                    .get(index)
+                    .ok_or("missing settings file after --compare-slot INDEX")?
+                    .clone();
+                compare_input = Some((slot, settings));
+            }
             "--variax-reference" => {
                 index += 1;
                 reference_dir = Some(
@@ -104,12 +122,37 @@ fn run() -> Result<(), String> {
         print!("{rendered}");
         return Err(error.to_string());
     }
+    let reference = if reference_dir.is_some() || compare_input.is_some() {
+        Some(variax_workbench::factory_reference::FactoryReference::parse(&bytes)?)
+    } else {
+        None
+    };
+    let comparison = if let Some((slot, settings)) = compare_input {
+        let preset =
+            variax_workbench::preset::PresetFile::parse(read_regular_file(Path::new(&settings))?)?;
+        Some(variax_workbench::factory_comparison::compare_slot(
+            reference.as_ref().expect("reference requested"),
+            slot,
+            &preset,
+        )?)
+    } else {
+        None
+    };
     if let Some(directory) = reference_dir {
-        let reference = variax_workbench::factory_reference::FactoryReference::parse(&bytes)?;
-        reference.export_new(Path::new(&directory))?;
+        reference
+            .as_ref()
+            .expect("reference requested")
+            .export_new(Path::new(&directory))?;
         eprintln!(
             "Saved local firmware-default reference to {directory}; not a current-unit/calibration backup or restoration procedure"
         );
+    }
+    if let Some(comparison) = comparison {
+        if json {
+            eprint!("{}", comparison.to_text());
+        } else {
+            print!("{}", comparison.to_text());
+        }
     }
     print!("{rendered}");
     Ok(())
@@ -153,9 +196,10 @@ fn usage() -> String {
 Reads one regular file and prints an integrity report.\n\
 Does not write firmware, open a device, or prove authenticity.\n\
 The reference option exports only the fingerprinted Variax 3.10 archive to a new local directory.\n\
+Slot comparison reads saved settings only. With --json its text is sent to stderr.\n\
 \n\
 Usage:\n  \
-variax-firmware-inspect [--json] [--expect-product HEX --expect-version HEX] [--variax-reference NEW_DIRECTORY] FILE\n  \
+variax-firmware-inspect [--json] [--expect-product HEX --expect-version HEX] [--variax-reference NEW_DIRECTORY] [--compare-slot INDEX SETTINGS_FILE] FILE\n  \
 variax-firmware-inspect --self-test\n"
         .to_owned()
 }
