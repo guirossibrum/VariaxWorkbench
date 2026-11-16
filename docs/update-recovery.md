@@ -170,6 +170,58 @@ no transport bytes. The combined private report
 `native-updater-oracle-00f50264c735f759.json` has 24 passing cases. They support
 host callback behavior, not receiver state, durability, or a physical reset.
 
+## Variax stage selection
+
+Static decompilation of 0x100D3D60, checked against its direct call sites,
+establishes this method-level order. Field meanings refer to this updater class,
+not an observed device state:
+
+| Stage | Selection and behavior |
+| --- | --- |
+| Preconditions | Requires an image object and object +8 equal to 0x10000. A separate product-0x70004/high-flag-byte-4 branch calls virtual slot +0x28 with arguments 0 and 3 and leaves the normal sequence. |
+| Boot region (raw tag 5) | Selected by flags +0x54 bit 27; first matching region calls 0x100D56A0 before the main-code stage. A product/version-specific erase-range call follows for 0x70004 above 0x0305FFFF. Range units and physical mapping remain unverified. |
+| Main code (raw tag 0) | First matching region calls the code sender 0x100D46F0 for 0x70004. |
+| User patches (raw tag 1) | Calls 0x100D4BF0 only when flags +0x54 bit 0 is clear. |
+| Factory patches (raw tag 2) | A separately computed applicability predicate selects 0x100D5060. Its full version/product predicate is not yet closed. |
+
+The base entry at 0x100D0890 stores its first argument into object +0x54 and
+later invokes update slot +0x20. Thus bit 0's skip-user-patches effect is tied
+to an update argument, but the entire path from the Central UI choice to that
+argument is still unverified. The sender's unconditional erase delegate is
+inside a stage which this caller can skip; it does not prove the keep-presets
+option is ineffective. No calibration copy/restore guarantee follows.
+
+When a transport-description test identifies a PODxt-capable link, the method
+also brackets Variax transfers with large-buffer enable/disable requests. These
+are Variax transfer support through a POD link, distinct from updating POD main
+flash. No such request has been sent.
+
+## Separate POD main-segment evidence
+
+The same DLL's product dispatch at 0x100CED00 sends product 0x0003000A through
+its two-level jump table to 0x100CED9E. With the dispatcher's second argument
+zero, constructor code installs vtable 0x1026AD24 at 0x100CEE0B. Its update slot
++0x20 points to 0x100D6D20, which calls segment writer 0x100D7330. The meaning of
+the alternate dispatcher argument remains unverified; it must not be labeled a
+USB-component path merely because it is an alternative.
+
+Seven isolated segment-writer cases cover 1, 2, 63, 64, 65, 128 and 129 synthetic
+big-endian 16-bit words. They corroborate at most 64 words per fake send, encoded
+into groups of 6, 6 and 4 bits, a count byte and terminator, and one simulated
+port-wait call per chunk. The payload/count checks are independent descriptions;
+they do not validate an entire POD update or its packet routing. An eighth
+all-FF case confirms that this writer skips such a span. The calling update's
+erase behavior is separate, so this does not establish that FF archive regions
+are preserved or safe to overwrite.
+
+The combined source-bound private report
+`native-updater-oracle-0c54da0d12b75ae6.json` records 32 passing cases over four
+host methods and three callbacks. POD logging and port waits are explicit
+memory-only adapters. This corroborates a different word encoding from the
+Variax path, without executing either device's firmware. POD boot/recovery entry,
+flash durability and preservation remain unverified; the USB-component artifact
+and installed version remain separately unknown on #20.
+
 ## Work still required
 
 Cross-check updater product/image applicability, transfer framing and sequencing,
