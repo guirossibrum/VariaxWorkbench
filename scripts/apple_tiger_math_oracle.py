@@ -224,3 +224,4 @@ if __name__ == '__main__':
             print(name, oracle.evaluate(name, *values), flush=True)
         except Exception as error:
             print(name, 'STOP:', error, flush=True)
+            raise SystemExit(1) from error
