@@ -1,6 +1,7 @@
 # Static firmware layout research
 
-Issue #13 is in progress. All findings below come from archived files; no device
+Issue #13 records a static baseline map with the unknowns listed below. All
+findings come from archived files; no device
 was contacted and no firmware was executed or installed. Source firmware and
 disassembly remain private. Image offsets are file offsets, and candidate
 loader destinations are word addresses, not approved flash offsets.
@@ -57,10 +58,72 @@ Source SHA-256:
 The existing inspector verifies product `0003000A`, version `03010000`, the
 1,048,576-byte image and embedded MD5, with 19 contiguous regions. Seven regions
 are entirely `0xFF`; their values do not prove they are safe to overwrite.
-Other regions include high-entropy data and recognizable preset/model text.
-Their executable ISA, internal packaging and code/data boundaries have not yet
-been established. High entropy is not proof of encryption. No USB-component
-firmware or installed component version is identified by this map.
+The following internal boundaries are derived from the image, independently of
+outer region tag meanings:
+
+| File range or region | Observed role | Remaining limit |
+| --- | --- | --- |
+| Regions 1/2, 0x4000/0x6000, 8,192 bytes each | Similar settings/name-bearing data | Persistence, calibration and redundancy rules unverified |
+| Region 3, 0x8000, 32,768 bytes | Repeated bit patterns consistent with display data | Not classified as executable; exact format unverified |
+| Region 4, 0x10000 | Length/checksum wrapper and four complete load records | Loader implementation and hardware behavior unverified |
+| Region 5, 0x20000 | Length/checksum wrapper, 65,528-byte opaque payload | Payload ISA/encoding unverified; high entropy is not proof of encryption |
+| Regions 6–11, 0x30000–0x90000 | Resource directory, named records and padding | Record bodies, licensing and execution semantics unverified |
+| Region 17, 0xE0000 | Preset-name-bearing data | Editing/checksum/preservation rules unverified |
+| Regions 0, 12–16, 18 | Entirely FF | Their values do not establish permission or safety to overwrite |
+
+Regions 4 and 5 begin with a big-endian u32 count of 16-bit words, then a
+big-endian u32 additive checksum. Summing the payload's unsigned big-endian
+16-bit values modulo 2^32 gives `0x10D752E2` and `0x3F7F2359`, respectively.
+Region 4 contains 24,534 words, followed by 16,460 FF padding bytes. Region 5
+contains 32,764 words and no padding. These are integrity checks, not signatures;
+there is no established publisher authentication mechanism in this analysis.
+
+Region 4's 49,068-byte payload parses exactly as four records: big-endian u32
+destination, u32 count, u16 width tag, then `count * tag * 2` bytes. This is the
+observed file structure, not a claim that it is the generic Analog Devices
+boot-stream format or a physical flash address map.
+
+| Destination word | Count | Width tag | Payload bytes | Static interpretation |
+| --- | --- | --- | --- | --- |
+| 0xC000 | 742 | 2 | 2,968 | Data candidate |
+| 0x1A900 | 5,582 | 1 | 11,164 | Data candidate |
+| 0x8000 | 128 | 3 | 768 | 48-bit program/vector block |
+| 0x8080 | 5,688 | 3 | 34,128 | 48-bit program block |
+
+The program blocks occupy words `0x8000..0x96B8` without overlap. Big-endian
+six-byte instruction decoding produces an IDLE at `0x8004`, followed by a jump
+to `0x823C`; another vector jumps to `0x9348`. Both destinations are inside the
+loaded program, and decode to interrupt-mask initialization and a data-memory
+store, respectively. This and coherent arithmetic/call sequences support a
+SHARC-compatible ISA. The reset-vector convention matches the ADSP-21065L entry
+in the manufacturer's [loader manual](https://www.analog.com/media/en/dsp-documentation/legacy-software-manuals/438698055513140_loader_man.pdf)
+(Table 4-2 and reset-vector discussion). It is an inference about compatibility,
+not identification of the installed IC or proof that the entire image executes
+correctly. No separate 8051 or USB-controller executable is identified here.
+
+Independent static decoding used Ville Linde's BSD-3-Clause MAME SHARC
+disassembler at tag `mame0285`, commit
+`f379cd060ac3b2bd567ebbd0957aed059d6895ff`, files
+`src/devices/cpu/sharc/sharcdsm.cpp` and `sharcdsm.h`. A local C++17 compatibility
+shim supplies formatting, the disassembler interface and a big-endian six-byte
+reader; no MAME CPU/device implementation is built or executed. This is a private
+research tool, not an application dependency. The source pin, shim and private
+decoder logs are retained in the issue worktree's ignored `.tools/sharc-research`
+and `analysis/reports` directories.
+
+The resource directory has 486 big-endian key/pointer pairs plus a final
+`FFFFFFFF` key carrying the end pointer. Converting each pointer to a file
+offset with `2 * (pointer - 0x01000000)` yields strictly increasing record
+boundaries from `0x31000` through `0x844EA`. Every record starts with two 32-byte
+UTF-16BE name fields; all 486 pairs decode as ASCII text with zero padding.
+The first record is named "No Amp"/"Bypass". The directory ends at `0x30F38`,
+with FF padding up to the first record. The end pointer equals the first byte
+after the region's final non-FF data. This is strong evidence of a word-indexed
+resource relationship, not a proven DSP/flash memory mapping or license grant.
+
+No USB-component firmware, installed component version, calibration-safe update,
+or recovery sequence is established by this map. These unknowns remain on #20,
+#14, #16 and the later safety/readiness issues.
 
 ## Reproduction and retained evidence
 
@@ -70,9 +133,10 @@ python scripts/inspect_firmware.py --self-test /ABS/VARIAX.vxf /ABS/POD.xtf
 python scripts/map_firmware.py /ABS/VARIAX.vxf /ABS/POD.xtf
 ```
 
-Three synthetic layout tests cover every truncated prefix of a two-space loader,
+Seven synthetic layout tests cover every truncated prefix of a two-space loader,
 invalid tags, destination overflow/overlap, unexpected extra data and a retained
-unknown tail. No vendor bytes are embedded in those tests. The mapper reads the
+unknown tail; POD record widths, exact load-record consumption, additive checksums,
+word-pointer directory bounds, invalid names and padding. No vendor bytes are embedded in those tests. The mapper reads the
 outer envelope using the existing strict inspector and writes only derived
 metadata to content-addressed private reports. It does not execute its inputs.
 
