@@ -43,8 +43,8 @@ disassembly, observed inputs, generated presets and detailed outputs stay privat
 - Both the pure guest candidate and the separate current-CPU x87 candidate
   complete the same **110 whole-generator cases**. Each matches **109/110**
   recorded glibc packed outputs. Both match all **110 existing MPFR-256 packed
-  candidates** byte for byte. This comparison is to saved MPFR results; it is
-  not a new cross-platform Rust product audit.
+  candidates** byte for byte. This comparison is to saved MPFR results; the
+  separate fresh product comparison below covers Linux x86-64 only.
 - The changed case is `two-pickups/series`, zero-based index 102. Four coefficient
   words and the checksum change. The glibc output SHA-256 is
   `2ae6c0bc84a01c442380c99335beb469f4890ee0391f1d891c636dd280917aeb`;
@@ -122,3 +122,37 @@ checks also passed. These are bounded offline research results. They establish
 neither audio equivalence, recovery capability, physical safety nor permission
 to contact equipment. Default-profile rollout and wider runtime coverage remain
 separate work and owner decisions.
+
+## Fresh Rust product comparison
+
+A further direct check builds the actual CLI twice per profile, in debug and
+release, using an isolated source/compiler-addressed Cargo target directory.
+It verifies the pinned libm archive, all 155 source files and Cargo's resolved
+source; records every product-source hash, compiler, command and binary hash;
+and rejects source changes during the run. The ordinary initialized oracle
+reconstructs the existing 110 inputs and validates the private model resources.
+The two saved Apple reports must have the expected runtime/source identities,
+completed initialization and the exact input order, and every saved output is
+checked against its recorded hash before comparison.
+
+Both fresh `portable-math` binaries match **110/110** outputs from **each**
+Apple candidate. Both default host-math binaries retain **110/110** recorded
+glibc outputs and match **109/110** Apple outputs, with the same series case
+and four coefficient words plus checksum differing. Debug and release outputs
+agree within each product profile. This tests actual current Rust CLI outputs
+against the saved original-instruction candidates, rather than relying solely
+on their earlier agreement with MPFR. It does not rerun the historical generator
+or establish a physical Mac/Windows process, audio or wider-input equivalence.
+
+Reproduce with the two complete generator reports from the earlier commands:
+
+```sh
+python scripts/audit_apple_tiger_product.py "$GUEST_GENERATOR_REPORT" "$CURRENT_X87_GENERATOR_REPORT"
+```
+
+This optional command is currently scoped to Linux x86-64 and uses offline,
+locked Cargo builds with no GUI/USB features. It writes a private content-addressed
+report under `.tools/apple-product-audit/`; failures retain their report. The
+110 settings are unchanged existing cases and are not additional sample coverage
+for #33. The experiment neither selects a new default nor changes any runtime
+contract or production dependency.
