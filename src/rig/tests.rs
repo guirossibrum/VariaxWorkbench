@@ -316,7 +316,7 @@ fn physical_claims_and_planned_work_do_not_start_a_backend() {
             .capability(RoleKind::Pod, Operation::SelectRecordRoute)
             .expect("route")
             .state,
-        CapabilityState::Planned { issue: 27 }
+        CapabilityState::Offline
     );
     assert_eq!(
         session
@@ -331,5 +331,60 @@ fn physical_claims_and_planned_work_do_not_start_a_backend() {
             .expect("usb read")
             .state,
         CapabilityState::Locked
+    );
+}
+
+#[test]
+fn pod_record_route_stays_offline_while_capture_stays_locked() {
+    let session = Session::initial_rig();
+    assert!(LIVE_BACKEND_INITIALIZER.is_none());
+    assert!(session.live_backend_is_absent());
+    let planned = session
+        .select_record_route(crate::pod_audio::RecordRoute::SendCleanGuitar, 66, 2)
+        .expect("clean route");
+    assert!(!planned.stream_opened);
+    assert!(planned.outbound.is_empty());
+    assert_eq!(planned.behavior.mode_number, 2);
+    assert!(!planned.coexistence.guitar.source_initializes_pcm);
+    assert!(planned.coexistence.pod.source_initializes_pcm);
+
+    assert_eq!(
+        session
+            .capability(RoleKind::Guitar, Operation::SelectRecordRoute)
+            .expect("guitar")
+            .state,
+        CapabilityState::Unsupported
+    );
+    let extension = Session::extension(ProductProfile::PodHd500x).expect("extension");
+    assert_eq!(
+        extension.select_record_route(crate::pod_audio::RecordRoute::SendProcessedGuitar, 66, 1),
+        Err(Rejection::Unverified {
+            profile: ProductProfile::PodHd500x,
+            operation: Operation::SelectRecordRoute,
+        })
+    );
+
+    let mut attempts = 0;
+    let locked = session.reject_physical(
+        RoleKind::Pod,
+        Operation::StartAudioCapture,
+        Some(CapabilityState::Offline),
+        || {
+            attempts += 1;
+            Ok(())
+        },
+    );
+    assert_eq!(attempts, 0);
+    assert_eq!(
+        locked,
+        Err(Rejection::Locked {
+            operation: Operation::StartAudioCapture,
+        })
+    );
+    assert_eq!(
+        session.select_record_route(crate::pod_audio::RecordRoute::SendProcessedGuitar, 64, 1),
+        Err(Rejection::Format {
+            detail: "period byte count is not a multiple of the 6-byte frame".into(),
+        })
     );
 }

@@ -199,6 +199,18 @@ impl Session {
         })
     }
 
+    /// Plans one documented PODxt Live record route. The returned plan keeps
+    /// `stream_opened` false and carries no outbound bytes.
+    pub fn select_record_route(
+        self,
+        route: crate::pod_audio::RecordRoute,
+        period_bytes: u32,
+        periods: u32,
+    ) -> Result<crate::pod_audio::RoutePlan, Rejection> {
+        self.require(RoleKind::Pod, Operation::SelectRecordRoute)?;
+        crate::pod_audio::plan(route, period_bytes, periods, || {}).map_err(Rejection::format)
+    }
+
     pub fn accept_family_math(self, role: RoleKind, device_id: u32) -> Result<(), Rejection> {
         let profile = self.require(role, Operation::ApplyFamilyMath)?;
         backend::accept_family_math(profile, device_id)

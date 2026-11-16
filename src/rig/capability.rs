@@ -158,7 +158,7 @@ fn pod_state(operation: Operation) -> CapabilityState {
         Operation::OpenPodPreset | Operation::EditPodPreset => {
             CapabilityState::Planned { issue: 29 }
         }
-        Operation::SelectRecordRoute => CapabilityState::Planned { issue: 27 },
+        Operation::SelectRecordRoute => CapabilityState::Offline,
         Operation::OpenGuitarPreset
         | Operation::OpenGuitarBank
         | Operation::SaveGuitarCopy
@@ -205,7 +205,7 @@ fn note(profile: ProductProfile, operation: Operation) -> &'static str {
             "POD preset editing is #29. This profile does not parse guitar FORM/L6PA files as POD presets."
         }
         (ProductProfile::PodxtLive, Operation::SelectRecordRoute) => {
-            "Record-route selection waits for the Linux routing work in #27 and the recorder in #28. Selecting a route does not open a stream."
+            "Selects one documented Record Send 1-2 mode in memory. It does not open a stream. Capture and playback stay locked. In-app recording is #28."
         }
         (ProductProfile::PodxtLive, Operation::ApplyFamilyMath) => {
             "PODxt coefficients are not the Variax 600 engine. There is no cross-family fallback."
