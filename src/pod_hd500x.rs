@@ -2,9 +2,10 @@
 //! POD HD500X driver-text identity and the public catalog limit.
 //!
 //! USB ids are match values copied from static driver text. They are not a
-//! live enumeration and not a firmware product id. No editor installer, flash
-//! image, preset container, model id, or effect id was acquired. Nothing here
-//! opens a device, converts another family's file, or installs a driver.
+//! live enumeration and not a firmware product id. The Edit 2.27 installers
+//! were not acquired. Two public manuals supply printed file names only.
+//! Nothing here opens a device, converts another family's file, or installs
+//! a driver.
 
 use crate::firmware::{
     PODXT_LIVE_PRODUCT_ID, VARIAX_300_600_PRODUCT_ID, VARIAX_500_700_PRODUCT_ID,
@@ -230,6 +231,216 @@ pub const EDITORS: &[EditorListing] = &[
     },
 ];
 
+/// Unauthenticated HEAD of one Edit 2.27 catalog link and of the CDN directory
+/// that would hold a file if the release id were a public object name.
+/// The catalog card does not publish a file name, so no object name was guessed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EditorAcquisition {
+    pub release_id: u32,
+    pub request_method: &'static str,
+    pub readeula_url: &'static str,
+    pub readeula_status: u16,
+    pub readeula_location: &'static str,
+    pub readeula_date: &'static str,
+    pub cdn_directory_url: &'static str,
+    pub cdn_directory_status: u16,
+    pub cdn_directory_date: &'static str,
+    pub cdn_content_length: u64,
+    pub followed_login: bool,
+    pub credentials: CredentialUse,
+    pub hardware: HardwareContact,
+    pub execution: Execution,
+    pub downloaded: bool,
+}
+
+pub const EDITOR_ACQUISITIONS: &[EditorAcquisition] = &[
+    EditorAcquisition {
+        release_id: 9781,
+        request_method: "HEAD",
+        readeula_url: "https://line6.com/software/readeula.html?rid=9781",
+        readeula_status: 302,
+        readeula_location: "/account/login.html?user_attempt=download",
+        readeula_date: "Mon, 16 Nov 2026 04:19:45 GMT",
+        cdn_directory_url: "https://l6c-acdn2.line6.net/media/software/9781/",
+        cdn_directory_status: 404,
+        cdn_directory_date: "Mon, 16 Nov 2026 04:19:47 GMT",
+        cdn_content_length: 213,
+        followed_login: false,
+        credentials: CredentialUse::None,
+        hardware: HardwareContact::None,
+        execution: Execution::NotRun,
+        downloaded: false,
+    },
+    EditorAcquisition {
+        release_id: 8559,
+        request_method: "HEAD",
+        readeula_url: "https://line6.com/software/readeula.html?rid=8559",
+        readeula_status: 302,
+        readeula_location: "/account/login.html?user_attempt=download",
+        readeula_date: "Mon, 16 Nov 2026 04:19:46 GMT",
+        cdn_directory_url: "https://l6c-acdn2.line6.net/media/software/8559/",
+        cdn_directory_status: 404,
+        cdn_directory_date: "Mon, 16 Nov 2026 04:19:48 GMT",
+        cdn_content_length: 213,
+        followed_login: false,
+        credentials: CredentialUse::None,
+        hardware: HardwareContact::None,
+        execution: Execution::NotRun,
+        downloaded: false,
+    },
+];
+
+/// Wayback CDX responses for the editor routes checked on 2026-11-16.
+/// An empty JSON array is `[]` plus a newline, which curl reported as 3 bytes.
+/// The second pattern does not match the manual URLs fetched directly below.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WaybackQuery {
+    pub url_pattern: &'static str,
+    pub http_status: u16,
+    pub body_bytes: u64,
+    pub rows: u32,
+}
+
+pub const EDITOR_WAYBACK: &[WaybackQuery] = &[
+    WaybackQuery {
+        url_pattern: "line6.com/software/readeula.html?rid=9781",
+        http_status: 200,
+        body_bytes: 3,
+        rows: 0,
+    },
+    WaybackQuery {
+        url_pattern: "line6.com/data/*HD500X*Edit*",
+        http_status: 200,
+        body_bytes: 3,
+        rows: 0,
+    },
+];
+
+/// A public Line 6 PDF. These are manuals, not the Edit 2.27 installer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PublicManual {
+    pub id: &'static str,
+    pub url: &'static str,
+    pub bytes: u64,
+    pub sha256: &'static str,
+    pub pdf_version: &'static str,
+    pub covers: &'static str,
+    pub executed: bool,
+}
+
+pub const PUBLIC_MANUALS: &[PublicManual] = &[
+    PublicManual {
+        id: "edit-pilots-guide-rev-b",
+        url: "https://line6.com/data/6/0a06434cb25651dddc9192349/application/pdf/POD%20HD500X%20Edit%20Pilot%27s%20Guide%20-%20English%20%28%20Rev%20B%20%29.pdf",
+        bytes: 3_017_205,
+        sha256: "853bdf6b5bf361b56a17e938e0b7d4f4e6140ecbb093b574977380b0c4e19cac",
+        pdf_version: "1.7",
+        covers: "POD HD500X Edit version 1.0 and Flash Memory version 1.0 or later",
+        executed: false,
+    },
+    PublicManual {
+        id: "edit-installer-guide-rev-a",
+        url: "https://line6.com/data/6/0a06434c122752169db7bc869/application/pdf/POD%20HD500X%20Edit%20Installer%20Guide%20-%20English%20%28%20Rev%20A%20%29.pdf",
+        bytes: 4_294_046,
+        sha256: "7eef1aefbe5d16f30f04fabbc3c9cdc149854397b1f3a317bd2ea7ff855e5435",
+        pdf_version: "1.6",
+        covers: "Rev A installer guide, copyright 2013, with no Edit 2.27 label",
+        executed: false,
+    },
+];
+
+/// A file-name suffix printed in one manual. The two manuals do not agree.
+/// `byte_layout_recovered` stays false: the suffix is not a container.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PrintedFileName {
+    pub manual_id: &'static str,
+    pub role: &'static str,
+    pub extension: &'static str,
+    pub byte_layout_recovered: bool,
+}
+
+pub const PRINTED_FILE_NAMES: &[PrintedFileName] = &[
+    PrintedFileName {
+        manual_id: "edit-pilots-guide-rev-b",
+        role: "preset",
+        extension: ".5xe",
+        byte_layout_recovered: false,
+    },
+    PrintedFileName {
+        manual_id: "edit-pilots-guide-rev-b",
+        role: "bundle",
+        extension: ".5xb",
+        byte_layout_recovered: false,
+    },
+    PrintedFileName {
+        manual_id: "edit-pilots-guide-rev-b",
+        role: "set list",
+        extension: ".5xs",
+        byte_layout_recovered: false,
+    },
+    PrintedFileName {
+        manual_id: "edit-installer-guide-rev-a",
+        role: "preset",
+        extension: ".h5e",
+        byte_layout_recovered: false,
+    },
+    PrintedFileName {
+        manual_id: "edit-installer-guide-rev-a",
+        role: "bundle",
+        extension: ".h3b",
+        byte_layout_recovered: false,
+    },
+    PrintedFileName {
+        manual_id: "edit-installer-guide-rev-a",
+        role: "set list",
+        extension: ".h5s",
+        byte_layout_recovered: false,
+    },
+];
+
+/// Installer names printed by the 2013 installer guide. Neither file is local.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PrintedInstallerName {
+    pub manual_id: &'static str,
+    pub name: &'static str,
+    pub obtained: bool,
+}
+
+pub const PRINTED_INSTALLER_NAMES: &[PrintedInstallerName] = &[
+    PrintedInstallerName {
+        manual_id: "edit-installer-guide-rev-a",
+        name: ".dmg",
+        obtained: false,
+    },
+    PrintedInstallerName {
+        manual_id: "edit-installer-guide-rev-a",
+        name: "POD HD500X Edit.mpkg",
+        obtained: false,
+    },
+];
+
+/// Local installer archives searched as bytes. None contained these sequences.
+/// The files were not executed, and tests do not reopen them.
+pub const EDITOR_PLAINTEXT_NEEDLES: &[&str] = &[
+    "HD500X",
+    "9781",
+    "8559",
+    "POD HD500X Edit",
+    "l6c-acdn",
+    "media/software",
+    ".5xe",
+    ".h5e",
+];
+
+pub const LOCAL_INSTALLERS_SCANNED: &[&str] = &[
+    "monkey-windows-1.77",
+    "monkey-macos-1.78",
+    "central-windows-1.00",
+];
+
+/// Local absence and the routes already requested. Wider sources stay unknown.
+pub const EDITOR_ACQUISITION_LIMIT: &str = "No Edit 2.27 installer is available locally. The unauthenticated readeula HEAD requests redirected to login, and the release-id directory HEAD requests returned 404. A directory 404 can coexist with a public named object. An owner-supplied original installer would unblock this static-extraction approach. Wider availability and other independent sources remain unknown. This crate does not store credentials and does not retry the routes already requested or flash release 6260.";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Record {
     pub usb_vendor_id: u16,
@@ -245,6 +456,9 @@ pub struct Record {
     pub mac_plist: StaticText,
     pub flash: CatalogProbe,
     pub editors: &'static [EditorListing],
+    pub editor_acquisitions: &'static [EditorAcquisition],
+    pub manuals: &'static [PublicManual],
+    pub printed_file_names: &'static [PrintedFileName],
     /// No HD500X file product id was recovered.
     pub file_product_id: Option<u32>,
     /// No firmware-container product id was recovered. The USB pid is not one.
@@ -270,6 +484,9 @@ const RECORD: Record = Record {
     mac_plist: MAC_PLIST,
     flash: FLASH,
     editors: EDITORS,
+    editor_acquisitions: EDITOR_ACQUISITIONS,
+    manuals: PUBLIC_MANUALS,
+    printed_file_names: PRINTED_FILE_NAMES,
     file_product_id: None,
     firmware_product_id: None,
     preset_container_recovered: false,
@@ -437,5 +654,75 @@ mod tests {
         );
         assert!(evidence.contains("4/9/15"));
         assert!(evidence.contains("2.62.00"));
+        assert_eq!(record.editors.len(), record.editor_acquisitions.len());
+        for editor in record.editors {
+            let probe = record
+                .editor_acquisitions
+                .iter()
+                .find(|probe| probe.release_id == editor.release_id)
+                .expect("acquisition");
+            assert_eq!(probe.request_method, "HEAD");
+            assert_eq!(probe.readeula_status, 302);
+            assert_eq!(
+                probe.readeula_location,
+                "/account/login.html?user_attempt=download"
+            );
+            assert!(probe.readeula_url.contains(&editor.release_id.to_string()));
+            assert_eq!(probe.cdn_directory_status, 404);
+            assert_eq!(probe.cdn_content_length, 213);
+            assert!(!probe.followed_login);
+            assert!(!probe.downloaded);
+            assert_eq!(probe.credentials, CredentialUse::None);
+            assert_eq!(probe.hardware, HardwareContact::None);
+            assert!(!probe.execution.ran());
+            assert!(evidence.contains(probe.readeula_date));
+            assert!(evidence.contains(probe.cdn_directory_url));
+        }
+        assert!(EDITOR_WAYBACK.iter().all(|query| query.rows == 0));
+        assert!(EDITOR_WAYBACK.iter().all(|query| query.body_bytes == 3));
+        assert!(record.manuals.iter().all(|manual| !manual.executed));
+        assert!(
+            record
+                .printed_file_names
+                .iter()
+                .all(|name| !name.byte_layout_recovered)
+        );
+        for role in ["preset", "bundle", "set list"] {
+            let printed: Vec<_> = record
+                .printed_file_names
+                .iter()
+                .filter(|name| name.role == role)
+                .map(|name| name.extension)
+                .collect();
+            assert_eq!(printed.len(), 2);
+            assert_ne!(printed[0], printed[1]);
+        }
+        assert!(PRINTED_INSTALLER_NAMES.iter().all(|name| !name.obtained));
+        assert!(evidence.contains("POD HD500X Edit.mpkg"));
+        for manual in record.manuals {
+            assert!(is_lower_hex(manual.sha256, 64));
+            assert!(evidence.contains(manual.sha256));
+            assert!(evidence.contains(manual.url));
+        }
+        for id in LOCAL_INSTALLERS_SCANNED {
+            let artifact = provenance::artifact_by_id(id).expect(id);
+            assert!(!artifact.execution.ran());
+            assert!(artifact.bytes > 0);
+        }
+        assert!(!EDITOR_PLAINTEXT_NEEDLES.is_empty());
+        assert!(evidence.contains(EDITOR_ACQUISITION_LIMIT));
+        let editor_gap = provenance::ACQUISITION_GAPS
+            .iter()
+            .find(|gap| gap.id == "hd500x-editor-not-obtained")
+            .expect("editor gap");
+        assert!(editor_gap.detail.contains("HTTP 302"));
+        assert!(editor_gap.detail.contains("HTTP 404"));
+    }
+
+    fn is_lower_hex(value: &str, len: usize) -> bool {
+        value.len() == len
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
     }
 }
