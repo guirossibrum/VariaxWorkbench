@@ -5,7 +5,7 @@ import re
 import subprocess
 
 LLVM_NM_VERSIONS = frozenset({"23.1.5", "23.1.6"})
-_VERSION_LINE = re.compile(r"^(?:LLVM|Debian LLVM|Apple LLVM) version (\d+\.\d+\.\d+)(?:\s|$)")
+_VERSION_LINE = re.compile(r"^[ \t]*(?:LLVM|Debian LLVM|Apple LLVM) version (\d+\.\d+\.\d+)(?:\s|$)")
 
 
 def verify_llvm_nm(run=None) -> str:
