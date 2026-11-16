@@ -173,7 +173,9 @@ host callback behavior, not receiver state, durability, or a physical reset.
 ## Variax stage selection
 
 Static decompilation of 0x100D3D60, checked against its direct call sites,
-establishes this method-level order. Field meanings refer to this updater class,
+establishes the following stage selection. User and factory stages are traversed
+in region-table order, rather than a fixed user-before-factory order; the archived
+3.10 image puts factory before user. Field meanings refer to this updater class,
 not an observed device state:
 
 | Stage | Selection and behavior |
