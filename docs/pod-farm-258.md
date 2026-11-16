@@ -200,3 +200,8 @@ add owned malformed/model-mismatch/roundtrip fixtures once there is a real codec
 contract. License inventory needs a read-only storage specification, not copied
 user authorization data. No new implementation issues were opened in this partial
 milestone; those remaining scopes require review before splitting #40.
+
+Later [cache and serialization findings](pod-farm-cache-serialization.md) trace
+one actual host metadata definition to three resource records and establish a
+PINF-local preservation limit. They do not supply PODxt applicability or complete
+format/state roundtrips, and do not complete #40.

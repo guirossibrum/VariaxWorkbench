@@ -2,7 +2,9 @@
 
 This continues the [property lookup trace](pod-farm-parameter-edge.md) for #40.
 It establishes a concrete named descriptor and new-patch seed, and the producer
-of its generic scalar metadata. It does not establish a complete control domain
+of its generic scalar metadata. The subsequent
+[cache/serialization trace](pod-farm-cache-serialization.md) resolves concrete
+metadata endpoints in the supplied resources. This does not establish a complete control domain
 or PODxt Live applicability. #40 stays partial/open; #29 stays held.
 
 All addresses here use the previously documented **x86_64 slice** coordinate
@@ -107,15 +109,13 @@ also calls instance slot `0x2f8`, so this generic projection is not proof of fin
 model-specific display behavior. It does not validate interpolation for malformed
 endpoints or establish cross-platform math compatibility.
 
-The precise remaining producer is the model-definition cache returned by
-`0x24ba0`: its tree at cache + `0x38`/`0x40` maps model IDs to definition objects.
-This pass traces lookup and consumption, but not construction of that cache or a
-concrete `Sys-In Mute` definition object containing its endpoint values. No such
-values are fabricated from template zeros, the seed, a nearby table or a name.
-The cache's descriptive name is inferred from the parameter-array consumer;
-its original class identity remains unverified.
-The path is not declared exhausted; cache population and the final override remain
-the next source edges. No additional artifact or live query is inferred necessary.
+The model-definition cache returned by `0x24ba0` uses the tree at cache +
+`0x38`/`0x40`. The subsequent cache trace follows its construction to the actual
+`LOUT`/`LOBJ` resource records and resolves the final override for this control.
+The descriptive cache label remains inferred; original class identity is unverified.
+That later result establishes endpoint words without inventing values from
+template zeros, and leaves the third scalar component's default/step meaning open.
+No additional artifact or live query is inferred necessary.
 
 ## Focused checks and boundaries
 
