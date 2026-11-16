@@ -10,17 +10,13 @@ from pathlib import Path
 import platform
 import struct
 
-from apple_tiger_math_oracle import AppleTigerCoefficientOracle
-from coefficient_oracle import CoefficientOracle, ROOT
-from inspect_firmware import preserve
-from test_coefficient_generator import cases
-
-
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
 def words(data):
+    if len(data) != 3276:
+        raise ValueError('invalid packed length: expected exactly 3276 bytes')
     result = [int.from_bytes(data[i:i + 3], 'big') for i in range(0, len(data), 3)]
     if len(result) != 1092 or sum(result[:-1]) & 0xffffff != result[-1]:
         raise ValueError('invalid packed length/checksum')
@@ -28,6 +24,11 @@ def words(data):
 
 
 def main():
+    from apple_tiger_math_oracle import AppleTigerCoefficientOracle
+    from coefficient_oracle import CoefficientOracle, ROOT
+    from inspect_firmware import preserve
+    from test_coefficient_generator import cases
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('library', type=Path)
     args = parser.parse_args()

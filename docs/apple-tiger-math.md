@@ -218,3 +218,10 @@ state and Windows compiler/JVM execution remain unresolved. The Apple 88.3.9
 candidate's x87 helpers still depend on Unicorn's host-double implementation.
 Resolving those accuracy claims needs an independently identified reference;
 the Gatekeeper must disposition the prerequisite before issue #6 proceeds.
+
+The packed-output guard now requires exactly 3276 bytes before decoding. Three
+vendor-free regressions (`python3 scripts/test_series_position_boundary.py`)
+cover valid full-length output, checksum-matching 3274/3275-byte truncations and
+a full-length checksum mismatch. The saved report above retains its original
+auditor hash; review independently checked all twelve saved outputs at the full
+3276-byte length. This guard correction does not replay or relabel that evidence.
