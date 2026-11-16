@@ -632,7 +632,7 @@ pub const ACQUISITION_GAPS: &[Gap] = &[
     },
     Gap {
         id: "hd500x-editor-not-obtained",
-        detail: "POD HD500X Edit listings 9781 and 8559 were not downloaded. No preset container, model id, or effect id was extracted.",
+        detail: "POD HD500X Edit releases 9781 and 8559 were not downloaded. On 2026-11-16 unauthenticated HEAD requests for both readeula links returned HTTP 302 to the account login page, and HEAD requests for the CDN directories media/software/9781/ and media/software/8559/ returned HTTP 404. No preset container, model id, or effect id was extracted.",
     },
 ];
 

@@ -235,10 +235,10 @@ fn hd500x_limit(operation: Operation) -> &'static str {
             "POD HD500X is a separate family from original Variax and from PODxt. No coefficient identity is registered."
         }
         Operation::OpenPodPreset => {
-            "No POD HD500X preset container, editor bytes, or file product id was acquired. A PODxt Live tone is not opened on this profile and is not converted."
+            "No POD HD500X preset container, editor bytes, or file product id was acquired. Printed names in the 2013 public manuals are not a byte layout. A PODxt Live tone is not opened on this profile and is not converted."
         }
         Operation::EditPodPreset => {
-            "No POD HD500X model, effect, or parameter definition was recovered. Values are not edited."
+            "No POD HD500X model, effect, or parameter definition was recovered. Printed names in the public manuals are not ids. Values are not edited."
         }
         Operation::SelectRecordRoute => {
             "The Windows INF DefaultSampleRate is 48000 and DefaultWordSize is 24, with EngineFormatLock 0. Those are driver defaults. They do not select a PODxt Live record route and do not open a stream."
