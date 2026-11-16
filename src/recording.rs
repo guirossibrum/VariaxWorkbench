@@ -5,6 +5,8 @@
 //! USB, or MIDI, and nothing changes a live record route, monitor mix, or
 //! re-amp path. `StartAudioCapture` stays locked in the session gate.
 
+pub mod aiff;
+
 use std::path::{Path, PathBuf};
 
 use crate::document;
@@ -141,6 +143,47 @@ pub struct SavedTake {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedAiffTake {
+    pub aiff_path: PathBuf,
+    pub sidecar_path: PathBuf,
+    /// Original little-endian source PCM; AIFF stores each sample big-endian.
+    pub pcm_sha256: String,
+    pub aiff_sha256: String,
+    pub frames: u64,
+}
+
+enum ExportEncoding {
+    Wav(u32),
+    NativeAiff,
+}
+
+impl ExportEncoding {
+    fn fields(&self) -> String {
+        match self {
+            Self::Wav(hz) => format!("\"clock\": \"integer\",\n  \"sample_rate_hz\": {hz},\n  \"native_clock_exported\": false,\n  \"format\": \"pcm-s16le\""),
+            Self::NativeAiff => concat!(
+                "\"clock\": \"rational-source\",\n",
+                "  \"source_clock\": {\"numerator\":78125,\"denominator\":2},\n",
+                "  \"clock_provenance\": \"Linux v7.2.15 driver source; not observed live negotiation\",\n",
+                "  \"native_clock_exported\": true,\n",
+                "  \"resampled\": false,\n",
+                "  \"container\": \"AIFF\",\n",
+                "  \"rate_extended_be_hex\": \"400e9896800000000000\",\n",
+                "  \"source_pcm_format\": \"pod-s24-3le\",\n",
+                "  \"format\": \"pcm-s24be\""
+            ).into(),
+        }
+    }
+
+    fn hash_key(&self) -> &'static str {
+        match self {
+            Self::Wav(_) => "wav_sha256",
+            Self::NativeAiff => "aiff_sha256",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TakeError {
     SelectionMissing(&'static str),
     FalseIntegerStandIn {
@@ -186,6 +229,7 @@ pub enum TakeError {
     DropoutEmpty,
     DropoutTooLarge,
     Wav(&'static str),
+    Aiff(&'static str),
     AlreadyExists,
     LabelTooLong,
     Save(String),
@@ -211,7 +255,7 @@ impl std::fmt::Display for TakeError {
                 denominator,
             } => write!(
                 formatter,
-                "PCM WAV cannot store the source clock {numerator}/{denominator}. Writing 39062 or 39063 would round it. No verified rational container and no tested conversion are implemented, so this export is rejected."
+                "PCM WAV cannot store the source clock {numerator}/{denominator}. Writing 39062 or 39063 would round it. Use the explicit exact-clock AIFF export for a native take. No resampling or rounded WAV rate is applied."
             ),
             Self::NativeClockRejected {
                 numerator,
@@ -273,6 +317,7 @@ impl std::fmt::Display for TakeError {
                 "one dropout is limited to {MAX_DROPOUT_FRAMES} frames"
             ),
             Self::Wav(detail) => write!(formatter, "WAV: {detail}"),
+            Self::Aiff(detail) => write!(formatter, "AIFF: {detail}"),
             Self::AlreadyExists => formatter.write_str(
                 "an audio file or its sidecar already exists. This save does not overwrite.",
             ),
@@ -460,7 +505,7 @@ impl Take {
         }
         let pcm_sha256 = sha256_hex(&self.pcm);
         let wav_sha256 = sha256_hex(&wav);
-        let sidecar = self.sidecar_json(hz, &pcm_sha256, &wav_sha256);
+        let sidecar = self.sidecar_json(ExportEncoding::Wav(hz), &pcm_sha256, &wav_sha256);
         document::save_new(wav_path, &wav).map_err(TakeError::Save)?;
         if let Err(error) = document::save_new(&sidecar_path, sidecar.as_bytes()) {
             return Err(TakeError::Save(format!(
@@ -472,6 +517,44 @@ impl Take {
             sidecar_path,
             pcm_sha256,
             wav_sha256,
+            frames: self.frames,
+        })
+    }
+
+    /// Save exact source clock and signed 24-bit PCM to a new AIFF plus sidecar.
+    /// This changes sample byte order only; the take and original PCM are retained.
+    pub fn save_aiff(&self, path: &Path) -> Result<SavedAiffTake, TakeError> {
+        if self.phase == Phase::Cancelled {
+            return Err(TakeError::Cancelled);
+        }
+        if self.phase != Phase::Stopped {
+            return Err(TakeError::NotStopped);
+        }
+        if self.clock != SampleClock::native_podxt() || self.format != FrameFormat::PodS24_3Le {
+            return Err(TakeError::FormatClockMismatch);
+        }
+        if self.pcm.len() as u64 != self.frames * 6 {
+            return Err(TakeError::Integrity);
+        }
+        let file = aiff::encode(&self.pcm)?;
+        let sidecar_path = sidecar_path(path)?;
+        if path_exists(path)? || path_exists(&sidecar_path)? {
+            return Err(TakeError::AlreadyExists);
+        }
+        let pcm_sha256 = sha256_hex(&self.pcm);
+        let aiff_sha256 = sha256_hex(&file);
+        let metadata = self.sidecar_json(ExportEncoding::NativeAiff, &pcm_sha256, &aiff_sha256);
+        document::save_new(path, &file).map_err(TakeError::Save)?;
+        if let Err(error) = document::save_new(&sidecar_path, metadata.as_bytes()) {
+            return Err(TakeError::Save(format!(
+                "{error}. The AIFF was written and the sidecar was not."
+            )));
+        }
+        Ok(SavedAiffTake {
+            aiff_path: path.to_path_buf(),
+            sidecar_path,
+            pcm_sha256,
+            aiff_sha256,
             frames: self.frames,
         })
     }
@@ -554,7 +637,12 @@ impl Take {
         }
     }
 
-    fn sidecar_json(&self, sample_rate_hz: u32, pcm_sha256: &str, wav_sha256: &str) -> String {
+    fn sidecar_json(
+        &self,
+        encoding: ExportEncoding,
+        pcm_sha256: &str,
+        file_sha256: &str,
+    ) -> String {
         let route = behavior(self.route);
         let (input, label) = match &self.origin {
             InputOrigin::Synthetic => ("synthetic", String::new()),
@@ -593,10 +681,7 @@ impl Take {
                 "  \"reamp_pass\": {reamp},\n",
                 "  \"input\": \"{input}\",\n",
                 "  \"file_label\": {file_label},\n",
-                "  \"clock\": \"integer\",\n",
-                "  \"sample_rate_hz\": {rate},\n",
-                "  \"native_clock_exported\": false,\n",
-                "  \"format\": \"pcm-s16le\",\n",
+                "  {encoding_fields},\n",
                 "  \"channels\": 2,\n",
                 "  \"frames\": {frames},\n",
                 "  \"pcm_bytes\": {pcm_bytes},\n",
@@ -605,7 +690,7 @@ impl Take {
                 "  \"peak_left\": {left},\n",
                 "  \"peak_right\": {right},\n",
                 "  \"pcm_sha256\": \"{pcm_sha}\",\n",
-                "  \"wav_sha256\": \"{wav_sha}\",\n",
+                "  \"{file_hash_key}\": \"{file_sha}\",\n",
                 "  \"stream_chunk_bytes_max\": {chunk_max},\n",
                 "  \"take_byte_cap\": {take_cap},\n",
                 "  \"take_bytes_ceiling\": {ceiling},\n",
@@ -626,7 +711,8 @@ impl Take {
             reamp = route.reamp_pass,
             input = input,
             file_label = file_label,
-            rate = sample_rate_hz,
+            encoding_fields = encoding.fields(),
+            file_hash_key = encoding.hash_key(),
             frames = self.frames,
             pcm_bytes = self.pcm.len(),
             dropouts = self.dropouts.len(),
@@ -634,7 +720,7 @@ impl Take {
             left = self.peak_left,
             right = self.peak_right,
             pcm_sha = pcm_sha256,
-            wav_sha = wav_sha256,
+            file_sha = file_sha256,
             chunk_max = STREAM_CHUNK_BYTES_MAX,
             take_cap = self.max_bytes,
             ceiling = TAKE_BYTES_CEILING,
@@ -1127,7 +1213,7 @@ impl Panel {
         self.take.is_some() && !self.take_saved
     }
 
-    /// File capability only; native-clock export remains a separate issue.
+    /// PCM WAV capability only; exact-clock AIFF has separate admission.
     pub fn take_can_save_wav(&self) -> bool {
         self.take.as_ref().is_some_and(|take| {
             matches!(take.clock, SampleClock::Integer { .. })
@@ -1369,6 +1455,26 @@ impl Panel {
         Ok(saved)
     }
 
+    pub fn take_can_save_aiff(&self) -> bool {
+        self.take.as_ref().is_some_and(|take| {
+            take.clock == SampleClock::native_podxt() && take.format == FrameFormat::PodS24_3Le
+        })
+    }
+
+    pub fn save_aiff(&mut self, path: &Path) -> Result<SavedAiffTake, TakeError> {
+        let saved = self
+            .take
+            .as_ref()
+            .ok_or(TakeError::NotStopped)?
+            .save_aiff(path)?;
+        self.take_saved = true;
+        self.message = format!(
+            "Saved exact-clock AIFF {}. Other software may round this rate; verify imports.",
+            path.display()
+        );
+        Ok(saved)
+    }
+
     pub fn guide_line(&self) -> String {
         match self.route {
             Some(route) => {
@@ -1547,6 +1653,87 @@ mod tests {
         assert!(reamp_sidecar.contains("\"monitor_as_documented\": \"NotStatedForThisMode\""));
         assert!(reamp_sidecar.contains("\"live_monitor_changed\": false"));
         assert_eq!(header_rate(&std::fs::read(reamp).unwrap()), 48_000);
+    }
+
+    #[test]
+    fn exact_clock_aiff_save_preserves_pcm_provenance_and_refuses_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("native.aiff");
+        let mut take = Take::prepare(TakeRequest {
+            route: RecordRoute::SendCleanGuitar,
+            clock: SampleClock::native_podxt(),
+            format: FrameFormat::PodS24_3Le,
+            origin: InputOrigin::Synthetic,
+            max_bytes: 8192,
+        })
+        .unwrap();
+        assert!(matches!(take.save_aiff(&path), Err(TakeError::NotStopped)));
+        take.start().unwrap();
+        let source = pack_stereo(-8_388_608, 8_388_607).unwrap().repeat(11);
+        take.push(&source).unwrap();
+        take.stop().unwrap();
+        let saved = take.save_aiff(&path).unwrap();
+        let file = std::fs::read(&path).unwrap();
+        assert_eq!(aiff::decode(&file).unwrap(), source);
+        assert_eq!(take.pcm(), source);
+        assert_eq!(saved.pcm_sha256, sha256_hex(&source));
+        assert_eq!(saved.aiff_sha256, sha256_hex(&file));
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&saved.sidecar_path).unwrap()).unwrap();
+        assert_eq!(metadata["source_clock"]["numerator"], 78125);
+        assert_eq!(metadata["source_clock"]["denominator"], 2);
+        assert_eq!(metadata["format"], "pcm-s24be");
+        assert_eq!(metadata["source_pcm_format"], "pod-s24-3le");
+        assert_eq!(metadata["resampled"], false);
+        assert_eq!(metadata["device_recording"], false);
+        assert!(metadata.get("sample_rate_hz").is_none());
+        assert_eq!(metadata["aiff_sha256"], saved.aiff_sha256);
+        assert!(matches!(
+            take.save_aiff(&path),
+            Err(TakeError::AlreadyExists)
+        ));
+        take.cancel().unwrap();
+        assert!(matches!(
+            take.save_aiff(&dir.path().join("cancelled.aiff")),
+            Err(TakeError::Cancelled)
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), file);
+        let sidecar_only = dir.path().join("reserved.aiff");
+        std::fs::write(sidecar_path(&sidecar_only).unwrap(), b"keep").unwrap();
+        let mut panel = armed_panel(ClockSelection::NativePodxt);
+        panel.feed().unwrap();
+        panel.stop().unwrap();
+        assert!(matches!(
+            panel.save_aiff(&sidecar_only),
+            Err(TakeError::AlreadyExists)
+        ));
+        assert!(panel.has_unsaved_take());
+        assert!(!sidecar_only.exists());
+    }
+
+    #[test]
+    fn native_panel_save_status_is_explicit_and_wrong_clock_aiff_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("take.aiff");
+        let mut integer = armed_panel(ClockSelection::Integer(44_100));
+        integer.stop().unwrap();
+        assert!(matches!(
+            integer.save_aiff(&path),
+            Err(TakeError::FormatClockMismatch)
+        ));
+        assert!(integer.has_unsaved_take());
+        assert!(!path.exists());
+        let mut native = armed_panel(ClockSelection::NativePodxt);
+        native.feed().unwrap();
+        native.stop().unwrap();
+        assert!(native.take_can_save_aiff());
+        assert!(native.has_unsaved_take());
+        native.save_aiff(&path).unwrap();
+        assert!(!native.has_unsaved_take());
+        native.cancel().unwrap();
+        native.start().unwrap();
+        assert!(native.has_unsaved_take());
+        assert!(path.exists());
     }
 
     #[test]
