@@ -117,3 +117,35 @@ fn a_directory_is_not_opened_as_a_device_or_container() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("not a regular file"), "{stderr}");
 }
+
+#[test]
+fn factory_reference_export_requires_the_source_fingerprint_before_creating_a_directory() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("synthetic.vxf");
+    std::fs::write(
+        &source,
+        synthetic_container(
+            variax_workbench::firmware::VARIAX_300_600_PRODUCT_ID,
+            variax_workbench::firmware::VARIAX_300_600_VERSION,
+            b"correct-declaration-is-not-archived-firmware",
+        ),
+    )
+    .unwrap();
+    let destination = directory.path().join("must-not-be-created");
+    let output = bin()
+        .arg("--variax-reference")
+        .arg(&destination)
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("SHA-256"));
+    assert!(!destination.exists());
+}
+
+#[test]
+fn reference_export_without_a_directory_is_rejected() {
+    let output = bin().arg("--variax-reference").output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("missing directory"));
+}

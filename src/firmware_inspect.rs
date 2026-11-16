@@ -35,6 +35,7 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
     let mut json = false;
+    let mut reference_dir = None;
     let mut expect_product = None;
     let mut expect_version = None;
     let mut file = None;
@@ -42,6 +43,14 @@ fn run() -> Result<(), String> {
     while index < args.len() {
         match args[index].as_str() {
             "--json" => json = true,
+            "--variax-reference" => {
+                index += 1;
+                reference_dir = Some(
+                    args.get(index)
+                        .ok_or("missing directory after --variax-reference")?
+                        .clone(),
+                );
+            }
             "--expect-product" => {
                 index += 1;
                 let value = args
@@ -95,6 +104,13 @@ fn run() -> Result<(), String> {
         print!("{rendered}");
         return Err(error.to_string());
     }
+    if let Some(directory) = reference_dir {
+        let reference = variax_workbench::factory_reference::FactoryReference::parse(&bytes)?;
+        reference.export_new(Path::new(&directory))?;
+        eprintln!(
+            "Saved local firmware-default reference to {directory}; not a current-unit/calibration backup or restoration procedure"
+        );
+    }
     print!("{rendered}");
     Ok(())
 }
@@ -136,9 +152,10 @@ fn usage() -> String {
     "Offline FORM/L6FF firmware container inspector.\n\
 Reads one regular file and prints an integrity report.\n\
 Does not write firmware, open a device, or prove authenticity.\n\
+The reference option exports only the fingerprinted Variax 3.10 archive to a new local directory.\n\
 \n\
 Usage:\n  \
-variax-firmware-inspect [--json] [--expect-product HEX --expect-version HEX] FILE\n  \
+variax-firmware-inspect [--json] [--expect-product HEX --expect-version HEX] [--variax-reference NEW_DIRECTORY] FILE\n  \
 variax-firmware-inspect --self-test\n"
         .to_owned()
 }
