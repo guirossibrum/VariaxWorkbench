@@ -27,7 +27,8 @@ The user picks both pieces before Start:
 | Native source clock | Linux `pod_ratden` `78125/2`, packed as declared S24_3LE frames in memory. |
 
 Guitar `SelectRecordRoute` stays unsupported. Workbench HD, JTV-69, and POD
-HD500X stay unverified. The session gate checks the POD role, proves the
+HD500X stay unverified. The HD500X INF sample-rate default is not a record
+route for this recorder. The session gate checks the POD role, proves the
 capture closure is not called, and keeps `stream_opened` false.
 
 Processed, clean, and re-amp are the documented meanings of the selected

@@ -160,9 +160,24 @@ pub(crate) fn version(profile: ProductProfile, component: Component) -> VersionK
                 evidence: "No live version read is authorized. The archived 3.01 container word is not a read of the connected unit.",
             }
         }
-        (ProductProfile::WorkbenchHd | ProductProfile::Jtv69 | ProductProfile::PodHd500x, _) => {
+        (ProductProfile::WorkbenchHd | ProductProfile::Jtv69, _) => {
             VersionKnowledge::NotEstablished {
                 evidence: "No product id, firmware artifact, or version is registered for this profile.",
+            }
+        }
+        (ProductProfile::PodHd500x, Component::ArchivedContainer) => {
+            VersionKnowledge::NotEstablished {
+                evidence: "The public Line 6 listing names POD HD500X Flash Memory v2.62 as release 6260, estimated 892 KB. The download was not obtained. That label is not a container product id or HEAD word.",
+            }
+        }
+        (ProductProfile::PodHd500x, Component::InstalledUsbFirmware) => {
+            VersionKnowledge::NotEstablished {
+                evidence: "The v2.62 flash notes name USB Firmware 1.04 separately from Flash Memory 2.62. No USB-firmware image was downloaded. 1.04 is not a container word and is not an installed-unit read.",
+            }
+        }
+        (ProductProfile::PodHd500x, Component::InstalledUnitRevision) => {
+            VersionKnowledge::NotEstablished {
+                evidence: "No live version read is authorized. The public flash and USB-firmware labels are not this unit's installed revision.",
             }
         }
     }

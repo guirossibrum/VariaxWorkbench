@@ -210,6 +210,7 @@ const CENTRAL_URL: &str =
     "https://l6c-acdn2.line6.net/media/software/12401/Line6CentralInstaller1.00.exe";
 const VARIAX_LISTING_PAGE: &str = "https://line6.com/software/index.html?hardware=Variax%20300%2F600&name=Flash%20Memory&os=All&submit_form=set&submit_query=Show";
 const POD_LISTING_PAGE: &str = "https://line6.com/software/index.html?hardware=PODxt%20Live&name=Flash%20Memory&os=All&submit_form=set&submit_query=Show";
+pub const HD500X_LISTING_PAGE: &str = "https://line6.com/software/index.html?hardware=POD%20HD500X&os=All&submit_form=set&submit_query=Show";
 const MONKEY_HISTORICAL_URL: &str = "https://line6.com/getrelease?rid=8688";
 
 pub const LOCAL_ARTIFACTS: &[LocalArtifact] = &[
@@ -364,7 +365,10 @@ pub const LOCAL_ARTIFACTS: &[LocalArtifact] = &[
         sha256: "dd2f3a787006ecb0341b0ff2f4a8699c00df274b494eb6ed2c6beae4e13c7b92",
         acquisition: Acquisition::UrlNotCaptured,
         catalog: CatalogClaim::NotApplicable,
-        evidence: &["analysis/reports/pod-user-downloads.json"],
+        evidence: &[
+            "analysis/reports/pod-user-downloads.json",
+            "docs/pod-hd500x.md",
+        ],
         signature: SignatureStatus::NotChecked,
         execution: Execution::NotRun,
     },
@@ -379,7 +383,10 @@ pub const LOCAL_ARTIFACTS: &[LocalArtifact] = &[
         sha256: "48099370936bea11e09b9d8ee4828e2c9050dd1a1da1586828b7f5a72b559436",
         acquisition: Acquisition::UrlNotCaptured,
         catalog: CatalogClaim::NotApplicable,
-        evidence: &["analysis/reports/pod-user-downloads.json"],
+        evidence: &[
+            "analysis/reports/pod-user-downloads.json",
+            "docs/pod-hd500x.md",
+        ],
         signature: SignatureStatus::NotChecked,
         execution: Execution::NotRun,
     },
@@ -433,17 +440,30 @@ pub const CATALOG_RELEASES: &[CatalogRelease] = &[
     },
 ];
 
-pub const PUBLIC_LISTINGS: &[PublicFlashListing] = &[PublicFlashListing {
-    product: "PODxt Live",
-    version: "3.01",
-    release_id: 1224,
-    release_date: "2006-04-20",
-    size_text: "approximately 411 KB",
-    page_url: POD_LISTING_PAGE,
-    catalog_md5_saved: false,
-    exact_catalog_bytes_saved: false,
-    local_artifact_id: Some("podxt-live-3.01"),
-}];
+pub const PUBLIC_LISTINGS: &[PublicFlashListing] = &[
+    PublicFlashListing {
+        product: "PODxt Live",
+        version: "3.01",
+        release_id: 1224,
+        release_date: "2006-04-20",
+        size_text: "approximately 411 KB",
+        page_url: POD_LISTING_PAGE,
+        catalog_md5_saved: false,
+        exact_catalog_bytes_saved: false,
+        local_artifact_id: Some("podxt-live-3.01"),
+    },
+    PublicFlashListing {
+        product: "POD HD500X",
+        version: "2.62",
+        release_id: 6260,
+        release_date: "4/9/15",
+        size_text: "estimated 892 KB",
+        page_url: HD500X_LISTING_PAGE,
+        catalog_md5_saved: false,
+        exact_catalog_bytes_saved: false,
+        local_artifact_id: None,
+    },
+];
 
 const UPDATE_STEPS: &[UpdateStep] = &[
     UpdateStep {
@@ -605,6 +625,14 @@ pub const ACQUISITION_GAPS: &[Gap] = &[
     Gap {
         id: "license-server-not-preserved",
         detail: "Keeping the License Manager and Monkey installers does not keep their transaction server available after the announced 2026-04-10 retirement.",
+    },
+    Gap {
+        id: "hd500x-flash-2.62-not-obtained",
+        detail: "POD HD500X Flash Memory v2.62 is public release 6260, estimated 892 KB. The unauthenticated readeula request redirected to the account login page and getrelease returned HTTP 403. No image was saved. USB Firmware 1.04 is a separate name in those notes and was not downloaded.",
+    },
+    Gap {
+        id: "hd500x-editor-not-obtained",
+        detail: "POD HD500X Edit listings 9781 and 8559 were not downloaded. No preset container, model id, or effect id was extracted.",
     },
 ];
 
@@ -799,6 +827,8 @@ pub fn validate_catalog() -> Result<(), String> {
         "variax-500-700-not-obtained",
         "source-urls-missing",
         "app-identifier-omitted",
+        "hd500x-flash-2.62-not-obtained",
+        "hd500x-editor-not-obtained",
     ];
     for id in required {
         if !ACQUISITION_GAPS.iter().any(|gap| gap.id == id) {

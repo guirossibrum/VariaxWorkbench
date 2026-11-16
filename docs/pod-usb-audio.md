@@ -204,7 +204,10 @@ false, and the open callback passed to `plan` is not called.
 Guitar control and POD audio are returned together. The guitar role still has
 no PCM capability. Extension profiles stay unverified, and the guitar role's
 `SelectRecordRoute` capability stays unsupported. Workbench HD, JTV-69, and
-POD HD500X do not receive a PODxt Live record route.
+POD HD500X do not receive a PODxt Live record route. The POD HD500X Windows
+INF records `DefaultSampleRate` 48000 and `DefaultWordSize` 24 with
+`EngineFormatLock` 0. Those are driver defaults from `l6PODHD5SE.inf`, not an
+opened stream. See [POD HD500X](pod-hd500x.md).
 
 ## Limits
 
