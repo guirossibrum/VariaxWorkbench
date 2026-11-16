@@ -23,6 +23,7 @@ pub mod math;
 pub mod midi;
 pub mod models;
 pub mod pickup;
+pub mod pod_assets;
 pub mod pod_audio;
 pub mod pod_preset;
 pub mod pod_usb_firmware;

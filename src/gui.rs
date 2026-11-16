@@ -132,13 +132,6 @@ impl FileDialogs for FakeDialogs {
     }
 }
 
-fn raw_id(id: Option<u32>) -> String {
-    match id {
-        Some(id) => format!("{id:08x}"),
-        None => "absent".into(),
-    }
-}
-
 fn suggested_tone_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
@@ -1582,8 +1575,8 @@ impl Workbench {
                                 "{index} {} {} amp {} cab {}",
                                 tone.container().tag(),
                                 tone.name(),
-                                raw_id(tone.amp_model_id()),
-                                raw_id(tone.cab_model_id()),
+                                pod_preset::PodTone::model_label(tone.amp_model_id()),
+                                pod_preset::PodTone::model_label(tone.cab_model_id()),
                             ),
                             tone.name().to_owned(),
                         ))
@@ -1614,11 +1607,13 @@ impl Workbench {
                 let detail = self.pod_selected.and_then(|index| {
                     self.pod_library.tone(index).map(|tone| {
                         format!(
-                            "Selected {} version {:08x}. {} undecoded slots. {} parameter chunks are not decoded.",
+                            "Selected {} version {:08x}. {} slots have no GPXT role. {} parameter records have no known range. {} parameter chunks stay opaque.\n{}",
                             tone.container().tag(),
                             tone.device_version(),
                             tone.undecoded_slots(),
+                            tone.recorded_parameter_chunks(),
                             tone.undecoded_parameter_chunks(),
+                            tone.control_lines().join("\n"),
                         )
                     })
                 });
@@ -1630,12 +1625,13 @@ impl Workbench {
                     let selected = self.pod_selected.and_then(|index| {
                         self.pod_library.tone(index).map(|tone| {
                             format!(
-                                "\n{} {} amp {} cab {} undecoded {}",
+                                "\n{} {} amp {} cab {} undecoded {}\n{}",
                                 tone.container().tag(),
                                 tone.name(),
-                                raw_id(tone.amp_model_id()),
-                                raw_id(tone.cab_model_id()),
+                                pod_preset::PodTone::model_label(tone.amp_model_id()),
+                                pod_preset::PodTone::model_label(tone.cab_model_id()),
                                 tone.undecoded_slots(),
+                                tone.control_lines().join("\n"),
                             )
                         })
                     });

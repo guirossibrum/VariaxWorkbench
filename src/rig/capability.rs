@@ -200,10 +200,10 @@ fn note(profile: ProductProfile, operation: Operation) -> &'static str {
             "Inspects a FORM/L6FF container and requires the archived PODxt Live product and version. A Variax image is the wrong product."
         }
         (ProductProfile::PodxtLive, Operation::OpenPodPreset) => {
-            "Opens one FORM/L6PA, FORM/L6FS, or FORM/L6AS tone whose PINF target is PODxt Live 0x0003000A. Amp slot 0x00030000 and, on L6AS only, cab slot 0x00030001 are raw model ids. Payloads are not decoded. Nothing is sent."
+            "Opens one FORM/L6PA, FORM/L6FS, or FORM/L6AS tone whose PINF target is PODxt Live 0x0003000A. Amp slot 0x00030000 and, on L6AS only, cab slot 0x00030001 expose model ids. Known asset names and 12-byte parameter records are reported. Ranges are not decoded. Nothing is sent."
         }
         (ProductProfile::PodxtLive, Operation::EditPodPreset) => {
-            "Renames the 32 UTF-16BE PINF name units and writes a new copy. Parameter payloads, unknown chunks, and other slots stay unchanged. Nothing is sent."
+            "Renames the 32 UTF-16BE PINF name units and writes a new copy. Parameter values, the enabled byte, unknown chunks, and other bytes stay unchanged. Nothing is sent."
         }
         (ProductProfile::PodxtLive, Operation::SelectRecordRoute) => {
             "Selects one documented Record Send 1-2 mode in memory. It does not open a stream. Capture and playback stay locked. An offline test take can use this selection and still does not start capture."

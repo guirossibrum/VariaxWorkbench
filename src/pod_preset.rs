@@ -6,21 +6,30 @@
 //! sends FORM/L6PA, FORM/L6FS, and FORM/L6AS to `L6Patch`. `L6ProductConstants.PODXT_LIVE`
 //! is 196618 (`0x0003000A`). `L6Patch.UpdateMetaAmpName` reads model slot 196608
 //! (`0x00030000`) for a Sharc tone. `UpdateMetaNotesForSetup` reads slot 196609
-//! (`0x00030001`) only when the patch type is 2 (L6AS). Asset names were not
-//! recovered. PARM and other unknown bytes are preserved and not decoded.
+//! (`0x00030001`) only when the patch type is 2 (L6AS). Asset names are the
+//! PODxt Live `GetAssetName` results in `pod_assets`. A 12-byte MINF carries
+//! the signed ordinal, two raw reserved bytes, and `m_enabled`. `L6Buffer.Read8`
+//! returns a Java signed byte on both mac and Windows. `L6Model` stores that
+//! byte in `int m_ordinal` and sets enabled from `Read8() > 0`, so bytes
+//! `0x80` through `0xFF` are negative and disabled. The file bytes stay as
+//! stored. A 12-byte PARM carries an id, a value type, and raw bits. No
+//! parameter range was recovered, and this module does not edit those values.
+//! Other bytes are preserved.
 //!
 //! The MIDI hardware id `L6HW_ID_PODXTLIVE` (18000) is a different namespace.
 //! The archived firmware version `0x03010000` is not a requirement of a tone file.
 
 use crate::document;
+use crate::pod_assets::{self, SlotRole};
 use crate::preset;
 use std::path::Path;
 
 /// PINF target for PODxt Live. Equal to `L6ProductConstants.PODXT_LIVE`.
 pub const PODXT_LIVE_TONE_ID: u32 = 0x0003_000a;
-/// Amp model slot from `L6Patch.UpdateMetaAmpName`. The stored id is raw.
+/// Amp model slot from `L6Patch.UpdateMetaAmpName` and `kGPXTSlot_Amp`.
 pub const AMP_SLOT: u32 = 0x0003_0000;
-/// Cab model slot from `L6Patch.UpdateMetaNotesForSetup`. L6AS (type 2) only.
+/// Cab model slot from `L6Patch.UpdateMetaNotesForSetup` and `kGPXTSlot_Cab`.
+/// Only an L6AS tone exposes it as the cab model.
 pub const CAB_SLOT: u32 = 0x0003_0001;
 /// Application bound for the offline librarian. Not a recovered Line 6 limit.
 pub const TONE_BYTES_CEILING: u64 = 1_048_576;
@@ -30,8 +39,7 @@ pub const OFFLINE_BANNER: &str =
 pub const NOT_GUITAR: &str =
     "This is not the Variax guitar editor. Guitar model slots are not applied.";
 pub const NOT_SENT: &str = "Nothing is sent to a device. No preset is switched.";
-pub const PAYLOADS_NOT_DECODED: &str =
-    "Model payloads and effect parameters are not decoded. Amp and cab values are raw ids.";
+pub const PAYLOADS_NOT_DECODED: &str = "Known asset names and 12-byte parameter records are shown. Parameter ranges are not decoded. Unknown ids stay raw.";
 
 const VARIAX_FAMILY_MASK: u32 = 0xffff_0000;
 const VARIAX_FAMILY_HIGH: u32 = 0x0007_0000;
@@ -96,13 +104,45 @@ impl ToneError {
     }
 }
 
-/// One model slot copied from MINF. The id is raw. Parameter chunks are counted
-/// and their bytes stay in the original buffer.
+/// Value stored in a 12-byte PARM record. The bits are not a knob position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParameterValue {
+    /// `L6ModelParam` value type 0. The bits are the Java `int`.
+    Int { bits: u32 },
+    /// `L6ModelParam` value type 1. The bits are an IEEE-754 `float`.
+    Float { bits: u32 },
+    /// Any other type word. Both words stay raw.
+    Other { type_word: u32, bits: u32 },
+}
+
+/// One PARM chunk. Only the 12-byte `L6ModelParam` record is structured.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ModelParameter {
+    Recorded {
+        /// High byte of the stored first word. A write uses `0x3F`. A read keeps any byte.
+        prefix: u8,
+        /// Low 24 bits of the first word.
+        id: u32,
+        value: ParameterValue,
+    },
+    /// A PARM chunk whose length is not 12. Its bytes stay in the tone file.
+    Opaque { len: usize },
+}
+
+/// One model slot copied from MINF. Bytes outside the decoded fields stay in the file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModelSlot {
     pub slot: u32,
     pub model_id: u32,
-    pub parameter_chunks: usize,
+    /// MINF byte 8 as the Java signed byte stored in `int m_ordinal`.
+    /// `0x80` is -128 and `0xFF` is -1. The file byte is not rewritten.
+    pub ordinal: Option<i8>,
+    /// MINF bytes 9 and 10 when the chunk is at least 12 bytes. Not rewritten.
+    pub reserved: Option<[u8; 2]>,
+    /// MINF byte 11 as `Read8() > 0`. A byte from `0x80` through `0xFF` is not
+    /// enabled. This is `m_enabled`, not a bypass flag, and it is not rewritten.
+    pub enabled: Option<bool>,
+    pub parameters: Vec<ModelParameter>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -114,6 +154,46 @@ pub struct PodTone {
     device_version: u32,
     container: ContainerKind,
     models: Vec<ModelSlot>,
+}
+
+impl ParameterValue {
+    fn label(self) -> String {
+        match self {
+            Self::Int { bits } => format!("int {bits:08x}"),
+            Self::Float { bits } => format!("float {bits:08x}"),
+            Self::Other { type_word, bits } => format!("type {type_word:08x} bits {bits:08x}"),
+        }
+    }
+}
+
+fn read_parameters(bytes: &[u8], fields: &[preset::Chunk]) -> Vec<ModelParameter> {
+    fields
+        .iter()
+        .filter(|chunk| chunk.id == *b"PARM")
+        .map(|chunk| {
+            if chunk.data.len() != 12 {
+                return ModelParameter::Opaque {
+                    len: chunk.data.len(),
+                };
+            }
+            let word0 = preset::word(bytes, chunk.data.start);
+            let type_word = preset::word(bytes, chunk.data.start + 4);
+            let bits = preset::word(bytes, chunk.data.start + 8);
+            let value = match type_word {
+                0 => ParameterValue::Int { bits },
+                1 => ParameterValue::Float { bits },
+                other => ParameterValue::Other {
+                    type_word: other,
+                    bits,
+                },
+            };
+            ModelParameter::Recorded {
+                prefix: (word0 >> 24) as u8,
+                id: word0 & 0x00ff_ffff,
+                value,
+            }
+        })
+        .collect()
 }
 
 impl PodTone {
@@ -181,10 +261,24 @@ impl PodTone {
                     "ambiguous duplicate model slot {slot:08x}"
                 )));
             }
+            let (ordinal, reserved, enabled) = if minf.data.len() >= 12 {
+                let ordinal_byte = bytes[minf.data.start + 8];
+                let enabled_byte = bytes[minf.data.start + 11];
+                (
+                    Some(ordinal_byte as i8),
+                    Some([bytes[minf.data.start + 9], bytes[minf.data.start + 10]]),
+                    Some((enabled_byte as i8) > 0),
+                )
+            } else {
+                (None, None, None)
+            };
             models.push(ModelSlot {
                 slot,
                 model_id: preset::word(&bytes, minf.data.start),
-                parameter_chunks: fields.iter().filter(|chunk| chunk.id == *b"PARM").count(),
+                ordinal,
+                reserved,
+                enabled,
+                parameters: read_parameters(&bytes, &fields),
             });
         }
         Ok(Self {
@@ -226,7 +320,7 @@ impl PodTone {
         &self.models
     }
 
-    /// Raw amp model id when slot `0x00030000` is present. No asset name.
+    /// Amp model id when slot `0x00030000` is present.
     pub fn amp_model_id(&self) -> Option<u32> {
         self.models
             .iter()
@@ -234,7 +328,12 @@ impl PodTone {
             .map(|model| model.model_id)
     }
 
-    /// Raw cab model id. Only L6AS exposes slot `0x00030001` as a cab.
+    /// Asset name for the amp model id, when the PODxt Live table has one.
+    pub fn amp_asset_name(&self) -> Option<&'static str> {
+        self.amp_model_id().and_then(pod_assets::asset_name)
+    }
+
+    /// Cab model id. Only L6AS exposes slot `0x00030001` as a cab.
     pub fn cab_model_id(&self) -> Option<u32> {
         if !self.container.exposes_cab() {
             return None;
@@ -245,19 +344,69 @@ impl PodTone {
             .map(|model| model.model_id)
     }
 
+    /// Asset name for the exposed cab model id.
+    pub fn cab_asset_name(&self) -> Option<&'static str> {
+        self.cab_model_id().and_then(pod_assets::asset_name)
+    }
+
+    /// Slots whose id is not in `kGPXTSlot_*`.
     pub fn undecoded_slots(&self) -> usize {
         self.models
             .iter()
-            .filter(|model| {
-                let amp = model.slot == AMP_SLOT;
-                let cab = self.container.exposes_cab() && model.slot == CAB_SLOT;
-                !amp && !cab
-            })
+            .filter(|model| SlotRole::from_id(model.slot).is_none())
             .count()
     }
 
+    /// PARM chunks whose length is the 12-byte record. Their ranges are still unknown.
+    pub fn recorded_parameter_chunks(&self) -> usize {
+        self.models
+            .iter()
+            .flat_map(|model| &model.parameters)
+            .filter(|parameter| matches!(parameter, ModelParameter::Recorded { .. }))
+            .count()
+    }
+
+    /// PARM chunks that are not the 12-byte record.
     pub fn undecoded_parameter_chunks(&self) -> usize {
-        self.models.iter().map(|model| model.parameter_chunks).sum()
+        self.models
+            .iter()
+            .flat_map(|model| &model.parameters)
+            .filter(|parameter| matches!(parameter, ModelParameter::Opaque { .. }))
+            .count()
+    }
+
+    /// One line per model, then one line per parameter. This does not edit the file.
+    pub fn control_lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        for model in &self.models {
+            lines.push(pod_assets::describe_model(
+                model.slot,
+                model.model_id,
+                model.ordinal,
+                model.reserved,
+                model.enabled,
+            ));
+            for parameter in &model.parameters {
+                lines.push(match parameter {
+                    ModelParameter::Opaque { len } => format!("opaque parameter {len} bytes"),
+                    ModelParameter::Recorded { prefix, id, value } => {
+                        pod_assets::describe_parameter(*prefix, *id, &value.label())
+                    }
+                });
+            }
+        }
+        lines
+    }
+
+    /// Hex id, with the asset name in front when the table has one.
+    pub fn model_label(id: Option<u32>) -> String {
+        match id {
+            Some(id) => match pod_assets::asset_name(id) {
+                Some(name) => format!("{name} {id:08x}"),
+                None => format!("{id:08x}"),
+            },
+            None => "absent".into(),
+        }
     }
 
     /// Replace the fixed 32 UTF-16BE PINF name units. No other byte changes.
@@ -481,8 +630,51 @@ pub(crate) fn fixture(
 }
 
 #[cfg(test)]
+struct BuiltModel<'a> {
+    slot: u32,
+    model_id: u32,
+    tail: &'a [u8],
+    parameters: &'a [&'a [u8]],
+}
+
+#[cfg(test)]
+fn custom_tone(kind: ContainerKind, models: &[BuiltModel<'_>]) -> Vec<u8> {
+    fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut output = id.to_vec();
+        output.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        output.extend_from_slice(data);
+        if !data.len().is_multiple_of(2) {
+            output.push(0xa5);
+        }
+        output
+    }
+    let mut info = vec![0; 76];
+    info[..4].copy_from_slice(&1u32.to_be_bytes());
+    info[4..8].copy_from_slice(&PODXT_LIVE_TONE_ID.to_be_bytes());
+    info[8..10].copy_from_slice(&u16::from(b'A').to_be_bytes());
+    let mut patch = b"PATC".to_vec();
+    for entry in models {
+        let mut minf = Vec::new();
+        minf.extend_from_slice(&entry.model_id.to_be_bytes());
+        minf.extend_from_slice(&entry.slot.to_be_bytes());
+        minf.extend_from_slice(entry.tail);
+        let mut model = b"MODL".to_vec();
+        model.extend(chunk(b"MINF", &minf));
+        for parameter in entry.parameters {
+            model.extend(chunk(b"PARM", parameter));
+        }
+        patch.extend(chunk(b"LIST", &model));
+    }
+    let mut data = kind.tag().as_bytes().to_vec();
+    data.extend(chunk(b"PINF", &info));
+    data.extend(chunk(b"LIST", &patch));
+    chunk(b"FORM", &data)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pod_assets::{self, SlotRole};
 
     fn live_tone() -> Vec<u8> {
         fixture(
@@ -517,8 +709,29 @@ mod tests {
         assert_ne!(tone.device_version(), crate::firmware::PODXT_LIVE_VERSION);
         assert_eq!(tone.amp_model_id(), Some(0x1111_0002));
         assert_eq!(tone.cab_model_id(), Some(0x2222_0003));
+        assert_eq!(tone.amp_asset_name(), None);
+        assert_eq!(tone.cab_asset_name(), None);
         assert_eq!(tone.undecoded_slots(), 1);
-        assert_eq!(tone.undecoded_parameter_chunks(), 6);
+        assert_eq!(tone.recorded_parameter_chunks(), 3);
+        assert_eq!(tone.undecoded_parameter_chunks(), 3);
+        assert_eq!(tone.models()[0].ordinal, Some(0x10));
+        assert_eq!(tone.models()[0].reserved, Some([0x20, 0x30]));
+        assert_eq!(tone.models()[0].enabled, Some(true));
+        assert!(matches!(
+            tone.models()[0].parameters[0],
+            ModelParameter::Opaque { len: 4 }
+        ));
+        assert!(matches!(
+            tone.models()[0].parameters[1],
+            ModelParameter::Recorded {
+                prefix: 0xab,
+                id: 0x00cd_ef01,
+                value: ParameterValue::Other {
+                    type_word: 0x0203_0405,
+                    bits: 0x0607_0809,
+                },
+            }
+        ));
         assert_eq!(tone.name(), "A");
         tone.rename("Stage").unwrap();
         let reread = PodTone::parse(tone.as_bytes().to_vec()).unwrap();
@@ -550,7 +763,7 @@ mod tests {
     }
 
     #[test]
-    fn cab_slot_on_l6pa_and_l6fs_stays_undecoded() {
+    fn cab_slot_on_l6pa_and_l6fs_is_not_the_cab_model() {
         for kind in [ContainerKind::L6pa, ContainerKind::L6fs] {
             let tone = PodTone::parse(fixture(
                 kind,
@@ -562,7 +775,12 @@ mod tests {
             assert_eq!(tone.container(), kind);
             assert_eq!(tone.amp_model_id(), Some(7));
             assert_eq!(tone.cab_model_id(), None);
-            assert_eq!(tone.undecoded_slots(), 1);
+            assert_eq!(tone.cab_asset_name(), None);
+            assert_eq!(tone.undecoded_slots(), 0);
+            assert_eq!(
+                SlotRole::from_id(tone.models()[1].slot),
+                Some(SlotRole::Cab)
+            );
             assert_eq!(tone.models()[1].slot, CAB_SLOT);
             assert_eq!(tone.models()[1].model_id, 8);
         }
@@ -619,6 +837,216 @@ mod tests {
         duplicated[4..8].copy_from_slice(&12u32.to_be_bytes());
         assert!(PodTone::parse(duplicated).is_err());
         assert!(PodTone::parse(vec![0; TONE_BYTES_CEILING as usize + 1]).is_err());
+    }
+
+    #[test]
+    fn recovered_controls_keep_unknown_bytes_and_do_not_edit_parameters() {
+        let original = custom_tone(
+            ContainerKind::L6as,
+            &[
+                BuiltModel {
+                    slot: AMP_SLOT,
+                    model_id: 131_073,
+                    tail: &[0x04, 0x00, 0x00, 0x01, 0xaa, 0xbb, 0xcc, 0xdd],
+                    parameters: &[
+                        &[
+                            0x3f, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0x01, 0x3f, 0x80, 0x00, 0x00,
+                        ],
+                        &[0x3f, 0x00, 0x00, 0x01],
+                        &[
+                            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc,
+                            0xde, 0xef, 0x01, 0x02,
+                        ],
+                    ],
+                },
+                BuiltModel {
+                    slot: CAB_SLOT,
+                    model_id: 0x0100_000f,
+                    tail: &[0x02, 0x7f, 0x7e, 0x00],
+                    parameters: &[],
+                },
+                BuiltModel {
+                    slot: 131_074,
+                    model_id: 0x0205_0000,
+                    tail: &[0x01, 0x10, 0x20, 0x03],
+                    parameters: &[],
+                },
+                BuiltModel {
+                    slot: 0x0003_00aa,
+                    model_id: 0x3333_0004,
+                    tail: &[],
+                    parameters: &[],
+                },
+            ],
+        );
+        let mut tone = PodTone::parse(original.clone()).unwrap();
+        assert_eq!(tone.amp_model_id(), Some(131_073));
+        assert_eq!(tone.amp_asset_name(), Some("Line 6 Clean"));
+        assert_eq!(tone.cab_model_id(), Some(0x0100_000f));
+        assert_eq!(tone.cab_asset_name(), Some("No Cabinet"));
+        assert_eq!(tone.undecoded_slots(), 1);
+        assert_eq!(tone.recorded_parameter_chunks(), 1);
+        assert_eq!(tone.undecoded_parameter_chunks(), 2);
+        let amp = &tone.models()[0];
+        assert_eq!(amp.ordinal, Some(0x04));
+        assert_eq!(amp.reserved, Some([0x00, 0x00]));
+        assert_eq!(amp.enabled, Some(true));
+        assert_eq!(
+            amp.parameters[0],
+            ModelParameter::Recorded {
+                prefix: 0x3f,
+                id: 7,
+                value: ParameterValue::Float { bits: 0x3f80_0000 },
+            }
+        );
+        assert_eq!(amp.parameters[1], ModelParameter::Opaque { len: 4 });
+        assert_eq!(amp.parameters[2], ModelParameter::Opaque { len: 16 });
+        let cab = &tone.models()[1];
+        assert_eq!(cab.enabled, Some(false));
+        assert_eq!(cab.reserved, Some([0x7f, 0x7e]));
+        let wah = &tone.models()[2];
+        assert_eq!(SlotRole::from_id(wah.slot), Some(SlotRole::Wah));
+        assert_eq!(pod_assets::asset_name(wah.model_id), Some("Facial Fuzz"));
+        assert_eq!(wah.ordinal, Some(1));
+        assert_eq!(wah.enabled, Some(true));
+        let unknown = &tone.models()[3];
+        assert_eq!(unknown.ordinal, None);
+        assert_eq!(unknown.reserved, None);
+        assert_eq!(unknown.enabled, None);
+        assert_eq!(SlotRole::from_id(unknown.slot), None);
+        let lines = tone.control_lines();
+        assert!(lines[0].contains("Amp slot 00030000 model Line 6 Clean 00020001"));
+        assert!(lines[0].contains(" enabled"));
+        assert!(!lines[0].contains("disabled"));
+        assert!(lines[0].contains("ordinal 4"));
+        assert!(lines[0].contains("reserved 00 00"));
+        assert!(lines[1].contains("parameter 000007 prefix 3f float 3f800000 no range"));
+        assert!(lines[2].contains("opaque parameter 4 bytes"));
+        assert!(lines[3].contains("opaque parameter 16 bytes"));
+        assert!(lines[4].contains("Cab slot 00030001 model No Cabinet 0100000f"));
+        assert!(lines[4].contains("disabled"));
+        assert!(lines[5].contains("Wah slot 00020002 model Facial Fuzz 02050000"));
+        assert!(lines[6].contains("no GPXT role slot 000300aa model 33330004"));
+        assert!(!lines.iter().any(|line| line.contains("bypass")));
+        tone.rename("Named").unwrap();
+        assert_eq!(tone.amp_asset_name(), Some("Line 6 Clean"));
+        assert_eq!(
+            tone.models()[0].parameters,
+            amp_parameters_after_rename(&original)
+        );
+        for (index, (&before, &after)) in original.iter().zip(tone.as_bytes()).enumerate() {
+            let name_at = tone_name_offset(&original);
+            if !(name_at..name_at + 64).contains(&index) {
+                assert_eq!(before, after, "byte {index} changed");
+            }
+        }
+        assert!(
+            tone.as_bytes()
+                .windows(4)
+                .any(|bytes| bytes == [0xaa, 0xbb, 0xcc, 0xdd])
+        );
+        let closed = PodTone::parse(custom_tone(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: CAB_SLOT,
+                model_id: 0x0100_000f,
+                tail: &[0, 0, 0, 1],
+                parameters: &[],
+            }],
+        ))
+        .unwrap();
+        assert_eq!(closed.cab_model_id(), None);
+        assert_eq!(
+            pod_assets::asset_name(closed.models()[0].model_id),
+            Some("No Cabinet")
+        );
+        let partial = PodTone::parse(custom_tone(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: AMP_SLOT,
+                model_id: 1,
+                tail: &[0x11, 0x22, 0x33],
+                parameters: &[],
+            }],
+        ))
+        .unwrap();
+        assert_eq!(partial.models()[0].ordinal, None);
+        assert_eq!(partial.models()[0].reserved, None);
+        assert_eq!(partial.models()[0].enabled, None);
+        assert!(
+            partial
+                .as_bytes()
+                .windows(3)
+                .any(|bytes| bytes == [0x11, 0x22, 0x33])
+        );
+    }
+
+    #[test]
+    fn signed_minf_fields_follow_java_read8_and_rename_keeps_the_bytes() {
+        // Java `byte` values of the file bytes 0x00, 0x01, 0x7F, 0x80, and 0xFF.
+        // Both the ordinal and the enabled byte use each value.
+        const TAILS: [[u8; 4]; 5] = [
+            [0x00, 0x5a, 0xa5, 0x00],
+            [0x01, 0x5a, 0xa5, 0x01],
+            [0x7f, 0x5a, 0xa5, 0x7f],
+            [0x80, 0x5a, 0xa5, 0x80],
+            [0xff, 0x5a, 0xa5, 0xff],
+        ];
+        let expected: [(u32, i8, bool); 5] = [
+            (65_536, 0, false),
+            (131_072, 1, true),
+            (131_073, 127, true),
+            (131_074, -128, false),
+            (AMP_SLOT, -1, false),
+        ];
+        let models: Vec<BuiltModel<'_>> = expected
+            .iter()
+            .enumerate()
+            .map(|(index, &(slot, _, _))| BuiltModel {
+                slot,
+                model_id: 0x1111_0002,
+                tail: &TAILS[index],
+                parameters: &[],
+            })
+            .collect();
+        let original = custom_tone(ContainerKind::L6as, &models);
+        let mut tone = PodTone::parse(original.clone()).unwrap();
+        let lines = tone.control_lines();
+        assert_eq!(lines.len(), expected.len());
+        for (index, &(slot, ordinal, enabled)) in expected.iter().enumerate() {
+            let model = &tone.models()[index];
+            assert_eq!(model.slot, slot);
+            assert_eq!(model.ordinal, Some(ordinal));
+            assert_eq!(model.reserved, Some([0x5a, 0xa5]));
+            assert_eq!(model.enabled, Some(enabled));
+            assert!(lines[index].ends_with(&format!("ordinal {ordinal} reserved 5a a5")));
+            if enabled {
+                assert!(lines[index].contains(" enabled"));
+                assert!(!lines[index].contains("disabled"));
+            } else {
+                assert!(lines[index].contains(" disabled"));
+            }
+        }
+        tone.rename("Signed").unwrap();
+        assert_eq!(tone.name(), "Signed");
+        let name_at = tone_name_offset(&original);
+        for (index, (&before, &after)) in original.iter().zip(tone.as_bytes()).enumerate() {
+            if !(name_at..name_at + 64).contains(&index) {
+                assert_eq!(before, after, "byte {index} changed");
+            }
+        }
+        for tail in TAILS {
+            assert!(
+                tone.as_bytes().windows(4).any(|bytes| bytes == tail),
+                "MINF tail {tail:02x?} was not preserved"
+            );
+        }
+    }
+
+    fn amp_parameters_after_rename(original: &[u8]) -> Vec<ModelParameter> {
+        PodTone::parse(original.to_vec()).unwrap().models()[0]
+            .parameters
+            .clone()
     }
 
     #[test]

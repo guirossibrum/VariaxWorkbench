@@ -427,8 +427,11 @@ fn pod_tone_open_rename_and_save_stay_offline_and_reject_variax() {
     assert_ne!(summary.device_version, PODXT_LIVE_VERSION);
     assert_eq!(summary.amp_model_id, Some(0x1111_0002));
     assert_eq!(summary.cab_model_id, Some(0x2222_0003));
+    assert_eq!(summary.amp_name, None);
+    assert_eq!(summary.cab_name, None);
     assert_eq!(summary.undecoded_slots, 1);
-    assert_eq!(summary.undecoded_parameter_chunks, 6);
+    assert_eq!(summary.recorded_parameter_chunks, 3);
+    assert_eq!(summary.undecoded_parameter_chunks, 3);
     assert_eq!(
         session.open_pod_preset(RoleKind::Guitar, &original),
         Err(Rejection::Unsupported {
