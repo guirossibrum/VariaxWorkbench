@@ -41,6 +41,7 @@ enum Pending {
     Quit,
     /// Quit while at least one PODxt Live tone has an applied unsaved edit.
     QuitPod,
+    QuitRecording,
 }
 
 trait FileDialogs {
@@ -488,10 +489,13 @@ impl Workbench {
         match self.pending.take() {
             Some(Pending::Open(path)) => self.load(&path),
             Some(Pending::ReadCurrent) => self.launch_read(),
-            Some(Pending::Quit | Pending::QuitPod) => {
+            Some(Pending::Quit | Pending::QuitPod | Pending::QuitRecording) => {
                 // Guitar save or discard must not close while a POD tone is unsaved.
                 if self.pod_library.any_dirty() {
                     self.pending = Some(Pending::QuitPod);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                } else if self.recorder.has_unsaved_take() {
+                    self.pending = Some(Pending::QuitRecording);
                     ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 } else {
                     self.permit_close = true;
@@ -1109,6 +1113,10 @@ impl Workbench {
     fn pending_dialog(&mut self, ctx: &egui::Context) {
         #[cfg(test)]
         self.pending_buttons.clear();
+        if matches!(self.pending, Some(Pending::QuitRecording)) {
+            self.recording_quit_dialog(ctx);
+            return;
+        }
         if matches!(self.pending, Some(Pending::QuitPod)) {
             self.pod_quit_dialog(ctx);
             return;
@@ -1168,8 +1176,67 @@ impl Workbench {
         } else if self.pod_library.any_dirty() && !self.permit_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.pending = Some(Pending::QuitPod);
+        } else if self.recorder.has_unsaved_take() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.pending = Some(Pending::QuitRecording);
         } else {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    fn recording_quit_dialog(&mut self, ctx: &egui::Context) {
+        if !self.recorder.has_unsaved_take() {
+            self.continue_pending(ctx);
+            return;
+        }
+        let can_save = self.recorder.take_can_save_wav();
+        let mut save = false;
+        let mut discard = false;
+        let mut cancel = false;
+        egui::Window::new("Unsaved offline test take")
+            .default_width(560.0)
+            .max_width(640.0)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label("This in-memory test take has not been saved.");
+                if !can_save {
+                    ui.label("This take uses source clock 78125/2. Exact-clock file export is not implemented. Keep editing or explicitly discard it.");
+                }
+                ui.label(self.recorder.message());
+                ui.horizontal(|ui| {
+                    let response = ui.add_enabled(can_save, egui::Button::new("Stop and save copy…"));
+                    #[cfg(test)]
+                    self.pending_buttons.insert("save", response.rect);
+                    save = response.clicked();
+                    let response = ui.button("Keep editing");
+                    #[cfg(test)]
+                    self.pending_buttons.insert("cancel", response.rect);
+                    cancel = response.clicked();
+                    let response = ui.button("Discard this take");
+                    #[cfg(test)]
+                    self.pending_buttons.insert("discard", response.rect);
+                    discard = response.clicked();
+                });
+            });
+        if cancel {
+            self.pending = None;
+        } else if save {
+            if self.recorder.phase() == recording::Phase::Recording
+                && let Err(error) = self.recorder.stop()
+            {
+                self.recorder.note(error.to_string());
+                return;
+            }
+            if self.save_recording() {
+                self.continue_pending(ctx);
+            }
+        } else if discard {
+            match self.recorder.cancel() {
+                Ok(()) => self.continue_pending(ctx),
+                Err(error) => self.recorder.note(error.to_string()),
+            }
         }
     }
 
@@ -1300,7 +1367,7 @@ impl Workbench {
                 ) {
                     self.error = Some(format!("Screenshot: {error}"));
                 } else {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    self.request_close(ctx);
                 }
             }
         }
@@ -1458,6 +1525,9 @@ impl Workbench {
             .resizable(false)
             .anchor(egui::Align2::LEFT_TOP, egui::vec2(24.0, 64.0))
             .show(ctx, |ui| {
+                if self.pending.is_some() {
+                    ui.disable();
+                }
                 ui.label(recording::OFFLINE_BANNER);
                 ui.label(recording::DEVICE_CAPTURE_LOCKED);
                 ui.label(recording::NO_AUTO_START);
@@ -1560,6 +1630,9 @@ impl Workbench {
             .resizable(false)
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-24.0, 64.0))
             .show(ctx, |ui| {
+                if self.pending.is_some() {
+                    ui.disable();
+                }
                 ui.label(pod_preset::OFFLINE_BANNER);
                 ui.label(pod_preset::NOT_GUITAR);
                 ui.label(pod_preset::NOT_SENT);
@@ -1855,17 +1928,21 @@ impl Workbench {
         }
     }
 
-    fn save_recording(&mut self) {
+    fn save_recording(&mut self) -> bool {
         if self.recorder.phase() != recording::Phase::Stopped {
             self.recorder.note("Stop the take before saving.");
-            return;
+            return false;
         }
         let Some(path) = self.dialogs.save_wav("offline-test-take.wav") else {
             self.recorder.note("Save cancelled. No file was written.");
-            return;
+            return false;
         };
-        if let Err(error) = self.recorder.save(&path) {
-            self.recorder.note(error.to_string());
+        match self.recorder.save(&path) {
+            Ok(_) => true,
+            Err(error) => {
+                self.recorder.note(error.to_string());
+                false
+            }
         }
     }
 }
@@ -2076,7 +2153,8 @@ mod tests {
     }
 
     fn click_prompt(context: &egui::Context, app: &mut Workbench, action: &'static str) {
-        // Center anchoring uses the previous frame's measured window size.
+        // Let a newly created or resized centered prompt settle before clicking.
+        prompt_frame(context, app, vec![]);
         prompt_frame(context, app, vec![]);
         let pos = app.pending_buttons[action].center();
         prompt_frame(
@@ -2468,6 +2546,139 @@ mod tests {
         assert!(!sidecar.contains("78125"));
         assert!(app.read_worker.is_none());
         app.start_read();
+        assert!(app.read_worker.is_none());
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    fn prepare_quit_take(app: &mut Workbench, clock: ClockSelection) {
+        app.recorder
+            .select_route(RecordRoute::SendCleanGuitar)
+            .unwrap();
+        app.recorder.select_clock(clock).unwrap();
+        app.recorder
+            .select_input(recording::InputSelection::Synthetic)
+            .unwrap();
+        app.recorder.start().unwrap();
+        app.recorder.feed().unwrap();
+    }
+
+    #[test]
+    fn recording_quit_cancel_and_failed_save_retain_audio_until_success() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let dir = tempfile::tempdir().unwrap();
+        let blocked = dir.path().join("blocked.wav");
+        let good = dir.path().join("saved.wav");
+        std::fs::write(&blocked, b"keep").unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            save: [None, Some(blocked.clone()), Some(good.clone())].into(),
+            ..Default::default()
+        });
+        prepare_quit_take(&mut app, ClockSelection::Integer(44_100));
+        let levels = app.recorder.levels();
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitRecording)));
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pending.is_none());
+        assert_eq!(app.recorder.phase(), recording::Phase::Recording);
+        assert!(app.recorder.has_unsaved_take());
+        assert!(!app.permit_close);
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "save"); // explicit stop, cancelled dialog
+        assert_eq!(app.recorder.phase(), recording::Phase::Stopped);
+        assert!(matches!(app.pending, Some(Pending::QuitRecording)));
+        assert!(app.recorder.has_unsaved_take());
+        assert_eq!(app.recorder.levels(), levels);
+        assert!(!app.permit_close);
+        click_prompt(&context, &mut app, "save"); // refused overwrite
+        assert!(matches!(app.pending, Some(Pending::QuitRecording)));
+        assert!(app.recorder.has_unsaved_take());
+        assert_eq!(std::fs::read(&blocked).unwrap(), b"keep");
+        assert_eq!(app.recorder.levels(), levels);
+        assert!(!app.permit_close);
+        click_prompt(&context, &mut app, "save");
+        assert!(!app.recorder.has_unsaved_take());
+        assert!(app.pending.is_none());
+        assert!(app.permit_close);
+        let decoded = recording::parse_wav(&std::fs::read(&good).unwrap()).unwrap();
+        assert!(!decoded.data.is_empty());
+        assert!(
+            decoded
+                .data
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|frame| *frame == [0xe8, 3, 0x30, 0xf8])
+        );
+        assert_eq!(app.recording_capture_attempts, 0);
+        assert!(app.read_worker.is_none());
+    }
+
+    #[test]
+    fn native_clock_quit_disables_save_and_requires_an_explicit_discard() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        prepare_quit_take(&mut app, ClockSelection::NativePodxt);
+        app.recorder.stop().unwrap();
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "save"); // disabled: no file picker
+        assert!(matches!(app.pending, Some(Pending::QuitRecording)));
+        assert!(app.recorder.has_unsaved_take());
+        assert!(!app.permit_close);
+        click_prompt(&context, &mut app, "cancel");
+        assert_eq!(app.recorder.phase(), recording::Phase::Stopped);
+        assert!(app.recorder.has_unsaved_take());
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "discard");
+        assert!(!app.recorder.has_unsaved_take());
+        assert_eq!(app.recorder.phase(), recording::Phase::Idle);
+        assert!(app.pending.is_none());
+        assert!(app.permit_close);
+        assert!(!app.recorder.device_opened());
+    }
+
+    #[test]
+    fn guitar_and_pod_quit_continuations_cannot_skip_an_unsaved_take() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let dir = tempfile::tempdir().unwrap();
+        let saved = dir.path().join("guitar.vwm");
+        app.dialogs = Box::new(FakeDialogs {
+            save: [Some(saved.clone())].into(),
+            ..Default::default()
+        });
+        app.change(|preset| preset.rename("Guitar changed"));
+        let index = app.pod_library.import_bytes(sample_pod_tone()).unwrap();
+        app.pod_selected = Some(index);
+        app.pod_name = "POD changed".into();
+        app.apply_pod_name();
+        prepare_quit_take(&mut app, ClockSelection::Integer(48_000));
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::Quit)));
+        click_prompt(&context, &mut app, "save");
+        assert!(saved.exists());
+        assert!(!app.dirty());
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert!(!app.permit_close);
+        click_prompt(&context, &mut app, "discard");
+        assert!(!app.pod_library.any_dirty());
+        assert!(matches!(app.pending, Some(Pending::QuitRecording)));
+        assert!(app.recorder.has_unsaved_take());
+        assert!(!app.permit_close);
+        // Background editors cannot alter the take while this decision is pending.
+        app.recording_open = true;
+        click_recording(&context, &mut app, "cancel");
+        assert!(app.recorder.has_unsaved_take());
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pending.is_none());
+        assert!(app.recorder.has_unsaved_take());
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitRecording)));
+        click_prompt(&context, &mut app, "discard");
+        assert!(app.permit_close);
+        assert!(!app.recorder.has_unsaved_take());
         assert!(app.read_worker.is_none());
         const {
             assert!(LIVE_ACCESS_LOCKED);

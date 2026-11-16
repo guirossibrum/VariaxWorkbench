@@ -409,6 +409,33 @@
       "issue_number": 34,
       "issue_url": "https://github.com/guirossibrum/VariaxWorkbench/issues/34",
       "order": 34
+    },
+    {
+      "key": "recording-quit",
+      "title": "Protect unsaved offline recording takes when quitting the app",
+      "phase": "offline",
+      "dependencies": [
+        "recording-ui"
+      ],
+      "issue_number": 72,
+      "issue_url": "https://github.com/guirossibrum/VariaxWorkbench/issues/72",
+      "order": 27.2,
+      "body": "The recorder added in #28 holds audio in memory until Save. Workbench::dirty() and request_close() currently consider the guitar document only. With a clean guitar document, Start/Feed/Stop followed by application Quit discards the unsaved test take without confirmation. This is a concrete file-workflow gap; hardware capture remains locked.\n\nAcceptance criteria:\n\n- [x] Warn or offer explicit save/discard/cancel before quitting with an unsaved recording or stopped take, without starting streams or changing monitoring. Define native-clock takes that cannot yet be saved truthfully.\n- [x] Cancelled or failed saves retain the in-memory audio and prevent quitting; a successful save marks only the corresponding take as saved. Previously saved files remain intact.\n- [x] Preserve guitar and POD dirty guards and avoid bypass through another pending Quit continuation. No auto-save or implicit discard.\n- [x] Add focused headless tests for unsaved/saved/cancelled takes, save failure and cancellation, and interactions with another dirty document. No USB/MIDI/audio enumeration or open, driver action, runtime unlock or vendor execution.\n\nDependencies: #28. Coordinate with #29's pending per-tone quit guard and #69's exact-clock export; no new format or live backend is required here.\n\n\n## Accepted implementation\n\nMerged as 2635678c87e6af7048d28c4ddb4eb8c7521f71fb (#76). Current-take saved status, guarded quit/save/discard/cancel and guitar/POD continuation checks are implemented. Cancelled or failed saves retain the take. Native-clock takes explicitly cannot save WAV and require keeping or explicit discard pending #69. Saved copies remain intact.\n\n209 tests per GUI math profile, 186 core tests locally, Clippy and fmt pass; core debug/release and Clippy pass on Linux, Windows and macOS in run 43797639307. Five new tests include exact saved PCM and actual headless prompt clicks. Hardware locks remain unchanged.\n",
+      "state": "closed"
+    },
+    {
+      "key": "rational-audio-export",
+      "title": "Preserve the PODxt rational source clock in verified offline audio exports",
+      "phase": "offline",
+      "dependencies": [
+        "pod-usb-audio",
+        "recording-ui"
+      ],
+      "issue_number": 69,
+      "issue_url": "https://github.com/guirossibrum/VariaxWorkbench/issues/69",
+      "order": 27.1,
+      "body": "The offline recorder from #28 deliberately rejects the PODxt source clock 78125/2 for integer-rate PCM WAV export, and rejects 39062, 39063 and 78125 as substitutes. Keep that behavior until an exact, independently tested file path exists. This is a pending file-only capability in the unified recording target.\n\nAcceptance criteria:\n\n- [ ] Verify a maintained, documented container capable of preserving the exact source clock, or a controlled explicitly selected resampler with recorded source-clock provenance. Prefer a self-contained Rust implementation without a new OS audio/runtime dependency.\n- [ ] Preserve source provenance and original synthetic PCM; never round the WAV header or silently resample. Unknown live negotiation remains unknown.\n- [ ] Cross-check exported files using an independent file decoder; no audio playback, device open, DAW stream, enumeration or hardware access. Test size bounds, malformed input, cancellation and atomic non-overwriting saves.\n- [ ] Integrate the verified file option into the offline recorder with accurate supported-format documentation and cross-platform tests.\n\nDependencies: #27, #28 (both accepted offline). Live capture, real device clocks, host monitoring and measured latency remain outside this issue. Hardware locks remain enabled.\n",
+      "state": "open"
     }
   ],
   "project": {
