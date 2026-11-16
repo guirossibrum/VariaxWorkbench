@@ -203,7 +203,7 @@ fn note(profile: ProductProfile, operation: Operation) -> &'static str {
             "Opens one FORM/L6PA, FORM/L6FS, or FORM/L6AS tone whose PINF target is PODxt Live 0x0003000A. Amp slot 0x00030000 and, on L6AS only, cab slot 0x00030001 expose model ids. Known asset names and 12-byte parameter records are reported. No unit or range was recovered. Nothing is sent."
         }
         (ProductProfile::PodxtLive, Operation::EditPodPreset) => {
-            "Renames the 32 UTF-16BE PINF name units and writes a new copy. A parameter value edit is refused because no unit or range was recovered. The enabled byte, unknown chunks, and other bytes stay unchanged. Nothing is sent."
+            "Renames the 32 UTF-16BE PINF name units and writes a new copy. Parameter values are not edited because no unit or range was recovered. The enabled byte, unknown chunks, and other bytes stay unchanged. Nothing is sent."
         }
         (ProductProfile::PodxtLive, Operation::SelectRecordRoute) => {
             "Selects one documented Record Send 1-2 mode in memory. It does not open a stream. Capture and playback stay locked. An offline test take can use this selection and still does not start capture."

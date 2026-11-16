@@ -46,8 +46,8 @@ non-overwriting file save and does not upload.
 PODxt Live tone files are parsed by the separate librarian in
 [POD presets](pod-presets.md), not by the guitar codec. Open and PINF-name edit
 are offline for that role. Known asset names and 12-byte parameter records
-are reported. No PODxt Live parameter unit or range was recovered, so a value
-edit is refused. Device transmission stays unimplemented.
+are reported. No PODxt Live parameter unit or range was recovered, so values
+are not edited. Device transmission stays unimplemented.
 PODxt Live record-route
 selection is the offline planner in [POD USB audio](pod-usb-audio.md): one
 documented Record Send 1-2 mode and a synthetic buffer, with capture still

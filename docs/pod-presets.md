@@ -92,10 +92,9 @@ recovered Line 6 limit.
 ## Parameter domain boundary
 
 No PODxt Live parameter unit, minimum, maximum, or knob name was recovered.
-`parameter_domain` therefore returns no domain, and
-`PodTone::reject_parameter_edit` leaves every file byte unchanged. Raw PARM
-bits are not knob positions. The searches were read-only checks of the local
-archives. No DLL was loaded, no installer was run, and no device was opened.
+The tone API has no parameter-value edit entry point. Raw PARM bits are not
+knob positions. The searches were read-only checks of the local archives.
+No DLL was loaded, no installer was run, and no device was opened.
 
 - `new L6ParamDefinition(` occurs only in
   `analysis/decompiled/mac/modules/variax/device/L6VariaxParamDefs.java`,
@@ -135,7 +134,7 @@ archives. No DLL was loaded, no installer was run, and no device was opened.
 
 - Parameter ranges, units, knob names, and value editing. A decoded PARM
   shows its id, type, and raw bits, and the display says that no range is
-  known. A requested value edit is refused.
+  known. Values are not edited.
 - PARM chunks whose length is not 12 bytes.
 - Model ids the PODxt Live name path does not return. They stay raw.
 - Slot ids outside `kGPXTSlot_*`. A known slot can still hold an unnamed

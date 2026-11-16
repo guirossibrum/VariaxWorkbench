@@ -17,26 +17,13 @@
 //!
 //! Model id `0x7fffffff` is the asset name "Bypass". That is not the MINF
 //! enabled byte. `L6ParamDefinition` ranges exist for Variax and Variax
-//! Acoustic only. No PODxt Live unit or range was recovered, so
-//! `parameter_domain` has no values and raw PARM bits are not knob positions.
+//! Acoustic only. No PODxt Live unit or range was recovered, and raw PARM
+//! bits are not knob positions.
 
 use std::fmt::Write as _;
 
 /// Number of model ids whose mac and Windows names agree.
 pub const ASSET_NAME_COUNT: usize = 348;
-
-/// A recovered unit and inclusive range for one PODxt Live parameter.
-/// The archived sources do not define one, so this type has no values.
-pub enum ParameterDomain {}
-
-/// Number of PODxt Live parameter ids with a recovered unit and range.
-pub const RECOVERED_PARAMETER_DOMAIN_COUNT: usize = 0;
-
-/// Look up a unit and range for a model id and a PARM id.
-/// Every id returns no domain. Variax ranges are not reused here.
-pub const fn parameter_domain(_model_id: u32, _parameter_id: u32) -> Option<ParameterDomain> {
-    None
-}
 
 const ASSET_NAMES: &[(u32, &str)] = &[
     (0x00000000, "Tube Preamp"),
@@ -631,13 +618,6 @@ mod tests {
         assert_eq!(asset_name(0x0410_0000), Some("Parlor"));
         assert_eq!(asset_name(0x7fff_ffff), Some("Bypass"));
         assert_eq!(asset_name(0), Some("Tube Preamp"));
-        assert_eq!(RECOVERED_PARAMETER_DOMAIN_COUNT, 0);
-        for &(model_id, _) in ASSET_NAMES {
-            assert!(parameter_domain(model_id, 0).is_none());
-            assert!(parameter_domain(model_id, 0x00cd_ef01).is_none());
-        }
-        assert!(parameter_domain(0x0201_0001, 0x0020_0000).is_none());
-        assert!(parameter_domain(0x1111_0002, 7).is_none());
         assert_eq!(asset_name(0x1111_0002), None);
         assert_eq!(model_type_label(131_073), Some("Amp"));
         assert_eq!(model_type_label(0x0100_000f), Some("Cab"));
