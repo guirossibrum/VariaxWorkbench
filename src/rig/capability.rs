@@ -205,7 +205,7 @@ fn note(profile: ProductProfile, operation: Operation) -> &'static str {
             "POD preset editing is #29. This profile does not parse guitar FORM/L6PA files as POD presets."
         }
         (ProductProfile::PodxtLive, Operation::SelectRecordRoute) => {
-            "Selects one documented Record Send 1-2 mode in memory. It does not open a stream. Capture and playback stay locked. In-app recording is #28."
+            "Selects one documented Record Send 1-2 mode in memory. It does not open a stream. Capture and playback stay locked. An offline test take can use this selection and still does not start capture."
         }
         (ProductProfile::PodxtLive, Operation::ApplyFamilyMath) => {
             "PODxt coefficients are not the Variax 600 engine. There is no cross-family fallback."

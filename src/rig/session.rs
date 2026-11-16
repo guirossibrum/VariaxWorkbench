@@ -26,6 +26,14 @@ enum SessionKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OfflineRecordingGate {
+    pub route: crate::pod_audio::RecordRoute,
+    pub stream_opened: bool,
+    pub outbound_len: usize,
+    pub capture_stays_locked: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Session {
     kind: SessionKind,
     live: LiveBackend,
@@ -209,6 +217,47 @@ impl Session {
     ) -> Result<crate::pod_audio::RoutePlan, Rejection> {
         self.require(RoleKind::Pod, Operation::SelectRecordRoute)?;
         crate::pod_audio::plan(route, period_bytes, periods, || {}).map_err(Rejection::format)
+    }
+
+    /// Arms the in-memory record-route check used by an offline test take.
+    ///
+    /// `attempt_capture` is the physical capture closure. It is not called.
+    /// The returned gate does not open a stream and carries no outbound bytes.
+    pub fn gate_offline_recording<F>(
+        self,
+        route: crate::pod_audio::RecordRoute,
+        period_bytes: u32,
+        periods: u32,
+        attempt_capture: F,
+    ) -> Result<OfflineRecordingGate, Rejection>
+    where
+        F: FnOnce() -> Result<(), Rejection>,
+    {
+        self.require(RoleKind::Pod, Operation::SelectRecordRoute)?;
+        match self.reject_physical(
+            RoleKind::Pod,
+            Operation::StartAudioCapture,
+            Some(CapabilityState::Offline),
+            attempt_capture,
+        ) {
+            Err(Rejection::Locked {
+                operation: Operation::StartAudioCapture,
+            }) => {}
+            Err(rejection) => return Err(rejection),
+            Ok(()) => {
+                return Err(Rejection::format(
+                    "capture attempt returned, so the offline gate refuses to continue",
+                ));
+            }
+        }
+        let plan = crate::pod_audio::plan(route, period_bytes, periods, || {})
+            .map_err(Rejection::format)?;
+        Ok(OfflineRecordingGate {
+            route: plan.route,
+            stream_opened: plan.stream_opened,
+            outbound_len: plan.outbound.len(),
+            capture_stays_locked: true,
+        })
     }
 
     pub fn accept_family_math(self, role: RoleKind, device_id: u32) -> Result<(), Rejection> {

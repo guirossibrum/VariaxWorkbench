@@ -46,7 +46,8 @@ non-overwriting file save and does not upload.
 POD preset bytes are not parsed with the guitar codec. PODxt Live record-route
 selection is the offline planner in [POD USB audio](pod-usb-audio.md): one
 documented Record Send 1-2 mode and a synthetic buffer, with capture still
-locked. In-app recording stays on #28. POD editing stays on #29. Maintenance
+locked. Offline test recording is the recorder in [recording files](recording.md)
+and does not open that capture path. POD editing stays on #29. Maintenance
 beyond offline inspection stays on #30.
 
 ## Versions

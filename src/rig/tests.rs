@@ -388,3 +388,95 @@ fn pod_record_route_stays_offline_while_capture_stays_locked() {
         })
     );
 }
+
+#[test]
+fn offline_recording_gate_does_not_call_capture_or_open_a_stream() {
+    let session = Session::initial_rig();
+    assert!(LIVE_BACKEND_INITIALIZER.is_none());
+    assert!(session.live_backend_is_absent());
+    let mut attempts = 0;
+    let opened = crate::pod_audio::plan(
+        crate::pod_audio::RecordRoute::SendCleanGuitar,
+        crate::recording::OFFLINE_ROUTE_PERIOD_BYTES,
+        crate::recording::OFFLINE_ROUTE_PERIODS,
+        || attempts += 1,
+    )
+    .expect("plan");
+    assert_eq!(attempts, 0);
+    assert!(!opened.stream_opened);
+    assert!(opened.outbound.is_empty());
+    let gate = session
+        .gate_offline_recording(
+            crate::pod_audio::RecordRoute::SendCleanGuitar,
+            crate::recording::OFFLINE_ROUTE_PERIOD_BYTES,
+            crate::recording::OFFLINE_ROUTE_PERIODS,
+            || {
+                attempts += 1;
+                Ok(())
+            },
+        )
+        .expect("gate");
+    assert_eq!(attempts, 0);
+    assert!(!gate.stream_opened);
+    assert_eq!(gate.outbound_len, 0);
+    assert!(gate.capture_stays_locked);
+    assert!(crate::pod_audio::iso_buffers_if_known().is_err());
+    assert!(crate::pod_audio::max_packet_size().is_err());
+
+    let extension = Session::extension(ProductProfile::PodHd500x).expect("extension");
+    let extension_gate = extension.gate_offline_recording(
+        crate::pod_audio::RecordRoute::SendProcessedGuitar,
+        crate::recording::OFFLINE_ROUTE_PERIOD_BYTES,
+        crate::recording::OFFLINE_ROUTE_PERIODS,
+        || {
+            attempts += 1;
+            Ok(())
+        },
+    );
+    assert_eq!(attempts, 0);
+    assert_eq!(
+        extension_gate,
+        Err(Rejection::Unverified {
+            profile: ProductProfile::PodHd500x,
+            operation: Operation::SelectRecordRoute,
+        })
+    );
+    assert_eq!(
+        session
+            .capability(RoleKind::Guitar, Operation::SelectRecordRoute)
+            .expect("guitar")
+            .state,
+        CapabilityState::Unsupported
+    );
+    let locked = session.reject_physical(
+        RoleKind::Pod,
+        Operation::StartAudioCapture,
+        Some(CapabilityState::Offline),
+        || {
+            attempts += 1;
+            Ok(())
+        },
+    );
+    assert_eq!(attempts, 0);
+    assert_eq!(
+        locked,
+        Err(Rejection::Locked {
+            operation: Operation::StartAudioCapture,
+        })
+    );
+    assert_eq!(
+        session.gate_offline_recording(
+            crate::pod_audio::RecordRoute::SendCleanGuitar,
+            64,
+            1,
+            || {
+                attempts += 1;
+                Ok(())
+            },
+        ),
+        Err(Rejection::Format {
+            detail: "period byte count is not a multiple of the 6-byte frame".into(),
+        })
+    );
+    assert_eq!(attempts, 0);
+}
