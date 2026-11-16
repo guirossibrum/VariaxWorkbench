@@ -13,6 +13,9 @@ LLVM23_PACKAGE_VERSION = "1:23.1.6~++20261116013850+5b10d2d74929-1~exp1~20261116
 LLVM23_PACKAGE_SHA256 = "1b513e3fbe8857f9d7a9a7ad7999e346d4f71c7d5cc6cdddec5f89f8ea4c7866"
 LLVM23_INRELEASE_SHA256 = "b52799690e1d8bda4dd7d04309b38a8e7764197f13fae842001e878026dbee9e"
 LLVM23_PACKAGES_SHA256 = "b1bdd1f5c12749a7b8fad6efcf8f6950ee44a5a0441d2646e2b88aa72c7965a3"
+ARCH_LLVM_PACKAGE_VERSION = "23.1.5-1"
+ARCH_LLVM_PACKAGE_SHA256 = "0fd7df891e40b2c09f82e9bbce742ba984580da70ec5a4aa467e3349f1c4feea"
+ARCH_LLVM_SIGNING_KEY = "2191B89431BAC0A8B96DE93D244740D17C7FD0EC"
 
 
 def _requirements(path: Path) -> list[str]:
@@ -69,12 +72,22 @@ def validate(root: Path = ROOT) -> list[str]:
     research = manifest.get("profiles", {}).get("linux_x86_64_research", {}).get("required", {})
     if research.get("python", {}).get("minimum") != "3.11" or research.get("python", {}).get("tested_baseline") != "3.14.8":
         errors.append("Python minimum and tested baseline must match the research workflow documentation")
+    rust_ci = manifest.get("profiles", {}).get("rust_ci", {})
+    rust_components = rust_ci.get("components", [])
+    rust_provisioning = rust_ci.get("provisioning", "")
+    if (not {"clippy", "rustfmt"}.issubset(rust_components)
+            or "--component clippy,rustfmt" not in reproduction
+            or "RUSTUP_TOOLCHAIN=1.99.1" not in reproduction
+            or "RUSTUP_TOOLCHAIN: \"1.99.1\"" not in workflow
+            or "components: clippy, rustfmt" not in workflow
+            or "clippy and rustfmt" not in rust_provisioning):
+        errors.append("Rust toolchain setup must provision clippy and rustfmt and select pinned 1.99.1")
     if research.get("jdk17", {}).get("version") != "17.0.21" or "17.0.21" not in reproduction or "17.0.21" not in setup_source:
         errors.append("JDK 17 pin must agree with the tested doctor and reference profile")
     if research.get("7zip", {}).get("version") != "26.06" or "26.06" not in reproduction or "26.06" not in setup_source:
         errors.append("7-Zip pin must agree with the tested doctor and reference profile")
     llvm = research.get("llvm-nm", {})
-    if (llvm.get("version") != "23.1.6" or llvm.get("package") != "llvm-23"
+    if (llvm.get("supported_versions") != ["23.1.5", "23.1.6"] or llvm.get("package") != "llvm-23"
             or llvm.get("platform") != "Ubuntu 24.04 amd64"
             or llvm.get("package_version") != LLVM23_PACKAGE_VERSION
             or llvm.get("package_sha256") != LLVM23_PACKAGE_SHA256
@@ -85,10 +98,23 @@ def validate(root: Path = ROOT) -> list[str]:
             or llvm.get("verified_metadata", {}).get("packages_gz_sha256") != LLVM23_PACKAGES_SHA256
             or llvm.get("binary") != "/usr/lib/llvm-23/bin/llvm-nm"):
         errors.append("llvm-nm must retain the verified Ubuntu 24.04 amd64 LLVM 23.1.6 package pin")
+    arch = llvm.get("arch_linux_x86_64", {})
+    if (arch.get("platform") != "Arch Linux x86_64 contributor baseline"
+            or arch.get("repository") != "extra" or arch.get("package") != "llvm"
+            or arch.get("package_version") != ARCH_LLVM_PACKAGE_VERSION
+            or arch.get("package_sha256") != ARCH_LLVM_PACKAGE_SHA256
+            or arch.get("package_size") != 16884148
+            or arch.get("package_url") != "https://geo.mirror.pkgbuild.com/extra/os/x86_64/llvm-23.1.5-1-x86_64.pkg.tar.zst"
+            or arch.get("package_signature_url") != "https://geo.mirror.pkgbuild.com/extra/os/x86_64/llvm-23.1.5-1-x86_64.pkg.tar.zst.sig"
+            or arch.get("signing_key_fingerprint") != ARCH_LLVM_SIGNING_KEY
+            or arch.get("binary") != "/usr/bin/llvm-nm"):
+        errors.append("llvm-nm must retain the verified Arch Linux x86_64 package pin")
     if (LLVM23_PACKAGE_VERSION not in reproduction or LLVM23_PACKAGE_SHA256 not in reproduction
+            or ARCH_LLVM_PACKAGE_VERSION not in reproduction or ARCH_LLVM_PACKAGE_SHA256 not in reproduction
+            or ARCH_LLVM_SIGNING_KEY not in reproduction
             or LLVM23_PACKAGE_VERSION not in str(llvm.get("package_version"))):
-        errors.append("llvm-nm provisioning docs must match its verified apt package version and hash")
-    if 'LLVM_NM_VERSION = "23.1.6"' not in tool_checks or "verify_llvm_nm" not in setup_source:
+        errors.append("llvm-nm provisioning docs must match the verified Ubuntu and Arch package pins")
+    if 'LLVM_NM_VERSIONS = frozenset({"23.1.5", "23.1.6"})' not in tool_checks or "verify_llvm_nm" not in setup_source:
         errors.append("research setup must fail closed on missing or wrong llvm-nm version")
     if any("verify_llvm_nm()" not in source for source in llvm_callers):
         errors.append("every direct llvm-nm research caller must check the pinned version first")
@@ -115,8 +141,8 @@ def validate(root: Path = ROOT) -> list[str]:
     required_categories = {"rust_ci", "linux_x86_64_research"}
     if not required_categories.issubset(manifest.get("profiles", {})):
         errors.append("tool manifest is missing a required contributor profile")
-    if not any("other distro/architecture" in gap for gap in manifest.get("known_gaps", [])):
-        errors.append("tool manifest must scope the llvm-nm pin to its verified distro and architecture")
+    if not any("other distributions and architectures" in gap for gap in manifest.get("known_gaps", [])):
+        errors.append("tool manifest must scope the llvm-nm pins to verified distributions and architectures")
     return errors
 
 

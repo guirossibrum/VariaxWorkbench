@@ -56,6 +56,20 @@ class DependencyManifestTests(unittest.TestCase):
         path.write_text(json.dumps(data), encoding="utf-8")
         self.assertTrue(any("llvm-nm" in error for error in check.validate(self.root)))
 
+    def test_arch_llvm_provisioning_pin_is_required(self):
+        path = self.root / "requirements-tools.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        del data["profiles"]["linux_x86_64_research"]["required"]["llvm-nm"]["arch_linux_x86_64"]
+        path.write_text(json.dumps(data), encoding="utf-8")
+        self.assertTrue(any("Arch Linux x86_64" in error for error in check.validate(self.root)))
+
+    def test_rustfmt_is_required_in_manifest_ci_and_setup_docs(self):
+        path = self.root / "requirements-tools.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["profiles"]["rust_ci"]["components"].remove("rustfmt")
+        path.write_text(json.dumps(data), encoding="utf-8")
+        self.assertTrue(any("rustfmt" in error for error in check.validate(self.root)))
+
     def test_changed_optional_tool_pin_cannot_drift_from_evidence(self):
         path = self.root / "requirements-tools.json"
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -65,16 +79,33 @@ class DependencyManifestTests(unittest.TestCase):
 
     def test_llvm_version_probe_rejects_missing_or_wrong_binary(self):
         def good(_command, **_kwargs):
-            return subprocess.CompletedProcess([], 0, "LLVM version 23.1.6\n", "")
+            return subprocess.CompletedProcess([], 0, "llvm-nm, compatible with GNU nm\nLLVM version 23.1.6\n  Optimized build.\n", "")
+        def arch(_command, **_kwargs):
+            return subprocess.CompletedProcess([], 0, "llvm-nm, compatible with GNU nm\nLLVM version 23.1.5\n  Optimized build.\n", "")
         def wrong(_command, **_kwargs):
-            return subprocess.CompletedProcess([], 0, "LLVM version 23.1.5\n", "")
+            return subprocess.CompletedProcess([], 0, "LLVM version 23.1.4\n", "")
+        def longer(_command, **_kwargs):
+            return subprocess.CompletedProcess([], 0, "LLVM version 23.1.60\n", "")
+        def incidental(_command, **_kwargs):
+            return subprocess.CompletedProcess([], 0, "llvm-nm report\nUnrecognized tool; expected LLVM version 23.1.6\n", "")
         def missing(_command, **_kwargs):
             raise FileNotFoundError("llvm-nm")
         self.assertIn("23.1.6", verify_llvm_nm(good))
-        with self.assertRaisesRegex(RuntimeError, "expected llvm-nm 23.1.6"):
-            verify_llvm_nm(wrong)
+        self.assertIn("23.1.5", verify_llvm_nm(arch))
+        for probe in (wrong, longer, incidental):
+            with self.subTest(probe=probe.__name__), self.assertRaisesRegex(RuntimeError, "expected llvm-nm version line"):
+                verify_llvm_nm(probe)
         with self.assertRaisesRegex(RuntimeError, "missing or unusable"):
             verify_llvm_nm(missing)
+
+    def test_llvm_version_probe_rejects_nonzero_and_timeout(self):
+        def nonzero(_command, **_kwargs):
+            raise subprocess.CalledProcessError(1, ["llvm-nm", "--version"], stderr="failed")
+        def timeout(_command, **_kwargs):
+            raise subprocess.TimeoutExpired(["llvm-nm", "--version"], 30)
+        for probe in (nonzero, timeout):
+            with self.subTest(probe=probe.__name__), self.assertRaisesRegex(RuntimeError, "missing or unusable"):
+                verify_llvm_nm(probe)
 
     def _doctor_inputs(self, omit=()):
         tools = self.root / "tools"

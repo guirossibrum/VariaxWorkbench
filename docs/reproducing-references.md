@@ -63,9 +63,17 @@ dependencies. This private cache is not supplied by Cargo.lock itself.
 With rustup available, the toolchain/cache setup is:
 
 ```sh
-rustup toolchain install 1.99.1 --profile minimal --component clippy
-cargo +1.99.1 fetch --locked
+rustup toolchain install 1.99.1 --profile minimal --component clippy,rustfmt
+export RUSTUP_TOOLCHAIN=1.99.1
+cargo fetch --locked
+cargo test --locked --all-features
+cargo clippy --locked --all-features --all-targets -- -D warnings
+cargo fmt --all -- --check
 ```
+
+The exported `RUSTUP_TOOLCHAIN` selects the pinned toolchain for every later
+`rustc`, `cargo`, and `rustfmt` invocation in that shell. CI installs both
+components and sets the same variable for the job.
 
 Ordinary Linux GUI/USB builds need the native C linker and the Wayland, XKB and
 X11 development metadata selected by the locked GUI features; check discovery
@@ -141,10 +149,42 @@ llvm-nm --version
 ```
 
 Expect the package version above and LLVM 23.1.6 from `llvm-nm --version`.
-This apt package is not installed by this task. Other distributions or
-architectures need their own exact repository/package version and authenticated
-digest before they are called pinned; the Ubuntu package pin must not be treated
-as a universal LLVM installation recipe.
+This apt package is not installed by this task. The registered contributor
+containers use Arch Linux x86_64, so their separate package source is the
+official Arch `extra` repository. On 2026-11-16 its package page listed LLVM
+23.1.5-1; the signed package was independently checked against the local Arch
+pacman keyring. Its 16,884,148-byte archive SHA-256 is
+`0fd7df891e40b2c09f82e9bbce742ba984580da70ec5a4aa467e3349f1c4feea`, the
+packager key fingerprint is
+`2191B89431BAC0A8B96DE93D244740D17C7FD0EC`, and the archive contains
+`/usr/bin/llvm-nm`. See the official [Arch LLVM package page](https://archlinux.org/packages/extra/x86_64/llvm/)
+and the [official package archive and signature](https://geo.mirror.pkgbuild.com/extra/os/x86_64/llvm-23.1.5-1-x86_64.pkg.tar.zst).
+
+On an Arch Linux x86_64 contributor container with its normal pacman keyring,
+download and verify the exact package before installing it. `pacman-key` checks
+the detached signature against trusted Arch packager keys; the explicit digest
+also confirms the inspected archive bytes. Then install the local package and
+verify the installed package and executable:
+
+```sh
+curl -fsSLO https://geo.mirror.pkgbuild.com/extra/os/x86_64/llvm-23.1.5-1-x86_64.pkg.tar.zst
+curl -fsSLO https://geo.mirror.pkgbuild.com/extra/os/x86_64/llvm-23.1.5-1-x86_64.pkg.tar.zst.sig
+echo '0fd7df891e40b2c09f82e9bbce742ba984580da70ec5a4aa467e3349f1c4feea  llvm-23.1.5-1-x86_64.pkg.tar.zst' | sha256sum --check
+sudo pacman-key --verify llvm-23.1.5-1-x86_64.pkg.tar.zst.sig llvm-23.1.5-1-x86_64.pkg.tar.zst
+sudo pacman -U ./llvm-23.1.5-1-x86_64.pkg.tar.zst
+pacman -Q llvm
+pacman -Qkk llvm
+llvm-nm --version
+```
+
+Expect `llvm 23.1.5-1`, and the version line from `llvm-nm --version` must be
+`LLVM version 23.1.5`. The pin's signature was made on 2026-11-09 by
+`Leonidas Spyropoulos <artafinde@archlinux.org>`; the package is kept in the
+official Arch repository rather than an AUR or third-party build. Package
+updates may replace it; refresh and review the signature, hash, and exact
+version before changing this pin. Other distributions and architectures need
+their own verified package pin. Do not treat either package as a universal
+installation recipe.
 
 `research/artifacts.json` identifies the archived installer/firmware files by
 size and SHA-256. The Workbench recipe requires the two exact 1.75 installers:

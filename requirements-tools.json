@@ -25,7 +25,8 @@
         "cargo clippy --locked --all-features --all-targets -- -D warnings",
         "cargo fmt --all -- --check"
       ],
-      "provisioning": "Install the Rust 1.99.1 toolchain and clippy component with the platform's rustup or the pinned CI toolchain action. Cargo.lock is authoritative for crate versions and registry checksums. Fetch with cargo fetch --locked before offline builds."
+      "components": ["clippy", "rustfmt"],
+      "provisioning": "Install Rust 1.99.1 with clippy and rustfmt using rustup or the pinned CI toolchain action. Set RUSTUP_TOOLCHAIN=1.99.1 for all subsequent Rust commands. Cargo.lock is authoritative for crate versions and registry checksums. Fetch with cargo fetch --locked before offline builds."
     },
     "linux_x86_64_research": {
       "required": {
@@ -48,7 +49,7 @@
         "cc": "C compiler/linker driver required by the optional MPFR and native x87 helpers; exact compiler build is host-image-specific.",
         "nm": "GNU nm is used by the optional native x87 helper; record the installed binutils version.",
         "llvm-nm": {
-          "version": "23.1.6",
+          "supported_versions": ["23.1.5", "23.1.6"],
           "platform": "Ubuntu 24.04 amd64",
           "package": "llvm-23",
           "package_version": "1:23.1.6~++20261116013850+5b10d2d74929-1~exp1~20261116133903.98",
@@ -63,7 +64,22 @@
             "packages_gz_sha256": "b1bdd1f5c12749a7b8fad6efcf8f6950ee44a5a0441d2646e2b88aa72c7965a3"
           },
           "binary": "/usr/lib/llvm-23/bin/llvm-nm",
-          "scope": "Install the exact package from the signed LLVM apt.llvm.org Ubuntu 24.04 amd64 repository, then add its versioned bin directory to PATH. The package archive hash was checked against the signed Packages index and the archive contains llvm-nm. Other distros/architectures need a separately verified package pin; do not substitute GNU nm."
+          "arch_linux_x86_64": {
+            "platform": "Arch Linux x86_64 contributor baseline",
+            "repository": "extra",
+            "package": "llvm",
+            "package_version": "23.1.5-1",
+            "package_sha256": "0fd7df891e40b2c09f82e9bbce742ba984580da70ec5a4aa467e3349f1c4feea",
+            "package_size": 16884148,
+            "package_url": "https://geo.mirror.pkgbuild.com/extra/os/x86_64/llvm-23.1.5-1-x86_64.pkg.tar.zst",
+            "package_signature_url": "https://geo.mirror.pkgbuild.com/extra/os/x86_64/llvm-23.1.5-1-x86_64.pkg.tar.zst.sig",
+            "signing_key_fingerprint": "2191B89431BAC0A8B96DE93D244740D17C7FD0EC",
+            "signer": "Leonidas Spyropoulos <artafinde@archlinux.org>",
+            "signature_date": "2026-11-09",
+            "binary": "/usr/bin/llvm-nm",
+            "verified_metadata": "The detached package signature verified with the local Arch pacman keyring; the archive SHA-256 and size were recorded after signature verification, and the archive contains usr/bin/llvm-nm."
+          },
+          "scope": "Use the Ubuntu package profile only on Ubuntu 24.04 amd64 and the separately signed Arch package profile on Arch Linux x86_64. Their package managers authenticate packages; the listed archive hashes identify the inspected package bytes. Other distributions and architectures need their own verified pin. Do not substitute GNU nm."
         },
         "jdk17": {
           "version": "17.0.21",
@@ -141,6 +157,6 @@
   },
   "known_gaps": [
     "The repository does not lock distro-specific GUI/USB SDK package revisions or immutable container image digests. Record these from the post-merge AC container baseline before claiming byte-for-byte environment reproduction.",
-    "The exact llvm-nm package pin covers Ubuntu 24.04 amd64 only; other distro/architecture packages need their own verified repository metadata. The repository has no upstream archive hash for Temurin JDK, 7-Zip, Ghidra, Node, CFR 0.152, or Pillow; pip itself also lacks an exact pin. The private coordinator inventory records file hashes for supplied tools, but those machine-local entries are not copied into this tracked manifest. The Ubuntu LLVM package, Unicorn wheel, and Cargo registry checksums are the reproducible package artifact hashes recorded here."
+    "The exact llvm-nm package pins cover Ubuntu 24.04 amd64 and Arch Linux x86_64 only; other distributions and architectures need their own verified repository metadata. The repository has no upstream archive hash for Temurin JDK, 7-Zip, Ghidra, Node, CFR 0.152, or Pillow; pip itself also lacks an exact pin. The private coordinator inventory records file hashes for supplied tools, but those machine-local entries are not copied into this tracked manifest. The Ubuntu and Arch LLVM packages, Unicorn wheel, and Cargo registry checksums are the reproducible package artifact hashes recorded here."
   ]
 }
