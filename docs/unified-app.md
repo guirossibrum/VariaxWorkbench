@@ -2,7 +2,8 @@
 
 Issue #26 defines one offline Rust session for the initial rig and names the
 later profiles without treating them as supported. This is not connectivity,
-audio, POD editing, or a firmware update.
+a live audio stream, POD editing, or a firmware update. Record-route planning
+is offline and is described in [POD USB audio](pod-usb-audio.md).
 
 ## Initial rig
 
@@ -31,7 +32,7 @@ for every profile, including Workbench HD, JTV-69, and POD HD500X.
 | Family-math identity gate | Offline, original id only | Unsupported | Unverified |
 | FORM/L6FF inspection | Offline, archived 300/600 target | Offline, archived PODxt Live target | Unverified |
 | POD preset open/edit | Unsupported | Planned, #29 | Unverified |
-| Record-route selection | Unsupported | Planned, #27 | Unverified |
+| Record-route selection | Unsupported | Offline, in-memory plan only | Unverified |
 | Enumerate, MIDI, audio, send, flash, reset, bank switch, module install, bind, USB-component read | Locked | Locked | Locked |
 
 Offline guitar open accepts file identity `0x00070004` only. Identity
@@ -42,9 +43,11 @@ inspector and then requires that role's archived product and version. Embedded
 MD5 agreement is not authentication. Saving a guitar copy uses the existing
 non-overwriting file save and does not upload.
 
-POD preset bytes are not parsed with the guitar codec. Recording and POD
-editing stay on #27, #28, and #29. Maintenance beyond offline inspection stays
-on #30. Those issues are not implemented here.
+POD preset bytes are not parsed with the guitar codec. PODxt Live record-route
+selection is the offline planner in [POD USB audio](pod-usb-audio.md): one
+documented Record Send 1-2 mode and a synthetic buffer, with capture still
+locked. In-app recording stays on #28. POD editing stays on #29. Maintenance
+beyond offline inspection stays on #30.
 
 ## Versions
 

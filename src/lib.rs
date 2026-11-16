@@ -21,6 +21,7 @@ pub mod math;
 pub mod midi;
 pub mod models;
 pub mod pickup;
+pub mod pod_audio;
 pub mod pod_usb_firmware;
 pub mod preset;
 pub mod provenance;

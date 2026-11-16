@@ -32,7 +32,8 @@ audio driver/stack first; the downloaded Windows/macOS drivers are reference
 material and cannot simply be loaded into Linux. Audio and control-interface
 ownership must coexist without reset, unexpected routing changes or interference
 with a DAW. Opening a real recording/playback stream is live hardware access and
-is not authorized in the present phase.
+is not authorized in the present phase. The offline GearBox and Linux-driver
+record is [POD USB audio](pod-usb-audio.md).
 
 Initial recording acceptance should include explicit input/route selection,
 levels, start/stop/cancel, non-overwriting audio saves, file integrity and bounded
