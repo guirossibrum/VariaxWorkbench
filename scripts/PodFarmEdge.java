@@ -21,13 +21,33 @@ public class PodFarmEdge extends GhidraScript {
             boolean exact = java.util.Arrays.asList(args).contains("--exact");
             for (Function f : currentProgram.getFunctionManager().getFunctions(true)) {
                 String name = f.getName();
+                for (String arg : args) {
+                    if (arg.startsWith("name:") && name.contains(arg.substring(5))) selected.add(f);
+                }
                 if (!exact && (name.contains("TWXYGetParameterProperties") || name.contains("TWXYGetPatchData")
                         || name.contains("TWXYSetPatchData") || name.contains("TWXYGetPatchSize"))) {
                     selected.add(f);
                 }
             }
             for (String arg : args) {
-                if (arg.equals("--exact")) continue;
+                if (arg.equals("--exact") || arg.equals("--list")) continue;
+                if (arg.startsWith("name:")) continue;
+                if (arg.startsWith("scalar:")) {
+                    long value = Long.parseUnsignedLong(arg.substring(7), 16);
+                    for (ghidra.program.model.listing.Instruction instruction : currentProgram.getListing().getInstructions(true)) {
+                        for (int operand = 0; operand < instruction.getNumOperands(); operand++) {
+                            for (Object object : instruction.getOpObjects(operand)) {
+                                if (object instanceof ghidra.program.model.scalar.Scalar &&
+                                        ((ghidra.program.model.scalar.Scalar)object).getUnsignedValue() == value) {
+                                    println("SCALAR " + arg.substring(7) + " AT " + instruction.getAddress());
+                                    Function owner = getFunctionContaining(instruction.getAddress());
+                                    if (owner != null) selected.add(owner);
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
                 if (arg.startsWith("write:")) {
                     Address target = toAddr(arg.substring(6));
                     for (Reference ref : getReferencesTo(target)) {
@@ -53,11 +73,15 @@ public class PodFarmEdge extends GhidraScript {
             println("PROGRAM " + currentProgram.getName() + " LANGUAGE " + currentProgram.getLanguageID());
             for (Function f : selected) {
                 monitor.checkCancelled();
-                println("FUNCTION " + f.getEntryPoint() + " " + f.getName());
+                println("FUNCTION " + f.getEntryPoint() + " " + f.getName(true));
+                if (java.util.Arrays.asList(args).contains("--list")) continue;
                 for (Reference ref : getReferencesTo(f.getEntryPoint())) {
                     println("XREF " + ref.getFromAddress() + " " + ref.getReferenceType());
                 }
                 println("CALLEES " + f.getCalledFunctions(monitor));
+                for (Function callee : f.getCalledFunctions(monitor)) {
+                    println("CALLEE " + callee.getEntryPoint() + " " + callee.getName(true));
+                }
                 DecompileResults result = decompiler.decompileFunction(f, 45, monitor);
                 if (result.decompileCompleted()) println(result.getDecompiledFunction().getC());
                 else println("INCOMPLETE " + result.getErrorMessage());

@@ -205,3 +205,9 @@ Later [cache and serialization findings](pod-farm-cache-serialization.md) trace
 one actual host metadata definition to three resource records and establish a
 PINF-local preservation limit. They do not supply PODxt applicability or complete
 format/state roundtrips, and do not complete #40.
+
+The later [setter and outer-state pass](pod-farm-setter-state.md) identifies
+conditional signed registry clamping, fixed two-tone L6P2 reconstruction and AU
+dictionary-state error limits. Its 17 reconstruction checks include the earlier
+nine resource/PINF checks. No plugin-state equivalence or active pack state was
+established; #40 remains open and #29 held.

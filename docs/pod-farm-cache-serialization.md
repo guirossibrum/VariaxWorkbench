@@ -7,6 +7,11 @@ has a concrete PINF preservation limit. These are offline static findings and
 owned reconstructions, not native execution or full issue #40 acceptance. #29
 remains held: none of this establishes PODxt Live parameter applicability.
 
+The subsequent [setter and outer-state pass](pod-farm-setter-state.md) resolves
+conditional registry clamping and the separate L6P2 container path, and identifies
+AU dictionary-state entry points and preservation/error limits. Its 17 focused
+synthetic checks include the nine below; they are not additional native executions.
+
 Native addresses use the x86_64 slice coordinate system, SHA-256
 `dced9e6bee1ac57ba9135c1b8751d26141be82155122f7aa151b2cb457bd55a1`, from framework
 SHA-256 `1b6acb3aa012d9b884f00daeacc948aa80884c81f513871be740055cd629a924`.

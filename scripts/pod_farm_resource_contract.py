@@ -97,6 +97,45 @@ def pinf_write_projection(record, default_device_version):
             struct.pack('>I', record['device_version'] or default_device_version))
 
 
+def registry_integer_projection(payload_word, lower, upper):
+    """Owned low-word model of 0x2c7c5..0x2c7dc, not a native setter.
+
+    The caller supplies signed registry endpoints. This models the non-float
+    branch only, including its max-then-min behavior for inverted endpoints.
+    It does not validate a type tag, invoke observers, or establish active state.
+    """
+    word = payload_word & 0xffffffff
+    signed = word - 0x100000000 if word & 0x80000000 else word
+    return min(max(signed, lower), upper) & 0xffffffff
+
+
+def dual_tone_selection(data):
+    """Strict structural inspection of the first bank and two FORM children.
+
+    This is a selection reconstruction, not a native loader/serializer. It
+    deliberately rejects truncated HEAD prefixes rather than modeling native
+    short-copy/uninitialized bytes. Embedded patch contents remain uninterpreted.
+    """
+    if (len(data) < 12 or data[:4] != b'FORM' or data[8:12] != b'L6P2' or
+            struct.unpack_from('>I', data, 4)[0]+8 != len(data)):
+        raise ValueError('expected complete FORM/L6P2')
+    top = list(chunks(data, 12, len(data)))
+    if any(t == b'LIST' and n < 4 for t, o, n in top):
+        raise ValueError('short LIST type')
+    heads = [(o, n) for t, o, n in top if t == b'HEAD']
+    banks = [(o, n) for t, o, n in top if t == b'LIST' and data[o:o+4] == b'BANK']
+    if not heads or heads[0][1] < 4 or not banks:
+        raise ValueError('required HEAD/BANK missing or truncated')
+    offset, size = banks[0]
+    body = list(chunks(data, offset+4, offset+size))
+    binfs = [(o, n) for t, o, n in body if t == b'BINF']
+    forms = [(o-8, n+8) for t, o, n in body if t == b'FORM']
+    if not binfs or len(forms) < 2:
+        raise ValueError('required BINF/two FORM children missing')
+    return {'head_word': struct.unpack_from('>I', data, heads[0][0])[0],
+            'patch_spans': forms[:2]}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--resources', type=Path, default=Path(
