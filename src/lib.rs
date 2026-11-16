@@ -24,6 +24,7 @@ pub mod pod_usb_firmware;
 pub mod preset;
 pub mod provenance;
 pub mod read_session;
+pub mod rig;
 #[cfg(feature = "usb")]
 pub mod usb;
 

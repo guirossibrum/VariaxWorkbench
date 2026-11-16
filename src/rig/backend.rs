@@ -1,0 +1,128 @@
+#![forbid(unsafe_code)]
+//! Family-specific offline backends.
+//!
+//! Guitar files use the Workbench preset and bank parsers. Firmware uses the
+//! FORM/L6FF inspector. POD editing, recording, and every physical transport
+//! stay out of these functions.
+
+use std::path::Path;
+
+use crate::bundle::BundleFile;
+use crate::document;
+use crate::firmware::{self, ApplicabilityError};
+use crate::preset::PresetFile;
+
+use super::capability::Operation;
+use super::model::{
+    DeviceFamily, PODXT_LIVE_FILE_ID, ProductProfile, VARIAX_500_700_FILE_ID, VARIAX_600_FILE_ID,
+};
+use super::session::{FirmwareSummary, GuitarBankSummary, GuitarPresetSummary, Rejection};
+
+pub(crate) fn open_guitar_preset(bytes: &[u8]) -> Result<GuitarPresetSummary, Rejection> {
+    let preset = PresetFile::parse(bytes.to_vec()).map_err(Rejection::format)?;
+    check_guitar_identity(preset.device_id(), Operation::OpenGuitarPreset)?;
+    Ok(GuitarPresetSummary {
+        name: preset.name().to_owned(),
+        device_id: preset.device_id(),
+        models: preset.models().len(),
+    })
+}
+
+pub(crate) fn open_guitar_bank(bytes: &[u8]) -> Result<GuitarBankSummary, Rejection> {
+    let bundle = BundleFile::parse(bytes.to_vec()).map_err(Rejection::format)?;
+    let mut presets = 0;
+    for bank in bundle.banks() {
+        for preset in bank.presets() {
+            check_guitar_identity(preset.device_id(), Operation::OpenGuitarBank)?;
+            presets += 1;
+        }
+    }
+    Ok(GuitarBankSummary {
+        banks: bundle.banks().len(),
+        presets,
+        fixed: bundle.fixed,
+    })
+}
+
+pub(crate) fn save_guitar_copy(path: &Path, bytes: &[u8]) -> Result<(), Rejection> {
+    let preset = PresetFile::parse(bytes.to_vec()).map_err(Rejection::format)?;
+    check_guitar_identity(preset.device_id(), Operation::SaveGuitarCopy)?;
+    document::save_new(path, preset.as_bytes()).map_err(Rejection::format)
+}
+
+pub(crate) fn inspect_firmware(
+    profile: ProductProfile,
+    bytes: &[u8],
+) -> Result<FirmwareSummary, Rejection> {
+    let (product, version) = expected_container(profile)?;
+    let inspection = firmware::inspect(bytes).map_err(Rejection::format)?;
+    inspection
+        .require_target(product, version)
+        .map_err(|error| match error {
+            ApplicabilityError::WrongProduct { declared, expected } => {
+                Rejection::WrongProduct { declared, expected }
+            }
+            ApplicabilityError::WrongVersion { declared, expected } => {
+                Rejection::WrongVersion { declared, expected }
+            }
+        })?;
+    Ok(FirmwareSummary {
+        product_id: inspection.report.product_id,
+        version: inspection.report.version,
+        applicability: inspection.report.applicability.tag(),
+        integrity_is_not_authentication: inspection.report.integrity_is_not_authentication,
+    })
+}
+
+pub(crate) fn accept_family_math(profile: ProductProfile, device_id: u32) -> Result<(), Rejection> {
+    match profile {
+        ProductProfile::Variax600 => check_guitar_identity(device_id, Operation::ApplyFamilyMath),
+        ProductProfile::PodxtLive => Err(Rejection::Unsupported {
+            profile,
+            operation: Operation::ApplyFamilyMath,
+        }),
+        profile => Err(Rejection::Unverified {
+            profile,
+            operation: Operation::ApplyFamilyMath,
+        }),
+    }
+}
+
+fn expected_container(profile: ProductProfile) -> Result<(u32, u32), Rejection> {
+    match profile {
+        ProductProfile::Variax600 => Ok((
+            crate::firmware::VARIAX_300_600_PRODUCT_ID,
+            crate::firmware::VARIAX_300_600_VERSION,
+        )),
+        ProductProfile::PodxtLive => Ok((
+            crate::firmware::PODXT_LIVE_PRODUCT_ID,
+            crate::firmware::PODXT_LIVE_VERSION,
+        )),
+        profile => Err(Rejection::Unverified {
+            profile,
+            operation: Operation::InspectFirmware,
+        }),
+    }
+}
+
+fn check_guitar_identity(device_id: u32, operation: Operation) -> Result<(), Rejection> {
+    if device_id == VARIAX_600_FILE_ID {
+        Ok(())
+    } else if device_id == VARIAX_500_700_FILE_ID {
+        Err(Rejection::DifferentModel {
+            profile: ProductProfile::Variax600,
+            device_id,
+        })
+    } else if device_id == PODXT_LIVE_FILE_ID {
+        Err(Rejection::CrossFamily {
+            from: DeviceFamily::PodXt,
+            to: DeviceFamily::VariaxWorkbench,
+            operation,
+        })
+    } else {
+        Err(Rejection::Unsupported {
+            profile: ProductProfile::Variax600,
+            operation,
+        })
+    }
+}
