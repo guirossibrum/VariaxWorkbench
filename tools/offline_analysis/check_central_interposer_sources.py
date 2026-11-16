@@ -68,6 +68,20 @@ def pe_offset(b: bytes, va: int) -> int:
             return rawoff + (rva - vaddr)
     raise AssertionError(f"unmapped VA {va:#x}")
 
+
+def cil_code(b: bytes, va: int) -> bytes:
+    """Return one CIL body by PE VA without interpreting or loading it."""
+    o = pe_offset(b, va)
+    first = b[o]
+    if first & 3 == 2:  # tiny header
+        size = first >> 2
+        return b[o + 1:o + 1 + size]
+    flags_and_size = struct.unpack_from("<H", b, o)[0]
+    assert flags_and_size & 3 == 3, (hex(va), hex(flags_and_size))
+    header_size = (flags_and_size >> 12) * 4
+    code_size = struct.unpack_from("<I", b, o + 4)[0]
+    return b[o + header_size:o + header_size + code_size]
+
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--inputs-root", type=Path, help="private Windows 'Line 6 Central' directory")
 parser.add_argument("--mac-app", type=Path, help="private macOS app executable")
@@ -91,6 +105,36 @@ assert b"EngineCLIWrapper" in host
 assert b"UpdaterV3EngineDLL.dll" in wrapper
 assert b"?initialize@Functions@UpdaterV3EngineInterface" in wrapper
 assert b"?start@Functions@UpdaterV3EngineInterface" in wrapper
+assert b"?createEngine@Functions@UpdaterV3EngineInterface" in wrapper
+
+# Static Central CIL: EngineInterface.createEngine subscribes the app's string
+# handler to SendString, then constructs EngineCLIWrapper. The wrapper retains
+# NativeStringParamValueReceiver and passes callback pointers in native export
+# order: float, int, bool, string, string-array. No assembly is executed.
+host_create = cil_code(host, 0x00407590)  # MethodDef 0x0600018a
+assert host_create == bytes.fromhex(
+    "02 fe 06 8f 01 00 06 73 8c 00 00 0a 28 8d 00 00 0a "
+    "02 fe 06 90 01 00 06 73 8e 00 00 0a 28 8f 00 00 0a "
+    "02 fe 06 91 01 00 06 73 90 00 00 0a 28 91 00 00 0a "
+    "02 fe 06 92 01 00 06 73 92 00 00 0a 28 93 00 00 0a "
+    "02 fe 06 94 01 00 06 73 94 00 00 0a 28 95 00 00 0a "
+    "02 fe 06 93 01 00 06 73 96 00 00 0a 28 97 00 00 0a "
+    "02 73 98 00 00 0a 7d 2e 02 00 04 2a"
+)
+wrapper_ctor = cil_code(wrapper, 0x10004aa0)  # MethodDef 0x060001b9
+assert len(wrapper_ctor) == 202
+assert bytes.fromhex(
+    "14 fe 06 cd 01 00 06 73 99 01 00 06 0b 02 07 7d b8 00 00 04 "
+    "07 28 02 00 00 2b 13 06"
+) in wrapper_ctor  # string receiver delegate -> retained field -> pointer local 6
+assert bytes.fromhex(
+    "02 12 09 28 2e 00 00 0a 12 08 28 2e 00 00 0a "
+    "12 07 28 2e 00 00 0a 12 06 28 2e 00 00 0a "
+    "12 05 28 2e 00 00 0a 28 58 01 00 06"
+) in wrapper_ctor
+assert cil_code(wrapper, 0x100037a4)  # NativeStringParamValueReceiver, MethodDef 0x060001cd
+assert b"NativeStringParamValueReceiver" in wrapper and b"stringParamValueDelegate" in wrapper
+assert wrapper[pe_offset(wrapper, 0x1000adeb):pe_offset(wrapper, 0x1000adeb) + 6] == bytes.fromhex("ff 25 b4 b0 00 10")
 
 # Updater provenance strings and delay-import metadata.
 assert b"\\Line 6\\Interposer\\" in updater
@@ -133,15 +177,36 @@ assert slices == [(0x01000007, 3, 0x4000, 0x6db150), (0x0100000c, 0, 0x6e0000, 0
 assert mac[0x4000:0x4000+0x6db150] == x64
 assert b"tearingDownVariaxScanner" in x64
 assert b"getParamValueSetInterposerDelegate" in x64
-# The static instruction decode documented with this source hash locates the
-# Variax.json product-selection edge and downstream helper; this checker keeps
-# only source identity and format/address relationships, not vendor opcodes.
+# ObjC metadata for UpdaterV3Engine maps the delegate getter selector to this
+# IMP; the IMP dispatches [ParamValueServer sharedInstance]. The initializer
+# sends that getter and stores its retained result in a global delegate slot.
+assert struct.unpack_from("<QQQ", x64, 0x62b9d8) == (0x1005bd42c, 0x1005c2d36, 0x10005a347)
+assert x64[0x5a347:0x5a360] == bytes.fromhex(
+    "55 48 89 e5 48 8b 3d fe 8c 5e 00 48 8b 35 ff 79 5e 00 5d ff 25 68 34 5a 00"
+)
+assert struct.unpack_from("<Q", x64, 0x643050)[0] == 0x100665d80
+assert struct.unpack_from("<Q", x64, 0x641d58)[0] == 0x1005c15dc
+assert x64[0x5c15dc:0x5c15dc + len(b"sharedInstance\0")] == b"sharedInstance\0"
+assert x64[0x14afe2:0x14afef] == bytes.fromhex("48 8b 35 df 71 4f 00 48 89 c7 41 ff d6")
+assert struct.unpack_from("<QQQ", x64, 0x67c528) == (0x1005c1a71, 0x10058ff40, 0x100429de0)
+assert x64[0x429de4:0x429deb] == bytes.fromhex("48 8d 05 95 3f 15 00")
+assert x64[0x429e14:0x429e1b] == bytes.fromhex("48 8d 05 85 3f 15 00")
+# Two scanner teardown-key sites dispatch through vtable +0x40. The second
+# first takes a callback object from receiver offset +0x1c8 and calls slot +0x18.
+assert x64[0xd5cca:0xd5cd1] == bytes.fromhex("48 8d 35 cf 80 4a 00")
+assert x64[0xd5d0e:0xd5d11] == bytes.fromhex("ff 50 40")
+assert x64[0xf8b82:0xf8b89] == bytes.fromhex("48 8d 35 17 52 48 00")
+assert x64[0xf8b63:0xf8b66] == bytes.fromhex("ff 50 18")
+assert x64[0xf8bb7:0xf8bba] == bytes.fromhex("ff 50 40")
+# The earlier raw decode documents the Variax.json product-selection edge;
+# these pinned bytes do not resolve runtime virtual targets or behavior.
 
 
 print("PASS static-only Central interposer provenance checks")
-print("Central/wrapper identity strings include appVersionString, EngineCLIWrapper, and initialize/start imports")
+print("Central/wrapper identity strings include appVersionString, EngineCLIWrapper, and initialize/start/createEngine imports")
+print("Static CIL: fourth createEngine callback targets NativeStringParamValueReceiver; host subscribes setStringValue to SendString")
 print("Updater source identity includes loadInterposer, current-directory API, Interposer path, and queue-out strings")
 print("Updater delay-import binding: Interposer.dll descriptor, named import table, per-export IAT thunk resolver confirmed")
-print("Mac universal slices: x86_64 and arm64 coordinates/hash; scanner/delegate names present; raw-decoded selection edge is documented separately")
-print("Mac scanner teardown and Interposer delegate implementation targets remain unresolved")
+print("Mac static metadata: updater delegate resolves to ParamValueServer; two teardown vtable callsites and selector/IMP mismatch pinned")
+print("Mac universal slices: x86_64 and arm64 coordinates/hash; product-selection edge remains separately documented")
 print("No vendor code loaded or executed")

@@ -482,6 +482,27 @@ APIs; imports alone do not establish that a path is active for Variax or safe
 to call. All of this is static analysis; no vendor binary or managed assembly
 was executed.
 
+The managed callback path is now traced through the available CIL metadata.
+In Central.exe, MethodDef `0x0600018a`
+(`ParamValueServer.WindowsCommon.EngineInterface.createEngine`, RVA
+`0x7590`) subscribes its instance method `setStringValue` (MethodDef
+`0x06000192`) to the wrapper's `SendString` event (`EngineCLIWrapper.add_SendString`,
+MemberRef `0x0a000093`) before constructing the wrapper (`EngineCLIWrapper..ctor`,
+MemberRef `0x0a000098`). The EngineCLIWrapper constructor (MethodDef
+`0x060001b9`, RVA `0x4aa0`) creates and retains a `NativeStringParamValueDelegate`
+targeting `EngineCLIWrapper.NativeStringParamValueReceiver` (MethodDef
+`0x060001cd`, RVA `0x37a4`; field `stringParamValueDelegate`, Field
+`0x040000b8`). It obtains unmanaged function pointers for five retained
+delegates and passes them to the native `Functions.createEngine` import
+(MethodDef `0x06000158`, import thunk VA `0x1000adeb`, IAT slot
+`0x1000b0b4`). The C++ export's decorated signature orders callback arguments
+as float, integer, bool, string, and string-array; the fourth native callback
+is therefore the string receiver. This resolves the target object/method and
+its app event subscriber. Its values enter as native callback arguments; the
+recovered CIL does not identify their producer as Interposer XML or join them
+to the parser's caller-fed `ProductId`/`library` input. No runtime callback
+invocation was observed.
+
 ### Central macOS device-manager evidence (bounded x86_64 Mach-O review)
 
 The macOS Central executable is a universal x86_64/arm64 Mach-O
@@ -523,9 +544,35 @@ Variax preset editing parity with Windows. Static Ghidra attempts on the full
 universal executable and extracted x86_64 slice (processor
 `x86:LE:64:default`) produced unresolved-instruction and decompiler warnings.
 LLVM 22 X86 disassembly independently confirms the product-selection edge
-above; scanner teardown and Objective-C selector/IMP or Interposer-delegate
-target tracing remain unresolved. Ghidra warnings are not treated as evidence
-of absence. No vendor code was executed.
+above. The macOS updater delegate path is now partly source-resolved. In the
+`UpdaterV3Engine` Objective-C method list, selector
+`getParamValueSetInterposerDelegate` maps to IMP `0x10005a347`. That IMP loads
+the `ParamValueServer` class reference and `sharedInstance` selector, then
+tail-dispatches through the Objective-C message-send slot. A separate x86_64
+initializer path at `0x10014afb4` loads the `UpdaterV3Engine` class reference,
+calls `sharedInstance`, sends `getParamValueSetInterposerDelegate` at
+`0x10014afe2`, and stores the retained result in global `0x1006ae7a0`. The
+`ParamValueServer` class method list contains its set/get delegate properties
+and typed bool, integer, float, string, string-array and dictionary handlers.
+This identifies the delegate object and typed handler surface; it does not
+connect those handlers to the Windows parser's XML input or establish
+successful device traffic.
+
+The scanner teardown trace is bounded but has a remaining metadata/dispatch
+boundary. `EngineInterfaceParamIDs` metaclass metadata records selector
+`tearingDownVariaxScanner` at entry 9 with IMP `0x100429de0`; the adjacent
+entry has IMP `0x100429e10`. Raw x86_64 decoding shows `0x100429de0`
+constructing the `tearingDownLegacyUpdateEngines` literal, while
+`0x100429e10` constructs `tearingDownVariaxScanner`; the selector/IMP mapping
+is therefore not accepted as a resolved getter mapping. Separately, the
+Variax teardown cstring is passed at code sites `0x1000d5cca` and
+`0x1000f8b82` into indirect calls through vtable slot `+0x40`. The first uses
+the object in `rbx`; the second takes its receiver from `[rbx+0x1c8]` on the
+non-null branch (and first calls that object's slot `+0x18`). The runtime
+vtable targets and scanner construction path are not identified by the
+available x86_64 metadata/disassembly. These are bounded static limits, not
+evidence that additional artifacts are absent. Ghidra warnings are not
+treated as evidence of absence. No vendor code was executed.
 
 ## Explicitly unresolved
 
@@ -546,12 +593,14 @@ of absence. No vendor code was executed.
 - Central's Variax table does not establish whether each guitar/bass is
   recognized, editable, backed up, or updateable in a real session. The bass
   rows do not imply Workbench HD editor support. The native start vtable path
-  resolves to a callback-bundle setter, and initialization dispatches a string
-  query through the fourth `createEngine` callback; the managed callback
-  producer and connection to the Interposer parser's XML source remain
-  unresolved. Successful descriptor data flow remains unresolved;
-  the macOS scanner teardown and Objective-C/Interposer delegate targets are
-  also unresolved.
+  resolves to a callback-bundle setter. The fourth native callback now maps
+  statically to `NativeStringParamValueReceiver` and the app's `SendString` /
+  `setStringValue` event path, but the origin of its native input values and
+  any connection to the Interposer parser's XML source remain unresolved.
+  Successful descriptor data flow remains unresolved. On macOS, the
+  `UpdaterV3Engine` delegate getter resolves to the `ParamValueServer`
+  singleton and typed handler surface, while teardown selector/IMP metadata
+  and two vtable `+0x40` targets remain unresolved as described above.
 - No Variax bass editor/backend, verified Central catalog/version payload, firmware
   image, firmware protocol, installed-unit version, or recovery path was
   established. No audio routing/capture support was established.
