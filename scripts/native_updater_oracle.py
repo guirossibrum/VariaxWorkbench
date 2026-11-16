@@ -1,7 +1,8 @@
 """Bounded i386 code/preset/erase oracle in private Unicorn memory; no device API.
 
-Five transfer/erase methods, two predicate helpers and three response callbacks execute in an
-emulated CPU. Every import and helper is trapped; recognized synchronization/transport calls are memory-only stubs. No
+Five transfer/erase methods, two predicate helpers and three response callbacks
+execute in an emulated CPU. Every import and helper is trapped; recognized
+synchronization/transport calls are memory-only stubs. No
 Windows loader, Wine, DLL entry point, driver, OS call or live transport runs.
 This does not execute device firmware or establish update/recovery safety.
 """
@@ -281,6 +282,10 @@ def main():
         results.append({'case':'variax_70004_factory_predicates','object_version':hex(version),
                         'cached_version':hex(cached),'transition':bool(transition),
                         'fallback':bool(fallback),'factory_stage_selected':bool(transition or fallback)})
+    reference=json.loads((ROOT/'research/updater-oracle-reference.json').read_text())
+    actual=[{key:value for key,value in case.items() if key!='events'} for case in results]
+    if reference.get('schema')!=1 or reference.get('source_sha256')!=SHA256 or reference.get('cases')!=actual:
+        raise AssertionError('derived updater reference changed; inspect evidence before revising the baseline')
     report={'status':'pass','source_sha256':SHA256,'scope':'Five host updater methods, two predicate helpers and three response callbacks in emulated i386 CPU with synthetic payloads and private fake transport/event/helper adapters. No DLL entry point, native vendor execution, device firmware or hardware.','cases':results,'limits':['OS calls never forwarded; unknown calls/addresses stop','event/status/erase delegate/pump/security-cookie behavior is stubbed','Zero native erase return is not proof of acknowledgment: boot guard and timeout also return zero','Zero-length sender shape is observed only; not approved as a receiver input','No receiver flash, recovery, power-loss or physical behavior is modeled']}
     encoded=(json.dumps(report,indent=2)+'\n').encode();folder=ROOT/'analysis/reports';folder.mkdir(parents=True,exist_ok=True);path=folder/('native-updater-oracle-'+hashlib.sha256(encoded).hexdigest()[:16]+'.json');preserve(path,encoded);print(path)
 

@@ -196,6 +196,24 @@ also brackets Variax transfers with large-buffer enable/disable requests. These
 are Variax transfer support through a POD link, distinct from updating POD main
 flash. No such request has been sent.
 
+The native step-response path now provides a further link: matching the
+keep-preset response key on the affirmative branch at 0x101017B2 stores 1 at
+stepper object +0x20C; the negative branch at 0x1010184E stores 0. At 0x1010E068
+the executor normalizes that field to a boolean and passes it as the fourth
+argument to queue builder 0x100CD6D0. That builder stores it under the `flags`
+key and queues callback 0x100CDC40. The callback forwards `(flags & 1) + 0x42`
+to base update entry 0x100D0890, closing that native response-to-skip-bit chain.
+The UI labels and managed event-binding path are distinct evidence; no GUI
+click, queue callback or update worker was executed in this trace.
+
+A static managed inventory was also taken from Central's main executable,
+SHA-256 `60c2fb244a725794271a1b2740b251cd73ac1dc8ae02f62deb01c1d66a2048b6`,
+without loading the assembly. The initial whole-member inspection exceeded its
+64 MiB representation budget and is explicitly partial. Selecting the exact
+firmware-controller/view types completed with 45 methods; neither an empty
+partial inventory nor type names alone are proof of an absent implementation.
+The UI-to-native mapping is not inferred merely from these metadata names.
+
 ## Separate POD main-segment evidence
 
 The same DLL's product dispatch at 0x100CED00 sends product 0x0003000A through
@@ -253,7 +271,7 @@ not use that helper. A first one-byte boot fixture also supplied a zero progress
 denominator and faulted; it was corrected to supply a positive caller fixture.
 Both failed research logs remain local. No instruction or time limit was relaxed.
 
-The final private report `native-updater-oracle-beb6f47dc4cedd2c.json` contains
+The extended private report `native-updater-oracle-beb6f47dc4cedd2c.json` contains
 **38 passing cases**, over five host methods and three callbacks, with all
 transport, event and helper adapters still explicit. No receiver firmware runs.
 
@@ -306,3 +324,12 @@ calibration preservation, disconnection and power-loss consequences remain open.
 
 This research does not implement a live updater. #18 owns the later memory-only
 state simulation; #22–#25 retain readiness, backup and physical-operation gates.
+
+## Reproducible derived reference
+
+`research/updater-oracle-reference.json` publishes the 43 synthetic case summaries,
+derived output hashes, lengths and status facts. It includes no vendor code,
+captured packets, preset data or emitted buffers. The opt-in oracle compares its
+results with this baseline and never rewrites it automatically. Full event traces
+and failed experiments remain ignored/private. This gives later independent Rust
+simulation tests an external reference without requiring vendor files in CI.

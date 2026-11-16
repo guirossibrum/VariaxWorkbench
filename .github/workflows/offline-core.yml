@@ -50,6 +50,7 @@ jobs:
           python scripts/inspect_firmware.py --self-test
           python scripts/test_firmware_map.py
           python -m py_compile scripts/native_updater_oracle.py
+          python -c "import json; json.load(open('research/updater-oracle-reference.json', encoding='utf-8'))"
       - name: Synthetic package guards
         if: runner.os == 'Linux'
         run: python scripts/test_linux_package.py
