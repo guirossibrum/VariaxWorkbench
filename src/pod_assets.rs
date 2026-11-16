@@ -17,7 +17,8 @@
 //!
 //! Model id `0x7fffffff` is the asset name "Bypass". That is not the MINF
 //! enabled byte. `L6ParamDefinition` ranges exist for Variax and Variax
-//! Acoustic only, so this module does not define knob domains.
+//! Acoustic only. No PODxt Live unit or range was recovered, and raw PARM
+//! bits are not knob positions.
 
 use std::fmt::Write as _;
 

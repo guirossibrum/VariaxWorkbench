@@ -7,6 +7,9 @@ normalize existing values. Unknown chunks, fields, types, model IDs and dormant
 settings remain lossless. Explicit edits of unknown parameters/models are refused.
 Failures occur before buffer mutation; grouped document edits are transactional.
 
+These domains are the Variax electric editor. They are not PODxt Live PARM
+domains. See [POD presets](pod-presets.md).
+
 Recovered from `L6VariaxParamDefs.Set`, `L6VariaxParamFormats.Set`,
 `L6VariaxParamMap` and `L6VariaxEditor.UpdateBodyImage`, `UpdateTuningPanel`,
 `UpdateToneKnobPanel` and the controls' parent panels. Static `javap -c -p`
