@@ -8,6 +8,7 @@
 //! this module enumerates, opens, or queries USB, MIDI, or audio, and there
 //! is no live backend initializer.
 
+pub mod audio;
 mod backend;
 mod capability;
 mod model;

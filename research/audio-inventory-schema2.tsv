@@ -1,0 +1,225 @@
+name	role
+Amplifi	alias
+AMPLIFi	alias
+AMPLIFi 150	alias
+AMPLIFi 30	alias
+AMPLIFi 75	alias
+Amplifi Desktop	alias
+AMPLIFi FX100	alias
+AMPLIFi TT	alias
+AX2	alias
+BackTrack	alias
+BackTrack + Mic	alias
+Bass POD	alias
+Bass POD Pro	alias
+Bass POD XT	alias
+Bass POD XT Live	alias
+Bass POD XT Pro	alias
+Bass PODxt	product
+Bass PODxt Live	product
+Bass PODxt Pro	product
+Catalyst	alias
+Catalyst 100	alias
+Catalyst 100-112	alias
+Catalyst 200	alias
+Catalyst 200-212	alias
+Catalyst 60	alias
+Catalyst 60-112	alias
+Catalyst Bootloader	alias
+Catalyst Freescale Bootloader	alias
+DL4 Mk	alias
+DL4 MK2	alias
+DL4 MK2 Bootloader	alias
+DL4 MkII	alias
+DT25 112	alias
+DT25 HD	alias
+DT50 112	alias
+DT50 212	alias
+DT50 Head	alias
+Duoverb	alias
+Echo Pro	alias
+FBV 2 MkII	alias
+FBV 3	alias
+FBV Express MkII	alias
+FBV MKIII	alias
+FBV Shortboard MkII	alias
+Filter Pro	alias
+Firehawk	alias
+Firehawk 1500	alias
+Firehawk Amp	alias
+Firehawk FX	alias
+Flextone II	product
+Flextone III	product
+Floor POD Plus	alias
+FX100	alias
+Guitar Port	alias
+GuitarPort	alias
+GuitarPort 1	product
+GuitarPort 2	product
+HD 147	alias
+HD147	product
+Helix	alias
+Helix Control	alias
+Helix Floor	alias
+Helix LT	alias
+Helix Rack	alias
+HX Effects	alias
+HX One	alias
+HX Stomp	alias
+HX Stomp XL	alias
+JM4	alias
+JTV-59	product
+JTV-69	product
+JTV-89	product
+JTV-89F	product
+KB37	alias
+Line 6 POD HD Pro X	alias
+Line 6 POD HD500X	alias
+Line 6 UX8	alias
+M13	alias
+M5	alias
+M9	alias
+Mod Pro	alias
+Pocket POD	alias
+POD	alias
+POD 1.x	product
+POD 2.0	product
+POD 2.0 Pro	product
+POD GO	alias
+POD Go	alias
+POD GO Wireless	alias
+POD Go Wireless	alias
+POD HD	product
+POD HD 300	product
+POD HD 400	product
+POD HD 500	product
+POD HD Bean	alias
+POD HD Pro	product
+POD HD Pro SE	alias
+POD HD Pro X	product
+POD HD300	alias
+POD HD400	alias
+POD HD500	alias
+POD HD500 SE	alias
+POD HD500X	product
+POD Pro	alias
+POD Studio GX	alias
+POD Studio KB37	alias
+POD Studio UX1	alias
+POD Studio UX2	alias
+POD X3	alias
+POD X3 Live	alias
+POD X3 Pro	alias
+PODxt	product
+PODxt Live	bridge
+PODxt Pro	product
+Powercab	alias
+Powercab 112	alias
+Powercab 112 Plus	alias
+Powercab 212 Plus	alias
+RELAY G10	alias
+Relay G10R	alias
+Relay G10S	alias
+RELAY G10S	alias
+RELAY G10T	alias
+RELAY G10TII	alias
+Relay G30 Bodypack	alias
+Relay G30 Bodypack (1.0)	alias
+Relay G30 Receiver	alias
+Relay G50 Bodypack	alias
+Relay G50 Receiver	alias
+Relay G50 Transmitter	alias
+Relay G70	alias
+RELAY G70 Receiver	alias
+Relay G75	alias
+RELAY G75 Receiver	alias
+Relay G90 Bodypack	alias
+Relay G90 Receiver	alias
+Relay G90 Transmitter	alias
+RELAY TB516 G Transmitter	alias
+Relay TB516G Beltpack	alias
+Shuriken	alias
+Shuriken SR-250	alias
+Spider IV	alias
+Spider IV 120	alias
+Spider IV 15	alias
+Spider IV 150	alias
+Spider IV 30	alias
+Spider IV 75	alias
+Spider IV HD150	alias
+Spider Jam	alias
+Spider V 120	alias
+Spider V 20	alias
+Spider V 240	alias
+Spider V 240 Head	alias
+Spider V 30	alias
+Spider V 60	alias
+Spider Valve mkII	alias
+Spider Valve MkII 112	alias
+Spider Valve MkII 212	alias
+Spider Valve mkII 212	alias
+Spider Valve mkII HD	alias
+Spider Valve MkII HD100	alias
+Studio POD	alias
+Studio POD 2	alias
+TonePort	product
+TonePort	product
+Toneport DI Gold	alias
+TonePort DI Gold	alias
+Toneport DI Silver	alias
+TonePort DI Silver	alias
+TonePort DI-Gold	alias
+TonePort DI-Silver	alias
+TonePort GX	alias
+Toneport GX	alias
+TonePort GX MKII	alias
+TonePort KB 37	alias
+TonePort KB37	alias
+TonePort KB61	alias
+TonePort UX1	alias
+TonePort UX1 MKII	alias
+TonePort UX2	alias
+TonePort UX2 MKII	alias
+TonePort UX8	alias
+TonePort/POD Studio KB37	alias
+TonePort/POD Studio UX1	alias
+TonePort/POD Studio UX2	alias
+Tyler Variax	family
+UX1	alias
+UX2	alias
+UX8	alias
+Variax	alias
+Variax 300	alias
+Variax 300 600	alias
+Variax 300/600	guitar
+Variax 500	alias
+Variax 500 700	alias
+Variax 500/700	guitar
+Variax 600	alias
+Variax 700	alias
+Variax Acoustic	guitar
+Variax Bass	guitar
+Variax Bass 705	guitar
+Variax Electric	alias
+Variax Standard	alias
+Variax Tyler	alias
+Variax USB Interface	bridge
+Vetta	alias
+Vetta Combo	alias
+Vetta Head	alias
+Vetta II	product
+Vetta II Combo	product
+Vetta II Head	product
+Workbench HD	family
+XD-V30 Bodypack	alias
+XD-V30 Handheld	alias
+XD-V30 Receiver	alias
+XD-V35 Bodypack	alias
+XD-V35 Handheld	alias
+XD-V35 Receiver	alias
+XD-V70 Bodypack	alias
+XD-V70 Handheld	alias
+XD-V70 Receiver	alias
+XD-V75 Bodypack	alias
+XD-V75 Handheld	alias
+XD-V75 Receiver	alias
