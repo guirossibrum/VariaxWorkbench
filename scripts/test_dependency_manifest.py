@@ -1,7 +1,7 @@
 """Focused dependency-manifest consistency tests; standard library only."""
 import json
 import io
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import shutil
 import subprocess
 import tempfile
@@ -155,11 +155,14 @@ class DependencyManifestTests(unittest.TestCase):
 
     @staticmethod
     def _version_process(command, **_kwargs):
-        if command[0].endswith("/jdk/bin/java"):
+        if (PureWindowsPath(command[0]).parts[-3:] == ("jdk", "bin", "java")
+                and command[1:] == ["-version"]):
             return subprocess.CompletedProcess(command, 0, "", 'openjdk version "17.0.21"\n')
-        if command[0].endswith("/python/bin/python"):
+        if (PureWindowsPath(command[0]).parts[-3:] == ("python", "bin", "python")
+                and command[1:] == ["--version"]):
             return subprocess.CompletedProcess(command, 0, "Python 3.14.8\n", "")
-        if command[0].endswith("/7zip/7zz"):
+        if (PureWindowsPath(command[0]).parts[-2:] == ("7zip", "7zz")
+                and command[1:] == []):
             return subprocess.CompletedProcess(command, 0, "7-Zip 26.06\n", "")
         if command == ["rustc", "--version"]:
             return subprocess.CompletedProcess(command, 0, "rustc 1.99.1 (test)\n", "")
@@ -170,6 +173,23 @@ class DependencyManifestTests(unittest.TestCase):
         if command == ["llvm-nm", "--version"]:
             return subprocess.CompletedProcess(command, 0, "LLVM version 23.1.6\n", "")
         raise AssertionError(f"doctor attempted an unlisted command: {command!r}")
+
+    def test_version_mock_accepts_only_listed_commands_on_both_path_styles(self):
+        for prefix, separator in (("/synthetic/tools", "/"), ("C:\\synthetic\\tools", "\\")):
+            for relative, arguments, expected in (
+                    (("jdk", "bin", "java"), ["-version"], "17.0.21"),
+                    (("python", "bin", "python"), ["--version"], "3.14.8"),
+                    (("7zip", "7zz"), [], "26.06")):
+                executable = prefix + separator + separator.join(relative)
+                with self.subTest(executable=executable):
+                    result = self._version_process([executable, *arguments])
+                    self.assertEqual(result.returncode, 0)
+                    self.assertIn(expected, result.stdout + result.stderr)
+                    for command in ([executable, "--unexpected"],
+                                    [executable, *arguments, "extra"],
+                                    [executable + ".unlisted", *arguments]):
+                        with self.assertRaises(AssertionError):
+                            self._version_process(command)
 
     def test_doctor_fails_closed_for_missing_tool_without_running_other_commands(self):
         tools, installers = self._doctor_inputs(omit=("7zip/7zz",))
@@ -184,18 +204,21 @@ class DependencyManifestTests(unittest.TestCase):
 
     def test_doctor_rejects_wrong_tool_version(self):
         tools, installers = self._doctor_inputs()
-        output = io.StringIO()
-        def wrong_jdk(command, **kwargs):
-            result = self._version_process(command, **kwargs)
-            if command[0].endswith("/jdk/bin/java"):
-                return subprocess.CompletedProcess(command, 0, "", 'openjdk version "17.0.20"\n')
-            return result
-        with patch.object(research_setup.subprocess, "run", side_effect=wrong_jdk), \
-                patch.object(research_setup, "checked_artifact", side_effect=lambda _d, n: installers / n), \
-                redirect_stdout(output):
-            with self.assertRaisesRegex(ValueError, "prerequisites incomplete"):
-                research_setup.doctor(tools, installers)
-        self.assertIn("differs from tested 17.0.21", output.getvalue())
+        for separator in ("/", "\\"):
+            output = io.StringIO()
+            def wrong_jdk(command, **kwargs):
+                command = [command[0].replace("/", separator), *command[1:]]
+                result = self._version_process(command, **kwargs)
+                if PureWindowsPath(command[0]).parts[-3:] == ("jdk", "bin", "java"):
+                    return subprocess.CompletedProcess(command, 0, "", 'openjdk version "17.0.20"\n')
+                return result
+            with self.subTest(separator=separator), \
+                    patch.object(research_setup.subprocess, "run", side_effect=wrong_jdk), \
+                    patch.object(research_setup, "checked_artifact", side_effect=lambda _d, n: installers / n), \
+                    redirect_stdout(output):
+                with self.assertRaisesRegex(ValueError, "prerequisites incomplete"):
+                    research_setup.doctor(tools, installers)
+            self.assertIn("differs from tested 17.0.21", output.getvalue())
 
 
 if __name__ == "__main__":
