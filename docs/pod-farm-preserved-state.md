@@ -106,6 +106,18 @@ parameter/automation IDs and state/application references before ABI selection.
 
 ## Verification and issue acceptance coverage
 
+The initial preservation head `7cc377886137f4f8017c3052127ace5bb559deeb` passed
+all four AC focused checks in run `791f781d-a6c7-432b-988e-4fc72d729b77`.
+Its GitHub Windows run `44087101254`, job `134052270015`, failed on the
+pre-existing dependency-doctor path mock. The owner-authored one-file repair
+`f0592633ed044d47e0862bd7730c5ea91ab13413` was cherry-picked with `-x` as
+`7bd806a22a9d09f39d8178f783a8ae7e1d85ae82`; all 12 vendor-free
+`test_dependency_manifest.py` methods pass locally after integration. The six
+preservation tests and policy are unchanged. Fresh combined-head AC checks and
+Ubuntu/macOS/Windows GitHub results are required; neither the initial AC pass
+nor another PR result supplies that evidence. The initial local missing-eframe
+resolution failure below remains historical.
+
 Six owned Rust test methods cover both endians, out-of-order/absent sections,
 opaque duplicate/unknown bytes and tails, every truncation of a synthetic frame,
 appended-data disagreement, fixed-header extensions, dangling spans, arithmetic
