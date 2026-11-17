@@ -16,7 +16,7 @@ use crate::rig::audio::{
     Platform, Registry, Request, RouteKind, RuntimeState, SampleFormat,
 };
 
-use super::{FrameFormat, InputOrigin, SampleClock, Take, TakeError, TakeRequest};
+use super::{FrameFormat, InputOrigin, Phase, SampleClock, Take, TakeError, TakeRequest};
 
 pub const QUEUE_CAPACITY_BYTES: usize = 64 * 1024;
 pub const MAX_CHANNELS: u8 = 8;
@@ -437,7 +437,9 @@ pub struct CaptureSession {
     take: Take,
     last_levels: super::Levels,
     error: Option<CaptureError>,
+    terminal_error: Option<CaptureError>,
     terminal: bool,
+    drain_blocked: bool,
     stopped: bool,
 }
 
@@ -455,7 +457,9 @@ impl CaptureSession {
             take,
             last_levels: super::Levels::default(),
             error: None,
+            terminal_error: None,
             terminal: false,
+            drain_blocked: false,
             stopped: false,
         })
     }
@@ -470,7 +474,7 @@ impl CaptureSession {
         self.last_levels
     }
     pub fn retained_error(&self) -> Option<CaptureError> {
-        self.error.clone()
+        self.terminal_error.clone().or_else(|| self.error.clone())
     }
     pub fn queued_bytes(&self) -> usize {
         self.queued_bytes
@@ -561,13 +565,27 @@ impl CaptureSession {
     /// storage and meter/dropout accounting.
     pub fn drain(&mut self) -> Result<usize, CaptureError> {
         self.check_owner()?;
+        if self.take.phase() != Phase::Recording {
+            return self
+                .terminal_error
+                .clone()
+                .map_or(Ok(0), Err);
+        }
+        if self.drain_blocked {
+            return Err(self
+                .terminal_error
+                .clone()
+                .unwrap_or(CaptureError::Stopped));
+        }
         let mut count = 0;
         while let Some(event) = self.queue.front().cloned() {
             match event {
                 QueueEvent::Audio(chunk) => {
                     let levels = match self.take.push(&chunk) {
                         Ok(levels) => levels,
-                        Err(error) => return self.terminal_failure(CaptureError::Take(error)),
+                        Err(error) => {
+                            return self.drain_failure(CaptureError::Take(error));
+                        }
                     };
                     self.last_levels = levels;
                     self.queue.pop_front();
@@ -577,7 +595,7 @@ impl CaptureSession {
                 QueueEvent::Gap(frames) => {
                     let n = frames.min(u64::from(super::MAX_DROPOUT_FRAMES)) as u32;
                     if let Err(error) = self.take.note_dropout(n) {
-                        return self.terminal_failure(CaptureError::Take(error));
+                        return self.drain_failure(CaptureError::Take(error));
                     }
                     self.queued_gap_frames -= u64::from(n);
                     if u64::from(n) == frames {
@@ -594,24 +612,35 @@ impl CaptureSession {
 
     pub fn stop(&mut self) -> Result<(), CaptureError> {
         self.check_owner()?;
-        let prior_terminal_error = self.terminal.then(|| self.error.clone()).flatten();
-        self.stopped = true;
-        let drained = self.drain();
-        if let Err(error) = self.take.stop() {
-            self.terminal = true;
-            self.error.get_or_insert(CaptureError::Take(error.clone()));
-            return Err(CaptureError::Take(error));
+        if self.take.phase() != Phase::Recording {
+            self.stopped = true;
+            return self.terminal_error.clone().map_or(Ok(()), Err);
         }
-        drained?;
-        if let Some(error) = prior_terminal_error {
+
+        let drained = if self.drain_blocked {
+            Err(self
+                .terminal_error
+                .clone()
+                .unwrap_or(CaptureError::Stopped))
+        } else {
+            self.drain().map(|_| ())
+        };
+        if let Err(error) = self.take.stop() {
+            let root = self.record_terminal_failure(CaptureError::Take(error));
+            return Err(root);
+        }
+        self.stopped = true;
+        if let Some(error) = self.terminal_error.clone() {
             return Err(error);
         }
-        self.stopped = true;
-        Ok(())
+        drained
     }
 
     pub fn cancel(&mut self) -> Result<(), CaptureError> {
         self.check_owner()?;
+        if self.take.phase() == Phase::Cancelled {
+            return Ok(());
+        }
         self.queue.clear();
         self.queued_bytes = 0;
         self.queued_gap_frames = 0;
@@ -623,8 +652,9 @@ impl CaptureSession {
 
     pub fn disconnect(&mut self) -> Result<(), CaptureError> {
         self.check_owner()?;
-        self.error.get_or_insert(CaptureError::Disconnected);
-        self.terminal = true;
+        if self.take.phase() == Phase::Recording && self.terminal_error.is_none() {
+            let _ = self.record_terminal_failure(CaptureError::Disconnected);
+        }
         self.stop()
     }
 
@@ -633,7 +663,7 @@ impl CaptureSession {
     /// queued audio or gap ordering.
     pub fn take_pending_events(&mut self) -> Result<Vec<PendingCaptureEvent>, CaptureError> {
         self.check_owner()?;
-        if !self.stopped {
+        if self.take.phase() != Phase::Stopped {
             return Err(CaptureError::Stopped);
         }
         self.queued_bytes = 0;
@@ -662,10 +692,21 @@ impl CaptureSession {
     }
 
     fn terminal_failure<T>(&mut self, error: CaptureError) -> Result<T, CaptureError> {
-        self.error = Some(error.clone());
+        let root = self.record_terminal_failure(error);
+        Err(root)
+    }
+
+    fn drain_failure<T>(&mut self, error: CaptureError) -> Result<T, CaptureError> {
+        self.drain_blocked = true;
+        self.terminal_failure(error)
+    }
+
+    fn record_terminal_failure(&mut self, error: CaptureError) -> CaptureError {
+        let root = self.terminal_error.get_or_insert(error).clone();
+        self.error = Some(root.clone());
         self.terminal = true;
         self.stopped = true;
-        Err(error)
+        root
     }
 
     fn output_frame_bytes(&self) -> usize {
@@ -680,7 +721,6 @@ impl CaptureSession {
 
 #[cfg(test)]
 mod tests {
-    use super::super::Phase;
     use super::*;
 
     fn file_plan() -> ValidatedPlan {
@@ -882,11 +922,66 @@ mod tests {
         assert_eq!(session.pending_audio_bytes(), 6);
         assert_eq!(session.take().pcm(), recorded);
         assert_eq!(session.retained_error(), retained);
+        assert_eq!(session.drain(), Err(retained.clone().unwrap()));
+        assert_eq!(session.stop(), Err(retained.clone().unwrap()));
+        assert_eq!(session.disconnect(), Err(retained.clone().unwrap()));
+        assert_eq!(session.take().phase(), Phase::Stopped);
+        assert_eq!(session.take().pcm(), recorded);
+        assert_eq!(session.pending_audio_bytes(), 6);
         assert_eq!(
             session.take_pending_events().unwrap(),
             vec![PendingCaptureEvent::Audio(too_short.to_vec())]
         );
         assert_eq!(session.pending_audio_bytes(), 0);
+
+        let directory = tempfile::tempdir().unwrap();
+        let saved_path = directory.path().join("recovered.aiff");
+        let saved = session.take().save_aiff(&saved_path).unwrap();
+        let saved_bytes = std::fs::read(saved.aiff_path).unwrap();
+        assert!(!saved_bytes.is_empty());
+        session.cancel().unwrap();
+        session.cancel().unwrap();
+        assert_eq!(session.take().phase(), Phase::Cancelled);
+        assert!(session.take().pcm().is_empty());
+        assert_eq!(std::fs::read(saved_path).unwrap(), saved_bytes);
+        assert_eq!(session.retained_error(), retained);
+    }
+
+    #[test]
+    fn successful_stop_drain_and_disconnect_retries_are_idempotent() {
+        let mut session = CaptureSession::start(file_plan(), 13).unwrap();
+        let bytes = [9, 0, 8, 0];
+        session.callback_chunk(13, &bytes).unwrap();
+        session.stop().unwrap();
+        let recorded = session.take().pcm().to_vec();
+        assert_eq!(recorded, bytes);
+        assert_eq!(session.drain().unwrap(), 0);
+        session.stop().unwrap();
+        session.disconnect().unwrap();
+        assert_eq!(session.take().phase(), Phase::Stopped);
+        assert_eq!(session.take().pcm(), recorded);
+        assert_eq!(session.pending_events(), 0);
+        assert_eq!(session.retained_error(), None);
+        assert_eq!(
+            session.callback_chunk(13, &[1, 0, 2, 0]),
+            Err(CaptureError::Stopped)
+        );
+        assert_eq!(session.take().pcm(), recorded);
+    }
+
+    #[test]
+    fn disconnect_retry_keeps_disconnected_as_the_stable_terminal_cause() {
+        let mut session = CaptureSession::start(file_plan(), 14).unwrap();
+        let bytes = [3, 0, 4, 0];
+        session.callback_chunk(14, &bytes).unwrap();
+        assert_eq!(session.disconnect(), Err(CaptureError::Disconnected));
+        let recorded = session.take().pcm().to_vec();
+        assert_eq!(session.take().phase(), Phase::Stopped);
+        assert_eq!(session.drain(), Err(CaptureError::Disconnected));
+        assert_eq!(session.stop(), Err(CaptureError::Disconnected));
+        assert_eq!(session.disconnect(), Err(CaptureError::Disconnected));
+        assert_eq!(session.take().pcm(), recorded);
+        assert_eq!(session.retained_error(), Some(CaptureError::Disconnected));
     }
 
     #[test]
