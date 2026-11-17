@@ -2,6 +2,17 @@ use std::process::Command;
 use variax_workbench::rig::audio::{ORIGINAL_SOURCE_SHA256, PROJECTION_SHA256};
 
 #[test]
+fn embedded_projection_preserves_byte_pinned_lf_storage_on_each_platform() {
+    let source = variax_workbench::rig::audio::SNAPSHOT;
+    assert!(!source.as_bytes().contains(&b'\r'));
+    assert_eq!(
+        source.as_bytes().iter().filter(|&&b| b == b'\n').count(),
+        225
+    );
+    assert!(variax_workbench::rig::audio::Registry::from_snapshot(source).is_ok());
+}
+
+#[test]
 fn cli_exports_224_source_rows_and_separate_static_route_declaration() {
     let executable = env!("CARGO_BIN_EXE_variax-workbench");
     let output = Command::new(executable)

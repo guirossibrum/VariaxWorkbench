@@ -165,3 +165,16 @@ is a static declaration, not working live capture. Full schema-2 identity/alias
 mapping, external route evidence, other OSes, real backends and observed hardware
 validation remain independent prerequisites. Existing settings/codec support is
 unchanged and does not override these gaps.
+
+## Checkout-byte portability correction
+
+The initial Windows run 44109577895 failed seven registry tests because Git
+converted the byte-pinned TSV to CRLF. A direct `git -c core.autocrlf=true
+cat-file --filters HEAD:research/audio-inventory-schema2.tsv` reproduced 225
+CRLFs and SHA-256 `475882b66464eb690965c8d699af9a468fc9600a922f3a9428b207ac19b4b808`.
+The file-specific `.gitattributes` rule now enforces LF checkout. The same Git
+filter produces zero CRLFs and the unchanged pinned projection hash. A new
+embedded-byte integration regression checks LF/count/admission on each platform.
+The drift guard remains strict: no newline normalization or new accepted hash
+is introduced. The failed run and initial focused pass remain historical evidence;
+new-head focused and platform checks are required after this correction.
