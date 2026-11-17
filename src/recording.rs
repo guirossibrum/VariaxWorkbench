@@ -235,6 +235,7 @@ pub enum TakeError {
     LabelTooLong,
     Save(String),
     Integrity,
+    Capture(String),
 }
 
 impl std::fmt::Display for TakeError {
@@ -330,6 +331,7 @@ impl std::fmt::Display for TakeError {
             Self::Integrity => {
                 formatter.write_str("stored audio length does not match the frame count")
             }
+            Self::Capture(detail) => write!(formatter, "capture session: {detail}"),
         }
     }
 }
@@ -1159,6 +1161,8 @@ pub struct Panel {
     file_label: String,
     pattern: SyntheticPattern,
     take: Option<Take>,
+    capture: Option<capture::CaptureSession>,
+    capture_generation: u64,
     take_saved: bool,
     cursor: u64,
     levels: Levels,
@@ -1184,6 +1188,8 @@ impl Panel {
                 right: -2_000,
             },
             take: None,
+            capture: None,
+            capture_generation: 0,
             take_saved: false,
             cursor: 0,
             levels: Levels::default(),
@@ -1205,28 +1211,43 @@ impl Panel {
     }
 
     pub fn phase(&self) -> Phase {
-        self.take.as_ref().map(Take::phase).unwrap_or(Phase::Idle)
+        self.current_take().map(Take::phase).unwrap_or(Phase::Idle)
     }
 
     /// The current take has not completed a successful file save. Even an
     /// armed, empty take is protected until explicitly saved or discarded.
     pub fn has_unsaved_take(&self) -> bool {
-        self.take.is_some() && !self.take_saved
+        self.current_take().is_some() && !self.take_saved
     }
 
     /// PCM WAV capability only; exact-clock AIFF has separate admission.
     pub fn take_can_save_wav(&self) -> bool {
-        self.take.as_ref().is_some_and(|take| {
+        self.current_take().is_some_and(|take| {
             matches!(take.clock, SampleClock::Integer { .. })
                 && take.format == FrameFormat::PcmS16Le
         })
     }
 
     pub fn phase_label(&self) -> &'static str {
-        self.take
-            .as_ref()
+        self.current_take()
             .map(Take::phase_label)
             .unwrap_or(PHASE_IDLE)
+    }
+
+    /// Returns the software capture queue for callers that need to inspect or
+    /// recover accepted-but-uncommitted callback events after a stop error.
+    pub fn capture_session(&self) -> Option<&capture::CaptureSession> {
+        self.capture.as_ref()
+    }
+
+    pub fn take_pending_capture_events(
+        &mut self,
+    ) -> Result<Vec<capture::PendingCaptureEvent>, TakeError> {
+        self.capture
+            .as_mut()
+            .ok_or(TakeError::NotRecording)?
+            .take_pending_events()
+            .map_err(|error| TakeError::Capture(error.to_string()))
     }
 
     pub fn message(&self) -> &str {
@@ -1320,12 +1341,44 @@ impl Panel {
     }
 
     pub fn start(&mut self) -> Result<(), TakeError> {
-        if self.take.is_some() {
+        if self.take.is_some() || self.capture.is_some() {
             return Err(TakeError::AlreadyStarted);
         }
         let route = self
             .route
             .ok_or(TakeError::SelectionMissing("a record route"))?;
+        if let (ClockSelection::Integer(hz), InputSelection::File) = (self.clock, self.input) {
+            let loaded = self
+                .loaded
+                .as_ref()
+                .ok_or(TakeError::SelectionMissing("a loaded wav"))?;
+            if loaded.sample_rate_hz != hz {
+                return Err(TakeError::RateMismatch {
+                    header: loaded.sample_rate_hz,
+                    selected: hz,
+                });
+            }
+            let plan = capture::ValidatedPlan::software_file_labeled(
+                hz,
+                2,
+                capture::ChannelMap { left: 0, right: 1 },
+                self.file_label.clone(),
+                route,
+                PANEL_TAKE_BYTES,
+            )
+            .map_err(|error| TakeError::Capture(error.to_string()))?;
+            self.capture_generation = self.capture_generation.wrapping_add(1);
+            self.capture = Some(
+                capture::CaptureSession::start(plan, self.capture_generation)
+                    .map_err(|error| TakeError::Capture(error.to_string()))?,
+            );
+            self.take = None;
+            self.cursor = 0;
+            self.levels = Levels::default();
+            self.take_saved = false;
+            self.message = "Recording armed from the selected WAV through the bounded offline capture session. Feed a chunk, then stop; nothing is saved yet.".into();
+            return Ok(());
+        }
         let (clock, format, origin) = match (self.clock, self.input) {
             (ClockSelection::Integer(hz), InputSelection::Synthetic) => (
                 SampleClock::Integer { hz },
@@ -1386,7 +1439,10 @@ impl Panel {
     }
 
     pub fn feed(&mut self) -> Result<(), TakeError> {
-        let format = self.take.as_ref().ok_or(TakeError::NotRecording)?.format();
+        let format = self
+            .current_take()
+            .ok_or(TakeError::NotRecording)?
+            .format();
         let bytes = match (format, self.input) {
             (FrameFormat::PcmS16Le, InputSelection::File) => {
                 let loaded = self
@@ -1415,28 +1471,53 @@ impl Panel {
             FRAME_BYTES as usize
         };
         let frames = (bytes.len() / frame_bytes) as u64;
-        let levels = self
-            .take
-            .as_mut()
-            .ok_or(TakeError::NotRecording)?
-            .push(&bytes)?;
+        let levels = if let Some(capture) = self.capture.as_mut() {
+            if let Err(error) = capture.callback_chunk(self.capture_generation, &bytes) {
+                if error == capture::CaptureError::QueueFull {
+                    self.cursor += frames;
+                }
+                return Err(TakeError::Capture(error.to_string()));
+            }
+            capture
+                .drain()
+                .map_err(|error| TakeError::Capture(error.to_string()))?;
+            capture.last_levels()
+        } else {
+            self.take
+                .as_mut()
+                .ok_or(TakeError::NotRecording)?
+                .push(&bytes)?
+        };
         self.cursor += frames;
         self.levels = levels;
         Ok(())
     }
 
     pub fn stop(&mut self) -> Result<(), TakeError> {
-        self.take.as_mut().ok_or(TakeError::NotRecording)?.stop()?;
+        if let Some(capture) = self.capture.as_mut() {
+            capture
+                .stop()
+                .map_err(|error| TakeError::Capture(error.to_string()))?;
+        } else {
+            self.take.as_mut().ok_or(TakeError::NotRecording)?.stop()?;
+        }
         self.message =
             "Stopped. Save writes a new copy. Cancel discards only the in-memory take.".into();
         Ok(())
     }
 
     pub fn cancel(&mut self) -> Result<(), TakeError> {
-        self.take
-            .as_mut()
-            .ok_or(TakeError::NotRecording)?
-            .cancel()?;
+        if let Some(capture) = self.capture.as_mut() {
+            capture
+                .cancel()
+                .map_err(|error| TakeError::Capture(error.to_string()))?;
+            self.capture = None;
+        } else {
+            self.take
+                .as_mut()
+                .ok_or(TakeError::NotRecording)?
+                .cancel()?;
+        }
         self.take = None;
         self.take_saved = false;
         self.cursor = 0;
@@ -1446,26 +1527,21 @@ impl Panel {
     }
 
     pub fn save(&mut self, path: &Path) -> Result<SavedTake, TakeError> {
-        let saved = self
-            .take
-            .as_ref()
-            .ok_or(TakeError::NotStopped)?
-            .save(path)?;
+        let saved = self.current_take().ok_or(TakeError::NotStopped)?.save(path)?;
         self.take_saved = true;
         self.message = format!("Saved {}", path.display());
         Ok(saved)
     }
 
     pub fn take_can_save_aiff(&self) -> bool {
-        self.take.as_ref().is_some_and(|take| {
+        self.current_take().is_some_and(|take| {
             take.clock == SampleClock::native_podxt() && take.format == FrameFormat::PodS24_3Le
         })
     }
 
     pub fn save_aiff(&mut self, path: &Path) -> Result<SavedAiffTake, TakeError> {
         let saved = self
-            .take
-            .as_ref()
+            .current_take()
             .ok_or(TakeError::NotStopped)?
             .save_aiff(path)?;
         self.take_saved = true;
@@ -1492,11 +1568,18 @@ impl Panel {
     }
 
     fn ensure_idle(&self) -> Result<(), TakeError> {
-        if self.take.is_some() {
+        if self.take.is_some() || self.capture.is_some() {
             Err(TakeError::Busy)
         } else {
             Ok(())
         }
+    }
+
+    fn current_take(&self) -> Option<&Take> {
+        self.capture
+            .as_ref()
+            .map(capture::CaptureSession::take)
+            .or(self.take.as_ref())
     }
 }
 
@@ -1872,6 +1955,44 @@ mod tests {
                 selected: 44_100,
             }
         );
+    }
+
+    #[test]
+    fn panel_file_input_runs_through_common_capture_and_keeps_save_dirty_guard() {
+        let directory = tempfile::tempdir().unwrap();
+        let pcm = render_pcm_s16(SyntheticPattern::Ramp, 0, 300).unwrap();
+        let encoded = write_wav(48_000, &pcm).unwrap();
+        let mut panel = Panel::new();
+        panel.select_route(RecordRoute::SendCleanGuitar).unwrap();
+        panel
+            .load_after_clock(48_000, "take.wav", &encoded)
+            .unwrap();
+        panel.start().unwrap();
+        assert!(panel.capture.is_some());
+        assert!(panel.take.is_none());
+        assert!(panel.has_unsaved_take());
+        panel.feed().unwrap();
+        assert_eq!(panel.current_take().unwrap().pcm(), pcm);
+        assert_eq!(panel.current_take().unwrap().frames(), 300);
+        panel.stop().unwrap();
+
+        let blocked = directory.path().join("blocked.wav");
+        std::fs::write(&blocked, b"keep").unwrap();
+        assert!(panel.save(&blocked).is_err());
+        assert!(panel.has_unsaved_take());
+        let saved = panel.save(&directory.path().join("saved.wav")).unwrap();
+        assert!(!panel.has_unsaved_take());
+        let output = parse_wav(&std::fs::read(saved.wav_path).unwrap()).unwrap();
+        assert_eq!(output.data, pcm);
+        assert_eq!(
+            std::fs::read_to_string(saved.sidecar_path)
+                .unwrap()
+                .contains("\"file_label\": \"take.wav\""),
+            true
+        );
+        panel.cancel().unwrap();
+        assert!(!panel.has_unsaved_take());
+        assert_eq!(std::fs::read(blocked).unwrap(), b"keep");
     }
 
     #[test]

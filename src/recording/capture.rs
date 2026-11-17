@@ -20,6 +20,7 @@ use super::{FrameFormat, InputOrigin, SampleClock, Take, TakeError, TakeRequest}
 
 pub const QUEUE_CAPACITY_BYTES: usize = 64 * 1024;
 pub const MAX_CHANNELS: u8 = 8;
+pub const MAX_QUEUE_EVENTS: usize = QUEUE_CAPACITY_BYTES / 2 + 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InterfaceIdentity {
@@ -31,6 +32,7 @@ pub enum InterfaceIdentity {
         interface: u8,
     },
     SoftwareFile,
+    SoftwareSynthetic,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,6 +54,8 @@ pub struct ChannelMap {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CaptureContract {
     pub identity: InterfaceIdentity,
+    pub capture_row: Option<usize>,
+    pub route_kind: Option<RouteKind>,
     pub backend: CaptureBackend,
     pub contract: &'static str,
     pub declaration: Option<Declaration>,
@@ -78,6 +82,7 @@ pub enum CaptureError {
     EmptyChunk,
     MisalignedChunk,
     Take(TakeError),
+    Disconnected,
     Stopped,
 }
 
@@ -99,8 +104,16 @@ impl std::error::Error for CaptureError {}
 pub struct ValidatedPlan {
     contract: CaptureContract,
     instrument: Option<ProductProfile>,
+    native_admission: Option<NativeAdmission>,
+    input_origin: InputOrigin,
     signal_route: RecordRoute,
     max_take_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NativeAdmission {
+    capture_row: usize,
+    connected_instrument: Option<ProductProfile>,
 }
 
 impl ValidatedPlan {
@@ -121,6 +134,8 @@ impl ValidatedPlan {
         Ok(Self {
             contract: CaptureContract {
                 identity: InterfaceIdentity::PodxtLive,
+                capture_row: Some(route.capture_row),
+                route_kind: Some(route.route_kind),
                 backend: CaptureBackend::LinuxDeclaredPod,
                 contract: CONTRACT,
                 declaration: Some(PODXT_LIVE_DECLARATION),
@@ -131,6 +146,11 @@ impl ValidatedPlan {
                 provenance: PODXT_LIVE_DECLARATION.source,
             },
             instrument: route.connected_instrument,
+            native_admission: Some(NativeAdmission {
+                capture_row: route.capture_row,
+                connected_instrument: route.connected_instrument,
+            }),
+            input_origin: InputOrigin::Synthetic,
             signal_route,
             max_take_bytes,
         })
@@ -144,10 +164,33 @@ impl ValidatedPlan {
         map: ChannelMap,
         max_take_bytes: u64,
     ) -> Result<Self, CaptureError> {
+        Self::software_file_labeled(
+            rate_hz,
+            channels,
+            map,
+            "software file adapter".into(),
+            RecordRoute::SendProcessedGuitar,
+            max_take_bytes,
+        )
+    }
+
+    pub fn software_file_labeled(
+        rate_hz: u32,
+        channels: u8,
+        map: ChannelMap,
+        label: String,
+        signal_route: RecordRoute,
+        max_take_bytes: u64,
+    ) -> Result<Self, CaptureError> {
         validate_software_shape(rate_hz, channels, map, max_take_bytes)?;
+        if label.is_empty() {
+            return Err(CaptureError::Take(TakeError::SelectionMissing("file label")));
+        }
         Ok(Self {
             contract: CaptureContract {
                 identity: InterfaceIdentity::SoftwareFile,
+                capture_row: None,
+                route_kind: None,
                 backend: CaptureBackend::SoftwareFile,
                 contract: "software-file-pcm-s16le-v1",
                 declaration: None,
@@ -158,7 +201,39 @@ impl ValidatedPlan {
                 provenance: "user-selected regular PCM WAV; software file adapter",
             },
             instrument: None,
-            signal_route: RecordRoute::SendProcessedGuitar,
+            native_admission: None,
+            input_origin: InputOrigin::File { label },
+            signal_route,
+            max_take_bytes,
+        })
+    }
+
+    pub fn software_synthetic(
+        rate_hz: u32,
+        channels: u8,
+        map: ChannelMap,
+        signal_route: RecordRoute,
+        max_take_bytes: u64,
+    ) -> Result<Self, CaptureError> {
+        validate_software_shape(rate_hz, channels, map, max_take_bytes)?;
+        Ok(Self {
+            contract: CaptureContract {
+                identity: InterfaceIdentity::SoftwareSynthetic,
+                capture_row: None,
+                route_kind: None,
+                backend: CaptureBackend::SoftwareFile,
+                contract: "software-synthetic-pcm-s16le-v1",
+                declaration: None,
+                channels,
+                clock: (rate_hz, 1),
+                format: SampleFormat::S16Le,
+                channel_map: map,
+                provenance: "owned deterministic software generator; no device source",
+            },
+            instrument: None,
+            native_admission: None,
+            input_origin: InputOrigin::Synthetic,
+            signal_route,
             max_take_bytes,
         })
     }
@@ -181,7 +256,30 @@ impl ValidatedPlan {
     pub fn revalidate(&self) -> Result<(), CaptureError> {
         match self.contract.identity {
             InterfaceIdentity::PodxtLive => {
+                let admitted = self
+                    .native_admission
+                    .ok_or(CaptureError::ForgedOrChangedRoute)?;
+                let registry = Registry::frozen().map_err(|_| CaptureError::ForgedOrChangedRoute)?;
+                let request = Request {
+                    capture_row: admitted.capture_row,
+                    capture_profile: ProductProfile::PodxtLive,
+                    connected_instrument: admitted.connected_instrument,
+                    platform: Platform::Linux,
+                    state: RuntimeState::Normal,
+                    endpoint_use: EndpointUse::Capture,
+                    contract: CONTRACT,
+                    installed_revision: None,
+                    channels: 2,
+                    clock: (78_125, 2),
+                    format: SampleFormat::S24ThreeByteLe,
+                };
+                let route = registry
+                    .plan(&request)
+                    .map_err(CaptureError::Registry)?;
+                validate_native_route(&request, &route)?;
                 if self.contract.backend != CaptureBackend::LinuxDeclaredPod
+                    || self.contract.capture_row != Some(route.capture_row)
+                    || self.contract.route_kind != Some(route.route_kind)
                     || self.contract.contract != CONTRACT
                     || self.contract.declaration != Some(PODXT_LIVE_DECLARATION)
                     || self.contract.channels != 2
@@ -189,13 +287,38 @@ impl ValidatedPlan {
                     || self.contract.format != SampleFormat::S24ThreeByteLe
                     || self.contract.channel_map != (ChannelMap { left: 0, right: 1 })
                     || self.contract.provenance != PODXT_LIVE_DECLARATION.source
+                    || self.instrument != route.connected_instrument
+                    || self.input_origin != InputOrigin::Synthetic
                 {
                     return Err(CaptureError::ForgedOrChangedRoute);
                 }
             }
             InterfaceIdentity::SoftwareFile => {
                 if self.contract.backend != CaptureBackend::SoftwareFile
+                    || self.contract.contract != "software-file-pcm-s16le-v1"
                     || self.contract.declaration.is_some()
+                    || self.contract.capture_row.is_some()
+                    || self.contract.route_kind.is_some()
+                    || self.contract.format != SampleFormat::S16Le
+                    || !matches!(self.input_origin, InputOrigin::File { .. })
+                {
+                    return Err(CaptureError::ForgedOrChangedRoute);
+                }
+                validate_software_shape(
+                    self.contract.clock.0,
+                    self.contract.channels,
+                    self.contract.channel_map,
+                    self.max_take_bytes,
+                )?;
+            }
+            InterfaceIdentity::SoftwareSynthetic => {
+                if self.contract.backend != CaptureBackend::SoftwareFile
+                    || self.contract.contract != "software-synthetic-pcm-s16le-v1"
+                    || self.contract.declaration.is_some()
+                    || self.contract.capture_row.is_some()
+                    || self.contract.route_kind.is_some()
+                    || self.contract.format != SampleFormat::S16Le
+                    || self.input_origin != InputOrigin::Synthetic
                 {
                     return Err(CaptureError::ForgedOrChangedRoute);
                 }
@@ -215,20 +338,16 @@ impl ValidatedPlan {
 
     pub fn prepare_take(&self) -> Result<Take, CaptureError> {
         self.revalidate()?;
-        let (clock, format, origin) = match self.contract.identity {
+        let (clock, format) = match self.contract.identity {
             InterfaceIdentity::PodxtLive => (
                 SampleClock::native_podxt(),
                 FrameFormat::PodS24_3Le,
-                InputOrigin::Synthetic,
             ),
-            InterfaceIdentity::SoftwareFile => (
+            InterfaceIdentity::SoftwareFile | InterfaceIdentity::SoftwareSynthetic => (
                 SampleClock::Integer {
                     hz: self.contract.clock.0,
                 },
                 FrameFormat::PcmS16Le,
-                InputOrigin::File {
-                    label: "software file adapter".into(),
-                },
             ),
             InterfaceIdentity::External { .. } => {
                 return Err(CaptureError::ExternalContractMissing);
@@ -238,7 +357,7 @@ impl ValidatedPlan {
             route: self.signal_route,
             clock,
             format,
-            origin,
+            origin: self.input_origin.clone(),
             max_bytes: self.max_take_bytes,
         })?;
         take.start()?;
@@ -251,8 +370,14 @@ fn validate_native_route(request: &Request<'_>, route: &OfflineRoute) -> Result<
     if request.platform != Platform::Linux {
         return Err(CaptureError::UnsupportedPlatform);
     }
+    let expected_route = if request.connected_instrument == Some(ProductProfile::Variax600) {
+        RouteKind::SpecificBridge
+    } else {
+        RouteKind::NativeUsb
+    };
     if route.capture_profile != ProductProfile::PodxtLive
-        || route.route_kind != RouteKind::NativeUsb
+        || route.connected_instrument != request.connected_instrument
+        || route.route_kind != expected_route
         || d != PODXT_LIVE_DECLARATION
         || d.clock != (78_125, 2)
         || request.contract != CONTRACT
@@ -291,16 +416,30 @@ fn validate_software_shape(
 
 /// Bounded single-owner queue. Full queues reject whole chunks and record an
 /// explicit gap; no producer callback blocks or grows memory without a bound.
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum QueueEvent {
+    Audio(Vec<u8>),
+    Gap(u64),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PendingCaptureEvent {
+    Audio(Vec<u8>),
+    Dropout { frames: u64 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CaptureSession {
     plan: ValidatedPlan,
     owner: ThreadId,
     generation: u64,
-    queue: VecDeque<Vec<u8>>,
+    queue: VecDeque<QueueEvent>,
     queued_bytes: usize,
+    queued_gap_frames: u64,
     take: Take,
-    pending_dropouts: u32,
+    last_levels: super::Levels,
     error: Option<CaptureError>,
+    terminal: bool,
     stopped: bool,
 }
 
@@ -314,9 +453,11 @@ impl CaptureSession {
             generation,
             queue: VecDeque::new(),
             queued_bytes: 0,
+            queued_gap_frames: 0,
             take,
-            pending_dropouts: 0,
+            last_levels: super::Levels::default(),
             error: None,
+            terminal: false,
             stopped: false,
         })
     }
@@ -327,6 +468,9 @@ impl CaptureSession {
     pub fn take(&self) -> &Take {
         &self.take
     }
+    pub fn last_levels(&self) -> super::Levels {
+        self.last_levels
+    }
     pub fn retained_error(&self) -> Option<CaptureError> {
         self.error.clone()
     }
@@ -335,6 +479,12 @@ impl CaptureSession {
     }
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+    pub fn pending_events(&self) -> usize {
+        self.queue.len()
+    }
+    pub fn pending_audio_bytes(&self) -> usize {
+        self.queued_bytes
     }
 
     /// Callback-side operation: bounded copy only, no file I/O, no lock, and
@@ -346,6 +496,9 @@ impl CaptureSession {
         }
         if self.stopped {
             return self.fail(CaptureError::Stopped);
+        }
+        if self.terminal {
+            return Err(self.error.clone().unwrap_or(CaptureError::Stopped));
         }
         if bytes.is_empty() {
             return self.fail(CaptureError::EmptyChunk);
@@ -362,7 +515,7 @@ impl CaptureSession {
             return self.fail(CaptureError::MisalignedChunk);
         }
         let frames = bytes.len() / input_frame_bytes;
-        let mut stereo = Vec::with_capacity(frames.saturating_mul(4));
+        let mut stereo = Vec::with_capacity(frames.saturating_mul(self.output_frame_bytes()));
         for frame in bytes.chunks_exact(input_frame_bytes) {
             for channel in [
                 self.plan.contract.channel_map.left,
@@ -372,14 +525,37 @@ impl CaptureSession {
                 stereo.extend_from_slice(&frame[start..start + sample_bytes]);
             }
         }
+        let frame_bytes = self.output_frame_bytes();
+        let used_bytes = self
+            .take
+            .pcm()
+            .len()
+            .saturating_add(self.queued_bytes)
+            .saturating_add((self.queued_gap_frames as usize).saturating_mul(frame_bytes));
         if self.queued_bytes.saturating_add(stereo.len()) > QUEUE_CAPACITY_BYTES {
-            self.pending_dropouts = self
-                .pending_dropouts
-                .saturating_add(frames.min(u32::MAX as usize) as u32);
+            let gap_bytes = frames.saturating_mul(frame_bytes);
+            if used_bytes.saturating_add(gap_bytes) > self.plan.max_take_bytes as usize {
+                return self.terminal_failure(CaptureError::Take(TakeError::CapExceeded));
+            }
+            if let Some(QueueEvent::Gap(previous)) = self.queue.back_mut() {
+                *previous = previous.saturating_add(frames as u64);
+            } else {
+                if self.queue.len() >= MAX_QUEUE_EVENTS {
+                    return self.terminal_failure(CaptureError::QueueFull);
+                }
+                self.queue.push_back(QueueEvent::Gap(frames as u64));
+            }
+            self.queued_gap_frames = self.queued_gap_frames.saturating_add(frames as u64);
             return self.fail(CaptureError::QueueFull);
         }
+        if used_bytes.saturating_add(stereo.len()) > self.plan.max_take_bytes as usize {
+            return self.terminal_failure(CaptureError::Take(TakeError::CapExceeded));
+        }
+        if self.queue.len() >= MAX_QUEUE_EVENTS {
+            return self.terminal_failure(CaptureError::QueueFull);
+        }
         self.queued_bytes += stereo.len();
-        self.queue.push_back(stereo);
+        self.queue.push_back(QueueEvent::Audio(stereo));
         Ok(())
     }
 
@@ -387,30 +563,56 @@ impl CaptureSession {
     /// storage and meter/dropout accounting.
     pub fn drain(&mut self) -> Result<usize, CaptureError> {
         self.check_owner()?;
-        while self.pending_dropouts > 0 {
-            let n = self.pending_dropouts.min(super::MAX_DROPOUT_FRAMES);
-            if let Err(error) = self.take.note_dropout(n) {
-                self.error = Some(CaptureError::Take(error.clone()));
-                return Err(CaptureError::Take(error));
-            }
-            self.pending_dropouts -= n;
-        }
         let mut count = 0;
-        while let Some(chunk) = self.queue.pop_front() {
-            self.queued_bytes -= chunk.len();
-            if let Err(error) = self.take.push(&chunk) {
-                self.error = Some(CaptureError::Take(error.clone()));
-                return Err(CaptureError::Take(error));
+        loop {
+            let Some(event) = self.queue.front().cloned() else {
+                break;
+            };
+            match event {
+                QueueEvent::Audio(chunk) => {
+                    let levels = match self.take.push(&chunk) {
+                        Ok(levels) => levels,
+                        Err(error) => return self.terminal_failure(CaptureError::Take(error)),
+                    };
+                    self.last_levels = levels;
+                    self.queue.pop_front();
+                    self.queued_bytes -= chunk.len();
+                    count += 1;
+                }
+                QueueEvent::Gap(frames) => {
+                    let n = frames.min(u64::from(super::MAX_DROPOUT_FRAMES)) as u32;
+                    if let Err(error) = self.take.note_dropout(n) {
+                        return self.terminal_failure(CaptureError::Take(error));
+                    }
+                    self.queued_gap_frames -= u64::from(n);
+                    if u64::from(n) == frames {
+                        self.queue.pop_front();
+                    } else if let Some(QueueEvent::Gap(remaining)) = self.queue.front_mut() {
+                        *remaining -= u64::from(n);
+                    }
+                    count += 1;
+                }
             }
-            count += 1;
         }
         Ok(count)
     }
 
     pub fn stop(&mut self) -> Result<(), CaptureError> {
         self.check_owner()?;
-        self.drain()?;
-        self.take.stop()?;
+        let prior_terminal_error = self.terminal.then(|| self.error.clone()).flatten();
+        self.stopped = true;
+        let drained = self.drain();
+        if let Err(error) = self.take.stop() {
+            self.terminal = true;
+            self.error.get_or_insert(CaptureError::Take(error.clone()));
+            return Err(CaptureError::Take(error));
+        }
+        if let Err(error) = drained {
+            return Err(error);
+        }
+        if let Some(error) = prior_terminal_error {
+            return Err(error);
+        }
         self.stopped = true;
         Ok(())
     }
@@ -419,15 +621,38 @@ impl CaptureSession {
         self.check_owner()?;
         self.queue.clear();
         self.queued_bytes = 0;
-        self.pending_dropouts = 0;
+        self.queued_gap_frames = 0;
         self.take.cancel()?;
         self.stopped = true;
+        self.terminal = true;
         Ok(())
     }
 
     pub fn disconnect(&mut self) -> Result<(), CaptureError> {
-        self.error = Some(CaptureError::Stopped);
+        self.check_owner()?;
+        self.error.get_or_insert(CaptureError::Disconnected);
+        self.terminal = true;
         self.stop()
+    }
+
+    /// Transfers accepted but not yet committed events to the caller after a
+    /// terminal stop error. This is explicit recovery; it never silently drops
+    /// queued audio or gap ordering.
+    pub fn take_pending_events(&mut self) -> Result<Vec<PendingCaptureEvent>, CaptureError> {
+        self.check_owner()?;
+        if !self.stopped {
+            return Err(CaptureError::Stopped);
+        }
+        self.queued_bytes = 0;
+        self.queued_gap_frames = 0;
+        Ok(self
+            .queue
+            .drain(..)
+            .map(|event| match event {
+                QueueEvent::Audio(bytes) => PendingCaptureEvent::Audio(bytes),
+                QueueEvent::Gap(frames) => PendingCaptureEvent::Dropout { frames },
+            })
+            .collect())
     }
 
     fn check_owner(&self) -> Result<(), CaptureError> {
@@ -439,8 +664,24 @@ impl CaptureSession {
     }
 
     fn fail<T>(&mut self, error: CaptureError) -> Result<T, CaptureError> {
-        self.error = Some(error.clone());
+        self.error.get_or_insert(error.clone());
         Err(error)
+    }
+
+    fn terminal_failure<T>(&mut self, error: CaptureError) -> Result<T, CaptureError> {
+        self.error = Some(error.clone());
+        self.terminal = true;
+        self.stopped = true;
+        Err(error)
+    }
+
+    fn output_frame_bytes(&self) -> usize {
+        let sample_bytes = match self.plan.contract.format {
+            SampleFormat::S16Le => 2,
+            SampleFormat::S24ThreeByteLe => 3,
+            SampleFormat::Float32 => 0,
+        };
+        sample_bytes * 2
     }
 }
 
@@ -516,24 +757,294 @@ mod tests {
     }
 
     #[test]
-    fn bounded_queue_records_overflow_as_a_gap_and_stops_cleanly() {
+    fn overflow_gaps_preserve_chronology_across_drains_and_later_callbacks() {
         let plan =
             ValidatedPlan::software_file(44_100, 2, ChannelMap { left: 0, right: 1 }, 128 * 1024)
                 .unwrap();
         let mut session = CaptureSession::start(plan, 4).unwrap();
-        let chunk = vec![1; super::super::STREAM_CHUNK_BYTES_MAX];
-        for _ in 0..QUEUE_CAPACITY_BYTES / chunk.len() {
-            session.callback_chunk(4, &chunk).unwrap();
+        let a = vec![0x11; super::super::STREAM_CHUNK_BYTES_MAX];
+        let b = vec![0x22; super::super::STREAM_CHUNK_BYTES_MAX];
+        for _ in 0..QUEUE_CAPACITY_BYTES / a.len() {
+            session.callback_chunk(4, &a).unwrap();
         }
         assert_eq!(session.queued_bytes(), QUEUE_CAPACITY_BYTES);
-        assert_eq!(
-            session.callback_chunk(4, &chunk),
-            Err(CaptureError::QueueFull)
-        );
+        assert_eq!(session.callback_chunk(4, &b), Err(CaptureError::QueueFull));
+        assert_eq!(session.callback_chunk(4, &b), Err(CaptureError::QueueFull));
         assert_eq!(session.queued_bytes(), QUEUE_CAPACITY_BYTES);
+        session.drain().unwrap();
+        assert_eq!(session.take().pcm().len(), QUEUE_CAPACITY_BYTES);
+        assert!(session.take().pcm().iter().all(|byte| *byte == 0x11));
+        assert_eq!(
+            session
+                .take()
+                .dropouts()
+                .iter()
+                .map(|gap| (gap.at_frame, gap.missing_frames))
+                .collect::<Vec<_>>(),
+            vec![(16_384, 2_048), (18_432, 2_048)]
+        );
+        let c = [0x44, 0x33, 0x66, 0x55];
+        session.callback_chunk(4, &c).unwrap();
+        session.drain().unwrap();
+        assert_eq!(
+            &session.take().pcm()[QUEUE_CAPACITY_BYTES + 16_384..],
+            &c
+        );
         session.stop().unwrap();
         assert_eq!(session.queued_bytes(), 0);
-        assert_eq!(session.take().frames(), 18_432);
-        assert_eq!(session.take().dropouts().len(), 1);
+        assert_eq!(session.take().frames(), 20_481);
+    }
+
+    fn native_request(instrument: Option<ProductProfile>) -> (Registry, Request<'static>) {
+        let registry = Registry::frozen().unwrap();
+        let row = registry
+            .rows()
+            .iter()
+            .find(|row| {
+                row.name == "PODxt Live" && row.role == crate::rig::audio::SourceRole::Bridge
+            })
+            .unwrap()
+            .ordinal;
+        (
+            registry,
+            Request {
+                capture_row: row,
+                capture_profile: ProductProfile::PodxtLive,
+                connected_instrument: instrument,
+                platform: Platform::Linux,
+                state: RuntimeState::Normal,
+                endpoint_use: EndpointUse::Capture,
+                contract: CONTRACT,
+                installed_revision: None,
+                channels: 2,
+                clock: (78_125, 2),
+                format: SampleFormat::S24ThreeByteLe,
+            },
+        )
+    }
+
+    #[test]
+    fn registry_native_and_specific_bridge_routes_are_revalidated_without_family_widening() {
+        let (registry, direct) = native_request(None);
+        let native = ValidatedPlan::native_podxt(
+            &registry,
+            direct,
+            RecordRoute::SendCleanGuitar,
+            1024,
+        )
+        .unwrap();
+        assert_eq!(native.contract().route_kind, Some(RouteKind::NativeUsb));
+        assert_eq!(native.connected_instrument(), None);
+        native.revalidate().unwrap();
+
+        let (registry, bridge) = native_request(Some(ProductProfile::Variax600));
+        let plan = ValidatedPlan::native_podxt(
+            &registry,
+            bridge,
+            RecordRoute::SendCleanGuitar,
+            1024,
+        )
+        .unwrap();
+        assert_eq!(plan.contract().route_kind, Some(RouteKind::SpecificBridge));
+        assert_eq!(plan.connected_instrument(), Some(ProductProfile::Variax600));
+        plan.revalidate().unwrap();
+
+        let (registry, wrong_family) = native_request(Some(ProductProfile::Jtv69));
+        assert_eq!(
+            ValidatedPlan::native_podxt(
+                &registry,
+                wrong_family,
+                RecordRoute::SendCleanGuitar,
+                1024
+            ),
+            Err(CaptureError::Registry(AdmissionError::WrongBridgeFamily))
+        );
+    }
+
+    #[test]
+    fn queued_chunk_failure_freezes_callbacks_and_stop_preserves_recorded_audio() {
+        let (registry, request) = native_request(None);
+        let plan = ValidatedPlan::native_podxt(
+            &registry,
+            request,
+            RecordRoute::SendCleanGuitar,
+            1024,
+        )
+        .unwrap();
+        let mut session = CaptureSession::start(plan, 12).unwrap();
+        let recorded = vec![0x12; 66];
+        session.callback_chunk(12, &recorded).unwrap();
+        session.drain().unwrap();
+        let too_short = [1, 2, 3, 4, 5, 6];
+        session.callback_chunk(12, &too_short).unwrap();
+        assert!(matches!(
+            session.drain(),
+            Err(CaptureError::Take(TakeError::ChunkRejected(_)))
+        ));
+        assert_eq!(session.pending_audio_bytes(), 6);
+        assert_eq!(session.take().pcm(), recorded);
+        let retained = session.retained_error();
+        assert_eq!(
+            session.callback_chunk(12, &recorded),
+            Err(retained.clone().unwrap())
+        );
+        assert!(matches!(
+            session.stop(),
+            Err(CaptureError::Take(TakeError::ChunkRejected(_)))
+        ));
+        assert_eq!(session.take().phase(), Phase::Stopped);
+        assert_eq!(session.pending_audio_bytes(), 6);
+        assert_eq!(session.take().pcm(), recorded);
+        assert_eq!(session.retained_error(), retained);
+        assert_eq!(
+            session.take_pending_events().unwrap(),
+            vec![PendingCaptureEvent::Audio(too_short.to_vec())]
+        );
+        assert_eq!(session.pending_audio_bytes(), 0);
+    }
+
+    #[test]
+    fn cap_failures_freeze_input_but_keep_recorded_and_queued_work_recoverable() {
+        let plan = ValidatedPlan::software_file(
+            44_100,
+            2,
+            ChannelMap { left: 0, right: 1 },
+            8,
+        )
+        .unwrap();
+        let mut session = CaptureSession::start(plan, 20).unwrap();
+        let recorded = [1, 0, 2, 0];
+        session.callback_chunk(20, &recorded).unwrap();
+        session.drain().unwrap();
+        assert_eq!(
+            session.callback_chunk(20, &[3, 0, 4, 0, 5, 0, 6, 0]),
+            Err(CaptureError::Take(TakeError::CapExceeded))
+        );
+        assert!(session.stop().is_err());
+        assert_eq!(session.take().pcm(), &recorded);
+        assert_eq!(session.take().phase(), Phase::Stopped);
+        assert_eq!(
+            session.callback_chunk(20, &[7, 0, 8, 0]),
+            Err(CaptureError::Take(TakeError::CapExceeded))
+        );
+        session.cancel().unwrap();
+        assert_eq!(session.take().phase(), Phase::Cancelled);
+
+        let plan = ValidatedPlan::software_file(
+            44_100,
+            2,
+            ChannelMap { left: 0, right: 1 },
+            QUEUE_CAPACITY_BYTES as u64,
+        )
+        .unwrap();
+        let mut session = CaptureSession::start(plan, 21).unwrap();
+        let chunk = vec![0x5a; super::super::STREAM_CHUNK_BYTES_MAX];
+        for _ in 0..QUEUE_CAPACITY_BYTES / chunk.len() {
+            session.callback_chunk(21, &chunk).unwrap();
+        }
+        assert_eq!(
+            session.callback_chunk(21, &chunk),
+            Err(CaptureError::Take(TakeError::CapExceeded))
+        );
+        assert!(session.stop().is_err());
+        assert_eq!(session.take().pcm().len(), QUEUE_CAPACITY_BYTES);
+        assert!(session.take().pcm().iter().all(|byte| *byte == 0x5a));
+        assert_eq!(session.queued_bytes(), 0);
+        assert_eq!(session.take().phase(), Phase::Stopped);
+    }
+
+    #[test]
+    fn overflow_gap_that_exceeds_take_cap_is_terminal_without_losing_queued_audio() {
+        let plan = ValidatedPlan::software_file(
+            44_100,
+            2,
+            ChannelMap { left: 0, right: 1 },
+            (QUEUE_CAPACITY_BYTES + 4) as u64,
+        )
+        .unwrap();
+        let mut session = CaptureSession::start(plan, 22).unwrap();
+        let chunk = vec![0x6b; super::super::STREAM_CHUNK_BYTES_MAX];
+        for _ in 0..QUEUE_CAPACITY_BYTES / chunk.len() {
+            session.callback_chunk(22, &chunk).unwrap();
+        }
+        assert_eq!(
+            session.callback_chunk(22, &chunk),
+            Err(CaptureError::Take(TakeError::CapExceeded))
+        );
+        assert_eq!(session.pending_audio_bytes(), QUEUE_CAPACITY_BYTES);
+        assert!(session.stop().is_err());
+        assert_eq!(session.take().phase(), Phase::Stopped);
+        assert_eq!(session.take().pcm().len(), QUEUE_CAPACITY_BYTES);
+        assert_eq!(session.pending_audio_bytes(), 0);
+        assert_eq!(session.take().pcm()[0], 0x6b);
+    }
+
+    #[test]
+    fn invalid_shapes_external_routes_late_callbacks_and_lifecycle_are_explicit() {
+        let stereo = ChannelMap { left: 0, right: 1 };
+        assert_eq!(
+            ValidatedPlan::software_file(44_100, 1, stereo, 1024),
+            Err(CaptureError::InvalidChannels)
+        );
+        assert_eq!(
+            ValidatedPlan::software_file(44_100, 2, ChannelMap { left: 0, right: 0 }, 1024),
+            Err(CaptureError::InvalidChannelMap)
+        );
+        assert_eq!(
+            ValidatedPlan::software_file(44_101, 2, stereo, 1024),
+            Err(CaptureError::InvalidClock)
+        );
+        assert_eq!(
+            ValidatedPlan::external(InterfaceIdentity::External {
+                vendor: 1,
+                product: 2,
+                interface: 0,
+            }),
+            Err(CaptureError::ExternalContractMissing)
+        );
+
+        for generation in 40..43 {
+            let mut session = CaptureSession::start(file_plan(), generation).unwrap();
+            assert_eq!(
+                session.callback_chunk(generation - 1, &[1, 0, 2, 0]),
+                Err(CaptureError::StaleGeneration)
+            );
+            session.callback_chunk(generation, &[1, 0, 2, 0]).unwrap();
+            session.drain().unwrap();
+            session.stop().unwrap();
+            assert_eq!(session.take().frames(), 1);
+            session.cancel().unwrap();
+            assert_eq!(session.take().phase(), Phase::Cancelled);
+        }
+    }
+
+    #[test]
+    fn wrong_thread_disconnect_does_not_mutate_and_old_generations_are_rejected() {
+        let mut session = CaptureSession::start(file_plan(), 30).unwrap();
+        session.callback_chunk(30, &[1, 0, 2, 0]).unwrap();
+        let (mut session, result) = std::thread::spawn(move || {
+            let result = session.disconnect();
+            (session, result)
+        })
+        .join()
+        .unwrap();
+        assert_eq!(result, Err(CaptureError::WrongThread));
+        assert_eq!(session.pending_audio_bytes(), 4);
+        assert_eq!(session.pending_events(), 1);
+        assert_eq!(session.retained_error(), None);
+        session.drain().unwrap();
+        session.stop().unwrap();
+
+        for generation in 31..34 {
+            let mut restarted = CaptureSession::start(file_plan(), generation).unwrap();
+            assert_eq!(
+                restarted.callback_chunk(generation - 1, &[1, 0, 2, 0]),
+                Err(CaptureError::StaleGeneration)
+            );
+            restarted.callback_chunk(generation, &[1, 0, 2, 0]).unwrap();
+            restarted.drain().unwrap();
+            restarted.stop().unwrap();
+            assert_eq!(restarted.take().frames(), 1);
+        }
     }
 }
