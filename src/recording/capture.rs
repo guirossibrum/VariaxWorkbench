@@ -184,7 +184,9 @@ impl ValidatedPlan {
     ) -> Result<Self, CaptureError> {
         validate_software_shape(rate_hz, channels, map, max_take_bytes)?;
         if label.is_empty() {
-            return Err(CaptureError::Take(TakeError::SelectionMissing("file label")));
+            return Err(CaptureError::Take(TakeError::SelectionMissing(
+                "file label",
+            )));
         }
         Ok(Self {
             contract: CaptureContract {
@@ -259,7 +261,8 @@ impl ValidatedPlan {
                 let admitted = self
                     .native_admission
                     .ok_or(CaptureError::ForgedOrChangedRoute)?;
-                let registry = Registry::frozen().map_err(|_| CaptureError::ForgedOrChangedRoute)?;
+                let registry =
+                    Registry::frozen().map_err(|_| CaptureError::ForgedOrChangedRoute)?;
                 let request = Request {
                     capture_row: admitted.capture_row,
                     capture_profile: ProductProfile::PodxtLive,
@@ -273,9 +276,7 @@ impl ValidatedPlan {
                     clock: (78_125, 2),
                     format: SampleFormat::S24ThreeByteLe,
                 };
-                let route = registry
-                    .plan(&request)
-                    .map_err(CaptureError::Registry)?;
+                let route = registry.plan(&request).map_err(CaptureError::Registry)?;
                 validate_native_route(&request, &route)?;
                 if self.contract.backend != CaptureBackend::LinuxDeclaredPod
                     || self.contract.capture_row != Some(route.capture_row)
@@ -339,10 +340,7 @@ impl ValidatedPlan {
     pub fn prepare_take(&self) -> Result<Take, CaptureError> {
         self.revalidate()?;
         let (clock, format) = match self.contract.identity {
-            InterfaceIdentity::PodxtLive => (
-                SampleClock::native_podxt(),
-                FrameFormat::PodS24_3Le,
-            ),
+            InterfaceIdentity::PodxtLive => (SampleClock::native_podxt(), FrameFormat::PodS24_3Le),
             InterfaceIdentity::SoftwareFile | InterfaceIdentity::SoftwareSynthetic => (
                 SampleClock::Integer {
                     hz: self.contract.clock.0,
@@ -682,8 +680,8 @@ impl CaptureSession {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::Phase;
+    use super::*;
 
     fn file_plan() -> ValidatedPlan {
         ValidatedPlan::software_file(44_100, 2, ChannelMap { left: 0, right: 1 }, 64 * 1024)
@@ -789,10 +787,7 @@ mod tests {
         let c = [0x44, 0x33, 0x66, 0x55];
         session.callback_chunk(4, &c).unwrap();
         session.drain().unwrap();
-        assert_eq!(
-            &session.take().pcm()[QUEUE_CAPACITY_BYTES + 16_384..],
-            &c
-        );
+        assert_eq!(&session.take().pcm()[QUEUE_CAPACITY_BYTES + 16_384..], &c);
         session.stop().unwrap();
         assert_eq!(session.queued_bytes(), 0);
         assert_eq!(session.take().frames(), 20_481);
@@ -829,25 +824,17 @@ mod tests {
     #[test]
     fn registry_native_and_specific_bridge_routes_are_revalidated_without_family_widening() {
         let (registry, direct) = native_request(None);
-        let native = ValidatedPlan::native_podxt(
-            &registry,
-            direct,
-            RecordRoute::SendCleanGuitar,
-            1024,
-        )
-        .unwrap();
+        let native =
+            ValidatedPlan::native_podxt(&registry, direct, RecordRoute::SendCleanGuitar, 1024)
+                .unwrap();
         assert_eq!(native.contract().route_kind, Some(RouteKind::NativeUsb));
         assert_eq!(native.connected_instrument(), None);
         native.revalidate().unwrap();
 
         let (registry, bridge) = native_request(Some(ProductProfile::Variax600));
-        let plan = ValidatedPlan::native_podxt(
-            &registry,
-            bridge,
-            RecordRoute::SendCleanGuitar,
-            1024,
-        )
-        .unwrap();
+        let plan =
+            ValidatedPlan::native_podxt(&registry, bridge, RecordRoute::SendCleanGuitar, 1024)
+                .unwrap();
         assert_eq!(plan.contract().route_kind, Some(RouteKind::SpecificBridge));
         assert_eq!(plan.connected_instrument(), Some(ProductProfile::Variax600));
         plan.revalidate().unwrap();
@@ -867,13 +854,9 @@ mod tests {
     #[test]
     fn queued_chunk_failure_freezes_callbacks_and_stop_preserves_recorded_audio() {
         let (registry, request) = native_request(None);
-        let plan = ValidatedPlan::native_podxt(
-            &registry,
-            request,
-            RecordRoute::SendCleanGuitar,
-            1024,
-        )
-        .unwrap();
+        let plan =
+            ValidatedPlan::native_podxt(&registry, request, RecordRoute::SendCleanGuitar, 1024)
+                .unwrap();
         let mut session = CaptureSession::start(plan, 12).unwrap();
         let recorded = vec![0x12; 66];
         session.callback_chunk(12, &recorded).unwrap();
@@ -908,13 +891,8 @@ mod tests {
 
     #[test]
     fn cap_failures_freeze_input_but_keep_recorded_and_queued_work_recoverable() {
-        let plan = ValidatedPlan::software_file(
-            44_100,
-            2,
-            ChannelMap { left: 0, right: 1 },
-            8,
-        )
-        .unwrap();
+        let plan =
+            ValidatedPlan::software_file(44_100, 2, ChannelMap { left: 0, right: 1 }, 8).unwrap();
         let mut session = CaptureSession::start(plan, 20).unwrap();
         let recorded = [1, 0, 2, 0];
         session.callback_chunk(20, &recorded).unwrap();

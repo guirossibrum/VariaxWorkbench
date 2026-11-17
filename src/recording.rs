@@ -1439,10 +1439,7 @@ impl Panel {
     }
 
     pub fn feed(&mut self) -> Result<(), TakeError> {
-        let format = self
-            .current_take()
-            .ok_or(TakeError::NotRecording)?
-            .format();
+        let format = self.current_take().ok_or(TakeError::NotRecording)?.format();
         let bytes = match (format, self.input) {
             (FrameFormat::PcmS16Le, InputSelection::File) => {
                 let loaded = self
