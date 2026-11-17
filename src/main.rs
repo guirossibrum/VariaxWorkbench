@@ -29,6 +29,15 @@ fn run() -> Result<(), String> {
         Some("math-profile") if args.len() == 1 => {
             println!("{}", variax_workbench::math::PROFILE);
         }
+        Some("audio-capabilities") if args.len() == 1 => {
+            variax_workbench::rig::audio::Registry::frozen()?
+                .write_tsv(std::io::stdout().lock())
+                .map_err(|e| e.to_string())?;
+        }
+        Some("audio-route-declarations") if args.len() == 1 => {
+            variax_workbench::rig::audio::write_declaration_tsv(std::io::stdout().lock())
+                .map_err(|e| e.to_string())?;
+        }
         Some("preview") if args.len() == 1 => {
             println!("Offline byte preview; no device opened. Live access is locked.");
             println!("PODxt routing enable: {}", hex(&PODXT_ROUTING_ENABLE));
@@ -781,7 +790,7 @@ fn run() -> Result<(), String> {
         }
         _ => {
             return Err(
-                "Usage: variax-workbench preview | decode FIRST.syx SECOND.syx | inspect PRESET.vwm | inspect-workbench-asset FILE.ast | render-preset INPUT.vwm MODELS.tsv NEW.packed [muted] | pickup-response INPUT.bin FREQ_BITS VOL_BITS TONE_BITS | pickup-filter1 INPUT.bin VOL_BITS TONE_BITS | combine-pickups LEFT.bin RIGHT.bin series|parallel | interpolate-body INPUT.bin OUTPUT.bin X_BITS_HEX Y_BITS_HEX | blend-body INPUT.bin OUTPUT.bin LEFT_INDEX RIGHT_INDEX WEIGHT_BITS_HEX | body-roundtrip INPUT.bin OUTPUT.bin | normalize-body INPUT.bin POSITION_BITS_HEX | body-plan MODE X_BITS_HEX Y_BITS_HEX | inspect-bundle BANK.vwb | extract-preset BANK.vwb OUTPUT.vwm BANK_INDEX PRESET_INDEX | replace-preset BANK PRESET NEW_BANK BANK_INDEX PRESET_INDEX | roundtrip INPUT OUTPUT | rename INPUT OUTPUT NAME | set INPUT OUTPUT SLOT_HEX PARAM_HEX int|float VALUE\nAll commands are offline. Output files must not exist. Explicit edits enforce recovered legacy UI domains; imported unknown settings remain lossless.".into(),
+                "Usage: variax-workbench audio-capabilities | audio-route-declarations | preview | decode FIRST.syx SECOND.syx | inspect PRESET.vwm | inspect-workbench-asset FILE.ast | render-preset INPUT.vwm MODELS.tsv NEW.packed [muted] | pickup-response INPUT.bin FREQ_BITS VOL_BITS TONE_BITS | pickup-filter1 INPUT.bin VOL_BITS TONE_BITS | combine-pickups LEFT.bin RIGHT.bin series|parallel | interpolate-body INPUT.bin OUTPUT.bin X_BITS_HEX Y_BITS_HEX | blend-body INPUT.bin OUTPUT.bin LEFT_INDEX RIGHT_INDEX WEIGHT_BITS_HEX | body-roundtrip INPUT.bin OUTPUT.bin | normalize-body INPUT.bin POSITION_BITS_HEX | body-plan MODE X_BITS_HEX Y_BITS_HEX | inspect-bundle BANK.vwb | extract-preset BANK.vwb OUTPUT.vwm BANK_INDEX PRESET_INDEX | replace-preset BANK PRESET NEW_BANK BANK_INDEX PRESET_INDEX | roundtrip INPUT OUTPUT | rename INPUT OUTPUT NAME | set INPUT OUTPUT SLOT_HEX PARAM_HEX int|float VALUE\nAll commands are offline. Output files must not exist. Explicit edits enforce recovered legacy UI domains; imported unknown settings remain lossless.".into(),
             );
         }
     }

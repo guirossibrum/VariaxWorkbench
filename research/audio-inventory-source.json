@@ -1,0 +1,13 @@
+{
+  "schema": 2,
+  "rows": 224,
+  "reported_recovered_rows": 38,
+  "alias_rows": 186,
+  "original_reported_sha256": "e808fe477b4d1c8a976bdaf11369e711e131317164f20d4140b816f69dd26c7b",
+  "original_bytes_admitted": false,
+  "names_roles_projection": "audio-inventory-schema2.tsv",
+  "projection_sha256": "c3ed43ad76a0486ef327cb0cf1c42d389124c765418b0065b29f2d1db37ba790",
+  "source": "https://github.com/guirossibrum/VariaxWorkbench/issues/96",
+  "contract_owner": "VariaxWorkbench issue #93",
+  "identity_rule": "One-based frozen projection ordinal; preserve duplicate names and source roles; no canonical or numeric identity inferred. Future schema/projection/source-digest drift requires reviewed migration."
+}
