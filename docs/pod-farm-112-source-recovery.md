@@ -140,15 +140,17 @@ The static constructor chain resolves that virtual dispatch further:
   typed patch accessors to refresh current words. A record's mutable current
   value is not evidence of its allowed range or default.
 
-The remaining boundary is the **population of this constructed instance's table
-at +`0x28c`**, including its model/product selection, descriptor identity and
-scalar/format metadata. This pass has not connected that producer to product
-`0x3000a` or the converted amp parameter above. This is an unresolved static
-producer/consumer edge, not evidence that another artifact or live input is
-necessary. The legacy import path above does not establish that link.
-No domain has been admitted from host resources, reset seeds or the generic
-property API. This bounded pass does not claim that this package lacks all
-PODxt definitions or that all sources have been exhausted.
+At this source-recovery milestone, population of the constructed instance's table
+at +`0x28c` was unresolved. The subsequent
+[target-applicability investigation](pod-farm-112-target-applicability.md) locates
+its descriptor/cache producers and distinguishes the reference product key from
+the processing destination. The examined concrete receivers select a different
+product or encounter rejection; a generic product-forwarding leaf does not
+establish an applicable PODxt branch through its preceding guards. No control
+domain is admitted from host resources, reset seeds or the generic property API.
+The remaining requirement is an independently applicable target-preserving
+contract, not a claim that another artifact or live input is necessary, that this
+package lacks every PODxt definition or that all entry points are exhausted.
 
 For comparison, the already reviewed [2.58 conversion trace](pod-farm-conversion-transforms.md)
 places the corresponding layout consumer at AU x86-64 `0x191e8a` → `0x1915fc`,
@@ -194,11 +196,12 @@ component. Original binaries, instructions, resource tables, artwork and example
 tones remain ignored and are not test fixtures.
 
 No applicable tuple of **model/product + parameter ID + representation + accepted
-domain + units/scaling/default/step** was recovered. Further source recovery must
-resolve the property-provider/target connection above before proposing value
-editing. A future recovered definition needs target/model mismatch, endpoint and
-adjacent-invalid-value cases, exact serialization, unknown-byte retention and
-atomic new-copy tests, backed by an independently applicable source contract.
+domain + units/scaling/default/step** was recovered. The continuation states the
+[remaining target-preserving contract](pod-farm-112-target-applicability.md#validation-scope-and-remaining-contract)
+before value editing. A future recovered definition needs target/model mismatch,
+endpoint and adjacent-invalid-value cases, exact serialization, unknown-byte
+retention and atomic new-copy tests, backed by an independently applicable source
+contract.
 No placeholder API, fabricated units or disabled editing UI is added here.
 The four configured Rust checks are submitted through the coordinator at the
 actual committed head; reader tests do not replace them. Review and merge-result
