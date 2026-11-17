@@ -566,16 +566,10 @@ impl CaptureSession {
     pub fn drain(&mut self) -> Result<usize, CaptureError> {
         self.check_owner()?;
         if self.take.phase() != Phase::Recording {
-            return self
-                .terminal_error
-                .clone()
-                .map_or(Ok(0), Err);
+            return self.terminal_error.clone().map_or(Ok(0), Err);
         }
         if self.drain_blocked {
-            return Err(self
-                .terminal_error
-                .clone()
-                .unwrap_or(CaptureError::Stopped));
+            return Err(self.terminal_error.clone().unwrap_or(CaptureError::Stopped));
         }
         let mut count = 0;
         while let Some(event) = self.queue.front().cloned() {
@@ -618,10 +612,7 @@ impl CaptureSession {
         }
 
         let drained = if self.drain_blocked {
-            Err(self
-                .terminal_error
-                .clone()
-                .unwrap_or(CaptureError::Stopped))
+            Err(self.terminal_error.clone().unwrap_or(CaptureError::Stopped))
         } else {
             self.drain().map(|_| ())
         };
