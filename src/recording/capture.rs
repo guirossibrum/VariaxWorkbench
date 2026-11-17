@@ -456,7 +456,7 @@ mod tests {
     #[test]
     fn software_file_session_bounds_buffers_meters_and_stops() {
         let mut session = CaptureSession::start(file_plan(), 7).unwrap();
-        let frames = [0x10, 0x00, 0, 0xf0, 0xff, 0];
+        let frames = [0x10, 0x00, 0xf0, 0xff];
         let chunk: Vec<u8> = frames.repeat(32);
         session.callback_chunk(7, &chunk).unwrap();
         assert_eq!(session.queued_bytes(), chunk.len());
