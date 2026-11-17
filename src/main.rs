@@ -1,4 +1,4 @@
-use std::{env, fs, path::Path, process::ExitCode};
+use std::{env, fs, io::Read, path::Path, process::ExitCode};
 use variax_workbench::preset::PresetFile;
 use variax_workbench::{PODXT_ROUTING_ENABLE, PresetMetadata, metadata_requests, midi_enable};
 
@@ -121,6 +121,17 @@ fn run() -> Result<(), String> {
         }
         Some("inspect") if args.len() == 2 => {
             print!("{}", read_preset(&args[1])?.summary());
+        }
+        Some("inspect-workbench-asset") if args.len() == 2 => {
+            let file = fs::File::open(&args[1]).map_err(|e| format!("{}: {e}", args[1]))?;
+            let mut bytes = Vec::new();
+            file.take((variax_workbench::workbench_asset::MAX_ASSET_FILE_BYTES + 1) as u64)
+                .read_to_end(&mut bytes)
+                .map_err(|e| format!("{}: {e}", args[1]))?;
+            let inspection =
+                variax_workbench::workbench_asset::WorkbenchAssetInspection::parse(&bytes)
+                    .map_err(|e| format!("{}: {e}", args[1]))?;
+            print!("{}", inspection.summary());
         }
         Some(
             command @ ("dsp-block" | "dsp-filter-block" | "dsp-resonance-block" | "dsp-eq-block"),
@@ -770,7 +781,7 @@ fn run() -> Result<(), String> {
         }
         _ => {
             return Err(
-                "Usage: variax-workbench preview | decode FIRST.syx SECOND.syx | inspect PRESET.vwm | render-preset INPUT.vwm MODELS.tsv NEW.packed [muted] | pickup-response INPUT.bin FREQ_BITS VOL_BITS TONE_BITS | pickup-filter1 INPUT.bin VOL_BITS TONE_BITS | combine-pickups LEFT.bin RIGHT.bin series|parallel | interpolate-body INPUT.bin OUTPUT.bin X_BITS_HEX Y_BITS_HEX | blend-body INPUT.bin OUTPUT.bin LEFT_INDEX RIGHT_INDEX WEIGHT_BITS_HEX | body-roundtrip INPUT.bin OUTPUT.bin | normalize-body INPUT.bin POSITION_BITS_HEX | body-plan MODE X_BITS_HEX Y_BITS_HEX | inspect-bundle BANK.vwb | extract-preset BANK.vwb OUTPUT.vwm BANK_INDEX PRESET_INDEX | replace-preset BANK PRESET NEW_BANK BANK_INDEX PRESET_INDEX | roundtrip INPUT OUTPUT | rename INPUT OUTPUT NAME | set INPUT OUTPUT SLOT_HEX PARAM_HEX int|float VALUE\nAll commands are offline. Output files must not exist. Explicit edits enforce recovered legacy UI domains; imported unknown settings remain lossless.".into(),
+                "Usage: variax-workbench preview | decode FIRST.syx SECOND.syx | inspect PRESET.vwm | inspect-workbench-asset FILE.ast | render-preset INPUT.vwm MODELS.tsv NEW.packed [muted] | pickup-response INPUT.bin FREQ_BITS VOL_BITS TONE_BITS | pickup-filter1 INPUT.bin VOL_BITS TONE_BITS | combine-pickups LEFT.bin RIGHT.bin series|parallel | interpolate-body INPUT.bin OUTPUT.bin X_BITS_HEX Y_BITS_HEX | blend-body INPUT.bin OUTPUT.bin LEFT_INDEX RIGHT_INDEX WEIGHT_BITS_HEX | body-roundtrip INPUT.bin OUTPUT.bin | normalize-body INPUT.bin POSITION_BITS_HEX | body-plan MODE X_BITS_HEX Y_BITS_HEX | inspect-bundle BANK.vwb | extract-preset BANK.vwb OUTPUT.vwm BANK_INDEX PRESET_INDEX | replace-preset BANK PRESET NEW_BANK BANK_INDEX PRESET_INDEX | roundtrip INPUT OUTPUT | rename INPUT OUTPUT NAME | set INPUT OUTPUT SLOT_HEX PARAM_HEX int|float VALUE\nAll commands are offline. Output files must not exist. Explicit edits enforce recovered legacy UI domains; imported unknown settings remain lossless.".into(),
             );
         }
     }
