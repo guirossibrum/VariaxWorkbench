@@ -316,3 +316,5 @@ mod tests {
         assert_eq!(preset.raw[191], 0xa5);
     }
 }
+
+pub mod variax_bridge_record;
