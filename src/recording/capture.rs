@@ -274,7 +274,7 @@ fn validate_software_shape(
     map: ChannelMap,
     max_take_bytes: u64,
 ) -> Result<(), CaptureError> {
-    if channels < 2 || channels > MAX_CHANNELS {
+    if !(2..=MAX_CHANNELS).contains(&channels) {
         return Err(CaptureError::InvalidChannels);
     }
     if map.left >= channels || map.right >= channels || map.left == map.right {
