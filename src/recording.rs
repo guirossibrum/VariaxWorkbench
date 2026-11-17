@@ -1527,7 +1527,10 @@ impl Panel {
     }
 
     pub fn save(&mut self, path: &Path) -> Result<SavedTake, TakeError> {
-        let saved = self.current_take().ok_or(TakeError::NotStopped)?.save(path)?;
+        let saved = self
+            .current_take()
+            .ok_or(TakeError::NotStopped)?
+            .save(path)?;
         self.take_saved = true;
         self.message = format!("Saved {}", path.display());
         Ok(saved)

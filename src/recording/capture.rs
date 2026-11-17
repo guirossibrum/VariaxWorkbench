@@ -564,10 +564,7 @@ impl CaptureSession {
     pub fn drain(&mut self) -> Result<usize, CaptureError> {
         self.check_owner()?;
         let mut count = 0;
-        loop {
-            let Some(event) = self.queue.front().cloned() else {
-                break;
-            };
+        while let Some(event) = self.queue.front().cloned() {
             match event {
                 QueueEvent::Audio(chunk) => {
                     let levels = match self.take.push(&chunk) {
@@ -607,9 +604,7 @@ impl CaptureSession {
             self.error.get_or_insert(CaptureError::Take(error.clone()));
             return Err(CaptureError::Take(error));
         }
-        if let Err(error) = drained {
-            return Err(error);
-        }
+        drained?;
         if let Some(error) = prior_terminal_error {
             return Err(error);
         }
@@ -688,6 +683,7 @@ impl CaptureSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::Phase;
 
     fn file_plan() -> ValidatedPlan {
         ValidatedPlan::software_file(44_100, 2, ChannelMap { left: 0, right: 1 }, 64 * 1024)
