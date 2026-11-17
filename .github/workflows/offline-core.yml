@@ -8,8 +8,18 @@ on:
       - "tests/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "requirements.txt"
+      - "requirements-tools.json"
       - "research/**"
+      - "docs/reproducing-references.md"
+      - "scripts/verify_dependency_manifest.py"
+      - "scripts/test_dependency_manifest.py"
+      - "scripts/dependency_tools.py"
+      - "scripts/build_rust_math_reference.py"
       - "scripts/research_setup.py"
+      - "scripts/verify_native_startup.py"
+      - "scripts/verify_coefficient_jni.py"
+      - "scripts/audit_engine_math.py"
       - "scripts/test_research_setup.py"
       - "scripts/rea"
       - "scripts/inspect_firmware.py"
@@ -50,6 +60,8 @@ jobs:
         os: [ubuntu-24.04, windows-2025, macos-15]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    env:
+      RUSTUP_TOOLCHAIN: "1.99.1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -58,11 +70,15 @@ jobs:
         run: python scripts/check_coefficient_math.py
       - name: Synthetic research setup guards
         run: python scripts/test_research_setup.py
+      - name: Dependency manifest consistency
+        run: |
+          python scripts/verify_dependency_manifest.py
+          python scripts/test_dependency_manifest.py
       - name: Synthetic firmware layout guards
         run: |
           python scripts/inspect_firmware.py --self-test
           python scripts/test_firmware_map.py
-          python -m py_compile scripts/native_updater_oracle.py scripts/verify_aiff_export.py scripts/apple_tiger_math_oracle.py scripts/audit_apple_tiger_generator.py scripts/audit_apple_tiger_product.py scripts/isolate_apple_tiger_case.py scripts/audit_apple_tiger_math.py scripts/audit_x87_instruction_reference.py scripts/extract_apple_tiger_runtime.py scripts/native_x87_reference.py scripts/verify_apple_tiger_runtime.py scripts/coefficient_oracle.py
+          python -m py_compile scripts/native_updater_oracle.py scripts/verify_aiff_export.py scripts/apple_tiger_math_oracle.py scripts/audit_apple_tiger_generator.py scripts/audit_apple_tiger_product.py scripts/isolate_apple_tiger_case.py scripts/audit_apple_tiger_math.py scripts/audit_x87_instruction_reference.py scripts/extract_apple_tiger_runtime.py scripts/native_x87_reference.py scripts/verify_apple_tiger_runtime.py scripts/coefficient_oracle.py scripts/dependency_tools.py scripts/build_rust_math_reference.py scripts/verify_native_startup.py scripts/verify_coefficient_jni.py scripts/audit_engine_math.py
           python -c "import json; json.load(open('research/updater-oracle-reference.json', encoding='utf-8'))"
       - name: Synthetic package guards
         if: runner.os == 'Linux'
@@ -70,7 +86,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
         with:
           toolchain: "1.99.1"
-          components: clippy
+          components: clippy, rustfmt
       - name: Record compiler and math profile
         run: |
           rustc -vV

@@ -87,3 +87,7 @@ When this checkout is managed by agent-coordinator, read
 client and the repository context in the receipt. Cloning or reading this guide
 does not activate a session, assign work, authorize CI or change any safety rule
 above. Keep machine-specific settings and credentials outside tracked files.
+
+## Required coordinated role reading
+
+Before further coordinated action, contributors must read [the contributor role](docs/roles/contributor.md), and Gatekeepers must read [the Gatekeeper role](docs/roles/gatekeeper.md). Both roles must explicitly load the versioned generic review skill named by their delivery. These role documents preserve all hardware and private-input boundaries; they do not activate a missing coordinator policy or grant work, CI or merge authority.

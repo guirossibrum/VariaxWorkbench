@@ -37,6 +37,7 @@ pub mod rig;
 pub mod simulation;
 #[cfg(feature = "usb")]
 pub mod usb;
+pub mod workbench_asset;
 
 pub const HEADER: [u8; 6] = [0xf0, 0, 1, 0x0c, 7, 0];
 pub const PODXT_ROUTING_ENABLE: [u8; 8] = [0xf0, 0, 1, 0x0c, 3, 0x23, 1, 0xf7];

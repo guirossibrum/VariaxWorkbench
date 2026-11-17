@@ -18,6 +18,174 @@ scripts, register drivers, mount a device or open USB/MIDI/audio hardware.
 
 ## Inputs and tools
 
+The repository dependency entry points are [requirements.txt](../requirements.txt)
+for the Linux x86-64 pip research profile and
+[requirements-tools.json](../requirements-tools.json) for Python, Rust,
+toolchain, host-package, and private-input boundaries. Validate the declarations
+without installing anything with:
+
+```sh
+python3 scripts/verify_dependency_manifest.py
+```
+
+The root requirements file is valid pip syntax, but intentionally targets only
+Linux x86-64 because the hash-locked Unicorn artifact is that platform's wheel.
+It is not a prerequisite for normal Rust builds or Windows/macOS core CI. For a
+private Linux research venv, prepare a wheelhouse from the declared requirements
+and install offline:
+
+```sh
+python3 -m pip download --only-binary=:all: --no-deps \
+  --require-hashes -r requirements.txt --dest WHEELS
+python3 -m venv .tools/python
+.tools/python/bin/python -m pip install --no-index --find-links WHEELS \
+  --require-hashes -r requirements.txt
+```
+
+The only active Python package is Unicorn 2.1.4; its wheel SHA-256 is recorded
+in `research/requirements-linux-x86_64.txt`. Setup, manifest checks, and ordinary
+script tests otherwise use the Python standard library. Python 3.11 is the
+documented minimum; CPython 3.14.8 is the recorded research baseline, not a
+cross-platform lock. pip itself and distro package revisions have no exact
+tracked pin.
+
+For Rust, install rustc 1.99.1 with Cargo and clippy from that same toolchain.
+The pinned workflow action and `Cargo.lock` are the sources of truth; do not
+copy crate versions into a second list. Populate Cargo's registry cache with
+`cargo fetch --locked` before offline work. The optional software-math helper
+also needs the exact `libm-0.2.16.crate`, its unpacked registry source, and Cargo
+index/cache metadata. The archive checksum is
+`b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981`; the helper
+checks every archived source file (155 in the recorded run), requires
+`force-soft-floats`, disables default features, and rejects transitive
+dependencies. This private cache is not supplied by Cargo.lock itself.
+
+With rustup available, the toolchain/cache setup is:
+
+```sh
+rustup toolchain install 1.99.1 --profile minimal --component clippy,rustfmt
+export RUSTUP_TOOLCHAIN=1.99.1
+cargo fetch --locked
+cargo test --locked --all-features
+cargo clippy --locked --all-features --all-targets -- -D warnings
+cargo fmt --all -- --check
+```
+
+The exported `RUSTUP_TOOLCHAIN` selects the pinned toolchain for every later
+`rustc`, `cargo`, and `rustfmt` invocation in that shell. CI installs both
+components and sets the same variable for the job.
+
+Ordinary Linux GUI/USB builds need the native C linker and the Wayland, XKB and
+X11 development metadata selected by the locked GUI features; check discovery
+with `pkg-config --modversion wayland-client xkbcommon`. Windows GUI builds use
+the MSVC linker/build tools and Windows SDK; macOS builds use Xcode Command Line
+Tools and the selected Apple SDK. Install these through the chosen image's native
+package manager and record exact package/SDK revisions there. Neither Cargo.lock
+nor the current workflow pins distro revisions or an immutable container image,
+so the repository does not claim those OS packages are byte-for-byte reproducible.
+The `rust_ci` commands in `requirements-tools.json` are ordinary product checks;
+the Python/Unicorn/native-analysis stack below is optional research, never an
+application runtime dependency.
+
+For the workflow's Ubuntu 24.04 runner, the native GUI metadata is provided by
+the distro's build-essential, pkg-config, Wayland/XKB and X11 development
+packages (including `libwayland-dev`, `libxkbcommon-dev`, `libxkbcommon-x11-dev`,
+`libx11-dev`, `libxrandr-dev`, `libxi-dev`, `libxcursor-dev`, and
+`libxinerama-dev`). Package revisions are image-supplied; record them with
+`dpkg-query -W` when reproducing a specific image. For example, on Ubuntu 24.04:
+
+```sh
+sudo apt-get install --no-install-recommends build-essential pkg-config \
+  libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-dev \
+  libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev
+pkg-config --modversion wayland-client xkbcommon
+dpkg-query -W build-essential pkg-config libwayland-dev libxkbcommon-dev \
+  libxkbcommon-x11-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev \
+  libxinerama-dev
+```
+
+This command is platform-qualified, but its package revisions follow the
+configured apt sources; the repository does not claim an immutable apt snapshot.
+On Windows use the installed
+MSVC C++ build tools and Windows SDK; on macOS use the installed Xcode Command
+Line Tools. These host tools are separate from pip and Cargo packages.
+
+### Pinned LLVM symbol tool for Linux research
+
+The libm research helper and selected native audits call `llvm-nm`; GNU `nm`
+does not satisfy that executable contract. For Ubuntu 24.04 amd64, the exact
+tool pin is LLVM 23.1.6 from the signed `llvm-toolchain-noble-23` repository.
+On 2026-11-16 the signed apt metadata identified package
+`llvm-23=1:23.1.6~++20261116013850+5b10d2d74929-1~exp1~20261116133903.98`,
+size 21,328,480 bytes, SHA-256
+`1b513e3fbe8857f9d7a9a7ad7999e346d4f71c7d5cc6cdddec5f89f8ea4c7866`. The
+repository InRelease signature verified with key fingerprint
+`6084 F3CF 814B 57C1 CF12 EFD5 15CF 4D18 AF4F 7421`; its SHA-256 is
+`b52799690e1d8bda4dd7d04309b38a8e7764197f13fae842001e878026dbee9e`, and the
+`Packages.gz` index SHA-256 is
+`b1bdd1f5c12749a7b8fad6efcf8f6950ee44a5a0441d2646e2b88aa72c7965a3`. The
+verified package archive contains `/usr/lib/llvm-23/bin/llvm-nm` and
+`/usr/bin/llvm-nm-23`. The official package instructions and signing-key
+fingerprint are published by [apt.llvm.org](https://apt.llvm.org/); the exact
+[Ubuntu amd64 package](https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-23/llvm-23_23.1.6~++20261116013850+5b10d2d74929-1~exp1~20261116133903.98_amd64.deb)
+is pinned here for post-merge provisioning.
+
+For a matching Ubuntu 24.04 image, verify the key fingerprint before adding
+the repository, install the exact package version, then expose its versioned
+binary directory to scripts that invoke `llvm-nm`:
+
+```sh
+curl -fsSLo /tmp/llvm-snapshot.gpg.key https://apt.llvm.org/llvm-snapshot.gpg.key
+gpg --show-keys --with-fingerprint /tmp/llvm-snapshot.gpg.key
+sudo install -d -m 0755 /usr/share/keyrings
+gpg --dearmor --output /tmp/llvm-snapshot.gpg /tmp/llvm-snapshot.gpg.key
+sudo install -m 0644 /tmp/llvm-snapshot.gpg /usr/share/keyrings/llvm-snapshot.gpg
+echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/llvm-snapshot.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main' | sudo tee /etc/apt/sources.list.d/llvm-23.list
+sudo apt-get update
+sudo apt-get install 'llvm-23=1:23.1.6~++20261116013850+5b10d2d74929-1~exp1~20261116133903.98'
+export PATH="/usr/lib/llvm-23/bin:$PATH"
+dpkg-query -W -f='${Version}\n' llvm-23
+llvm-nm --version
+```
+
+Expect the package version above and LLVM 23.1.6 from `llvm-nm --version`.
+This apt package is not installed by this task. The registered contributor
+containers use Arch Linux x86_64, so their separate package source is the
+official Arch `extra` repository. On 2026-11-16 its package page listed LLVM
+23.1.5-1; the signed package was independently checked against the local Arch
+pacman keyring. Its 16,884,148-byte archive SHA-256 is
+`0fd7df891e40b2c09f82e9bbce742ba984580da70ec5a4aa467e3349f1c4feea`, the
+packager key fingerprint is
+`2191B89431BAC0A8B96DE93D244740D17C7FD0EC`, and the archive contains
+`/usr/bin/llvm-nm`. See the official [Arch LLVM package page](https://archlinux.org/packages/extra/x86_64/llvm/)
+and the [official package archive and signature](https://geo.mirror.pkgbuild.com/extra/os/x86_64/llvm-23.1.5-1-x86_64.pkg.tar.zst).
+
+On an Arch Linux x86_64 contributor container with its normal pacman keyring,
+download and verify the exact package before installing it. `pacman-key` checks
+the detached signature against trusted Arch packager keys; the explicit digest
+also confirms the inspected archive bytes. Then install the local package and
+verify the installed package and executable:
+
+```sh
+curl -fsSLO https://geo.mirror.pkgbuild.com/extra/os/x86_64/llvm-23.1.5-1-x86_64.pkg.tar.zst
+curl -fsSLO https://geo.mirror.pkgbuild.com/extra/os/x86_64/llvm-23.1.5-1-x86_64.pkg.tar.zst.sig
+echo '0fd7df891e40b2c09f82e9bbce742ba984580da70ec5a4aa467e3349f1c4feea  llvm-23.1.5-1-x86_64.pkg.tar.zst' | sha256sum --check
+sudo pacman-key --verify llvm-23.1.5-1-x86_64.pkg.tar.zst.sig llvm-23.1.5-1-x86_64.pkg.tar.zst
+sudo pacman -U ./llvm-23.1.5-1-x86_64.pkg.tar.zst
+pacman -Q llvm
+pacman -Qkk llvm
+llvm-nm --version
+```
+
+Expect `llvm 23.1.5-1`, and the version line from `llvm-nm --version` must be
+`LLVM version 23.1.5`. The pin's signature was made on 2026-11-09 by
+`Leonidas Spyropoulos <artafinde@archlinux.org>`; the package is kept in the
+official Arch repository rather than an AUR or third-party build. Package
+updates may replace it; refresh and review the signature, hash, and exact
+version before changing this pin. Other distributions and architectures need
+their own verified package pin. Do not treat either package as a universal
+installation recipe.
+
 `research/artifacts.json` identifies the archived installer/firmware files by
 size and SHA-256. The Workbench recipe requires the two exact 1.75 installers:
 
@@ -33,9 +201,9 @@ not inputs to the coefficient-reference extraction recipe.
 The tested research tools are CPython 3.14.8, Temurin JDK 17.0.21, 7-Zip 26.06,
 Unicorn 2.1.4 and Rust 1.99.1, with a Linux C linker/compiler available as `cc`.
 Python 3.11+ is needed by the setup helper. `doctor` checks tool availability,
-the tested JDK/extractor/compiler versions and both original archive identities,
-and records the host/Python/libc versions. A missing/mismatched prerequisite
-stops with a setup error. The default reference adapter uses the research
+the tested JDK/extractor/compiler versions, pinned LLVM 23.1.6 `llvm-nm`, and
+both original archive identities, and records the host/Python/libc versions. A
+missing/mismatched prerequisite stops with a setup error. The default reference adapter uses the research
 host's libm; changed runtime rounding is a test failure to investigate, not
 permission to replace expectations. See [math profiles](math-profiles.md).
 

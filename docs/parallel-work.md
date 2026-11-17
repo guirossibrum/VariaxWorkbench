@@ -62,3 +62,7 @@ operations, or lock overrides. Vendor packages, extracted binaries, captures,
 credentials and user presets stay ignored/local. Only synthetic test data and
 permitted provenance/derived documentation may be committed. Passing offline
 checks never authorizes hardware operations.
+
+## Required coordinated role reading
+
+Before further coordinated action, contributors must read [the contributor role](roles/contributor.md), and Gatekeepers must read [the Gatekeeper role](roles/gatekeeper.md). Both roles must explicitly load the versioned generic review skill named by their delivery. These role documents preserve all hardware and private-input boundaries; they do not activate a missing coordinator policy or grant work, CI or merge authority.

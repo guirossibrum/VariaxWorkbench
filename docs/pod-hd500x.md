@@ -182,7 +182,10 @@ byte layout, a file product id, a model id, or an effect id. The `.dmg` and
 
 The device Advanced Guide Rev A at
 `https://line6.com/data/6/0a06434c6fb051e03e8ab63dc/application/pdf/POD%20HD500X%20Advanced%20Guide%20-%20English%20(%20Rev%20A%20).pdf`
-was not downloaded. It did not supply definitions to this record.
+was not downloaded during the earlier pass. A later bounded acquisition and
+page-cited capability/routing study is now recorded in the
+[Advanced Guide evidence](pod-hd500x-advanced-guide.md). It adds documented
+behavior, not preset/model identities or a codec.
 
 The v2.62 notes name three optional amp/cab packs and eight setlist display
 names, including VARIAX. They also say selecting a preset from that setlist

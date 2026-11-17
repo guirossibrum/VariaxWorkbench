@@ -1,0 +1,162 @@
+{
+  "schema_version": 1,
+  "authoritative_inputs": {
+    "rust_crates": "Cargo.lock",
+    "rust_toolchain": ".github/workflows/offline-core.yml",
+    "python_packages": "research/requirements-linux-x86_64.txt",
+    "tool_workflows": [
+      "scripts/research_setup.py",
+      "scripts/build_rust_math_reference.py",
+      "docs/reproducing-references.md",
+      "docs/native-analysis.md",
+      "docs/math-runtime-audit.md"
+    ]
+  },
+  "profiles": {
+    "rust_ci": {
+      "required": {
+        "rustc": "1.99.1",
+        "cargo": "bundled with rustc 1.99.1",
+        "linker": "native target linker",
+        "c_compiler": "native target C compiler where a locked crate build script requires it"
+      },
+      "commands": [
+        "cargo test --locked --all-features",
+        "cargo clippy --locked --all-features --all-targets -- -D warnings",
+        "cargo fmt --all -- --check"
+      ],
+      "components": ["clippy", "rustfmt"],
+      "provisioning": "Install Rust 1.99.1 with clippy and rustfmt using rustup or the pinned CI toolchain action. Set RUSTUP_TOOLCHAIN=1.99.1 for all subsequent Rust commands. Cargo.lock is authoritative for crate versions and registry checksums. Fetch with cargo fetch --locked before offline builds."
+    },
+    "linux_x86_64_research": {
+      "required": {
+        "python": {
+          "minimum": "3.11",
+          "tested_baseline": "3.14.8",
+          "reason": "The setup helper uses tomllib; the listed baseline is the documented research environment."
+        },
+        "pip": {
+          "version": null,
+          "reason": "pip bootstraps a venv and downloads a hash-locked wheel; no exact pip version is recorded."
+        },
+        "unicorn": {
+          "version": "2.1.4",
+          "wheel_sha256": "9d6e6dea140560de4ebd8446661f7ef84a357d428c14a3ef09dacd306ec8c239",
+          "scope": "Linux x86-64 manylinux wheel; installed only into the private research venv."
+        },
+        "rustc": "1.99.1",
+        "cargo": "bundled with rustc 1.99.1",
+        "cc": "C compiler/linker driver required by the optional MPFR and native x87 helpers; exact compiler build is host-image-specific.",
+        "nm": "GNU nm is used by the optional native x87 helper; record the installed binutils version.",
+        "llvm-nm": {
+          "supported_versions": ["23.1.5", "23.1.6"],
+          "platform": "Ubuntu 24.04 amd64",
+          "package": "llvm-23",
+          "package_version": "1:23.1.6~++20261116013850+5b10d2d74929-1~exp1~20261116133903.98",
+          "package_sha256": "1b513e3fbe8857f9d7a9a7ad7999e346d4f71c7d5cc6cdddec5f89f8ea4c7866",
+          "package_size": 21328480,
+          "package_url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-23/llvm-23_23.1.6~++20261116013850+5b10d2d74929-1~exp1~20261116133903.98_amd64.deb",
+          "repository": "https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main",
+          "signing_key_fingerprint": "6084F3CF814B57C1CF12EFD515CF4D18AF4F7421",
+          "verified_metadata": {
+            "date": "2026-11-16",
+            "inrelease_sha256": "b52799690e1d8bda4dd7d04309b38a8e7764197f13fae842001e878026dbee9e",
+            "packages_gz_sha256": "b1bdd1f5c12749a7b8fad6efcf8f6950ee44a5a0441d2646e2b88aa72c7965a3"
+          },
+          "binary": "/usr/lib/llvm-23/bin/llvm-nm",
+          "arch_linux_x86_64": {
+            "platform": "Arch Linux x86_64 contributor baseline",
+            "repository": "extra",
+            "package": "llvm",
+            "package_version": "23.1.5-1",
+            "package_sha256": "0fd7df891e40b2c09f82e9bbce742ba984580da70ec5a4aa467e3349f1c4feea",
+            "package_size": 16884148,
+            "package_url": "https://geo.mirror.pkgbuild.com/extra/os/x86_64/llvm-23.1.5-1-x86_64.pkg.tar.zst",
+            "package_signature_url": "https://geo.mirror.pkgbuild.com/extra/os/x86_64/llvm-23.1.5-1-x86_64.pkg.tar.zst.sig",
+            "signing_key_fingerprint": "2191B89431BAC0A8B96DE93D244740D17C7FD0EC",
+            "signer": "Leonidas Spyropoulos <artafinde@archlinux.org>",
+            "signature_date": "2026-11-09",
+            "binary": "/usr/bin/llvm-nm",
+            "verified_metadata": "The detached package signature verified with the local Arch pacman keyring; the archive SHA-256 and size were recorded after signature verification, and the archive contains usr/bin/llvm-nm."
+          },
+          "scope": "Use the Ubuntu package profile only on Ubuntu 24.04 amd64 and the separately signed Arch package profile on Arch Linux x86_64. Their package managers authenticate packages; the listed archive hashes identify the inspected package bytes. Other distributions and architectures need their own verified pin. Do not substitute GNU nm."
+        },
+        "jdk17": {
+          "version": "17.0.21",
+          "distribution": "Temurin",
+          "scope": "Workbench Java inspection and the documented reference workflow; use java, javac, and javap from this same JDK."
+        },
+        "7zip": {
+          "version": "26.06",
+          "executable": "7zz",
+          "scope": "Static archive listing/extraction only; original installers are never executed."
+        },
+        "libm": {
+          "version": "0.2.16",
+          "crate_sha256": "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981",
+          "source_files_verified": 155,
+          "features": ["force-soft-floats"],
+          "default_features": false,
+          "transitive_dependencies": 0,
+          "role": "Optional offline research helper; the crate is already in Cargo.lock and is not a new product dependency."
+        }
+      },
+      "optional": {
+        "mpfr": {
+          "observed_version": "4.2.2",
+          "system_packages": ["MPFR development headers/library", "GMP development headers/library"],
+          "reason": "Independent math comparison helpers only; exact distro package revisions are not recorded."
+        },
+        "ghidra_rea": {
+          "ghidra": "12.2",
+          "rea": "6.9.0",
+          "rea_commit": "79cc07ecf191e44ff4e280fa843e11a574e20f77",
+          "node": "24.22.1",
+          "npm": "11.16.0",
+          "jdk": "25.0.5",
+          "note": "Optional static re-analysis. The bridge accepts Ghidra 12.2; its recorded verified baseline is 12.1.4. Saved digest-bound metadata avoids requiring this toolchain for the bounded reference replay."
+        },
+        "cfr": {
+          "version": "0.152",
+          "reason": "Optional Java decompilation only; not needed by current automated reference replay. The repository does not record a distribution checksum."
+        },
+        "pillow": {
+          "version": null,
+          "reason": "Only the optional contact-sheet helper uses Pillow; no pin is recorded."
+        }
+      },
+      "offline_cache": {
+        "python_wheels": "Download the exact Unicorn wheel to a private wheelhouse, verify the hash in research/requirements-linux-x86_64.txt, then use pip --no-index --find-links WHEELS --require-hashes.",
+        "cargo": "Cargo.lock pins crates but does not contain crate source. Populate Cargo registry source, archive, and index/cache metadata before setting Cargo offline mode. The libm helper additionally requires the exact .crate archive and its unpacked source tree; build_rust_math_reference.py verifies the archive digest and every archived source file before compiling. No network fallback is used by that helper."
+      },
+      "host_packages": {
+        "linux_gui_usb": {
+          "platform": "Linux x86-64",
+          "tools": ["C compiler/linker", "pkg-config", "Wayland client development metadata", "xkbcommon development metadata", "X11 development metadata"],
+          "verify": "pkg-config --modversion wayland-client xkbcommon",
+          "version_policy": "Use the chosen image's native package manager and record its exact package revisions. Cargo.lock does not pin OS packages, and the current repository does not identify a frozen container image or distro package snapshot."
+        },
+        "windows_gui_usb": {
+          "platform": "Windows x86-64",
+          "tools": ["Rust MSVC target", "Visual C++ linker/build tools", "Windows SDK"],
+          "version_policy": "Use the image's installed MSVC/Windows SDK and record exact versions; these are not pinned by Cargo.lock."
+        },
+        "macos_gui_usb": {
+          "platform": "macOS",
+          "tools": ["Rust Apple target", "Xcode Command Line Tools and SDK"],
+          "version_policy": "Use the image's installed Xcode toolchain and record exact versions; these are not pinned by Cargo.lock."
+        }
+      }
+    }
+  },
+  "private_inputs": {
+    "policy": "Original vendor installers, firmware, captured settings, derived private analysis, and task-bound supplements stay in ignored/private storage and are not Python/Rust/system dependencies.",
+    "locations": "Use the authenticated coordinator inventory and assignment-scoped prepared inputs. Never copy those inputs into tracked files or publish inventory contents.",
+    "no_vendor_execution": true,
+    "no_device_access": true
+  },
+  "known_gaps": [
+    "The repository does not lock distro-specific GUI/USB SDK package revisions or immutable container image digests. Record these from the post-merge AC container baseline before claiming byte-for-byte environment reproduction.",
+    "The exact llvm-nm package pins cover Ubuntu 24.04 amd64 and Arch Linux x86_64 only; other distributions and architectures need their own verified repository metadata. The repository has no upstream archive hash for Temurin JDK, 7-Zip, Ghidra, Node, CFR 0.152, or Pillow; pip itself also lacks an exact pin. The private coordinator inventory records file hashes for supplied tools, but those machine-local entries are not copied into this tracked manifest. The Ubuntu and Arch LLVM packages, Unicorn wheel, and Cargo registry checksums are the reproducible package artifact hashes recorded here."
+  ]
+}

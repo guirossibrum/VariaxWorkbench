@@ -178,3 +178,50 @@ reuse one existing settings case. They are not new distinct settings for #33,
 not additional product compatibility profiles and not a general assertion that
 other functions cannot matter on other inputs. Their private report records the
 source/input/auditor hashes and output hashes; no vendor output is published.
+
+## Neighboring-position diagnostic
+
+The issue #5 continuation tests the four adjacent float32 pickup positions
+around the existing series case's first pickup position, 2.0: bit patterns
+`3ffffffe`, `3fffffff`, `40000001` and `40000002`. Their spacing is asymmetric
+across the power-of-two boundary. Each input changes only the first position
+field at offset `0x18`; these are synthetic native settings, without Java's
+parameter adjustments. The original center is run before and after the four
+neighbors to check both saved output identities and warm-state repeatability.
+
+All six paired host/Apple executions complete and validate packed checksums.
+All five distinct inputs retain the same four coefficient-word differences
+(Apple minus host: -3, -1, +1, +1) and checksum difference (-2). Thus the known
+discrepancy persists across this immediate input neighborhood; perturbing the
+position by one or two representable values does not remove it. This does not
+locate the internal rounding threshold or establish which runtime is accurate.
+It is four new local settings, not a new full-corpus or issue #33 result.
+
+```sh
+.tools/python/bin/python scripts/audit_series_position_boundary.py "$LIB"
+```
+
+The diagnostic preserves inputs and packed outputs in its own ignored directory
+and writes a content-addressed private report with adapter/source hashes,
+platform, exact profile startup contracts and changed-word measurements. It
+leaves canonical references intact. Each runtime executes all 26 initializers
+and captures 53 destructor registrations under its existing strict contract.
+The five-setting pilot and the later run with the repeated center are preserved
+separately. This is original-instruction adapter evidence, not a fresh Rust
+product comparison or an independent MPFR accuracy result.
+
+No product math fix or default change is justified by this result. Acceptance
+criterion three stays open: the input neighborhood is quantified, but an
+authenticated installation/runtime and historical processor contract remain
+unavailable, and internal threshold attribution, complete return exception/ABI
+state and Windows compiler/JVM execution remain unresolved. The Apple 88.3.9
+candidate's x87 helpers still depend on Unicorn's host-double implementation.
+Resolving those accuracy claims needs an independently identified reference;
+the Gatekeeper must disposition the prerequisite before issue #6 proceeds.
+
+The packed-output guard now requires exactly 3276 bytes before decoding. Three
+vendor-free regressions (`python3 scripts/test_series_position_boundary.py`)
+cover valid full-length output, checksum-matching 3274/3275-byte truncations and
+a full-length checksum mismatch. The saved report above retains its original
+auditor hash; review independently checked all twelve saved outputs at the full
+3276-byte length. This guard correction does not replay or relabel that evidence.
