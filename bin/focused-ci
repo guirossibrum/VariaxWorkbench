@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if (($# == 0)); then
+    echo "usage: bin/focused-ci SELECTION..." >&2
+    exit 2
+fi
+
+for selection in "$@"; do
+    case "$selection" in
+        functional:cargo-all-features)
+            cargo test --all-features
+            ;;
+        functional:cargo-gui-usb)
+            cargo test --features gui,usb
+            ;;
+        lint:cargo-clippy)
+            cargo clippy --all-features --all-targets -- -D warnings
+            ;;
+        format:cargo-fmt)
+            cargo fmt --all -- --check
+            ;;
+        *)
+            echo "unsupported focused selection: $selection" >&2
+            exit 2
+            ;;
+    esac
+done
