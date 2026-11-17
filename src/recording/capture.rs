@@ -62,7 +62,7 @@ pub struct CaptureContract {
     pub provenance: &'static str,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CaptureError {
     Registry(AdmissionError),
     ForgedOrChangedRoute,
@@ -328,7 +328,7 @@ impl CaptureSession {
         &self.take
     }
     pub fn retained_error(&self) -> Option<CaptureError> {
-        self.error
+        self.error.clone()
     }
     pub fn queued_bytes(&self) -> usize {
         self.queued_bytes
