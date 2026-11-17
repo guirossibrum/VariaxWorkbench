@@ -439,7 +439,7 @@ impl CaptureSession {
     }
 
     fn fail<T>(&mut self, error: CaptureError) -> Result<T, CaptureError> {
-        self.error = Some(error);
+        self.error = Some(error.clone());
         Err(error)
     }
 }
