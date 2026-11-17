@@ -6,6 +6,7 @@
 //! re-amp path. `StartAudioCapture` stays locked in the session gate.
 
 pub mod aiff;
+pub mod capture;
 
 use std::path::{Path, PathBuf};
 
