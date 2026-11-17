@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
+<title id="title">Annotated visual hierarchy comparison</title>
+<desc id="desc">Original specification diagram with synthetic data. Proposed behavior, not implemented GUI or a vendor screenshot.</desc>
+<style>text{font-family:sans-serif;font-size:14px;fill:#ebebeb}.title{font-size:18px;font-weight:bold}.muted{fill:#c0c0c0}</style>
+<rect width="1280" height="760" fill="#000000"/>
+<text x="24" y="32" class="title">REFERENCE HIERARCHY / GUITAR / POD</text>
+<text x="24" y="57" class="muted">Original schematics. Reference column reconstructs XML hierarchy only; all task behavior is proposed.</text>
+<text x="24" y="96" class="title">Resource reconstruction</text>
+<rect x="24" y="112" width="400" height="44" rx="6" fill="#0f0f0f" stroke="none" stroke-width="2"/>
+<text x="36" y="140" class="">1  Global navigation / offline scope</text>
+<rect x="24" y="164" width="400" height="44" rx="6" fill="#222222" stroke="none" stroke-width="2"/>
+<text x="36" y="192" class="">2  60 / 48 authored-unit bars</text>
+<rect x="24" y="216" width="286" height="224" rx="6" fill="#0f0f0f" stroke="none" stroke-width="2"/>
+<text x="36" y="244" class="">3  Task canvas / custom</text>
+<text x="36" y="264" class="">composition unknown</text>
+<rect x="318" y="216" width="106" height="414" rx="6" fill="#222222" stroke="none" stroke-width="2"/>
+<text x="328" y="244" class="">5  250</text>
+<text x="328" y="264" class="">authored-</text>
+<text x="328" y="284" class="">unit</text>
+<text x="328" y="304" class="">utility</text>
+<text x="328" y="324" class="">pane</text>
+<rect x="24" y="448" width="286" height="182" rx="6" fill="#0f0f0f" stroke="none" stroke-width="2"/>
+<text x="36" y="476" class="">4  Category + parameter panes</text>
+<text x="36" y="556" class="">Named value + units. Numeric</text>
+<text x="36" y="576" class="">entry accompanies any knob.</text>
+<rect x="24" y="638" width="400" height="44" rx="6" fill="#222222" stroke="none" stroke-width="2"/>
+<text x="36" y="665" class="">6  Persistent status / capability reason</text>
+<text x="440" y="96" class="title">Variax local editor proposal</text>
+<rect x="440" y="112" width="400" height="44" rx="6" fill="#0f0f0f" stroke="none" stroke-width="2"/>
+<text x="452" y="140" class="">1  Global navigation / offline scope</text>
+<rect x="440" y="164" width="400" height="44" rx="6" fill="#222222" stroke="none" stroke-width="2"/>
+<text x="452" y="192" class="">2  T-Model / Bank 1 / Slot 2 / Unsaved</text>
+<rect x="440" y="216" width="286" height="224" rx="6" fill="#0f0f0f" stroke="none" stroke-width="2"/>
+<text x="452" y="244" class="">3  Modeled virtual pickups</text>
+<text x="452" y="264" class="">(not piezo sensors)</text>
+<path d="M490 340 Q460 300 540 308 L690 308 L690 336 L540 336 Q460 390 490 340Z" fill="#424242" stroke="#c0c0c0"/>
+<rect x="550" y="309" width="12" height="26" rx="6" fill="#78dce8" stroke="none" stroke-width="2"/>
+<rect x="596" y="309" width="12" height="26" rx="6" fill="#78dce8" stroke="none" stroke-width="2"/>
+<text x="452" y="405" class="muted">Original symbolic guitar geometry</text>
+<rect x="734" y="216" width="106" height="414" rx="6" fill="#222222" stroke="none" stroke-width="2"/>
+<text x="744" y="244" class="">5  Local</text>
+<text x="744" y="264" class="">guitar</text>
+<text x="744" y="284" class="">documents</text>
+<rect x="440" y="448" width="286" height="182" rx="6" fill="#0f0f0f" stroke="none" stroke-width="2"/>
+<text x="452" y="476" class="">4  Body | Pickups | Wiring |</text>
+<text x="452" y="496" class="">Tuning</text>
+<text x="452" y="556" class="">Named value + units. Numeric</text>
+<text x="452" y="576" class="">entry accompanies any knob.</text>
+<rect x="440" y="638" width="400" height="44" rx="6" fill="#222222" stroke="none" stroke-width="2"/>
+<text x="452" y="665" class="">6  Persistent status / capability reason</text>
+<text x="856" y="96" class="title">POD local library proposal</text>
+<rect x="856" y="112" width="400" height="44" rx="6" fill="#0f0f0f" stroke="none" stroke-width="2"/>
+<text x="868" y="140" class="">1  Global navigation / offline scope</text>
+<rect x="856" y="164" width="400" height="44" rx="6" fill="#222222" stroke="none" stroke-width="2"/>
+<text x="868" y="192" class="">2  PODxt Live / Tone A / source file</text>
+<rect x="856" y="216" width="286" height="224" rx="6" fill="#0f0f0f" stroke="none" stroke-width="2"/>
+<text x="868" y="244" class="">3  Recovered metadata;</text>
+<text x="868" y="264" class="">unsupported editing</text>
+<rect x="1150" y="216" width="106" height="414" rx="6" fill="#222222" stroke="none" stroke-width="2"/>
+<text x="1160" y="244" class="">5  Family-</text>
+<text x="1160" y="264" class="">scoped</text>
+<text x="1160" y="284" class="">local tones</text>
+<rect x="856" y="448" width="286" height="182" rx="6" fill="#0f0f0f" stroke="none" stroke-width="2"/>
+<text x="868" y="476" class="">4  Raw model ID + unverified</text>
+<text x="868" y="496" class="">reason</text>
+<text x="868" y="556" class="">Named value + units. Numeric</text>
+<text x="868" y="576" class="">entry accompanies any knob.</text>
+<rect x="856" y="638" width="400" height="44" rx="6" fill="#222222" stroke="none" stroke-width="2"/>
+<text x="868" y="665" class="">6  Persistent status / capability reason</text>
+<text x="24" y="718" class="muted">Proposed full layout: 60 / 48 / 24 chrome, 250 library; 4/8/12/16/24 spacing; 32 minimum targets.</text>
+</svg>

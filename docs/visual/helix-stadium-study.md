@@ -227,3 +227,11 @@ mockups reconstruct hierarchy, not a verified runtime screenshot match. Follow-u
 issues are proposed above; they have not been created or accepted by this study.
 No Rust GUI behavior, hardware support, safety, recovery or audio equivalence is
 established by this work. Existing hardware locks remain unchanged.
+
+## Component specification follow-up
+
+The [bounded follow-up specification](component-specification.md) adds static
+font-table/state/anchor measurements, original annotated comparison and state
+boards, measurable proposed layout/theme contracts and migration acceptance
+gates. It preserves this study and its three original mockups. Neither milestone
+implements the GUI or establishes reference-renderer equivalence.

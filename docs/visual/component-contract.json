@@ -1,0 +1,247 @@
+{
+  "status": "proposal; geometry/contrast checks only, no implemented GUI or font metrics proof",
+  "colors": {
+    "canvas": "#000000",
+    "panel": "#0f0f0f",
+    "raised": "#222222",
+    "selected": "#424242",
+    "text": "#ebebeb",
+    "secondary": "#c0c0c0",
+    "focus": "#78dce8",
+    "warning": "#ffd580",
+    "error": "#ff9c9c"
+  },
+  "contrast_pairs": [
+    [
+      "text",
+      "selected",
+      4.5
+    ],
+    [
+      "secondary",
+      "selected",
+      4.5
+    ],
+    [
+      "focus",
+      "panel",
+      3
+    ],
+    [
+      "error",
+      "raised",
+      4.5
+    ],
+    [
+      "warning",
+      "raised",
+      4.5
+    ]
+  ],
+  "tokens": {
+    "space": [
+      4,
+      8,
+      12,
+      16,
+      24
+    ],
+    "body": 14,
+    "title": 18,
+    "line_height": 20,
+    "target": 32,
+    "focus_border": 2,
+    "radius": 6,
+    "library_width": 250,
+    "min_inspector_column": 200
+  },
+  "layouts": [
+    {
+      "name": "compact",
+      "width": 1024,
+      "height": 768,
+      "panels": {
+        "global": [
+          0,
+          0,
+          1024,
+          60
+        ],
+        "context": [
+          0,
+          60,
+          1024,
+          48
+        ],
+        "canvas": [
+          0,
+          108,
+          1024,
+          356
+        ],
+        "inspector": [
+          0,
+          464,
+          1024,
+          280
+        ],
+        "status": [
+          0,
+          744,
+          1024,
+          24
+        ]
+      },
+      "library": "drawer; closed by default; focus returns to Library button"
+    },
+    {
+      "name": "wide",
+      "width": 1280,
+      "height": 800,
+      "panels": {
+        "global": [
+          0,
+          0,
+          1280,
+          60
+        ],
+        "context": [
+          0,
+          60,
+          1280,
+          48
+        ],
+        "canvas": [
+          0,
+          108,
+          1030,
+          368
+        ],
+        "inspector": [
+          0,
+          476,
+          1030,
+          300
+        ],
+        "library": [
+          1030,
+          108,
+          250,
+          668
+        ],
+        "status": [
+          0,
+          776,
+          1280,
+          24
+        ]
+      },
+      "library": "docked"
+    },
+    {
+      "name": "large",
+      "width": 1920,
+      "height": 1080,
+      "panels": {
+        "global": [
+          0,
+          0,
+          1920,
+          60
+        ],
+        "context": [
+          0,
+          60,
+          1920,
+          48
+        ],
+        "canvas": [
+          0,
+          108,
+          1670,
+          568
+        ],
+        "inspector": [
+          0,
+          676,
+          1670,
+          380
+        ],
+        "library": [
+          1670,
+          108,
+          250,
+          948
+        ],
+        "status": [
+          0,
+          1056,
+          1920,
+          24
+        ]
+      },
+      "library": "docked"
+    }
+  ],
+  "focus_order": [
+    "navigation",
+    "file_actions",
+    "canvas_selection",
+    "inspector_category",
+    "parameter_value",
+    "library",
+    "status_action"
+  ],
+  "modal_focus": [
+    "save_copy",
+    "discard",
+    "cancel"
+  ],
+  "scales": [
+    1,
+    1.5,
+    2
+  ],
+  "states": [
+    {
+      "id": "dirty",
+      "message": "Unsaved changes",
+      "action": "request open or quit -> blocking prompt; no background edit"
+    },
+    {
+      "id": "save_success",
+      "message": "Saved new copy",
+      "action": "continue pending action only after existing save API succeeds"
+    },
+    {
+      "id": "save_failure",
+      "message": "Copy not saved: destination exists",
+      "action": "retain edits and pending action; choose another path or cancel"
+    },
+    {
+      "id": "cancel",
+      "message": "Editing retained",
+      "action": "dismiss prompt; restore invoking focus; no file write"
+    },
+    {
+      "id": "discard",
+      "message": "Discard local edits?",
+      "action": "explicit choice; continue existing guarded pending action"
+    },
+    {
+      "id": "empty",
+      "message": "No local presets",
+      "action": "Open local file; preserve family filter"
+    },
+    {
+      "id": "unsupported",
+      "message": "Parameter definition unverified",
+      "action": "read-only raw ID; no invented parameter values"
+    },
+    {
+      "id": "hardware_locked",
+      "message": "Hardware access locked - offline phase",
+      "action": "no backend invocation; reason available in keyboard flow"
+    }
+  ]
+}
