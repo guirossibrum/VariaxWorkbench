@@ -494,11 +494,11 @@ impl CaptureSession {
         if generation != self.generation {
             return self.fail(CaptureError::StaleGeneration);
         }
-        if self.stopped {
-            return self.fail(CaptureError::Stopped);
-        }
         if self.terminal {
             return Err(self.error.clone().unwrap_or(CaptureError::Stopped));
+        }
+        if self.stopped {
+            return self.fail(CaptureError::Stopped);
         }
         if bytes.is_empty() {
             return self.fail(CaptureError::EmptyChunk);
@@ -768,8 +768,15 @@ mod tests {
         assert_eq!(session.callback_chunk(4, &b), Err(CaptureError::QueueFull));
         assert_eq!(session.queued_bytes(), QUEUE_CAPACITY_BYTES);
         session.drain().unwrap();
-        assert_eq!(session.take().pcm().len(), QUEUE_CAPACITY_BYTES);
-        assert!(session.take().pcm().iter().all(|byte| *byte == 0x11));
+        assert_eq!(session.take().pcm().len(), QUEUE_CAPACITY_BYTES + 16_384);
+        assert_eq!(
+            &session.take().pcm()[..QUEUE_CAPACITY_BYTES],
+            vec![0x11; QUEUE_CAPACITY_BYTES]
+        );
+        assert_eq!(
+            &session.take().pcm()[QUEUE_CAPACITY_BYTES..],
+            vec![0; 16_384]
+        );
         assert_eq!(
             session
                 .take()

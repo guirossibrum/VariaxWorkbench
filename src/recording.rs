@@ -1975,6 +1975,7 @@ mod tests {
         assert!(panel.take.is_none());
         assert!(panel.has_unsaved_take());
         panel.feed().unwrap();
+        panel.feed().unwrap();
         assert_eq!(panel.current_take().unwrap().pcm(), pcm);
         assert_eq!(panel.current_take().unwrap().frames(), 300);
         panel.stop().unwrap();
@@ -1987,11 +1988,10 @@ mod tests {
         assert!(!panel.has_unsaved_take());
         let output = parse_wav(&std::fs::read(saved.wav_path).unwrap()).unwrap();
         assert_eq!(output.data, pcm);
-        assert_eq!(
+        assert!(
             std::fs::read_to_string(saved.sidecar_path)
                 .unwrap()
-                .contains("\"file_label\": \"take.wav\""),
-            true
+                .contains("\"file_label\": \"take.wav\"")
         );
         panel.cancel().unwrap();
         assert!(!panel.has_unsaved_take());
