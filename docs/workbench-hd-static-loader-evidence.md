@@ -208,3 +208,40 @@ nonnumeric metadata consumers and stored-value range/scaling path also remain
 unresolved. No device input is requested. Until these source edges are
 recovered, #31 remains pending. Keep `LIVE_ACCESS_LOCKED` and the Python probe
 guard locked.
+
+## Offline structural inspector and caller boundary
+
+The Rust library now includes a bounded offline structural inspector for
+`FORM/WB2A` assets and the CLI command `inspect-workbench-asset FILE`. It
+checks the declared form length, chunk headers and parent bounds, and limits
+file size, chunk count, nesting, and model-definition count. It recognizes the
+leading `AINF`, `LIST/MDEF`, the four-byte `MINF` tag (the MINFO record), and an
+immediately following `MDAT` metadata header. The observed Workbench HD reader
+advances by each chunk header plus declared length without word padding; this
+differs from `FORM/L6PA`. Other chunks remain opaque source ranges.
+
+The inspector reports stored AINF/MINFO/MDAT fields and source offsets only.
+It does not decrypt or decompress model data, validate CRCs, or establish that
+any asset is valid for a physical instrument. Its separate optional catalog
+builder accepts bytes already supplied by its caller and labeled as decoded;
+it reads the source-backed little-endian logical key at byte offset `0x10b4`,
+with distinct body and pickup maps. Asset model IDs and catalog VariaxID keys
+are separate Rust types. The caller-supplied bytes have no verified provenance
+or integrity, and catalog results do not imply a JTV-69 mapping or physical
+applicability.
+
+Caller tracing supports that boundary: `WB2Preset::GetParamValFromPatchStruct`
+reads a logical VariaxID from the preset patch structure and looks up its body
+asset; the pickup accessor reads logical pickup IDs and uses the separate
+pickup lookup. Corresponding setters copy selected asset data into the preset
+patch structure. This shows preset editing semantics and a logical catalog
+namespace, while guitar identity/version detection is performed by a separate
+compatibility path. It does not connect JTV-69 identity to these catalog keys.
+
+Eight synthetic Rust tests cover body and pickup containers, unknown chunks,
+independent namespaces, missing keys, first duplicate MINFO retention,
+last-wins duplicate catalog keys in ascending asset-ID traversal order,
+truncated/overflowing lengths, short metadata, and parser bounds. These tests
+exercise synthetic CPU data only; they do not validate vendor payload decoding,
+audio equivalence, device compatibility, or physical safety. No vendor rows,
+assets, disassembly, or instruction bytes are included here.
