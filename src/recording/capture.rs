@@ -1,10 +1,11 @@
 //! Validated, bounded software capture sessions shared by recorder inputs.
 //!
-//! This module deliberately has no OS or device backend. Native route plans
-//! are revalidated against the frozen registry, but remain declarations only;
-//! external physical routes are rejected until an independently reviewed
-//! interface contract is registered. The queue is single-owner and intended
-//! for deterministic adapters and tests, not a real-time callback guarantee.
+//! Native route plans are revalidated against the frozen registry, but remain
+//! declarations only; external physical routes are rejected until an
+//! independently reviewed interface contract is registered. OS-specific
+//! contract translations live in `recording::adapters`; they are inactive and
+//! do not initialize a device. The queue is single-owner and intended for
+//! deterministic adapters and tests, not a real-time callback guarantee.
 
 use std::collections::VecDeque;
 use std::thread::ThreadId;
@@ -17,6 +18,7 @@ use crate::rig::audio::{
 };
 
 use super::{FrameFormat, InputOrigin, Phase, SampleClock, Take, TakeError, TakeRequest};
+use super::clock::{ClockError, ClockMeasurement, SoftwareClockTracker};
 
 pub const QUEUE_CAPACITY_BYTES: usize = 64 * 1024;
 pub const MAX_CHANNELS: u8 = 8;
@@ -76,6 +78,7 @@ pub enum CaptureError {
     InvalidChannelMap,
     InvalidClock,
     InvalidFormat,
+    Clock(ClockError),
     WrongThread,
     StaleGeneration,
     QueueFull,
@@ -435,6 +438,7 @@ pub struct CaptureSession {
     queued_bytes: usize,
     queued_gap_frames: u64,
     take: Take,
+    clock: SoftwareClockTracker,
     last_levels: super::Levels,
     error: Option<CaptureError>,
     terminal_error: Option<CaptureError>,
@@ -446,6 +450,8 @@ pub struct CaptureSession {
 impl CaptureSession {
     pub fn start(plan: ValidatedPlan, generation: u64) -> Result<Self, CaptureError> {
         plan.revalidate()?;
+        let clock = SoftwareClockTracker::new(plan.contract.clock.0, plan.contract.clock.1)
+            .map_err(CaptureError::Clock)?;
         let take = plan.prepare_take()?;
         Ok(Self {
             plan,
@@ -455,6 +461,7 @@ impl CaptureSession {
             queued_bytes: 0,
             queued_gap_frames: 0,
             take,
+            clock,
             last_levels: super::Levels::default(),
             error: None,
             terminal_error: None,
@@ -481,6 +488,34 @@ impl CaptureSession {
     }
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+    pub fn clock_measurement(&self) -> Option<ClockMeasurement> {
+        self.clock.latest()
+    }
+
+    /// Records explicit adapter-supplied software timing observations. The
+    /// timestamps are not obtained from hardware and do not certify device
+    /// clock synchronization.
+    pub fn observe_software_clock(
+        &mut self,
+        cumulative_frames: u64,
+        monotonic_ns: u64,
+        dropout_frames: u64,
+    ) -> Result<ClockMeasurement, CaptureError> {
+        self.check_owner()?;
+        if self.take.phase() != Phase::Recording || self.terminal || self.stopped {
+            return Err(self
+                .terminal_error
+                .clone()
+                .unwrap_or(CaptureError::Stopped));
+        }
+        match self
+            .clock
+            .observe(cumulative_frames, monotonic_ns, dropout_frames)
+        {
+            Ok(measurement) => Ok(measurement),
+            Err(error) => self.fail(CaptureError::Clock(error)),
+        }
     }
     pub fn pending_events(&self) -> usize {
         self.queue.len()
@@ -880,6 +915,31 @@ mod tests {
             ),
             Err(CaptureError::Registry(AdmissionError::WrongBridgeFamily))
         );
+    }
+
+    #[test]
+    fn native_session_clock_observation_keeps_the_exact_rational_source_rate() {
+        let (registry, request) = native_request(None);
+        let plan =
+            ValidatedPlan::native_podxt(&registry, request, RecordRoute::SendCleanGuitar, 1024)
+                .unwrap();
+        let mut session = CaptureSession::start(plan, 11).unwrap();
+        assert_eq!(session.plan().clock, (78_125, 2));
+        session.observe_software_clock(0, 1_000, 0).unwrap();
+        let observation = session
+            .observe_software_clock(1_000, 25_601_000, 2)
+            .unwrap();
+        assert_eq!(observation.expected_elapsed_ns, 25_600_000);
+        assert_eq!(observation.observed_elapsed_ns, 25_600_000);
+        assert_eq!(observation.drift_ppm, Some(0));
+        assert_eq!(observation.cumulative_dropout_frames, 2);
+        assert_eq!(session.clock_measurement(), Some(observation));
+        session.stop().unwrap();
+        assert_eq!(
+            session.observe_software_clock(2_000, 51_201_000, 0),
+            Err(CaptureError::Stopped)
+        );
+        assert_eq!(session.clock_measurement(), Some(observation));
     }
 
     #[test]
