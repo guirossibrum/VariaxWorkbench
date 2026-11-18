@@ -194,10 +194,17 @@ notes. They are not a file format, not model or effect ids, and not JTV or
 Workbench HD compatibility. This crate does not store the names as a bank and
 does not recall or convert presets.
 
-No POD HD500X preset container, file product id, model id, effect id, or
-parameter range was recovered from these archives. PODxt Live tones and
-original Variax files opened through this profile stay `Unverified`. They are
-not rewritten into another format.
+No POD HD500X-specific preset identity, file product id, model id, effect id,
+or parameter range was recovered from these archives. The Rust shared POD file
+dispatcher now recognizes a bounded H5EP envelope for offline no-op
+preservation: it checks the observed fixed header/body bounds and version,
+retains every header, body, and trailing byte, and supports a non-overwriting
+copy save. This is structural recognition of an independent envelope, not a
+POD HD500X identity or semantic codec. H5ES remains unsupported. PODxt Live
+tones and original Variax files opened through the HD500X profile stay
+`Unverified`; none are rewritten into another format. Synthetic tests do not
+reopen the independently published files and do not validate an original Edit
+implementation.
 
 ## Independent files were measured and do not name the product
 
@@ -242,8 +249,10 @@ so offsets `0x14` and `0x15` differ. The embedded records are not treated as
 that branch's output.
 
 `preset_container_recovered`, `model_ids_recovered`, and `effect_ids_recovered`
-stay false. A synthetic buffer with these lengths is rejected by
-`Session::open_pod_preset` as `Unverified` before any product parse.
+stay false. A synthetic H5EP buffer can be parsed by the generic offline file
+dispatcher as an opaque envelope. `Session::open_pod_preset` for the HD500X
+profile still returns `Unverified` before product admission; the envelope
+parser does not change that gate.
 
 ## What remains open
 

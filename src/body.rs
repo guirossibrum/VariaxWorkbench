@@ -497,9 +497,9 @@ mod tests {
         for (i, p) in body.pickup_defaults.iter().enumerate() {
             assert_eq!(p.position, (2 + i * 3) as f32 * 0.125);
             assert_eq!(p.angle, (3 + i * 3) as f32 * 0.125);
-            for j in 0..6 {
+            for (j, pole_offset) in p.pole_offsets.iter().enumerate() {
                 assert_eq!(
-                    p.pole_offsets[j],
+                    *pole_offset,
                     (4 + i * 3) as f32 * 0.125 + j as f32 * 0.03125
                 );
             }

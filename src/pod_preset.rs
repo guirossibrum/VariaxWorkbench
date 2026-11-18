@@ -34,6 +34,12 @@ pub const CAB_SLOT: u32 = 0x0003_0001;
 /// Application bound for the offline librarian. Not a recovered Line 6 limit.
 pub const TONE_BYTES_CEILING: u64 = 1_048_576;
 
+/// Structural H5EP bounds observed in independent files. These describe an
+/// envelope shape only; they are not an HD500X identity or a vendor limit.
+pub const H5EP_HEADER_BYTES: usize = 0x28;
+pub const H5EP_BODY_BYTES: usize = 0x1000;
+pub const H5EP_MIN_BYTES: usize = H5EP_HEADER_BYTES + H5EP_BODY_BYTES;
+
 pub const OFFLINE_BANNER: &str =
     "Offline PODxt Live tone file. This does not edit a connected POD.";
 pub const NOT_GUITAR: &str =
@@ -81,6 +87,99 @@ impl ContainerKind {
 pub enum ToneError {
     Format { detail: String },
     WrongTarget { device_id: u32 },
+}
+
+/// A POD-family file recognized by its byte structure, without implying that
+/// its format is supported by a particular product profile.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PodPresetFile {
+    PodxtLive(PodTone),
+    H5ep(OpaqueH5epPreset),
+}
+
+/// H5EP bytes retained as an opaque, no-op envelope. No fields are interpreted
+/// as a product id, model id, or editable preset data.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpaqueH5epPreset {
+    bytes: Vec<u8>,
+}
+
+impl PodPresetFile {
+    /// Dispatches only on the file's structural magic. Suffixes are not used.
+    pub fn parse(bytes: Vec<u8>) -> Result<Self, ToneError> {
+        if bytes.starts_with(b"H5EP") {
+            OpaqueH5epPreset::parse(bytes).map(Self::H5ep)
+        } else if bytes.starts_with(b"FORM") {
+            PodTone::parse(bytes).map(Self::PodxtLive)
+        } else {
+            Err(ToneError::format(
+                "unrecognized individual POD file structure",
+            ))
+        }
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::PodxtLive(tone) => tone.as_bytes(),
+            Self::H5ep(preset) => preset.as_bytes(),
+        }
+    }
+
+    /// Exact no-op serialization. This never edits or normalizes stored bytes.
+    pub fn serialize_noop(&self) -> Vec<u8> {
+        self.as_bytes().to_vec()
+    }
+
+    pub fn save_copy(&self, path: &Path) -> Result<(), ToneError> {
+        document::save_new(path, self.as_bytes()).map_err(ToneError::format)
+    }
+}
+
+impl OpaqueH5epPreset {
+    pub fn parse(bytes: Vec<u8>) -> Result<Self, ToneError> {
+        if bytes.len() as u64 > TONE_BYTES_CEILING {
+            return Err(ToneError::format(
+                "POD file exceeds the 1 MiB offline librarian ceiling",
+            ));
+        }
+        if bytes.len() < H5EP_MIN_BYTES {
+            return Err(ToneError::format(format!(
+                "truncated H5EP envelope: expected at least {H5EP_MIN_BYTES} bytes"
+            )));
+        }
+        if &bytes[..4] != b"H5EP" {
+            return Err(ToneError::format("expected H5EP preset magic"));
+        }
+        if bytes[4..8] != 1u32.to_be_bytes() {
+            return Err(ToneError::format("unsupported H5EP envelope version"));
+        }
+        Ok(Self { bytes })
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn header_bytes(&self) -> &[u8] {
+        &self.bytes[..H5EP_HEADER_BYTES]
+    }
+
+    pub fn body_bytes(&self) -> &[u8] {
+        &self.bytes[H5EP_HEADER_BYTES..H5EP_MIN_BYTES]
+    }
+
+    pub fn trailing_bytes(&self) -> &[u8] {
+        &self.bytes[H5EP_MIN_BYTES..]
+    }
+
+    /// Exact no-op serialization. The envelope's unknown fields remain raw.
+    pub fn serialize_noop(&self) -> Vec<u8> {
+        self.bytes.clone()
+    }
+
+    pub fn save_copy(&self, path: &Path) -> Result<(), ToneError> {
+        document::save_new(path, &self.bytes).map_err(ToneError::format)
+    }
 }
 
 impl ToneError {
@@ -674,6 +773,65 @@ fn custom_tone(kind: ContainerKind, models: &[BuiltModel<'_>]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn synthetic_h5ep(extra: &[u8]) -> Vec<u8> {
+        let mut bytes = (0..H5EP_MIN_BYTES)
+            .map(|index| ((index.wrapping_mul(73) + 19) & 0xff) as u8)
+            .collect::<Vec<_>>();
+        bytes[..4].copy_from_slice(b"H5EP");
+        bytes[4..8].copy_from_slice(&1u32.to_be_bytes());
+        bytes.extend_from_slice(extra);
+        bytes
+    }
+
+    #[test]
+    fn opaque_h5ep_dispatch_and_noop_round_trip_preserve_every_byte() {
+        let mut original = synthetic_h5ep(b"uninterpreted trailing bytes");
+        // Exercise noncanonical/unknown header and body values, including bytes
+        // that resemble duplicated fields. No field is normalized or decoded.
+        original[8..H5EP_HEADER_BYTES].fill(0xa5);
+        original[H5EP_HEADER_BYTES..H5EP_MIN_BYTES].fill(0x5a);
+        original[0x0b] = 0x2e;
+        original[0x13..0x16].copy_from_slice(&[0x06, 0x02, 0x62]);
+        let file = PodPresetFile::parse(original.clone()).unwrap();
+        let PodPresetFile::H5ep(envelope) = file else {
+            panic!("H5EP must dispatch to the opaque envelope");
+        };
+        assert_eq!(envelope.header_bytes().len(), H5EP_HEADER_BYTES);
+        assert_eq!(envelope.body_bytes().len(), H5EP_BODY_BYTES);
+        assert_eq!(envelope.trailing_bytes(), b"uninterpreted trailing bytes");
+        assert_eq!(envelope.serialize_noop(), original);
+    }
+
+    #[test]
+    fn opaque_h5ep_rejects_bad_magic_version_truncation_and_oversize() {
+        let valid = synthetic_h5ep(&[]);
+        for len in [0, 3, 4, H5EP_HEADER_BYTES - 1, H5EP_MIN_BYTES - 1] {
+            assert!(
+                OpaqueH5epPreset::parse(valid[..len].to_vec()).is_err(),
+                "len {len}"
+            );
+        }
+        let mut bad_magic = valid.clone();
+        bad_magic[..4].copy_from_slice(b"H5ES");
+        assert!(OpaqueH5epPreset::parse(bad_magic).is_err());
+        let mut bad_version = valid;
+        bad_version[7] = 2;
+        assert!(OpaqueH5epPreset::parse(bad_version).is_err());
+        assert!(OpaqueH5epPreset::parse(vec![0; TONE_BYTES_CEILING as usize + 1]).is_err());
+    }
+
+    #[test]
+    fn opaque_h5ep_save_copy_is_atomic_and_does_not_overwrite() {
+        let original = synthetic_h5ep(b"tail");
+        let file = PodPresetFile::parse(original.clone()).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("copy.5xe");
+        file.save_copy(&path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(file.save_copy(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
     use crate::pod_assets::{self, SlotRole};
 
     fn live_tone() -> Vec<u8> {

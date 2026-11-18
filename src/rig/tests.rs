@@ -663,7 +663,8 @@ fn pod_hd500x_identity_stays_on_its_profile_and_does_not_open_other_families() {
         capability::capability(ProductProfile::PodHd500x, Operation::SelectRecordRoute).note;
     let firmware_note =
         capability::capability(ProductProfile::PodHd500x, Operation::InspectFirmware).note;
-    assert!(open_note.contains("preset container"));
+    assert!(open_note.contains("H5EP envelope parser"));
+    assert!(open_note.contains("does not establish a POD HD500X preset identity"));
     assert!(route_note.contains("48000"));
     assert!(route_note.contains("EngineFormatLock"));
     assert!(firmware_note.contains("6260"));
