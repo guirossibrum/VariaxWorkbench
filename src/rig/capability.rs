@@ -235,16 +235,16 @@ fn hd500x_limit(operation: Operation) -> &'static str {
             "POD HD500X is a separate family from original Variax and from PODxt. No coefficient identity is registered."
         }
         Operation::OpenPodPreset => {
-            "A bounded opaque H5EP envelope parser preserves bytes but does not establish a POD HD500X preset identity. No HD500X editor bytes or file product id was acquired. Independent H5EP and H5ES measurements are not a registered product-specific container. Printed names in the 2013 public manuals are not a byte layout. A PODxt Live tone is not opened on this profile and is not converted."
+            "A bounded opaque H5EP envelope parser preserves bytes but does not establish a POD HD500X preset identity. Private Editor/PHF/model-default materials have been examined statically, but the app admits no product-specific preset schema or semantic edit behavior. Independent H5EP and H5ES measurements are not a registered product-specific container. Printed names in the 2013 public manuals are not a byte layout. A PODxt Live tone is not opened on this profile and is not converted."
         }
         Operation::EditPodPreset => {
-            "No POD HD500X model, effect, or parameter definition was recovered. Printed names in the public manuals are not ids. Values are not edited."
+            "Private model/default evidence has been examined statically, but no product-attributed model/effect/default schema is admitted for editing. Printed names in the public manuals are not ids. Values are not edited."
         }
         Operation::SelectRecordRoute => {
             "The Windows INF DefaultSampleRate is 48000 and DefaultWordSize is 24, with EngineFormatLock 0. Those are driver defaults. They do not select a PODxt Live record route and do not open a stream."
         }
         Operation::InspectFirmware => {
-            "Public listing names Flash Memory v2.62, release 6260, and the notes also name USB Firmware 1.04. Neither image is local. FORM/L6FF inspection is not applied."
+            "The public listing names Flash Memory v2.62, release 6260, and the notes also name USB Firmware 1.04. Separately supplied private firmware-image material has been examined statically, but its release linkage/applicability is not admitted. FORM/L6FF inspection is not applied."
         }
         Operation::StartAudioCapture
         | Operation::StopAudioCapture

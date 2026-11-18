@@ -12,6 +12,13 @@ use crate::linux_transport::PODXT_LIVE_VARIAX_PROPERTIES;
 const PRESET: &[u8] = include_bytes!("../../tests/fixtures/editor-preset.vwm");
 const BANK: &[u8] = include_bytes!("../../tests/fixtures/synthetic-bank.vwb");
 
+fn synthetic_h5ep() -> Vec<u8> {
+    let mut bytes = vec![0x37; crate::pod_preset::H5EP_MIN_BYTES];
+    bytes[..4].copy_from_slice(b"H5EP");
+    bytes[4..8].copy_from_slice(&1u32.to_be_bytes());
+    bytes
+}
+
 fn with_device_id(bytes: &[u8], device_id: u32) -> Vec<u8> {
     let mut owned = bytes.to_vec();
     owned[24..28].copy_from_slice(&device_id.to_be_bytes());
@@ -692,6 +699,40 @@ fn pod_hd500x_identity_stays_on_its_profile_and_does_not_open_other_families() {
         1,
         &[(crate::pod_preset::AMP_SLOT, 1)],
     );
+    let h5ep = synthetic_h5ep();
+    assert!(matches!(
+        crate::pod_preset::PodPresetFile::parse(h5ep.clone()),
+        Ok(crate::pod_preset::PodPresetFile::H5ep(_))
+    ));
+    assert_eq!(
+        Session::initial_rig().open_pod_preset(RoleKind::Pod, &h5ep),
+        Err(Rejection::Format {
+            detail: "expected an individual FORM tone; banks and collections are not POD presets"
+                .into(),
+        })
+    );
+    assert_eq!(
+        Session::initial_rig().open_pod_preset(RoleKind::Guitar, &h5ep),
+        Err(Rejection::Unsupported {
+            profile: ProductProfile::Variax600,
+            operation: Operation::OpenPodPreset,
+        })
+    );
+    for profile in [
+        ProductProfile::PodHd500x,
+        ProductProfile::WorkbenchHd,
+        ProductProfile::Jtv69,
+    ] {
+        assert_eq!(
+            Session::extension(profile)
+                .unwrap()
+                .open_pod_preset(RoleKind::Pod, &h5ep),
+            Err(Rejection::Unverified {
+                profile,
+                operation: Operation::OpenPodPreset,
+            })
+        );
+    }
     assert_eq!(
         hd.open_pod_preset(RoleKind::Pod, &tone),
         Err(Rejection::Unverified {

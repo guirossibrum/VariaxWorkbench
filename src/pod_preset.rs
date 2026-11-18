@@ -822,6 +822,57 @@ mod tests {
     }
 
     #[test]
+    fn ceiling_is_checked_after_valid_magic_and_version_by_parser_and_dispatcher() {
+        let mut at_ceiling = vec![0x6d; TONE_BYTES_CEILING as usize];
+        at_ceiling[..4].copy_from_slice(b"H5EP");
+        at_ceiling[4..8].copy_from_slice(&1u32.to_be_bytes());
+        let parsed = OpaqueH5epPreset::parse(at_ceiling.clone()).unwrap();
+        assert_eq!(parsed.serialize_noop(), at_ceiling);
+        let dispatched = PodPresetFile::parse(at_ceiling.clone()).unwrap();
+        assert_eq!(dispatched.serialize_noop(), at_ceiling);
+
+        let mut over_ceiling = vec![0x6d; TONE_BYTES_CEILING as usize + 1];
+        over_ceiling[..4].copy_from_slice(b"H5EP");
+        over_ceiling[4..8].copy_from_slice(&1u32.to_be_bytes());
+        for result in [
+            OpaqueH5epPreset::parse(over_ceiling.clone()),
+            match PodPresetFile::parse(over_ceiling.clone()) {
+                Err(error) => Err(error),
+                Ok(_) => panic!("oversized H5EP must fail dispatch"),
+            },
+        ] {
+            assert!(
+                matches!(result, Err(ToneError::Format { detail }) if detail.contains("ceiling"))
+            );
+        }
+    }
+
+    #[test]
+    fn pod_dispatch_preserves_valid_tones_and_rejects_wrong_pinf_and_other_tags() {
+        let valid = live_tone();
+        let dispatched = PodPresetFile::parse(valid.clone()).unwrap();
+        assert!(matches!(&dispatched, PodPresetFile::PodxtLive(_)));
+        assert_eq!(dispatched.serialize_noop(), valid);
+
+        let wrong_target = fixture(ContainerKind::L6pa, 0x0003_000b, 1, &[(AMP_SLOT, 7)]);
+        assert!(matches!(
+            PodPresetFile::parse(wrong_target),
+            Err(ToneError::WrongTarget {
+                device_id: 0x0003_000b
+            })
+        ));
+        for tag in [b"H5ES".as_slice(), b"H5EB".as_slice()] {
+            let mut unsupported = vec![0u8; H5EP_MIN_BYTES];
+            unsupported[..4].copy_from_slice(tag);
+            unsupported[4..8].copy_from_slice(&1u32.to_be_bytes());
+            assert!(matches!(
+                PodPresetFile::parse(unsupported),
+                Err(ToneError::Format { .. })
+            ));
+        }
+    }
+
+    #[test]
     fn opaque_h5ep_save_copy_is_atomic_and_does_not_overwrite() {
         let original = synthetic_h5ep(b"tail");
         let file = PodPresetFile::parse(original.clone()).unwrap();
@@ -831,6 +882,12 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), original);
         assert!(file.save_copy(&path).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), original);
+
+        let invalid_destination = directory.path().join("missing-parent").join("copy.5xe");
+        assert!(file.save_copy(&invalid_destination).is_err());
+        assert!(!invalid_destination.exists());
+        assert_eq!(file.as_bytes(), original);
+        assert_eq!(file.serialize_noop(), original);
     }
     use crate::pod_assets::{self, SlotRole};
 

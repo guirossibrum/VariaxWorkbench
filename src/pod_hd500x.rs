@@ -2,8 +2,10 @@
 //! POD HD500X driver-text identity and the public catalog limit.
 //!
 //! USB ids are match values copied from static driver text. They are not a
-//! live enumeration and not a firmware product id. The Edit 2.27 installers
-//! were not acquired. Two public manuals supply printed file names only.
+//! live enumeration and not a firmware product id. Owner-supplied editor,
+//! PHF, model/default, and firmware-image materials have since been examined
+//! statically; private contents are not distributed here and are not an
+//! admitted product schema. Two public manuals supply printed file names only.
 //! Nothing here opens a device, converts another family's file, or installs
 //! a driver.
 
@@ -180,7 +182,9 @@ pub struct CatalogProbe {
     pub execution: Execution,
     /// Named in the v2.62 notes. No separate release id was on that listing.
     pub usb_firmware_label: &'static str,
-    pub local_image: bool,
+    /// Whether the public listing route supplied an image. This excludes
+    /// separate owner-supplied private candidate material.
+    pub public_route_image_obtained: bool,
 }
 
 pub const FLASH: CatalogProbe = CatalogProbe {
@@ -197,7 +201,7 @@ pub const FLASH: CatalogProbe = CatalogProbe {
     hardware: HardwareContact::None,
     execution: Execution::NotRun,
     usb_firmware_label: "1.04",
-    local_image: false,
+    public_route_image_obtained: false,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -209,6 +213,8 @@ pub struct EditorListing {
     pub version_label: Option<&'static str>,
     /// Sidebar date, copied as printed. Not normalized.
     pub released_label: &'static str,
+    /// Whether the public catalog link supplied this release payload. Private
+    /// owner-supplied artifacts are separate evidence.
     pub downloaded: bool,
 }
 
@@ -250,6 +256,7 @@ pub struct EditorAcquisition {
     pub credentials: CredentialUse,
     pub hardware: HardwareContact,
     pub execution: Execution,
+    /// Whether the public route supplied this release payload.
     pub downloaded: bool,
 }
 
@@ -398,11 +405,13 @@ pub const PRINTED_FILE_NAMES: &[PrintedFileName] = &[
     },
 ];
 
-/// Installer names printed by the 2013 installer guide. Neither file is local.
+/// Installer names printed by the 2013 installer guide. These flags describe
+/// acquisition through the public catalog routes only, not private supplies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PrintedInstallerName {
     pub manual_id: &'static str,
     pub name: &'static str,
+    /// Whether the exact named item was obtained from its public catalog route.
     pub obtained: bool,
 }
 
@@ -438,8 +447,8 @@ pub const LOCAL_INSTALLERS_SCANNED: &[&str] = &[
     "central-windows-1.00",
 ];
 
-/// Local absence and the routes already requested. Wider sources stay unknown.
-pub const EDITOR_ACQUISITION_LIMIT: &str = "No Edit 2.27 installer is available locally. The unauthenticated readeula HEAD requests redirected to login, and the release-id directory HEAD requests returned 404. A directory 404 can coexist with a public named object. An owner-supplied original installer would unblock this static-extraction approach. Wider availability and other independent sources remain unknown. This crate does not store credentials and does not retry the routes already requested or flash release 6260.";
+/// Public-route limits alongside the later, separately supplied static evidence.
+pub const EDITOR_ACQUISITION_LIMIT: &str = "The unauthenticated Edit 2.27 readeula HEAD requests redirected to login, and the release-id directory HEAD requests returned 404; those public routes did not supply their listed payloads. Owner-supplied private Editor/PHF/model-default and firmware-image materials have since been examined statically. Their contents are not distributed here and do not establish an admitted product schema, target applicability, or semantic support. Wider availability and provenance remain distinct unknowns. This crate does not store credentials, retry the routes already requested, or flash release 6260.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Record {
@@ -459,12 +468,17 @@ pub struct Record {
     pub editor_acquisitions: &'static [EditorAcquisition],
     pub manuals: &'static [PublicManual],
     pub printed_file_names: &'static [PrintedFileName],
-    /// No HD500X file product id was recovered.
+    /// No HD500X file product id is admitted by this public implementation;
+    /// private static evidence is not promoted to a registered identity.
     pub file_product_id: Option<u32>,
-    /// No firmware-container product id was recovered. The USB pid is not one.
+    /// No firmware-container product id is admitted. Private image material
+    /// and the USB pid do not establish one.
     pub firmware_product_id: Option<u32>,
+    /// Whether this public crate has admitted a product-specific preset format.
     pub preset_container_recovered: bool,
+    /// Whether product-attributed model identifiers are admitted here.
     pub model_ids_recovered: bool,
+    /// Whether product-attributed effect identifiers are admitted here.
     pub effect_ids_recovered: bool,
     pub converts_other_family: bool,
     pub live_access: bool,
@@ -588,7 +602,7 @@ mod tests {
     }
 
     #[test]
-    fn extracted_text_hashes_are_members_and_the_images_were_not_obtained() {
+    fn extracted_text_hashes_and_public_route_limits_stay_distinct_from_private_material() {
         provenance::validate_catalog().expect("catalog");
         let record = record();
         let windows = provenance::artifact_by_id(record.windows_inf.archive_id).expect("windows");
@@ -608,7 +622,7 @@ mod tests {
         assert!(listing.local_artifact_id.is_none());
         assert!(!listing.catalog_md5_saved);
         assert!(!listing.exact_catalog_bytes_saved);
-        assert!(!record.flash.local_image);
+        assert!(!record.flash.public_route_image_obtained);
         assert_eq!(record.flash.credentials, CredentialUse::None);
         assert_eq!(record.flash.hardware, HardwareContact::None);
         assert!(!record.flash.execution.ran());
@@ -634,8 +648,9 @@ mod tests {
         assert!(listing.page_url.contains("submit_form=set"));
         assert!(listing.page_url.contains("submit_query=Show"));
         for id in [
-            "hd500x-flash-2.62-not-obtained",
-            "hd500x-editor-not-obtained",
+            "hd500x-flash-public-route-unresolved",
+            "hd500x-editor-public-routes-unresolved",
+            "hd500x-private-static-evidence-not-admitted",
             "hd500x-independent-bytes-are-not-a-product",
         ] {
             assert!(
@@ -711,13 +726,17 @@ mod tests {
             assert!(artifact.bytes > 0);
         }
         assert!(!EDITOR_PLAINTEXT_NEEDLES.is_empty());
-        assert!(evidence.contains(EDITOR_ACQUISITION_LIMIT));
+        assert!(evidence.contains("those public routes did"));
+        assert!(evidence.contains("not supply their listed payloads"));
+        assert!(evidence.contains("Owner-supplied private Editor/PHF/model-default"));
+        assert!(evidence.contains("do not establish linkage to the public release ids"));
         let editor_gap = provenance::ACQUISITION_GAPS
             .iter()
-            .find(|gap| gap.id == "hd500x-editor-not-obtained")
+            .find(|gap| gap.id == "hd500x-editor-public-routes-unresolved")
             .expect("editor gap");
         assert!(editor_gap.detail.contains("HTTP 302"));
         assert!(editor_gap.detail.contains("HTTP 404"));
+        assert!(editor_gap.detail.contains("examined statically"));
     }
 
     fn is_lower_hex(value: &str, len: usize) -> bool {

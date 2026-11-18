@@ -83,7 +83,7 @@ negotiated format, not a PODxt Live Record Send route, and not an opened
 stream. `SelectRecordRoute` on this profile stays `Unverified`. Capture,
 playback, and driver bind stay `Locked`.
 
-## Catalog downloads that were not obtained
+## Public catalog routes and private static materials
 
 A GET of
 `https://line6.com/software/index.html?hardware=POD%20HD500X&os=All`
@@ -94,20 +94,30 @@ The listing request is a GET of
 On 2026-11-16 that request returned HTTP 200 and `text/html`, 315367 bytes,
 SHA-256
 `048b200988464d1e73942a36afe657e2af7e9aa933236b6000a452de48fe3657`.
-The ignored copy is
-`analysis/reports/pod-hd500x-public-catalog-2026-11-16.html` in the primary
-checkout. No account and no download token were used.
+An ignored local capture was used for the offline inspection. Its private
+storage location and contents are not published. No account and no download
+token were used.
 
 That saved page lists POD HD500X Flash Memory v2.62 as release 6260. The
 sidebar prints Version 2.62.00 and Released 4/9/15. The estimated size is
 892 KB. The notes say to update USB Firmware (1.04) and Flash Memory (2.62).
-Those are separate labels. No USB-firmware release id or image was obtained.
+Those are separate labels. No USB-firmware release id or image was obtained
+through this public catalog.
 The same page also lists Flash Memory v2.61 as release 6237, estimated
 892 KB, and those notes also name USB Firmware (1.04). Release 6237 is not
 the archived-container row. On 2026-11-16, without an account,
 `https://line6.com/software/readeula.html?rid=6260` returned HTTP 302 to
 `/account/login.html?user_attempt=download` and then HTTP 200 login HTML.
-`https://line6.com/getrelease?rid=6260` returned HTTP 403. No image was saved.
+`https://line6.com/getrelease?rid=6260` returned HTTP 403. No image was saved
+through that public route.
+
+These results describe only the unauthenticated public routes checked on that
+date. Owner-supplied private Editor, PHF, model/default, and firmware-image
+materials have since been examined statically. Their files, extracted
+contents, hashes, and private locations are intentionally not published here.
+They supersede the earlier inference that no such artifacts were available;
+they do not establish linkage to the public release ids, product applicability,
+or an admitted application schema. No vendor process was executed.
 
 Neither flash label is a FORM/L6FF product id or an installed-unit read.
 `archived_firmware_product` stays empty. Version queries stay
@@ -125,7 +135,7 @@ same page, including Edit 2.26, are not registered here. One older description
 calls Edit an editor/librarian and says one build adds HD Model Pack support.
 That text does not include a preset container or a model id.
 
-## Edit 2.27 installers were not obtained
+## Public Edit 2.27 routes and private static materials
 
 On 2026-11-16, HEAD requests without an account and without following the
 redirect returned:
@@ -148,15 +158,17 @@ Wayback CDX returned HTTP 200 and a 3-byte empty JSON array for
 `line6.com/data/*HD500X*Edit*`. The second pattern does not describe the
 manual URLs below, which were fetched directly.
 
-A plaintext search of the local `monkey-windows-1.77`, both archive names of
+A plaintext search of the locally recorded `monkey-windows-1.77`, both archive names of
 `monkey-macos-1.78`, and `central-windows-1.00` found none of `HD500X`,
 `9781`, `8559`, `POD HD500X Edit`, `l6c-acdn`, `media/software`, `.5xe`, or
-`.h5e`. Those installers were not run. Tests do not reopen them.
+`.h5e`. Those scanned archives were not run. Separate owner-supplied Editor
+materials have since been examined statically; no vendor process was run, and
+tests do not reopen either private or scanned source artifacts.
 
 ## Public manuals name files and do not define them
 
-Two PDFs were saved under the ignored primary-checkout directory
-`analysis/reports/pod-hd500x-manuals/`. They were not executed.
+Two PDFs were captured locally for offline inspection and were not executed.
+Their private storage location is not published.
 
 | Manual | Bytes | PDF | SHA-256 |
 | --- | --- | --- | --- |
@@ -178,7 +190,9 @@ Its Windows association sentence prints `.h5e` Preset, `.h3b` Bundle, and
 `.h5s` Set List. Those suffixes are not the Pilot's Guide suffixes. This
 record keeps both printed sets and does not choose one. Neither guide gives a
 byte layout, a file product id, a model id, or an effect id. The `.dmg` and
-`POD HD500X Edit.mpkg` names are not local files.
+`POD HD500X Edit.mpkg` names describe the guide only; the public catalog route
+did not supply those named payloads. Private Editor materials are separate,
+owner-supplied evidence.
 
 The device Advanced Guide Rev A at
 `https://line6.com/data/6/0a06434c6fb051e03e8ab63dc/application/pdf/POD%20HD500X%20Advanced%20Guide%20-%20English%20(%20Rev%20A%20).pdf`
@@ -194,21 +208,22 @@ notes. They are not a file format, not model or effect ids, and not JTV or
 Workbench HD compatibility. This crate does not store the names as a bank and
 does not recall or convert presets.
 
-No POD HD500X-specific preset identity, file product id, model id, effect id,
-or parameter range was recovered from these archives. The Rust shared POD file
-dispatcher now recognizes a bounded H5EP envelope for offline no-op
-preservation: it checks the observed fixed header/body bounds and version,
-retains every header, body, and trailing byte, and supports a non-overwriting
-copy save. This is structural recognition of an independent envelope, not a
-POD HD500X identity or semantic codec. H5ES remains unsupported. PODxt Live
-tones and original Variax files opened through the HD500X profile stay
-`Unverified`; none are rewritten into another format. Synthetic tests do not
-reopen the independently published files and do not validate an original Edit
-implementation.
+Private Editor/PHF/model-default research has recovered static evidence, but
+this crate admits no product-attributed preset identity or schema, model/effect
+catalog, parameter ranges, or semantic edit behavior. The Rust shared POD file
+dispatcher recognizes a bounded H5EP envelope for offline no-op preservation:
+it checks the observed fixed header/body bounds and version, retains every
+header, body, and trailing byte, and supports a non-overwriting copy save. This
+is structural recognition of an independent envelope, not a POD HD500X
+identity or semantic codec. H5ES remains unsupported. PODxt Live tones and
+original Variax files opened through the HD500X profile stay `Unverified`; none
+are rewritten into another format. Synthetic tests do not reopen the
+independently published files or private materials and do not validate an
+original Edit implementation.
 
 ## Independent files were measured and do not name the product
 
-No Edit installer was used. A public author page,
+No original Edit application or installer was executed. A public author page,
 `https://www.jzab.de/content/pod-hd-preset-tool/`, returned HTTP 200 on
 Mon, 16 Nov 2026 05:07:21 GMT, 23665 bytes, SHA-256
 `84b3ba20ae3bbb407ac08b5f0220cd028c4abe290d96eea62cc7496cc8ce82e5`.
@@ -225,8 +240,8 @@ The same commit's file filters name `.h5e` and `.h5s`. The fetched files use
 
 Four files were fetched from
 `https://www.foobazaar.com/podhd/patches/HD500X/` on 2026-11-16. The copies
-stay in the ignored `.tools/issue-32-continuation/` directory. Tests do not
-reopen them.
+remain in an ignored local location that is not published. Tests do not reopen
+them.
 
 | File | Bytes | SHA-256 | Fetched |
 | --- | --- | --- | --- |
@@ -249,16 +264,26 @@ so offsets `0x14` and `0x15` differ. The embedded records are not treated as
 that branch's output.
 
 `preset_container_recovered`, `model_ids_recovered`, and `effect_ids_recovered`
-stay false. A synthetic H5EP buffer can be parsed by the generic offline file
-dispatcher as an opaque envelope. `Session::open_pod_preset` for the HD500X
-profile still returns `Unverified` before product admission; the envelope
-parser does not change that gate.
+remain false as application-admission flags: private static evidence does not
+register a product-attributed container/schema or model/effect catalog. A
+synthetic H5EP buffer can be parsed by the generic offline file dispatcher as
+an opaque envelope. `Session::open_pod_preset` for the HD500X profile still
+returns `Unverified` before product admission; the envelope parser does not
+change that gate.
 
 ## What remains open
 
-No Edit 2.27 installer is available locally. The unauthenticated readeula HEAD requests redirected to login, and the release-id directory HEAD requests returned 404. A directory 404 can coexist with a public named object. An owner-supplied original installer would unblock this static-extraction approach. Wider availability and other independent sources remain unknown. This crate does not store credentials and does not retry the routes already requested or flash release 6260.
+The unauthenticated Edit 2.27 readeula HEAD requests redirected to login, and
+the release-id directory HEAD requests returned 404; those public routes did
+not supply their listed payloads. Owner-supplied private Editor/PHF/model-default
+and firmware-image materials have since been statically examined. They remain
+private and are not published in this report. This supersedes the earlier
+acquisition-limit inference, while provenance, public availability, target
+attribution, and applicability remain separate questions. This crate does not
+store credentials, retry the routes already requested, or flash release 6260.
 
-Preset format, model and effect definitions, a local editor, a local flash
-image, a local USB-firmware image, and USB-audio routing beyond the INF
-defaults are still unresolved. Issue #32 stays open. Passing these tests does
-not authorize enumeration, streaming, flashing, or a driver install.
+An admitted product-specific preset format, supported model/effect/default
+schema, semantic editing, firmware release/product applicability, installed
+versions, and USB-audio routing beyond INF defaults remain unresolved. Issue
+#32 stays open. Passing these tests does not authorize enumeration, streaming,
+flashing, or a driver install.

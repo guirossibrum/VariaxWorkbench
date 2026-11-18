@@ -62,7 +62,7 @@ beyond offline inspection stays on #30.
 | Variax 600 | `0x03100000` (`3.10`), catalog HEAD only | Unknown | Not applicable to this role |
 | PODxt Live | `0x03010000` (`3.01`), catalog HEAD only | Unknown | Unknown. Main flash 3.01 and bcdDevice 0.01 are not this component. Tracked on #20. |
 | Workbench HD, JTV-69 | Not established | Not established | Not established |
-| POD HD500X | Public name Flash Memory v2.62, release 6260. The image was not downloaded, so no container word is registered. | Not established. No live read. | The same notes name USB Firmware 1.04. That image was not downloaded. |
+| POD HD500X | Public name Flash Memory v2.62, release 6260. Public download routes did not supply that image. Separately supplied private firmware-image material has been examined statically but is not linked to release 6260 or admitted as applicable; no container word is registered. | Not established. No live read. | The same notes name USB Firmware 1.04. Private image material is not attributed to that label. |
 
 No product id is invented for an extension profile. Workbench HD, JTV-69, and
 POD HD500X are separate families as well as separate profiles. None of them

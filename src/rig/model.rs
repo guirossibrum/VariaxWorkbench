@@ -167,12 +167,12 @@ pub(crate) fn version(profile: ProductProfile, component: Component) -> VersionK
         }
         (ProductProfile::PodHd500x, Component::ArchivedContainer) => {
             VersionKnowledge::NotEstablished {
-                evidence: "The public Line 6 listing names POD HD500X Flash Memory v2.62 as release 6260, estimated 892 KB. The download was not obtained. That label is not a container product id or HEAD word.",
+                evidence: "The public Line 6 listing names POD HD500X Flash Memory v2.62 as release 6260, estimated 892 KB. Public unauthenticated routes did not supply that payload. Separately supplied private firmware-image material has not been linked to this release or admitted as an applicable container.",
             }
         }
         (ProductProfile::PodHd500x, Component::InstalledUsbFirmware) => {
             VersionKnowledge::NotEstablished {
-                evidence: "The v2.62 flash notes name USB Firmware 1.04 separately from Flash Memory 2.62. No USB-firmware image was downloaded. 1.04 is not a container word and is not an installed-unit read.",
+                evidence: "The v2.62 flash notes name USB Firmware 1.04 separately from Flash Memory 2.62. Private firmware-image material has not been attributed to USB Firmware 1.04. That label is not a container word and is not an installed-unit read.",
             }
         }
         (ProductProfile::PodHd500x, Component::InstalledUnitRevision) => {
