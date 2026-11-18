@@ -188,10 +188,10 @@ mod tests {
         .unwrap();
         assert_eq!(adapter.session().plan().clock, (78_125, 2));
         assert_eq!(adapter.channel_map(), ChannelMap { left: 0, right: 1 });
-        let period = [1, 2, 3, 4, 5, 6];
+        let period = vec![0x2a; 66];
         adapter.capture_period(51, &period).unwrap();
         adapter.drain().unwrap();
-        assert_eq!(adapter.session().take().pcm(), period);
+        assert_eq!(adapter.session().take().pcm(), period.as_slice());
         assert_eq!(adapter.stop(), Ok(()));
     }
 
