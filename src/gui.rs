@@ -1542,8 +1542,7 @@ impl Workbench {
                 ui.label(recording::OFFLINE_BANNER);
                 ui.label(recording::DEVICE_CAPTURE_LOCKED);
                 ui.label(recording::NO_AUTO_START);
-                ui.label("Native PODxt Live: Linux static contract only; live capture is unavailable.");
-                ui.label("External interface: unavailable until an independent audio contract is admitted.");
+                ui.label("Native PODxt Live: static-only; external input unsupported; live start locked.");
                 ui.label(self.recorder.phase_label());
                 ui.label(self.recorder.meter_line());
                 ui.label(self.recorder.guide_line());
@@ -1624,12 +1623,11 @@ impl Workbench {
                 #[cfg(test)]
                 {
                     self.recording_visible = format!(
-                        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+                        "{}\n{}\n{}\n{}\n{}\n{}\n{}",
                         recording::OFFLINE_BANNER,
                         recording::DEVICE_CAPTURE_LOCKED,
                         recording::NO_AUTO_START,
-                        "Native PODxt Live: Linux static contract only; live capture is unavailable.",
-                        "External interface: unavailable until an independent audio contract is admitted.",
+                        "Native PODxt Live: static-only; external input unsupported; live start locked.",
                         self.recorder.phase_label(),
                         self.recorder.meter_line(),
                         self.recorder.guide_line(),
@@ -2542,10 +2540,7 @@ mod tests {
         assert!(app.recording_visible.contains(recording::NO_AUTO_START));
         assert!(app
             .recording_visible
-            .contains("Native PODxt Live: Linux static contract only; live capture is unavailable."));
-        assert!(app
-            .recording_visible
-            .contains("External interface: unavailable until an independent audio contract is admitted."));
+            .contains("Native PODxt Live: static-only; external input unsupported; live start locked."));
         assert!(app.recording_visible.contains(recording::PHASE_IDLE));
         assert!(app.recording_visible.contains("not a live route change"));
         assert!(app.read_worker.is_none());
