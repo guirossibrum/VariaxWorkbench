@@ -247,6 +247,8 @@ struct Workbench {
     #[cfg(test)]
     pod_buttons: HashMap<&'static str, Rect>,
     #[cfg(test)]
+    type9_combo_id: Option<egui::Id>,
+    #[cfg(test)]
     pod_visible: String,
     read_receiver:
         Option<std::sync::mpsc::Receiver<Result<variax_workbench::usb::CurrentPreset, String>>>,
@@ -327,6 +329,8 @@ impl Workbench {
             recording_capture_attempts: 0,
             #[cfg(test)]
             pod_buttons: HashMap::new(),
+            #[cfg(test)]
+            type9_combo_id: None,
             #[cfg(test)]
             pod_visible: String::new(),
             read_receiver: None,
@@ -2306,8 +2310,11 @@ impl Workbench {
                         );
                     });
                     #[cfg(test)]
-                    self.pod_buttons
-                        .insert("hd-type9-choice-combo", response.response.rect);
+                    {
+                        self.pod_buttons
+                            .insert("hd-type9-choice-combo", response.response.rect);
+                        self.type9_combo_id = Some(response.response.id);
+                    }
                     ui.scroll_to_rect(response.response.rect, Some(egui::Align::Center));
                     ui.label("Choice labels are neutral. Imported unknown values are preserved until you choose an explicit value.");
                     if matches!(value, pod_preset::HdType9ChoiceValue::NonFinite(_)) {
@@ -3938,6 +3945,9 @@ mod tests {
 
     fn click_hd_type9_choice(context: &egui::Context, app: &mut Workbench, choice: usize) {
         click_hd_editor(context, app, "hd-type9-choice-combo");
+        let combo_id = app.type9_combo_id.expect("rendered type-9 ComboBox");
+        egui::Popup::open_id(context, combo_id.with("popup"));
+        hd_editor_frame(context, app, vec![]);
         let option_id = match choice {
             0 => "hd-type9-choice-option-0",
             1 => "hd-type9-choice-option-1",
