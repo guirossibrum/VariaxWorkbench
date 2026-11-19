@@ -4346,11 +4346,12 @@ mod tests {
 
     #[test]
     fn whammy_quantizer_transition_neighbors_and_fixed_points_match_source_float32_steps() {
-        let record = drive_record(0x3f, STOMP_WHAMMY_HEEL_PARAM, 1, 0);
+        let heel = drive_record(0x3f, STOMP_WHAMMY_HEEL_PARAM, 1, 0);
+        let toe = drive_record(0x3f, STOMP_WHAMMY_TOE_PARAM, 1, 0);
         let original = whammy_tone(
             PODXT_LIVE_HOST_MIN_VERSION,
             STOMP_WHAMMY_INTERVAL_MODEL_ID,
-            &[&record],
+            &[&heel, &toe],
         );
         let boundaries = [
             (0x3c80_8080, 0x0000_0000),
@@ -4487,7 +4488,7 @@ mod tests {
             );
             assert_eq!(tone.as_bytes(), bytes);
         }
-        let wrong_target = custom_tone(
+        let mut wrong_target = custom_tone(
             ContainerKind::L6pa,
             &[BuiltModel {
                 slot: STOMP_SLOT,
@@ -4496,6 +4497,8 @@ mod tests {
                 parameters: &[&valid],
             }],
         );
+        let pinf = find_chunk_data(&wrong_target, b"PINF");
+        wrong_target[pinf + 4..pinf + 8].copy_from_slice(&0x0003_000bu32.to_be_bytes());
         let mut tone = PodTone::parse(wrong_target.clone()).unwrap();
         assert!(
             tone.set_stomp_whammy_knob_position(StompWhammyKnob::Heel, 0.5)
