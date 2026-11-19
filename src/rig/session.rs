@@ -262,6 +262,36 @@ impl Session {
         summarize_hd_editor_file(library, index)
     }
 
+    /// Applies the admitted offline enable flag only through a POD HD500X
+    /// extension session. H5EP v1 is enforced by the parser; file context does
+    /// not establish a physical unit or firmware version.
+    pub fn set_hd_effect_enabled(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: crate::pod_preset::HdFxSlot,
+        enabled: bool,
+    ) -> Result<(), Rejection> {
+        match self.kind {
+            SessionKind::Extension(ProductProfile::PodHd500x) => {}
+            SessionKind::Extension(profile) => {
+                return Err(Rejection::Unsupported {
+                    profile,
+                    operation: Operation::EditPodPreset,
+                });
+            }
+            SessionKind::InitialRig => {
+                return Err(Rejection::Unsupported {
+                    profile: ProductProfile::Variax600,
+                    operation: Operation::EditPodPreset,
+                });
+            }
+        }
+        library
+            .set_effect_enabled(file, effect_slot, enabled)
+            .map_err(map_hd_library_error)
+    }
+
     /// Replaces an existing Octave Fuzz in one standalone offline H5EP item
     /// with the admitted Vintage Pre source defaults. No device is contacted.
     pub fn replace_hd_octave_fuzz_with_vintage_pre_defaults(

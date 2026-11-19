@@ -464,6 +464,69 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
 }
 
 #[test]
+fn hd500x_enable_session_is_profile_gated_and_keeps_file_and_version_guards() {
+    let hd500x = Session::extension(ProductProfile::PodHd500x).unwrap();
+    let mut library = hd500x.new_hd_editor_library();
+    let mut bytes = synthetic_h5ep();
+    let body = crate::pod_preset::H5EP_HEADER_BYTES;
+    let block = body + 0x428;
+    bytes[block..block + 4].copy_from_slice(&0x0205_000eu32.to_be_bytes());
+    bytes[block + 0x0b] = 1;
+    let summary = hd500x
+        .import_hd_editor_file(&mut library, bytes.clone())
+        .expect("supported H5EP v1");
+    let slot = crate::pod_preset::HdFxSlot::new(0).unwrap();
+    hd500x
+        .set_hd_effect_enabled(&mut library, summary.index, slot, true)
+        .expect("bounded HD500X offline enable edit");
+    assert!(library.is_dirty(summary.index));
+    let crate::pod_preset::PodPresetFile::H5ep(preset) = library.file(summary.index).unwrap()
+    else {
+        panic!("the imported file remains an H5EP");
+    };
+    assert_eq!(preset.effect_enabled(slot), Some(true));
+
+    let mut unknown_model = synthetic_h5ep();
+    unknown_model[block..block + 4].copy_from_slice(&0x02ad_beefu32.to_be_bytes());
+    let unknown = hd500x
+        .import_hd_editor_file(&mut library, unknown_model)
+        .unwrap();
+    let before = library.file(unknown.index).unwrap().as_bytes().to_vec();
+    assert!(
+        hd500x
+            .set_hd_effect_enabled(&mut library, unknown.index, slot, true)
+            .is_err()
+    );
+    assert_eq!(library.file(unknown.index).unwrap().as_bytes(), before);
+
+    for unsupported in [
+        Session::initial_rig(),
+        Session::extension(ProductProfile::WorkbenchHd).unwrap(),
+        Session::extension(ProductProfile::Jtv69).unwrap(),
+    ] {
+        let before = library.file(summary.index).unwrap().as_bytes().to_vec();
+        assert!(
+            unsupported
+                .set_hd_effect_enabled(&mut library, summary.index, slot, false)
+                .is_err()
+        );
+        assert_eq!(library.file(summary.index).unwrap().as_bytes(), before);
+    }
+
+    let mut bad_version = synthetic_h5ep();
+    bad_version[7] = 2;
+    assert!(
+        hd500x
+            .import_hd_editor_file(&mut library, bad_version)
+            .is_err()
+    );
+    assert_eq!(
+        library.file(summary.index).unwrap().as_bytes()[block + 8],
+        1
+    );
+}
+
+#[test]
 fn shared_session_replaces_one_octave_fuzz_with_source_defaults_and_reopens_copy() {
     use crate::pod_preset::HdFxSlot;
 

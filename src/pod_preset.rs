@@ -56,6 +56,7 @@ const HD_EFFECT_ROWS_OFFSET: usize = 0x10;
 const HD_PARAMETER_ROW_STRIDE: usize = 0x14;
 const HD_PARAMETER_ROW_FLAG_OFFSET: usize = 0x10;
 const HD_PARAMETER_ROW_COUNT: usize = 12;
+const HD_EMPTY_EFFECT_MODEL_ID: u32 = 0x0200_0000;
 const HD_SCREAMER_MODEL_ID: u32 = 0x0205_000e;
 const HD_SUB_OCTAVE_FUZZ_MODEL_ID: u32 = 0x0205_0014;
 const HD_TUBE_DRIVE_MODEL_ID: u32 = 0x0205_000d;
@@ -1874,6 +1875,62 @@ impl OpaqueH5epPreset {
         read_be_u32(self.body_bytes(), block)
     }
 
+    /// Reads the source-traced enable flag for an admitted existing HD effect.
+    /// The on-disk byte is interpreted as a boolean; this does not claim that
+    /// the file is applicable to a connected product.
+    pub fn effect_enabled(&self, effect_slot: HdFxSlot) -> Option<bool> {
+        let body = self.body_bytes();
+        let block = HD_EFFECT_BLOCK_OFFSET + effect_slot.index() * HD_EFFECT_BLOCK_STRIDE;
+        let model_id = read_be_u32(body, block)?;
+        (body[block + 0x0b] == 1 && is_admitted_hd_enable_model(model_id))
+            .then_some(body[block + 8] != 0)
+    }
+
+    /// Changes only the existing effect's source-traced enable byte. Nonzero
+    /// values read as enabled, but writes require a canonical stored byte so
+    /// malformed values are never silently normalized.
+    pub fn set_effect_enabled(
+        &mut self,
+        effect_slot: HdFxSlot,
+        enabled: bool,
+    ) -> Result<(), ToneError> {
+        let body = self.body_bytes();
+        let block = HD_EFFECT_BLOCK_OFFSET + effect_slot.index() * HD_EFFECT_BLOCK_STRIDE;
+        let model_id = read_be_u32(body, block)
+            .ok_or_else(|| ToneError::format("truncated HD effect model id"))?;
+        if model_id == HD_EMPTY_EFFECT_MODEL_ID {
+            return Err(ToneError::format(
+                "cannot enable or disable an empty HD effect slot",
+            ));
+        }
+        if !is_admitted_hd_enable_model(model_id) {
+            return Err(ToneError::format(format!(
+                "HD effect model {model_id:08x} has no admitted enable contract"
+            )));
+        }
+        if body[block + 0x0b] != 1 {
+            return Err(ToneError::format(
+                "HD effect enable requires a valid, non-empty effect slot",
+            ));
+        }
+        if body[block + 8] > 1 {
+            return Err(ToneError::format(
+                "HD effect enable requires a canonical 0 or 1 byte",
+            ));
+        }
+        if (body[block + 8] != 0) == enabled {
+            return Ok(());
+        }
+
+        // Stage the single-byte write and validate the complete record before
+        // publishing it, so a failure cannot leave a partial mutation.
+        let mut candidate = self.bytes.clone();
+        candidate[H5EP_HEADER_BYTES + block + 8] = u8::from(enabled);
+        let staged = Self::parse(candidate)?;
+        self.bytes = staged.bytes;
+        Ok(())
+    }
+
     /// Replaces one existing Octave Fuzz with the source-derived Vintage Pre
     /// default prefix. This pure file operation has no vendor runtime context
     /// and makes no claim about physical target applicability.
@@ -2332,6 +2389,26 @@ pub struct HdEditorLibrary {
 }
 
 impl HdEditorLibrary {
+    /// Applies an enable flag to one standalone H5EP item. Extract a child
+    /// first for H5ES/H5EB; the parents remain untouched in the library.
+    pub fn set_effect_enabled(
+        &mut self,
+        index: usize,
+        effect_slot: HdFxSlot,
+        enabled: bool,
+    ) -> Result<(), ToneError> {
+        let entry = self
+            .files
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("file index is outside the HD editor library"))?;
+        match &mut entry.file {
+            PodPresetFile::H5ep(preset) => preset.set_effect_enabled(effect_slot, enabled),
+            _ => Err(ToneError::format(
+                "HD effect enable requires an extracted H5EP preset",
+            )),
+        }
+    }
+
     pub fn import_bytes(&mut self, bytes: Vec<u8>) -> Result<usize, ToneError> {
         let file = PodPresetFile::parse(bytes)?;
         if file.hd_container_kind().is_none() {
@@ -2628,6 +2705,21 @@ fn read_be_u32(bytes: &[u8], offset: usize) -> Option<u32> {
     Some(u32::from_be_bytes(
         bytes.get(offset..offset.checked_add(4)?)?.try_into().ok()?,
     ))
+}
+
+/// Enable editing is bounded to model ids already present in a source-joined
+/// typed control table. This is intentionally not the editor's complete model
+/// menu and cannot assign a model or infer slot applicability.
+fn is_admitted_hd_enable_model(model_id: u32) -> bool {
+    HdType1Control::ALL
+        .into_iter()
+        .any(|control| control.model_id() == model_id)
+        || HD_TYPE1_MAPPED_CONTROLS
+            .iter()
+            .any(|control| control.model_id() == model_id)
+        || HD_NUMERIC_CONTROLS
+            .iter()
+            .any(|control| control.model_id() == model_id)
 }
 
 fn exact_drive_percent(value: f32) -> Option<u8> {
@@ -3409,6 +3501,129 @@ mod tests {
         bytes
     }
 
+    fn synthetic_enable_h5ep(effect_slot: usize, enabled_byte: u8) -> Vec<u8> {
+        let mut bytes = synthetic_octave_fuzz_h5ep(effect_slot, true);
+        let block =
+            H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + effect_slot * HD_EFFECT_BLOCK_STRIDE;
+        bytes[block + 8] = enabled_byte;
+        bytes
+    }
+
+    #[test]
+    fn admitted_enable_edits_one_byte_for_every_effect_slot() {
+        for effect_slot in 0..HD_EFFECT_COUNT {
+            for requested in [false, true] {
+                let old = u8::from(!requested);
+                let original = synthetic_enable_h5ep(effect_slot, old);
+                let mut expected = original.clone();
+                let enable_at = H5EP_HEADER_BYTES
+                    + HD_EFFECT_BLOCK_OFFSET
+                    + effect_slot * HD_EFFECT_BLOCK_STRIDE
+                    + 8;
+                expected[enable_at] = u8::from(requested);
+
+                let mut preset = OpaqueH5epPreset::parse(original).unwrap();
+                let slot = HdFxSlot::new(effect_slot).unwrap();
+                assert_eq!(preset.effect_enabled(slot), Some(!requested));
+                preset.set_effect_enabled(slot, requested).unwrap();
+                assert_eq!(
+                    preset.as_bytes(),
+                    expected,
+                    "slot {effect_slot}, {requested}"
+                );
+                assert_eq!(preset.effect_enabled(slot), Some(requested));
+            }
+        }
+        assert!(HdFxSlot::new(HD_EFFECT_COUNT).is_err());
+    }
+
+    #[test]
+    fn admitted_enable_noops_preserve_the_whole_file_and_noncanonical_writes_reject() {
+        for raw in [0, 1] {
+            let bytes = synthetic_enable_h5ep(3, raw);
+            let mut preset = OpaqueH5epPreset::parse(bytes.clone()).unwrap();
+            preset
+                .set_effect_enabled(HdFxSlot::new(3).unwrap(), raw != 0)
+                .unwrap();
+            assert_eq!(preset.as_bytes(), bytes, "canonical no-op for {raw:#04x}");
+        }
+
+        for raw in [0x02, 0x7f, 0x80, 0xff] {
+            let bytes = synthetic_enable_h5ep(3, raw);
+            let mut preset = OpaqueH5epPreset::parse(bytes.clone()).unwrap();
+            assert_eq!(preset.effect_enabled(HdFxSlot::new(3).unwrap()), Some(true));
+            for requested in [false, true] {
+                assert!(
+                    preset
+                        .set_effect_enabled(HdFxSlot::new(3).unwrap(), requested)
+                        .is_err(),
+                    "raw {raw:#04x}, requested {requested}"
+                );
+                assert_eq!(preset.as_bytes(), bytes, "raw {raw:#04x}");
+            }
+        }
+    }
+
+    #[test]
+    fn admitted_enable_rejects_unknown_empty_invalid_and_unsupported_records_atomically() {
+        let slot = HdFxSlot::new(0).unwrap();
+        for (model, valid) in [
+            (0x02ad_beef, 1),
+            (HD_EMPTY_EFFECT_MODEL_ID, 1),
+            (HD_SCREAMER_MODEL_ID, 0),
+            (HD_SCREAMER_MODEL_ID, 2),
+        ] {
+            let mut bytes = synthetic_enable_h5ep(0, 0);
+            let block = H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET;
+            bytes[block..block + 4].copy_from_slice(&model.to_be_bytes());
+            bytes[block + 0x0b] = valid;
+            let original = bytes.clone();
+            let mut preset = OpaqueH5epPreset::parse(bytes).unwrap();
+            assert!(preset.set_effect_enabled(slot, true).is_err());
+            assert_eq!(
+                preset.as_bytes(),
+                original,
+                "model {model:#010x}, valid {valid}"
+            );
+            assert_eq!(preset.effect_enabled(slot), None);
+        }
+
+        let mut bad_version = synthetic_enable_h5ep(0, 0);
+        bad_version[7] = 2;
+        assert!(OpaqueH5epPreset::parse(bad_version).is_err());
+    }
+
+    #[test]
+    fn admitted_enable_dirty_state_returns_to_saved_baseline() {
+        let mut library = HdEditorLibrary::default();
+        let mut original = synthetic_enable_h5ep(0, 0);
+        let other_block = H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + HD_EFFECT_BLOCK_STRIDE;
+        original[other_block..other_block + 4].copy_from_slice(&HD_SCREAMER_MODEL_ID.to_be_bytes());
+        original[other_block + 8] = 0x7f;
+        original[other_block + 0x0b] = 1;
+        let index = library.import_bytes(original.clone()).unwrap();
+        let slot = HdFxSlot::new(0).unwrap();
+        library.set_effect_enabled(index, slot, true).unwrap();
+        assert!(library.is_dirty(index));
+
+        let dirty_bytes = library.file(index).unwrap().as_bytes().to_vec();
+        let noncanonical_slot = HdFxSlot::new(1).unwrap();
+        for requested in [false, true] {
+            assert!(
+                library
+                    .set_effect_enabled(index, noncanonical_slot, requested)
+                    .is_err()
+            );
+            assert_eq!(library.file(index).unwrap().as_bytes(), dirty_bytes);
+            assert!(library.is_dirty(index));
+        }
+
+        library.set_effect_enabled(index, slot, false).unwrap();
+        assert!(!library.is_dirty(index));
+        assert!(!library.any_dirty());
+        assert_eq!(library.file(index).unwrap().as_bytes(), original);
+    }
+
     #[test]
     fn opaque_h5ep_dispatch_and_noop_round_trip_preserve_every_byte() {
         let mut original = synthetic_h5ep(b"uninterpreted trailing bytes");
@@ -3897,6 +4112,62 @@ mod tests {
         }
         bytes.extend_from_slice(extra);
         bytes
+    }
+
+    #[test]
+    fn enable_action_edits_only_extracted_setlist_and_bundle_children() {
+        let slot = HdFxSlot::new(0).unwrap();
+        let child = synthetic_enable_h5ep(0, 0);
+
+        let mut setlist_bytes = synthetic_h5es(&[]);
+        setlist_bytes[H5ES_HEADER_BYTES..H5ES_HEADER_BYTES + H5EP_MIN_BYTES]
+            .copy_from_slice(&child[..H5EP_MIN_BYTES]);
+        let mut setlist_library = HdEditorLibrary::default();
+        let setlist_index = setlist_library.import_bytes(setlist_bytes.clone()).unwrap();
+        assert!(
+            setlist_library
+                .set_effect_enabled(setlist_index, slot, true)
+                .is_err()
+        );
+        let extracted = setlist_library.extract_preset(setlist_index, 0, 0).unwrap();
+        setlist_library
+            .set_effect_enabled(extracted, slot, true)
+            .unwrap();
+        assert_eq!(
+            setlist_library.file(setlist_index).unwrap().as_bytes(),
+            setlist_bytes
+        );
+        assert!(setlist_library.is_dirty(extracted));
+        assert_eq!(
+            setlist_library.file(extracted).unwrap().as_bytes()
+                [H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 8],
+            1
+        );
+
+        let mut bundle_bytes = synthetic_h5eb(&[]);
+        let child_at = H5EB_HEADER_BYTES + H5ES_HEADER_BYTES;
+        bundle_bytes[child_at..child_at + H5EP_MIN_BYTES].copy_from_slice(&child[..H5EP_MIN_BYTES]);
+        let mut bundle_library = HdEditorLibrary::default();
+        let bundle_index = bundle_library.import_bytes(bundle_bytes.clone()).unwrap();
+        assert!(
+            bundle_library
+                .set_effect_enabled(bundle_index, slot, true)
+                .is_err()
+        );
+        let extracted = bundle_library.extract_preset(bundle_index, 0, 0).unwrap();
+        bundle_library
+            .set_effect_enabled(extracted, slot, true)
+            .unwrap();
+        assert_eq!(
+            bundle_library.file(bundle_index).unwrap().as_bytes(),
+            bundle_bytes
+        );
+        assert!(bundle_library.is_dirty(extracted));
+        assert_eq!(
+            bundle_library.file(extracted).unwrap().as_bytes()
+                [H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 8],
+            1
+        );
     }
 
     #[test]

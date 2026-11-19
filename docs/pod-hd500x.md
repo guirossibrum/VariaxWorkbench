@@ -355,6 +355,34 @@ branch; exact-head focused validation is pending. GUI target selection and
 rendering do not apply it. No vendor execution, product applicability or
 callback parity is established.
 
+### Bounded FX enable/disable flag
+
+The shared library admits enable/disable only for an existing valid H5EP FX
+block whose model id appears in the current source-joined typed control tables.
+That limited set is not a complete model catalog and does not add model
+selection. The POD HD500X session is required for this write; H5EP parsing
+requires file version 1, while unknown internal header words remain opaque and
+physical target applicability remains unknown.
+
+The source-traced byte is `B+8`, where public FX slot 0–7 maps to body block
+`B = 0x428 + 0x100 * slot`. A nonzero byte reads as enabled, but a write
+requires the existing byte to be canonical `0` or `1`; both requested values
+reject a noncanonical byte without changing it. A canonical no-op preserves
+the whole file, while a real state change writes only the requested `0` or `1`
+at `H5EP_HEADER_BYTES + B + 8`. The operation rejects the empty
+`0x02000000` block, unknown models, invalid slot validity and unsupported
+H5EP versions before mutation. Candidate bytes are reparsed before publishing.
+Extracted H5ES/H5EB children are independent library entries, so their parents
+stay byte-identical. The GUI exposes a single offline action only for an
+admitted current selection; save remains a non-overwriting copy operation and
+unsaved changes stay protected by the existing quit prompt.
+
+Seven new synthetic tests cover both requested states across all eight slots,
+canonical no-ops, both requests against noncanonical bytes, unknown/empty/invalid
+blocks, version rejection, dirty/revert state, H5ES/H5EB parent preservation,
+target profile checks, and GUI save collision/failure/reopen/quit behavior.
+These tests do not validate a physical product or original-editor event parity.
+
 ### Additional selected numeric control contracts
 
 The retained Editor 2.27 callback matrix has 80 active non-type-1 numeric rows
@@ -599,12 +627,16 @@ does not resolve the Windows object's producer or semantics. Generic PHF
 inspection does not classify its declared product for HD500X, authenticate the
 image, validate a connected unit, or authorize flashing.
 
+The bounded enable flag is part of the current Session/library/UI surface. It
+does not establish a physical target from the selected profile or opaque H5EP
+context words, and it does not broaden the existing finite default operations.
+
 ### Issue #32 acceptance status
 
 | Original acceptance criterion | Current status |
 | --- | --- |
 | Establish HD500X identity, editor/driver/firmware, preset/model/effect and audio evidence from primary sources. | **Partial.** Static Editor file-group association and a bounded writer/reader trace are recorded. Driver text matches USB `0x0E41:0x4159`, with the Mac audio personality on interface 0 and bulk personality on interface 1; the Advanced Guide names a processed stereo host feed, **1-2 Main Out**, plus playback return and 48 kHz native processing with documented conversion rates. This does not supply the device's USB audio descriptors/endpoints or connect them to driver callbacks, formats, and selected identity. Product attribution, complete model/effect catalog, firmware applicability and physical identity remain unresolved. |
-| Implement an independent offline backend integrated with shared interfaces and tests. | **Partial.** The shared offline Session/library interface and GUI import bounded H5EP/H5ES/H5EB files, extract children, preserve context and save new copies. They edit all 364 source-identified primary type-1 rows plus 80 selected non-type-1 numeric controls across 143 descriptor model IDs with canonical-grid and byte-preservation tests, and expose three earlier Octave Fuzz replacements plus the newly implemented closed twelve-target defaults action. The earlier three passed exact-head checks at `a2fc16839d18066866e9522a74297a9ef8d2b491` (280 tests/profile: 226 library, 28 GUI, 26 integration); the twelve-target batch awaits focused checks. The HD500X session also exposes generic bounded FORM/L6FF inspection without applying header identity to a physical profile. Product-qualified route planning and maintenance remain unavailable; other type-family semantics, physical recording and original-editor parity are not implemented. |
+| Implement an independent offline backend integrated with shared interfaces and tests. | **Partial.** The shared offline Session/library interface and GUI import bounded H5EP/H5ES/H5EB files, extract children, preserve context and save new copies. They edit all 364 source-identified primary type-1 rows plus 80 selected non-type-1 numeric controls across 143 descriptor model IDs with canonical-grid and byte-preservation tests, and expose three earlier Octave Fuzz replacements, the closed twelve-target defaults action, and the newly admitted one-byte FX enable/disable operation. Seven new synthetic tests cover slot transitions, preservation, parent extraction, session/version rejection and GUI copy/quit flow; the exact-head configured checks are pending. The HD500X session also exposes generic bounded FORM/L6FF inspection without applying header identity to a physical profile. Product-qualified route planning and maintenance remain unavailable; other type-family semantics, physical recording and original-editor parity are not implemented. |
 | Keep HD/JTV separate from PODxt/original Variax; prohibit cross-family conversion, flashing and live operations. | **Met as written.** Profiles remain separate; no cross-family conversion, upload, flash or live path is exposed, and hardware access remains locked. This criterion does not establish physical compatibility. |
 
 Issue #32 remains open. Synthetic tests do not complete source-identification,

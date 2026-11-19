@@ -10,7 +10,7 @@ use std::{
 use variax_workbench::pod_audio::RecordRoute;
 use variax_workbench::pod_preset::{self, Library, PodPresetFile};
 use variax_workbench::recording::{self, ClockSelection};
-use variax_workbench::rig::{HdEditorLibrary, Rejection, RoleKind, Session};
+use variax_workbench::rig::{HdEditorLibrary, ProductProfile, Rejection, RoleKind, Session};
 use variax_workbench::{document::EditorDocument, preset::PresetFile};
 
 const PICKUP1: u32 = 0x02010001;
@@ -1760,6 +1760,41 @@ impl Workbench {
                 ui.label(pod_preset::NOT_SENT);
                 ui.label(pod_preset::PAYLOADS_NOT_DECODED);
                 ui.label(&self.pod_message);
+                let selected_enable = self.hd_selected.and_then(|index| {
+                    let slot = pod_preset::HdFxSlot::new(self.hd_effect_slot).ok()?;
+                    let PodPresetFile::H5ep(preset) = self.hd_library.file(index)? else {
+                        return None;
+                    };
+                    Some((index, slot, preset.effect_enabled(slot)?))
+                });
+                if let Some((index, slot, enabled)) = selected_enable {
+                    let (button_id, label) = if enabled {
+                        ("disable-hd-effect", "Disable effect offline")
+                    } else {
+                        ("enable-hd-effect", "Enable effect offline")
+                    };
+                    if self.pod_button(ui, button_id, label) {
+                        let result = Session::extension(ProductProfile::PodHd500x).and_then(
+                            |session| {
+                                session.set_hd_effect_enabled(
+                                    &mut self.hd_library,
+                                    index,
+                                    slot,
+                                    !enabled,
+                                )
+                            },
+                        );
+                        match result {
+                            Ok(()) => {
+                                self.pod_message = format!(
+                                    "Effect {} updated in this offline preset. Nothing was sent; save a new copy to keep the change.",
+                                    if enabled { "disabled" } else { "enabled" }
+                                );
+                            }
+                            Err(error) => self.pod_message = rejection_text(&error),
+                        }
+                    }
+                }
                 let selected_octave_fuzz = self.hd_selected.and_then(|index| {
                     self.hd_library.file(index).and_then(|file| match file {
                         PodPresetFile::H5ep(preset) => {
@@ -3570,6 +3605,45 @@ mod tests {
         );
     }
 
+    fn hd_editor_frame(context: &egui::Context, app: &mut Workbench, events: Vec<egui::Event>) {
+        let _ = context.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 1400.0))),
+                events,
+                ..Default::default()
+            },
+            |ctx| app.render(ctx),
+        );
+    }
+
+    fn click_hd_editor(context: &egui::Context, app: &mut Workbench, id: &'static str) {
+        hd_editor_frame(context, app, vec![]);
+        let pos = app.pod_buttons[id].center();
+        hd_editor_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        hd_editor_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
     fn sample_pod_tone() -> Vec<u8> {
         fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
             let mut output = id.to_vec();
@@ -3905,6 +3979,87 @@ mod tests {
         let reopened = pod_preset::OpaqueH5epPreset::parse(written).unwrap();
         assert_eq!(reopened.effect_model_id(0), Some(target_model));
         assert!(reopened.trailing_bytes().is_empty());
+        assert!(app.read_worker.is_none());
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn hd_effect_enable_ui_edits_one_flag_and_guards_copy_save_and_quit() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let mut original = sample_hd_editor_preset();
+        let block = pod_preset::H5EP_HEADER_BYTES + 0x428;
+        original[block + 0x0b] = 1;
+        original[block + 8] = 0;
+        let index = app.hd_library.import_bytes(original.clone()).unwrap();
+        app.select_hd_file(index);
+        app.pod_open = true;
+        hd_editor_frame(&context, &mut app, vec![]);
+        assert!(app.pod_buttons.contains_key("enable-hd-effect"));
+
+        click_hd_editor(&context, &mut app, "enable-hd-effect");
+        let mut expected = original.clone();
+        expected[block + 8] = 1;
+        let actual = app.hd_library.file(index).unwrap().as_bytes();
+        let differences = actual
+            .iter()
+            .zip(&expected)
+            .enumerate()
+            .filter_map(|(offset, (actual, expected))| (actual != expected).then_some(offset))
+            .collect::<Vec<_>>();
+        assert!(
+            differences.is_empty(),
+            "unexpected byte offsets: {differences:?}; actual={}, expected={}, button={:?}; message={}",
+            actual[block + 8],
+            expected[block + 8],
+            app.pod_buttons.get("enable-hd-effect"),
+            app.pod_message
+        );
+        assert!(app.hd_library.is_dirty(index));
+        assert!(app.pod_message.contains("Nothing was sent"));
+
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pending.is_none());
+        assert!(app.hd_library.is_dirty(index));
+
+        let directory = tempfile::tempdir().unwrap();
+        let blocked = directory.path().join("blocked-directory");
+        std::fs::create_dir(&blocked).unwrap();
+        let collision = directory.path().join("existing.5xe");
+        let output = directory.path().join("enabled-copy.5xe");
+        std::fs::write(&collision, b"keep destination").unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_save: [
+                Some(blocked.clone()),
+                Some(collision.clone()),
+                Some(output.clone()),
+            ]
+            .into(),
+            ..Default::default()
+        });
+
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "save");
+        assert!(app.pending.is_some());
+        assert!(app.hd_library.is_dirty(index));
+        click_prompt(&context, &mut app, "save");
+        assert!(app.pending.is_some());
+        assert!(app.hd_library.is_dirty(index));
+        assert_eq!(std::fs::read(&collision).unwrap(), b"keep destination");
+        click_prompt(&context, &mut app, "save");
+        assert!(app.permit_close);
+        assert!(!app.hd_library.any_dirty());
+        let saved = std::fs::read(&output).unwrap();
+        assert_eq!(saved, expected);
+        let reopened = pod_preset::OpaqueH5epPreset::parse(saved).unwrap();
+        assert_eq!(
+            reopened.effect_enabled(pod_preset::HdFxSlot::new(0).unwrap()),
+            Some(true)
+        );
         assert!(app.read_worker.is_none());
         const {
             assert!(LIVE_ACCESS_LOCKED);
