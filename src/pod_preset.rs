@@ -76,18 +76,55 @@ impl TryFrom<u32> for PodAmpModelChoice {
 
 /// Exact unconditional CAB ids in the supplied PODxt source table.
 pub const PODXT_CAB_MODEL_IDS: [u32; 25] = [
-    0x0102_0000, 0x0102_0001, 0x0102_0002, 0x0102_0003, 0x0102_0004,
-    0x0102_0005, 0x0102_0006, 0x0102_0007, 0x0102_0008, 0x0102_0009,
-    0x0102_000a, 0x0102_000b, 0x0102_000c, 0x0102_000d, 0x0102_000e,
-    0x0102_000f, 0x0102_0010, 0x0102_0011, 0x0102_0012, 0x0102_0013,
-    0x0102_0014, 0x0102_0015, 0x0102_0016, 0x0102_0018, 0x0102_001a,
+    0x0102_0000,
+    0x0102_0001,
+    0x0102_0002,
+    0x0102_0003,
+    0x0102_0004,
+    0x0102_0005,
+    0x0102_0006,
+    0x0102_0007,
+    0x0102_0008,
+    0x0102_0009,
+    0x0102_000a,
+    0x0102_000b,
+    0x0102_000c,
+    0x0102_000d,
+    0x0102_000e,
+    0x0102_000f,
+    0x0102_0010,
+    0x0102_0011,
+    0x0102_0012,
+    0x0102_0013,
+    0x0102_0014,
+    0x0102_0015,
+    0x0102_0016,
+    0x0102_0018,
+    0x0102_001a,
 ];
 pub const PODXT_BASS_CAB_MODEL_IDS: [u32; 22] = [
-    0x0103_0001, 0x0103_0002, 0x0103_0003, 0x0103_0004, 0x0103_0005,
-    0x0103_0006, 0x0103_0007, 0x0103_0008, 0x0103_0009, 0x0103_000a,
-    0x0103_000b, 0x0103_000c, 0x0103_000d, 0x0103_000e, 0x0103_000f,
-    0x0103_0010, 0x0103_0011, 0x0103_0012, 0x0103_0013, 0x0103_0014,
-    0x0103_0015, 0x0103_0016,
+    0x0103_0001,
+    0x0103_0002,
+    0x0103_0003,
+    0x0103_0004,
+    0x0103_0005,
+    0x0103_0006,
+    0x0103_0007,
+    0x0103_0008,
+    0x0103_0009,
+    0x0103_000a,
+    0x0103_000b,
+    0x0103_000c,
+    0x0103_000d,
+    0x0103_000e,
+    0x0103_000f,
+    0x0103_0010,
+    0x0103_0011,
+    0x0103_0012,
+    0x0103_0013,
+    0x0103_0014,
+    0x0103_0015,
+    0x0103_0016,
 ];
 pub const PODXT_MIC_PARAM: u32 = 0;
 
@@ -95,8 +132,12 @@ pub const PODXT_MIC_PARAM: u32 = 0;
 pub struct PodCabModelChoice(u32);
 
 impl PodCabModelChoice {
-    pub const fn model_id(self) -> u32 { self.0 }
-    pub fn numeric_label(self) -> String { format!("CAB {:08x}", self.0) }
+    pub const fn model_id(self) -> u32 {
+        self.0
+    }
+    pub fn numeric_label(self) -> String {
+        format!("CAB {:08x}", self.0)
+    }
     pub fn from_model_id(id: u32) -> Option<Self> {
         PODXT_CAB_MODEL_IDS.contains(&id).then_some(Self(id))
     }
@@ -104,23 +145,34 @@ impl PodCabModelChoice {
 
 impl TryFrom<u32> for PodCabModelChoice {
     type Error = u32;
-    fn try_from(id: u32) -> Result<Self, Self::Error> { Self::from_model_id(id).ok_or(id) }
+    fn try_from(id: u32) -> Result<Self, Self::Error> {
+        Self::from_model_id(id).ok_or(id)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PodCabClass { Bass, Other }
+pub enum PodCabClass {
+    Bass,
+    Other,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PodMicChoice(u32);
 
 impl PodMicChoice {
-    pub const fn value(self) -> u32 { self.0 }
-    pub fn from_value(value: u32) -> Option<Self> { (value <= 3).then_some(Self(value)) }
+    pub const fn value(self) -> u32 {
+        self.0
+    }
+    pub fn from_value(value: u32) -> Option<Self> {
+        (value <= 3).then_some(Self(value))
+    }
 }
 
 impl TryFrom<u32> for PodMicChoice {
     type Error = u32;
-    fn try_from(value: u32) -> Result<Self, Self::Error> { Self::from_value(value).ok_or(value) }
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        Self::from_value(value).ok_or(value)
+    }
 }
 /// Amp model slot from `L6Patch.UpdateMetaAmpName` and `kGPXTSlot_Amp`.
 pub const AMP_SLOT: u32 = 0x0003_0000;
@@ -2647,17 +2699,43 @@ impl PodTone {
 
     fn cab_edit_location(&self) -> Result<(usize, Range<usize>), ToneError> {
         if self.container != ContainerKind::L6as {
-            return Err(ToneError::format("CAB/MIC editing requires a FORM/L6AS tone"));
+            return Err(ToneError::format(
+                "CAB/MIC editing requires a FORM/L6AS tone",
+            ));
         }
-        if self.device_id != PODXT_LIVE_TONE_ID || self.device_version < PODXT_LIVE_HOST_MIN_VERSION {
-            return Err(ToneError::format("CAB/MIC editing requires the PODxt Live target and host profile"));
+        if self.device_id != PODXT_LIVE_TONE_ID || self.device_version < PODXT_LIVE_HOST_MIN_VERSION
+        {
+            return Err(ToneError::format(
+                "CAB/MIC editing requires the PODxt Live target and host profile",
+            ));
         }
-        let matches: Vec<_> = self.models.iter().enumerate().filter(|(_, m)| m.slot == CAB_SLOT).map(|(i, _)| i).collect();
-        let [index] = matches.as_slice() else { return Err(ToneError::format("CAB/MIC edit requires exactly one existing CAB slot")); };
+        let matches: Vec<_> = self
+            .models
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.slot == CAB_SLOT)
+            .map(|(i, _)| i)
+            .collect();
+        let [index] = matches.as_slice() else {
+            return Err(ToneError::format(
+                "CAB/MIC edit requires exactly one existing CAB slot",
+            ));
+        };
         let index = *index;
-        let range = self.model_minfo_ranges.get(index).cloned().ok_or_else(|| ToneError::format("CAB MINF source range is unavailable"))?;
-        if range.end > self.bytes.len() || range.start.checked_add(12).is_none_or(|end| end > range.end) {
-            return Err(ToneError::format("CAB edit requires an existing MINF body of at least 12 bytes"));
+        let range = self
+            .model_minfo_ranges
+            .get(index)
+            .cloned()
+            .ok_or_else(|| ToneError::format("CAB MINF source range is unavailable"))?;
+        if range.end > self.bytes.len()
+            || range
+                .start
+                .checked_add(12)
+                .is_none_or(|end| end > range.end)
+        {
+            return Err(ToneError::format(
+                "CAB edit requires an existing MINF body of at least 12 bytes",
+            ));
         }
         Ok((index, range))
     }
@@ -2677,16 +2755,36 @@ impl PodTone {
     pub fn cab_class(&self) -> Option<PodCabClass> {
         let id = self.cab_model_id()?;
         (PODXT_CAB_MODEL_IDS.contains(&id) || PODXT_BASS_CAB_MODEL_IDS.contains(&id)).then_some(
-            if PODXT_BASS_CAB_MODEL_IDS.contains(&id) { PodCabClass::Bass } else { PodCabClass::Other }
+            if PODXT_BASS_CAB_MODEL_IDS.contains(&id) {
+                PodCabClass::Bass
+            } else {
+                PodCabClass::Other
+            },
         )
     }
 
     /// Return a currently interpretable MIC integer; unknown raw integers remain preserved.
     pub fn mic_choice(&self) -> Option<PodMicChoice> {
         let (mi, _) = self.cab_edit_location().ok()?;
-        let matches: Vec<_> = self.models[mi].parameters.iter().enumerate().filter_map(|(i,p)| match p { ModelParameter::Recorded { id: 0, .. } => Some(i), _ => None }).collect();
-        let [pi] = matches.as_slice() else { return None; };
-        match &self.models[mi].parameters[*pi] { ModelParameter::Recorded { value: ParameterValue::Int { bits }, .. } => PodMicChoice::from_value(*bits), _ => None }
+        let matches: Vec<_> = self.models[mi]
+            .parameters
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| match p {
+                ModelParameter::Recorded { id: 0, .. } => Some(i),
+                _ => None,
+            })
+            .collect();
+        let [pi] = matches.as_slice() else {
+            return None;
+        };
+        match &self.models[mi].parameters[*pi] {
+            ModelParameter::Recorded {
+                value: ParameterValue::Int { bits },
+                ..
+            } => PodMicChoice::from_value(*bits),
+            _ => None,
+        }
     }
 
     /// Explicitly apply one MIC value. CAB selector changes never call this operation.
@@ -2694,19 +2792,48 @@ impl PodTone {
         let (mi, _) = self.cab_edit_location()?;
         let id = self.models[mi].model_id;
         if !PODXT_CAB_MODEL_IDS.contains(&id) && !PODXT_BASS_CAB_MODEL_IDS.contains(&id) {
-            return Err(ToneError::format("MIC editing requires a source-listed current CAB id"));
+            return Err(ToneError::format(
+                "MIC editing requires a source-listed current CAB id",
+            ));
         }
-        let matches: Vec<_> = self.models[mi].parameters.iter().enumerate().filter_map(|(i,p)| match p { ModelParameter::Recorded { id: 0, .. } => Some(i), _ => None }).collect();
-        let [pi] = matches.as_slice() else { return Err(ToneError::format("MIC edit requires exactly one recorded PARM id 0")); };
+        let matches: Vec<_> = self.models[mi]
+            .parameters
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| match p {
+                ModelParameter::Recorded { id: 0, .. } => Some(i),
+                _ => None,
+            })
+            .collect();
+        let [pi] = matches.as_slice() else {
+            return Err(ToneError::format(
+                "MIC edit requires exactly one recorded PARM id 0",
+            ));
+        };
         let pi = *pi;
         match &self.models[mi].parameters[pi] {
-            ModelParameter::Recorded { prefix: 0x3f, value: ParameterValue::Int { .. }, .. } => {},
-            _ => return Err(ToneError::format("MIC edit requires a canonical integer PARM")),
+            ModelParameter::Recorded {
+                prefix: 0x3f,
+                value: ParameterValue::Int { .. },
+                ..
+            } => {}
+            _ => {
+                return Err(ToneError::format(
+                    "MIC edit requires a canonical integer PARM",
+                ));
+            }
         }
-        let offset = self.parameter_value_offsets[mi][pi].ok_or_else(|| ToneError::format("MIC PARM has no unique value word"))?;
+        let offset = self.parameter_value_offsets[mi][pi]
+            .ok_or_else(|| ToneError::format("MIC PARM has no unique value word"))?;
         let value = choice.value();
         self.bytes[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
-        if let ModelParameter::Recorded { value: ParameterValue::Int { bits }, .. } = &mut self.models[mi].parameters[pi] { *bits = value; }
+        if let ModelParameter::Recorded {
+            value: ParameterValue::Int { bits },
+            ..
+        } = &mut self.models[mi].parameters[pi]
+        {
+            *bits = value;
+        }
         Ok(())
     }
 
@@ -2863,12 +2990,22 @@ impl Library {
         entry.tone.set_amp_model_choice(choice)
     }
 
-    pub fn set_cab_model_choice(&mut self, index: usize, choice: PodCabModelChoice) -> Result<(), ToneError> {
-        let entry = self.tones.get_mut(index).ok_or_else(|| ToneError::format("tone index is outside the library"))?;
+    pub fn set_cab_model_choice(
+        &mut self,
+        index: usize,
+        choice: PodCabModelChoice,
+    ) -> Result<(), ToneError> {
+        let entry = self
+            .tones
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
         entry.tone.set_cab_model_choice(choice)
     }
     pub fn set_mic_choice(&mut self, index: usize, choice: PodMicChoice) -> Result<(), ToneError> {
-        let entry = self.tones.get_mut(index).ok_or_else(|| ToneError::format("tone index is outside the library"))?;
+        let entry = self
+            .tones
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
         entry.tone.set_mic_choice(choice)
     }
 
@@ -3297,7 +3434,11 @@ impl PodBundleLibrary {
         self.edit_entry(index, |tone| tone.set_amp_model_choice(choice))
     }
 
-    pub fn set_cab_model_choice(&mut self, index: usize, choice: PodCabModelChoice) -> Result<(), ToneError> {
+    pub fn set_cab_model_choice(
+        &mut self,
+        index: usize,
+        choice: PodCabModelChoice,
+    ) -> Result<(), ToneError> {
         self.edit_entry(index, |tone| tone.set_cab_model_choice(choice))
     }
     pub fn set_mic_choice(&mut self, index: usize, choice: PodMicChoice) -> Result<(), ToneError> {
@@ -4252,25 +4393,47 @@ mod tests {
         mic.extend_from_slice(&0x3f00_0000u32.to_be_bytes());
         mic.extend_from_slice(&0u32.to_be_bytes());
         mic.extend_from_slice(&2u32.to_be_bytes());
-        let original = custom_tone(ContainerKind::L6as, &[BuiltModel { slot: CAB_SLOT, model_id: PODXT_BASS_CAB_MODEL_IDS[0], tail: &[0x80, 0xa1, 0xb2, 0xfe], parameters: &[&mic] }]);
+        let original = custom_tone(
+            ContainerKind::L6as,
+            &[BuiltModel {
+                slot: CAB_SLOT,
+                model_id: PODXT_BASS_CAB_MODEL_IDS[0],
+                tail: &[0x80, 0xa1, 0xb2, 0xfe],
+                parameters: &[&mic],
+            }],
+        );
         assert_eq!(PODXT_CAB_MODEL_IDS.len(), 25);
-        for id in PODXT_CAB_MODEL_IDS { assert!(PodCabModelChoice::from_model_id(id).is_some()); }
-        for id in [0x0102_0017, 0x0102_0019, 0x0103_0001, 0x0103_0016, 0xdead_beef] { assert!(PodCabModelChoice::from_model_id(id).is_none()); }
+        for id in PODXT_CAB_MODEL_IDS {
+            assert!(PodCabModelChoice::from_model_id(id).is_some());
+        }
+        for id in [
+            0x0102_0017,
+            0x0102_0019,
+            0x0103_0001,
+            0x0103_0016,
+            0xdead_beef,
+        ] {
+            assert!(PodCabModelChoice::from_model_id(id).is_none());
+        }
         let mut tone = PodTone::parse(original.clone()).unwrap();
         assert_eq!(tone.cab_class(), Some(PodCabClass::Bass));
         assert_eq!(tone.mic_choice(), Some(PodMicChoice::try_from(2).unwrap()));
         let choice = PodCabModelChoice::from_model_id(PODXT_CAB_MODEL_IDS[0]).unwrap();
         let mut expected = original.clone();
         let offset = tone.model_minfo_ranges[0].start;
-        expected[offset..offset+4].copy_from_slice(&choice.model_id().to_be_bytes());
+        expected[offset..offset + 4].copy_from_slice(&choice.model_id().to_be_bytes());
         tone.set_cab_model_choice(choice).unwrap();
         assert_eq!(tone.as_bytes(), expected);
         assert_eq!(tone.mic_choice(), Some(PodMicChoice::try_from(2).unwrap()));
         let mic_value_offset = tone.parameter_value_offsets[0][0].unwrap();
-        expected[mic_value_offset..mic_value_offset+4].copy_from_slice(&3u32.to_be_bytes());
-        tone.set_mic_choice(PodMicChoice::try_from(3).unwrap()).unwrap();
+        expected[mic_value_offset..mic_value_offset + 4].copy_from_slice(&3u32.to_be_bytes());
+        tone.set_mic_choice(PodMicChoice::try_from(3).unwrap())
+            .unwrap();
         assert_eq!(tone.as_bytes(), expected);
-        assert_eq!(PodTone::parse(expected.clone()).unwrap().as_bytes(), expected);
+        assert_eq!(
+            PodTone::parse(expected.clone()).unwrap().as_bytes(),
+            expected
+        );
     }
 
     #[test]

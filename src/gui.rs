@@ -1925,7 +1925,8 @@ impl Workbench {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(format!("MIC current {}", mic.map_or_else(|| "unknown".into(), |m| m.value().to_string())));
                         for value in 0..=3 {
-                            if self.pod_button(ui, &format!("pod-mic-{value}"), &format!("Apply MIC {value}")) {
+                            let id = ["pod-mic-0", "pod-mic-1", "pod-mic-2", "pod-mic-3"][value as usize];
+                            if self.pod_button(ui, id, &format!("Apply MIC {value}")) {
                                 self.pod_selected = Some(index);
                                 if let Some(choice) = pod_preset::PodMicChoice::from_value(value) { self.apply_pod_mic_choice(choice); }
                             }
@@ -2691,19 +2692,48 @@ impl Workbench {
     }
 
     fn apply_pod_cab_model_choice(&mut self, choice: pod_preset::PodCabModelChoice) {
-        let Some(index) = self.pod_selected else { return; };
-        let Some(current) = self.pod_library.tone(index).map(|tone| tone.as_bytes().to_vec()) else { return; };
+        let Some(index) = self.pod_selected else {
+            return;
+        };
+        let Some(current) = self
+            .pod_library
+            .tone(index)
+            .map(|tone| tone.as_bytes().to_vec())
+        else {
+            return;
+        };
         match Session::initial_rig().set_pod_cab_model_choice(RoleKind::Pod, &current, choice) {
-            Ok(bytes) => match self.replace_pod_tone(index, bytes) { Ok(()) => self.pod_message = format!("Applied CAB {}. MIC value was preserved; nothing was sent.", choice.numeric_label()), Err(error) => self.pod_message = error.detail() },
+            Ok(bytes) => match self.replace_pod_tone(index, bytes) {
+                Ok(()) => {
+                    self.pod_message = format!(
+                        "Applied CAB {}. MIC value was preserved; nothing was sent.",
+                        choice.numeric_label()
+                    )
+                }
+                Err(error) => self.pod_message = error.detail(),
+            },
             Err(error) => self.pod_message = rejection_text(&error),
         }
     }
 
     fn apply_pod_mic_choice(&mut self, choice: pod_preset::PodMicChoice) {
-        let Some(index) = self.pod_selected else { return; };
-        let Some(current) = self.pod_library.tone(index).map(|tone| tone.as_bytes().to_vec()) else { return; };
+        let Some(index) = self.pod_selected else {
+            return;
+        };
+        let Some(current) = self
+            .pod_library
+            .tone(index)
+            .map(|tone| tone.as_bytes().to_vec())
+        else {
+            return;
+        };
         match Session::initial_rig().set_pod_mic_choice(RoleKind::Pod, &current, choice) {
-            Ok(bytes) => match self.replace_pod_tone(index, bytes) { Ok(()) => self.pod_message = format!("Applied MIC {}. Nothing was sent.", choice.value()), Err(error) => self.pod_message = error.detail() },
+            Ok(bytes) => match self.replace_pod_tone(index, bytes) {
+                Ok(()) => {
+                    self.pod_message = format!("Applied MIC {}. Nothing was sent.", choice.value())
+                }
+                Err(error) => self.pod_message = error.detail(),
+            },
             Err(error) => self.pod_message = rejection_text(&error),
         }
     }
