@@ -35,7 +35,7 @@ pub const CAB_SLOT: u32 = 0x0003_0001;
 /// Application bound for the offline librarian. Not a recovered Line 6 limit.
 pub const TONE_BYTES_CEILING: u64 = 1_048_576;
 
-/// Static Edit 2.27 file framing. The tag is an HD500X editor-group
+/// Static Edit 2.27 file framing. The tag is an HD500x editor-group
 /// observation; it does not prove a physical target or profile compatibility.
 pub const H5EP_HEADER_BYTES: usize = 0x28;
 pub const H5EP_BODY_BYTES: usize = 0x1000;
@@ -447,9 +447,15 @@ impl HdType1MappedControl {
     }
 }
 
-/// 184 active primary type-1 rows across source-identified distortion, delay
-/// and reverb families. Some rows overlap the existing typed descriptors.
-pub const HD_TYPE1_MAPPED_CONTROLS: [HdType1MappedControl; 184] = [
+/// Source-joined primary type-1 controls from the corrected Editor 2.27
+/// effect descriptor matrix. The source trace gives the common primary-widget
+/// setup (integer 0..=100, step 1) and normalized float value path; this does
+/// not claim physical availability or cross-family compatibility.
+///
+/// Rows come only from nonzero-key, raw type-1 primary descriptors. Auxiliary
+/// widget candidates are not separate controls here; the edit path still
+/// rejects nonzero assignment flags and preserves all other bytes.
+pub const HD_TYPE1_MAPPED_CONTROLS: [HdType1MappedControl; 364] = [
     HdType1MappedControl::new(0x0205000C, "Octave Fuzz", "DRIVE", 0x3F100001),
     HdType1MappedControl::new(0x0205000C, "Octave Fuzz", "BASS", 0x3F100002),
     HdType1MappedControl::new(0x0205000C, "Octave Fuzz", "MID", 0x3F100003),
@@ -525,6 +531,25 @@ pub const HD_TYPE1_MAPPED_CONTROLS: [HdType1MappedControl; 184] = [
     HdType1MappedControl::new(0x0205000D, "Tube Drive", "MID", 0x3F100003),
     HdType1MappedControl::new(0x0205000D, "Tube Drive", "TREBLE", 0x3F100004),
     HdType1MappedControl::new(0x0205000D, "Tube Drive", "OUTPUT", 0x3F100005),
+    HdType1MappedControl::new(0x02000011, "Noise Gate", "THRESH", 0x3F100001),
+    HdType1MappedControl::new(0x02000011, "Noise Gate", "DECAY", 0x3F100002),
+    HdType1MappedControl::new(0x02000012, "Boost Comp", "DRIVE", 0x3F100001),
+    HdType1MappedControl::new(0x02000012, "Boost Comp", "BASS", 0x3F100002),
+    HdType1MappedControl::new(0x02000012, "Boost Comp", "COMP", 0x3F100003),
+    HdType1MappedControl::new(0x02000012, "Boost Comp", "TREBLE", 0x3F100004),
+    HdType1MappedControl::new(0x02000012, "Boost Comp", "OUTPUT", 0x3F100005),
+    HdType1MappedControl::new(0x0200000B, "Red Comp", "SUSTAIN", 0x3F100001),
+    HdType1MappedControl::new(0x0200000B, "Red Comp", "LEVEL", 0x3F100002),
+    HdType1MappedControl::new(0x0200000C, "Blue Comp", "SUSTAIN", 0x3F100001),
+    HdType1MappedControl::new(0x0200000C, "Blue Comp", "LEVEL", 0x3F100002),
+    HdType1MappedControl::new(0x0200000D, "Blue Comp Treb", "SUSTAIN", 0x3F100002),
+    HdType1MappedControl::new(0x0200000D, "Blue Comp Treb", "LEVEL", 0x3F100001),
+    HdType1MappedControl::new(0x0200000F, "Vetta Comp", "SENS", 0x3F100001),
+    HdType1MappedControl::new(0x0200000F, "Vetta Comp", "LEVEL", 0x3F100002),
+    HdType1MappedControl::new(0x02000010, "Vetta Juice", "AMOUNT", 0x3F100001),
+    HdType1MappedControl::new(0x02000010, "Vetta Juice", "LEVEL", 0x3F100002),
+    HdType1MappedControl::new(0x0200000E, "Tube Comp", "THRESH", 0x3F100001),
+    HdType1MappedControl::new(0x0200000E, "Tube Comp", "LEVEL", 0x3F100002),
     HdType1MappedControl::new(0x02040023, "Octo", "DECAY", 0x3F100001),
     HdType1MappedControl::new(0x02040023, "Octo", "TONE", 0x3F100003),
     HdType1MappedControl::new(0x02040023, "Octo", "MIX", 0x3F100005),
@@ -561,6 +586,88 @@ pub const HD_TYPE1_MAPPED_CONTROLS: [HdType1MappedControl; 184] = [
     HdType1MappedControl::new(0x02040027, "Particle Verb", "DWELL", 0x3F100001),
     HdType1MappedControl::new(0x02040027, "Particle Verb", "GAIN", 0x3F100003),
     HdType1MappedControl::new(0x02040027, "Particle Verb", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x020C000B, "Parametric EQ", "LOWS", 0x3F100001),
+    HdType1MappedControl::new(0x020C000B, "Parametric EQ", "HIGHS", 0x3F100002),
+    HdType1MappedControl::new(0x020C000B, "Parametric EQ", "FREQ", 0x3F100003),
+    HdType1MappedControl::new(0x020C000B, "Parametric EQ", "Q", 0x3F100004),
+    HdType1MappedControl::new(0x020C000B, "Parametric EQ", "GAIN", 0x3F100005),
+    HdType1MappedControl::new(0x020C000C, "4 Band Shift EQ", "SHIFT", 0x3F100005),
+    HdType1MappedControl::new(0x020C000D, "Mid Focus EQ", "HP FREQ", 0x3F100001),
+    HdType1MappedControl::new(0x020C000D, "Mid Focus EQ", "HP Q", 0x3F100002),
+    HdType1MappedControl::new(0x020C000D, "Mid Focus EQ", "LP FREQ", 0x3F100003),
+    HdType1MappedControl::new(0x020C000D, "Mid Focus EQ", "LP Q", 0x3F100004),
+    HdType1MappedControl::new(0x020C000D, "Mid Focus EQ", "GAIN", 0x3F100005),
+    HdType1MappedControl::new(0x020C000E, "Vintage Pre", "GAIN", 0x3F100002),
+    HdType1MappedControl::new(0x020C000E, "Vintage Pre", "OUTPUT", 0x3F100003),
+    HdType1MappedControl::new(0x02030049, "80A Flanger", "RANGE", 0x3F100001),
+    HdType1MappedControl::new(0x02030049, "80A Flanger", "ENHANCE", 0x3F100002),
+    HdType1MappedControl::new(0x02030049, "80A Flanger", "MANUAL", 0x3F100003),
+    HdType1MappedControl::new(0x0203002A, "Analog Chorus", "DEPTH", 0x3F100001),
+    HdType1MappedControl::new(0x0203002A, "Analog Chorus", "TONE", 0x3F100003),
+    HdType1MappedControl::new(0x0203002A, "Analog Chorus", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x02030028, "Analog Flanger", "DEPTH", 0x3F100001),
+    HdType1MappedControl::new(0x02030028, "Analog Flanger", "FDBACK", 0x3F100002),
+    HdType1MappedControl::new(0x02030028, "Analog Flanger", "MANUAL", 0x3F100003),
+    HdType1MappedControl::new(0x02030028, "Analog Flanger", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x02030040, "Barberpole Phaser", "FDBACK", 0x3F100001),
+    HdType1MappedControl::new(0x02030040, "Barberpole Phaser", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x02030021, "Bias Tremolo", "DEPTH", 0x3F100001),
+    HdType1MappedControl::new(0x02030021, "Bias Tremolo", "SHAPE", 0x3F100002),
+    HdType1MappedControl::new(0x02030021, "Bias Tremolo", "VOLSNS", 0x3F100003),
+    HdType1MappedControl::new(0x02030021, "Bias Tremolo", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x0203002B, "Dimension", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x02030023, "Dual Phaser", "DEPTH", 0x3F100001),
+    HdType1MappedControl::new(0x02030023, "Dual Phaser", "FDBACK", 0x3F100002),
+    HdType1MappedControl::new(0x02030023, "Dual Phaser", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x02030042, "Frequency Shifter", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x02030029, "Jet FLanger", "DEPTH", 0x3F100001),
+    HdType1MappedControl::new(0x02030029, "Jet FLanger", "FDBACK", 0x3F100002),
+    HdType1MappedControl::new(0x02030029, "Jet FLanger", "MANUAL", 0x3F100003),
+    HdType1MappedControl::new(0x02030029, "Jet FLanger", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x02030047, "AC Flanger", "WIDTH", 0x3F100001),
+    HdType1MappedControl::new(0x02030047, "AC Flanger", "REGEN", 0x3F100002),
+    HdType1MappedControl::new(0x02030047, "AC Flanger", "MANUAL", 0x3F100003),
+    HdType1MappedControl::new(0x02030047, "AC Flanger", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x02030020, "Opto Tremolo", "DEPTH", 0x3F100001),
+    HdType1MappedControl::new(0x02030020, "Opto Tremolo", "SHAPE", 0x3F100002),
+    HdType1MappedControl::new(0x02030020, "Opto Tremolo", "VOLSNS", 0x3F100003),
+    HdType1MappedControl::new(0x02030020, "Opto Tremolo", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x02030024, "Panned Phaser", "DEPTH", 0x3F100001),
+    HdType1MappedControl::new(0x02030024, "Panned Phaser", "PANSPD", 0x3F100003),
+    HdType1MappedControl::new(0x02030024, "Panned Phaser", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x0203002F, "Panner", "DEPTH", 0x3F100001),
+    HdType1MappedControl::new(0x0203002F, "Panner", "VOLSNS", 0x3F100003),
+    HdType1MappedControl::new(0x0203002F, "Panner", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x02030022, "Phaser", "DEPTH", 0x3F100001),
+    HdType1MappedControl::new(0x02030022, "Phaser", "FDBACK", 0x3F100002),
+    HdType1MappedControl::new(0x02030022, "Phaser", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x0203002D, "Pitch Vibrato", "DEPTH", 0x3F100001),
+    HdType1MappedControl::new(0x0203002D, "Pitch Vibrato", "RISE", 0x3F100002),
+    HdType1MappedControl::new(0x0203002D, "Pitch Vibrato", "VOLSNS", 0x3F100003),
+    HdType1MappedControl::new(0x0203002D, "Pitch Vibrato", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x02030026, "Rotary Drum", "DEPTH", 0x3F100001),
+    HdType1MappedControl::new(0x02030026, "Rotary Drum", "TONE", 0x3F100002),
+    HdType1MappedControl::new(0x02030026, "Rotary Drum", "DRIVE", 0x3F100003),
+    HdType1MappedControl::new(0x02030026, "Rotary Drum", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x02030027, "Rotary Drum & Horn", "DEPTH", 0x3F100001),
+    HdType1MappedControl::new(0x02030027, "Rotary Drum & Horn", "HDEPTH", 0x3F100002),
+    HdType1MappedControl::new(0x02030027, "Rotary Drum & Horn", "DRIVE", 0x3F100003),
+    HdType1MappedControl::new(0x02030027, "Rotary Drum & Horn", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x0203002C, "Tri Chorus", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x0203002C, "Tri Chorus", "DEPTH 1", 0x3F100001),
+    HdType1MappedControl::new(0x0203002C, "Tri Chorus", "DEPTH 2", 0x3F100002),
+    HdType1MappedControl::new(0x0203002C, "Tri Chorus", "DEPTH 3", 0x3F100003),
+    HdType1MappedControl::new(0x02030025, "U-Vibe", "DEPTH", 0x3F100001),
+    HdType1MappedControl::new(0x02030025, "U-Vibe", "FDBACK", 0x3F100002),
+    HdType1MappedControl::new(0x02030025, "U-Vibe", "VOLSNS", 0x3F100003),
+    HdType1MappedControl::new(0x02030025, "U-Vibe", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x020A0015, "Throbber", "FREQ", 0x3F100001),
+    HdType1MappedControl::new(0x020A0015, "Throbber", "Q", 0x3F100002),
+    HdType1MappedControl::new(0x020A0015, "Throbber", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x020A0016, "Spin Cycle", "FREQ", 0x3F100001),
+    HdType1MappedControl::new(0x020A0016, "Spin Cycle", "Q", 0x3F100002),
+    HdType1MappedControl::new(0x020A0016, "Spin Cycle", "VOLSNS", 0x3F100003),
+    HdType1MappedControl::new(0x020A0016, "Spin Cycle", "MIX", 0x3F100005),
     HdType1MappedControl::new(0x0202001A, "Multi-Head Delay", "FDBACK", 0x3F100001),
     HdType1MappedControl::new(0x0202001A, "Multi-Head Delay", "MIX", 0x3F100004),
     HdType1MappedControl::new(0x02020023, "Auto-Volume", "FDBACK", 0x3F100001),
@@ -634,6 +741,85 @@ pub const HD_TYPE1_MAPPED_CONTROLS: [HdType1MappedControl; 184] = [
     HdType1MappedControl::new(0x02020020, "Ping Pong", "OFFSET", 0x3F100002),
     HdType1MappedControl::new(0x02020020, "Ping Pong", "SPREAD", 0x3F100003),
     HdType1MappedControl::new(0x02020020, "Ping Pong", "MIX", 0x3F100004),
+    HdType1MappedControl::new(0x020A001B, "Attack Synth", "FREQ", 0x3F100001),
+    HdType1MappedControl::new(0x020A001B, "Attack Synth", "SPEED", 0x3F100003),
+    HdType1MappedControl::new(0x020A001B, "Attack Synth", "PITCH", 0x3F100004),
+    HdType1MappedControl::new(0x020A001B, "Attack Synth", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x020A001C, "Synth String", "FREQ", 0x3F100001),
+    HdType1MappedControl::new(0x020A001C, "Synth String", "ATTACK", 0x3F100002),
+    HdType1MappedControl::new(0x020A001C, "Synth String", "PITCH", 0x3F100003),
+    HdType1MappedControl::new(0x020A001C, "Synth String", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x020A0019, "Growler", "FREQ", 0x3F100001),
+    HdType1MappedControl::new(0x020A0019, "Growler", "Q", 0x3F100002),
+    HdType1MappedControl::new(0x020A0019, "Growler", "PITCH", 0x3F100003),
+    HdType1MappedControl::new(0x020A0019, "Growler", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x020A001A, "Synth-O-Matic", "FREQ", 0x3F100001),
+    HdType1MappedControl::new(0x020A001A, "Synth-O-Matic", "Q", 0x3F100002),
+    HdType1MappedControl::new(0x020A001A, "Synth-O-Matic", "PITCH", 0x3F100004),
+    HdType1MappedControl::new(0x020A001A, "Synth-O-Matic", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x02090004, "Bass Octaver", "TONE", 0x3F100001),
+    HdType1MappedControl::new(0x02090004, "Bass Octaver", "NORMAL", 0x3F100002),
+    HdType1MappedControl::new(0x02090004, "Bass Octaver", "OCTAVE", 0x3F100003),
+    HdType1MappedControl::new(0x020A0013, "Slow Filter", "SPEED", 0x3F100003),
+    HdType1MappedControl::new(0x020A0013, "Slow Filter", "FREQ", 0x3F100001),
+    HdType1MappedControl::new(0x020A0013, "Slow Filter", "Q", 0x3F100002),
+    HdType1MappedControl::new(0x020A0013, "Slow Filter", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x020A0010, "Tron Down", "FREQ", 0x3F100001),
+    HdType1MappedControl::new(0x020A0010, "Tron Down", "Q", 0x3F100002),
+    HdType1MappedControl::new(0x020A0010, "Tron Down", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x020A000F, "Tron Up", "FREQ", 0x3F100001),
+    HdType1MappedControl::new(0x020A000F, "Tron Up", "Q", 0x3F100002),
+    HdType1MappedControl::new(0x020A000F, "Tron Up", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x020A0014, "Q Filter", "FREQ", 0x3F100001),
+    HdType1MappedControl::new(0x020A0014, "Q Filter", "Q", 0x3F100002),
+    HdType1MappedControl::new(0x020A0014, "Q Filter", "GAIN", 0x3F100003),
+    HdType1MappedControl::new(0x020A0014, "Q Filter", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x020A0026, "Vocoder", "INPUT", 0x3F100001),
+    HdType1MappedControl::new(0x020A0026, "Vocoder", "MIC", 0x3F100002),
+    HdType1MappedControl::new(0x020A0026, "Vocoder", "DECAY", 0x3F100003),
+    HdType1MappedControl::new(0x020A0026, "Vocoder", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x020A0018, "Octisynth", "FREQ", 0x3F100001),
+    HdType1MappedControl::new(0x020A0018, "Octisynth", "Q", 0x3F100002),
+    HdType1MappedControl::new(0x020A0018, "Octisynth", "DEPTH", 0x3F100003),
+    HdType1MappedControl::new(0x020A0018, "Octisynth", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x020A001E, "V-Tron", "SPEED", 0x3F100001),
+    HdType1MappedControl::new(0x020A001E, "V-Tron", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x020A0017, "Comet Trails", "FREQ", 0x3F100001),
+    HdType1MappedControl::new(0x020A0017, "Comet Trails", "Q", 0x3F100002),
+    HdType1MappedControl::new(0x020A0017, "Comet Trails", "GAIN", 0x3F100003),
+    HdType1MappedControl::new(0x020A0017, "Comet Trails", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x020A0011, "Seeker", "FREQ", 0x3F100001),
+    HdType1MappedControl::new(0x020A0011, "Seeker", "Q", 0x3F100002),
+    HdType1MappedControl::new(0x020A0011, "Seeker", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x020A0012, "Obi Wah", "FREQ", 0x3F100001),
+    HdType1MappedControl::new(0x020A0012, "Obi Wah", "Q", 0x3F100002),
+    HdType1MappedControl::new(0x020A0012, "Obi Wah", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x0203002E, "Ring Modulator", "AM/FM", 0x3F100003),
+    HdType1MappedControl::new(0x0203002E, "Ring Modulator", "SPEED", 0x3F100004),
+    HdType1MappedControl::new(0x0203002E, "Ring Modulator", "DEPTH", 0x3F100001),
+    HdType1MappedControl::new(0x0203002E, "Ring Modulator", "SHAPE", 0x3F100002),
+    HdType1MappedControl::new(0x0203002E, "Ring Modulator", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x020A001D, "Voice Box", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x02090003, "Smart Harmony", "MIX", 0x3F010001),
+    HdType1MappedControl::new(0x02090002, "Pitch Glide", "MIX", 0x3F010001),
+    HdType1MappedControl::new(0x0206000B, "Vetta Wah", "POSITION", 0x3F100001),
+    HdType1MappedControl::new(0x0206000B, "Vetta Wah", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x0206000C, "Fassel", "POSITION", 0x3F100001),
+    HdType1MappedControl::new(0x0206000C, "Fassel", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x0206000E, "Chrome", "POSITION", 0x3F100001),
+    HdType1MappedControl::new(0x0206000E, "Chrome", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x0206000D, "Weeper", "POSITION", 0x3F100001),
+    HdType1MappedControl::new(0x0206000D, "Weeper", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x02060010, "Throaty", "POSITION", 0x3F100001),
+    HdType1MappedControl::new(0x02060010, "Throaty", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x0206000F, "Chrome Custom", "POSITION", 0x3F100001),
+    HdType1MappedControl::new(0x0206000F, "Chrome Custom", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x02060011, "Conductor", "POSITION", 0x3F100001),
+    HdType1MappedControl::new(0x02060011, "Conductor", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x02060012, "Colorful", "POSITION", 0x3F100001),
+    HdType1MappedControl::new(0x02060012, "Colorful", "MIX", 0x3F100005),
+    HdType1MappedControl::new(0x02080000, "FX Loop", "MIX", 0x3F100004),
+    HdType1MappedControl::new(0x02070004, "Volume Pedal", "VOLUME", 0x3F100001),
 ];
 
 /// A source-joined non-type-1 numeric editor control. Bounds are the
@@ -3180,7 +3366,29 @@ mod tests {
 
     #[test]
     fn selected_effect_type1_descriptors_are_model_gated_and_write_only_the_value_word() {
-        assert_eq!(HD_TYPE1_MAPPED_CONTROLS.len(), 184);
+        assert_eq!(HD_TYPE1_MAPPED_CONTROLS.len(), 364);
+        let mut source_rows = std::collections::BTreeSet::new();
+        for control in HD_TYPE1_MAPPED_CONTROLS {
+            assert!(
+                source_rows.insert((control.model_id, control.key)),
+                "duplicate source row for {} {}",
+                control.model_label,
+                control.label
+            );
+        }
+        for (model_id, label) in [
+            (HD_SCREAMER_MODEL_ID, "TONE"),
+            (HD_TUBE_DRIVE_MODEL_ID, "MID"),
+            (HD_OCTAVE_FUZZ_MODEL_ID, "MID"),
+        ] {
+            assert_eq!(
+                HD_TYPE1_MAPPED_CONTROLS
+                    .iter()
+                    .filter(|control| (control.model_id, control.label) == (model_id, label))
+                    .count(),
+                1
+            );
+        }
         for control in HD_TYPE1_MAPPED_CONTROLS {
             let mut original = synthetic_h5ep(&[]);
             let body = H5EP_HEADER_BYTES;
@@ -3208,6 +3416,38 @@ mod tests {
                 control.model_label(),
                 control.label()
             );
+
+            let wrong_model_id = if control.model_id() == HD_SCREAMER_MODEL_ID {
+                HD_TUBE_DRIVE_MODEL_ID
+            } else {
+                HD_SCREAMER_MODEL_ID
+            };
+            let mut wrong_model = preset.clone();
+            wrong_model.bytes[body + block..body + block + 4]
+                .copy_from_slice(&wrong_model_id.to_be_bytes());
+            let before_wrong_model = wrong_model.as_bytes().to_vec();
+            assert_eq!(
+                wrong_model.hd_type1_mapped_control_percent(0, control),
+                None
+            );
+            assert!(
+                wrong_model
+                    .set_hd_type1_mapped_control_percent(0, control, 50)
+                    .is_err()
+            );
+            assert_eq!(wrong_model.as_bytes(), before_wrong_model);
+
+            let mut wrong_key = preset.clone();
+            wrong_key.bytes[row..row + 4]
+                .copy_from_slice(&(control.key() ^ 0x8000_0000).to_be_bytes());
+            let before_wrong_key = wrong_key.as_bytes().to_vec();
+            assert_eq!(wrong_key.hd_type1_mapped_control_percent(0, control), None);
+            assert!(
+                wrong_key
+                    .set_hd_type1_mapped_control_percent(0, control, 50)
+                    .is_err()
+            );
+            assert_eq!(wrong_key.as_bytes(), before_wrong_key);
 
             let before_invalid = preset.as_bytes().to_vec();
             assert!(
