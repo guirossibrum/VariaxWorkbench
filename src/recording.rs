@@ -1456,45 +1456,16 @@ impl Panel {
         let route = self
             .route
             .ok_or(TakeError::SelectionMissing("a record route"))?;
-        if let (ClockSelection::Integer(hz), InputSelection::File) = (self.clock, self.input) {
-            let loaded = self
-                .loaded
-                .as_ref()
-                .ok_or(TakeError::SelectionMissing("a loaded wav"))?;
-            if loaded.sample_rate_hz != hz {
-                return Err(TakeError::RateMismatch {
-                    header: loaded.sample_rate_hz,
-                    selected: hz,
-                });
+        let plan = match (self.clock, self.input) {
+            (ClockSelection::Integer(hz), InputSelection::Synthetic) => {
+                capture::ValidatedPlan::software_synthetic(
+                    hz,
+                    2,
+                    capture::ChannelMap { left: 0, right: 1 },
+                    route,
+                    PANEL_TAKE_BYTES,
+                )
             }
-            let plan = capture::ValidatedPlan::software_file_labeled(
-                hz,
-                2,
-                capture::ChannelMap { left: 0, right: 1 },
-                self.file_label.clone(),
-                route,
-                PANEL_TAKE_BYTES,
-            )
-            .map_err(|error| TakeError::Capture(error.to_string()))?;
-            self.capture_generation = self.capture_generation.wrapping_add(1);
-            self.capture = Some(
-                capture::CaptureSession::start(plan, self.capture_generation)
-                    .map_err(|error| TakeError::Capture(error.to_string()))?,
-            );
-            self.take = None;
-            self.cursor = 0;
-            self.levels = Levels::default();
-            self.take_saved = false;
-            self.recovery_events_outstanding = false;
-            self.message = "Recording armed from the selected WAV through the bounded offline capture session. Feed a chunk, then stop; nothing is saved yet.".into();
-            return Ok(());
-        }
-        let (clock, format, origin) = match (self.clock, self.input) {
-            (ClockSelection::Integer(hz), InputSelection::Synthetic) => (
-                SampleClock::Integer { hz },
-                FrameFormat::PcmS16Le,
-                InputOrigin::Synthetic,
-            ),
             (ClockSelection::Integer(hz), InputSelection::File) => {
                 let loaded = self
                     .loaded
@@ -1506,19 +1477,50 @@ impl Panel {
                         selected: hz,
                     });
                 }
-                (
-                    SampleClock::Integer { hz },
-                    FrameFormat::PcmS16Le,
-                    InputOrigin::File {
-                        label: self.file_label.clone(),
-                    },
+                capture::ValidatedPlan::software_file_labeled(
+                    hz,
+                    2,
+                    capture::ChannelMap { left: 0, right: 1 },
+                    self.file_label.clone(),
+                    route,
+                    PANEL_TAKE_BYTES,
                 )
             }
-            (ClockSelection::NativePodxt, InputSelection::Synthetic) => (
-                SampleClock::native_podxt(),
-                FrameFormat::PodS24_3Le,
-                InputOrigin::Synthetic,
-            ),
+            (ClockSelection::NativePodxt, InputSelection::Synthetic) => {
+                let registry = crate::rig::audio::Registry::frozen()
+                    .map_err(|error| TakeError::Capture(error.to_string()))?;
+                let capture_row = registry
+                    .rows()
+                    .iter()
+                    .find(|row| {
+                        row.name == "PODxt Live"
+                            && row.role == crate::rig::audio::SourceRole::Bridge
+                            && row.classification
+                                == crate::rig::audio::Classification::NativeUsbDeclaration
+                    })
+                    .map(|row| row.ordinal)
+                    .ok_or_else(|| {
+                        TakeError::Capture("PODxt Live declaration is not admitted".into())
+                    })?;
+                capture::ValidatedPlan::native_podxt(
+                    &registry,
+                    crate::rig::audio::Request {
+                        capture_row,
+                        capture_profile: crate::rig::ProductProfile::PodxtLive,
+                        connected_instrument: None,
+                        platform: crate::rig::audio::Platform::Linux,
+                        state: crate::rig::audio::RuntimeState::Normal,
+                        endpoint_use: crate::rig::audio::EndpointUse::Capture,
+                        contract: crate::rig::audio::CONTRACT,
+                        installed_revision: None,
+                        channels: 2,
+                        clock: (78_125, 2),
+                        format: crate::rig::audio::SampleFormat::S24ThreeByteLe,
+                    },
+                    route,
+                    PANEL_TAKE_BYTES,
+                )
+            }
             (ClockSelection::NativePodxt, InputSelection::File) => {
                 return Err(TakeError::RationalClockNotWav {
                     numerator: RATE_NUMERATOR,
@@ -1531,21 +1533,24 @@ impl Panel {
             (_, InputSelection::Unselected) => {
                 return Err(TakeError::SelectionMissing("an input"));
             }
-        };
-        let mut take = Take::prepare(TakeRequest {
-            route,
-            clock,
-            format,
-            origin,
-            max_bytes: PANEL_TAKE_BYTES,
-        })?;
-        take.start()?;
+        }
+        .map_err(|error| TakeError::Capture(error.to_string()))?;
+        self.capture_generation = self.capture_generation.wrapping_add(1);
+        self.capture = Some(
+            capture::CaptureSession::start(plan, self.capture_generation)
+                .map_err(|error| TakeError::Capture(error.to_string()))?,
+        );
+        self.take = None;
         self.cursor = 0;
         self.levels = Levels::default();
-        self.take = Some(take);
         self.take_saved = false;
         self.recovery_events_outstanding = false;
-        self.message = "Recording armed. Feed a chunk, then stop. Nothing is saved yet.".into();
+        self.message = match self.input {
+            InputSelection::File => "Recording armed from the selected WAV through the bounded offline capture session. Feed a chunk, then stop; nothing is saved yet.",
+            InputSelection::Synthetic => "Offline synthetic recording armed through the bounded common capture session. Feed a chunk, then stop; nothing is saved yet.",
+            InputSelection::Unselected => unreachable!("input was validated above"),
+        }
+        .into();
         Ok(())
     }
 
@@ -1741,10 +1746,10 @@ mod tests {
         assert!(panel.take_can_save_wav());
         panel.feed().unwrap();
         panel.stop().unwrap();
-        let pcm = panel.take.as_ref().unwrap().pcm().to_vec();
+        let pcm = panel.current_take().unwrap().pcm().to_vec();
         assert!(panel.save(&blocked).is_err());
         assert!(panel.has_unsaved_take());
-        assert_eq!(panel.take.as_ref().unwrap().pcm(), pcm);
+        assert_eq!(panel.current_take().unwrap().pcm(), pcm);
         panel.save(&good).unwrap();
         assert!(!panel.has_unsaved_take());
         // A refused second copy does not erase the first successful save.
@@ -1767,11 +1772,11 @@ mod tests {
         let mut panel = armed_panel(ClockSelection::NativePodxt);
         panel.feed().unwrap();
         panel.stop().unwrap();
-        let pcm = panel.take.as_ref().unwrap().pcm().to_vec();
+        let pcm = panel.current_take().unwrap().pcm().to_vec();
         assert!(!panel.take_can_save_wav());
         assert!(panel.save(&path).is_err());
         assert!(panel.has_unsaved_take());
-        assert_eq!(panel.take.as_ref().unwrap().pcm(), pcm);
+        assert_eq!(panel.current_take().unwrap().pcm(), pcm);
         assert!(!path.exists());
         assert!(!panel.device_opened());
     }
@@ -2546,8 +2551,10 @@ mod tests {
         panel.select_input(InputSelection::Synthetic).unwrap();
         assert!(!panel.live_monitor_changed());
         panel.start().unwrap();
+        assert!(panel.capture.is_some());
+        assert!(panel.take.is_none());
         assert_eq!(panel.phase_label(), PHASE_RECORDING);
-        assert!(panel.take.as_ref().unwrap().pcm().is_empty());
+        assert!(panel.current_take().unwrap().pcm().is_empty());
         panel.feed().unwrap();
         assert_eq!(panel.levels().left_peak, 1_000);
         assert_eq!(panel.levels().right_peak, 2_000);

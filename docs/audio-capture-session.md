@@ -28,18 +28,22 @@ cannot be committed to `Take`, it remains available as ordered pending audio or
 dropout events for explicit recovery after stop. Cancel discards only in-memory
 work and leaves prior saved files intact.
 
-The recording `Panel` routes its selected WAV-file input through this same
-`CaptureSession` and existing `Take` save path, while keeping the existing
-unsaved-take and non-overwriting-save checks. It can also prepare and revalidate
+The recording `Panel` routes selected WAV-file and synthetic input through this
+same `CaptureSession` and existing `Take` save path, while keeping the existing
+unsaved-take and non-overwriting-save checks. Integer-clock synthetic input is
+admitted as an explicitly generated S16 software source. The native PODxt clock
+selection revalidates the existing static Linux declaration but generates
+synthetic PCM only; it does not initialize ALSA or claim that the bytes came
+from a connected PODxt. It can also prepare and revalidate
 the source-supported Linux PODxt Live declaration from the selected Record Send
 route, displaying its exact `78125/2` clock, S24_3LE format, channel map,
 provenance contract, and take cap. This only inspects a static plan: it creates
 no take and cannot start a stream. The external-interface check reports the
 missing independently admitted identity/revision, route/map, format, rational
 clock, OS backend, and provenance without fabricating an interface record.
-Synthetic-input recording remains distinct and does not pretend to be
-native/external capture. This is offline in-app integration only; it does not
-create or open an operating-system capture stream.
+Synthetic-input recording remains identified as synthetic and does not pretend
+to be externally captured audio. This is offline in-app integration only; it
+does not create or open an operating-system capture stream.
 
 The session is a deterministic software contract, not a live real-time callback
 or stream initializer. The inactive Linux ALSA translator now requires a
@@ -113,7 +117,7 @@ Platform blockers:
 
 | Platform | Available source paths and facts | Exact missing contract and effect |
 | --- | --- | --- |
-| Windows | `src/linux_transport.rs` records a PODxt Live hardware ID without an interface/endpoint audio contract. `docs/pod-usb-audio.md` identifies Windows packet text as a different-source clue, not a PODxt Live negotiated format or callback contract. `src/pod_hd500x.rs` records HD500X INF defaults only. The local bounded header/cache search found no Windows SDK headers. | Missing PODxt Live `IMMDevice`/`IAudioClient` stream ownership and `GetBuffer`/`ReleaseBuffer` callback-lifetime contract, plus source-qualified endpoint channels, sample format, and rational clock. The portable-core Windows CI job does not compile an adapter or provide the missing SDK/API contract. Guessing ABI layouts or borrowing another product's defaults is not safe. |
+| Windows | `src/linux_transport.rs` records a PODxt Live hardware ID without an interface/endpoint audio contract. `docs/pod-usb-audio.md` identifies Windows packet text as a different-source clue, not a PODxt Live negotiated format. A version-pinned static trace of the supplied PODxt Live x64 ASIO DLL and driver establishes a Windows ASIO host-buffer/control path and bounded byte-level callback ownership. It does not provide named callback semantics. `src/pod_hd500x.rs` records HD500X INF defaults only. | The static trace leaves the version-identified `ASIOCallbacks` and `ASIOTime` declarations unavailable, including the semantic meaning of selector 7; those declarations are required before implementing the callback adapter. The PODxt Live `IMMDevice`/`IAudioClient` stream ownership and `GetBuffer`/`ReleaseBuffer` path is also unimplemented, as are source-qualified endpoint channels, sample format, and rational clock. No generic ABI or modern header substitutes for the missing versioned declaration. The portable-core Windows CI job does not compile an adapter or provide the missing API contract. |
 | macOS | The admitted 7.6.8 driver source statically maps the exact PODxt Live personality to interface 0 and an `isoenginext` engine with two-channel input and output streams. It advertises one raw linear signed PCM format record and integer rates 44,100, 48,000, 88,200, and 96,000 Hz. The source's input conversion copies frame slices at an eight-byte stereo-frame buffer stride. These are driver declarations and callback-buffer dataflow, not OS-negotiated or physical stream results. | The matching Core Audio `AudioStreamBasicDescription`/`AudioBufferList` mapping, format-tail semantics, host callback ownership/lifetime, and an app adapter are absent. The 24-byte driver format record's trailing fields and the meaning of the eight-byte callback stride relative to its 24-bit fields remain unresolved; do not label this packed S24 or S24-in-32. The master audio clock remains unknown. The portable-core macOS CI job does not compile an adapter or supply the missing SDK/API contract. |
 
 ### Bounded macOS input-buffer trace
@@ -143,6 +147,21 @@ external plan can pass admission. The PODxt declaration is not an external
 interface or a runtime-negotiated result. No physical capture or hardware
 clock timing is inferred. There is no global audio setting, privileged path,
 monitor/re-amp activation, or hardware override.
+
+### Acceptance-criterion status matrix
+
+This finite matrix ties the six audio-integration criteria to the current
+implementation and exact remaining dependencies. A documented platform blocker
+counts for criterion 2; it does not imply an adapter or live capability.
+
+| Criterion | Current implementation or evidence | Status and remaining dependency |
+| --- | --- | --- |
+| 1. Integrate recorder behavior with the common capture API | `ValidatedPlan` and `CaptureSession` own software-file and synthetic Panel sessions; `Take` remains the shared storage/save implementation. Tests cover queue bounds, lifecycle, and WAV-file Panel save behavior. | Partial. Offline UI/recorder integration exists, while platform source-plan execution and exact-head validation remain outstanding. |
+| 2. Establish each platform adapter contract or record a bounded blocker | Linux ALSA translation is source-qualified and inactive. Windows has the version-pinned ASIO static trace; exact versioned `ASIOCallbacks`/`ASIOTime` declarations and selector 7 semantics remain unavailable. macOS has the bounded driver declaration/buffer trace; Core Audio mapping remains unresolved. | Met with limits: blockers are explicitly recorded. Windows callback implementation requires the exact versioned declarations; macOS requires the matching Core Audio mapping and callback ownership contract. No acquisition or live probe is authorized. |
+| 3. Admit source records and negotiated format/clock provenance | The frozen registry admits one static Linux PODxt Live declaration. External records remain absent; Windows and macOS facts do not provide an admitted plan or runtime negotiation. | Partial. Requires independently sourced identity/revision, channel map, format, rational clock, backend, and provenance for each additional source. |
+| 4. Preserve bounded queue, chronology, error, recovery, and lifecycle behavior | `CaptureSession` uses bounded chronological audio/dropout events, owner-thread drain, generation checks, terminal errors, recovery events, and stop/cancel ownership; deterministic tests exercise these paths without enumerating/opening devices. | Met with limits as an offline software contract; platform callback behavior and physical stream recovery remain unverified. |
+| 5. Use common controls for admitted native/external plans | Panel offers route, clock, input, and shared start/feed/stop/cancel/save controls; it can inspect the static PODxt plan and reports the missing external admission fields. No live native or external source plan is admitted. | Partial. Depends on independently admitted source records and platform adapters before any live route can be offered. |
+| 6. Validate portability and dependency provenance | Offline portable-core/file workflow covers Linux, Windows, and macOS; it does not compile native audio adapters or supply platform SDK contracts. ALSA declarations are tied to the installed header version and digest. | Partial. Requires platform-specific adapter builds/contracts and exact-head checks when code changes; current configured workflow is not adapter validation. |
 
 Validation is limited to deterministic injected buffers, software file input,
 the frozen static registry, and the configured exact-head command-v1 checks.
