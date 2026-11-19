@@ -293,7 +293,7 @@ impl Workbench {
             hd_selected: None,
             hd_effect_slot: 0,
             hd_control: pod_preset::HdType1Control::Screamer(pod_preset::ScreamerControl::Drive),
-            hd_mapped_control: pod_preset::HD_TYPE1_DELAY_CONTROLS[0],
+            hd_mapped_control: pod_preset::HD_TYPE1_MAPPED_CONTROLS[0],
             hd_control_percent: 0,
             hd_numeric_control: pod_preset::HD_NUMERIC_CONTROLS[0],
             hd_numeric_value: 0,
@@ -1911,18 +1911,17 @@ impl Workbench {
                         .hd_type1_control_percent(self.hd_effect_slot, self.hd_control)
                         .unwrap_or(0);
                     if let Some(model_id) = selected_model_id
-                        && let Some(control) =
-                            pod_preset::HD_TYPE1_DELAY_CONTROLS
-                                .into_iter()
-                                .find(|control| {
-                                    control.model_id() == model_id
-                                        && preset
-                                            .hd_type1_mapped_control_percent(
-                                                self.hd_effect_slot,
-                                                *control,
-                                            )
-                                            .is_some()
-                                })
+                        && let Some(control) = pod_preset::HD_TYPE1_MAPPED_CONTROLS
+                            .into_iter()
+                            .find(|control| {
+                                control.model_id() == model_id
+                                    && preset
+                                        .hd_type1_mapped_control_percent(
+                                            self.hd_effect_slot,
+                                            *control,
+                                        )
+                                        .is_some()
+                            })
                     {
                         self.hd_mapped_control = control;
                         self.hd_control_percent = preset
@@ -1949,21 +1948,21 @@ impl Workbench {
                 let model_id = preset
                     .effect_model_id(self.hd_effect_slot)
                     .unwrap_or_default();
-                let has_mapped_type1 = pod_preset::HD_TYPE1_DELAY_CONTROLS.iter().any(|control| {
+                let has_mapped_type1 = pod_preset::HD_TYPE1_MAPPED_CONTROLS.iter().any(|control| {
                     control.model_id() == model_id
                         && preset
                             .hd_type1_mapped_control_percent(self.hd_effect_slot, *control)
                             .is_some()
                 });
                 if has_mapped_type1 {
-                    egui::ComboBox::from_label("Recovered delay control")
+                    egui::ComboBox::from_label("Recovered effect control")
                         .selected_text(format!(
                             "{} {}",
                             self.hd_mapped_control.model_label(),
                             self.hd_mapped_control.label()
                         ))
                         .show_ui(ui, |ui| {
-                            for control in pod_preset::HD_TYPE1_DELAY_CONTROLS {
+                            for control in pod_preset::HD_TYPE1_MAPPED_CONTROLS {
                                 if control.model_id() != model_id
                                     || preset
                                         .hd_type1_mapped_control_percent(
@@ -1998,7 +1997,8 @@ impl Workbench {
                             self.hd_mapped_control.label()
                         )),
                     );
-                    if self.pod_button(ui, "apply-hd-delay-control", "Apply offline control") {
+                    if self.pod_button(ui, "apply-hd-mapped-type1-control", "Apply offline control")
+                    {
                         self.apply_hd_mapped_control(index);
                     }
                 } else {
@@ -2186,7 +2186,7 @@ impl Workbench {
             .and_then(|file| match file {
                 PodPresetFile::H5ep(preset) => {
                     let model = preset.effect_model_id(0)?;
-                    pod_preset::HD_TYPE1_DELAY_CONTROLS
+                    pod_preset::HD_TYPE1_MAPPED_CONTROLS
                         .into_iter()
                         .find(|control| {
                             control.model_id() == model
@@ -2197,7 +2197,7 @@ impl Workbench {
                 }
                 _ => None,
             })
-            .unwrap_or(pod_preset::HD_TYPE1_DELAY_CONTROLS[0]);
+            .unwrap_or(pod_preset::HD_TYPE1_MAPPED_CONTROLS[0]);
         self.hd_control_percent = self
             .hd_library
             .file(index)
@@ -3712,9 +3712,9 @@ mod tests {
     }
 
     #[test]
-    fn hd_editor_mapped_delay_control_updates_its_traced_value_offline() {
+    fn hd_editor_mapped_type1_control_updates_its_traced_value_offline() {
         let (_context, mut app) = app();
-        let control = pod_preset::HD_TYPE1_DELAY_CONTROLS[0];
+        let control = pod_preset::HD_TYPE1_MAPPED_CONTROLS[0];
         let mut bytes = sample_hd_editor_preset();
         let body = pod_preset::H5EP_HEADER_BYTES;
         let block = body + 0x428;
