@@ -3832,6 +3832,23 @@ mod tests {
 
     fn click_hd_editor(context: &egui::Context, app: &mut Workbench, id: &'static str) {
         hd_editor_frame(context, app, vec![]);
+        let area = context
+            .memory(|memory| memory.area_rect(egui::Id::new("Offline POD preset library")))
+            .expect("HD editor window");
+        let scroll_pos = area.center();
+        hd_editor_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(scroll_pos),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Page,
+                    delta: Vec2::new(0.0, -10.0),
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        hd_editor_frame(context, app, vec![]);
         let pos = app.pod_buttons[id].center();
         hd_editor_frame(
             context,
