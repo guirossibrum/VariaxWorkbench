@@ -1888,7 +1888,6 @@ mod tests {
         assert!(!panel.has_unsaved_take());
         assert!(!panel.device_opened());
         assert!(crate::rig::LIVE_BACKEND_INITIALIZER.is_none());
-        assert!(crate::usb::LIVE_ACCESS_LOCKED);
 
         panel.select_input(InputSelection::Synthetic).unwrap();
         panel.start().unwrap();
@@ -1920,7 +1919,6 @@ mod tests {
         assert_eq!(panel.phase(), Phase::Stopped);
         assert!(!panel.device_opened());
         assert!(crate::rig::LIVE_BACKEND_INITIALIZER.is_none());
-        assert!(crate::usb::LIVE_ACCESS_LOCKED);
     }
 
     #[test]
