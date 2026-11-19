@@ -4033,7 +4033,13 @@ mod tests {
         for (target, model_id, label, output_name) in BATCH {
             exercise_hd_editor_explicit_replacement_lifecycle(
                 model_id,
-                [0x3f10_0001, 0x3f10_0002, 0x3f10_0003, 0x3f10_0004, 0x3f10_0005],
+                [
+                    0x3f10_0001,
+                    0x3f10_0002,
+                    0x3f10_0003,
+                    0x3f10_0004,
+                    0x3f10_0005,
+                ],
                 "replace-octave-fuzz-admitted-default",
                 label,
                 output_name,
