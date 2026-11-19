@@ -101,17 +101,20 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
     ));
 
     let mut numeric = synthetic_h5ep();
-    let numeric_model = 0x020c_0009u32;
+    let control = crate::pod_preset::HD_NUMERIC_CONTROLS[0];
+    assert_eq!(
+        (control.raw_type(), control.min(), control.max()),
+        (0x05, 0, 240)
+    );
     let numeric_block = body + 0x428;
-    numeric[numeric_block..numeric_block + 4].copy_from_slice(&numeric_model.to_be_bytes());
+    numeric[numeric_block..numeric_block + 4].copy_from_slice(&control.model_id().to_be_bytes());
     let numeric_row = numeric_block + 0x10;
     numeric[numeric_row..numeric_row + 4].copy_from_slice(&0x3f10_0001u32.to_be_bytes());
-    numeric[numeric_row + 4..numeric_row + 8].copy_from_slice(&0.5f32.to_bits().to_be_bytes());
+    numeric[numeric_row + 4..numeric_row + 8].copy_from_slice(&0x3e9b_bbbcu32.to_be_bytes());
     let numeric_before = numeric.clone();
     let numeric_summary = session
         .import_hd_editor_file(&mut library, numeric)
         .expect("offline source-qualified numeric preset");
-    let control = crate::pod_preset::HD_NUMERIC_CONTROLS[0];
     assert_eq!(control.model_label(), "Graphic EQ");
     assert_eq!(control.label(), "80Hz");
     assert_eq!(
@@ -123,10 +126,10 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
                 }
                 _ => None,
             }),
-        Some(120)
+        Some(73)
     );
     session
-        .set_hd_numeric_control_value(&mut library, numeric_summary.index, 0, control, 180)
+        .set_hd_numeric_control_value(&mut library, numeric_summary.index, 0, control, 167)
         .expect("shared offline numeric edit");
     assert!(library.is_dirty(numeric_summary.index));
     let numeric_after = library.file(numeric_summary.index).unwrap().as_bytes();
@@ -134,11 +137,22 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
     assert_eq!(&numeric_after[..value_at], &numeric_before[..value_at]);
     assert_eq!(
         &numeric_after[value_at..value_at + 4],
-        &(0.75f32.to_bits().to_be_bytes())
+        &0x3f32_2222u32.to_be_bytes()
     );
     assert_eq!(
         &numeric_after[value_at + 4..],
         &numeric_before[value_at + 4..]
+    );
+    let numeric_output = directory.path().join("numeric-edited.h5p");
+    session
+        .save_hd_editor_copy(&library, &numeric_output, numeric_summary.index)
+        .expect("save shared numeric edit as new copy");
+    let saved_numeric = std::fs::read(numeric_output).expect("read shared numeric copy");
+    assert_eq!(saved_numeric, numeric_after);
+    let reparsed_numeric = crate::pod_preset::OpaqueH5epPreset::parse(saved_numeric).unwrap();
+    assert_eq!(
+        reparsed_numeric.hd_numeric_control_value(0, control),
+        Some(167)
     );
 
     let mut mapped_context = synthetic_h5ep();

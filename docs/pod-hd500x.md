@@ -243,6 +243,17 @@ matching four-byte float value. These bounds and labels do not establish
 physical units, audible ranges, device defaults, or availability on a connected
 POD. Auxiliary widget data remains opaque.
 
+The retained Edit 2.27 disassembly provides the conversion order for the
+admitted rows: integer `value - min` and `max - min` are formed in 32-bit
+registers, the numerator is loaded to x87, divided by the integer width, mapped
+through the configured 0.0..1.0 endpoints, then stored as a DWORD float. Tag
+`0x10` follows a separate converter with the same observed endpoints. The
+independent fixed-word regression fixtures record interior inputs and edited
+outputs for all 16 admitted tags, including negative and nonzero minima; these
+test raw-word decoding, direct/shared edits, unrelated-byte preservation and
+saved-file reparse. This is a source-derived offline contract, not a claim of
+audio equivalence, physical behavior or full editor parity.
+
 | Raw widget tag | Active rows | Editor integer bounds |
 | --- | ---: | --- |
 | `0x05` | 9 | 0..240 |
