@@ -47,7 +47,7 @@ pub const OFFLINE_BANNER: &str =
 pub const NOT_GUITAR: &str =
     "This is not the Variax guitar editor. Guitar model slots are not applied.";
 pub const NOT_SENT: &str = "Nothing is sent to a device. No preset is switched.";
-pub const PAYLOADS_NOT_DECODED: &str = "Known asset names and 12-byte parameter records are shown. Only Plexi Lead 100 Amp Drive has a source-backed host-scale editor; other parameter domains remain unknown. Unknown ids stay raw.";
+pub const PAYLOADS_NOT_DECODED: &str = "Known asset names and 12-byte parameter records are shown. Only Plexi Lead 100 Amp Drive has a source-backed host-scale editor; other parameter ranges are not decoded. Unknown ids stay raw.";
 pub const AMP_DRIVE_SCALE_LABEL: &str = "Line6Edit host scale (0–1; not device-validated)";
 
 const VARIAX_FAMILY_MASK: u32 = 0xffff_0000;
