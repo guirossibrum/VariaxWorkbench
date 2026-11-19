@@ -205,6 +205,7 @@ pub enum TakeError {
         denominator: u32,
     },
     InputClockMismatch,
+    StaticInputUnavailableOnPlatform,
     FormatClockMismatch,
     RateMismatch {
         header: u32,
@@ -272,6 +273,9 @@ impl std::fmt::Display for TakeError {
             ),
             Self::InputClockMismatch => formatter.write_str(
                 "the static PODxt declaration test input requires the exact 78125/2 clock",
+            ),
+            Self::StaticInputUnavailableOnPlatform => formatter.write_str(
+                "the static PODxt declaration test input is available only on Linux",
             ),
             Self::FormatClockMismatch => formatter.write_str(
                 "integer clocks use 16-bit PCM frames, and the native 78125/2 clock uses declared S24_3LE frames. This pairing is rejected.",
@@ -1464,6 +1468,10 @@ impl Panel {
     }
 
     pub fn start(&mut self) -> Result<(), TakeError> {
+        #[cfg(not(target_os = "linux"))]
+        if self.input == InputSelection::StaticPodxtSynthetic {
+            return Err(TakeError::StaticInputUnavailableOnPlatform);
+        }
         if self.take.is_some() || self.capture.is_some() {
             return Err(TakeError::AlreadyStarted);
         }
@@ -1504,7 +1512,14 @@ impl Panel {
                 capture::ValidatedPlan::software_synthetic_podxt_clock(route, PANEL_TAKE_BYTES)
             }
             (ClockSelection::NativePodxt, InputSelection::StaticPodxtSynthetic) => {
-                static_podxt_plan(route, crate::rig::audio::Platform::Linux)
+                #[cfg(target_os = "linux")]
+                {
+                    static_podxt_plan(route, crate::rig::audio::Platform::Linux)
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    return Err(TakeError::StaticInputUnavailableOnPlatform);
+                }
             }
             (ClockSelection::Integer(_), InputSelection::StaticPodxtSynthetic) => {
                 return Err(TakeError::InputClockMismatch);
@@ -1807,6 +1822,7 @@ mod tests {
         assert!(!panel.device_opened());
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn panel_runs_generated_pcm_through_the_revalidated_static_podxt_plan() {
         let mut panel = Panel::new();
@@ -1842,6 +1858,69 @@ mod tests {
         assert!(panel.take_can_save_aiff());
         assert!(!panel.take_can_save_wav());
         assert!(!panel.device_opened());
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn panel_rejects_static_podxt_input_without_changing_recorder_state() {
+        let mut panel = Panel::new();
+        panel.select_route(RecordRoute::SendCleanGuitar).unwrap();
+        panel.select_clock(ClockSelection::NativePodxt).unwrap();
+        panel
+            .select_input(InputSelection::StaticPodxtSynthetic)
+            .unwrap();
+
+        let generation = panel.capture_generation;
+        let cursor = panel.cursor;
+        let levels = panel.levels;
+        let message = panel.message.clone();
+        assert_eq!(
+            panel.start(),
+            Err(TakeError::StaticInputUnavailableOnPlatform)
+        );
+        assert_eq!(panel.phase(), Phase::Idle);
+        assert!(panel.capture.is_none());
+        assert!(panel.take.is_none());
+        assert_eq!(panel.capture_generation, generation);
+        assert_eq!(panel.cursor, cursor);
+        assert_eq!(panel.levels, levels);
+        assert_eq!(panel.message, message);
+        assert!(!panel.has_unsaved_take());
+        assert!(!panel.device_opened());
+        assert!(crate::rig::LIVE_BACKEND_INITIALIZER.is_none());
+        assert!(crate::usb::LIVE_ACCESS_LOCKED);
+
+        panel.select_input(InputSelection::Synthetic).unwrap();
+        panel.start().unwrap();
+        panel.feed().unwrap();
+        panel.stop().unwrap();
+        assert!(panel.has_unsaved_take());
+        assert!(!panel.device_opened());
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn static_input_guard_preserves_an_existing_unsaved_take() {
+        let mut panel = armed_panel(ClockSelection::NativePodxt);
+        panel.feed().unwrap();
+        panel.stop().unwrap();
+        let pcm = panel.current_take().unwrap().pcm().to_vec();
+        let generation = panel.capture_generation;
+        let cursor = panel.cursor;
+        panel.input = InputSelection::StaticPodxtSynthetic;
+
+        assert_eq!(
+            panel.start(),
+            Err(TakeError::StaticInputUnavailableOnPlatform)
+        );
+        assert_eq!(panel.current_take().unwrap().pcm(), pcm);
+        assert_eq!(panel.capture_generation, generation);
+        assert_eq!(panel.cursor, cursor);
+        assert!(panel.has_unsaved_take());
+        assert_eq!(panel.phase(), Phase::Stopped);
+        assert!(!panel.device_opened());
+        assert!(crate::rig::LIVE_BACKEND_INITIALIZER.is_none());
+        assert!(crate::usb::LIVE_ACCESS_LOCKED);
     }
 
     #[test]
