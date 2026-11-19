@@ -46,8 +46,27 @@ pub const AMP_PRESENCE_PARAM: u32 = 0x0010_0004;
 pub const AMP_CHANNEL_VOLUME_PARAM: u32 = 0x0010_0005;
 /// PODxt Live stomp model slot from `GetStompModel`.
 pub const STOMP_SLOT: u32 = 0x0002_0003;
-/// Stomp model with a source-mapped Drive/Gain/Tone layout.
+/// Facial Fuzz, the first model with the source-mapped Stomp control layout.
 pub const STOMP_DRIVE_MODEL_ID: u32 = 0x0205_0000;
+/// PODxt Live Stomp models with source-mapped percent control layouts.
+pub const STOMP_CONTROL_MODEL_IDS: [u32; 16] = [
+    0x0200_0002,
+    0x0200_0003,
+    0x0200_0004,
+    0x0200_0005,
+    0x0200_0006,
+    0x0200_0007,
+    0x0205_0000, // Facial Fuzz
+    0x0205_0001, // FX-Tube Drive
+    0x0205_0002, // Fuzz Pi
+    0x0205_0003, // Screamer
+    0x0205_0004, // Octave Fuzz
+    0x0205_0005, // Classic Dist
+    0x0205_0006, // FX-Killer Z
+    0x0205_0007, // FX-Boost + EQ
+    0x0205_0008, // Bass Overdrive
+    0x0205_0009, // Bronze Master
+];
 /// Stomp Drive selector passed through `GetFXParamDef`.
 pub const STOMP_DRIVE_SELECTOR: u32 = 0x0003_0001;
 /// Raw semantic PARM identifier selected for Stomp Drive.
@@ -69,7 +88,7 @@ pub const OFFLINE_BANNER: &str =
 pub const NOT_GUITAR: &str =
     "This is not the Variax guitar editor. Guitar model slots are not applied.";
 pub const NOT_SENT: &str = "Nothing is sent to a device. No preset is switched.";
-pub const PAYLOADS_NOT_DECODED: &str = "Known asset names and 12-byte parameter records are shown. Six Plexi Lead 100 amp controls and three controls on one Stomp model have source-backed host-scale editors; other parameter ranges are not decoded. Unknown ids stay raw.";
+pub const PAYLOADS_NOT_DECODED: &str = "Known asset names and 12-byte parameter records are shown. Six Plexi Lead 100 amp controls and source-mapped Stomp controls on sixteen models have host-scale editors; other parameter ranges are not decoded. Unknown ids stay raw.";
 pub const AMP_CONTROL_SCALE_LABEL: &str = "Line6Edit host scale 0–1 (not device-validated)";
 pub const STOMP_CONTROL_SCALE_LABEL: &str = "Line6Edit Stomp host scale 0–1 (not device-validated)";
 
@@ -118,30 +137,131 @@ impl AmpControl {
     }
 }
 
-/// Source-backed controls on PODxt Live Stomp model `0x02050000` only.
+/// Source-backed percent controls on selected PODxt Live Stomp layouts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StompControl {
     Drive,
     Gain,
     Tone,
+    Bass,
+    Treble,
+    Contour,
+    Mid,
+    MidFrequency,
+    Blend,
+    Sustain,
+    Level,
+    Sensitivity,
+    Amount,
+    Ramp,
+    Depth,
 }
 
 impl StompControl {
-    pub const ALL: [Self; 3] = [Self::Drive, Self::Gain, Self::Tone];
+    pub const ALL: [Self; 15] = [
+        Self::Drive,
+        Self::Gain,
+        Self::Tone,
+        Self::Bass,
+        Self::Treble,
+        Self::Contour,
+        Self::Mid,
+        Self::MidFrequency,
+        Self::Blend,
+        Self::Sustain,
+        Self::Level,
+        Self::Sensitivity,
+        Self::Amount,
+        Self::Ramp,
+        Self::Depth,
+    ];
 
-    pub const fn selector_id(self) -> u32 {
-        match self {
-            Self::Drive => STOMP_DRIVE_SELECTOR,
-            Self::Gain => STOMP_GAIN_SELECTOR,
-            Self::Tone => STOMP_TONE_SELECTOR,
+    /// Selector position established by `GetFXParamDef` for a particular model.
+    pub const fn selector_id(self, model_id: u32) -> Option<u32> {
+        match self.position(model_id) {
+            Some(position) => Some(0x0003_0000 + position),
+            None => None,
         }
     }
 
-    pub const fn param_id(self) -> u32 {
-        match self {
-            Self::Drive => STOMP_DRIVE_PARAM,
-            Self::Gain => STOMP_GAIN_PARAM,
-            Self::Tone => STOMP_TONE_PARAM,
+    /// Semantic raw PARM id established by `GetFXParam` for a model selector.
+    pub const fn param_id(self, model_id: u32) -> Option<u32> {
+        match self.position(model_id) {
+            Some(position) => Some(0x0010_0000 + position),
+            None => None,
+        }
+    }
+
+    const fn position(self, model_id: u32) -> Option<u32> {
+        match model_id {
+            0x0205_0000 | 0x0205_0002 | 0x0205_0003 | 0x0205_0004 | 0x0205_0005 => match self {
+                Self::Drive => Some(1),
+                Self::Gain => Some(2),
+                Self::Tone => Some(3),
+                _ => None,
+            },
+            0x0205_0001 => match self {
+                Self::Drive => Some(1),
+                Self::Treble => Some(2),
+                Self::Gain => Some(3),
+                Self::Bass => Some(4),
+                _ => None,
+            },
+            0x0205_0006 => match self {
+                Self::Drive => Some(1),
+                Self::Contour => Some(2),
+                Self::Gain => Some(3),
+                Self::Mid => Some(4),
+                Self::MidFrequency => Some(5),
+                _ => None,
+            },
+            0x0205_0007 => match self {
+                Self::Gain => Some(1),
+                Self::Bass => Some(2),
+                Self::Treble => Some(3),
+                Self::Mid => Some(4),
+                Self::MidFrequency => Some(5),
+                _ => None,
+            },
+            0x0205_0008 => match self {
+                Self::Bass => Some(1),
+                Self::Treble => Some(2),
+                Self::Drive => Some(3),
+                Self::Gain => Some(4),
+                _ => None,
+            },
+            0x0205_0009 => match self {
+                Self::Drive => Some(1),
+                Self::Tone => Some(2),
+                Self::Blend => Some(4),
+                _ => None,
+            },
+            0x0200_0002 | 0x0200_0004 => match self {
+                Self::Sustain => Some(1),
+                Self::Level => Some(2),
+                _ => None,
+            },
+            0x0200_0003 => match self {
+                Self::Level => Some(1),
+                Self::Sustain => Some(2),
+                _ => None,
+            },
+            0x0200_0005 => match self {
+                Self::Sensitivity => Some(1),
+                Self::Level => Some(2),
+                _ => None,
+            },
+            0x0200_0006 => match self {
+                Self::Amount => Some(1),
+                Self::Level => Some(2),
+                _ => None,
+            },
+            0x0200_0007 => match self {
+                Self::Ramp => Some(1),
+                Self::Depth => Some(2),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
@@ -150,6 +270,18 @@ impl StompControl {
             Self::Drive => "Drive",
             Self::Gain => "Gain",
             Self::Tone => "Tone",
+            Self::Bass => "Bass",
+            Self::Treble => "Treble",
+            Self::Contour => "Contour",
+            Self::Mid => "Mid",
+            Self::MidFrequency => "Mid Frequency",
+            Self::Blend => "Blend",
+            Self::Sustain => "Sustain",
+            Self::Level => "Level",
+            Self::Sensitivity => "Sensitivity",
+            Self::Amount => "Amount",
+            Self::Ramp => "Ramp",
+            Self::Depth => "Depth",
         }
     }
 }
@@ -455,6 +587,14 @@ impl PodTone {
             .map(|model| model.model_id)
     }
 
+    /// Stomp model id when slot `0x00020003` is present.
+    pub fn stomp_model_id(&self) -> Option<u32> {
+        self.models
+            .iter()
+            .find(|model| model.slot == STOMP_SLOT)
+            .map(|model| model.model_id)
+    }
+
     /// Asset name for the amp model id, when the PODxt Live table has one.
     pub fn amp_asset_name(&self) -> Option<&'static str> {
         self.amp_model_id().and_then(pod_assets::asset_name)
@@ -529,25 +669,30 @@ impl PodTone {
     fn amp_control_location(&self, control: AmpControl) -> Result<(usize, usize), ToneError> {
         self.control_location(
             AMP_SLOT,
-            PLEXI_LEAD_100_MODEL,
+            &[PLEXI_LEAD_100_MODEL],
             control.param_id(),
             &format!("Amp {}", control.label()),
         )
     }
 
     fn stomp_control_location(&self, control: StompControl) -> Result<(usize, usize), ToneError> {
-        self.control_location(
-            STOMP_SLOT,
-            STOMP_DRIVE_MODEL_ID,
-            control.param_id(),
-            &format!("Stomp {}", control.label()),
-        )
+        let label = format!("Stomp {}", control.label());
+        let model_id = self
+            .models
+            .iter()
+            .find(|model| model.slot == STOMP_SLOT)
+            .map(|model| model.model_id)
+            .ok_or_else(|| ToneError::format(format!("{label} requires an existing model slot")))?;
+        let parameter_id = control.param_id(model_id).ok_or_else(|| {
+            ToneError::format(format!("{label} is not defined for model 0x{model_id:08x}"))
+        })?;
+        self.control_location(STOMP_SLOT, &[model_id], parameter_id, &label)
     }
 
     fn control_location(
         &self,
         slot: u32,
-        model_id: u32,
+        model_ids: &[u32],
         parameter_id: u32,
         label: &str,
     ) -> Result<(usize, usize), ToneError> {
@@ -566,7 +711,7 @@ impl PodTone {
             .iter()
             .position(|model| model.slot == slot)
             .ok_or_else(|| ToneError::format(format!("{label} requires an existing model slot")))?;
-        if self.models[model_index].model_id != model_id {
+        if !model_ids.contains(&self.models[model_index].model_id) {
             return Err(ToneError::format(format!(
                 "{label} host contract does not apply to this model"
             )));
@@ -1211,59 +1356,226 @@ mod tests {
         assert_eq!(STOMP_SLOT, 0x0002_0003);
         assert_eq!(STOMP_DRIVE_MODEL_ID, 0x0205_0000);
         let unknown = drive_record(0xa7, 0x0000_9876, 9, 0x1234_5678);
-        for ((control, selector), parameter_id) in StompControl::ALL
-            .into_iter()
-            .zip([
-                STOMP_DRIVE_SELECTOR,
-                STOMP_GAIN_SELECTOR,
-                STOMP_TONE_SELECTOR,
-            ])
-            .zip([0x0010_0001, 0x0010_0002, 0x0010_0003])
-        {
-            assert_eq!(control.selector_id(), selector);
-            assert_eq!(control.param_id(), parameter_id);
-            let record = drive_record(0x3f, control.param_id(), 1, 0x3f00_0000);
-            let earlier_duplicate = drive_record(0x3f, control.param_id(), 1, 0x3e00_0000);
-            let bytes = stomp_tone(
-                PODXT_LIVE_HOST_MIN_VERSION,
-                STOMP_DRIVE_MODEL_ID,
-                &[&unknown, &earlier_duplicate, &record],
-            );
-            let mut tone = PodTone::parse(bytes.clone()).unwrap();
-            assert_eq!(
-                tone.stomp_control_fraction(control).unwrap().to_bits(),
-                0x3f00_0000
-            );
-            tone.set_stomp_control_fraction(control, 0.317).unwrap();
-            let value_offset = bytes
-                .windows(record.len())
-                .position(|window| window == record)
-                .unwrap()
-                + 8;
-            let earlier_value_offset = bytes
-                .windows(earlier_duplicate.len())
-                .position(|window| window == earlier_duplicate)
-                .unwrap()
-                + 8;
-            let expected = [
-                bytes[..value_offset].to_vec(),
-                0.317f32.to_bits().to_be_bytes().to_vec(),
-                bytes[value_offset + 4..].to_vec(),
-            ]
-            .concat();
-            assert_eq!(tone.as_bytes(), expected, "{}", control.label());
-            assert_eq!(
-                &tone.as_bytes()[earlier_value_offset..earlier_value_offset + 4],
-                &bytes[earlier_value_offset..earlier_value_offset + 4],
-                "earlier duplicate {}",
-                control.label()
-            );
-            assert_eq!(
-                tone.stomp_control_fraction(control).unwrap().to_bits(),
-                0.317f32.to_bits(),
-                "{}",
-                control.label()
-            );
+        let profiles = [
+            (
+                0x0200_0002,
+                [
+                    Some(StompControl::Sustain),
+                    Some(StompControl::Level),
+                    None,
+                    None,
+                    None,
+                ],
+            ),
+            (
+                0x0200_0003,
+                [
+                    Some(StompControl::Level),
+                    Some(StompControl::Sustain),
+                    None,
+                    None,
+                    None,
+                ],
+            ),
+            (
+                0x0200_0004,
+                [
+                    Some(StompControl::Sustain),
+                    Some(StompControl::Level),
+                    None,
+                    None,
+                    None,
+                ],
+            ),
+            (
+                0x0200_0005,
+                [
+                    Some(StompControl::Sensitivity),
+                    Some(StompControl::Level),
+                    None,
+                    None,
+                    None,
+                ],
+            ),
+            (
+                0x0200_0006,
+                [
+                    Some(StompControl::Amount),
+                    Some(StompControl::Level),
+                    None,
+                    None,
+                    None,
+                ],
+            ),
+            (
+                0x0200_0007,
+                [
+                    Some(StompControl::Ramp),
+                    Some(StompControl::Depth),
+                    None,
+                    None,
+                    None,
+                ],
+            ),
+            (
+                0x0205_0000,
+                [
+                    Some(StompControl::Drive),
+                    Some(StompControl::Gain),
+                    Some(StompControl::Tone),
+                    None,
+                    None,
+                ],
+            ),
+            (
+                0x0205_0002,
+                [
+                    Some(StompControl::Drive),
+                    Some(StompControl::Gain),
+                    Some(StompControl::Tone),
+                    None,
+                    None,
+                ],
+            ),
+            (
+                0x0205_0003,
+                [
+                    Some(StompControl::Drive),
+                    Some(StompControl::Gain),
+                    Some(StompControl::Tone),
+                    None,
+                    None,
+                ],
+            ),
+            (
+                0x0205_0004,
+                [
+                    Some(StompControl::Drive),
+                    Some(StompControl::Gain),
+                    Some(StompControl::Tone),
+                    None,
+                    None,
+                ],
+            ),
+            (
+                0x0205_0005,
+                [
+                    Some(StompControl::Drive),
+                    Some(StompControl::Gain),
+                    Some(StompControl::Tone),
+                    None,
+                    None,
+                ],
+            ),
+            (
+                0x0205_0001,
+                [
+                    Some(StompControl::Drive),
+                    Some(StompControl::Treble),
+                    Some(StompControl::Gain),
+                    Some(StompControl::Bass),
+                    None,
+                ],
+            ),
+            (
+                0x0205_0006,
+                [
+                    Some(StompControl::Drive),
+                    Some(StompControl::Contour),
+                    Some(StompControl::Gain),
+                    Some(StompControl::Mid),
+                    Some(StompControl::MidFrequency),
+                ],
+            ),
+            (
+                0x0205_0007,
+                [
+                    Some(StompControl::Gain),
+                    Some(StompControl::Bass),
+                    Some(StompControl::Treble),
+                    Some(StompControl::Mid),
+                    Some(StompControl::MidFrequency),
+                ],
+            ),
+            (
+                0x0205_0008,
+                [
+                    Some(StompControl::Bass),
+                    Some(StompControl::Treble),
+                    Some(StompControl::Drive),
+                    Some(StompControl::Gain),
+                    None,
+                ],
+            ),
+            (
+                0x0205_0009,
+                [
+                    Some(StompControl::Drive),
+                    Some(StompControl::Tone),
+                    None,
+                    Some(StompControl::Blend),
+                    None,
+                ],
+            ),
+        ];
+        for (model_id, expected_layout) in profiles {
+            assert!(STOMP_CONTROL_MODEL_IDS.contains(&model_id));
+            for (position, expected_control) in expected_layout.into_iter().enumerate() {
+                let Some(control) = expected_control else {
+                    continue;
+                };
+                let position = position as u32 + 1;
+                assert_eq!(
+                    control.selector_id(model_id),
+                    Some(0x0003_0000 + position),
+                    "{} on model {model_id:08x}",
+                    control.label()
+                );
+                let parameter_id = 0x0010_0000 + position;
+                assert_eq!(control.param_id(model_id), Some(parameter_id));
+                let record = drive_record(0x3f, parameter_id, 1, 0x3f00_0000);
+                let earlier_duplicate = drive_record(0x3f, parameter_id, 1, 0x3e00_0000);
+                let bytes = stomp_tone(
+                    PODXT_LIVE_HOST_MIN_VERSION,
+                    model_id,
+                    &[&unknown, &earlier_duplicate, &record],
+                );
+                let mut tone = PodTone::parse(bytes.clone()).unwrap();
+                assert_eq!(
+                    tone.stomp_control_fraction(control).unwrap().to_bits(),
+                    0x3f00_0000
+                );
+                tone.set_stomp_control_fraction(control, 0.317).unwrap();
+                let value_offset = bytes
+                    .windows(record.len())
+                    .position(|window| window == record)
+                    .unwrap()
+                    + 8;
+                let earlier_value_offset = bytes
+                    .windows(earlier_duplicate.len())
+                    .position(|window| window == earlier_duplicate)
+                    .unwrap()
+                    + 8;
+                let expected = [
+                    bytes[..value_offset].to_vec(),
+                    0.317f32.to_bits().to_be_bytes().to_vec(),
+                    bytes[value_offset + 4..].to_vec(),
+                ]
+                .concat();
+                assert_eq!(tone.as_bytes(), expected, "{}", control.label());
+                assert_eq!(
+                    &tone.as_bytes()[earlier_value_offset..earlier_value_offset + 4],
+                    &bytes[earlier_value_offset..earlier_value_offset + 4],
+                    "earlier duplicate {}",
+                    control.label()
+                );
+                assert_eq!(
+                    tone.stomp_control_fraction(control).unwrap().to_bits(),
+                    0.317f32.to_bits(),
+                    "{} on model {model_id:08x}",
+                    control.label()
+                );
+            }
         }
     }
 
@@ -1291,11 +1603,7 @@ mod tests {
                 STOMP_DRIVE_MODEL_ID,
                 &[&drive],
             ),
-            stomp_tone(
-                PODXT_LIVE_HOST_MIN_VERSION,
-                STOMP_DRIVE_MODEL_ID + 1,
-                &[&drive],
-            ),
+            stomp_tone(PODXT_LIVE_HOST_MIN_VERSION, 0x0205_000a, &[&drive]),
             stomp_tone(PODXT_LIVE_HOST_MIN_VERSION, STOMP_DRIVE_MODEL_ID, &[]),
             wrong_slot,
             stomp_tone(
@@ -1315,103 +1623,97 @@ mod tests {
             ),
         ];
         assert!(PodTone::parse(wrong_product).is_err());
-        for control in StompControl::ALL {
-            let record = drive_record(0x3f, control.param_id(), 1, 0x3f00_0000);
-            let wrong_prefix = drive_record(0x7e, control.param_id(), 1, 0x3f00_0000);
-            let wrong_type = drive_record(0x3f, control.param_id(), 0, 0x3f00_0000);
-            for bytes in invalid_targets.iter().cloned().chain([
-                stomp_tone(
-                    PODXT_LIVE_HOST_MIN_VERSION,
-                    STOMP_DRIVE_MODEL_ID,
-                    &[&wrong_prefix],
-                ),
-                stomp_tone(
-                    PODXT_LIVE_HOST_MIN_VERSION,
-                    STOMP_DRIVE_MODEL_ID,
-                    &[&wrong_type],
-                ),
-                stomp_tone(
-                    PODXT_LIVE_HOST_MIN_VERSION,
-                    STOMP_DRIVE_MODEL_ID,
-                    &[&[1, 2, 3, 4], &record],
-                ),
-            ]) {
-                let mut tone = PodTone::parse(bytes.clone()).unwrap();
+        for model_id in STOMP_CONTROL_MODEL_IDS {
+            for control in StompControl::ALL {
+                let Some(parameter_id) = control.param_id(model_id) else {
+                    continue;
+                };
+                let record = drive_record(0x3f, parameter_id, 1, 0x3f00_0000);
+                let wrong_prefix = drive_record(0x7e, parameter_id, 1, 0x3f00_0000);
+                let wrong_type = drive_record(0x3f, parameter_id, 0, 0x3f00_0000);
+                let invalid_model =
+                    stomp_tone(PODXT_LIVE_HOST_MIN_VERSION, 0x0205_000a, &[&record]);
+                let fixtures = invalid_targets.iter().cloned().chain([
+                    invalid_model,
+                    stomp_tone(PODXT_LIVE_HOST_MIN_VERSION, model_id, &[&wrong_prefix]),
+                    stomp_tone(PODXT_LIVE_HOST_MIN_VERSION, model_id, &[&wrong_type]),
+                    stomp_tone(
+                        PODXT_LIVE_HOST_MIN_VERSION,
+                        model_id,
+                        &[&[1, 2, 3, 4], &record],
+                    ),
+                ]);
+                for bytes in fixtures {
+                    let mut tone = PodTone::parse(bytes.clone()).unwrap();
+                    assert!(tone.stomp_control_fraction(control).is_err());
+                    assert!(tone.set_stomp_control_fraction(control, 0.25).is_err());
+                    assert_eq!(tone.as_bytes(), bytes);
+                }
+                for invalid in [
+                    f32::from_bits(0x8000_0001),
+                    f32::from_bits(0x3f80_0001),
+                    f32::NAN,
+                    f32::INFINITY,
+                    f32::NEG_INFINITY,
+                ] {
+                    let bytes = stomp_tone(PODXT_LIVE_HOST_MIN_VERSION, model_id, &[&record]);
+                    let mut tone = PodTone::parse(bytes.clone()).unwrap();
+                    assert!(tone.set_stomp_control_fraction(control, invalid).is_err());
+                    assert_eq!(tone.as_bytes(), bytes);
+                }
+                let nonfinite = drive_record(0x3f, parameter_id, 1, f32::NAN.to_bits());
+                let bytes = stomp_tone(PODXT_LIVE_HOST_MIN_VERSION, model_id, &[&nonfinite]);
                 assert!(
-                    tone.stomp_control_fraction(control).is_err(),
-                    "{}",
-                    control.label()
+                    PodTone::parse(bytes)
+                        .unwrap()
+                        .stomp_control_fraction(control)
+                        .is_err()
                 );
-                assert!(
-                    tone.set_stomp_control_fraction(control, 0.25).is_err(),
-                    "{}",
-                    control.label()
-                );
-                assert_eq!(tone.as_bytes(), bytes, "{}", control.label());
             }
-            for invalid in [
-                f32::from_bits(0x8000_0001),
-                f32::from_bits(0x3f80_0001),
-                f32::NAN,
-                f32::INFINITY,
-                f32::NEG_INFINITY,
-            ] {
-                let bytes = stomp_tone(
-                    PODXT_LIVE_HOST_MIN_VERSION,
-                    STOMP_DRIVE_MODEL_ID,
-                    &[&record],
-                );
-                let mut tone = PodTone::parse(bytes.clone()).unwrap();
-                assert!(tone.set_stomp_control_fraction(control, invalid).is_err());
-                assert_eq!(tone.as_bytes(), bytes);
-            }
-            let nonfinite = drive_record(0x3f, control.param_id(), 1, f32::NAN.to_bits());
-            let bytes = stomp_tone(
-                PODXT_LIVE_HOST_MIN_VERSION,
-                STOMP_DRIVE_MODEL_ID,
-                &[&nonfinite],
-            );
-            assert!(
-                PodTone::parse(bytes)
-                    .unwrap()
-                    .stomp_control_fraction(control)
-                    .is_err()
-            );
         }
     }
 
     #[test]
     fn stomp_control_library_revert_copy_collision_and_reopen_keep_safe_copy_rules() {
-        let records: Vec<_> = StompControl::ALL
-            .into_iter()
-            .map(|control| drive_record(0x3f, control.param_id(), 1, 0x3f00_0000))
-            .collect();
-        let refs: Vec<_> = records.iter().map(|record| &record[..]).collect();
-        let original = stomp_tone(PODXT_LIVE_HOST_MIN_VERSION, STOMP_DRIVE_MODEL_ID, &refs);
-        for control in StompControl::ALL {
-            let mut library = Library::default();
-            let index = library.import_bytes(original.clone()).unwrap();
-            library
-                .set_stomp_control_fraction(index, control, 0.625)
-                .unwrap();
-            assert!(library.is_dirty(index), "{}", control.label());
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("stomp.l6t");
-            std::fs::write(&path, b"keep existing destination").unwrap();
-            assert!(library.tone(index).unwrap().save_copy(&path).is_err());
-            assert_eq!(std::fs::read(&path).unwrap(), b"keep existing destination");
-            library.revert_unsaved(index).unwrap();
-            assert_eq!(library.tone(index).unwrap().as_bytes(), original);
-            library
-                .set_stomp_control_fraction(index, control, 0.625)
-                .unwrap();
-            std::fs::remove_file(&path).unwrap();
-            library.tone(index).unwrap().save_copy(&path).unwrap();
-            let reopened = PodTone::parse(std::fs::read(path).unwrap()).unwrap();
-            assert_eq!(reopened.stomp_control_fraction(control).unwrap(), 0.625);
-            assert!(library.is_dirty(index));
-            library.note_saved(index).unwrap();
-            assert!(!library.is_dirty(index));
+        for model_id in STOMP_CONTROL_MODEL_IDS {
+            let records: Vec<_> = StompControl::ALL
+                .into_iter()
+                .filter_map(|control| {
+                    control
+                        .param_id(model_id)
+                        .map(|parameter_id| drive_record(0x3f, parameter_id, 1, 0x3f00_0000))
+                })
+                .collect();
+            let refs: Vec<_> = records.iter().map(|record| &record[..]).collect();
+            let original = stomp_tone(PODXT_LIVE_HOST_MIN_VERSION, model_id, &refs);
+            for control in StompControl::ALL {
+                if control.param_id(model_id).is_none() {
+                    continue;
+                }
+                let mut library = Library::default();
+                let index = library.import_bytes(original.clone()).unwrap();
+                library
+                    .set_stomp_control_fraction(index, control, 0.625)
+                    .unwrap();
+                assert!(library.is_dirty(index), "{}", control.label());
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("stomp.l6t");
+                std::fs::write(&path, b"keep existing destination").unwrap();
+                assert!(library.tone(index).unwrap().save_copy(&path).is_err());
+                assert_eq!(std::fs::read(&path).unwrap(), b"keep existing destination");
+                library.revert_unsaved(index).unwrap();
+                assert_eq!(library.tone(index).unwrap().as_bytes(), original);
+                library
+                    .set_stomp_control_fraction(index, control, 0.625)
+                    .unwrap();
+                std::fs::remove_file(&path).unwrap();
+                library.tone(index).unwrap().save_copy(&path).unwrap();
+                let reopened = PodTone::parse(std::fs::read(path).unwrap()).unwrap();
+                assert_eq!(reopened.stomp_control_fraction(control).unwrap(), 0.625);
+                assert!(library.is_dirty(index));
+                library.note_saved(index).unwrap();
+                assert!(!library.is_dirty(index));
+            }
         }
     }
 

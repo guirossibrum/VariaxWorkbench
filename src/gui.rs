@@ -1690,10 +1690,11 @@ impl Workbench {
                         Some((
                             index,
                             format!(
-                                "{index} {} {} amp {} cab {}",
+                                "{index} {} {} amp {} stomp {} cab {}",
                                 tone.container().tag(),
                                 tone.name(),
                                 pod_preset::PodTone::model_label(tone.amp_model_id()),
+                                pod_preset::PodTone::model_label(tone.stomp_model_id()),
                                 pod_preset::PodTone::model_label(tone.cab_model_id()),
                             ),
                             tone.name().to_owned(),
@@ -3411,17 +3412,19 @@ mod tests {
         assert_eq!(app.pod_selected, Some(0));
         recording_frame(&context, &mut app, vec![]);
         assert!(app.pod_drive_slider.is_some());
-        assert_eq!(
-            app.pod_stomp_sliders.len(),
-            pod_preset::StompControl::ALL.len()
-        );
+        let stomp_controls = [
+            pod_preset::StompControl::Drive,
+            pod_preset::StompControl::Gain,
+            pod_preset::StompControl::Tone,
+        ];
+        assert_eq!(app.pod_stomp_sliders.len(), stomp_controls.len());
         let original_drive = app
             .pod_library
             .tone(0)
             .unwrap()
             .amp_drive_fraction()
             .unwrap();
-        let original_stomp: Vec<_> = pod_preset::StompControl::ALL
+        let original_stomp: Vec<_> = stomp_controls
             .into_iter()
             .map(|control| {
                 app.pod_library
@@ -3432,7 +3435,7 @@ mod tests {
             })
             .collect();
         drag_pod_drive_slider(&context, &mut app);
-        for control in pod_preset::StompControl::ALL {
+        for control in stomp_controls {
             drag_pod_stomp_slider(&context, &mut app, control);
         }
         let edited_drive = app
@@ -3443,7 +3446,7 @@ mod tests {
             .unwrap();
         assert_ne!(edited_drive.to_bits(), original_drive.to_bits());
         assert!((0.0..=1.0).contains(&edited_drive));
-        let edited_stomp: Vec<_> = pod_preset::StompControl::ALL
+        let edited_stomp: Vec<_> = stomp_controls
             .into_iter()
             .map(|control| {
                 app.pod_library
@@ -3479,7 +3482,7 @@ mod tests {
                 .to_bits(),
             edited_drive.to_bits()
         );
-        for (control, edited) in pod_preset::StompControl::ALL.into_iter().zip(&edited_stomp) {
+        for (control, edited) in stomp_controls.into_iter().zip(&edited_stomp) {
             assert_eq!(
                 app.pod_library
                     .tone(0)
@@ -3512,7 +3515,7 @@ mod tests {
             reopened.amp_drive_fraction().unwrap().to_bits(),
             edited_drive.to_bits()
         );
-        for (control, edited) in pod_preset::StompControl::ALL.into_iter().zip(&edited_stomp) {
+        for (control, edited) in stomp_controls.into_iter().zip(&edited_stomp) {
             assert_eq!(
                 reopened.stomp_control_fraction(control).unwrap().to_bits(),
                 edited.to_bits()

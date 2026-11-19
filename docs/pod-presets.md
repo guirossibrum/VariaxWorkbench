@@ -83,16 +83,21 @@ uneditable. `document::save_new` writes a new copy and refuses to replace an
 existing path. The guitar document refuses to open or rename a PODxt Live
 target, including a bank that contains one.
 
-Static Line6Edit 3.06 source also maps Stomp model `0x02050000` in slot
-`0x00020003` to Drive, Gain and Tone. The definition selectors are
-`0x00030001`, `0x00030002` and `0x00030003`; their semantic PARM ids are
-`0x00100001`, `0x00100002` and `0x00100003`. All three use the same finite
-host-scale float `0..=1` and percent formatter. Rust exposes sliders only for
-that model/slot and applies the same target/version/prefix/type/range checks
-and four-byte raw patch as the amp controls. Other Stomp models and
-modulation, delay, reverb, EQ and cab controls remain unavailable. The source's
-default `IsModelInstalled` branch for this model is not evidence of a physical
-unit or installed-pack entitlement.
+Static Line6Edit 3.06 source maps selector positions in Stomp slot `0x00020003`
+to semantic PARM ids `0x00100000 + position`. Rust exposes source-derived
+percent controls for these 16 model layouts: `0x02000002` Sustain/Level,
+`0x02000003` Level/Sustain, `0x02000004` Sustain/Level, `0x02000005`
+Sensitivity/Level, `0x02000006` Amount/Level, `0x02000007` Ramp/Depth;
+`0x02050000`, `02`–`05` Drive/Gain/Tone; `0x02050001` Drive/Treble/Gain/Bass;
+`0x02050006` Drive/Contour/Gain/Mid/Mid Frequency; `0x02050007`
+Gain/Bass/Treble/Mid/Mid Frequency; `0x02050008` Bass/Treble/Drive/Gain; and
+`0x02050009` Drive/Tone/Blend, with the source's selector position 3 left
+empty. The selected `L6AX3ParamDefs` use finite host-scale floats `0..=1` and
+the percent formatter. Rust applies the same target/version/prefix/type/range
+checks and four-byte raw patch as the amp controls. Other Stomp models and
+modulation, delay, reverb, EQ and cab controls remain unavailable. This
+allowlist does not establish installed-pack entitlement, device acceptance or
+physical behavior.
 
 An applied name is unsaved until that tone's copy is written. Quitting asks
 to save, discard, or keep editing, one tone at a time. Cancel, or a save that
@@ -113,8 +118,9 @@ recovered Line 6 limit.
 ## Parameter domain boundary
 
 For these controls, static Line6Edit source identifies `L6PODxtDevice`,
-`L6PODxtParamMap`, the Plexi Lead 100 amp model and one Stomp model, nine
-`L6AX3ParamDefs` definitions, and `L6SharcTonePercentFormat`. The formatter maps finite host
+`L6PODxtParamMap`, the Plexi Lead 100 amp model, 16 selected Stomp model
+layouts, the selected `L6AX3ParamDefs` definitions, and
+`L6SharcTonePercentFormat`. The formatter maps finite host
 values through percent text and its quantizer is a no-op; display labels are
 derived through a 7-bit conversion. Rust edits the underlying finite float
 without treating those display labels as a supported integer grid. Other
@@ -125,10 +131,10 @@ Rust behavior, not an executed vendor oracle, device acceptance test, or
 installed-pack entitlement result. No DLL was loaded, no installer was run,
 and no device was opened.
 
-Three Stomp-specific Rust test methods cover exact-byte edits, invalid target
-and value rejection, and library revert/copy collision/reopen behavior; the
-headless egui slider/quit-guard test exercises the three Stomp sliders alongside
-the amp control. These are synthetic Rust behaviors, not a physical
+Three Stomp-specific Rust test methods cover exact-byte edits across the
+selected model layouts, invalid target and value rejection, and library
+revert/copy collision/reopen behavior; the headless egui slider/quit-guard test
+exercises model-available Stomp sliders alongside the amp control. These are synthetic Rust behaviors, not a physical
 compatibility test or vendor runtime oracle. Exact-head configured checks are
 tracked separately.
 
