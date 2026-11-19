@@ -197,7 +197,13 @@ pub enum TubeDriveControl {
 }
 
 impl TubeDriveControl {
-    pub const ALL: [Self; 5] = [Self::Drive, Self::Bass, Self::Mid, Self::Treble, Self::Output];
+    pub const ALL: [Self; 5] = [
+        Self::Drive,
+        Self::Bass,
+        Self::Mid,
+        Self::Treble,
+        Self::Output,
+    ];
 
     pub const fn label(self) -> &'static str {
         match self {
@@ -228,27 +234,44 @@ pub enum HdType1Control {
 
 impl HdType1Control {
     pub const ALL: [Self; 10] = [
-        Self::Screamer(ScreamerControl::Drive), Self::Screamer(ScreamerControl::Bass),
-        Self::Screamer(ScreamerControl::Tone), Self::Screamer(ScreamerControl::Treble),
-        Self::Screamer(ScreamerControl::Output), Self::TubeDrive(TubeDriveControl::Drive),
-        Self::TubeDrive(TubeDriveControl::Bass), Self::TubeDrive(TubeDriveControl::Mid),
-        Self::TubeDrive(TubeDriveControl::Treble), Self::TubeDrive(TubeDriveControl::Output),
+        Self::Screamer(ScreamerControl::Drive),
+        Self::Screamer(ScreamerControl::Bass),
+        Self::Screamer(ScreamerControl::Tone),
+        Self::Screamer(ScreamerControl::Treble),
+        Self::Screamer(ScreamerControl::Output),
+        Self::TubeDrive(TubeDriveControl::Drive),
+        Self::TubeDrive(TubeDriveControl::Bass),
+        Self::TubeDrive(TubeDriveControl::Mid),
+        Self::TubeDrive(TubeDriveControl::Treble),
+        Self::TubeDrive(TubeDriveControl::Output),
     ];
 
     pub const fn label(self) -> &'static str {
-        match self { Self::Screamer(c) => c.label(), Self::TubeDrive(c) => c.label() }
+        match self {
+            Self::Screamer(c) => c.label(),
+            Self::TubeDrive(c) => c.label(),
+        }
     }
 
     const fn key(self) -> u32 {
-        match self { Self::Screamer(c) => c.key(), Self::TubeDrive(c) => c.key() }
+        match self {
+            Self::Screamer(c) => c.key(),
+            Self::TubeDrive(c) => c.key(),
+        }
     }
 
     pub const fn model_label(self) -> &'static str {
-        match self { Self::Screamer(_) => "Screamer", Self::TubeDrive(_) => "Tube Drive" }
+        match self {
+            Self::Screamer(_) => "Screamer",
+            Self::TubeDrive(_) => "Tube Drive",
+        }
     }
 
     pub const fn model_id(self) -> u32 {
-        match self { Self::Screamer(_) => HD_SCREAMER_MODEL_ID, Self::TubeDrive(_) => HD_TUBE_DRIVE_MODEL_ID }
+        match self {
+            Self::Screamer(_) => HD_SCREAMER_MODEL_ID,
+            Self::TubeDrive(_) => HD_TUBE_DRIVE_MODEL_ID,
+        }
     }
 }
 
@@ -361,19 +384,29 @@ impl OpaqueH5epPreset {
         self.hd_type1_control_percent(effect_slot, HdType1Control::Screamer(control))
     }
 
-    pub fn hd_type1_control_percent(&self, effect_slot: usize, control: HdType1Control) -> Option<u8> {
+    pub fn hd_type1_control_percent(
+        &self,
+        effect_slot: usize,
+        control: HdType1Control,
+    ) -> Option<u8> {
         let value_at = self.hd_type1_control_value_offset(effect_slot, control)?;
         let value = f32::from_bits(read_be_u32(self.body_bytes(), value_at)?);
         exact_drive_percent(value)
     }
 
     pub fn effect_model_id(&self, effect_slot: usize) -> Option<u32> {
-        if effect_slot >= HD_EFFECT_COUNT { return None; }
+        if effect_slot >= HD_EFFECT_COUNT {
+            return None;
+        }
         let block = HD_EFFECT_BLOCK_OFFSET + effect_slot * HD_EFFECT_BLOCK_STRIDE;
         read_be_u32(self.body_bytes(), block)
     }
 
-    pub fn tube_drive_control_percent(&self, effect_slot: usize, control: TubeDriveControl) -> Option<u8> {
+    pub fn tube_drive_control_percent(
+        &self,
+        effect_slot: usize,
+        control: TubeDriveControl,
+    ) -> Option<u8> {
         self.hd_type1_control_percent(effect_slot, HdType1Control::TubeDrive(control))
     }
 
@@ -398,11 +431,21 @@ impl OpaqueH5epPreset {
         self.set_hd_type1_control_percent(effect_slot, HdType1Control::Screamer(control), percent)
     }
 
-    pub fn set_tube_drive_control_percent(&mut self, effect_slot: usize, control: TubeDriveControl, percent: u8) -> Result<(), ToneError> {
+    pub fn set_tube_drive_control_percent(
+        &mut self,
+        effect_slot: usize,
+        control: TubeDriveControl,
+        percent: u8,
+    ) -> Result<(), ToneError> {
         self.set_hd_type1_control_percent(effect_slot, HdType1Control::TubeDrive(control), percent)
     }
 
-    pub fn set_hd_type1_control_percent(&mut self, effect_slot: usize, control: HdType1Control, percent: u8) -> Result<(), ToneError> {
+    pub fn set_hd_type1_control_percent(
+        &mut self,
+        effect_slot: usize,
+        control: HdType1Control,
+        percent: u8,
+    ) -> Result<(), ToneError> {
         if percent > 100 {
             return Err(ToneError::format(format!(
                 "{} {} must be in 0..=100",
@@ -1830,8 +1873,16 @@ mod tests {
     #[test]
     fn screamer_and_tube_drive_contracts_keep_model_and_third_control_distinct() {
         for (model, controls, mid_label) in [
-            (HD_SCREAMER_MODEL_ID, HdType1Control::ALL[..5].to_vec(), "TONE"),
-            (HD_TUBE_DRIVE_MODEL_ID, HdType1Control::ALL[5..].to_vec(), "MID"),
+            (
+                HD_SCREAMER_MODEL_ID,
+                HdType1Control::ALL[..5].to_vec(),
+                "TONE",
+            ),
+            (
+                HD_TUBE_DRIVE_MODEL_ID,
+                HdType1Control::ALL[5..].to_vec(),
+                "MID",
+            ),
         ] {
             let mut bytes = synthetic_h5ep(&[]);
             let body = H5EP_HEADER_BYTES;
@@ -1860,9 +1911,16 @@ mod tests {
             } else {
                 HdType1Control::Screamer(ScreamerControl::Tone)
             };
-            assert_eq!(preset.hd_type1_control_percent(0, wrong_model_control), None);
+            assert_eq!(
+                preset.hd_type1_control_percent(0, wrong_model_control),
+                None
+            );
             let unchanged = preset.as_bytes().to_vec();
-            assert!(preset.set_hd_type1_control_percent(0, wrong_model_control, 50).is_err());
+            assert!(
+                preset
+                    .set_hd_type1_control_percent(0, wrong_model_control, 50)
+                    .is_err()
+            );
             assert_eq!(preset.as_bytes(), unchanged);
         }
     }

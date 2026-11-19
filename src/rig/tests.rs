@@ -57,7 +57,7 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
     let body = crate::pod_preset::H5EP_HEADER_BYTES;
     let block = 0x428;
     let row = body + block + 0x10;
-    bytes[body + block..body + block + 4].copy_from_slice(&0x0205_000du32.to_be_bytes());
+    bytes[body + block..body + block + 4].copy_from_slice(&0x0205_000eu32.to_be_bytes());
     bytes[row..row + 4].copy_from_slice(&0x3f10_0001u32.to_be_bytes());
     bytes[row + 4..row + 8].copy_from_slice(&0.25f32.to_bits().to_be_bytes());
     let original = bytes.clone();

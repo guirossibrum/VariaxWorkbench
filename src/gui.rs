@@ -1893,23 +1893,32 @@ impl Workbench {
                     .add(egui::Slider::new(&mut self.hd_effect_slot, 0..=7).text("Effect slot"))
                     .changed();
                 if slot_changed {
-                    if let Some(model_id) = preset.effect_model_id(self.hd_effect_slot) {
-                        if let Some(control) = pod_preset::HdType1Control::ALL
+                    if let Some(model_id) = preset.effect_model_id(self.hd_effect_slot)
+                        && let Some(control) = pod_preset::HdType1Control::ALL
                             .into_iter()
                             .find(|control| control.model_id() == model_id)
-                        {
-                            self.hd_control = control;
-                        }
+                    {
+                        self.hd_control = control;
                     }
                     self.hd_control_percent = preset
                         .hd_type1_control_percent(self.hd_effect_slot, self.hd_control)
                         .unwrap_or(0);
                 }
                 egui::ComboBox::from_label("Recovered control")
-                    .selected_text(format!("{} {}", self.hd_control.model_label(), self.hd_control.label()))
+                    .selected_text(format!(
+                        "{} {}",
+                        self.hd_control.model_label(),
+                        self.hd_control.label()
+                    ))
                     .show_ui(ui, |ui| {
                         for control in pod_preset::HdType1Control::ALL {
-                            if control.model_id() != preset.effect_model_id(self.hd_effect_slot).unwrap_or_default() { continue; }
+                            if control.model_id()
+                                != preset
+                                    .effect_model_id(self.hd_effect_slot)
+                                    .unwrap_or_default()
+                            {
+                                continue;
+                            }
                             if ui
                                 .selectable_value(
                                     &mut self.hd_control,
@@ -1929,8 +1938,11 @@ impl Workbench {
                     .is_some()
                 {
                     ui.add(
-                        egui::Slider::new(&mut self.hd_control_percent, 0..=100)
-                            .text(format!("{} {}", self.hd_control.model_label(), self.hd_control.label())),
+                        egui::Slider::new(&mut self.hd_control_percent, 0..=100).text(format!(
+                            "{} {}",
+                            self.hd_control.model_label(),
+                            self.hd_control.label()
+                        )),
                     );
                     if self.pod_button(ui, "apply-hd-drive", "Apply offline control") {
                         self.apply_hd_control(index);
@@ -2002,9 +2014,7 @@ impl Workbench {
             .hd_library
             .file(index)
             .and_then(|file| match file {
-                PodPresetFile::H5ep(preset) => {
-                    preset.hd_type1_control_percent(0, self.hd_control)
-                }
+                PodPresetFile::H5ep(preset) => preset.hd_type1_control_percent(0, self.hd_control),
                 _ => None,
             })
             .unwrap_or(0);

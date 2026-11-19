@@ -270,7 +270,13 @@ impl Session {
         control: crate::pod_preset::ScreamerControl,
         percent: u8,
     ) -> Result<(), Rejection> {
-        self.set_hd_type1_control_percent(library, file, effect_slot, crate::pod_preset::HdType1Control::Screamer(control), percent)
+        self.set_hd_type1_control_percent(
+            library,
+            file,
+            effect_slot,
+            crate::pod_preset::HdType1Control::Screamer(control),
+            percent,
+        )
     }
 
     pub fn set_hd_type1_control_percent(
