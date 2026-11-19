@@ -306,6 +306,36 @@ impl Session {
             .map_err(map_hd_library_error)
     }
 
+    /// Edits one source-joined non-type-1 HD Edit numeric control in the
+    /// shared offline library. The file association does not establish a
+    /// physical product target.
+    pub fn set_hd_numeric_control_value(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: usize,
+        control: crate::pod_preset::HdNumericControl,
+        value: i32,
+    ) -> Result<(), Rejection> {
+        let _ = self;
+        let preset = match library.file_mut(file) {
+            Some(crate::pod_preset::PodPresetFile::H5ep(preset)) => preset,
+            Some(_) => {
+                return Err(Rejection::format(
+                    "HD numeric controls require an H5EP preset",
+                ));
+            }
+            None => {
+                return Err(Rejection::format(
+                    "file index is outside the HD editor library",
+                ));
+            }
+        };
+        preset
+            .set_hd_numeric_control_value(effect_slot, control, value)
+            .map_err(map_hd_library_error)
+    }
+
     /// Writes the selected editor file using its non-overwriting copy save.
     pub fn save_hd_editor_copy(
         self,

@@ -241,10 +241,10 @@ fn hd500x_limit(operation: Operation) -> &'static str {
             "Offline library recognizes the statically traced Edit H5EP/H5ES/H5EB framing, validates the recovered body subset, and can extract child records. This file group does not prove physical target compatibility. A PODxt Live tone is not opened on this profile and is not converted."
         }
         Operation::EditPodPreset => {
-            "Offline HD Edit library supports five source-traced Screamer controls (DRIVE, BASS, TONE, TREBLE, OUTPUT), five Tube Drive controls (DRIVE, BASS, MID, TREBLE, OUTPUT), and five Octave Fuzz primary controls (DRIVE, BASS, MID, TREBLE, OUTPUT) on the exact recovered editor integer-percent grid. This is normalized editor data, not physical units or device availability; auxiliary widgets, other control contracts and full editor parity are unavailable. Preserved header context does not establish a product id; physical target compatibility and device behavior remain unverified."
+            "Offline HD Edit library supports 20 selected type-1 controls and 20 source-joined non-type-1 numeric controls across nine effect models. Type-1 values use the editor integer-percent grid; numeric values use each descriptor's recovered integer widget bounds and exact normalized float grid, without assigning physical units. The file association does not establish a physical product target. Auxiliary widgets, all other model/control contracts and full editor parity remain unavailable."
         }
         Operation::SelectRecordRoute => {
-            "The Windows INF DefaultSampleRate is 48000 and DefaultWordSize is 24, with EngineFormatLock 0. Those are driver defaults. They do not select a PODxt Live record route and do not open a stream."
+            "HD500X record routing remains Unverified. The Windows INF's DefaultSampleRate 48000, DefaultWordSize 24 and EngineFormatLock 0 are driver defaults; guide routing statements do not provide the product-qualified USB endpoint, format, timing and callback join required for an offline route. No stream is opened."
         }
         Operation::InspectFirmware => {
             "The HD500X session can run generic bounded FORM/L6FF structure inspection on the supplied P25 image. Central's separate metadata name mapping and native parser/loader trace do not resolve the PHF header product/version consumer join. The public Flash Memory v2.62 release 6260 listing does not establish that link or the separate USB Firmware 1.04 component/installed state."

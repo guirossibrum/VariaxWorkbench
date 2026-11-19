@@ -215,6 +215,8 @@ struct Workbench {
     hd_effect_slot: usize,
     hd_control: pod_preset::HdType1Control,
     hd_control_percent: u8,
+    hd_numeric_control: pod_preset::HdNumericControl,
+    hd_numeric_value: i32,
     hd_setlist_index: usize,
     hd_preset_index: usize,
     pod_name: String,
@@ -291,6 +293,8 @@ impl Workbench {
             hd_effect_slot: 0,
             hd_control: pod_preset::HdType1Control::Screamer(pod_preset::ScreamerControl::Drive),
             hd_control_percent: 0,
+            hd_numeric_control: pod_preset::HD_NUMERIC_CONTROLS[0],
+            hd_numeric_value: 0,
             hd_setlist_index: 0,
             hd_preset_index: 0,
             pod_name: String::new(),
@@ -1845,7 +1849,7 @@ impl Workbench {
     fn hd_editor_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("POD HD Edit files · offline");
         ui.label(pod_preset::HD_EDITOR_OFFLINE_NOTICE);
-        ui.label("Fixed H5EP/H5ES/H5EB framing and selected source-traced primary type-1 controls for Screamer, Tube Drive, and Octave Fuzz are supported. Auxiliary widgets remain opaque; a file tag does not prove physical target compatibility.");
+        ui.label("Fixed H5EP/H5ES/H5EB framing and selected source-traced type-1 and numeric controls are supported across nine effect models. Auxiliary widgets and all other rows remain opaque; file association does not prove physical target compatibility.");
         ui.label("No device, audio, firmware or driver operation is available here. Copy saves never replace an existing file.");
         if self.pod_button(ui, "load-hd-file", "Open HD Edit file…") {
             self.load_hd_editor_file();
@@ -1903,6 +1907,22 @@ impl Workbench {
                     self.hd_control_percent = preset
                         .hd_type1_control_percent(self.hd_effect_slot, self.hd_control)
                         .unwrap_or(0);
+                    if let Some(control) =
+                        pod_preset::HD_NUMERIC_CONTROLS.into_iter().find(|control| {
+                            control.model_id()
+                                == preset
+                                    .effect_model_id(self.hd_effect_slot)
+                                    .unwrap_or_default()
+                                && preset
+                                    .hd_numeric_control_value(self.hd_effect_slot, *control)
+                                    .is_some()
+                        })
+                    {
+                        self.hd_numeric_control = control;
+                        self.hd_numeric_value = preset
+                            .hd_numeric_control_value(self.hd_effect_slot, control)
+                            .unwrap_or(control.min());
+                    }
                 }
                 egui::ComboBox::from_label("Recovered control")
                     .selected_text(format!(
@@ -1948,7 +1968,70 @@ impl Workbench {
                         self.apply_hd_control(index);
                     }
                 } else {
-                    ui.label("This slot has no applicable recovered control; its data remains unchanged.");
+                    ui.label(
+                        "No matching type-1 control is available; other rows remain unchanged.",
+                    );
+                }
+                if pod_preset::HD_NUMERIC_CONTROLS.iter().any(|control| {
+                    control.model_id()
+                        == preset
+                            .effect_model_id(self.hd_effect_slot)
+                            .unwrap_or_default()
+                        && preset
+                            .hd_numeric_control_value(self.hd_effect_slot, *control)
+                            .is_some()
+                }) {
+                    egui::ComboBox::from_label("Recovered numeric control")
+                        .selected_text(format!(
+                            "{} {}",
+                            self.hd_numeric_control.model_label(),
+                            self.hd_numeric_control.label()
+                        ))
+                        .show_ui(ui, |ui| {
+                            for control in pod_preset::HD_NUMERIC_CONTROLS {
+                                if control.model_id()
+                                    != preset
+                                        .effect_model_id(self.hd_effect_slot)
+                                        .unwrap_or_default()
+                                    || preset
+                                        .hd_numeric_control_value(self.hd_effect_slot, control)
+                                        .is_none()
+                                {
+                                    continue;
+                                }
+                                if ui
+                                    .selectable_value(
+                                        &mut self.hd_numeric_control,
+                                        control,
+                                        format!("{} {}", control.model_label(), control.label()),
+                                    )
+                                    .changed()
+                                {
+                                    self.hd_numeric_value = preset
+                                        .hd_numeric_control_value(self.hd_effect_slot, control)
+                                        .unwrap_or(control.min());
+                                }
+                            }
+                        });
+                    ui.label("Editor integer control values; source labels and bounds do not declare physical units.");
+                    ui.add(
+                        egui::Slider::new(
+                            &mut self.hd_numeric_value,
+                            self.hd_numeric_control.min()..=self.hd_numeric_control.max(),
+                        )
+                        .text(format!(
+                            "{} {}",
+                            self.hd_numeric_control.model_label(),
+                            self.hd_numeric_control.label()
+                        )),
+                    );
+                    if self.pod_button(
+                        ui,
+                        "apply-hd-numeric-control",
+                        "Apply offline numeric control",
+                    ) {
+                        self.apply_hd_numeric_control(index);
+                    }
                 }
             }
             PodPresetFile::H5es(setlist) => {
@@ -2018,6 +2101,30 @@ impl Workbench {
                 _ => None,
             })
             .unwrap_or(0);
+        self.hd_numeric_control = self
+            .hd_library
+            .file(index)
+            .and_then(|file| match file {
+                PodPresetFile::H5ep(preset) => {
+                    let model = preset.effect_model_id(0)?;
+                    pod_preset::HD_NUMERIC_CONTROLS.into_iter().find(|control| {
+                        control.model_id() == model
+                            && preset.hd_numeric_control_value(0, *control).is_some()
+                    })
+                }
+                _ => None,
+            })
+            .unwrap_or(pod_preset::HD_NUMERIC_CONTROLS[0]);
+        self.hd_numeric_value = self
+            .hd_library
+            .file(index)
+            .and_then(|file| match file {
+                PodPresetFile::H5ep(preset) => {
+                    preset.hd_numeric_control_value(0, self.hd_numeric_control)
+                }
+                _ => None,
+            })
+            .unwrap_or(self.hd_numeric_control.min());
     }
 
     fn apply_hd_control(&mut self, index: usize) {
@@ -2027,6 +2134,23 @@ impl Workbench {
             self.hd_effect_slot,
             self.hd_control,
             self.hd_control_percent,
+        );
+        match result {
+            Ok(()) => {
+                self.pod_message =
+                    "Updated only the traced in-memory value. Nothing was sent.".into();
+            }
+            Err(error) => self.pod_message = rejection_text(&error),
+        }
+    }
+
+    fn apply_hd_numeric_control(&mut self, index: usize) {
+        let result = Session::initial_rig().set_hd_numeric_control_value(
+            &mut self.hd_library,
+            index,
+            self.hd_effect_slot,
+            self.hd_numeric_control,
+            self.hd_numeric_value,
         );
         match result {
             Ok(()) => {
@@ -3406,6 +3530,58 @@ mod tests {
         );
         assert!(app.read_worker.is_none());
         assert!(!app.is_reading());
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn hd_editor_numeric_control_updates_only_its_traced_value_offline() {
+        let (_context, mut app) = app();
+        let source_document = app.document.as_ref().unwrap().as_bytes().to_vec();
+        let mut bytes = sample_hd_editor_preset();
+        let body = pod_preset::H5EP_HEADER_BYTES;
+        let block = body + 0x428;
+        bytes[block..block + 4].copy_from_slice(&0x020c_0009u32.to_be_bytes());
+        let controls = pod_preset::HD_NUMERIC_CONTROLS
+            .into_iter()
+            .filter(|control| control.model_id() == 0x020c_0009);
+        for (index, control) in controls.enumerate() {
+            let row = block + 0x10 + index * 0x14;
+            bytes[row..row + 4].copy_from_slice(
+                &match index {
+                    0 => 0x3f10_0001u32,
+                    1 => 0x3f10_0002u32,
+                    2 => 0x3f10_0003u32,
+                    3 => 0x3f10_0004u32,
+                    _ => 0x3f10_0005u32,
+                }
+                .to_be_bytes(),
+            );
+            bytes[row + 4..row + 8].copy_from_slice(&0.5f32.to_bits().to_be_bytes());
+            bytes[row + 0x10] = 0;
+            assert_eq!(control.max(), 240);
+        }
+        let original = bytes.clone();
+        let index = app.hd_library.import_bytes(bytes).unwrap();
+        app.select_hd_file(index);
+        let control = app.hd_numeric_control;
+        assert_eq!(control.model_label(), "Graphic EQ");
+        assert_eq!(control.label(), "80Hz");
+        assert_eq!(app.hd_numeric_value, 120);
+        app.hd_numeric_value = 180;
+        app.apply_hd_numeric_control(index);
+        assert!(app.hd_library.is_dirty(index));
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), source_document);
+        let edited = app.hd_library.file(index).unwrap().as_bytes();
+        let value_at = block + 0x10 + 4;
+        assert_eq!(&edited[..value_at], &original[..value_at]);
+        assert_eq!(
+            &edited[value_at..value_at + 4],
+            &0.75f32.to_bits().to_be_bytes()
+        );
+        assert_eq!(&edited[value_at + 4..], &original[value_at + 4..]);
+        assert!(app.read_worker.is_none());
         const {
             assert!(LIVE_ACCESS_LOCKED);
         }

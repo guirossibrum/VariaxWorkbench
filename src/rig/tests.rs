@@ -100,6 +100,47 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
         Err(Rejection::Format { .. })
     ));
 
+    let mut numeric = synthetic_h5ep();
+    let numeric_model = 0x020c_0009u32;
+    let numeric_block = body + 0x428;
+    numeric[numeric_block..numeric_block + 4].copy_from_slice(&numeric_model.to_be_bytes());
+    let numeric_row = numeric_block + 0x10;
+    numeric[numeric_row..numeric_row + 4].copy_from_slice(&0x3f10_0001u32.to_be_bytes());
+    numeric[numeric_row + 4..numeric_row + 8].copy_from_slice(&0.5f32.to_bits().to_be_bytes());
+    let numeric_before = numeric.clone();
+    let numeric_summary = session
+        .import_hd_editor_file(&mut library, numeric)
+        .expect("offline source-qualified numeric preset");
+    let control = crate::pod_preset::HD_NUMERIC_CONTROLS[0];
+    assert_eq!(control.model_label(), "Graphic EQ");
+    assert_eq!(control.label(), "80Hz");
+    assert_eq!(
+        library
+            .file(numeric_summary.index)
+            .and_then(|file| match file {
+                crate::pod_preset::PodPresetFile::H5ep(preset) => {
+                    preset.hd_numeric_control_value(0, control)
+                }
+                _ => None,
+            }),
+        Some(120)
+    );
+    session
+        .set_hd_numeric_control_value(&mut library, numeric_summary.index, 0, control, 180)
+        .expect("shared offline numeric edit");
+    assert!(library.is_dirty(numeric_summary.index));
+    let numeric_after = library.file(numeric_summary.index).unwrap().as_bytes();
+    let value_at = numeric_row + 4;
+    assert_eq!(&numeric_after[..value_at], &numeric_before[..value_at]);
+    assert_eq!(
+        &numeric_after[value_at..value_at + 4],
+        &(0.75f32.to_bits().to_be_bytes())
+    );
+    assert_eq!(
+        &numeric_after[value_at + 4..],
+        &numeric_before[value_at + 4..]
+    );
+
     let mut mapped_context = synthetic_h5ep();
     mapped_context[0x10..0x14].copy_from_slice(&0x0021_0001u32.to_be_bytes());
     mapped_context[0x14..0x18].copy_from_slice(&0x0003_0262u32.to_be_bytes());
@@ -134,7 +175,7 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
     );
     let rejection = session.import_hd_editor_file(&mut library, podxt);
     assert!(matches!(rejection, Err(Rejection::Format { .. })));
-    assert_eq!(library.len(), 4, "rejected PODxt file is not imported");
+    assert_eq!(library.len(), 5, "rejected PODxt file is not imported");
 
     let mut malformed = synthetic_h5ep();
     malformed[7] = 2;
@@ -142,7 +183,7 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
         session.import_hd_editor_file(&mut library, malformed),
         Err(Rejection::Format { .. })
     ));
-    assert_eq!(library.len(), 4, "malformed file is not imported");
+    assert_eq!(library.len(), 5, "malformed file is not imported");
     assert_eq!(
         capability::capability(ProductProfile::PodHd500x, Operation::OpenPodPreset).state,
         CapabilityState::Unverified
@@ -960,12 +1001,7 @@ fn pod_hd500x_identity_stays_on_its_profile_and_does_not_open_other_families() {
         );
     }
     let mut attempts = 0;
-    for operation in [
-        Operation::OpenAudioStream,
-        Operation::FlashFirmware,
-        Operation::BindDriver,
-        Operation::EnumerateUsb,
-    ] {
+    for operation in Operation::ALL.into_iter().filter(|op| op.is_physical()) {
         assert_eq!(
             hd.reject_extension_physical(operation, Some(CapabilityState::Offline), || {
                 attempts += 1;
@@ -975,6 +1011,14 @@ fn pod_hd500x_identity_stays_on_its_profile_and_does_not_open_other_families() {
         );
     }
     assert_eq!(attempts, 0);
+    assert_eq!(
+        capability::capability(ProductProfile::PodHd500x, Operation::SelectRecordRoute).state,
+        CapabilityState::Unverified
+    );
+    assert_eq!(
+        capability::capability(ProductProfile::PodHd500x, Operation::InspectFirmware).state,
+        CapabilityState::Offline
+    );
     assert_eq!(
         capability::resolve(
             ProductProfile::PodHd500x,

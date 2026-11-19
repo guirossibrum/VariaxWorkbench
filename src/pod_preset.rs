@@ -59,6 +59,12 @@ const HD_PARAMETER_ROW_COUNT: usize = 12;
 const HD_SCREAMER_MODEL_ID: u32 = 0x0205_000e;
 const HD_TUBE_DRIVE_MODEL_ID: u32 = 0x0205_000d;
 const HD_OCTAVE_FUZZ_MODEL_ID: u32 = 0x0205_000c;
+const HD_BAND_SHIFT_EQ_MODEL_ID: u32 = 0x020c_000c;
+const HD_GRAPHIC_EQ_MODEL_ID: u32 = 0x020c_0009;
+const HD_STUDIO_EQ_MODEL_ID: u32 = 0x020c_000a;
+const HD_HARD_GATE_MODEL_ID: u32 = 0x0200_0013;
+const HD_STEREO_DELAY_MODEL_ID: u32 = 0x0202_0013;
+const HD_FX_LOOP_MODEL_ID: u32 = 0x0208_0000;
 const HD_TYPE1_DRIVE_KEY: u32 = 0x3f10_0001;
 const HD_TYPE1_BASS_KEY: u32 = 0x3f10_0002;
 const HD_TYPE1_THIRD_KEY: u32 = 0x3f10_0003;
@@ -236,6 +242,67 @@ impl OctaveFuzzControl {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BandShiftEqControl {
+    Shift,
+}
+
+impl BandShiftEqControl {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Shift => "SHIFT",
+        }
+    }
+
+    const fn key(self) -> u32 {
+        match self {
+            Self::Shift => HD_TYPE1_OUTPUT_KEY,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StereoDelayControl {
+    LeftFeedback,
+    RightFeedback,
+    Mix,
+}
+
+impl StereoDelayControl {
+    pub const ALL: [Self; 3] = [Self::LeftFeedback, Self::RightFeedback, Self::Mix];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::LeftFeedback => "L FDBK",
+            Self::RightFeedback => "R FDBK",
+            Self::Mix => "MIX",
+        }
+    }
+
+    const fn key(self) -> u32 {
+        match self {
+            Self::LeftFeedback => HD_TYPE1_DRIVE_KEY,
+            Self::RightFeedback => HD_TYPE1_THIRD_KEY,
+            Self::Mix => HD_TYPE1_TREBLE_KEY,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FxLoopControl {
+    Mix,
+}
+
+impl FxLoopControl {
+    pub const fn label(self) -> &'static str {
+        "MIX"
+    }
+
+    const fn key(self) -> u32 {
+        HD_TYPE1_TREBLE_KEY
+    }
+}
+
 impl TubeDriveControl {
     pub const ALL: [Self; 5] = [
         Self::Drive,
@@ -271,10 +338,13 @@ pub enum HdType1Control {
     Screamer(ScreamerControl),
     TubeDrive(TubeDriveControl),
     OctaveFuzz(OctaveFuzzControl),
+    BandShiftEq(BandShiftEqControl),
+    StereoDelay(StereoDelayControl),
+    FxLoop(FxLoopControl),
 }
 
 impl HdType1Control {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 20] = [
         Self::Screamer(ScreamerControl::Drive),
         Self::Screamer(ScreamerControl::Bass),
         Self::Screamer(ScreamerControl::Tone),
@@ -290,6 +360,11 @@ impl HdType1Control {
         Self::OctaveFuzz(OctaveFuzzControl::Mid),
         Self::OctaveFuzz(OctaveFuzzControl::Treble),
         Self::OctaveFuzz(OctaveFuzzControl::Output),
+        Self::BandShiftEq(BandShiftEqControl::Shift),
+        Self::StereoDelay(StereoDelayControl::LeftFeedback),
+        Self::StereoDelay(StereoDelayControl::RightFeedback),
+        Self::StereoDelay(StereoDelayControl::Mix),
+        Self::FxLoop(FxLoopControl::Mix),
     ];
 
     pub const fn label(self) -> &'static str {
@@ -297,6 +372,9 @@ impl HdType1Control {
             Self::Screamer(c) => c.label(),
             Self::TubeDrive(c) => c.label(),
             Self::OctaveFuzz(c) => c.label(),
+            Self::BandShiftEq(c) => c.label(),
+            Self::StereoDelay(c) => c.label(),
+            Self::FxLoop(c) => c.label(),
         }
     }
 
@@ -305,6 +383,9 @@ impl HdType1Control {
             Self::Screamer(c) => c.key(),
             Self::TubeDrive(c) => c.key(),
             Self::OctaveFuzz(c) => c.key(),
+            Self::BandShiftEq(c) => c.key(),
+            Self::StereoDelay(c) => c.key(),
+            Self::FxLoop(c) => c.key(),
         }
     }
 
@@ -313,6 +394,9 @@ impl HdType1Control {
             Self::Screamer(_) => "Screamer",
             Self::TubeDrive(_) => "Tube Drive",
             Self::OctaveFuzz(_) => "Octave Fuzz",
+            Self::BandShiftEq(_) => "4 Band Shift EQ",
+            Self::StereoDelay(_) => "Stereo Delay",
+            Self::FxLoop(_) => "FX Loop",
         }
     }
 
@@ -321,9 +405,260 @@ impl HdType1Control {
             Self::Screamer(_) => HD_SCREAMER_MODEL_ID,
             Self::TubeDrive(_) => HD_TUBE_DRIVE_MODEL_ID,
             Self::OctaveFuzz(_) => HD_OCTAVE_FUZZ_MODEL_ID,
+            Self::BandShiftEq(_) => HD_BAND_SHIFT_EQ_MODEL_ID,
+            Self::StereoDelay(_) => HD_STEREO_DELAY_MODEL_ID,
+            Self::FxLoop(_) => HD_FX_LOOP_MODEL_ID,
         }
     }
 }
+
+/// A source-joined non-type-1 numeric editor control. Bounds are the
+/// constructor's integer widget arguments, not named physical units.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HdNumericControl {
+    model_id: u32,
+    model_label: &'static str,
+    label: &'static str,
+    key: u32,
+    raw_type: u8,
+    min: i32,
+    max: i32,
+}
+
+impl HdNumericControl {
+    const fn new(
+        model_id: u32,
+        model_label: &'static str,
+        label: &'static str,
+        key: u32,
+        raw_type: u8,
+        min: i32,
+        max: i32,
+    ) -> Self {
+        Self {
+            model_id,
+            model_label,
+            label,
+            key,
+            raw_type,
+            min,
+            max,
+        }
+    }
+
+    pub const fn model_id(self) -> u32 {
+        self.model_id
+    }
+
+    pub const fn model_label(self) -> &'static str {
+        self.model_label
+    }
+
+    pub const fn label(self) -> &'static str {
+        self.label
+    }
+
+    pub const fn raw_type(self) -> u8 {
+        self.raw_type
+    }
+
+    pub const fn min(self) -> i32 {
+        self.min
+    }
+
+    pub const fn max(self) -> i32 {
+        self.max
+    }
+
+    const fn key(self) -> u32 {
+        self.key
+    }
+}
+
+/// Independently joined selected numeric controls across equalizer, gate,
+/// delay and FX Loop descriptors. This is not a complete model catalog.
+pub const HD_NUMERIC_CONTROLS: [HdNumericControl; 20] = [
+    HdNumericControl::new(
+        HD_GRAPHIC_EQ_MODEL_ID,
+        "Graphic EQ",
+        "80Hz",
+        0x3f10_0001,
+        0x05,
+        0,
+        240,
+    ),
+    HdNumericControl::new(
+        HD_GRAPHIC_EQ_MODEL_ID,
+        "Graphic EQ",
+        "220Hz",
+        0x3f10_0002,
+        0x05,
+        0,
+        240,
+    ),
+    HdNumericControl::new(
+        HD_GRAPHIC_EQ_MODEL_ID,
+        "Graphic EQ",
+        "440Hz",
+        0x3f10_0003,
+        0x05,
+        0,
+        240,
+    ),
+    HdNumericControl::new(
+        HD_GRAPHIC_EQ_MODEL_ID,
+        "Graphic EQ",
+        "1.1kHz",
+        0x3f10_0004,
+        0x05,
+        0,
+        240,
+    ),
+    HdNumericControl::new(
+        HD_GRAPHIC_EQ_MODEL_ID,
+        "Graphic EQ",
+        "2.2kHz",
+        0x3f10_0005,
+        0x05,
+        0,
+        240,
+    ),
+    HdNumericControl::new(
+        HD_BAND_SHIFT_EQ_MODEL_ID,
+        "4 Band Shift EQ",
+        "LO FREQ",
+        0x3f10_0001,
+        0x05,
+        0,
+        240,
+    ),
+    HdNumericControl::new(
+        HD_BAND_SHIFT_EQ_MODEL_ID,
+        "4 Band Shift EQ",
+        "LO MID",
+        0x3f10_0002,
+        0x05,
+        0,
+        240,
+    ),
+    HdNumericControl::new(
+        HD_BAND_SHIFT_EQ_MODEL_ID,
+        "4 Band Shift EQ",
+        "HI MID",
+        0x3f10_0003,
+        0x05,
+        0,
+        240,
+    ),
+    HdNumericControl::new(
+        HD_BAND_SHIFT_EQ_MODEL_ID,
+        "4 Band Shift EQ",
+        "HIGH",
+        0x3f10_0004,
+        0x05,
+        0,
+        240,
+    ),
+    HdNumericControl::new(
+        HD_STUDIO_EQ_MODEL_ID,
+        "Studio EQ",
+        "LO GAIN",
+        0x3f10_0002,
+        0x06,
+        0,
+        220,
+    ),
+    HdNumericControl::new(
+        HD_STUDIO_EQ_MODEL_ID,
+        "Studio EQ",
+        "HI GAIN",
+        0x3f10_0004,
+        0x06,
+        0,
+        220,
+    ),
+    HdNumericControl::new(
+        HD_STUDIO_EQ_MODEL_ID,
+        "Studio EQ",
+        "GAIN",
+        0x3f10_0005,
+        0x07,
+        0,
+        360,
+    ),
+    HdNumericControl::new(
+        HD_HARD_GATE_MODEL_ID,
+        "Hard Gate",
+        "OPEN",
+        0x3f10_0000,
+        0x08,
+        -96,
+        0,
+    ),
+    HdNumericControl::new(
+        HD_HARD_GATE_MODEL_ID,
+        "Hard Gate",
+        "CLOSE",
+        0x3f10_0001,
+        0x08,
+        -96,
+        0,
+    ),
+    HdNumericControl::new(
+        HD_HARD_GATE_MODEL_ID,
+        "Hard Gate",
+        "HOLD TIME",
+        0x3f10_0002,
+        0x12,
+        0,
+        800,
+    ),
+    HdNumericControl::new(
+        HD_HARD_GATE_MODEL_ID,
+        "Hard Gate",
+        "DECAY",
+        0x3f10_0003,
+        0x13,
+        0,
+        4000,
+    ),
+    HdNumericControl::new(
+        HD_STEREO_DELAY_MODEL_ID,
+        "Stereo Delay",
+        "L TIME",
+        0x3f10_0000,
+        0x10,
+        20,
+        2000,
+    ),
+    HdNumericControl::new(
+        HD_STEREO_DELAY_MODEL_ID,
+        "Stereo Delay",
+        "R TIME",
+        0x3f10_0002,
+        0x10,
+        20,
+        2000,
+    ),
+    HdNumericControl::new(
+        HD_FX_LOOP_MODEL_ID,
+        "FX Loop",
+        "SEND",
+        0x3f10_0001,
+        0x09,
+        -80,
+        0,
+    ),
+    HdNumericControl::new(
+        HD_FX_LOOP_MODEL_ID,
+        "FX Loop",
+        "RETURN",
+        0x3f10_0002,
+        0x0a,
+        0,
+        24,
+    ),
+];
 
 impl PodPresetFile {
     /// Dispatches only on the file's structural magic. Suffixes are not used.
@@ -444,6 +779,18 @@ impl OpaqueH5epPreset {
         exact_drive_percent(value)
     }
 
+    /// Returns a selected non-type-1 control's canonical editor integer value.
+    /// Values outside the exact normalized integer grid remain opaque.
+    pub fn hd_numeric_control_value(
+        &self,
+        effect_slot: usize,
+        control: HdNumericControl,
+    ) -> Option<i32> {
+        let value_at = self.hd_numeric_control_value_offset(effect_slot, control)?;
+        let value = f32::from_bits(read_be_u32(self.body_bytes(), value_at)?);
+        exact_numeric_value(value, control.min, control.max)
+    }
+
     pub fn effect_model_id(&self, effect_slot: usize) -> Option<u32> {
         if effect_slot >= HD_EFFECT_COUNT {
             return None;
@@ -542,6 +889,43 @@ impl OpaqueH5epPreset {
         Ok(())
     }
 
+    /// Edits one selected non-type-1 numeric widget value. The stored float
+    /// must already be on the exact source-configured integer grid; only its
+    /// keyed value word changes.
+    pub fn set_hd_numeric_control_value(
+        &mut self,
+        effect_slot: usize,
+        control: HdNumericControl,
+        value: i32,
+    ) -> Result<(), ToneError> {
+        if !(control.min..=control.max).contains(&value) {
+            return Err(ToneError::format(format!(
+                "{} {} must be in {}..={}",
+                control.model_label, control.label, control.min, control.max
+            )));
+        }
+        let value_at = self
+            .hd_numeric_control_value_offset(effect_slot, control)
+            .ok_or_else(|| {
+                ToneError::format(
+                    "HD numeric control slot, key, model, or assignment state is not admitted for editing",
+                )
+            })?;
+        let current = f32::from_bits(
+            read_be_u32(self.body_bytes(), value_at)
+                .ok_or_else(|| ToneError::format("HD numeric row is truncated"))?,
+        );
+        exact_numeric_value(current, control.min, control.max).ok_or_else(|| {
+            ToneError::format(
+                "existing HD numeric value is outside the exact recovered editor grid",
+            )
+        })?;
+        let normalized = normalized_numeric_value(value, control.min, control.max);
+        let file_at = H5EP_HEADER_BYTES + value_at;
+        self.bytes[file_at..file_at + 4].copy_from_slice(&normalized.to_bits().to_be_bytes());
+        Ok(())
+    }
+
     /// Exact no-op serialization. The envelope's unknown fields remain raw.
     pub fn serialize_noop(&self) -> Vec<u8> {
         self.bytes.clone()
@@ -571,6 +955,31 @@ impl OpaqueH5epPreset {
                 // while the callback suppresses writes for expression controls.
                 // Only the zero-flag state is admitted; auxiliary flag bytes
                 // remain opaque and are never normalized.
+                if body[row_at + HD_PARAMETER_ROW_FLAG_OFFSET] != 0 {
+                    return None;
+                }
+                return Some(row_at + 4);
+            }
+        }
+        None
+    }
+
+    fn hd_numeric_control_value_offset(
+        &self,
+        effect_slot: usize,
+        control: HdNumericControl,
+    ) -> Option<usize> {
+        if effect_slot >= HD_EFFECT_COUNT {
+            return None;
+        }
+        let body = self.body_bytes();
+        let block = HD_EFFECT_BLOCK_OFFSET + effect_slot * HD_EFFECT_BLOCK_STRIDE;
+        if read_be_u32(body, block)? != control.model_id {
+            return None;
+        }
+        for row in 0..HD_PARAMETER_ROW_COUNT {
+            let row_at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
+            if read_be_u32(body, row_at)? == control.key() {
                 if body[row_at + HD_PARAMETER_ROW_FLAG_OFFSET] != 0 {
                     return None;
                 }
@@ -877,6 +1286,19 @@ fn exact_drive_percent(value: f32) -> Option<u8> {
     }
     let percent = (value * 100.0).round() as u8;
     ((percent as f32 / 100.0).to_bits() == value.to_bits()).then_some(percent)
+}
+
+fn normalized_numeric_value(value: i32, min: i32, max: i32) -> f32 {
+    (value - min) as f32 / (max - min) as f32
+}
+
+fn exact_numeric_value(value: f32, min: i32, max: i32) -> Option<i32> {
+    if min >= max || !value.is_finite() || !(0.0..=1.0).contains(&value) {
+        return None;
+    }
+    let width = (max - min) as f32;
+    let integer = min + (value * width).round() as i32;
+    (normalized_numeric_value(integer, min, max).to_bits() == value.to_bits()).then_some(integer)
 }
 
 fn transform_hd_body_words(body: &mut [u8]) {
@@ -1904,7 +2326,10 @@ mod tests {
         for (model, controls) in [
             (HD_SCREAMER_MODEL_ID, &HdType1Control::ALL[..5]),
             (HD_TUBE_DRIVE_MODEL_ID, &HdType1Control::ALL[5..10]),
-            (HD_OCTAVE_FUZZ_MODEL_ID, &HdType1Control::ALL[10..]),
+            (HD_OCTAVE_FUZZ_MODEL_ID, &HdType1Control::ALL[10..15]),
+            (HD_BAND_SHIFT_EQ_MODEL_ID, &HdType1Control::ALL[15..16]),
+            (HD_STEREO_DELAY_MODEL_ID, &HdType1Control::ALL[16..19]),
+            (HD_FX_LOOP_MODEL_ID, &HdType1Control::ALL[19..20]),
         ] {
             let mut original = synthetic_h5ep(&[]);
             let body_start = H5EP_HEADER_BYTES;
@@ -1943,22 +2368,138 @@ mod tests {
     }
 
     #[test]
+    fn selected_non_type1_controls_use_their_source_integer_grid_and_preserve_other_bytes() {
+        assert_eq!(HD_NUMERIC_CONTROLS.len(), 20);
+        for control in HD_NUMERIC_CONTROLS {
+            assert_ne!(control.raw_type(), 0x01);
+            let mut original = synthetic_h5ep(&[]);
+            let body = H5EP_HEADER_BYTES;
+            let block = HD_EFFECT_BLOCK_OFFSET;
+            original[body + block..body + block + 4]
+                .copy_from_slice(&control.model_id().to_be_bytes());
+            let row = body + block + HD_EFFECT_ROWS_OFFSET;
+            original[row..row + 4].copy_from_slice(&control.key().to_be_bytes());
+            let initial = control.min() + (control.max() - control.min()) / 3;
+            let encoded = normalized_numeric_value(initial, control.min(), control.max());
+            original[row + 4..row + 8].copy_from_slice(&encoded.to_bits().to_be_bytes());
+            original[row + 8..row + 16]
+                .copy_from_slice(&[0xa1, 0xa2, 0xa3, 0xa4, 0xb1, 0xb2, 0xb3, 0xb4]);
+            original[row + HD_PARAMETER_ROW_FLAG_OFFSET] = 0;
+            original[row + 17..row + 20].copy_from_slice(&[0xc1, 0xc2, 0xc3]);
+
+            let mut preset = OpaqueH5epPreset::parse(original).unwrap();
+            assert_eq!(
+                preset.hd_numeric_control_value(0, control),
+                Some(initial),
+                "{} {}",
+                control.model_label(),
+                control.label()
+            );
+            let before = preset.as_bytes().to_vec();
+            preset
+                .set_hd_numeric_control_value(0, control, control.max())
+                .unwrap();
+            assert_eq!(
+                preset.hd_numeric_control_value(0, control),
+                Some(control.max())
+            );
+            let mut expected = before;
+            let value_at = row + 4;
+            expected[value_at..value_at + 4].copy_from_slice(
+                &normalized_numeric_value(control.max(), control.min(), control.max())
+                    .to_bits()
+                    .to_be_bytes(),
+            );
+            assert_eq!(preset.as_bytes(), expected);
+
+            let before_rejection = preset.as_bytes().to_vec();
+            assert!(
+                preset
+                    .set_hd_numeric_control_value(0, control, control.max() + 1)
+                    .is_err()
+            );
+            assert_eq!(preset.as_bytes(), before_rejection);
+
+            let mut wrong_model = preset.clone();
+            let wrong_model_id = if control.model_id() == HD_GRAPHIC_EQ_MODEL_ID {
+                HD_STUDIO_EQ_MODEL_ID
+            } else {
+                HD_GRAPHIC_EQ_MODEL_ID
+            };
+            let wrong_model_at = H5EP_HEADER_BYTES + block;
+            wrong_model.bytes[wrong_model_at..wrong_model_at + 4]
+                .copy_from_slice(&wrong_model_id.to_be_bytes());
+            let before_wrong_model = wrong_model.as_bytes().to_vec();
+            assert_eq!(wrong_model.hd_numeric_control_value(0, control), None);
+            assert!(
+                wrong_model
+                    .set_hd_numeric_control_value(0, control, initial)
+                    .is_err()
+            );
+            assert_eq!(wrong_model.as_bytes(), before_wrong_model);
+
+            let mut flagged = preset.clone();
+            flagged.bytes[row + HD_PARAMETER_ROW_FLAG_OFFSET] = 1;
+            let before_flagged = flagged.as_bytes().to_vec();
+            assert_eq!(flagged.hd_numeric_control_value(0, control), None);
+            assert!(
+                flagged
+                    .set_hd_numeric_control_value(0, control, initial)
+                    .is_err()
+            );
+            assert_eq!(flagged.as_bytes(), before_flagged);
+
+            let mut off_grid = preset.clone();
+            off_grid.bytes[row + 4..row + 8].copy_from_slice(&0.12345f32.to_bits().to_be_bytes());
+            let before_off_grid = off_grid.as_bytes().to_vec();
+            assert_eq!(off_grid.hd_numeric_control_value(0, control), None);
+            assert!(
+                off_grid
+                    .set_hd_numeric_control_value(0, control, initial)
+                    .is_err()
+            );
+            assert_eq!(off_grid.as_bytes(), before_off_grid);
+        }
+    }
+
+    #[test]
     fn screamer_and_tube_drive_contracts_keep_model_and_third_control_distinct() {
-        for (model, controls, mid_label) in [
+        for (model, controls, selected_label, selected_index) in [
             (
                 HD_SCREAMER_MODEL_ID,
                 HdType1Control::ALL[..5].to_vec(),
                 "TONE",
+                2,
             ),
             (
                 HD_TUBE_DRIVE_MODEL_ID,
                 HdType1Control::ALL[5..10].to_vec(),
                 "MID",
+                2,
             ),
             (
                 HD_OCTAVE_FUZZ_MODEL_ID,
-                HdType1Control::ALL[10..].to_vec(),
+                HdType1Control::ALL[10..15].to_vec(),
                 "MID",
+                2,
+            ),
+            (
+                HD_BAND_SHIFT_EQ_MODEL_ID,
+                HdType1Control::ALL[15..16].to_vec(),
+                "SHIFT",
+                0,
+            ),
+            (
+                HD_STEREO_DELAY_MODEL_ID,
+                HdType1Control::ALL[16..19].to_vec(),
+                "MIX",
+                2,
+            ),
+            (
+                HD_FX_LOOP_MODEL_ID,
+                HdType1Control::ALL[19..20].to_vec(),
+                "MIX",
+                0,
             ),
         ] {
             let mut bytes = synthetic_h5ep(&[]);
@@ -1977,20 +2518,27 @@ mod tests {
                 }
             }
             let mut preset = OpaqueH5epPreset::parse(bytes.clone()).unwrap();
-            let third = controls[2];
-            assert_eq!(third.label(), mid_label);
-            assert_eq!(preset.hd_type1_control_percent(0, third), Some(25));
+            let selected = controls[selected_index];
+            assert_eq!(selected.label(), selected_label);
+            assert_eq!(preset.hd_type1_control_percent(0, selected), Some(25));
             let before = preset.as_bytes().to_vec();
-            preset.set_hd_type1_control_percent(0, third, 61).unwrap();
-            assert_eq!(preset.hd_type1_control_percent(0, third), Some(61));
+            preset
+                .set_hd_type1_control_percent(0, selected, 61)
+                .unwrap();
+            assert_eq!(preset.hd_type1_control_percent(0, selected), Some(61));
             let mut expected = before;
-            let value = first + 2 * HD_PARAMETER_ROW_STRIDE + 4;
+            let value = first + selected_index * HD_PARAMETER_ROW_STRIDE + 4;
             expected[value..value + 4].copy_from_slice(&0.61f32.to_bits().to_be_bytes());
             assert_eq!(preset.as_bytes(), expected);
 
             let wrong_model_control = match model {
                 HD_SCREAMER_MODEL_ID => HdType1Control::TubeDrive(TubeDriveControl::Mid),
                 HD_TUBE_DRIVE_MODEL_ID => HdType1Control::OctaveFuzz(OctaveFuzzControl::Mid),
+                HD_OCTAVE_FUZZ_MODEL_ID => HdType1Control::BandShiftEq(BandShiftEqControl::Shift),
+                HD_BAND_SHIFT_EQ_MODEL_ID => {
+                    HdType1Control::StereoDelay(StereoDelayControl::LeftFeedback)
+                }
+                HD_STEREO_DELAY_MODEL_ID => HdType1Control::FxLoop(FxLoopControl::Mix),
                 _ => HdType1Control::Screamer(ScreamerControl::Tone),
             };
             assert_eq!(
