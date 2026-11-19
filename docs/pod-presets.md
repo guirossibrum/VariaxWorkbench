@@ -78,9 +78,24 @@ guitar `PresetFile` semantic parser; duplicate records and unrelated short
 opaque PARM children therefore remain inspectable and preservable under the
 POD contract. Ambiguous targeted controls still reject. It rejects empty and
 mixed-target bundles. The GUI now lists bank/preset locations, supports selection
-across banks, and saves or discards edits for the collection as a whole. The GUI
-does not synthesize bank membership or claim vendor save compatibility. Bundle
-files are bounded to 16 MiB before UI reads. The path is checked before open,
+across banks, and saves or discards edits for the collection as a whole. It can
+duplicate, remove, and reorder existing tone entries only inside an existing
+`FLDR` in an `L6CO` collection. Each operation splices complete existing tone
+spans, preserves all other child spans and their relative order, updates the
+affected `LIST` and root `FORM` lengths, then reparses a candidate before commit.
+The 16 MiB cap and zero-tone rejection apply transactionally. Folder names,
+container types, unselected tones, opaque children, and original padding remain
+byte-preserved. Selection and pending CAB choice state refresh after an operation;
+collection dirty, save-copy, revert, and quit handling track membership changes.
+`L6BA` roots and `BANK` containers do not expose these controls; fixed-bank
+compatibility remains unimplemented. Static Line6Edit 3.06 references are
+`L6Bundle.GetBanks/SetBanks`, `L6PatchBank.GetPatches/SetPatches`,
+`L6PatchTree.DropPatch`, and
+`L6PatchTree$BundleStructureValidator.ValidateChangeBankStructure`; they support
+ordered membership and proposed-structure validation. They do not establish
+opaque-child preservation or device acceptance. This is a conservative Rust
+byte-preserving policy, not vendor writer equivalence. Bundle files are
+bounded to 16 MiB before UI reads. The path is checked before open,
 the opened handle is checked again, and the reader consumes no more than the
 ceiling plus one sentinel byte if the file grows during reading. The public
 parser rejects files over the same cap, and edits that would grow a collection

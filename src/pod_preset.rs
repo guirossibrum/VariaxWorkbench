@@ -3238,6 +3238,7 @@ impl Library {
 pub struct PodBundleLibrary {
     bytes: Vec<u8>,
     saved: Vec<u8>,
+    collection: bool,
     banks: Vec<PodBundleBank>,
 }
 
@@ -3245,8 +3246,16 @@ pub struct PodBundleLibrary {
 struct PodBundleBank {
     name: String,
     entry_ranges: Vec<Range<usize>>,
+    children: Vec<PodBundleChild>,
+    folder: bool,
     chunk_start: usize,
     data_length: usize,
+}
+
+#[derive(Clone, Debug)]
+struct PodBundleChild {
+    range: Range<usize>,
+    tone: bool,
 }
 
 impl PodBundleLibrary {
@@ -3267,6 +3276,7 @@ impl PodBundleLibrary {
                 "bundle FORM length does not match the file",
             ));
         }
+        let collection = &bytes[8..12] == b"L6CO";
         let mut banks = Vec::new();
         let mut tone_count = 0;
         let outer = preset::chunks(&bytes, 12..bytes.len()).map_err(ToneError::format)?;
@@ -3291,22 +3301,30 @@ impl PodBundleLibrary {
                 .trim_end()
                 .to_owned();
             let mut entry_ranges = Vec::new();
-            for entry in children.iter().filter(|child| {
-                preset::container(&bytes, child, b"L6PA")
+            let mut child_spans = Vec::with_capacity(children.len());
+            for child in &children {
+                let payload_end = child.data.end;
+                let full_end = payload_end + (child.data.len() & 1);
+                let full_range = child.data.start - 8..full_end;
+                let is_tone = preset::container(&bytes, child, b"L6PA")
                     || preset::container(&bytes, child, b"L6FS")
-                    || preset::container(&bytes, child, b"L6AS")
-            }) {
-                let payload_end = entry.data.end;
-                let full_end = payload_end + (entry.data.len() & 1);
-                let full_range = entry.data.start - 8..full_end;
-                let tone_range = entry.data.start - 8..payload_end;
-                PodTone::parse(bytes[tone_range].to_vec())?;
-                tone_count += 1;
-                entry_ranges.push(full_range);
+                    || preset::container(&bytes, child, b"L6AS");
+                if is_tone {
+                    let tone_range = child.data.start - 8..payload_end;
+                    PodTone::parse(bytes[tone_range].to_vec())?;
+                    tone_count += 1;
+                    entry_ranges.push(full_range.clone());
+                }
+                child_spans.push(PodBundleChild {
+                    range: full_range,
+                    tone: is_tone,
+                });
             }
             banks.push(PodBundleBank {
                 name,
                 entry_ranges,
+                children: child_spans,
+                folder: preset::container(&bytes, bank, b"FLDR"),
                 chunk_start: bank.data.start - 8,
                 data_length: bank.data.len(),
             });
@@ -3318,8 +3336,200 @@ impl PodBundleLibrary {
         Ok(Self {
             bytes,
             saved,
+            collection,
             banks,
         })
+    }
+
+    /// Membership edits are admitted only for existing folders in collections.
+    pub fn membership_editable(&self, bank: usize) -> bool {
+        self.collection && self.banks.get(bank).is_some_and(|bank| bank.folder)
+    }
+
+    /// Duplicate an existing tone byte-for-byte after its current tone slot.
+    /// Returns the new flattened entry index.
+    pub fn duplicate_entry(&mut self, bank: usize, preset: usize) -> Result<usize, ToneError> {
+        let order = self.membership_order(bank)?;
+        let source = order
+            .get(preset)
+            .cloned()
+            .ok_or_else(|| ToneError::format("preset index is outside the folder"))?;
+        self.apply_membership_order(bank, order, None, Some(source))?;
+        Ok(self.flat_index(bank, preset + 1))
+    }
+
+    /// Remove one existing tone. The current library invariant requires at
+    /// least one recognized POD tone to remain in the collection.
+    pub fn remove_entry(&mut self, bank: usize, preset: usize) -> Result<usize, ToneError> {
+        let mut order = self.membership_order(bank)?;
+        if preset >= order.len() {
+            return Err(ToneError::format("preset index is outside the folder"));
+        }
+        let old_flat_index = self.flat_index(bank, preset);
+        let removed = order.remove(preset);
+        if self.entry_count() == 1 {
+            return Err(ToneError::format(
+                "cannot remove the last POD tone from the collection",
+            ));
+        }
+        self.apply_membership_order(bank, order, Some(removed), None)?;
+        Ok(old_flat_index.min(self.entry_count() - 1))
+    }
+
+    /// Move an existing tone to a final tone-slot index in the same folder.
+    /// Returns the new flattened entry index.
+    pub fn reorder_entry(
+        &mut self,
+        bank: usize,
+        from: usize,
+        to: usize,
+    ) -> Result<usize, ToneError> {
+        let mut order = self.membership_order(bank)?;
+        if from >= order.len() || to >= order.len() {
+            return Err(ToneError::format("preset index is outside the folder"));
+        }
+        if from != to {
+            let tone = order.remove(from);
+            order.insert(to, tone);
+            self.apply_membership_order(bank, order, None, None)?;
+        }
+        Ok(self.flat_index(bank, to))
+    }
+
+    fn membership_order(&self, bank_index: usize) -> Result<Vec<Range<usize>>, ToneError> {
+        if !self.membership_editable(bank_index) {
+            return Err(ToneError::format(
+                "POD membership edits require an existing FLDR in an L6CO collection",
+            ));
+        }
+        Ok(self.banks[bank_index]
+            .children
+            .iter()
+            .filter(|child| child.tone)
+            .map(|child| child.range.clone())
+            .collect())
+    }
+
+    fn apply_membership_order(
+        &mut self,
+        bank_index: usize,
+        tone_order: Vec<Range<usize>>,
+        remove_tone: Option<Range<usize>>,
+        duplicate_after: Option<Range<usize>>,
+    ) -> Result<(), ToneError> {
+        let bank = self
+            .banks
+            .get(bank_index)
+            .ok_or_else(|| ToneError::format("bank index is outside the collection"))?;
+        if !self.membership_editable(bank_index) {
+            return Err(ToneError::format(
+                "POD membership edits require an existing FLDR in an L6CO collection",
+            ));
+        }
+        if tone_order.is_empty() && self.entry_count() == bank.entry_ranges.len() {
+            return Err(ToneError::format(
+                "cannot remove the last POD tone from the collection",
+            ));
+        }
+
+        let child_length = bank.data_length - 4;
+        let (new_child_length, new_file_length) = if let Some(removed) = &remove_tone {
+            let delta = removed.len();
+            (
+                child_length
+                    .checked_sub(delta)
+                    .ok_or_else(|| ToneError::format("bundle size overflow"))?,
+                self.bytes
+                    .len()
+                    .checked_sub(delta)
+                    .ok_or_else(|| ToneError::format("bundle size overflow"))?,
+            )
+        } else if let Some(duplicate) = &duplicate_after {
+            let delta = duplicate.len();
+            (
+                child_length
+                    .checked_add(delta)
+                    .ok_or_else(|| ToneError::format("bundle size overflow"))?,
+                self.bytes
+                    .len()
+                    .checked_add(delta)
+                    .ok_or_else(|| ToneError::format("bundle size overflow"))?,
+            )
+        } else {
+            (child_length, self.bytes.len())
+        };
+        if new_file_length as u64 > BUNDLE_BYTES_CEILING {
+            return Err(ToneError::format(
+                "POD bank exceeds the 16 MiB offline librarian ceiling",
+            ));
+        }
+        let new_data_length = 4usize
+            .checked_add(new_child_length)
+            .ok_or_else(|| ToneError::format("bundle size overflow"))?;
+        let bank_length = u32::try_from(new_data_length)
+            .map_err(|_| ToneError::format("folder exceeds IFF size capacity"))?;
+        let root_length = u32::try_from(new_file_length - 8)
+            .map_err(|_| ToneError::format("bundle exceeds IFF size capacity"))?;
+
+        let mut replacement_children = Vec::with_capacity(new_child_length);
+        let mut next_tone = tone_order.iter();
+        if let Some(removed) = remove_tone {
+            for child in &bank.children {
+                if child.tone && child.range == removed {
+                    continue;
+                }
+                replacement_children.extend_from_slice(&self.bytes[child.range.clone()]);
+            }
+        } else if let Some(duplicate) = duplicate_after {
+            for child in &bank.children {
+                replacement_children.extend_from_slice(&self.bytes[child.range.clone()]);
+                if child.tone && child.range == duplicate {
+                    replacement_children.extend_from_slice(&self.bytes[child.range.clone()]);
+                }
+            }
+        } else {
+            for child in &bank.children {
+                if child.tone {
+                    let range = next_tone.next().ok_or_else(|| {
+                        ToneError::format("membership edit has an invalid tone ordering")
+                    })?;
+                    replacement_children.extend_from_slice(&self.bytes[range.clone()]);
+                } else {
+                    replacement_children.extend_from_slice(&self.bytes[child.range.clone()]);
+                }
+            }
+            if next_tone.next().is_some() {
+                return Err(ToneError::format(
+                    "membership edit has an invalid tone ordering",
+                ));
+            }
+        }
+
+        if replacement_children.len() != new_child_length {
+            return Err(ToneError::format(
+                "membership span lengths are inconsistent",
+            ));
+        }
+        let child_start = bank.chunk_start + 12;
+        let child_end = bank.chunk_start + 8 + bank.data_length;
+        let mut bytes = self.bytes.clone();
+        bytes.splice(child_start..child_end, replacement_children);
+        bytes[bank.chunk_start + 4..bank.chunk_start + 8]
+            .copy_from_slice(&bank_length.to_be_bytes());
+        bytes[4..8].copy_from_slice(&root_length.to_be_bytes());
+        let saved = self.saved.clone();
+        let mut next = Self::parse(bytes)?;
+        next.saved = saved;
+        *self = next;
+        Ok(())
+    }
+
+    fn flat_index(&self, bank_index: usize, preset_index: usize) -> usize {
+        self.banks[..bank_index]
+            .iter()
+            .map(|bank| bank.entry_ranges.len())
+            .sum::<usize>()
+            + preset_index
     }
 
     pub fn bank_count(&self) -> usize {
@@ -3833,6 +4043,43 @@ mod tests {
             }
             root.extend(chunk(b"LIST", &bank));
         }
+        chunk(b"FORM", &root)
+    }
+
+    fn membership_bundle(
+        root_kind: &[u8; 4],
+        fixed_tones: &[Vec<u8>],
+        folder_children: &[Vec<u8>],
+    ) -> Vec<u8> {
+        fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+            let mut bytes = id.to_vec();
+            bytes.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(data);
+            if !data.len().is_multiple_of(2) {
+                bytes.push(0xa5);
+            }
+            bytes
+        }
+        fn bank(kind: &[u8; 4], name: u16, children: &[Vec<u8>]) -> Vec<u8> {
+            let mut data = kind.to_vec();
+            let mut info = vec![0; 68];
+            info[4..6].copy_from_slice(&name.to_be_bytes());
+            data.extend(chunk(b"BINF", &info));
+            for child in children {
+                data.extend_from_slice(child);
+            }
+            chunk(b"LIST", &data)
+        }
+
+        let mut root = root_kind.to_vec();
+        root.extend(chunk(b"JUNK", &[0x91, 0x92, 0x93]));
+        root.extend(bank(b"BANK", b'A' as u16, fixed_tones));
+        root.extend(bank(b"FLDR", b'B' as u16, folder_children));
+        root.extend(bank(
+            b"FLDR",
+            b'C' as u16,
+            &[chunk(b"SIDE", &[0x31, 0x32, 0x33])],
+        ));
         chunk(b"FORM", &root)
     }
 
@@ -8721,6 +8968,151 @@ mod tests {
         let mut malformed = original;
         malformed[4..8].copy_from_slice(&u32::MAX.to_be_bytes());
         assert!(PodBundleLibrary::parse(malformed).is_err());
+    }
+
+    #[test]
+    fn pod_membership_edits_splice_only_admitted_folder_tone_spans_transactionally() {
+        fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+            let mut bytes = id.to_vec();
+            bytes.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(data);
+            if !data.len().is_multiple_of(2) {
+                bytes.push(0xa5);
+            }
+            bytes
+        }
+
+        let fixed = live_tone();
+        let first = live_tone();
+        let second = tone_with_empty_unknown_chunk(&live_tone());
+        let before = chunk(b"BEFR", &[0x11, 0x22, 0x33]);
+        let middle = chunk(b"MIDD", &[0x44, 0x55, 0x66]);
+        let after = chunk(b"AFTR", &[0x77, 0x88, 0x99]);
+        let original_children = vec![
+            before.clone(),
+            first.clone(),
+            middle.clone(),
+            second.clone(),
+            after.clone(),
+        ];
+        let original = membership_bundle(b"L6CO", std::slice::from_ref(&fixed), &original_children);
+        let mut library = PodBundleLibrary::parse(original.clone()).unwrap();
+        assert_eq!(library.bank_count(), 3);
+        assert!(!library.membership_editable(0));
+        assert!(library.membership_editable(1));
+        assert!(library.membership_editable(2));
+
+        let duplicate_index = library.duplicate_entry(1, 0).unwrap();
+        let duplicated_children = vec![
+            before.clone(),
+            first.clone(),
+            first.clone(),
+            middle.clone(),
+            second.clone(),
+            after.clone(),
+        ];
+        let duplicated =
+            membership_bundle(b"L6CO", std::slice::from_ref(&fixed), &duplicated_children);
+        assert_eq!(library.as_bytes(), duplicated);
+        assert_eq!(duplicate_index, 2);
+        assert_eq!(library.entry_location(duplicate_index), Some((1, 1)));
+        assert_eq!(library.tone(1, 1).unwrap().as_bytes(), first);
+        assert!(library.is_dirty());
+        let reopened = PodBundleLibrary::parse(library.as_bytes().to_vec()).unwrap();
+        assert_eq!(reopened.as_bytes(), duplicated);
+
+        let directory = tempfile::tempdir().unwrap();
+        let copy = directory.path().join("membership-copy.l6c");
+        library.save_copy(&copy).unwrap();
+        assert_eq!(std::fs::read(&copy).unwrap(), duplicated);
+        assert!(library.is_dirty(), "save-copy keeps the existing baseline");
+        assert!(
+            library.save_copy(&copy).is_err(),
+            "save-copy refuses overwrite"
+        );
+        library.revert().unwrap();
+        assert_eq!(library.as_bytes(), original);
+        assert!(!library.is_dirty());
+
+        let selected = library.reorder_entry(1, 0, 1).unwrap();
+        let reordered_children = vec![
+            before.clone(),
+            second.clone(),
+            middle.clone(),
+            first.clone(),
+            after.clone(),
+        ];
+        let reordered =
+            membership_bundle(b"L6CO", std::slice::from_ref(&fixed), &reordered_children);
+        assert_eq!(library.as_bytes(), reordered);
+        assert_eq!(selected, 2);
+        assert_eq!(library.tone(1, 1).unwrap().as_bytes(), first);
+        let unchanged = library.as_bytes().to_vec();
+        assert_eq!(library.reorder_entry(1, 1, 1).unwrap(), 2);
+        assert_eq!(
+            library.as_bytes(),
+            unchanged,
+            "same-slot reorder is a no-op"
+        );
+
+        let selected = library.remove_entry(1, 0).unwrap();
+        let removed_children = vec![before.clone(), middle.clone(), first.clone(), after.clone()];
+        let removed = membership_bundle(b"L6CO", std::slice::from_ref(&fixed), &removed_children);
+        assert_eq!(library.as_bytes(), removed);
+        assert_eq!(selected, 1);
+        assert_eq!(library.tone(1, 0).unwrap().as_bytes(), first);
+        let empty_folder_children = vec![before, middle, after];
+        let empty_folder = membership_bundle(
+            b"L6CO",
+            std::slice::from_ref(&fixed),
+            &empty_folder_children,
+        );
+        library.remove_entry(1, 0).unwrap();
+        assert_eq!(library.as_bytes(), empty_folder);
+        assert_eq!(library.preset_count(1), Some(0));
+        assert_eq!(
+            PodBundleLibrary::parse(empty_folder.clone())
+                .unwrap()
+                .as_bytes(),
+            empty_folder
+        );
+
+        let unchanged = library.as_bytes().to_vec();
+        assert!(library.duplicate_entry(1, 0).is_err());
+        assert!(library.remove_entry(0, 0).is_err());
+        assert!(library.reorder_entry(1, 0, 1).is_err());
+        assert_eq!(library.as_bytes(), unchanged);
+
+        let fixed_root = membership_bundle(
+            b"L6BA",
+            std::slice::from_ref(&fixed),
+            std::slice::from_ref(&second),
+        );
+        let mut fixed_library = PodBundleLibrary::parse(fixed_root.clone()).unwrap();
+        assert!(!fixed_library.membership_editable(1));
+        assert!(fixed_library.duplicate_entry(1, 0).is_err());
+        assert_eq!(fixed_library.as_bytes(), fixed_root);
+
+        let only_tone = membership_bundle(b"L6CO", &[], std::slice::from_ref(&second));
+        let mut last_tone = PodBundleLibrary::parse(only_tone.clone()).unwrap();
+        assert!(last_tone.remove_entry(1, 0).is_err());
+        assert_eq!(last_tone.as_bytes(), only_tone);
+        assert!(!last_tone.is_dirty());
+
+        let base = membership_bundle(
+            b"L6CO",
+            std::slice::from_ref(&fixed),
+            std::slice::from_ref(&second),
+        );
+        let filler_len = BUNDLE_BYTES_CEILING as usize - base.len() - 8;
+        assert_eq!(filler_len % 2, 0);
+        let filler = chunk(b"FILL", &vec![0x6d; filler_len]);
+        let capped = membership_bundle(b"L6CO", &[live_tone()], &[second, filler]);
+        assert_eq!(capped.len() as u64, BUNDLE_BYTES_CEILING);
+        let mut capped_library = PodBundleLibrary::parse(capped.clone()).unwrap();
+        assert!(capped_library.duplicate_entry(1, 0).is_err());
+        assert_eq!(capped_library.as_bytes(), capped);
+        assert!(!capped_library.is_dirty());
     }
 
     #[test]

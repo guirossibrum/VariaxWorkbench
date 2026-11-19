@@ -44,6 +44,14 @@ enum Pending {
     QuitRecording,
 }
 
+#[derive(Clone, Copy)]
+enum PodMembershipAction {
+    Duplicate,
+    Remove,
+    MoveUp,
+    MoveDown,
+}
+
 trait FileDialogs {
     fn open(&mut self) -> Option<PathBuf>;
     fn save(&mut self, suggested: &str, extension: &str) -> Option<PathBuf>;
@@ -400,6 +408,14 @@ impl Workbench {
         self.document.as_ref().is_some_and(EditorDocument::is_dirty)
     }
 
+    fn pod_dirty(&self) -> bool {
+        self.pod_library.any_dirty()
+            || self
+                .pod_bundle
+                .as_ref()
+                .is_some_and(pod_preset::PodBundleLibrary::is_dirty)
+    }
+
     fn is_reading(&self) -> bool {
         self.read_receiver.is_some()
     }
@@ -576,7 +592,7 @@ impl Workbench {
             Some(Pending::ReadCurrent) => self.launch_read(),
             Some(Pending::Quit | Pending::QuitPod | Pending::QuitRecording) => {
                 // Guitar save or discard must not close while a POD tone is unsaved.
-                if self.pod_library.any_dirty() {
+                if self.pod_dirty() {
                     self.pending = Some(Pending::QuitPod);
                     ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 } else if self.recorder.has_unsaved_take() {
@@ -1258,7 +1274,7 @@ impl Workbench {
         } else if self.dirty() && !self.permit_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.pending = Some(Pending::Quit);
-        } else if self.pod_library.any_dirty() && !self.permit_close {
+        } else if self.pod_dirty() && !self.permit_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.pending = Some(Pending::QuitPod);
         } else if self.recorder.has_unsaved_take() {
@@ -1437,6 +1453,7 @@ impl Workbench {
                 .map_or(Ok(()), |bundle| bundle.revert());
             match result.and_then(|()| self.refresh_pod_library_from_bundle()) {
                 Ok(()) => {
+                    self.refresh_selected_pod_name();
                     self.pod_message = "Discarded offline bank edits. Nothing was sent.".into();
                     self.continue_pending(ctx);
                 }
@@ -1825,6 +1842,15 @@ impl Workbench {
                 ui.label(pod_preset::PAYLOADS_NOT_DECODED);
                 ui.label(&self.pod_message);
                 ui.separator();
+                let membership_selection = self.pod_selected.and_then(|index| {
+                    self.pod_bundle.as_ref().and_then(|bundle| {
+                        let (bank, preset) = bundle.entry_location(index)?;
+                        bundle
+                            .membership_editable(bank)
+                            .then_some((bank, preset, bundle.preset_count(bank)?))
+                    })
+                });
+                let mut membership_action = None;
                 ui.horizontal(|ui| {
                     if self.pod_button(ui, "load-pod", "Load tone or bank…") {
                         self.load_pod_tone();
@@ -1834,6 +1860,33 @@ impl Workbench {
                     }
                     if self.pod_button(ui, "save-pod", "Save copy…") {
                         self.save_pod_tone();
+                    }
+                    if let Some((bank, preset, count)) = membership_selection {
+                        if self.pod_button(ui, "pod-duplicate-entry", "Duplicate") {
+                            membership_action =
+                                Some((PodMembershipAction::Duplicate, bank, preset));
+                        }
+                        if self.pod_button(ui, "pod-remove-entry", "Remove") {
+                            membership_action = Some((PodMembershipAction::Remove, bank, preset));
+                        }
+                        if self.pod_button_enabled(
+                            ui,
+                            "pod-move-entry-up",
+                            "Move up",
+                            preset > 0,
+                        ) {
+                            membership_action = Some((PodMembershipAction::MoveUp, bank, preset));
+                        }
+                        if self.pod_button_enabled(
+                            ui,
+                            "pod-move-entry-down",
+                            "Move down",
+                            preset + 1 < count,
+                        ) {
+                            membership_action =
+                                Some((PodMembershipAction::MoveDown, bank, preset));
+                        }
+                        ui.label(format!("Folder slot {} of {count}", preset + 1));
                     }
                     if let Some(index) = self.pod_selected {
                         let _response = ui.menu_button("Model flags…", |ui| {
@@ -1845,6 +1898,9 @@ impl Workbench {
                         }
                     }
                 });
+                if let Some((action, bank, preset)) = membership_action {
+                    self.apply_pod_membership_action(action, bank, preset);
+                }
                 let rows: Vec<_> = (0..self.pod_library.len())
                     .filter_map(|index| {
                         let tone = self.pod_library.tone(index)?;
@@ -2476,6 +2532,21 @@ impl Workbench {
         response.clicked()
     }
 
+    fn pod_button_enabled(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: &'static str,
+        label: &str,
+        enabled: bool,
+    ) -> bool {
+        let response = ui.add_enabled(enabled, egui::Button::new(label));
+        #[cfg(test)]
+        self.pod_buttons.insert(id, response.rect);
+        #[cfg(not(test))]
+        let _ = id;
+        response.clicked()
+    }
+
     fn model_enable_menu(&mut self, ui: &mut egui::Ui, index: usize) {
         ui.label("Stored model flags only; no bypass, audio, or device effect is claimed.");
         for control in [
@@ -2576,9 +2647,9 @@ impl Workbench {
     }
 
     fn load_pod_bundle_bytes(&mut self, bytes: Vec<u8>) -> Result<(), pod_preset::ToneError> {
-        if self.pod_library.any_dirty() {
+        if self.pod_dirty() {
             return Err(pod_preset::ToneError::format(
-                "save or discard individual POD edits before loading a bank",
+                "save or discard POD edits before loading a bank",
             ));
         }
         let bundle = pod_preset::PodBundleLibrary::parse(bytes)?;
@@ -2612,6 +2683,48 @@ impl Workbench {
         Ok(())
     }
 
+    fn apply_pod_membership_action(
+        &mut self,
+        action: PodMembershipAction,
+        bank: usize,
+        preset: usize,
+    ) {
+        let result = match self.pod_bundle.as_mut() {
+            Some(bundle) => match action {
+                PodMembershipAction::Duplicate => bundle.duplicate_entry(bank, preset),
+                PodMembershipAction::Remove => bundle.remove_entry(bank, preset),
+                PodMembershipAction::MoveUp if preset > 0 => {
+                    bundle.reorder_entry(bank, preset, preset - 1)
+                }
+                PodMembershipAction::MoveDown => bundle.reorder_entry(bank, preset, preset + 1),
+                PodMembershipAction::MoveUp => return,
+            },
+            None => return,
+        };
+        match result.and_then(|selected| {
+            self.refresh_pod_library_from_bundle()?;
+            self.pod_selected = Some(selected);
+            self.refresh_selected_pod_name();
+            Ok(selected)
+        }) {
+            Ok(_) => {
+                self.pod_message = match action {
+                    PodMembershipAction::Duplicate => {
+                        "Duplicated the existing tone bytes in this folder. Nothing was sent."
+                            .into()
+                    }
+                    PodMembershipAction::Remove => {
+                        "Removed the selected tone from this folder. Nothing was sent.".into()
+                    }
+                    PodMembershipAction::MoveUp | PodMembershipAction::MoveDown => {
+                        "Reordered tones in this folder. Nothing was sent.".into()
+                    }
+                };
+            }
+            Err(error) => self.pod_message = error.detail(),
+        }
+    }
+
     fn load_pod_tone(&mut self) {
         let Some(path) = self.dialogs.open_pod_tone() else {
             self.pod_message = "Load cancelled. No file was read.".into();
@@ -2643,7 +2756,7 @@ impl Workbench {
                 }
             }
             Ok(bytes) => {
-                if self.pod_bundle.is_some() && self.pod_library.any_dirty() {
+                if self.pod_bundle.is_some() && self.pod_dirty() {
                     self.pod_message =
                         "Save or discard bank edits before loading an individual tone.".into();
                     return;
@@ -5094,6 +5207,97 @@ mod tests {
         assert!(!app.pod_library.any_dirty());
         assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), saved);
         assert!(app.read_worker.is_none());
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn pod_membership_controls_are_folder_only_and_refresh_selection_and_pending_choices() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let directory = tempfile::tempdir().unwrap();
+        let source_path = directory.path().join("source.l6c");
+        let saved_path = directory.path().join("saved.l6c");
+        let fixed_tone = sample_drive_pod_tone();
+        let folder_tone = sample_pod_tone();
+        let original = sample_pod_bundle(&[fixed_tone.clone(), folder_tone.clone()]);
+        std::fs::write(&source_path, &original).unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_save: [Some(saved_path.clone())].into(),
+            ..Default::default()
+        });
+        app.pod_open = true;
+        app.load_pod_bundle_bytes(original.clone()).unwrap();
+        recording_frame(&context, &mut app, vec![]);
+        assert!(!app.pod_buttons.contains_key("pod-duplicate-entry"));
+        app.pod_selected = Some(1);
+        app.refresh_selected_pod_name();
+        assert_eq!(app.pod_selected, Some(1));
+        recording_frame(&context, &mut app, vec![]);
+        assert!(app.pod_buttons.contains_key("pod-duplicate-entry"));
+
+        app.pod_cab_pending = Some((
+            1,
+            pod_preset::PodCabModelChoice::from_model_id(0x0102_0016).unwrap(),
+        ));
+        click_pod(&context, &mut app, "pod-duplicate-entry");
+        let bundle = app.pod_bundle.as_ref().unwrap();
+        assert_eq!(bundle.entry_count(), 3);
+        assert_eq!(app.pod_library.len(), 3);
+        assert_eq!(app.pod_selected, Some(2));
+        assert_eq!(app.pod_library.tone(2).unwrap().as_bytes(), folder_tone);
+        assert!(bundle.is_dirty());
+        assert_ne!(
+            app.pod_cab_pending,
+            Some((
+                2,
+                pod_preset::PodCabModelChoice::from_model_id(0x0102_0016).unwrap()
+            ))
+        );
+        assert!(app.pod_cab_pending.is_none_or(|(index, _)| index != 1));
+        assert_eq!(std::fs::read(&source_path).unwrap(), original);
+        assert!(app.load_pod_bundle_bytes(original.clone()).is_err());
+        assert_eq!(app.pod_bundle.as_ref().unwrap().entry_count(), 3);
+
+        click_pod(&context, &mut app, "save-pod");
+        let saved = std::fs::read(&saved_path).unwrap();
+        let reopened = pod_preset::PodBundleLibrary::parse(saved.clone()).unwrap();
+        assert_eq!(reopened.entry_count(), 3);
+        assert_eq!(reopened.tone(1, 1).unwrap().as_bytes(), folder_tone);
+        assert_eq!(saved, app.pod_bundle.as_ref().unwrap().as_bytes());
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_eq!(std::fs::read(&source_path).unwrap(), original);
+
+        click_pod(&context, &mut app, "pod-move-entry-up");
+        assert_eq!(app.pod_selected, Some(1));
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), saved);
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+
+        click_pod(&context, &mut app, "pod-remove-entry");
+        assert_eq!(app.pod_bundle.as_ref().unwrap().entry_count(), 2);
+        assert_eq!(app.pod_selected, Some(1));
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_ne!(
+            app.pod_cab_pending,
+            Some((
+                1,
+                pod_preset::PodCabModelChoice::from_model_id(0x0102_0016).unwrap()
+            ))
+        );
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "discard");
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), saved);
+        assert_eq!(app.pod_selected, Some(1));
+        assert_eq!(
+            app.pod_name,
+            pod_preset::PodTone::parse(folder_tone.clone())
+                .unwrap()
+                .name()
+        );
+        assert_eq!(std::fs::read(&source_path).unwrap(), original);
         const {
             assert!(LIVE_ACCESS_LOCKED);
         }
