@@ -6745,6 +6745,7 @@ mod tests {
         let mut duplicate = source.clone();
         let row9 = block + HD_EFFECT_ROWS_OFFSET + 9 * HD_PARAMETER_ROW_STRIDE;
         duplicate[row9..row9 + 4].copy_from_slice(&HD_TYPE10_CHOICE_KEY.to_be_bytes());
+        duplicate[block + 0x0f] = 1;
         cases.push(("duplicate outside count", duplicate));
         let mut beyond = source.clone();
         let row5 = block + HD_EFFECT_ROWS_OFFSET + 5 * HD_PARAMETER_ROW_STRIDE;
@@ -6756,14 +6757,20 @@ mod tests {
         marker[row0 + HD_PARAMETER_ROW_FLAG_OFFSET] = 1;
         cases.push(("assigned marker", marker));
         for (reason, bytes) in cases {
-            let mut preset = OpaqueH5epPreset::parse(bytes.clone()).unwrap();
+            let mut equal_choice = bytes.clone();
+            equal_choice[row0 + 4..row0 + 8].copy_from_slice(&0x3f80_0000u32.to_be_bytes());
+            let mut preset = OpaqueH5epPreset::parse(equal_choice.clone()).unwrap();
             assert!(
                 preset
                     .set_hd_type10_choice(slot, HdType10Choice::Choice1)
                     .is_err(),
-                "{reason}"
+                "{reason} must reject before equal-word no-op"
             );
-            assert_eq!(preset.as_bytes(), bytes, "{reason} must preserve all bytes");
+            assert_eq!(
+                preset.as_bytes(),
+                equal_choice,
+                "{reason} must preserve all bytes"
+            );
         }
         assert!(HdFxSlot::new(8).is_err());
         assert_eq!(HdType10Choice::ALL.len(), 2);

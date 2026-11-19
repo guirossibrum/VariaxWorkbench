@@ -1660,6 +1660,12 @@ impl Workbench {
                 {
                     self.hd_type8_pending = None;
                 }
+                if self
+                    .hd_type10_pending
+                    .is_some_and(|pending| pending.file_index == index)
+                {
+                    self.hd_type10_pending = None;
+                }
                 self.pod_message = "Discarded one unsaved HD Edit file change.".into();
                 true
             }
@@ -5799,6 +5805,32 @@ mod tests {
         assert_eq!(&after9[type10_value..type10_value + 4], &[0x3f, 0x80, 0, 0]);
         assert!(app.hd_type9_pending.is_none());
 
+        click_hd_type10_choice(&context, &mut app, 0);
+        hd_editor_frame(&context, &mut app, vec![]);
+        click_hd_type9_choice(&context, &mut app, 2);
+        hd_editor_frame(&context, &mut app, vec![]);
+        click_hd_editor(&context, &mut app, "discard-hd-type9-choice");
+        assert!(app.hd_type9_pending.is_none());
+        assert!(
+            app.hd_type10_pending.is_some(),
+            "discard type 9 preserves type 10"
+        );
+        click_hd_editor(&context, &mut app, "discard-hd-type10-choice");
+        assert!(app.hd_type10_pending.is_none());
+
+        click_hd_type10_choice(&context, &mut app, 0);
+        hd_editor_frame(&context, &mut app, vec![]);
+        click_hd_type9_choice(&context, &mut app, 2);
+        hd_editor_frame(&context, &mut app, vec![]);
+        click_hd_editor(&context, &mut app, "discard-hd-type10-choice");
+        assert!(app.hd_type10_pending.is_none());
+        assert!(
+            app.hd_type9_pending.is_some(),
+            "discard type 10 preserves type 9"
+        );
+        click_hd_editor(&context, &mut app, "discard-hd-type9-choice");
+        assert!(app.hd_type9_pending.is_none());
+
         let directory = tempfile::tempdir().unwrap();
         let collision = directory.path().join("type10-existing.5xe");
         std::fs::write(&collision, b"keep existing").unwrap();
@@ -5878,6 +5910,143 @@ mod tests {
         assert!(
             app.permit_close,
             "quit closes only after all staged choices are resolved"
+        );
+    }
+
+    #[test]
+    fn hd_type10_pending_is_invalidated_on_same_entry_model_change_and_file_replacement() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let slot_index = 5;
+        let bytes = sample_hd_type10_preset(slot_index, 8, 0x3eaa_aaab);
+        let index = app.hd_library.import_bytes(bytes.clone()).unwrap();
+        app.select_hd_file(index);
+        app.pod_open = true;
+        app.hd_effect_slot = slot_index;
+
+        click_hd_type10_choice(&context, &mut app, 1);
+        hd_editor_frame(&context, &mut app, vec![]);
+        app.hd_effect_slot = 4;
+        hd_editor_frame(&context, &mut app, vec![]);
+        assert!(
+            app.hd_type10_pending.is_none(),
+            "slot change clears stale stage"
+        );
+        app.hd_effect_slot = slot_index;
+        click_hd_type10_choice(&context, &mut app, 1);
+        hd_editor_frame(&context, &mut app, vec![]);
+        click_hd_type9_choice(&context, &mut app, 1);
+        hd_editor_frame(&context, &mut app, vec![]);
+        assert!(app.hd_type10_pending.is_some());
+        assert!(app.hd_type9_pending.is_some());
+
+        let model_offset = pod_preset::H5EP_HEADER_BYTES + 0x428 + slot_index * 0x100;
+        let mut changed_model = bytes.clone();
+        changed_model[model_offset..model_offset + 4]
+            .copy_from_slice(&0x020a_0014u32.to_be_bytes());
+        *app.hd_library.file_mut(index).unwrap() =
+            PodPresetFile::parse(changed_model.clone()).unwrap();
+        hd_editor_frame(&context, &mut app, vec![]);
+        assert!(app.hd_type10_pending.is_none());
+        assert!(app.hd_type9_pending.is_none());
+        assert_hd_bytes_eq(
+            app.hd_library.file(index).unwrap().as_bytes(),
+            &changed_model,
+            "same-entry model change clears both stale stages without editing bytes",
+        );
+
+        click_hd_type10_choice(&context, &mut app, 0);
+        hd_editor_frame(&context, &mut app, vec![]);
+        let replacement = app
+            .hd_library
+            .import_bytes(sample_hd_type10_preset(2, 4, 0x3eaa_aaab))
+            .unwrap();
+        app.select_hd_file(replacement);
+        assert!(
+            app.hd_type10_pending.is_none(),
+            "file replacement clears stale stage"
+        );
+        assert_hd_bytes_eq(
+            app.hd_library.file(index).unwrap().as_bytes(),
+            &changed_model,
+            "replacing selection leaves the prior entry unchanged",
+        );
+    }
+
+    #[test]
+    fn hd_revert_clears_only_pending_type10_for_the_reverted_file() {
+        let (_context, mut app) = app();
+        let bytes = sample_hd_type10_preset(5, 8, 0x3eaa_aaab);
+        let reverted = app.hd_library.import_bytes(bytes.clone()).unwrap();
+        let unrelated = app.hd_library.import_bytes(bytes.clone()).unwrap();
+        let model_offset = pod_preset::H5EP_HEADER_BYTES + 0x428 + 5 * 0x100;
+        let mut dirty_bytes = bytes.clone();
+        dirty_bytes[model_offset..model_offset + 4].copy_from_slice(&0x020a_0014u32.to_be_bytes());
+        *app.hd_library.file_mut(reverted).unwrap() = PodPresetFile::parse(dirty_bytes).unwrap();
+        assert!(app.hd_library.is_dirty(reverted));
+        let slot = pod_preset::HdFxSlot::new(5).unwrap();
+        app.hd_type10_pending = Some(PendingHdType10Choice {
+            file_index: reverted,
+            slot,
+            model_id: pod_preset::HD_TYPE10_CHOICE_MODEL_ID,
+            choice: pod_preset::HdType10Choice::Choice1,
+        });
+        app.hd_type9_pending = Some(PendingHdType9Choice {
+            file_index: unrelated,
+            slot,
+            model_id: pod_preset::HD_TYPE10_CHOICE_MODEL_ID,
+            choice: pod_preset::HdType9Choice::Choice1,
+        });
+
+        assert!(app.discard_next_dirty_pod());
+        assert!(app.hd_type10_pending.is_none());
+        assert!(
+            app.hd_type9_pending
+                .is_some_and(|pending| pending.file_index == unrelated)
+        );
+        assert_eq!(app.hd_library.file(reverted).unwrap().as_bytes(), bytes);
+        assert!(!app.hd_library.is_dirty(reverted));
+    }
+
+    #[test]
+    fn hd_type10_quit_apply_and_keep_editing_resolve_only_the_staged_choice() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let slot_index = 5;
+        let bytes = sample_hd_type10_preset(slot_index, 8, 0x3eaa_aaab);
+        let index = app.hd_library.import_bytes(bytes.clone()).unwrap();
+        app.select_hd_file(index);
+        app.pod_open = true;
+        app.hd_effect_slot = slot_index;
+        click_hd_type10_choice(&context, &mut app, 1);
+        hd_editor_frame(&context, &mut app, vec![]);
+
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "cancel");
+        assert!(
+            app.pending.is_none(),
+            "Keep editing dismisses the quit prompt"
+        );
+        assert!(
+            app.hd_type10_pending.is_some(),
+            "Keep editing retains the stage"
+        );
+        assert!(!app.permit_close);
+
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "apply-type10");
+        assert!(app.hd_type10_pending.is_none());
+        assert!(app.hd_library.is_dirty(index));
+        assert!(
+            !app.permit_close,
+            "applied edit still requires save or discard"
+        );
+        let value_at =
+            pod_preset::H5EP_HEADER_BYTES + 0x428 + slot_index * 0x100 + 0x10 + 8 * 0x14 + 4;
+        assert_eq!(
+            &app.hd_library.file(index).unwrap().as_bytes()[value_at..value_at + 4],
+            &[0x3f, 0x80, 0, 0]
         );
     }
 
