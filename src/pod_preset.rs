@@ -1668,6 +1668,22 @@ impl PodTone {
         bits: u32,
         label: &str,
     ) -> Result<(), ToneError> {
+        let ModelParameter::Recorded {
+            value: ParameterValue::Float {
+                bits: existing_bits,
+            },
+            ..
+        } = &self.models[model_index].parameters[parameter_index]
+        else {
+            return Err(ToneError::format(format!(
+                "{label} target is not a float PARM"
+            )));
+        };
+        if !f32::from_bits(*existing_bits).is_finite() {
+            return Err(ToneError::format(format!(
+                "{label} cannot replace a non-finite stored association value"
+            )));
+        }
         let offset = self.parameter_value_offsets[model_index][parameter_index]
             .ok_or_else(|| ToneError::format(format!("{label} has no unique raw value word")))?;
         self.bytes[offset..offset + 4].copy_from_slice(&bits.to_be_bytes());
@@ -3928,6 +3944,93 @@ mod tests {
                     );
                 }
                 assert_eq!(tone.as_bytes(), original);
+            }
+        }
+    }
+
+    #[test]
+    fn finite_unknown_delay_association_values_can_be_explicitly_replaced() {
+        for (model_id, parameter_id, is_heads) in [
+            (0x0202_0005, 0x0010_0002, true),
+            (0x0202_000d, 0x0010_0003, false),
+        ] {
+            for raw_bits in [0x3f12_3456, 0xbb81_0203] {
+                assert!(f32::from_bits(raw_bits).is_finite());
+                let record = drive_record(0x3f, parameter_id, 1, raw_bits);
+                let mut tone = PodTone::parse(delay_tone(
+                    PODXT_LIVE_HOST_MIN_VERSION,
+                    model_id,
+                    &[&record],
+                ))
+                .unwrap();
+                let result = if is_heads {
+                    tone.set_delay_heads_selection(DelayHeadsSelection::OneTwoThreeFour)
+                } else {
+                    tone.set_delay_bits_selection(DelayBitsSelection::Four)
+                };
+                assert!(result.is_ok());
+                assert!(if is_heads {
+                    matches!(
+                        tone.delay_heads_selection().unwrap(),
+                        DelayAssociationValue::Known(DelayHeadsSelection::OneTwoThreeFour)
+                    )
+                } else {
+                    matches!(
+                        tone.delay_bits_selection().unwrap(),
+                        DelayAssociationValue::Known(DelayBitsSelection::Four)
+                    )
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn delay_association_setters_and_bundle_edits_reject_nonfinite_existing_values_transactionally()
+    {
+        for (model_id, parameter_id, is_heads) in [
+            (0x0202_0005, 0x0010_0002, true),
+            (0x0202_000d, 0x0010_0003, false),
+        ] {
+            for raw_bits in [0x7fc0_0001, 0x7f80_0000, 0xff80_0000] {
+                let record = drive_record(0x3f, parameter_id, 1, raw_bits);
+                let original_tone = delay_tone(PODXT_LIVE_HOST_MIN_VERSION, model_id, &[&record]);
+                let mut tone = PodTone::parse(original_tone.clone()).unwrap();
+                assert!(if is_heads {
+                    matches!(tone.delay_heads_selection().unwrap(), DelayAssociationValue::Unknown { raw_bits: found } if found == raw_bits)
+                } else {
+                    matches!(tone.delay_bits_selection().unwrap(), DelayAssociationValue::Unknown { raw_bits: found } if found == raw_bits)
+                });
+                let result = if is_heads {
+                    tone.set_delay_heads_selection(DelayHeadsSelection::OneTwoThreeFour)
+                } else {
+                    tone.set_delay_bits_selection(DelayBitsSelection::Four)
+                };
+                assert!(result.is_err());
+                assert_eq!(tone.as_bytes(), original_tone);
+                assert!(if is_heads {
+                    matches!(tone.delay_heads_selection().unwrap(), DelayAssociationValue::Unknown { raw_bits: found } if found == raw_bits)
+                } else {
+                    matches!(tone.delay_bits_selection().unwrap(), DelayAssociationValue::Unknown { raw_bits: found } if found == raw_bits)
+                });
+
+                let original_bundle = bundle_with_tone(&original_tone);
+                let mut library = PodBundleLibrary::parse(original_bundle.clone()).unwrap();
+                assert!(!library.is_dirty());
+                let result = library.edit_entry(0, |tone| {
+                    if is_heads {
+                        tone.set_delay_heads_selection(DelayHeadsSelection::OneTwoThreeFour)
+                    } else {
+                        tone.set_delay_bits_selection(DelayBitsSelection::Four)
+                    }
+                });
+                assert!(result.is_err());
+                assert_eq!(library.as_bytes(), original_bundle);
+                assert!(!library.is_dirty());
+                assert!(if is_heads {
+                    matches!(library.tone(0, 0).unwrap().delay_heads_selection().unwrap(), DelayAssociationValue::Unknown { raw_bits: found } if found == raw_bits)
+                } else {
+                    matches!(library.tone(0, 0).unwrap().delay_bits_selection().unwrap(), DelayAssociationValue::Unknown { raw_bits: found } if found == raw_bits)
+                });
             }
         }
     }

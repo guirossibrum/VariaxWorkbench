@@ -3558,10 +3558,32 @@ mod tests {
     }
 
     fn sample_delay_association_pod_tone(model_id: u32) -> Vec<u8> {
+        let default_bits = if model_id == 0x0202_0005 {
+            0.4f32.to_bits()
+        } else {
+            0.6f32.to_bits()
+        };
+        sample_delay_association_pod_tone_with_bits(model_id, default_bits)
+    }
+
+    fn sample_delay_association_pod_tone_with_bits(model_id: u32, value_bits: u32) -> Vec<u8> {
         let mut bytes = sample_drive_pod_tone();
         let old = pod_preset::DELAY_CONTROL_MODEL_IDS[0].to_be_bytes();
         let offset = bytes.windows(4).position(|word| word == old).unwrap();
         bytes[offset..offset + 4].copy_from_slice(&model_id.to_be_bytes());
+        let parameter_id = if model_id == 0x0202_0005 {
+            0x0010_0002
+        } else {
+            0x0010_0003
+        };
+        let mut marker = ((0x3fu32 << 24) | parameter_id).to_be_bytes().to_vec();
+        marker.extend_from_slice(&1u32.to_be_bytes());
+        let value_offset = bytes
+            .windows(marker.len())
+            .rposition(|window| window == marker)
+            .unwrap()
+            + 8;
+        bytes[value_offset..value_offset + 4].copy_from_slice(&value_bits.to_be_bytes());
         bytes
     }
 
@@ -4431,6 +4453,61 @@ mod tests {
                     pod_preset::DelayAssociationValue::Known(pod_preset::DelayBitsSelection::Four)
                 );
             }
+            const {
+                assert!(LIVE_ACCESS_LOCKED);
+            }
+        }
+    }
+
+    #[test]
+    fn delay_association_gui_refuses_nonfinite_values_without_dirtying_the_library() {
+        for (model_id, raw_bits) in [
+            (0x0202_0005, 0x7fc0_0001),
+            (0x0202_0005, 0x7f80_0000),
+            (0x0202_0005, 0xff80_0000),
+            (0x0202_000d, 0x7fc0_0001),
+            (0x0202_000d, 0x7f80_0000),
+            (0x0202_000d, 0xff80_0000),
+        ] {
+            let (context, mut app) = app();
+            let directory = tempfile::tempdir().unwrap();
+            let source = directory.path().join("nonfinite-association.l6t");
+            let original = sample_delay_association_pod_tone_with_bits(model_id, raw_bits);
+            std::fs::write(&source, &original).unwrap();
+            app.dialogs = Box::new(FakeDialogs {
+                pod_open: [Some(source)].into(),
+                ..Default::default()
+            });
+            click_pod(&context, &mut app, "open-pod");
+            click_pod(&context, &mut app, "load-pod");
+            assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+            assert!(!app.pod_library.is_dirty(0));
+
+            if model_id == 0x0202_0005 {
+                assert!(matches!(
+                    app.pod_library.tone(0).unwrap().delay_heads_selection(),
+                    Ok(pod_preset::DelayAssociationValue::Unknown { raw_bits: found }) if found == raw_bits
+                ));
+                select_delay_heads_choice(
+                    &context,
+                    &mut app,
+                    pod_preset::DelayHeadsSelection::OneTwoThreeFour,
+                );
+            } else {
+                assert!(matches!(
+                    app.pod_library.tone(0).unwrap().delay_bits_selection(),
+                    Ok(pod_preset::DelayAssociationValue::Unknown { raw_bits: found }) if found == raw_bits
+                ));
+                select_delay_bits_choice(&context, &mut app, pod_preset::DelayBitsSelection::Four);
+            }
+
+            assert!(
+                app.pod_message.contains("non-finite"),
+                "{}",
+                app.pod_message
+            );
+            assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+            assert!(!app.pod_library.is_dirty(0));
             const {
                 assert!(LIVE_ACCESS_LOCKED);
             }

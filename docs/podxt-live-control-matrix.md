@@ -113,8 +113,9 @@ only exposes edits for an existing matching typed PARM. The GUI and library
 use finite typed choices, encode each controller key with the source float32
 operation order (`i2f`, subtract `0.5f`, divide by `127.0f`), and patch only the
 existing value word. Controller zero therefore encodes a negative value and
-is not percent-clamped. Unknown raw values remain unchanged until an explicit
-choice. Duplicate ids use the source last-match behavior. Wrong target,
+is not percent-clamped. Unknown finite raw values remain unchanged until an
+explicit choice; imported NaN and infinity bit patterns remain lossless on
+read but reject any attempted association edit. Duplicate ids use the source last-match behavior. Wrong target,
 version, model, slot, prefix, type, missing/opaque records, and ambiguous slot
 layouts reject before mutation. Synthetic Rust tests cover every choice,
 byte preservation, unknown values, rejection, duplicate lookup, and library
