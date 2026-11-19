@@ -32,6 +32,21 @@ use std::{ops::Range, path::Path};
 pub const PODXT_LIVE_TONE_ID: u32 = 0x0003_000a;
 /// Amp model slot from `L6Patch.UpdateMetaAmpName` and `kGPXTSlot_Amp`.
 pub const AMP_SLOT: u32 = 0x0003_0000;
+/// Stomp selector resolved to the SYNWAVE definition at layout position 1.
+pub const STOMP_SYNTH_WAVE_SELECTOR: u32 = 0x0003_0001;
+/// Semantic PARM id resolved by the Stomp selector for SYNWAVE.
+pub const STOMP_SYNTH_WAVE_PARAM: u32 = 0x0010_0001;
+/// PODxt Live Stomp layouts whose position-1 control uses `SYNWAVE_8`.
+pub const STOMP_SYNTH_WAVE_MODEL_IDS: [u32; 8] = [
+    0x020a_0001,
+    0x020a_0002,
+    0x020a_0003,
+    0x020a_0004,
+    0x020a_0005,
+    0x020a_0006,
+    0x020a_0007,
+    0x020a_000c,
+];
 /// PODxt Live Plexi Lead 100 model from the device-specific model table.
 pub const PLEXI_LEAD_100_MODEL: u32 = 0x0002_001b;
 /// PODxt Live Plexi 45 model from the device-specific model table.
@@ -867,6 +882,78 @@ pub enum DelayAssociationValue<T> {
     Unknown { raw_bits: u32 },
 }
 
+/// One of the eight source-listed SYNWAVE choices for the admitted Stomp models.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StompWaveSelection {
+    Wave1,
+    Wave2,
+    Wave3,
+    Wave4,
+    Wave5,
+    Wave6,
+    Wave7,
+    Wave8,
+}
+
+impl StompWaveSelection {
+    pub const ALL: [Self; 8] = [
+        Self::Wave1,
+        Self::Wave2,
+        Self::Wave3,
+        Self::Wave4,
+        Self::Wave5,
+        Self::Wave6,
+        Self::Wave7,
+        Self::Wave8,
+    ];
+
+    const fn controller_value(self) -> u8 {
+        match self {
+            Self::Wave1 => 0,
+            Self::Wave2 => 16,
+            Self::Wave3 => 32,
+            Self::Wave4 => 48,
+            Self::Wave5 => 64,
+            Self::Wave6 => 80,
+            Self::Wave7 => 96,
+            Self::Wave8 => 112,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Wave1 => "WAVE 1",
+            Self::Wave2 => "WAVE 2",
+            Self::Wave3 => "WAVE 3",
+            Self::Wave4 => "WAVE 4",
+            Self::Wave5 => "WAVE 5",
+            Self::Wave6 => "WAVE 6",
+            Self::Wave7 => "WAVE 7",
+            Self::Wave8 => "WAVE 8",
+        }
+    }
+
+    /// Reproduce Java's int-to-float, subtract 0.5f, then divide by 127.0f.
+    pub const fn float_bits(self) -> u32 {
+        let controller = self.controller_value();
+        let as_float = controller as f32;
+        let adjusted = as_float - 0.5_f32;
+        let normalized = adjusted / 127.0_f32;
+        normalized.to_bits()
+    }
+
+    fn from_float_bits(bits: u32) -> Option<Self> {
+        Self::ALL.into_iter().find(|choice| choice.float_bits() == bits)
+    }
+}
+
+/// A known source choice or the exact raw float word from an unknown value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StompWaveValue {
+    Known(StompWaveSelection),
+    Unknown { raw_bits: u32 },
+}
+
 /// Source-listed four-head patterns for Delay model `0x02020005`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DelayHeadsSelection {
@@ -1372,6 +1459,21 @@ impl PodTone {
         )
     }
 
+    /// Read the existing Stomp SYNWAVE value without snapping unknown raw words.
+    pub fn stomp_wave_selection(&self) -> Result<StompWaveValue, ToneError> {
+        let (model_index, parameter_index) = self.stomp_wave_location()?;
+        let ModelParameter::Recorded {
+            value: ParameterValue::Float { bits },
+            ..
+        } = &self.models[model_index].parameters[parameter_index]
+        else {
+            return Err(ToneError::format("Stomp SYNWAVE target is not a float PARM"));
+        };
+        Ok(StompWaveSelection::from_float_bits(*bits)
+            .map(StompWaveValue::Known)
+            .unwrap_or(StompWaveValue::Unknown { raw_bits: *bits }))
+    }
+
     /// Read one source-backed Mod percent value (host scale 0..=1).
     pub fn mod_control_fraction(&self, control: ModControl) -> Result<f32, ToneError> {
         let (model_index, parameter_index) = self.mod_control_location(control)?;
@@ -1460,6 +1562,21 @@ impl PodTone {
         self.set_float_control_fraction_at(model_index, parameter_index, value, &label)
     }
 
+    /// Replace only the existing Stomp SYNWAVE value word with a typed choice.
+    /// Unknown finite values may be replaced; non-finite stored values refuse mutation.
+    pub fn set_stomp_wave_selection(
+        &mut self,
+        selection: StompWaveSelection,
+    ) -> Result<(), ToneError> {
+        let (model_index, parameter_index) = self.stomp_wave_location()?;
+        self.set_association_bits_at(
+            model_index,
+            parameter_index,
+            selection.float_bits(),
+            "Stomp SYNWAVE",
+        )
+    }
+
     /// Change only the existing raw value word for a source-mapped Mod percent control.
     pub fn set_mod_control_fraction(
         &mut self,
@@ -1503,7 +1620,7 @@ impl PodTone {
     ) -> Result<(), ToneError> {
         let (model_index, parameter_index) =
             self.delay_association_location(0x0202_0005, 0x0005_0004, 0x0010_0002, "Delay Heads")?;
-        self.set_delay_association_bits_at(
+        self.set_association_bits_at(
             model_index,
             parameter_index,
             selection.float_bits(),
@@ -1520,7 +1637,7 @@ impl PodTone {
     ) -> Result<(), ToneError> {
         let (model_index, parameter_index) =
             self.delay_association_location(0x0202_000d, 0x0005_0005, 0x0010_0003, "Delay Bits")?;
-        self.set_delay_association_bits_at(
+        self.set_association_bits_at(
             model_index,
             parameter_index,
             selection.float_bits(),
@@ -1643,6 +1760,36 @@ impl PodTone {
         self.control_location(DELAY_SLOT, &[expected_model_id], parameter_id, label)
     }
 
+    fn stomp_wave_location(&self) -> Result<(usize, usize), ToneError> {
+        let slot_count = self
+            .models
+            .iter()
+            .filter(|model| model.slot == STOMP_SLOT)
+            .count();
+        if slot_count != 1 {
+            return Err(ToneError::format(
+                "Stomp SYNWAVE requires one unambiguous existing model slot",
+            ));
+        }
+        let model_id = self
+            .models
+            .iter()
+            .find(|model| model.slot == STOMP_SLOT)
+            .map(|model| model.model_id)
+            .ok_or_else(|| ToneError::format("Stomp SYNWAVE requires an existing model slot"))?;
+        if !STOMP_SYNTH_WAVE_MODEL_IDS.contains(&model_id) {
+            return Err(ToneError::format(format!(
+                "Stomp SYNWAVE source mapping does not apply to model 0x{model_id:08x}"
+            )));
+        }
+        self.control_location(
+            STOMP_SLOT,
+            &[model_id],
+            STOMP_SYNTH_WAVE_PARAM,
+            "Stomp SYNWAVE",
+        )
+    }
+
     fn delay_association_bits_at(
         &self,
         model_index: usize,
@@ -1661,7 +1808,7 @@ impl PodTone {
         Ok(*bits)
     }
 
-    fn set_delay_association_bits_at(
+    fn set_association_bits_at(
         &mut self,
         model_index: usize,
         parameter_index: usize,
@@ -2013,6 +2160,26 @@ impl Library {
         entry.tone.set_stomp_control_fraction(control, value)
     }
 
+    pub fn stomp_wave_selection(&self, index: usize) -> Result<StompWaveValue, ToneError> {
+        self.tones
+            .get(index)
+            .ok_or_else(|| ToneError::format("tone index is outside the library"))?
+            .tone
+            .stomp_wave_selection()
+    }
+
+    pub fn set_stomp_wave_selection(
+        &mut self,
+        index: usize,
+        selection: StompWaveSelection,
+    ) -> Result<(), ToneError> {
+        let entry = self
+            .tones
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
+        entry.tone.set_stomp_wave_selection(selection)
+    }
+
     pub fn set_mod_control_fraction(
         &mut self,
         index: usize,
@@ -2288,6 +2455,21 @@ impl PodBundleLibrary {
             .entry_location(index)
             .ok_or_else(|| ToneError::format("preset index is outside the library"))?;
         self.edit_tone(bank, preset, edit)
+    }
+
+    pub fn stomp_wave_selection(&self, index: usize) -> Result<StompWaveValue, ToneError> {
+        let (bank, preset) = self
+            .entry_location(index)
+            .ok_or_else(|| ToneError::format("preset index is outside the library"))?;
+        self.tone(bank, preset)?.stomp_wave_selection()
+    }
+
+    pub fn set_stomp_wave_selection(
+        &mut self,
+        index: usize,
+        selection: StompWaveSelection,
+    ) -> Result<(), ToneError> {
+        self.edit_entry(index, |tone| tone.set_stomp_wave_selection(selection))
     }
 
     pub fn replace_entry(&mut self, index: usize, bytes: Vec<u8>) -> Result<(), ToneError> {
@@ -2592,6 +2774,21 @@ mod tests {
                 slot: AMP_SLOT,
                 model_id: model,
                 tail: &[0xa1, 0xb2, 0xc3, 0xd4],
+                parameters,
+            }],
+        );
+        let pinf = find_chunk_data(&bytes, b"PINF");
+        bytes[pinf + 72..pinf + 76].copy_from_slice(&version.to_be_bytes());
+        bytes
+    }
+
+    fn stomp_wave_tone(version: u32, model: u32, parameters: &[&[u8]]) -> Vec<u8> {
+        let mut bytes = custom_tone(
+            ContainerKind::L6as,
+            &[BuiltModel {
+                slot: STOMP_SLOT,
+                model_id: model,
+                tail: &[0x91, 0x82, 0x73, 0x64],
                 parameters,
             }],
         );
@@ -3599,6 +3796,214 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn stomp_wave_choices_match_exact_source_bits_and_all_eight_layouts() {
+        let expected = [
+            0xbb81_0204,
+            0x3df9_f3e8,
+            0x3e7d_fbf8,
+            0x3ebf_7efe,
+            0x3f00_0000,
+            0x3f20_4081,
+            0x3f40_8102,
+            0x3f60_c183,
+        ];
+        assert_eq!(STOMP_SYNTH_WAVE_MODEL_IDS.len(), 8);
+        assert_eq!(STOMP_SYNTH_WAVE_SELECTOR, 0x0003_0001);
+        assert_eq!(STOMP_SYNTH_WAVE_PARAM, 0x0010_0001);
+        assert_eq!(StompWaveSelection::ALL.len(), expected.len());
+        for (choice, expected_bits) in StompWaveSelection::ALL.into_iter().zip(expected) {
+            assert_eq!(choice.float_bits(), expected_bits);
+            assert_eq!(StompWaveSelection::from_float_bits(expected_bits), Some(choice));
+        }
+        assert_eq!(f32::from_bits(expected[0]), -0.003937008);
+        assert!(!f32::from_bits(expected[0]).is_sign_positive());
+
+        for model_id in STOMP_SYNTH_WAVE_MODEL_IDS {
+            let earlier = drive_record(0x3f, STOMP_SYNTH_WAVE_PARAM, 1, 0x3e80_0000);
+            let unrelated = drive_record(0xa7, 0x0000_9876, 9, 0x1234_5678);
+            let selected = drive_record(0x3f, STOMP_SYNTH_WAVE_PARAM, 1, 0x3f00_0000);
+            let records: [&[u8]; 3] = [&earlier, &unrelated, &selected];
+            let original = stomp_wave_tone(PODXT_LIVE_HOST_MIN_VERSION, model_id, &records);
+            let selected_offset = original
+                .windows(selected.len())
+                .rposition(|window| window == selected)
+                .unwrap()
+                + 8;
+            let mut tone = PodTone::parse(original.clone()).unwrap();
+            assert_eq!(
+                tone.stomp_wave_selection().unwrap(),
+                StompWaveValue::Known(StompWaveSelection::Wave5)
+            );
+            for (choice, expected_bits) in StompWaveSelection::ALL.into_iter().zip(expected) {
+                let mut expected_bytes = original.clone();
+                expected_bytes[selected_offset..selected_offset + 4]
+                    .copy_from_slice(&expected_bits.to_be_bytes());
+                tone.set_stomp_wave_selection(choice).unwrap();
+                assert_eq!(tone.as_bytes(), expected_bytes, "model 0x{model_id:08x} {choice:?}");
+                assert_eq!(tone.stomp_wave_selection().unwrap(), StompWaveValue::Known(choice));
+                assert!(tone.as_bytes().windows(earlier.len()).any(|w| w == earlier));
+                assert!(tone.as_bytes().windows(unrelated.len()).any(|w| w == unrelated));
+            }
+        }
+
+        let ninth_candidate = drive_record(0x3f, STOMP_SYNTH_WAVE_PARAM, 1, 0x3f00_0000);
+        let nine_tone = stomp_wave_tone(
+            PODXT_LIVE_HOST_MIN_VERSION,
+            0x020a_0009,
+            &[&ninth_candidate],
+        );
+        let mut nine_tone = PodTone::parse(nine_tone).unwrap();
+        let before = nine_tone.as_bytes().to_vec();
+        assert!(nine_tone.stomp_wave_selection().is_err());
+        assert!(nine_tone
+            .set_stomp_wave_selection(StompWaveSelection::Wave2)
+            .is_err());
+        assert_eq!(nine_tone.as_bytes(), before);
+    }
+
+    #[test]
+    fn stomp_wave_unknown_words_are_lossless_and_nonfinite_edits_are_atomic() {
+        for bits in [0x3eaa_aaab, 0x7fc0_1234, f32::INFINITY.to_bits(), f32::NEG_INFINITY.to_bits()] {
+            let record = drive_record(0x3f, STOMP_SYNTH_WAVE_PARAM, 1, bits);
+            let original = stomp_wave_tone(
+                PODXT_LIVE_HOST_MIN_VERSION,
+                STOMP_SYNTH_WAVE_MODEL_IDS[0],
+                &[&record],
+            );
+            let mut tone = PodTone::parse(original.clone()).unwrap();
+            assert_eq!(tone.stomp_wave_selection().unwrap(), StompWaveValue::Unknown { raw_bits: bits });
+            assert_eq!(tone.as_bytes(), original);
+            if f32::from_bits(bits).is_finite() {
+                tone.set_stomp_wave_selection(StompWaveSelection::Wave8).unwrap();
+                assert_eq!(tone.stomp_wave_selection().unwrap(), StompWaveValue::Known(StompWaveSelection::Wave8));
+            } else {
+                assert!(tone.set_stomp_wave_selection(StompWaveSelection::Wave8).is_err());
+                assert_eq!(tone.as_bytes(), original);
+                assert_eq!(tone.stomp_wave_selection().unwrap(), StompWaveValue::Unknown { raw_bits: bits });
+
+                let mut library = Library::default();
+                let index = library.import_bytes(original.clone()).unwrap();
+                assert!(library
+                    .set_stomp_wave_selection(index, StompWaveSelection::Wave8)
+                    .is_err());
+                assert!(!library.is_dirty(index));
+                assert_eq!(library.tone(index).unwrap().as_bytes(), original);
+
+                let bundle_bytes = bundle_with_tone(&original);
+                let mut bundle = PodBundleLibrary::parse(bundle_bytes.clone()).unwrap();
+                assert!(bundle
+                    .set_stomp_wave_selection(0, StompWaveSelection::Wave8)
+                    .is_err());
+                assert!(!bundle.is_dirty());
+                assert_eq!(bundle.as_bytes(), bundle_bytes);
+            }
+        }
+    }
+
+    #[test]
+    fn stomp_wave_admission_rejects_wrong_target_model_layout_and_records() {
+        let valid = drive_record(0x3f, STOMP_SYNTH_WAVE_PARAM, 1, 0x3f00_0000);
+        let bad_prefix = drive_record(0x7e, STOMP_SYNTH_WAVE_PARAM, 1, 0x3f00_0000);
+        let bad_type = drive_record(0x3f, STOMP_SYNTH_WAVE_PARAM, 0, 0x3f00_0000);
+        let opaque = [1, 2, 3, 4];
+        let cases = [
+            stomp_wave_tone(PODXT_LIVE_HOST_MIN_VERSION - 1, STOMP_SYNTH_WAVE_MODEL_IDS[0], &[&valid]),
+            stomp_wave_tone(PODXT_LIVE_HOST_MIN_VERSION, 0x020a_0009, &[&valid]),
+            stomp_wave_tone(PODXT_LIVE_HOST_MIN_VERSION, 0x020a_0000, &[&valid]),
+            stomp_wave_tone(PODXT_LIVE_HOST_MIN_VERSION, STOMP_SYNTH_WAVE_MODEL_IDS[0], &[]),
+            stomp_wave_tone(PODXT_LIVE_HOST_MIN_VERSION, STOMP_SYNTH_WAVE_MODEL_IDS[0], &[&opaque]),
+            stomp_wave_tone(PODXT_LIVE_HOST_MIN_VERSION, STOMP_SYNTH_WAVE_MODEL_IDS[0], &[&bad_prefix]),
+            stomp_wave_tone(PODXT_LIVE_HOST_MIN_VERSION, STOMP_SYNTH_WAVE_MODEL_IDS[0], &[&bad_type]),
+            custom_tone(
+                ContainerKind::L6pa,
+                &[BuiltModel {
+                    slot: AMP_SLOT,
+                    model_id: PLEXI_LEAD_100_MODEL,
+                    tail: &[],
+                    parameters: &[&valid],
+                }],
+            ),
+            custom_tone(
+                ContainerKind::L6pa,
+                &[BuiltModel {
+                    slot: AMP_SLOT,
+                    model_id: STOMP_SYNTH_WAVE_MODEL_IDS[0],
+                    tail: &[],
+                    parameters: &[&valid],
+                }],
+            ),
+        ];
+        for bytes in cases {
+            let mut tone = PodTone::parse(bytes.clone()).unwrap();
+            assert!(tone.stomp_wave_selection().is_err());
+            assert!(tone.set_stomp_wave_selection(StompWaveSelection::Wave4).is_err());
+            assert_eq!(tone.as_bytes(), bytes);
+        }
+
+        let wrong_target = fixture(
+            ContainerKind::L6pa,
+            0x0003_000b,
+            PODXT_LIVE_HOST_MIN_VERSION,
+            &[(STOMP_SLOT, STOMP_SYNTH_WAVE_MODEL_IDS[0])],
+        );
+        assert!(matches!(PodTone::parse(wrong_target), Err(ToneError::WrongTarget { .. })));
+
+        let duplicate_slot = custom_tone(
+            ContainerKind::L6pa,
+            &[
+                BuiltModel { slot: STOMP_SLOT, model_id: STOMP_SYNTH_WAVE_MODEL_IDS[0], tail: &[], parameters: &[&valid] },
+                BuiltModel { slot: STOMP_SLOT, model_id: STOMP_SYNTH_WAVE_MODEL_IDS[1], tail: &[], parameters: &[&valid] },
+            ],
+        );
+        assert!(PodTone::parse(duplicate_slot).is_err());
+    }
+
+    #[test]
+    fn stomp_wave_library_bundle_save_and_reopen_preserve_unrelated_bytes() {
+        let record = drive_record(0x3f, STOMP_SYNTH_WAVE_PARAM, 1, 0x3f00_0000);
+        let original = stomp_wave_tone(
+            PODXT_LIVE_HOST_MIN_VERSION,
+            STOMP_SYNTH_WAVE_MODEL_IDS[3],
+            &[&record],
+        );
+        let mut library = Library::default();
+        let index = library.import_bytes(original.clone()).unwrap();
+        assert_eq!(library.stomp_wave_selection(index).unwrap(), StompWaveValue::Known(StompWaveSelection::Wave5));
+        library.set_stomp_wave_selection(index, StompWaveSelection::Wave2).unwrap();
+        assert!(library.is_dirty(index));
+        let edited = library.tone(index).unwrap().as_bytes().to_vec();
+        let changed = edited.iter().zip(&original).filter(|(a, b)| a != b).count();
+        assert_eq!(changed, 4);
+        library.revert_unsaved(index).unwrap();
+        assert!(!library.is_dirty(index));
+        assert_eq!(library.tone(index).unwrap().as_bytes(), original);
+        library
+            .set_stomp_wave_selection(index, StompWaveSelection::Wave2)
+            .unwrap();
+        assert!(library.is_dirty(index));
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("stomp-wave.l6t");
+        library.tone(index).unwrap().save_copy(&path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), edited);
+        assert!(library.tone(index).unwrap().save_copy(&path).is_err());
+        let reopened = PodTone::parse(std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(reopened.as_bytes(), edited);
+        assert_eq!(reopened.stomp_wave_selection().unwrap(), StompWaveValue::Known(StompWaveSelection::Wave2));
+
+        let bundle_bytes = bundle_with_tone(&original);
+        let mut bundle = PodBundleLibrary::parse(bundle_bytes.clone()).unwrap();
+        assert_eq!(bundle.stomp_wave_selection(0).unwrap(), StompWaveValue::Known(StompWaveSelection::Wave5));
+        bundle.set_stomp_wave_selection(0, StompWaveSelection::Wave3).unwrap();
+        assert!(bundle.is_dirty());
+        let bundled_tone = bundle.tone(0, 0).unwrap();
+        assert_eq!(bundled_tone.stomp_wave_selection().unwrap(), StompWaveValue::Known(StompWaveSelection::Wave3));
+        assert!(bundled_tone.as_bytes().iter().zip(&original).filter(|(a, b)| a != b).count() == 4);
+        let reopened_bundle = PodBundleLibrary::parse(bundle.as_bytes().to_vec()).unwrap();
+        assert_eq!(reopened_bundle.tone(0, 0).unwrap().as_bytes(), bundled_tone.as_bytes());
     }
 
     #[test]

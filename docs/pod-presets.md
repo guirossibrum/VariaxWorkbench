@@ -133,12 +133,29 @@ and Q at positions 1/2; `0x020a0001`, `03`–`06` Filter/Decay/Mix at positions
 `0x020a0007` and `0c` Mix at position 4; `0x020a0008` and `0d` S1OG/S2OG/Mix
 at positions 1/2/4; `0x020a000a` Sensitivity/Q at positions 2/3; `0x020a000b`
 Decay/Sensitivity/Q at positions 1/2/3; and `0x020a000e` Position/Mix at
-positions 1/4. The source's SYNWAVE association values and the special
-WHAMMY_INTERVAL Heel/Toe values are not percent controls and remain unavailable.
-All exposed definitions use finite host-scale floats `0..=1` with the percent
-formatter; the source labels do not establish physical units. Rust applies the
-same target/version/prefix/type/range checks and four-byte raw patch as the amp
-controls. EQ and cab controls remain unavailable.
+positions 1/4. SYNWAVE is a typed eight-choice association for models `0x020a0001`,
+`0x020a0002`, `0x020a0003`, `0x020a0004`, `0x020a0005`, `0x020a0006`,
+`0x020a0007`, and `0x020a000c`; model `0x020a0009` uses separate percent WAVE.
+The special WHAMMY_INTERVAL Heel/Toe values remain unavailable. The SYNWAVE
+association choices use exact f32 values from the source's controller-key
+conversion, in the shown order:
+
+| Choice | Controller key | f32 bits |
+| --- | ---: | --- |
+| WAVE 1 | 0 | `0xbb810204` |
+| WAVE 2 | 16 | `0x3df9f3e8` |
+| WAVE 3 | 32 | `0x3e7dfbf8` |
+| WAVE 4 | 48 | `0x3ebf7efe` |
+| WAVE 5 | 64 | `0x3f000000` |
+| WAVE 6 | 80 | `0x3f204081` |
+| WAVE 7 | 96 | `0x3f408102` |
+| WAVE 8 | 112 | `0x3f60c183` |
+
+The first choice is negative; discrete selection does not use the percent
+formatter or clamp to the nominal `0..=1` definition. The percent definitions
+use finite host-scale floats `0..=1`; their labels do not establish physical
+units. Rust applies target/version/prefix/type/range checks and a four-byte raw
+patch to those percent controls. EQ and cab controls remain unavailable.
 This allowlist does not establish installed-pack entitlement, device
 acceptance or physical behavior.
 

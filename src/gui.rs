@@ -244,6 +244,8 @@ struct Workbench {
     #[cfg(test)]
     pod_delay_bits_choices: HashMap<pod_preset::DelayBitsSelection, Rect>,
     #[cfg(test)]
+    pod_stomp_wave_choices: HashMap<pod_preset::StompWaveSelection, Rect>,
+    #[cfg(test)]
     pod_visible: String,
     read_receiver:
         Option<std::sync::mpsc::Receiver<Result<variax_workbench::usb::CurrentPreset, String>>>,
@@ -329,6 +331,8 @@ impl Workbench {
             pod_delay_heads_choices: HashMap::new(),
             #[cfg(test)]
             pod_delay_bits_choices: HashMap::new(),
+            #[cfg(test)]
+            pod_stomp_wave_choices: HashMap::new(),
             #[cfg(test)]
             pod_visible: String::new(),
             read_receiver: None,
@@ -1754,6 +1758,7 @@ impl Workbench {
             self.pod_delay_sliders.clear();
             self.pod_delay_heads_choices.clear();
             self.pod_delay_bits_choices.clear();
+            self.pod_stomp_wave_choices.clear();
         }
         let mut open = true;
         egui::Window::new("Offline PODxt Live tones")
@@ -1910,6 +1915,50 @@ impl Workbench {
                             }
                         }
                     });
+                }
+                let stomp_wave = self
+                    .pod_selected
+                    .and_then(|index| self.pod_library.tone(index))
+                    .and_then(|tone| tone.stomp_wave_selection().ok());
+                if let Some(current) = stomp_wave {
+                    let previous = match current {
+                        pod_preset::StompWaveValue::Known(choice) => Some(choice),
+                        pod_preset::StompWaveValue::Unknown { .. } => None,
+                    };
+                    let mut selected = previous;
+                    let selected_text = match current {
+                        pod_preset::StompWaveValue::Known(choice) => choice.label().to_owned(),
+                        pod_preset::StompWaveValue::Unknown { raw_bits } => {
+                            format!("Unknown float 0x{raw_bits:08x}")
+                        }
+                    };
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Stomp Wave");
+                        if matches!(current, pod_preset::StompWaveValue::Unknown { .. }) {
+                            ui.small(selected_text);
+                        }
+                        for choice in pod_preset::StompWaveSelection::ALL {
+                            let _response =
+                                ui.selectable_value(&mut selected, Some(choice), choice.label());
+                            #[cfg(test)]
+                            self.pod_stomp_wave_choices.insert(choice, _response.rect);
+                        }
+                    });
+                    if selected != previous
+                        && let (Some(index), Some(choice)) = (self.pod_selected, selected)
+                    {
+                        match self.edit_pod_tone(index, |tone| {
+                            tone.set_stomp_wave_selection(choice)
+                        }) {
+                            Ok(()) => {
+                                self.pod_message = format!(
+                                    "Applied Stomp Wave {} selection. Nothing was sent.",
+                                    choice.label()
+                                )
+                            }
+                            Err(error) => self.pod_message = error.detail(),
+                        }
+                    }
                 }
                 let mod_controls = self
                     .pod_selected
@@ -3557,6 +3606,35 @@ mod tests {
         chunk(b"FORM", &data)
     }
 
+    fn sample_stomp_wave_pod_tone() -> Vec<u8> {
+        sample_stomp_wave_pod_tone_with_bits(0x3f00_0000)
+    }
+
+    fn sample_stomp_wave_pod_tone_with_bits(bits: u32) -> Vec<u8> {
+        let mut bytes = sample_drive_pod_tone();
+        let mut model_slot = pod_preset::STOMP_DRIVE_MODEL_ID.to_be_bytes().to_vec();
+        model_slot.extend_from_slice(&pod_preset::STOMP_SLOT.to_be_bytes());
+        let offset = bytes
+            .windows(model_slot.len())
+            .position(|window| window == model_slot)
+            .expect("synthetic Stomp MINF");
+        bytes[offset..offset + 4]
+            .copy_from_slice(&pod_preset::STOMP_SYNTH_WAVE_MODEL_IDS[0].to_be_bytes());
+        let mut value_record = Vec::new();
+        value_record.extend_from_slice(
+            &((0x3fu32 << 24) | pod_preset::STOMP_SYNTH_WAVE_PARAM).to_be_bytes(),
+        );
+        value_record.extend_from_slice(&1u32.to_be_bytes());
+        value_record.extend_from_slice(&0x3e80_0000u32.to_be_bytes());
+        let value_offset = bytes
+            .windows(value_record.len())
+            .rposition(|window| window == value_record)
+            .expect("synthetic Stomp wave PARM")
+            + 8;
+        bytes[value_offset..value_offset + 4].copy_from_slice(&bits.to_be_bytes());
+        bytes
+    }
+
     fn sample_delay_association_pod_tone(model_id: u32) -> Vec<u8> {
         let default_bits = if model_id == 0x0202_0005 {
             0.4f32.to_bits()
@@ -3631,6 +3709,17 @@ mod tests {
     ) {
         recording_frame_tall(context, app, vec![]);
         let choice_rect = app.pod_delay_bits_choices[&choice];
+        click_pod_at_tall(context, app, choice_rect.center());
+        recording_frame_tall(context, app, vec![]);
+    }
+
+    fn select_stomp_wave_choice(
+        context: &egui::Context,
+        app: &mut Workbench,
+        choice: pod_preset::StompWaveSelection,
+    ) {
+        recording_frame_tall(context, app, vec![]);
+        let choice_rect = app.pod_stomp_wave_choices[&choice];
         click_pod_at_tall(context, app, choice_rect.center());
         recording_frame_tall(context, app, vec![]);
     }
@@ -4373,6 +4462,157 @@ mod tests {
             unavailable_bytes
         );
         assert!(!app.document.as_ref().unwrap().as_bytes().is_empty());
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn stomp_wave_choices_edit_dirty_save_quit_and_reopen_in_gui() {
+        let (context, mut app) = app();
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("stomp-wave-source.l6t");
+        let blocked = directory.path().join("existing-copy.l6t");
+        let saved = directory.path().join("stomp-wave-copy.l6t");
+        let original = sample_stomp_wave_pod_tone();
+        std::fs::write(&source, &original).unwrap();
+        std::fs::write(&blocked, b"preserve existing destination").unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(source)].into(),
+            pod_save: [Some(blocked.clone()), None, Some(saved.clone())].into(),
+            ..Default::default()
+        });
+        click_pod(&context, &mut app, "open-pod");
+        click_pod(&context, &mut app, "load-pod");
+        assert_eq!(app.pod_library.len(), 1, "{}", app.pod_message);
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert!(!app.pod_library.is_dirty(0));
+        assert!(matches!(
+            app.pod_library.tone(0).unwrap().stomp_wave_selection(),
+            Ok(pod_preset::StompWaveValue::Known(pod_preset::StompWaveSelection::Wave5))
+        ));
+
+        select_stomp_wave_choice(
+            &context,
+            &mut app,
+            pod_preset::StompWaveSelection::Wave1,
+        );
+        assert!(app.pod_library.is_dirty(0));
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().stomp_wave_selection().unwrap(),
+            pod_preset::StompWaveValue::Known(pod_preset::StompWaveSelection::Wave1)
+        );
+
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "save");
+        assert_eq!(std::fs::read(&blocked).unwrap(), b"preserve existing destination");
+        assert!(app.pod_library.is_dirty(0));
+        assert!(!app.permit_close);
+
+        // A cancelled save leaves the dirty edit available for another choice/save.
+        click_prompt(&context, &mut app, "save");
+        assert!(app.pod_library.is_dirty(0));
+        assert!(!app.permit_close);
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pod_library.is_dirty(0));
+
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "save");
+        assert!(app.permit_close);
+        assert!(app.pending.is_none());
+        assert!(!app.pod_library.any_dirty());
+        let reopened = pod_preset::PodTone::parse(std::fs::read(saved).unwrap()).unwrap();
+        assert_eq!(
+            reopened.stomp_wave_selection().unwrap(),
+            pod_preset::StompWaveValue::Known(pod_preset::StompWaveSelection::Wave1)
+        );
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn stomp_wave_gui_refuses_nonfinite_values_without_dirtying_the_library() {
+        for raw_bits in [0x7fc0_1234, f32::INFINITY.to_bits(), f32::NEG_INFINITY.to_bits()] {
+            let (context, mut app) = app();
+            let directory = tempfile::tempdir().unwrap();
+            let source = directory.path().join("nonfinite-stomp-wave.l6t");
+            let original = sample_stomp_wave_pod_tone_with_bits(raw_bits);
+            std::fs::write(&source, &original).unwrap();
+            app.dialogs = Box::new(FakeDialogs {
+                pod_open: [Some(source)].into(),
+                ..Default::default()
+            });
+            click_pod(&context, &mut app, "open-pod");
+            click_pod(&context, &mut app, "load-pod");
+            assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+            assert!(!app.pod_library.is_dirty(0));
+            assert!(matches!(
+                app.pod_library.tone(0).unwrap().stomp_wave_selection(),
+                Ok(pod_preset::StompWaveValue::Unknown { raw_bits: found }) if found == raw_bits
+            ));
+            select_stomp_wave_choice(
+                &context,
+                &mut app,
+                pod_preset::StompWaveSelection::Wave8,
+            );
+            assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+            assert!(matches!(
+                app.pod_library.tone(0).unwrap().stomp_wave_selection(),
+                Ok(pod_preset::StompWaveValue::Unknown { raw_bits: found }) if found == raw_bits
+            ));
+            assert!(!app.pod_library.is_dirty(0));
+            assert!(app.pod_message.contains("non-finite"));
+            const {
+                assert!(LIVE_ACCESS_LOCKED);
+            }
+        }
+    }
+
+    #[test]
+    fn stomp_wave_bundle_gui_edit_is_dirty_and_saves_a_preserving_copy() {
+        let (context, mut app) = app();
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("stomp-wave-bank.vwb");
+        let saved = directory.path().join("stomp-wave-bank-copy.vwb");
+        let tone = sample_stomp_wave_pod_tone();
+        let original_bundle = sample_pod_bundle(std::slice::from_ref(&tone));
+        std::fs::write(&source, &original_bundle).unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(source)].into(),
+            pod_save: [Some(saved.clone())].into(),
+            ..Default::default()
+        });
+        click_pod(&context, &mut app, "open-pod");
+        click_pod(&context, &mut app, "load-pod");
+        assert!(app.pod_bundle.is_some());
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+        recording_frame_tall(&context, &mut app, vec![]);
+        select_stomp_wave_choice(
+            &context,
+            &mut app,
+            pod_preset::StompWaveSelection::Wave8,
+        );
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert!(app.pod_library.is_dirty(0));
+        assert_eq!(
+            app.pod_bundle.as_ref().unwrap().tone(0, 0).unwrap().stomp_wave_selection().unwrap(),
+            pod_preset::StompWaveValue::Known(pod_preset::StompWaveSelection::Wave8)
+        );
+
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "save");
+        assert!(app.permit_close);
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert!(!app.pod_library.any_dirty());
+        assert_eq!(std::fs::read(source).unwrap(), original_bundle);
+        let reopened = pod_preset::PodBundleLibrary::parse(std::fs::read(saved).unwrap()).unwrap();
+        assert_eq!(
+            reopened.tone(0, 0).unwrap().stomp_wave_selection().unwrap(),
+            pod_preset::StompWaveValue::Known(pod_preset::StompWaveSelection::Wave8)
+        );
         const {
             assert!(LIVE_ACCESS_LOCKED);
         }
