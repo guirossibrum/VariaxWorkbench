@@ -2261,14 +2261,13 @@ impl Workbench {
                     }) {
                         ui.horizontal(|ui| {
                             if self.pod_button(ui, "apply-hd-type9-choice", "Apply offline choice")
+                                && let Some(pending) = self.hd_type9_pending
                             {
-                                if let Some(pending) = self.hd_type9_pending {
-                                    self.apply_hd_type9_choice(
-                                        pending.file_index,
-                                        pending.slot,
-                                        pending.choice,
-                                    );
-                                }
+                                self.apply_hd_type9_choice(
+                                    pending.file_index,
+                                    pending.slot,
+                                    pending.choice,
+                                );
                             }
                             if self.pod_button(
                                 ui,

@@ -5806,7 +5806,7 @@ mod tests {
                         );
                         assert_eq!(preset.as_bytes()[value_at + 4], 0x31);
                         assert_eq!(preset.as_bytes()[value_at + 12], 0);
-                        assert_eq!(preset.as_bytes()[H5EP_MIN_BYTES..], b"type9-tail");
+                        assert_eq!(&preset.as_bytes()[H5EP_MIN_BYTES..], b"type9-tail");
                     }
                 }
             }
