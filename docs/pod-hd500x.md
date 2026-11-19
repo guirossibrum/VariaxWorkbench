@@ -424,6 +424,31 @@ quit decisions. The exact-head configured check result is recorded on PR #109;
 older check totals do not cover this operation. None of these tests establish
 physical compatibility or audio behavior.
 
+### Bounded type-8 two-choice control
+
+The offline library exposes one exact type-8 association admitted from the
+revision-3 Editor 2.27 descriptor initialization: model `0x020A0013`, key
+`0x3F100004`. Its choices use neutral labels `Choice 0` and `Choice 1`, with
+big-endian f32 words `00000000` and `3F800000`. This is a separately typed
+two-choice API; type-9 Choice 2 cannot be supplied. The descriptor does not
+establish user-facing names, units, default semantics, or physical
+compatibility.
+
+The writer uses the same strict H5EP v1 framing, explicit file slot 0–7,
+validity/enable/count/unique-key/row-within-count/zero-marker guards as the
+type-9 writer. It preserves finite unknown imports until explicit replacement,
+retains non-finite raw words for reading while rejecting edits to them, runs
+guards before same-word no-ops, stages a complete candidate, reparses it, and
+changes only the four value bytes. H5ES/H5EB entries remain separate; a child
+must be extracted before editing. The shared POD HD500X extension Session is
+required. GUI Apply/Discard is explicit and stages by entry/slot/model; a file,
+slot, or model-context change invalidates the stage. Tests cover the eight file
+slots, representative first/middle/last rows and both enable states, literal
+serialized words, unknown/non-finite reads, malformed and cross-type rejection,
+profile/library gates, extracted-child isolation, save collision/reopen/revert,
+and GUI apply/discard/context switching. These are offline synthetic checks,
+not physical-device evidence.
+
 ### Additional selected numeric control contracts
 
 The retained Editor 2.27 callback matrix has 80 active non-type-1 numeric rows

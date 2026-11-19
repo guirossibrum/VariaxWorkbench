@@ -291,6 +291,36 @@ impl Session {
             .map_err(map_hd_library_error)
     }
 
+    /// Applies the exact admitted type-8 two-choice control through the
+    /// POD HD500X extension profile. File association is not physical
+    /// applicability.
+    pub fn set_hd_type8_choice(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: crate::pod_preset::HdFxSlot,
+        choice: crate::pod_preset::HdType8Choice,
+    ) -> Result<(), Rejection> {
+        match self.kind {
+            SessionKind::Extension(ProductProfile::PodHd500x) => {}
+            SessionKind::Extension(profile) => {
+                return Err(Rejection::Unsupported {
+                    profile,
+                    operation: Operation::EditPodPreset,
+                });
+            }
+            SessionKind::InitialRig => {
+                return Err(Rejection::Unsupported {
+                    profile: ProductProfile::Variax600,
+                    operation: Operation::EditPodPreset,
+                });
+            }
+        }
+        library
+            .set_type8_choice(file, effect_slot, choice)
+            .map_err(map_hd_library_error)
+    }
+
     /// Applies the admitted offline enable flag only through a POD HD500X
     /// extension session. H5EP v1 is enforced by the parser; file context does
     /// not establish a physical unit or firmware version.

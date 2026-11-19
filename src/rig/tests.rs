@@ -657,6 +657,105 @@ fn type9_choice_writer_is_gated_to_the_hd500x_extension_and_standalone_h5ep() {
 }
 
 #[test]
+fn type8_choice_is_a_separate_profile_gated_child_h5ep_edit() {
+    use crate::pod_preset::{
+        HD_TYPE8_CHOICE_KEY, HD_TYPE8_CHOICE_MODEL_ID, HdFxSlot, HdType8Choice, HdType8ChoiceValue,
+        OpaqueH5epPreset,
+    };
+    let slot = HdFxSlot::new(6).unwrap();
+    let block = crate::pod_preset::H5EP_HEADER_BYTES + 0x428 + 6 * 0x100;
+    let row = block + 0x10;
+    let mut bytes = type9_h5ep();
+    bytes[block..block + 4].copy_from_slice(&HD_TYPE8_CHOICE_MODEL_ID.to_be_bytes());
+    bytes[row..row + 4].copy_from_slice(&HD_TYPE8_CHOICE_KEY.to_be_bytes());
+    bytes[row + 4..row + 8].copy_from_slice(&0x3eaa_aaabu32.to_be_bytes());
+    let mut library = HdEditorLibrary::default();
+    let index = library.import_bytes(bytes.clone()).unwrap();
+
+    assert!(
+        Session::initial_rig()
+            .set_hd_type8_choice(&mut library, index, slot, HdType8Choice::Choice1)
+            .is_err()
+    );
+    for profile in [ProductProfile::WorkbenchHd, ProductProfile::Jtv69] {
+        assert!(
+            Session::extension(profile)
+                .unwrap()
+                .set_hd_type8_choice(&mut library, index, slot, HdType8Choice::Choice1)
+                .is_err()
+        );
+    }
+    let hd = Session::extension(ProductProfile::PodHd500x).unwrap();
+    // The type-9 model/key association cannot borrow this distinct two-choice API.
+    let mut foreign = bytes.clone();
+    foreign[block..block + 4].copy_from_slice(&0x020a_0014u32.to_be_bytes());
+    foreign[row..row + 4].copy_from_slice(&0x3f10_0004u32.to_be_bytes());
+    let mut foreign_library = HdEditorLibrary::default();
+    let foreign_index = foreign_library.import_bytes(foreign.clone()).unwrap();
+    assert!(
+        hd.set_hd_type8_choice(
+            &mut foreign_library,
+            foreign_index,
+            slot,
+            HdType8Choice::Choice1
+        )
+        .is_err()
+    );
+    assert_eq!(
+        foreign_library.file(foreign_index).unwrap().as_bytes(),
+        foreign
+    );
+    assert!(!foreign_library.is_dirty(foreign_index));
+
+    hd.set_hd_type8_choice(&mut library, index, slot, HdType8Choice::Choice1)
+        .unwrap();
+    let mut expected = bytes.clone();
+    expected[row + 4..row + 8].copy_from_slice(&[0x3f, 0x80, 0x00, 0x00]);
+    assert_eq!(library.file(index).unwrap().as_bytes(), expected);
+    assert!(library.is_dirty(index));
+    let directory = tempfile::tempdir().unwrap();
+    let copy = directory.path().join("type8.5xe");
+    let collision = directory.path().join("collision.5xe");
+    std::fs::write(&collision, b"keep existing bytes").unwrap();
+    assert!(hd.save_hd_editor_copy(&library, &collision, index).is_err());
+    assert_eq!(std::fs::read(&collision).unwrap(), b"keep existing bytes");
+    hd.save_hd_editor_copy(&library, &copy, index).unwrap();
+    assert_eq!(std::fs::read(&copy).unwrap(), expected);
+    assert_eq!(
+        OpaqueH5epPreset::parse(std::fs::read(copy).unwrap())
+            .unwrap()
+            .hd_type8_choice_value(slot),
+        HdType8ChoiceValue::Choice(HdType8Choice::Choice1)
+    );
+    library.revert_unsaved(index).unwrap();
+    assert_eq!(library.file(index).unwrap().as_bytes(), bytes);
+    assert!(!library.is_dirty(index));
+
+    // Editing an extracted child never replaces or dirties the parent.
+    let mut parent_bytes = synthetic_h5es();
+    let child_offset = crate::pod_preset::H5ES_HEADER_BYTES;
+    parent_bytes[child_offset..child_offset + crate::pod_preset::H5EP_MIN_BYTES]
+        .copy_from_slice(&bytes);
+    let mut parent = HdEditorLibrary::default();
+    let parent_index = parent.import_bytes(parent_bytes.clone()).unwrap();
+    let child_index = parent.extract_preset(parent_index, 0, 0).unwrap();
+    let child_before = parent.file(child_index).unwrap().as_bytes().to_vec();
+    assert!(
+        hd.set_hd_type8_choice(&mut parent, parent_index, slot, HdType8Choice::Choice1)
+            .is_err()
+    );
+    hd.set_hd_type8_choice(&mut parent, child_index, slot, HdType8Choice::Choice1)
+        .unwrap();
+    assert_ne!(parent.file(child_index).unwrap().as_bytes(), child_before);
+    assert_eq!(parent.file(parent_index).unwrap().as_bytes(), parent_bytes);
+    assert!(parent.is_dirty(child_index));
+    assert!(!parent.is_dirty(parent_index));
+    parent.revert_unsaved(child_index).unwrap();
+    assert_eq!(parent.file(child_index).unwrap().as_bytes(), child_before);
+    assert_eq!(parent.file(parent_index).unwrap().as_bytes(), parent_bytes);
+}
+
+#[test]
 fn admitted_type9_catalog_entries_work_through_session_and_save_reopen() {
     use crate::pod_preset::{HdFxSlot, HdType9Choice, HdType9ChoiceValue, OpaqueH5epPreset};
     let associations: [(u32, u32, usize); 3] = [
