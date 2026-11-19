@@ -3422,6 +3422,47 @@ mod tests {
         );
     }
 
+    fn recording_frame_amp_model(
+        context: &egui::Context,
+        app: &mut Workbench,
+        events: Vec<egui::Event>,
+    ) {
+        let _ = context.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 2600.0))),
+                events,
+                ..Default::default()
+            },
+            |ctx| app.render(ctx),
+        );
+    }
+
+    fn click_pod_amp_model_at(context: &egui::Context, app: &mut Workbench, pos: Pos2) {
+        recording_frame_amp_model(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame_amp_model(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
     fn click_recording(context: &egui::Context, app: &mut Workbench, id: &'static str) {
         recording_frame(context, app, vec![]);
         let pos = app.recording_buttons[id].center();
@@ -4692,19 +4733,20 @@ mod tests {
         original[8..12].copy_from_slice(b"L6PA");
         app.pod_library.import_bytes(original.clone()).unwrap();
         app.pod_selected = Some(0);
-        recording_frame_tall(&context, &mut app, vec![]);
+        recording_frame_amp_model(&context, &mut app, vec![]);
         assert!(app.pod_drive_slider.is_some());
 
         let no_amp = pod_preset::PodAmpModelChoice::NoAmp;
         let choice_rect = app.pod_amp_model_choices[&no_amp];
-        click_pod_at_tall(&context, &mut app, choice_rect.center());
-        recording_frame_tall(&context, &mut app, vec![]);
+        click_pod_amp_model_at(&context, &mut app, choice_rect.center());
+        recording_frame_amp_model(&context, &mut app, vec![]);
         assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
         assert!(!app.pod_library.is_dirty(0));
+        assert_eq!(app.pod_pending_amp_choice, Some((0, no_amp)));
 
         let apply_rect = app.pod_apply_amp_model_button.unwrap();
-        click_pod_at_tall(&context, &mut app, apply_rect.center());
-        recording_frame_tall(&context, &mut app, vec![]);
+        click_pod_amp_model_at(&context, &mut app, apply_rect.center());
+        recording_frame_amp_model(&context, &mut app, vec![]);
         assert_eq!(
             app.pod_library.tone(0).unwrap().amp_model_id(),
             Some(no_amp.model_id())
@@ -4733,10 +4775,10 @@ mod tests {
         assert!(!app.pod_library.is_dirty(0));
         let reopened = pod_preset::PodTone::parse(std::fs::read(&saved).unwrap()).unwrap();
         assert_eq!(reopened.amp_model_id(), Some(no_amp.model_id()));
-        recording_frame_tall(&context, &mut app, vec![]);
+        recording_frame_amp_model(&context, &mut app, vec![]);
         let same_choice_apply = app.pod_apply_amp_model_button.unwrap();
-        click_pod_at_tall(&context, &mut app, same_choice_apply.center());
-        recording_frame_tall(&context, &mut app, vec![]);
+        click_pod_amp_model_at(&context, &mut app, same_choice_apply.center());
+        recording_frame_amp_model(&context, &mut app, vec![]);
         assert!(!app.pod_library.is_dirty(0));
         assert_eq!(
             app.pod_library.tone(0).unwrap().amp_model_id(),
@@ -4744,18 +4786,18 @@ mod tests {
         );
 
         let clean = pod_preset::PodAmpModelChoice::Line6Clean;
-        recording_frame_tall(&context, &mut app, vec![]);
+        recording_frame_amp_model(&context, &mut app, vec![]);
         let choice_rect = app.pod_amp_model_choices[&clean];
-        click_pod_at_tall(&context, &mut app, choice_rect.center());
-        recording_frame_tall(&context, &mut app, vec![]);
+        click_pod_amp_model_at(&context, &mut app, choice_rect.center());
+        recording_frame_amp_model(&context, &mut app, vec![]);
         assert_eq!(reopened.amp_model_id(), Some(no_amp.model_id()));
         assert_eq!(
             app.pod_library.tone(0).unwrap().amp_model_id(),
             Some(no_amp.model_id())
         );
         let apply_rect = app.pod_apply_amp_model_button.unwrap();
-        click_pod_at_tall(&context, &mut app, apply_rect.center());
-        recording_frame_tall(&context, &mut app, vec![]);
+        click_pod_amp_model_at(&context, &mut app, apply_rect.center());
+        recording_frame_amp_model(&context, &mut app, vec![]);
         assert_eq!(
             app.pod_library.tone(0).unwrap().amp_model_id(),
             Some(clean.model_id())
