@@ -247,7 +247,7 @@ struct Workbench {
     #[cfg(test)]
     pod_buttons: HashMap<&'static str, Rect>,
     #[cfg(test)]
-    type9_combo_id: Option<egui::Id>,
+    pod_scroll_area: Option<(egui::Id, Rect, f32)>,
     #[cfg(test)]
     pod_visible: String,
     read_receiver:
@@ -330,7 +330,7 @@ impl Workbench {
             #[cfg(test)]
             pod_buttons: HashMap::new(),
             #[cfg(test)]
-            type9_combo_id: None,
+            pod_scroll_area: None,
             #[cfg(test)]
             pod_visible: String::new(),
             read_receiver: None,
@@ -2119,7 +2119,16 @@ impl Workbench {
                     }
                 }
                 ui.separator();
-                egui::ScrollArea::vertical().show(ui, |ui| self.hd_editor_panel(ui));
+                let scroll = egui::ScrollArea::vertical()
+                    .id_salt("pod-hd-editor-panel")
+                    .show(ui, |ui| self.hd_editor_panel(ui));
+                #[cfg(test)]
+                {
+                    self.pod_scroll_area =
+                        Some((scroll.id, scroll.inner_rect, scroll.content_size.y));
+                }
+                #[cfg(not(test))]
+                let _ = scroll;
             });
         // Closing this window keeps the in-memory library, including unsaved names.
         self.pod_open = open;
@@ -2310,12 +2319,8 @@ impl Workbench {
                         );
                     });
                     #[cfg(test)]
-                    {
-                        self.pod_buttons
-                            .insert("hd-type9-choice-combo", response.response.rect);
-                        self.type9_combo_id = Some(response.response.id);
-                    }
-                    ui.scroll_to_rect(response.response.rect, Some(egui::Align::Center));
+                    self.pod_buttons
+                        .insert("hd-type9-choice-combo", response.response.rect);
                     ui.label("Choice labels are neutral. Imported unknown values are preserved until you choose an explicit value.");
                     if matches!(value, pod_preset::HdType9ChoiceValue::NonFinite(_)) {
                         ui.label("A non-finite imported value cannot be replaced by this editor operation.");
@@ -3885,27 +3890,11 @@ mod tests {
                 | "discard-hd-type9-choice"
                 | "save-hd-copy"
                 | "load-hd-file"
-                | "hd-type9-choice-combo"
                 | "hd-type9-choice-option-0"
                 | "hd-type9-choice-option-1"
                 | "hd-type9-choice-option-2"
         ) {
-            let area = context
-                .memory(|memory| memory.area_rect(egui::Id::new("Offline POD preset library")))
-                .expect("HD editor window");
-            let scroll_pos = area.center();
-            hd_editor_frame(
-                context,
-                app,
-                vec![
-                    egui::Event::PointerMoved(scroll_pos),
-                    egui::Event::MouseWheel {
-                        unit: egui::MouseWheelUnit::Page,
-                        delta: Vec2::new(0.0, -10.0),
-                        modifiers: Default::default(),
-                    },
-                ],
-            );
+            scroll_hd_editor_control_into_view(context, app, id);
             hd_editor_frame(context, app, vec![]);
         }
         let pos = app
@@ -3943,11 +3932,23 @@ mod tests {
         );
     }
 
+    fn scroll_hd_editor_control_into_view(
+        context: &egui::Context,
+        app: &Workbench,
+        id: &'static str,
+    ) {
+        let rect = app.pod_buttons[id];
+        let (scroll_id, viewport, content_height) =
+            app.pod_scroll_area.expect("rendered HD editor scroll area");
+        let mut state = egui::scroll_area::State::load(context, scroll_id).unwrap_or_default();
+        let max_offset = (content_height - viewport.height()).max(0.0);
+        state.offset.y =
+            (state.offset.y + rect.center().y - viewport.center().y).clamp(0.0, max_offset);
+        state.store(context, scroll_id);
+    }
+
     fn click_hd_type9_choice(context: &egui::Context, app: &mut Workbench, choice: usize) {
         click_hd_editor(context, app, "hd-type9-choice-combo");
-        let combo_id = app.type9_combo_id.expect("rendered type-9 ComboBox");
-        egui::Popup::open_id(context, combo_id.with("popup"));
-        hd_editor_frame(context, app, vec![]);
         let option_id = match choice {
             0 => "hd-type9-choice-option-0",
             1 => "hd-type9-choice-option-1",
@@ -4873,6 +4874,38 @@ mod tests {
         let mut malformed = sample_hd_type9_preset(2, 3, 0x3f40_0000);
         malformed[7] = 2;
         assert!(app.hd_library.import_bytes(malformed).is_err());
+    }
+
+    #[test]
+    fn hd_type9_idle_redraw_preserves_the_users_library_scroll_position() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let bytes = sample_hd_type9_preset(0, 3, 0x3f40_0000);
+        let index = app.hd_library.import_bytes(bytes).unwrap();
+        app.select_hd_file(index);
+        app.pod_open = true;
+        hd_editor_frame(&context, &mut app, vec![]);
+
+        let (scroll_id, viewport, content_height) =
+            app.pod_scroll_area.expect("rendered HD editor scroll area");
+        let max_offset = (content_height - viewport.height()).max(0.0);
+        assert!(max_offset > 0.0, "fixture must require vertical scrolling");
+        let mut state = egui::scroll_area::State::load(&context, scroll_id).unwrap();
+        state.offset.y = max_offset;
+        state.store(&context, scroll_id);
+
+        hd_editor_frame(&context, &mut app, vec![]);
+        let (scroll_id, viewport, _) = app.pod_scroll_area.unwrap();
+        let after_idle = egui::scroll_area::State::load(&context, scroll_id).unwrap();
+        assert!((after_idle.offset.y - max_offset).abs() < 1.0);
+        assert!(
+            !viewport.intersects(app.pod_buttons["hd-type9-choice-combo"]),
+            "the scrolled-away type-9 control must stay offscreen after redraw"
+        );
+
+        hd_editor_frame(&context, &mut app, vec![]);
+        let after_second_idle = egui::scroll_area::State::load(&context, scroll_id).unwrap();
+        assert!((after_second_idle.offset.y - after_idle.offset.y).abs() < 1.0);
     }
 
     fn click_pod_window_close(context: &egui::Context, app: &mut Workbench) {
