@@ -5272,6 +5272,30 @@ pub(crate) mod tests {
         chunk(b"FORM", &data)
     }
 
+    fn mod_operation_fixture(models: &[(u32, u32, Vec<Vec<u8>>)]) -> Vec<u8> {
+        delay_context_fixture(models, PODXT_LIVE_TONE_ID, PODXT_LIVE_HOST_MIN_VERSION)
+    }
+
+    fn mod_test_rows(note: u32, speed_bits: u32) -> Vec<Vec<u8>> {
+        vec![
+            drive_record(0x3f, 0x0010_0000, 1, speed_bits).to_vec(),
+            drive_record(0x3f, 0x0020_0000, 0, note).to_vec(),
+            drive_record(0x3f, 0x007a_bcde, 0x7f, 0xfeed_cafe).to_vec(),
+        ]
+    }
+
+    fn mod_test_delay_rows(note: u32) -> Vec<Vec<u8>> {
+        vec![
+            drive_record(0x3f, 0x0010_0000, 1, 0x3e80_0000).to_vec(),
+            drive_record(0x3f, 0x0020_0000, 0, note).to_vec(),
+            drive_record(0x3f, 0x007a_bcde, 0x7f, 0xcafe_feed).to_vec(),
+        ]
+    }
+
+    fn mod_test_system_rows(tempo: f32) -> Vec<Vec<u8>> {
+        vec![drive_record(0x3f, 0x0020_0001, 1, tempo.to_bits()).to_vec()]
+    }
+
     fn patch_expected_parameter(
         tone: &PodTone,
         expected: &mut [u8],
@@ -11490,19 +11514,27 @@ pub(crate) mod tests {
     fn mod_note_model_slots_and_manual_speed_lower_boundary_are_bounded() {
         for slot in [MOD_SLOT, 0x0005_0003] {
             for model_id in MOD_CONTROL_MODEL_IDS {
-                let bytes = delay_note_fixture(
-                    DELAY_SLOT,
-                    DELAY_CONTROL_MODEL_IDS[0],
-                    0,
-                    0x3e80_0000,
-                    Some(slot),
-                    model_id,
-                    0,
-                    Some(120.0),
-                );
-                let mut tone = PodTone::parse(bytes).unwrap();
-                tone.set_mod_note_choice(ModNoteChoice::Quarter).unwrap();
-                assert_eq!(parm_bits(&tone, slot, 0x0010_0000), 0x3e02_93c2);
+                for delay_slot in [DELAY_SLOT, 0x0005_0004] {
+                    let bytes = mod_operation_fixture(&[
+                        (slot, model_id, mod_test_rows(0, 0x3e80_0000)),
+                        (
+                            delay_slot,
+                            DELAY_CONTROL_MODEL_IDS[0],
+                            mod_test_delay_rows(0),
+                        ),
+                        (0x0001_0000, 0x3e70_0000, mod_test_system_rows(120.0)),
+                    ]);
+                    let mut tone = PodTone::parse(bytes.clone()).unwrap();
+                    let mut expected = bytes;
+                    patch_expected_parameter(&tone, &mut expected, slot, 0x0020_0000, 6);
+                    patch_expected_parameter(&tone, &mut expected, slot, 0x0010_0000, 0x3e02_93c2);
+                    tone.set_mod_note_choice(ModNoteChoice::Quarter).unwrap();
+                    assert_eq!(
+                        tone.as_bytes(),
+                        expected,
+                        "Mod model {model_id:08x}, slot {slot:08x}, Delay slot {delay_slot:08x}"
+                    );
+                }
             }
         }
         let mut lower = PodTone::parse(delay_note_fixture(
@@ -11634,6 +11666,400 @@ pub(crate) mod tests {
                 assert_eq!(tone.as_bytes(), original);
             }
         }
+    }
+
+    #[test]
+    fn mod_note_and_speed_rejections_are_transactional() {
+        let tempo = || vec![drive_record(0x3f, 0x0020_0001, 1, 120.0_f32.to_bits()).to_vec()];
+        let delay_rows = |note| {
+            vec![
+                drive_record(0x3f, 0x0010_0000, 1, 0x3e80_0000).to_vec(),
+                drive_record(0x3f, 0x0020_0000, 0, note).to_vec(),
+            ]
+        };
+        let build = |mod_rows: Vec<Vec<u8>>,
+                     delays: Vec<(u32, u32, Vec<Vec<u8>>)>,
+                     systems: Vec<(u32, u32, Vec<Vec<u8>>)>| {
+            let mut models = vec![(MOD_SLOT, MOD_CONTROL_MODEL_IDS[0], mod_rows)];
+            models.extend(delays);
+            models.extend(systems);
+            mod_operation_fixture(&models)
+        };
+        let good_delay = || vec![(DELAY_SLOT, DELAY_CONTROL_MODEL_IDS[0], delay_rows(0))];
+        let good_system = || vec![(0x0001_0000, 0x3e70_0000, tempo())];
+        let speed = || drive_record(0x3f, 0x0010_0000, 1, 0x3e80_0000).to_vec();
+        let note = |prefix, kind, value| drive_record(prefix, 0x0020_0000, kind, value).to_vec();
+        let reject_both = |bytes: Vec<u8>, label: &str| {
+            let mut tone = PodTone::parse(bytes.clone()).unwrap();
+            let before = tone.as_bytes().to_vec();
+            assert!(
+                tone.set_mod_note_choice(ModNoteChoice::Quarter).is_err(),
+                "{label} NOTE"
+            );
+            assert_eq!(tone.as_bytes(), before, "{label} NOTE");
+            let mut tone = PodTone::parse(bytes).unwrap();
+            let before = tone.as_bytes().to_vec();
+            assert!(tone.set_mod_speed_hz(3.0).is_err(), "{label} speed");
+            assert_eq!(tone.as_bytes(), before, "{label} speed");
+        };
+
+        let mut malformed_mod = vec![
+            ("missing NOTE", vec![speed()]),
+            (
+                "duplicate NOTE",
+                vec![speed(), note(0x3f, 0, 0), note(0x3f, 0, 0)],
+            ),
+            ("wrong-type NOTE", vec![speed(), note(0x3f, 1, 0)]),
+            ("noncanonical NOTE", vec![speed(), note(0x3e, 0, 0)]),
+            ("unknown NOTE", vec![speed(), note(0x3f, 0, 14)]),
+            ("missing SPEED", vec![note(0x3f, 0, 0)]),
+            ("duplicate SPEED", vec![speed(), speed(), note(0x3f, 0, 0)]),
+            (
+                "wrong-type SPEED",
+                vec![
+                    drive_record(0x3f, 0x0010_0000, 0, 0).to_vec(),
+                    note(0x3f, 0, 0),
+                ],
+            ),
+            (
+                "noncanonical SPEED",
+                vec![
+                    drive_record(0x3e, 0x0010_0000, 1, 0x3e80_0000).to_vec(),
+                    note(0x3f, 0, 0),
+                ],
+            ),
+            (
+                "nonfinite SPEED",
+                vec![
+                    drive_record(0x3f, 0x0010_0000, 1, f32::INFINITY.to_bits()).to_vec(),
+                    note(0x3f, 0, 0),
+                ],
+            ),
+            (
+                "out-of-range SPEED",
+                vec![
+                    drive_record(0x3f, 0x0010_0000, 1, 1.01_f32.to_bits()).to_vec(),
+                    note(0x3f, 0, 0),
+                ],
+            ),
+            (
+                "opaque Mod PARM",
+                vec![speed(), note(0x3f, 0, 0), vec![0x81, 0x82, 0x83]],
+            ),
+        ];
+        for (label, rows) in malformed_mod.drain(..) {
+            reject_both(build(rows, good_delay(), good_system()), label);
+        }
+
+        let missing_mod = build(vec![], good_delay(), good_system());
+        let mut tone = PodTone::parse(missing_mod.clone()).unwrap();
+        assert!(tone.set_mod_note_choice(ModNoteChoice::Quarter).is_err());
+        assert_eq!(tone.as_bytes(), missing_mod);
+        let duplicate_mods = mod_operation_fixture(&[
+            (
+                MOD_SLOT,
+                MOD_CONTROL_MODEL_IDS[0],
+                vec![speed(), note(0x3f, 0, 0)],
+            ),
+            (
+                0x0005_0003,
+                MOD_CONTROL_MODEL_IDS[1],
+                vec![speed(), note(0x3f, 0, 0)],
+            ),
+            (DELAY_SLOT, DELAY_CONTROL_MODEL_IDS[0], delay_rows(0)),
+            (0x0001_0000, 0x3e70_0000, tempo()),
+        ]);
+        reject_both(duplicate_mods.clone(), "duplicate Mod slots");
+        let mut tone = PodTone::parse(duplicate_mods.clone()).unwrap();
+        assert!(tone.set_mod_note_choice(ModNoteChoice::Quarter).is_err());
+        assert_eq!(tone.as_bytes(), duplicate_mods);
+
+        for (label, rows) in [
+            ("missing Delay", vec![]),
+            (
+                "active Delay NOTE",
+                vec![(DELAY_SLOT, DELAY_CONTROL_MODEL_IDS[0], delay_rows(6))],
+            ),
+            (
+                "duplicate Delay slots",
+                vec![
+                    (DELAY_SLOT, DELAY_CONTROL_MODEL_IDS[0], delay_rows(0)),
+                    (0x0005_0004, DELAY_CONTROL_MODEL_IDS[1], delay_rows(0)),
+                ],
+            ),
+            (
+                "unknown Delay model",
+                vec![(DELAY_SLOT, 0xdead_beef, delay_rows(0))],
+            ),
+            (
+                "missing Delay NOTE",
+                vec![(
+                    DELAY_SLOT,
+                    DELAY_CONTROL_MODEL_IDS[0],
+                    vec![drive_record(0x3f, 0x0010_0000, 1, 0x3e80_0000).to_vec()],
+                )],
+            ),
+            (
+                "wrong-type Delay NOTE",
+                vec![(
+                    DELAY_SLOT,
+                    DELAY_CONTROL_MODEL_IDS[0],
+                    vec![
+                        drive_record(0x3f, 0x0010_0000, 1, 0x3e80_0000).to_vec(),
+                        note(0x3f, 1, 0),
+                    ],
+                )],
+            ),
+            (
+                "noncanonical Delay NOTE",
+                vec![(
+                    DELAY_SLOT,
+                    DELAY_CONTROL_MODEL_IDS[0],
+                    vec![
+                        drive_record(0x3f, 0x0010_0000, 1, 0x3e80_0000).to_vec(),
+                        note(0x3e, 0, 0),
+                    ],
+                )],
+            ),
+            (
+                "duplicate Delay NOTE",
+                vec![(
+                    DELAY_SLOT,
+                    DELAY_CONTROL_MODEL_IDS[0],
+                    vec![
+                        drive_record(0x3f, 0x0020_0000, 0, 0).to_vec(),
+                        note(0x3f, 0, 0),
+                    ],
+                )],
+            ),
+            (
+                "unknown Delay NOTE",
+                vec![(DELAY_SLOT, DELAY_CONTROL_MODEL_IDS[0], delay_rows(14))],
+            ),
+            (
+                "opaque Delay PARM",
+                vec![(
+                    DELAY_SLOT,
+                    DELAY_CONTROL_MODEL_IDS[0],
+                    vec![
+                        drive_record(0x3f, 0x0020_0000, 0, 0).to_vec(),
+                        vec![0x81, 0x82, 0x83],
+                    ],
+                )],
+            ),
+        ] {
+            let bytes = build(vec![speed(), note(0x3f, 0, 0)], rows, good_system());
+            let mut tone = PodTone::parse(bytes.clone()).unwrap();
+            for choice in [ModNoteChoice::Off, ModNoteChoice::Quarter] {
+                let before = tone.as_bytes().to_vec();
+                assert!(tone.set_mod_note_choice(choice).is_err(), "{label}");
+                assert_eq!(tone.as_bytes(), before, "{label}");
+            }
+        }
+
+        let mut invalid_systems = vec![
+            ("missing System", vec![]),
+            ("wrong System ID", vec![(0x0001_0000, 0x3e80_0000, tempo())]),
+            (
+                "unknown System ID",
+                vec![(0x0001_0000, 0xdead_beef, tempo())],
+            ),
+            ("missing Tempo", vec![(0x0001_0000, 0x3e70_0000, vec![])]),
+            (
+                "duplicate Tempo",
+                vec![(
+                    0x0001_0000,
+                    0x3e70_0000,
+                    vec![tempo()[0].clone(), tempo()[0].clone()],
+                )],
+            ),
+            (
+                "wrong-type Tempo",
+                vec![(
+                    0x0001_0000,
+                    0x3e70_0000,
+                    vec![drive_record(0x3f, 0x0020_0001, 0, 120).to_vec()],
+                )],
+            ),
+            (
+                "noncanonical Tempo",
+                vec![(
+                    0x0001_0000,
+                    0x3e70_0000,
+                    vec![drive_record(0x3e, 0x0020_0001, 1, 120.0_f32.to_bits()).to_vec()],
+                )],
+            ),
+            (
+                "low Tempo",
+                vec![(
+                    0x0001_0000,
+                    0x3e70_0000,
+                    vec![drive_record(0x3f, 0x0020_0001, 1, 29.0_f32.to_bits()).to_vec()],
+                )],
+            ),
+            (
+                "high Tempo",
+                vec![(
+                    0x0001_0000,
+                    0x3e70_0000,
+                    vec![drive_record(0x3f, 0x0020_0001, 1, 241.0_f32.to_bits()).to_vec()],
+                )],
+            ),
+            (
+                "nonfinite Tempo",
+                vec![(
+                    0x0001_0000,
+                    0x3e70_0000,
+                    vec![drive_record(0x3f, 0x0020_0001, 1, f32::NAN.to_bits()).to_vec()],
+                )],
+            ),
+        ];
+        for (label, systems) in invalid_systems.drain(..) {
+            let bytes = build(vec![speed(), note(0x3f, 0, 0)], good_delay(), systems);
+            let mut tone = PodTone::parse(bytes.clone()).unwrap();
+            let before = tone.as_bytes().to_vec();
+            assert!(
+                tone.set_mod_note_choice(ModNoteChoice::Quarter).is_err(),
+                "{label}"
+            );
+            assert_eq!(tone.as_bytes(), before, "{label}");
+        }
+        let duplicate_system = build(
+            vec![speed(), note(0x3f, 0, 0)],
+            good_delay(),
+            vec![
+                (0x0001_0000, 0x3e70_0000, tempo()),
+                (0x0001_0000, 0x3e70_0000, tempo()),
+            ],
+        );
+        assert!(PodTone::parse(duplicate_system).is_err());
+
+        let already_matching = mod_operation_fixture(&[
+            (
+                MOD_SLOT,
+                MOD_CONTROL_MODEL_IDS[0],
+                mod_test_rows(6, 0x3e02_93c2),
+            ),
+            (
+                DELAY_SLOT,
+                DELAY_CONTROL_MODEL_IDS[0],
+                mod_test_delay_rows(0),
+            ),
+            (0x0001_0000, 0x3e80_0000, tempo()),
+        ]);
+        let mut tone = PodTone::parse(already_matching.clone()).unwrap();
+        assert!(tone.set_mod_note_choice(ModNoteChoice::Quarter).is_err());
+        assert_eq!(tone.as_bytes(), already_matching);
+
+        let mut note_off_without_speed_or_tempo = PodTone::parse(mod_operation_fixture(&[
+            (
+                MOD_SLOT,
+                MOD_CONTROL_MODEL_IDS[0],
+                vec![drive_record(0x3f, 0x0020_0000, 0, 6).to_vec()],
+            ),
+            (
+                DELAY_SLOT,
+                DELAY_CONTROL_MODEL_IDS[0],
+                mod_test_delay_rows(0),
+            ),
+        ]))
+        .unwrap();
+        let before = note_off_without_speed_or_tempo.as_bytes().to_vec();
+        let mut expected = before;
+        patch_expected_parameter(
+            &note_off_without_speed_or_tempo,
+            &mut expected,
+            MOD_SLOT,
+            0x0020_0000,
+            0,
+        );
+        note_off_without_speed_or_tempo
+            .set_mod_note_choice(ModNoteChoice::Off)
+            .unwrap();
+        assert_eq!(note_off_without_speed_or_tempo.as_bytes(), expected);
+
+        let mut same_speed_clears_note = PodTone::parse(mod_operation_fixture(&[
+            (
+                MOD_SLOT,
+                MOD_CONTROL_MODEL_IDS[0],
+                mod_test_rows(6, 0x3e02_93c2),
+            ),
+            (
+                DELAY_SLOT,
+                DELAY_CONTROL_MODEL_IDS[0],
+                mod_test_delay_rows(0),
+            ),
+        ]))
+        .unwrap();
+        let before = same_speed_clears_note.as_bytes().to_vec();
+        let mut expected = before;
+        patch_expected_parameter(
+            &same_speed_clears_note,
+            &mut expected,
+            MOD_SLOT,
+            0x0020_0000,
+            0,
+        );
+        same_speed_clears_note.set_mod_speed_hz(2.0).unwrap();
+        assert_eq!(same_speed_clears_note.as_bytes(), expected);
+
+        for invalid_hz in [f32::NAN, f32::INFINITY, 0.099, 15.001] {
+            let bytes = mod_operation_fixture(&[(
+                MOD_SLOT,
+                MOD_CONTROL_MODEL_IDS[0],
+                mod_test_rows(0, 0x3e80_0000),
+            )]);
+            let mut tone = PodTone::parse(bytes.clone()).unwrap();
+            assert!(tone.set_mod_speed_hz(invalid_hz).is_err());
+            assert_eq!(tone.as_bytes(), bytes);
+        }
+
+        let invalid_speed_library = mod_operation_fixture(&[
+            (
+                MOD_SLOT,
+                MOD_CONTROL_MODEL_IDS[0],
+                mod_test_rows(0, 0x3e80_0000),
+            ),
+            (
+                DELAY_SLOT,
+                DELAY_CONTROL_MODEL_IDS[0],
+                mod_test_delay_rows(0),
+            ),
+            (0x0001_0000, 0x3e80_0000, tempo()),
+        ]);
+        let mut library = Library::default();
+        library.import_bytes(invalid_speed_library.clone()).unwrap();
+        let mut edited = PodTone::parse(invalid_speed_library.clone()).unwrap();
+        edited.rename("Unsaved baseline").unwrap();
+        library.replace(0, edited.into_bytes()).unwrap();
+        let bytes_before = library.tone(0).unwrap().as_bytes().to_vec();
+        let saved_before = library.tones[0].saved.clone();
+        assert!(library.is_dirty(0));
+        assert!(
+            library
+                .set_mod_note_choice(0, ModNoteChoice::Quarter)
+                .is_err()
+        );
+        assert_eq!(library.tone(0).unwrap().as_bytes(), bytes_before);
+        assert_eq!(library.tones[0].saved, saved_before);
+        assert!(library.is_dirty(0));
+
+        let bundle_bytes = membership_bundle(b"L6CO", &[invalid_speed_library], &[]);
+        let mut bundle = PodBundleLibrary::parse(bundle_bytes).unwrap();
+        bundle
+            .edit_entry(0, |tone| tone.rename("Unsaved bundle"))
+            .unwrap();
+        let bytes_before = bundle.as_bytes().to_vec();
+        let saved_before = bundle.saved.clone();
+        assert!(bundle.is_dirty());
+        assert!(
+            bundle
+                .set_mod_note_choice(0, ModNoteChoice::Quarter)
+                .is_err()
+        );
+        assert_eq!(bundle.as_bytes(), bytes_before);
+        assert_eq!(bundle.saved, saved_before);
+        assert!(bundle.is_dirty());
     }
 
     #[test]

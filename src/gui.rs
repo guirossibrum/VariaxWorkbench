@@ -5281,6 +5281,37 @@ mod tests {
         );
     }
 
+    fn drag_mod_speed_slider(context: &egui::Context, app: &mut Workbench, fraction: f32) {
+        recording_frame_tall(context, app, vec![]);
+        let rect = app.pod_mod_speed_slider.expect("visible Mod SPEED slider");
+        let start = Pos2::new(rect.center().x, rect.center().y);
+        let end = Pos2::new(rect.left() + rect.width() * fraction, rect.center().y);
+        recording_frame_tall(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame_tall(context, app, vec![egui::Event::PointerMoved(end)]);
+        recording_frame_tall(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
     fn stage_stomp_harmony2_choice(
         context: &egui::Context,
         app: &mut Workbench,
@@ -6738,6 +6769,126 @@ mod tests {
         );
         assert!(app.pod_library.is_dirty(0));
         assert!(app.pod_mod_pending.is_none());
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn mod_speed_gui_stages_discards_applies_and_retains_failed_edits() {
+        let (context, mut app) = app();
+        app.pod_open = true;
+        app.pod_selected = Some(
+            app.pod_library
+                .import_bytes(sample_delay_note_tone(0, 6))
+                .unwrap(),
+        );
+        app.pod_library
+            .import_bytes(sample_delay_note_tone(0, 99))
+            .unwrap();
+        recording_frame_tall(&context, &mut app, vec![]);
+        let original = app.pod_library.tone(0).unwrap().as_bytes().to_vec();
+        drag_mod_speed_slider(&context, &mut app, 0.2);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert!(matches!(
+            app.pod_mod_pending,
+            Some((0, PendingModEdit::SpeedHz(_)))
+        ));
+        click_pod(&context, &mut app, "pod-mod-discard");
+        assert!(app.pod_mod_pending.is_none());
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+
+        drag_mod_speed_slider(&context, &mut app, 0.2);
+        click_pod(&context, &mut app, "pod-mod-apply");
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().mod_note_value().unwrap(),
+            pod_preset::ModNoteValue::Known(pod_preset::ModNoteChoice::Off)
+        );
+        assert!(app.pod_library.is_dirty(0));
+        assert!(app.pod_library.tone(0).unwrap().as_bytes() != original);
+        assert!(app.pod_mod_pending.is_none());
+
+        let second_row = app.pod_rows[&1].center();
+        click_pod_at_tall(&context, &mut app, second_row);
+        recording_frame_tall(&context, &mut app, vec![]);
+        let invalid_original = app.pod_library.tone(1).unwrap().as_bytes().to_vec();
+        drag_mod_speed_slider(&context, &mut app, 0.2);
+        assert_eq!(
+            app.pod_library.tone(1).unwrap().as_bytes(),
+            invalid_original
+        );
+        click_pod(&context, &mut app, "pod-mod-apply");
+        assert_eq!(
+            app.pod_library.tone(1).unwrap().as_bytes(),
+            invalid_original
+        );
+        assert!(!app.pod_library.is_dirty(1));
+        assert!(matches!(
+            app.pod_mod_pending,
+            Some((1, PendingModEdit::SpeedHz(_)))
+        ));
+
+        let first_row = app.pod_rows[&0].center();
+        click_pod_at_tall(&context, &mut app, first_row);
+        recording_frame_tall(&context, &mut app, vec![]);
+        drag_mod_speed_slider(&context, &mut app, 0.3);
+        assert!(app.pod_mod_pending.is_some());
+        app.pod_library.revert_unsaved(0).unwrap();
+        app.refresh_selected_pod_name();
+        assert!(app.pod_mod_pending.is_none());
+        assert!(!app.pod_library.is_dirty(0));
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn mod_speed_bundle_gui_saves_without_overwrite_and_reopens() {
+        let (context, mut app) = app();
+        let directory = tempfile::tempdir().unwrap();
+        let collision = directory.path().join("existing-mod-bank.l6c");
+        let saved = directory.path().join("mod-bank-copy.l6c");
+        std::fs::write(&collision, b"preserve existing MOD destination").unwrap();
+        let original_tone = sample_delay_note_tone(0, 6);
+        let original_bundle = sample_pod_bundle(std::slice::from_ref(&original_tone));
+        app.dialogs = Box::new(FakeDialogs {
+            pod_save: [Some(collision.clone()), Some(saved.clone())].into(),
+            pod_open: [Some(saved.clone())].into(),
+            ..Default::default()
+        });
+        app.pod_open = true;
+        app.load_pod_bundle_bytes(original_bundle.clone()).unwrap();
+        recording_frame_tall(&context, &mut app, vec![]);
+        drag_mod_speed_slider(&context, &mut app, 0.2);
+        assert_eq!(
+            app.pod_bundle.as_ref().unwrap().as_bytes(),
+            original_bundle.as_slice()
+        );
+        click_pod(&context, &mut app, "pod-mod-apply");
+        assert!(app.pod_dirty());
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().mod_note_value().unwrap(),
+            pod_preset::ModNoteValue::Known(pod_preset::ModNoteChoice::Off)
+        );
+
+        click_pod(&context, &mut app, "save-pod");
+        assert!(app.pod_dirty());
+        assert_eq!(
+            std::fs::read(&collision).unwrap(),
+            b"preserve existing MOD destination"
+        );
+        click_pod(&context, &mut app, "save-pod");
+        assert!(!app.pod_dirty());
+        let saved_bytes = std::fs::read(&saved).unwrap();
+        assert_ne!(saved_bytes, original_bundle);
+
+        click_pod(&context, &mut app, "load-pod");
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().mod_note_value().unwrap(),
+            pod_preset::ModNoteValue::Known(pod_preset::ModNoteChoice::Off)
+        );
+        assert!(!app.pod_dirty());
         const {
             assert!(LIVE_ACCESS_LOCKED);
         }

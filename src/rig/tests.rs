@@ -749,6 +749,11 @@ fn pod_mod_note_session_is_role_gated_and_uses_the_shared_offline_backend() {
             .set_pod_mod_note_choice(RoleKind::Guitar, &bytes, pod_preset::ModNoteChoice::Quarter,)
             .is_err()
     );
+    assert!(
+        Session::initial_rig()
+            .set_pod_mod_speed_hz(RoleKind::Guitar, &bytes, 3.0)
+            .is_err()
+    );
 }
 
 #[test]
