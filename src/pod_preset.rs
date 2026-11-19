@@ -360,8 +360,10 @@ impl PodTone {
     /// This is not a claim about the value accepted by physical hardware.
     pub fn amp_drive_fraction(&self) -> Result<f32, ToneError> {
         let (model_index, parameter_index) = self.amp_drive_location()?;
-        let ModelParameter::Recorded { value: ParameterValue::Float { bits }, .. } =
-            &self.models[model_index].parameters[parameter_index]
+        let ModelParameter::Recorded {
+            value: ParameterValue::Float { bits },
+            ..
+        } = &self.models[model_index].parameters[parameter_index]
         else {
             return Err(ToneError::format("Amp Drive target is not a float PARM"));
         };
@@ -382,8 +384,10 @@ impl PodTone {
             ));
         }
         let (model_index, parameter_index) = self.amp_drive_location()?;
-        let ModelParameter::Recorded { value: ParameterValue::Float { bits }, .. } =
-            &self.models[model_index].parameters[parameter_index]
+        let ModelParameter::Recorded {
+            value: ParameterValue::Float { bits },
+            ..
+        } = &self.models[model_index].parameters[parameter_index]
         else {
             return Err(ToneError::format("Amp Drive target is not a float PARM"));
         };
@@ -397,8 +401,10 @@ impl PodTone {
             .ok_or_else(|| ToneError::format("Amp Drive target has no unique raw value word"))?;
         let new_bits = value.to_bits();
         self.bytes[offset..offset + 4].copy_from_slice(&new_bits.to_be_bytes());
-        if let ModelParameter::Recorded { value: ParameterValue::Float { bits }, .. } =
-            &mut self.models[model_index].parameters[parameter_index]
+        if let ModelParameter::Recorded {
+            value: ParameterValue::Float { bits },
+            ..
+        } = &mut self.models[model_index].parameters[parameter_index]
         {
             *bits = new_bits;
         }
@@ -449,9 +455,15 @@ impl PodTone {
             .copied()
             .ok_or_else(|| ToneError::format("Amp Drive parameter is absent"))?;
         match &self.models[model_index].parameters[parameter_index] {
-            ModelParameter::Recorded { prefix: 0x3f, value: ParameterValue::Float { .. }, .. } => {}
+            ModelParameter::Recorded {
+                prefix: 0x3f,
+                value: ParameterValue::Float { .. },
+                ..
+            } => {}
             ModelParameter::Recorded { prefix, .. } if *prefix != 0x3f => {
-                return Err(ToneError::format("Amp Drive raw prefix is not canonical 0x3f"));
+                return Err(ToneError::format(
+                    "Amp Drive raw prefix is not canonical 0x3f",
+                ));
             }
             _ => {
                 return Err(ToneError::format(
@@ -864,11 +876,20 @@ mod tests {
             .enumerate()
             .filter_map(|(index, (before, after))| (before != after).then_some(index))
             .collect();
-        let last_at = original.windows(12).position(|window| window == last).unwrap();
+        let last_at = original
+            .windows(12)
+            .position(|window| window == last)
+            .unwrap();
         assert_eq!(changed, (last_at + 8..last_at + 12).collect::<Vec<_>>());
-        assert_eq!(tone.amp_drive_fraction().unwrap().to_bits(), 0.317f32.to_bits());
+        assert_eq!(
+            tone.amp_drive_fraction().unwrap().to_bits(),
+            0.317f32.to_bits()
+        );
         let reopened = PodTone::parse(tone.as_bytes().to_vec()).unwrap();
-        assert_eq!(reopened.amp_drive_fraction().unwrap().to_bits(), 0.317f32.to_bits());
+        assert_eq!(
+            reopened.amp_drive_fraction().unwrap().to_bits(),
+            0.317f32.to_bits()
+        );
         assert!(tone.as_bytes().windows(12).any(|window| window == first));
         assert!(tone.as_bytes().windows(12).any(|window| window == unknown));
     }
@@ -879,14 +900,21 @@ mod tests {
         let values = [0.0, 1.0, 0.314_159_27, f32::from_bits(1), -0.0];
         for value in values {
             let mut tone = PodTone::parse(drive_tone(
-                PODXT_LIVE_HOST_MIN_VERSION, PLEXI_LEAD_100_MODEL, &[&record],
-            )).unwrap();
+                PODXT_LIVE_HOST_MIN_VERSION,
+                PLEXI_LEAD_100_MODEL,
+                &[&record],
+            ))
+            .unwrap();
             tone.set_amp_drive_fraction(value).unwrap();
-            assert_eq!(tone.amp_drive_fraction().unwrap().to_bits(), value.to_bits());
-            assert!(tone
-                .as_bytes()
-                .windows(4)
-                .any(|bytes| bytes == value.to_bits().to_be_bytes()));
+            assert_eq!(
+                tone.amp_drive_fraction().unwrap().to_bits(),
+                value.to_bits()
+            );
+            assert!(
+                tone.as_bytes()
+                    .windows(4)
+                    .any(|bytes| bytes == value.to_bits().to_be_bytes())
+            );
         }
     }
 
@@ -900,14 +928,26 @@ mod tests {
             f32::INFINITY,
             f32::NEG_INFINITY,
         ] {
-            let bytes = drive_tone(PODXT_LIVE_HOST_MIN_VERSION, PLEXI_LEAD_100_MODEL, &[&record]);
+            let bytes = drive_tone(
+                PODXT_LIVE_HOST_MIN_VERSION,
+                PLEXI_LEAD_100_MODEL,
+                &[&record],
+            );
             let mut tone = PodTone::parse(bytes.clone()).unwrap();
             assert!(tone.set_amp_drive_fraction(invalid).is_err());
             assert_eq!(tone.as_bytes(), bytes);
         }
         let fixtures = [
-            drive_tone(PODXT_LIVE_HOST_MIN_VERSION - 1, PLEXI_LEAD_100_MODEL, &[&record]),
-            drive_tone(PODXT_LIVE_HOST_MIN_VERSION, PLEXI_LEAD_100_MODEL + 1, &[&record]),
+            drive_tone(
+                PODXT_LIVE_HOST_MIN_VERSION - 1,
+                PLEXI_LEAD_100_MODEL,
+                &[&record],
+            ),
+            drive_tone(
+                PODXT_LIVE_HOST_MIN_VERSION,
+                PLEXI_LEAD_100_MODEL + 1,
+                &[&record],
+            ),
             drive_tone(PODXT_LIVE_HOST_MIN_VERSION, PLEXI_LEAD_100_MODEL, &[]),
         ];
         for bytes in fixtures {
@@ -917,18 +957,18 @@ mod tests {
         }
         let wrong_prefix = drive_record(0x7e, AMP_DRIVE_PARAM, 1, 0x3f00_0000);
         let wrong_type = drive_record(0x3f, AMP_DRIVE_PARAM, 0, 0x3f00_0000);
-        for parm in [
-            &wrong_prefix[..],
-            &wrong_type[..],
-            &[1, 2, 3, 4][..],
-        ] {
+        for parm in [&wrong_prefix[..], &wrong_type[..], &[1, 2, 3, 4][..]] {
             let bytes = drive_tone(PODXT_LIVE_HOST_MIN_VERSION, PLEXI_LEAD_100_MODEL, &[parm]);
             let mut tone = PodTone::parse(bytes.clone()).unwrap();
             assert!(tone.set_amp_drive_fraction(0.25).is_err());
             assert_eq!(tone.as_bytes(), bytes);
         }
         let nonfinite = drive_record(0x3f, AMP_DRIVE_PARAM, 1, f32::NAN.to_bits());
-        let bytes = drive_tone(PODXT_LIVE_HOST_MIN_VERSION, PLEXI_LEAD_100_MODEL, &[&nonfinite]);
+        let bytes = drive_tone(
+            PODXT_LIVE_HOST_MIN_VERSION,
+            PLEXI_LEAD_100_MODEL,
+            &[&nonfinite],
+        );
         let mut tone = PodTone::parse(bytes.clone()).unwrap();
         assert!(tone.set_amp_drive_fraction(0.25).is_err());
         assert_eq!(tone.as_bytes(), bytes);
@@ -937,7 +977,11 @@ mod tests {
     #[test]
     fn amp_drive_library_edit_revert_save_copy_and_collision_keep_safe_copy_rules() {
         let record = drive_record(0x3f, AMP_DRIVE_PARAM, 1, 0x3f00_0000);
-        let original = drive_tone(PODXT_LIVE_HOST_MIN_VERSION, PLEXI_LEAD_100_MODEL, &[&record]);
+        let original = drive_tone(
+            PODXT_LIVE_HOST_MIN_VERSION,
+            PLEXI_LEAD_100_MODEL,
+            &[&record],
+        );
         let mut library = Library::default();
         let index = library.import_bytes(original.clone()).unwrap();
         library.set_amp_drive_fraction(index, 0.625).unwrap();
@@ -955,7 +999,10 @@ mod tests {
         library.tone(index).unwrap().save_copy(&path).unwrap();
         assert!(library.tone(index).unwrap().save_copy(&path).is_err());
         let saved = std::fs::read(path).unwrap();
-        assert_eq!(PodTone::parse(saved).unwrap().amp_drive_fraction().unwrap(), 0.625);
+        assert_eq!(
+            PodTone::parse(saved).unwrap().amp_drive_fraction().unwrap(),
+            0.625
+        );
         assert!(library.is_dirty(index));
         library.note_saved(index).unwrap();
         assert!(!library.is_dirty(index));
