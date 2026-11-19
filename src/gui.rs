@@ -2574,12 +2574,24 @@ mod tests {
         assert!(app.read_worker.is_none());
         click_recording(&context, &mut app, "route-clean");
         click_recording(&context, &mut app, "inspect-native-plan");
-        assert!(app.recording_visible.contains("Prepared declaration only"));
-        assert!(app.recording_visible.contains("78125/2 Hz"));
-        assert!(app.recording_visible.contains("2 channels mapped 0→L, 1→R"));
+        #[cfg(target_os = "linux")]
+        {
+            assert!(app.recording_visible.contains("Prepared declaration only"));
+            assert!(app.recording_visible.contains("78125/2 Hz"));
+            assert!(app.recording_visible.contains("2 channels mapped 0→L, 1→R"));
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            assert!(app.recording_visible.contains("UnverifiedPlatform"));
+        }
         assert_eq!(app.recorder.phase(), recording::Phase::Idle);
+        assert_eq!(
+            app.recorder.route(),
+            Some(variax_workbench::pod_audio::RecordRoute::SendCleanGuitar)
+        );
         assert!(!app.recorder.live_monitor_changed());
         assert!(!app.recorder.live_route_changed());
+        assert_eq!(app.recording_capture_attempts, 0);
         click_recording(&context, &mut app, "check-external-plan");
         assert!(
             app.recording_visible

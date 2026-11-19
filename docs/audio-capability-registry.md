@@ -93,6 +93,14 @@ This consumes accepted findings; it does not download or execute those sources.
 | OS / architecture / backend | Linux source declaration; no architecture-specific build/negotiation validated. Existing `snd-usb-pod` source is evidence, future ALSA adapter unimplemented here. No driver is installed/loaded. Windows/macOS rate/format/backend/driver contract remains unverified; requests rejected. |
 | Revision / validation / gaps | Source contract `linux-v7.2.15-podxt-live-audio-v1`; installed firmware/USB revisions unknown. Static+documented+offline validation only. No permission/latency/resampling or physical support claim. |
 
+A separate bounded trace of the already admitted macOS 7.6.8 driver identifies
+the same exact PODxt Live product and a two-channel engine with four integer
+rate declarations. Its shared input conversion uses an eight-byte stereo-frame
+buffer stride, but the raw 24-byte format record is not mapped to the matching
+Core Audio ABI. This source narrows the Mac source gap; it does not populate a
+Mac registry record or prove runtime negotiation. See the qualified trace and
+remaining mapping limits in [the common capture session](audio-capture-session.md).
+
 `Registry::plan` accepts only that frozen capture row, correct profile, normal
 runtime state, capture endpoint role, exact Linux source-contract version, no
 claim of validated installed revision, exact channels/clock/format, and either

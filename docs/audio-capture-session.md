@@ -114,7 +114,21 @@ Platform blockers:
 | Platform | Available source paths and facts | Exact missing contract and effect |
 | --- | --- | --- |
 | Windows | `src/linux_transport.rs` records a PODxt Live hardware ID without an interface/endpoint audio contract. `docs/pod-usb-audio.md` identifies Windows packet text as a different-source clue, not a PODxt Live negotiated format or callback contract. `src/pod_hd500x.rs` records HD500X INF defaults only. The local bounded header/cache search found no Windows SDK headers. | Missing PODxt Live `IMMDevice`/`IAudioClient` stream ownership and `GetBuffer`/`ReleaseBuffer` callback-lifetime contract, plus source-qualified endpoint channels, sample format, and rational clock. The portable-core Windows CI job does not compile an adapter or provide the missing SDK/API contract. Guessing ABI layouts or borrowing another product's defaults is not safe. |
-| macOS | `src/linux_transport.rs` and `docs/pod-usb-audio.md` record a static macOS audio personality identity only; no audio endpoint mapping or stream contract is included. The local bounded header/cache search found no Core Audio SDK headers. | Missing PODxt Live `AudioStreamBasicDescription`, `AudioBufferList`, callback ownership/lifetime, and source-qualified endpoint channels, sample format, and rational clock. The portable-core macOS CI job does not compile an adapter or provide the missing SDK/API contract. The identity-only personality cannot establish the native stream layout. |
+| macOS | The admitted 7.6.8 driver source statically maps the exact PODxt Live personality to interface 0 and an `isoenginext` engine with two-channel input and output streams. It advertises one raw linear signed PCM format record and integer rates 44,100, 48,000, 88,200, and 96,000 Hz. The source's input conversion copies frame slices at an eight-byte stereo-frame buffer stride. These are driver declarations and callback-buffer dataflow, not OS-negotiated or physical stream results. | The matching Core Audio `AudioStreamBasicDescription`/`AudioBufferList` mapping, format-tail semantics, host callback ownership/lifetime, and an app adapter are absent. The 24-byte driver format record's trailing fields and the meaning of the eight-byte callback stride relative to its 24-bit fields remain unresolved; do not label this packed S24 or S24-in-32. The master audio clock remains unknown. The portable-core macOS CI job does not compile an adapter or supply the missing SDK/API contract. |
+
+### Bounded macOS input-buffer trace
+
+The already admitted Mac driver binary provides a narrow additional fact. Its
+PODxt Live engine selects one two-channel input stream and exposes a source
+format record carrying the `lpcm`/`sint` identifiers and raw 24/24 width bytes.
+Its engine setup accepts the 24-width selector. The shared input conversion
+routine copies the requested frame range from `source + first_frame * 8` for
+`frame_count * 8` bytes. This proves an eight-byte frame stride at that internal
+callback boundary. It does not identify channel byte order, valid-bit
+alignment, the USB packet sample representation, or how the raw format fields
+map to the matching Apple framework ABI. The driver format's trailing words
+remain opaque. This narrows the static source gap but does not admit a macOS
+capture plan or adapter. No physical capture or clock behavior is inferred.
 
 The task forbids acquiring new SDKs or source files, so the OS contracts cannot
 be filled by guessing API structures or by using another product's defaults.
