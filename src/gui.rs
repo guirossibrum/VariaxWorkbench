@@ -1684,6 +1684,30 @@ impl Workbench {
                     ui.label("PINF name");
                     ui.text_edit_singleline(&mut self.pod_name);
                 });
+                let drive = self.pod_selected.and_then(|index| {
+                    self.pod_library
+                        .tone(index)
+                        .map(pod_preset::PodTone::amp_drive_fraction)
+                });
+                if let Some(Ok(mut value)) = drive {
+                    ui.horizontal(|ui| {
+                        ui.label(pod_preset::AMP_DRIVE_SCALE_LABEL);
+                        if ui
+                            .add(egui::Slider::new(&mut value, 0.0..=1.0).show_value(true))
+                            .changed()
+                            && let Some(index) = self.pod_selected
+                        {
+                            match self.pod_library.set_amp_drive_fraction(index, value) {
+                                Ok(()) => self.pod_message = format!(
+                                    "Applied Amp Drive host-scale value {value}. Nothing was sent."
+                                ),
+                                Err(error) => self.pod_message = error.detail(),
+                            }
+                        }
+                    });
+                } else if let Some(Err(error)) = drive {
+                    ui.label(format!("Amp Drive unavailable: {}", error.detail()));
+                }
                 if self.pod_button(ui, "load-pod", "Load tone file…") {
                     self.load_pod_tone();
                 }

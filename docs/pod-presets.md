@@ -66,12 +66,21 @@ rejection. Any other id is rejected and is not treated as a decoded PODxt Live
 tone. The in-memory library is a list of those files. It is not a new bank
 format.
 
-The only edit is the 32-unit PINF name, with the same NUL and length rule as
-the guitar renamer. Model names, the enabled byte, ordinals, reserved bytes,
-and parameter values are displayed from the recovered records and are not
-edited. `document::save_new` writes a new copy and refuses to
-replace an existing path. The guitar document refuses to open or rename a
-PODxt Live target, including a bank that contains one.
+The PINF name edit uses the same 32-unit NUL and length rule as the guitar
+renamer. A second edit is available only for Amp Drive on model
+`0x0002001b` (Plexi Lead 100) in amp slot `0x00030000`: the Line6Edit host
+mapping identifies Drive as float PARM `0x00100003`, with a finite host scale
+of 0 through 1. The GUI labels this as a host scale; no device-accepted range
+or physical behavior is claimed. The edit requires the exact serialized
+prefix `0x3f`, type 1, a present parameter and a PINF device-version word at
+least `3.00` under this offline profile. It patches only the last matching
+parameter's four value bytes, following the source reader's reverse lookup;
+it does not create a missing parameter or rewrite the surrounding file.
+Unknown IDs, other controls, other amp models, unsupported prefixes/types,
+opaque amp PARM chunks, missing controls and out-of-domain values remain
+uneditable. `document::save_new` writes a new copy and refuses to replace an
+existing path. The guitar document refuses to open or rename a PODxt Live
+target, including a bank that contains one.
 
 An applied name is unsaved until that tone's copy is written. Quitting asks
 to save, discard, or keep editing, one tone at a time. Cancel, or a save that
@@ -91,9 +100,15 @@ recovered Line 6 limit.
 
 ## Parameter domain boundary
 
-No PODxt Live parameter unit, minimum, maximum, or knob name was recovered.
-The tone API has no parameter-value edit entry point. Raw PARM bits are not
-knob positions. The searches were read-only checks of the local archives.
+For this one control, static Line6Edit source identifies `L6PODxtDevice`,
+`L6PODxtParamMap`, the Plexi Lead 100 model, the AMP_DRIVE definition, and
+`L6SharcTonePercentFormat`. The formatter parses percent text into the host
+float and its quantizer is a no-op; its display converts through a 7-bit
+derived label. Rust edits the underlying finite float without claiming the
+display labels form a supported integer grid. Other PODxt Live parameter
+units, ranges, names, effects, and model-specific controls remain unresolved.
+This is static source analysis plus independent Rust behavior, not an executed
+vendor oracle, device acceptance test, or installed-pack entitlement result.
 No DLL was loaded, no installer was run, and no device was opened.
 
 The subsequent [POD Farm 1.12 source-recovery milestone](pod-farm-112-source-recovery.md)
