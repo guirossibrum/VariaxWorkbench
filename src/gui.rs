@@ -227,6 +227,10 @@ struct Workbench {
     #[cfg(test)]
     pod_buttons: HashMap<&'static str, Rect>,
     #[cfg(test)]
+    pod_rows: HashMap<usize, Rect>,
+    #[cfg(test)]
+    pod_drive_slider: Option<Rect>,
+    #[cfg(test)]
     pod_visible: String,
     read_receiver:
         Option<std::sync::mpsc::Receiver<Result<variax_workbench::usb::CurrentPreset, String>>>,
@@ -295,6 +299,10 @@ impl Workbench {
             recording_capture_attempts: 0,
             #[cfg(test)]
             pod_buttons: HashMap::new(),
+            #[cfg(test)]
+            pod_rows: HashMap::new(),
+            #[cfg(test)]
+            pod_drive_slider: None,
             #[cfg(test)]
             pod_visible: String::new(),
             read_receiver: None,
@@ -1639,6 +1647,11 @@ impl Workbench {
         if !self.pod_open {
             return;
         }
+        #[cfg(test)]
+        {
+            self.pod_rows.clear();
+            self.pod_drive_slider = None;
+        }
         let mut open = true;
         egui::Window::new("Offline PODxt Live tones")
             .open(&mut open)
@@ -1672,10 +1685,10 @@ impl Workbench {
                     })
                     .collect();
                 for (index, label, name) in rows {
-                    if ui
-                        .selectable_label(self.pod_selected == Some(index), label)
-                        .clicked()
-                    {
+                    let response = ui.selectable_label(self.pod_selected == Some(index), label);
+                    #[cfg(test)]
+                    self.pod_rows.insert(index, response.rect);
+                    if response.clicked() {
                         self.pod_selected = Some(index);
                         self.pod_name = name;
                     }
@@ -1684,29 +1697,50 @@ impl Workbench {
                     ui.label("PINF name");
                     ui.text_edit_singleline(&mut self.pod_name);
                 });
-                let drive = self.pod_selected.and_then(|index| {
-                    self.pod_library
-                        .tone(index)
-                        .map(pod_preset::PodTone::amp_drive_fraction)
-                });
-                if let Some(Ok(mut value)) = drive {
+                let controls = self
+                    .pod_selected
+                    .and_then(|index| self.pod_library.tone(index))
+                    .map(|tone| {
+                        pod_preset::AmpControl::ALL
+                            .into_iter()
+                            .filter_map(|control| {
+                                tone.amp_control_fraction(control)
+                                    .ok()
+                                    .map(|value| (control, value))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if !controls.is_empty() {
+                    ui.small(pod_preset::AMP_CONTROL_SCALE_LABEL);
+                }
+                for (control, mut value) in controls {
                     ui.horizontal(|ui| {
-                        ui.label(pod_preset::AMP_DRIVE_SCALE_LABEL);
-                        if ui
+                        ui.label(control.label());
+                        let response = ui
                             .add(egui::Slider::new(&mut value, 0.0..=1.0).show_value(true))
-                            .changed()
+                            .on_hover_text(pod_preset::AMP_CONTROL_SCALE_LABEL);
+                        #[cfg(test)]
+                        if control == pod_preset::AmpControl::Drive {
+                            self.pod_drive_slider = Some(response.rect);
+                        }
+                        if response.changed()
                             && let Some(index) = self.pod_selected
                         {
-                            match self.pod_library.set_amp_drive_fraction(index, value) {
-                                Ok(()) => self.pod_message = format!(
-                                    "Applied Amp Drive host-scale value {value}. Nothing was sent."
-                                ),
+                            match self
+                                .pod_library
+                                .set_amp_control_fraction(index, control, value)
+                            {
+                                Ok(()) => {
+                                    self.pod_message = format!(
+                                        "Applied Amp {} host-scale value {value}. Nothing was sent.",
+                                        control.label()
+                                    )
+                                }
                                 Err(error) => self.pod_message = error.detail(),
                             }
                         }
                     });
-                } else if let Some(Err(error)) = drive {
-                    ui.label(format!("Amp Drive unavailable: {}", error.detail()));
                 }
                 if self.pod_button(ui, "load-pod", "Load tone file…") {
                     self.load_pod_tone();
@@ -2873,6 +2907,97 @@ mod tests {
         chunk(b"FORM", &data)
     }
 
+    fn sample_drive_pod_tone() -> Vec<u8> {
+        let mut bytes = sample_pod_tone();
+        let old_model = 0x1111_0002u32.to_be_bytes();
+        let model_at = bytes
+            .windows(old_model.len())
+            .position(|window| window == old_model)
+            .expect("sample amp model");
+        bytes[model_at..model_at + old_model.len()]
+            .copy_from_slice(&pod_preset::PLEXI_LEAD_100_MODEL.to_be_bytes());
+
+        let pinf_at = bytes
+            .windows(4)
+            .position(|window| window == b"PINF")
+            .expect("PINF chunk")
+            + 8;
+        bytes[pinf_at + 72..pinf_at + 76]
+            .copy_from_slice(&pod_preset::PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
+
+        let old_parameter = [
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc,
+        ];
+        let parameter_at = bytes
+            .windows(old_parameter.len())
+            .position(|window| window == old_parameter)
+            .expect("sample amp parameter");
+        let mut parameter = [0; 12];
+        parameter[..4]
+            .copy_from_slice(&((0x3fu32 << 24) | pod_preset::AMP_DRIVE_PARAM).to_be_bytes());
+        parameter[4..8].copy_from_slice(&1u32.to_be_bytes());
+        parameter[8..12].copy_from_slice(&0.5f32.to_bits().to_be_bytes());
+        bytes[parameter_at..parameter_at + parameter.len()].copy_from_slice(&parameter);
+        bytes
+    }
+
+    fn click_pod_at(context: &egui::Context, app: &mut Workbench, pos: Pos2) {
+        recording_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
+    fn drag_pod_drive_slider(context: &egui::Context, app: &mut Workbench) {
+        recording_frame(context, app, vec![]);
+        let rect = app.pod_drive_slider.expect("visible Amp Drive slider");
+        let start = Pos2::new(rect.left() + rect.width() * 0.45, rect.center().y);
+        let end = Pos2::new(rect.left() + rect.width() * 0.78, rect.center().y);
+        recording_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame(context, app, vec![egui::Event::PointerMoved(end)]);
+        recording_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
     #[test]
     fn offline_pod_tone_window_does_not_open_a_device_or_edit_the_guitar() {
         let (context, mut app) = app();
@@ -3124,6 +3249,120 @@ mod tests {
         assert!(app.pod_message.contains("Discarded"));
         assert_eq!(app.document.as_ref().unwrap().as_bytes(), guitar_edited);
         assert!(app.read_worker.is_none());
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn amp_drive_slider_edits_only_selected_tone_and_quit_guard_keeps_or_saves_it() {
+        let (context, mut app) = app();
+        context.style_mut(|style| {
+            style.animation_time = 0.0;
+            style.spacing.slider_width = 220.0;
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let admitted_path = directory.path().join("admitted-drive.tone");
+        let unavailable_path = directory.path().join("unavailable.tone");
+        let blocked_path = directory.path().join("blocked-copy.tone");
+        let saved_path = directory.path().join("drive-copy.tone");
+        let admitted_bytes = sample_drive_pod_tone();
+        let unavailable_bytes = sample_pod_tone();
+        std::fs::write(&admitted_path, &admitted_bytes).unwrap();
+        std::fs::write(&unavailable_path, &unavailable_bytes).unwrap();
+        std::fs::write(&blocked_path, b"keep existing destination").unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(admitted_path), Some(unavailable_path)].into(),
+            pod_save: [Some(blocked_path.clone()), Some(saved_path.clone())].into(),
+            ..Default::default()
+        });
+
+        click_pod(&context, &mut app, "open-pod");
+        click_pod(&context, &mut app, "load-pod");
+        click_pod(&context, &mut app, "load-pod");
+        assert_eq!(app.pod_library.len(), 2);
+        assert_eq!(app.pod_selected, Some(1));
+        recording_frame(&context, &mut app, vec![]);
+        assert!(app.pod_drive_slider.is_none());
+        assert!(
+            app.pod_library
+                .tone(1)
+                .unwrap()
+                .amp_drive_fraction()
+                .is_err()
+        );
+        assert!(!app.pod_library.is_dirty(0));
+        assert!(!app.pod_library.is_dirty(1));
+
+        let first_row = app.pod_rows[&0].center();
+        click_pod_at(&context, &mut app, first_row);
+        assert_eq!(app.pod_selected, Some(0));
+        recording_frame(&context, &mut app, vec![]);
+        assert!(app.pod_drive_slider.is_some());
+        let original_drive = app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .amp_drive_fraction()
+            .unwrap();
+        drag_pod_drive_slider(&context, &mut app);
+        let edited_drive = app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .amp_drive_fraction()
+            .unwrap();
+        assert_ne!(edited_drive.to_bits(), original_drive.to_bits());
+        assert!((0.0..=1.0).contains(&edited_drive));
+        assert!(app.pod_library.is_dirty(0));
+        assert!(!app.pod_library.is_dirty(1));
+        assert_eq!(
+            app.pod_library.tone(1).unwrap().as_bytes(),
+            unavailable_bytes
+        );
+
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pending.is_none());
+        assert!(app.pod_library.is_dirty(0));
+        assert!(!app.pod_library.is_dirty(1));
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .amp_drive_fraction()
+                .unwrap()
+                .to_bits(),
+            edited_drive.to_bits()
+        );
+
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "save");
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert!(!app.permit_close);
+        assert!(app.pod_library.is_dirty(0));
+        assert!(!app.pod_library.is_dirty(1));
+        assert_eq!(
+            std::fs::read(&blocked_path).unwrap(),
+            b"keep existing destination"
+        );
+
+        click_prompt(&context, &mut app, "save");
+        assert!(app.pending.is_none());
+        assert!(app.permit_close);
+        assert!(!app.pod_library.any_dirty());
+        let saved_bytes = std::fs::read(saved_path).unwrap();
+        let reopened = pod_preset::PodTone::parse(saved_bytes).unwrap();
+        assert_eq!(
+            reopened.amp_drive_fraction().unwrap().to_bits(),
+            edited_drive.to_bits()
+        );
+        assert_eq!(
+            app.pod_library.tone(1).unwrap().as_bytes(),
+            unavailable_bytes
+        );
+        assert!(!app.document.as_ref().unwrap().as_bytes().is_empty());
         const {
             assert!(LIVE_ACCESS_LOCKED);
         }

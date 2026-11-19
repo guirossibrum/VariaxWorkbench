@@ -5,9 +5,12 @@ paths do not yet justify numeric PODxt Live preset editing. It continues the
 [1.12 source recovery](pod-farm-112-source-recovery.md) and concerns one candidate:
 PINF product `0x3000a`, model `0x2001b`, amp slot `0x30000`, tagged control
 `0x3f100003` / raw PARM identifier `0x100003`. Those identifiers describe the
-investigation, not a supported control or an admitted value domain.
+POD Farm investigation, not its supported control or an admitted value domain.
 [#29](https://github.com/guirossibrum/VariaxWorkbench/issues/29) remains open;
-the existing [offline librarian](pod-presets.md) is unchanged.
+this document records a historical POD Farm 1.12 negative result. A later,
+separate Windows Line6Edit source supports a limited exception; see the
+[Line6Edit control matrix](podxt-live-control-matrix.md). It does not change the
+POD Farm findings below.
 
 ## Source and method
 
@@ -158,7 +161,8 @@ Before numeric editing, an independently evidenced contract must connect:
    save/reopen, independent compatibility evidence and atomic non-overwriting
    new-copy saves.
 
-Those gates remain unresolved; the issue's implementation acceptance is still
-incomplete. This milestone adds documentation only, with no editing API, runtime
-dependency, default-math change or device operation. Hardware access remains
-locked independently of any future offline result.
+Those gates remain unresolved for this POD Farm candidate; the issue's
+implementation acceptance remains incomplete. The POD Farm milestone itself
+adds documentation only. The separate Line6Edit contract does not establish
+POD Farm applicability, device acceptance, runtime equivalence or a reason to
+unlock hardware.

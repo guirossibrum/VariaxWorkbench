@@ -196,13 +196,16 @@ component. Original binaries, instructions, resource tables, artwork and example
 tones remain ignored and are not test fixtures.
 
 No applicable tuple of **model/product + parameter ID + representation + accepted
-domain + units/scaling/default/step** was recovered. The continuation states the
-[remaining target-preserving contract](pod-farm-112-target-applicability.md#validation-scope-and-remaining-contract)
-before value editing. A future recovered definition needs target/model mismatch,
-endpoint and adjacent-invalid-value cases, exact serialization, unknown-byte
-retention and atomic new-copy tests, backed by an independently applicable source
-contract.
-No placeholder API, fabricated units or disabled editing UI is added here.
+domain + units/scaling/default/step** was recovered from this POD Farm 1.12
+source candidate. A separate later
+[Line6Edit 3.06 source follow-up](podxt-live-control-matrix.md) supplies a
+positive host-scale contract for six Plexi Lead 100 amp controls. It is a distinct
+source and does not change this candidate's result. The continuation states the
+[remaining POD Farm target-preserving contract](pod-farm-112-target-applicability.md#validation-scope-and-remaining-contract).
+Any further definition needs target/model mismatch, endpoint and adjacent-invalid
+value cases, exact serialization, unknown-byte retention and atomic new-copy
+tests, backed by an independently applicable source contract. No placeholder API
+or fabricated units are added for unresolved controls.
 The four configured Rust checks are submitted through the coordinator at the
 actual committed head; reader tests do not replace them. Review and merge-result
 CI remain required. Passing any offline check grants no hardware access.

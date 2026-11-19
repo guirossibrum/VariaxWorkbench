@@ -13,10 +13,10 @@
 //! byte in `int m_ordinal` and sets enabled from `Read8() > 0`, so bytes
 //! `0x80` through `0xFF` are negative and disabled. The file bytes stay as
 //! stored. A 12-byte PARM carries an id, a value type, and raw bits. No
-//! parameter range was recovered for the other controls. Amp Drive is the
-//! single exception: the narrowly source-backed Line6Edit
-//! host scale is edited by patching one existing float value word. This is not
-//! a device-accepted-domain claim. Other bytes are preserved.
+//! Line6Edit 3.06 source maps six classic amp controls to the same finite
+//! 0..=1 host scale. Rust exposes those controls only on Plexi Lead 100 when
+//! each existing 12-byte PARM has the expected id, prefix and float type.
+//! This is not a device-accepted-domain claim. Other bytes are preserved.
 //!
 //! The MIDI hardware id `L6HW_ID_PODXTLIVE` (18000) is a different namespace.
 //! The archived firmware version `0x03010000` is not a requirement of a tone file.
@@ -34,6 +34,16 @@ pub const AMP_SLOT: u32 = 0x0003_0000;
 pub const PLEXI_LEAD_100_MODEL: u32 = 0x0002_001b;
 /// Semantic Amp Drive parameter id in the PODxt Sharc parameter map.
 pub const AMP_DRIVE_PARAM: u32 = 0x0010_0003;
+/// Semantic Amp Bass parameter id in the PODxt Sharc parameter map.
+pub const AMP_BASS_PARAM: u32 = 0x0010_0000;
+/// Semantic Amp Mid parameter id in the PODxt Sharc parameter map.
+pub const AMP_MID_PARAM: u32 = 0x0010_0001;
+/// Semantic Amp Treble parameter id in the PODxt Sharc parameter map.
+pub const AMP_TREBLE_PARAM: u32 = 0x0010_0002;
+/// Semantic Amp Presence parameter id in the PODxt Sharc parameter map.
+pub const AMP_PRESENCE_PARAM: u32 = 0x0010_0004;
+/// Semantic Amp Channel Volume parameter id in the PODxt Sharc parameter map.
+pub const AMP_CHANNEL_VOLUME_PARAM: u32 = 0x0010_0005;
 /// Host provider minimum from `ParseVersionString("3.00")`; not a file-loader rule.
 pub const PODXT_LIVE_HOST_MIN_VERSION: u32 = 0x0300_0000;
 /// Cab model slot from `L6Patch.UpdateMetaNotesForSetup` and `kGPXTSlot_Cab`.
@@ -47,8 +57,53 @@ pub const OFFLINE_BANNER: &str =
 pub const NOT_GUITAR: &str =
     "This is not the Variax guitar editor. Guitar model slots are not applied.";
 pub const NOT_SENT: &str = "Nothing is sent to a device. No preset is switched.";
-pub const PAYLOADS_NOT_DECODED: &str = "Known asset names and 12-byte parameter records are shown. Only Plexi Lead 100 Amp Drive has a source-backed host-scale editor; other parameter ranges are not decoded. Unknown ids stay raw.";
-pub const AMP_DRIVE_SCALE_LABEL: &str = "Line6Edit host scale (0–1; not device-validated)";
+pub const PAYLOADS_NOT_DECODED: &str = "Known asset names and 12-byte parameter records are shown. Six Plexi Lead 100 amp controls have source-backed host-scale editors; other parameter ranges are not decoded. Unknown ids stay raw.";
+pub const AMP_CONTROL_SCALE_LABEL: &str = "Line6Edit host scale 0–1 (not device-validated)";
+
+/// Plexi Lead 100 amp controls with an admitted Line6Edit host scale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AmpControl {
+    Drive,
+    Bass,
+    Mid,
+    Treble,
+    Presence,
+    ChannelVolume,
+}
+
+impl AmpControl {
+    /// The source-backed controls in UI display order.
+    pub const ALL: [Self; 6] = [
+        Self::Drive,
+        Self::Bass,
+        Self::Mid,
+        Self::Treble,
+        Self::Presence,
+        Self::ChannelVolume,
+    ];
+
+    pub const fn param_id(self) -> u32 {
+        match self {
+            Self::Drive => AMP_DRIVE_PARAM,
+            Self::Bass => AMP_BASS_PARAM,
+            Self::Mid => AMP_MID_PARAM,
+            Self::Treble => AMP_TREBLE_PARAM,
+            Self::Presence => AMP_PRESENCE_PARAM,
+            Self::ChannelVolume => AMP_CHANNEL_VOLUME_PARAM,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Drive => "Drive",
+            Self::Bass => "Bass",
+            Self::Mid => "Mid",
+            Self::Treble => "Treble",
+            Self::Presence => "Presence",
+            Self::ChannelVolume => "Channel Volume",
+        }
+    }
+}
 
 const VARIAX_FAMILY_MASK: u32 = 0xffff_0000;
 const VARIAX_FAMILY_HIGH: u32 = 0x0007_0000;
@@ -356,49 +411,67 @@ impl PodTone {
         self.amp_model_id().and_then(pod_assets::asset_name)
     }
 
-    /// Read the admitted Line6Edit host-scale Amp Drive value (0..=1).
+    /// Read one admitted Line6Edit host-scale amp control value (0..=1).
     /// This is not a claim about the value accepted by physical hardware.
-    pub fn amp_drive_fraction(&self) -> Result<f32, ToneError> {
-        let (model_index, parameter_index) = self.amp_drive_location()?;
+    pub fn amp_control_fraction(&self, control: AmpControl) -> Result<f32, ToneError> {
+        let (model_index, parameter_index) = self.amp_control_location(control)?;
         let ModelParameter::Recorded {
             value: ParameterValue::Float { bits },
             ..
         } = &self.models[model_index].parameters[parameter_index]
         else {
-            return Err(ToneError::format("Amp Drive target is not a float PARM"));
+            return Err(ToneError::format(format!(
+                "Amp {} target is not a float PARM",
+                control.label()
+            )));
         };
         let value = f32::from_bits(*bits);
         if !value.is_finite() || !(0.0..=1.0).contains(&value) {
-            return Err(ToneError::format(
-                "Amp Drive value is outside the finite host scale 0..=1",
-            ));
+            return Err(ToneError::format(format!(
+                "Amp {} value is outside the finite host scale 0..=1",
+                control.label()
+            )));
         }
         Ok(value)
     }
 
-    /// Change only the existing raw Amp Drive value word in the retained file.
-    pub fn set_amp_drive_fraction(&mut self, value: f32) -> Result<(), ToneError> {
+    /// Compatibility convenience for callers that only use Drive.
+    pub fn amp_drive_fraction(&self) -> Result<f32, ToneError> {
+        self.amp_control_fraction(AmpControl::Drive)
+    }
+
+    /// Change only the existing raw value word for the selected amp control.
+    pub fn set_amp_control_fraction(
+        &mut self,
+        control: AmpControl,
+        value: f32,
+    ) -> Result<(), ToneError> {
         if !value.is_finite() || !(0.0..=1.0).contains(&value) {
-            return Err(ToneError::format(
-                "Amp Drive requires a finite host-scale value in 0..=1",
-            ));
+            return Err(ToneError::format(format!(
+                "Amp {} requires a finite host-scale value in 0..=1",
+                control.label()
+            )));
         }
-        let (model_index, parameter_index) = self.amp_drive_location()?;
+        let (model_index, parameter_index) = self.amp_control_location(control)?;
         let ModelParameter::Recorded {
             value: ParameterValue::Float { bits },
             ..
         } = &self.models[model_index].parameters[parameter_index]
         else {
-            return Err(ToneError::format("Amp Drive target is not a float PARM"));
+            return Err(ToneError::format(format!(
+                "Amp {} target is not a float PARM",
+                control.label()
+            )));
         };
         let current = f32::from_bits(*bits);
         if !current.is_finite() || !(0.0..=1.0).contains(&current) {
-            return Err(ToneError::format(
-                "existing Amp Drive value is outside the finite host scale 0..=1",
-            ));
+            return Err(ToneError::format(format!(
+                "existing Amp {} value is outside the finite host scale 0..=1",
+                control.label()
+            )));
         }
         let offset = self.parameter_value_offsets[model_index][parameter_index]
-            .ok_or_else(|| ToneError::format("Amp Drive target has no unique raw value word"))?;
+            .ok_or_else(|| ToneError::format("amp control has no unique raw value word"))?;
         let new_bits = value.to_bits();
         self.bytes[offset..offset + 4].copy_from_slice(&new_bits.to_be_bytes());
         if let ModelParameter::Recorded {
@@ -411,10 +484,15 @@ impl PodTone {
         Ok(())
     }
 
-    fn amp_drive_location(&self) -> Result<(usize, usize), ToneError> {
+    /// Compatibility convenience for callers that only use Drive.
+    pub fn set_amp_drive_fraction(&mut self, value: f32) -> Result<(), ToneError> {
+        self.set_amp_control_fraction(AmpControl::Drive, value)
+    }
+
+    fn amp_control_location(&self, control: AmpControl) -> Result<(usize, usize), ToneError> {
         if self.device_id != PODXT_LIVE_TONE_ID {
             return Err(ToneError::format(
-                "Amp Drive editing requires a PODxt Live PINF target",
+                "amp control editing requires a PODxt Live PINF target",
             ));
         }
         if self.device_version < PODXT_LIVE_HOST_MIN_VERSION {
@@ -426,10 +504,10 @@ impl PodTone {
             .models
             .iter()
             .position(|model| model.slot == AMP_SLOT)
-            .ok_or_else(|| ToneError::format("Amp Drive requires an existing amp model slot"))?;
+            .ok_or_else(|| ToneError::format("amp control requires an existing amp model slot"))?;
         if self.models[model_index].model_id != PLEXI_LEAD_100_MODEL {
             return Err(ToneError::format(
-                "Amp Drive host contract applies only to Plexi Lead 100",
+                "amp control host contract applies only to Plexi Lead 100",
             ));
         }
         if self.models[model_index]
@@ -438,7 +516,7 @@ impl PodTone {
             .any(|parameter| matches!(parameter, ModelParameter::Opaque { .. }))
         {
             return Err(ToneError::format(
-                "opaque PARM in amp model makes Drive target ambiguous",
+                "opaque PARM in amp model makes control target ambiguous",
             ));
         }
         let matches: Vec<_> = self.models[model_index]
@@ -446,14 +524,13 @@ impl PodTone {
             .iter()
             .enumerate()
             .filter_map(|(index, parameter)| match parameter {
-                ModelParameter::Recorded { id, .. } if *id == AMP_DRIVE_PARAM => Some(index),
+                ModelParameter::Recorded { id, .. } if *id == control.param_id() => Some(index),
                 _ => None,
             })
             .collect();
-        let parameter_index = matches
-            .last()
-            .copied()
-            .ok_or_else(|| ToneError::format("Amp Drive parameter is absent"))?;
+        let parameter_index = matches.last().copied().ok_or_else(|| {
+            ToneError::format(format!("Amp {} parameter is absent", control.label()))
+        })?;
         match &self.models[model_index].parameters[parameter_index] {
             ModelParameter::Recorded {
                 prefix: 0x3f,
@@ -461,19 +538,21 @@ impl PodTone {
                 ..
             } => {}
             ModelParameter::Recorded { prefix, .. } if *prefix != 0x3f => {
-                return Err(ToneError::format(
-                    "Amp Drive raw prefix is not canonical 0x3f",
-                ));
+                return Err(ToneError::format(format!(
+                    "Amp {} raw prefix is not canonical 0x3f",
+                    control.label()
+                )));
             }
             _ => {
-                return Err(ToneError::format(
-                    "Amp Drive target has an unsupported value type",
-                ));
+                return Err(ToneError::format(format!(
+                    "Amp {} target has an unsupported value type",
+                    control.label()
+                )));
             }
         }
         if self.parameter_value_offsets[model_index][parameter_index].is_none() {
             return Err(ToneError::format(
-                "Amp Drive target has no unique raw value word",
+                "amp control target has no unique raw value word",
             ));
         }
         Ok((model_index, parameter_index))
@@ -615,11 +694,20 @@ impl Library {
     }
 
     pub fn set_amp_drive_fraction(&mut self, index: usize, value: f32) -> Result<(), ToneError> {
+        self.set_amp_control_fraction(index, AmpControl::Drive, value)
+    }
+
+    pub fn set_amp_control_fraction(
+        &mut self,
+        index: usize,
+        control: AmpControl,
+        value: f32,
+    ) -> Result<(), ToneError> {
         let entry = self
             .tones
             .get_mut(index)
             .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
-        entry.tone.set_amp_drive_fraction(value)
+        entry.tone.set_amp_control_fraction(control, value)
     }
 
     pub fn replace(&mut self, index: usize, bytes: Vec<u8>) -> Result<(), ToneError> {
@@ -919,72 +1007,117 @@ mod tests {
     }
 
     #[test]
-    fn amp_drive_rejections_are_transactional_for_domain_and_target_failures() {
-        let record = drive_record(0x3f, AMP_DRIVE_PARAM, 1, 0x3f00_0000);
-        for invalid in [
-            f32::from_bits(0x8000_0001),
-            f32::from_bits(0x3f80_0001),
-            f32::NAN,
-            f32::INFINITY,
-            f32::NEG_INFINITY,
-        ] {
-            let bytes = drive_tone(
-                PODXT_LIVE_HOST_MIN_VERSION,
-                PLEXI_LEAD_100_MODEL,
-                &[&record],
+    fn source_mapped_amp_controls_have_distinct_ids_and_preserve_every_other_byte() {
+        let records: Vec<_> = AmpControl::ALL
+            .into_iter()
+            .enumerate()
+            .map(|(index, control)| {
+                drive_record(
+                    0x3f,
+                    control.param_id(),
+                    1,
+                    (0.1f32 + index as f32 * 0.1).to_bits(),
+                )
+            })
+            .collect();
+        let refs: Vec<_> = records.iter().map(|record| &record[..]).collect();
+        let original = drive_tone(PODXT_LIVE_HOST_MIN_VERSION, PLEXI_LEAD_100_MODEL, &refs);
+        for control in AmpControl::ALL {
+            let mut tone = PodTone::parse(original.clone()).unwrap();
+            let previous = tone.amp_control_fraction(control).unwrap();
+            let new_value = (previous + 0.01).min(1.0);
+            tone.set_amp_control_fraction(control, new_value).unwrap();
+            assert_eq!(
+                tone.amp_control_fraction(control).unwrap().to_bits(),
+                new_value.to_bits(),
+                "{}",
+                control.label()
             );
-            let mut tone = PodTone::parse(bytes.clone()).unwrap();
-            assert!(tone.set_amp_drive_fraction(invalid).is_err());
-            assert_eq!(tone.as_bytes(), bytes);
+            let (model_index, parameter_index) = tone.amp_control_location(control).unwrap();
+            let offset = tone.parameter_value_offsets[model_index][parameter_index].unwrap();
+            let expected = [
+                original[..offset].to_vec(),
+                new_value.to_bits().to_be_bytes().to_vec(),
+                original[offset + 4..].to_vec(),
+            ]
+            .concat();
+            assert_eq!(tone.as_bytes(), expected, "{}", control.label());
         }
-        let fixtures = [
-            drive_tone(
-                PODXT_LIVE_HOST_MIN_VERSION - 1,
-                PLEXI_LEAD_100_MODEL,
-                &[&record],
-            ),
-            drive_tone(
-                PODXT_LIVE_HOST_MIN_VERSION,
-                PLEXI_LEAD_100_MODEL + 1,
-                &[&record],
-            ),
-            drive_tone(PODXT_LIVE_HOST_MIN_VERSION, PLEXI_LEAD_100_MODEL, &[]),
-        ];
-        for bytes in fixtures {
-            let mut tone = PodTone::parse(bytes.clone()).unwrap();
-            assert!(tone.set_amp_drive_fraction(0.25).is_err());
-            assert_eq!(tone.as_bytes(), bytes);
-        }
-        let wrong_prefix = drive_record(0x7e, AMP_DRIVE_PARAM, 1, 0x3f00_0000);
-        let wrong_type = drive_record(0x3f, AMP_DRIVE_PARAM, 0, 0x3f00_0000);
-        for parm in [&wrong_prefix[..], &wrong_type[..], &[1, 2, 3, 4][..]] {
-            let bytes = drive_tone(PODXT_LIVE_HOST_MIN_VERSION, PLEXI_LEAD_100_MODEL, &[parm]);
-            let mut tone = PodTone::parse(bytes.clone()).unwrap();
-            assert!(tone.set_amp_drive_fraction(0.25).is_err());
-            assert_eq!(tone.as_bytes(), bytes);
-        }
-        let nonfinite = drive_record(0x3f, AMP_DRIVE_PARAM, 1, f32::NAN.to_bits());
-        let bytes = drive_tone(
-            PODXT_LIVE_HOST_MIN_VERSION,
-            PLEXI_LEAD_100_MODEL,
-            &[&nonfinite],
-        );
-        let mut tone = PodTone::parse(bytes.clone()).unwrap();
-        assert!(tone.set_amp_drive_fraction(0.25).is_err());
-        assert_eq!(tone.as_bytes(), bytes);
     }
 
     #[test]
-    fn amp_drive_library_edit_revert_save_copy_and_collision_keep_safe_copy_rules() {
-        let record = drive_record(0x3f, AMP_DRIVE_PARAM, 1, 0x3f00_0000);
-        let original = drive_tone(
-            PODXT_LIVE_HOST_MIN_VERSION,
-            PLEXI_LEAD_100_MODEL,
-            &[&record],
-        );
+    fn amp_control_rejections_are_transactional_for_domain_and_target_failures() {
+        for control in AmpControl::ALL {
+            let record = drive_record(0x3f, control.param_id(), 1, 0x3f00_0000);
+            for invalid in [
+                f32::from_bits(0x8000_0001),
+                f32::from_bits(0x3f80_0001),
+                f32::NAN,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+            ] {
+                let bytes = drive_tone(
+                    PODXT_LIVE_HOST_MIN_VERSION,
+                    PLEXI_LEAD_100_MODEL,
+                    &[&record],
+                );
+                let mut tone = PodTone::parse(bytes.clone()).unwrap();
+                assert!(tone.set_amp_control_fraction(control, invalid).is_err());
+                assert_eq!(tone.as_bytes(), bytes, "{}", control.label());
+            }
+            let fixtures = [
+                drive_tone(
+                    PODXT_LIVE_HOST_MIN_VERSION - 1,
+                    PLEXI_LEAD_100_MODEL,
+                    &[&record],
+                ),
+                drive_tone(
+                    PODXT_LIVE_HOST_MIN_VERSION,
+                    PLEXI_LEAD_100_MODEL + 1,
+                    &[&record],
+                ),
+                drive_tone(PODXT_LIVE_HOST_MIN_VERSION, PLEXI_LEAD_100_MODEL, &[]),
+            ];
+            for bytes in fixtures {
+                let mut tone = PodTone::parse(bytes.clone()).unwrap();
+                assert!(tone.set_amp_control_fraction(control, 0.25).is_err());
+                assert_eq!(tone.as_bytes(), bytes, "{}", control.label());
+            }
+            let wrong_prefix = drive_record(0x7e, control.param_id(), 1, 0x3f00_0000);
+            let wrong_type = drive_record(0x3f, control.param_id(), 0, 0x3f00_0000);
+            for parm in [&wrong_prefix[..], &wrong_type[..], &[1, 2, 3, 4][..]] {
+                let bytes = drive_tone(PODXT_LIVE_HOST_MIN_VERSION, PLEXI_LEAD_100_MODEL, &[parm]);
+                let mut tone = PodTone::parse(bytes.clone()).unwrap();
+                assert!(tone.set_amp_control_fraction(control, 0.25).is_err());
+                assert_eq!(tone.as_bytes(), bytes, "{}", control.label());
+            }
+            let nonfinite = drive_record(0x3f, control.param_id(), 1, f32::NAN.to_bits());
+            let bytes = drive_tone(
+                PODXT_LIVE_HOST_MIN_VERSION,
+                PLEXI_LEAD_100_MODEL,
+                &[&nonfinite],
+            );
+            let mut tone = PodTone::parse(bytes.clone()).unwrap();
+            assert!(tone.set_amp_control_fraction(control, 0.25).is_err());
+            assert_eq!(tone.as_bytes(), bytes, "{}", control.label());
+        }
+    }
+
+    #[test]
+    fn amp_control_library_edit_revert_save_copy_and_collision_keep_safe_copy_rules() {
+        let records: Vec<_> = AmpControl::ALL
+            .into_iter()
+            .map(|control| drive_record(0x3f, control.param_id(), 1, 0x3f00_0000))
+            .collect();
+        let refs: Vec<_> = records.iter().map(|record| &record[..]).collect();
+        let original = drive_tone(PODXT_LIVE_HOST_MIN_VERSION, PLEXI_LEAD_100_MODEL, &refs);
         let mut library = Library::default();
         let index = library.import_bytes(original.clone()).unwrap();
-        library.set_amp_drive_fraction(index, 0.625).unwrap();
+        for (number, control) in AmpControl::ALL.into_iter().enumerate() {
+            library
+                .set_amp_control_fraction(index, control, 0.125 + number as f32 * 0.125)
+                .unwrap();
+        }
         assert!(library.is_dirty(index));
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("drive.l6t");
@@ -994,15 +1127,24 @@ mod tests {
         assert!(library.is_dirty(index));
         library.revert_unsaved(index).unwrap();
         assert_eq!(library.tone(index).unwrap().as_bytes(), original);
-        library.set_amp_drive_fraction(index, 0.625).unwrap();
+        for (number, control) in AmpControl::ALL.into_iter().enumerate() {
+            library
+                .set_amp_control_fraction(index, control, 0.125 + number as f32 * 0.125)
+                .unwrap();
+        }
         std::fs::remove_file(&path).unwrap();
         library.tone(index).unwrap().save_copy(&path).unwrap();
         assert!(library.tone(index).unwrap().save_copy(&path).is_err());
         let saved = std::fs::read(path).unwrap();
-        assert_eq!(
-            PodTone::parse(saved).unwrap().amp_drive_fraction().unwrap(),
-            0.625
-        );
+        let reopened = PodTone::parse(saved).unwrap();
+        for (number, control) in AmpControl::ALL.into_iter().enumerate() {
+            assert_eq!(
+                reopened.amp_control_fraction(control).unwrap().to_bits(),
+                (0.125 + number as f32 * 0.125).to_bits(),
+                "{}",
+                control.label()
+            );
+        }
         assert!(library.is_dirty(index));
         library.note_saved(index).unwrap();
         assert!(!library.is_dirty(index));

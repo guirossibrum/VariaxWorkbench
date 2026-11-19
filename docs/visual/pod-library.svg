@@ -65,10 +65,10 @@
 <text x="24" y="662" class="">Source: example.l6t</text>
 <text x="24" y="704" class="">Original file preserved</text>
 <text x="450" y="496" class="title">SELECTED STAGE: AMP</text>
-<text x="450" y="545" class="">Parameter definition unverified</text>
-<text x="450" y="579" class="muted">Editing unavailable — no invented values</text>
+<text x="450" y="545" class="">Six Plexi amp host scales</text>
+<text x="450" y="579" class="muted">Other models and controls stay uneditable</text>
 <rect x="450" y="610" width="360" height="32" rx="6" fill="#222222" stroke="#797979" stroke-width="2"/>
-<text x="460" y="631" class="">Amp controls — unsupported</text>
+<text x="460" y="631" class="">Amp controls — host scale 0–1</text>
 <text x="450" y="702" class="muted">Saved new copy: example-copy.l6t</text>
 <rect x="0" y="776" width="1280" height="24" rx="0" fill="#222222" stroke="none" stroke-width="2"/>
 <text x="12" y="793" class="small">Local copy saved • Original unchanged • Hardware transfer remains locked</text>

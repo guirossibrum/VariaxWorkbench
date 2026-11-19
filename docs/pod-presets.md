@@ -67,17 +67,18 @@ tone. The in-memory library is a list of those files. It is not a new bank
 format.
 
 The PINF name edit uses the same 32-unit NUL and length rule as the guitar
-renamer. A second edit is available only for Amp Drive on model
-`0x0002001b` (Plexi Lead 100) in amp slot `0x00030000`: the Line6Edit host
-mapping identifies Drive as float PARM `0x00100003`, with a finite host scale
-of 0 through 1. The GUI labels this as a host scale; no device-accepted range
-or physical behavior is claimed. The edit requires the exact serialized
-prefix `0x3f`, type 1, a present parameter and a PINF device-version word at
-least `3.00` under this offline profile. It patches only the last matching
-parameter's four value bytes, following the source reader's reverse lookup;
-it does not create a missing parameter or rewrite the surrounding file.
-Unknown IDs, other controls, other amp models, unsupported prefixes/types,
-opaque amp PARM chunks, missing controls and out-of-domain values remain
+renamer. Six host-scale edits are available for Drive, Bass, Mid, Treble,
+Presence, and Channel Volume on model `0x0002001b` (Plexi Lead 100) in amp slot
+`0x00030000`. The source maps these controls to float PARM identifiers
+`0x00100003`, `0x00100000`, `0x00100001`, `0x00100002`, `0x00100004`, and
+`0x00100005`, respectively. Their finite host scale is 0 through 1; this does
+not claim a device-accepted range or physical behavior. Each edit requires the
+exact serialized prefix `0x3f`, type 1, a present parameter and a PINF
+device-version word at least `3.00` under this offline profile. It patches only
+the last matching parameter's four value bytes, following the source reader's
+reverse lookup; it does not create a missing parameter or rewrite the
+surrounding file. Unknown IDs, unsupported prefixes/types, opaque amp PARM
+chunks, missing controls, out-of-domain values and other amp models remain
 uneditable. `document::save_new` writes a new copy and refuses to replace an
 existing path. The guitar document refuses to open or rename a PODxt Live
 target, including a bank that contains one.
@@ -100,22 +101,30 @@ recovered Line 6 limit.
 
 ## Parameter domain boundary
 
-For this one control, static Line6Edit source identifies `L6PODxtDevice`,
-`L6PODxtParamMap`, the Plexi Lead 100 model, the AMP_DRIVE definition, and
-`L6SharcTonePercentFormat`. The formatter parses percent text into the host
-float and its quantizer is a no-op; its display converts through a 7-bit
-derived label. Rust edits the underlying finite float without claiming the
-display labels form a supported integer grid. Other PODxt Live parameter
-units, ranges, names, effects, and model-specific controls remain unresolved.
-This is static source analysis plus independent Rust behavior, not an executed
-vendor oracle, device acceptance test, or installed-pack entitlement result.
-No DLL was loaded, no installer was run, and no device was opened.
+For these controls, static Line6Edit source identifies `L6PODxtDevice`,
+`L6PODxtParamMap`, the Plexi Lead 100 model, six `L6AX3ParamDefs` amp
+definitions, and `L6SharcTonePercentFormat`. The formatter maps finite host
+values through percent text and its quantizer is a no-op; display labels are
+derived through a 7-bit conversion. Rust edits the underlying finite float
+without treating those display labels as a supported integer grid. Other
+PODxt Live model/effect controls remain unresolved. See the
+[source-to-operation matrix](podxt-live-control-matrix.md) for the admitted
+scope and remaining workflows. This is static source analysis plus independent
+Rust behavior, not an executed vendor oracle, device acceptance test, or
+installed-pack entitlement result. No DLL was loaded, no installer was run,
+and no device was opened.
 
-The subsequent [POD Farm 1.12 source-recovery milestone](pod-farm-112-source-recovery.md)
-uses a separately provisioned original and connects a target-specific packed-tone
-conversion consumer to one typed scalar callback. This establishes conditional
-encoding behavior, not editor domains or units. The property-provider/target
-connection remains unresolved; no value-edit API or hardware release follows.
+Six focused offline test methods pass: five Rust parser/library/control methods
+and one headless egui slider/quit-guard method. The filtered `cargo test
+--offline --all-features amp_` invocation also selected two pre-existing POD
+tests. This is focused synthetic coverage, not a full suite or a physical
+compatibility test; changed-head configured checks are tracked separately.
+
+The [POD Farm 1.12 source-recovery milestone](pod-farm-112-source-recovery.md)
+uses a separate original and remains a historical negative for that package's
+control applicability. It does not negate the independently admitted
+[Line6Edit 3.06 contract](podxt-live-control-matrix.md), and it grants no
+hardware access.
 
 - `new L6ParamDefinition(` occurs only in
   `analysis/decompiled/mac/modules/variax/device/L6VariaxParamDefs.java`,
