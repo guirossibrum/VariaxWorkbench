@@ -48,6 +48,7 @@ pub const OFFLINE_BANNER: &str =
     "Offline test recording. This is not a recording from a connected device.";
 pub const DEVICE_CAPTURE_LOCKED: &str = "Device capture and playback stay locked. No ALSA, PipeWire, PulseAudio, USB, or MIDI port is opened.";
 pub const NO_AUTO_START: &str = "No auto-start, route change, or monitor/re-amp. Native live locked; external input unsupported.";
+pub const EXTERNAL_PLAN_UNAVAILABLE: &str = "External interface plan unavailable: no independently admitted interface record binds identity/revision, route and channel map, sample format, rational clock, OS backend, and provenance.";
 pub const PHASE_IDLE: &str = "Idle. Device capture is locked.";
 pub const PHASE_RECORDING: &str = "Recording test audio in memory. No device is open.";
 pub const PHASE_STOPPED: &str = "Stopped. A file is written only when you save.";
@@ -1340,6 +1341,80 @@ impl Panel {
         self.ensure_idle()?;
         self.input = input;
         Ok(())
+    }
+
+    /// Prepare and inspect the source-supported PODxt declaration through the
+    /// same route selected for the recorder. This is planning only: it never
+    /// creates a take or initializes a live stream.
+    pub fn inspect_native_plan(&mut self) -> Result<capture::CaptureContract, TakeError> {
+        self.ensure_idle()?;
+        let signal_route = self
+            .route
+            .ok_or(TakeError::SelectionMissing("a record route"))?;
+        let registry = crate::rig::audio::Registry::frozen()
+            .map_err(|error| TakeError::Capture(error.to_string()))?;
+        let capture_row = registry
+            .rows()
+            .iter()
+            .find(|row| {
+                row.name == "PODxt Live"
+                    && row.role == crate::rig::audio::SourceRole::Bridge
+                    && row.classification
+                        == crate::rig::audio::Classification::NativeUsbDeclaration
+            })
+            .map(|row| row.ordinal)
+            .ok_or_else(|| TakeError::Capture("PODxt Live declaration is not admitted".into()))?;
+        #[cfg(target_os = "linux")]
+        let platform = crate::rig::audio::Platform::Linux;
+        #[cfg(target_os = "windows")]
+        let platform = crate::rig::audio::Platform::Windows;
+        #[cfg(target_os = "macos")]
+        let platform = crate::rig::audio::Platform::MacOs;
+        #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+        let platform = crate::rig::audio::Platform::Windows;
+        let plan = capture::ValidatedPlan::native_podxt(
+            &registry,
+            crate::rig::audio::Request {
+                capture_row,
+                capture_profile: crate::rig::ProductProfile::PodxtLive,
+                connected_instrument: None,
+                platform,
+                state: crate::rig::audio::RuntimeState::Normal,
+                endpoint_use: crate::rig::audio::EndpointUse::Capture,
+                contract: crate::rig::audio::CONTRACT,
+                installed_revision: None,
+                channels: 2,
+                clock: (78_125, 2),
+                format: crate::rig::audio::SampleFormat::S24ThreeByteLe,
+            },
+            signal_route,
+            PANEL_TAKE_BYTES,
+        )
+        .map_err(|error| TakeError::Capture(error.to_string()))?;
+        plan.revalidate()
+            .map_err(|error| TakeError::Capture(error.to_string()))?;
+        let contract = plan.contract();
+        self.message = format!(
+            "Prepared declaration only: {}; provenance {}; {} channels mapped {}→L, {}→R; exact source clock {}/{} Hz; {:?}. Capacity {} bytes. No take started; live capture remains locked.",
+            contract.contract,
+            contract.provenance,
+            contract.channels,
+            contract.channel_map.left,
+            contract.channel_map.right,
+            contract.clock.0,
+            contract.clock.1,
+            contract.format,
+            PANEL_TAKE_BYTES,
+        );
+        Ok(contract)
+    }
+
+    /// No external interface has an independently admitted capture record.
+    /// The UI can report the blocker without inventing an identity or plan.
+    pub fn external_plan_status(&mut self) -> Result<(), TakeError> {
+        self.ensure_idle()?;
+        self.message = EXTERNAL_PLAN_UNAVAILABLE.into();
+        Err(TakeError::Capture(EXTERNAL_PLAN_UNAVAILABLE.into()))
     }
 
     pub fn load_wav(&mut self, label: &str, bytes: &[u8]) -> Result<(), TakeError> {

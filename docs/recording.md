@@ -26,6 +26,14 @@ The user picks both pieces before Start:
 | WAV file | A regular canonical 16-bit stereo PCM file whose header rate matches the selected integer clock. A pipe, socket, or device node is refused before it is opened, including when its reported length is zero. |
 | Native source clock | Linux `pod_ratden` `78125/2`, packed as declared S24_3LE frames in memory. |
 
+The same window has **Inspect PODxt Live plan…** and **Check external
+interface…** actions. Inspection revalidates the frozen Linux declaration using
+the selected Record Send route and displays its exact rational clock, format,
+channel map, contract provenance, and take capacity. It does not arm or start a
+take. The external check reports that no interface record is admitted yet; it
+does not create an identity from a name or USB ID. Both actions leave live
+capture locked and do not alter monitoring or re-amping.
+
 Guitar `SelectRecordRoute` stays unsupported. Workbench HD, JTV-69, and POD
 HD500X stay unverified. The HD500X INF sample-rate default is not a record
 route for this recorder. The session gate checks the POD role, proves the

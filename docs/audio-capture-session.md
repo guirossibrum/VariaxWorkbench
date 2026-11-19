@@ -28,11 +28,18 @@ cannot be committed to `Take`, it remains available as ordered pending audio or
 dropout events for explicit recovery after stop. Cancel discards only in-memory
 work and leaves prior saved files intact.
 
-The recording `Panel` now routes its selected WAV-file input through this same
+The recording `Panel` routes its selected WAV-file input through this same
 `CaptureSession` and existing `Take` save path, while keeping the existing
-unsaved-take and non-overwriting-save checks. The synthetic-input path retains
-its existing direct `Take` workflow. This is offline in-app integration only;
-it does not create or open an operating-system capture stream.
+unsaved-take and non-overwriting-save checks. It can also prepare and revalidate
+the source-supported Linux PODxt Live declaration from the selected Record Send
+route, displaying its exact `78125/2` clock, S24_3LE format, channel map,
+provenance contract, and take cap. This only inspects a static plan: it creates
+no take and cannot start a stream. The external-interface check reports the
+missing independently admitted identity/revision, route/map, format, rational
+clock, OS backend, and provenance without fabricating an interface record.
+Synthetic-input recording remains distinct and does not pretend to be
+native/external capture. This is offline in-app integration only; it does not
+create or open an operating-system capture stream.
 
 The session is a deterministic software contract, not a live real-time callback
 or stream initializer. The inactive Linux ALSA translator now requires a

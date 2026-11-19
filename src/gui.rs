@@ -1575,6 +1575,17 @@ impl Workbench {
                         self.recorder.note(error.to_string());
                     }
                 }
+                ui.separator();
+                if self.record_button(ui, "inspect-native-plan", "Inspect PODxt Live plan…")
+                    && let Err(error) = self.recorder.inspect_native_plan()
+                {
+                    self.recorder.note(error.to_string());
+                }
+                if self.record_button(ui, "check-external-plan", "Check external interface…")
+                    && let Err(error) = self.recorder.external_plan_status()
+                {
+                    self.recorder.note(error.to_string());
+                }
                 if self.record_choice(
                     ui,
                     "input-synthetic",
@@ -1628,13 +1639,14 @@ impl Workbench {
                 #[cfg(test)]
                 {
                     self.recording_visible = format!(
-                        "{}\n{}\n{}\n{}\n{}\n{}",
+                        "{}\n{}\n{}\n{}\n{}\n{}\n{}",
                         recording::OFFLINE_BANNER,
                         recording::DEVICE_CAPTURE_LOCKED,
                         recording::NO_AUTO_START,
                         self.recorder.phase_label(),
                         self.recorder.meter_line(),
                         self.recorder.guide_line(),
+                        self.recorder.message(),
                     );
                 }
             });
@@ -2557,6 +2569,20 @@ mod tests {
         assert_eq!(app.recorder.phase(), recording::Phase::Idle);
         assert!(app.read_worker.is_none());
         click_recording(&context, &mut app, "route-clean");
+        click_recording(&context, &mut app, "inspect-native-plan");
+        assert!(app.recording_visible.contains("Prepared declaration only"));
+        assert!(app.recording_visible.contains("78125/2 Hz"));
+        assert!(app.recording_visible.contains("2 channels mapped 0→L, 1→R"));
+        assert_eq!(app.recorder.phase(), recording::Phase::Idle);
+        assert!(!app.recorder.live_monitor_changed());
+        assert!(!app.recorder.live_route_changed());
+        click_recording(&context, &mut app, "check-external-plan");
+        assert!(
+            app.recording_visible
+                .contains("no independently admitted interface record")
+        );
+        assert_eq!(app.recorder.phase(), recording::Phase::Idle);
+        assert_eq!(app.recording_capture_attempts, 0);
         click_recording(&context, &mut app, "clock-44100");
         click_recording(&context, &mut app, "input-synthetic");
         assert!(app.recording_visible.contains("not a live route change"));

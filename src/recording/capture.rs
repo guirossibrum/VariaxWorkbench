@@ -1034,6 +1034,33 @@ mod tests {
     }
 
     #[test]
+    fn native_declaration_rejects_unsupported_platforms_and_invalid_source_clocks() {
+        let (registry, mut request) = native_request(None);
+        request.platform = Platform::MacOs;
+        assert_eq!(
+            ValidatedPlan::native_podxt(
+                &registry,
+                request,
+                RecordRoute::SendCleanGuitar,
+                1024
+            ),
+            Err(CaptureError::UnsupportedPlatform)
+        );
+
+        let (registry, mut request) = native_request(None);
+        request.clock = (39_062, 1);
+        assert_eq!(
+            ValidatedPlan::native_podxt(
+                &registry,
+                request,
+                RecordRoute::SendCleanGuitar,
+                1024
+            ),
+            Err(CaptureError::Registry(AdmissionError::UnsupportedPcm))
+        );
+    }
+
+    #[test]
     fn native_session_clock_observation_keeps_the_exact_rational_source_rate() {
         let (registry, request) = native_request(None);
         let plan =
