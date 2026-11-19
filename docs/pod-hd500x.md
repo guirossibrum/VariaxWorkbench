@@ -231,6 +231,52 @@ rewritten into another format. Synthetic fixtures validate only the
 implemented subset and do not reopen independent captures or private source
 materials.
 
+### Writer context and the limits of byte `0x0b`
+
+The Editor 2.27 static source trace follows `FUN_0040dd80` through
+`FUN_00410730` to `FUN_004108f0`. The writer selects patch state through a
+setlist/preset-slot table and emits ten big-endian 32-bit header words. Words
+0–1 (offsets `0x00` and `0x04`) are the magic and version. Words 2–5
+(`0x08`–`0x17`) are copied from writer context; words 6–9 (`0x18`–`0x27`) are
+zeroed. Thus `0x0b` is the last byte of context word 2, not a separately
+validated product field. Reader `FUN_00410a50` converts the body back and
+checks only the magic and version words; it does not compare `0x0b`.
+
+The immediate writer producer for word 2 is in-memory patch/context state.
+The upstream def-use path from that word to a product or profile selector is
+not established. A separate Central static product key (`0x00140005`) has no
+proven join to this H5EP field or reader. Consequently, neither the writer
+trace nor the file-group association establishes a POD HD500X target ID. The
+often repeated third-party `0x2d`/`0x2e` labels remain unregistered claims.
+These narrow edit-domain conclusions are based on private static reports
+identified by SHA-256 `04be402d5444356e0d31ab0bbb26e09b4bb75fcb0723d285f67b3be783d828c1`,
+`0087b55afb53b293f4c79136423ff607cab21f2325bbfc78b204947b4001c2a6`, and
+`9a0c2576398272b486fb3c1a4c523157369da1d00349cadebdcf0c316d0824df`; the
+Editor image identity is `871c86da6b6810307dc201297d8411f2b2f7eec7e4c3e150f0aa881f8c89afe2`.
+The reports and binaries remain local; hashes are provenance pins, not a
+public reproduction package.
+
+The DRIVE edit is intentionally narrower still. In the pinned Editor image,
+`FUN_00411130`/`FUN_004127e0` resolve the first row matching the parameter key;
+the row flag is passed into widget assignment, and `FUN_00407ef0` gates the
+write callback through `expc` before `FUN_0040a610`. The complete assignment
+state path is unresolved. Rust therefore admits only a zero row flag and an
+exact integer-percent float value, preserves the remaining row bytes, and
+rejects nonzero/unknown flags without mutation. This is a conservative offline
+editing rule, not proof that a physical device or original editor accepts the
+result.
+
+### Issue #32 acceptance status
+
+| Original acceptance criterion | Current status |
+| --- | --- |
+| Establish HD500X identity, editor/driver/firmware, preset/model/effect and audio evidence from primary sources. | **Partial.** Static Editor file-group association and a bounded writer/reader trace are recorded. Product attribution, complete model/effect catalog, firmware applicability, physical identity, and USB-audio behavior remain unresolved. |
+| Implement an independent offline backend integrated with shared interfaces and tests. | **Partial.** The separate offline HD Edit library parses bounded H5EP/H5ES/H5EB framing, extracts children, saves new copies, and admits one restricted DRIVE field edit with synthetic tests. The shared session profile remains `Unverified`; recording, maintenance, broad semantics and original-editor parity are not implemented. |
+| Keep HD/JTV separate from PODxt/original Variax; prohibit cross-family conversion, flashing and live operations. | **Partial.** Profile gates remain separate and this work adds no conversion, upload, flash or live path. Physical cross-family compatibility has not been established; hardware access remains locked. |
+
+Issue #32 remains open. Synthetic tests do not complete source-identification,
+device-compatibility or physical-safety criteria.
+
 ## Independent files were measured and do not name the product
 
 No original Edit application or installer was executed. A public author page,

@@ -1982,9 +1982,11 @@ impl Workbench {
         let facts = pod_preset::path_facts(&path);
         let bytes = match facts {
             Ok(facts) if facts.len <= pod_preset::TONE_BYTES_CEILING => {
-                pod_preset::read_regular_tone(Ok(facts), || fs::read(&path))
+                pod_preset::read_regular_tone(Ok(facts), || pod_preset::open_regular_file(&path))
             }
-            Ok(facts) => pod_preset::read_regular_hd_editor_file(Ok(facts), || fs::read(&path)),
+            Ok(facts) => pod_preset::read_regular_hd_editor_file(Ok(facts), || {
+                pod_preset::open_regular_file(&path)
+            }),
             Err(error) => Err(pod_preset::ToneError::Format {
                 detail: error.to_string(),
             }),
@@ -2078,7 +2080,9 @@ impl Workbench {
             self.pod_message = "Load cancelled. No file was read.".into();
             return;
         };
-        match pod_preset::read_regular_tone(pod_preset::path_facts(&path), || fs::read(&path)) {
+        match pod_preset::read_regular_tone(pod_preset::path_facts(&path), || {
+            pod_preset::open_regular_file(&path)
+        }) {
             Ok(bytes) => match Session::initial_rig().open_pod_preset(RoleKind::Pod, &bytes) {
                 Ok(summary) => match self.pod_library.import_bytes(bytes) {
                     Ok(index) => {
@@ -3280,11 +3284,15 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let input = directory.path().join("source.5xe");
         let output = directory.path().join("copy.5xe");
+        let blocked_output = directory.path().join("blocked-output");
+        std::fs::create_dir(&blocked_output).unwrap();
+        let sentinel = blocked_output.join("keep.bin");
+        std::fs::write(&sentinel, b"keep").unwrap();
         let original = sample_hd_editor_preset();
         std::fs::write(&input, &original).unwrap();
         app.dialogs = Box::new(FakeDialogs {
             pod_open: [Some(input.clone())].into(),
-            pod_save: [Some(output.clone())].into(),
+            pod_save: [Some(blocked_output.clone()), Some(output.clone())].into(),
             ..Default::default()
         });
 
@@ -3302,6 +3310,10 @@ mod tests {
         app.request_close(&context);
         assert!(matches!(app.pending, Some(Pending::QuitPod)));
         prompt_frame(&context, &mut app, vec![]);
+        click_prompt(&context, &mut app, "save");
+        assert!(!app.permit_close);
+        assert!(app.hd_library.is_dirty(0));
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep");
         click_prompt(&context, &mut app, "save");
         assert!(app.permit_close);
         assert!(!app.hd_library.any_dirty());

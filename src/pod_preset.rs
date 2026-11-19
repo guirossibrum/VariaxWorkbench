@@ -22,6 +22,7 @@
 use crate::document;
 use crate::pod_assets::{self, SlotRole};
 use crate::preset;
+use std::io::{self, Read};
 use std::path::Path;
 
 /// PINF target for PODxt Live. Equal to `L6ProductConstants.PODXT_LIVE`.
@@ -53,6 +54,7 @@ const HD_EFFECT_BLOCK_STRIDE: usize = 0x100;
 const HD_EFFECT_COUNT: usize = 8;
 const HD_EFFECT_ROWS_OFFSET: usize = 0x10;
 const HD_PARAMETER_ROW_STRIDE: usize = 0x14;
+const HD_PARAMETER_ROW_FLAG_OFFSET: usize = 0x10;
 const HD_PARAMETER_ROW_COUNT: usize = 12;
 const HD_SCREAMER_MODEL_ID: u32 = 0x0205_000d;
 const HD_SCREAMER_DRIVE_KEY: u32 = 0x3f10_0001;
@@ -213,20 +215,6 @@ impl OpaqueH5epPreset {
         body
     }
 
-    /// Replaces a body expressed in editor memory order. Validation occurs on
-    /// a temporary file-order copy before the stored source bytes are changed.
-    pub fn replace_body_in_editor_order(&mut self, mut body: Vec<u8>) -> Result<(), ToneError> {
-        if body.len() != H5EP_BODY_BYTES {
-            return Err(ToneError::format(
-                "editor-order H5EP body must be 4096 bytes",
-            ));
-        }
-        transform_hd_body_words(&mut body);
-        validate_hd_body(&body)?;
-        self.bytes[H5EP_HEADER_BYTES..H5EP_MIN_BYTES].copy_from_slice(&body);
-        Ok(())
-    }
-
     pub fn trailing_bytes(&self) -> &[u8] {
         &self.bytes[H5EP_MIN_BYTES..]
     }
@@ -235,29 +223,10 @@ impl OpaqueH5epPreset {
     /// the first matching effect row. The result is editor data, not a claim
     /// of physical-device availability.
     pub fn screamer_drive_percent(&self, effect_slot: usize) -> Option<u8> {
-        if effect_slot >= HD_EFFECT_COUNT {
-            return None;
-        }
-        let body = self.body_bytes();
-        let block = HD_EFFECT_BLOCK_OFFSET + effect_slot * HD_EFFECT_BLOCK_STRIDE;
-        if read_be_u32(body, block)? != HD_SCREAMER_MODEL_ID {
-            return None;
-        }
-        for row in 0..HD_PARAMETER_ROW_COUNT {
-            let key_at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
-            if read_be_u32(body, key_at)? == HD_SCREAMER_DRIVE_KEY {
-                let value = f32::from_bits(read_be_u32(body, key_at + 4)?);
-                if value.is_finite() && (0.0..=1.0).contains(&value) {
-                    let percent = (value * 100.0).round() as u8;
-                    let encoded = percent as f32 / 100.0;
-                    if encoded.to_bits() == value.to_bits() {
-                        return Some(percent);
-                    }
-                }
-                return None;
-            }
-        }
-        None
+        let value_at = self.screamer_drive_value_offset(effect_slot)?;
+        let value = f32::from_bits(read_be_u32(self.body_bytes(), value_at)?);
+        let percent = exact_drive_percent(value)?;
+        Some(percent)
     }
 
     /// Edits only the first statically identified Screamer DRIVE value word.
@@ -270,34 +239,22 @@ impl OpaqueH5epPreset {
         if percent > 100 {
             return Err(ToneError::format("Screamer DRIVE must be in 0..=100"));
         }
-        if effect_slot >= HD_EFFECT_COUNT {
-            return Err(ToneError::format("effect slot is outside 0..8"));
-        }
-        let body = self.body_bytes();
-        let block = HD_EFFECT_BLOCK_OFFSET + effect_slot * HD_EFFECT_BLOCK_STRIDE;
-        if read_be_u32(body, block) != Some(HD_SCREAMER_MODEL_ID) {
-            return Err(ToneError::format(
-                "selected effect slot is not the statically identified Screamer model",
-            ));
-        }
-        let value_at = (0..HD_PARAMETER_ROW_COUNT)
-            .map(|row| block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE)
-            .find(|&at| read_be_u32(body, at) == Some(HD_SCREAMER_DRIVE_KEY))
-            .map(|at| at + 4)
-            .ok_or_else(|| ToneError::format("Screamer slot has no DRIVE parameter row"))?;
+        let value_at = self
+            .screamer_drive_value_offset(effect_slot)
+            .ok_or_else(|| {
+                ToneError::format(
+                    "Screamer DRIVE slot, key, or assignment state is not admitted for editing",
+                )
+            })?;
         let current = f32::from_bits(
-            read_be_u32(body, value_at)
+            read_be_u32(self.body_bytes(), value_at)
                 .ok_or_else(|| ToneError::format("Screamer DRIVE row is truncated"))?,
         );
-        let current_percent = (current * 100.0).round() as u8;
-        if !current.is_finite()
-            || !(0.0..=1.0).contains(&current)
-            || (current_percent as f32 / 100.0).to_bits() != current.to_bits()
-        {
-            return Err(ToneError::format(
+        exact_drive_percent(current).ok_or_else(|| {
+            ToneError::format(
                 "existing Screamer DRIVE value is outside the exact recovered editor encoding",
-            ));
-        }
+            )
+        })?;
         let file_at = H5EP_HEADER_BYTES + value_at;
         self.bytes[file_at..file_at + 4]
             .copy_from_slice(&(percent as f32 / 100.0).to_bits().to_be_bytes());
@@ -311,6 +268,31 @@ impl OpaqueH5epPreset {
 
     pub fn save_copy(&self, path: &Path) -> Result<(), ToneError> {
         document::save_new(path, &self.bytes).map_err(ToneError::format)
+    }
+
+    fn screamer_drive_value_offset(&self, effect_slot: usize) -> Option<usize> {
+        if effect_slot >= HD_EFFECT_COUNT {
+            return None;
+        }
+        let body = self.body_bytes();
+        let block = HD_EFFECT_BLOCK_OFFSET + effect_slot * HD_EFFECT_BLOCK_STRIDE;
+        if read_be_u32(body, block)? != HD_SCREAMER_MODEL_ID {
+            return None;
+        }
+        for row in 0..HD_PARAMETER_ROW_COUNT {
+            let row_at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
+            if read_be_u32(body, row_at)? == HD_SCREAMER_DRIVE_KEY {
+                // The source sends the row flag into widget assignment state,
+                // while the callback suppresses writes for expression controls.
+                // Only the zero-flag state is admitted; auxiliary flag bytes
+                // remain opaque and are never normalized.
+                if body[row_at + HD_PARAMETER_ROW_FLAG_OFFSET] != 0 {
+                    return None;
+                }
+                return Some(row_at + 4);
+            }
+        }
+        None
     }
 }
 
@@ -602,6 +584,14 @@ fn read_be_u32(bytes: &[u8], offset: usize) -> Option<u32> {
     Some(u32::from_be_bytes(
         bytes.get(offset..offset.checked_add(4)?)?.try_into().ok()?,
     ))
+}
+
+fn exact_drive_percent(value: f32) -> Option<u8> {
+    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+        return None;
+    }
+    let percent = (value * 100.0).round() as u8;
+    ((percent as f32 / 100.0).to_bits() == value.to_bits()).then_some(percent)
 }
 
 fn transform_hd_body_words(body: &mut [u8]) {
@@ -1099,13 +1089,26 @@ pub fn path_facts(path: &Path) -> std::io::Result<PathFacts> {
     })
 }
 
+/// Opens an input only when the opened handle itself names a regular file.
+/// Callers also check the path facts first so non-file paths are not opened.
+pub fn open_regular_file(path: &Path) -> std::io::Result<std::fs::File> {
+    let file = std::fs::File::open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "input must be a regular file",
+        ));
+    }
+    Ok(file)
+}
+
 /// Reads only after `facts` names a regular file at or under the ceiling.
 ///
 /// A pipe, socket, or device node is refused first, including when its
 /// reported length is zero. `read` is not called in that case.
-pub fn read_regular_tone(
+pub fn read_regular_tone<R: Read>(
     facts: std::io::Result<PathFacts>,
-    read: impl FnOnce() -> std::io::Result<Vec<u8>>,
+    read: impl FnOnce() -> std::io::Result<R>,
 ) -> Result<Vec<u8>, ToneError> {
     let facts = facts.map_err(|error| ToneError::format(error.to_string()))?;
     if !facts.regular_file {
@@ -1118,21 +1121,19 @@ pub fn read_regular_tone(
             "tone file exceeds the 1 MiB offline librarian ceiling",
         ));
     }
-    let bytes = read().map_err(|error| ToneError::format(error.to_string()))?;
-    if bytes.len() as u64 > TONE_BYTES_CEILING {
-        return Err(ToneError::format(
-            "tone file exceeds the 1 MiB offline librarian ceiling",
-        ));
-    }
-    Ok(bytes)
+    read_bounded_file(
+        read().map_err(|error| ToneError::format(error.to_string()))?,
+        TONE_BYTES_CEILING,
+        "tone file exceeds the 1 MiB offline librarian ceiling",
+    )
 }
 
 /// Reads a regular offline `.5xe`/`.5xs`/`.5xb` candidate under the largest
 /// bounded format size. Device nodes, pipes, and oversized files are refused
 /// before the reader closure is called.
-pub fn read_regular_hd_editor_file(
+pub fn read_regular_hd_editor_file<R: Read>(
     facts: std::io::Result<PathFacts>,
-    read: impl FnOnce() -> std::io::Result<Vec<u8>>,
+    read: impl FnOnce() -> std::io::Result<R>,
 ) -> Result<Vec<u8>, ToneError> {
     let facts = facts.map_err(|error| ToneError::format(error.to_string()))?;
     if !facts.regular_file {
@@ -1145,11 +1146,42 @@ pub fn read_regular_hd_editor_file(
             "HD editor file exceeds the offline file-size ceiling",
         ));
     }
-    let bytes = read().map_err(|error| ToneError::format(error.to_string()))?;
-    if bytes.len() > HD_BUNDLE_BYTES_CEILING {
-        return Err(ToneError::format(
-            "HD editor file exceeds the offline file-size ceiling",
-        ));
+    read_bounded_file(
+        read().map_err(|error| ToneError::format(error.to_string()))?,
+        HD_BUNDLE_BYTES_CEILING as u64,
+        "HD editor file exceeds the offline file-size ceiling",
+    )
+}
+
+fn read_bounded_file<R: Read>(
+    mut reader: R,
+    ceiling: u64,
+    too_large: &str,
+) -> Result<Vec<u8>, ToneError> {
+    let capacity = usize::try_from(
+        ceiling
+            .checked_add(1)
+            .ok_or_else(|| ToneError::format("offline file-size ceiling overflow"))?,
+    )
+    .map_err(|_| ToneError::format("offline file-size ceiling is not addressable"))?;
+    let mut bytes = Vec::with_capacity(capacity);
+    let mut buffer = [0u8; 8192];
+    loop {
+        let remaining = capacity - bytes.len();
+        if remaining == 0 {
+            break;
+        }
+        let read_len = buffer.len().min(remaining);
+        let count = reader
+            .read(&mut buffer[..read_len])
+            .map_err(|error| ToneError::format(error.to_string()))?;
+        if count == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..count]);
+    }
+    if bytes.len() as u64 > ceiling {
+        return Err(ToneError::format(too_large));
     }
     Ok(bytes)
 }
@@ -1245,6 +1277,19 @@ fn custom_tone(kind: ContainerKind, models: &[BuiltModel<'_>]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+    use std::io::Cursor;
+    use std::rc::Rc;
+
+    struct ContinuousReader(Rc<Cell<usize>>);
+
+    impl Read for ContinuousReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            buffer.fill(0x5a);
+            self.0.set(self.0.get() + buffer.len());
+            Ok(buffer.len())
+        }
+    }
 
     fn synthetic_h5ep(extra: &[u8]) -> Vec<u8> {
         let mut bytes = vec![0; H5EP_MIN_BYTES];
@@ -1470,7 +1515,7 @@ mod tests {
                 }),
                 || {
                     called.set(true);
-                    Ok(vec![])
+                    Ok(Cursor::new(vec![]))
                 }
             )
             .is_err()
@@ -1484,7 +1529,7 @@ mod tests {
                 }),
                 || {
                     called.set(true);
-                    Ok(vec![])
+                    Ok(Cursor::new(vec![]))
                 }
             )
             .is_err()
@@ -1496,11 +1541,23 @@ mod tests {
                     regular_file: true,
                     len: 3,
                 }),
-                || Ok(vec![1, 2, 3]),
+                || Ok(Cursor::new(vec![1, 2, 3])),
             )
             .unwrap(),
             [1, 2, 3]
         );
+
+        let consumed = Rc::new(Cell::new(0));
+        let error = read_regular_hd_editor_file(
+            Ok(PathFacts {
+                regular_file: true,
+                len: 1,
+            }),
+            || Ok(ContinuousReader(Rc::clone(&consumed))),
+        )
+        .unwrap_err();
+        assert!(error.detail().contains("ceiling"));
+        assert_eq!(consumed.get(), HD_BUNDLE_BYTES_CEILING + 1);
     }
 
     #[test]
@@ -1513,7 +1570,7 @@ mod tests {
         let row0 = body_start + block + HD_EFFECT_ROWS_OFFSET;
         original[row0..row0 + 4].copy_from_slice(&HD_SCREAMER_DRIVE_KEY.to_be_bytes());
         original[row0 + 4..row0 + 8].copy_from_slice(&0.5f32.to_bits().to_be_bytes());
-        original[row0 + 0x10..row0 + 0x14].copy_from_slice(&0xdead_beefu32.to_be_bytes());
+        original[row0 + 0x10..row0 + 0x14].copy_from_slice(&[0x00, 0xde, 0xad, 0xbe]);
         let row1 = row0 + HD_PARAMETER_ROW_STRIDE;
         original[row1..row1 + 4].copy_from_slice(&HD_SCREAMER_DRIVE_KEY.to_be_bytes());
         original[row1 + 4..row1 + 8].copy_from_slice(&0.75f32.to_bits().to_be_bytes());
@@ -1526,9 +1583,10 @@ mod tests {
         transform_hd_body_words(&mut transformed);
         assert_eq!(transformed, disk_body);
         let editor_body = file.body_in_editor_order();
-        let mut unchanged = file.clone();
-        unchanged.replace_body_in_editor_order(editor_body).unwrap();
-        assert_eq!(unchanged.as_bytes(), original);
+        let mut round_trip_body = editor_body;
+        transform_hd_body_words(&mut round_trip_body);
+        assert_eq!(round_trip_body, disk_body);
+        assert_eq!(file.serialize_noop(), original);
 
         let mut edited = file;
         for percent in [0, 50, 100] {
@@ -1538,6 +1596,10 @@ mod tests {
         let mut expected = original.clone();
         expected[row0 + 4..row0 + 8].copy_from_slice(&1.0f32.to_bits().to_be_bytes());
         assert_eq!(edited.as_bytes(), expected);
+        assert_eq!(
+            &edited.as_bytes()[row0 + 0x10..row0 + 0x14],
+            &[0, 0xde, 0xad, 0xbe]
+        );
         let before = edited.as_bytes().to_vec();
         assert!(edited.set_screamer_drive_percent(0, 101).is_err());
         assert!(edited.set_screamer_drive_percent(8, 50).is_err());
@@ -1550,6 +1612,50 @@ mod tests {
         let non_grid_before = non_grid.as_bytes().to_vec();
         assert!(non_grid.set_screamer_drive_percent(0, 12).is_err());
         assert_eq!(non_grid.as_bytes(), non_grid_before);
+    }
+
+    #[test]
+    fn screamer_drive_admission_rejects_nonzero_row_flags_and_bad_values_atomically() {
+        let mut eligible = synthetic_h5ep(&[]);
+        let body_start = H5EP_HEADER_BYTES;
+        let block = HD_EFFECT_BLOCK_OFFSET;
+        eligible[body_start + block..body_start + block + 4]
+            .copy_from_slice(&HD_SCREAMER_MODEL_ID.to_be_bytes());
+        let row = body_start + block + HD_EFFECT_ROWS_OFFSET;
+        eligible[row..row + 4].copy_from_slice(&HD_SCREAMER_DRIVE_KEY.to_be_bytes());
+        eligible[row + 4..row + 8].copy_from_slice(&0.5f32.to_bits().to_be_bytes());
+        eligible[row + HD_PARAMETER_ROW_FLAG_OFFSET..row + HD_PARAMETER_ROW_STRIDE]
+            .copy_from_slice(&[0, 0x11, 0x22, 0x33]);
+
+        // Zero is the only admitted row flag; every nonzero value is treated
+        // as unresolved assignment state, without changing any row bytes.
+        for flag in 1..=u8::MAX {
+            let mut bytes = eligible.clone();
+            bytes[row + HD_PARAMETER_ROW_FLAG_OFFSET] = flag;
+            let mut preset = OpaqueH5epPreset::parse(bytes).unwrap();
+            assert_eq!(preset.screamer_drive_percent(0), None, "flag {flag:#04x}");
+            let before = preset.as_bytes().to_vec();
+            assert!(preset.set_screamer_drive_percent(0, 25).is_err());
+            assert_eq!(preset.as_bytes(), before, "flag {flag:#04x}");
+        }
+
+        let mut missing_key = eligible.clone();
+        missing_key[row..row + 4].copy_from_slice(&0x3f10_0002u32.to_be_bytes());
+        let mut missing_key = OpaqueH5epPreset::parse(missing_key).unwrap();
+        assert_eq!(missing_key.screamer_drive_percent(0), None);
+        let before = missing_key.as_bytes().to_vec();
+        assert!(missing_key.set_screamer_drive_percent(0, 25).is_err());
+        assert_eq!(missing_key.as_bytes(), before);
+
+        for value in [f32::NAN, f32::INFINITY, -0.01, 1.01, 0.123_456_7] {
+            let mut bytes = eligible.clone();
+            bytes[row + 4..row + 8].copy_from_slice(&value.to_bits().to_be_bytes());
+            let mut preset = OpaqueH5epPreset::parse(bytes).unwrap();
+            assert_eq!(preset.screamer_drive_percent(0), None);
+            let before = preset.as_bytes().to_vec();
+            assert!(preset.set_screamer_drive_percent(0, 25).is_err());
+            assert_eq!(preset.as_bytes(), before);
+        }
     }
 
     #[test]
@@ -1573,6 +1679,14 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), original);
         assert!(file.save_copy(&path).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), original);
+
+        let blocked_dir = directory.path().join("existing-directory");
+        std::fs::create_dir(&blocked_dir).unwrap();
+        let sentinel = blocked_dir.join("preserve.bin");
+        std::fs::write(&sentinel, b"sentinel").unwrap();
+        assert!(file.save_copy(&blocked_dir).is_err());
+        assert_eq!(file.as_bytes(), original);
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"sentinel");
 
         let invalid_destination = directory.path().join("missing-parent").join("copy.5xe");
         assert!(file.save_copy(&invalid_destination).is_err());
@@ -2011,7 +2125,7 @@ mod tests {
             }),
             || {
                 called = true;
-                Ok(vec![1])
+                Ok(Cursor::new(vec![1]))
             },
         )
         .unwrap_err();
@@ -2026,7 +2140,7 @@ mod tests {
             }),
             || {
                 called = true;
-                Ok(vec![1])
+                Ok(Cursor::new(vec![1]))
             },
         )
         .unwrap_err();
@@ -2035,8 +2149,11 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("not-a-tone");
         std::fs::create_dir(&path).unwrap();
-        let error = read_regular_tone(path_facts(&path), || panic!("directory must not be read"))
-            .unwrap_err();
+        assert!(open_regular_file(&path).is_err());
+        let error = read_regular_tone(path_facts(&path), || -> io::Result<Cursor<Vec<u8>>> {
+            panic!("directory must not be read")
+        })
+        .unwrap_err();
         assert!(error.detail().contains("regular file"));
     }
 
