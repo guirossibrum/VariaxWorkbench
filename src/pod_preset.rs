@@ -1243,6 +1243,175 @@ pub enum StompWaveValue {
     Unknown { raw_bits: u32 },
 }
 
+/// Source-backed harmony interval choices for the Stomp HARMONY_1M335 layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StompHarmony1M335Selection {
+    MinusOctave,
+    MinusMajorSixth,
+    MinusMinorSixth,
+    MinusFourth,
+    Unison,
+    MinorThird,
+    MajorThird,
+    Fifth,
+    Octave,
+}
+
+impl StompHarmony1M335Selection {
+    pub const ALL: [Self; 9] = [
+        Self::MinusOctave,
+        Self::MinusMajorSixth,
+        Self::MinusMinorSixth,
+        Self::MinusFourth,
+        Self::Unison,
+        Self::MinorThird,
+        Self::MajorThird,
+        Self::Fifth,
+        Self::Octave,
+    ];
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::MinusOctave => "-1 OCT",
+            Self::MinusMajorSixth => "-MAJ6TH",
+            Self::MinusMinorSixth => "-MIN6TH",
+            Self::MinusFourth => "-4TH",
+            Self::Unison => "UNISON",
+            Self::MinorThird => "MIN3RD",
+            Self::MajorThird => "MAJ3RD",
+            Self::Fifth => "5TH",
+            Self::Octave => "1 OCT",
+        }
+    }
+    pub const fn controller_key(self) -> u8 {
+        match self {
+            Self::MinusOctave => 0,
+            Self::MinusMajorSixth => 16,
+            Self::MinusMinorSixth => 32,
+            Self::MinusFourth => 48,
+            Self::Unison => 64,
+            Self::MinorThird => 80,
+            Self::MajorThird => 96,
+            Self::Fifth => 112,
+            Self::Octave => 127,
+        }
+    }
+    pub const fn float_bits(self) -> u32 {
+        HARMONY_FLOAT_BITS[self as usize]
+    }
+    fn from_float_bits(bits: u32) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|choice| choice.float_bits() == bits)
+    }
+}
+
+/// Source-backed harmony interval choices for the Stomp HARMONY_1457 layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StompHarmony1457Selection {
+    MinusOctave,
+    MinusFifth,
+    MinusFourth,
+    MinusSecond,
+    Unison,
+    Fourth,
+    Fifth,
+    Seventh,
+    Octave,
+}
+
+impl StompHarmony1457Selection {
+    pub const ALL: [Self; 9] = [
+        Self::MinusOctave,
+        Self::MinusFifth,
+        Self::MinusFourth,
+        Self::MinusSecond,
+        Self::Unison,
+        Self::Fourth,
+        Self::Fifth,
+        Self::Seventh,
+        Self::Octave,
+    ];
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::MinusOctave => "-1 OCT",
+            Self::MinusFifth => "-5TH",
+            Self::MinusFourth => "-4TH",
+            Self::MinusSecond => "-2ND",
+            Self::Unison => "UNISON",
+            Self::Fourth => "4TH",
+            Self::Fifth => "5TH",
+            Self::Seventh => "7TH",
+            Self::Octave => "1 OCT",
+        }
+    }
+    pub const fn controller_key(self) -> u8 {
+        match self {
+            Self::MinusOctave => 0,
+            Self::MinusFifth => 16,
+            Self::MinusFourth => 32,
+            Self::MinusSecond => 48,
+            Self::Unison => 64,
+            Self::Fourth => 80,
+            Self::Fifth => 96,
+            Self::Seventh => 112,
+            Self::Octave => 127,
+        }
+    }
+    pub const fn float_bits(self) -> u32 {
+        HARMONY_FLOAT_BITS[self as usize]
+    }
+    fn from_float_bits(bits: u32) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|choice| choice.float_bits() == bits)
+    }
+}
+
+const HARMONY_FLOAT_BITS: [u32; 9] = [
+    0xbb81_0204,
+    0x3df9_f3e8,
+    0x3e7d_fbf8,
+    0x3ebf_7efe,
+    0x3f00_0000,
+    0x3f20_4081,
+    0x3f40_8102,
+    0x3f60_c183,
+    0x3f7e_fdfc,
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StompHarmonyValue<T> {
+    Known(T),
+    Unknown { raw_bits: u32 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StompHarmonyControl {
+    Harmony1M335,
+    Harmony1457,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StompHarmonySelection {
+    Harmony1M335(StompHarmony1M335Selection),
+    Harmony1457(StompHarmony1457Selection),
+}
+
+impl StompHarmonyControl {
+    pub const fn selector_id(self) -> u32 {
+        match self {
+            Self::Harmony1M335 => 0x0003_0001,
+            Self::Harmony1457 => 0x0003_0002,
+        }
+    }
+    pub const fn parameter_id(self) -> u32 {
+        match self {
+            Self::Harmony1M335 => 0x0010_0001,
+            Self::Harmony1457 => 0x0010_0002,
+        }
+    }
+}
+
 /// Source-listed four-head patterns for Delay model `0x02020005`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DelayHeadsSelection {
@@ -1943,6 +2112,30 @@ impl PodTone {
             .unwrap_or(StompWaveValue::Unknown { raw_bits: *bits }))
     }
 
+    pub fn stomp_harmony_1m335_selection(
+        &self,
+    ) -> Result<StompHarmonyValue<StompHarmony1M335Selection>, ToneError> {
+        let (model_index, parameter_index) =
+            self.stomp_harmony_location(StompHarmonyControl::Harmony1M335)?;
+        let bits =
+            self.delay_association_bits_at(model_index, parameter_index, "Stomp HARMONY_1M335")?;
+        Ok(StompHarmony1M335Selection::from_float_bits(bits)
+            .map(StompHarmonyValue::Known)
+            .unwrap_or(StompHarmonyValue::Unknown { raw_bits: bits }))
+    }
+
+    pub fn stomp_harmony_1457_selection(
+        &self,
+    ) -> Result<StompHarmonyValue<StompHarmony1457Selection>, ToneError> {
+        let (model_index, parameter_index) =
+            self.stomp_harmony_location(StompHarmonyControl::Harmony1457)?;
+        let bits =
+            self.delay_association_bits_at(model_index, parameter_index, "Stomp HARMONY_1457")?;
+        Ok(StompHarmony1457Selection::from_float_bits(bits)
+            .map(StompHarmonyValue::Known)
+            .unwrap_or(StompHarmonyValue::Unknown { raw_bits: bits }))
+    }
+
     /// Read one source-backed Mod percent value (host scale 0..=1).
     pub fn mod_control_fraction(&self, control: ModControl) -> Result<f32, ToneError> {
         let (model_index, parameter_index) = self.mod_control_location(control)?;
@@ -2248,6 +2441,34 @@ impl PodTone {
         )
     }
 
+    pub fn set_stomp_harmony_1m335_selection(
+        &mut self,
+        selection: StompHarmony1M335Selection,
+    ) -> Result<(), ToneError> {
+        let (model_index, parameter_index) =
+            self.stomp_harmony_location(StompHarmonyControl::Harmony1M335)?;
+        self.set_association_bits_at(
+            model_index,
+            parameter_index,
+            selection.float_bits(),
+            "Stomp HARMONY_1M335",
+        )
+    }
+
+    pub fn set_stomp_harmony_1457_selection(
+        &mut self,
+        selection: StompHarmony1457Selection,
+    ) -> Result<(), ToneError> {
+        let (model_index, parameter_index) =
+            self.stomp_harmony_location(StompHarmonyControl::Harmony1457)?;
+        self.set_association_bits_at(
+            model_index,
+            parameter_index,
+            selection.float_bits(),
+            "Stomp HARMONY_1457",
+        )
+    }
+
     /// Change only the existing raw value word for a source-mapped Mod percent control.
     pub fn set_mod_control_fraction(
         &mut self,
@@ -2498,6 +2719,35 @@ impl PodTone {
             &[model_id],
             STOMP_SYNTH_WAVE_PARAM,
             "Stomp SYNWAVE",
+        )
+    }
+
+    fn stomp_harmony_location(
+        &self,
+        control: StompHarmonyControl,
+    ) -> Result<(usize, usize), ToneError> {
+        let model_index = self
+            .models
+            .iter()
+            .position(|model| model.slot == STOMP_SLOT)
+            .ok_or_else(|| ToneError::format("Stomp harmony requires an existing model slot"))?;
+        if self
+            .models
+            .iter()
+            .filter(|model| model.slot == STOMP_SLOT)
+            .count()
+            != 1
+            || self.models[model_index].model_id != 0x020a_0009
+        {
+            return Err(ToneError::format(
+                "Stomp harmony requires one existing model 0x020a0009 slot",
+            ));
+        }
+        self.control_location(
+            STOMP_SLOT,
+            &[0x020a_0009],
+            control.parameter_id(),
+            "Stomp harmony",
         )
     }
 
@@ -3095,6 +3345,49 @@ impl Library {
             .get_mut(index)
             .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
         entry.tone.set_stomp_wave_selection(selection)
+    }
+
+    pub fn stomp_harmony_1m335_selection(
+        &self,
+        index: usize,
+    ) -> Result<StompHarmonyValue<StompHarmony1M335Selection>, ToneError> {
+        self.tones
+            .get(index)
+            .ok_or_else(|| ToneError::format("tone index is outside the library"))?
+            .tone
+            .stomp_harmony_1m335_selection()
+    }
+    pub fn set_stomp_harmony_1m335_selection(
+        &mut self,
+        index: usize,
+        choice: StompHarmony1M335Selection,
+    ) -> Result<(), ToneError> {
+        let entry = self
+            .tones
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
+        entry.tone.set_stomp_harmony_1m335_selection(choice)
+    }
+    pub fn stomp_harmony_1457_selection(
+        &self,
+        index: usize,
+    ) -> Result<StompHarmonyValue<StompHarmony1457Selection>, ToneError> {
+        self.tones
+            .get(index)
+            .ok_or_else(|| ToneError::format("tone index is outside the library"))?
+            .tone
+            .stomp_harmony_1457_selection()
+    }
+    pub fn set_stomp_harmony_1457_selection(
+        &mut self,
+        index: usize,
+        choice: StompHarmony1457Selection,
+    ) -> Result<(), ToneError> {
+        let entry = self
+            .tones
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
+        entry.tone.set_stomp_harmony_1457_selection(choice)
     }
 
     pub fn set_mod_control_fraction(
@@ -3811,6 +4104,39 @@ impl PodBundleLibrary {
         self.edit_entry(index, |tone| tone.set_stomp_wave_selection(selection))
     }
 
+    pub fn stomp_harmony_1m335_selection(
+        &self,
+        index: usize,
+    ) -> Result<StompHarmonyValue<StompHarmony1M335Selection>, ToneError> {
+        let (bank, preset) = self
+            .entry_location(index)
+            .ok_or_else(|| ToneError::format("preset index is outside the library"))?;
+        self.tone(bank, preset)?.stomp_harmony_1m335_selection()
+    }
+    pub fn set_stomp_harmony_1m335_selection(
+        &mut self,
+        index: usize,
+        choice: StompHarmony1M335Selection,
+    ) -> Result<(), ToneError> {
+        self.edit_entry(index, |tone| tone.set_stomp_harmony_1m335_selection(choice))
+    }
+    pub fn stomp_harmony_1457_selection(
+        &self,
+        index: usize,
+    ) -> Result<StompHarmonyValue<StompHarmony1457Selection>, ToneError> {
+        let (bank, preset) = self
+            .entry_location(index)
+            .ok_or_else(|| ToneError::format("preset index is outside the library"))?;
+        self.tone(bank, preset)?.stomp_harmony_1457_selection()
+    }
+    pub fn set_stomp_harmony_1457_selection(
+        &mut self,
+        index: usize,
+        choice: StompHarmony1457Selection,
+    ) -> Result<(), ToneError> {
+        self.edit_entry(index, |tone| tone.set_stomp_harmony_1457_selection(choice))
+    }
+
     pub fn replace_entry(&mut self, index: usize, bytes: Vec<u8>) -> Result<(), ToneError> {
         let replacement = PodTone::parse(bytes)?;
         let (bank, preset) = self
@@ -4141,6 +4467,23 @@ mod tests {
         );
         let pinf = find_chunk_data(&bytes, b"PINF");
         bytes[pinf + 72..pinf + 76].copy_from_slice(&version.to_be_bytes());
+        bytes
+    }
+
+    fn stomp_harmony_tone(bits1: u32, bits2: u32) -> Vec<u8> {
+        let p1 = drive_record(0x3f, 0x0010_0001, 1, bits1);
+        let p2 = drive_record(0x3f, 0x0010_0002, 1, bits2);
+        let mut bytes = custom_tone(
+            ContainerKind::L6as,
+            &[BuiltModel {
+                slot: STOMP_SLOT,
+                model_id: 0x020a_0009,
+                tail: &[0x91, 0x82, 0x73, 0x64],
+                parameters: &[&p1, &p2],
+            }],
+        );
+        let pinf = find_chunk_data(&bytes, b"PINF");
+        bytes[pinf + 72..pinf + 76].copy_from_slice(&PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
         bytes
     }
 
@@ -6806,6 +7149,197 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn stomp_harmony_choices_match_source_bits_and_patch_only_selected_existing_word() {
+        let expected = [
+            0xbb81_0204,
+            0x3df9_f3e8,
+            0x3e7d_fbf8,
+            0x3ebf_7efe,
+            0x3f00_0000,
+            0x3f20_4081,
+            0x3f40_8102,
+            0x3f60_c183,
+            0x3f7e_fdfc,
+        ];
+        let expected_keys = [0, 16, 32, 48, 64, 80, 96, 112, 127];
+        assert_eq!(StompHarmonyControl::Harmony1M335.selector_id(), 0x0003_0001);
+        assert_eq!(
+            StompHarmonyControl::Harmony1M335.parameter_id(),
+            0x0010_0001
+        );
+        assert_eq!(StompHarmonyControl::Harmony1457.selector_id(), 0x0003_0002);
+        assert_eq!(StompHarmonyControl::Harmony1457.parameter_id(), 0x0010_0002);
+        assert_eq!(StompHarmony1M335Selection::ALL.len(), 9);
+        assert_eq!(StompHarmony1457Selection::ALL.len(), 9);
+        for (choice, bits) in StompHarmony1M335Selection::ALL.into_iter().zip(expected) {
+            assert_eq!(choice.float_bits(), bits);
+        }
+        for ((choice, bits), key) in StompHarmony1457Selection::ALL
+            .into_iter()
+            .zip(expected)
+            .zip(expected_keys)
+        {
+            assert_eq!(choice.float_bits(), bits);
+            assert_eq!(choice.controller_key(), key);
+        }
+        for (choice, key) in StompHarmony1M335Selection::ALL
+            .into_iter()
+            .zip(expected_keys)
+        {
+            assert_eq!(choice.controller_key(), key);
+        }
+        let original = stomp_harmony_tone(0x3f00_0000, 0x3f40_8102);
+        for choice in StompHarmony1M335Selection::ALL {
+            let mut tone = PodTone::parse(original.clone()).unwrap();
+            tone.set_stomp_harmony_1m335_selection(choice).unwrap();
+            assert_eq!(
+                tone.stomp_harmony_1m335_selection().unwrap(),
+                StompHarmonyValue::Known(choice)
+            );
+            assert_eq!(
+                tone.stomp_harmony_1457_selection().unwrap(),
+                StompHarmonyValue::Known(StompHarmony1457Selection::Fifth)
+            );
+            let differences = original
+                .iter()
+                .zip(tone.as_bytes())
+                .enumerate()
+                .filter_map(|(i, (a, b))| (a != b).then_some(i))
+                .collect::<Vec<_>>();
+            let start = original
+                .windows(12)
+                .rposition(|w| w[..8] == drive_record(0x3f, 0x0010_0001, 1, 0x3f00_0000)[..8])
+                .unwrap()
+                + 8;
+            let expected_differences = choice
+                .float_bits()
+                .to_be_bytes()
+                .into_iter()
+                .zip(0x3f00_0000u32.to_be_bytes())
+                .enumerate()
+                .filter_map(|(i, (a, b))| (a != b).then_some(start + i))
+                .collect::<Vec<_>>();
+            assert_eq!(differences, expected_differences);
+        }
+        for choice in StompHarmony1457Selection::ALL {
+            let mut tone = PodTone::parse(original.clone()).unwrap();
+            tone.set_stomp_harmony_1457_selection(choice).unwrap();
+            assert_eq!(
+                tone.stomp_harmony_1457_selection().unwrap(),
+                StompHarmonyValue::Known(choice)
+            );
+            assert_eq!(
+                tone.stomp_harmony_1m335_selection().unwrap(),
+                StompHarmonyValue::Known(StompHarmony1M335Selection::Unison)
+            );
+            let differences = original
+                .iter()
+                .zip(tone.as_bytes())
+                .enumerate()
+                .filter_map(|(i, (a, b))| (a != b).then_some(i))
+                .collect::<Vec<_>>();
+            let start = original
+                .windows(12)
+                .rposition(|w| w[..8] == drive_record(0x3f, 0x0010_0002, 1, 0x3f40_8102)[..8])
+                .unwrap()
+                + 8;
+            let expected_differences = choice
+                .float_bits()
+                .to_be_bytes()
+                .into_iter()
+                .zip(0x3f40_8102u32.to_be_bytes())
+                .enumerate()
+                .filter_map(|(i, (a, b))| (a != b).then_some(start + i))
+                .collect::<Vec<_>>();
+            assert_eq!(differences, expected_differences);
+        }
+    }
+
+    #[test]
+    fn stomp_harmony_unknown_is_preserved_and_invalid_current_values_reject_atomically() {
+        let mut tone = PodTone::parse(stomp_harmony_tone(0x3f00_0001, 0x7fc0_1234)).unwrap();
+        let before = tone.as_bytes().to_vec();
+        assert_eq!(
+            tone.stomp_harmony_1m335_selection().unwrap(),
+            StompHarmonyValue::Unknown {
+                raw_bits: 0x3f00_0001
+            }
+        );
+        assert!(
+            tone.set_stomp_harmony_1457_selection(StompHarmony1457Selection::Unison)
+                .is_err()
+        );
+        assert_eq!(tone.as_bytes(), before);
+        let mut unknown = PodTone::parse(stomp_harmony_tone(0x3f00_0001, 0x3f00_0000)).unwrap();
+        unknown
+            .set_stomp_harmony_1m335_selection(StompHarmony1M335Selection::MinusOctave)
+            .unwrap();
+        assert_eq!(
+            unknown.stomp_harmony_1m335_selection().unwrap(),
+            StompHarmonyValue::Known(StompHarmony1M335Selection::MinusOctave)
+        );
+        let mut below_profile = stomp_harmony_tone(0x3f00_0000, 0x3f40_8102);
+        let pinf = find_chunk_data(&below_profile, b"PINF");
+        below_profile[pinf + 72..pinf + 76]
+            .copy_from_slice(&(PODXT_LIVE_HOST_MIN_VERSION - 1).to_be_bytes());
+        let mut below_profile = PodTone::parse(below_profile).unwrap();
+        let before = below_profile.as_bytes().to_vec();
+        assert!(
+            below_profile
+                .set_stomp_harmony_1m335_selection(StompHarmony1M335Selection::Unison)
+                .is_err(),
+            "same-choice requests must still validate the host profile"
+        );
+        assert_eq!(below_profile.as_bytes(), before);
+    }
+
+    #[test]
+    fn stomp_harmony_library_and_bundle_paths_round_trip_offline_edits() {
+        let original = stomp_harmony_tone(0x3f00_0000, 0x3f40_8102);
+        let mut library = Library::default();
+        let index = library.import_bytes(original.clone()).unwrap();
+        library
+            .set_stomp_harmony_1m335_selection(index, StompHarmony1M335Selection::MinusOctave)
+            .unwrap();
+        library
+            .set_stomp_harmony_1457_selection(index, StompHarmony1457Selection::Fourth)
+            .unwrap();
+        assert!(library.is_dirty(index));
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("harmony-copy.l6t");
+        library.tone(index).unwrap().save_copy(&path).unwrap();
+        let reopened = PodTone::parse(std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            reopened.stomp_harmony_1m335_selection().unwrap(),
+            StompHarmonyValue::Known(StompHarmony1M335Selection::MinusOctave)
+        );
+        assert_eq!(
+            reopened.stomp_harmony_1457_selection().unwrap(),
+            StompHarmonyValue::Known(StompHarmony1457Selection::Fourth)
+        );
+
+        let bundle_bytes = bundle_with_tone(&original);
+        let mut bundle = PodBundleLibrary::parse(bundle_bytes).unwrap();
+        bundle
+            .set_stomp_harmony_1m335_selection(0, StompHarmony1M335Selection::Fifth)
+            .unwrap();
+        bundle
+            .set_stomp_harmony_1457_selection(0, StompHarmony1457Selection::Seventh)
+            .unwrap();
+        assert!(bundle.is_dirty());
+        let reopened = PodBundleLibrary::parse(bundle.as_bytes().to_vec()).unwrap();
+        let tone = reopened.tone(0, 0).unwrap();
+        assert_eq!(
+            tone.stomp_harmony_1m335_selection().unwrap(),
+            StompHarmonyValue::Known(StompHarmony1M335Selection::Fifth)
+        );
+        assert_eq!(
+            tone.stomp_harmony_1457_selection().unwrap(),
+            StompHarmonyValue::Known(StompHarmony1457Selection::Seventh)
+        );
     }
 
     #[test]

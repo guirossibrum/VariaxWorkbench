@@ -118,6 +118,24 @@ pub(crate) fn set_pod_mic_choice(
     Ok(tone.into_bytes())
 }
 
+pub(crate) fn set_pod_stomp_harmony_selection(
+    bytes: &[u8],
+    selection: pod_preset::StompHarmonySelection,
+) -> Result<Vec<u8>, Rejection> {
+    let mut tone = pod_preset::PodTone::parse(bytes.to_vec())
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    match selection {
+        pod_preset::StompHarmonySelection::Harmony1M335(choice) => {
+            tone.set_stomp_harmony_1m335_selection(choice)
+        }
+        pod_preset::StompHarmonySelection::Harmony1457(choice) => {
+            tone.set_stomp_harmony_1457_selection(choice)
+        }
+    }
+    .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    Ok(tone.into_bytes())
+}
+
 pub(crate) fn save_pod_copy(path: &Path, bytes: &[u8]) -> Result<(), Rejection> {
     let tone = pod_preset::PodTone::parse(bytes.to_vec())
         .map_err(|error| map_tone(error, Operation::EditPodPreset))?;

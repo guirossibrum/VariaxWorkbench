@@ -287,6 +287,18 @@ impl Session {
         backend::set_pod_mic_choice(bytes, choice)
     }
 
+    /// Applies one typed, source-backed Stomp harmony choice offline.
+    /// The returned tone bytes retain all unrelated data; nothing is sent.
+    pub fn set_pod_stomp_harmony_selection(
+        self,
+        role: RoleKind,
+        bytes: &[u8],
+        selection: crate::pod_preset::StompHarmonySelection,
+    ) -> Result<Vec<u8>, Rejection> {
+        self.require(role, Operation::EditPodPreset)?;
+        backend::set_pod_stomp_harmony_selection(bytes, selection)
+    }
+
     /// Writes a new copy through the non-overwriting save. It does not upload.
     pub fn save_pod_copy(self, role: RoleKind, path: &Path, bytes: &[u8]) -> Result<(), Rejection> {
         self.require(role, Operation::EditPodPreset)?;

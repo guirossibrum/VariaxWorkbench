@@ -52,6 +52,12 @@ enum PodMembershipAction {
     MoveDown,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PendingStompHarmony {
+    Harmony1M335(pod_preset::StompHarmony1M335Selection),
+    Harmony1457(pod_preset::StompHarmony1457Selection),
+}
+
 trait FileDialogs {
     fn open(&mut self) -> Option<PathBuf>;
     fn save(&mut self, suggested: &str, extension: &str) -> Option<PathBuf>;
@@ -227,6 +233,7 @@ struct Workbench {
     pod_bundle: Option<pod_preset::PodBundleLibrary>,
     pod_selected: Option<usize>,
     pod_cab_pending: Option<(usize, pod_preset::PodCabModelChoice)>,
+    pod_harmony_pending: Option<(usize, pod_preset::StompHarmonyControl, PendingStompHarmony)>,
     pod_name: String,
     pod_message: String,
     #[cfg(test)]
@@ -275,6 +282,10 @@ struct Workbench {
     pod_delay_bits_choices: HashMap<pod_preset::DelayBitsSelection, Rect>,
     #[cfg(test)]
     pod_stomp_wave_choices: HashMap<pod_preset::StompWaveSelection, Rect>,
+    #[cfg(test)]
+    pod_harmony1_choices: HashMap<pod_preset::StompHarmony1M335Selection, Rect>,
+    #[cfg(test)]
+    pod_harmony2_choices: HashMap<pod_preset::StompHarmony1457Selection, Rect>,
     #[cfg(test)]
     pod_visible: String,
     read_receiver:
@@ -330,6 +341,7 @@ impl Workbench {
             pod_bundle: None,
             pod_selected: None,
             pod_cab_pending: None,
+            pod_harmony_pending: None,
             pod_name: String::new(),
             pod_message: String::new(),
             #[cfg(test)]
@@ -378,6 +390,10 @@ impl Workbench {
             pod_delay_bits_choices: HashMap::new(),
             #[cfg(test)]
             pod_stomp_wave_choices: HashMap::new(),
+            #[cfg(test)]
+            pod_harmony1_choices: HashMap::new(),
+            #[cfg(test)]
+            pod_harmony2_choices: HashMap::new(),
             #[cfg(test)]
             pod_visible: String::new(),
             read_receiver: None,
@@ -1505,6 +1521,7 @@ impl Workbench {
 
     fn refresh_selected_pod_name(&mut self) {
         self.pod_cab_pending = None;
+        self.pod_harmony_pending = None;
         match (self.pod_selected, self.pod_library.len()) {
             (Some(_), 0) => {
                 self.pod_selected = None;
@@ -1837,6 +1854,8 @@ impl Workbench {
             self.pod_delay_heads_choices.clear();
             self.pod_delay_bits_choices.clear();
             self.pod_stomp_wave_choices.clear();
+            self.pod_harmony1_choices.clear();
+            self.pod_harmony2_choices.clear();
         }
         let mut open = true;
         egui::Window::new("Offline PODxt Live tones")
@@ -1961,6 +1980,7 @@ impl Workbench {
                     if response.clicked() {
                         if self.pod_selected != Some(index) {
                             self.pod_cab_pending = None;
+                            self.pod_harmony_pending = None;
                         }
                         self.pod_selected = Some(index);
                         self.pod_name = name;
@@ -2272,6 +2292,54 @@ impl Workbench {
                                 )
                             }
                             Err(error) => self.pod_message = error.detail(),
+                        }
+                    }
+                }
+                let harmony1 = self.pod_selected.and_then(|index| self.pod_library.tone(index))
+                    .and_then(|tone| tone.stomp_harmony_1m335_selection().ok());
+                if let Some(current) = harmony1 {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Stomp Harmony (-1/Maj3/5)");
+                        match current { pod_preset::StompHarmonyValue::Known(choice) => { ui.small(choice.label()); }, pod_preset::StompHarmonyValue::Unknown { raw_bits } => { ui.small(format!("Unknown float 0x{raw_bits:08x}")); } }
+                        for choice in pod_preset::StompHarmony1M335Selection::ALL {
+                            let previous = match self.pod_harmony_pending { Some((index, pod_preset::StompHarmonyControl::Harmony1M335, PendingStompHarmony::Harmony1M335(choice))) if Some(index) == self.pod_selected => Some(choice), _ => match current { pod_preset::StompHarmonyValue::Known(choice) => Some(choice), _ => None } };
+                            let mut selected = previous;
+                            let _response = ui.selectable_value(&mut selected, Some(choice), choice.label());
+                            #[cfg(test)] self.pod_harmony1_choices.insert(choice, _response.rect);
+                            if selected != previous && let Some(index) = self.pod_selected { self.pod_harmony_pending = Some((index, pod_preset::StompHarmonyControl::Harmony1M335, PendingStompHarmony::Harmony1M335(choice))); }
+                        }
+                    });
+                    if let Some((index, pod_preset::StompHarmonyControl::Harmony1M335, PendingStompHarmony::Harmony1M335(choice))) = self.pod_harmony_pending.filter(|(index, _, _)| Some(*index) == self.pod_selected) {
+                        ui.label(format!("Pending {} (not applied)", choice.label()));
+                        if self.pod_button(ui, "pod-harmony1-apply", "Apply Harmony 1") {
+                            match self.apply_pod_stomp_harmony(index, pod_preset::StompHarmonySelection::Harmony1M335(choice)) {
+                                Ok(()) => { self.pod_harmony_pending = None; self.pod_message = format!("Applied Stomp HARMONY_1M335 {}. Nothing was sent.", choice.label()); }
+                                Err(error) => self.pod_message = error.detail(),
+                            }
+                        }
+                    }
+                }
+                let harmony2 = self.pod_selected.and_then(|index| self.pod_library.tone(index))
+                    .and_then(|tone| tone.stomp_harmony_1457_selection().ok());
+                if let Some(current) = harmony2 {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Stomp Harmony (-1/2/4/7)");
+                        match current { pod_preset::StompHarmonyValue::Known(choice) => { ui.small(choice.label()); }, pod_preset::StompHarmonyValue::Unknown { raw_bits } => { ui.small(format!("Unknown float 0x{raw_bits:08x}")); } }
+                        for choice in pod_preset::StompHarmony1457Selection::ALL {
+                            let previous = match self.pod_harmony_pending { Some((index, pod_preset::StompHarmonyControl::Harmony1457, PendingStompHarmony::Harmony1457(choice))) if Some(index) == self.pod_selected => Some(choice), _ => match current { pod_preset::StompHarmonyValue::Known(choice) => Some(choice), _ => None } };
+                            let mut selected = previous;
+                            let _response = ui.selectable_value(&mut selected, Some(choice), choice.label());
+                            #[cfg(test)] self.pod_harmony2_choices.insert(choice, _response.rect);
+                            if selected != previous && let Some(index) = self.pod_selected { self.pod_harmony_pending = Some((index, pod_preset::StompHarmonyControl::Harmony1457, PendingStompHarmony::Harmony1457(choice))); }
+                        }
+                    });
+                    if let Some((index, pod_preset::StompHarmonyControl::Harmony1457, PendingStompHarmony::Harmony1457(choice))) = self.pod_harmony_pending.filter(|(index, _, _)| Some(*index) == self.pod_selected) {
+                        ui.label(format!("Pending {} (not applied)", choice.label()));
+                        if self.pod_button(ui, "pod-harmony2-apply", "Apply Harmony 2") {
+                            match self.apply_pod_stomp_harmony(index, pod_preset::StompHarmonySelection::Harmony1457(choice)) {
+                                Ok(()) => { self.pod_harmony_pending = None; self.pod_message = format!("Applied Stomp HARMONY_1457 {}. Nothing was sent.", choice.label()); }
+                                Err(error) => self.pod_message = error.detail(),
+                            }
                         }
                     }
                 }
@@ -2671,6 +2739,23 @@ impl Workbench {
         Ok(())
     }
 
+    fn apply_pod_stomp_harmony(
+        &mut self,
+        index: usize,
+        selection: pod_preset::StompHarmonySelection,
+    ) -> Result<(), pod_preset::ToneError> {
+        let current = self
+            .pod_library
+            .tone(index)
+            .ok_or_else(|| pod_preset::ToneError::format("POD selection is out of range"))?
+            .as_bytes()
+            .to_vec();
+        let replacement = Session::initial_rig()
+            .set_pod_stomp_harmony_selection(RoleKind::Pod, &current, selection)
+            .map_err(|error| pod_preset::ToneError::format(rejection_text(&error)))?;
+        self.replace_pod_tone(index, replacement)
+    }
+
     fn load_pod_bundle_bytes(&mut self, bytes: Vec<u8>) -> Result<(), pod_preset::ToneError> {
         if self.pod_dirty() {
             return Err(pod_preset::ToneError::format(
@@ -2689,6 +2774,7 @@ impl Workbench {
         self.pod_bundle = Some(bundle);
         self.pod_selected = Some(0);
         self.pod_cab_pending = None;
+        self.pod_harmony_pending = None;
         self.refresh_selected_pod_name();
         Ok(())
     }
@@ -2705,6 +2791,7 @@ impl Workbench {
         }
         self.pod_library = library;
         self.pod_cab_pending = None;
+        self.pod_harmony_pending = None;
         Ok(())
     }
 
@@ -2818,11 +2905,13 @@ impl Workbench {
                             self.pod_library.clear();
                             self.pod_selected = None;
                             self.pod_cab_pending = None;
+                            self.pod_harmony_pending = None;
                         }
                         match self.pod_library.import_bytes(bytes) {
                             Ok(index) => {
                                 self.pod_selected = Some(index);
                                 self.pod_cab_pending = None;
+                                self.pod_harmony_pending = None;
                                 self.pod_name = summary.name;
                                 self.pod_message = format!(
                                     "Loaded {} for PODxt Live {:08x}. {}",
@@ -4521,6 +4610,42 @@ mod tests {
         bytes
     }
 
+    fn sample_stomp_harmony_pod_tone() -> Vec<u8> {
+        fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+            let mut out = id.to_vec();
+            out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            out.extend_from_slice(data);
+            if !data.len().is_multiple_of(2) {
+                out.push(0xa5);
+            }
+            out
+        }
+        let mut info = vec![0; 80];
+        info[..4].copy_from_slice(&1u32.to_be_bytes());
+        info[4..8].copy_from_slice(&pod_preset::PODXT_LIVE_TONE_ID.to_be_bytes());
+        info[8..10].copy_from_slice(&u16::from(b'A').to_be_bytes());
+        info[72..76].copy_from_slice(&pod_preset::PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
+        let mut patch = b"PATC".to_vec();
+        let mut model = b"MODL".to_vec();
+        let mut minf = Vec::new();
+        minf.extend_from_slice(&0x020a_0009u32.to_be_bytes());
+        minf.extend_from_slice(&pod_preset::STOMP_SLOT.to_be_bytes());
+        minf.extend_from_slice(&[1, 2, 3, 4]);
+        model.extend(chunk(b"MINF", &minf));
+        for (id, bits) in [(0x0010_0001u32, 0x3f00_0000u32), (0x0010_0002, 0x3f40_8102)] {
+            let mut parm = Vec::new();
+            parm.extend_from_slice(&((0x3fu32 << 24) | id).to_be_bytes());
+            parm.extend_from_slice(&1u32.to_be_bytes());
+            parm.extend_from_slice(&bits.to_be_bytes());
+            model.extend(chunk(b"PARM", &parm));
+        }
+        patch.extend(chunk(b"LIST", &model));
+        let mut data = b"L6AS".to_vec();
+        data.extend(chunk(b"PINF", &info));
+        data.extend(chunk(b"LIST", &patch));
+        chunk(b"FORM", &data)
+    }
+
     fn sample_whammy_pod_tone() -> Vec<u8> {
         let mut bytes = sample_drive_pod_tone();
         let old = pod_preset::STOMP_DRIVE_MODEL_ID.to_be_bytes();
@@ -4757,6 +4882,28 @@ mod tests {
         recording_frame_tall(context, app, vec![]);
         let choice_rect = app.pod_stomp_wave_choices[&choice];
         click_pod_at_tall(context, app, choice_rect.center());
+        recording_frame_tall(context, app, vec![]);
+    }
+
+    fn stage_stomp_harmony1_choice(
+        context: &egui::Context,
+        app: &mut Workbench,
+        choice: pod_preset::StompHarmony1M335Selection,
+    ) {
+        recording_frame_tall(context, app, vec![]);
+        let rect = app.pod_harmony1_choices[&choice];
+        click_pod_at_tall(context, app, rect.center());
+        recording_frame_tall(context, app, vec![]);
+    }
+
+    fn stage_stomp_harmony2_choice(
+        context: &egui::Context,
+        app: &mut Workbench,
+        choice: pod_preset::StompHarmony1457Selection,
+    ) {
+        recording_frame_tall(context, app, vec![]);
+        let rect = app.pod_harmony2_choices[&choice];
+        click_pod_at_tall(context, app, rect.center());
         recording_frame_tall(context, app, vec![]);
     }
 
@@ -6030,6 +6177,125 @@ mod tests {
             unavailable_bytes
         );
         assert!(!app.document.as_ref().unwrap().as_bytes().is_empty());
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn stomp_harmony_gui_stages_until_apply_and_keeps_the_other_selector_independent() {
+        let (context, mut app) = app();
+        let directory = tempfile::tempdir().unwrap();
+        let blocked = directory.path().join("existing-harmony-copy.l6t");
+        let saved = directory.path().join("harmony-copy.l6t");
+        std::fs::write(&blocked, b"keep existing destination").unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_save: [Some(blocked.clone()), Some(saved.clone())].into(),
+            ..Default::default()
+        });
+        app.pod_open = true;
+        app.pod_selected = Some(
+            app.pod_library
+                .import_bytes(sample_stomp_harmony_pod_tone())
+                .unwrap(),
+        );
+        app.pod_library
+            .import_bytes(sample_stomp_harmony_pod_tone())
+            .unwrap();
+        recording_frame_tall(&context, &mut app, vec![]);
+        let original = app.pod_library.tone(0).unwrap().as_bytes().to_vec();
+        stage_stomp_harmony1_choice(
+            &context,
+            &mut app,
+            pod_preset::StompHarmony1M335Selection::MinusOctave,
+        );
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert_eq!(
+            app.pod_harmony_pending,
+            Some((
+                0,
+                pod_preset::StompHarmonyControl::Harmony1M335,
+                PendingStompHarmony::Harmony1M335(
+                    pod_preset::StompHarmony1M335Selection::MinusOctave
+                )
+            ))
+        );
+        let second_row = app.pod_rows[&1].center();
+        click_pod_at_tall(&context, &mut app, second_row);
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert_eq!(app.pod_selected, Some(1));
+        assert!(app.pod_harmony_pending.is_none());
+        let first_row = app.pod_rows[&0].center();
+        click_pod_at_tall(&context, &mut app, first_row);
+        recording_frame_tall(&context, &mut app, vec![]);
+        stage_stomp_harmony1_choice(
+            &context,
+            &mut app,
+            pod_preset::StompHarmony1M335Selection::MinusOctave,
+        );
+        click_pod(&context, &mut app, "pod-harmony1-apply");
+        let after_first = app.pod_library.tone(0).unwrap().as_bytes().to_vec();
+        assert_ne!(after_first, original);
+        assert!(app.pod_library.is_dirty(0));
+        assert!(app.pod_harmony_pending.is_none());
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .stomp_harmony_1457_selection()
+                .unwrap(),
+            pod_preset::StompHarmonyValue::Known(pod_preset::StompHarmony1457Selection::Fifth)
+        );
+
+        stage_stomp_harmony2_choice(
+            &context,
+            &mut app,
+            pod_preset::StompHarmony1457Selection::Fourth,
+        );
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), after_first);
+        click_pod(&context, &mut app, "pod-harmony2-apply");
+        let final_bytes = app.pod_library.tone(0).unwrap().as_bytes();
+        assert_ne!(final_bytes, after_first);
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .stomp_harmony_1457_selection()
+                .unwrap(),
+            pod_preset::StompHarmonyValue::Known(pod_preset::StompHarmony1457Selection::Fourth)
+        );
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .stomp_harmony_1m335_selection()
+                .unwrap(),
+            pod_preset::StompHarmonyValue::Known(
+                pod_preset::StompHarmony1M335Selection::MinusOctave
+            )
+        );
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "save");
+        assert_eq!(
+            std::fs::read(&blocked).unwrap(),
+            b"keep existing destination"
+        );
+        assert!(app.pod_library.is_dirty(0));
+        assert!(!app.permit_close);
+        click_prompt(&context, &mut app, "save");
+        assert!(app.permit_close);
+        let reopened = pod_preset::PodTone::parse(std::fs::read(saved).unwrap()).unwrap();
+        assert_eq!(
+            reopened.stomp_harmony_1457_selection().unwrap(),
+            pod_preset::StompHarmonyValue::Known(pod_preset::StompHarmony1457Selection::Fourth)
+        );
+        assert_eq!(
+            reopened.stomp_harmony_1m335_selection().unwrap(),
+            pod_preset::StompHarmonyValue::Known(
+                pod_preset::StompHarmony1M335Selection::MinusOctave
+            )
+        );
         const {
             assert!(LIVE_ACCESS_LOCKED);
         }

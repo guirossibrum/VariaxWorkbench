@@ -677,6 +677,84 @@ fn pod_cab_and_mic_apply_are_role_gated_and_keep_their_separate_write_sets() {
 }
 
 #[test]
+fn pod_stomp_harmony_session_is_role_gated_and_changes_one_selected_word() {
+    use crate::pod_preset::{
+        StompHarmony1M335Selection, StompHarmony1457Selection, StompHarmonySelection,
+    };
+    fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut out = id.to_vec();
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        out.extend_from_slice(data);
+        if !data.len().is_multiple_of(2) {
+            out.push(0);
+        }
+        out
+    }
+    let mut info = vec![0; 80];
+    info[..4].copy_from_slice(&1u32.to_be_bytes());
+    info[4..8].copy_from_slice(&PODXT_LIVE_PRODUCT_ID.to_be_bytes());
+    info[8..10].copy_from_slice(&u16::from(b'A').to_be_bytes());
+    info[72..76].copy_from_slice(&crate::pod_preset::PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
+    let mut model = b"MODL".to_vec();
+    let mut minf = Vec::new();
+    minf.extend_from_slice(&0x020a_0009u32.to_be_bytes());
+    minf.extend_from_slice(&crate::pod_preset::STOMP_SLOT.to_be_bytes());
+    minf.extend_from_slice(&[0; 4]);
+    model.extend(chunk(b"MINF", &minf));
+    for (id, bits) in [(0x0010_0001u32, 0x3f00_0000u32), (0x0010_0002, 0x3f40_8102)] {
+        let mut parm = Vec::new();
+        parm.extend_from_slice(&((0x3fu32 << 24) | id).to_be_bytes());
+        parm.extend_from_slice(&1u32.to_be_bytes());
+        parm.extend_from_slice(&bits.to_be_bytes());
+        model.extend(chunk(b"PARM", &parm));
+    }
+    let mut patch = b"PATC".to_vec();
+    patch.extend(chunk(b"LIST", &model));
+    let mut data = b"L6AS".to_vec();
+    data.extend(chunk(b"PINF", &info));
+    data.extend(chunk(b"LIST", &patch));
+    let original = chunk(b"FORM", &data);
+    let tone = crate::pod_preset::PodTone::parse(original.clone()).unwrap();
+    let start = original
+        .windows(4)
+        .position(|w| w == (((0x3fu32 << 24) | 0x0010_0001).to_be_bytes()))
+        .unwrap()
+        + 8;
+    let mut expected = original.clone();
+    expected[start..start + 4].copy_from_slice(
+        &StompHarmony1M335Selection::MinusOctave
+            .float_bits()
+            .to_be_bytes(),
+    );
+    let session = Session::initial_rig();
+    assert_eq!(
+        session.set_pod_stomp_harmony_selection(
+            RoleKind::Pod,
+            &original,
+            StompHarmonySelection::Harmony1M335(StompHarmony1M335Selection::MinusOctave)
+        ),
+        Ok(expected)
+    );
+    assert_eq!(
+        tone.stomp_harmony_1457_selection().unwrap(),
+        crate::pod_preset::StompHarmonyValue::Known(StompHarmony1457Selection::Fifth)
+    );
+    assert!(matches!(
+        session.set_pod_stomp_harmony_selection(
+            RoleKind::Guitar,
+            &original,
+            StompHarmonySelection::Harmony1M335(StompHarmony1M335Selection::MinusOctave)
+        ),
+        Err(Rejection::Unsupported {
+            operation: Operation::EditPodPreset,
+            ..
+        })
+    ));
+    assert!(session.live_backend_is_absent());
+    assert!(LIVE_BACKEND_INITIALIZER.is_none());
+}
+
+#[test]
 fn pod_model_enable_session_rejects_short_minf_with_canonical_padding() {
     let session = Session::initial_rig();
     for padding in [0, 1] {

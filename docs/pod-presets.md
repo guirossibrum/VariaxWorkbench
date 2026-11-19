@@ -174,6 +174,18 @@ separate formatted display text or assign semitone/physical units. The
 source-backed float32 operation multiplies by `63.75`, truncates toward zero,
 then multiplies by the float32 reciprocal `0x3c808081`, preserving each
 rounding stage. Imported finite values remain raw until an explicit edit.
+The distinct Stomp layout `0x020a0009` also exposes typed nine-choice
+`HARMONY_1M335` and `HARMONY_1457` associations at semantic PARMs
+`0x00100001` and `0x00100002`. Both use controller keys
+`0,16,32,48,64,80,96,112,127` and the exact float32 words documented in the
+[control matrix](podxt-live-control-matrix.md); their interval labels remain
+separate. This does not add key 127 to SYNWAVE. Each harmony edit requires one
+existing matching canonical float PARM on a PODxt Live target version `>=3.00`
+and one Stomp model `0x020a0009`; only that value word changes. Unknown finite
+words display as unknown and stay raw until a choice is explicitly staged and
+applied. Nonfinite existing words, opaque model records and failed target
+guards reject mutation. The GUI requires an explicit Apply button for either
+selector, and pending values are isolated by tone and control.
 The SYNWAVE
 association choices use exact f32 values from the source's controller-key
 conversion, in the shown order:
