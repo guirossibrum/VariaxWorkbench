@@ -8,8 +8,8 @@
 //! header contract documented in `docs/audio-capture-session.md`.
 
 use crate::recording::capture::{
-    CaptureBackend, CaptureError, CaptureSession, ChannelMap, InterfaceIdentity, PendingCaptureEvent,
-    ValidatedPlan,
+    CaptureBackend, CaptureError, CaptureSession, ChannelMap, InterfaceIdentity,
+    PendingCaptureEvent, ValidatedPlan,
 };
 use crate::recording::clock::ClockMeasurement;
 use crate::rig::audio;
@@ -64,7 +64,10 @@ impl AlsaPodxtCaptureAdapter {
         if admitted.identity != InterfaceIdentity::PodxtLive
             || admitted.backend != CaptureBackend::LinuxDeclaredPod
             || admitted.capture_row.is_none()
-            || !matches!(admitted.route_kind, Some(audio::RouteKind::NativeUsb | audio::RouteKind::SpecificBridge))
+            || !matches!(
+                admitted.route_kind,
+                Some(audio::RouteKind::NativeUsb | audio::RouteKind::SpecificBridge)
+            )
             || admitted.declaration != Some(audio::PODXT_LIVE_DECLARATION)
             || admitted.channels != 2
             || admitted.clock != (78_125, 2)
@@ -137,7 +140,8 @@ impl AlsaPodxtCaptureAdapter {
         let Some(captured_bytes) = captured_frames.checked_mul(PODXT_FRAME_BYTES) else {
             return self.session.adapter_failure(generation, i32::MIN);
         };
-        self.session.callback_chunk(generation, &buffer[..captured_bytes])
+        self.session
+            .callback_chunk(generation, &buffer[..captured_bytes])
     }
 
     pub fn drain(&mut self) -> Result<usize, CaptureError> {
@@ -159,8 +163,12 @@ impl AlsaPodxtCaptureAdapter {
         monotonic_ns: u64,
         dropout_frames: u64,
     ) -> Result<ClockMeasurement, CaptureError> {
-        self.session
-            .observe_software_clock(generation, cumulative_frames, monotonic_ns, dropout_frames)
+        self.session.observe_software_clock(
+            generation,
+            cumulative_frames,
+            monotonic_ns,
+            dropout_frames,
+        )
     }
 
     pub fn cancel(&mut self) -> Result<(), CaptureError> {
@@ -247,15 +255,15 @@ mod tests {
         assert_eq!(ALSA_ACCESS_RW_INTERLEAVED, 3);
         assert_eq!(ALSA_FORMAT_S24_3LE, 32);
         let mut adapter = AlsaPodxtCaptureAdapter::from_negotiated(
-            source(Some(ProductProfile::Variax600)), contract(), 51,
+            source(Some(ProductProfile::Variax600)),
+            contract(),
+            51,
         )
         .unwrap();
         assert_eq!(adapter.session().plan().clock, (78_125, 2));
         assert_eq!(adapter.channel_map(), ChannelMap { left: 0, right: 1 });
         let period = vec![0x2a; 66];
-        adapter
-            .translate_read_result(51, 11, 11, &period)
-            .unwrap();
+        adapter.translate_read_result(51, 11, 11, &period).unwrap();
         adapter.drain().unwrap();
         assert_eq!(adapter.session().take().pcm(), period.as_slice());
         assert_eq!(adapter.stop(), Ok(()));
@@ -266,22 +274,14 @@ mod tests {
         let mut negotiated = contract();
         negotiated.access = 4;
         assert_eq!(
-            AlsaPodxtCaptureAdapter::from_negotiated(
-                source(None),
-                negotiated,
-                52,
-            ),
+            AlsaPodxtCaptureAdapter::from_negotiated(source(None), negotiated, 52,),
             Err(AlsaAdapterError::UnsupportedAccess(4))
         );
 
         let mut negotiated = contract();
         negotiated.format = 6;
         assert_eq!(
-            AlsaPodxtCaptureAdapter::from_negotiated(
-                source(None),
-                negotiated,
-                52,
-            ),
+            AlsaPodxtCaptureAdapter::from_negotiated(source(None), negotiated, 52,),
             Err(AlsaAdapterError::UnsupportedFormat(6))
         );
 
@@ -289,11 +289,7 @@ mod tests {
         negotiated.rate_num = 39_062;
         negotiated.rate_den = 1;
         assert!(matches!(
-            AlsaPodxtCaptureAdapter::from_negotiated(
-                source(None),
-                negotiated,
-                52,
-            ),
+            AlsaPodxtCaptureAdapter::from_negotiated(source(None), negotiated, 52,),
             Err(AlsaAdapterError::InvalidClock {
                 numerator: 39_062,
                 denominator: 1
@@ -303,13 +299,9 @@ mod tests {
 
     #[test]
     fn identical_pcm_shape_does_not_promote_an_unadmitted_source() {
-        let software = ValidatedPlan::software_file(
-            44_100,
-            2,
-            ChannelMap { left: 0, right: 1 },
-            1024,
-        )
-        .unwrap();
+        let software =
+            ValidatedPlan::software_file(44_100, 2, ChannelMap { left: 0, right: 1 }, 1024)
+                .unwrap();
         assert_eq!(
             AlsaPodxtCaptureAdapter::from_negotiated(software, contract(), 60),
             Err(AlsaAdapterError::UnadmittedSource)
@@ -335,13 +327,10 @@ mod tests {
                 2 => request.capture_profile = ProductProfile::PodHd500x,
                 _ => request.platform = audio::Platform::Windows,
             }
-            assert!(ValidatedPlan::native_podxt(
-                &registry,
-                request,
-                RecordRoute::SendCleanGuitar,
-                1024
-            )
-            .is_err());
+            assert!(
+                ValidatedPlan::native_podxt(&registry, request, RecordRoute::SendCleanGuitar, 1024)
+                    .is_err()
+            );
         }
     }
 
@@ -388,8 +377,8 @@ mod tests {
 
     #[test]
     fn xrun_retains_native_discontinuity_and_freezes_later_periods() {
-        let mut adapter = AlsaPodxtCaptureAdapter::from_negotiated(source(None), contract(), 63)
-            .unwrap();
+        let mut adapter =
+            AlsaPodxtCaptureAdapter::from_negotiated(source(None), contract(), 63).unwrap();
         assert_eq!(
             adapter.translate_read_result(63, -(ALSA_ERRNO_EPIPE as isize), 4, &[]),
             Err(CaptureError::AdapterDiscontinuity(-32))
@@ -406,14 +395,14 @@ mod tests {
 
     #[test]
     fn suspended_and_other_native_errors_are_retained_without_pcm() {
-        let mut suspended = AlsaPodxtCaptureAdapter::from_negotiated(source(None), contract(), 65)
-            .unwrap();
+        let mut suspended =
+            AlsaPodxtCaptureAdapter::from_negotiated(source(None), contract(), 65).unwrap();
         assert_eq!(
             suspended.translate_read_result(65, -(ALSA_ERRNO_ESTRPIPE as isize), 4, &[]),
             Err(CaptureError::AdapterSuspended(-ALSA_ERRNO_ESTRPIPE))
         );
-        let mut failed = AlsaPodxtCaptureAdapter::from_negotiated(source(None), contract(), 66)
-            .unwrap();
+        let mut failed =
+            AlsaPodxtCaptureAdapter::from_negotiated(source(None), contract(), 66).unwrap();
         assert_eq!(
             failed.translate_read_result(66, -5, 4, &[]),
             Err(CaptureError::AdapterFailure(-5))
@@ -422,8 +411,8 @@ mod tests {
 
     #[test]
     fn timing_observations_follow_adapter_generation_and_owner_contract() {
-        let mut adapter = AlsaPodxtCaptureAdapter::from_negotiated(source(None), contract(), 64)
-            .unwrap();
+        let mut adapter =
+            AlsaPodxtCaptureAdapter::from_negotiated(source(None), contract(), 64).unwrap();
         let initial = adapter.observe_software_clock(64, 0, 1_000, 0).unwrap();
         assert_eq!(
             adapter.observe_software_clock(63, 1_000, 25_601_000, 0),
