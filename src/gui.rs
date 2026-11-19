@@ -3824,7 +3824,16 @@ mod tests {
 
     fn click_pod(context: &egui::Context, app: &mut Workbench, id: &'static str) {
         recording_frame(context, app, vec![]);
-        let pos = app.pod_buttons[id].center();
+        let pos = app
+            .pod_buttons
+            .get(id)
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected rendered POD button {id:?}; registered: {:?}",
+                    app.pod_buttons.keys().collect::<Vec<_>>()
+                )
+            })
+            .center();
         recording_frame(
             context,
             app,
@@ -3892,7 +3901,16 @@ mod tests {
             );
             hd_editor_frame(context, app, vec![]);
         }
-        let pos = app.pod_buttons[id].center();
+        let pos = app
+            .pod_buttons
+            .get(id)
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected rendered POD button {id:?}; registered: {:?}",
+                    app.pod_buttons.keys().collect::<Vec<_>>()
+                )
+            })
+            .center();
         hd_editor_frame(
             context,
             app,
@@ -4786,7 +4804,7 @@ mod tests {
         app.request_close(&context);
         assert!(matches!(app.pending, Some(Pending::QuitPod)));
         click_prompt(&context, &mut app, "cancel");
-        assert!(matches!(app.pending, None));
+        assert!(app.pending.is_none());
         assert!(app.hd_type9_pending.is_some());
         assert!(!app.permit_close);
 
@@ -4796,7 +4814,7 @@ mod tests {
         assert!(app.hd_library.is_dirty(index));
         assert!(matches!(app.pending, Some(Pending::QuitPod)));
         click_prompt(&context, &mut app, "cancel");
-        assert!(matches!(app.pending, None));
+        assert!(app.pending.is_none());
         assert!(app.hd_library.is_dirty(index));
         assert!(!app.permit_close);
 
