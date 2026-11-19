@@ -3808,9 +3808,11 @@ mod tests {
                 let index = library.import_bytes(original.clone()).unwrap();
                 for control in [PodModelEnable::Amp, PodModelEnable::Eq] {
                     for requested in [false, true] {
-                        assert!(library
-                            .set_model_enabled(index, control, requested)
-                            .is_err());
+                        assert!(
+                            library
+                                .set_model_enabled(index, control, requested)
+                                .is_err()
+                        );
                         assert_eq!(library.tone(index).unwrap().as_bytes(), original);
                         assert!(!library.is_dirty(index));
                     }
@@ -3819,11 +3821,15 @@ mod tests {
                 let mut bundle = PodBundleLibrary::parse(bundle_with_tone(&original)).unwrap();
                 let before = bundle.as_bytes().to_vec();
                 for control in [PodModelEnable::Amp, PodModelEnable::Eq] {
-                    assert!(bundle.tone(0, 0).unwrap().model_enable_state(control).is_err());
+                    assert!(
+                        bundle
+                            .tone(0, 0)
+                            .unwrap()
+                            .model_enable_state(control)
+                            .is_err()
+                    );
                     for requested in [false, true] {
-                        assert!(bundle
-                            .set_model_enabled(0, control, requested)
-                            .is_err());
+                        assert!(bundle.set_model_enabled(0, control, requested).is_err());
                         assert_eq!(bundle.as_bytes(), before);
                         assert!(!bundle.is_dirty());
                     }

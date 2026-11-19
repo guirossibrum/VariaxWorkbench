@@ -3953,12 +3953,13 @@ mod tests {
             !app.pod_model_enable_checks
                 .contains_key(&pod_preset::PodModelEnable::Amp)
         );
-        assert!(app
-            .pod_library
-            .tone(0)
-            .unwrap()
-            .model_enable_state(pod_preset::PodModelEnable::Amp)
-            .is_err());
+        assert!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .model_enable_state(pod_preset::PodModelEnable::Amp)
+                .is_err()
+        );
         assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), short_original);
         assert!(!app.pod_library.is_dirty(0));
         click_pod_model_enable_menu(&context, &mut app);

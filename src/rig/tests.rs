@@ -592,18 +592,21 @@ fn pod_model_enable_session_rejects_short_minf_with_canonical_padding() {
         original[header + 8 + 11] = padding;
         let before = original.clone();
         let tone = crate::pod_preset::PodTone::parse(original.clone()).unwrap();
-        assert!(tone
-            .model_enable_state(crate::pod_preset::PodModelEnable::Amp)
-            .is_err());
+        assert!(
+            tone.model_enable_state(crate::pod_preset::PodModelEnable::Amp)
+                .is_err()
+        );
         for enabled in [false, true] {
-            assert!(session
-                .set_pod_model_enabled(
-                    RoleKind::Pod,
-                    &original,
-                    crate::pod_preset::PodModelEnable::Amp,
-                    enabled,
-                )
-                .is_err());
+            assert!(
+                session
+                    .set_pod_model_enabled(
+                        RoleKind::Pod,
+                        &original,
+                        crate::pod_preset::PodModelEnable::Amp,
+                        enabled,
+                    )
+                    .is_err()
+            );
             assert_eq!(original, before);
         }
     }
