@@ -1044,7 +1044,7 @@ mod tests {
                 RecordRoute::SendCleanGuitar,
                 1024
             ),
-            Err(CaptureError::UnsupportedPlatform)
+            Err(CaptureError::Registry(AdmissionError::UnverifiedPlatform))
         );
 
         let (registry, mut request) = native_request(None);
