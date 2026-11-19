@@ -3721,8 +3721,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn hd_editor_explicit_vintage_pre_replacement_stages_reverts_saves_and_guards_quit() {
+    fn exercise_hd_editor_explicit_replacement_lifecycle(
+        target_model: u32,
+        default_keys: [u32; 5],
+        button_id: &str,
+        message_label: &str,
+        output_name: &str,
+    ) {
         let (context, mut app) = app();
         context.style_mut(|style| style.animation_time = 0.0);
         let source_document = app.document.as_ref().unwrap().as_bytes().to_vec();
@@ -3763,62 +3768,11 @@ mod tests {
         let index = app.hd_library.import_bytes(original.clone()).unwrap();
         app.select_hd_file(index);
         app.pod_open = true;
-
         recording_frame(&context, &mut app, vec![]);
-        click_pod(&context, &mut app, "replace-octave-fuzz-screamer");
-        assert!(
-            app.pod_message.contains("Screamer defaults"),
-            "{}",
-            app.pod_message
-        );
-        let mut screamer_expected = original.clone();
-        screamer_expected[block..block + 4].copy_from_slice(&0x0205_000eu32.to_be_bytes());
-        for (row, key) in [
-            0x3f10_0001u32,
-            0x3f10_0002,
-            0x3f10_0003,
-            0x3f10_0004,
-            0x3f10_0005,
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let row_at = block + 0x10 + row * 0x14;
-            screamer_expected[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
-            screamer_expected[row_at + 4..row_at + 8].copy_from_slice(&0u32.to_be_bytes());
-        }
-        screamer_expected[block + 0x0f] = 5;
-        for row in 0..12 {
-            screamer_expected[block + 0x10 + row * 0x14 + 0x10] = 0;
-        }
-        assert_eq!(
-            app.hd_library.file(index).unwrap().as_bytes(),
-            screamer_expected
-        );
-        assert!(app.hd_library.is_dirty(index));
-        assert_eq!(app.document.as_ref().unwrap().as_bytes(), source_document);
-        app.hd_library.revert_unsaved(index).unwrap();
-        assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), original);
-        assert!(!app.hd_library.is_dirty(index));
 
-        click_pod(&context, &mut app, "replace-octave-fuzz-vintage-pre");
-        assert!(
-            app.pod_message.contains("Vintage Pre defaults"),
-            "{}",
-            app.pod_message
-        );
         let mut expected = original.clone();
-        expected[block..block + 4].copy_from_slice(&0x020c_000eu32.to_be_bytes());
-        for (row, key) in [
-            0x3f10_0002u32,
-            0x3f10_0003,
-            0x3f10_0004,
-            0x3f10_0005,
-            0x3f10_0001,
-        ]
-        .into_iter()
-        .enumerate()
-        {
+        expected[block..block + 4].copy_from_slice(&target_model.to_be_bytes());
+        for (row, key) in default_keys.into_iter().enumerate() {
             let row_at = block + 0x10 + row * 0x14;
             expected[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
             expected[row_at + 4..row_at + 8].copy_from_slice(&0u32.to_be_bytes());
@@ -3827,22 +3781,27 @@ mod tests {
         for row in 0..12 {
             expected[block + 0x10 + row * 0x14 + 0x10] = 0;
         }
+
+        click_pod(&context, &mut app, button_id);
+        assert!(
+            app.pod_message.contains(message_label),
+            "{}",
+            app.pod_message
+        );
         assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), expected);
         assert!(app.hd_library.is_dirty(index));
         assert_eq!(app.document.as_ref().unwrap().as_bytes(), source_document);
-        assert!(app.pod_message.contains("Vintage Pre defaults"));
-
         app.hd_library.revert_unsaved(index).unwrap();
         assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), original);
         assert!(!app.hd_library.is_dirty(index));
-        click_pod(&context, &mut app, "replace-octave-fuzz-vintage-pre");
-        assert!(app.hd_library.is_dirty(index));
 
+        click_pod(&context, &mut app, button_id);
+        assert!(app.hd_library.is_dirty(index));
         let directory = tempfile::tempdir().unwrap();
         let blocked = directory.path().join("blocked-directory");
         std::fs::create_dir(&blocked).unwrap();
         let collision = directory.path().join("existing.5xe");
-        let output = directory.path().join("vintage-pre-copy.5xe");
+        let output = directory.path().join(output_name);
         std::fs::write(&collision, b"keep destination").unwrap();
         app.dialogs = Box::new(FakeDialogs {
             pod_save: [
@@ -3873,14 +3832,45 @@ mod tests {
         click_prompt(&context, &mut app, "save");
         assert!(app.permit_close);
         assert!(!app.hd_library.any_dirty());
-        assert_eq!(std::fs::read(&output).unwrap(), expected);
-        let reopened = pod_preset::OpaqueH5epPreset::parse(std::fs::read(output).unwrap()).unwrap();
-        assert_eq!(reopened.effect_model_id(0), Some(0x020c_000e));
+        let written = std::fs::read(&output).unwrap();
+        assert_eq!(written, expected);
+        let reopened = pod_preset::OpaqueH5epPreset::parse(written).unwrap();
+        assert_eq!(reopened.effect_model_id(0), Some(target_model));
         assert!(reopened.trailing_bytes().is_empty());
         assert!(app.read_worker.is_none());
         const {
             assert!(LIVE_ACCESS_LOCKED);
         }
+    }
+
+    #[test]
+    fn hd_editor_explicit_default_replacements_stages_reverts_saves_and_guards_quit() {
+        exercise_hd_editor_explicit_replacement_lifecycle(
+            0x020c_000e,
+            [
+                0x3f10_0002,
+                0x3f10_0003,
+                0x3f10_0004,
+                0x3f10_0005,
+                0x3f10_0001,
+            ],
+            "replace-octave-fuzz-vintage-pre",
+            "Vintage Pre defaults",
+            "vintage-pre-copy.5xe",
+        );
+        exercise_hd_editor_explicit_replacement_lifecycle(
+            0x0205_000e,
+            [
+                0x3f10_0001,
+                0x3f10_0002,
+                0x3f10_0003,
+                0x3f10_0004,
+                0x3f10_0005,
+            ],
+            "replace-octave-fuzz-screamer",
+            "Screamer defaults",
+            "screamer-copy.5xe",
+        );
     }
 
     #[test]

@@ -277,6 +277,48 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
         Err(Rejection::Format { .. })
     ));
     assert_eq!(library.len(), 6, "malformed file is not imported");
+
+    let mut bundle_bytes = vec![0; crate::pod_preset::H5EB_MIN_BYTES];
+    bundle_bytes[..4].copy_from_slice(b"H5EB");
+    bundle_bytes[4..8].copy_from_slice(&1u32.to_be_bytes());
+    for setlist in 0..crate::pod_preset::H5EB_SETLIST_COUNT {
+        let setlist_start =
+            crate::pod_preset::H5EB_HEADER_BYTES + setlist * crate::pod_preset::H5ES_MIN_BYTES;
+        let setlist_bytes = if setlist == 0 {
+            parent_bytes.clone()
+        } else {
+            synthetic_h5es()
+        };
+        bundle_bytes[setlist_start..setlist_start + crate::pod_preset::H5ES_MIN_BYTES]
+            .copy_from_slice(&setlist_bytes);
+    }
+    let bundle = session
+        .import_hd_editor_file(&mut library, bundle_bytes.clone())
+        .expect("offline H5EB import");
+    let bundle_child = session
+        .extract_hd_editor_preset(&mut library, bundle.index, 0, 17)
+        .expect("extract Screamer test child from H5EB");
+    let bundle_child_original = library
+        .file(bundle_child.index)
+        .unwrap()
+        .as_bytes()
+        .to_vec();
+    session
+        .replace_hd_octave_fuzz_with_screamer_defaults(
+            &mut library,
+            bundle_child.index,
+            crate::pod_preset::HdFxSlot::new(0).unwrap(),
+        )
+        .expect("bounded replacement in extracted H5EB child");
+    assert!(library.is_dirty(bundle_child.index));
+    assert_eq!(library.file(bundle.index).unwrap().as_bytes(), bundle_bytes);
+    library.revert_unsaved(bundle_child.index).unwrap();
+    assert!(!library.is_dirty(bundle_child.index));
+    assert_eq!(
+        library.file(bundle_child.index).unwrap().as_bytes(),
+        bundle_child_original
+    );
+    assert_eq!(library.file(bundle.index).unwrap().as_bytes(), bundle_bytes);
     assert_eq!(
         capability::capability(ProductProfile::PodHd500x, Operation::OpenPodPreset).state,
         CapabilityState::Unverified

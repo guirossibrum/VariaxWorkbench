@@ -275,8 +275,13 @@ of twelve rows. Validity and enable/reserved bytes remain unchanged, as do
 rows 5–11 (including later duplicates), all unrelated slots, file framing,
 trailing bytes and an H5ES/H5EB parent. The candidate is reparsed before
 commit. This is not a generic model/default setter and does not run on
-selection or rendering. Exact-head focused validation is pending for this
-newly admitted implementation.
+selection or rendering. Both explicit replacements share rejection coverage
+for invalid validity, enable, count, key prefix, duplicate prefix, old model,
+and marker inputs, checking bytes plus library baseline/dirty/revert state.
+The GUI lifecycle exercises each replacement through cancel, failing and
+colliding save destinations, successful save/reopen, and quit protection.
+Extracted H5ES and H5EB child tests check parent preservation; the H5EB case
+also checks dirty/revert state.
 
 ### Additional selected numeric control contracts
 
@@ -504,6 +509,9 @@ also passed all four configured focused checks: all-features
 (`395bb495-d6be-4504-b818-167a2c82f769`). Each functional profile passed
 279 tests: 225 library, 28 GUI, and 26 integration. These results apply to
 the Screamer implementation head; no GitHub Actions run is claimed for it.
+The review-requested test-only additions to rejection and lifecycle coverage
+are not covered by the `d2f6256` run. Their current-head result is recorded
+through the PR and coordinator handoff, avoiding a docs-only head change.
 
 | Operation | Shared entry point and current result | Product-specific evidence and remaining relation |
 | --- | --- | --- |

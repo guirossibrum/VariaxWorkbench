@@ -3424,70 +3424,52 @@ mod tests {
     }
 
     #[test]
-    fn octave_fuzz_to_screamer_rejects_wrong_models_and_bad_rows_atomically() {
+    fn octave_fuzz_default_replacements_reject_invalid_inputs_atomically_for_both_targets() {
+        type PresetReplace = fn(&mut OpaqueH5epPreset, HdFxSlot) -> Result<(), ToneError>;
+        type LibraryReplace = fn(&mut HdEditorLibrary, usize, HdFxSlot) -> Result<(), ToneError>;
+        let replacements: [(&str, PresetReplace, LibraryReplace); 2] = [
+            (
+                "Vintage Pre",
+                OpaqueH5epPreset::replace_octave_fuzz_with_vintage_pre_defaults,
+                HdEditorLibrary::replace_octave_fuzz_with_vintage_pre_defaults,
+            ),
+            (
+                "Screamer",
+                OpaqueH5epPreset::replace_octave_fuzz_with_screamer_defaults,
+                HdEditorLibrary::replace_octave_fuzz_with_screamer_defaults,
+            ),
+        ];
         let source = synthetic_octave_fuzz_h5ep(0, true);
         let mut cases = Vec::new();
-        for model in [HD_TUBE_DRIVE_MODEL_ID, HD_SCREAMER_MODEL_ID, 0x0200_0013] {
+        for model in [
+            HD_TUBE_DRIVE_MODEL_ID,
+            HD_SCREAMER_MODEL_ID,
+            0x0200_0013, // sentinel model
+            HD_FX_LOOP_MODEL_ID,
+        ] {
             let mut bytes = source.clone();
             bytes[H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET
                 ..H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 4]
                 .copy_from_slice(&model.to_be_bytes());
-            cases.push(("wrong model", bytes));
+            cases.push(("wrong old model", bytes));
         }
-        let mut invalid_marker = source.clone();
-        let marker = H5EP_HEADER_BYTES
-            + HD_EFFECT_BLOCK_OFFSET
-            + HD_EFFECT_ROWS_OFFSET
-            + 11 * HD_PARAMETER_ROW_STRIDE
-            + 0x10;
-        invalid_marker[marker] = 3;
-        cases.push(("invalid marker", invalid_marker));
-        let mut duplicate_prefix = source.clone();
-        let row1 = H5EP_HEADER_BYTES
-            + HD_EFFECT_BLOCK_OFFSET
-            + HD_EFFECT_ROWS_OFFSET
-            + HD_PARAMETER_ROW_STRIDE;
-        duplicate_prefix[row1..row1 + 4].copy_from_slice(&0x3f10_0005u32.to_be_bytes());
-        cases.push(("duplicate prefix", duplicate_prefix));
-
-        for (label, bytes) in cases {
-            let mut preset = OpaqueH5epPreset::parse(bytes).unwrap();
-            let before = preset.as_bytes().to_vec();
-            assert!(
-                preset
-                    .replace_octave_fuzz_with_screamer_defaults(HdFxSlot::new(0).unwrap())
-                    .is_err(),
-                "{label}"
-            );
-            assert_eq!(preset.as_bytes(), before, "{label} rejection is atomic");
+        for validity in [0, 2] {
+            let mut bytes = source.clone();
+            bytes[H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 0x0b] = validity;
+            cases.push(("validity", bytes));
         }
-    }
-
-    #[test]
-    fn octave_fuzz_replacement_rejects_noncanonical_inputs_without_mutation() {
-        let source = synthetic_octave_fuzz_h5ep(0, true);
-        let mut cases = Vec::new();
-
-        let mut wrong_model = source.clone();
-        wrong_model[H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET
-            ..H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 4]
-            .copy_from_slice(&HD_TUBE_DRIVE_MODEL_ID.to_be_bytes());
-        cases.push(("wrong model", wrong_model));
-        let mut invalid_slot = source.clone();
-        invalid_slot[H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 0x0b] = 0;
-        cases.push(("invalid slot", invalid_slot));
         let mut invalid_enable = source.clone();
         invalid_enable[H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 8] = 2;
         cases.push(("enable", invalid_enable));
         for count in [4, 13] {
-            let mut invalid_count = source.clone();
-            invalid_count[H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 0x0f] = count;
-            cases.push(("count", invalid_count));
+            let mut bytes = source.clone();
+            bytes[H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 0x0f] = count;
+            cases.push(("count", bytes));
         }
-        let mut unknown_prefix = source.clone();
         let row0 = H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + HD_EFFECT_ROWS_OFFSET;
+        let mut unknown_prefix = source.clone();
         unknown_prefix[row0..row0 + 4].copy_from_slice(&0xfeed_beefu32.to_be_bytes());
-        cases.push(("unknown prefix", unknown_prefix));
+        cases.push(("unknown first-five key", unknown_prefix));
         let mut duplicate_prefix = source.clone();
         let row1 = row0 + HD_PARAMETER_ROW_STRIDE;
         duplicate_prefix[row1..row1 + 4].copy_from_slice(&HD_TYPE1_OUTPUT_KEY.to_be_bytes());
@@ -3501,20 +3483,32 @@ mod tests {
         invalid_marker[marker] = 3;
         cases.push(("assignment marker", invalid_marker));
 
-        for (label, bytes) in cases {
-            let mut preset = OpaqueH5epPreset::parse(bytes).unwrap();
-            let before = preset.as_bytes().to_vec();
-            assert!(
-                preset
-                    .replace_octave_fuzz_with_vintage_pre_defaults(HdFxSlot::new(0).unwrap())
-                    .is_err(),
-                "{label}"
-            );
-            assert_eq!(
-                preset.as_bytes(),
-                before,
-                "{label} rejection must be atomic"
-            );
+        for (target, replace_preset, replace_library) in replacements {
+            for (label, bytes) in &cases {
+                let mut preset = OpaqueH5epPreset::parse(bytes.clone()).unwrap();
+                let before = preset.as_bytes().to_vec();
+                assert!(
+                    replace_preset(&mut preset, HdFxSlot::new(0).unwrap()).is_err(),
+                    "{target}: {label}"
+                );
+                assert_eq!(preset.as_bytes(), before, "{target}: {label} raw bytes");
+
+                let mut library = HdEditorLibrary::default();
+                let index = library.import_bytes(bytes.clone()).unwrap();
+                assert!(!library.is_dirty(index));
+                assert!(
+                    replace_library(&mut library, index, HdFxSlot::new(0).unwrap()).is_err(),
+                    "{target}: {label} shared library"
+                );
+                assert!(!library.is_dirty(index), "{target}: {label} dirty state");
+                assert_eq!(library.file(index).unwrap().as_bytes(), bytes);
+                library.revert_unsaved(index).unwrap();
+                assert_eq!(
+                    library.file(index).unwrap().as_bytes(),
+                    bytes,
+                    "{target}: {label} saved baseline"
+                );
+            }
         }
     }
 
