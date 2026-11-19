@@ -1,6 +1,7 @@
 # PODxt Live tone files
 
-Issue #29 adds an offline librarian for individual PODxt Live tone files.
+Issue #29 adds an offline librarian for individual PODxt Live tone files and
+target-validated bank/collection editing in the Rust core.
 It does not edit a connected POD, send MIDI or USB, switch presets, or write
 firmware. This document separates historical findings from the later,
 source-backed Line6Edit host-scale control subset. Neither those source scales
@@ -14,7 +15,9 @@ class used for other FORM tones. Local sources, kept out of git:
 - `analysis/decompiled/mac/cmn/l6java/patch/L6ToneFileIFFMap.java` maps
   `FORM/L6PA` to `L6Patch` type 0, `FORM/L6FS` to type 1, and `FORM/L6AS` to
   type 2. `L6TE`, `L6BA`, `L6CO`, `L6GP`, and SoundDiver containers are not
-  individual tones and are rejected here.
+  individual tones. `L6PatchBank.AddIFFContainer` accepts L6PA/L6FS/L6AS patch
+  entries in a bank. Rust admits the three individual types in its bank reader;
+  this is static format evidence, not a vendor save oracle.
 - `analysis/decompiled/mac/cmn/l6java/device/L6ProductConstants.java` sets
   `PODXT_LIVE` to 196618 (`0x0003000A`). `IsVariaxFamily` is the high word
   `0x00070000`. Other Sharc product ids, including Bass PODxt Live 196619,
@@ -65,8 +68,13 @@ Vetta slots `0x01030000` and `0x01040000` are not used. Guitar slots
 `src/pod_preset.rs` accepts one `FORM/L6PA`, `FORM/L6FS`, or `FORM/L6AS` file
 whose PINF target is `0x0003000A`. A Variax-family id is a cross-family
 rejection. Any other id is rejected and is not treated as a decoded PODxt Live
-tone. The in-memory library is a list of those files. It is not a new bank
-format.
+tone. The individual-tone GUI library is a list of those files.
+`PodBundleLibrary` also opens existing Workbench L6BA/L6CO banks and collections
+when every contained preset is a PODxt Live tone. It provides selected-tone
+editing, dirty tracking, revert and atomic non-overwriting save-copy while
+retaining the original bundle structure. It rejects empty and mixed-target
+bundles. GUI bank navigation remains unimplemented; this API does not synthesize
+bank membership or claim vendor save compatibility.
 
 The PINF name edit uses the same 32-unit NUL and length rule as the guitar
 renamer. Six host-scale edits are available for Drive, Bass, Mid, Treble,

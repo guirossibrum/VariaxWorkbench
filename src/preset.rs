@@ -1,4 +1,4 @@
-//! Lossless reader/editor for individual Workbench FORM/L6PA preset files.
+//! Lossless reader/editor for individual Workbench FORM/L6PA/L6FS/L6AS preset files.
 //! Unknown chunks, ordering, padding and parameter bit patterns remain untouched.
 //! File parameters are model-local IDs, not the MIDI metadata parameter IDs.
 
@@ -230,10 +230,11 @@ impl PresetFile {
     }
 
     pub fn parse(bytes: Vec<u8>) -> Result<Self, String> {
-        if bytes.len() < 12 || &bytes[..4] != b"FORM" || &bytes[8..12] != b"L6PA" {
-            return Err(
-                "expected an individual FORM/L6PA preset; bundles are not supported yet".into(),
-            );
+        if bytes.len() < 12
+            || &bytes[..4] != b"FORM"
+            || !matches!(&bytes[8..12], b"L6PA" | b"L6FS" | b"L6AS")
+        {
+            return Err("expected an individual FORM/L6PA, FORM/L6FS, or FORM/L6AS preset".into());
         }
         if word(&bytes, 4) as usize != bytes.len() - 8 {
             return Err("FORM length does not match the file".into());
