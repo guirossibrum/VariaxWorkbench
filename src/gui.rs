@@ -1866,6 +1866,37 @@ impl Workbench {
                         }
                     }
                 }
+                if let Some(pending) = self.hd_type9_pending
+                    && self.hd_selected == Some(pending.file_index)
+                    && self.hd_effect_slot == pending.slot.index()
+                {
+                    ui.label(format!(
+                        "{} for FX slot {} is staged.",
+                        pending.choice.label(),
+                        pending.slot.index()
+                    ));
+                    ui.horizontal(|ui| {
+                        if self.pod_button(
+                            ui,
+                            "apply-hd-type9-choice",
+                            "Apply offline choice",
+                        ) {
+                            self.apply_hd_type9_choice(
+                                pending.file_index,
+                                pending.slot,
+                                pending.choice,
+                            );
+                        }
+                        if self.pod_button(
+                            ui,
+                            "discard-hd-type9-choice",
+                            "Discard staged choice",
+                        ) {
+                            self.hd_type9_pending = None;
+                            self.pod_message = "Discarded the staged HD type-9 choice.".into();
+                        }
+                    });
+                }
                 let selected_octave_fuzz = self.hd_selected.and_then(|index| {
                     self.hd_library.file(index).and_then(|file| match file {
                         PodPresetFile::H5ep(preset) => {
@@ -2253,36 +2284,6 @@ impl Workbench {
                     ui.label("Choice labels are neutral. Imported unknown values are preserved until you choose an explicit value.");
                     if matches!(value, pod_preset::HdType9ChoiceValue::NonFinite(_)) {
                         ui.label("A non-finite imported value cannot be replaced by this editor operation.");
-                    }
-                    if self.hd_type9_pending.is_some_and(|pending| {
-                        pending.file_index == index
-                            && pending.slot == slot
-                            && pending.model_id == model_id
-                    }) {
-                        ui.horizontal(|ui| {
-                            let response = ui.button("Apply offline choice");
-                            #[cfg(test)]
-                            self.pod_buttons
-                                .insert("apply-hd-type9-choice", response.rect);
-                            ui.scroll_to_rect(response.rect, Some(egui::Align::Center));
-                            if response.clicked()
-                                && let Some(pending) = self.hd_type9_pending
-                            {
-                                self.apply_hd_type9_choice(
-                                    pending.file_index,
-                                    pending.slot,
-                                    pending.choice,
-                                );
-                            }
-                            if self.pod_button(
-                                ui,
-                                "discard-hd-type9-choice",
-                                "Discard staged choice",
-                            ) {
-                                self.hd_type9_pending = None;
-                                self.pod_message = "Discarded the staged HD type-9 choice.".into();
-                            }
-                        });
                     }
                 }
                 let has_mapped_type1 = pod_preset::HD_TYPE1_MAPPED_CONTROLS.iter().any(|control| {
