@@ -3858,6 +3858,24 @@ mod tests {
         );
     }
 
+    fn assert_hd_bytes_eq(actual: &[u8], expected: &[u8], context: &str) {
+        let differences = actual
+            .iter()
+            .zip(expected)
+            .enumerate()
+            .filter_map(|(offset, (actual, expected))| {
+                (actual != expected).then_some((offset, *actual, *expected))
+            })
+            .take(8)
+            .collect::<Vec<_>>();
+        assert!(
+            actual.len() == expected.len() && differences.is_empty(),
+            "{context}: actual length {}, expected length {}, first differences (offset, actual, expected): {differences:?}",
+            actual.len(),
+            expected.len()
+        );
+    }
+
     fn sample_pod_tone() -> Vec<u8> {
         fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
             let mut output = id.to_vec();
@@ -4141,7 +4159,11 @@ mod tests {
         }
         app.pod_open = true;
         recording_frame(&context, &mut app, vec![]);
-        assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), original);
+        assert_hd_bytes_eq(
+            app.hd_library.file(index).unwrap().as_bytes(),
+            &original,
+            "staging must not alter file bytes",
+        );
 
         let mut expected = original.clone();
         expected[block..block + 4].copy_from_slice(&target_model.to_be_bytes());
@@ -4161,7 +4183,11 @@ mod tests {
             "{}",
             app.pod_message
         );
-        assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), expected);
+        assert_hd_bytes_eq(
+            app.hd_library.file(index).unwrap().as_bytes(),
+            &expected,
+            "applying the staged GUI choice",
+        );
         assert!(app.hd_library.is_dirty(index));
         assert_eq!(app.document.as_ref().unwrap().as_bytes(), source_document);
         app.hd_library.revert_unsaved(index).unwrap();
@@ -4527,7 +4553,11 @@ mod tests {
         assert!(app.hd_library.is_dirty(index));
         let mut expected = original.clone();
         expected[row + 4..row + 8].copy_from_slice(&0x3f7f_fba2u32.to_be_bytes());
-        assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), expected);
+        assert_hd_bytes_eq(
+            app.hd_library.file(index).unwrap().as_bytes(),
+            &expected,
+            "discarding a later staged GUI choice",
+        );
 
         let directory = tempfile::tempdir().unwrap();
         let collision = directory.path().join("existing.h5p");
