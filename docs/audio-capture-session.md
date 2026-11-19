@@ -46,10 +46,12 @@ The adapter's pure `translate_read_result` boundary models the installed ALSA
 `snd_pcm_readi` contract: a signed frame count, requested frame capacity, and a
 borrowed interleaved buffer. It checks the buffer's byte extent from the admitted
 two-channel three-byte sample format and only copies the returned frame prefix
-into the bounded common queue. The borrow ends before the callback returns; no
-native buffer or PCM handle is retained. Negative `-EPIPE` results are retained
-as terminal discontinuities and other negative errno results as terminal
-adapter failures. ALSA read results do not report the exact lost-frame count,
+into the bounded common queue. A zero-frame result remains a no-op only after
+the common session validates owner, generation, and lifecycle; it adds no PCM
+and changes no meter, clock, or queue state. The borrow ends before the callback
+returns; no native buffer or PCM handle is retained. Negative `-EPIPE` results
+are retained as terminal discontinuities; other negative errno results are
+terminal adapter failures. ALSA read results do not report the exact lost-frame count,
 so the adapter does not invent dropout duration or silence for an xrun. This
 translation has no FFI, endpoint discovery, PCM handle, or production
 initialization route.
@@ -91,8 +93,11 @@ Platform blockers are tied to concrete source and bounded local environment
 checks. The local search covered `/usr/include`, `/usr/local/include`, `/opt`,
 and the existing Cargo registry source cache; it found no Windows SDK
 `audioclient.h`/`mmdeviceapi.h` or macOS Core Audio `AudioHardware.h`,
-`AudioUnit.h`, or AudioQueue headers. `cargo`, `rustc`, and `rustup` are not
-installed in this contributor shell. The configured
+`AudioUnit.h`, or AudioQueue headers. An earlier contributor-shell search also
+found no `cargo`, `rustc`, or `rustup` on its default `PATH`; that is historical
+environment evidence. The currently provisioned shared pinned toolchain is
+Cargo 1.99.1, rustc 1.99.1, and rustfmt 1.10.0-stable. This toolchain does not
+provide Windows or macOS SDK headers in this Linux worktree. The configured
 `.github/workflows/offline-core.yml` matrix runs portable-core/file checks on
 Ubuntu 24.04, Windows 2025, and macOS 15, with no WASAPI/Core Audio adapter
 target or SDK contract step. Those jobs are not native-adapter compile proof.

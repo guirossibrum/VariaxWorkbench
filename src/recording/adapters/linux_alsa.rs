@@ -135,6 +135,7 @@ impl AlsaPodxtCaptureAdapter {
             return self.session.adapter_failure(generation, i32::MIN);
         }
         if captured_frames == 0 {
+            self.session.check_callback_admission(generation)?;
             return Ok(());
         }
         let Some(captured_bytes) = captured_frames.checked_mul(PODXT_FRAME_BYTES) else {
@@ -192,6 +193,7 @@ impl AlsaPodxtCaptureAdapter {
 mod tests {
     use super::*;
     use crate::pod_audio::RecordRoute;
+    use crate::recording::Phase;
     use crate::rig::ProductProfile;
 
     fn contract() -> AlsaNegotiatedPcm {
@@ -349,7 +351,17 @@ mod tests {
             .unwrap();
         assert_eq!(adapter.drain().unwrap(), 1);
         assert_eq!(adapter.session().take().pcm(), bytes.as_slice());
+        let clock_before_zero = adapter.session().clock_measurement();
+        let levels_before_zero = adapter.session().last_levels();
+        let pending_before_zero = adapter.session().pending_events();
+        let queued_before_zero = adapter.session().queued_bytes();
+        let pcm_before_zero = adapter.session().take().pcm().to_vec();
         assert_eq!(adapter.translate_read_result(62, 0, 0, &[]), Ok(()));
+        assert_eq!(adapter.session().clock_measurement(), clock_before_zero);
+        assert_eq!(adapter.session().last_levels(), levels_before_zero);
+        assert_eq!(adapter.session().pending_events(), pending_before_zero);
+        assert_eq!(adapter.session().queued_bytes(), queued_before_zero);
+        assert_eq!(adapter.session().take().pcm(), pcm_before_zero.as_slice());
 
         let mut overread = AlsaPodxtCaptureAdapter::from_negotiated(
             source_with_capacity(None, 16_384),
@@ -376,6 +388,72 @@ mod tests {
     }
 
     #[test]
+    fn zero_frame_results_check_generation_lifecycle_and_terminal_cause() {
+        let mut stale =
+            AlsaPodxtCaptureAdapter::from_negotiated(source(None), contract(), 67).unwrap();
+        assert_eq!(
+            stale.translate_read_result(66, 0, 0, &[]),
+            Err(CaptureError::StaleGeneration)
+        );
+        assert_eq!(
+            stale.session().retained_error(),
+            Some(CaptureError::StaleGeneration)
+        );
+        assert!(stale.session().take().pcm().is_empty());
+        assert_eq!(stale.session().queued_bytes(), 0);
+
+        let mut stopped =
+            AlsaPodxtCaptureAdapter::from_negotiated(source(None), contract(), 68).unwrap();
+        stopped.stop().unwrap();
+        assert_eq!(
+            stopped.translate_read_result(68, 0, 0, &[]),
+            Err(CaptureError::Stopped)
+        );
+        assert_eq!(
+            stopped.session().retained_error(),
+            Some(CaptureError::Stopped)
+        );
+
+        let mut cancelled =
+            AlsaPodxtCaptureAdapter::from_negotiated(source(None), contract(), 69).unwrap();
+        cancelled.cancel().unwrap();
+        assert_eq!(
+            cancelled.translate_read_result(69, 0, 0, &[]),
+            Err(CaptureError::Stopped)
+        );
+        assert_eq!(cancelled.session().take().phase(), Phase::Cancelled);
+        assert!(cancelled.session().retained_error().is_none());
+
+        let mut disconnected =
+            AlsaPodxtCaptureAdapter::from_negotiated(source(None), contract(), 70).unwrap();
+        assert_eq!(disconnected.disconnect(), Err(CaptureError::Disconnected));
+        assert_eq!(
+            disconnected.translate_read_result(70, 0, 0, &[]),
+            Err(CaptureError::Disconnected)
+        );
+        assert_eq!(
+            disconnected.session().retained_error(),
+            Some(CaptureError::Disconnected)
+        );
+    }
+
+    #[test]
+    fn zero_frame_result_on_wrong_thread_is_rejected_without_state_changes() {
+        let mut adapter =
+            AlsaPodxtCaptureAdapter::from_negotiated(source(None), contract(), 71).unwrap();
+        let before = adapter.session().clone();
+        let (adapter, wrong_thread) = std::thread::spawn(move || {
+            let result = adapter.translate_read_result(71, 0, 0, &[]);
+            (adapter, result)
+        })
+        .join()
+        .unwrap();
+        assert_eq!(wrong_thread, Err(CaptureError::WrongThread));
+        assert_eq!(adapter.session(), &before);
+        assert_eq!(adapter.session().retained_error(), None);
+    }
+
+    #[test]
     fn xrun_retains_native_discontinuity_and_freezes_later_periods() {
         let mut adapter =
             AlsaPodxtCaptureAdapter::from_negotiated(source(None), contract(), 63).unwrap();
@@ -386,6 +464,10 @@ mod tests {
         assert_eq!(
             adapter.session().retained_error(),
             Some(CaptureError::AdapterDiscontinuity(-32))
+        );
+        assert_eq!(
+            adapter.translate_read_result(63, 0, 0, &[]),
+            Err(CaptureError::AdapterDiscontinuity(-32))
         );
         assert_eq!(
             adapter.translate_read_result(63, 4, 4, &[0; 24]),

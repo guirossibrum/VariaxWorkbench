@@ -528,9 +528,9 @@ impl CaptureSession {
         self.queued_bytes
     }
 
-    /// Callback-side operation: bounded copy only, no file I/O, no lock, and
-    /// no adapter invocation. Queue ownership is deliberately single-thread.
-    pub fn callback_chunk(&mut self, generation: u64, bytes: &[u8]) -> Result<(), CaptureError> {
+    /// Checks callback ownership and session/generation admission without
+    /// copying a chunk or changing the clock and queue.
+    pub(crate) fn check_callback_admission(&mut self, generation: u64) -> Result<(), CaptureError> {
         self.check_owner()?;
         if self.terminal {
             return Err(self.error.clone().unwrap_or(CaptureError::Stopped));
@@ -541,6 +541,13 @@ impl CaptureSession {
         if generation != self.generation {
             return self.fail(CaptureError::StaleGeneration);
         }
+        Ok(())
+    }
+
+    /// Callback-side operation: bounded copy only, no file I/O, no lock, and
+    /// no adapter invocation. Queue ownership is deliberately single-thread.
+    pub fn callback_chunk(&mut self, generation: u64, bytes: &[u8]) -> Result<(), CaptureError> {
+        self.check_callback_admission(generation)?;
         if bytes.is_empty() {
             return self.fail(CaptureError::EmptyChunk);
         }
