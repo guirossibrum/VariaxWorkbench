@@ -3690,8 +3690,12 @@ mod tests {
     fn sample_whammy_pod_tone() -> Vec<u8> {
         let mut bytes = sample_drive_pod_tone();
         let old = pod_preset::STOMP_DRIVE_MODEL_ID.to_be_bytes();
-        let offset = bytes.windows(4).position(|word| word == old).expect("synthetic Stomp MINF");
-        bytes[offset..offset + 4].copy_from_slice(&pod_preset::STOMP_WHAMMY_INTERVAL_MODEL_ID.to_be_bytes());
+        let offset = bytes
+            .windows(4)
+            .position(|word| word == old)
+            .expect("synthetic Stomp MINF");
+        bytes[offset..offset + 4]
+            .copy_from_slice(&pod_preset::STOMP_WHAMMY_INTERVAL_MODEL_ID.to_be_bytes());
         bytes
     }
 
@@ -3885,12 +3889,30 @@ mod tests {
         let rect = app.pod_whammy_knob_sliders[&control];
         let start = Pos2::new(rect.left() + rect.width() * 0.35, rect.center().y);
         let end = Pos2::new(rect.left() + rect.width() * 0.73, rect.center().y);
-        recording_frame(context, app, vec![
-            egui::Event::PointerMoved(start),
-            egui::Event::PointerButton { pos: start, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },
-        ]);
+        recording_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
         recording_frame(context, app, vec![egui::Event::PointerMoved(end)]);
-        recording_frame(context, app, vec![egui::Event::PointerButton { pos: end, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() }]);
+        recording_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
     }
 
     fn drag_pod_mod_slider(
@@ -4675,23 +4697,67 @@ mod tests {
         click_pod(&context, &mut app, "load-pod");
         recording_frame_tall(&context, &mut app, vec![]);
         assert_eq!(app.pod_whammy_knob_sliders.len(), 2);
-        assert!(!app.pod_library.is_dirty(0), "opening and rendering preserve raw values");
-        let toe_before = app.pod_library.tone(0).unwrap().stomp_whammy_knob_position(pod_preset::StompWhammyKnob::Toe).unwrap().to_bits();
+        assert!(
+            !app.pod_library.is_dirty(0),
+            "opening and rendering preserve raw values"
+        );
+        let toe_before = app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .stomp_whammy_knob_position(pod_preset::StompWhammyKnob::Toe)
+            .unwrap()
+            .to_bits();
         drag_pod_whammy_slider(&context, &mut app, pod_preset::StompWhammyKnob::Heel);
         assert!(app.pod_library.is_dirty(0));
-        assert_eq!(app.pod_library.tone(0).unwrap().stomp_whammy_knob_position(pod_preset::StompWhammyKnob::Toe).unwrap().to_bits(), toe_before);
-        let edited_heel = app.pod_library.tone(0).unwrap().stomp_whammy_knob_position(pod_preset::StompWhammyKnob::Heel).unwrap().to_bits();
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .stomp_whammy_knob_position(pod_preset::StompWhammyKnob::Toe)
+                .unwrap()
+                .to_bits(),
+            toe_before
+        );
+        let edited_heel = app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .stomp_whammy_knob_position(pod_preset::StompWhammyKnob::Heel)
+            .unwrap()
+            .to_bits();
         assert_ne!(edited_heel, 0x3e80_0000);
         click_pod(&context, &mut app, "save-pod");
-        assert_eq!(std::fs::read(&blocked).unwrap(), b"keep existing destination");
-        assert!(app.pod_library.is_dirty(0), "collision preserves dirty edit");
+        assert_eq!(
+            std::fs::read(&blocked).unwrap(),
+            b"keep existing destination"
+        );
+        assert!(
+            app.pod_library.is_dirty(0),
+            "collision preserves dirty edit"
+        );
         click_pod(&context, &mut app, "save-pod");
-        assert!(app.pod_library.is_dirty(0), "cancelled save preserves dirty edit");
+        assert!(
+            app.pod_library.is_dirty(0),
+            "cancelled save preserves dirty edit"
+        );
         click_pod(&context, &mut app, "save-pod");
         assert!(!app.pod_library.is_dirty(0));
         let reopened = pod_preset::PodTone::parse(std::fs::read(saved).unwrap()).unwrap();
-        assert_eq!(reopened.stomp_whammy_knob_position(pod_preset::StompWhammyKnob::Heel).unwrap().to_bits(), edited_heel);
-        assert_eq!(reopened.stomp_whammy_knob_position(pod_preset::StompWhammyKnob::Toe).unwrap().to_bits(), toe_before);
+        assert_eq!(
+            reopened
+                .stomp_whammy_knob_position(pod_preset::StompWhammyKnob::Heel)
+                .unwrap()
+                .to_bits(),
+            edited_heel
+        );
+        assert_eq!(
+            reopened
+                .stomp_whammy_knob_position(pod_preset::StompWhammyKnob::Toe)
+                .unwrap()
+                .to_bits(),
+            toe_before
+        );
 
         drag_pod_whammy_slider(&context, &mut app, pod_preset::StompWhammyKnob::Toe);
         assert!(app.pod_library.is_dirty(0));
@@ -4704,7 +4770,9 @@ mod tests {
         click_prompt(&context, &mut app, "discard");
         assert!(app.permit_close);
         assert!(app.pending.is_none());
-        const { assert!(LIVE_ACCESS_LOCKED); }
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
     }
 
     #[test]
@@ -4775,11 +4843,23 @@ mod tests {
         click_pod(&context, &mut app, "load-pod");
         assert!(app.pod_bundle.is_some());
         recording_frame_tall(&context, &mut app, vec![]);
-        let heel = app.pod_library.tone(0).unwrap().stomp_whammy_knob_position(pod_preset::StompWhammyKnob::Heel).unwrap().to_bits();
+        let heel = app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .stomp_whammy_knob_position(pod_preset::StompWhammyKnob::Heel)
+            .unwrap()
+            .to_bits();
         drag_pod_whammy_slider(&context, &mut app, pod_preset::StompWhammyKnob::Toe);
         assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
         assert!(app.pod_library.is_dirty(0));
-        let toe = app.pod_library.tone(0).unwrap().stomp_whammy_knob_position(pod_preset::StompWhammyKnob::Toe).unwrap().to_bits();
+        let toe = app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .stomp_whammy_knob_position(pod_preset::StompWhammyKnob::Toe)
+            .unwrap()
+            .to_bits();
         app.request_close(&context);
         click_prompt(&context, &mut app, "save");
         assert!(app.permit_close);
@@ -4787,9 +4867,23 @@ mod tests {
         assert!(!app.pod_library.any_dirty());
         assert_eq!(std::fs::read(source).unwrap(), original_bundle);
         let reopened = pod_preset::PodBundleLibrary::parse(std::fs::read(saved).unwrap()).unwrap();
-        assert_eq!(reopened.stomp_whammy_knob_position(0, pod_preset::StompWhammyKnob::Heel).unwrap().to_bits(), heel);
-        assert_eq!(reopened.stomp_whammy_knob_position(0, pod_preset::StompWhammyKnob::Toe).unwrap().to_bits(), toe);
-        const { assert!(LIVE_ACCESS_LOCKED); }
+        assert_eq!(
+            reopened
+                .stomp_whammy_knob_position(0, pod_preset::StompWhammyKnob::Heel)
+                .unwrap()
+                .to_bits(),
+            heel
+        );
+        assert_eq!(
+            reopened
+                .stomp_whammy_knob_position(0, pod_preset::StompWhammyKnob::Toe)
+                .unwrap()
+                .to_bits(),
+            toe
+        );
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
     }
 
     #[test]
