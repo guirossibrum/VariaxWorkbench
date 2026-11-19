@@ -249,6 +249,7 @@ struct Workbench {
     pod_mod_model_pending: Option<(usize, pod_preset::PodModModelChoice)>,
     pod_stomp_model_pending: Option<(usize, pod_preset::PodStompModelChoice)>,
     pod_reverb_model_pending: Option<(usize, pod_preset::PodReverbModelChoice)>,
+    pod_amp_model_pending: Option<(usize, pod_preset::PodAmpModelChoice)>,
     pod_harmony_pending: Option<(usize, pod_preset::StompHarmonyControl, PendingStompHarmony)>,
     pod_delay_pending: Option<(usize, PendingDelayEdit)>,
     pod_mod_pending: Option<(usize, PendingModEdit)>,
@@ -312,6 +313,10 @@ struct Workbench {
     pod_reverb_model_combo: Option<Rect>,
     #[cfg(test)]
     pod_reverb_model_options: HashMap<u32, Rect>,
+    #[cfg(test)]
+    pod_amp_model_combo: Option<Rect>,
+    #[cfg(test)]
+    pod_amp_model_options: HashMap<u32, Rect>,
     #[cfg(test)]
     pod_mod_note_options: HashMap<pod_preset::ModNoteChoice, Rect>,
     #[cfg(test)]
@@ -387,6 +392,7 @@ impl Workbench {
             pod_mod_model_pending: None,
             pod_stomp_model_pending: None,
             pod_reverb_model_pending: None,
+            pod_amp_model_pending: None,
             pod_harmony_pending: None,
             pod_delay_pending: None,
             pod_mod_pending: None,
@@ -450,6 +456,10 @@ impl Workbench {
             pod_reverb_model_combo: None,
             #[cfg(test)]
             pod_reverb_model_options: HashMap::new(),
+            #[cfg(test)]
+            pod_amp_model_combo: None,
+            #[cfg(test)]
+            pod_amp_model_options: HashMap::new(),
             #[cfg(test)]
             pod_mod_note_options: HashMap::new(),
             #[cfg(test)]
@@ -1597,6 +1607,7 @@ impl Workbench {
         self.pod_mod_model_pending = None;
         self.pod_stomp_model_pending = None;
         self.pod_reverb_model_pending = None;
+        self.pod_amp_model_pending = None;
         self.pod_harmony_pending = None;
         self.pod_delay_pending = None;
         self.pod_mod_pending = None;
@@ -1942,6 +1953,8 @@ impl Workbench {
             self.pod_stomp_model_options.clear();
             self.pod_reverb_model_combo = None;
             self.pod_reverb_model_options.clear();
+            self.pod_amp_model_combo = None;
+            self.pod_amp_model_options.clear();
         }
         let mut open = true;
         egui::Window::new("Offline PODxt Live tones")
@@ -2125,6 +2138,7 @@ impl Workbench {
                             self.pod_mod_model_pending = None;
                             self.pod_stomp_model_pending = None;
                             self.pod_reverb_model_pending = None;
+                            self.pod_amp_model_pending = None;
                             self.pod_harmony_pending = None;
                             self.pod_delay_pending = None;
                             self.pod_mod_pending = None;
@@ -2142,27 +2156,65 @@ impl Workbench {
                     })
                 });
                 if let Some((index, current)) = amp_choice_state {
-                    let mut apply_choice = None;
+                    let current_id = current.unwrap_or_default();
+                    let known_current = current == Some(0x0002_0000)
+                        || pod_preset::AMP_CONTROL_MODEL_IDS.contains(&current_id);
+                    let mut selected = self.pod_amp_model_pending
+                        .filter(|(pending_index, _)| *pending_index == index)
+                        .map(|(_, choice)| Some(choice))
+                        .or_else(|| current.and_then(pod_preset::PodAmpModelChoice::from_model_id).map(Some))
+                        .unwrap_or(None);
+                    let selected_text = selected.map_or_else(
+                        || format!("{current_id:08x} (current only)"),
+                        |choice| format!("{:08x}", choice.model_id()),
+                    );
                     ui.horizontal_wrapped(|ui| {
                         ui.label(format!(
-                            "AMP model (offline) · current {}",
-                            current.map_or_else(
-                                || "unavailable".to_owned(),
-                                |id| format!("0x{id:08x}")
-                            )
+                            "AMP model ID (offline; parameters retained, no reset) · current {}",
+                            current.map_or_else(|| "unavailable".to_owned(), |id| format!("0x{id:08x}"))
                         ));
                         for (id, choice, label) in [
                             ("pod-amp-no-amp", pod_preset::PodAmpModelChoice::NoAmp, "Apply No Amp · 00020000"),
                             ("pod-amp-line6-clean", pod_preset::PodAmpModelChoice::Line6Clean, "Apply Line 6 Clean · 00020001"),
                         ] {
                             if self.pod_button(ui, id, label) {
-                                apply_choice = Some(choice);
+                                self.pod_amp_model_pending = None;
+                                self.pod_selected = Some(index);
+                                self.apply_pod_amp_model_choice(choice);
                             }
                         }
                     });
-                    if let Some(choice) = apply_choice {
-                        self.pod_selected = Some(index);
-                        self.apply_pod_amp_model_choice(choice);
+                    if known_current {
+                        let mut changed = None;
+                        let combo = egui::ComboBox::from_id_salt("pod-amp-model-choice")
+                            .selected_text(selected_text)
+                            .show_ui(ui, |ui| {
+                                for choice in pod_preset::PODXT_AMP_MODEL_CHOICES {
+                                    let id = choice.model_id();
+                                    let response = ui.selectable_value(&mut selected, Some(choice), format!("{id:08x}"));
+                                    #[cfg(test)] self.pod_amp_model_options.insert(id, response.rect);
+                                    if response.changed() { changed = Some(choice); }
+                                }
+                            });
+                        #[cfg(test)] { self.pod_amp_model_combo = Some(combo.response.rect); }
+                        #[cfg(not(test))] let _ = combo;
+                        if let Some(choice) = changed { self.pod_amp_model_pending = Some((index, choice)); }
+                        if let Some((pending_index, choice)) = self.pod_amp_model_pending.filter(|(pending_index, _)| *pending_index == index) {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("Pending AMP {:08x} (not applied)", choice.model_id()));
+                                let apply = ui.button("Apply AMP model");
+                                #[cfg(test)] self.pod_buttons.insert("pod-amp-model-apply", apply.rect);
+                                if apply.clicked() {
+                                    self.pod_selected = Some(pending_index);
+                                    if self.apply_pod_amp_model_choice(choice) {
+                                        self.pod_amp_model_pending = None;
+                                    }
+                                }
+                                let discard = ui.button("Discard");
+                                #[cfg(test)] self.pod_buttons.insert("pod-amp-model-discard", discard.rect);
+                                if discard.clicked() { self.pod_amp_model_pending = None; }
+                            });
+                        }
                     }
                 }
                 let cab_state = self.pod_selected.and_then(|index| self.pod_library.tone(index).and_then(|tone| {
@@ -3247,6 +3299,12 @@ impl Workbench {
         index: usize,
         bytes: Vec<u8>,
     ) -> Result<(), pod_preset::ToneError> {
+        if self
+            .pod_amp_model_pending
+            .is_some_and(|(pending_index, _)| pending_index == index)
+        {
+            self.pod_amp_model_pending = None;
+        }
         let mut library = self.pod_library.clone();
         library.replace(index, bytes.clone())?;
         let mut bundle = self.pod_bundle.clone();
@@ -3482,6 +3540,7 @@ impl Workbench {
                                 self.pod_mod_model_pending = None;
                                 self.pod_stomp_model_pending = None;
                                 self.pod_reverb_model_pending = None;
+                                self.pod_amp_model_pending = None;
                                 self.pod_delay_pending = None;
                                 self.pod_mod_pending = None;
                                 self.pod_harmony_pending = None;
@@ -3530,10 +3589,10 @@ impl Workbench {
         }
     }
 
-    fn apply_pod_amp_model_choice(&mut self, choice: pod_preset::PodAmpModelChoice) {
+    fn apply_pod_amp_model_choice(&mut self, choice: pod_preset::PodAmpModelChoice) -> bool {
         let Some(index) = self.pod_selected else {
             self.pod_message = "Select a tone before applying an AMP model.".into();
-            return;
+            return false;
         };
         let Some(current) = self
             .pod_library
@@ -3541,7 +3600,7 @@ impl Workbench {
             .map(|tone| tone.as_bytes().to_vec())
         else {
             self.pod_message = "Select a tone before applying an AMP model.".into();
-            return;
+            return false;
         };
         match Session::initial_rig().set_pod_amp_model_choice(RoleKind::Pod, &current, choice) {
             Ok(bytes) => match self.replace_pod_tone(index, bytes) {
@@ -3551,10 +3610,17 @@ impl Workbench {
                         choice.label(),
                         choice.model_id()
                     );
+                    true
                 }
-                Err(error) => self.pod_message = error.detail(),
+                Err(error) => {
+                    self.pod_message = error.detail();
+                    false
+                }
             },
-            Err(error) => self.pod_message = rejection_text(&error),
+            Err(error) => {
+                self.pod_message = rejection_text(&error);
+                false
+            }
         }
     }
 
@@ -5789,6 +5855,19 @@ mod tests {
         recording_frame_tall(context, app, vec![]);
     }
 
+    fn choose_amp_model_popup(context: &egui::Context, app: &mut Workbench, model_id: u32) {
+        recording_frame_tall(context, app, vec![]);
+        let combo = app
+            .pod_amp_model_combo
+            .expect("AMP model selector is rendered");
+        click_pod_at_tall(context, app, combo.center());
+        recording_frame_tall(context, app, vec![]);
+        assert_eq!(app.pod_amp_model_options.len(), 43);
+        let option = app.pod_amp_model_options[&model_id];
+        click_pod_at_tall(context, app, option.center());
+        recording_frame_tall(context, app, vec![]);
+    }
+
     fn click_pod_button_tall(context: &egui::Context, app: &mut Workbench, id: &'static str) {
         recording_frame_tall(context, app, vec![]);
         let position = app.pod_buttons[id].center();
@@ -6339,6 +6418,132 @@ mod tests {
             app.pod_library.tone(0).unwrap().amp_model_id(),
             Some(no_amp.model_id())
         );
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn pod_amp_combo_stages_all_choices_and_applies_from_pack_gated_current_id() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let mut original = sample_drive_pod_tone();
+        original[8..12].copy_from_slice(b"L6PA");
+        let old_id = pod_preset::PLEXI_45_MODEL;
+        let marker = [old_id.to_be_bytes(), pod_preset::AMP_SLOT.to_be_bytes()].concat();
+        let amp = original
+            .windows(marker.len())
+            .position(|window| window == marker)
+            .unwrap();
+        original[amp..amp + 4].copy_from_slice(&0x0003_0001u32.to_be_bytes());
+        app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_selected = Some(0);
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert!(!app.pod_library.is_dirty(0));
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().amp_model_id(),
+            Some(0x0003_0001)
+        );
+
+        app.pod_reverb_model_pending = Some((
+            0,
+            pod_preset::PodReverbModelChoice::from_model_id(
+                pod_preset::REVERB_CONTROL_MODEL_IDS[1],
+            )
+            .unwrap(),
+        ));
+        choose_amp_model_popup(&context, &mut app, 0x0002_002e);
+        assert_eq!(app.pod_amp_model_pending.unwrap().1.model_id(), 0x0002_002e);
+        assert!(!app.pod_library.is_dirty(0));
+        click_pod_button_tall(&context, &mut app, "pod-amp-model-apply");
+        recording_frame_tall(&context, &mut app, vec![]);
+
+        let changed = app.pod_library.tone(0).unwrap();
+        assert_eq!(changed.amp_model_id(), Some(0x0002_002e));
+        assert!(app.pod_library.is_dirty(0));
+        assert_eq!(
+            app.pod_reverb_model_pending.unwrap().1.model_id(),
+            pod_preset::REVERB_CONTROL_MODEL_IDS[1]
+        );
+        let parsed = pod_preset::PodTone::parse(changed.as_bytes().to_vec()).unwrap();
+        let minf_offset = parsed
+            .models()
+            .iter()
+            .find(|model| model.slot == pod_preset::AMP_SLOT)
+            .unwrap()
+            .model_id;
+        assert_eq!(minf_offset, 0x0002_002e);
+        assert_eq!(app.pod_amp_model_pending, None);
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn pod_amp_first_choice_is_reachable_from_every_pack_gated_current_id() {
+        let gated: Vec<_> = pod_preset::AMP_CONTROL_MODEL_IDS
+            .into_iter()
+            .filter(|id| pod_preset::PodAmpModelChoice::from_model_id(*id).is_none())
+            .collect();
+        assert_eq!(gated.len(), 64);
+        for current_id in gated {
+            let (context, mut app) = app();
+            context.style_mut(|style| style.animation_time = 0.0);
+            app.pod_open = true;
+            let mut original = sample_drive_pod_tone();
+            original[8..12].copy_from_slice(b"L6PA");
+            let marker = [
+                pod_preset::PLEXI_45_MODEL.to_be_bytes(),
+                pod_preset::AMP_SLOT.to_be_bytes(),
+            ]
+            .concat();
+            let amp = original
+                .windows(marker.len())
+                .position(|window| window == marker)
+                .unwrap();
+            original[amp..amp + 4].copy_from_slice(&current_id.to_be_bytes());
+            app.pod_library.import_bytes(original).unwrap();
+            app.pod_selected = Some(0);
+            recording_frame_tall(&context, &mut app, vec![]);
+            choose_amp_model_popup(&context, &mut app, 0x0002_0000);
+            click_pod_button_tall(&context, &mut app, "pod-amp-model-apply");
+            recording_frame_tall(&context, &mut app, vec![]);
+            assert_eq!(
+                app.pod_library.tone(0).unwrap().amp_model_id(),
+                Some(0x0002_0000),
+                "current {current_id:08x}"
+            );
+            assert!(app.pod_library.is_dirty(0), "current {current_id:08x}");
+        }
+    }
+
+    #[test]
+    fn pod_amp_failed_apply_retains_pending_choice_and_tone_bytes() {
+        let (_, mut app) = app();
+        app.pod_open = true;
+        let original = sample_drive_pod_tone();
+        app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_selected = Some(0);
+        let choice = pod_preset::PodAmpModelChoice::Model2002e;
+        app.pod_amp_model_pending = Some((0, choice));
+        let mut unknown = original;
+        let marker = [
+            pod_preset::PLEXI_45_MODEL.to_be_bytes(),
+            pod_preset::AMP_SLOT.to_be_bytes(),
+        ]
+        .concat();
+        let amp = unknown
+            .windows(marker.len())
+            .position(|window| window == marker)
+            .unwrap();
+        unknown[amp..amp + 4].copy_from_slice(&0xdead_beefu32.to_be_bytes());
+        app.pod_library.replace(0, unknown.clone()).unwrap();
+        let before = app.pod_library.tone(0).unwrap().as_bytes().to_vec();
+
+        assert!(!app.apply_pod_amp_model_choice(choice));
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), before);
+        assert_eq!(app.pod_amp_model_pending, Some((0, choice)));
         const {
             assert!(LIVE_ACCESS_LOCKED);
         }

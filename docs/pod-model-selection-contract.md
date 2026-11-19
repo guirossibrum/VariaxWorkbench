@@ -683,3 +683,41 @@ and compatibility work. Historical GUI same-choice event emission remains
 unknown; the offline same-value policy is a byte/decoded/dirty no-op.
 Existing admitted operations, including AMP/EQ stored model-enable flags, do
 not need renewed per-leaf scope approval.
+
+## Amp request-set expansion: bounded implementation record
+
+The later #29 contributor receipt explicitly expands the earlier two-choice
+allowance above. The Rust request set is now exactly these 43 numeric IDs in
+the supplied PODxt `AMP_MODELS` source order; all other source-list entries
+remain non-requestable:
+
+```text
+00020000 0002002e 00020001 00020005 00020006 00020007 00020008 0002000a
+0002000c 0002000f 00020010 00020011 00020012 00020013 00020014 00020015
+00020018 00020019 0002001a 0002001b 0002001d 0002001e 00020020 00020021
+00020022 00020023 00020024 00020026 00020027 00020029 0002002a 0002002c
+0002002d 0002003d 0002003c 0002003b 00020032 0002004a 0002004b 0002004c
+0002004d 0002004e 0002004f
+```
+
+The existing `No Amp` and `Line 6 Clean` actions retain their prior behavior
+even when the current AMP ID is unknown. The other 41 choices require the
+current ID to belong to the complete 107-ID static catalog (the 106-entry
+`GetAmpModelList` plus its separate No Amp association). This is classification
+of the stored value only; it is not a connected installed-pack query or
+runtime entitlement. Pack-gated catalog members remain raw/lossless current
+values and cannot be requested. An unknown current ID remains raw/lossless and
+cannot gain access to the new choices.
+
+For an admitted request the Rust operation requires FORM/L6PA, PINF target
+`0x0003000A`, the existing host-profile floor `0x03000000`, exactly one
+existing AMP slot `0x00030000`, and a complete unique MINF body of at least 12
+bytes. Structural checks run even for same-ID requests. A change patches only
+the four big-endian model-ID bytes in that MINF and reparses before publication;
+it does not create a slot, fabricate pack state, reset, translate, reconcile,
+send, or rewrite parameters. Synthetic coverage exercises all 107 current IDs
+against all 43 requests, all 64 pack-gated requests, representative unknown
+requests, unknown-current legacy behavior, byte preservation, and the GUI
+selector/Apply flow. These results validate the Rust offline behavior only;
+parameter/default semantics, entitlement behavior, and connected-device
+effects remain unverified. The three parent #29 criteria remain partial/open.

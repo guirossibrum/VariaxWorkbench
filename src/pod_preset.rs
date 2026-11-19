@@ -31,15 +31,211 @@ use std::{ops::Range, path::Path};
 
 /// PINF target for PODxt Live. Equal to `L6ProductConstants.PODXT_LIVE`.
 pub const PODXT_LIVE_TONE_ID: u32 = 0x0003_000a;
-/// Exact AMP model choices admitted for the bounded existing-slot operation.
-pub const PODXT_AMP_MODEL_CHOICES: [PodAmpModelChoice; 2] =
-    [PodAmpModelChoice::NoAmp, PodAmpModelChoice::Line6Clean];
+/// Exact source-order AMP requests admitted by the bounded existing-slot operation.
+pub const PODXT_AMP_MODEL_CHOICES: [PodAmpModelChoice; 43] = [
+    PodAmpModelChoice::NoAmp,
+    PodAmpModelChoice::Model2002e,
+    PodAmpModelChoice::Line6Clean,
+    PodAmpModelChoice::Model20005,
+    PodAmpModelChoice::Model20006,
+    PodAmpModelChoice::Model20007,
+    PodAmpModelChoice::Model20008,
+    PodAmpModelChoice::Model2000a,
+    PodAmpModelChoice::Model2000c,
+    PodAmpModelChoice::Model2000f,
+    PodAmpModelChoice::Model20010,
+    PodAmpModelChoice::Model20011,
+    PodAmpModelChoice::Model20012,
+    PodAmpModelChoice::Model20013,
+    PodAmpModelChoice::Model20014,
+    PodAmpModelChoice::Model20015,
+    PodAmpModelChoice::Model20018,
+    PodAmpModelChoice::Model20019,
+    PodAmpModelChoice::Model2001a,
+    PodAmpModelChoice::Model2001b,
+    PodAmpModelChoice::Model2001d,
+    PodAmpModelChoice::Model2001e,
+    PodAmpModelChoice::Model20020,
+    PodAmpModelChoice::Model20021,
+    PodAmpModelChoice::Model20022,
+    PodAmpModelChoice::Model20023,
+    PodAmpModelChoice::Model20024,
+    PodAmpModelChoice::Model20026,
+    PodAmpModelChoice::Model20027,
+    PodAmpModelChoice::Model20029,
+    PodAmpModelChoice::Model2002a,
+    PodAmpModelChoice::Model2002c,
+    PodAmpModelChoice::Model2002d,
+    PodAmpModelChoice::Model2003d,
+    PodAmpModelChoice::Model2003c,
+    PodAmpModelChoice::Model2003b,
+    PodAmpModelChoice::Model20032,
+    PodAmpModelChoice::Model2004a,
+    PodAmpModelChoice::Model2004b,
+    PodAmpModelChoice::Model2004c,
+    PodAmpModelChoice::Model2004d,
+    PodAmpModelChoice::Model2004e,
+    PodAmpModelChoice::Model2004f,
+];
+
+/// Complete source-listed AMP current-ID facts, retained only for deciding
+/// whether a stored current value may use the 41 newly admitted requests.
+const PODXT_AMP_SOURCE_MODEL_IDS: [u32; 107] = [
+    0x0002_0000,
+    0x0002_002e,
+    0x0002_0001,
+    0x0002_0005,
+    0x0002_0006,
+    0x0002_0007,
+    0x0002_0008,
+    0x0002_000a,
+    0x0002_000c,
+    0x0002_000f,
+    0x0002_0010,
+    0x0002_0011,
+    0x0002_0012,
+    0x0002_0013,
+    0x0002_0014,
+    0x0002_0015,
+    0x0002_0018,
+    0x0002_0019,
+    0x0002_001a,
+    0x0002_001b,
+    0x0002_001d,
+    0x0002_001e,
+    0x0002_0020,
+    0x0002_0021,
+    0x0002_0022,
+    0x0002_0023,
+    0x0002_0024,
+    0x0002_0026,
+    0x0002_0027,
+    0x0002_0029,
+    0x0002_002a,
+    0x0002_002c,
+    0x0002_002d,
+    0x0002_003d,
+    0x0002_003c,
+    0x0002_003b,
+    0x0002_0032,
+    0x0002_002f,
+    0x0002_003e,
+    0x0002_0040,
+    0x0002_0041,
+    0x0002_0031,
+    0x0002_0045,
+    0x0002_0046,
+    0x0002_0047,
+    0x0002_0048,
+    0x0002_0025,
+    0x0002_0049,
+    0x0002_003a,
+    0x0002_0039,
+    0x0002_0038,
+    0x0002_000d,
+    0x0002_0037,
+    0x0002_0035,
+    0x0002_0009,
+    0x0002_0030,
+    0x0002_003f,
+    0x0002_0042,
+    0x0002_0043,
+    0x0002_0044,
+    0x0002_0016,
+    0x0002_0017,
+    0x0002_001c,
+    0x0002_001f,
+    0x0002_0028,
+    0x0002_002b,
+    0x0002_0004,
+    0x0002_0036,
+    0x0002_000b,
+    0x0002_0002,
+    0x0002_0033,
+    0x0002_0034,
+    0x0002_0003,
+    0x0003_0001,
+    0x0003_0002,
+    0x0003_0003,
+    0x0003_0004,
+    0x0003_0005,
+    0x0003_0006,
+    0x0003_0007,
+    0x0003_0008,
+    0x0003_0009,
+    0x0003_000a,
+    0x0003_000b,
+    0x0003_000c,
+    0x0003_000d,
+    0x0003_000e,
+    0x0003_000f,
+    0x0003_0010,
+    0x0003_0011,
+    0x0003_0012,
+    0x0003_0013,
+    0x0003_0014,
+    0x0003_0015,
+    0x0003_0016,
+    0x0003_0017,
+    0x0003_0018,
+    0x0003_0019,
+    0x0003_001a,
+    0x0003_001b,
+    0x0003_001c,
+    0x0002_004a,
+    0x0002_004b,
+    0x0002_004c,
+    0x0002_004d,
+    0x0002_004e,
+    0x0002_004f,
+];
 
 /// One source-admitted AMP model-id choice. This is not a device-support claim.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PodAmpModelChoice {
     NoAmp,
     Line6Clean,
+    Model2002e,
+    Model20005,
+    Model20006,
+    Model20007,
+    Model20008,
+    Model2000a,
+    Model2000c,
+    Model2000f,
+    Model20010,
+    Model20011,
+    Model20012,
+    Model20013,
+    Model20014,
+    Model20015,
+    Model20018,
+    Model20019,
+    Model2001a,
+    Model2001b,
+    Model2001d,
+    Model2001e,
+    Model20020,
+    Model20021,
+    Model20022,
+    Model20023,
+    Model20024,
+    Model20026,
+    Model20027,
+    Model20029,
+    Model2002a,
+    Model2002c,
+    Model2002d,
+    Model2003d,
+    Model2003c,
+    Model2003b,
+    Model20032,
+    Model2004a,
+    Model2004b,
+    Model2004c,
+    Model2004d,
+    Model2004e,
+    Model2004f,
 }
 
 impl PodAmpModelChoice {
@@ -47,6 +243,47 @@ impl PodAmpModelChoice {
         match self {
             Self::NoAmp => 0x0002_0000,
             Self::Line6Clean => 0x0002_0001,
+            Self::Model2002e => 0x0002_002e,
+            Self::Model20005 => 0x0002_0005,
+            Self::Model20006 => 0x0002_0006,
+            Self::Model20007 => 0x0002_0007,
+            Self::Model20008 => 0x0002_0008,
+            Self::Model2000a => 0x0002_000a,
+            Self::Model2000c => 0x0002_000c,
+            Self::Model2000f => 0x0002_000f,
+            Self::Model20010 => 0x0002_0010,
+            Self::Model20011 => 0x0002_0011,
+            Self::Model20012 => 0x0002_0012,
+            Self::Model20013 => 0x0002_0013,
+            Self::Model20014 => 0x0002_0014,
+            Self::Model20015 => 0x0002_0015,
+            Self::Model20018 => 0x0002_0018,
+            Self::Model20019 => 0x0002_0019,
+            Self::Model2001a => 0x0002_001a,
+            Self::Model2001b => 0x0002_001b,
+            Self::Model2001d => 0x0002_001d,
+            Self::Model2001e => 0x0002_001e,
+            Self::Model20020 => 0x0002_0020,
+            Self::Model20021 => 0x0002_0021,
+            Self::Model20022 => 0x0002_0022,
+            Self::Model20023 => 0x0002_0023,
+            Self::Model20024 => 0x0002_0024,
+            Self::Model20026 => 0x0002_0026,
+            Self::Model20027 => 0x0002_0027,
+            Self::Model20029 => 0x0002_0029,
+            Self::Model2002a => 0x0002_002a,
+            Self::Model2002c => 0x0002_002c,
+            Self::Model2002d => 0x0002_002d,
+            Self::Model2003d => 0x0002_003d,
+            Self::Model2003c => 0x0002_003c,
+            Self::Model2003b => 0x0002_003b,
+            Self::Model20032 => 0x0002_0032,
+            Self::Model2004a => 0x0002_004a,
+            Self::Model2004b => 0x0002_004b,
+            Self::Model2004c => 0x0002_004c,
+            Self::Model2004d => 0x0002_004d,
+            Self::Model2004e => 0x0002_004e,
+            Self::Model2004f => 0x0002_004f,
         }
     }
 
@@ -54,15 +291,15 @@ impl PodAmpModelChoice {
         match self {
             Self::NoAmp => "No Amp",
             Self::Line6Clean => "Line 6 Clean",
+            _ => "AMP model",
         }
     }
 
-    pub const fn from_model_id(model_id: u32) -> Option<Self> {
-        match model_id {
-            0x0002_0000 => Some(Self::NoAmp),
-            0x0002_0001 => Some(Self::Line6Clean),
-            _ => None,
-        }
+    pub fn from_model_id(model_id: u32) -> Option<Self> {
+        PODXT_AMP_MODEL_CHOICES
+            .iter()
+            .copied()
+            .find(|choice| choice.model_id() == model_id)
     }
 }
 
@@ -2178,11 +2415,41 @@ impl PodTone {
         }
 
         let requested = choice.model_id();
+        let current = self.models[model_index].model_id;
+        let legacy_choice = matches!(
+            choice,
+            PodAmpModelChoice::NoAmp | PodAmpModelChoice::Line6Clean
+        );
+        // The provider's 106-entry GetAmpModelList plus its No Amp association
+        // is the closed 107-ID current-value catalog. Only the two legacy
+        // requests remain available when the stored current ID is unknown.
+        if !legacy_choice && !PODXT_AMP_SOURCE_MODEL_IDS.contains(&current) {
+            return Err(ToneError::format(
+                "new AMP choices require a current model ID in the source-listed 107-ID catalog",
+            ));
+        }
         if self.models[model_index].model_id == requested {
             return Ok(());
         }
-        self.bytes[range.start..range.start + 4].copy_from_slice(&requested.to_be_bytes());
-        self.models[model_index].model_id = requested;
+        let mut staged = self.bytes.clone();
+        staged[range.start..range.start + 4].copy_from_slice(&requested.to_be_bytes());
+        let verified = Self::parse(staged)?;
+        let verified_amp: Vec<_> = verified
+            .models
+            .iter()
+            .filter(|model| model.slot == AMP_SLOT)
+            .collect();
+        if verified.container != ContainerKind::L6pa
+            || verified.device_id != PODXT_LIVE_TONE_ID
+            || verified.device_version < PODXT_LIVE_HOST_MIN_VERSION
+            || verified_amp.len() != 1
+            || verified_amp[0].model_id != requested
+        {
+            return Err(ToneError::format(
+                "staged AMP model selection did not reparse to the requested existing slot",
+            ));
+        }
+        *self = verified;
         Ok(())
     }
 
@@ -6294,6 +6561,170 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn amp_choices_match_exact_source_allowlist_and_all_107_current_ids() {
+        let expected = [
+            0x0002_0000,
+            0x0002_002e,
+            0x0002_0001,
+            0x0002_0005,
+            0x0002_0006,
+            0x0002_0007,
+            0x0002_0008,
+            0x0002_000a,
+            0x0002_000c,
+            0x0002_000f,
+            0x0002_0010,
+            0x0002_0011,
+            0x0002_0012,
+            0x0002_0013,
+            0x0002_0014,
+            0x0002_0015,
+            0x0002_0018,
+            0x0002_0019,
+            0x0002_001a,
+            0x0002_001b,
+            0x0002_001d,
+            0x0002_001e,
+            0x0002_0020,
+            0x0002_0021,
+            0x0002_0022,
+            0x0002_0023,
+            0x0002_0024,
+            0x0002_0026,
+            0x0002_0027,
+            0x0002_0029,
+            0x0002_002a,
+            0x0002_002c,
+            0x0002_002d,
+            0x0002_003d,
+            0x0002_003c,
+            0x0002_003b,
+            0x0002_0032,
+            0x0002_004a,
+            0x0002_004b,
+            0x0002_004c,
+            0x0002_004d,
+            0x0002_004e,
+            0x0002_004f,
+        ];
+        let actual: Vec<_> = PODXT_AMP_MODEL_CHOICES
+            .iter()
+            .map(|choice| choice.model_id())
+            .collect();
+        assert_eq!(actual, expected);
+        assert_eq!(
+            actual
+                .iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            43
+        );
+
+        // The existing 106-ID provider table plus its separate No Amp association
+        // is the complete current-ID classification set, including gated IDs.
+        let current_ids = PODXT_AMP_SOURCE_MODEL_IDS.to_vec();
+        assert_eq!(current_ids.len(), 107);
+        assert_eq!(
+            current_ids
+                .iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            107
+        );
+        let classified_control_ids: std::collections::HashSet<_> = current_ids
+            .iter()
+            .copied()
+            .filter(|id| *id != 0x0002_0000)
+            .collect();
+        assert_eq!(classified_control_ids.len(), 106);
+        assert_eq!(
+            classified_control_ids,
+            AMP_CONTROL_MODEL_IDS.into_iter().collect()
+        );
+        let empty: [&[u8]; 0] = [];
+        for current in current_ids {
+            let bytes = custom_tone(
+                ContainerKind::L6pa,
+                &[BuiltModel {
+                    slot: AMP_SLOT,
+                    model_id: current,
+                    tail: &[0x80, 0xa1, 0xb2, 0xfe],
+                    parameters: &empty,
+                }],
+            );
+            for choice in PODXT_AMP_MODEL_CHOICES {
+                let mut tone = PodTone::parse(bytes.clone()).unwrap();
+                let before = tone.as_bytes().to_vec();
+                tone.set_amp_model_choice(choice).unwrap();
+                let after = tone.as_bytes();
+                let id_offset = tone.model_minfo_ranges[0].start;
+                for i in 0..before.len() {
+                    if !(id_offset..id_offset + 4).contains(&i) {
+                        assert_eq!(
+                            after[i],
+                            before[i],
+                            "current={current:08x}, requested={:08x}, byte={i}",
+                            choice.model_id()
+                        );
+                    }
+                }
+                assert_eq!(tone.amp_model_id(), Some(choice.model_id()));
+                assert_eq!(tone.models()[0].ordinal, Some(-128));
+                assert_eq!(tone.models()[0].reserved, Some([0xa1, 0xb2]));
+                assert_eq!(tone.models()[0].enabled, Some(false));
+            }
+        }
+
+        let pack_gated: Vec<_> = PODXT_AMP_SOURCE_MODEL_IDS
+            .iter()
+            .copied()
+            .filter(|id| !expected.contains(id))
+            .collect();
+        assert_eq!(pack_gated.len(), 64);
+        for id in pack_gated {
+            assert_eq!(PodAmpModelChoice::try_from(id), Err(id));
+        }
+        for id in [0xdead_beef, 0x7fff_ffff, 0x0003_0000] {
+            assert_eq!(PodAmpModelChoice::try_from(id), Err(id));
+        }
+    }
+
+    #[test]
+    fn amp_new_choices_require_known_current_but_legacy_choices_preserve_unknown_compatibility() {
+        let empty: [&[u8]; 0] = [];
+        let original = custom_tone(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: AMP_SLOT,
+                model_id: 0xdead_beef,
+                tail: &[0, 0, 0, 1],
+                parameters: &empty,
+            }],
+        );
+        for choice in PODXT_AMP_MODEL_CHOICES {
+            let mut tone = PodTone::parse(original.clone()).unwrap();
+            let before = tone.clone();
+            let result = tone.set_amp_model_choice(choice);
+            if matches!(
+                choice,
+                PodAmpModelChoice::NoAmp | PodAmpModelChoice::Line6Clean
+            ) {
+                result.unwrap();
+                assert_eq!(tone.amp_model_id(), Some(choice.model_id()));
+            } else {
+                assert!(
+                    result.is_err(),
+                    "unexpectedly accepted {:08x}",
+                    choice.model_id()
+                );
+                assert_eq!(tone, before);
+            }
+        }
+    }
+
+    #[test]
     fn amp_model_apply_uses_the_documented_literal_whole_buffer() {
         let literal = "46 4f 52 4d 00 00 00 aa 4c 36 50 41 4a 55 4e 4b
             00 00 00 03 11 22 33 a5 50 49 4e 46 00 00 00 50
@@ -6349,6 +6780,20 @@ pub(crate) mod tests {
             }],
         );
         let mut tone = PodTone::parse(short_minf).unwrap();
+        let before = tone.clone();
+        assert!(tone.set_amp_model_choice(PodAmpModelChoice::NoAmp).is_err());
+        assert_eq!(tone, before);
+
+        let malformed_same_id = custom_tone(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: AMP_SLOT,
+                model_id: PodAmpModelChoice::NoAmp.model_id(),
+                tail: &[],
+                parameters: &parameters,
+            }],
+        );
+        let mut tone = PodTone::parse(malformed_same_id).unwrap();
         let before = tone.clone();
         assert!(tone.set_amp_model_choice(PodAmpModelChoice::NoAmp).is_err());
         assert_eq!(tone, before);
