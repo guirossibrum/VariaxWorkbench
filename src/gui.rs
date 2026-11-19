@@ -1505,10 +1505,26 @@ impl Workbench {
 
     fn refresh_selected_pod_name(&mut self) {
         self.pod_cab_pending = None;
-        if let Some(index) = self.pod_selected
-            && let Some(tone) = self.pod_library.tone(index)
-        {
-            self.pod_name = tone.name().to_owned();
+        match (self.pod_selected, self.pod_library.len()) {
+            (Some(_), 0) => {
+                self.pod_selected = None;
+                self.pod_name.clear();
+            }
+            (Some(index), len) if index >= len => {
+                let selected = len - 1;
+                self.pod_selected = Some(selected);
+                self.pod_name = self
+                    .pod_library
+                    .tone(selected)
+                    .map_or_else(String::new, |tone| tone.name().to_owned());
+            }
+            (Some(index), _) => {
+                self.pod_name = self
+                    .pod_library
+                    .tone(index)
+                    .map_or_else(String::new, |tone| tone.name().to_owned());
+            }
+            (None, _) => self.pod_name.clear(),
         }
     }
 
@@ -5298,6 +5314,48 @@ mod tests {
                 .name()
         );
         assert_eq!(std::fs::read(&source_path).unwrap(), original);
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn reverting_pod_membership_before_recording_quit_cancel_keeps_selection_valid() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let fixed_tone = sample_drive_pod_tone();
+        let folder_tone = sample_pod_tone();
+        let original = sample_pod_bundle(&[fixed_tone, folder_tone.clone()]);
+        app.pod_open = true;
+        app.load_pod_bundle_bytes(original).unwrap();
+        app.pod_selected = Some(1);
+        app.refresh_selected_pod_name();
+        recording_frame(&context, &mut app, vec![]);
+
+        click_pod(&context, &mut app, "pod-duplicate-entry");
+        assert_eq!(app.pod_selected, Some(2));
+        assert_eq!(app.pod_bundle.as_ref().unwrap().entry_count(), 3);
+
+        prepare_quit_take(&mut app, ClockSelection::Integer(48_000));
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "discard");
+        assert_eq!(app.pod_bundle.as_ref().unwrap().entry_count(), 2);
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_eq!(app.pod_selected, Some(1));
+        assert_eq!(
+            app.pod_name,
+            pod_preset::PodTone::parse(folder_tone).unwrap().name()
+        );
+        assert!(matches!(app.pending, Some(Pending::QuitRecording)));
+
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pending.is_none());
+        assert!(app.recorder.has_unsaved_take());
+        assert_eq!(app.pod_selected, Some(1));
+        recording_frame(&context, &mut app, vec![]);
+        assert!(app.pod_rows.contains_key(&1));
+        assert!(app.pod_buttons.contains_key("pod-duplicate-entry"));
         const {
             assert!(LIVE_ACCESS_LOCKED);
         }
