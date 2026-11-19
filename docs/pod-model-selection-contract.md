@@ -280,6 +280,167 @@ set is pack-gated and rejects with no fallback. MIC class derives from the
 current exact CAB id. CAB changes preserve the raw MIC integer; a separate
 explicit MIC Apply changes it. Gatekeeper admitted this scoped offline operation.
 
+## Delay model selector: source trace and proposed offline boundary
+
+This is a static, research-only contract for the next review. It does not add a
+Delay model selector or authorize a writer. The source is the already-retained
+Line6Edit 3.06 class payload in ignored `analysis/issue29-line6edit306-source/`;
+no new source was acquired and no vendor code was executed.
+
+**Source identity and pins.** The retained source container
+`analysis/issue29-line6edit306-source/Line 6 Edit.exe` has digest
+`02e46be124274617496f6aaa93ab8251b3ff60217bc08a6f3b5ed48943a112ac`. Relevant
+class SHA-256 values are:
+
+- `modules/sharctone/device/podxt/L6PODxtParamMap.class` —
+  `3092741706674148563731965226cc7b56e8d1d1db55bbd1ddacf2f2bc3f4888`
+- `modules/sharctone/device/L6SharcToneParamMap.class` —
+  `761b59f407496ca5924f66e6fd8e3b7f728feb0771702ab9cc2484c6b2e72dcc`
+- `modules/sharctone/editor/L6SharcToneEditor.class` —
+  `131c4167a01d02b684f9e522bd8182424ff6af1c26bde50f544331ddcedae060`
+- `cmn/l6java/patch/L6Model.class` —
+  `20a965fd09e5cdcb11ef810fea2babd67eea67079d65dd7ebef38973e527ca05`
+- `modules/sharctone/device/podxt/L6PODxtDevice.class` —
+  `fcdff53cf943283ba43d2ccd9967b36780a3e71571e4976112de2f736ced12cc`
+- `line6editbase/app/L6EditorAppDeviceMap.class` —
+  `de0a93656cf05e61155971b51610bbba16454f1a3b3a7ee85554f418dfb225d8`
+
+**Selector and storage path.** `L6SharcToneEditor.SetupDelayPanel` registers
+the Delay combo under selector id `0x10050000`. `L6PODxtParamMap.GetDelayModelList`
+returns 14 PODxt-family ids (not a Live-only list):
+`0x02020002` through `0x0202000F`, inclusive. The shared
+`L6SharcToneParamMap.CreateModelFormat` resolves their displayed labels through
+`L6Assets.GetAssetName(product, id)`. Exact display strings are not independently
+listed by these retained class files and are not inferred here.
+
+`GetModelForGroup` routes the Delay group `0x00050000` to
+`GetDelayModel(patch, true)`. That method calls `GetDualSlotModel` with primary
+slot `0x00020005` and fallback slot `0x00050004`. The shared helper queries the
+primary first and uses the fallback only when the primary is absent. If both
+are absent and creation is enabled, the call constructs and loads a model with
+id `-1`, primary slot `0x00020005`, `enabled=false`, and ordinal `0`. This is
+source behavior; the proposed file operation below rejects a missing slot and
+never copies that creation behavior.
+
+`L6SharcToneParamMap.SetParam` recognizes model selector words by their high
+byte (`0x10000000`); for an existing returned model it calls
+`L6Model.SetID(requested_id)` and returns. That branch does not clear, seed,
+remove, or rewrite the model's in-memory PARM vector, and it does not itself
+validate the candidate against `GetDelayModelList`. The UI association list
+provides the finite choice table, while `L6SharcToneEditor.OnParamChange`
+performs the installed-model guard before dispatching the choice.
+
+**Optional-pack fallback.** The editor's `IsModelInstalled` returns true by
+default for Delay ids `0x02020002`–`0x0202000A`. The five ids
+`0x0202000B`–`0x0202000F` are mapped to
+`L6PODxtDevice.IsPackInstalled(4)`. In the pre-base portion of
+`OnParamChange`, selector `0x10050000` is paired with fallback id
+`0x02020002`; if `IsModelInstalled(requested_id)` is false, the editor
+substitutes that fallback before calling the base handler. This is an
+installation-state branch, not a model-specific parameter reset. The current
+offline tone has no authenticated pack-installation state, so a Rust choice
+list cannot claim those five optional-pack models are available. The
+conservative proposed choices are exactly `0x02020002`–`0x0202000A`; the five
+pack-gated IDs and any non-listed id reject as requested choices. This is an
+offline policy inferred from the source guard, not a claim about entitlement or
+physical support.
+
+**Event side effects and parameter retention.** After the base parameter
+change, the selector branch calls `UpdateAllControls()` and then
+`MergeEditBuffer(send)`. Static bytecode shows control refresh and a merge
+attempt, but this research did not execute either method or follow a connected
+device path. No live result or GUI same-choice event behavior is claimed. The
+direct model-map branch has no call to a model-default, reset, clear, or
+parameter-creation method. Existing PARMs stay in the model object and will be
+interpreted under the newly selected model layout. Missing expected PARMs are
+not created; old PARMs are not reconciled to the new model's parameter set.
+
+`L6Model.WriteIFFContainer` reconstructs a MINF record from model id, slot,
+ordinal, two zero bytes, and enabled state, then writes stored PARM objects.
+The `L6Model` fields do not retain arbitrary MINF reserved bytes or unknown
+model children, so this class alone cannot establish their preservation by a
+full surrounding writer. Its canonical output can differ outside the selected
+id. The proposed Rust operation must edit the original parsed buffer directly,
+changing only the existing MINF model-id word and retaining all other source
+bytes, including unknown PARM records, model tails, sibling chunks, and pads.
+Opaque PARM data need not be interpreted for that one-word operation; malformed
+or opaque target MINF structure must reject. This is a proposed Rust
+preservation rule, not vendor behavior.
+
+**Proposed technical review boundary (no implementation admitted yet).** For a
+first finite operation, limit writes to one existing individual PODxt Live
+`FORM/L6PA` tone with PINF layout 1, target `0x0003000A`, and the established
+offline editing-profile floor `0x03000000` on the PINF device-version word. The
+version floor is an application profile, not a selector-source precondition.
+Resolve Delay as the source does:
+existing primary slot `0x00020005`, otherwise existing fallback slot
+`0x00050004`; if neither exists, reject rather than creating a model. Duplicate
+occurrences of either slot reject during parsing. If both distinct slots are
+present, the source selects primary first; a proposed implementation should
+change only that primary MINF and preserve the fallback completely. The
+selected current model id must be in the full source list, and the requested
+model id must be in the nine unconditional choices above. Unknown current or
+requested ids, pack-gated choices, wrong target/container/profile, missing or
+ambiguous model slot, truncated MINF, or non-unique MINF reject before mutation.
+An opaque/unknown PARM or unrelated MODL child remains uninterpreted and
+byte-preserved; it does not expand the accepted model-choice set. Validate all
+guards before treating same-id Apply as a no-op. A same-id valid request leaves
+the full buffer, decoded model, dirty state, and save baseline unchanged. Any
+failed guard likewise leaves all of them unchanged.
+
+For a valid changed request, the proposed offline raw write set is exactly the
+first four bytes of the selected existing MINF body, big-endian. It does not
+alter slot id, ordinal, reserved bytes, enabled state, any PARM id/type/value,
+the fallback model, or any outer IFF length. This avoids importing the source
+serializer's normalization and omission behavior.
+
+**Literal synthetic full-buffer vector.** These independent 188-byte
+`FORM/L6PA` buffers contain a valid PODxt Live PINF, a primary Delay model in
+slot `0x00020005`, one stored float PARM, an odd unknown top-level chunk with
+pad, and an unknown MODL child. The only difference is byte offset `0x93`:
+the requested source-listed id changes from `0x02020002` to `0x02020003`.
+They specify the proposed raw-buffer edit, not bytes emitted by the vendor
+serializer and not a captured preset.
+
+```text
+before (188 bytes):
+0000: 46 4f 52 4d 00 00 00 b4 4c 36 50 41 4f 44 44 21
+0010: 00 00 00 03 17 28 39 a5 50 49 4e 46 00 00 00 50
+0020: 00 00 00 01 00 03 00 0a 00 41 00 00 00 00 00 00
+0030: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0040: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0050: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0060: 00 00 00 00 00 00 00 00 03 00 00 00 5a a5 96 69
+0070: 4c 49 53 54 00 00 00 44 50 41 54 43 4c 49 53 54
+0080: 00 00 00 38 4d 4f 44 4c 4d 49 4e 46 00 00 00 0c
+0090: 02 02 00 02 00 02 00 05 00 00 00 01 50 41 52 4d
+00a0: 00 00 00 0c 3f 10 00 00 00 00 00 01 3f 00 00 00
+00b0: 58 54 52 41 00 00 00 03 de ad be a5
+
+after (188 bytes):
+0000: 46 4f 52 4d 00 00 00 b4 4c 36 50 41 4f 44 44 21
+0010: 00 00 00 03 17 28 39 a5 50 49 4e 46 00 00 00 50
+0020: 00 00 00 01 00 03 00 0a 00 41 00 00 00 00 00 00
+0030: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0040: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0050: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0060: 00 00 00 00 00 00 00 00 03 00 00 00 5a a5 96 69
+0070: 4c 49 53 54 00 00 00 44 50 41 54 43 4c 49 53 54
+0080: 00 00 00 38 4d 4f 44 4c 4d 49 4e 46 00 00 00 0c
+0090: 02 02 00 03 00 02 00 05 00 00 00 01 50 41 52 4d
+00a0: 00 00 00 0c 3f 10 00 00 00 00 00 01 3f 00 00 00
+00b0: 58 54 52 41 00 00 00 03 de ad be a5
+```
+
+This is static Java bytecode and a synthetic byte vector only. The source-backed
+contract and proposed edge matrix should receive technical review before any
+Delay model writer is implemented. Any such writer still needs independent
+synthetic tests for every admitted choice, byte-isolated full-buffer output,
+unknown-byte preservation, missing/duplicate/short/opaque target structures,
+unknown current/requested models, pack-gated requests, same-value validation,
+atomic rejection, primary/fallback resolution, and library/bundle/session/GUI
+lifecycle paths as applicable.
+
 ## Admitted CAB/MIC operation contract
 
 This records the admitted boundary and implemented offline operations. It does
