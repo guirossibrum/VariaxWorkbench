@@ -78,6 +78,15 @@ const HD_VINTAGE_PRE_DEFAULT_KEYS: [u32; 5] = [
     0x3f10_0005,
     0x3f10_0001,
 ];
+// Retained Editor 2.27 source evidence identifies Screamer's five defaults
+// in ascending key order, with selector 1 and zero value bits for each row.
+const HD_SCREAMER_DEFAULT_KEYS: [u32; 5] = [
+    HD_TYPE1_DRIVE_KEY,
+    HD_TYPE1_BASS_KEY,
+    HD_TYPE1_THIRD_KEY,
+    HD_TYPE1_TREBLE_KEY,
+    HD_TYPE1_OUTPUT_KEY,
+];
 /// One of the eight editable HD FX positions. This file-only slot type is
 /// independent of vendor runtime slot numbers (which are four through eleven).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1871,6 +1880,86 @@ impl OpaqueH5epPreset {
         Ok(())
     }
 
+    /// Replaces one existing Octave Fuzz with the source-derived Screamer
+    /// default prefix. This remains a typed, standalone file operation.
+    pub fn replace_octave_fuzz_with_screamer_defaults(
+        &mut self,
+        effect_slot: HdFxSlot,
+    ) -> Result<(), ToneError> {
+        let body = self.body_bytes();
+        let block = HD_EFFECT_BLOCK_OFFSET + effect_slot.index() * HD_EFFECT_BLOCK_STRIDE;
+        if read_be_u32(body, block) != Some(HD_OCTAVE_FUZZ_MODEL_ID) {
+            return Err(ToneError::format(
+                "Screamer replacement requires an existing Octave Fuzz model",
+            ));
+        }
+        if body[block + 0x0b] != 1 {
+            return Err(ToneError::format(
+                "Screamer replacement requires a valid, non-empty effect slot",
+            ));
+        }
+        if !matches!(body[block + 8], 0 | 1) {
+            return Err(ToneError::format(
+                "Screamer replacement requires a canonical effect enable byte",
+            ));
+        }
+        if !(5..=HD_PARAMETER_ROW_COUNT as u8).contains(&body[block + 0x0f]) {
+            return Err(ToneError::format(
+                "Screamer replacement requires an effect row count in 5..=12",
+            ));
+        }
+        let mut seen = [false; HD_SCREAMER_DEFAULT_KEYS.len()];
+        for row in 0..HD_SCREAMER_DEFAULT_KEYS.len() {
+            let row_at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
+            let key = read_be_u32(body, row_at)
+                .ok_or_else(|| ToneError::format("truncated HD effect parameter prefix"))?;
+            let Some(key_index) = HD_SCREAMER_DEFAULT_KEYS
+                .iter()
+                .position(|expected| *expected == key)
+            else {
+                return Err(ToneError::format(
+                    "Screamer replacement requires each default key exactly once in the first five rows",
+                ));
+            };
+            if std::mem::replace(&mut seen[key_index], true) {
+                return Err(ToneError::format(
+                    "Screamer replacement requires each default key exactly once in the first five rows",
+                ));
+            }
+        }
+        if seen.iter().any(|present| !present) {
+            return Err(ToneError::format(
+                "Screamer replacement requires each default key exactly once in the first five rows",
+            ));
+        }
+        for row in 0..HD_PARAMETER_ROW_COUNT {
+            let marker_at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE + 0x10;
+            if !matches!(body[marker_at], 0..=2) {
+                return Err(ToneError::format(
+                    "Screamer replacement requires canonical effect assignment marker bytes",
+                ));
+            }
+        }
+
+        let mut candidate = self.bytes.clone();
+        let file_block = H5EP_HEADER_BYTES + block;
+        candidate[file_block..file_block + 4].copy_from_slice(&HD_SCREAMER_MODEL_ID.to_be_bytes());
+        for (row, key) in HD_SCREAMER_DEFAULT_KEYS.into_iter().enumerate() {
+            let row_at = file_block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
+            candidate[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
+            candidate[row_at + 4..row_at + 8].copy_from_slice(&0u32.to_be_bytes());
+        }
+        candidate[file_block + 0x0f] = HD_SCREAMER_DEFAULT_KEYS.len() as u8;
+        for row in 0..HD_PARAMETER_ROW_COUNT {
+            let marker_at =
+                file_block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE + 0x10;
+            candidate[marker_at] = 0;
+        }
+        let staged = Self::parse(candidate)?;
+        self.bytes = staged.bytes;
+        Ok(())
+    }
+
     pub fn tube_drive_control_percent(
         &self,
         effect_slot: usize,
@@ -2257,6 +2346,27 @@ impl HdEditorLibrary {
             }
             _ => Err(ToneError::format(
                 "Vintage Pre replacement requires an extracted H5EP preset",
+            )),
+        }
+    }
+
+    /// Applies the bounded Screamer defaults replacement to a standalone H5EP
+    /// item. Extract H5ES/H5EB children first; their parents remain untouched.
+    pub fn replace_octave_fuzz_with_screamer_defaults(
+        &mut self,
+        index: usize,
+        effect_slot: HdFxSlot,
+    ) -> Result<(), ToneError> {
+        let entry = self
+            .files
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("file index is outside the HD editor library"))?;
+        match &mut entry.file {
+            PodPresetFile::H5ep(preset) => {
+                preset.replace_octave_fuzz_with_screamer_defaults(effect_slot)
+            }
+            _ => Err(ToneError::format(
+                "Screamer replacement requires an extracted H5EP preset",
             )),
         }
     }
@@ -3275,6 +3385,82 @@ mod tests {
             );
         }
         assert!(HdFxSlot::new(8).is_err());
+    }
+
+    #[test]
+    fn octave_fuzz_to_screamer_uses_literal_defaults_and_preserves_the_bounded_write_set() {
+        const SCREAMER_ID: u32 = 0x0205_000e;
+        const EXPECTED_KEYS: [u32; 5] = [
+            0x3f10_0001,
+            0x3f10_0002,
+            0x3f10_0003,
+            0x3f10_0004,
+            0x3f10_0005,
+        ];
+        for effect_slot in 0..HD_EFFECT_COUNT {
+            let original = synthetic_octave_fuzz_h5ep(effect_slot, true);
+            let mut expected = original.clone();
+            let block =
+                H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + effect_slot * HD_EFFECT_BLOCK_STRIDE;
+            expected[block..block + 4].copy_from_slice(&SCREAMER_ID.to_be_bytes());
+            for (row, key) in EXPECTED_KEYS.into_iter().enumerate() {
+                let row_at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
+                expected[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
+                expected[row_at + 4..row_at + 8].copy_from_slice(&0u32.to_be_bytes());
+            }
+            expected[block + 0x0f] = 5;
+            for row in 0..HD_PARAMETER_ROW_COUNT {
+                expected[block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE + 0x10] = 0;
+            }
+
+            let mut preset = OpaqueH5epPreset::parse(original.clone()).unwrap();
+            preset
+                .replace_octave_fuzz_with_screamer_defaults(HdFxSlot::new(effect_slot).unwrap())
+                .unwrap();
+            assert_eq!(preset.as_bytes(), expected, "FX slot {effect_slot}");
+            assert_eq!(preset.effect_model_id(effect_slot), Some(SCREAMER_ID));
+            assert_eq!(preset.trailing_bytes(), b"private-tail");
+        }
+    }
+
+    #[test]
+    fn octave_fuzz_to_screamer_rejects_wrong_models_and_bad_rows_atomically() {
+        let source = synthetic_octave_fuzz_h5ep(0, true);
+        let mut cases = Vec::new();
+        for model in [HD_TUBE_DRIVE_MODEL_ID, HD_SCREAMER_MODEL_ID, 0x0200_0013] {
+            let mut bytes = source.clone();
+            bytes[H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET
+                ..H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 4]
+                .copy_from_slice(&model.to_be_bytes());
+            cases.push(("wrong model", bytes));
+        }
+        let mut invalid_marker = source.clone();
+        let marker = H5EP_HEADER_BYTES
+            + HD_EFFECT_BLOCK_OFFSET
+            + HD_EFFECT_ROWS_OFFSET
+            + 11 * HD_PARAMETER_ROW_STRIDE
+            + 0x10;
+        invalid_marker[marker] = 3;
+        cases.push(("invalid marker", invalid_marker));
+        let mut duplicate_prefix = source.clone();
+        let row1 = H5EP_HEADER_BYTES
+            + HD_EFFECT_BLOCK_OFFSET
+            + HD_EFFECT_ROWS_OFFSET
+            + HD_PARAMETER_ROW_STRIDE;
+        duplicate_prefix[row1..row1 + 4].copy_from_slice(&0x3f10_0005u32.to_be_bytes());
+        cases.push(("duplicate prefix", duplicate_prefix));
+
+        for (label, bytes) in cases {
+            let mut preset = OpaqueH5epPreset::parse(bytes).unwrap();
+            let before = preset.as_bytes().to_vec();
+            assert!(
+                preset
+                    .replace_octave_fuzz_with_screamer_defaults(HdFxSlot::new(0).unwrap())
+                    .is_err(),
+                "{label}"
+            );
+            assert_eq!(preset.as_bytes(), before, "{label} rejection is atomic");
+        }
     }
 
     #[test]

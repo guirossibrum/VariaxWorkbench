@@ -1795,6 +1795,29 @@ impl Workbench {
                             Err(error) => self.pod_message = error.detail(),
                         }
                     }
+                    ui.label("This explicit action replaces the current model and resets its five source-defined values to Screamer defaults.");
+                    if self.pod_button(
+                        ui,
+                        "replace-octave-fuzz-screamer",
+                        "Replace Octave Fuzz with Screamer defaults",
+                    ) {
+                        let index = self.hd_selected.expect("selected HD file");
+                        match pod_preset::HdFxSlot::new(self.hd_effect_slot) {
+                            Ok(slot) => match Session::initial_rig()
+                                .replace_hd_octave_fuzz_with_screamer_defaults(
+                                    &mut self.hd_library,
+                                    index,
+                                    slot,
+                                )
+                            {
+                                Ok(()) => {
+                                    self.pod_message = "Replaced this offline effect with Screamer defaults. Nothing was sent; save a new copy to keep the change.".into();
+                                }
+                                Err(error) => self.pod_message = rejection_text(&error),
+                            },
+                            Err(error) => self.pod_message = error.detail(),
+                        }
+                    }
                     ui.separator();
                 }
                 ui.separator();
@@ -3742,6 +3765,42 @@ mod tests {
         app.pod_open = true;
 
         recording_frame(&context, &mut app, vec![]);
+        click_pod(&context, &mut app, "replace-octave-fuzz-screamer");
+        assert!(
+            app.pod_message.contains("Screamer defaults"),
+            "{}",
+            app.pod_message
+        );
+        let mut screamer_expected = original.clone();
+        screamer_expected[block..block + 4].copy_from_slice(&0x0205_000eu32.to_be_bytes());
+        for (row, key) in [
+            0x3f10_0001u32,
+            0x3f10_0002,
+            0x3f10_0003,
+            0x3f10_0004,
+            0x3f10_0005,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let row_at = block + 0x10 + row * 0x14;
+            screamer_expected[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
+            screamer_expected[row_at + 4..row_at + 8].copy_from_slice(&0u32.to_be_bytes());
+        }
+        screamer_expected[block + 0x0f] = 5;
+        for row in 0..12 {
+            screamer_expected[block + 0x10 + row * 0x14 + 0x10] = 0;
+        }
+        assert_eq!(
+            app.hd_library.file(index).unwrap().as_bytes(),
+            screamer_expected
+        );
+        assert!(app.hd_library.is_dirty(index));
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), source_document);
+        app.hd_library.revert_unsaved(index).unwrap();
+        assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), original);
+        assert!(!app.hd_library.is_dirty(index));
+
         click_pod(&context, &mut app, "replace-octave-fuzz-vintage-pre");
         assert!(
             app.pod_message.contains("Vintage Pre defaults"),

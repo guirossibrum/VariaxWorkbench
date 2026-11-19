@@ -215,7 +215,27 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
         Some((0x0021_0001, 0x0003_0262))
     );
 
-    let parent_bytes = synthetic_h5es();
+    let mut parent_bytes = synthetic_h5es();
+    let preset_start = crate::pod_preset::H5ES_HEADER_BYTES
+        + 17 * crate::pod_preset::H5EP_MIN_BYTES
+        + crate::pod_preset::H5EP_HEADER_BYTES;
+    let child_block = preset_start + 0x428;
+    parent_bytes[child_block..child_block + 4].copy_from_slice(&0x0205_000cu32.to_be_bytes());
+    parent_bytes[child_block + 0x0b] = 1;
+    parent_bytes[child_block + 0x0f] = 5;
+    for (row, key) in [
+        0x3f10_0005u32,
+        0x3f10_0001,
+        0x3f10_0003,
+        0x3f10_0002,
+        0x3f10_0004,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let row_at = child_block + 0x10 + row * 0x14;
+        parent_bytes[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
+    }
     let parent = session
         .import_hd_editor_file(&mut library, parent_bytes.clone())
         .expect("offline H5ES import");
@@ -224,6 +244,20 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
         .expect("common child extraction");
     assert_eq!(child.kind, "H5EP preset");
     assert_eq!(child.header_words_10_14, Some((0, 0)));
+    let mutated_child_before = library.file(child.index).unwrap().as_bytes().to_vec();
+    session
+        .replace_hd_octave_fuzz_with_screamer_defaults(
+            &mut library,
+            child.index,
+            crate::pod_preset::HdFxSlot::new(0).unwrap(),
+        )
+        .expect("bounded Screamer replacement on extracted child");
+    let crate::pod_preset::PodPresetFile::H5ep(replaced_child) = library.file(child.index).unwrap()
+    else {
+        panic!("extracted child remains H5EP");
+    };
+    assert_eq!(replaced_child.effect_model_id(0), Some(0x0205_000e));
+    assert_ne!(replaced_child.as_bytes(), mutated_child_before);
     assert_eq!(library.file(parent.index).unwrap().as_bytes(), parent_bytes);
 
     let podxt = crate::pod_preset::fixture(
