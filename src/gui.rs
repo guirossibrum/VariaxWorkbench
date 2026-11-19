@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 use variax_workbench::pod_audio::RecordRoute;
-use variax_workbench::pod_preset::{self, Library};
+use variax_workbench::pod_preset::{self, HdEditorLibrary, Library, PodPresetFile};
 use variax_workbench::recording::{self, ClockSelection};
 use variax_workbench::rig::{Rejection, RoleKind, Session};
 use variax_workbench::{document::EditorDocument, preset::PresetFile};
@@ -209,7 +209,13 @@ struct Workbench {
     recorder: recording::Panel,
     pod_open: bool,
     pod_library: Library,
+    hd_library: HdEditorLibrary,
     pod_selected: Option<usize>,
+    hd_selected: Option<usize>,
+    hd_effect_slot: usize,
+    hd_drive_percent: u8,
+    hd_setlist_index: usize,
+    hd_preset_index: usize,
     pod_name: String,
     pod_message: String,
     #[cfg(test)]
@@ -278,7 +284,13 @@ impl Workbench {
             recorder: recording::Panel::new(),
             pod_open: false,
             pod_library: Library::default(),
+            hd_library: HdEditorLibrary::default(),
             pod_selected: None,
+            hd_selected: None,
+            hd_effect_slot: 0,
+            hd_drive_percent: 0,
+            hd_setlist_index: 0,
+            hd_preset_index: 0,
             pod_name: String::new(),
             pod_message: String::new(),
             #[cfg(test)]
@@ -501,7 +513,7 @@ impl Workbench {
             Some(Pending::ReadCurrent) => self.launch_read(),
             Some(Pending::Quit | Pending::QuitPod | Pending::QuitRecording) => {
                 // Guitar save or discard must not close while a POD tone is unsaved.
-                if self.pod_library.any_dirty() {
+                if self.pod_library.any_dirty() || self.hd_library.any_dirty() {
                     self.pending = Some(Pending::QuitPod);
                     ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 } else if self.recorder.has_unsaved_take() {
@@ -1183,7 +1195,9 @@ impl Workbench {
         } else if self.dirty() && !self.permit_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.pending = Some(Pending::Quit);
-        } else if self.pod_library.any_dirty() && !self.permit_close {
+        } else if (self.pod_library.any_dirty() || self.hd_library.any_dirty())
+            && !self.permit_close
+        {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.pending = Some(Pending::QuitPod);
         } else if self.recorder.has_unsaved_take() {
@@ -1253,7 +1267,11 @@ impl Workbench {
 
     fn pod_quit_dialog(&mut self, ctx: &egui::Context) {
         let Some(index) = self.pod_library.first_dirty() else {
-            self.continue_pending(ctx);
+            if self.hd_library.any_dirty() {
+                self.hd_quit_dialog(ctx);
+            } else {
+                self.continue_pending(ctx);
+            }
             return;
         };
         let Some(name) = self
@@ -1307,30 +1325,108 @@ impl Workbench {
         if cancel {
             self.pending = None;
         } else if save_continue {
-            if self.save_next_dirty_pod() && !self.pod_library.any_dirty() {
+            if self.save_next_dirty_pod()
+                && !self.pod_library.any_dirty()
+                && !self.hd_library.any_dirty()
+            {
                 self.continue_pending(ctx);
             }
-        } else if discard && self.discard_next_dirty_pod() && !self.pod_library.any_dirty() {
+        } else if discard
+            && self.discard_next_dirty_pod()
+            && !self.pod_library.any_dirty()
+            && !self.hd_library.any_dirty()
+        {
+            self.continue_pending(ctx);
+        }
+    }
+
+    fn hd_quit_dialog(&mut self, ctx: &egui::Context) {
+        let Some(index) = self.hd_library.first_dirty() else {
+            self.continue_pending(ctx);
+            return;
+        };
+        let kind = self
+            .hd_library
+            .file(index)
+            .and_then(PodPresetFile::hd_container_kind)
+            .unwrap_or("HD editor file");
+        let remaining = self.hd_library.dirty_count();
+        let mut discard = false;
+        let mut save_continue = false;
+        let mut cancel = false;
+        egui::Window::new("Unsaved HD Edit file")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "The selected {kind} has an offline edit that is not saved. {remaining} HD file(s) are unsaved."
+                ));
+                ui.label("Save writes a new copy only; no device operation is available.");
+                ui.horizontal(|ui| {
+                    let response = ui.button("Save copy and continue…");
+                    #[cfg(test)]
+                    self.pending_buttons.insert("save", response.rect);
+                    save_continue = response.clicked();
+                    let response = ui.button("Keep editing");
+                    #[cfg(test)]
+                    self.pending_buttons.insert("cancel", response.rect);
+                    cancel = response.clicked();
+                    let response = ui.button("Discard this edit");
+                    #[cfg(test)]
+                    self.pending_buttons.insert("discard", response.rect);
+                    discard = response.clicked();
+                });
+            });
+        if cancel {
+            self.pending = None;
+        } else if save_continue {
+            if self.save_next_dirty_pod()
+                && !self.pod_library.any_dirty()
+                && !self.hd_library.any_dirty()
+            {
+                self.continue_pending(ctx);
+            }
+        } else if discard
+            && self.discard_next_dirty_pod()
+            && !self.pod_library.any_dirty()
+            && !self.hd_library.any_dirty()
+        {
             self.continue_pending(ctx);
         }
     }
 
     fn save_next_dirty_pod(&mut self) -> bool {
-        let Some(index) = self.pod_library.first_dirty() else {
-            return false;
-        };
-        self.write_pod_copy(index)
+        if let Some(index) = self.pod_library.first_dirty() {
+            self.write_pod_copy(index)
+        } else if let Some(index) = self.hd_library.first_dirty() {
+            self.write_hd_copy(index)
+        } else {
+            false
+        }
     }
 
     fn discard_next_dirty_pod(&mut self) -> bool {
-        let Some(index) = self.pod_library.first_dirty() else {
+        if let Some(index) = self.pod_library.first_dirty() {
+            return match self.pod_library.revert_unsaved(index) {
+                Ok(()) => {
+                    self.refresh_selected_pod_name();
+                    self.pod_message =
+                        "Discarded the unsaved name edit for one tone. Nothing was sent.".into();
+                    true
+                }
+                Err(error) => {
+                    self.pod_message = error.detail();
+                    false
+                }
+            };
+        }
+        let Some(index) = self.hd_library.first_dirty() else {
             return false;
         };
-        match self.pod_library.revert_unsaved(index) {
+        match self.hd_library.revert_unsaved(index) {
             Ok(()) => {
-                self.refresh_selected_pod_name();
-                self.pod_message =
-                    "Discarded the unsaved name edit for one tone. Nothing was sent.".into();
+                self.pod_message = "Discarded one unsaved HD Edit file change.".into();
                 true
             }
             Err(error) => {
@@ -1640,7 +1736,7 @@ impl Workbench {
             return;
         }
         let mut open = true;
-        egui::Window::new("Offline PODxt Live tones")
+        egui::Window::new("Offline POD preset library")
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
@@ -1725,20 +1821,247 @@ impl Workbench {
                         })
                     });
                     self.pod_visible = format!(
-                        "{}\n{}\n{}\n{}\n{}",
+                        "{}\n{}\n{}\n{}\n{}\n{}",
                         pod_preset::OFFLINE_BANNER,
                         pod_preset::NOT_GUITAR,
                         pod_preset::NOT_SENT,
                         pod_preset::PAYLOADS_NOT_DECODED,
+                        pod_preset::HD_EDITOR_OFFLINE_NOTICE,
                         self.pod_message,
                     );
                     if let Some(selected) = selected {
                         self.pod_visible.push_str(&selected);
                     }
                 }
+                ui.separator();
+                self.hd_editor_panel(ui);
             });
         // Closing this window keeps the in-memory library, including unsaved names.
         self.pod_open = open;
+    }
+
+    fn hd_editor_panel(&mut self, ui: &mut egui::Ui) {
+        ui.heading("POD HD Edit files · offline");
+        ui.label(pod_preset::HD_EDITOR_OFFLINE_NOTICE);
+        ui.label("Fixed H5EP/H5ES/H5EB framing and one traced editor control are supported. A file tag does not prove physical target compatibility.");
+        ui.label("No device, audio, firmware or driver operation is available here. Copy saves never replace an existing file.");
+        if self.pod_button(ui, "load-hd-file", "Open HD Edit file…") {
+            self.load_hd_editor_file();
+        }
+
+        let rows: Vec<_> = (0..self.hd_library.len())
+            .filter_map(|index| {
+                let file = self.hd_library.file(index)?;
+                Some((
+                    index,
+                    format!(
+                        "{index} · {} · {} bytes{}",
+                        file.hd_container_kind()?,
+                        file.as_bytes().len(),
+                        if self.hd_library.is_dirty(index) {
+                            " · unsaved"
+                        } else {
+                            ""
+                        },
+                    ),
+                ))
+            })
+            .collect();
+        for (index, label) in rows {
+            if ui
+                .selectable_label(self.hd_selected == Some(index), label)
+                .clicked()
+            {
+                self.select_hd_file(index);
+            }
+        }
+
+        let Some(index) = self.hd_selected else {
+            return;
+        };
+        let Some(file) = self.hd_library.file(index).cloned() else {
+            self.hd_selected = None;
+            return;
+        };
+        ui.label("The editor-group/file-format association is static evidence; internal context words are not treated as a product ID.");
+        match &file {
+            PodPresetFile::H5ep(preset) => {
+                ui.label("Single preset. Source header and unmapped body bytes are preserved.");
+                let slot_changed = ui
+                    .add(egui::Slider::new(&mut self.hd_effect_slot, 0..=7).text("Effect slot"))
+                    .changed();
+                if slot_changed {
+                    self.hd_drive_percent = preset
+                        .screamer_drive_percent(self.hd_effect_slot)
+                        .unwrap_or(0);
+                }
+                if preset.screamer_drive_percent(self.hd_effect_slot).is_some() {
+                    ui.add(
+                        egui::Slider::new(&mut self.hd_drive_percent, 0..=100)
+                            .text("Screamer DRIVE"),
+                    );
+                    if self.pod_button(ui, "apply-hd-drive", "Apply offline control") {
+                        self.apply_hd_drive(index);
+                    }
+                } else {
+                    ui.label("This slot has no applicable recovered control; its data remains unchanged.");
+                }
+            }
+            PodPresetFile::H5es(setlist) => {
+                ui.label(format!("One setlist with {0} fixed preset entries. Extracted children become separate library items; the parent remains unchanged.", pod_preset::H5ES_PRESET_COUNT));
+                ui.add(egui::Slider::new(&mut self.hd_preset_index, 0..=63).text("Preset index"));
+                if self.pod_button(ui, "extract-hd-child", "Open child as separate preset") {
+                    match self
+                        .hd_library
+                        .extract_preset(index, 0, self.hd_preset_index)
+                    {
+                        Ok(child) => self.select_hd_file(child),
+                        Err(error) => self.pod_message = error.detail(),
+                    }
+                }
+                let _ = setlist;
+            }
+            PodPresetFile::H5eb(bundle) => {
+                ui.label(format!("Bundle with {0} fixed setlists × {1} preset entries. Extracted children become separate library items; the parent remains unchanged.", pod_preset::H5EB_SETLIST_COUNT, pod_preset::H5ES_PRESET_COUNT));
+                ui.add(egui::Slider::new(&mut self.hd_setlist_index, 0..=7).text("Setlist index"));
+                ui.add(egui::Slider::new(&mut self.hd_preset_index, 0..=63).text("Preset index"));
+                if self.pod_button(ui, "extract-hd-child", "Open child as separate preset") {
+                    match self.hd_library.extract_preset(
+                        index,
+                        self.hd_setlist_index,
+                        self.hd_preset_index,
+                    ) {
+                        Ok(child) => self.select_hd_file(child),
+                        Err(error) => self.pod_message = error.detail(),
+                    }
+                }
+                let _ = bundle;
+            }
+            PodPresetFile::PodxtLive(_) => return,
+        }
+        if self.pod_button(ui, "save-hd-copy", "Save HD file copy…") {
+            self.write_hd_copy(index);
+        }
+        ui.label(&self.pod_message);
+    }
+
+    fn select_hd_file(&mut self, index: usize) {
+        self.hd_selected = Some(index);
+        self.hd_effect_slot = 0;
+        self.hd_drive_percent = self
+            .hd_library
+            .file(index)
+            .and_then(|file| match file {
+                PodPresetFile::H5ep(preset) => preset.screamer_drive_percent(0),
+                _ => None,
+            })
+            .unwrap_or(0);
+    }
+
+    fn apply_hd_drive(&mut self, index: usize) {
+        let result = match self.hd_library.file_mut(index) {
+            Some(PodPresetFile::H5ep(preset)) => {
+                preset.set_screamer_drive_percent(self.hd_effect_slot, self.hd_drive_percent)
+            }
+            _ => return,
+        };
+        match result {
+            Ok(()) => {
+                self.pod_message =
+                    "Updated only the traced in-memory value. Nothing was sent.".into();
+            }
+            Err(error) => self.pod_message = error.detail(),
+        }
+    }
+
+    fn load_hd_editor_file(&mut self) {
+        let Some(path) = self.dialogs.open_pod_tone() else {
+            self.pod_message = "Load cancelled. No file was read.".into();
+            return;
+        };
+        let facts = pod_preset::path_facts(&path);
+        let bytes = match facts {
+            Ok(facts) if facts.len <= pod_preset::TONE_BYTES_CEILING => {
+                pod_preset::read_regular_tone(Ok(facts), || fs::read(&path))
+            }
+            Ok(facts) => pod_preset::read_regular_hd_editor_file(Ok(facts), || fs::read(&path)),
+            Err(error) => Err(pod_preset::ToneError::Format {
+                detail: error.to_string(),
+            }),
+        };
+        match bytes.and_then(|bytes| {
+            let parsed = PodPresetFile::parse(bytes.clone())?;
+            Ok((bytes, parsed))
+        }) {
+            Ok((bytes, PodPresetFile::PodxtLive(_)))
+                if bytes.len() as u64 <= pod_preset::TONE_BYTES_CEILING =>
+            {
+                match Session::initial_rig().open_pod_preset(RoleKind::Pod, &bytes) {
+                    Ok(summary) => match self.pod_library.import_bytes(bytes) {
+                        Ok(index) => {
+                            self.pod_selected = Some(index);
+                            self.pod_name = summary.name;
+                            self.pod_message = format!(
+                                "Loaded {} for PODxt Live {:08x}. {}",
+                                summary.container,
+                                summary.device_id,
+                                pod_preset::PAYLOADS_NOT_DECODED
+                            );
+                        }
+                        Err(error) => self.pod_message = error.detail(),
+                    },
+                    Err(error) => self.pod_message = rejection_text(&error),
+                }
+            }
+            Ok((bytes, _)) => match self.hd_library.import_bytes(bytes) {
+                Ok(index) => {
+                    self.select_hd_file(index);
+                    self.pod_message = "Loaded an offline HD Edit file. Internal product target and physical compatibility remain unverified.".into();
+                }
+                Err(error) => self.pod_message = error.detail(),
+            },
+            Err(error) => self.pod_message = error.detail(),
+        }
+    }
+
+    fn write_hd_copy(&mut self, index: usize) -> bool {
+        let Some(file) = self.hd_library.file(index) else {
+            self.pod_message = "Select an HD Edit file before saving a copy.".into();
+            return false;
+        };
+        let suggested = match file.hd_container_kind() {
+            Some("H5ES setlist") => "hd-edit-setlist.5xs",
+            Some("H5EB bundle") => "hd-edit-bundle.5xb",
+            _ => "hd-edit-preset.5xe",
+        };
+        let Some(path) = self.dialogs.save_pod_tone(suggested) else {
+            self.pod_message = "Save cancelled. No file was written.".into();
+            return false;
+        };
+        let result = self
+            .hd_library
+            .file(index)
+            .ok_or_else(|| "selected HD editor file disappeared".to_owned())
+            .and_then(|file| file.save_copy(&path).map_err(|error| error.detail()));
+        match result {
+            Ok(()) => match self.hd_library.note_saved(index) {
+                Ok(()) => {
+                    self.pod_message = format!(
+                        "Saved a new offline copy to {}. No device operation occurred.",
+                        path.display()
+                    );
+                    true
+                }
+                Err(error) => {
+                    self.pod_message = error.detail();
+                    false
+                }
+            },
+            Err(error) => {
+                self.pod_message = error;
+                false
+            }
+        }
     }
 
     fn pod_button(&mut self, ui: &mut egui::Ui, id: &'static str, label: &str) -> bool {
@@ -2849,6 +3172,26 @@ mod tests {
         chunk(b"FORM", &data)
     }
 
+    fn sample_hd_editor_preset() -> Vec<u8> {
+        let mut bytes = vec![0; pod_preset::H5EP_MIN_BYTES];
+        bytes[..4].copy_from_slice(b"H5EP");
+        bytes[4..8].copy_from_slice(&1u32.to_be_bytes());
+        let body = &mut bytes[pod_preset::H5EP_HEADER_BYTES..];
+        for offset in [0x228, 0x328] {
+            body[offset..offset + 4].copy_from_slice(&0x0100_0000u32.to_be_bytes());
+        }
+        for index in 0..8 {
+            let block = 0x428 + index * 0x100;
+            body[block..block + 4].copy_from_slice(&0x0200_0000u32.to_be_bytes());
+        }
+        let block = 0x428;
+        body[block..block + 4].copy_from_slice(&0x0205_000du32.to_be_bytes());
+        let row = block + 0x10;
+        body[row..row + 4].copy_from_slice(&0x3f10_0001u32.to_be_bytes());
+        body[row + 4..row + 8].copy_from_slice(&0.5f32.to_bits().to_be_bytes());
+        bytes
+    }
+
     #[test]
     fn offline_pod_tone_window_does_not_open_a_device_or_edit_the_guitar() {
         let (context, mut app) = app();
@@ -2929,10 +3272,56 @@ mod tests {
         }
     }
 
+    #[test]
+    fn hd_editor_library_workflow_edits_and_saves_a_new_copy_offline() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let source = app.document.as_ref().unwrap().as_bytes().to_vec();
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("source.5xe");
+        let output = directory.path().join("copy.5xe");
+        let original = sample_hd_editor_preset();
+        std::fs::write(&input, &original).unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(input.clone())].into(),
+            pod_save: [Some(output.clone())].into(),
+            ..Default::default()
+        });
+
+        app.load_hd_editor_file();
+        assert_eq!(app.hd_library.len(), 1);
+        assert_eq!(app.pod_library.len(), 0);
+        assert_eq!(app.hd_selected, Some(0));
+        assert_eq!(app.hd_drive_percent, 50);
+        app.hd_drive_percent = 75;
+        app.apply_hd_drive(0);
+        assert!(app.hd_library.is_dirty(0));
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), source);
+        assert_eq!(std::fs::read(&input).unwrap(), original);
+
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        prompt_frame(&context, &mut app, vec![]);
+        click_prompt(&context, &mut app, "save");
+        assert!(app.permit_close);
+        assert!(!app.hd_library.any_dirty());
+        let written = std::fs::read(&output).unwrap();
+        assert_eq!(written.len(), original.len());
+        assert_eq!(
+            &written[0x28 + 0x428 + 0x10 + 4..0x28 + 0x428 + 0x10 + 8],
+            &0.75f32.to_bits().to_be_bytes()
+        );
+        assert!(app.read_worker.is_none());
+        assert!(!app.is_reading());
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
     fn click_pod_window_close(context: &egui::Context, app: &mut Workbench) {
         recording_frame(context, app, vec![]);
         let rect = context
-            .memory(|memory| memory.area_rect(egui::Id::new("Offline PODxt Live tones")))
+            .memory(|memory| memory.area_rect(egui::Id::new("Offline POD preset library")))
             .expect("POD window");
         let pos = Pos2::new(rect.right() - 20.0, rect.top() + 18.0);
         recording_frame(

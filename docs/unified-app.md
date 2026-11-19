@@ -55,6 +55,12 @@ locked. Offline test recording is the recorder in [recording files](recording.md
 and does not open that capture path. Maintenance
 beyond offline inspection stays on #30.
 
+The GUI also has a separate offline HD Edit library for statically associated
+H5EP/H5ES/H5EB files, including child extraction and one narrowly traced
+Screamer DRIVE edit. It does not change the shared HD500X session capability
+from `Unverified`, because the file group and preserved header context do not
+establish physical target compatibility.
+
 ## Versions
 
 | Profile | Archived container | Installed unit | USB-firmware component |

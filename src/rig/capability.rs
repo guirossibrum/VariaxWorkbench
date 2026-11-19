@@ -235,10 +235,10 @@ fn hd500x_limit(operation: Operation) -> &'static str {
             "POD HD500X is a separate family from original Variax and from PODxt. No coefficient identity is registered."
         }
         Operation::OpenPodPreset => {
-            "A bounded opaque H5EP envelope parser preserves bytes but does not establish a POD HD500X preset identity. Private Editor/PHF/model-default materials have been examined statically, but the app admits no product-specific preset schema or semantic edit behavior. Independent H5EP and H5ES measurements are not a registered product-specific container. Printed names in the 2013 public manuals are not a byte layout. A PODxt Live tone is not opened on this profile and is not converted."
+            "Offline library recognizes the statically traced Edit H5EP/H5ES/H5EB framing, validates the recovered body subset, and can extract child records. This file group does not prove physical target compatibility. A PODxt Live tone is not opened on this profile and is not converted."
         }
         Operation::EditPodPreset => {
-            "Private model/default evidence has been examined statically, but no product-attributed model/effect/default schema is admitted for editing. Printed names in the public manuals are not ids. Values are not edited."
+            "Offline HD Edit library supports only the source-traced Screamer DRIVE field on an exact supported value grid. Other controls and full editor parity are unavailable. The preserved header context does not establish a product id; physical target compatibility and device behavior remain unverified."
         }
         Operation::SelectRecordRoute => {
             "The Windows INF DefaultSampleRate is 48000 and DefaultWordSize is 24, with EngineFormatLock 0. Those are driver defaults. They do not select a PODxt Live record route and do not open a stream."

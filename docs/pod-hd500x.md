@@ -1,12 +1,12 @@
 # POD HD500X offline identity
 
 Issue [#32](https://github.com/guirossibrum/VariaxWorkbench/issues/32) records
-what the local driver packages, the public Line 6 catalog, and two public
-manuals establish for POD HD500X. This is not a preset editor, a firmware
-image, a record route, or
-permission to connect a device. Workbench HD and JTV-69 stay on their own
-profiles. PODxt Live file id `0x0003000A` and USB product `0x4650` stay on the
-initial rig.
+what the local driver packages, public Line 6 catalog, public manuals, and
+static Editor research establish for POD HD500X. The offline HD Edit file
+library described below is not proof of device compatibility, a firmware image,
+a record route, or permission to connect a device. Workbench HD and JTV-69 stay
+on their own profiles. PODxt Live file id `0x0003000A` and USB product `0x4650`
+stay on the initial rig.
 
 `Session::pod_hd500x` returns this record only for `ProductProfile::PodHd500x`.
 Workbench HD, JTV-69, and `Session::initial_rig` do not inherit it. Shared
@@ -208,18 +208,28 @@ notes. They are not a file format, not model or effect ids, and not JTV or
 Workbench HD compatibility. This crate does not store the names as a bank and
 does not recall or convert presets.
 
-Private Editor/PHF/model-default research has recovered static evidence, but
-this crate admits no product-attributed preset identity or schema, model/effect
-catalog, parameter ranges, or semantic edit behavior. The Rust shared POD file
-dispatcher recognizes a bounded H5EP envelope for offline no-op preservation:
-it checks the observed fixed header/body bounds and version, retains every
-header, body, and trailing byte, and supports a non-overwriting copy save. This
-is structural recognition of an independent envelope, not a POD HD500X
-identity or semantic codec. H5ES remains unsupported. PODxt Live tones and
-original Variax files opened through the HD500X profile stay `Unverified`; none
-are rewritten into another format. Synthetic tests do not reopen the
-independently published files or private materials and do not validate an
-original Edit implementation.
+Static Editor 2.27 resource metadata associates H5EP presets, H5ES setlists and
+H5EB bundles with the HD500X Edit file group. The offline library parses their
+fixed nested framing, preserves unknown header/context and trailing bytes,
+extracts child records as separate items, and saves new copies without
+overwriting. H5EP parsing also validates a bounded subset of model classes and
+tail flags. Its reversible word conversion is limited to statically traced
+fields. The library edits only the Screamer DRIVE row for the recovered model
+and key, and only when its existing value is exactly on the editor's
+integer-percent float grid. Other rows and unknown words remain unchanged.
+
+This Edit file association does not prove device target compatibility. In
+particular, H5EP byte `0x0b` belongs to a context dword supplied by the writer;
+the H5EP reader checks the magic/version but does not compare that byte as a
+product id. Third-party source comments assigning `0x2d` or `0x2e` to device
+families therefore do not establish target identity. Product attribution,
+physical compatibility, broad model/effect semantics, other control ranges,
+and original-editor parity remain unresolved. The GUI exposes this path as a
+separate offline HD Edit library, while the shared session's product capability
+remains `Unverified`. PODxt Live tones and original Variax files are not
+rewritten into another format. Synthetic fixtures validate only the
+implemented subset and do not reopen independent captures or private source
+materials.
 
 ## Independent files were measured and do not name the product
 
@@ -264,12 +274,11 @@ so offsets `0x14` and `0x15` differ. The embedded records are not treated as
 that branch's output.
 
 `preset_container_recovered`, `model_ids_recovered`, and `effect_ids_recovered`
-remain false as application-admission flags: private static evidence does not
-register a product-attributed container/schema or model/effect catalog. A
-synthetic H5EP buffer can be parsed by the generic offline file dispatcher as
-an opaque envelope. `Session::open_pod_preset` for the HD500X profile still
-returns `Unverified` before product admission; the envelope parser does not
-change that gate.
+remain false as product-admission flags. Static Edit resources and writer paths
+support the bounded file-group and one-control implementation above, but do not
+register a product-attributed device schema or complete model/effect catalog.
+`Session::open_pod_preset` for the HD500X profile still returns `Unverified`;
+the separate offline library does not change that identity gate.
 
 ## What remains open
 

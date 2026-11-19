@@ -52,11 +52,13 @@ its `ProX` branch. A setlist has 64 H5EP spans beginning at byte 56 with stride
 registered device identity. No third-party converter code was copied or run.
 
 Owner-supplied Editor/PHF/model-default and firmware-image materials have since
-been examined statically and remain private. This does not register a
-product-specific preset schema, model/effect/default catalog, target-applicable
-firmware interpretation, or semantic edit behavior. The HD500X session
-continues to reject preset opening as `Unverified`. Linux negotiation and live
-USB-audio routing remain unverified. See [HD500X evidence](pod-hd500x.md).
+been examined statically and remain private. The bounded offline HD Edit
+library now recognizes the statically associated H5EP/H5ES/H5EB file group and
+one source-traced Screamer DRIVE field. It does not register a product-specific
+device identity, complete model/effect/default catalog, or target-applicable
+firmware interpretation. The HD500X session continues to reject product-level
+preset opening as `Unverified`. Linux negotiation and live USB-audio routing
+remain unverified. See [HD500X evidence](pod-hd500x.md).
 
 ## Verification
 

@@ -34,14 +34,32 @@ pub const CAB_SLOT: u32 = 0x0003_0001;
 /// Application bound for the offline librarian. Not a recovered Line 6 limit.
 pub const TONE_BYTES_CEILING: u64 = 1_048_576;
 
-/// Structural H5EP bounds observed in independent files. These describe an
-/// envelope shape only; they are not an HD500X identity or a vendor limit.
+/// Static Edit 2.27 file framing. The tag is an HD500X editor-group
+/// observation; it does not prove a physical target or profile compatibility.
 pub const H5EP_HEADER_BYTES: usize = 0x28;
 pub const H5EP_BODY_BYTES: usize = 0x1000;
 pub const H5EP_MIN_BYTES: usize = H5EP_HEADER_BYTES + H5EP_BODY_BYTES;
+pub const H5ES_HEADER_BYTES: usize = 0x38;
+pub const H5ES_PRESET_COUNT: usize = 64;
+pub const H5ES_MIN_BYTES: usize = H5ES_HEADER_BYTES + H5ES_PRESET_COUNT * H5EP_MIN_BYTES;
+pub const H5EB_HEADER_BYTES: usize = 0x28;
+pub const H5EB_SETLIST_COUNT: usize = 8;
+pub const H5EB_MIN_BYTES: usize = H5EB_HEADER_BYTES + H5EB_SETLIST_COUNT * H5ES_MIN_BYTES;
+const HD_PRESET_BYTES_CEILING: usize = 1_048_576;
+const HD_SETLIST_BYTES_CEILING: usize = 1_048_576;
+pub const HD_BUNDLE_BYTES_CEILING: usize = 3 * 1024 * 1024;
+const HD_EFFECT_BLOCK_OFFSET: usize = 0x428;
+const HD_EFFECT_BLOCK_STRIDE: usize = 0x100;
+const HD_EFFECT_COUNT: usize = 8;
+const HD_EFFECT_ROWS_OFFSET: usize = 0x10;
+const HD_PARAMETER_ROW_STRIDE: usize = 0x14;
+const HD_PARAMETER_ROW_COUNT: usize = 12;
+const HD_SCREAMER_MODEL_ID: u32 = 0x0205_000d;
+const HD_SCREAMER_DRIVE_KEY: u32 = 0x3f10_0001;
 
 pub const OFFLINE_BANNER: &str =
     "Offline PODxt Live tone file. This does not edit a connected POD.";
+pub const HD_EDITOR_OFFLINE_NOTICE: &str = "HD Edit files are handled offline. Internal target and physical compatibility remain unverified.";
 pub const NOT_GUITAR: &str =
     "This is not the Variax guitar editor. Guitar model slots are not applied.";
 pub const NOT_SENT: &str = "Nothing is sent to a device. No preset is switched.";
@@ -95,12 +113,26 @@ pub enum ToneError {
 pub enum PodPresetFile {
     PodxtLive(PodTone),
     H5ep(OpaqueH5epPreset),
+    H5es(H5esSetlist),
+    H5eb(H5ebBundle),
 }
 
-/// H5EP bytes retained as an opaque, no-op envelope. No fields are interpreted
-/// as a product id, model id, or editable preset data.
+/// A statically framed H5EP record. Header words other than magic/version and
+/// all body data remain raw unless a narrowly evidenced control is edited.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpaqueH5epPreset {
+    bytes: Vec<u8>,
+}
+
+/// A complete editor setlist with exactly 64 fixed-size H5EP children.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct H5esSetlist {
+    bytes: Vec<u8>,
+}
+
+/// A complete editor bundle with exactly eight fixed-size H5ES children.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct H5ebBundle {
     bytes: Vec<u8>,
 }
 
@@ -109,6 +141,10 @@ impl PodPresetFile {
     pub fn parse(bytes: Vec<u8>) -> Result<Self, ToneError> {
         if bytes.starts_with(b"H5EP") {
             OpaqueH5epPreset::parse(bytes).map(Self::H5ep)
+        } else if bytes.starts_with(b"H5ES") {
+            H5esSetlist::parse(bytes).map(Self::H5es)
+        } else if bytes.starts_with(b"H5EB") {
+            H5ebBundle::parse(bytes).map(Self::H5eb)
         } else if bytes.starts_with(b"FORM") {
             PodTone::parse(bytes).map(Self::PodxtLive)
         } else {
@@ -122,6 +158,8 @@ impl PodPresetFile {
         match self {
             Self::PodxtLive(tone) => tone.as_bytes(),
             Self::H5ep(preset) => preset.as_bytes(),
+            Self::H5es(setlist) => setlist.as_bytes(),
+            Self::H5eb(bundle) => bundle.as_bytes(),
         }
     }
 
@@ -133,26 +171,25 @@ impl PodPresetFile {
     pub fn save_copy(&self, path: &Path) -> Result<(), ToneError> {
         document::save_new(path, self.as_bytes()).map_err(ToneError::format)
     }
+
+    pub fn hd_container_kind(&self) -> Option<&'static str> {
+        match self {
+            Self::H5ep(_) => Some("H5EP preset"),
+            Self::H5es(_) => Some("H5ES setlist"),
+            Self::H5eb(_) => Some("H5EB bundle"),
+            Self::PodxtLive(_) => None,
+        }
+    }
 }
 
 impl OpaqueH5epPreset {
     pub fn parse(bytes: Vec<u8>) -> Result<Self, ToneError> {
-        if bytes.len() as u64 > TONE_BYTES_CEILING {
+        if bytes.len() > HD_PRESET_BYTES_CEILING {
             return Err(ToneError::format(
-                "POD file exceeds the 1 MiB offline librarian ceiling",
+                "H5EP exceeds the offline file-size ceiling",
             ));
         }
-        if bytes.len() < H5EP_MIN_BYTES {
-            return Err(ToneError::format(format!(
-                "truncated H5EP envelope: expected at least {H5EP_MIN_BYTES} bytes"
-            )));
-        }
-        if &bytes[..4] != b"H5EP" {
-            return Err(ToneError::format("expected H5EP preset magic"));
-        }
-        if bytes[4..8] != 1u32.to_be_bytes() {
-            return Err(ToneError::format("unsupported H5EP envelope version"));
-        }
+        validate_h5ep_record(&bytes)?;
         Ok(Self { bytes })
     }
 
@@ -168,8 +205,103 @@ impl OpaqueH5epPreset {
         &self.bytes[H5EP_HEADER_BYTES..H5EP_MIN_BYTES]
     }
 
+    /// Returns the editor's in-memory byte order using the statically traced
+    /// selective word transform. Unmapped bytes are copied verbatim.
+    pub fn body_in_editor_order(&self) -> Vec<u8> {
+        let mut body = self.body_bytes().to_vec();
+        transform_hd_body_words(&mut body);
+        body
+    }
+
+    /// Replaces a body expressed in editor memory order. Validation occurs on
+    /// a temporary file-order copy before the stored source bytes are changed.
+    pub fn replace_body_in_editor_order(&mut self, mut body: Vec<u8>) -> Result<(), ToneError> {
+        if body.len() != H5EP_BODY_BYTES {
+            return Err(ToneError::format(
+                "editor-order H5EP body must be 4096 bytes",
+            ));
+        }
+        transform_hd_body_words(&mut body);
+        validate_hd_body(&body)?;
+        self.bytes[H5EP_HEADER_BYTES..H5EP_MIN_BYTES].copy_from_slice(&body);
+        Ok(())
+    }
+
     pub fn trailing_bytes(&self) -> &[u8] {
         &self.bytes[H5EP_MIN_BYTES..]
+    }
+
+    /// The Edit 2.27 static source maps this control to a normalized float in
+    /// the first matching effect row. The result is editor data, not a claim
+    /// of physical-device availability.
+    pub fn screamer_drive_percent(&self, effect_slot: usize) -> Option<u8> {
+        if effect_slot >= HD_EFFECT_COUNT {
+            return None;
+        }
+        let body = self.body_bytes();
+        let block = HD_EFFECT_BLOCK_OFFSET + effect_slot * HD_EFFECT_BLOCK_STRIDE;
+        if read_be_u32(body, block)? != HD_SCREAMER_MODEL_ID {
+            return None;
+        }
+        for row in 0..HD_PARAMETER_ROW_COUNT {
+            let key_at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
+            if read_be_u32(body, key_at)? == HD_SCREAMER_DRIVE_KEY {
+                let value = f32::from_bits(read_be_u32(body, key_at + 4)?);
+                if value.is_finite() && (0.0..=1.0).contains(&value) {
+                    let percent = (value * 100.0).round() as u8;
+                    let encoded = percent as f32 / 100.0;
+                    if encoded.to_bits() == value.to_bits() {
+                        return Some(percent);
+                    }
+                }
+                return None;
+            }
+        }
+        None
+    }
+
+    /// Edits only the first statically identified Screamer DRIVE value word.
+    /// Unknown rows, duplicates and every other source byte remain unchanged.
+    pub fn set_screamer_drive_percent(
+        &mut self,
+        effect_slot: usize,
+        percent: u8,
+    ) -> Result<(), ToneError> {
+        if percent > 100 {
+            return Err(ToneError::format("Screamer DRIVE must be in 0..=100"));
+        }
+        if effect_slot >= HD_EFFECT_COUNT {
+            return Err(ToneError::format("effect slot is outside 0..8"));
+        }
+        let body = self.body_bytes();
+        let block = HD_EFFECT_BLOCK_OFFSET + effect_slot * HD_EFFECT_BLOCK_STRIDE;
+        if read_be_u32(body, block) != Some(HD_SCREAMER_MODEL_ID) {
+            return Err(ToneError::format(
+                "selected effect slot is not the statically identified Screamer model",
+            ));
+        }
+        let value_at = (0..HD_PARAMETER_ROW_COUNT)
+            .map(|row| block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE)
+            .find(|&at| read_be_u32(body, at) == Some(HD_SCREAMER_DRIVE_KEY))
+            .map(|at| at + 4)
+            .ok_or_else(|| ToneError::format("Screamer slot has no DRIVE parameter row"))?;
+        let current = f32::from_bits(
+            read_be_u32(body, value_at)
+                .ok_or_else(|| ToneError::format("Screamer DRIVE row is truncated"))?,
+        );
+        let current_percent = (current * 100.0).round() as u8;
+        if !current.is_finite()
+            || !(0.0..=1.0).contains(&current)
+            || (current_percent as f32 / 100.0).to_bits() != current.to_bits()
+        {
+            return Err(ToneError::format(
+                "existing Screamer DRIVE value is outside the exact recovered editor encoding",
+            ));
+        }
+        let file_at = H5EP_HEADER_BYTES + value_at;
+        self.bytes[file_at..file_at + 4]
+            .copy_from_slice(&(percent as f32 / 100.0).to_bits().to_be_bytes());
+        Ok(())
     }
 
     /// Exact no-op serialization. The envelope's unknown fields remain raw.
@@ -179,6 +311,319 @@ impl OpaqueH5epPreset {
 
     pub fn save_copy(&self, path: &Path) -> Result<(), ToneError> {
         document::save_new(path, &self.bytes).map_err(ToneError::format)
+    }
+}
+
+impl H5esSetlist {
+    pub fn parse(bytes: Vec<u8>) -> Result<Self, ToneError> {
+        if bytes.len() > HD_SETLIST_BYTES_CEILING {
+            return Err(ToneError::format(
+                "H5ES exceeds the offline file-size ceiling",
+            ));
+        }
+        validate_h5es_record(&bytes)?;
+        Ok(Self { bytes })
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn trailing_bytes(&self) -> &[u8] {
+        &self.bytes[H5ES_MIN_BYTES..]
+    }
+
+    pub fn preset_bytes(&self, index: usize) -> Option<&[u8]> {
+        if index >= H5ES_PRESET_COUNT {
+            return None;
+        }
+        let start = H5ES_HEADER_BYTES + index * H5EP_MIN_BYTES;
+        self.bytes.get(start..start + H5EP_MIN_BYTES)
+    }
+
+    pub fn save_copy(&self, path: &Path) -> Result<(), ToneError> {
+        document::save_new(path, &self.bytes).map_err(ToneError::format)
+    }
+}
+
+impl H5ebBundle {
+    pub fn parse(bytes: Vec<u8>) -> Result<Self, ToneError> {
+        if bytes.len() > HD_BUNDLE_BYTES_CEILING {
+            return Err(ToneError::format(
+                "H5EB exceeds the offline file-size ceiling",
+            ));
+        }
+        validate_h5eb_record(&bytes)?;
+        Ok(Self { bytes })
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn trailing_bytes(&self) -> &[u8] {
+        &self.bytes[H5EB_MIN_BYTES..]
+    }
+
+    pub fn setlist_bytes(&self, index: usize) -> Option<&[u8]> {
+        if index >= H5EB_SETLIST_COUNT {
+            return None;
+        }
+        let start = H5EB_HEADER_BYTES + index * H5ES_MIN_BYTES;
+        self.bytes.get(start..start + H5ES_MIN_BYTES)
+    }
+
+    pub fn save_copy(&self, path: &Path) -> Result<(), ToneError> {
+        document::save_new(path, &self.bytes).map_err(ToneError::format)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StoredHdFile {
+    file: PodPresetFile,
+    saved: Vec<u8>,
+}
+
+/// Shared in-memory library for statically framed HD Edit files. Imported
+/// containers and their source bytes are retained independently; extracting a
+/// child creates a separate preset entry and never rewrites its parent.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HdEditorLibrary {
+    files: Vec<StoredHdFile>,
+}
+
+impl HdEditorLibrary {
+    pub fn import_bytes(&mut self, bytes: Vec<u8>) -> Result<usize, ToneError> {
+        let file = PodPresetFile::parse(bytes)?;
+        if file.hd_container_kind().is_none() {
+            return Err(ToneError::format(
+                "HD editor library accepts H5EP, H5ES, and H5EB files only",
+            ));
+        }
+        let saved = file.as_bytes().to_vec();
+        self.files.push(StoredHdFile { file, saved });
+        Ok(self.files.len() - 1)
+    }
+
+    pub fn len(&self) -> usize {
+        self.files.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+
+    pub fn file(&self, index: usize) -> Option<&PodPresetFile> {
+        self.files.get(index).map(|entry| &entry.file)
+    }
+
+    pub fn file_mut(&mut self, index: usize) -> Option<&mut PodPresetFile> {
+        self.files.get_mut(index).map(|entry| &mut entry.file)
+    }
+
+    pub fn extract_preset(
+        &mut self,
+        index: usize,
+        setlist: usize,
+        preset: usize,
+    ) -> Result<usize, ToneError> {
+        let child = match self.file(index) {
+            Some(PodPresetFile::H5ep(_)) if setlist == 0 && preset == 0 => {
+                return Ok(index);
+            }
+            Some(PodPresetFile::H5es(file)) if setlist == 0 => file.preset_bytes(preset),
+            Some(PodPresetFile::H5eb(file)) => file.setlist_bytes(setlist).and_then(|bytes| {
+                let start = H5ES_HEADER_BYTES + preset.checked_mul(H5EP_MIN_BYTES)?;
+                bytes.get(start..start.checked_add(H5EP_MIN_BYTES)?)
+            }),
+            _ => None,
+        }
+        .ok_or_else(|| ToneError::format("setlist or preset index is outside the file"))?
+        .to_vec();
+        let file = PodPresetFile::H5ep(OpaqueH5epPreset::parse(child)?);
+        let saved = file.as_bytes().to_vec();
+        self.files.push(StoredHdFile { file, saved });
+        Ok(self.files.len() - 1)
+    }
+
+    pub fn is_dirty(&self, index: usize) -> bool {
+        self.files
+            .get(index)
+            .is_some_and(|entry| entry.file.as_bytes() != entry.saved)
+    }
+
+    pub fn any_dirty(&self) -> bool {
+        self.files
+            .iter()
+            .any(|entry| entry.file.as_bytes() != entry.saved)
+    }
+
+    pub fn dirty_count(&self) -> usize {
+        self.files
+            .iter()
+            .filter(|entry| entry.file.as_bytes() != entry.saved)
+            .count()
+    }
+
+    pub fn first_dirty(&self) -> Option<usize> {
+        self.files
+            .iter()
+            .position(|entry| entry.file.as_bytes() != entry.saved)
+    }
+
+    pub fn note_saved(&mut self, index: usize) -> Result<(), ToneError> {
+        let entry = self
+            .files
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("file index is outside the HD editor library"))?;
+        entry.saved = entry.file.as_bytes().to_vec();
+        Ok(())
+    }
+
+    pub fn revert_unsaved(&mut self, index: usize) -> Result<(), ToneError> {
+        let entry = self
+            .files
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("file index is outside the HD editor library"))?;
+        if entry.file.as_bytes() != entry.saved {
+            entry.file = PodPresetFile::parse(entry.saved.clone())?;
+        }
+        Ok(())
+    }
+}
+
+fn validate_h5ep_record(bytes: &[u8]) -> Result<(), ToneError> {
+    if bytes.len() < H5EP_MIN_BYTES {
+        return Err(ToneError::format(format!(
+            "truncated H5EP record: expected at least {H5EP_MIN_BYTES} bytes"
+        )));
+    }
+    if &bytes[..4] != b"H5EP" {
+        return Err(ToneError::format("expected H5EP preset magic"));
+    }
+    if bytes[4..8] != 1u32.to_be_bytes() {
+        return Err(ToneError::format("unsupported H5EP version"));
+    }
+    validate_hd_body(&bytes[H5EP_HEADER_BYTES..H5EP_MIN_BYTES])
+}
+
+fn validate_h5es_header(bytes: &[u8]) -> Result<(), ToneError> {
+    if bytes.len() < H5ES_HEADER_BYTES {
+        return Err(ToneError::format("truncated H5ES header"));
+    }
+    if &bytes[..4] != b"H5ES" {
+        return Err(ToneError::format("expected H5ES setlist magic"));
+    }
+    if bytes[4..8] != 1u32.to_be_bytes() {
+        return Err(ToneError::format("unsupported H5ES version"));
+    }
+    Ok(())
+}
+
+fn validate_h5es_record(bytes: &[u8]) -> Result<(), ToneError> {
+    validate_h5es_header(bytes)?;
+    if bytes.len() < H5ES_MIN_BYTES {
+        return Err(ToneError::format(format!(
+            "truncated H5ES children: expected at least {H5ES_MIN_BYTES} bytes"
+        )));
+    }
+    for index in 0..H5ES_PRESET_COUNT {
+        let start = H5ES_HEADER_BYTES + index * H5EP_MIN_BYTES;
+        validate_h5ep_record(&bytes[start..start + H5EP_MIN_BYTES])?;
+    }
+    Ok(())
+}
+
+fn validate_h5eb_record(bytes: &[u8]) -> Result<(), ToneError> {
+    if bytes.len() < H5EB_HEADER_BYTES {
+        return Err(ToneError::format("truncated H5EB header"));
+    }
+    if &bytes[..4] != b"H5EB" {
+        return Err(ToneError::format("expected H5EB bundle magic"));
+    }
+    if bytes[4..8] != 1u32.to_be_bytes() {
+        return Err(ToneError::format("unsupported H5EB version"));
+    }
+    if bytes.len() < H5EB_MIN_BYTES {
+        return Err(ToneError::format(format!(
+            "truncated H5EB children: expected at least {H5EB_MIN_BYTES} bytes"
+        )));
+    }
+    for index in 0..H5EB_SETLIST_COUNT {
+        let start = H5EB_HEADER_BYTES + index * H5ES_MIN_BYTES;
+        validate_h5es_record(&bytes[start..start + H5ES_MIN_BYTES])?;
+    }
+    Ok(())
+}
+
+fn validate_hd_body(body: &[u8]) -> Result<(), ToneError> {
+    if body.len() != H5EP_BODY_BYTES {
+        return Err(ToneError::format("invalid H5EP body length"));
+    }
+    for index in 0..2 {
+        if body[0x028 + index * HD_EFFECT_BLOCK_STRIDE] != 0 {
+            return Err(ToneError::format("invalid H5EP amp model class"));
+        }
+        if body[0x228 + index * HD_EFFECT_BLOCK_STRIDE] != 1 {
+            return Err(ToneError::format("invalid H5EP cab model class"));
+        }
+    }
+    let mut loop_count = 0;
+    for index in 0..HD_EFFECT_COUNT {
+        let offset = HD_EFFECT_BLOCK_OFFSET + index * HD_EFFECT_BLOCK_STRIDE;
+        if body[offset] != 2 {
+            return Err(ToneError::format("invalid H5EP effect model class"));
+        }
+        if read_be_u32(body, offset) == Some(0x0208_0000) {
+            loop_count += 1;
+        }
+    }
+    if loop_count >= 2 {
+        return Err(ToneError::format("H5EP contains two FX Loop models"));
+    }
+    for (offset, maximum, field) in [
+        (0xff3, 1, "TrailsEnabled"),
+        (0xff6, 1, "AmpControl"),
+        (0xff8, 7, "Mic[0]"),
+        (0xff9, 7, "Mic[1]"),
+        (0xffa, 1, "MainMute[0]"),
+        (0xffb, 1, "MainMute[1]"),
+        (0xffe, 10, "Input1Source"),
+        (0xfff, 10, "Input2Source"),
+    ] {
+        if body[offset] > maximum {
+            return Err(ToneError::format(format!("invalid H5EP {field} value")));
+        }
+    }
+    Ok(())
+}
+
+fn read_be_u32(bytes: &[u8], offset: usize) -> Option<u32> {
+    Some(u32::from_be_bytes(
+        bytes.get(offset..offset.checked_add(4)?)?.try_into().ok()?,
+    ))
+}
+
+fn transform_hd_body_words(body: &mut [u8]) {
+    const FIXED_WORDS: [usize; 9] = [0x20, 0x24, 0xd48, 0xd4c, 0xd50, 0xd54, 0xd58, 0xd7c, 0xd80];
+    for offset in FIXED_WORDS {
+        body[offset..offset + 4].reverse();
+    }
+    const BLOCKS: [usize; 4] = [0x28, 0x128, 0x228, 0x328];
+    for offset in BLOCKS.into_iter().chain(
+        (0..HD_EFFECT_COUNT).map(|index| HD_EFFECT_BLOCK_OFFSET + index * HD_EFFECT_BLOCK_STRIDE),
+    ) {
+        for word in 0..2 {
+            let at = offset + word * 4;
+            body[at..at + 4].reverse();
+        }
+        for row in 0..HD_PARAMETER_ROW_COUNT {
+            let row_at = offset + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
+            for word in 0..4 {
+                let at = row_at + word * 4;
+                body[at..at + 4].reverse();
+            }
+        }
     }
 }
 
@@ -682,6 +1127,33 @@ pub fn read_regular_tone(
     Ok(bytes)
 }
 
+/// Reads a regular offline `.5xe`/`.5xs`/`.5xb` candidate under the largest
+/// bounded format size. Device nodes, pipes, and oversized files are refused
+/// before the reader closure is called.
+pub fn read_regular_hd_editor_file(
+    facts: std::io::Result<PathFacts>,
+    read: impl FnOnce() -> std::io::Result<Vec<u8>>,
+) -> Result<Vec<u8>, ToneError> {
+    let facts = facts.map_err(|error| ToneError::format(error.to_string()))?;
+    if !facts.regular_file {
+        return Err(ToneError::format(
+            "HD editor input must be a regular file; non-file paths are not opened",
+        ));
+    }
+    if facts.len > HD_BUNDLE_BYTES_CEILING as u64 {
+        return Err(ToneError::format(
+            "HD editor file exceeds the offline file-size ceiling",
+        ));
+    }
+    let bytes = read().map_err(|error| ToneError::format(error.to_string()))?;
+    if bytes.len() > HD_BUNDLE_BYTES_CEILING {
+        return Err(ToneError::format(
+            "HD editor file exceeds the offline file-size ceiling",
+        ));
+    }
+    Ok(bytes)
+}
+
 #[cfg(test)]
 pub(crate) fn fixture(
     kind: ContainerKind,
@@ -775,11 +1247,17 @@ mod tests {
     use super::*;
 
     fn synthetic_h5ep(extra: &[u8]) -> Vec<u8> {
-        let mut bytes = (0..H5EP_MIN_BYTES)
-            .map(|index| ((index.wrapping_mul(73) + 19) & 0xff) as u8)
-            .collect::<Vec<_>>();
+        let mut bytes = vec![0; H5EP_MIN_BYTES];
         bytes[..4].copy_from_slice(b"H5EP");
         bytes[4..8].copy_from_slice(&1u32.to_be_bytes());
+        let body = &mut bytes[H5EP_HEADER_BYTES..];
+        for offset in [0x228, 0x328] {
+            body[offset..offset + 4].copy_from_slice(&0x0100_0000u32.to_be_bytes());
+        }
+        for index in 0..HD_EFFECT_COUNT {
+            let offset = HD_EFFECT_BLOCK_OFFSET + index * HD_EFFECT_BLOCK_STRIDE;
+            body[offset..offset + 4].copy_from_slice(&0x0200_0000u32.to_be_bytes());
+        }
         bytes.extend_from_slice(extra);
         bytes
     }
@@ -790,12 +1268,12 @@ mod tests {
         // Exercise noncanonical/unknown header and body values, including bytes
         // that resemble duplicated fields. No field is normalized or decoded.
         original[8..H5EP_HEADER_BYTES].fill(0xa5);
-        original[H5EP_HEADER_BYTES..H5EP_MIN_BYTES].fill(0x5a);
+        original[H5EP_HEADER_BYTES + 0xd90..H5EP_HEADER_BYTES + 0xda0].fill(0x5a);
         original[0x0b] = 0x2e;
         original[0x13..0x16].copy_from_slice(&[0x06, 0x02, 0x62]);
         let file = PodPresetFile::parse(original.clone()).unwrap();
         let PodPresetFile::H5ep(envelope) = file else {
-            panic!("H5EP must dispatch to the opaque envelope");
+            panic!("H5EP must dispatch to the structured editor record");
         };
         assert_eq!(envelope.header_bytes().len(), H5EP_HEADER_BYTES);
         assert_eq!(envelope.body_bytes().len(), H5EP_BODY_BYTES);
@@ -823,17 +1301,15 @@ mod tests {
 
     #[test]
     fn ceiling_is_checked_after_valid_magic_and_version_by_parser_and_dispatcher() {
-        let mut at_ceiling = vec![0x6d; TONE_BYTES_CEILING as usize];
-        at_ceiling[..4].copy_from_slice(b"H5EP");
-        at_ceiling[4..8].copy_from_slice(&1u32.to_be_bytes());
+        let mut at_ceiling = synthetic_h5ep(&[]);
+        at_ceiling.resize(TONE_BYTES_CEILING as usize, 0x6d);
         let parsed = OpaqueH5epPreset::parse(at_ceiling.clone()).unwrap();
         assert_eq!(parsed.serialize_noop(), at_ceiling);
         let dispatched = PodPresetFile::parse(at_ceiling.clone()).unwrap();
         assert_eq!(dispatched.serialize_noop(), at_ceiling);
 
-        let mut over_ceiling = vec![0x6d; TONE_BYTES_CEILING as usize + 1];
-        over_ceiling[..4].copy_from_slice(b"H5EP");
-        over_ceiling[4..8].copy_from_slice(&1u32.to_be_bytes());
+        let mut over_ceiling = at_ceiling.clone();
+        over_ceiling.push(0x6d);
         for result in [
             OpaqueH5epPreset::parse(over_ceiling.clone()),
             match PodPresetFile::parse(over_ceiling.clone()) {
@@ -869,6 +1345,221 @@ mod tests {
                 PodPresetFile::parse(unsupported),
                 Err(ToneError::Format { .. })
             ));
+        }
+    }
+
+    fn synthetic_h5es(extra: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0xa7; H5ES_HEADER_BYTES];
+        bytes[..4].copy_from_slice(b"H5ES");
+        bytes[4..8].copy_from_slice(&1u32.to_be_bytes());
+        for _ in 0..H5ES_PRESET_COUNT {
+            bytes.extend_from_slice(&synthetic_h5ep(&[]));
+        }
+        bytes.extend_from_slice(extra);
+        bytes
+    }
+
+    fn synthetic_h5eb(extra: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0x39; H5EB_HEADER_BYTES];
+        bytes[..4].copy_from_slice(b"H5EB");
+        bytes[4..8].copy_from_slice(&1u32.to_be_bytes());
+        for _ in 0..H5EB_SETLIST_COUNT {
+            bytes.extend_from_slice(&synthetic_h5es(&[]));
+        }
+        bytes.extend_from_slice(extra);
+        bytes
+    }
+
+    #[test]
+    fn h5es_and_h5eb_parse_fixed_nested_records_and_preserve_tails() {
+        let setlist_bytes = synthetic_h5es(b"setlist tail");
+        assert_eq!(setlist_bytes.len(), H5ES_MIN_BYTES + 12);
+        let dispatched = PodPresetFile::parse(setlist_bytes.clone()).unwrap();
+        let PodPresetFile::H5es(setlist) = dispatched else {
+            panic!("H5ES should dispatch to a setlist");
+        };
+        assert_eq!(setlist.preset_bytes(0).unwrap().len(), H5EP_MIN_BYTES);
+        assert_eq!(setlist.preset_bytes(63).unwrap().len(), H5EP_MIN_BYTES);
+        assert!(setlist.preset_bytes(64).is_none());
+        assert_eq!(setlist.trailing_bytes(), b"setlist tail");
+        assert_eq!(setlist.as_bytes(), setlist_bytes);
+
+        let bundle_bytes = synthetic_h5eb(b"bundle tail");
+        assert_eq!(bundle_bytes.len(), H5EB_MIN_BYTES + 11);
+        let dispatched = PodPresetFile::parse(bundle_bytes.clone()).unwrap();
+        let PodPresetFile::H5eb(bundle) = dispatched else {
+            panic!("H5EB should dispatch to a bundle");
+        };
+        assert_eq!(bundle.setlist_bytes(0).unwrap().len(), H5ES_MIN_BYTES);
+        assert_eq!(bundle.setlist_bytes(7).unwrap().len(), H5ES_MIN_BYTES);
+        assert!(bundle.setlist_bytes(8).is_none());
+        assert_eq!(bundle.trailing_bytes(), b"bundle tail");
+        assert_eq!(bundle.as_bytes(), bundle_bytes);
+    }
+
+    #[test]
+    fn h5es_and_h5eb_reject_bad_nested_tags_versions_truncation_and_caps() {
+        let setlist = synthetic_h5es(&[]);
+        assert!(H5esSetlist::parse(setlist[..H5ES_MIN_BYTES - 1].to_vec()).is_err());
+        let mut bad_child = setlist.clone();
+        bad_child[H5ES_HEADER_BYTES..H5ES_HEADER_BYTES + 4].copy_from_slice(b"H5EB");
+        assert!(H5esSetlist::parse(bad_child).is_err());
+        let mut bad_version = setlist;
+        bad_version[7] = 2;
+        assert!(H5esSetlist::parse(bad_version).is_err());
+
+        let bundle = synthetic_h5eb(&[]);
+        assert!(H5ebBundle::parse(bundle[..H5EB_MIN_BYTES - 1].to_vec()).is_err());
+        let mut bad_nested_setlist = bundle.clone();
+        bad_nested_setlist[H5EB_HEADER_BYTES..H5EB_HEADER_BYTES + 4].copy_from_slice(b"H5EP");
+        assert!(H5ebBundle::parse(bad_nested_setlist).is_err());
+        let mut over_cap = bundle;
+        over_cap.resize(HD_BUNDLE_BYTES_CEILING + 1, 0);
+        assert!(
+            matches!(H5ebBundle::parse(over_cap), Err(ToneError::Format { detail }) if detail.contains("ceiling"))
+        );
+    }
+
+    #[test]
+    fn hd_editor_library_tracks_edits_and_extracts_children_without_changing_parents() {
+        let mut bytes = synthetic_h5ep(&[]);
+        let body = H5EP_HEADER_BYTES;
+        let block = HD_EFFECT_BLOCK_OFFSET;
+        bytes[body + block..body + block + 4].copy_from_slice(&HD_SCREAMER_MODEL_ID.to_be_bytes());
+        let row = body + block + HD_EFFECT_ROWS_OFFSET;
+        bytes[row..row + 4].copy_from_slice(&HD_SCREAMER_DRIVE_KEY.to_be_bytes());
+        bytes[row + 4..row + 8].copy_from_slice(&0.25f32.to_bits().to_be_bytes());
+
+        let mut library = HdEditorLibrary::default();
+        let preset = library.import_bytes(bytes.clone()).unwrap();
+        assert_eq!(
+            library.file(preset).unwrap().hd_container_kind(),
+            Some("H5EP preset")
+        );
+        assert!(!library.any_dirty());
+        let Some(PodPresetFile::H5ep(preset_file)) = library.file_mut(preset) else {
+            panic!("expected H5EP");
+        };
+        assert_eq!(preset_file.screamer_drive_percent(0), Some(25));
+        preset_file.set_screamer_drive_percent(0, 40).unwrap();
+        assert!(library.is_dirty(preset));
+        library.note_saved(preset).unwrap();
+        assert!(!library.is_dirty(preset));
+
+        let parent_bytes = synthetic_h5es(b"tail");
+        let parent = library.import_bytes(parent_bytes.clone()).unwrap();
+        let child = library.extract_preset(parent, 0, 17).unwrap();
+        assert_ne!(parent, child);
+        assert_eq!(library.file(parent).unwrap().as_bytes(), parent_bytes);
+        let start = H5ES_HEADER_BYTES + 17 * H5EP_MIN_BYTES;
+        assert_eq!(
+            library.file(child).unwrap().as_bytes(),
+            &parent_bytes[start..start + H5EP_MIN_BYTES]
+        );
+        assert!(!library.any_dirty());
+    }
+
+    #[test]
+    fn hd_editor_input_reader_checks_regular_file_and_growth_bounds() {
+        let called = std::cell::Cell::new(false);
+        assert!(
+            read_regular_hd_editor_file(
+                Ok(PathFacts {
+                    regular_file: false,
+                    len: 0,
+                }),
+                || {
+                    called.set(true);
+                    Ok(vec![])
+                }
+            )
+            .is_err()
+        );
+        assert!(!called.get());
+        assert!(
+            read_regular_hd_editor_file(
+                Ok(PathFacts {
+                    regular_file: true,
+                    len: (HD_BUNDLE_BYTES_CEILING + 1) as u64,
+                }),
+                || {
+                    called.set(true);
+                    Ok(vec![])
+                }
+            )
+            .is_err()
+        );
+        assert!(!called.get());
+        assert_eq!(
+            read_regular_hd_editor_file(
+                Ok(PathFacts {
+                    regular_file: true,
+                    len: 3,
+                }),
+                || Ok(vec![1, 2, 3]),
+            )
+            .unwrap(),
+            [1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn h5ep_body_conversion_is_involutive_and_known_drive_edit_is_narrow() {
+        let mut original = synthetic_h5ep(b"opaque tail");
+        let body_start = H5EP_HEADER_BYTES;
+        let block = HD_EFFECT_BLOCK_OFFSET;
+        original[body_start + block..body_start + block + 4]
+            .copy_from_slice(&HD_SCREAMER_MODEL_ID.to_be_bytes());
+        let row0 = body_start + block + HD_EFFECT_ROWS_OFFSET;
+        original[row0..row0 + 4].copy_from_slice(&HD_SCREAMER_DRIVE_KEY.to_be_bytes());
+        original[row0 + 4..row0 + 8].copy_from_slice(&0.5f32.to_bits().to_be_bytes());
+        original[row0 + 0x10..row0 + 0x14].copy_from_slice(&0xdead_beefu32.to_be_bytes());
+        let row1 = row0 + HD_PARAMETER_ROW_STRIDE;
+        original[row1..row1 + 4].copy_from_slice(&HD_SCREAMER_DRIVE_KEY.to_be_bytes());
+        original[row1 + 4..row1 + 8].copy_from_slice(&0.75f32.to_bits().to_be_bytes());
+        let file = OpaqueH5epPreset::parse(original.clone()).unwrap();
+        assert_eq!(file.screamer_drive_percent(0), Some(50));
+
+        let disk_body = file.body_bytes().to_vec();
+        let mut transformed = disk_body.clone();
+        transform_hd_body_words(&mut transformed);
+        transform_hd_body_words(&mut transformed);
+        assert_eq!(transformed, disk_body);
+        let editor_body = file.body_in_editor_order();
+        let mut unchanged = file.clone();
+        unchanged.replace_body_in_editor_order(editor_body).unwrap();
+        assert_eq!(unchanged.as_bytes(), original);
+
+        let mut edited = file;
+        for percent in [0, 50, 100] {
+            edited.set_screamer_drive_percent(0, percent).unwrap();
+            assert_eq!(edited.screamer_drive_percent(0), Some(percent));
+        }
+        let mut expected = original.clone();
+        expected[row0 + 4..row0 + 8].copy_from_slice(&1.0f32.to_bits().to_be_bytes());
+        assert_eq!(edited.as_bytes(), expected);
+        let before = edited.as_bytes().to_vec();
+        assert!(edited.set_screamer_drive_percent(0, 101).is_err());
+        assert!(edited.set_screamer_drive_percent(8, 50).is_err());
+        assert_eq!(edited.as_bytes(), before);
+
+        let mut non_grid = original.clone();
+        non_grid[row0 + 4..row0 + 8].copy_from_slice(&0.123_456_7f32.to_bits().to_be_bytes());
+        let mut non_grid = OpaqueH5epPreset::parse(non_grid).unwrap();
+        assert_eq!(non_grid.screamer_drive_percent(0), None);
+        let non_grid_before = non_grid.as_bytes().to_vec();
+        assert!(non_grid.set_screamer_drive_percent(0, 12).is_err());
+        assert_eq!(non_grid.as_bytes(), non_grid_before);
+    }
+
+    #[test]
+    fn header_context_byte_is_preserved_but_not_admitted_as_product_identity() {
+        for context_byte in [0x2d, 0x2e] {
+            let mut bytes = synthetic_h5ep(&[]);
+            bytes[0x0b] = context_byte;
+            let parsed = PodPresetFile::parse(bytes.clone()).unwrap();
+            assert!(matches!(parsed, PodPresetFile::H5ep(_)));
+            assert_eq!(parsed.serialize_noop(), bytes);
         }
     }
 

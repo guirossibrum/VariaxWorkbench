@@ -13,9 +13,17 @@ const PRESET: &[u8] = include_bytes!("../../tests/fixtures/editor-preset.vwm");
 const BANK: &[u8] = include_bytes!("../../tests/fixtures/synthetic-bank.vwb");
 
 fn synthetic_h5ep() -> Vec<u8> {
-    let mut bytes = vec![0x37; crate::pod_preset::H5EP_MIN_BYTES];
+    let mut bytes = vec![0; crate::pod_preset::H5EP_MIN_BYTES];
     bytes[..4].copy_from_slice(b"H5EP");
     bytes[4..8].copy_from_slice(&1u32.to_be_bytes());
+    let body = &mut bytes[crate::pod_preset::H5EP_HEADER_BYTES..];
+    for offset in [0x228, 0x328] {
+        body[offset..offset + 4].copy_from_slice(&0x0100_0000u32.to_be_bytes());
+    }
+    for index in 0..8 {
+        let offset = 0x428 + index * 0x100;
+        body[offset..offset + 4].copy_from_slice(&0x0200_0000u32.to_be_bytes());
+    }
     bytes
 }
 
@@ -670,8 +678,8 @@ fn pod_hd500x_identity_stays_on_its_profile_and_does_not_open_other_families() {
         capability::capability(ProductProfile::PodHd500x, Operation::SelectRecordRoute).note;
     let firmware_note =
         capability::capability(ProductProfile::PodHd500x, Operation::InspectFirmware).note;
-    assert!(open_note.contains("H5EP envelope parser"));
-    assert!(open_note.contains("does not establish a POD HD500X preset identity"));
+    assert!(open_note.contains("H5EP/H5ES/H5EB framing"));
+    assert!(open_note.contains("does not prove physical target compatibility"));
     assert!(route_note.contains("48000"));
     assert!(route_note.contains("EngineFormatLock"));
     assert!(firmware_note.contains("6260"));
