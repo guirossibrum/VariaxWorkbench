@@ -181,6 +181,111 @@ physical applicability remains unverified. No hardware query is needed or
 permitted. The explicit Apply and same-choice no-op behavior remain this
 application's file policy, not a claim about vendor combo events.
 
+## CAB/MIC source trace and proposed bounded operation
+
+This is a source-backed proposal for Gatekeeper technical admission. It adds no
+Rust behavior and does not establish that any listed model is installed or
+accepted by a physical unit.
+
+**Source pin and symbols.** The source is the staged Line6 Edit 3.06.0 installer
+already recorded above (SHA-256
+`426ddbb1559f445bfc8d0c29c316c80fe19f9bf8ff2e71d61b065342783dbe24`). Static
+class/method pins are `L6PODxtParamMap.GetCabModelList` and class initializer;
+`L6SharcToneParamMap.GetCabModel`, `GetCabParam`, `GetCabParamDef`,
+`IsBassCab`, `SetParam`, and `IsBassModel`; `L6SharcToneEditor.SetupAmpCabPanel`,
+`SetupMicPanel`, `OnParamChange`, and `IsModelInstalled`; and
+`L6AX3ParamDefs.MIC_MODEL_PODXT` / `MIC_MODEL_BASSPODXT`. Existing recorded
+class digests for the provider, shared map and editor are in the source pin
+section above. The supplied parameter-definition class is part of the same
+private payload. All evidence is static bytecode inspection; vendor code was
+not run.
+
+**Selector and storage mapping.** `SetupAmpCabPanel` binds CAB selector
+`0x10020000` to model slot `0x00030001`; the model setter calls `L6Model.SetID`
+on that slot and does not seed or rewrite its PARMs. `L6PODxtParamMap` returns
+one 47-id CAB list. Its first 25 ids are the contiguous range
+`0x01020000..=0x01020018`; the remaining 22 are
+`0x01030001..=0x01030016`. The source `IsBassModel` predicate classifies the
+second range as bass cabs and the first range as non-bass. When a CAB model is
+missing, the original map can create it with model id `-1`, enabled `true`, and
+ordinal `0` before setting the selected id. This proposal rejects missing
+slots rather than copying that creation behavior.
+
+**Eligibility and fallback.** `IsModelInstalled` sends the listed
+`0x01030001..=0x01030016` CAB ids to pack index 8. CAB selector handling
+substitutes `0x01020000` when that check fails. The listed
+`0x01020000..=0x01020018` ids do not have CAB cases in that switch and reach
+its default-true branch. An offline file contains no authoritative pack state.
+The proposed first CAB-choice batch therefore admits exactly the 25
+default-true ids and rejects pack-gated CAB choices while their eligibility is
+unknown. It never silently applies the source editor's pack fallback, because
+the app cannot evaluate the source's installed-pack condition. `0x01020000` is
+itself an explicit listed choice; that is distinct from implicit substitution.
+This is an offline admission boundary, not an entitlement claim.
+
+**CAB-dependent MIC definition.** `SetupMicPanel` registers MIC selector
+`0x00020001`. In the shared map that selector belongs to the existing CAB model
+and maps to CAB `PARM` id `0`; it is not a model slot. `GetCabParamDef` selects
+the PODxt MIC association definition when `IsBassCab` is false and the
+bass-PODxt definition when it is true. The two definitions each enumerate
+integer choice ids `0..=3`, but those ids have different meanings between the
+two definitions. For PODxt Live, `IsBassCab` obtains the existing CAB model and
+classifies its id through `IsBassModel`. Thus the UI must derive MIC choices
+from the current CAB id and refresh that interpretation after a CAB Apply. A
+CAB change itself changes only the CAB model id; it leaves an existing MIC
+value word untouched, so its displayed meaning can change when the cab class
+changes. A separate explicit MIC Apply can then choose an id under the new
+definition. Static `OnParamChange` pack fallback applies to the CAB model
+selector, not to MIC selector `0x00020001`.
+
+**Proposed Rust boundary.** Admit only FORM/L6AS, PINF layout 1, PODxt Live
+target `0x0003000A`, and the established conservative profile floor
+`0x03000000`. Require one existing CAB slot `0x00030001` and one complete MINF
+body of at least 12 bytes. A CAB Apply accepts only
+`0x01020000..=0x01020018`, changes only the first four CAB MINF bytes in
+big-endian order, and updates the decoded CAB id. It does not require, create,
+or change MIC PARM id `0`; if present, that entire record is preserved. The UI
+refreshes the MIC selector's choice definition from the new CAB id.
+
+For MIC Apply, require an existing CAB id in the source's 47-id list, one
+existing CAB `PARM` id `0`, an exact 12-byte recorded PARM with canonical
+integer type `0`, and a requested id in `0..=3`. Interpret the id through the
+definition selected by the existing CAB class; patch only the PARM value word
+and update the decoded integer. Do not normalize the type word, create a
+missing CAB/MIC record, or change the CAB model. A MIC edit on a currently
+stored pack-gated bass-cab id uses the source's bass MIC definition; it does
+not infer installed-pack eligibility and does not select that cab.
+
+For either operation, validate target, container, source allowlist, unique
+slot/chunk/record, actual parsed ranges and field type before comparing the
+requested value. Same-value Apply is a byte/decoded/dirty no-op under the Rust
+file policy, not a claim about vendor widget events. Failed validation leaves
+bytes, decoded state, dirty state and baseline unchanged. Preserve CAB ordinal,
+enabled/reserved fields, all MIC metadata, every unrelated PARM/chunk/pad and
+outer byte. No model or parameter defaults, slot creation, fallback, GUI send or
+device communication are part of this operation.
+
+Synthetic coverage proposed before implementation: iterate all 25 admitted
+CAB ids; test rejection of all pack-gated selector ids and non-list ids; cover
+both CAB classes' `0..=3` MIC meaning without publishing vendor labels; assert
+CAB Apply retains the raw MIC word while the UI derives the refreshed class;
+test CAB and MIC same-value no-op, unknown existing CAB rejection for MIC,
+missing/duplicate/truncated CAB MINF or MIC PARM, wrong target/container/type,
+exact raw write sets, failure atomicity, library/bundle/session/GUI dirty-save-
+reopen-revert and quit safeguards. These tests would establish Rust behavior
+only.
+
+**Admission request.** Please admit or correct this exact split policy before
+any CAB/MIC write code is added: CAB selection supports only the unconditional
+default-true `0x01020000..=0x01020018` set, rejects the `0x01030001..=0x01030016`
+pack-gated set instead of guessing or applying fallback, while MIC editing may
+use either association definition for a currently stored listed CAB id and
+updates only existing CAB `PARM` id `0`. In particular, confirm that retaining
+the MIC numeric id across an explicit CAB change, while refreshing its displayed
+definition and requiring a separate explicit MIC Apply to change it, is the
+desired file-preserving policy. No CAB/MIC write operation is admitted until
+this answer.
+
 ## Proposed operation contract for Gatekeeper admission
 
 This proposes a boundary for a future offline implementation; no selection
@@ -226,10 +331,11 @@ operation is implemented by this document.
    vendor applicability.
 
 **Admission status:** the concrete two-choice AMP record above is admitted and
-implemented in the current PR #95 branch for existing-slot FORM/L6PA MINF model
-IDs only. Its exact-head configured checks and independent review remain
-pending. The separate CAB/MIC operations and broader AMP choices remain out of
-scope until their own contracts are reviewed. Historical GUI same-choice event
-emission is unknown, but does not block this explicit Apply/file-diff policy.
+implemented in PR #95 for existing-slot FORM/L6PA MINF model IDs only. All four
+configured checks passed on code head `2c12b380e397747cd3c866107bec69bafb9cd023`;
+the independent review found no new AMP defect. The refined CAB/MIC proposal
+above awaits technical admission; no CAB/MIC write operation is implemented or
+admitted. Historical GUI same-choice event emission is unknown, but does not
+block the explicit Apply/file-diff policy for AMP.
 Existing admitted operations, including AMP/EQ stored model-enable flags, do
 not need renewed per-leaf scope approval.
