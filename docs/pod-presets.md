@@ -278,13 +278,16 @@ choice. All 14 supported Delay models are also checked in both primary and
 fallback slots against complete expected buffers, including unrelated records,
 model tails and odd padding. These are source-compatible calculations and
 synthetic regression results, not captured device values, audio equivalence, or
-proof of device acceptance. The bounded writer and GUI were implemented on the issue branch;
-all four configured checks passed on prior head
-`1cb466fcd623ad63aca41eb231374c70efcf9058` (278 library, 46 GUI, 26
-integration tests per functional profile; Clippy and format passed). The
-review-requested correction adds broader Delay regression coverage; exact-head
-check records for this revision are maintained in the PR description so the
-source ledger does not need another check-ID-only commit.
+proof of device acceptance. The bounded writer and GUI were implemented on the
+issue branch. The historical code head
+`1cb466fcd623ad63aca41eb231374c70efcf9058` passed all four configured checks
+with 274 library, 44 GUI, and 26 integration tests per functional profile (344
+total); Clippy and format passed. The correction code head
+`2c95bd4d28fc09193b5127f9a9412244c424843f` passed all four configured checks
+with 278 library, 46 GUI, and 26 integration tests per functional profile (350
+total). Its exact-head run IDs are recorded in the PR description. This later
+documentation-only evidence correction does not change those code results or
+claim that the follow-up documentation was rerun.
 
 An applied name is unsaved until that tone's copy is written. Quitting asks
 to save, discard, or keep editing, one tone at a time. Cancel, or a save that

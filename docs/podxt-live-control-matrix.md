@@ -122,6 +122,108 @@ byte preservation, unknown values, rejection, duplicate lookup, and library
 dirty/revert/save/reopen behavior. This is offline Rust behavior checked
 against the admitted static contract, not a vendor-runtime or hardware oracle.
 
+## Mod NOTE/SPEED source contract proposal — research only
+
+This is a proposed next bounded control contract, not an implementation or an
+acceptance claim. It is based on static bytecode from the already admitted
+Line6Edit 3.06.0 artifact (SHA-256
+`426ddbb1559f445bfc8d0c29c316c80fe19f9bf8ff2e71d61b065342783dbe24`). No
+vendor class was executed.
+
+Relevant symbols are `modules.sharctone.device.L6SharcToneEditor` methods
+`Note2TimeSpeed(int,float,boolean)`, `UpdateNoteValues()`, and
+`OnParamChange(int,int,boolean)`; `modules.sharctone.device.L6AX3ParamFormats`
+fields `NOTE`, `MODSPEED`, and `DELAYTIME`; `modules.sharctone.device.L6AX3ParamDefs`
+fields `MOD_NOTE`, `MOD_SPEED`, `DELAY_NOTE`, and `DELAY_TIME`; and
+`modules.sharctone.device.L6SharcToneParamMap` methods `GetModModel`,
+`GetDelayModel`, `GetFXParam`, and `GetFXParamDef`. The shared conversion is
+`cmn.l6java.patch.paramformats.L6RangeFormat.TranslateFromDisplayedValue(double)`;
+the editor applies it via `L6Editor.SetDisplayedParam(int,double,boolean)`.
+
+| Control | Source selector id | Existing semantic PARM | Type | Model lookup |
+| --- | ---: | ---: | --- | --- |
+| Mod SPEED | `0x00040001` | `0x00100000` | float | Mod slot `0x00020004`, else `0x00050003` |
+| Mod NOTE | `0x00040002` | `0x00200000` | integer ordinal | Mod slot `0x00020004`, else `0x00050003` |
+| Delay TIME | `0x00050001` | `0x00100000` | float | Delay slot `0x00020005`, else `0x00050004` |
+| Delay NOTE | `0x00050002` | `0x00200000` | integer ordinal | Delay slot `0x00020005`, else `0x00050004` |
+| System Tempo | `0x000c0001` | `0x00200001` | float BPM | System slot `0x00010000` |
+
+`L6PODxtParamMap.GetModModelList` supplies 24 Mod ids:
+`0x02030004`, `0x02030005`, `0x02030006`, `0x02030007`, `0x02030008`,
+`0x02030009`, `0x0203000a`, `0x0203000b`, `0x0203000c`, `0x0203000d`,
+`0x0203000e`, `0x02030015`, `0x02030012`, `0x0203001e`, `0x02030014`,
+`0x0203001f`, `0x02030013`, `0x02030011`, `0x0203001a`, `0x0203001b`,
+`0x02030017`, `0x02030018`, `0x02030019`, `0x0203001c`. The special Mod
+NOTE/SPEED selector definitions and `GetFXParam` semantic ids are returned
+independently of per-model percent-layout arrays. A bounded writer should
+admit only one existing source-listed Mod model, one selected primary or
+fallback slot, and unique existing canonical NOTE and SPEED records; it must
+not synthesize missing models or PARMs. `NOTE` is the shared ordinal table
+0–13. `MODSPEED` is displayed in Hz over `[0.1,15]`; `DELAYTIME` is displayed
+in ms over `[20,2000]`; both `L6RangeFormat` definitions request clipping.
+
+`UpdateNoteValues()` reads Tempo as `f32`, then Mod NOTE and Delay NOTE as
+integers. For each NOTE ordinal greater than zero it calls
+`Note2TimeSpeed(note, tempo, true)` for Mod SPEED and
+`Note2TimeSpeed(note, tempo, false)` for Delay TIME, then passes the returned
+`f32` (widened to `double`) to `SetDisplayedParam`. The common NOTE multipliers
+are `1.0f`, `0.75f`, `0.5f`, `0.33333334f`, `0.375f`, `0.25f`,
+`0.16666667f`, `0.1875f`, `0.125f`, `0.083333336f`, `0.09375f`, `0.0625f`,
+and `0.041666668f` for ordinals 1 through 13. The method multiplies the
+multiplier by `4.0f` first. Mod SPEED is `tempo / (q * 60.0f)`; Delay TIME is
+`(q / tempo) * 1000.0f * 60.0f`, with each operation in `f32`. `L6RangeFormat`
+computes display-minus-min in `double`, computes `max - min` in `f32` before
+promoting it, divides in `double`, then the editor casts the normalized result
+to `f32` before writing. Source Tempo has range `[30,240]` BPM.
+
+The callback also establishes separate edit behavior. A positive Mod NOTE
+event updates Mod SPEED and updates Delay TIME if Delay NOTE is positive. A
+manual Mod SPEED event clears a positive Mod NOTE and otherwise writes SPEED;
+Mod NOTE Off does not recompute SPEED. System Tempo changes use the same
+`UpdateNoteValues()` path. The proposed initial Mod NOTE writer should require
+Delay NOTE to be the unique existing integer zero value to avoid the cross-
+Delay TIME side effect. For positive NOTE, update Mod NOTE and derived SPEED
+atomically; for Off, write only Mod NOTE. Offer manual SPEED separately; it
+clears an active Mod NOTE. Require valid unique Tempo only for positive NOTE,
+and an existing canonical Mod SPEED record for every operation. Reject
+opaque, duplicate, wrong-type, noncanonical, unknown NOTE, and invalid
+speed/tempo contexts without changing bytes or saved baseline. Off should not
+normalize imported SPEED.
+
+Literal synthetic expectations for NOTE `6` (Quarter) at 120 BPM are `q =
+1.0f`, Mod SPEED `2.0f Hz`, normalized SPEED bits `0x3e0293c2`, Delay TIME
+`500.0000305175781f ms`, and normalized TIME bits `0x3e783e11`. If Delay NOTE
+is positive, the TIME bits are the independent cross-effect the source
+callback would also write; the proposed Mod NOTE operation rejects that
+fixture before mutation. With Delay NOTE zero, it writes Mod NOTE ordinal 6
+and SPEED bits `0x3e0293c2`, preserving Delay TIME and all other bytes. Manual
+3.0 Hz SPEED converts to `0x3e474d51` and clears positive Mod NOTE. Mod NOTE
+Off preserves the prior SPEED word. These are synthetic expectations, not a
+runtime or device oracle.
+
+One source discrepancy must be resolved before implementing this proposal:
+`L6SharcToneParamMap.GetSystemModel` calls `GetSingleSlotModel` for slot
+`0x00010000` with default model id `0x3e700000`; the current bounded Delay
+writer admits Tempo only when that model id is `0x3e800000`. This proposal
+does not change existing Delay behavior. Owner review must clarify Tempo-model
+admission before a shared Mod NOTE writer uses that context. Until then Mod
+NOTE/SPEED remains research-only and no writer should be added.
+
+## Issue #29 acceptance gap ledger
+
+All three original guirossibrum/VariaxWorkbench issue #29 criteria remain
+partial; this PR and its bounded controls do not complete the issue.
+
+| Original criterion | Evidence already in this bounded implementation | Required work still missing | Explicitly outside the admitted contracts |
+| --- | --- | --- | --- |
+| Recover POD-specific formats, model/effect controls, source references, and synthetic fixtures | FORM/L6PA, L6FS, and L6AS parsing; source-backed existing-record controls and synthetic checks for the listed amp, Stomp, Mod/Delay/Reverb scalar layouts, selected associations, EQ, and model flags | Recover and validate remaining model/effect association definitions, per-model records, coupled side effects, domains, and precision; review proposed Mod NOTE/SPEED contract and resolve Tempo model discrepancy | Untraced associations, unsupported families, model/PARM creation or replacement, vendor runtime, and live behavior |
+| Implement offline POD inspection/editing/library workflows alongside guitar without target confusion | Separate POD parser/backend, offline tone/session/library/bundle views, bounded existing tone/bank organization operations, target rejection, and Apply/save-copy flows | Broader source-supported editor controls and workflows; model replacement; bank/folder creation/deletion and tone synthesis; compatibility across remaining admitted containers and model families | POD Farm conversion, unsupported container combinations, absent-record repair, and synthesis until their own contracts exist |
+| Test compatibility, unknown-field preservation, backups, and target-specific rejection while live transmission remains separately gated | Byte-preserving bounded writes, malformed/unknown/duplicate rejection, dirty/save-copy/reopen paths, and POD/guitar target guards for exercised operations | Broader compatibility fixtures for remaining formats, models/effects, and library paths; backup/recovery semantics if those operations are implemented | Physical acceptance, audio equivalence, recovery capability, hardware traffic, and lock overrides are not claims or substitutes for offline criteria |
+
+This ledger records gaps rather than a new task queue. Unsupported operations
+stay rejected until individually sourced and admitted; the hardware boundary
+remains independently locked.
+
 ## Remaining editor and librarian workflows
 
 | Workflow/source area | Current disposition | Admission still needed before editing |
