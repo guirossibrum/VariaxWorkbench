@@ -1576,16 +1576,18 @@ impl Workbench {
                     }
                 }
                 ui.separator();
-                if self.record_button(ui, "inspect-native-plan", "Inspect PODxt Live plan…")
-                    && let Err(error) = self.recorder.inspect_native_plan()
-                {
-                    self.recorder.note(error.to_string());
-                }
-                if self.record_button(ui, "check-external-plan", "Check external interface…")
-                    && let Err(error) = self.recorder.external_plan_status()
-                {
-                    self.recorder.note(error.to_string());
-                }
+                ui.horizontal(|ui| {
+                    if self.record_button(ui, "inspect-native-plan", "Inspect PODxt Live plan…")
+                        && let Err(error) = self.recorder.inspect_native_plan()
+                    {
+                        self.recorder.note(error.to_string());
+                    }
+                    if self.record_button(ui, "check-external-plan", "Check external interface…")
+                        && let Err(error) = self.recorder.external_plan_status()
+                    {
+                        self.recorder.note(error.to_string());
+                    }
+                });
                 if self.record_choice(
                     ui,
                     "input-synthetic",
@@ -1610,24 +1612,26 @@ impl Workbench {
                     self.load_recording_wav();
                 }
                 ui.separator();
-                if self.record_button(ui, "start", "Start") {
-                    self.arm_recording();
-                }
-                if self.record_button(ui, "feed", "Feed chunk")
-                    && let Err(error) = self.recorder.feed()
-                {
-                    self.recorder.note(error.to_string());
-                }
-                if self.record_button(ui, "stop", "Stop")
-                    && let Err(error) = self.recorder.stop()
-                {
-                    self.recorder.note(error.to_string());
-                }
-                if self.record_button(ui, "cancel", "Cancel")
-                    && let Err(error) = self.recorder.cancel()
-                {
-                    self.recorder.note(error.to_string());
-                }
+                ui.horizontal(|ui| {
+                    if self.record_button(ui, "start", "Start") {
+                        self.arm_recording();
+                    }
+                    if self.record_button(ui, "feed", "Feed chunk")
+                        && let Err(error) = self.recorder.feed()
+                    {
+                        self.recorder.note(error.to_string());
+                    }
+                    if self.record_button(ui, "stop", "Stop")
+                        && let Err(error) = self.recorder.stop()
+                    {
+                        self.recorder.note(error.to_string());
+                    }
+                    if self.record_button(ui, "cancel", "Cancel")
+                        && let Err(error) = self.recorder.cancel()
+                    {
+                        self.recorder.note(error.to_string());
+                    }
+                });
                 let label = if self.recorder.take_can_save_aiff() {
                     "Save exact-clock AIFF…"
                 } else {
