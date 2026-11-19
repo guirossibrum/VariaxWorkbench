@@ -241,7 +241,7 @@ fn hd500x_limit(operation: Operation) -> &'static str {
             "Offline library recognizes the statically traced Edit H5EP/H5ES/H5EB framing, validates the recovered body subset, and can extract child records. This file group does not prove physical target compatibility. A PODxt Live tone is not opened on this profile and is not converted."
         }
         Operation::EditPodPreset => {
-            "Offline HD Edit library supports five source-traced Screamer type-1 controls (DRIVE, BASS, MID, TREBLE, OUTPUT) on an exact editor integer-percent grid. This is normalized editor data, not physical units or device availability; other control contracts and full editor parity are unavailable. Preserved header context does not establish a product id; physical target compatibility and device behavior remain unverified."
+            "Offline HD Edit library supports five source-traced Screamer controls (DRIVE, BASS, TONE, TREBLE, OUTPUT), five Tube Drive controls (DRIVE, BASS, MID, TREBLE, OUTPUT), and five Octave Fuzz primary controls (DRIVE, BASS, MID, TREBLE, OUTPUT) on the exact recovered editor integer-percent grid. This is normalized editor data, not physical units or device availability; auxiliary widgets, other control contracts and full editor parity are unavailable. Preserved header context does not establish a product id; physical target compatibility and device behavior remain unverified."
         }
         Operation::SelectRecordRoute => {
             "The Windows INF DefaultSampleRate is 48000 and DefaultWordSize is 24, with EngineFormatLock 0. Those are driver defaults. They do not select a PODxt Live record route and do not open a stream."

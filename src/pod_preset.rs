@@ -58,11 +58,12 @@ const HD_PARAMETER_ROW_FLAG_OFFSET: usize = 0x10;
 const HD_PARAMETER_ROW_COUNT: usize = 12;
 const HD_SCREAMER_MODEL_ID: u32 = 0x0205_000e;
 const HD_TUBE_DRIVE_MODEL_ID: u32 = 0x0205_000d;
-const HD_SCREAMER_DRIVE_KEY: u32 = 0x3f10_0001;
-const HD_SCREAMER_BASS_KEY: u32 = 0x3f10_0002;
-const HD_SCREAMER_TONE_KEY: u32 = 0x3f10_0003;
-const HD_SCREAMER_TREBLE_KEY: u32 = 0x3f10_0004;
-const HD_SCREAMER_OUTPUT_KEY: u32 = 0x3f10_0005;
+const HD_OCTAVE_FUZZ_MODEL_ID: u32 = 0x0205_000c;
+const HD_TYPE1_DRIVE_KEY: u32 = 0x3f10_0001;
+const HD_TYPE1_BASS_KEY: u32 = 0x3f10_0002;
+const HD_TYPE1_THIRD_KEY: u32 = 0x3f10_0003;
+const HD_TYPE1_TREBLE_KEY: u32 = 0x3f10_0004;
+const HD_TYPE1_OUTPUT_KEY: u32 = 0x3f10_0005;
 
 pub const OFFLINE_BANNER: &str =
     "Offline PODxt Live tone file. This does not edit a connected POD.";
@@ -176,11 +177,11 @@ impl ScreamerControl {
 
     const fn key(self) -> u32 {
         match self {
-            Self::Drive => HD_SCREAMER_DRIVE_KEY,
-            Self::Bass => HD_SCREAMER_BASS_KEY,
-            Self::Tone => HD_SCREAMER_TONE_KEY,
-            Self::Treble => HD_SCREAMER_TREBLE_KEY,
-            Self::Output => HD_SCREAMER_OUTPUT_KEY,
+            Self::Drive => HD_TYPE1_DRIVE_KEY,
+            Self::Bass => HD_TYPE1_BASS_KEY,
+            Self::Tone => HD_TYPE1_THIRD_KEY,
+            Self::Treble => HD_TYPE1_TREBLE_KEY,
+            Self::Output => HD_TYPE1_OUTPUT_KEY,
         }
     }
 }
@@ -194,6 +195,45 @@ pub enum TubeDriveControl {
     Mid,
     Treble,
     Output,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OctaveFuzzControl {
+    Drive,
+    Bass,
+    Mid,
+    Treble,
+    Output,
+}
+
+impl OctaveFuzzControl {
+    pub const ALL: [Self; 5] = [
+        Self::Drive,
+        Self::Bass,
+        Self::Mid,
+        Self::Treble,
+        Self::Output,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Drive => "DRIVE",
+            Self::Bass => "BASS",
+            Self::Mid => "MID",
+            Self::Treble => "TREBLE",
+            Self::Output => "OUTPUT",
+        }
+    }
+
+    const fn key(self) -> u32 {
+        match self {
+            Self::Drive => HD_TYPE1_DRIVE_KEY,
+            Self::Bass => HD_TYPE1_BASS_KEY,
+            Self::Mid => HD_TYPE1_THIRD_KEY,
+            Self::Treble => HD_TYPE1_TREBLE_KEY,
+            Self::Output => HD_TYPE1_OUTPUT_KEY,
+        }
+    }
 }
 
 impl TubeDriveControl {
@@ -217,11 +257,11 @@ impl TubeDriveControl {
 
     const fn key(self) -> u32 {
         match self {
-            Self::Drive => HD_SCREAMER_DRIVE_KEY,
-            Self::Bass => HD_SCREAMER_BASS_KEY,
-            Self::Mid => HD_SCREAMER_TONE_KEY,
-            Self::Treble => HD_SCREAMER_TREBLE_KEY,
-            Self::Output => HD_SCREAMER_OUTPUT_KEY,
+            Self::Drive => HD_TYPE1_DRIVE_KEY,
+            Self::Bass => HD_TYPE1_BASS_KEY,
+            Self::Mid => HD_TYPE1_THIRD_KEY,
+            Self::Treble => HD_TYPE1_TREBLE_KEY,
+            Self::Output => HD_TYPE1_OUTPUT_KEY,
         }
     }
 }
@@ -230,10 +270,11 @@ impl TubeDriveControl {
 pub enum HdType1Control {
     Screamer(ScreamerControl),
     TubeDrive(TubeDriveControl),
+    OctaveFuzz(OctaveFuzzControl),
 }
 
 impl HdType1Control {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 15] = [
         Self::Screamer(ScreamerControl::Drive),
         Self::Screamer(ScreamerControl::Bass),
         Self::Screamer(ScreamerControl::Tone),
@@ -244,12 +285,18 @@ impl HdType1Control {
         Self::TubeDrive(TubeDriveControl::Mid),
         Self::TubeDrive(TubeDriveControl::Treble),
         Self::TubeDrive(TubeDriveControl::Output),
+        Self::OctaveFuzz(OctaveFuzzControl::Drive),
+        Self::OctaveFuzz(OctaveFuzzControl::Bass),
+        Self::OctaveFuzz(OctaveFuzzControl::Mid),
+        Self::OctaveFuzz(OctaveFuzzControl::Treble),
+        Self::OctaveFuzz(OctaveFuzzControl::Output),
     ];
 
     pub const fn label(self) -> &'static str {
         match self {
             Self::Screamer(c) => c.label(),
             Self::TubeDrive(c) => c.label(),
+            Self::OctaveFuzz(c) => c.label(),
         }
     }
 
@@ -257,6 +304,7 @@ impl HdType1Control {
         match self {
             Self::Screamer(c) => c.key(),
             Self::TubeDrive(c) => c.key(),
+            Self::OctaveFuzz(c) => c.key(),
         }
     }
 
@@ -264,6 +312,7 @@ impl HdType1Control {
         match self {
             Self::Screamer(_) => "Screamer",
             Self::TubeDrive(_) => "Tube Drive",
+            Self::OctaveFuzz(_) => "Octave Fuzz",
         }
     }
 
@@ -271,6 +320,7 @@ impl HdType1Control {
         match self {
             Self::Screamer(_) => HD_SCREAMER_MODEL_ID,
             Self::TubeDrive(_) => HD_TUBE_DRIVE_MODEL_ID,
+            Self::OctaveFuzz(_) => HD_OCTAVE_FUZZ_MODEL_ID,
         }
     }
 }
@@ -410,6 +460,14 @@ impl OpaqueH5epPreset {
         self.hd_type1_control_percent(effect_slot, HdType1Control::TubeDrive(control))
     }
 
+    pub fn octave_fuzz_control_percent(
+        &self,
+        effect_slot: usize,
+        control: OctaveFuzzControl,
+    ) -> Option<u8> {
+        self.hd_type1_control_percent(effect_slot, HdType1Control::OctaveFuzz(control))
+    }
+
     /// Edits only the first statically identified Screamer DRIVE value word.
     /// Unknown rows, duplicates and every other source byte remain unchanged.
     pub fn set_screamer_drive_percent(
@@ -438,6 +496,15 @@ impl OpaqueH5epPreset {
         percent: u8,
     ) -> Result<(), ToneError> {
         self.set_hd_type1_control_percent(effect_slot, HdType1Control::TubeDrive(control), percent)
+    }
+
+    pub fn set_octave_fuzz_control_percent(
+        &mut self,
+        effect_slot: usize,
+        control: OctaveFuzzControl,
+        percent: u8,
+    ) -> Result<(), ToneError> {
+        self.set_hd_type1_control_percent(effect_slot, HdType1Control::OctaveFuzz(control), percent)
     }
 
     pub fn set_hd_type1_control_percent(
@@ -1690,7 +1757,7 @@ mod tests {
         let block = HD_EFFECT_BLOCK_OFFSET;
         bytes[body + block..body + block + 4].copy_from_slice(&HD_SCREAMER_MODEL_ID.to_be_bytes());
         let row = body + block + HD_EFFECT_ROWS_OFFSET;
-        bytes[row..row + 4].copy_from_slice(&HD_SCREAMER_DRIVE_KEY.to_be_bytes());
+        bytes[row..row + 4].copy_from_slice(&HD_TYPE1_DRIVE_KEY.to_be_bytes());
         bytes[row + 4..row + 8].copy_from_slice(&0.25f32.to_bits().to_be_bytes());
 
         let mut library = HdEditorLibrary::default();
@@ -1786,11 +1853,11 @@ mod tests {
         original[body_start + block..body_start + block + 4]
             .copy_from_slice(&HD_SCREAMER_MODEL_ID.to_be_bytes());
         let row0 = body_start + block + HD_EFFECT_ROWS_OFFSET;
-        original[row0..row0 + 4].copy_from_slice(&HD_SCREAMER_DRIVE_KEY.to_be_bytes());
+        original[row0..row0 + 4].copy_from_slice(&HD_TYPE1_DRIVE_KEY.to_be_bytes());
         original[row0 + 4..row0 + 8].copy_from_slice(&0.5f32.to_bits().to_be_bytes());
         original[row0 + 0x10..row0 + 0x14].copy_from_slice(&[0x00, 0xde, 0xad, 0xbe]);
         let row1 = row0 + HD_PARAMETER_ROW_STRIDE;
-        original[row1..row1 + 4].copy_from_slice(&HD_SCREAMER_DRIVE_KEY.to_be_bytes());
+        original[row1..row1 + 4].copy_from_slice(&HD_TYPE1_DRIVE_KEY.to_be_bytes());
         original[row1 + 4..row1 + 8].copy_from_slice(&0.75f32.to_bits().to_be_bytes());
         let file = OpaqueH5epPreset::parse(original.clone()).unwrap();
         assert_eq!(file.screamer_drive_percent(0), Some(50));
@@ -1833,40 +1900,45 @@ mod tests {
     }
 
     #[test]
-    fn screamer_type1_controls_read_and_edit_only_their_first_keyed_value() {
-        let mut original = synthetic_h5ep(&[]);
-        let body_start = H5EP_HEADER_BYTES;
-        let block = HD_EFFECT_BLOCK_OFFSET;
-        original[body_start + block..body_start + block + 4]
-            .copy_from_slice(&HD_SCREAMER_MODEL_ID.to_be_bytes());
-        let first_row = body_start + block + HD_EFFECT_ROWS_OFFSET;
-        for (index, control) in ScreamerControl::ALL.into_iter().enumerate() {
-            let row = first_row + index * HD_PARAMETER_ROW_STRIDE;
-            original[row..row + 4].copy_from_slice(&control.key().to_be_bytes());
-            original[row + 4..row + 8]
-                .copy_from_slice(&((index as u32 + 10) as f32 / 100.0).to_bits().to_be_bytes());
-            original[row + HD_PARAMETER_ROW_FLAG_OFFSET..row + HD_PARAMETER_ROW_STRIDE]
-                .copy_from_slice(&[
-                    0,
-                    0x41 + index as u8,
-                    0x51 + index as u8,
-                    0x61 + index as u8,
-                ]);
-        }
-        let mut preset = OpaqueH5epPreset::parse(original).unwrap();
+    fn admitted_primary_type1_controls_edit_only_their_value_word() {
+        for (model, controls) in [
+            (HD_SCREAMER_MODEL_ID, &HdType1Control::ALL[..5]),
+            (HD_TUBE_DRIVE_MODEL_ID, &HdType1Control::ALL[5..10]),
+            (HD_OCTAVE_FUZZ_MODEL_ID, &HdType1Control::ALL[10..]),
+        ] {
+            let mut original = synthetic_h5ep(&[]);
+            let body_start = H5EP_HEADER_BYTES;
+            let block = HD_EFFECT_BLOCK_OFFSET;
+            original[body_start + block..body_start + block + 4]
+                .copy_from_slice(&model.to_be_bytes());
+            let first_row = body_start + block + HD_EFFECT_ROWS_OFFSET;
+            for (index, control) in controls.iter().copied().enumerate() {
+                let row = first_row + index * HD_PARAMETER_ROW_STRIDE;
+                original[row..row + 4].copy_from_slice(&control.key().to_be_bytes());
+                original[row + 4..row + 8]
+                    .copy_from_slice(&((index as u32 + 10) as f32 / 100.0).to_bits().to_be_bytes());
+                if model == HD_OCTAVE_FUZZ_MODEL_ID && (1..=3).contains(&index) {
+                    original[row + 8..row + 16]
+                        .copy_from_slice(&[0xa1, 0xa2, 0xa3, 0xa4, 0xb1, 0xb2, 0xb3, 0xb4]);
+                    original[row + 17..row + 20].copy_from_slice(&[0xc1, 0xc2, 0xc3]);
+                }
+                original[row + HD_PARAMETER_ROW_FLAG_OFFSET] = 0;
+            }
+            let mut preset = OpaqueH5epPreset::parse(original).unwrap();
 
-        for (index, control) in ScreamerControl::ALL.into_iter().enumerate() {
-            assert_eq!(
-                preset.screamer_control_percent(0, control),
-                Some(10 + index as u8)
-            );
-            let before = preset.as_bytes().to_vec();
-            preset.set_screamer_control_percent(0, control, 73).unwrap();
-            assert_eq!(preset.screamer_control_percent(0, control), Some(73));
-            let value_at = first_row + index * HD_PARAMETER_ROW_STRIDE + 4;
-            let mut expected = before;
-            expected[value_at..value_at + 4].copy_from_slice(&0.73f32.to_bits().to_be_bytes());
-            assert_eq!(preset.as_bytes(), expected);
+            for (index, control) in controls.iter().copied().enumerate() {
+                assert_eq!(
+                    preset.hd_type1_control_percent(0, control),
+                    Some(10 + index as u8)
+                );
+                let before = preset.as_bytes().to_vec();
+                preset.set_hd_type1_control_percent(0, control, 73).unwrap();
+                assert_eq!(preset.hd_type1_control_percent(0, control), Some(73));
+                let value_at = first_row + index * HD_PARAMETER_ROW_STRIDE + 4;
+                let mut expected = before;
+                expected[value_at..value_at + 4].copy_from_slice(&0.73f32.to_bits().to_be_bytes());
+                assert_eq!(preset.as_bytes(), expected);
+            }
         }
     }
 
@@ -1880,7 +1952,12 @@ mod tests {
             ),
             (
                 HD_TUBE_DRIVE_MODEL_ID,
-                HdType1Control::ALL[5..].to_vec(),
+                HdType1Control::ALL[5..10].to_vec(),
+                "MID",
+            ),
+            (
+                HD_OCTAVE_FUZZ_MODEL_ID,
+                HdType1Control::ALL[10..].to_vec(),
                 "MID",
             ),
         ] {
@@ -1893,6 +1970,11 @@ mod tests {
                 let row = first + index * HD_PARAMETER_ROW_STRIDE;
                 bytes[row..row + 4].copy_from_slice(&control.key().to_be_bytes());
                 bytes[row + 4..row + 8].copy_from_slice(&0.25f32.to_bits().to_be_bytes());
+                if model == HD_OCTAVE_FUZZ_MODEL_ID && (1..=3).contains(&index) {
+                    bytes[row + 8..row + 16]
+                        .copy_from_slice(&[0xa1, 0xa2, 0xa3, 0xa4, 0xb1, 0xb2, 0xb3, 0xb4]);
+                    bytes[row + 17..row + 20].copy_from_slice(&[0xc1, 0xc2, 0xc3]);
+                }
             }
             let mut preset = OpaqueH5epPreset::parse(bytes.clone()).unwrap();
             let third = controls[2];
@@ -1906,10 +1988,10 @@ mod tests {
             expected[value..value + 4].copy_from_slice(&0.61f32.to_bits().to_be_bytes());
             assert_eq!(preset.as_bytes(), expected);
 
-            let wrong_model_control = if model == HD_SCREAMER_MODEL_ID {
-                HdType1Control::TubeDrive(TubeDriveControl::Mid)
-            } else {
-                HdType1Control::Screamer(ScreamerControl::Tone)
+            let wrong_model_control = match model {
+                HD_SCREAMER_MODEL_ID => HdType1Control::TubeDrive(TubeDriveControl::Mid),
+                HD_TUBE_DRIVE_MODEL_ID => HdType1Control::OctaveFuzz(OctaveFuzzControl::Mid),
+                _ => HdType1Control::Screamer(ScreamerControl::Tone),
             };
             assert_eq!(
                 preset.hd_type1_control_percent(0, wrong_model_control),
@@ -1933,7 +2015,7 @@ mod tests {
         eligible[body_start + block..body_start + block + 4]
             .copy_from_slice(&HD_SCREAMER_MODEL_ID.to_be_bytes());
         let row = body_start + block + HD_EFFECT_ROWS_OFFSET;
-        eligible[row..row + 4].copy_from_slice(&HD_SCREAMER_DRIVE_KEY.to_be_bytes());
+        eligible[row..row + 4].copy_from_slice(&HD_TYPE1_DRIVE_KEY.to_be_bytes());
         eligible[row + 4..row + 8].copy_from_slice(&0.5f32.to_bits().to_be_bytes());
         eligible[row + HD_PARAMETER_ROW_FLAG_OFFSET..row + HD_PARAMETER_ROW_STRIDE]
             .copy_from_slice(&[0, 0x11, 0x22, 0x33]);

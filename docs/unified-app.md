@@ -57,9 +57,12 @@ beyond offline inspection stays on #30.
 
 The GUI also has a separate offline HD Edit library for statically associated
 H5EP/H5ES/H5EB files, including child extraction and five narrowly traced
-Screamer type-1 controls (DRIVE, BASS, MID, TREBLE, OUTPUT) on the editor's
-normalized integer-percent grid. These values have no established physical
-units or device availability. This does not change the shared HD500X session capability
+primary controls each for Screamer (`0x0205000E`: DRIVE, BASS, TONE, TREBLE,
+OUTPUT), Tube Drive (`0x0205000D`: DRIVE, BASS, MID, TREBLE, OUTPUT), and
+Octave Fuzz (`0x0205000C`: DRIVE, BASS, MID, TREBLE, OUTPUT) on the editor's
+normalized integer-percent grid. Auxiliary widgets remain opaque. These values
+have no established physical units or device availability. This does not
+change the shared HD500X session capability
 from `Unverified`, because the file group and preserved header context do not
 establish physical target compatibility.
 

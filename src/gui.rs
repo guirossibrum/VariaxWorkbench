@@ -1845,7 +1845,7 @@ impl Workbench {
     fn hd_editor_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("POD HD Edit files · offline");
         ui.label(pod_preset::HD_EDITOR_OFFLINE_NOTICE);
-        ui.label("Fixed H5EP/H5ES/H5EB framing and source-traced type-1 controls for Screamer and Tube Drive are supported. A file tag does not prove physical target compatibility.");
+        ui.label("Fixed H5EP/H5ES/H5EB framing and selected source-traced primary type-1 controls for Screamer, Tube Drive, and Octave Fuzz are supported. Auxiliary widgets remain opaque; a file tag does not prove physical target compatibility.");
         ui.label("No device, audio, firmware or driver operation is available here. Copy saves never replace an existing file.");
         if self.pod_button(ui, "load-hd-file", "Open HD Edit file…") {
             self.load_hd_editor_file();
