@@ -240,6 +240,10 @@ struct Workbench {
     #[cfg(test)]
     pod_delay_sliders: HashMap<pod_preset::DelayControl, Rect>,
     #[cfg(test)]
+    pod_delay_heads_choices: HashMap<pod_preset::DelayHeadsSelection, Rect>,
+    #[cfg(test)]
+    pod_delay_bits_choices: HashMap<pod_preset::DelayBitsSelection, Rect>,
+    #[cfg(test)]
     pod_visible: String,
     read_receiver:
         Option<std::sync::mpsc::Receiver<Result<variax_workbench::usb::CurrentPreset, String>>>,
@@ -321,6 +325,10 @@ impl Workbench {
             pod_reverb_sliders: HashMap::new(),
             #[cfg(test)]
             pod_delay_sliders: HashMap::new(),
+            #[cfg(test)]
+            pod_delay_heads_choices: HashMap::new(),
+            #[cfg(test)]
+            pod_delay_bits_choices: HashMap::new(),
             #[cfg(test)]
             pod_visible: String::new(),
             read_receiver: None,
@@ -1744,6 +1752,8 @@ impl Workbench {
             self.pod_mod_sliders.clear();
             self.pod_reverb_sliders.clear();
             self.pod_delay_sliders.clear();
+            self.pod_delay_heads_choices.clear();
+            self.pod_delay_bits_choices.clear();
         }
         let mut open = true;
         egui::Window::new("Offline PODxt Live tones")
@@ -2032,6 +2042,99 @@ impl Workbench {
                             }
                         }
                     });
+                }
+                let delay_heads = self
+                    .pod_selected
+                    .and_then(|index| self.pod_library.tone(index))
+                    .and_then(|tone| tone.delay_heads_selection().ok());
+                if let Some(current) = delay_heads {
+                    let previous = match current {
+                        pod_preset::DelayAssociationValue::Known(choice) => Some(choice),
+                        pod_preset::DelayAssociationValue::Unknown { .. } => None,
+                    };
+                    let mut selected = previous;
+                    let selected_text = match current {
+                        pod_preset::DelayAssociationValue::Known(choice) => {
+                            choice.label().to_owned()
+                        }
+                        pod_preset::DelayAssociationValue::Unknown { raw_bits } => {
+                            format!("Unknown float 0x{raw_bits:08x}")
+                        }
+                    };
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Delay Heads");
+                        if matches!(current, pod_preset::DelayAssociationValue::Unknown { .. }) {
+                            ui.small(selected_text);
+                        }
+                        for choice in pod_preset::DelayHeadsSelection::ALL {
+                            let _choice_response =
+                                ui.selectable_value(&mut selected, Some(choice), choice.label());
+                            #[cfg(test)]
+                            self.pod_delay_heads_choices
+                                .insert(choice, _choice_response.rect);
+                        }
+                    });
+                    if selected != previous
+                        && let (Some(index), Some(choice)) = (self.pod_selected, selected)
+                    {
+                        match self.edit_pod_tone(index, |tone| {
+                            tone.set_delay_heads_selection(choice)
+                        }) {
+                            Ok(()) => {
+                                self.pod_message = format!(
+                                    "Applied Delay Heads {} selection. Nothing was sent.",
+                                    choice.label()
+                                )
+                            }
+                            Err(error) => self.pod_message = error.detail(),
+                        }
+                    }
+                }
+                let delay_bits = self
+                    .pod_selected
+                    .and_then(|index| self.pod_library.tone(index))
+                    .and_then(|tone| tone.delay_bits_selection().ok());
+                if let Some(current) = delay_bits {
+                    let previous = match current {
+                        pod_preset::DelayAssociationValue::Known(choice) => Some(choice),
+                        pod_preset::DelayAssociationValue::Unknown { .. } => None,
+                    };
+                    let mut selected = previous;
+                    let selected_text = match current {
+                        pod_preset::DelayAssociationValue::Known(choice) => {
+                            choice.label().to_owned()
+                        }
+                        pod_preset::DelayAssociationValue::Unknown { raw_bits } => {
+                            format!("Unknown float 0x{raw_bits:08x}")
+                        }
+                    };
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Delay Bits");
+                        if matches!(current, pod_preset::DelayAssociationValue::Unknown { .. }) {
+                            ui.small(selected_text);
+                        }
+                        for choice in pod_preset::DelayBitsSelection::ALL {
+                            let _choice_response =
+                                ui.selectable_value(&mut selected, Some(choice), choice.label());
+                            #[cfg(test)]
+                            self.pod_delay_bits_choices.insert(choice, _choice_response.rect);
+                        }
+                    });
+                    if selected != previous
+                        && let (Some(index), Some(choice)) = (self.pod_selected, selected)
+                    {
+                        match self.edit_pod_tone(index, |tone| {
+                            tone.set_delay_bits_selection(choice)
+                        }) {
+                            Ok(()) => {
+                                self.pod_message = format!(
+                                    "Applied Delay Bits {} selection. Nothing was sent.",
+                                    choice.label()
+                                )
+                            }
+                            Err(error) => self.pod_message = error.detail(),
+                        }
+                    }
                 }
                 let detail = self.pod_selected.and_then(|index| {
                     self.pod_library.tone(index).map(|tone| {
@@ -2971,6 +3074,21 @@ mod tests {
         );
     }
 
+    fn recording_frame_tall(
+        context: &egui::Context,
+        app: &mut Workbench,
+        events: Vec<egui::Event>,
+    ) {
+        let _ = context.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 1600.0))),
+                events,
+                ..Default::default()
+            },
+            |ctx| app.render(ctx),
+        );
+    }
+
     fn click_recording(context: &egui::Context, app: &mut Workbench, id: &'static str) {
         recording_frame(context, app, vec![]);
         let pos = app.recording_buttons[id].center();
@@ -3439,6 +3557,14 @@ mod tests {
         chunk(b"FORM", &data)
     }
 
+    fn sample_delay_association_pod_tone(model_id: u32) -> Vec<u8> {
+        let mut bytes = sample_drive_pod_tone();
+        let old = pod_preset::DELAY_CONTROL_MODEL_IDS[0].to_be_bytes();
+        let offset = bytes.windows(4).position(|word| word == old).unwrap();
+        bytes[offset..offset + 4].copy_from_slice(&model_id.to_be_bytes());
+        bytes
+    }
+
     fn click_pod_at(context: &egui::Context, app: &mut Workbench, pos: Pos2) {
         recording_frame(
             context,
@@ -3454,6 +3580,54 @@ mod tests {
             ],
         );
         recording_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
+    fn select_delay_heads_choice(
+        context: &egui::Context,
+        app: &mut Workbench,
+        choice: pod_preset::DelayHeadsSelection,
+    ) {
+        recording_frame_tall(context, app, vec![]);
+        let choice_rect = app.pod_delay_heads_choices[&choice];
+        click_pod_at_tall(context, app, choice_rect.center());
+        recording_frame_tall(context, app, vec![]);
+    }
+
+    fn select_delay_bits_choice(
+        context: &egui::Context,
+        app: &mut Workbench,
+        choice: pod_preset::DelayBitsSelection,
+    ) {
+        recording_frame_tall(context, app, vec![]);
+        let choice_rect = app.pod_delay_bits_choices[&choice];
+        click_pod_at_tall(context, app, choice_rect.center());
+        recording_frame_tall(context, app, vec![]);
+    }
+
+    fn click_pod_at_tall(context: &egui::Context, app: &mut Workbench, pos: Pos2) {
+        recording_frame_tall(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame_tall(
             context,
             app,
             vec![egui::Event::PointerButton {
@@ -4179,6 +4353,87 @@ mod tests {
         assert!(!app.document.as_ref().unwrap().as_bytes().is_empty());
         const {
             assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn delay_association_combos_keep_unknown_values_until_explicit_choice_and_save_reopen() {
+        for model_id in [0x0202_0005, 0x0202_000d] {
+            let (context, mut app) = app();
+            let directory = tempfile::tempdir().unwrap();
+            let source = directory.path().join("association-source.l6t");
+            let saved = directory.path().join("association-copy.l6t");
+            std::fs::write(&source, sample_delay_association_pod_tone(model_id)).unwrap();
+            app.dialogs = Box::new(FakeDialogs {
+                pod_open: [Some(source)].into(),
+                pod_save: [Some(saved.clone())].into(),
+                ..Default::default()
+            });
+            click_pod(&context, &mut app, "open-pod");
+            click_pod(&context, &mut app, "load-pod");
+            assert_eq!(app.pod_library.len(), 1, "{}", app.pod_message);
+            assert_eq!(app.pod_selected, Some(0));
+            recording_frame(&context, &mut app, vec![]);
+            assert!(!app.pod_library.is_dirty(0));
+
+            if model_id == 0x0202_0005 {
+                assert!(matches!(
+                    app.pod_library.tone(0).unwrap().delay_heads_selection(),
+                    Ok(pod_preset::DelayAssociationValue::Unknown { .. })
+                ));
+                select_delay_heads_choice(
+                    &context,
+                    &mut app,
+                    pod_preset::DelayHeadsSelection::OneTwoThreeFour,
+                );
+                assert_eq!(
+                    app.pod_library
+                        .tone(0)
+                        .unwrap()
+                        .delay_heads_selection()
+                        .unwrap(),
+                    pod_preset::DelayAssociationValue::Known(
+                        pod_preset::DelayHeadsSelection::OneTwoThreeFour
+                    )
+                );
+            } else {
+                assert!(matches!(
+                    app.pod_library.tone(0).unwrap().delay_bits_selection(),
+                    Ok(pod_preset::DelayAssociationValue::Unknown { .. })
+                ));
+                select_delay_bits_choice(&context, &mut app, pod_preset::DelayBitsSelection::Four);
+                assert_eq!(
+                    app.pod_library
+                        .tone(0)
+                        .unwrap()
+                        .delay_bits_selection()
+                        .unwrap(),
+                    pod_preset::DelayAssociationValue::Known(pod_preset::DelayBitsSelection::Four)
+                );
+            }
+            assert!(app.pod_library.is_dirty(0));
+            app.request_close(&context);
+            assert!(matches!(app.pending, Some(Pending::QuitPod)));
+            click_prompt(&context, &mut app, "save");
+            assert!(app.permit_close);
+            assert!(app.pending.is_none());
+            let reopened = pod_preset::PodTone::parse(std::fs::read(saved).unwrap()).unwrap();
+            if model_id == 0x0202_0005 {
+                assert_eq!(
+                    reopened.delay_heads_selection().unwrap(),
+                    pod_preset::DelayAssociationValue::Known(
+                        pod_preset::DelayHeadsSelection::OneTwoThreeFour
+                    )
+                );
+            } else {
+                assert_eq!(
+                    reopened.delay_bits_selection().unwrap(),
+                    pod_preset::DelayAssociationValue::Known(pod_preset::DelayBitsSelection::Four)
+                );
+            }
+            const {
+                assert!(LIVE_ACCESS_LOCKED);
+            }
         }
     }
 

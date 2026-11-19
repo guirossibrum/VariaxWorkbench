@@ -858,6 +858,157 @@ impl DelayControl {
     }
 }
 
+/// Finite source-backed association value read from an existing Delay PARM.
+/// Unknown float words stay visible and unchanged until the user selects a
+/// recognized option.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DelayAssociationValue<T> {
+    Known(T),
+    Unknown { raw_bits: u32 },
+}
+
+/// Source-listed four-head patterns for Delay model `0x02020005`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DelayHeadsSelection {
+    TwelveMinusMinus,
+    OneThree,
+    OneMinusFour,
+    MinusTwoThreeMinus,
+    OneTwoThreeMinus,
+    OneTwoMinusFour,
+    OneMinusThreeFour,
+    MinusTwoThreeFour,
+    OneTwoThreeFour,
+}
+
+impl DelayHeadsSelection {
+    pub const ALL: [Self; 9] = [
+        Self::TwelveMinusMinus,
+        Self::OneThree,
+        Self::OneMinusFour,
+        Self::MinusTwoThreeMinus,
+        Self::OneTwoThreeMinus,
+        Self::OneTwoMinusFour,
+        Self::OneMinusThreeFour,
+        Self::MinusTwoThreeFour,
+        Self::OneTwoThreeFour,
+    ];
+
+    const fn controller_value(self) -> u8 {
+        match self {
+            Self::TwelveMinusMinus => 0,
+            Self::OneThree => 16,
+            Self::OneMinusFour => 32,
+            Self::MinusTwoThreeMinus => 48,
+            Self::OneTwoThreeMinus => 64,
+            Self::OneTwoMinusFour => 80,
+            Self::OneMinusThreeFour => 96,
+            Self::MinusTwoThreeFour => 112,
+            Self::OneTwoThreeFour => 127,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::TwelveMinusMinus => "12--",
+            Self::OneThree => "1-3-",
+            Self::OneMinusFour => "1--4",
+            Self::MinusTwoThreeMinus => "-23-",
+            Self::OneTwoThreeMinus => "123-",
+            Self::OneTwoMinusFour => "12-4",
+            Self::OneMinusThreeFour => "1-34",
+            Self::MinusTwoThreeFour => "-234",
+            Self::OneTwoThreeFour => "1234",
+        }
+    }
+}
+
+/// Source-listed bit counts for Delay model `0x0202000D`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DelayBitsSelection {
+    Twelve,
+    Eleven,
+    Ten,
+    Nine,
+    Eight,
+    Seven,
+    Six,
+    Five,
+    Four,
+}
+
+impl DelayBitsSelection {
+    pub const ALL: [Self; 9] = [
+        Self::Twelve,
+        Self::Eleven,
+        Self::Ten,
+        Self::Nine,
+        Self::Eight,
+        Self::Seven,
+        Self::Six,
+        Self::Five,
+        Self::Four,
+    ];
+
+    const fn controller_value(self) -> u8 {
+        match self {
+            Self::Twelve => 0,
+            Self::Eleven => 16,
+            Self::Ten => 32,
+            Self::Nine => 48,
+            Self::Eight => 64,
+            Self::Seven => 80,
+            Self::Six => 96,
+            Self::Five => 112,
+            Self::Four => 127,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Twelve => "12",
+            Self::Eleven => "11",
+            Self::Ten => "10",
+            Self::Nine => "9",
+            Self::Eight => "8",
+            Self::Seven => "7",
+            Self::Six => "6",
+            Self::Five => "5",
+            Self::Four => "4",
+        }
+    }
+}
+
+fn association_float_bits(controller_value: u8) -> u32 {
+    let adjusted = f32::from(controller_value) - 0.5_f32;
+    let normalized = adjusted / 127.0_f32;
+    normalized.to_bits()
+}
+
+impl DelayHeadsSelection {
+    fn float_bits(self) -> u32 {
+        association_float_bits(self.controller_value())
+    }
+
+    fn from_float_bits(bits: u32) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|choice| choice.float_bits() == bits)
+    }
+}
+
+impl DelayBitsSelection {
+    fn float_bits(self) -> u32 {
+        association_float_bits(self.controller_value())
+    }
+
+    fn from_float_bits(bits: u32) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|choice| choice.float_bits() == bits)
+    }
+}
+
 const VARIAX_FAMILY_MASK: u32 = 0xffff_0000;
 const VARIAX_FAMILY_HIGH: u32 = 0x0007_0000;
 
@@ -1249,6 +1400,32 @@ impl PodTone {
         )
     }
 
+    /// Read the finite HEADS association selection, preserving unrecognized
+    /// float bits as `Unknown` without snapping them to a displayed choice.
+    pub fn delay_heads_selection(
+        &self,
+    ) -> Result<DelayAssociationValue<DelayHeadsSelection>, ToneError> {
+        let (model_index, parameter_index) =
+            self.delay_association_location(0x0202_0005, 0x0005_0004, 0x0010_0002, "Delay Heads")?;
+        let bits = self.delay_association_bits_at(model_index, parameter_index, "Delay Heads")?;
+        Ok(DelayHeadsSelection::from_float_bits(bits)
+            .map(DelayAssociationValue::Known)
+            .unwrap_or(DelayAssociationValue::Unknown { raw_bits: bits }))
+    }
+
+    /// Read the finite BITS association selection, preserving unrecognized
+    /// float bits as `Unknown` without snapping them to a displayed choice.
+    pub fn delay_bits_selection(
+        &self,
+    ) -> Result<DelayAssociationValue<DelayBitsSelection>, ToneError> {
+        let (model_index, parameter_index) =
+            self.delay_association_location(0x0202_000d, 0x0005_0005, 0x0010_0003, "Delay Bits")?;
+        let bits = self.delay_association_bits_at(model_index, parameter_index, "Delay Bits")?;
+        Ok(DelayBitsSelection::from_float_bits(bits)
+            .map(DelayAssociationValue::Known)
+            .unwrap_or(DelayAssociationValue::Unknown { raw_bits: bits }))
+    }
+
     /// Compatibility convenience for callers that only use Drive.
     pub fn amp_drive_fraction(&self) -> Result<f32, ToneError> {
         self.amp_control_fraction(AmpControl::Drive)
@@ -1315,6 +1492,40 @@ impl PodTone {
         Self::validate_host_fraction(value, &label)?;
         let (model_index, parameter_index) = self.delay_control_location(control)?;
         self.set_float_control_fraction_at(model_index, parameter_index, value, &label)
+    }
+
+    /// Write only the existing HEADS PARM value word using a finite registered
+    /// choice. This discrete operation intentionally does not use the percent
+    /// scale setter.
+    pub fn set_delay_heads_selection(
+        &mut self,
+        selection: DelayHeadsSelection,
+    ) -> Result<(), ToneError> {
+        let (model_index, parameter_index) =
+            self.delay_association_location(0x0202_0005, 0x0005_0004, 0x0010_0002, "Delay Heads")?;
+        self.set_delay_association_bits_at(
+            model_index,
+            parameter_index,
+            selection.float_bits(),
+            "Delay Heads",
+        )
+    }
+
+    /// Write only the existing BITS PARM value word using a finite registered
+    /// choice. This discrete operation intentionally does not use the percent
+    /// scale setter.
+    pub fn set_delay_bits_selection(
+        &mut self,
+        selection: DelayBitsSelection,
+    ) -> Result<(), ToneError> {
+        let (model_index, parameter_index) =
+            self.delay_association_location(0x0202_000d, 0x0005_0005, 0x0010_0003, "Delay Bits")?;
+        self.set_delay_association_bits_at(
+            model_index,
+            parameter_index,
+            selection.float_bits(),
+            "Delay Bits",
+        )
     }
 
     /// Compatibility convenience for callers that only use Drive.
@@ -1385,6 +1596,89 @@ impl PodTone {
             ToneError::format(format!("{label} is not defined for model 0x{model_id:08x}"))
         })?;
         self.control_location(DELAY_SLOT, &[model_id], parameter_id, &label)
+    }
+
+    fn delay_association_location(
+        &self,
+        expected_model_id: u32,
+        selector_id: u32,
+        parameter_id: u32,
+        label: &str,
+    ) -> Result<(usize, usize), ToneError> {
+        if self
+            .models
+            .iter()
+            .filter(|model| model.slot == DELAY_SLOT)
+            .count()
+            != 1
+        {
+            return Err(ToneError::format(format!(
+                "{label} requires one unambiguous existing model slot"
+            )));
+        }
+        let model_id = self
+            .models
+            .iter()
+            .find(|model| model.slot == DELAY_SLOT)
+            .map(|model| model.model_id)
+            .ok_or_else(|| ToneError::format(format!("{label} requires an existing model slot")))?;
+        let expected_selector = match expected_model_id {
+            0x0202_0005 => 0x0005_0004,
+            0x0202_000d => 0x0005_0005,
+            _ => 0,
+        };
+        let expected_parameter = match expected_model_id {
+            0x0202_0005 => 0x0010_0002,
+            0x0202_000d => 0x0010_0003,
+            _ => 0,
+        };
+        if model_id != expected_model_id
+            || selector_id != expected_selector
+            || parameter_id != expected_parameter
+        {
+            return Err(ToneError::format(format!(
+                "{label} source mapping does not apply to model 0x{model_id:08x}"
+            )));
+        }
+        self.control_location(DELAY_SLOT, &[expected_model_id], parameter_id, label)
+    }
+
+    fn delay_association_bits_at(
+        &self,
+        model_index: usize,
+        parameter_index: usize,
+        label: &str,
+    ) -> Result<u32, ToneError> {
+        let ModelParameter::Recorded {
+            value: ParameterValue::Float { bits },
+            ..
+        } = &self.models[model_index].parameters[parameter_index]
+        else {
+            return Err(ToneError::format(format!(
+                "{label} target is not a float PARM"
+            )));
+        };
+        Ok(*bits)
+    }
+
+    fn set_delay_association_bits_at(
+        &mut self,
+        model_index: usize,
+        parameter_index: usize,
+        bits: u32,
+        label: &str,
+    ) -> Result<(), ToneError> {
+        let offset = self.parameter_value_offsets[model_index][parameter_index]
+            .ok_or_else(|| ToneError::format(format!("{label} has no unique raw value word")))?;
+        self.bytes[offset..offset + 4].copy_from_slice(&bits.to_be_bytes());
+        if let ModelParameter::Recorded {
+            value: ParameterValue::Float { bits: value_bits },
+            ..
+        } = &mut self.models[model_index].parameters[parameter_index]
+        {
+            *value_bits = bits;
+        }
+        Ok(())
     }
 
     fn control_location(
@@ -1740,6 +2034,30 @@ impl Library {
             .get_mut(index)
             .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
         entry.tone.set_delay_control_fraction(control, value)
+    }
+
+    pub fn set_delay_heads_selection(
+        &mut self,
+        index: usize,
+        selection: DelayHeadsSelection,
+    ) -> Result<(), ToneError> {
+        let entry = self
+            .tones
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
+        entry.tone.set_delay_heads_selection(selection)
+    }
+
+    pub fn set_delay_bits_selection(
+        &mut self,
+        index: usize,
+        selection: DelayBitsSelection,
+    ) -> Result<(), ToneError> {
+        let entry = self
+            .tones
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
+        entry.tone.set_delay_bits_selection(selection)
     }
 
     pub fn replace(&mut self, index: usize, bytes: Vec<u8>) -> Result<(), ToneError> {
@@ -3442,6 +3760,315 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn delay_association_choices_encode_exact_float32_controller_keys() {
+        let expected = [
+            0xbb81_0204,
+            0x3df9_f3e8,
+            0x3e7d_fbf8,
+            0x3ebf_7efe,
+            0x3f00_0000,
+            0x3f20_4081,
+            0x3f40_8102,
+            0x3f60_c183,
+            0x3f7e_fdfc,
+        ];
+        let head_labels = [
+            "12--", "1-3-", "1--4", "-23-", "123-", "12-4", "1-34", "-234", "1234",
+        ];
+        let bit_labels = ["12", "11", "10", "9", "8", "7", "6", "5", "4"];
+        assert_eq!(DelayHeadsSelection::ALL.len(), expected.len());
+        assert_eq!(DelayBitsSelection::ALL.len(), expected.len());
+        for index in 0..expected.len() {
+            let heads = DelayHeadsSelection::ALL[index];
+            let bits = DelayBitsSelection::ALL[index];
+            assert_eq!(heads.label(), head_labels[index]);
+            assert_eq!(bits.label(), bit_labels[index]);
+            assert_eq!(heads.float_bits(), expected[index]);
+            assert_eq!(bits.float_bits(), expected[index]);
+            assert!(f32::from_bits(expected[index]).is_finite());
+            assert_eq!(
+                DelayHeadsSelection::from_float_bits(expected[index]),
+                Some(heads)
+            );
+            assert_eq!(
+                DelayBitsSelection::from_float_bits(expected[index]),
+                Some(bits)
+            );
+        }
+        assert!(f32::from_bits(expected[0]).is_sign_negative());
+    }
+
+    #[test]
+    fn delay_association_edits_are_typed_exact_last_match_value_word_patches() {
+        let families = [
+            (0x0202_0005, 0x0010_0002, 0x0005_0004),
+            (0x0202_000d, 0x0010_0003, 0x0005_0005),
+        ];
+        for (model_id, association_id, selector_id) in families {
+            assert_eq!(DELAY_SLOT, 0x0002_0005);
+            let unrelated_id = if model_id == 0x0202_0005 {
+                0x0010_0003
+            } else {
+                0x0010_0002
+            };
+            let first = drive_record(0x3f, association_id, 1, 0x3f00_0000);
+            let unrelated = drive_record(0x3f, unrelated_id, 1, 0x3e80_0000);
+            let last = drive_record(0x3f, association_id, 1, 0x3f20_4081);
+            let original = delay_tone(
+                PODXT_LIVE_HOST_MIN_VERSION,
+                model_id,
+                &[&first, &unrelated, &last],
+            );
+            let last_offset = original
+                .windows(12)
+                .rposition(|window| window == last)
+                .unwrap();
+            let first_offset = original
+                .windows(12)
+                .position(|window| window == first)
+                .unwrap();
+            let unrelated_offset = original
+                .windows(12)
+                .position(|window| window == unrelated)
+                .unwrap();
+
+            for index in 0..9 {
+                let mut tone = PodTone::parse(original.clone()).unwrap();
+                if model_id == 0x0202_0005 {
+                    assert_eq!(selector_id, 0x0005_0004);
+                    assert_eq!(
+                        tone.delay_heads_selection().unwrap(),
+                        DelayAssociationValue::Known(DelayHeadsSelection::OneTwoMinusFour)
+                    );
+                    tone.set_delay_heads_selection(DelayHeadsSelection::ALL[index])
+                        .unwrap();
+                    assert_eq!(
+                        tone.delay_heads_selection().unwrap(),
+                        DelayAssociationValue::Known(DelayHeadsSelection::ALL[index])
+                    );
+                } else {
+                    assert_eq!(selector_id, 0x0005_0005);
+                    assert_eq!(
+                        tone.delay_bits_selection().unwrap(),
+                        DelayAssociationValue::Known(DelayBitsSelection::Seven)
+                    );
+                    tone.set_delay_bits_selection(DelayBitsSelection::ALL[index])
+                        .unwrap();
+                    assert_eq!(
+                        tone.delay_bits_selection().unwrap(),
+                        DelayAssociationValue::Known(DelayBitsSelection::ALL[index])
+                    );
+                }
+                let changed: Vec<_> = original
+                    .iter()
+                    .zip(tone.as_bytes())
+                    .enumerate()
+                    .filter_map(|(offset, (before, after))| (before != after).then_some(offset))
+                    .collect();
+                let expected_bits = if model_id == 0x0202_0005 {
+                    DelayHeadsSelection::ALL[index].float_bits()
+                } else {
+                    DelayBitsSelection::ALL[index].float_bits()
+                };
+                assert!(
+                    changed
+                        .iter()
+                        .all(|offset| (last_offset + 8..last_offset + 12).contains(offset))
+                );
+                assert_eq!(
+                    &tone.as_bytes()[last_offset + 8..last_offset + 12],
+                    &expected_bits.to_be_bytes()
+                );
+                assert_eq!(
+                    &tone.as_bytes()[first_offset..first_offset + 12],
+                    &original[first_offset..first_offset + 12]
+                );
+                assert_eq!(
+                    &tone.as_bytes()[unrelated_offset..unrelated_offset + 12],
+                    &original[unrelated_offset..unrelated_offset + 12]
+                );
+                let reopened = PodTone::parse(tone.as_bytes().to_vec()).unwrap();
+                if model_id == 0x0202_0005 {
+                    assert_eq!(
+                        reopened.delay_heads_selection().unwrap(),
+                        DelayAssociationValue::Known(DelayHeadsSelection::ALL[index])
+                    );
+                } else {
+                    assert_eq!(
+                        reopened.delay_bits_selection().unwrap(),
+                        DelayAssociationValue::Known(DelayBitsSelection::ALL[index])
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn delay_associations_preserve_unknown_values_until_an_explicit_choice() {
+        for (model_id, parameter_id, is_heads) in [
+            (0x0202_0005, 0x0010_0002, true),
+            (0x0202_000d, 0x0010_0003, false),
+        ] {
+            for raw_bits in [0x3f12_3456, 0x7fc0_0001, 0xbb81_0203] {
+                let record = drive_record(0x3f, parameter_id, 1, raw_bits);
+                let original = delay_tone(PODXT_LIVE_HOST_MIN_VERSION, model_id, &[&record]);
+                let tone = PodTone::parse(original.clone()).unwrap();
+                if is_heads {
+                    assert_eq!(
+                        tone.delay_heads_selection().unwrap(),
+                        DelayAssociationValue::Unknown { raw_bits }
+                    );
+                } else {
+                    assert_eq!(
+                        tone.delay_bits_selection().unwrap(),
+                        DelayAssociationValue::Unknown { raw_bits }
+                    );
+                }
+                assert_eq!(tone.as_bytes(), original);
+            }
+        }
+    }
+
+    #[test]
+    fn delay_association_admission_rejects_wrong_target_layout_and_record_before_mutation() {
+        let heads_record = drive_record(0x3f, 0x0010_0002, 1, 0x3f00_0000);
+        let bits_record = drive_record(0x3f, 0x0010_0003, 1, 0x3f00_0000);
+        let mut wrong_product =
+            delay_tone(PODXT_LIVE_HOST_MIN_VERSION, 0x0202_0005, &[&heads_record]);
+        let pinf = find_chunk_data(&wrong_product, b"PINF");
+        wrong_product[pinf + 4..pinf + 8].copy_from_slice(&0x0003_0009u32.to_be_bytes());
+
+        let wrong_slot = custom_tone(
+            ContainerKind::L6as,
+            &[BuiltModel {
+                slot: AMP_SLOT,
+                model_id: 0x0202_0005,
+                tail: &[0xa1, 0xb2, 0xc3, 0xd4],
+                parameters: &[&heads_record],
+            }],
+        );
+        let opaque = [1, 2, 3, 4];
+        let heads_bad_cases = [
+            delay_tone(PODXT_LIVE_HOST_MIN_VERSION, 0x0202_0006, &[&heads_record]),
+            delay_tone(
+                PODXT_LIVE_HOST_MIN_VERSION - 1,
+                0x0202_0005,
+                &[&heads_record],
+            ),
+            delay_tone(PODXT_LIVE_HOST_MIN_VERSION, 0x0202_0005, &[]),
+            delay_tone(
+                PODXT_LIVE_HOST_MIN_VERSION,
+                0x0202_0005,
+                &[&opaque, &heads_record],
+            ),
+            delay_tone(
+                PODXT_LIVE_HOST_MIN_VERSION,
+                0x0202_0005,
+                &[&drive_record(0x7e, 0x0010_0002, 1, 0x3f00_0000)],
+            ),
+            delay_tone(
+                PODXT_LIVE_HOST_MIN_VERSION,
+                0x0202_0005,
+                &[&drive_record(0x3f, 0x0010_0002, 0, 0x3f00_0000)],
+            ),
+            wrong_slot,
+        ];
+        assert!(matches!(
+            PodTone::parse(wrong_product),
+            Err(ToneError::WrongTarget { .. })
+        ));
+        for bytes in heads_bad_cases {
+            let mut tone = PodTone::parse(bytes.clone()).unwrap();
+            assert!(tone.delay_heads_selection().is_err());
+            assert!(
+                tone.set_delay_heads_selection(DelayHeadsSelection::OneTwoThreeFour)
+                    .is_err()
+            );
+            assert!(
+                tone.set_delay_bits_selection(DelayBitsSelection::Four)
+                    .is_err()
+            );
+            assert_eq!(tone.as_bytes(), bytes);
+        }
+        let bits_bad_cases = [
+            delay_tone(PODXT_LIVE_HOST_MIN_VERSION, 0x0202_000c, &[&bits_record]),
+            delay_tone(
+                PODXT_LIVE_HOST_MIN_VERSION - 1,
+                0x0202_000d,
+                &[&bits_record],
+            ),
+            delay_tone(PODXT_LIVE_HOST_MIN_VERSION, 0x0202_000d, &[]),
+            delay_tone(
+                PODXT_LIVE_HOST_MIN_VERSION,
+                0x0202_000d,
+                &[&opaque, &bits_record],
+            ),
+            delay_tone(
+                PODXT_LIVE_HOST_MIN_VERSION,
+                0x0202_000d,
+                &[&drive_record(0x7e, 0x0010_0003, 1, 0x3f00_0000)],
+            ),
+            delay_tone(
+                PODXT_LIVE_HOST_MIN_VERSION,
+                0x0202_000d,
+                &[&drive_record(0x3f, 0x0010_0003, 0, 0x3f00_0000)],
+            ),
+        ];
+        for bytes in bits_bad_cases {
+            let mut tone = PodTone::parse(bytes.clone()).unwrap();
+            assert!(tone.delay_bits_selection().is_err());
+            assert!(
+                tone.set_delay_bits_selection(DelayBitsSelection::Four)
+                    .is_err()
+            );
+            assert!(tone.as_bytes() == bytes);
+        }
+    }
+
+    #[test]
+    fn delay_association_library_edit_save_collision_revert_and_reopen_are_transactional() {
+        let parameter = drive_record(0x3f, 0x0010_0002, 1, 0xbb81_0204);
+        let original_tone = delay_tone(PODXT_LIVE_HOST_MIN_VERSION, 0x0202_0005, &[&parameter]);
+        let original_bundle = bundle_with_tone(&original_tone);
+        let mut library = PodBundleLibrary::parse(original_bundle.clone()).unwrap();
+        assert!(!library.is_dirty());
+        library
+            .edit_entry(0, |tone| {
+                tone.set_delay_heads_selection(DelayHeadsSelection::OneTwoThreeFour)
+            })
+            .unwrap();
+        assert!(library.is_dirty());
+        let collision_dir = tempfile::tempdir().unwrap();
+        let collision_path = collision_dir.path().join("delay.l6b");
+        std::fs::write(&collision_path, b"keep destination").unwrap();
+        assert!(library.save_copy(&collision_path).is_err());
+        assert_eq!(std::fs::read(&collision_path).unwrap(), b"keep destination");
+        library.revert().unwrap();
+        assert_eq!(library.as_bytes(), original_bundle);
+        assert!(!library.is_dirty());
+
+        library
+            .edit_entry(0, |tone| {
+                tone.set_delay_heads_selection(DelayHeadsSelection::OneTwoThreeFour)
+            })
+            .unwrap();
+        let save_dir = tempfile::tempdir().unwrap();
+        let save_path = save_dir.path().join("delay.l6b");
+        library.save_copy(&save_path).unwrap();
+        let reopened = PodBundleLibrary::parse(std::fs::read(save_path).unwrap()).unwrap();
+        assert_eq!(
+            reopened
+                .tone(0, 0)
+                .unwrap()
+                .delay_heads_selection()
+                .unwrap(),
+            DelayAssociationValue::Known(DelayHeadsSelection::OneTwoThreeFour)
+        );
+        library.note_saved();
+        assert!(!library.is_dirty());
     }
 
     #[test]

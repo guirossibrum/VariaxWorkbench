@@ -75,7 +75,7 @@ Library dirty tracking compares against the original byte baseline, supports
 revert, and writes atomic non-overwriting copies. These are Rust behaviors tested
 with synthetic data, not a native vendor save/reopen oracle.
 
-## Delay association control contract — static source trace, pending review
+## Delay association control contract — implemented offline subset
 
 The admitted Line6Edit 3.06.0 source defines `L6AX3ParamFormats.HEADS` and
 `BITS` as `L6AssociationFormat` instances. `L6AX3ParamFormats.Init` sets fuzzy
@@ -85,9 +85,10 @@ associates controller values `0,16,32,48,64,80,96,112,127` with four-head
 patterns; BITS associates those same values with labels `12` through `4`.
 These labels are formatter objects, not integer PARM values or a percentage
 scale. `L6AssociationFormat.ToObject` returns no object when there is no pair;
-`FromString` rejects text, and `FromObject` accepts only a registered object or
-pair. Fuzzy lookup can snap an unrecognized input to its lower neighbor for
-display, so Rust retains the raw word unless a recognized selection is made.
+`FromString` rejects text. `FromObject` accepts an `ObjectValuePair` instance
+directly, without checking membership, or looks up a registered object.
+Fuzzy lookup can snap an unrecognized input to its lower neighbor for display,
+so Rust retains the raw word unless a recognized finite selection is made.
 
 | PODxt Live delay model | `SetupDelayLayouts` definition | Selector / definition position | Semantic PARM id | Source value representation |
 | --- | --- | --- | --- | --- |
@@ -108,11 +109,17 @@ This contract applies to the PODxt Live product branch (`0x0003000a`) in the
 supplied Line6Edit source. It does not establish firmware-version compatibility,
 physical-device acceptance, or a device-side interpretation. The host map can
 create missing model/parameter records when called with its create flag; Rust
-will remain stricter and will only expose an edit when the matching typed PARM
-already exists, to preserve source bytes and avoid manufacturing unsupported
-state. Unknown association values remain unchanged; unknown model layouts,
-selectors, malformed records, and wrong target/slot reject. This is a source
-contract for review, not implemented Rust value editing.
+only exposes edits for an existing matching typed PARM. The GUI and library
+use finite typed choices, encode each controller key with the source float32
+operation order (`i2f`, subtract `0.5f`, divide by `127.0f`), and patch only the
+existing value word. Controller zero therefore encodes a negative value and
+is not percent-clamped. Unknown raw values remain unchanged until an explicit
+choice. Duplicate ids use the source last-match behavior. Wrong target,
+version, model, slot, prefix, type, missing/opaque records, and ambiguous slot
+layouts reject before mutation. Synthetic Rust tests cover every choice,
+byte preservation, unknown values, rejection, duplicate lookup, and library
+dirty/revert/save/reopen behavior. This is offline Rust behavior checked
+against the admitted static contract, not a vendor-runtime or hardware oracle.
 
 ## Remaining editor and librarian workflows
 
@@ -120,7 +127,7 @@ contract for review, not implemented Rust value editing.
 | --- | --- | --- |
 | Amp-model catalog outside the six shared controls | The 106 source-listed amp models are admitted for edits only when a matching canonical existing PARM is present; No Amp is rejected. Model selection/replacement remains unimplemented. | Source-defined model-selection association behavior, optional-pack transaction rules and model-specific defaults/side effects. Catalog membership does not prove installed entitlement or that a field is present in every model. |
 | Cab models and microphone selection | Model IDs may be displayed; no numeric edit is exposed | Target-specific cab/mic definition, associated parameter ID/type/domain, model-dependent mapping, and exact preservation behavior. |
-| Non-scalar Stomp controls; Mod, delay, reverb and EQ models | All 31 Stomp layouts expose 86 source-mapped percent fields; 24 Mod layouts expose 52 fields; 14 Delay layouts expose 37 fields; 15 Reverb layouts expose 42 fields with family-specific selector and PARM mappings. Stomp SYNWAVE/WHAMMY_INTERVAL and Delay HEADS/BITS association formats remain raw. EQ numeric editing remains unavailable. | For omitted Stomp/Delay association formats, a compatible scalar contract; for EQ, exact target-specific model-to-slot and parameter mapping, representation, domain/units/scaling/steps, callbacks and failure behavior. Shared AX3 names or ids alone are insufficient. |
+| Non-scalar Stomp controls; Mod, delay, reverb and EQ models | All 31 Stomp layouts expose 86 source-mapped percent fields; 24 Mod layouts expose 52 fields; 14 Delay layouts expose 37 fields; 15 Reverb layouts expose 42 fields with family-specific selector and PARM mappings. Delay HEADS/BITS are implemented only for the two exact layouts in the table above; other association layouts and Stomp SYNWAVE/WHAMMY_INTERVAL remain raw. EQ numeric editing remains unavailable. | For omitted Stomp/Delay association formats, a compatible scalar contract; for EQ, exact target-specific model-to-slot and parameter mapping, representation, domain/units/scaling/steps, callbacks and failure behavior. Shared AX3 names or ids alone are insufficient. |
 | Amp enable, setup slots and model replacement | No numeric/model replacement API | Boolean/association contract, optional-pack policy, replacement side effects and transaction/failure semantics. `CheckCanWritePatch`'s installed-pack check is not an edit-domain or serializer contract. |
 | Tone setup, bank/collection organization and POD Farm interchange | Existing L6BA/L6CO PODxt-only banks/collections can be inspected, navigated, edited, reverted and saved as a new copy in the offline GUI. Reads are limited to 16 MiB plus one sentinel byte during I/O; parse and replacement enforce the same total cap transactionally. Mixed-target and empty collections reject. Bank/preset creation/deletion and POD Farm conversion remain unavailable. | Source-backed container schema for creation/deletion, exact serializer rules for membership changes, and a target-specific POD Farm conversion contract. The negative POD Farm 1.12 receiver result is scoped to that package; see [its historical investigation](pod-farm-112-target-applicability.md). |
 | Send, switch, firmware, backup, audio and maintenance operations | Disabled or unimplemented | Separate future requirements and explicit authorization. No such live operation follows from the offline contracts here. |
@@ -140,10 +147,10 @@ testing is not an offline criterion gap; hardware remains locked independently.
 
 ## Remaining source/input gaps — 2026-11-19
 
-The admitted Line6Edit 3.06 trace now establishes the typed source contract for
-Delay `HEADS` on `0x02020005` and `BITS` on `0x0202000D`; these controls remain
-raw and uneditable in Rust pending gatekeeper review of that contract. Other
-Delay association layouts, Stomp `SYNWAVE` and `WHAMMY_INTERVAL` (including
+The admitted Line6Edit 3.06 trace and synthetic Rust coverage establish
+Delay `HEADS` on `0x02020005` and `BITS` on `0x0202000D` as editable offline
+controls under the exact restrictions above. Other Delay association layouts,
+Stomp `SYNWAVE` and `WHAMMY_INTERVAL` (including
 Heel/Toe), EQ model/slot selection and parameter definitions, amp enable/model
 replacement, and cab/mic selection remain unresolved. Names, selector ordinals,
 a shared AX3 id, or a generic float definition do not by themselves establish
