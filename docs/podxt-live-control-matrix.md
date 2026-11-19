@@ -75,6 +75,45 @@ Library dirty tracking compares against the original byte baseline, supports
 revert, and writes atomic non-overwriting copies. These are Rust behaviors tested
 with synthetic data, not a native vendor save/reopen oracle.
 
+## Delay association control contract — static source trace, pending review
+
+The admitted Line6Edit 3.06.0 source defines `L6AX3ParamFormats.HEADS` and
+`BITS` as `L6AssociationFormat` instances. `L6AX3ParamFormats.Init` sets fuzzy
+mode `FUZZY_SNAP_LOW` and quantization on for both; `AddCCValuePair` maps each
+integer controller value `v` to the floating key `(v - 0.5) / 127.0`. HEADS
+associates controller values `0,16,32,48,64,80,96,112,127` with four-head
+patterns; BITS associates those same values with labels `12` through `4`.
+These labels are formatter objects, not integer PARM values or a percentage
+scale. `L6AssociationFormat.ToObject` returns no object when there is no pair;
+`FromString` rejects text, and `FromObject` accepts only a registered object or
+pair. Fuzzy lookup can snap an unrecognized input to its lower neighbor for
+display, so Rust retains the raw word unless a recognized selection is made.
+
+| PODxt Live delay model | `SetupDelayLayouts` definition | Selector / definition position | Semantic PARM id | Source value representation |
+| --- | --- | --- | --- | --- |
+| `0x02020005` | `HEADS` | `DELAY_PARAM3` (`0x00050004`) / array position 2 | `0x00100002` | `L6ParamDefinition.IsFloat`; `L6ModelParam` float bits, type 1 |
+| `0x0202000D` | `BITS` | `DELAY_PARAM4` (`0x00050005`) / array position 3 | `0x00100003` | `L6ParamDefinition.IsFloat`; `L6ModelParam` float bits, type 1 |
+
+`GetModelForGroup` selects the Delay model, `GetFXParamDef` maps those selector
+constants to the positions above, and `GetFXParamLayoutDef` indexes the array
+registered for the model id. `GetFXParam` maps the selector to the semantic
+PARM id and asks `L6Model.FindParam` for the record. `L6SharcToneParamMap.GetParam`
+returns the raw value bits; `SetParam` updates those bits and assigns the value
+type from the selected definition's `IsFloat` result. `L6ModelParam` serializes
+PARM as id, type, and value words; `SetFloatValue` uses IEEE-754 float bits and
+sets type 1. Thus the formatter's normalized float keys are the source-backed
+stored representation for these two controls.
+
+This contract applies to the PODxt Live product branch (`0x0003000a`) in the
+supplied Line6Edit source. It does not establish firmware-version compatibility,
+physical-device acceptance, or a device-side interpretation. The host map can
+create missing model/parameter records when called with its create flag; Rust
+will remain stricter and will only expose an edit when the matching typed PARM
+already exists, to preserve source bytes and avoid manufacturing unsupported
+state. Unknown association values remain unchanged; unknown model layouts,
+selectors, malformed records, and wrong target/slot reject. This is a source
+contract for review, not implemented Rust value editing.
+
 ## Remaining editor and librarian workflows
 
 | Workflow/source area | Current disposition | Admission still needed before editing |
@@ -99,27 +138,26 @@ The broader criteria for formats/models/effects, editor workflows and
 compatibility/preservation/rejection testing remain partial. Lack of physical
 testing is not an offline criterion gap; hardware remains locked independently.
 
-## Remaining source/input blocker — 2026-11-19
+## Remaining source/input gaps — 2026-11-19
 
-The admitted Line6Edit 3.06 contract covers the scalar amp, Stomp, Mod, Delay,
-and Reverb controls listed above. The exact target-specific serializer/API edge
-needed to extend that contract remains unresolved for Stomp `SYNWAVE` and
-`WHAMMY_INTERVAL` (including Heel/Toe), Delay `HEADS` and `BITS`, EQ model/slot
-selection and parameter definitions, amp enable/model replacement, and cab/mic
-selection. Names, selector ordinals, a shared AX3 id, or a generic float
-definition do not by themselves establish the PODxt association, stored type,
-domain, unit, side effects, error behavior, or preservation rules. These fields
-remain raw and uneditable.
+The admitted Line6Edit 3.06 trace now establishes the typed source contract for
+Delay `HEADS` on `0x02020005` and `BITS` on `0x0202000D`; these controls remain
+raw and uneditable in Rust pending gatekeeper review of that contract. Other
+Delay association layouts, Stomp `SYNWAVE` and `WHAMMY_INTERVAL` (including
+Heel/Toe), EQ model/slot selection and parameter definitions, amp enable/model
+replacement, and cab/mic selection remain unresolved. Names, selector ordinals,
+a shared AX3 id, or a generic float definition do not by themselves establish
+the PODxt association, stored type, domain, unit, side effects, error behavior,
+or preservation rules.
 
 Bounded read-only searches of the retained archived Workbench trees
 `analysis/decompiled/mac/line6editbase`,
 `analysis/decompiled/windows/line6editbase`,
 `analysis/extracted/mac-jar/line6editbase`, and
 `analysis/extracted/windows-app/line6editbase` found no source member chain
-that fills those missing PODxt-specific serializer and control contracts. The
-Line6Edit scalar evidence above remains separately qualified and is not
-invalidated by this negative Workbench search. To proceed safely, the required
-input is a source-backed PODxt-specific mapping/serializer contract for each
-named association and model/slot operation, including applicable record type,
-read/write member behavior, failure semantics, and any model-dependent mapping.
-No new source was fetched or vendor code executed for this check.
+that fills the still unresolved control contracts. Those historical negative
+searches cover Workbench trees only and do not establish absence from the
+separately admitted Line6Edit source. The trace above uses retained
+`device-provider.txt`, `param-formats-followup.txt`, and
+`patch-codec-formats.txt` outputs for the pinned original digest. No new source
+was fetched or vendor code executed for this check.
