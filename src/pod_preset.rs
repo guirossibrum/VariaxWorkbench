@@ -79,6 +79,76 @@ const HD_VINTAGE_PRE_DEFAULT_KEYS: [u32; 5] = [
     0x3f10_0005,
     0x3f10_0001,
 ];
+
+/// One of the exact standalone distortion/fuzz model-default targets admitted
+/// for the explicit Octave Fuzz replacement action. This is not a general HD
+/// model catalog or arbitrary model-ID writer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HdDistortionDefault {
+    JetFuzz,
+    BuzzSaw,
+    ClassicDistortion,
+    ColorDrive,
+    FacialFuzz,
+    FuzzPi,
+    HeavyDistortion,
+    JumboFuzz,
+    Line6Distortion,
+    Line6Drive,
+    Overdrive,
+    TubeDrive,
+}
+
+impl HdDistortionDefault {
+    pub const ALL: [Self; 12] = [
+        Self::JetFuzz,
+        Self::BuzzSaw,
+        Self::ClassicDistortion,
+        Self::ColorDrive,
+        Self::FacialFuzz,
+        Self::FuzzPi,
+        Self::HeavyDistortion,
+        Self::JumboFuzz,
+        Self::Line6Distortion,
+        Self::Line6Drive,
+        Self::Overdrive,
+        Self::TubeDrive,
+    ];
+
+    pub const fn model_id(self) -> u32 {
+        match self {
+            Self::JetFuzz => 0x0205_000a,
+            Self::BuzzSaw => 0x0205_0015,
+            Self::ClassicDistortion => 0x0205_000b,
+            Self::ColorDrive => 0x0205_0018,
+            Self::FacialFuzz => 0x0205_0011,
+            Self::FuzzPi => 0x0205_000f,
+            Self::HeavyDistortion => 0x0205_0016,
+            Self::JumboFuzz => 0x0205_0017,
+            Self::Line6Distortion => 0x0205_0012,
+            Self::Line6Drive => 0x0205_0013,
+            Self::Overdrive => 0x0205_0010,
+            Self::TubeDrive => 0x0205_000d,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::JetFuzz => "Jet Fuzz",
+            Self::BuzzSaw => "Buzz Saw",
+            Self::ClassicDistortion => "Classic Distortion",
+            Self::ColorDrive => "Color Drive",
+            Self::FacialFuzz => "Facial Fuzz",
+            Self::FuzzPi => "Fuzz Pi",
+            Self::HeavyDistortion => "Heavy Distortion",
+            Self::JumboFuzz => "Jumbo Fuzz",
+            Self::Line6Distortion => "Line 6 Distortion",
+            Self::Line6Drive => "Line 6 Drive",
+            Self::Overdrive => "Overdrive",
+            Self::TubeDrive => "Tube Drive",
+        }
+    }
+}
 // Retained Editor 2.27 source evidence identifies Screamer's five defaults
 // in ascending key order, with selector 1 and zero value bits for each row.
 const HD_SCREAMER_DEFAULT_KEYS: [u32; 5] = [
@@ -1811,83 +1881,12 @@ impl OpaqueH5epPreset {
         &mut self,
         effect_slot: HdFxSlot,
     ) -> Result<(), ToneError> {
-        let body = self.body_bytes();
-        let block = HD_EFFECT_BLOCK_OFFSET + effect_slot.index() * HD_EFFECT_BLOCK_STRIDE;
-
-        if read_be_u32(body, block) != Some(HD_OCTAVE_FUZZ_MODEL_ID) {
-            return Err(ToneError::format(
-                "replacement requires an existing Octave Fuzz model",
-            ));
-        }
-        if body[block + 0x0b] != 1 {
-            return Err(ToneError::format(
-                "replacement requires a valid, non-empty effect slot",
-            ));
-        }
-        if !matches!(body[block + 8], 0 | 1) {
-            return Err(ToneError::format(
-                "replacement requires a canonical effect enable byte",
-            ));
-        }
-        if !(5..=HD_PARAMETER_ROW_COUNT as u8).contains(&body[block + 0x0f]) {
-            return Err(ToneError::format(
-                "replacement requires an effect row count in 5..=12",
-            ));
-        }
-
-        let mut seen = [false; HD_VINTAGE_PRE_DEFAULT_KEYS.len()];
-        for row in 0..HD_VINTAGE_PRE_DEFAULT_KEYS.len() {
-            let row_at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
-            let key = read_be_u32(body, row_at)
-                .ok_or_else(|| ToneError::format("truncated HD effect parameter prefix"))?;
-            let Some(key_index) = HD_VINTAGE_PRE_DEFAULT_KEYS
-                .iter()
-                .position(|expected| *expected == key)
-            else {
-                return Err(ToneError::format(
-                    "replacement requires each Vintage Pre default key exactly once in the first five rows",
-                ));
-            };
-            if std::mem::replace(&mut seen[key_index], true) {
-                return Err(ToneError::format(
-                    "replacement requires each Vintage Pre default key exactly once in the first five rows",
-                ));
-            }
-        }
-        if seen.iter().any(|present| !present) {
-            return Err(ToneError::format(
-                "replacement requires each Vintage Pre default key exactly once in the first five rows",
-            ));
-        }
-        for row in 0..HD_PARAMETER_ROW_COUNT {
-            let marker_at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE + 0x10;
-            if !matches!(body[marker_at], 0..=2) {
-                return Err(ToneError::format(
-                    "replacement requires canonical effect assignment marker bytes",
-                ));
-            }
-        }
-
-        // Stage every write in a candidate. Parsing it again validates the
-        // complete record before the original object is changed.
-        let mut candidate = self.bytes.clone();
-        let file_block = H5EP_HEADER_BYTES + block;
-        candidate[file_block..file_block + 4]
-            .copy_from_slice(&HD_VINTAGE_PRE_MODEL_ID.to_be_bytes());
-        for (row, key) in HD_VINTAGE_PRE_DEFAULT_KEYS.into_iter().enumerate() {
-            let row_at = file_block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
-            candidate[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
-            candidate[row_at + 4..row_at + 8].copy_from_slice(&0u32.to_be_bytes());
-        }
-        candidate[file_block + 0x0f] = HD_VINTAGE_PRE_DEFAULT_KEYS.len() as u8;
-        for row in 0..HD_PARAMETER_ROW_COUNT {
-            let marker_at =
-                file_block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE + 0x10;
-            candidate[marker_at] = 0;
-        }
-        let staged = Self::parse(candidate)?;
-        self.bytes = staged.bytes;
-        Ok(())
+        self.replace_octave_fuzz_with_default_prefix(
+            effect_slot,
+            HD_VINTAGE_PRE_MODEL_ID,
+            HD_VINTAGE_PRE_DEFAULT_KEYS,
+            "replacement",
+        )
     }
 
     /// Replaces one existing Octave Fuzz with the source-derived Screamer
@@ -1896,78 +1895,12 @@ impl OpaqueH5epPreset {
         &mut self,
         effect_slot: HdFxSlot,
     ) -> Result<(), ToneError> {
-        let body = self.body_bytes();
-        let block = HD_EFFECT_BLOCK_OFFSET + effect_slot.index() * HD_EFFECT_BLOCK_STRIDE;
-        if read_be_u32(body, block) != Some(HD_OCTAVE_FUZZ_MODEL_ID) {
-            return Err(ToneError::format(
-                "Screamer replacement requires an existing Octave Fuzz model",
-            ));
-        }
-        if body[block + 0x0b] != 1 {
-            return Err(ToneError::format(
-                "Screamer replacement requires a valid, non-empty effect slot",
-            ));
-        }
-        if !matches!(body[block + 8], 0 | 1) {
-            return Err(ToneError::format(
-                "Screamer replacement requires a canonical effect enable byte",
-            ));
-        }
-        if !(5..=HD_PARAMETER_ROW_COUNT as u8).contains(&body[block + 0x0f]) {
-            return Err(ToneError::format(
-                "Screamer replacement requires an effect row count in 5..=12",
-            ));
-        }
-        let mut seen = [false; HD_SCREAMER_DEFAULT_KEYS.len()];
-        for row in 0..HD_SCREAMER_DEFAULT_KEYS.len() {
-            let row_at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
-            let key = read_be_u32(body, row_at)
-                .ok_or_else(|| ToneError::format("truncated HD effect parameter prefix"))?;
-            let Some(key_index) = HD_SCREAMER_DEFAULT_KEYS
-                .iter()
-                .position(|expected| *expected == key)
-            else {
-                return Err(ToneError::format(
-                    "Screamer replacement requires each default key exactly once in the first five rows",
-                ));
-            };
-            if std::mem::replace(&mut seen[key_index], true) {
-                return Err(ToneError::format(
-                    "Screamer replacement requires each default key exactly once in the first five rows",
-                ));
-            }
-        }
-        if seen.iter().any(|present| !present) {
-            return Err(ToneError::format(
-                "Screamer replacement requires each default key exactly once in the first five rows",
-            ));
-        }
-        for row in 0..HD_PARAMETER_ROW_COUNT {
-            let marker_at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE + 0x10;
-            if !matches!(body[marker_at], 0..=2) {
-                return Err(ToneError::format(
-                    "Screamer replacement requires canonical effect assignment marker bytes",
-                ));
-            }
-        }
-
-        let mut candidate = self.bytes.clone();
-        let file_block = H5EP_HEADER_BYTES + block;
-        candidate[file_block..file_block + 4].copy_from_slice(&HD_SCREAMER_MODEL_ID.to_be_bytes());
-        for (row, key) in HD_SCREAMER_DEFAULT_KEYS.into_iter().enumerate() {
-            let row_at = file_block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
-            candidate[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
-            candidate[row_at + 4..row_at + 8].copy_from_slice(&0u32.to_be_bytes());
-        }
-        candidate[file_block + 0x0f] = HD_SCREAMER_DEFAULT_KEYS.len() as u8;
-        for row in 0..HD_PARAMETER_ROW_COUNT {
-            let marker_at =
-                file_block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE + 0x10;
-            candidate[marker_at] = 0;
-        }
-        let staged = Self::parse(candidate)?;
-        self.bytes = staged.bytes;
-        Ok(())
+        self.replace_octave_fuzz_with_default_prefix(
+            effect_slot,
+            HD_SCREAMER_MODEL_ID,
+            HD_SCREAMER_DEFAULT_KEYS,
+            "Screamer",
+        )
     }
 
     /// Replaces one existing Octave Fuzz with the source-derived Sub Octave
@@ -1976,71 +1909,105 @@ impl OpaqueH5epPreset {
         &mut self,
         effect_slot: HdFxSlot,
     ) -> Result<(), ToneError> {
+        self.replace_octave_fuzz_with_default_prefix(
+            effect_slot,
+            HD_SUB_OCTAVE_FUZZ_MODEL_ID,
+            HD_SUB_OCTAVE_FUZZ_DEFAULT_KEYS,
+            "Sub Octave Fuzz",
+        )
+    }
+
+    /// Applies one member of the exact finite distortion/fuzz default set
+    /// admitted for this explicit standalone replacement.
+    pub fn replace_octave_fuzz_with_admitted_defaults(
+        &mut self,
+        effect_slot: HdFxSlot,
+        target: HdDistortionDefault,
+    ) -> Result<(), ToneError> {
+        self.replace_octave_fuzz_with_default_prefix(
+            effect_slot,
+            target.model_id(),
+            HD_SCREAMER_DEFAULT_KEYS,
+            target.label(),
+        )
+    }
+
+    fn replace_octave_fuzz_with_default_prefix(
+        &mut self,
+        effect_slot: HdFxSlot,
+        target_model_id: u32,
+        default_keys: [u32; 5],
+        target_label: &str,
+    ) -> Result<(), ToneError> {
         let body = self.body_bytes();
         let block = HD_EFFECT_BLOCK_OFFSET + effect_slot.index() * HD_EFFECT_BLOCK_STRIDE;
+        let prefix_error = format!(
+            "{target_label} replacement requires each default key exactly once in the first five rows"
+        );
+        let format_error = |message: String| ToneError::format(message);
+
         if read_be_u32(body, block) != Some(HD_OCTAVE_FUZZ_MODEL_ID) {
-            return Err(ToneError::format(
-                "Sub Octave Fuzz replacement requires an existing Octave Fuzz model",
-            ));
+            return Err(format_error(format!(
+                "{target_label} replacement requires an existing Octave Fuzz model"
+            )));
         }
         if body[block + 0x0b] != 1 {
-            return Err(ToneError::format(
-                "Sub Octave Fuzz replacement requires a valid, non-empty effect slot",
-            ));
+            return Err(format_error(format!(
+                "{target_label} replacement requires a valid, non-empty effect slot"
+            )));
         }
         if !matches!(body[block + 8], 0 | 1) {
-            return Err(ToneError::format(
-                "Sub Octave Fuzz replacement requires a canonical effect enable byte",
-            ));
+            return Err(format_error(format!(
+                "{target_label} replacement requires a canonical effect enable byte"
+            )));
         }
         if !(5..=HD_PARAMETER_ROW_COUNT as u8).contains(&body[block + 0x0f]) {
-            return Err(ToneError::format(
-                "Sub Octave Fuzz replacement requires an effect row count in 5..=12",
-            ));
+            return Err(format_error(format!(
+                "{target_label} replacement requires an effect row count in 5..=12"
+            )));
         }
-        let mut seen = [false; HD_SUB_OCTAVE_FUZZ_DEFAULT_KEYS.len()];
-        for row in 0..HD_SUB_OCTAVE_FUZZ_DEFAULT_KEYS.len() {
+
+        // The source Octave Fuzz must have these five keys exactly once, in any
+        // order. Target labels may differ; this operation applies defaults.
+        let mut seen = [false; 5];
+        for row in 0..5 {
             let row_at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
             let key = read_be_u32(body, row_at)
                 .ok_or_else(|| ToneError::format("truncated HD effect parameter prefix"))?;
-            let Some(key_index) = HD_SUB_OCTAVE_FUZZ_DEFAULT_KEYS
+            let Some(key_index) = HD_SCREAMER_DEFAULT_KEYS
                 .iter()
                 .position(|expected| *expected == key)
             else {
-                return Err(ToneError::format(
-                    "Sub Octave Fuzz replacement requires each default key exactly once in the first five rows",
-                ));
+                return Err(format_error(prefix_error.clone()));
             };
             if std::mem::replace(&mut seen[key_index], true) {
-                return Err(ToneError::format(
-                    "Sub Octave Fuzz replacement requires each default key exactly once in the first five rows",
-                ));
+                return Err(format_error(prefix_error.clone()));
             }
         }
         if seen.iter().any(|present| !present) {
-            return Err(ToneError::format(
-                "Sub Octave Fuzz replacement requires each default key exactly once in the first five rows",
-            ));
+            return Err(format_error(prefix_error));
         }
         for row in 0..HD_PARAMETER_ROW_COUNT {
-            let marker_at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE + 0x10;
+            let marker_at =
+                block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE + 0x10;
             if !matches!(body[marker_at], 0..=2) {
-                return Err(ToneError::format(
-                    "Sub Octave Fuzz replacement requires canonical effect assignment marker bytes",
-                ));
+                return Err(ToneError::format(format!(
+                    "{target_label} replacement requires canonical effect assignment marker bytes"
+                )));
             }
         }
 
+        // Stage every write in a candidate and reparse the complete record
+        // before changing the original object.
         let mut candidate = self.bytes.clone();
         let file_block = H5EP_HEADER_BYTES + block;
-        candidate[file_block..file_block + 4]
-            .copy_from_slice(&HD_SUB_OCTAVE_FUZZ_MODEL_ID.to_be_bytes());
-        for (row, key) in HD_SUB_OCTAVE_FUZZ_DEFAULT_KEYS.into_iter().enumerate() {
+        candidate[file_block..file_block + 4].copy_from_slice(&target_model_id.to_be_bytes());
+        for (row, key) in default_keys.into_iter().enumerate() {
             let row_at = file_block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
             candidate[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
             candidate[row_at + 4..row_at + 8].copy_from_slice(&0u32.to_be_bytes());
         }
-        candidate[file_block + 0x0f] = HD_SUB_OCTAVE_FUZZ_DEFAULT_KEYS.len() as u8;
+        candidate[file_block + 0x0f] = default_keys.len() as u8;
         for row in 0..HD_PARAMETER_ROW_COUNT {
             let marker_at =
                 file_block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE + 0x10;
@@ -2480,6 +2447,28 @@ impl HdEditorLibrary {
             }
             _ => Err(ToneError::format(
                 "Sub Octave Fuzz replacement requires an extracted H5EP preset",
+            )),
+        }
+    }
+
+    /// Applies one admitted closed-set distortion/fuzz default to an extracted
+    /// H5EP item. H5ES/H5EB parents remain separate and unchanged.
+    pub fn replace_octave_fuzz_with_admitted_defaults(
+        &mut self,
+        index: usize,
+        effect_slot: HdFxSlot,
+        target: HdDistortionDefault,
+    ) -> Result<(), ToneError> {
+        let entry = self
+            .files
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("file index is outside the HD editor library"))?;
+        match &mut entry.file {
+            PodPresetFile::H5ep(preset) => {
+                preset.replace_octave_fuzz_with_admitted_defaults(effect_slot, target)
+            }
+            _ => Err(ToneError::format(
+                "admitted defaults replacement requires an extracted H5EP preset",
             )),
         }
     }
@@ -3573,6 +3562,165 @@ mod tests {
             assert_eq!(preset.trailing_bytes(), b"private-tail");
         }
         assert!(HdFxSlot::new(8).is_err());
+    }
+
+    #[test]
+    fn octave_fuzz_admitted_distortion_defaults_match_the_exact_closed_set_and_write_set() {
+        const TARGETS: [(HdDistortionDefault, u32); 12] = [
+            (HdDistortionDefault::JetFuzz, 0x0205_000a),
+            (HdDistortionDefault::BuzzSaw, 0x0205_0015),
+            (HdDistortionDefault::ClassicDistortion, 0x0205_000b),
+            (HdDistortionDefault::ColorDrive, 0x0205_0018),
+            (HdDistortionDefault::FacialFuzz, 0x0205_0011),
+            (HdDistortionDefault::FuzzPi, 0x0205_000f),
+            (HdDistortionDefault::HeavyDistortion, 0x0205_0016),
+            (HdDistortionDefault::JumboFuzz, 0x0205_0017),
+            (HdDistortionDefault::Line6Distortion, 0x0205_0012),
+            (HdDistortionDefault::Line6Drive, 0x0205_0013),
+            (HdDistortionDefault::Overdrive, 0x0205_0010),
+            (HdDistortionDefault::TubeDrive, 0x0205_000d),
+        ];
+        assert_eq!(HdDistortionDefault::ALL.len(), 12);
+        assert_eq!(
+            HdDistortionDefault::ALL,
+            TARGETS.map(|(target, _)| target)
+        );
+        assert_eq!(
+            TARGETS.map(|(target, _)| target.model_id()),
+            TARGETS.map(|(_, model_id)| model_id)
+        );
+        const KEYS: [u32; 5] = [
+            0x3f10_0001,
+            0x3f10_0002,
+            0x3f10_0003,
+            0x3f10_0004,
+            0x3f10_0005,
+        ];
+
+        for (target, target_id) in TARGETS {
+            for public_slot in 0..HD_EFFECT_COUNT {
+                let original = synthetic_octave_fuzz_h5ep(public_slot, true);
+                let mut expected = original.clone();
+                let block = H5EP_HEADER_BYTES
+                    + HD_EFFECT_BLOCK_OFFSET
+                    + public_slot * HD_EFFECT_BLOCK_STRIDE;
+                expected[block..block + 4].copy_from_slice(&target_id.to_be_bytes());
+                for (row, key) in KEYS.into_iter().enumerate() {
+                    let row_at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
+                    expected[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
+                    expected[row_at + 4..row_at + 8].copy_from_slice(&0u32.to_be_bytes());
+                }
+                expected[block + 0x0f] = 5;
+                for row in 0..HD_PARAMETER_ROW_COUNT {
+                    expected
+                        [block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE + 0x10] = 0;
+                }
+
+                let mut preset = OpaqueH5epPreset::parse(original.clone()).unwrap();
+                preset
+                    .replace_octave_fuzz_with_admitted_defaults(
+                        HdFxSlot::new(public_slot).unwrap(),
+                        target,
+                    )
+                    .unwrap();
+                assert_eq!(preset.as_bytes(), expected, "{target:?}, slot {public_slot}");
+                assert_eq!(preset.effect_model_id(public_slot), Some(target_id));
+                assert_eq!(preset.trailing_bytes(), b"private-tail");
+            }
+        }
+        assert!(HdFxSlot::new(8).is_err());
+    }
+
+    #[test]
+    fn admitted_distortion_defaults_reject_guard_failures_without_changing_library_baselines() {
+        let source = synthetic_octave_fuzz_h5ep(0, true);
+        let mut cases = Vec::new();
+        for model in [
+            0x0205_000a,
+            0x0205_0015,
+            0x0205_000b,
+            0x0205_0018,
+            0x0205_0011,
+            0x0205_000f,
+            0x0205_0016,
+            0x0205_0017,
+            0x0205_0012,
+            0x0205_0013,
+            0x0205_0010,
+            0x0205_000d,
+            HD_SCREAMER_MODEL_ID,
+            HD_SUB_OCTAVE_FUZZ_MODEL_ID,
+            0x0200_0013,
+            HD_FX_LOOP_MODEL_ID,
+        ] {
+            let mut bytes = source.clone();
+            bytes[H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET
+                ..H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 4]
+                .copy_from_slice(&model.to_be_bytes());
+            cases.push(("wrong old model", bytes));
+        }
+        for validity in [0, 2] {
+            let mut bytes = source.clone();
+            bytes[H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 0x0b] = validity;
+            cases.push(("validity", bytes));
+        }
+        let mut bytes = source.clone();
+        bytes[H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 8] = 2;
+        cases.push(("enable", bytes));
+        for count in [4, 13] {
+            let mut bytes = source.clone();
+            bytes[H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 0x0f] = count;
+            cases.push(("count", bytes));
+        }
+        let row0 = H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + HD_EFFECT_ROWS_OFFSET;
+        let mut bytes = source.clone();
+        bytes[row0..row0 + 4].copy_from_slice(&0xfeed_beefu32.to_be_bytes());
+        cases.push(("unknown prefix key", bytes));
+        let mut bytes = source.clone();
+        let row1 = row0 + HD_PARAMETER_ROW_STRIDE;
+        bytes[row1..row1 + 4].copy_from_slice(&HD_TYPE1_OUTPUT_KEY.to_be_bytes());
+        cases.push(("duplicate prefix key", bytes));
+        let marker = H5EP_HEADER_BYTES
+            + HD_EFFECT_BLOCK_OFFSET
+            + HD_EFFECT_ROWS_OFFSET
+            + 11 * HD_PARAMETER_ROW_STRIDE
+            + 0x10;
+        let mut bytes = source.clone();
+        bytes[marker] = 3;
+        cases.push(("marker", bytes));
+
+        for target in HdDistortionDefault::ALL {
+            for (label, bytes) in &cases {
+                let mut preset = OpaqueH5epPreset::parse(bytes.clone()).unwrap();
+                let before = preset.as_bytes().to_vec();
+                assert!(
+                    preset
+                        .replace_octave_fuzz_with_admitted_defaults(
+                            HdFxSlot::new(0).unwrap(),
+                            target,
+                        )
+                        .is_err(),
+                    "{target:?}: {label}"
+                );
+                assert_eq!(preset.as_bytes(), before, "{target:?}: {label}");
+
+                let mut library = HdEditorLibrary::default();
+                let index = library.import_bytes(bytes.clone()).unwrap();
+                let saved = library.file(index).unwrap().as_bytes().to_vec();
+                assert!(
+                    library
+                        .replace_octave_fuzz_with_admitted_defaults(
+                            index,
+                            HdFxSlot::new(0).unwrap(),
+                            target,
+                        )
+                        .is_err(),
+                    "library {target:?}: {label}"
+                );
+                assert_eq!(library.file(index).unwrap().as_bytes(), saved);
+                assert!(!library.is_dirty(index), "library {target:?}: {label}");
+            }
+        }
     }
 
     #[test]

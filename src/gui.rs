@@ -213,6 +213,7 @@ struct Workbench {
     pod_selected: Option<usize>,
     hd_selected: Option<usize>,
     hd_effect_slot: usize,
+    hd_default_target: pod_preset::HdDistortionDefault,
     hd_control: pod_preset::HdType1Control,
     hd_mapped_control: pod_preset::HdType1MappedControl,
     hd_control_percent: u8,
@@ -292,6 +293,7 @@ impl Workbench {
             pod_selected: None,
             hd_selected: None,
             hd_effect_slot: 0,
+            hd_default_target: pod_preset::HdDistortionDefault::JetFuzz,
             hd_control: pod_preset::HdType1Control::Screamer(pod_preset::ScreamerControl::Drive),
             hd_mapped_control: pod_preset::HD_TYPE1_MAPPED_CONTROLS[0],
             hd_control_percent: 0,
@@ -1835,6 +1837,44 @@ impl Workbench {
                             {
                                 Ok(()) => {
                                     self.pod_message = "Replaced this offline effect with Sub Octave Fuzz defaults. Nothing was sent; save a new copy to keep the change.".into();
+                                }
+                                Err(error) => self.pod_message = rejection_text(&error),
+                            },
+                            Err(error) => self.pod_message = error.detail(),
+                        }
+                    }
+                    ui.label("Additional source-derived distortion/fuzz defaults");
+                    egui::ComboBox::from_id_salt("hd-octave-fuzz-default-target")
+                        .selected_text(self.hd_default_target.label())
+                        .show_ui(ui, |ui| {
+                            for target in pod_preset::HdDistortionDefault::ALL {
+                                ui.selectable_value(
+                                    &mut self.hd_default_target,
+                                    target,
+                                    target.label(),
+                                );
+                            }
+                        });
+                    if self.pod_button(
+                        ui,
+                        "replace-octave-fuzz-admitted-default",
+                        "Apply selected source defaults",
+                    ) {
+                        let index = self.hd_selected.expect("selected HD file");
+                        match pod_preset::HdFxSlot::new(self.hd_effect_slot) {
+                            Ok(slot) => match Session::initial_rig()
+                                .replace_hd_octave_fuzz_with_admitted_defaults(
+                                    &mut self.hd_library,
+                                    index,
+                                    slot,
+                                    self.hd_default_target,
+                                )
+                            {
+                                Ok(()) => {
+                                    self.pod_message = format!(
+                                        "Replaced this offline effect with {} defaults. Nothing was sent; save a new copy to keep the change.",
+                                        self.hd_default_target.label()
+                                    );
                                 }
                                 Err(error) => self.pod_message = rejection_text(&error),
                             },
@@ -3750,6 +3790,7 @@ mod tests {
         button_id: &'static str,
         message_label: &str,
         output_name: &str,
+        batch_target: Option<pod_preset::HdDistortionDefault>,
     ) {
         let (context, mut app) = app();
         context.style_mut(|style| style.animation_time = 0.0);
@@ -3790,8 +3831,12 @@ mod tests {
         }
         let index = app.hd_library.import_bytes(original.clone()).unwrap();
         app.select_hd_file(index);
+        if let Some(target) = batch_target {
+            app.hd_default_target = target;
+        }
         app.pod_open = true;
         recording_frame(&context, &mut app, vec![]);
+        assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), original);
 
         let mut expected = original.clone();
         expected[block..block + 4].copy_from_slice(&target_model.to_be_bytes());
@@ -3880,6 +3925,7 @@ mod tests {
             "replace-octave-fuzz-vintage-pre",
             "Vintage Pre defaults",
             "vintage-pre-copy.5xe",
+            None,
         );
         exercise_hd_editor_explicit_replacement_lifecycle(
             0x0205_000e,
@@ -3893,6 +3939,7 @@ mod tests {
             "replace-octave-fuzz-screamer",
             "Screamer defaults",
             "screamer-copy.5xe",
+            None,
         );
         exercise_hd_editor_explicit_replacement_lifecycle(
             0x0205_0014,
@@ -3906,7 +3953,93 @@ mod tests {
             "replace-octave-fuzz-sub-octave-fuzz",
             "Sub Octave Fuzz defaults",
             "sub-octave-fuzz-copy.5xe",
+            None,
         );
+
+        const BATCH: [(pod_preset::HdDistortionDefault, u32, &str, &str); 12] = [
+            (
+                pod_preset::HdDistortionDefault::JetFuzz,
+                0x0205_000a,
+                "Jet Fuzz defaults",
+                "jet-fuzz-copy.5xe",
+            ),
+            (
+                pod_preset::HdDistortionDefault::BuzzSaw,
+                0x0205_0015,
+                "Buzz Saw defaults",
+                "buzz-saw-copy.5xe",
+            ),
+            (
+                pod_preset::HdDistortionDefault::ClassicDistortion,
+                0x0205_000b,
+                "Classic Distortion defaults",
+                "classic-distortion-copy.5xe",
+            ),
+            (
+                pod_preset::HdDistortionDefault::ColorDrive,
+                0x0205_0018,
+                "Color Drive defaults",
+                "color-drive-copy.5xe",
+            ),
+            (
+                pod_preset::HdDistortionDefault::FacialFuzz,
+                0x0205_0011,
+                "Facial Fuzz defaults",
+                "facial-fuzz-copy.5xe",
+            ),
+            (
+                pod_preset::HdDistortionDefault::FuzzPi,
+                0x0205_000f,
+                "Fuzz Pi defaults",
+                "fuzz-pi-copy.5xe",
+            ),
+            (
+                pod_preset::HdDistortionDefault::HeavyDistortion,
+                0x0205_0016,
+                "Heavy Distortion defaults",
+                "heavy-distortion-copy.5xe",
+            ),
+            (
+                pod_preset::HdDistortionDefault::JumboFuzz,
+                0x0205_0017,
+                "Jumbo Fuzz defaults",
+                "jumbo-fuzz-copy.5xe",
+            ),
+            (
+                pod_preset::HdDistortionDefault::Line6Distortion,
+                0x0205_0012,
+                "Line 6 Distortion defaults",
+                "line6-distortion-copy.5xe",
+            ),
+            (
+                pod_preset::HdDistortionDefault::Line6Drive,
+                0x0205_0013,
+                "Line 6 Drive defaults",
+                "line6-drive-copy.5xe",
+            ),
+            (
+                pod_preset::HdDistortionDefault::Overdrive,
+                0x0205_0010,
+                "Overdrive defaults",
+                "overdrive-copy.5xe",
+            ),
+            (
+                pod_preset::HdDistortionDefault::TubeDrive,
+                0x0205_000d,
+                "Tube Drive defaults",
+                "tube-drive-copy.5xe",
+            ),
+        ];
+        for (target, model_id, label, output_name) in BATCH {
+            exercise_hd_editor_explicit_replacement_lifecycle(
+                model_id,
+                [0x3f10_0001, 0x3f10_0002, 0x3f10_0003, 0x3f10_0004, 0x3f10_0005],
+                "replace-octave-fuzz-admitted-default",
+                label,
+                output_name,
+                Some(target),
+            );
+        }
     }
 
     #[test]
