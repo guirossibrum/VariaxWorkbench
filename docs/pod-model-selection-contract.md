@@ -73,12 +73,113 @@ serialization and translation, but do not support a claim that selector source
 is missing. In particular, generic writer reserved-byte normalization and
 cross-family translation defaults do not describe PODxt model selection.
 
-The precise remaining selector edge is the supplied GUI widget implementation:
-`L6ComboBox` and `L6ParamRouter` are not present in the class payload, so
-same-choice event emission cannot be determined. The PODxt classes, model-id
-arrays and association definitions are present; the unresolved question is not
-source presence. No acquisition, vendor execution or hardware observation is
-needed to state this limit.
+Historical combo same-choice event emission remains unknown because
+`L6ComboBox` and `L6ParamRouter` are not present. It is not a blocker for the
+explicit Apply action specified below: if the selected id already matches the
+stored model id, this offline file operation is a byte/decoded/dirty no-op. That
+is this application's file-edit policy, not a claim about Line6Edit widget
+events or runtime dirty notifications.
+
+## Concrete AMP operation record for technical admission
+
+This is one conservative existing-slot AMP model-id operation for Gatekeeper
+review. It is not admitted for implementation yet. The complete allowed choice
+set is intentionally smaller than either the 107-entry `AMP_MODELS` array or
+the separate 106-model numeric-control set:
+
+| Exact allowed AMP id | Static source evidence | Eligibility evidence |
+| --- | --- | --- |
+| `0x00020000` | `L6PODxtParamMap.GetAmpModelList`; `AMP_MODELS[0]` is integer `131072` | `L6SharcToneEditor.IsModelInstalled(int)` does not list this id in its pack-gated switch; its `default` returns `true` |
+| `0x00020001` | `L6PODxtParamMap.GetAmpModelList`; `AMP_MODELS[2]` is integer `131073` | Same default-true branch in `IsModelInstalled(int)` |
+
+For these two choices the original editor's static pack guard returns available
+independently of the four `IsPackInstalled` flags it reads. This establishes
+the source application's eligibility decision for those ids. It does not
+establish physical device support or a hardware result. No runtime installed
+boolean is accepted by this file operation, and no other array member is
+implicitly admitted.
+
+The exact source payload is pinned by class-file SHA-256:
+
+- `modules/sharctone/device/podxt/L6PODxtParamMap.class` —
+  `3092741706674148563731965226cc7b56e8d1d1db55bbd1ddacf2f2bc3f4888`
+- `modules/sharctone/device/L6SharcToneParamMap.class` —
+  `761b59f407496ca5924f66e6fd8e3b7f728feb0771702ab9cc2484c6b2e72dcc`
+- `modules/sharctone/editor/L6SharcToneEditor.class` —
+  `131c4167a01d02b684f9e522bd8182424ff6af1c26bde50f544331ddcedae060`
+
+**Source operation path.** The PODxt device map is created with product
+`0x0003000A`. `SetupAmpCabPanel` binds selector `0x10010000` to the AMP combo.
+`OnParamChange` checks an emitted model id with `IsModelInstalled` and only
+substitutes the fallback for ids that fail that check. `SetParam` dispatches
+model-id parameters to `L6Model.SetID`. `GetModelForGroup` maps AMP group
+`0x00010000` to slot `0x00030000`; it asks `GetAmpModel` to create a missing
+model, and `GetSingleSlotModel` would create it with id `-1`, enabled `true`,
+ordinal `0`. This proposed Rust operation deliberately rejects a missing slot
+instead. On an existing model the static setter changes only its id and retains
+all existing PARMs. No model-specific defaults or PARM rewrites are admitted.
+
+**Admission preconditions and mutation.** Require one parsed `FORM/L6PA` tone,
+PINF layout version word `1`, target `0x0003000A`, the existing project's
+conservative device-version floor `0x03000000`, exactly one AMP slot
+`0x00030000`, one `MINF` for that slot, and a complete MINF body of at least 12
+bytes. The version floor is the Rust offline editing profile; the traced
+selector setter itself does not read PINF and this is not claimed as a vendor
+selector gate. The parser rejects duplicate slots/chunks and validates the
+outer FORM length. Admit only the two ids in the table above. The current
+stored model id may be any 32-bit value: requesting the same id is a no-op;
+requesting either admitted id changes only the first four bytes of the selected
+MINF body, big-endian, and updates the decoded `ModelSlot.model_id`. Preserve
+the complete MINF remainder, slot, ordinal, enabled and reserved bytes, every
+PARM (including opaque/noncanonical records), all other model data, IFF pads,
+chunks and metadata. Wrong target/version/container, absent/duplicate AMP slot,
+missing/duplicate/truncated MINF, unsupported choice, or any failed
+precondition rejects before bytes, decoded state, dirty state or save baseline
+change. The operation never creates a model or silently substitutes another
+choice.
+
+**Literal synthetic whole-buffer example.** This 178-byte `FORM/L6PA` fixture
+has PINF v1 / PODxt Live / device-version word `0x03000000`, one AMP model with
+id `0x00020001`, a full MINF, an opaque three-byte PARM and an unknown model
+child. The only byte difference on Apply of `0x00020000` is the final byte of
+the big-endian MINF model-id word at file offset `0x93` (`01` to `00`):
+
+```text
+before (178 bytes; FORM length 0x000000aa):
+0000: 46 4f 52 4d 00 00 00 aa 4c 36 50 41 4a 55 4e 4b
+0010: 00 00 00 03 11 22 33 a5 50 49 4e 46 00 00 00 50
+0020: 00 00 00 01 00 03 00 0a 00 41 00 00 00 00 00 00
+0030: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0040: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0050: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0060: 00 00 00 00 00 00 00 00 03 00 00 00 5a a5 96 69
+0070: 4c 49 53 54 00 00 00 3a 50 41 54 43 4c 49 53 54
+0080: 00 00 00 2e 4d 4f 44 4c 4d 49 4e 46 00 00 00 0c
+0090: 00 02 00 01 00 03 00 00 fe 12 34 01 50 41 52 4d
+00a0: 00 00 00 03 de ad be a5 58 54 52 41 00 00 00 02
+00b0: 55 66
+
+after (178 bytes; FORM length 0x000000aa):
+0000: 46 4f 52 4d 00 00 00 aa 4c 36 50 41 4a 55 4e 4b
+0010: 00 00 00 03 11 22 33 a5 50 49 4e 46 00 00 00 50
+0020: 00 00 00 01 00 03 00 0a 00 41 00 00 00 00 00 00
+0030: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0040: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0050: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0060: 00 00 00 00 00 00 00 00 03 00 00 00 5a a5 96 69
+0070: 4c 49 53 54 00 00 00 3a 50 41 54 43 4c 49 53 54
+0080: 00 00 00 2e 4d 4f 44 4c 4d 49 4e 46 00 00 00 0c
+0090: 00 02 00 00 00 03 00 00 fe 12 34 01 50 41 52 4d
+00a0: 00 00 00 03 de ad be a5 58 54 52 41 00 00 00 02
+00b0: 55 66
+```
+
+**Technical admission question.** Is a two-choice, file-only AMP operation
+admissible on the static evidence above, where both choices take the original
+editor's unconditional default-true pack-eligibility branch? If a stronger
+physical pack/device guarantee is required even for offline file editing,
+identify the source-backed requirement: the current scope forbids device
+queries, and neither this record nor a software test claims physical support.
 
 ## Proposed operation contract for Gatekeeper admission
 
@@ -124,9 +225,10 @@ operation is implemented by this document.
    contract must precede these tests; synthetic fixtures cannot establish
    vendor applicability.
 
-**Admission status:** no new selection operation is admitted by this research
-correction. The target-specific classes and selector maps are present, and the
-direct setter behavior is now source-backed. Gatekeeper review is still needed
-before implementation, including `L6AS` cab applicability and the GUI
-same-choice event edge. Existing admitted operations, including AMP/EQ stored
-model-enable flags, do not need renewed per-leaf scope approval.
+**Admission status:** no new selection operation is admitted yet. The concrete
+two-choice AMP record above is submitted for technical admission. The separate
+CAB/MIC operations and broader AMP choices remain out of scope until their own
+contracts are reviewed. Historical GUI same-choice event emission is unknown,
+but does not block this explicit Apply/file-diff policy. Existing admitted
+operations, including AMP/EQ stored model-enable flags, do not need renewed
+per-leaf scope approval.
