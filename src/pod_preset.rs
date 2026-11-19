@@ -943,7 +943,9 @@ impl StompWaveSelection {
     }
 
     fn from_float_bits(bits: u32) -> Option<Self> {
-        Self::ALL.into_iter().find(|choice| choice.float_bits() == bits)
+        Self::ALL
+            .into_iter()
+            .find(|choice| choice.float_bits() == bits)
     }
 }
 
@@ -1467,7 +1469,9 @@ impl PodTone {
             ..
         } = &self.models[model_index].parameters[parameter_index]
         else {
-            return Err(ToneError::format("Stomp SYNWAVE target is not a float PARM"));
+            return Err(ToneError::format(
+                "Stomp SYNWAVE target is not a float PARM",
+            ));
         };
         Ok(StompWaveSelection::from_float_bits(*bits)
             .map(StompWaveValue::Known)
@@ -3816,7 +3820,10 @@ mod tests {
         assert_eq!(StompWaveSelection::ALL.len(), expected.len());
         for (choice, expected_bits) in StompWaveSelection::ALL.into_iter().zip(expected) {
             assert_eq!(choice.float_bits(), expected_bits);
-            assert_eq!(StompWaveSelection::from_float_bits(expected_bits), Some(choice));
+            assert_eq!(
+                StompWaveSelection::from_float_bits(expected_bits),
+                Some(choice)
+            );
         }
         assert_eq!(f32::from_bits(expected[0]), -0.003937008);
         assert!(!f32::from_bits(expected[0]).is_sign_positive());
@@ -3842,10 +3849,21 @@ mod tests {
                 expected_bytes[selected_offset..selected_offset + 4]
                     .copy_from_slice(&expected_bits.to_be_bytes());
                 tone.set_stomp_wave_selection(choice).unwrap();
-                assert_eq!(tone.as_bytes(), expected_bytes, "model 0x{model_id:08x} {choice:?}");
-                assert_eq!(tone.stomp_wave_selection().unwrap(), StompWaveValue::Known(choice));
+                assert_eq!(
+                    tone.as_bytes(),
+                    expected_bytes,
+                    "model 0x{model_id:08x} {choice:?}"
+                );
+                assert_eq!(
+                    tone.stomp_wave_selection().unwrap(),
+                    StompWaveValue::Known(choice)
+                );
                 assert!(tone.as_bytes().windows(earlier.len()).any(|w| w == earlier));
-                assert!(tone.as_bytes().windows(unrelated.len()).any(|w| w == unrelated));
+                assert!(
+                    tone.as_bytes()
+                        .windows(unrelated.len())
+                        .any(|w| w == unrelated)
+                );
             }
         }
 
@@ -3858,15 +3876,22 @@ mod tests {
         let mut nine_tone = PodTone::parse(nine_tone).unwrap();
         let before = nine_tone.as_bytes().to_vec();
         assert!(nine_tone.stomp_wave_selection().is_err());
-        assert!(nine_tone
-            .set_stomp_wave_selection(StompWaveSelection::Wave2)
-            .is_err());
+        assert!(
+            nine_tone
+                .set_stomp_wave_selection(StompWaveSelection::Wave2)
+                .is_err()
+        );
         assert_eq!(nine_tone.as_bytes(), before);
     }
 
     #[test]
     fn stomp_wave_unknown_words_are_lossless_and_nonfinite_edits_are_atomic() {
-        for bits in [0x3eaa_aaab, 0x7fc0_1234, f32::INFINITY.to_bits(), f32::NEG_INFINITY.to_bits()] {
+        for bits in [
+            0x3eaa_aaab,
+            0x7fc0_1234,
+            f32::INFINITY.to_bits(),
+            f32::NEG_INFINITY.to_bits(),
+        ] {
             let record = drive_record(0x3f, STOMP_SYNTH_WAVE_PARAM, 1, bits);
             let original = stomp_wave_tone(
                 PODXT_LIVE_HOST_MIN_VERSION,
@@ -3874,29 +3899,46 @@ mod tests {
                 &[&record],
             );
             let mut tone = PodTone::parse(original.clone()).unwrap();
-            assert_eq!(tone.stomp_wave_selection().unwrap(), StompWaveValue::Unknown { raw_bits: bits });
+            assert_eq!(
+                tone.stomp_wave_selection().unwrap(),
+                StompWaveValue::Unknown { raw_bits: bits }
+            );
             assert_eq!(tone.as_bytes(), original);
             if f32::from_bits(bits).is_finite() {
-                tone.set_stomp_wave_selection(StompWaveSelection::Wave8).unwrap();
-                assert_eq!(tone.stomp_wave_selection().unwrap(), StompWaveValue::Known(StompWaveSelection::Wave8));
+                tone.set_stomp_wave_selection(StompWaveSelection::Wave8)
+                    .unwrap();
+                assert_eq!(
+                    tone.stomp_wave_selection().unwrap(),
+                    StompWaveValue::Known(StompWaveSelection::Wave8)
+                );
             } else {
-                assert!(tone.set_stomp_wave_selection(StompWaveSelection::Wave8).is_err());
+                assert!(
+                    tone.set_stomp_wave_selection(StompWaveSelection::Wave8)
+                        .is_err()
+                );
                 assert_eq!(tone.as_bytes(), original);
-                assert_eq!(tone.stomp_wave_selection().unwrap(), StompWaveValue::Unknown { raw_bits: bits });
+                assert_eq!(
+                    tone.stomp_wave_selection().unwrap(),
+                    StompWaveValue::Unknown { raw_bits: bits }
+                );
 
                 let mut library = Library::default();
                 let index = library.import_bytes(original.clone()).unwrap();
-                assert!(library
-                    .set_stomp_wave_selection(index, StompWaveSelection::Wave8)
-                    .is_err());
+                assert!(
+                    library
+                        .set_stomp_wave_selection(index, StompWaveSelection::Wave8)
+                        .is_err()
+                );
                 assert!(!library.is_dirty(index));
                 assert_eq!(library.tone(index).unwrap().as_bytes(), original);
 
                 let bundle_bytes = bundle_with_tone(&original);
                 let mut bundle = PodBundleLibrary::parse(bundle_bytes.clone()).unwrap();
-                assert!(bundle
-                    .set_stomp_wave_selection(0, StompWaveSelection::Wave8)
-                    .is_err());
+                assert!(
+                    bundle
+                        .set_stomp_wave_selection(0, StompWaveSelection::Wave8)
+                        .is_err()
+                );
                 assert!(!bundle.is_dirty());
                 assert_eq!(bundle.as_bytes(), bundle_bytes);
             }
@@ -3910,13 +3952,33 @@ mod tests {
         let bad_type = drive_record(0x3f, STOMP_SYNTH_WAVE_PARAM, 0, 0x3f00_0000);
         let opaque = [1, 2, 3, 4];
         let cases = [
-            stomp_wave_tone(PODXT_LIVE_HOST_MIN_VERSION - 1, STOMP_SYNTH_WAVE_MODEL_IDS[0], &[&valid]),
+            stomp_wave_tone(
+                PODXT_LIVE_HOST_MIN_VERSION - 1,
+                STOMP_SYNTH_WAVE_MODEL_IDS[0],
+                &[&valid],
+            ),
             stomp_wave_tone(PODXT_LIVE_HOST_MIN_VERSION, 0x020a_0009, &[&valid]),
             stomp_wave_tone(PODXT_LIVE_HOST_MIN_VERSION, 0x020a_0000, &[&valid]),
-            stomp_wave_tone(PODXT_LIVE_HOST_MIN_VERSION, STOMP_SYNTH_WAVE_MODEL_IDS[0], &[]),
-            stomp_wave_tone(PODXT_LIVE_HOST_MIN_VERSION, STOMP_SYNTH_WAVE_MODEL_IDS[0], &[&opaque]),
-            stomp_wave_tone(PODXT_LIVE_HOST_MIN_VERSION, STOMP_SYNTH_WAVE_MODEL_IDS[0], &[&bad_prefix]),
-            stomp_wave_tone(PODXT_LIVE_HOST_MIN_VERSION, STOMP_SYNTH_WAVE_MODEL_IDS[0], &[&bad_type]),
+            stomp_wave_tone(
+                PODXT_LIVE_HOST_MIN_VERSION,
+                STOMP_SYNTH_WAVE_MODEL_IDS[0],
+                &[],
+            ),
+            stomp_wave_tone(
+                PODXT_LIVE_HOST_MIN_VERSION,
+                STOMP_SYNTH_WAVE_MODEL_IDS[0],
+                &[&opaque],
+            ),
+            stomp_wave_tone(
+                PODXT_LIVE_HOST_MIN_VERSION,
+                STOMP_SYNTH_WAVE_MODEL_IDS[0],
+                &[&bad_prefix],
+            ),
+            stomp_wave_tone(
+                PODXT_LIVE_HOST_MIN_VERSION,
+                STOMP_SYNTH_WAVE_MODEL_IDS[0],
+                &[&bad_type],
+            ),
             custom_tone(
                 ContainerKind::L6pa,
                 &[BuiltModel {
@@ -3939,7 +4001,10 @@ mod tests {
         for bytes in cases {
             let mut tone = PodTone::parse(bytes.clone()).unwrap();
             assert!(tone.stomp_wave_selection().is_err());
-            assert!(tone.set_stomp_wave_selection(StompWaveSelection::Wave4).is_err());
+            assert!(
+                tone.set_stomp_wave_selection(StompWaveSelection::Wave4)
+                    .is_err()
+            );
             assert_eq!(tone.as_bytes(), bytes);
         }
 
@@ -3949,13 +4014,26 @@ mod tests {
             PODXT_LIVE_HOST_MIN_VERSION,
             &[(STOMP_SLOT, STOMP_SYNTH_WAVE_MODEL_IDS[0])],
         );
-        assert!(matches!(PodTone::parse(wrong_target), Err(ToneError::WrongTarget { .. })));
+        assert!(matches!(
+            PodTone::parse(wrong_target),
+            Err(ToneError::WrongTarget { .. })
+        ));
 
         let duplicate_slot = custom_tone(
             ContainerKind::L6pa,
             &[
-                BuiltModel { slot: STOMP_SLOT, model_id: STOMP_SYNTH_WAVE_MODEL_IDS[0], tail: &[], parameters: &[&valid] },
-                BuiltModel { slot: STOMP_SLOT, model_id: STOMP_SYNTH_WAVE_MODEL_IDS[1], tail: &[], parameters: &[&valid] },
+                BuiltModel {
+                    slot: STOMP_SLOT,
+                    model_id: STOMP_SYNTH_WAVE_MODEL_IDS[0],
+                    tail: &[],
+                    parameters: &[&valid],
+                },
+                BuiltModel {
+                    slot: STOMP_SLOT,
+                    model_id: STOMP_SYNTH_WAVE_MODEL_IDS[1],
+                    tail: &[],
+                    parameters: &[&valid],
+                },
             ],
         );
         assert!(PodTone::parse(duplicate_slot).is_err());
@@ -3971,8 +4049,13 @@ mod tests {
         );
         let mut library = Library::default();
         let index = library.import_bytes(original.clone()).unwrap();
-        assert_eq!(library.stomp_wave_selection(index).unwrap(), StompWaveValue::Known(StompWaveSelection::Wave5));
-        library.set_stomp_wave_selection(index, StompWaveSelection::Wave2).unwrap();
+        assert_eq!(
+            library.stomp_wave_selection(index).unwrap(),
+            StompWaveValue::Known(StompWaveSelection::Wave5)
+        );
+        library
+            .set_stomp_wave_selection(index, StompWaveSelection::Wave2)
+            .unwrap();
         assert!(library.is_dirty(index));
         let edited = library.tone(index).unwrap().as_bytes().to_vec();
         let changed = edited.iter().zip(&original).filter(|(a, b)| a != b).count();
@@ -3992,18 +4075,40 @@ mod tests {
         assert!(library.tone(index).unwrap().save_copy(&path).is_err());
         let reopened = PodTone::parse(std::fs::read(path).unwrap()).unwrap();
         assert_eq!(reopened.as_bytes(), edited);
-        assert_eq!(reopened.stomp_wave_selection().unwrap(), StompWaveValue::Known(StompWaveSelection::Wave2));
+        assert_eq!(
+            reopened.stomp_wave_selection().unwrap(),
+            StompWaveValue::Known(StompWaveSelection::Wave2)
+        );
 
         let bundle_bytes = bundle_with_tone(&original);
         let mut bundle = PodBundleLibrary::parse(bundle_bytes.clone()).unwrap();
-        assert_eq!(bundle.stomp_wave_selection(0).unwrap(), StompWaveValue::Known(StompWaveSelection::Wave5));
-        bundle.set_stomp_wave_selection(0, StompWaveSelection::Wave3).unwrap();
+        assert_eq!(
+            bundle.stomp_wave_selection(0).unwrap(),
+            StompWaveValue::Known(StompWaveSelection::Wave5)
+        );
+        bundle
+            .set_stomp_wave_selection(0, StompWaveSelection::Wave3)
+            .unwrap();
         assert!(bundle.is_dirty());
         let bundled_tone = bundle.tone(0, 0).unwrap();
-        assert_eq!(bundled_tone.stomp_wave_selection().unwrap(), StompWaveValue::Known(StompWaveSelection::Wave3));
-        assert!(bundled_tone.as_bytes().iter().zip(&original).filter(|(a, b)| a != b).count() == 4);
+        assert_eq!(
+            bundled_tone.stomp_wave_selection().unwrap(),
+            StompWaveValue::Known(StompWaveSelection::Wave3)
+        );
+        assert!(
+            bundled_tone
+                .as_bytes()
+                .iter()
+                .zip(&original)
+                .filter(|(a, b)| a != b)
+                .count()
+                == 4
+        );
         let reopened_bundle = PodBundleLibrary::parse(bundle.as_bytes().to_vec()).unwrap();
-        assert_eq!(reopened_bundle.tone(0, 0).unwrap().as_bytes(), bundled_tone.as_bytes());
+        assert_eq!(
+            reopened_bundle.tone(0, 0).unwrap().as_bytes(),
+            bundled_tone.as_bytes()
+        );
     }
 
     #[test]

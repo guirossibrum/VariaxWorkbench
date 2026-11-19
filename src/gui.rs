@@ -4478,7 +4478,7 @@ mod tests {
         std::fs::write(&source, &original).unwrap();
         std::fs::write(&blocked, b"preserve existing destination").unwrap();
         app.dialogs = Box::new(FakeDialogs {
-            pod_open: [Some(source)].into(),
+            pod_open: [Some(source.clone())].into(),
             pod_save: [Some(blocked.clone()), None, Some(saved.clone())].into(),
             ..Default::default()
         });
@@ -4489,24 +4489,29 @@ mod tests {
         assert!(!app.pod_library.is_dirty(0));
         assert!(matches!(
             app.pod_library.tone(0).unwrap().stomp_wave_selection(),
-            Ok(pod_preset::StompWaveValue::Known(pod_preset::StompWaveSelection::Wave5))
+            Ok(pod_preset::StompWaveValue::Known(
+                pod_preset::StompWaveSelection::Wave5
+            ))
         ));
 
-        select_stomp_wave_choice(
-            &context,
-            &mut app,
-            pod_preset::StompWaveSelection::Wave1,
-        );
+        select_stomp_wave_choice(&context, &mut app, pod_preset::StompWaveSelection::Wave1);
         assert!(app.pod_library.is_dirty(0));
         assert_eq!(
-            app.pod_library.tone(0).unwrap().stomp_wave_selection().unwrap(),
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .stomp_wave_selection()
+                .unwrap(),
             pod_preset::StompWaveValue::Known(pod_preset::StompWaveSelection::Wave1)
         );
 
         app.request_close(&context);
         assert!(matches!(app.pending, Some(Pending::QuitPod)));
         click_prompt(&context, &mut app, "save");
-        assert_eq!(std::fs::read(&blocked).unwrap(), b"preserve existing destination");
+        assert_eq!(
+            std::fs::read(&blocked).unwrap(),
+            b"preserve existing destination"
+        );
         assert!(app.pod_library.is_dirty(0));
         assert!(!app.permit_close);
 
@@ -4534,7 +4539,11 @@ mod tests {
 
     #[test]
     fn stomp_wave_gui_refuses_nonfinite_values_without_dirtying_the_library() {
-        for raw_bits in [0x7fc0_1234, f32::INFINITY.to_bits(), f32::NEG_INFINITY.to_bits()] {
+        for raw_bits in [
+            0x7fc0_1234,
+            f32::INFINITY.to_bits(),
+            f32::NEG_INFINITY.to_bits(),
+        ] {
             let (context, mut app) = app();
             let directory = tempfile::tempdir().unwrap();
             let source = directory.path().join("nonfinite-stomp-wave.l6t");
@@ -4552,11 +4561,7 @@ mod tests {
                 app.pod_library.tone(0).unwrap().stomp_wave_selection(),
                 Ok(pod_preset::StompWaveValue::Unknown { raw_bits: found }) if found == raw_bits
             ));
-            select_stomp_wave_choice(
-                &context,
-                &mut app,
-                pod_preset::StompWaveSelection::Wave8,
-            );
+            select_stomp_wave_choice(&context, &mut app, pod_preset::StompWaveSelection::Wave8);
             assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
             assert!(matches!(
                 app.pod_library.tone(0).unwrap().stomp_wave_selection(),
@@ -4580,7 +4585,7 @@ mod tests {
         let original_bundle = sample_pod_bundle(std::slice::from_ref(&tone));
         std::fs::write(&source, &original_bundle).unwrap();
         app.dialogs = Box::new(FakeDialogs {
-            pod_open: [Some(source)].into(),
+            pod_open: [Some(source.clone())].into(),
             pod_save: [Some(saved.clone())].into(),
             ..Default::default()
         });
@@ -4589,15 +4594,17 @@ mod tests {
         assert!(app.pod_bundle.is_some());
         assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
         recording_frame_tall(&context, &mut app, vec![]);
-        select_stomp_wave_choice(
-            &context,
-            &mut app,
-            pod_preset::StompWaveSelection::Wave8,
-        );
+        select_stomp_wave_choice(&context, &mut app, pod_preset::StompWaveSelection::Wave8);
         assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
         assert!(app.pod_library.is_dirty(0));
         assert_eq!(
-            app.pod_bundle.as_ref().unwrap().tone(0, 0).unwrap().stomp_wave_selection().unwrap(),
+            app.pod_bundle
+                .as_ref()
+                .unwrap()
+                .tone(0, 0)
+                .unwrap()
+                .stomp_wave_selection()
+                .unwrap(),
             pod_preset::StompWaveValue::Known(pod_preset::StompWaveSelection::Wave8)
         );
 
