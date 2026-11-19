@@ -4473,6 +4473,9 @@ mod tests {
             2 => "hd-type9-choice-option-2",
             _ => panic!("invalid type-9 choice index"),
         };
+        hd_editor_frame(context, app, vec![]);
+        scroll_hd_editor_control_into_view(context, app, option_id);
+        hd_editor_frame(context, app, vec![]);
         click_hd_editor(context, app, option_id);
     }
 
