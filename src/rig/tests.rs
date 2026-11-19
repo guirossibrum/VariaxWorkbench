@@ -575,6 +575,41 @@ fn pod_model_enable_session_edit_is_role_gated_offline_and_byte_preserving() {
 }
 
 #[test]
+fn pod_model_enable_session_rejects_short_minf_with_canonical_padding() {
+    let session = Session::initial_rig();
+    for padding in [0, 1] {
+        let mut original = crate::pod_preset::fixture(
+            crate::pod_preset::ContainerKind::L6as,
+            PODXT_LIVE_PRODUCT_ID,
+            crate::pod_preset::PODXT_LIVE_HOST_MIN_VERSION,
+            &[(crate::pod_preset::AMP_SLOT, 0xdead_beef)],
+        );
+        let header = original
+            .windows(4)
+            .position(|window| window == b"MINF")
+            .expect("amp MINF header");
+        original[header + 4..header + 8].copy_from_slice(&11u32.to_be_bytes());
+        original[header + 8 + 11] = padding;
+        let before = original.clone();
+        let tone = crate::pod_preset::PodTone::parse(original.clone()).unwrap();
+        assert!(tone
+            .model_enable_state(crate::pod_preset::PodModelEnable::Amp)
+            .is_err());
+        for enabled in [false, true] {
+            assert!(session
+                .set_pod_model_enabled(
+                    RoleKind::Pod,
+                    &original,
+                    crate::pod_preset::PodModelEnable::Amp,
+                    enabled,
+                )
+                .is_err());
+            assert_eq!(original, before);
+        }
+    }
+}
+
+#[test]
 fn offline_recording_gate_does_not_call_capture_or_open_a_stream() {
     let session = Session::initial_rig();
     assert!(LIVE_BACKEND_INITIALIZER.is_none());

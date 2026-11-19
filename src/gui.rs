@@ -3936,6 +3936,33 @@ mod tests {
         app.pod_library.revert_unsaved(0).unwrap();
         assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
 
+        let mut short_minfo = original.clone();
+        let minf_header = short_minfo
+            .windows(4)
+            .position(|window| window == b"MINF")
+            .unwrap();
+        short_minfo[minf_header + 4..minf_header + 8].copy_from_slice(&11u32.to_be_bytes());
+        short_minfo[minf_header + 8 + 11] = 0;
+        let short_original = short_minfo.clone();
+        app.pod_library.clear();
+        app.pod_library.import_bytes(short_minfo).unwrap();
+        app.pod_selected = Some(0);
+        recording_frame(&context, &mut app, vec![]);
+        open_pod_model_enable_menu(&context, &mut app);
+        assert!(
+            !app.pod_model_enable_checks
+                .contains_key(&pod_preset::PodModelEnable::Amp)
+        );
+        assert!(app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .model_enable_state(pod_preset::PodModelEnable::Amp)
+            .is_err());
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), short_original);
+        assert!(!app.pod_library.is_dirty(0));
+        click_pod_model_enable_menu(&context, &mut app);
+
         let mut noncanonical = original;
         noncanonical[enabled_offset] = 0x80;
         let state = pod_preset::PodTone::parse(noncanonical.clone())

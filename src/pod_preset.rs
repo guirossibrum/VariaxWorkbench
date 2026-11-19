@@ -1355,8 +1355,8 @@ pub struct PodTone {
     device_version: u32,
     container: ContainerKind,
     models: Vec<ModelSlot>,
-    /// MINF body offsets parallel to `models`; used for field-specific edits.
-    model_minfo_offsets: Vec<usize>,
+    /// Parsed MINF body ranges parallel to `models`; never extend into padding.
+    model_minfo_ranges: Vec<std::ops::Range<usize>>,
     parameter_value_offsets: Vec<Vec<Option<usize>>>,
 }
 
@@ -1458,7 +1458,7 @@ impl PodTone {
         let model_chunks = preset::chunks(&bytes, patch.data.start + 4..patch.data.end)
             .map_err(ToneError::format)?;
         let mut models = Vec::new();
-        let mut model_minfo_offsets = Vec::new();
+        let mut model_minfo_ranges = Vec::new();
         let mut parameter_value_offsets = Vec::new();
         for entry in model_chunks
             .iter()
@@ -1488,7 +1488,7 @@ impl PodTone {
                 (None, None, None)
             };
             let (parameters, offsets) = read_parameters(&bytes, &fields);
-            model_minfo_offsets.push(minf.data.start);
+            model_minfo_ranges.push(minf.data.clone());
             models.push(ModelSlot {
                 slot,
                 model_id: preset::word(&bytes, minf.data.start),
@@ -1507,7 +1507,7 @@ impl PodTone {
             device_version,
             container,
             models,
-            model_minfo_offsets,
+            model_minfo_ranges,
             parameter_value_offsets,
         })
     }
@@ -1616,20 +1616,22 @@ impl PodTone {
                 "EQ enable edit requires model {expected:08x} in slot {slot:08x}"
             )));
         }
-        let offset = *self
-            .model_minfo_offsets
+        let range = self
+            .model_minfo_ranges
             .get(model_index)
-            .ok_or_else(|| ToneError::format("model MINF source offset is unavailable"))?;
-        if offset
-            .checked_add(12)
-            .is_none_or(|end| end > self.bytes.len())
+            .ok_or_else(|| ToneError::format("model MINF source range is unavailable"))?;
+        if range.end > self.bytes.len()
+            || range
+                .start
+                .checked_add(12)
+                .is_none_or(|minimum_end| minimum_end > range.end)
         {
             return Err(ToneError::format(format!(
                 "{} enable edit requires an existing MINF body of at least 12 bytes",
                 control.label()
             )));
         }
-        Ok((model_index, offset))
+        Ok((model_index, range.start))
     }
 
     /// Amp model id when slot `0x00030000` is present.
@@ -3601,6 +3603,40 @@ mod tests {
         )
     }
 
+    fn short_enable_tone(minf_len: usize, following_byte: u8) -> Vec<u8> {
+        assert!((8..12).contains(&minf_len));
+        let tail = vec![0; minf_len - 8];
+        let mut bytes = custom_tone(
+            ContainerKind::L6as,
+            &[
+                BuiltModel {
+                    slot: AMP_SLOT,
+                    model_id: 0xdead_beef,
+                    tail: &tail,
+                    parameters: &[],
+                },
+                BuiltModel {
+                    slot: PODXT_EQ_SLOT,
+                    model_id: PODXT_EQ_MODEL_ID,
+                    tail: &tail,
+                    parameters: &[],
+                },
+            ],
+        );
+        for (model_id, slot) in [(0xdead_beef, AMP_SLOT), (PODXT_EQ_MODEL_ID, PODXT_EQ_SLOT)] {
+            let mut marker = model_id.to_be_bytes().to_vec();
+            marker.extend_from_slice(&slot.to_be_bytes());
+            let body = bytes
+                .windows(marker.len())
+                .position(|window| window == marker)
+                .unwrap();
+            // For short MINFs this absolute position is pad or following
+            // chunk data. Make it look canonical to prove it is not admitted.
+            bytes[body + 11] = following_byte;
+        }
+        bytes
+    }
+
     #[test]
     fn pod_model_enable_patches_only_the_selected_minf_byte_and_noops_same_value() {
         for control in [PodModelEnable::Amp, PodModelEnable::Eq] {
@@ -3615,7 +3651,7 @@ mod tests {
                     PodModelEnable::Amp => 0,
                     PodModelEnable::Eq => 1,
                 };
-                let enabled_offset = tone.model_minfo_offsets[model_index] + 11;
+                let enabled_offset = tone.model_minfo_ranges[model_index].start + 11;
                 let desired = initial == 0;
                 let mut expected = original.clone();
                 expected[enabled_offset] = u8::from(desired);
@@ -3747,6 +3783,56 @@ mod tests {
     }
 
     #[test]
+    fn pod_model_enable_rejects_short_minf_before_get_or_mutation() {
+        for minf_len in 8..12 {
+            for following_byte in [0, 1] {
+                let original = short_enable_tone(minf_len, following_byte);
+                let mut tone = PodTone::parse(original.clone()).unwrap();
+                let before = tone.clone();
+                for control in [PodModelEnable::Amp, PodModelEnable::Eq] {
+                    assert_eq!(
+                        tone.model_enable_state(control).unwrap_err().detail(),
+                        format!(
+                            "{} enable edit requires an existing MINF body of at least 12 bytes",
+                            control.label()
+                        )
+                    );
+                    for requested in [false, true] {
+                        assert!(tone.set_model_enabled(control, requested).is_err());
+                        assert_eq!(tone, before);
+                        assert_eq!(tone.as_bytes(), original);
+                    }
+                }
+
+                let mut library = Library::default();
+                let index = library.import_bytes(original.clone()).unwrap();
+                for control in [PodModelEnable::Amp, PodModelEnable::Eq] {
+                    for requested in [false, true] {
+                        assert!(library
+                            .set_model_enabled(index, control, requested)
+                            .is_err());
+                        assert_eq!(library.tone(index).unwrap().as_bytes(), original);
+                        assert!(!library.is_dirty(index));
+                    }
+                }
+
+                let mut bundle = PodBundleLibrary::parse(bundle_with_tone(&original)).unwrap();
+                let before = bundle.as_bytes().to_vec();
+                for control in [PodModelEnable::Amp, PodModelEnable::Eq] {
+                    assert!(bundle.tone(0, 0).unwrap().model_enable_state(control).is_err());
+                    for requested in [false, true] {
+                        assert!(bundle
+                            .set_model_enabled(0, control, requested)
+                            .is_err());
+                        assert_eq!(bundle.as_bytes(), before);
+                        assert!(!bundle.is_dirty());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn pod_model_enable_library_and_bundle_edits_track_dirty_revert_and_save_copy() {
         let original = enable_tone(0xdead_beef, PODXT_EQ_MODEL_ID, 0, 1);
         let wrong_eq = enable_tone(0xdead_beef, 0x020c_0003, 0, 1);
@@ -3765,7 +3851,7 @@ mod tests {
             .unwrap();
         assert!(library.is_dirty(index));
         let edited = library.tone(index).unwrap().as_bytes().to_vec();
-        let expected_offset = library.tone(index).unwrap().model_minfo_offsets[0] + 11;
+        let expected_offset = library.tone(index).unwrap().model_minfo_ranges[0].start + 11;
         assert_eq!(edited[expected_offset], 1);
         library
             .set_model_enabled(index, PodModelEnable::Amp, true)

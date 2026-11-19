@@ -169,9 +169,12 @@ AMP and non-Bass PODxt EQ stored enable flags are editable offline on an existin
 unambiguous target model. AMP control `0x40010001` requires exactly one model in
 slot `0x00030000` and intentionally has no additional model-ID allowlist; EQ
 control `0x40090000` requires model `0x020c0002` in slot `0x00030004`. Both
-require PINF target `0x0003000A`, host profile version at least 3.00, a 12-byte
-MINF, and current enabled byte exactly `0x00` or `0x01`. A typed boolean changes
-only MINF body byte 11 and corresponding in-memory metadata. Missing/duplicate/
+require PINF target `0x0003000A`, host profile version at least 3.00, a parsed
+MINF body range of at least 12 bytes, and current enabled byte exactly `0x00`
+or `0x01`. Getters and setters validate the actual MINF body range, not the
+file boundary, so IFF padding and following-chunk bytes can never stand in for
+the flag. A typed boolean changes only MINF body byte 11 and corresponding
+in-memory metadata. Missing/duplicate/
 wrong EQ targets, short MINF and noncanonical current bytes reject atomically.
 The edit preserves model id, slot, ordinal, reserved bytes, MINF tail, all PARM
 children and surrounding file bytes; it does not create or replace models or
@@ -303,8 +306,11 @@ hardware access.
 - The MINF enabled flag reads as signed Java `Read8() > 0`; bytes `0x80`
   through `0xFF` display as disabled and are preserved on read. Only explicit
   admitted AMP/EQ edits replace a canonical `0x00`/`0x01` byte at body offset
-  11. Noncanonical values remain visible with their source interpretation but
-  disable the toggle and are never normalized. This flag is not a bypass
+  11, and only when that byte lies within the parsed MINF body. Short 8–11-byte
+  MINFs remain readable, but getters and edits reject even if padding or the
+  next chunk begins with `0x00`/`0x01`. Noncanonical values remain visible with
+  their source interpretation but disable the toggle and are never normalized.
+  This flag is not a bypass
   meaning. Model id `0x7fffffff` has the asset name "Bypass" from
   `GetAssetName`; that name is a different field. The displayed ordinal is
   the signed Java value. Ordinal, reserved bytes and MINF tail stay unchanged.
