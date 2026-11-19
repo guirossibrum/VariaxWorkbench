@@ -1901,6 +1901,37 @@ impl Workbench {
                         self.apply_pod_amp_model_choice(choice);
                     }
                 }
+                let cab_state = self.pod_selected.and_then(|index| self.pod_library.tone(index).and_then(|tone| {
+                    (tone.container() == pod_preset::ContainerKind::L6as).then_some((index, tone.cab_model_id(), tone.cab_class(), tone.mic_choice()))
+                }));
+                if let Some((index, cab_id, class, mic)) = cab_state {
+                    let mut selected_cab = cab_id.and_then(pod_preset::PodCabModelChoice::from_model_id).unwrap_or_else(|| pod_preset::PodCabModelChoice::from_model_id(pod_preset::PODXT_CAB_MODEL_IDS[0]).expect("source CAB allowlist is nonempty"));
+                    ui.label(format!("CAB (offline) · current {} · MIC class {}", cab_id.map_or_else(|| "unavailable".into(), |id| format!("{id:08x}")), match class { Some(pod_preset::PodCabClass::Bass) => "bass", Some(pod_preset::PodCabClass::Other) => "standard", None => "unknown" }));
+                    ui.horizontal(|ui| {
+                        egui::ComboBox::from_id_salt("pod-cab-choice")
+                            .selected_text(selected_cab.numeric_label())
+                            .show_ui(ui, |ui| {
+                                for id in pod_preset::PODXT_CAB_MODEL_IDS {
+                                    if let Some(choice) = pod_preset::PodCabModelChoice::from_model_id(id) {
+                                        ui.selectable_value(&mut selected_cab, choice, format!("CAB {id:08x}"));
+                                    }
+                                }
+                            });
+                        if self.pod_button(ui, "pod-cab-apply", "Apply CAB") {
+                            self.pod_selected = Some(index);
+                            self.apply_pod_cab_model_choice(selected_cab);
+                        }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(format!("MIC current {}", mic.map_or_else(|| "unknown".into(), |m| m.value().to_string())));
+                        for value in 0..=3 {
+                            if self.pod_button(ui, &format!("pod-mic-{value}"), &format!("Apply MIC {value}")) {
+                                self.pod_selected = Some(index);
+                                if let Some(choice) = pod_preset::PodMicChoice::from_value(value) { self.apply_pod_mic_choice(choice); }
+                            }
+                        }
+                    });
+                }
                 ui.horizontal(|ui| {
                     ui.label("PINF name");
                     ui.text_edit_singleline(&mut self.pod_name);
@@ -2655,6 +2686,24 @@ impl Workbench {
                 }
                 Err(error) => self.pod_message = error.detail(),
             },
+            Err(error) => self.pod_message = rejection_text(&error),
+        }
+    }
+
+    fn apply_pod_cab_model_choice(&mut self, choice: pod_preset::PodCabModelChoice) {
+        let Some(index) = self.pod_selected else { return; };
+        let Some(current) = self.pod_library.tone(index).map(|tone| tone.as_bytes().to_vec()) else { return; };
+        match Session::initial_rig().set_pod_cab_model_choice(RoleKind::Pod, &current, choice) {
+            Ok(bytes) => match self.replace_pod_tone(index, bytes) { Ok(()) => self.pod_message = format!("Applied CAB {}. MIC value was preserved; nothing was sent.", choice.numeric_label()), Err(error) => self.pod_message = error.detail() },
+            Err(error) => self.pod_message = rejection_text(&error),
+        }
+    }
+
+    fn apply_pod_mic_choice(&mut self, choice: pod_preset::PodMicChoice) {
+        let Some(index) = self.pod_selected else { return; };
+        let Some(current) = self.pod_library.tone(index).map(|tone| tone.as_bytes().to_vec()) else { return; };
+        match Session::initial_rig().set_pod_mic_choice(RoleKind::Pod, &current, choice) {
+            Ok(bytes) => match self.replace_pod_tone(index, bytes) { Ok(()) => self.pod_message = format!("Applied MIC {}. Nothing was sent.", choice.value()), Err(error) => self.pod_message = error.detail() },
             Err(error) => self.pod_message = rejection_text(&error),
         }
     }

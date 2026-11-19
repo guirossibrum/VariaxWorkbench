@@ -267,6 +267,16 @@ impl Session {
         backend::set_pod_amp_model_choice(bytes, choice)
     }
 
+    pub fn set_pod_cab_model_choice(self, role: RoleKind, bytes: &[u8], choice: crate::pod_preset::PodCabModelChoice) -> Result<Vec<u8>, Rejection> {
+        self.require(role, Operation::EditPodPreset)?;
+        backend::set_pod_cab_model_choice(bytes, choice)
+    }
+
+    pub fn set_pod_mic_choice(self, role: RoleKind, bytes: &[u8], choice: crate::pod_preset::PodMicChoice) -> Result<Vec<u8>, Rejection> {
+        self.require(role, Operation::EditPodPreset)?;
+        backend::set_pod_mic_choice(bytes, choice)
+    }
+
     /// Writes a new copy through the non-overwriting save. It does not upload.
     pub fn save_pod_copy(self, role: RoleKind, path: &Path, bytes: &[u8]) -> Result<(), Rejection> {
         self.require(role, Operation::EditPodPreset)?;

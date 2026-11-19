@@ -203,8 +203,8 @@ not run.
 **Selector and storage mapping.** `SetupAmpCabPanel` binds CAB selector
 `0x10020000` to model slot `0x00030001`; the model setter calls `L6Model.SetID`
 on that slot and does not seed or rewrite its PARMs. `L6PODxtParamMap` returns
-one 47-id CAB list. Its first 25 ids are the contiguous range
-`0x01020000..=0x01020018`; the remaining 22 are
+one 47-id CAB list. Its first 25 ids are exactly
+`0x01020000..=0x01020016`, `0x01020018`, and `0x0102001a`; the remaining 22 are
 `0x01030001..=0x01030016`. The source `IsBassModel` predicate classifies the
 second range as bass cabs and the first range as non-bass. When a CAB model is
 missing, the original map can create it with model id `-1`, enabled `true`, and
@@ -213,10 +213,9 @@ slots rather than copying that creation behavior.
 
 **Eligibility and fallback.** `IsModelInstalled` sends the listed
 `0x01030001..=0x01030016` CAB ids to pack index 8. CAB selector handling
-substitutes `0x01020000` when that check fails. The listed
-`0x01020000..=0x01020018` ids do not have CAB cases in that switch and reach
+substitutes `0x01020000` when that check fails. The 25 corrected unconditional ids do not have CAB cases in that switch and reach
 its default-true branch. An offline file contains no authoritative pack state.
-The proposed first CAB-choice batch therefore admits exactly the 25
+The admitted CAB-choice operation therefore accepts exactly the 25
 default-true ids and rejects pack-gated CAB choices while their eligibility is
 unknown. It never silently applies the source editor's pack fallback, because
 the app cannot evaluate the source's installed-pack condition. `0x01020000` is
@@ -238,11 +237,11 @@ changes. A separate explicit MIC Apply can then choose an id under the new
 definition. Static `OnParamChange` pack fallback applies to the CAB model
 selector, not to MIC selector `0x00020001`.
 
-**Proposed Rust boundary.** Admit only FORM/L6AS, PINF layout 1, PODxt Live
+**Admitted Rust boundary.** Admit only FORM/L6AS, PINF layout 1, PODxt Live
 target `0x0003000A`, and the established conservative profile floor
 `0x03000000`. Require one existing CAB slot `0x00030001` and one complete MINF
 body of at least 12 bytes. A CAB Apply accepts only
-`0x01020000..=0x01020018`, changes only the first four CAB MINF bytes in
+the 25 corrected unconditional ids, changes only the first four CAB MINF bytes in
 big-endian order, and updates the decoded CAB id. It does not require, create,
 or change MIC PARM id `0`; if present, that entire record is preserved. The UI
 refreshes the MIC selector's choice definition from the new CAB id.
@@ -265,31 +264,26 @@ enabled/reserved fields, all MIC metadata, every unrelated PARM/chunk/pad and
 outer byte. No model or parameter defaults, slot creation, fallback, GUI send or
 device communication are part of this operation.
 
-Synthetic coverage proposed before implementation: iterate all 25 admitted
+Synthetic verification scope: iterate all 25 admitted
 CAB ids; test rejection of all pack-gated selector ids and non-list ids; cover
 both CAB classes' `0..=3` MIC meaning without publishing vendor labels; assert
 CAB Apply retains the raw MIC word while the UI derives the refreshed class;
 test CAB and MIC same-value no-op, unknown existing CAB rejection for MIC,
 missing/duplicate/truncated CAB MINF or MIC PARM, wrong target/container/type,
 exact raw write sets, failure atomicity, library/bundle/session/GUI dirty-save-
-reopen-revert and quit safeguards. These tests would establish Rust behavior
-only.
+reopen-revert and quit safeguards. These tests establish Rust behavior only.
 
-**Admission request.** Please admit or correct this exact split policy before
-any CAB/MIC write code is added: CAB selection supports only the unconditional
-default-true `0x01020000..=0x01020018` set, rejects the `0x01030001..=0x01030016`
-pack-gated set instead of guessing or applying fallback, while MIC editing may
-use either association definition for a currently stored listed CAB id and
-updates only existing CAB `PARM` id `0`. In particular, confirm that retaining
-the MIC numeric id across an explicit CAB change, while refreshing its displayed
-definition and requiring a separate explicit MIC Apply to change it, is the
-desired file-preserving policy. No CAB/MIC write operation is admitted until
-this answer.
+**Admission erratum (Gatekeeper review, PR #95).** CAB selection supports only
+`0x01020000..=0x01020016`, plus `0x01020018` and `0x0102001a`; holes
+`0x01020017` and `0x01020019` reject. The exact `0x01030001..=0x01030016`
+set is pack-gated and rejects with no fallback. MIC class derives from the
+current exact CAB id. CAB changes preserve the raw MIC integer; a separate
+explicit MIC Apply changes it. Gatekeeper admitted this scoped offline operation.
 
-## Proposed operation contract for Gatekeeper admission
+## Admitted CAB/MIC operation contract
 
-This proposes a boundary for a future offline implementation; no selection
-operation is implemented by this document.
+This records the admitted boundary and implemented offline operations. It does
+not claim connected-device behavior.
 
 1. **Target:** only a parsed PODxt Live file with PINF target `0x0003000A` and
    supported individual-tone container `L6PA`, `L6FS` or `L6AS`. Never admit a
@@ -330,12 +324,12 @@ operation is implemented by this document.
    contract must precede these tests; synthetic fixtures cannot establish
    vendor applicability.
 
-**Admission status:** the concrete two-choice AMP record above is admitted and
-implemented in PR #95 for existing-slot FORM/L6PA MINF model IDs only. All four
-configured checks passed on code head `2c12b380e397747cd3c866107bec69bafb9cd023`;
-the independent review found no new AMP defect. The refined CAB/MIC proposal
-above awaits technical admission; no CAB/MIC write operation is implemented or
-admitted. Historical GUI same-choice event emission is unknown, but does not
-block the explicit Apply/file-diff policy for AMP.
+**Admission status:** AMP and the corrected CAB/MIC operations are admitted. CAB
+Apply is limited to existing-slot FORM/L6AS MINF IDs; MIC Apply is a separate
+existing CAB PARM id 0 integer edit. The current implementation revision is
+under exact-head configured validation; the issue remains partial because its
+three parent acceptance criteria include broader POD format/control, library,
+and compatibility work. Historical GUI same-choice event emission remains
+unknown; the offline same-value policy is a byte/decoded/dirty no-op.
 Existing admitted operations, including AMP/EQ stored model-enable flags, do
 not need renewed per-leaf scope approval.
