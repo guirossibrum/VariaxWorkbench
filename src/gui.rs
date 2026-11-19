@@ -1201,6 +1201,12 @@ impl Workbench {
         }
         let native = self.recorder.take_can_save_aiff();
         let can_save = self.recorder.take_can_save_wav() || native;
+        let save_label = match (native, self.recorder.phase()) {
+            (true, recording::Phase::Recording) => "Stop and save AIFF copy…",
+            (true, _) => "Save AIFF copy…",
+            (false, recording::Phase::Recording) => "Stop and save WAV copy…",
+            (false, _) => "Save WAV copy…",
+        };
         let mut save = false;
         let mut discard = false;
         let mut cancel = false;
@@ -1211,13 +1217,13 @@ impl Workbench {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
             .show(ctx, |ui| {
-                ui.label("This in-memory test take has not been saved.");
+                ui.label("This test take or its pending capture recovery data has not been fully saved or explicitly discarded.");
                 if native {
                     ui.label("Exact-clock AIFF preserves 78125/2. Other software may round this rate; verify imports.");
                 }
                 ui.label(self.recorder.message());
                 ui.horizontal(|ui| {
-                    let response = ui.add_enabled(can_save, egui::Button::new(if native { "Stop and save AIFF copy…" } else { "Stop and save WAV copy…" }));
+                    let response = ui.add_enabled(can_save, egui::Button::new(save_label));
                     #[cfg(test)]
                     self.pending_buttons.insert("save", response.rect);
                     save = response.clicked();

@@ -35,17 +35,38 @@ its existing direct `Take` workflow. This is offline in-app integration only;
 it does not create or open an operating-system capture stream.
 
 The session is a deterministic software contract, not a live real-time callback
-or stream initializer. The inactive Linux ALSA adapter translates the admitted
-PODxt negotiation tuple and already-obtained interleaved S24_3LE periods into
-this session. It has no FFI, endpoint discovery, PCM handle, or production
-initialization route. Its constants match the installed ALSA 1.2.16.1
-`/usr/include/alsa/pcm.h` declaration: `SND_PCM_ACCESS_RW_INTERLEAVED` is 3,
-`SND_PCM_FORMAT_S24_3LE` is 32, and `snd_pcm_hw_params_get_rate_numden` exposes
-the rational clock pair. The inspected header SHA-256 is
+or stream initializer. The inactive Linux ALSA translator now requires a
+`ValidatedPlan` token created from the frozen registry; it revalidates source
+identity, route kind, declaration, provenance, format, channel map, and exact
+rational clock together with the supplied PCM negotiation tuple. A same-shaped
+tuple cannot promote a software or unknown source to PODxt. This remains a
+static source admission, not a report of physical runtime negotiation.
+
+The adapter's pure `translate_read_result` boundary models the installed ALSA
+`snd_pcm_readi` contract: a signed frame count, requested frame capacity, and a
+borrowed interleaved buffer. It checks the buffer's byte extent from the admitted
+two-channel three-byte sample format and only copies the returned frame prefix
+into the bounded common queue. The borrow ends before the callback returns; no
+native buffer or PCM handle is retained. Negative `-EPIPE` results are retained
+as terminal discontinuities and other negative errno results as terminal
+adapter failures. ALSA read results do not report the exact lost-frame count,
+so the adapter does not invent dropout duration or silence for an xrun. This
+translation has no FFI, endpoint discovery, PCM handle, or production
+initialization route.
+
+Native numeric values match the installed ALSA 1.2.16.1
+`/usr/include/alsa/pcm.h`: `SND_PCM_ACCESS_RW_INTERLEAVED` is 3,
+`SND_PCM_FORMAT_S24_3LE` is 32, `snd_pcm_sframes_t` is `long`,
+`snd_pcm_readi` returns that signed frame type, and
+`snd_pcm_hw_params_get_rate_numden` exposes the rational clock pair. The
+`-EPIPE` and `-ESTRPIPE` results are translated using the local Linux errno
+headers (`/usr/include/asm-generic/errno-base.h` defines `EPIPE=32`;
+`/usr/include/asm-generic/errno.h` defines `ESTRPIPE=86`). The inspected ALSA
+header SHA-256 is
 `7b7bee209aca7a45b16c475bd950920b70b55734a6d80efedac1c98ed4a7e25e`. The
-adapter rejects other access modes, formats, channel counts, and clocks.
-Construction and tests consume supplied values; they do not query ALSA or a
-device.
+adapter rejects other access modes, formats, channel counts, clocks, impossible
+frame counts, and buffers outside the bounded period size. Construction and
+tests consume supplied values; they do not query ALSA or a device.
 
 `SoftwareClockTracker` accepts explicit monotonic software timestamps and
 cumulative frame positions. It computes expected elapsed nanoseconds using the
@@ -66,16 +87,36 @@ PODxt plans can be validated offline; the Linux ALSA adapter consumes that
 static declaration but does not open a native route. It does not establish a
 physical capture backend or actual negotiation results.
 
-Platform blockers are tied to the inspected repository evidence:
+Platform blockers are tied to concrete source and bounded local environment
+checks. The local search covered `/usr/include`, `/usr/local/include`, `/opt`,
+and the existing Cargo registry source cache; it found no Windows SDK
+`audioclient.h`/`mmdeviceapi.h` or macOS Core Audio `AudioHardware.h`,
+`AudioUnit.h`, or AudioQueue headers. `cargo`, `rustc`, and `rustup` are not
+installed in this contributor shell. The configured
+`.github/workflows/offline-core.yml` matrix runs portable-core/file checks on
+Ubuntu 24.04, Windows 2025, and macOS 15, with no WASAPI/Core Audio adapter
+target or SDK contract step. Those jobs are not native-adapter compile proof.
+
+Platform blockers:
 
 | Platform | Available source paths and facts | Exact missing contract and effect |
 | --- | --- | --- |
-| Windows | `src/linux_transport.rs` records a PODxt Live hardware ID without an interface/endpoint audio contract. `docs/pod-usb-audio.md` identifies Windows packet text as a different-source clue, not a PODxt Live negotiated format or callback contract. `src/pod_hd500x.rs` records HD500X INF defaults only. | No admitted PODxt Live WASAPI endpoint/format/rational clock/channel/callback ownership/lifetime contract. `audioclient.h`, `mmdeviceapi.h`, and the matching Windows SDK were not found in this environment. Without those inputs an inactive WASAPI adapter cannot be source-checked or cross-compiled; the available ID/default fields cannot safely construct its callback contract. |
-| macOS | `src/linux_transport.rs` and `docs/pod-usb-audio.md` record a static macOS audio personality identity only; no audio endpoint mapping or stream contract is included. | No admitted PODxt Live `AudioStreamBasicDescription`, buffer-list, callback ownership, or lifetime contract. Core Audio headers (`AudioHardware.h`, `AudioUnit.h`, and AudioQueue headers) and the matching macOS SDK were not found in this environment. The identity-only personality cannot safely construct an inactive adapter or its compile checks. |
+| Windows | `src/linux_transport.rs` records a PODxt Live hardware ID without an interface/endpoint audio contract. `docs/pod-usb-audio.md` identifies Windows packet text as a different-source clue, not a PODxt Live negotiated format or callback contract. `src/pod_hd500x.rs` records HD500X INF defaults only. The local bounded header/cache search found no Windows SDK headers. | Missing PODxt Live `IMMDevice`/`IAudioClient` stream ownership and `GetBuffer`/`ReleaseBuffer` callback-lifetime contract, plus source-qualified endpoint channels, sample format, and rational clock. The portable-core Windows CI job does not compile an adapter or provide the missing SDK/API contract. Guessing ABI layouts or borrowing another product's defaults is not safe. |
+| macOS | `src/linux_transport.rs` and `docs/pod-usb-audio.md` record a static macOS audio personality identity only; no audio endpoint mapping or stream contract is included. The local bounded header/cache search found no Core Audio SDK headers. | Missing PODxt Live `AudioStreamBasicDescription`, `AudioBufferList`, callback ownership/lifetime, and source-qualified endpoint channels, sample format, and rational clock. The portable-core macOS CI job does not compile an adapter or provide the missing SDK/API contract. The identity-only personality cannot establish the native stream layout. |
 
-The task forbids acquiring new SDKs or source files, so those contracts cannot
+The task forbids acquiring new SDKs or source files, so the OS contracts cannot
 be filled by guessing API structures or by using another product's defaults.
-Independent external-interface records are also absent: `research/audio-inventory-schema2.tsv`, `src/rig/audio.rs`, and `docs/audio-capability-registry.md` contain no record binding an exact interface identity/revision to input channels and mapping, supported sample format, rational source clock, backend, and provenance. The PODxt declaration is a Linux static driver capability, not an external interface or a runtime-negotiated result. No physical capture or hardware clock timing is inferred. There is no global audio setting, privileged path, monitor/re-amp activation, or hardware override.
+The independently admitted external-interface record is missing entirely. In
+`research/audio-inventory-schema2.tsv` the inventory schema has only `name` and
+`role`; `src/rig/audio.rs` exports one static PODxt Live Linux declaration;
+`docs/audio-capability-registry.md` leaves other rows unresolved or denied. No
+admitted row binds a canonical interface identity and revision to the input
+channel map, sample format, rational source clock, OS backend, and evidence
+provenance. Those are the missing fields and source relation needed before an
+external plan can pass admission. The PODxt declaration is not an external
+interface or a runtime-negotiated result. No physical capture or hardware
+clock timing is inferred. There is no global audio setting, privileged path,
+monitor/re-amp activation, or hardware override.
 
 Validation is limited to deterministic injected buffers, software file input,
 the frozen static registry, and the configured exact-head command-v1 checks.

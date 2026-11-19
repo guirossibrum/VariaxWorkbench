@@ -1166,6 +1166,7 @@ pub struct Panel {
     capture: Option<capture::CaptureSession>,
     capture_generation: u64,
     take_saved: bool,
+    recovery_events_outstanding: bool,
     cursor: u64,
     levels: Levels,
     message: String,
@@ -1193,6 +1194,7 @@ impl Panel {
             capture: None,
             capture_generation: 0,
             take_saved: false,
+            recovery_events_outstanding: false,
             cursor: 0,
             levels: Levels::default(),
             message: "Select a route, an input, and a clock. Nothing starts until you press Start."
@@ -1219,7 +1221,12 @@ impl Panel {
     /// The current take has not completed a successful file save. Even an
     /// armed, empty take is protected until explicitly saved or discarded.
     pub fn has_unsaved_take(&self) -> bool {
-        self.current_take().is_some() && !self.take_saved
+        self.recovery_events_outstanding
+            || self
+                .capture
+                .as_ref()
+                .is_some_and(|capture| capture.pending_events() != 0)
+            || (self.current_take().is_some() && !self.take_saved)
     }
 
     /// PCM WAV capability only; exact-clock AIFF has separate admission.
@@ -1245,11 +1252,36 @@ impl Panel {
     pub fn take_pending_capture_events(
         &mut self,
     ) -> Result<Vec<capture::PendingCaptureEvent>, TakeError> {
-        self.capture
+        let events = self.capture
             .as_mut()
             .ok_or(TakeError::NotRecording)?
             .take_pending_events()
+            .map_err(|error| TakeError::Capture(error.to_string()))?;
+        self.recovery_events_outstanding |= !events.is_empty();
+        Ok(events)
+    }
+
+    /// Clears the dirty recovery guard only after the caller has handled the
+    /// extracted events. Cancel/discard also clears this state explicitly.
+    pub fn acknowledge_recovered_capture_events(&mut self) {
+        self.recovery_events_outstanding = false;
+    }
+
+    pub fn submit_capture_chunk(&mut self, generation: u64, bytes: &[u8]) -> Result<(), TakeError> {
+        self.capture
+            .as_mut()
+            .ok_or(TakeError::NotRecording)?
+            .callback_chunk(generation, bytes)
             .map_err(|error| TakeError::Capture(error.to_string()))
+    }
+
+    pub fn drain_capture(&mut self) -> Result<usize, TakeError> {
+        let capture = self.capture.as_mut().ok_or(TakeError::NotRecording)?;
+        let drained = capture
+            .drain()
+            .map_err(|error| TakeError::Capture(error.to_string()))?;
+        self.levels = capture.last_levels();
+        Ok(drained)
     }
 
     pub fn message(&self) -> &str {
@@ -1378,6 +1410,7 @@ impl Panel {
             self.cursor = 0;
             self.levels = Levels::default();
             self.take_saved = false;
+            self.recovery_events_outstanding = false;
             self.message = "Recording armed from the selected WAV through the bounded offline capture session. Feed a chunk, then stop; nothing is saved yet.".into();
             return Ok(());
         }
@@ -1436,6 +1469,7 @@ impl Panel {
         self.levels = Levels::default();
         self.take = Some(take);
         self.take_saved = false;
+        self.recovery_events_outstanding = false;
         self.message = "Recording armed. Feed a chunk, then stop. Nothing is saved yet.".into();
         Ok(())
     }
@@ -1519,6 +1553,7 @@ impl Panel {
         }
         self.take = None;
         self.take_saved = false;
+        self.recovery_events_outstanding = false;
         self.cursor = 0;
         self.levels = Levels::default();
         self.message = PHASE_CANCELLED.into();
@@ -1530,7 +1565,8 @@ impl Panel {
             .current_take()
             .ok_or(TakeError::NotStopped)?
             .save(path)?;
-        self.take_saved = true;
+        self.take_saved = !self.recovery_events_outstanding
+            && self.capture.as_ref().is_none_or(|capture| capture.pending_events() == 0);
         self.message = format!("Saved {}", path.display());
         Ok(saved)
     }
@@ -1546,7 +1582,8 @@ impl Panel {
             .current_take()
             .ok_or(TakeError::NotStopped)?
             .save_aiff(path)?;
-        self.take_saved = true;
+        self.take_saved = !self.recovery_events_outstanding
+            && self.capture.as_ref().is_none_or(|capture| capture.pending_events() == 0);
         self.message = format!(
             "Saved exact-clock AIFF {}. Other software may round this rate; verify imports.",
             path.display()
@@ -1995,6 +2032,71 @@ mod tests {
         panel.cancel().unwrap();
         assert!(!panel.has_unsaved_take());
         assert_eq!(std::fs::read(blocked).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn committed_take_save_does_not_clear_uncommitted_capture_recovery_guard() {
+        let registry = crate::rig::audio::Registry::frozen().unwrap();
+        let capture_row = registry
+            .rows()
+            .iter()
+            .find(|row| {
+                row.name == "PODxt Live" && row.role == crate::rig::audio::SourceRole::Bridge
+            })
+            .unwrap()
+            .ordinal;
+        let plan = capture::ValidatedPlan::native_podxt(
+            &registry,
+            crate::rig::audio::Request {
+                capture_row,
+                capture_profile: crate::rig::ProductProfile::PodxtLive,
+                connected_instrument: None,
+                platform: crate::rig::audio::Platform::Linux,
+                state: crate::rig::audio::RuntimeState::Normal,
+                endpoint_use: crate::rig::audio::EndpointUse::Capture,
+                contract: crate::rig::audio::CONTRACT,
+                installed_revision: None,
+                channels: 2,
+                clock: (78_125, 2),
+                format: SampleFormat::S24ThreeByteLe,
+            },
+            RecordRoute::SendCleanGuitar,
+            1024,
+        )
+        .unwrap();
+        let mut panel = Panel::new();
+        panel.route = Some(RecordRoute::SendCleanGuitar);
+        panel.clock = ClockSelection::NativePodxt;
+        panel.input = InputSelection::Synthetic;
+        panel.capture_generation = 700;
+        panel.capture = Some(capture::CaptureSession::start(plan, 700).unwrap());
+
+        let committed = [0x12; 66];
+        panel.submit_capture_chunk(700, &committed).unwrap();
+        panel.drain_capture().unwrap();
+        let pending = [1, 2, 3, 4, 5, 6];
+        panel.submit_capture_chunk(700, &pending).unwrap();
+        assert!(panel.stop().is_err());
+        assert_eq!(panel.capture_session().unwrap().take().pcm(), committed);
+        assert!(panel.has_unsaved_take());
+
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("committed-only.aiff");
+        panel.save_aiff(&first).unwrap();
+        assert!(first.exists());
+        assert!(panel.has_unsaved_take());
+        assert_eq!(
+            panel.take_pending_capture_events().unwrap(),
+            vec![capture::PendingCaptureEvent::Audio(pending.to_vec())]
+        );
+        assert!(panel.has_unsaved_take());
+
+        panel.acknowledge_recovered_capture_events();
+        assert!(panel.has_unsaved_take());
+        let second = directory.path().join("recovered.aiff");
+        panel.save_aiff(&second).unwrap();
+        assert!(second.exists());
+        assert!(!panel.has_unsaved_take());
     }
 
     #[test]

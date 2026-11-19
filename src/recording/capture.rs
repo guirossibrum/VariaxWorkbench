@@ -81,6 +81,9 @@ pub enum CaptureError {
     Clock(ClockError),
     WrongThread,
     StaleGeneration,
+    AdapterFailure(i32),
+    AdapterDiscontinuity(i32),
+    AdapterSuspended(i32),
     QueueFull,
     EmptyChunk,
     MisalignedChunk,
@@ -498,6 +501,7 @@ impl CaptureSession {
     /// clock synchronization.
     pub fn observe_software_clock(
         &mut self,
+        generation: u64,
         cumulative_frames: u64,
         monotonic_ns: u64,
         dropout_frames: u64,
@@ -505,6 +509,9 @@ impl CaptureSession {
         self.check_owner()?;
         if self.take.phase() != Phase::Recording || self.terminal || self.stopped {
             return Err(self.terminal_error.clone().unwrap_or(CaptureError::Stopped));
+        }
+        if generation != self.generation {
+            return self.fail(CaptureError::StaleGeneration);
         }
         match self
             .clock
@@ -525,14 +532,14 @@ impl CaptureSession {
     /// no adapter invocation. Queue ownership is deliberately single-thread.
     pub fn callback_chunk(&mut self, generation: u64, bytes: &[u8]) -> Result<(), CaptureError> {
         self.check_owner()?;
-        if generation != self.generation {
-            return self.fail(CaptureError::StaleGeneration);
-        }
         if self.terminal {
             return Err(self.error.clone().unwrap_or(CaptureError::Stopped));
         }
         if self.stopped {
-            return self.fail(CaptureError::Stopped);
+            return Err(self.terminal_error.clone().unwrap_or(CaptureError::Stopped));
+        }
+        if generation != self.generation {
+            return self.fail(CaptureError::StaleGeneration);
         }
         if bytes.is_empty() {
             return self.fail(CaptureError::EmptyChunk);
@@ -591,6 +598,77 @@ impl CaptureSession {
         self.queued_bytes += stereo.len();
         self.queue.push_back(QueueEvent::Audio(stereo));
         Ok(())
+    }
+
+    /// Queues an adapter-reported discontinuity in source order. The event is
+    /// bounded by the same take budget as audio and becomes silence only when
+    /// the consumer drains it into the Take.
+    pub fn callback_dropout(&mut self, generation: u64, missing_frames: u64) -> Result<(), CaptureError> {
+        self.check_owner()?;
+        if self.terminal || self.stopped || self.take.phase() != Phase::Recording {
+            return Err(self.terminal_error.clone().unwrap_or(CaptureError::Stopped));
+        }
+        if generation != self.generation {
+            return self.fail(CaptureError::StaleGeneration);
+        }
+        if missing_frames == 0 {
+            return self.fail(CaptureError::EmptyChunk);
+        }
+        let frame_bytes = self.output_frame_bytes() as u64;
+        let Some(gap_bytes) = missing_frames.checked_mul(frame_bytes) else {
+            return self.terminal_failure(CaptureError::Take(TakeError::CapExceeded));
+        };
+        let used_bytes = (self.take.pcm().len() as u64)
+            .saturating_add(self.queued_bytes as u64)
+            .saturating_add(self.queued_gap_frames.saturating_mul(frame_bytes));
+        if used_bytes.saturating_add(gap_bytes) > self.plan.max_take_bytes {
+            return self.terminal_failure(CaptureError::Take(TakeError::CapExceeded));
+        }
+        if let Some(QueueEvent::Gap(previous)) = self.queue.back_mut() {
+            *previous = previous.saturating_add(missing_frames);
+        } else {
+            if self.queue.len() >= MAX_QUEUE_EVENTS {
+                return self.terminal_failure(CaptureError::QueueFull);
+            }
+            self.queue.push_back(QueueEvent::Gap(missing_frames));
+        }
+        self.queued_gap_frames = self.queued_gap_frames.saturating_add(missing_frames);
+        Ok(())
+    }
+
+    /// Retains a native adapter error as the stable terminal cause and freezes
+    /// later input. The numeric code is adapter evidence, not a live probe.
+    pub fn adapter_failure(&mut self, generation: u64, code: i32) -> Result<(), CaptureError> {
+        self.check_owner()?;
+        if self.terminal || self.stopped || self.take.phase() != Phase::Recording {
+            return Err(self.terminal_error.clone().unwrap_or(CaptureError::Stopped));
+        }
+        if generation != self.generation {
+            return self.fail(CaptureError::StaleGeneration);
+        }
+        self.terminal_failure(CaptureError::AdapterFailure(code))
+    }
+
+    pub fn adapter_discontinuity(&mut self, generation: u64, code: i32) -> Result<(), CaptureError> {
+        self.check_owner()?;
+        if self.terminal || self.stopped || self.take.phase() != Phase::Recording {
+            return Err(self.terminal_error.clone().unwrap_or(CaptureError::Stopped));
+        }
+        if generation != self.generation {
+            return self.fail(CaptureError::StaleGeneration);
+        }
+        self.terminal_failure(CaptureError::AdapterDiscontinuity(code))
+    }
+
+    pub fn adapter_suspended(&mut self, generation: u64, code: i32) -> Result<(), CaptureError> {
+        self.check_owner()?;
+        if self.terminal || self.stopped || self.take.phase() != Phase::Recording {
+            return Err(self.terminal_error.clone().unwrap_or(CaptureError::Stopped));
+        }
+        if generation != self.generation {
+            return self.fail(CaptureError::StaleGeneration);
+        }
+        self.terminal_failure(CaptureError::AdapterSuspended(code))
     }
 
     /// Consumer-side work drains queued chunks into existing bounded Take
@@ -856,6 +934,33 @@ mod tests {
         assert_eq!(session.take().frames(), 20_481);
     }
 
+    #[test]
+    fn explicit_adapter_dropout_stays_between_accepted_audio_events() {
+        let mut session = CaptureSession::start(file_plan(), 41).unwrap();
+        let before = [0x11, 0x00, 0x22, 0x00];
+        let after = [0x33, 0x00, 0x44, 0x00];
+        session.callback_chunk(41, &before).unwrap();
+        session.callback_dropout(41, 3).unwrap();
+        session.callback_chunk(41, &after).unwrap();
+        session.drain().unwrap();
+        assert_eq!(
+            session.take().pcm(),
+            &[
+                0x11, 0x00, 0x22, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x33, 0x00,
+                0x44, 0x00,
+            ]
+        );
+        assert_eq!(
+            session
+                .take()
+                .dropouts()
+                .iter()
+                .map(|gap| (gap.at_frame, gap.missing_frames))
+                .collect::<Vec<_>>(),
+            vec![(1, 3)]
+        );
+    }
+
     fn native_request(instrument: Option<ProductProfile>) -> (Registry, Request<'static>) {
         let registry = Registry::frozen().unwrap();
         let row = registry
@@ -922,9 +1027,9 @@ mod tests {
                 .unwrap();
         let mut session = CaptureSession::start(plan, 11).unwrap();
         assert_eq!(session.plan().clock, (78_125, 2));
-        session.observe_software_clock(0, 1_000, 0).unwrap();
+        session.observe_software_clock(11, 0, 1_000, 0).unwrap();
         let observation = session
-            .observe_software_clock(1_000, 25_601_000, 2)
+            .observe_software_clock(11, 1_000, 25_601_000, 2)
             .unwrap();
         assert_eq!(observation.expected_elapsed_ns, 25_600_000);
         assert_eq!(observation.observed_elapsed_ns, 25_600_000);
@@ -933,10 +1038,42 @@ mod tests {
         assert_eq!(session.clock_measurement(), Some(observation));
         session.stop().unwrap();
         assert_eq!(
-            session.observe_software_clock(2_000, 51_201_000, 0),
+            session.observe_software_clock(11, 2_000, 51_201_000, 0),
             Err(CaptureError::Stopped)
         );
         assert_eq!(session.clock_measurement(), Some(observation));
+    }
+
+    #[test]
+    fn stale_and_wrong_thread_clock_observations_do_not_change_measurement() {
+        let (registry, request) = native_request(None);
+        let plan = ValidatedPlan::native_podxt(
+            &registry,
+            request,
+            RecordRoute::SendCleanGuitar,
+            1024,
+        )
+        .unwrap();
+        let mut session = CaptureSession::start(plan, 111).unwrap();
+        let origin = session.observe_software_clock(111, 0, 1_000, 0).unwrap();
+        assert_eq!(
+            session.observe_software_clock(110, 1_000, 25_601_000, 0),
+            Err(CaptureError::StaleGeneration)
+        );
+        assert_eq!(session.clock_measurement(), Some(origin));
+
+        let (mut session, result) = std::thread::spawn(move || {
+            let result = session.observe_software_clock(111, 1_000, 25_601_000, 0);
+            (session, result)
+        })
+        .join()
+        .unwrap();
+        assert_eq!(result, Err(CaptureError::WrongThread));
+        assert_eq!(session.clock_measurement(), Some(origin));
+        let valid = session
+            .observe_software_clock(111, 1_000, 25_601_000, 0)
+            .unwrap();
+        assert_eq!(valid.drift_ppm, Some(0));
     }
 
     #[test]
