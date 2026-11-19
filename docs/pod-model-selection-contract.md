@@ -245,6 +245,78 @@ after (178 bytes; FORM length 0x000000aa):
 00b0: 55 66
 ```
 
+## Stomp model selector: admitted offline ID-only operation
+
+The retained Line6Edit 3.06 source maps selector `0x10030000` to the existing
+Stomp model at slot `0x00020003`. The selector uses `GetSingleSlotModel`; the
+host may create a missing model, but this application does not. Its resolved
+model-selector branch calls `L6Model.SetID`, which assigns only the in-memory
+model id. That does not prove vendor serialization behavior. The Rust edit is
+an explicit conservative policy that clones the original tone, patches only the
+first four big-endian MINF bytes, reparses the full candidate, and publishes it
+only after all guards pass.
+
+The exact 31 source IDs are `STOMP_CONTROL_MODEL_IDS`; all are accepted as raw
+current imports. The Pack 4 predicate gates these exact 17 IDs:
+`02050006`, `02050001`, `02000006`, `02050007`, `02000003`, `020a000a`,
+`020a000b`, `020a000c`, `020a0008`, `020a0005`, `020a0006`, `020a0007`,
+`020a0003`, `020a0004`, `020a0009`, `020a0001`, and `020a0002`. The remaining
+14 source IDs, in provider order, are the only typed requested choices:
+`02050000`, `02050002`, `02050003`, `02050005`, `02050004`, `02000002`,
+`02000004`, `02000005`, `02000007`, `020a0000`, `02050008`, `02050009`,
+`020a000d`, `020a000e`. In particular `02050006` is Pack 4 gated. A gated
+current value may transition to any of the 14 choices; file contents are never
+used to infer entitlement. Unknown current IDs remain raw but are not editable.
+
+The operation requires one individual `FORM/L6PA`, PINF v1 target
+`0x0003000A`, profile floor `0x03000000`, exactly one Stomp slot
+`0x00020003`, one unique MINF of at least 12 body bytes, and a source-listed
+current model ID. Missing/duplicate slots or MINF, short MINF, wrong target,
+container/profile, or unknown current ID reject atomically. The typed choice
+API cannot express a Pack 4-gated request, even as a same-ID request. A valid
+same-ID request validates every guard first, then preserves bytes, decoded
+state, and dirty baseline. Actual changes retain all other MINF bytes, slot,
+enable/reserved bytes, parameters, opaque children, padding, lengths, and
+unrelated data. Model change invalidates Stomp Harmony staged state for that
+tone; unrelated Delay/Mod staging remains. Failure or no-op preserves staging.
+No parameters are reset, created or reconciled, and nothing is transmitted.
+
+**Literal independent whole-buffer fixture.** This valid synthetic 178-byte
+`FORM/L6PA` before/after pair has a Stomp model at slot `0x00020003`, opaque
+PARM, noncanonical MINF reserved/enabled bytes, and unknown child. Only the
+model ID bytes at offsets `0x90..0x94` change from `0x02050000` to
+`0x02050002`.
+
+```text
+before (178 bytes; FORM length 0x000000aa):
+0000: 46 4f 52 4d 00 00 00 aa 4c 36 50 41 4a 55 4e 4b
+0010: 00 00 00 03 11 22 33 a5 50 49 4e 46 00 00 00 50
+0020: 00 00 00 01 00 03 00 0a 00 41 00 00 00 00 00 00
+0030: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0040: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0050: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0060: 00 00 00 00 00 00 00 00 03 00 00 00 5a a5 96 69
+0070: 4c 49 53 54 00 00 00 3a 50 41 54 43 4c 49 53 54
+0080: 00 00 00 2e 4d 4f 44 4c 4d 49 4e 46 00 00 00 0c
+0090: 02 05 00 00 00 02 00 03 fe 12 34 01 50 41 52 4d
+00a0: 00 00 00 03 de ad be a5 58 54 52 41 00 00 00 02
+00b0: 55 66
+
+after (178 bytes; FORM length 0x000000aa):
+0000: 46 4f 52 4d 00 00 00 aa 4c 36 50 41 4a 55 4e 4b
+0010: 00 00 00 03 11 22 33 a5 50 49 4e 46 00 00 00 50
+0020: 00 00 00 01 00 03 00 0a 00 41 00 00 00 00 00 00
+0030: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0040: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0050: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0060: 00 00 00 00 00 00 00 00 03 00 00 00 5a a5 96 69
+0070: 4c 49 53 54 00 00 00 3a 50 41 54 43 4c 49 53 54
+0080: 00 00 00 2e 4d 4f 44 4c 4d 49 4e 46 00 00 00 0c
+0090: 02 05 00 02 00 02 00 03 fe 12 34 01 50 41 52 4d
+00a0: 00 00 00 03 de ad be a5 58 54 52 41 00 00 00 02
+00b0: 55 66
+```
+
 ## CAB/MIC source trace and proposed bounded operation
 
 This is a source-backed proposal for Gatekeeper technical admission. It adds no

@@ -725,6 +725,66 @@ fn pod_mod_model_choice_session_checks_role_target_and_host_profile() {
 }
 
 #[test]
+fn pod_stomp_model_choice_session_checks_role_target_profile_and_write_set() {
+    use crate::pod_preset::{PODXT_LIVE_HOST_MIN_VERSION, PodStompModelChoice, STOMP_SLOT};
+
+    let session = Session::initial_rig();
+    let original = crate::pod_preset::fixture(
+        crate::pod_preset::ContainerKind::L6pa,
+        PODXT_LIVE_PRODUCT_ID,
+        PODXT_LIVE_HOST_MIN_VERSION,
+        &[(STOMP_SLOT, 0x0205_0006)],
+    );
+    let choice = PodStompModelChoice::try_from(0x0205_0000).unwrap();
+    let edited = session
+        .set_pod_stomp_model_choice(RoleKind::Pod, &original, choice)
+        .unwrap();
+    let offset = original
+        .windows(4)
+        .position(|word| word == 0x0205_0006u32.to_be_bytes())
+        .unwrap();
+    assert_eq!(
+        &edited[offset..offset + 4],
+        &choice.model_id().to_be_bytes()
+    );
+    assert!(
+        original
+            .iter()
+            .zip(&edited)
+            .enumerate()
+            .all(|(i, (a, b))| { a == b || (offset..offset + 4).contains(&i) })
+    );
+    assert!(matches!(
+        session.set_pod_stomp_model_choice(RoleKind::Guitar, &original, choice),
+        Err(Rejection::Unsupported {
+            profile: ProductProfile::Variax600,
+            operation: Operation::EditPodPreset,
+        })
+    ));
+
+    let wrong_target = crate::pod_preset::fixture(
+        crate::pod_preset::ContainerKind::L6pa,
+        0x0003_000b,
+        PODXT_LIVE_HOST_MIN_VERSION,
+        &[(STOMP_SLOT, 0x0205_0006)],
+    );
+    assert!(matches!(
+        session.set_pod_stomp_model_choice(RoleKind::Pod, &wrong_target, choice),
+        Err(Rejection::Format { .. })
+    ));
+    let old_profile = crate::pod_preset::fixture(
+        crate::pod_preset::ContainerKind::L6pa,
+        PODXT_LIVE_PRODUCT_ID,
+        PODXT_LIVE_HOST_MIN_VERSION - 1,
+        &[(STOMP_SLOT, 0x0205_0006)],
+    );
+    assert!(matches!(
+        session.set_pod_stomp_model_choice(RoleKind::Pod, &old_profile, choice),
+        Err(Rejection::Format { .. })
+    ));
+}
+
+#[test]
 fn pod_cab_and_mic_apply_are_role_gated_and_keep_their_separate_write_sets() {
     use crate::pod_preset::{CAB_SLOT, PODXT_BASS_CAB_MODEL_IDS, PodCabModelChoice, PodMicChoice};
 

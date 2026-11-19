@@ -494,6 +494,52 @@ pub const STOMP_CONTROL_MODEL_IDS: [u32; 31] = [
     0x020a_000d,
     0x020a_000e,
 ];
+/// The 14 Stomp ids with no Pack 4 case in the Line6Edit PODxt selector guard.
+/// Gated ids remain valid imports but are not constructible requested choices.
+pub const STOMP_MODEL_CHOICE_IDS: [u32; 14] = [
+    0x0205_0000,
+    0x0205_0002,
+    0x0205_0003,
+    0x0205_0005,
+    0x0205_0004,
+    0x0200_0002,
+    0x0200_0004,
+    0x0200_0005,
+    0x0200_0007,
+    0x020a_0000,
+    0x0205_0008,
+    0x0205_0009,
+    0x020a_000d,
+    0x020a_000e,
+];
+
+/// Closed requested Stomp model choice for the conservative offline selector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PodStompModelChoice(u32);
+
+impl PodStompModelChoice {
+    pub const MODEL_IDS: [u32; 14] = STOMP_MODEL_CHOICE_IDS;
+
+    pub const fn model_id(self) -> u32 {
+        self.0
+    }
+
+    pub fn from_model_id(id: u32) -> Option<Self> {
+        Self::MODEL_IDS.contains(&id).then_some(Self(id))
+    }
+
+    pub fn numeric_label(self) -> String {
+        format!("Stomp {:08x}", self.0)
+    }
+}
+
+impl TryFrom<u32> for PodStompModelChoice {
+    type Error = u32;
+
+    fn try_from(id: u32) -> Result<Self, Self::Error> {
+        Self::from_model_id(id).ok_or(id)
+    }
+}
 /// Stomp Drive selector passed through `GetFXParamDef`.
 pub const STOMP_DRIVE_SELECTOR: u32 = 0x0003_0001;
 /// Raw semantic PARM identifier selected for Stomp Drive.
@@ -2369,6 +2415,80 @@ impl PodTone {
             .map(|model| model.model_id)
     }
 
+    /// Apply one admitted Stomp choice to the existing slot's MINF model ID.
+    /// This conservative file-only operation changes no parameters or other bytes.
+    pub fn set_stomp_model_choice(&mut self, choice: PodStompModelChoice) -> Result<(), ToneError> {
+        if self.container != ContainerKind::L6pa {
+            return Err(ToneError::format(
+                "Stomp model selection requires a FORM/L6PA tone",
+            ));
+        }
+        if self.device_id != PODXT_LIVE_TONE_ID {
+            return Err(ToneError::format(
+                "Stomp model selection requires the PODxt Live PINF target",
+            ));
+        }
+        if self.device_version < PODXT_LIVE_HOST_MIN_VERSION {
+            return Err(ToneError::format(
+                "Stomp model selection requires the PODxt Live host profile minimum 3.00",
+            ));
+        }
+
+        let matches: Vec<_> = self
+            .models
+            .iter()
+            .enumerate()
+            .filter(|(_, model)| model.slot == STOMP_SLOT)
+            .map(|(index, _)| index)
+            .collect();
+        let [model_index] = matches.as_slice() else {
+            return Err(ToneError::format(format!(
+                "Stomp model selection requires exactly one existing model in slot {STOMP_SLOT:08x}"
+            )));
+        };
+        let model_index = *model_index;
+        let current = self.models[model_index].model_id;
+        if !STOMP_CONTROL_MODEL_IDS.contains(&current) {
+            return Err(ToneError::format(format!(
+                "unknown current Stomp model id {current:08x}"
+            )));
+        }
+        let range = self
+            .model_minfo_ranges
+            .get(model_index)
+            .cloned()
+            .ok_or_else(|| ToneError::format("Stomp model MINF source range is unavailable"))?;
+        if range.end > self.bytes.len()
+            || range
+                .start
+                .checked_add(12)
+                .is_none_or(|end| end > range.end)
+        {
+            return Err(ToneError::format(
+                "Stomp model selection requires an existing MINF body of at least 12 bytes",
+            ));
+        }
+
+        let requested = choice.model_id();
+        if current == requested {
+            return Ok(());
+        }
+        let mut candidate = self.bytes.clone();
+        candidate[range.start..range.start + 4].copy_from_slice(&requested.to_be_bytes());
+        let parsed = Self::parse(candidate)?;
+        if parsed
+            .models
+            .get(model_index)
+            .is_none_or(|model| model.model_id != requested || model.slot != STOMP_SLOT)
+        {
+            return Err(ToneError::format(
+                "Stomp model candidate did not reparse to the requested model",
+            ));
+        }
+        *self = parsed;
+        Ok(())
+    }
+
     /// Mod model id when the primary Mod slot `0x00020004` is present.
     pub fn mod_model_id(&self) -> Option<u32> {
         self.models
@@ -4123,6 +4243,18 @@ impl Library {
         entry.tone.set_mod_model_choice(choice)
     }
 
+    pub fn set_stomp_model_choice(
+        &mut self,
+        index: usize,
+        choice: PodStompModelChoice,
+    ) -> Result<(), ToneError> {
+        let entry = self
+            .tones
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
+        entry.tone.set_stomp_model_choice(choice)
+    }
+
     pub fn set_cab_model_choice(
         &mut self,
         index: usize,
@@ -5030,6 +5162,14 @@ impl PodBundleLibrary {
         choice: PodModModelChoice,
     ) -> Result<(), ToneError> {
         self.edit_entry(index, |tone| tone.set_mod_model_choice(choice))
+    }
+
+    pub fn set_stomp_model_choice(
+        &mut self,
+        index: usize,
+        choice: PodStompModelChoice,
+    ) -> Result<(), ToneError> {
+        self.edit_entry(index, |tone| tone.set_stomp_model_choice(choice))
     }
 
     pub fn set_cab_model_choice(
@@ -13327,6 +13467,317 @@ pub(crate) mod tests {
                 assert_eq!(reparsed.models()[0].slot, MOD_SLOT);
             }
         }
+    }
+
+    #[test]
+    fn stomp_model_choice_partition_and_full_buffer_matrix_are_exact() {
+        assert_eq!(STOMP_CONTROL_MODEL_IDS.len(), 31);
+        assert_eq!(STOMP_MODEL_CHOICE_IDS.len(), 14);
+        for id in STOMP_MODEL_CHOICE_IDS {
+            assert!(STOMP_CONTROL_MODEL_IDS.contains(&id));
+        }
+        let gated = [
+            0x0205_0006,
+            0x0205_0001,
+            0x0200_0006,
+            0x0205_0007,
+            0x0200_0003,
+            0x020a_000a,
+            0x020a_000b,
+            0x020a_000c,
+            0x020a_0008,
+            0x020a_0005,
+            0x020a_0006,
+            0x020a_0007,
+            0x020a_0003,
+            0x020a_0004,
+            0x020a_0009,
+            0x020a_0001,
+            0x020a_0002,
+        ];
+        assert_eq!(gated.len(), 17);
+        for id in gated {
+            assert!(STOMP_CONTROL_MODEL_IDS.contains(&id));
+            assert!(!STOMP_MODEL_CHOICE_IDS.contains(&id));
+            assert!(PodStompModelChoice::try_from(id).is_err());
+        }
+        for (index, left) in STOMP_CONTROL_MODEL_IDS.iter().enumerate() {
+            for right in STOMP_CONTROL_MODEL_IDS.iter().skip(index + 1) {
+                assert_ne!(left, right);
+            }
+        }
+
+        for current in STOMP_CONTROL_MODEL_IDS {
+            let original = custom_tone(
+                ContainerKind::L6pa,
+                &[BuiltModel {
+                    slot: STOMP_SLOT,
+                    model_id: current,
+                    tail: &[0x80, 0xa5, 0x00, 0xfe, 0x55],
+                    parameters: &[&[0xde, 0xad, 0xbe]],
+                }],
+            );
+            for requested in STOMP_MODEL_CHOICE_IDS {
+                let choice = PodStompModelChoice::try_from(requested).unwrap();
+                let mut tone = PodTone::parse(original.clone()).unwrap();
+                let before = tone.as_bytes().to_vec();
+                let minf = tone.model_minfo_ranges[0].start;
+                let mut expected = before.clone();
+                if current != requested {
+                    expected[minf..minf + 4].copy_from_slice(&requested.to_be_bytes());
+                }
+                tone.set_stomp_model_choice(choice).unwrap();
+                assert_eq!(
+                    tone.as_bytes(),
+                    expected,
+                    "{current:08x} -> {requested:08x}"
+                );
+                let reopened = PodTone::parse(tone.as_bytes().to_vec()).unwrap();
+                assert_eq!(reopened.stomp_model_id(), Some(requested));
+                assert_eq!(reopened.models()[0].slot, STOMP_SLOT);
+                assert_eq!(reopened.models()[0].ordinal, Some(-128));
+                assert_eq!(reopened.models()[0].reserved, Some([0xa5, 0x00]));
+                assert_eq!(reopened.models()[0].enabled, Some(false));
+            }
+        }
+    }
+
+    #[test]
+    fn stomp_model_selection_rejects_bad_structure_and_context_atomically() {
+        let choice = PodStompModelChoice::try_from(0x0205_0002).unwrap();
+        for (kind, slot, current) in [
+            (ContainerKind::L6as, STOMP_SLOT, 0x0205_0000),
+            (ContainerKind::L6pa, MOD_SLOT, 0x0205_0000),
+            (ContainerKind::L6pa, STOMP_SLOT, 0xdead_beef),
+        ] {
+            let mut tone = PodTone::parse(custom_tone(
+                kind,
+                &[BuiltModel {
+                    slot,
+                    model_id: current,
+                    tail: &[1, 2, 3, 4],
+                    parameters: &[],
+                }],
+            ))
+            .unwrap();
+            let before = tone.as_bytes().to_vec();
+            assert!(tone.set_stomp_model_choice(choice).is_err());
+            assert_eq!(tone.as_bytes(), before);
+        }
+
+        for tail in [&[][..], &[0][..], &[0, 0][..], &[0, 0, 1][..]] {
+            let mut tone = PodTone::parse(custom_tone(
+                ContainerKind::L6pa,
+                &[BuiltModel {
+                    slot: STOMP_SLOT,
+                    model_id: 0x0205_0000,
+                    tail,
+                    parameters: &[],
+                }],
+            ))
+            .unwrap();
+            let before = tone.as_bytes().to_vec();
+            assert!(tone.set_stomp_model_choice(choice).is_err());
+            assert_eq!(tone.as_bytes(), before);
+        }
+
+        for models in [
+            vec![],
+            vec![
+                BuiltModel {
+                    slot: STOMP_SLOT,
+                    model_id: 0x0205_0000,
+                    tail: &[0; 4],
+                    parameters: &[],
+                },
+                BuiltModel {
+                    slot: STOMP_SLOT,
+                    model_id: 0x0205_0002,
+                    tail: &[0; 4],
+                    parameters: &[],
+                },
+            ],
+        ] {
+            let bytes = custom_tone(ContainerKind::L6pa, &models);
+            if models.len() == 2 {
+                assert!(PodTone::parse(bytes.clone()).is_err());
+                continue;
+            }
+            let mut tone = PodTone::parse(bytes).unwrap();
+            let before = tone.as_bytes().to_vec();
+            assert!(tone.set_stomp_model_choice(choice).is_err());
+            assert_eq!(tone.as_bytes(), before);
+        }
+
+        let mut wrong_target = custom_tone(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: STOMP_SLOT,
+                model_id: 0x0205_0000,
+                tail: &[0; 4],
+                parameters: &[],
+            }],
+        );
+        // PINF target resides at the fixture's standard target word offset.
+        let target = wrong_target
+            .windows(8)
+            .position(|window| window == b"\0\0\0\x01\0\x03\0\x0a")
+            .unwrap()
+            + 4;
+        wrong_target[target + 3] ^= 1;
+        assert!(PodTone::parse(wrong_target.clone()).is_err());
+        assert_eq!(wrong_target[target + 3], 0x0b);
+
+        let old_profile = fixture(
+            ContainerKind::L6pa,
+            PODXT_LIVE_TONE_ID,
+            PODXT_LIVE_HOST_MIN_VERSION - 1,
+            &[(STOMP_SLOT, 0x0205_0000)],
+        );
+        let mut tone = PodTone::parse(old_profile.clone()).unwrap();
+        assert!(tone.set_stomp_model_choice(choice).is_err());
+        assert_eq!(tone.as_bytes(), old_profile);
+
+        fn alter_stomp_minfo(mut bytes: Vec<u8>, duplicate: bool) -> Vec<u8> {
+            let root = preset::chunks(&bytes, 12..bytes.len()).unwrap();
+            let patch = root
+                .iter()
+                .find(|chunk| {
+                    chunk.id == *b"LIST"
+                        && &bytes[chunk.data.start..chunk.data.start + 4] == b"PATC"
+                })
+                .unwrap()
+                .clone();
+            let models = preset::chunks(&bytes, patch.data.start + 4..patch.data.end).unwrap();
+            let model = models
+                .iter()
+                .find(|chunk| {
+                    chunk.id == *b"LIST"
+                        && &bytes[chunk.data.start..chunk.data.start + 4] == b"MODL"
+                })
+                .unwrap()
+                .clone();
+            let fields = preset::chunks(&bytes, model.data.start + 4..model.data.end).unwrap();
+            let minf = fields
+                .iter()
+                .find(|chunk| chunk.id == *b"MINF")
+                .unwrap()
+                .clone();
+            let start = minf.data.start - 8;
+            let end = minf.data.end + minf.data.len() % 2;
+            let payload = bytes[start..end].to_vec();
+            if duplicate {
+                bytes.splice(end..end, payload.iter().copied());
+            } else {
+                bytes.drain(start..end);
+            }
+            let delta = if duplicate {
+                payload.len() as i32
+            } else {
+                -(payload.len() as i32)
+            };
+            for chunk_start in [model.data.start - 8, patch.data.start - 8] {
+                let length = preset::word(&bytes, chunk_start + 4) as i32;
+                bytes[chunk_start + 4..chunk_start + 8]
+                    .copy_from_slice(&(length + delta).to_be_bytes());
+            }
+            let root_length = preset::word(&bytes, 4) as i32;
+            bytes[4..8].copy_from_slice(&(root_length + delta).to_be_bytes());
+            bytes
+        }
+        for duplicate in [false, true] {
+            let malformed = alter_stomp_minfo(
+                custom_tone(
+                    ContainerKind::L6pa,
+                    &[BuiltModel {
+                        slot: STOMP_SLOT,
+                        model_id: 0x0205_0000,
+                        tail: &[0; 4],
+                        parameters: &[],
+                    }],
+                ),
+                duplicate,
+            );
+            assert!(PodTone::parse(malformed).is_err());
+        }
+    }
+
+    #[test]
+    fn stomp_model_choice_matches_independent_whole_file_fixture_and_reopens() {
+        fn vector(text: &str, marker: &str, stop: &str) -> Vec<u8> {
+            let section = text.split_once(marker).unwrap().1;
+            section
+                .lines()
+                .take_while(|line| !line.starts_with(stop))
+                .filter_map(|line| line.split_once(':').map(|(_, bytes)| bytes))
+                .flat_map(str::split_whitespace)
+                .map(|byte| u8::from_str_radix(byte, 16).unwrap())
+                .collect()
+        }
+        let contract = include_str!("../docs/pod-model-selection-contract.md")
+            .split_once("## Stomp model selector: admitted offline ID-only operation")
+            .unwrap()
+            .1;
+        let before = vector(
+            contract,
+            "before (178 bytes; FORM length 0x000000aa):",
+            "after (178 bytes; FORM length 0x000000aa):",
+        );
+        let expected = vector(
+            contract,
+            "after (178 bytes; FORM length 0x000000aa):",
+            "```",
+        );
+        assert_eq!(before.len(), 178);
+        assert_eq!(expected.len(), 178);
+        let mut tone = PodTone::parse(before).unwrap();
+        tone.set_stomp_model_choice(PodStompModelChoice::try_from(0x0205_0002).unwrap())
+            .unwrap();
+        assert_eq!(tone.as_bytes(), expected);
+        let reopened = PodTone::parse(tone.as_bytes().to_vec()).unwrap();
+        assert_eq!(reopened.stomp_model_id(), Some(0x0205_0002));
+    }
+
+    #[test]
+    fn stomp_model_library_and_bundle_apply_track_dirty_revert_and_save_collision() {
+        let original = fixture(
+            ContainerKind::L6pa,
+            PODXT_LIVE_TONE_ID,
+            PODXT_LIVE_HOST_MIN_VERSION,
+            &[(STOMP_SLOT, 0x020a_000a)],
+        );
+        let choice = PodStompModelChoice::try_from(0x0205_0000).unwrap();
+        let mut library = Library::default();
+        let index = library.import_bytes(original.clone()).unwrap();
+        library.set_stomp_model_choice(index, choice).unwrap();
+        assert!(library.is_dirty(index));
+        assert_eq!(
+            library.tone(index).unwrap().stomp_model_id(),
+            Some(choice.model_id())
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let copy = directory.path().join("stomp-choice.l6t");
+        library.tone(index).unwrap().save_copy(&copy).unwrap();
+        let saved = std::fs::read(&copy).unwrap();
+        assert_eq!(PodTone::parse(saved.clone()).unwrap().as_bytes(), saved);
+        assert!(library.tone(index).unwrap().save_copy(&copy).is_err());
+        assert_eq!(std::fs::read(&copy).unwrap(), saved);
+        library.revert_unsaved(index).unwrap();
+        assert!(!library.is_dirty(index));
+        assert_eq!(library.tone(index).unwrap().as_bytes(), original);
+
+        let mut bundle = PodBundleLibrary::parse(bundle_with_tone(&original)).unwrap();
+        let before = bundle.as_bytes().to_vec();
+        bundle.set_stomp_model_choice(0, choice).unwrap();
+        assert!(bundle.is_dirty());
+        let (bank, preset) = bundle.entry_location(0).unwrap();
+        assert_eq!(
+            bundle.tone(bank, preset).unwrap().stomp_model_id(),
+            Some(choice.model_id())
+        );
+        bundle.revert().unwrap();
+        assert_eq!(bundle.as_bytes(), before);
+        assert!(!bundle.is_dirty());
     }
 
     #[test]

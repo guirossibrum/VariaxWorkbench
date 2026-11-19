@@ -247,6 +247,7 @@ struct Workbench {
     pod_cab_pending: Option<(usize, pod_preset::PodCabModelChoice)>,
     pod_delay_model_pending: Option<(usize, pod_preset::PodDelayModelChoice)>,
     pod_mod_model_pending: Option<(usize, pod_preset::PodModModelChoice)>,
+    pod_stomp_model_pending: Option<(usize, pod_preset::PodStompModelChoice)>,
     pod_harmony_pending: Option<(usize, pod_preset::StompHarmonyControl, PendingStompHarmony)>,
     pod_delay_pending: Option<(usize, PendingDelayEdit)>,
     pod_mod_pending: Option<(usize, PendingModEdit)>,
@@ -302,6 +303,10 @@ struct Workbench {
     pod_mod_model_combo: Option<Rect>,
     #[cfg(test)]
     pod_mod_model_options: HashMap<u32, Rect>,
+    #[cfg(test)]
+    pod_stomp_model_combo: Option<Rect>,
+    #[cfg(test)]
+    pod_stomp_model_options: HashMap<u32, Rect>,
     #[cfg(test)]
     pod_mod_note_options: HashMap<pod_preset::ModNoteChoice, Rect>,
     #[cfg(test)]
@@ -375,6 +380,7 @@ impl Workbench {
             pod_cab_pending: None,
             pod_delay_model_pending: None,
             pod_mod_model_pending: None,
+            pod_stomp_model_pending: None,
             pod_harmony_pending: None,
             pod_delay_pending: None,
             pod_mod_pending: None,
@@ -430,6 +436,10 @@ impl Workbench {
             pod_mod_model_combo: None,
             #[cfg(test)]
             pod_mod_model_options: HashMap::new(),
+            #[cfg(test)]
+            pod_stomp_model_combo: None,
+            #[cfg(test)]
+            pod_stomp_model_options: HashMap::new(),
             #[cfg(test)]
             pod_mod_note_options: HashMap::new(),
             #[cfg(test)]
@@ -1575,6 +1585,7 @@ impl Workbench {
         self.pod_cab_pending = None;
         self.pod_delay_model_pending = None;
         self.pod_mod_model_pending = None;
+        self.pod_stomp_model_pending = None;
         self.pod_harmony_pending = None;
         self.pod_delay_pending = None;
         self.pod_mod_pending = None;
@@ -1916,6 +1927,8 @@ impl Workbench {
             self.pod_stomp_wave_choices.clear();
             self.pod_harmony1_choices.clear();
             self.pod_harmony2_choices.clear();
+            self.pod_stomp_model_combo = None;
+            self.pod_stomp_model_options.clear();
         }
         let mut open = true;
         egui::Window::new("Offline PODxt Live tones")
@@ -2042,6 +2055,7 @@ impl Workbench {
                             self.pod_cab_pending = None;
                             self.pod_delay_model_pending = None;
                             self.pod_mod_model_pending = None;
+                            self.pod_stomp_model_pending = None;
                             self.pod_harmony_pending = None;
                             self.pod_delay_pending = None;
                             self.pod_mod_pending = None;
@@ -2547,6 +2561,72 @@ impl Workbench {
                 let delay_model_state = self.pod_selected.and_then(|index| self.pod_library.tone(index).and_then(|tone| {
                     (tone.container() == pod_preset::ContainerKind::L6pa).then_some((index, tone.models().iter().find(|m| m.slot == pod_preset::DELAY_SLOT || m.slot == 0x0005_0004).map(|m| m.model_id)))
                 }));
+                let stomp_model_state = self.pod_selected.and_then(|index| {
+                    self.pod_library.tone(index).and_then(|tone| {
+                        (tone.container() == pod_preset::ContainerKind::L6pa).then(|| {
+                            let matches: Vec<_> = tone.models().iter()
+                                .filter(|model| model.slot == pod_preset::STOMP_SLOT)
+                                .map(|model| model.model_id)
+                                .collect();
+                            (index, matches.first().copied(), matches.len())
+                        })
+                    })
+                });
+                if let Some((index, current, slot_count)) = stomp_model_state {
+                    let mut selected = self.pod_stomp_model_pending
+                        .filter(|(pending_index, _)| *pending_index == index)
+                        .map(|(_, choice)| Some(choice))
+                        .or_else(|| current.and_then(pod_preset::PodStompModelChoice::from_model_id).map(Some))
+                        .unwrap_or(None);
+                    let selected_text = selected
+                        .map(pod_preset::PodStompModelChoice::numeric_label)
+                        .unwrap_or_else(|| current.map_or_else(|| "Select model".into(), |id| format!("{id:08x} (current only)")));
+                    ui.separator();
+                    let current_text = current.map_or_else(|| "unavailable".into(), |id| {
+                        if pod_preset::STOMP_CONTROL_MODEL_IDS.contains(&id) {
+                            format!("{id:08x}{}", if pod_preset::PodStompModelChoice::from_model_id(id).is_some() { "" } else { " (Pack 4 gated; preserved)" })
+                        } else { format!("{id:08x} (unknown; preserved)" ) }
+                    });
+                    ui.label(format!("Stomp model ID (offline; parameters retained, no reset) · current {current_text}"));
+                    if slot_count == 1 {
+                        let mut changed = None;
+                        let combo = egui::ComboBox::from_id_salt("pod-stomp-model-choice")
+                            .selected_text(selected_text)
+                            .show_ui(ui, |ui| {
+                                for id in pod_preset::PodStompModelChoice::MODEL_IDS {
+                                    let choice = pod_preset::PodStompModelChoice::from_model_id(id)
+                                        .expect("listed Stomp model id is admitted");
+                                    let response = ui.selectable_value(&mut selected, Some(choice), format!("{id:08x}"));
+                                    #[cfg(test)] self.pod_stomp_model_options.insert(id, response.rect);
+                                    if response.changed() { changed = Some(choice); }
+                                }
+                            });
+                        #[cfg(test)] { self.pod_stomp_model_combo = Some(combo.response.rect); }
+                        #[cfg(not(test))] let _ = combo;
+                        if let Some(choice) = changed { self.pod_stomp_model_pending = Some((index, choice)); }
+                        if let Some((pending_index, choice)) = self.pod_stomp_model_pending.filter(|(pending_index, _)| *pending_index == index) {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("Pending {} (not applied)", choice.numeric_label()));
+                                let apply = ui.button("Apply Stomp model");
+                                #[cfg(test)] self.pod_buttons.insert("pod-stomp-model-apply", apply.rect);
+                                if apply.clicked() {
+                                    match self.apply_pod_stomp_model_choice(pending_index, choice) {
+                                        Ok(changed) => {
+                                            if changed { self.pod_stomp_model_pending = None; }
+                                            self.pod_message = if changed { "Applied the Stomp model ID offline; stored parameters were retained. Nothing was sent.".into() } else { "The Stomp model ID already matched; no bytes or staging changed.".into() };
+                                        }
+                                        Err(error) => self.pod_message = error.detail(),
+                                    }
+                                }
+                                let discard = ui.button("Discard");
+                                #[cfg(test)] self.pod_buttons.insert("pod-stomp-model-discard", discard.rect);
+                                if discard.clicked() { self.pod_stomp_model_pending = None; }
+                            });
+                        }
+                    } else {
+                        ui.small("Stomp model selection requires exactly one existing Stomp slot; no slot will be created.");
+                    }
+                }
                 if let Some((index, current)) = delay_model_state {
                     let mut selected = self.pod_delay_model_pending
                         .filter(|(i, _)| *i == index)
@@ -3331,6 +3411,7 @@ impl Workbench {
                                 self.pod_cab_pending = None;
                                 self.pod_delay_model_pending = None;
                                 self.pod_mod_model_pending = None;
+                                self.pod_stomp_model_pending = None;
                                 self.pod_delay_pending = None;
                                 self.pod_mod_pending = None;
                                 self.pod_harmony_pending = None;
@@ -3476,6 +3557,33 @@ impl Workbench {
             self.pod_mod_pending = None;
         }
         Ok(())
+    }
+
+    fn apply_pod_stomp_model_choice(
+        &mut self,
+        index: usize,
+        choice: pod_preset::PodStompModelChoice,
+    ) -> Result<bool, pod_preset::ToneError> {
+        let current = self
+            .pod_library
+            .tone(index)
+            .ok_or_else(|| pod_preset::ToneError::format("POD selection is out of range"))?
+            .as_bytes()
+            .to_vec();
+        let replacement = Session::initial_rig()
+            .set_pod_stomp_model_choice(RoleKind::Pod, &current, choice)
+            .map_err(|error| pod_preset::ToneError::format(rejection_text(&error)))?;
+        if replacement == current {
+            return Ok(false);
+        }
+        self.replace_pod_tone(index, replacement)?;
+        if self
+            .pod_harmony_pending
+            .is_some_and(|(pending_index, _, _)| pending_index == index)
+        {
+            self.pod_harmony_pending = None;
+        }
+        Ok(true)
     }
 
     fn apply_pod_cab_model_choice(&mut self, choice: pod_preset::PodCabModelChoice) {
@@ -4747,6 +4855,37 @@ mod tests {
         chunk(b"FORM", &data)
     }
 
+    fn sample_stomp_model_tone(model_id: u32) -> Vec<u8> {
+        fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+            let mut bytes = id.to_vec();
+            bytes.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(data);
+            if !data.len().is_multiple_of(2) {
+                bytes.push(0xa5);
+            }
+            bytes
+        }
+        let mut info = vec![0; 80];
+        info[..4].copy_from_slice(&1u32.to_be_bytes());
+        info[4..8].copy_from_slice(&pod_preset::PODXT_LIVE_TONE_ID.to_be_bytes());
+        info[8..10].copy_from_slice(&u16::from(b'S').to_be_bytes());
+        info[72..76].copy_from_slice(&pod_preset::PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
+        let mut minf = Vec::new();
+        minf.extend_from_slice(&model_id.to_be_bytes());
+        minf.extend_from_slice(&pod_preset::STOMP_SLOT.to_be_bytes());
+        minf.extend_from_slice(&[0xfe, 0x12, 0x34, 0x01]);
+        let mut model = b"MODL".to_vec();
+        model.extend(chunk(b"MINF", &minf));
+        model.extend(chunk(b"PARM", &[0xde, 0xad, 0xbe]));
+        model.extend(chunk(b"XTRA", &[0x55, 0x66]));
+        let mut patch = b"PATC".to_vec();
+        patch.extend(chunk(b"LIST", &model));
+        let mut data = b"L6PA".to_vec();
+        data.extend(chunk(b"PINF", &info));
+        data.extend(chunk(b"LIST", &patch));
+        chunk(b"FORM", &data)
+    }
+
     fn sample_pod_bundle(tones: &[Vec<u8>]) -> Vec<u8> {
         fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
             let mut output = id.to_vec();
@@ -5496,6 +5635,18 @@ mod tests {
         click_pod_at_tall(context, app, combo.center());
         recording_frame_tall(context, app, vec![]);
         let option = app.pod_mod_model_options[&model_id];
+        click_pod_at_tall(context, app, option.center());
+        recording_frame_tall(context, app, vec![]);
+    }
+
+    fn choose_stomp_model_popup(context: &egui::Context, app: &mut Workbench, model_id: u32) {
+        recording_frame_tall(context, app, vec![]);
+        let combo = app
+            .pod_stomp_model_combo
+            .expect("Stomp model selector is rendered");
+        click_pod_at_tall(context, app, combo.center());
+        recording_frame_tall(context, app, vec![]);
+        let option = app.pod_stomp_model_options[&model_id];
         click_pod_at_tall(context, app, option.center());
         recording_frame_tall(context, app, vec![]);
     }
@@ -7321,6 +7472,147 @@ mod tests {
             assert_eq!(app.pod_mod_model_pending, None);
             app.pod_delay_pending = None;
         }
+    }
+
+    #[test]
+    fn stomp_model_gui_directly_replaces_all_gated_current_ids_and_invalidates_only_stomp_stage() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let gated = [
+            0x0205_0006,
+            0x0205_0001,
+            0x0200_0006,
+            0x0205_0007,
+            0x0200_0003,
+            0x020a_000a,
+            0x020a_000b,
+            0x020a_000c,
+            0x020a_0008,
+            0x020a_0005,
+            0x020a_0006,
+            0x020a_0007,
+            0x020a_0003,
+            0x020a_0004,
+            0x020a_0009,
+            0x020a_0001,
+            0x020a_0002,
+        ];
+        for current_id in gated {
+            let original = sample_stomp_model_tone(current_id);
+            let index = app.pod_library.import_bytes(original.clone()).unwrap();
+            app.pod_selected = Some(index);
+            recording_frame_tall(&context, &mut app, vec![]);
+            assert_eq!(
+                app.pod_library.tone(index).unwrap().stomp_model_id(),
+                Some(current_id),
+                "gated current id {current_id:08x} stays raw"
+            );
+            app.pod_harmony_pending = Some((
+                index,
+                pod_preset::StompHarmonyControl::Harmony1M335,
+                PendingStompHarmony::Harmony1M335(pod_preset::StompHarmony1M335Selection::Unison),
+            ));
+            app.pod_delay_pending = Some((index, PendingDelayEdit::TimeMs(350.0)));
+            app.pod_mod_pending = Some((index, PendingModEdit::SpeedHz(2.0)));
+            choose_stomp_model_popup(&context, &mut app, 0x0205_0000);
+            assert_eq!(
+                app.pod_stomp_model_pending.unwrap().1.model_id(),
+                0x0205_0000
+            );
+            assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), original);
+            click_pod_button_tall(&context, &mut app, "pod-stomp-model-apply");
+            let applied = app.pod_library.tone(index).unwrap();
+            assert_eq!(applied.stomp_model_id(), Some(0x0205_0000));
+            assert!(app.pod_library.is_dirty(index));
+            assert_eq!(app.pod_stomp_model_pending, None);
+            assert_eq!(app.pod_harmony_pending, None);
+            assert_eq!(
+                app.pod_delay_pending,
+                Some((index, PendingDelayEdit::TimeMs(350.0)))
+            );
+            assert_eq!(
+                app.pod_mod_pending,
+                Some((index, PendingModEdit::SpeedHz(2.0)))
+            );
+            let changed: Vec<_> = original
+                .iter()
+                .zip(applied.as_bytes())
+                .enumerate()
+                .filter_map(|(offset, (before, after))| (before != after).then_some(offset))
+                .collect();
+            let id_offset = original
+                .windows(4)
+                .position(|window| window == current_id.to_be_bytes())
+                .unwrap();
+            assert!(!changed.is_empty());
+            assert!(
+                changed
+                    .iter()
+                    .all(|offset| (id_offset..id_offset + 4).contains(offset))
+            );
+            app.pod_delay_pending = None;
+            app.pod_mod_pending = None;
+        }
+    }
+
+    #[test]
+    fn stomp_model_gui_discards_and_bundle_apply_reopens_preserving_copy() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let original = sample_stomp_model_tone(0x0205_0006);
+        app.load_pod_bundle_bytes(sample_pod_bundle(std::slice::from_ref(&original)))
+            .unwrap();
+        recording_frame_tall(&context, &mut app, vec![]);
+        choose_stomp_model_popup(&context, &mut app, 0x0205_0000);
+        click_pod_button_tall(&context, &mut app, "pod-stomp-model-discard");
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+
+        choose_stomp_model_popup(&context, &mut app, 0x0205_0002);
+        click_pod_button_tall(&context, &mut app, "pod-stomp-model-apply");
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        let bundle_tone = app.pod_bundle.as_ref().unwrap().tone(0, 0).unwrap();
+        assert_eq!(bundle_tone.stomp_model_id(), Some(0x0205_0002));
+        let directory = tempfile::tempdir().unwrap();
+        let copy = directory.path().join("stomp-bundle-copy.l6c");
+        app.pod_bundle.as_ref().unwrap().save_copy(&copy).unwrap();
+        assert!(app.pod_bundle.as_ref().unwrap().save_copy(&copy).is_err());
+        let reopened = pod_preset::PodBundleLibrary::parse(std::fs::read(copy).unwrap()).unwrap();
+        assert_eq!(
+            reopened.tone(0, 0).unwrap().stomp_model_id(),
+            Some(0x0205_0002)
+        );
+    }
+
+    #[test]
+    fn stomp_model_gui_failed_apply_and_same_noop_retain_all_stages() {
+        let (_context, mut app) = app();
+        let original = sample_stomp_model_tone(0x0205_0000);
+        let index = app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_harmony_pending = Some((
+            index,
+            pod_preset::StompHarmonyControl::Harmony1457,
+            PendingStompHarmony::Harmony1457(pod_preset::StompHarmony1457Selection::Unison),
+        ));
+        app.pod_delay_pending = Some((index, PendingDelayEdit::TimeMs(400.0)));
+        let same = pod_preset::PodStompModelChoice::try_from(0x0205_0000).unwrap();
+        assert!(!app.apply_pod_stomp_model_choice(index, same).unwrap());
+        assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), original);
+        assert!(app.pod_harmony_pending.is_some());
+        assert!(app.pod_delay_pending.is_some());
+
+        let mut unknown = original.clone();
+        let id = 0x0205_0000u32.to_be_bytes();
+        let offset = unknown.windows(4).position(|window| window == id).unwrap();
+        unknown[offset..offset + 4].copy_from_slice(&0xdead_beefu32.to_be_bytes());
+        app.pod_library.replace(index, unknown.clone()).unwrap();
+        let requested = pod_preset::PodStompModelChoice::try_from(0x0205_0002).unwrap();
+        assert!(app.apply_pod_stomp_model_choice(index, requested).is_err());
+        assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), unknown);
+        assert!(app.pod_harmony_pending.is_some());
+        assert!(app.pod_delay_pending.is_some());
     }
 
     #[test]
