@@ -576,7 +576,7 @@ fn pod_model_enable_session_edit_is_role_gated_offline_and_byte_preserving() {
 
 #[test]
 fn pod_amp_model_choice_session_is_role_gated_and_changes_only_the_minf_id() {
-    use crate::pod_preset::{PodAmpModelChoice, AMP_SLOT};
+    use crate::pod_preset::{AMP_SLOT, PodAmpModelChoice};
 
     let session = Session::initial_rig();
     let original = crate::pod_preset::fixture(
@@ -605,11 +605,7 @@ fn pod_amp_model_choice_session_is_role_gated_and_changes_only_the_minf_id() {
         4
     );
     assert_eq!(
-        session.set_pod_amp_model_choice(
-            RoleKind::Guitar,
-            &original,
-            PodAmpModelChoice::NoAmp,
-        ),
+        session.set_pod_amp_model_choice(RoleKind::Guitar, &original, PodAmpModelChoice::NoAmp,),
         Err(Rejection::Unsupported {
             profile: ProductProfile::Variax600,
             operation: Operation::EditPodPreset,

@@ -1584,10 +1584,7 @@ impl PodTone {
 
     /// Apply one admitted AMP choice to the existing AMP MINF model-id word.
     /// This file-only Apply path never creates a slot or rewrites PARMs.
-    pub fn set_amp_model_choice(
-        &mut self,
-        choice: PodAmpModelChoice,
-    ) -> Result<(), ToneError> {
+    pub fn set_amp_model_choice(&mut self, choice: PodAmpModelChoice) -> Result<(), ToneError> {
         if self.container != ContainerKind::L6pa {
             return Err(ToneError::format(
                 "AMP model selection requires a FORM/L6PA tone",
@@ -3792,7 +3789,10 @@ mod tests {
             &changed[id_offset..id_offset + 4],
             &PodAmpModelChoice::NoAmp.model_id().to_be_bytes()
         );
-        assert_eq!(tone.amp_model_id(), Some(PodAmpModelChoice::NoAmp.model_id()));
+        assert_eq!(
+            tone.amp_model_id(),
+            Some(PodAmpModelChoice::NoAmp.model_id())
+        );
         assert_eq!(tone.models()[0].ordinal, Some(-128));
         assert_eq!(tone.models()[0].reserved, Some([0xa1, 0xb2]));
         assert_eq!(tone.models()[0].enabled, Some(false));
@@ -3832,10 +3832,7 @@ mod tests {
         tone.set_amp_model_choice(PodAmpModelChoice::Line6Clean)
             .unwrap();
         assert_eq!(tone.as_bytes(), before_noop);
-        assert_eq!(
-            PodAmpModelChoice::try_from(0xdead_beef),
-            Err(0xdead_beef)
-        );
+        assert_eq!(PodAmpModelChoice::try_from(0xdead_beef), Err(0xdead_beef));
     }
 
     #[test]
@@ -3880,9 +3877,7 @@ mod tests {
             );
             let mut tone = PodTone::parse(bytes.clone()).unwrap();
             let before = tone.clone();
-            assert!(tone
-                .set_amp_model_choice(PodAmpModelChoice::NoAmp)
-                .is_err());
+            assert!(tone.set_amp_model_choice(PodAmpModelChoice::NoAmp).is_err());
             assert_eq!(tone, before);
         }
 
@@ -3897,9 +3892,7 @@ mod tests {
         );
         let mut tone = PodTone::parse(short_minf).unwrap();
         let before = tone.clone();
-        assert!(tone
-            .set_amp_model_choice(PodAmpModelChoice::NoAmp)
-            .is_err());
+        assert!(tone.set_amp_model_choice(PodAmpModelChoice::NoAmp).is_err());
         assert_eq!(tone, before);
 
         let missing_amp = custom_tone(
@@ -3913,9 +3906,7 @@ mod tests {
         );
         let mut tone = PodTone::parse(missing_amp).unwrap();
         let before = tone.clone();
-        assert!(tone
-            .set_amp_model_choice(PodAmpModelChoice::NoAmp)
-            .is_err());
+        assert!(tone.set_amp_model_choice(PodAmpModelChoice::NoAmp).is_err());
         assert_eq!(tone, before);
 
         let mut old_version = custom_tone(
@@ -3932,9 +3923,7 @@ mod tests {
             .copy_from_slice(&(PODXT_LIVE_HOST_MIN_VERSION - 1).to_be_bytes());
         let mut tone = PodTone::parse(old_version).unwrap();
         let before = tone.clone();
-        assert!(tone
-            .set_amp_model_choice(PodAmpModelChoice::NoAmp)
-            .is_err());
+        assert!(tone.set_amp_model_choice(PodAmpModelChoice::NoAmp).is_err());
         assert_eq!(tone, before);
 
         let wrong_target = {
@@ -4005,6 +3994,10 @@ mod tests {
         assert!(PodTone::parse(missing_minf.clone()).is_err());
         assert_eq!(missing_minf, missing_minf_before);
 
+        let opaque_parameter = [0xde, 0xad, 0xbe];
+        let unusual_parameter = [
+            0xff, 0x12, 0x34, 0x56, 0x7f, 0x00, 0x00, 0x01, 0x7f, 0xc0, 0x00, 0x01,
+        ];
         let mut duplicate_minf = custom_tone(
             ContainerKind::L6pa,
             &[BuiltModel {
@@ -4016,20 +4009,13 @@ mod tests {
         );
         let top = preset::chunks(&duplicate_minf, 12..duplicate_minf.len()).unwrap();
         let patch = preset::unique(&top, b"LIST").unwrap();
-        let model_chunks = preset::chunks(
-            &duplicate_minf,
-            patch.data.start + 4..patch.data.end,
-        )
-        .unwrap();
+        let model_chunks =
+            preset::chunks(&duplicate_minf, patch.data.start + 4..patch.data.end).unwrap();
         let model = model_chunks
             .iter()
             .find(|chunk| preset::container(&duplicate_minf, chunk, b"MODL"))
             .unwrap();
-        let fields = preset::chunks(
-            &duplicate_minf,
-            model.data.start + 4..model.data.end,
-        )
-        .unwrap();
+        let fields = preset::chunks(&duplicate_minf, model.data.start + 4..model.data.end).unwrap();
         let minf = preset::unique(&fields, b"MINF").unwrap();
         let duplicate_chunk = duplicate_minf[minf.data.start - 8..minf.data.end].to_vec();
         let inserted_len = duplicate_chunk.len();
@@ -4102,9 +4088,11 @@ mod tests {
         rejected_library
             .import_bytes(wrong_container.clone())
             .unwrap();
-        assert!(rejected_library
-            .set_amp_model_choice(0, PodAmpModelChoice::NoAmp)
-            .is_err());
+        assert!(
+            rejected_library
+                .set_amp_model_choice(0, PodAmpModelChoice::NoAmp)
+                .is_err()
+        );
         assert!(!rejected_library.is_dirty(0));
         assert_eq!(
             rejected_library.tone(0).unwrap().as_bytes(),
@@ -4113,11 +4101,16 @@ mod tests {
 
         let mut rejected_bundle =
             PodBundleLibrary::parse(bundle_with_tone(&wrong_container)).unwrap();
-        assert!(rejected_bundle
-            .set_amp_model_choice(0, PodAmpModelChoice::NoAmp)
-            .is_err());
+        assert!(
+            rejected_bundle
+                .set_amp_model_choice(0, PodAmpModelChoice::NoAmp)
+                .is_err()
+        );
         assert!(!rejected_bundle.is_dirty());
-        assert_eq!(rejected_bundle.tone(0, 0).unwrap().as_bytes(), wrong_container);
+        assert_eq!(
+            rejected_bundle.tone(0, 0).unwrap().as_bytes(),
+            wrong_container
+        );
     }
 
     #[test]

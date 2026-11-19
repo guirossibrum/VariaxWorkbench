@@ -239,7 +239,9 @@ struct Workbench {
     pod_rows: HashMap<usize, Rect>,
     #[cfg(test)]
     pod_drive_slider: Option<Rect>,
+    #[cfg(test)]
     pod_amp_model_choices: HashMap<pod_preset::PodAmpModelChoice, Rect>,
+    #[cfg(test)]
     pod_apply_amp_model_button: Option<Rect>,
     #[cfg(test)]
     pod_stomp_sliders: HashMap<pod_preset::StompControl, Rect>,
@@ -340,7 +342,9 @@ impl Workbench {
             pod_rows: HashMap::new(),
             #[cfg(test)]
             pod_drive_slider: None,
+            #[cfg(test)]
             pod_amp_model_choices: HashMap::new(),
+            #[cfg(test)]
             pod_apply_amp_model_button: None,
             #[cfg(test)]
             pod_stomp_sliders: HashMap::new(),
@@ -1903,9 +1907,10 @@ impl Workbench {
                         ui.label("AMP model (offline)");
                         for choice in pod_preset::PODXT_AMP_MODEL_CHOICES {
                             let label = format!("{} · {:08x}", choice.label(), choice.model_id());
-                            let response = ui.selectable_value(&mut selected, Some(choice), label);
+                            let _response =
+                                ui.selectable_value(&mut selected, Some(choice), label);
                             #[cfg(test)]
-                            self.pod_amp_model_choices.insert(choice, response.rect);
+                            self.pod_amp_model_choices.insert(choice, _response.rect);
                         }
                         if current.is_none() {
                             ui.small("Current id is outside the admitted choice list.");
