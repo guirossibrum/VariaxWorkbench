@@ -44,6 +44,18 @@ pub const AMP_TREBLE_PARAM: u32 = 0x0010_0002;
 pub const AMP_PRESENCE_PARAM: u32 = 0x0010_0004;
 /// Semantic Amp Channel Volume parameter id in the PODxt Sharc parameter map.
 pub const AMP_CHANNEL_VOLUME_PARAM: u32 = 0x0010_0005;
+/// PODxt Live stomp model slot from `GetStompModel`.
+pub const STOMP_SLOT: u32 = 0x0002_0003;
+/// Stomp model with a source-mapped Drive/Gain/Tone layout.
+pub const STOMP_DRIVE_MODEL_ID: u32 = 0x0205_0000;
+/// Stomp Drive selector passed through `GetFXParamDef`.
+pub const STOMP_DRIVE_SELECTOR: u32 = 0x0003_0001;
+/// Raw semantic PARM identifier selected for Stomp Drive.
+pub const STOMP_DRIVE_PARAM: u32 = 0x0010_0001;
+pub const STOMP_GAIN_SELECTOR: u32 = 0x0003_0002;
+pub const STOMP_GAIN_PARAM: u32 = 0x0010_0002;
+pub const STOMP_TONE_SELECTOR: u32 = 0x0003_0003;
+pub const STOMP_TONE_PARAM: u32 = 0x0010_0003;
 /// Host provider minimum from `ParseVersionString("3.00")`; not a file-loader rule.
 pub const PODXT_LIVE_HOST_MIN_VERSION: u32 = 0x0300_0000;
 /// Cab model slot from `L6Patch.UpdateMetaNotesForSetup` and `kGPXTSlot_Cab`.
@@ -57,8 +69,9 @@ pub const OFFLINE_BANNER: &str =
 pub const NOT_GUITAR: &str =
     "This is not the Variax guitar editor. Guitar model slots are not applied.";
 pub const NOT_SENT: &str = "Nothing is sent to a device. No preset is switched.";
-pub const PAYLOADS_NOT_DECODED: &str = "Known asset names and 12-byte parameter records are shown. Six Plexi Lead 100 amp controls have source-backed host-scale editors; other parameter ranges are not decoded. Unknown ids stay raw.";
+pub const PAYLOADS_NOT_DECODED: &str = "Known asset names and 12-byte parameter records are shown. Six Plexi Lead 100 amp controls and three controls on one Stomp model have source-backed host-scale editors; other parameter ranges are not decoded. Unknown ids stay raw.";
 pub const AMP_CONTROL_SCALE_LABEL: &str = "Line6Edit host scale 0–1 (not device-validated)";
+pub const STOMP_CONTROL_SCALE_LABEL: &str = "Line6Edit Stomp host scale 0–1 (not device-validated)";
 
 /// Plexi Lead 100 amp controls with an admitted Line6Edit host scale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -101,6 +114,42 @@ impl AmpControl {
             Self::Treble => "Treble",
             Self::Presence => "Presence",
             Self::ChannelVolume => "Channel Volume",
+        }
+    }
+}
+
+/// Source-backed controls on PODxt Live Stomp model `0x02050000` only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StompControl {
+    Drive,
+    Gain,
+    Tone,
+}
+
+impl StompControl {
+    pub const ALL: [Self; 3] = [Self::Drive, Self::Gain, Self::Tone];
+
+    pub const fn selector_id(self) -> u32 {
+        match self {
+            Self::Drive => STOMP_DRIVE_SELECTOR,
+            Self::Gain => STOMP_GAIN_SELECTOR,
+            Self::Tone => STOMP_TONE_SELECTOR,
+        }
+    }
+
+    pub const fn param_id(self) -> u32 {
+        match self {
+            Self::Drive => STOMP_DRIVE_PARAM,
+            Self::Gain => STOMP_GAIN_PARAM,
+            Self::Tone => STOMP_TONE_PARAM,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Drive => "Drive",
+            Self::Gain => "Gain",
+            Self::Tone => "Tone",
         }
     }
 }
@@ -415,24 +464,27 @@ impl PodTone {
     /// This is not a claim about the value accepted by physical hardware.
     pub fn amp_control_fraction(&self, control: AmpControl) -> Result<f32, ToneError> {
         let (model_index, parameter_index) = self.amp_control_location(control)?;
-        let ModelParameter::Recorded {
-            value: ParameterValue::Float { bits },
-            ..
-        } = &self.models[model_index].parameters[parameter_index]
-        else {
-            return Err(ToneError::format(format!(
-                "Amp {} target is not a float PARM",
-                control.label()
-            )));
-        };
-        let value = f32::from_bits(*bits);
-        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
-            return Err(ToneError::format(format!(
-                "Amp {} value is outside the finite host scale 0..=1",
-                control.label()
-            )));
-        }
-        Ok(value)
+        self.float_control_fraction_at(
+            model_index,
+            parameter_index,
+            &format!("Amp {}", control.label()),
+        )
+    }
+
+    /// Read the admitted PODxt Live Stomp Drive host-scale value (0..=1).
+    /// This is not a claim about physical-device acceptance or effect sound.
+    pub fn stomp_drive_fraction(&self) -> Result<f32, ToneError> {
+        self.stomp_control_fraction(StompControl::Drive)
+    }
+
+    /// Read a source-backed Stomp host-scale value (0..=1) for the admitted model.
+    pub fn stomp_control_fraction(&self, control: StompControl) -> Result<f32, ToneError> {
+        let (model_index, parameter_index) = self.stomp_control_location(control)?;
+        self.float_control_fraction_at(
+            model_index,
+            parameter_index,
+            &format!("Stomp {}", control.label()),
+        )
     }
 
     /// Compatibility convenience for callers that only use Drive.
@@ -446,42 +498,27 @@ impl PodTone {
         control: AmpControl,
         value: f32,
     ) -> Result<(), ToneError> {
-        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
-            return Err(ToneError::format(format!(
-                "Amp {} requires a finite host-scale value in 0..=1",
-                control.label()
-            )));
-        }
+        let label = format!("Amp {}", control.label());
+        Self::validate_host_fraction(value, &label)?;
         let (model_index, parameter_index) = self.amp_control_location(control)?;
-        let ModelParameter::Recorded {
-            value: ParameterValue::Float { bits },
-            ..
-        } = &self.models[model_index].parameters[parameter_index]
-        else {
-            return Err(ToneError::format(format!(
-                "Amp {} target is not a float PARM",
-                control.label()
-            )));
-        };
-        let current = f32::from_bits(*bits);
-        if !current.is_finite() || !(0.0..=1.0).contains(&current) {
-            return Err(ToneError::format(format!(
-                "existing Amp {} value is outside the finite host scale 0..=1",
-                control.label()
-            )));
-        }
-        let offset = self.parameter_value_offsets[model_index][parameter_index]
-            .ok_or_else(|| ToneError::format("amp control has no unique raw value word"))?;
-        let new_bits = value.to_bits();
-        self.bytes[offset..offset + 4].copy_from_slice(&new_bits.to_be_bytes());
-        if let ModelParameter::Recorded {
-            value: ParameterValue::Float { bits },
-            ..
-        } = &mut self.models[model_index].parameters[parameter_index]
-        {
-            *bits = new_bits;
-        }
-        Ok(())
+        self.set_float_control_fraction_at(model_index, parameter_index, value, &label)
+    }
+
+    /// Change only the existing raw Stomp Drive value word.
+    pub fn set_stomp_drive_fraction(&mut self, value: f32) -> Result<(), ToneError> {
+        self.set_stomp_control_fraction(StompControl::Drive, value)
+    }
+
+    /// Change only the existing raw value word for an admitted Stomp control.
+    pub fn set_stomp_control_fraction(
+        &mut self,
+        control: StompControl,
+        value: f32,
+    ) -> Result<(), ToneError> {
+        let label = format!("Stomp {}", control.label());
+        Self::validate_host_fraction(value, &label)?;
+        let (model_index, parameter_index) = self.stomp_control_location(control)?;
+        self.set_float_control_fraction_at(model_index, parameter_index, value, &label)
     }
 
     /// Compatibility convenience for callers that only use Drive.
@@ -490,9 +527,33 @@ impl PodTone {
     }
 
     fn amp_control_location(&self, control: AmpControl) -> Result<(usize, usize), ToneError> {
+        self.control_location(
+            AMP_SLOT,
+            PLEXI_LEAD_100_MODEL,
+            control.param_id(),
+            &format!("Amp {}", control.label()),
+        )
+    }
+
+    fn stomp_control_location(&self, control: StompControl) -> Result<(usize, usize), ToneError> {
+        self.control_location(
+            STOMP_SLOT,
+            STOMP_DRIVE_MODEL_ID,
+            control.param_id(),
+            &format!("Stomp {}", control.label()),
+        )
+    }
+
+    fn control_location(
+        &self,
+        slot: u32,
+        model_id: u32,
+        parameter_id: u32,
+        label: &str,
+    ) -> Result<(usize, usize), ToneError> {
         if self.device_id != PODXT_LIVE_TONE_ID {
             return Err(ToneError::format(
-                "amp control editing requires a PODxt Live PINF target",
+                "control editing requires a PODxt Live PINF target",
             ));
         }
         if self.device_version < PODXT_LIVE_HOST_MIN_VERSION {
@@ -503,34 +564,35 @@ impl PodTone {
         let model_index = self
             .models
             .iter()
-            .position(|model| model.slot == AMP_SLOT)
-            .ok_or_else(|| ToneError::format("amp control requires an existing amp model slot"))?;
-        if self.models[model_index].model_id != PLEXI_LEAD_100_MODEL {
-            return Err(ToneError::format(
-                "amp control host contract applies only to Plexi Lead 100",
-            ));
+            .position(|model| model.slot == slot)
+            .ok_or_else(|| ToneError::format(format!("{label} requires an existing model slot")))?;
+        if self.models[model_index].model_id != model_id {
+            return Err(ToneError::format(format!(
+                "{label} host contract does not apply to this model"
+            )));
         }
         if self.models[model_index]
             .parameters
             .iter()
             .any(|parameter| matches!(parameter, ModelParameter::Opaque { .. }))
         {
-            return Err(ToneError::format(
-                "opaque PARM in amp model makes control target ambiguous",
-            ));
+            return Err(ToneError::format(format!(
+                "opaque PARM in {label} model makes control target ambiguous"
+            )));
         }
         let matches: Vec<_> = self.models[model_index]
             .parameters
             .iter()
             .enumerate()
             .filter_map(|(index, parameter)| match parameter {
-                ModelParameter::Recorded { id, .. } if *id == control.param_id() => Some(index),
+                ModelParameter::Recorded { id, .. } if *id == parameter_id => Some(index),
                 _ => None,
             })
             .collect();
-        let parameter_index = matches.last().copied().ok_or_else(|| {
-            ToneError::format(format!("Amp {} parameter is absent", control.label()))
-        })?;
+        let parameter_index = matches
+            .last()
+            .copied()
+            .ok_or_else(|| ToneError::format(format!("{label} parameter is absent")))?;
         match &self.models[model_index].parameters[parameter_index] {
             ModelParameter::Recorded {
                 prefix: 0x3f,
@@ -539,23 +601,90 @@ impl PodTone {
             } => {}
             ModelParameter::Recorded { prefix, .. } if *prefix != 0x3f => {
                 return Err(ToneError::format(format!(
-                    "Amp {} raw prefix is not canonical 0x3f",
-                    control.label()
+                    "{label} raw prefix is not canonical 0x3f"
                 )));
             }
             _ => {
                 return Err(ToneError::format(format!(
-                    "Amp {} target has an unsupported value type",
-                    control.label()
+                    "{label} target has an unsupported value type"
                 )));
             }
         }
         if self.parameter_value_offsets[model_index][parameter_index].is_none() {
-            return Err(ToneError::format(
-                "amp control target has no unique raw value word",
-            ));
+            return Err(ToneError::format(format!(
+                "{label} target has no unique raw value word"
+            )));
         }
         Ok((model_index, parameter_index))
+    }
+
+    fn validate_host_fraction(value: f32, label: &str) -> Result<(), ToneError> {
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+            return Err(ToneError::format(format!(
+                "{label} requires a finite host-scale value in 0..=1"
+            )));
+        }
+        Ok(())
+    }
+
+    fn float_control_fraction_at(
+        &self,
+        model_index: usize,
+        parameter_index: usize,
+        label: &str,
+    ) -> Result<f32, ToneError> {
+        let ModelParameter::Recorded {
+            value: ParameterValue::Float { bits },
+            ..
+        } = &self.models[model_index].parameters[parameter_index]
+        else {
+            return Err(ToneError::format(format!(
+                "{label} target is not a float PARM"
+            )));
+        };
+        let value = f32::from_bits(*bits);
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+            return Err(ToneError::format(format!(
+                "{label} value is outside the finite host scale 0..=1"
+            )));
+        }
+        Ok(value)
+    }
+
+    fn set_float_control_fraction_at(
+        &mut self,
+        model_index: usize,
+        parameter_index: usize,
+        value: f32,
+        label: &str,
+    ) -> Result<(), ToneError> {
+        let ModelParameter::Recorded {
+            value: ParameterValue::Float { bits },
+            ..
+        } = &self.models[model_index].parameters[parameter_index]
+        else {
+            return Err(ToneError::format(format!(
+                "{label} target is not a float PARM"
+            )));
+        };
+        let current = f32::from_bits(*bits);
+        if !current.is_finite() || !(0.0..=1.0).contains(&current) {
+            return Err(ToneError::format(format!(
+                "existing {label} value is outside the finite host scale 0..=1"
+            )));
+        }
+        let offset = self.parameter_value_offsets[model_index][parameter_index]
+            .ok_or_else(|| ToneError::format(format!("{label} has no unique raw value word")))?;
+        let new_bits = value.to_bits();
+        self.bytes[offset..offset + 4].copy_from_slice(&new_bits.to_be_bytes());
+        if let ModelParameter::Recorded {
+            value: ParameterValue::Float { bits },
+            ..
+        } = &mut self.models[model_index].parameters[parameter_index]
+        {
+            *bits = new_bits;
+        }
+        Ok(())
     }
 
     /// Cab model id. Only L6AS exposes slot `0x00030001` as a cab.
@@ -708,6 +837,23 @@ impl Library {
             .get_mut(index)
             .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
         entry.tone.set_amp_control_fraction(control, value)
+    }
+
+    pub fn set_stomp_drive_fraction(&mut self, index: usize, value: f32) -> Result<(), ToneError> {
+        self.set_stomp_control_fraction(index, StompControl::Drive, value)
+    }
+
+    pub fn set_stomp_control_fraction(
+        &mut self,
+        index: usize,
+        control: StompControl,
+        value: f32,
+    ) -> Result<(), ToneError> {
+        let entry = self
+            .tones
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
+        entry.tone.set_stomp_control_fraction(control, value)
     }
 
     pub fn replace(&mut self, index: usize, bytes: Vec<u8>) -> Result<(), ToneError> {
@@ -945,6 +1091,21 @@ mod tests {
         bytes
     }
 
+    fn stomp_tone(version: u32, model: u32, parameters: &[&[u8]]) -> Vec<u8> {
+        let mut bytes = custom_tone(
+            ContainerKind::L6as,
+            &[BuiltModel {
+                slot: STOMP_SLOT,
+                model_id: model,
+                tail: &[0xa1, 0xb2, 0xc3, 0xd4],
+                parameters,
+            }],
+        );
+        let pinf = find_chunk_data(&bytes, b"PINF");
+        bytes[pinf + 72..pinf + 76].copy_from_slice(&version.to_be_bytes());
+        bytes
+    }
+
     #[test]
     fn amp_drive_accepts_host_scale_values_and_changes_only_the_last_raw_value_word() {
         let first = drive_record(0x3f, AMP_DRIVE_PARAM, 1, 0x3e80_0000);
@@ -1042,6 +1203,215 @@ mod tests {
             ]
             .concat();
             assert_eq!(tone.as_bytes(), expected, "{}", control.label());
+        }
+    }
+
+    #[test]
+    fn source_mapped_stomp_controls_patch_only_their_existing_value_words() {
+        assert_eq!(STOMP_SLOT, 0x0002_0003);
+        assert_eq!(STOMP_DRIVE_MODEL_ID, 0x0205_0000);
+        let unknown = drive_record(0xa7, 0x0000_9876, 9, 0x1234_5678);
+        for ((control, selector), parameter_id) in StompControl::ALL
+            .into_iter()
+            .zip([
+                STOMP_DRIVE_SELECTOR,
+                STOMP_GAIN_SELECTOR,
+                STOMP_TONE_SELECTOR,
+            ])
+            .zip([0x0010_0001, 0x0010_0002, 0x0010_0003])
+        {
+            assert_eq!(control.selector_id(), selector);
+            assert_eq!(control.param_id(), parameter_id);
+            let record = drive_record(0x3f, control.param_id(), 1, 0x3f00_0000);
+            let earlier_duplicate = drive_record(0x3f, control.param_id(), 1, 0x3e00_0000);
+            let bytes = stomp_tone(
+                PODXT_LIVE_HOST_MIN_VERSION,
+                STOMP_DRIVE_MODEL_ID,
+                &[&unknown, &earlier_duplicate, &record],
+            );
+            let mut tone = PodTone::parse(bytes.clone()).unwrap();
+            assert_eq!(
+                tone.stomp_control_fraction(control).unwrap().to_bits(),
+                0x3f00_0000
+            );
+            tone.set_stomp_control_fraction(control, 0.317).unwrap();
+            let value_offset = bytes
+                .windows(record.len())
+                .position(|window| window == record)
+                .unwrap()
+                + 8;
+            let earlier_value_offset = bytes
+                .windows(earlier_duplicate.len())
+                .position(|window| window == earlier_duplicate)
+                .unwrap()
+                + 8;
+            let expected = [
+                bytes[..value_offset].to_vec(),
+                0.317f32.to_bits().to_be_bytes().to_vec(),
+                bytes[value_offset + 4..].to_vec(),
+            ]
+            .concat();
+            assert_eq!(tone.as_bytes(), expected, "{}", control.label());
+            assert_eq!(
+                &tone.as_bytes()[earlier_value_offset..earlier_value_offset + 4],
+                &bytes[earlier_value_offset..earlier_value_offset + 4],
+                "earlier duplicate {}",
+                control.label()
+            );
+            assert_eq!(
+                tone.stomp_control_fraction(control).unwrap().to_bits(),
+                0.317f32.to_bits(),
+                "{}",
+                control.label()
+            );
+        }
+    }
+
+    #[test]
+    fn stomp_controls_reject_unsupported_targets_records_and_values_transactionally() {
+        let drive = drive_record(0x3f, STOMP_DRIVE_PARAM, 1, 0x3f00_0000);
+        let wrong_prefix = drive_record(0x7e, STOMP_DRIVE_PARAM, 1, 0x3f00_0000);
+        let wrong_type = drive_record(0x3f, STOMP_DRIVE_PARAM, 0, 0x3f00_0000);
+        let mut wrong_product =
+            stomp_tone(PODXT_LIVE_HOST_MIN_VERSION, STOMP_DRIVE_MODEL_ID, &[&drive]);
+        let pinf = find_chunk_data(&wrong_product, b"PINF");
+        wrong_product[pinf + 4..pinf + 8].copy_from_slice(&0x0003_0002u32.to_be_bytes());
+        let wrong_slot = custom_tone(
+            ContainerKind::L6as,
+            &[BuiltModel {
+                slot: STOMP_SLOT + 1,
+                model_id: STOMP_DRIVE_MODEL_ID,
+                tail: &[0xa1, 0xb2, 0xc3, 0xd4],
+                parameters: &[&drive],
+            }],
+        );
+        let invalid_targets = [
+            stomp_tone(
+                PODXT_LIVE_HOST_MIN_VERSION - 1,
+                STOMP_DRIVE_MODEL_ID,
+                &[&drive],
+            ),
+            stomp_tone(
+                PODXT_LIVE_HOST_MIN_VERSION,
+                STOMP_DRIVE_MODEL_ID + 1,
+                &[&drive],
+            ),
+            stomp_tone(PODXT_LIVE_HOST_MIN_VERSION, STOMP_DRIVE_MODEL_ID, &[]),
+            wrong_slot,
+            stomp_tone(
+                PODXT_LIVE_HOST_MIN_VERSION,
+                STOMP_DRIVE_MODEL_ID,
+                &[&wrong_prefix],
+            ),
+            stomp_tone(
+                PODXT_LIVE_HOST_MIN_VERSION,
+                STOMP_DRIVE_MODEL_ID,
+                &[&wrong_type],
+            ),
+            stomp_tone(
+                PODXT_LIVE_HOST_MIN_VERSION,
+                STOMP_DRIVE_MODEL_ID,
+                &[&[1, 2, 3, 4], &drive],
+            ),
+        ];
+        assert!(PodTone::parse(wrong_product).is_err());
+        for control in StompControl::ALL {
+            let record = drive_record(0x3f, control.param_id(), 1, 0x3f00_0000);
+            let wrong_prefix = drive_record(0x7e, control.param_id(), 1, 0x3f00_0000);
+            let wrong_type = drive_record(0x3f, control.param_id(), 0, 0x3f00_0000);
+            for bytes in invalid_targets.iter().cloned().chain([
+                stomp_tone(
+                    PODXT_LIVE_HOST_MIN_VERSION,
+                    STOMP_DRIVE_MODEL_ID,
+                    &[&wrong_prefix],
+                ),
+                stomp_tone(
+                    PODXT_LIVE_HOST_MIN_VERSION,
+                    STOMP_DRIVE_MODEL_ID,
+                    &[&wrong_type],
+                ),
+                stomp_tone(
+                    PODXT_LIVE_HOST_MIN_VERSION,
+                    STOMP_DRIVE_MODEL_ID,
+                    &[&[1, 2, 3, 4], &record],
+                ),
+            ]) {
+                let mut tone = PodTone::parse(bytes.clone()).unwrap();
+                assert!(
+                    tone.stomp_control_fraction(control).is_err(),
+                    "{}",
+                    control.label()
+                );
+                assert!(
+                    tone.set_stomp_control_fraction(control, 0.25).is_err(),
+                    "{}",
+                    control.label()
+                );
+                assert_eq!(tone.as_bytes(), bytes, "{}", control.label());
+            }
+            for invalid in [
+                f32::from_bits(0x8000_0001),
+                f32::from_bits(0x3f80_0001),
+                f32::NAN,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+            ] {
+                let bytes = stomp_tone(
+                    PODXT_LIVE_HOST_MIN_VERSION,
+                    STOMP_DRIVE_MODEL_ID,
+                    &[&record],
+                );
+                let mut tone = PodTone::parse(bytes.clone()).unwrap();
+                assert!(tone.set_stomp_control_fraction(control, invalid).is_err());
+                assert_eq!(tone.as_bytes(), bytes);
+            }
+            let nonfinite = drive_record(0x3f, control.param_id(), 1, f32::NAN.to_bits());
+            let bytes = stomp_tone(
+                PODXT_LIVE_HOST_MIN_VERSION,
+                STOMP_DRIVE_MODEL_ID,
+                &[&nonfinite],
+            );
+            assert!(
+                PodTone::parse(bytes)
+                    .unwrap()
+                    .stomp_control_fraction(control)
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn stomp_control_library_revert_copy_collision_and_reopen_keep_safe_copy_rules() {
+        let records: Vec<_> = StompControl::ALL
+            .into_iter()
+            .map(|control| drive_record(0x3f, control.param_id(), 1, 0x3f00_0000))
+            .collect();
+        let refs: Vec<_> = records.iter().map(|record| &record[..]).collect();
+        let original = stomp_tone(PODXT_LIVE_HOST_MIN_VERSION, STOMP_DRIVE_MODEL_ID, &refs);
+        for control in StompControl::ALL {
+            let mut library = Library::default();
+            let index = library.import_bytes(original.clone()).unwrap();
+            library
+                .set_stomp_control_fraction(index, control, 0.625)
+                .unwrap();
+            assert!(library.is_dirty(index), "{}", control.label());
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("stomp.l6t");
+            std::fs::write(&path, b"keep existing destination").unwrap();
+            assert!(library.tone(index).unwrap().save_copy(&path).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), b"keep existing destination");
+            library.revert_unsaved(index).unwrap();
+            assert_eq!(library.tone(index).unwrap().as_bytes(), original);
+            library
+                .set_stomp_control_fraction(index, control, 0.625)
+                .unwrap();
+            std::fs::remove_file(&path).unwrap();
+            library.tone(index).unwrap().save_copy(&path).unwrap();
+            let reopened = PodTone::parse(std::fs::read(path).unwrap()).unwrap();
+            assert_eq!(reopened.stomp_control_fraction(control).unwrap(), 0.625);
+            assert!(library.is_dirty(index));
+            library.note_saved(index).unwrap();
+            assert!(!library.is_dirty(index));
         }
     }
 

@@ -231,6 +231,8 @@ struct Workbench {
     #[cfg(test)]
     pod_drive_slider: Option<Rect>,
     #[cfg(test)]
+    pod_stomp_sliders: HashMap<pod_preset::StompControl, Rect>,
+    #[cfg(test)]
     pod_visible: String,
     read_receiver:
         Option<std::sync::mpsc::Receiver<Result<variax_workbench::usb::CurrentPreset, String>>>,
@@ -303,6 +305,8 @@ impl Workbench {
             pod_rows: HashMap::new(),
             #[cfg(test)]
             pod_drive_slider: None,
+            #[cfg(test)]
+            pod_stomp_sliders: HashMap::new(),
             #[cfg(test)]
             pod_visible: String::new(),
             read_receiver: None,
@@ -1651,6 +1655,7 @@ impl Workbench {
         {
             self.pod_rows.clear();
             self.pod_drive_slider = None;
+            self.pod_stomp_sliders.clear();
         }
         let mut open = true;
         egui::Window::new("Offline PODxt Live tones")
@@ -1668,6 +1673,17 @@ impl Workbench {
                 ui.label(pod_preset::PAYLOADS_NOT_DECODED);
                 ui.label(&self.pod_message);
                 ui.separator();
+                ui.horizontal(|ui| {
+                    if self.pod_button(ui, "load-pod", "Load tone file…") {
+                        self.load_pod_tone();
+                    }
+                    if self.pod_button(ui, "apply-pod-name", "Apply name") {
+                        self.apply_pod_name();
+                    }
+                    if self.pod_button(ui, "save-pod", "Save copy…") {
+                        self.save_pod_tone();
+                    }
+                });
                 let rows: Vec<_> = (0..self.pod_library.len())
                     .filter_map(|index| {
                         let tone = self.pod_library.tone(index)?;
@@ -1742,14 +1758,50 @@ impl Workbench {
                         }
                     });
                 }
-                if self.pod_button(ui, "load-pod", "Load tone file…") {
-                    self.load_pod_tone();
+                let stomp_controls = self
+                    .pod_selected
+                    .and_then(|index| self.pod_library.tone(index))
+                    .map(|tone| {
+                        pod_preset::StompControl::ALL
+                            .into_iter()
+                            .filter_map(|control| {
+                                tone.stomp_control_fraction(control)
+                                    .ok()
+                                    .map(|value| (control, value))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if !stomp_controls.is_empty() {
+                    ui.small(pod_preset::STOMP_CONTROL_SCALE_LABEL);
                 }
-                if self.pod_button(ui, "apply-pod-name", "Apply name") {
-                    self.apply_pod_name();
-                }
-                if self.pod_button(ui, "save-pod", "Save copy…") {
-                    self.save_pod_tone();
+                for (control, mut value) in stomp_controls {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Stomp {}", control.label()));
+                        let response = ui
+                            .add(egui::Slider::new(&mut value, 0.0..=1.0).show_value(true))
+                            .on_hover_text(pod_preset::STOMP_CONTROL_SCALE_LABEL);
+                        #[cfg(test)]
+                        {
+                            self.pod_stomp_sliders.insert(control, response.rect);
+                        }
+                        if response.changed()
+                            && let Some(index) = self.pod_selected
+                        {
+                            match self
+                                .pod_library
+                                .set_stomp_control_fraction(index, control, value)
+                            {
+                                Ok(()) => {
+                                    self.pod_message = format!(
+                                        "Applied Stomp {} host-scale value {value}. Nothing was sent.",
+                                        control.label()
+                                    )
+                                }
+                                Err(error) => self.pod_message = error.detail(),
+                            }
+                        }
+                    });
                 }
                 let detail = self.pod_selected.and_then(|index| {
                     self.pod_library.tone(index).map(|tone| {
@@ -2908,37 +2960,61 @@ mod tests {
     }
 
     fn sample_drive_pod_tone() -> Vec<u8> {
-        let mut bytes = sample_pod_tone();
-        let old_model = 0x1111_0002u32.to_be_bytes();
-        let model_at = bytes
-            .windows(old_model.len())
-            .position(|window| window == old_model)
-            .expect("sample amp model");
-        bytes[model_at..model_at + old_model.len()]
-            .copy_from_slice(&pod_preset::PLEXI_LEAD_100_MODEL.to_be_bytes());
+        fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+            let mut output = id.to_vec();
+            output.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            output.extend_from_slice(data);
+            if !data.len().is_multiple_of(2) {
+                output.push(0xa5);
+            }
+            output
+        }
+        fn parameter(id: u32, value: f32) -> Vec<u8> {
+            let mut data = Vec::new();
+            data.extend_from_slice(&((0x3fu32 << 24) | id).to_be_bytes());
+            data.extend_from_slice(&1u32.to_be_bytes());
+            data.extend_from_slice(&value.to_bits().to_be_bytes());
+            chunk(b"PARM", &data)
+        }
+        fn model(slot: u32, model_id: u32, parameters: &[Vec<u8>]) -> Vec<u8> {
+            let mut minf = Vec::new();
+            minf.extend_from_slice(&model_id.to_be_bytes());
+            minf.extend_from_slice(&slot.to_be_bytes());
+            minf.extend_from_slice(&[0, 0, 0, 1]);
+            let mut body = b"MODL".to_vec();
+            body.extend(chunk(b"MINF", &minf));
+            for parameter in parameters {
+                body.extend_from_slice(parameter);
+            }
+            body.extend(chunk(b"XTRA", &[0xde, 0xad, 0xbe]));
+            chunk(b"LIST", &body)
+        }
 
-        let pinf_at = bytes
-            .windows(4)
-            .position(|window| window == b"PINF")
-            .expect("PINF chunk")
-            + 8;
-        bytes[pinf_at + 72..pinf_at + 76]
-            .copy_from_slice(&pod_preset::PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
-
-        let old_parameter = [
-            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc,
-        ];
-        let parameter_at = bytes
-            .windows(old_parameter.len())
-            .position(|window| window == old_parameter)
-            .expect("sample amp parameter");
-        let mut parameter = [0; 12];
-        parameter[..4]
-            .copy_from_slice(&((0x3fu32 << 24) | pod_preset::AMP_DRIVE_PARAM).to_be_bytes());
-        parameter[4..8].copy_from_slice(&1u32.to_be_bytes());
-        parameter[8..12].copy_from_slice(&0.5f32.to_bits().to_be_bytes());
-        bytes[parameter_at..parameter_at + parameter.len()].copy_from_slice(&parameter);
-        bytes
+        let mut info = vec![0; 76];
+        info[..4].copy_from_slice(&1u32.to_be_bytes());
+        info[4..8].copy_from_slice(&pod_preset::PODXT_LIVE_TONE_ID.to_be_bytes());
+        info[8..10].copy_from_slice(&u16::from(b'A').to_be_bytes());
+        info[72..76].copy_from_slice(&pod_preset::PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
+        let mut patch = b"PATC".to_vec();
+        patch.extend(model(
+            pod_preset::AMP_SLOT,
+            pod_preset::PLEXI_LEAD_100_MODEL,
+            &[parameter(pod_preset::AMP_DRIVE_PARAM, 0.5)],
+        ));
+        patch.extend(model(
+            pod_preset::STOMP_SLOT,
+            pod_preset::STOMP_DRIVE_MODEL_ID,
+            &[
+                parameter(pod_preset::STOMP_DRIVE_PARAM, 0.25),
+                parameter(pod_preset::STOMP_GAIN_PARAM, 0.5),
+                parameter(pod_preset::STOMP_TONE_PARAM, 0.75),
+            ],
+        ));
+        let mut data = b"L6AS".to_vec();
+        data.extend(chunk(b"ODD!", &[0x17, 0x28, 0x39]));
+        data.extend(chunk(b"PINF", &info));
+        data.extend(chunk(b"LIST", &patch));
+        chunk(b"FORM", &data)
     }
 
     fn click_pod_at(context: &egui::Context, app: &mut Workbench, pos: Pos2) {
@@ -2972,6 +3048,41 @@ mod tests {
         let rect = app.pod_drive_slider.expect("visible Amp Drive slider");
         let start = Pos2::new(rect.left() + rect.width() * 0.45, rect.center().y);
         let end = Pos2::new(rect.left() + rect.width() * 0.78, rect.center().y);
+        recording_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame(context, app, vec![egui::Event::PointerMoved(end)]);
+        recording_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
+    fn drag_pod_stomp_slider(
+        context: &egui::Context,
+        app: &mut Workbench,
+        control: pod_preset::StompControl,
+    ) {
+        recording_frame(context, app, vec![]);
+        let rect = app.pod_stomp_sliders[&control];
+        let start = Pos2::new(rect.left() + rect.width() * 0.35, rect.center().y);
+        let end = Pos2::new(rect.left() + rect.width() * 0.73, rect.center().y);
         recording_frame(
             context,
             app,
@@ -3255,7 +3366,7 @@ mod tests {
     }
 
     #[test]
-    fn amp_drive_slider_edits_only_selected_tone_and_quit_guard_keeps_or_saves_it() {
+    fn amp_and_stomp_drive_sliders_edit_selected_tone_and_quit_guard_keeps_or_saves_it() {
         let (context, mut app) = app();
         context.style_mut(|style| {
             style.animation_time = 0.0;
@@ -3280,10 +3391,11 @@ mod tests {
         click_pod(&context, &mut app, "open-pod");
         click_pod(&context, &mut app, "load-pod");
         click_pod(&context, &mut app, "load-pod");
-        assert_eq!(app.pod_library.len(), 2);
+        assert_eq!(app.pod_library.len(), 2, "{}", app.pod_message);
         assert_eq!(app.pod_selected, Some(1));
         recording_frame(&context, &mut app, vec![]);
         assert!(app.pod_drive_slider.is_none());
+        assert!(app.pod_stomp_sliders.is_empty());
         assert!(
             app.pod_library
                 .tone(1)
@@ -3299,13 +3411,30 @@ mod tests {
         assert_eq!(app.pod_selected, Some(0));
         recording_frame(&context, &mut app, vec![]);
         assert!(app.pod_drive_slider.is_some());
+        assert_eq!(
+            app.pod_stomp_sliders.len(),
+            pod_preset::StompControl::ALL.len()
+        );
         let original_drive = app
             .pod_library
             .tone(0)
             .unwrap()
             .amp_drive_fraction()
             .unwrap();
+        let original_stomp: Vec<_> = pod_preset::StompControl::ALL
+            .into_iter()
+            .map(|control| {
+                app.pod_library
+                    .tone(0)
+                    .unwrap()
+                    .stomp_control_fraction(control)
+                    .unwrap()
+            })
+            .collect();
         drag_pod_drive_slider(&context, &mut app);
+        for control in pod_preset::StompControl::ALL {
+            drag_pod_stomp_slider(&context, &mut app, control);
+        }
         let edited_drive = app
             .pod_library
             .tone(0)
@@ -3314,6 +3443,20 @@ mod tests {
             .unwrap();
         assert_ne!(edited_drive.to_bits(), original_drive.to_bits());
         assert!((0.0..=1.0).contains(&edited_drive));
+        let edited_stomp: Vec<_> = pod_preset::StompControl::ALL
+            .into_iter()
+            .map(|control| {
+                app.pod_library
+                    .tone(0)
+                    .unwrap()
+                    .stomp_control_fraction(control)
+                    .unwrap()
+            })
+            .collect();
+        for (edited, original) in edited_stomp.iter().zip(&original_stomp) {
+            assert_ne!(edited.to_bits(), original.to_bits());
+            assert!((0.0..=1.0).contains(edited));
+        }
         assert!(app.pod_library.is_dirty(0));
         assert!(!app.pod_library.is_dirty(1));
         assert_eq!(
@@ -3336,6 +3479,17 @@ mod tests {
                 .to_bits(),
             edited_drive.to_bits()
         );
+        for (control, edited) in pod_preset::StompControl::ALL.into_iter().zip(&edited_stomp) {
+            assert_eq!(
+                app.pod_library
+                    .tone(0)
+                    .unwrap()
+                    .stomp_control_fraction(control)
+                    .unwrap()
+                    .to_bits(),
+                edited.to_bits()
+            );
+        }
 
         app.request_close(&context);
         click_prompt(&context, &mut app, "save");
@@ -3358,6 +3512,12 @@ mod tests {
             reopened.amp_drive_fraction().unwrap().to_bits(),
             edited_drive.to_bits()
         );
+        for (control, edited) in pod_preset::StompControl::ALL.into_iter().zip(&edited_stomp) {
+            assert_eq!(
+                reopened.stomp_control_fraction(control).unwrap().to_bits(),
+                edited.to_bits()
+            );
+        }
         assert_eq!(
             app.pod_library.tone(1).unwrap().as_bytes(),
             unavailable_bytes

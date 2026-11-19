@@ -19,7 +19,9 @@ not authenticate the publisher.
 The relevant source chain is `L6EditorAppDeviceMap` registration of product
 `0x0003000a` to `L6PODxtDevice` and `L6SharcToneEditor`; the Live version branch
 in `L6PODxtDevice`; `L6PODxtParamMap.GetAmpParam` and
-`GetAmpParamDef`; `L6AX3ParamDefs.Init` and its float definitions; and the shared
+`GetAmpParamDef`; `L6PODxtParamMap.GetStompModelList`,
+`L6SharcToneParamMap.SetupStompLayouts`, `GetStompModel`, `GetFXParamDef` and
+`GetFXParam`; `L6AX3ParamDefs.Init` and its float definitions; and the shared
 typed map accessors in `L6SharcToneParamMap`. For product `0x0003000a`, the
 shared-map constructor sets the PODxt product branch and leaves the Bass PODxt
 flag clear. The Drive definition uses `L6SharcTonePercentFormat`; the five
@@ -45,6 +47,7 @@ disassembly, resource tables, and local paths are not published here.
 | Amp Treble | PODxt branch selects `AMP_TREBLE`; semantic PARM `0x00100002`, float range `0..1` | Same existing-record patch contract | Same rejections and four-byte write set. |
 | Amp Presence | PODxt branch selects `AMP_PRESENCE`; semantic PARM `0x00100004`, float range `0..1` | Same existing-record patch contract | Same rejections and four-byte write set. |
 | Amp Channel Volume | PODxt branch selects `AMP_CHANVOL`; semantic PARM `0x00100005`, float range `0..1` | Same existing-record patch contract | Same rejections and four-byte write set. |
+| Stomp Drive, Gain and Tone | PODxt `STOMP_MODELS` and `SetupStompLayouts` both contain model `0x02050000`; `GetStompModel` resolves slot `0x00020003`. Definition selectors `0x00030001/2/3` select Drive/Gain/Tone; `GetFXParam` resolves semantic PARM IDs `0x00100001/2/3`. `L6AX3ParamDefs` defines each as float `0..1` with the percent formatter | Rust exposes these three controls only for model `0x02050000` in Stomp slot `0x00020003`, the PODxt Live PINF target and host-profile version `>=3.00`. It requires the last matching PARM, canonical stored prefix `0x3f`, float type 1 and a finite existing value in `[0,1]`; each UI/API edit changes only that record's four raw value bytes | The shared percent formatter has no quantization; its integer labels are display conversions, not a supported input grid. Missing, opaque, wrong-prefix/type, wrong-model/slot/target/version and invalid-domain records reject before mutation. Known duplicate IDs follow the source's last-match lookup; opaque PARM records make the target ambiguous and reject. Host `IsModelInstalled` defaults true for this model; this is only source applicability, not pack entitlement or device state. |
 
 For each amp control, static `L6ModelParam.ReadIFFChunk` masks the first word
 to a semantic ID and reads a value type; the Rust operation additionally
@@ -74,9 +77,10 @@ with synthetic data, not a native vendor save/reopen oracle.
 | Tone setup, bank/collection organization and POD Farm interchange | Tone-file list/name workflow only; no bank/collection editor or POD Farm conversion | Concrete container schema, target/version gate, exact serializer, unknown-record retention and safe-copy workflow. The negative POD Farm 1.12 receiver result is scoped to that package; see [its historical investigation](pod-farm-112-target-applicability.md). |
 | Send, switch, firmware, backup, audio and maintenance operations | Disabled or unimplemented | Separate future requirements and explicit authorization. No such live operation follows from the offline contracts here. |
 
-The current Rust implementation covers six controls on one amp model. Other
-controls and workflows remain rejected or unimplemented until their own source
-contract and synthetic compatibility tests are admitted. This matrix is not an
+The current Rust implementation covers six controls on one amp model and three
+controls on one Stomp model. Other controls and workflows remain rejected or
+unimplemented until their own source contract and synthetic compatibility tests
+are admitted. This matrix is not an
 issue-acceptance claim. The broader criteria for formats/models/effects,
 inspection/edit/library workflow, and compatibility/preservation/rejection
 testing remain partial. Lack of physical testing is not an offline criterion
