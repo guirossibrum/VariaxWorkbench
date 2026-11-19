@@ -13484,6 +13484,39 @@ pub(crate) mod tests {
         assert!(tone.set_mod_model_choice(choice).is_err());
         assert_eq!(tone.as_bytes(), before);
 
+        let mut wrong_target = make(MOD_SLOT, 0x0203_0004);
+        let pinf = find_chunk_data(&wrong_target, b"PINF");
+        wrong_target[pinf + 4..pinf + 8].copy_from_slice(&0x0003_000bu32.to_be_bytes());
+        let before = wrong_target.clone();
+        assert!(PodTone::parse(wrong_target.clone()).is_err());
+        assert_eq!(wrong_target, before);
+
+        let mut wrong_layout = make(MOD_SLOT, 0x0203_0004);
+        let pinf = find_chunk_data(&wrong_layout, b"PINF");
+        wrong_layout[pinf..pinf + 4].copy_from_slice(&2u32.to_be_bytes());
+        assert!(PodTone::parse(wrong_layout.clone()).is_err());
+        assert_eq!(wrong_layout[pinf..pinf + 4], 2u32.to_be_bytes());
+
+        let duplicate_slot = custom_tone(
+            ContainerKind::L6pa,
+            &[
+                BuiltModel {
+                    slot: MOD_SLOT,
+                    model_id: 0x0203_0004,
+                    tail: &[1, 2, 3, 4],
+                    parameters: &[],
+                },
+                BuiltModel {
+                    slot: MOD_SLOT,
+                    model_id: 0x0203_0005,
+                    tail: &[5, 6, 7, 8],
+                    parameters: &[],
+                },
+            ],
+        );
+        assert!(PodTone::parse(duplicate_slot.clone()).is_err());
+        assert_eq!(duplicate_slot[8..12], *b"L6PA");
+
         let same_id_wrong_context = custom_tone(
             ContainerKind::L6as,
             &[BuiltModel {
@@ -13530,6 +13563,50 @@ pub(crate) mod tests {
         library.revert_unsaved(index).unwrap();
         assert_eq!(library.tone(index).unwrap().as_bytes(), original);
         assert!(!library.is_dirty(index));
+
+        let mut dirty_library = Library::default();
+        let dirty_index = dirty_library.import_bytes(original.clone()).unwrap();
+        let unknown_current = custom_tone(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: MOD_SLOT,
+                model_id: 0x3333_0001,
+                tail: &[0x7f, 0xa5, 0x00, 0xfe],
+                parameters: &[],
+            }],
+        );
+        dirty_library
+            .replace(dirty_index, unknown_current.clone())
+            .unwrap();
+        let dirty_before_failure = dirty_library.tone(dirty_index).unwrap().as_bytes().to_vec();
+        assert!(
+            dirty_library
+                .set_mod_model_choice(dirty_index, choice)
+                .is_err()
+        );
+        assert_eq!(
+            dirty_library.tone(dirty_index).unwrap().as_bytes(),
+            dirty_before_failure
+        );
+        assert!(dirty_library.is_dirty(dirty_index));
+        dirty_library.revert_unsaved(dirty_index).unwrap();
+        assert_eq!(
+            dirty_library.tone(dirty_index).unwrap().as_bytes(),
+            original
+        );
+
+        let mut dirty_bundle = PodBundleLibrary::parse(bundle_with_tone(&original)).unwrap();
+        let bundle_baseline = dirty_bundle.as_bytes().to_vec();
+        dirty_bundle
+            .replace_entry(0, unknown_current.clone())
+            .unwrap();
+        let dirty_bundle_bytes = dirty_bundle.as_bytes().to_vec();
+        assert!(dirty_bundle.set_mod_model_choice(0, choice).is_err());
+        assert_eq!(dirty_bundle.as_bytes(), dirty_bundle_bytes);
+        assert!(dirty_bundle.is_dirty());
+        dirty_bundle.revert().unwrap();
+        assert_eq!(dirty_bundle.as_bytes(), bundle_baseline);
+        assert!(!dirty_bundle.is_dirty());
 
         let mut bundle = PodBundleLibrary::parse(bundle_with_tone(&original)).unwrap();
         let bundle_before = bundle.as_bytes().to_vec();

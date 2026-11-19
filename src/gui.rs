@@ -3329,6 +3329,10 @@ impl Workbench {
                             Ok(index) => {
                                 self.pod_selected = Some(index);
                                 self.pod_cab_pending = None;
+                                self.pod_delay_model_pending = None;
+                                self.pod_mod_model_pending = None;
+                                self.pod_delay_pending = None;
+                                self.pod_mod_pending = None;
                                 self.pod_harmony_pending = None;
                                 self.pod_name = summary.name;
                                 self.pod_message = format!(
@@ -5911,7 +5915,7 @@ mod tests {
         assert!(app.read_worker.is_none());
         assert!(!app.is_reading());
         assert_eq!(app.pod_library.len(), 0);
-        click_pod(&context, &mut app, "load-pod");
+        click_pod_button_tall(&context, &mut app, "load-pod");
         assert!(app.pod_message.contains("regular file"));
         assert!(app.pod_message.contains("not opened"));
         assert!(app.pod_library.is_empty());
@@ -7283,9 +7287,18 @@ mod tests {
             let index = app.pod_library.import_bytes(original.clone()).unwrap();
             app.pod_selected = Some(index);
             recording_frame_tall(&context, &mut app, vec![]);
+            stage_delay_note_choice(&context, &mut app, pod_preset::DelayNoteChoice::Quarter);
             stage_mod_note_choice(&context, &mut app, pod_preset::ModNoteChoice::Quarter);
-            choose_mod_model_popup(&context, &mut app, 0x0203_0005);
-            assert_eq!(app.pod_mod_model_pending.unwrap().1.model_id(), 0x0203_0005);
+            assert!(
+                app.pod_mod_pending.is_some(),
+                "Mod NOTE must be staged before model Apply"
+            );
+            assert!(
+                app.pod_delay_pending.is_some(),
+                "unrelated Delay NOTE must be staged"
+            );
+            choose_mod_model_popup(&context, &mut app, 0x0203_0004);
+            assert_eq!(app.pod_mod_model_pending.unwrap().1.model_id(), 0x0203_0004);
             click_pod_button_tall(&context, &mut app, "pod-mod-model-apply");
             let applied = app.pod_library.tone(index).unwrap();
             let changed: Vec<_> = original
@@ -7301,7 +7314,12 @@ mod tests {
                     .all(|byte| (offset..offset + 4).contains(byte))
             );
             assert_eq!(app.pod_mod_pending, None);
+            assert!(
+                app.pod_delay_pending.is_some(),
+                "unrelated Delay NOTE staging must survive"
+            );
             assert_eq!(app.pod_mod_model_pending, None);
+            app.pod_delay_pending = None;
         }
     }
 
@@ -7322,6 +7340,8 @@ mod tests {
             .unwrap();
 
         recording_frame_tall(&context, &mut app, vec![]);
+        stage_mod_note_choice(&context, &mut app, pod_preset::ModNoteChoice::Quarter);
+        assert!(app.pod_mod_pending.is_some());
         choose_mod_model_popup(&context, &mut app, 0x0203_0005);
         click_pod_button_tall(&context, &mut app, "pod-mod-model-discard");
         assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
@@ -7330,6 +7350,7 @@ mod tests {
         choose_mod_model_popup(&context, &mut app, 0x0203_0005);
         click_pod_button_tall(&context, &mut app, "pod-mod-model-apply");
         assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_eq!(app.pod_mod_pending, None);
         assert_eq!(
             app.pod_bundle
                 .as_ref()
@@ -7379,6 +7400,104 @@ mod tests {
         assert!(app.apply_pod_mod_model_choice(index, same).is_err());
         assert_eq!(app.pod_mod_pending, pending);
         assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), invalid);
+    }
+
+    #[test]
+    fn mod_model_apply_save_reopen_navigation_load_revert_and_quit_guard() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let directory = tempfile::tempdir().unwrap();
+        let collision = directory.path().join("occupied-mod.tone");
+        let saved = directory.path().join("mod-model-copy.tone");
+        std::fs::write(&collision, b"keep existing destination").unwrap();
+        let mut original = sample_delay_note_tone(0, 0);
+        original[8..12].copy_from_slice(b"L6PA");
+        app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_selected = Some(0);
+        app.dialogs = Box::new(FakeDialogs {
+            pod_save: [Some(collision.clone()), Some(saved.clone())].into(),
+            pod_open: [Some(saved.clone())].into(),
+            ..Default::default()
+        });
+
+        recording_frame_tall(&context, &mut app, vec![]);
+        choose_mod_model_popup(&context, &mut app, 0x0203_0005);
+        click_pod_button_tall(&context, &mut app, "pod-mod-model-apply");
+        assert!(app.pod_dirty());
+        click_pod_button_tall(&context, &mut app, "save-pod");
+        assert!(app.pod_dirty());
+        assert_eq!(
+            std::fs::read(&collision).unwrap(),
+            b"keep existing destination"
+        );
+        click_pod_button_tall(&context, &mut app, "save-pod");
+        assert!(!app.pod_dirty());
+        let saved_tone = pod_preset::PodTone::parse(std::fs::read(&saved).unwrap()).unwrap();
+        assert_eq!(
+            saved_tone
+                .models()
+                .iter()
+                .find(|model| model.slot == pod_preset::MOD_SLOT)
+                .unwrap()
+                .model_id,
+            0x0203_0005
+        );
+
+        choose_mod_model_popup(&context, &mut app, 0x0203_0006);
+        assert!(app.pod_mod_model_pending.is_some());
+        let second = app.pod_rows[&1].center();
+        click_pod_at_tall(&context, &mut app, second);
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert_eq!(app.pod_selected, Some(1));
+        assert_eq!(app.pod_mod_model_pending, None);
+
+        let first = app.pod_rows[&0].center();
+        click_pod_at_tall(&context, &mut app, first);
+        recording_frame_tall(&context, &mut app, vec![]);
+        choose_mod_model_popup(&context, &mut app, 0x0203_0007);
+        assert!(app.pod_mod_model_pending.is_some());
+        click_pod_button_tall(&context, &mut app, "load-pod");
+        assert_eq!(app.pod_mod_model_pending, None);
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .models()
+                .iter()
+                .find(|model| model.slot == pod_preset::MOD_SLOT)
+                .unwrap()
+                .model_id,
+            0x0203_0005
+        );
+
+        choose_mod_model_popup(&context, &mut app, 0x0203_0006);
+        click_pod_button_tall(&context, &mut app, "pod-mod-model-apply");
+        assert!(app.pod_dirty());
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pod_dirty());
+        let selected = app.pod_selected.unwrap();
+        app.pod_library.revert_unsaved(selected).unwrap();
+        app.refresh_selected_pod_name();
+        assert!(!app.pod_dirty());
+        assert_eq!(app.pod_mod_model_pending, None);
+        assert_eq!(
+            app.pod_library
+                .tone(selected)
+                .unwrap()
+                .models()
+                .iter()
+                .find(|model| model.slot == pod_preset::MOD_SLOT)
+                .unwrap()
+                .model_id,
+            0x0203_0005
+        );
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
     }
 
     #[test]
