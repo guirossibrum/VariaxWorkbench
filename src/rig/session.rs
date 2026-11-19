@@ -10,6 +10,7 @@ use super::backend;
 use super::capability::{self, Capability, CapabilityState, Operation};
 use super::model::{self, Component, ProductProfile, RoleKind, VersionKnowledge};
 use super::registry::{INITIAL_HOST, PhysicalHost};
+use crate::pod_preset::PodModelEnable;
 
 /// No function constructs a live transport. This stays `None`.
 pub const LIVE_BACKEND_INITIALIZER: Option<fn() -> Session> = None;
@@ -239,6 +240,19 @@ impl Session {
     ) -> Result<Vec<u8>, Rejection> {
         self.require(role, Operation::EditPodPreset)?;
         backend::rename_pod_preset(bytes, name)
+    }
+
+    /// Changes one source-backed stored PODxt model-enable flag in memory.
+    /// This is an offline file edit; it never sends the value to a device.
+    pub fn set_pod_model_enabled(
+        self,
+        role: RoleKind,
+        bytes: &[u8],
+        control: PodModelEnable,
+        enabled: bool,
+    ) -> Result<Vec<u8>, Rejection> {
+        self.require(role, Operation::EditPodPreset)?;
+        backend::set_pod_model_enabled(bytes, control, enabled)
     }
 
     /// Writes a new copy through the non-overwriting save. It does not upload.

@@ -73,6 +73,18 @@ pub(crate) fn rename_pod_preset(bytes: &[u8], name: &str) -> Result<Vec<u8>, Rej
     Ok(tone.into_bytes())
 }
 
+pub(crate) fn set_pod_model_enabled(
+    bytes: &[u8],
+    control: pod_preset::PodModelEnable,
+    enabled: bool,
+) -> Result<Vec<u8>, Rejection> {
+    let mut tone = pod_preset::PodTone::parse(bytes.to_vec())
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    tone.set_model_enabled(control, enabled)
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    Ok(tone.into_bytes())
+}
+
 pub(crate) fn save_pod_copy(path: &Path, bytes: &[u8]) -> Result<(), Rejection> {
     let tone = pod_preset::PodTone::parse(bytes.to_vec())
         .map_err(|error| map_tone(error, Operation::EditPodPreset))?;

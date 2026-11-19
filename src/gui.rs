@@ -240,6 +240,8 @@ struct Workbench {
     #[cfg(test)]
     pod_eq_gain_sliders: HashMap<pod_preset::PodxtEqBand, Rect>,
     #[cfg(test)]
+    pod_model_enable_checks: HashMap<pod_preset::PodModelEnable, Rect>,
+    #[cfg(test)]
     pod_mod_sliders: HashMap<pod_preset::ModControl, Rect>,
     #[cfg(test)]
     pod_reverb_sliders: HashMap<pod_preset::ReverbControl, Rect>,
@@ -333,6 +335,8 @@ impl Workbench {
             pod_eq_frequency_sliders: HashMap::new(),
             #[cfg(test)]
             pod_eq_gain_sliders: HashMap::new(),
+            #[cfg(test)]
+            pod_model_enable_checks: HashMap::new(),
             #[cfg(test)]
             pod_mod_sliders: HashMap::new(),
             #[cfg(test)]
@@ -1768,6 +1772,7 @@ impl Workbench {
             self.pod_whammy_knob_sliders.clear();
             self.pod_eq_frequency_sliders.clear();
             self.pod_eq_gain_sliders.clear();
+            self.pod_model_enable_checks.clear();
             self.pod_mod_sliders.clear();
             self.pod_reverb_sliders.clear();
             self.pod_delay_sliders.clear();
@@ -1886,6 +1891,63 @@ impl Workbench {
                             }
                         }
                     });
+                }
+                if let Some(index) = self.pod_selected {
+                    ui.small("Stored model enable flags only. No bypass, audio, or device effect is claimed.");
+                    for control in [pod_preset::PodModelEnable::Amp, pod_preset::PodModelEnable::Eq] {
+                        let state = self
+                            .pod_library
+                            .tone(index)
+                            .ok_or_else(|| pod_preset::ToneError::format("POD selection is out of range"))
+                            .and_then(|tone| tone.model_enable_state(control));
+                        match state {
+                            Ok(pod_preset::ModelEnableState::Canonical(mut enabled)) => {
+                                let label = match control {
+                                    pod_preset::PodModelEnable::Amp => "Amp enabled (stored flag)",
+                                    pod_preset::PodModelEnable::Eq => "EQ enabled (stored flag)",
+                                };
+                                let response = ui.checkbox(&mut enabled, label);
+                                #[cfg(test)]
+                                self.pod_model_enable_checks.insert(control, response.rect);
+                                if response.changed() {
+                                    match self.edit_pod_tone(index, |tone| {
+                                        tone.set_model_enabled(control, enabled)
+                                    }) {
+                                        Ok(()) => {
+                                            self.pod_message = format!(
+                                                "Applied {} stored enable flag. Nothing was sent.",
+                                                match control {
+                                                    pod_preset::PodModelEnable::Amp => "Amp",
+                                                    pod_preset::PodModelEnable::Eq => "EQ",
+                                                }
+                                            )
+                                        }
+                                        Err(error) => self.pod_message = error.detail(),
+                                    }
+                                }
+                            }
+                            Ok(pod_preset::ModelEnableState::NonCanonical {
+                                raw,
+                                source_interpretation,
+                            }) => {
+                                let label = match control {
+                                    pod_preset::PodModelEnable::Amp => "Amp",
+                                    pod_preset::PodModelEnable::Eq => "EQ",
+                                };
+                                ui.label(format!(
+                                    "{label} enable edit unavailable: MINF byte 0x{raw:02x} is noncanonical (Line6Edit reads it as {}). It is preserved unchanged.",
+                                    if source_interpretation { "enabled" } else { "disabled" }
+                                ));
+                            }
+                            Err(error) => {
+                                let label = match control {
+                                    pod_preset::PodModelEnable::Amp => "Amp",
+                                    pod_preset::PodModelEnable::Eq => "EQ",
+                                };
+                                ui.label(format!("{label} enable edit unavailable: {}", error.detail()));
+                            }
+                        }
+                    }
                 }
                 let stomp_controls = self
                     .pod_selected
@@ -3560,6 +3622,38 @@ mod tests {
         );
     }
 
+    fn click_pod_model_enable(
+        context: &egui::Context,
+        app: &mut Workbench,
+        control: pod_preset::PodModelEnable,
+    ) {
+        recording_frame(context, app, vec![]);
+        let pos = app.pod_model_enable_checks[&control].center();
+        recording_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
     fn sample_pod_tone() -> Vec<u8> {
         fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
             let mut output = id.to_vec();
@@ -3741,6 +3835,128 @@ mod tests {
         data.extend(chunk(b"PINF", &info));
         data.extend(chunk(b"LIST", &patch));
         chunk(b"FORM", &data)
+    }
+
+    #[test]
+    fn pod_model_enable_gui_clicks_direct_tone_and_bundle_and_disables_noncanonical_state() {
+        let (context, mut app) = app();
+        let mut amp_tone = sample_pod_tone();
+        let pinf_header = amp_tone
+            .windows(4)
+            .position(|window| window == b"PINF")
+            .unwrap();
+        let pinf_data = pinf_header + 8;
+        amp_tone[pinf_data + 72..pinf_data + 76]
+            .copy_from_slice(&pod_preset::PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
+        let original = amp_tone.clone();
+        app.pod_library.import_bytes(amp_tone).unwrap();
+        app.pod_selected = Some(0);
+        app.pod_open = true;
+        recording_frame(&context, &mut app, vec![]);
+        assert!(app
+            .pod_model_enable_checks
+            .contains_key(&pod_preset::PodModelEnable::Amp));
+        assert!(!app
+            .pod_model_enable_checks
+            .contains_key(&pod_preset::PodModelEnable::Eq));
+        let mut marker = 0x1111_0002u32.to_be_bytes().to_vec();
+        marker.extend_from_slice(&pod_preset::AMP_SLOT.to_be_bytes());
+        let minf_body = original
+            .windows(marker.len())
+            .position(|window| window == marker)
+            .unwrap();
+        let enabled_offset = minf_body + 11;
+        let mut expected = original.clone();
+        expected[enabled_offset] = 0;
+        click_pod_model_enable(&context, &mut app, pod_preset::PodModelEnable::Amp);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), expected);
+        assert!(app.pod_library.is_dirty(0));
+        app.pod_library.revert_unsaved(0).unwrap();
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+
+        let mut noncanonical = original;
+        noncanonical[enabled_offset] = 0x80;
+        let state = pod_preset::PodTone::parse(noncanonical.clone())
+            .unwrap()
+            .model_enable_state(pod_preset::PodModelEnable::Amp)
+            .unwrap();
+        assert_eq!(
+            state,
+            pod_preset::ModelEnableState::NonCanonical {
+                raw: 0x80,
+                source_interpretation: false,
+            }
+        );
+        app.pod_library.clear();
+        app.pod_library.import_bytes(noncanonical.clone()).unwrap();
+        app.pod_selected = Some(0);
+        recording_frame(&context, &mut app, vec![]);
+        assert!(!app
+            .pod_model_enable_checks
+            .contains_key(&pod_preset::PodModelEnable::Amp));
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), noncanonical);
+        assert!(!app.pod_library.is_dirty(0));
+
+        let eq_tone = sample_pod_eq_tone();
+        app.load_pod_bundle_bytes(sample_pod_bundle(&[eq_tone.clone()]))
+            .unwrap();
+        app.pod_open = true;
+        recording_frame(&context, &mut app, vec![]);
+        assert!(app
+            .pod_model_enable_checks
+            .contains_key(&pod_preset::PodModelEnable::Eq));
+        click_pod_model_enable(&context, &mut app, pod_preset::PodModelEnable::Eq);
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_eq!(
+            app.pod_bundle
+                .as_ref()
+                .unwrap()
+                .tone(0, 0)
+                .unwrap()
+                .model_enable_state(pod_preset::PodModelEnable::Eq),
+            Ok(pod_preset::ModelEnableState::Canonical(false))
+        );
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .model_enable_state(pod_preset::PodModelEnable::Eq),
+            Ok(pod_preset::ModelEnableState::Canonical(false))
+        );
+        assert!(app.pod_message.contains("Nothing was sent"));
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let collision = dir.path().join("existing.vwb");
+        std::fs::write(&collision, b"keep existing bytes").unwrap();
+        app.dialogs.pod_save.push_back(Some(collision.clone()));
+        app.pending = Some(Pending::QuitPod);
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pending.is_none());
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+
+        app.pending = Some(Pending::QuitPod);
+        click_prompt(&context, &mut app, "save");
+        assert!(app.pending.is_some(), "failed save must keep quit pending");
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_eq!(std::fs::read(&collision).unwrap(), b"keep existing bytes");
+
+        let saved = dir.path().join("saved.vwb");
+        app.dialogs.pod_save.push_back(Some(saved.clone()));
+        click_prompt(&context, &mut app, "save");
+        assert!(app.pending.is_none());
+        assert!(app.permit_close);
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_eq!(
+            pod_preset::PodBundleLibrary::parse(std::fs::read(saved).unwrap())
+                .unwrap()
+                .tone(0, 0)
+                .unwrap()
+                .model_enable_state(pod_preset::PodModelEnable::Eq),
+            Ok(pod_preset::ModelEnableState::Canonical(false))
+        );
     }
 
     fn sample_pod_eq_tone_with_words(frequency: u32, gain: u32) -> Vec<u8> {

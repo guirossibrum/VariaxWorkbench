@@ -523,6 +523,58 @@ fn pod_tone_open_rename_and_save_stay_offline_and_reject_variax() {
 }
 
 #[test]
+fn pod_model_enable_session_edit_is_role_gated_offline_and_byte_preserving() {
+    let session = Session::initial_rig();
+    let mut original = crate::pod_preset::fixture(
+        crate::pod_preset::ContainerKind::L6as,
+        PODXT_LIVE_PRODUCT_ID,
+        crate::pod_preset::PODXT_LIVE_HOST_MIN_VERSION,
+        &[(crate::pod_preset::AMP_SLOT, 0xdead_beef)],
+    );
+    let mut marker = 0xdead_beefu32.to_be_bytes().to_vec();
+    marker.extend_from_slice(&crate::pod_preset::AMP_SLOT.to_be_bytes());
+    let minf_body = original
+        .windows(marker.len())
+        .position(|window| window == marker)
+        .expect("amp MINF");
+    let enabled_offset = minf_body + 11;
+    original[enabled_offset] = 1;
+    let mut expected = original.clone();
+    expected[enabled_offset] = 0;
+    let edited = session
+        .set_pod_model_enabled(
+            RoleKind::Pod,
+            &original,
+            crate::pod_preset::PodModelEnable::Amp,
+            false,
+        )
+        .expect("offline stored-flag edit");
+    assert_eq!(edited, expected);
+    assert_eq!(
+        edited
+            .iter()
+            .zip(&original)
+            .filter(|(left, right)| left != right)
+            .count(),
+        1
+    );
+    assert_eq!(
+        session.set_pod_model_enabled(
+            RoleKind::Guitar,
+            &original,
+            crate::pod_preset::PodModelEnable::Amp,
+            false,
+        ),
+        Err(Rejection::Unsupported {
+            profile: ProductProfile::Variax600,
+            operation: Operation::EditPodPreset,
+        })
+    );
+    assert!(session.live_backend_is_absent());
+    assert!(LIVE_BACKEND_INITIALIZER.is_none());
+}
+
+#[test]
 fn offline_recording_gate_does_not_call_capture_or_open_a_stream() {
     let session = Session::initial_rig();
     assert!(LIVE_BACKEND_INITIALIZER.is_none());

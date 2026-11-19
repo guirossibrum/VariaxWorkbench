@@ -164,10 +164,20 @@ formatter or clamp to the nominal `0..=1` definition. The percent definitions
 use finite host-scale floats `0..=1`; their labels do not establish physical
 units. Rust applies target/version/prefix/type/range checks and a four-byte raw
 patch to those percent controls. The bounded four-band EQ frequency/gain graph
-edit is available for existing canonical records. EQ enable/reset/send, model
-creation or replacement, and cab controls remain unavailable.
-This allowlist does not establish installed-pack entitlement, device
-acceptance or physical behavior.
+edit is available for existing canonical records. The separately source-backed
+AMP and non-Bass PODxt EQ stored enable flags are editable offline on an existing
+unambiguous target model. AMP control `0x40010001` requires exactly one model in
+slot `0x00030000` and intentionally has no additional model-ID allowlist; EQ
+control `0x40090000` requires model `0x020c0002` in slot `0x00030004`. Both
+require PINF target `0x0003000A`, host profile version at least 3.00, a 12-byte
+MINF, and current enabled byte exactly `0x00` or `0x01`. A typed boolean changes
+only MINF body byte 11 and corresponding in-memory metadata. Missing/duplicate/
+wrong EQ targets, short MINF and noncanonical current bytes reject atomically.
+The edit preserves model id, slot, ordinal, reserved bytes, MINF tail, all PARM
+children and surrounding file bytes; it does not create or replace models or
+parameters and makes no bypass/audio/device-effect claim. EQ reset/send and cab
+controls remain unavailable. This allowlist does not establish installed-pack
+entitlement, device acceptance or physical behavior.
 
 The provider also maps 52 percent controls across its 24 Mod layouts in slot
 `0x00020004`: Depth, Bass, Treble, Feedback, Manual, Pre-delay, Wave, Tone, Q,
@@ -290,11 +300,14 @@ hardware access.
 - Slot ids outside `kGPXTSlot_*`. A known slot can still hold an unnamed
   model. A cab slot inside L6PA or L6FS keeps the Cab role and is not
   presented as the tone's cab model.
-- The MINF enabled flag is the signed `Read8() > 0` result and is not
-  rewritten. Bytes `0x80` through `0xFF` display as disabled. It is not a
-  bypass meaning. Model id `0x7fffffff` has the asset name "Bypass" from
+- The MINF enabled flag reads as signed Java `Read8() > 0`; bytes `0x80`
+  through `0xFF` display as disabled and are preserved on read. Only explicit
+  admitted AMP/EQ edits replace a canonical `0x00`/`0x01` byte at body offset
+  11. Noncanonical values remain visible with their source interpretation but
+  disable the toggle and are never normalized. This flag is not a bypass
+  meaning. Model id `0x7fffffff` has the asset name "Bypass" from
   `GetAssetName`; that name is a different field. The displayed ordinal is
-  the signed Java value. The stored MINF bytes stay unchanged.
+  the signed Java value. Ordinal, reserved bytes and MINF tail stay unchanged.
 - `L6BA` / `L6CO` libraries, `L6TE` templates, and `L6GP` patches.
 - Firmware region 17 and the 486-name resource directory in
   [firmware map](firmware-map.md). Those are image structures, not this tone
