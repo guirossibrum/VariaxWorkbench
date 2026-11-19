@@ -3908,7 +3908,7 @@ mod tests {
         assert!(!app.pod_library.is_dirty(0));
 
         let eq_tone = sample_pod_eq_tone();
-        app.load_pod_bundle_bytes(sample_pod_bundle(&[eq_tone.clone()]))
+        app.load_pod_bundle_bytes(sample_pod_bundle(std::slice::from_ref(&eq_tone)))
             .unwrap();
         app.pod_open = true;
         recording_frame(&context, &mut app, vec![]);

@@ -3625,8 +3625,12 @@ mod tests {
                 let after_change = tone.as_bytes().to_vec();
                 tone.set_model_enabled(control, desired).unwrap();
                 assert_eq!(tone.as_bytes(), after_change, "same value changed bytes");
-                assert_eq!(tone.models()[model_index].ordinal, Some(-128));
-                assert_eq!(tone.models()[model_index].reserved, Some([0xa1, 0xb2]));
+                let (ordinal, reserved) = match control {
+                    PodModelEnable::Amp => (-128, [0xa1, 0xb2]),
+                    PodModelEnable::Eq => (-1, [0xc3, 0xd4]),
+                };
+                assert_eq!(tone.models()[model_index].ordinal, Some(ordinal));
+                assert_eq!(tone.models()[model_index].reserved, Some(reserved));
                 assert!(
                     tone.models()[0]
                         .parameters
