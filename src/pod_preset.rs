@@ -3776,10 +3776,10 @@ mod tests {
         assert_eq!(tone.models()[0].reserved, Some([0xa1, 0xb2]));
         assert_eq!(tone.models()[0].enabled, Some(false));
 
+        let id_offset = tone.model_minfo_ranges[0].start;
         tone.set_amp_model_choice(PodAmpModelChoice::NoAmp).unwrap();
         let changed = tone.as_bytes().to_vec();
-        let id_offset = find_chunk_data(&original, b"MINF");
-        assert_eq!(id_offset, find_chunk_data(&changed, b"MINF"));
+        assert_eq!(id_offset, tone.model_minfo_ranges[0].start);
         for index in 0..original.len() {
             if !(id_offset..id_offset + 4).contains(&index) {
                 assert_eq!(changed[index], original[index], "changed byte {index:#x}");
@@ -3813,14 +3813,14 @@ mod tests {
 
         tone.set_amp_model_choice(PodAmpModelChoice::Line6Clean)
             .unwrap();
-        let restored_id = find_chunk_data(tone.as_bytes(), b"MINF");
+        let restored_id = tone.model_minfo_ranges[0].start;
         assert_eq!(
             &tone.as_bytes()[restored_id..restored_id + 4],
             &PodAmpModelChoice::Line6Clean.model_id().to_be_bytes()
         );
         let line6_clean = tone.as_bytes().to_vec();
         tone.set_amp_model_choice(PodAmpModelChoice::NoAmp).unwrap();
-        let no_amp_id = find_chunk_data(tone.as_bytes(), b"MINF");
+        let no_amp_id = tone.model_minfo_ranges[0].start;
         assert_eq!(
             &tone.as_bytes()[no_amp_id..no_amp_id + 4],
             &PodAmpModelChoice::NoAmp.model_id().to_be_bytes()
@@ -3988,7 +3988,10 @@ mod tests {
                 parameters: &parameters,
             }],
         );
-        let minf = find_chunk_data(&missing_minf, b"MINF");
+        let minf = PodTone::parse(missing_minf.clone())
+            .unwrap()
+            .model_minfo_ranges[0]
+            .start;
         missing_minf[minf - 8..minf - 4].copy_from_slice(b"XXXX");
         let missing_minf_before = missing_minf.clone();
         assert!(PodTone::parse(missing_minf.clone()).is_err());
