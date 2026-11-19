@@ -4528,7 +4528,7 @@ mod tests {
                 slot: STOMP_SLOT,
                 model_id: STOMP_WHAMMY_INTERVAL_MODEL_ID,
                 tail: &[],
-                parameters: &[&valid, b"\x00\x00\x00\x0c\x00\x10\x00\x02\x00\x00\x00\x01"],
+                parameters: &[&valid, b"\x00\x00"],
             }],
         );
         let mut tone = PodTone::parse(opaque.clone()).unwrap();
