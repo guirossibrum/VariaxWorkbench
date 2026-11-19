@@ -4660,8 +4660,7 @@ mod tests {
 
     #[test]
     fn pod_bundle_parse_rejects_structurally_valid_file_over_total_ceiling() {
-        let oversized =
-            bundle_with_total_length(&live_tone(), BUNDLE_BYTES_CEILING as usize + 2);
+        let oversized = bundle_with_total_length(&live_tone(), BUNDLE_BYTES_CEILING as usize + 2);
         assert_eq!(oversized.len(), BUNDLE_BYTES_CEILING as usize + 2);
         let error = PodBundleLibrary::parse(oversized).unwrap_err();
         assert!(error.detail().contains("16 MiB"));
@@ -4669,10 +4668,11 @@ mod tests {
 
     #[test]
     fn pod_bundle_replacement_growth_over_ceiling_is_transactional() {
-        let original =
-            bundle_with_total_length(&live_tone(), BUNDLE_BYTES_CEILING as usize - 2);
+        let original = bundle_with_total_length(&live_tone(), BUNDLE_BYTES_CEILING as usize - 2);
         let mut library = PodBundleLibrary::parse(original.clone()).unwrap();
-        library.edit_entry(0, |tone| tone.rename("Unsaved")).unwrap();
+        library
+            .edit_entry(0, |tone| tone.rename("Unsaved"))
+            .unwrap();
         let before_replace = library.as_bytes().to_vec();
         let saved_before = library.saved.clone();
         assert!(library.is_dirty());
