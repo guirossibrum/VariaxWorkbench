@@ -39,6 +39,33 @@ fn synthetic_h5es() -> Vec<u8> {
     bytes
 }
 
+fn synthetic_h5eb_with_type9_child() -> Vec<u8> {
+    let mut bytes = vec![0; crate::pod_preset::H5EB_MIN_BYTES];
+    bytes[..4].copy_from_slice(b"H5EB");
+    bytes[4..8].copy_from_slice(&1u32.to_be_bytes());
+    for setlist in 0..crate::pod_preset::H5EB_SETLIST_COUNT {
+        let start =
+            crate::pod_preset::H5EB_HEADER_BYTES + setlist * crate::pod_preset::H5ES_MIN_BYTES;
+        bytes[start..start + crate::pod_preset::H5ES_MIN_BYTES].copy_from_slice(&synthetic_h5es());
+    }
+    let child = crate::pod_preset::H5EB_HEADER_BYTES + crate::pod_preset::H5ES_HEADER_BYTES;
+    bytes[child..child + crate::pod_preset::H5EP_MIN_BYTES].copy_from_slice(&type9_h5ep());
+    bytes
+}
+
+fn type9_h5ep() -> Vec<u8> {
+    let mut bytes = synthetic_h5ep();
+    let block = crate::pod_preset::H5EP_HEADER_BYTES + 0x428 + 6 * 0x100;
+    bytes[block..block + 4].copy_from_slice(&0x020a_0014u32.to_be_bytes());
+    bytes[block + 8] = 1;
+    bytes[block + 0x0b] = 1;
+    bytes[block + 0x0f] = 1;
+    let row = block + 0x10;
+    bytes[row..row + 4].copy_from_slice(&0x3f10_0004u32.to_be_bytes());
+    bytes[row + 4..row + 8].copy_from_slice(&0x3e80_0000u32.to_be_bytes());
+    bytes
+}
+
 fn with_device_id(bytes: &[u8], device_id: u32) -> Vec<u8> {
     let mut owned = bytes.to_vec();
     owned[24..28].copy_from_slice(&device_id.to_be_bytes());
@@ -466,18 +493,13 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
 #[test]
 fn type9_choice_writer_is_gated_to_the_hd500x_extension_and_standalone_h5ep() {
     use crate::pod_preset::{HdFxSlot, HdType9Choice};
-    let mut bytes = synthetic_h5ep();
+    let bytes = type9_h5ep();
     let block = crate::pod_preset::H5EP_HEADER_BYTES + 0x428 + 6 * 0x100;
-    bytes[block..block + 4].copy_from_slice(&0x020a_0014u32.to_be_bytes());
-    bytes[block + 8] = 1;
-    bytes[block + 0x0b] = 1;
-    bytes[block + 0x0f] = 1;
     let row = block + 0x10;
-    bytes[row..row + 4].copy_from_slice(&0x3f10_0004u32.to_be_bytes());
-    bytes[row + 4..row + 8].copy_from_slice(&0x3e80_0000u32.to_be_bytes());
     let mut library = HdEditorLibrary::default();
     let index = library.import_bytes(bytes.clone()).unwrap();
     let slot = HdFxSlot::new(6).unwrap();
+    let hd_session = Session::extension(ProductProfile::PodHd500x).unwrap();
 
     assert!(matches!(
         Session::initial_rig().set_hd_type9_choice(
@@ -524,8 +546,7 @@ fn type9_choice_writer_is_gated_to_the_hd500x_extension_and_standalone_h5ep() {
         bad_marker
     );
     assert!(!rejected_library.is_dirty(rejected_index));
-    Session::extension(ProductProfile::PodHd500x)
-        .unwrap()
+    hd_session
         .set_hd_type9_choice(&mut library, index, slot, HdType9Choice::Choice2)
         .expect("admitted offline profile edit");
     assert!(library.is_dirty(index));
@@ -537,11 +558,27 @@ fn type9_choice_writer_is_gated_to_the_hd500x_extension_and_standalone_h5ep() {
         library.file(index).unwrap().as_bytes()[row..row + 4],
         0x3f10_0004u32.to_be_bytes()
     );
+    let edited_bytes = library.file(index).unwrap().as_bytes().to_vec();
+    hd_session
+        .set_hd_type9_choice(&mut library, index, slot, HdType9Choice::Choice2)
+        .expect("same-word replacement is an allowed no-op");
+    assert_eq!(library.file(index).unwrap().as_bytes(), edited_bytes);
+    assert!(
+        library.is_dirty(index),
+        "same-word no-op preserves dirty state"
+    );
+    let other_slot = HdFxSlot::new(5).unwrap();
+    assert!(
+        hd_session
+            .set_hd_type9_choice(&mut library, index, other_slot, HdType9Choice::Choice1)
+            .is_err()
+    );
+    assert_eq!(library.file(index).unwrap().as_bytes(), edited_bytes);
+    assert!(library.is_dirty(index), "rejection preserves dirty state");
     library.revert_unsaved(index).unwrap();
     assert_eq!(library.file(index).unwrap().as_bytes(), bytes.as_slice());
     assert!(!library.is_dirty(index));
 
-    let hd_session = Session::extension(ProductProfile::PodHd500x).unwrap();
     hd_session
         .set_hd_type9_choice(&mut library, index, slot, HdType9Choice::Choice1)
         .unwrap();
@@ -571,15 +608,52 @@ fn type9_choice_writer_is_gated_to_the_hd500x_extension_and_standalone_h5ep() {
     library.note_saved(index).unwrap();
     assert!(!library.is_dirty(index));
 
-    let mut parent = HdEditorLibrary::default();
-    let h5es_index = parent.import_bytes(synthetic_h5es()).unwrap();
-    assert!(
-        Session::extension(ProductProfile::PodHd500x)
-            .unwrap()
-            .set_hd_type9_choice(&mut parent, h5es_index, slot, HdType9Choice::Choice1)
-            .is_err()
-    );
-    assert!(!parent.is_dirty(h5es_index));
+    for parent_bytes in [
+        {
+            let mut bytes = synthetic_h5es();
+            bytes[crate::pod_preset::H5ES_HEADER_BYTES
+                ..crate::pod_preset::H5ES_HEADER_BYTES + crate::pod_preset::H5EP_MIN_BYTES]
+                .copy_from_slice(&type9_h5ep());
+            bytes
+        },
+        synthetic_h5eb_with_type9_child(),
+    ] {
+        let mut parent = HdEditorLibrary::default();
+        let parent_index = parent.import_bytes(parent_bytes.clone()).unwrap();
+        assert!(
+            hd_session
+                .set_hd_type9_choice(&mut parent, parent_index, slot, HdType9Choice::Choice1)
+                .is_err()
+        );
+        assert_eq!(parent.file(parent_index).unwrap().as_bytes(), parent_bytes);
+        assert!(!parent.is_dirty(parent_index));
+        let child_index = parent.extract_preset(parent_index, 0, 0).unwrap();
+        let child_original = parent.file(child_index).unwrap().as_bytes().to_vec();
+        hd_session
+            .set_hd_type9_choice(&mut parent, child_index, slot, HdType9Choice::Choice1)
+            .unwrap();
+        assert!(parent.is_dirty(child_index));
+        assert_eq!(parent.file(parent_index).unwrap().as_bytes(), parent_bytes);
+        let edited_child = parent.file(child_index).unwrap().as_bytes().to_vec();
+        assert_ne!(edited_child, child_original);
+        assert!(
+            hd_session
+                .set_hd_type9_choice(
+                    &mut parent,
+                    child_index,
+                    HdFxSlot::new(5).unwrap(),
+                    HdType9Choice::Choice2
+                )
+                .is_err()
+        );
+        assert_eq!(parent.file(child_index).unwrap().as_bytes(), edited_child);
+        assert!(parent.is_dirty(child_index));
+        assert_eq!(parent.file(parent_index).unwrap().as_bytes(), parent_bytes);
+        parent.revert_unsaved(child_index).unwrap();
+        assert_eq!(parent.file(child_index).unwrap().as_bytes(), child_original);
+        assert!(!parent.is_dirty(child_index));
+        assert_eq!(parent.file(parent_index).unwrap().as_bytes(), parent_bytes);
+    }
 }
 
 #[test]
