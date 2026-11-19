@@ -1758,6 +1758,45 @@ impl Workbench {
                 ui.label(pod_preset::NOT_SENT);
                 ui.label(pod_preset::PAYLOADS_NOT_DECODED);
                 ui.label(&self.pod_message);
+                let selected_octave_fuzz = self.hd_selected.and_then(|index| {
+                    self.hd_library.file(index).and_then(|file| match file {
+                        PodPresetFile::H5ep(preset) => {
+                            preset.effect_model_id(self.hd_effect_slot)
+                        }
+                        _ => None,
+                    })
+                }) == Some(
+                    pod_preset::HdType1Control::OctaveFuzz(
+                        pod_preset::OctaveFuzzControl::Drive,
+                    )
+                    .model_id(),
+                );
+                if selected_octave_fuzz {
+                    ui.label("This explicit action replaces the current model and resets its five source-defined values to Vintage Pre defaults.");
+                    if self.pod_button(
+                        ui,
+                        "replace-octave-fuzz-vintage-pre",
+                        "Replace Octave Fuzz with Vintage Pre defaults",
+                    ) {
+                        let index = self.hd_selected.expect("selected HD file");
+                        match pod_preset::HdFxSlot::new(self.hd_effect_slot) {
+                            Ok(slot) => match Session::initial_rig()
+                                .replace_hd_octave_fuzz_with_vintage_pre_defaults(
+                                    &mut self.hd_library,
+                                    index,
+                                    slot,
+                                )
+                            {
+                                Ok(()) => {
+                                    self.pod_message = "Replaced this offline effect with Vintage Pre defaults. Nothing was sent; save a new copy to keep the change.".into();
+                                }
+                                Err(error) => self.pod_message = rejection_text(&error),
+                            },
+                            Err(error) => self.pod_message = error.detail(),
+                        }
+                    }
+                    ui.separator();
+                }
                 ui.separator();
                 let rows: Vec<_> = (0..self.pod_library.len())
                     .filter_map(|index| {
@@ -1842,7 +1881,7 @@ impl Workbench {
                     }
                 }
                 ui.separator();
-                self.hd_editor_panel(ui);
+                egui::ScrollArea::vertical().show(ui, |ui| self.hd_editor_panel(ui));
             });
         // Closing this window keeps the in-memory library, including unsaved names.
         self.pod_open = open;
@@ -1948,32 +1987,6 @@ impl Workbench {
                 let model_id = preset
                     .effect_model_id(self.hd_effect_slot)
                     .unwrap_or_default();
-                if model_id
-                    == pod_preset::HdType1Control::OctaveFuzz(pod_preset::OctaveFuzzControl::Drive)
-                        .model_id()
-                {
-                    ui.label("This explicit action replaces the current model and resets its five source-defined values to Vintage Pre defaults.");
-                    if self.pod_button(
-                        ui,
-                        "replace-octave-fuzz-vintage-pre",
-                        "Replace Octave Fuzz with Vintage Pre defaults",
-                    ) {
-                        match pod_preset::HdFxSlot::new(self.hd_effect_slot) {
-                            Ok(slot) => match Session::initial_rig()
-                                .replace_hd_octave_fuzz_with_vintage_pre_defaults(
-                                    &mut self.hd_library,
-                                    index,
-                                    slot,
-                                ) {
-                                Ok(()) => {
-                                    self.pod_message = "Replaced this offline effect with Vintage Pre defaults. Nothing was sent; save a new copy to keep the change.".into();
-                                }
-                                Err(error) => self.pod_message = rejection_text(&error),
-                            },
-                            Err(error) => self.pod_message = error.detail(),
-                        }
-                    }
-                }
                 let has_mapped_type1 = pod_preset::HD_TYPE1_MAPPED_CONTROLS.iter().any(|control| {
                     control.model_id() == model_id
                         && preset
@@ -3728,7 +3741,13 @@ mod tests {
         app.select_hd_file(index);
         app.pod_open = true;
 
+        recording_frame(&context, &mut app, vec![]);
         click_pod(&context, &mut app, "replace-octave-fuzz-vintage-pre");
+        assert!(
+            app.pod_message.contains("Vintage Pre defaults"),
+            "{}",
+            app.pod_message
+        );
         let mut expected = original.clone();
         expected[block..block + 4].copy_from_slice(&0x020c_000eu32.to_be_bytes());
         for (row, key) in [
