@@ -677,7 +677,7 @@ fn type10_choice_uses_independent_same_model_key_through_hd500x_session() {
         .unwrap();
     let changed = library.file(index).unwrap().as_bytes();
     assert_eq!(&changed[0x9dc..0x9e0], &[0x3f, 0x80, 0, 0]);
-    assert_eq!(&changed[0x94c..0x954], &bytes[0x94c..0x954]);
+    assert_eq!(&changed[0x988..0x990], &bytes[0x988..0x990]);
     assert_ne!(changed, bytes);
     library.revert_unsaved(index).unwrap();
     assert_eq!(library.file(index).unwrap().as_bytes(), bytes);

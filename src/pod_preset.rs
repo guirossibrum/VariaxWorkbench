@@ -6777,13 +6777,13 @@ mod tests {
         assert_eq!(source.len(), expected0.len());
         assert_eq!(source.len(), expected1.len());
         assert_eq!(
-            &source[0x930..0x934],
+            &source[0x950..0x954],
             &HD_TYPE10_CHOICE_MODEL_ID.to_be_bytes()
         );
         assert_eq!(&source[0x9d8..0x9dc], &HD_TYPE10_CHOICE_KEY.to_be_bytes());
         assert_eq!(&source[0x9dc..0x9e0], &[0x3e, 0xaa, 0xaa, 0xab]);
-        assert_eq!(&source[0x94c..0x950], &0x3f10_0004u32.to_be_bytes());
-        assert_eq!(&source[0x950..0x954], &0x3f00_0000u32.to_be_bytes());
+        assert_eq!(&source[0x988..0x98c], &0x3f10_0004u32.to_be_bytes());
+        assert_eq!(&source[0x98c..0x990], &0x3f00_0000u32.to_be_bytes());
         assert_eq!(&source[H5EP_MIN_BYTES..], b"TYPE10-SYNTHETIC-SUFFIX");
         for (choice, expected) in [
             (HdType10Choice::Choice0, expected0),
@@ -6805,7 +6805,7 @@ mod tests {
         p.set_hd_type10_choice(HdFxSlot::new(5).unwrap(), HdType10Choice::Choice1)
             .unwrap();
         assert_eq!(
-            &p.as_bytes()[0x94c..0x954],
+            &p.as_bytes()[0x988..0x990],
             &[0x3f, 0x10, 0x00, 0x04, 0x3f, 0x00, 0x00, 0x00]
         );
         let mut no_op = p.clone();

@@ -2651,7 +2651,7 @@ impl Workbench {
                         |p| format!("{} · staged", p.choice.label()),
                     );
                     ui.label("Recovered type-10 choice");
-                    let response = egui::ComboBox::from_id_salt((
+                    let _response = egui::ComboBox::from_id_salt((
                         "hd-type10-choice",
                         index,
                         self.hd_effect_slot,
@@ -2689,7 +2689,7 @@ impl Workbench {
                     });
                     #[cfg(test)]
                     self.pod_buttons
-                        .insert("hd-type10-choice-combo", response.response.rect);
+                        .insert("hd-type10-choice-combo", _response.response.rect);
                     ui.label("Choice labels are neutral; the selected value is preserved as an opaque float word.");
                     if matches!(value, pod_preset::HdType10ChoiceValue::NonFinite(_)) {
                         ui.label("A non-finite imported value cannot be replaced by this editor operation.");
