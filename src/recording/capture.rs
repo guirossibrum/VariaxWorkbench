@@ -1038,24 +1038,14 @@ mod tests {
         let (registry, mut request) = native_request(None);
         request.platform = Platform::MacOs;
         assert_eq!(
-            ValidatedPlan::native_podxt(
-                &registry,
-                request,
-                RecordRoute::SendCleanGuitar,
-                1024
-            ),
+            ValidatedPlan::native_podxt(&registry, request, RecordRoute::SendCleanGuitar, 1024),
             Err(CaptureError::Registry(AdmissionError::UnverifiedPlatform))
         );
 
         let (registry, mut request) = native_request(None);
         request.clock = (39_062, 1);
         assert_eq!(
-            ValidatedPlan::native_podxt(
-                &registry,
-                request,
-                RecordRoute::SendCleanGuitar,
-                1024
-            ),
+            ValidatedPlan::native_podxt(&registry, request, RecordRoute::SendCleanGuitar, 1024),
             Err(CaptureError::Registry(AdmissionError::UnsupportedPcm))
         );
     }

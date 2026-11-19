@@ -1359,8 +1359,7 @@ impl Panel {
             .find(|row| {
                 row.name == "PODxt Live"
                     && row.role == crate::rig::audio::SourceRole::Bridge
-                    && row.classification
-                        == crate::rig::audio::Classification::NativeUsbDeclaration
+                    && row.classification == crate::rig::audio::Classification::NativeUsbDeclaration
             })
             .map(|row| row.ordinal)
             .ok_or_else(|| TakeError::Capture("PODxt Live declaration is not admitted".into()))?;
