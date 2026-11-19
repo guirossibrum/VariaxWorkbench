@@ -299,6 +299,30 @@ impl Session {
         backend::set_pod_stomp_harmony_selection(bytes, selection)
     }
 
+    /// Applies one typed Delay NOTE choice offline. Positive choices derive
+    /// TIME from stored Tempo; Off changes NOTE only. Nothing is sent.
+    pub fn set_pod_delay_note_choice(
+        self,
+        role: RoleKind,
+        bytes: &[u8],
+        choice: crate::pod_preset::DelayNoteChoice,
+    ) -> Result<Vec<u8>, Rejection> {
+        self.require(role, Operation::EditPodPreset)?;
+        backend::set_pod_delay_note_choice(bytes, choice)
+    }
+
+    /// Applies a displayed Delay TIME value in milliseconds offline and clears
+    /// a positive Delay NOTE. This isolated edit does not read Tempo or Mod.
+    pub fn set_pod_delay_time_ms(
+        self,
+        role: RoleKind,
+        bytes: &[u8],
+        milliseconds: f32,
+    ) -> Result<Vec<u8>, Rejection> {
+        self.require(role, Operation::EditPodPreset)?;
+        backend::set_pod_delay_time_ms(bytes, milliseconds)
+    }
+
     /// Writes a new copy through the non-overwriting save. It does not upload.
     pub fn save_pod_copy(self, role: RoleKind, path: &Path, bytes: &[u8]) -> Result<(), Rejection> {
         self.require(role, Operation::EditPodPreset)?;

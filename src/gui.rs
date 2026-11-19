@@ -58,6 +58,12 @@ enum PendingStompHarmony {
     Harmony1457(pod_preset::StompHarmony1457Selection),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PendingDelayEdit {
+    Note(pod_preset::DelayNoteChoice),
+    TimeMs(f32),
+}
+
 trait FileDialogs {
     fn open(&mut self) -> Option<PathBuf>;
     fn save(&mut self, suggested: &str, extension: &str) -> Option<PathBuf>;
@@ -234,6 +240,7 @@ struct Workbench {
     pod_selected: Option<usize>,
     pod_cab_pending: Option<(usize, pod_preset::PodCabModelChoice)>,
     pod_harmony_pending: Option<(usize, pod_preset::StompHarmonyControl, PendingStompHarmony)>,
+    pod_delay_pending: Option<(usize, PendingDelayEdit)>,
     pod_name: String,
     pod_message: String,
     #[cfg(test)]
@@ -276,6 +283,10 @@ struct Workbench {
     pod_reverb_sliders: HashMap<pod_preset::ReverbControl, Rect>,
     #[cfg(test)]
     pod_delay_sliders: HashMap<pod_preset::DelayControl, Rect>,
+    #[cfg(test)]
+    pod_delay_note_options: HashMap<pod_preset::DelayNoteChoice, Rect>,
+    #[cfg(test)]
+    pod_delay_time_slider: Option<Rect>,
     #[cfg(test)]
     pod_delay_heads_choices: HashMap<pod_preset::DelayHeadsSelection, Rect>,
     #[cfg(test)]
@@ -342,6 +353,7 @@ impl Workbench {
             pod_selected: None,
             pod_cab_pending: None,
             pod_harmony_pending: None,
+            pod_delay_pending: None,
             pod_name: String::new(),
             pod_message: String::new(),
             #[cfg(test)]
@@ -384,6 +396,11 @@ impl Workbench {
             pod_reverb_sliders: HashMap::new(),
             #[cfg(test)]
             pod_delay_sliders: HashMap::new(),
+            #[cfg(test)]
+            #[cfg(test)]
+            pod_delay_note_options: HashMap::new(),
+            #[cfg(test)]
+            pod_delay_time_slider: None,
             #[cfg(test)]
             pod_delay_heads_choices: HashMap::new(),
             #[cfg(test)]
@@ -1522,6 +1539,7 @@ impl Workbench {
     fn refresh_selected_pod_name(&mut self) {
         self.pod_cab_pending = None;
         self.pod_harmony_pending = None;
+        self.pod_delay_pending = None;
         match (self.pod_selected, self.pod_library.len()) {
             (Some(_), 0) => {
                 self.pod_selected = None;
@@ -1851,6 +1869,8 @@ impl Workbench {
             self.pod_mod_sliders.clear();
             self.pod_reverb_sliders.clear();
             self.pod_delay_sliders.clear();
+            self.pod_delay_note_options.clear();
+            self.pod_delay_time_slider = None;
             self.pod_delay_heads_choices.clear();
             self.pod_delay_bits_choices.clear();
             self.pod_stomp_wave_choices.clear();
@@ -1981,6 +2001,7 @@ impl Workbench {
                         if self.pod_selected != Some(index) {
                             self.pod_cab_pending = None;
                             self.pod_harmony_pending = None;
+                            self.pod_delay_pending = None;
                         }
                         self.pod_selected = Some(index);
                         self.pod_name = name;
@@ -2475,6 +2496,85 @@ impl Workbench {
                         }
                     });
                 }
+                let delay_note_state = self.pod_selected.and_then(|index| {
+                    self.pod_library.tone(index).map(|tone| {
+                        (index, tone.delay_note_value(), tone.delay_time_ms())
+                    })
+                });
+                if let Some((index, note_result, time_result)) = delay_note_state {
+                    ui.separator();
+                    ui.label("Delay NOTE / TIME");
+                    match note_result {
+                        Ok(value) => {
+                            let selected_current = match value {
+                                pod_preset::DelayNoteValue::Known(choice) => Some(choice),
+                                pod_preset::DelayNoteValue::Unknown { .. } => None,
+                            };
+                            let selected_pending = match self.pod_delay_pending {
+                                Some((pending_index, PendingDelayEdit::Note(choice))) if pending_index == index => Some(choice),
+                                _ => selected_current,
+                            };
+                            let selected_label = match value {
+                                pod_preset::DelayNoteValue::Known(choice) => choice.label().to_owned(),
+                                pod_preset::DelayNoteValue::Unknown { raw_bits } => format!("Unknown NOTE {raw_bits}"),
+                            };
+                            ui.label(format!("Stored: {selected_label}"));
+                            let mut selected = selected_pending;
+                            let mut changed = None;
+                            ui.horizontal_wrapped(|ui| {
+                                for choice in pod_preset::DelayNoteChoice::ALL {
+                                    let response = ui.selectable_value(&mut selected, Some(choice), choice.label());
+                                    #[cfg(test)]
+                                    self.pod_delay_note_options.insert(choice, response.rect);
+                                    if response.changed() { changed = selected; }
+                                }
+                            });
+                            if let Some(choice) = changed {
+                                self.pod_delay_pending = Some((index, PendingDelayEdit::Note(choice)));
+                            }
+                        }
+                        Err(error) => { ui.small(format!("Delay NOTE unavailable: {}", error.detail())); }
+                    }
+                    match time_result {
+                        Ok(current_ms) => {
+                            let pending_ms = match self.pod_delay_pending {
+                                Some((pending_index, PendingDelayEdit::TimeMs(value))) if pending_index == index => value,
+                                _ => current_ms,
+                            };
+                            let mut value = pending_ms;
+                            ui.horizontal(|ui| {
+                                ui.label("TIME (ms)");
+                                let response = ui.add(egui::Slider::new(&mut value, 20.0..=2000.0).show_value(true));
+                                #[cfg(test)] { self.pod_delay_time_slider = Some(response.rect); }
+                                if response.changed() {
+                                    self.pod_delay_pending = Some((index, PendingDelayEdit::TimeMs(value)));
+                                }
+                            });
+                        }
+                        Err(error) => { ui.small(format!("Delay TIME unavailable: {}", error.detail())); }
+                    }
+                    if let Some((pending_index, edit)) = self.pod_delay_pending.filter(|(pending_index, _)| *pending_index == index) {
+                        let (label, button) = match edit {
+                            PendingDelayEdit::Note(choice) => (format!("{} (not applied)", choice.label()), "Apply Delay NOTE"),
+                            PendingDelayEdit::TimeMs(value) => (format!("{value:.3} ms (not applied)"), "Apply Delay TIME"),
+                        };
+                        ui.horizontal(|ui| {
+                            ui.label(format!("Pending {label}"));
+                            let response = ui.button(button);
+                            #[cfg(test)] { self.pod_buttons.insert("pod-delay-apply", response.rect); }
+                            if response.clicked() {
+                                match self.apply_pod_delay_edit(pending_index, edit) {
+                                    Ok(()) => {
+                                        self.pod_delay_pending = None;
+                                        self.pod_message = "Applied the staged Delay NOTE/TIME edit offline. Nothing was sent.".into();
+                                    }
+                                    Err(error) => self.pod_message = error.detail(),
+                                }
+                            }
+                            if ui.button("Discard").clicked() { self.pod_delay_pending = None; }
+                        });
+                    }
+                }
                 let delay_heads = self
                     .pod_selected
                     .and_then(|index| self.pod_library.tone(index))
@@ -2753,6 +2853,30 @@ impl Workbench {
         let replacement = Session::initial_rig()
             .set_pod_stomp_harmony_selection(RoleKind::Pod, &current, selection)
             .map_err(|error| pod_preset::ToneError::format(rejection_text(&error)))?;
+        self.replace_pod_tone(index, replacement)
+    }
+
+    fn apply_pod_delay_edit(
+        &mut self,
+        index: usize,
+        edit: PendingDelayEdit,
+    ) -> Result<(), pod_preset::ToneError> {
+        let current = self
+            .pod_library
+            .tone(index)
+            .ok_or_else(|| pod_preset::ToneError::format("POD selection is out of range"))?
+            .as_bytes()
+            .to_vec();
+        let session = Session::initial_rig();
+        let replacement = match edit {
+            PendingDelayEdit::Note(choice) => {
+                session.set_pod_delay_note_choice(RoleKind::Pod, &current, choice)
+            }
+            PendingDelayEdit::TimeMs(milliseconds) => {
+                session.set_pod_delay_time_ms(RoleKind::Pod, &current, milliseconds)
+            }
+        }
+        .map_err(|error| pod_preset::ToneError::format(rejection_text(&error)))?;
         self.replace_pod_tone(index, replacement)
     }
 
@@ -4189,6 +4313,71 @@ mod tests {
         chunk(b"FORM", &data)
     }
 
+    fn sample_delay_note_tone() -> Vec<u8> {
+        fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+            let mut output = id.to_vec();
+            output.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            output.extend_from_slice(data);
+            if !data.len().is_multiple_of(2) {
+                output.push(0xa5);
+            }
+            output
+        }
+        fn parameter(id: u32, kind: u32, bits: u32) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&(0x3f00_0000 | id).to_be_bytes());
+            bytes.extend_from_slice(&kind.to_be_bytes());
+            bytes.extend_from_slice(&bits.to_be_bytes());
+            chunk(b"PARM", &bytes)
+        }
+        fn model(slot: u32, model_id: u32, parameters: &[Vec<u8>]) -> Vec<u8> {
+            let mut minf = Vec::new();
+            minf.extend_from_slice(&model_id.to_be_bytes());
+            minf.extend_from_slice(&slot.to_be_bytes());
+            minf.extend_from_slice(&[0, 0, 0, 1]);
+            let mut contents = b"MODL".to_vec();
+            contents.extend(chunk(b"MINF", &minf));
+            for parameter in parameters {
+                contents.extend_from_slice(parameter);
+            }
+            chunk(b"LIST", &contents)
+        }
+        let mut info = vec![0; 80];
+        info[..4].copy_from_slice(&1u32.to_be_bytes());
+        info[4..8].copy_from_slice(&pod_preset::PODXT_LIVE_TONE_ID.to_be_bytes());
+        info[8..10].copy_from_slice(&u16::from(b'D').to_be_bytes());
+        info[72..76].copy_from_slice(&pod_preset::PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
+        let system = model(
+            0x0001_0000,
+            0x3e80_0000,
+            &[parameter(0x0020_0001, 1, 120.0_f32.to_bits())],
+        );
+        let modulation = model(
+            pod_preset::MOD_SLOT,
+            pod_preset::MOD_CONTROL_MODEL_IDS[0],
+            &[
+                parameter(0x0010_0000, 1, 0x3e80_0000),
+                parameter(0x0020_0000, 0, 0),
+            ],
+        );
+        let delay = model(
+            pod_preset::DELAY_SLOT,
+            0x0202_0002,
+            &[
+                parameter(0x0010_0000, 1, 0x3e80_0000),
+                parameter(0x0020_0000, 0, 0),
+            ],
+        );
+        let mut patch = b"PATC".to_vec();
+        patch.extend(system);
+        patch.extend(modulation);
+        patch.extend(delay);
+        let mut data = b"L6AS".to_vec();
+        data.extend(chunk(b"PINF", &info));
+        data.extend(chunk(b"LIST", &patch));
+        chunk(b"FORM", &data)
+    }
+
     fn sample_pod_bundle(tones: &[Vec<u8>]) -> Vec<u8> {
         fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
             let mut output = id.to_vec();
@@ -4904,6 +5093,17 @@ mod tests {
         recording_frame_tall(context, app, vec![]);
         let rect = app.pod_harmony1_choices[&choice];
         click_pod_at_tall(context, app, rect.center());
+        recording_frame_tall(context, app, vec![]);
+    }
+
+    fn stage_delay_note_choice(
+        context: &egui::Context,
+        app: &mut Workbench,
+        choice: pod_preset::DelayNoteChoice,
+    ) {
+        recording_frame_tall(context, app, vec![]);
+        let option = app.pod_delay_note_options[&choice];
+        click_pod_at_tall(context, app, option.center());
         recording_frame_tall(context, app, vec![]);
     }
 
@@ -6310,6 +6510,71 @@ mod tests {
         const {
             assert!(LIVE_ACCESS_LOCKED);
         }
+    }
+
+    #[test]
+    fn delay_note_gui_stages_per_tone_applies_offline_and_keeps_unsaved_guards() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let directory = tempfile::tempdir().unwrap();
+        let saved = directory.path().join("delay-note-copy.l6c");
+        app.dialogs = Box::new(FakeDialogs {
+            pod_save: [Some(saved.clone())].into(),
+            ..Default::default()
+        });
+        let original = sample_delay_note_tone();
+        app.pod_open = true;
+        app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_selected = Some(0);
+        recording_frame_tall(&context, &mut app, vec![]);
+
+        stage_delay_note_choice(&context, &mut app, pod_preset::DelayNoteChoice::Quarter);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert_eq!(
+            app.pod_delay_pending,
+            Some((
+                0,
+                PendingDelayEdit::Note(pod_preset::DelayNoteChoice::Quarter)
+            ))
+        );
+        let second_row = app.pod_rows[&1].center();
+        click_pod_at_tall(&context, &mut app, second_row);
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert_eq!(app.pod_selected, Some(1));
+        assert!(app.pod_delay_pending.is_none());
+
+        let first_row = app.pod_rows[&0].center();
+        click_pod_at_tall(&context, &mut app, first_row);
+        recording_frame_tall(&context, &mut app, vec![]);
+        stage_delay_note_choice(&context, &mut app, pod_preset::DelayNoteChoice::Quarter);
+        click_pod(&context, &mut app, "pod-delay-apply");
+        let applied = app.pod_library.tone(0).unwrap().as_bytes().to_vec();
+        assert_ne!(applied, original);
+        assert!(app.pod_library.is_dirty(0));
+        assert!(app.pod_delay_pending.is_none());
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().delay_note_value().unwrap(),
+            pod_preset::DelayNoteValue::Known(pod_preset::DelayNoteChoice::Quarter)
+        );
+        click_pod(&context, &mut app, "save-pod");
+        let reopened = pod_preset::PodTone::parse(std::fs::read(&saved).unwrap()).unwrap();
+        assert_eq!(
+            reopened.delay_note_value().unwrap(),
+            pod_preset::DelayNoteValue::Known(pod_preset::DelayNoteChoice::Quarter)
+        );
+        assert!(!app.pod_library.is_dirty(0));
+
+        stage_delay_note_choice(&context, &mut app, pod_preset::DelayNoteChoice::Off);
+        click_pod(&context, &mut app, "pod-delay-apply");
+        assert!(app.pod_library.is_dirty(0));
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert!(!app.permit_close);
+        click_prompt(&context, &mut app, "discard");
+        assert!(app.permit_close);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), applied);
+        assert!(!app.pod_library.is_dirty(0));
     }
 
     #[test]

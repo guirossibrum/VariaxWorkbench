@@ -1054,6 +1054,116 @@ pub enum DelayControl {
     Tone,
 }
 
+/// Source-defined NOTE choices shared by PODxt Live Mod and Delay model
+/// parameter IDs. These choices are only admitted by the bounded Delay NOTE
+/// editor below; this is not a generic Mod editor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u32)]
+pub enum DelayNoteChoice {
+    Off = 0,
+    Whole = 1,
+    HalfDotted = 2,
+    Half = 3,
+    HalfTriplet = 4,
+    QuarterDotted = 5,
+    Quarter = 6,
+    QuarterTriplet = 7,
+    EighthDotted = 8,
+    Eighth = 9,
+    EighthTriplet = 10,
+    SixteenthDotted = 11,
+    Sixteenth = 12,
+    SixteenthTriplet = 13,
+}
+
+impl DelayNoteChoice {
+    pub const ALL: [Self; 14] = [
+        Self::Off,
+        Self::Whole,
+        Self::HalfDotted,
+        Self::Half,
+        Self::HalfTriplet,
+        Self::QuarterDotted,
+        Self::Quarter,
+        Self::QuarterTriplet,
+        Self::EighthDotted,
+        Self::Eighth,
+        Self::EighthTriplet,
+        Self::SixteenthDotted,
+        Self::Sixteenth,
+        Self::SixteenthTriplet,
+    ];
+
+    pub const fn value(self) -> u32 {
+        self as u32
+    }
+
+    pub const fn from_value(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Self::Off),
+            1 => Some(Self::Whole),
+            2 => Some(Self::HalfDotted),
+            3 => Some(Self::Half),
+            4 => Some(Self::HalfTriplet),
+            5 => Some(Self::QuarterDotted),
+            6 => Some(Self::Quarter),
+            7 => Some(Self::QuarterTriplet),
+            8 => Some(Self::EighthDotted),
+            9 => Some(Self::Eighth),
+            10 => Some(Self::EighthTriplet),
+            11 => Some(Self::SixteenthDotted),
+            12 => Some(Self::Sixteenth),
+            13 => Some(Self::SixteenthTriplet),
+            _ => None,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Whole => "Whole",
+            Self::HalfDotted => "Half Dotted",
+            Self::Half => "Half",
+            Self::HalfTriplet => "Half Triplet",
+            Self::QuarterDotted => "Quarter Dotted",
+            Self::Quarter => "Quarter",
+            Self::QuarterTriplet => "Quarter Triplet",
+            Self::EighthDotted => "8th Dotted",
+            Self::Eighth => "8th",
+            Self::EighthTriplet => "8th Triplet",
+            Self::SixteenthDotted => "16th Dotted",
+            Self::Sixteenth => "16th",
+            Self::SixteenthTriplet => "16th Triplet",
+        }
+    }
+
+    fn multiplier(self) -> Option<f32> {
+        Some(match self {
+            Self::Off => return None,
+            Self::Whole => 1.0,
+            Self::HalfDotted => 0.75,
+            Self::Half => 0.5,
+            Self::HalfTriplet => 0.33333334,
+            Self::QuarterDotted => 0.375,
+            Self::Quarter => 0.25,
+            Self::QuarterTriplet => 0.16666667,
+            Self::EighthDotted => 0.1875,
+            Self::Eighth => 0.125,
+            Self::EighthTriplet => 0.083333336,
+            Self::SixteenthDotted => 0.09375,
+            Self::Sixteenth => 0.0625,
+            Self::SixteenthTriplet => 0.041666668,
+        })
+    }
+}
+
+/// Read-only NOTE presentation retains unsupported imported integer words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DelayNoteValue {
+    Known(DelayNoteChoice),
+    Unknown { raw_bits: u32 },
+}
+
 impl DelayControl {
     pub const ALL: [Self; 13] = [
         Self::Feedback,
@@ -2503,6 +2613,328 @@ impl PodTone {
         self.set_float_control_fraction_at(model_index, parameter_index, value, &label)
     }
 
+    /// Read the stored Delay NOTE without normalizing unknown imported ordinals.
+    pub fn delay_note_value(&self) -> Result<DelayNoteValue, ToneError> {
+        let model = self.unique_control_model(
+            &[DELAY_SLOT, 0x0005_0004],
+            &DELAY_CONTROL_MODEL_IDS,
+            "Delay NOTE",
+        )?;
+        let (parameter, _) =
+            self.unique_control_parameter(model, 0x0020_0000, false, "Delay NOTE")?;
+        let bits = match self.models[model].parameters[parameter] {
+            ModelParameter::Recorded {
+                value: ParameterValue::Int { bits },
+                ..
+            } => bits,
+            _ => {
+                return Err(ToneError::format(
+                    "Delay NOTE target is not an integer PARM",
+                ));
+            }
+        };
+        Ok(DelayNoteChoice::from_value(bits)
+            .map(DelayNoteValue::Known)
+            .unwrap_or(DelayNoteValue::Unknown { raw_bits: bits }))
+    }
+
+    /// Display the normalized Delay TIME as milliseconds for UI staging.
+    pub fn delay_time_ms(&self) -> Result<f32, ToneError> {
+        let model = self.unique_control_model(
+            &[DELAY_SLOT, 0x0005_0004],
+            &DELAY_CONTROL_MODEL_IDS,
+            "Delay TIME",
+        )?;
+        let (parameter, _) =
+            self.unique_control_parameter(model, 0x0010_0000, true, "Delay TIME")?;
+        let raw = self.float_parameter_bits(model, parameter, "Delay TIME")?;
+        if !raw.is_finite() || !(0.0..=1.0).contains(&raw) {
+            return Err(ToneError::format(
+                "stored Delay TIME is outside finite raw range 0..=1",
+            ));
+        }
+        let scale: f32 = 2000.0 - 20.0;
+        Ok(20.0 + raw * scale)
+    }
+
+    /// Apply a typed Delay NOTE choice to an existing target. Positive choices
+    /// also update TIME using the original f32 NOTE formula and source range
+    /// conversion. Off changes NOTE only. This operation never edits Mod.
+    pub fn set_delay_note_choice(&mut self, choice: DelayNoteChoice) -> Result<(), ToneError> {
+        self.require_control_edit_profile("Delay NOTE")?;
+        let delay_model = self.unique_control_model(
+            &[DELAY_SLOT, 0x0005_0004],
+            &DELAY_CONTROL_MODEL_IDS,
+            "Delay NOTE",
+        )?;
+        let (note_index, note_offset) =
+            self.unique_control_parameter(delay_model, 0x0020_0000, false, "Delay NOTE")?;
+        let old_note = match self.models[delay_model].parameters[note_index] {
+            ModelParameter::Recorded {
+                value: ParameterValue::Int { bits },
+                ..
+            } => bits,
+            _ => {
+                return Err(ToneError::format(
+                    "Delay NOTE target is not an integer PARM",
+                ));
+            }
+        };
+        if DelayNoteChoice::from_value(old_note).is_none() {
+            return Err(ToneError::format("stored Delay NOTE is outside 0..=13"));
+        }
+
+        let mod_model = self.unique_control_model(
+            &[MOD_SLOT, 0x0005_0003],
+            &MOD_CONTROL_MODEL_IDS,
+            "Mod NOTE context",
+        )?;
+        let (mod_note_index, _) =
+            self.unique_control_parameter(mod_model, 0x0020_0000, false, "Mod NOTE context")?;
+        let mod_note = match self.models[mod_model].parameters[mod_note_index] {
+            ModelParameter::Recorded {
+                value: ParameterValue::Int { bits },
+                ..
+            } => bits,
+            _ => return Err(ToneError::format("Mod NOTE context is not an integer PARM")),
+        };
+        if mod_note != 0 {
+            return Err(ToneError::format(
+                "Delay NOTE edit requires Mod NOTE Off to avoid the coupled Mod SPEED write",
+            ));
+        }
+
+        let delay_time_target = if choice != DelayNoteChoice::Off {
+            Some(self.unique_control_parameter(delay_model, 0x0010_0000, true, "Delay TIME")?)
+        } else {
+            None
+        };
+        let derived_bits = if let Some((time_index, _)) = delay_time_target {
+            let old_time = self.float_parameter_bits(delay_model, time_index, "Delay TIME")?;
+            if !old_time.is_finite() || !(0.0..=1.0).contains(&old_time) {
+                return Err(ToneError::format(
+                    "stored Delay TIME is outside finite raw range 0..=1",
+                ));
+            }
+            let system_model =
+                self.unique_control_model(&[0x0001_0000], &[0x3e80_0000], "System Tempo context")?;
+            let (tempo_index, _) = self.unique_control_parameter(
+                system_model,
+                0x0020_0001,
+                true,
+                "System Tempo context",
+            )?;
+            let tempo =
+                self.float_parameter_bits(system_model, tempo_index, "System Tempo context")?;
+            if !tempo.is_finite() || !(30.0..=240.0).contains(&tempo) {
+                return Err(ToneError::format(
+                    "stored Tempo is outside finite BPM range 30..=240",
+                ));
+            }
+            Some(delay_note_time_raw(choice, tempo))
+        } else {
+            None
+        };
+
+        if old_note == choice.value()
+            && derived_bits.is_none_or(|bits| {
+                self.float_parameter_bits(delay_model, delay_time_target.unwrap().0, "Delay TIME")
+                    .is_ok_and(|old| old.to_bits() == bits)
+            })
+        {
+            return Ok(());
+        }
+        self.write_parameter_bits(delay_model, note_index, note_offset, choice.value());
+        if let (Some(bits), Some((time_index, offset))) = (derived_bits, delay_time_target) {
+            self.write_parameter_bits(delay_model, time_index, offset, bits);
+        }
+        Ok(())
+    }
+
+    /// Apply a displayed Delay TIME in milliseconds. The explicit TIME event
+    /// clears a positive NOTE; it deliberately has no Mod or Tempo dependency.
+    pub fn set_delay_time_ms(&mut self, milliseconds: f32) -> Result<(), ToneError> {
+        self.require_control_edit_profile("Delay TIME")?;
+        if !milliseconds.is_finite() || !(20.0..=2000.0).contains(&milliseconds) {
+            return Err(ToneError::format(
+                "Delay TIME edit requires finite displayed milliseconds in 20..=2000",
+            ));
+        }
+        let delay_model = self.unique_control_model(
+            &[DELAY_SLOT, 0x0005_0004],
+            &DELAY_CONTROL_MODEL_IDS,
+            "Delay TIME",
+        )?;
+        let (time_index, time_offset) =
+            self.unique_control_parameter(delay_model, 0x0010_0000, true, "Delay TIME")?;
+        let old_time = self.float_parameter_bits(delay_model, time_index, "Delay TIME")?;
+        if !old_time.is_finite() || !(0.0..=1.0).contains(&old_time) {
+            return Err(ToneError::format(
+                "stored Delay TIME is outside finite raw range 0..=1",
+            ));
+        }
+        let (note_index, note_offset) =
+            self.unique_control_parameter(delay_model, 0x0020_0000, false, "Delay NOTE")?;
+        let old_note = match self.models[delay_model].parameters[note_index] {
+            ModelParameter::Recorded {
+                value: ParameterValue::Int { bits },
+                ..
+            } => bits,
+            _ => {
+                return Err(ToneError::format(
+                    "Delay NOTE target is not an integer PARM",
+                ));
+            }
+        };
+        if DelayNoteChoice::from_value(old_note).is_none() {
+            return Err(ToneError::format("stored Delay NOTE is outside 0..=13"));
+        }
+        let new_time = delay_time_raw(milliseconds);
+        if old_time.to_bits() == new_time && old_note == 0 {
+            return Ok(());
+        }
+        self.write_parameter_bits(delay_model, time_index, time_offset, new_time);
+        if old_note != 0 {
+            self.write_parameter_bits(delay_model, note_index, note_offset, 0);
+        }
+        Ok(())
+    }
+
+    fn require_control_edit_profile(&self, label: &str) -> Result<(), ToneError> {
+        if self.device_id != PODXT_LIVE_TONE_ID {
+            return Err(ToneError::format(format!(
+                "{label} requires a PODxt Live PINF target"
+            )));
+        }
+        if self.device_version < PODXT_LIVE_HOST_MIN_VERSION {
+            return Err(ToneError::format(format!(
+                "{label} requires the PODxt Live host profile minimum 3.00"
+            )));
+        }
+        Ok(())
+    }
+
+    fn unique_control_model(
+        &self,
+        slots: &[u32],
+        model_ids: &[u32],
+        label: &str,
+    ) -> Result<usize, ToneError> {
+        self.require_control_edit_profile(label)?;
+        let matches: Vec<_> = self
+            .models
+            .iter()
+            .enumerate()
+            .filter(|(_, model)| slots.contains(&model.slot))
+            .map(|(index, _)| index)
+            .collect();
+        let [index] = matches.as_slice() else {
+            return Err(ToneError::format(format!(
+                "{label} requires exactly one model across slots {slots:02x?}"
+            )));
+        };
+        let index = *index;
+        if !model_ids.contains(&self.models[index].model_id) {
+            return Err(ToneError::format(format!(
+                "{label} model is outside the source-backed host profile"
+            )));
+        }
+        if self.models[index]
+            .parameters
+            .iter()
+            .any(|parameter| matches!(parameter, ModelParameter::Opaque { .. }))
+        {
+            return Err(ToneError::format(format!(
+                "opaque PARM in {label} model makes control context ambiguous"
+            )));
+        }
+        Ok(index)
+    }
+
+    fn unique_control_parameter(
+        &self,
+        model: usize,
+        id: u32,
+        float: bool,
+        label: &str,
+    ) -> Result<(usize, usize), ToneError> {
+        let matches: Vec<_> = self.models[model]
+            .parameters
+            .iter()
+            .enumerate()
+            .filter_map(|(index, parameter)| {
+                matches!(parameter, ModelParameter::Recorded { id: found, .. } if *found == id)
+                    .then_some(index)
+            })
+            .collect();
+        let [index] = matches.as_slice() else {
+            return Err(ToneError::format(format!(
+                "{label} requires exactly one PARM 0x{id:06x}"
+            )));
+        };
+        let index = *index;
+        let ModelParameter::Recorded { prefix, value, .. } = &self.models[model].parameters[index]
+        else {
+            unreachable!()
+        };
+        if *prefix != 0x3f {
+            return Err(ToneError::format(format!(
+                "{label} target prefix is not canonical 0x3f"
+            )));
+        }
+        let type_ok = if float {
+            matches!(value, ParameterValue::Float { .. })
+        } else {
+            matches!(value, ParameterValue::Int { .. })
+        };
+        if !type_ok {
+            return Err(ToneError::format(format!(
+                "{label} target has an unsupported value type"
+            )));
+        }
+        let offset = self
+            .parameter_value_offsets
+            .get(model)
+            .and_then(|offsets| offsets.get(index))
+            .copied()
+            .flatten()
+            .ok_or_else(|| {
+                ToneError::format(format!("{label} target has no unique raw value word"))
+            })?;
+        Ok((index, offset))
+    }
+
+    fn float_parameter_bits(
+        &self,
+        model: usize,
+        parameter: usize,
+        label: &str,
+    ) -> Result<f32, ToneError> {
+        match self.models[model].parameters[parameter] {
+            ModelParameter::Recorded {
+                value: ParameterValue::Float { bits },
+                ..
+            } => Ok(f32::from_bits(bits)),
+            _ => Err(ToneError::format(format!(
+                "{label} target is not a float PARM"
+            ))),
+        }
+    }
+
+    fn write_parameter_bits(&mut self, model: usize, parameter: usize, offset: usize, bits: u32) {
+        self.bytes[offset..offset + 4].copy_from_slice(&bits.to_be_bytes());
+        if let ModelParameter::Recorded { value, .. } =
+            &mut self.models[model].parameters[parameter]
+        {
+            match value {
+                ParameterValue::Int { bits: stored } | ParameterValue::Float { bits: stored } => {
+                    *stored = bits
+                }
+                ParameterValue::Other { .. } => unreachable!("validated parameter type"),
+            }
+        }
+    }
+
     /// Write only the existing HEADS PARM value word using a finite registered
     /// choice. This discrete operation intentionally does not use the percent
     /// scale setter.
@@ -3440,6 +3872,26 @@ impl Library {
         entry.tone.set_delay_control_fraction(control, value)
     }
 
+    pub fn set_delay_note_choice(
+        &mut self,
+        index: usize,
+        choice: DelayNoteChoice,
+    ) -> Result<(), ToneError> {
+        let entry = self
+            .tones
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
+        entry.tone.set_delay_note_choice(choice)
+    }
+
+    pub fn set_delay_time_ms(&mut self, index: usize, milliseconds: f32) -> Result<(), ToneError> {
+        let entry = self
+            .tones
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
+        entry.tone.set_delay_time_ms(milliseconds)
+    }
+
     pub fn set_delay_heads_selection(
         &mut self,
         index: usize,
@@ -4038,6 +4490,18 @@ impl PodBundleLibrary {
         self.edit_tone(bank, preset, edit)
     }
 
+    pub fn set_delay_note_choice(
+        &mut self,
+        index: usize,
+        choice: DelayNoteChoice,
+    ) -> Result<(), ToneError> {
+        self.edit_entry(index, |tone| tone.set_delay_note_choice(choice))
+    }
+
+    pub fn set_delay_time_ms(&mut self, index: usize, milliseconds: f32) -> Result<(), ToneError> {
+        self.edit_entry(index, |tone| tone.set_delay_time_ms(milliseconds))
+    }
+
     pub fn stomp_whammy_knob_position(
         &self,
         index: usize,
@@ -4239,6 +4703,27 @@ impl PodBundleLibrary {
     }
 }
 
+fn source_range_raw(displayed: f32, minimum: f32, maximum: f32) -> f32 {
+    // L6RangeFormat: convert the stored float bounds to double, subtract the
+    // minimum in double, but subtract max-min in float before promoting it.
+    let numerator = f64::from(displayed) - f64::from(minimum);
+    let span: f32 = maximum - minimum;
+    (numerator / f64::from(span)) as f32
+}
+
+fn delay_time_raw(milliseconds: f32) -> u32 {
+    source_range_raw(milliseconds.clamp(20.0, 2000.0), 20.0, 2000.0).to_bits()
+}
+
+fn delay_note_time_raw(choice: DelayNoteChoice, tempo: f32) -> u32 {
+    let multiplier = choice.multiplier().expect("positive NOTE choice");
+    let q = multiplier * 4.0_f32;
+    let beat = q / tempo;
+    let milliseconds = beat * 1000.0_f32;
+    let displayed = milliseconds * 60.0_f32;
+    source_range_raw(displayed.clamp(20.0, 2000.0), 20.0, 2000.0).to_bits()
+}
+
 fn utf16_name(bytes: &[u8]) -> Result<String, ToneError> {
     if bytes.len() != 64 {
         return Err(ToneError::format("PINF name field is not 64 bytes"));
@@ -4431,7 +4916,7 @@ fn custom_tone(kind: ContainerKind, models: &[BuiltModel<'_>]) -> Vec<u8> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::pod_assets::{self, SlotRole};
 
@@ -4479,6 +4964,83 @@ mod tests {
         let pinf = find_chunk_data(&bytes, b"PINF");
         bytes[pinf + 72..pinf + 76].copy_from_slice(&version.to_be_bytes());
         bytes
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn delay_note_fixture(
+        delay_slot: u32,
+        delay_model: u32,
+        delay_note: u32,
+        delay_time: u32,
+        mod_slot: Option<u32>,
+        mod_model: u32,
+        mod_note: u32,
+        tempo: Option<f32>,
+    ) -> Vec<u8> {
+        let delay_note_row = drive_record(0x3f, 0x0020_0000, 0, delay_note);
+        let delay_time_row = drive_record(0x3f, 0x0010_0000, 1, delay_time);
+        let mod_note_row = drive_record(0x3f, 0x0020_0000, 0, mod_note);
+        let mod_speed_row = drive_record(0x3f, 0x0010_0000, 1, 0x3e80_0000);
+        let tempo_row = tempo.map(|value| drive_record(0x3f, 0x0020_0001, 1, value.to_bits()));
+        let sentinel = drive_record(0x3f, 0x007a_bcde, 0x7f, 0xdead_beef);
+        let delay_rows = [&delay_time_row[..], &delay_note_row[..], &sentinel[..]];
+        let mod_rows = [&mod_speed_row[..], &mod_note_row[..]];
+        let tempo_rows = tempo_row.as_ref().map(|row| [row.as_slice()]);
+        let mut models = vec![BuiltModel {
+            slot: delay_slot,
+            model_id: delay_model,
+            tail: &[1, 2, 3, 4],
+            parameters: &delay_rows,
+        }];
+        if let Some(slot) = mod_slot {
+            models.push(BuiltModel {
+                slot,
+                model_id: mod_model,
+                tail: &[5, 6, 7, 8],
+                parameters: &mod_rows,
+            });
+        }
+        if tempo_row.is_some() {
+            models.push(BuiltModel {
+                slot: 0x0001_0000,
+                model_id: 0x3e80_0000,
+                tail: &[9, 10, 11, 12],
+                parameters: tempo_rows.as_ref().unwrap(),
+            });
+        }
+        custom_tone(ContainerKind::L6as, &models)
+    }
+
+    fn parm_bits(tone: &PodTone, slot: u32, id: u32) -> u32 {
+        let model = tone
+            .models()
+            .iter()
+            .find(|model| model.slot == slot)
+            .unwrap();
+        model
+            .parameters
+            .iter()
+            .find_map(|parameter| match parameter {
+                ModelParameter::Recorded {
+                    id: found,
+                    value: ParameterValue::Int { bits } | ParameterValue::Float { bits },
+                    ..
+                } if *found == id => Some(*bits),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    fn parameter_word0_offset(tone: &PodTone, slot: u32, id: u32) -> usize {
+        let model_index = tone
+            .models
+            .iter()
+            .position(|model| model.slot == slot)
+            .unwrap();
+        let parameter_index = tone.models[model_index].parameters.iter().position(|parameter| {
+            matches!(parameter, ModelParameter::Recorded { id: found, .. } if *found == id)
+        }).unwrap();
+        tone.parameter_value_offsets[model_index][parameter_index].unwrap() - 8
     }
 
     fn stomp_harmony_tone_with_models(
@@ -10483,6 +11045,410 @@ mod tests {
         assert!(library.is_dirty());
         assert_eq!(library.entry_location(0), Some((0, 0)));
         assert_eq!(library.tone(0, 0).unwrap().name(), "Unsaved");
+    }
+
+    #[test]
+    fn delay_note_choices_match_source_rounding_at_endpoints_and_interior_tempo() {
+        let expected = [
+            (0x3f80_0000, 0x3f80_0000, 0x3efd_6a06),
+            (0x3f80_0000, 0x3f3f_5a81, 0x3ebc_c486),
+            (0x3f80_0000, 0x3efd_6a06, 0x3e78_3e11),
+            (0x3f80_0000, 0x3ea7_3807, 0x3e22_0c12),
+            (0x3f80_0000, 0x3ebc_c486, 0x3e37_9891),
+            (0x3f80_0000, 0x3e78_3e11, 0x3ded_e625),
+            (0x3f29_ce02, 0x3e22_0c12, 0x3d97_b426),
+            (0x3f3f_5a81, 0x3e37_9891, 0x3dad_40a5),
+            (0x3efd_6a06, 0x3ded_e625, 0x3d59_364f),
+            (0x3ea7_3807, 0x3d97_b426, 0x3d03_0450),
+            (0x3ebc_c486, 0x3dad_40a5, 0x3d18_90cf),
+            (0x3e78_3e11, 0x3d59_364f, 0x3caf_d6a1),
+            (0x3e22_0c12, 0x3d03_0450, 0x3c33_4945),
+        ];
+        let tempos = [30.0_f32, 120.0_f32, 240.0_f32];
+        for (index, choice) in DelayNoteChoice::ALL.into_iter().enumerate().skip(1) {
+            for (tempo_index, tempo) in tempos.into_iter().enumerate() {
+                let mut tone = PodTone::parse(delay_note_fixture(
+                    DELAY_SLOT,
+                    0x0202_0002,
+                    0,
+                    0x3e80_0000,
+                    Some(MOD_SLOT),
+                    MOD_CONTROL_MODEL_IDS[0],
+                    0,
+                    Some(tempo),
+                ))
+                .unwrap();
+                tone.set_delay_note_choice(choice).unwrap();
+                assert_eq!(parm_bits(&tone, DELAY_SLOT, 0x0020_0000), index as u32);
+                let expected_bits = match tempo_index {
+                    0 => expected[index - 1].0,
+                    1 => expected[index - 1].1,
+                    _ => expected[index - 1].2,
+                };
+                assert_eq!(
+                    parm_bits(&tone, DELAY_SLOT, 0x0010_0000),
+                    expected_bits,
+                    "NOTE {index}, BPM {tempo}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn delay_note_off_needs_no_time_or_tempo_and_preserves_time() {
+        let note = drive_record(0x3f, 0x0020_0000, 0, 6);
+        let mod_note = drive_record(0x3f, 0x0020_0000, 0, 0);
+        let models = [
+            BuiltModel {
+                slot: DELAY_SLOT,
+                model_id: 0x0202_0002,
+                tail: &[1, 2, 3, 4],
+                parameters: &[&note],
+            },
+            BuiltModel {
+                slot: MOD_SLOT,
+                model_id: MOD_CONTROL_MODEL_IDS[0],
+                tail: &[5, 6, 7, 8],
+                parameters: &[&mod_note],
+            },
+        ];
+        let mut tone = PodTone::parse(custom_tone(ContainerKind::L6as, &models)).unwrap();
+        tone.set_delay_note_choice(DelayNoteChoice::Off).unwrap();
+        assert_eq!(parm_bits(&tone, DELAY_SLOT, 0x0020_0000), 0);
+        assert!(
+            tone.models()
+                .iter()
+                .find(|model| model.slot == DELAY_SLOT)
+                .unwrap()
+                .parameters
+                .iter()
+                .all(|p| !matches!(
+                    p,
+                    ModelParameter::Recorded {
+                        id: 0x0010_0000,
+                        ..
+                    }
+                ))
+        );
+    }
+
+    #[test]
+    fn delay_time_ms_isolated_edit_clears_note_and_uses_double_source_conversion() {
+        let note = drive_record(0x3f, 0x0020_0000, 0, 6);
+        let time = drive_record(0x3f, 0x0010_0000, 1, 0x3e80_0000);
+        let models = [BuiltModel {
+            slot: DELAY_SLOT,
+            model_id: 0x0202_0002,
+            tail: &[1, 2, 3, 4],
+            parameters: &[&time, &note],
+        }];
+        let original = custom_tone(ContainerKind::L6as, &models);
+        let mut tone = PodTone::parse(original.clone()).unwrap();
+        tone.set_delay_time_ms(1010.0).unwrap();
+        assert_eq!(parm_bits(&tone, DELAY_SLOT, 0x0010_0000), 0x3f00_0000);
+        assert_eq!(parm_bits(&tone, DELAY_SLOT, 0x0020_0000), 0);
+        let untouched = PodTone::parse(original).unwrap();
+        assert_eq!(tone.models()[0].model_id, untouched.models()[0].model_id);
+        assert!(tone.set_delay_time_ms(f32::NAN).is_err());
+        assert!(tone.set_delay_time_ms(2000.5).is_err());
+    }
+
+    #[test]
+    fn delay_note_and_time_edits_reject_bad_context_atomically() {
+        let mut positive_mod = PodTone::parse(delay_note_fixture(
+            DELAY_SLOT,
+            0x0202_0002,
+            0,
+            0x3e80_0000,
+            Some(MOD_SLOT),
+            MOD_CONTROL_MODEL_IDS[0],
+            6,
+            Some(120.0),
+        ))
+        .unwrap();
+        let before = positive_mod.as_bytes().to_vec();
+        assert!(
+            positive_mod
+                .set_delay_note_choice(DelayNoteChoice::Off)
+                .is_err()
+        );
+        assert_eq!(positive_mod.as_bytes(), before);
+
+        let mut missing_tempo = PodTone::parse(delay_note_fixture(
+            DELAY_SLOT,
+            0x0202_0002,
+            0,
+            0x3e80_0000,
+            Some(MOD_SLOT),
+            MOD_CONTROL_MODEL_IDS[0],
+            0,
+            None,
+        ))
+        .unwrap();
+        let before = missing_tempo.as_bytes().to_vec();
+        assert!(
+            missing_tempo
+                .set_delay_note_choice(DelayNoteChoice::Quarter)
+                .is_err()
+        );
+        assert_eq!(missing_tempo.as_bytes(), before);
+
+        let mut bad_time = PodTone::parse(delay_note_fixture(
+            DELAY_SLOT,
+            0x0202_0002,
+            0,
+            0x7f80_0000,
+            Some(MOD_SLOT),
+            MOD_CONTROL_MODEL_IDS[0],
+            0,
+            Some(120.0),
+        ))
+        .unwrap();
+        let before = bad_time.as_bytes().to_vec();
+        assert!(
+            bad_time
+                .set_delay_note_choice(DelayNoteChoice::Quarter)
+                .is_err()
+        );
+        assert_eq!(bad_time.as_bytes(), before);
+        assert!(bad_time.set_delay_time_ms(1010.0).is_err());
+        assert_eq!(bad_time.as_bytes(), before);
+    }
+
+    #[test]
+    fn delay_note_rejects_ambiguous_duplicate_slots_and_rows() {
+        let base = delay_note_fixture(
+            DELAY_SLOT,
+            0x0202_0002,
+            0,
+            0x3e80_0000,
+            Some(MOD_SLOT),
+            MOD_CONTROL_MODEL_IDS[0],
+            0,
+            Some(120.0),
+        );
+        let parsed = PodTone::parse(base.clone()).unwrap();
+        let delay = parsed
+            .models()
+            .iter()
+            .find(|model| model.slot == DELAY_SLOT)
+            .unwrap();
+        let mod_model = parsed
+            .models()
+            .iter()
+            .find(|model| model.slot == MOD_SLOT)
+            .unwrap();
+        let d_time = match delay.parameters[0] {
+            ModelParameter::Recorded {
+                prefix,
+                id,
+                value: ParameterValue::Float { bits },
+            } => drive_record(prefix, id, 1, bits),
+            _ => unreachable!(),
+        };
+        let d_note = match delay.parameters[1] {
+            ModelParameter::Recorded {
+                prefix,
+                id,
+                value: ParameterValue::Int { bits },
+            } => drive_record(prefix, id, 0, bits),
+            _ => unreachable!(),
+        };
+        let d_sentinel = match delay.parameters[2] {
+            ModelParameter::Recorded {
+                prefix,
+                id,
+                value: ParameterValue::Other { type_word, bits },
+            } => drive_record(prefix, id, type_word, bits),
+            _ => unreachable!(),
+        };
+        let m_speed = match mod_model.parameters[0] {
+            ModelParameter::Recorded {
+                prefix,
+                id,
+                value: ParameterValue::Float { bits },
+            } => drive_record(prefix, id, 1, bits),
+            _ => unreachable!(),
+        };
+        let m_note = match mod_model.parameters[1] {
+            ModelParameter::Recorded {
+                prefix,
+                id,
+                value: ParameterValue::Int { bits },
+            } => drive_record(prefix, id, 0, bits),
+            _ => unreachable!(),
+        };
+        let duplicate_delay_rows = [&d_time[..], &d_note[..], &d_note[..], &d_sentinel[..]];
+        let normal_delay_rows = [&d_time[..], &d_note[..]];
+        let mod_rows = [&m_speed[..], &m_note[..]];
+        let tempo_row = drive_record(0x3f, 0x0020_0001, 1, 120.0_f32.to_bits());
+        let tempo_rows = [&tempo_row[..]];
+        let dup_delay = [
+            BuiltModel {
+                slot: DELAY_SLOT,
+                model_id: 0x0202_0002,
+                tail: &[1, 2, 3, 4],
+                parameters: &duplicate_delay_rows,
+            },
+            BuiltModel {
+                slot: MOD_SLOT,
+                model_id: MOD_CONTROL_MODEL_IDS[0],
+                tail: &[5, 6, 7, 8],
+                parameters: &mod_rows,
+            },
+            BuiltModel {
+                slot: 0x0001_0000,
+                model_id: 0x3e80_0000,
+                tail: &[9, 10, 11, 12],
+                parameters: &tempo_rows,
+            },
+        ];
+        let mut tone = PodTone::parse(custom_tone(ContainerKind::L6as, &dup_delay)).unwrap();
+        let before = tone.as_bytes().to_vec();
+        assert!(
+            tone.set_delay_note_choice(DelayNoteChoice::Quarter)
+                .is_err()
+        );
+        assert_eq!(tone.as_bytes(), before);
+
+        let duplicate_slot_models = vec![
+            BuiltModel {
+                slot: DELAY_SLOT,
+                model_id: 0x0202_0002,
+                tail: &[1, 2, 3, 4],
+                parameters: &normal_delay_rows,
+            },
+            BuiltModel {
+                slot: 0x0005_0004,
+                model_id: 0x0202_0002,
+                tail: &[1, 2, 3, 4],
+                parameters: &normal_delay_rows,
+            },
+            BuiltModel {
+                slot: MOD_SLOT,
+                model_id: MOD_CONTROL_MODEL_IDS[0],
+                tail: &[5, 6, 7, 8],
+                parameters: &mod_rows,
+            },
+            BuiltModel {
+                slot: 0x0001_0000,
+                model_id: 0x3e80_0000,
+                tail: &[9, 10, 11, 12],
+                parameters: &tempo_rows,
+            },
+        ];
+        let mut tone =
+            PodTone::parse(custom_tone(ContainerKind::L6as, &duplicate_slot_models)).unwrap();
+        let before = tone.as_bytes().to_vec();
+        assert!(
+            tone.set_delay_note_choice(DelayNoteChoice::Quarter)
+                .is_err()
+        );
+        assert_eq!(tone.as_bytes(), before);
+    }
+
+    #[test]
+    fn delay_note_rejects_noncanonical_prefix_type_unknown_values_and_profiles() {
+        let original = delay_note_fixture(
+            DELAY_SLOT,
+            0x0202_0002,
+            0,
+            0x3e80_0000,
+            Some(MOD_SLOT),
+            MOD_CONTROL_MODEL_IDS[0],
+            0,
+            Some(120.0),
+        );
+        let mut bad_prefix = original.clone();
+        let parsed = PodTone::parse(original.clone()).unwrap();
+        let prefix_at = parameter_word0_offset(&parsed, DELAY_SLOT, 0x0020_0000);
+        bad_prefix[prefix_at] = 0x3e;
+        let mut tone = PodTone::parse(bad_prefix).unwrap();
+        let before = tone.as_bytes().to_vec();
+        assert!(
+            tone.set_delay_note_choice(DelayNoteChoice::Quarter)
+                .is_err()
+        );
+        assert_eq!(tone.as_bytes(), before);
+
+        let mut wrong_type = original.clone();
+        wrong_type[prefix_at + 4..prefix_at + 8].copy_from_slice(&1u32.to_be_bytes());
+        let mut tone = PodTone::parse(wrong_type).unwrap();
+        let before = tone.as_bytes().to_vec();
+        assert!(
+            tone.set_delay_note_choice(DelayNoteChoice::Quarter)
+                .is_err()
+        );
+        assert_eq!(tone.as_bytes(), before);
+
+        let mut unknown_note = original.clone();
+        unknown_note[prefix_at + 8..prefix_at + 12].copy_from_slice(&14u32.to_be_bytes());
+        let mut tone = PodTone::parse(unknown_note).unwrap();
+        assert_eq!(
+            tone.delay_note_value().unwrap(),
+            DelayNoteValue::Unknown { raw_bits: 14 }
+        );
+        let before = tone.as_bytes().to_vec();
+        assert!(tone.set_delay_note_choice(DelayNoteChoice::Off).is_err());
+        assert_eq!(tone.as_bytes(), before);
+
+        let mut old_profile = original.clone();
+        let pinf = find_chunk_data(&old_profile, b"PINF");
+        old_profile[pinf + 72..pinf + 76]
+            .copy_from_slice(&(PODXT_LIVE_HOST_MIN_VERSION - 1).to_be_bytes());
+        let mut tone = PodTone::parse(old_profile).unwrap();
+        let before = tone.as_bytes().to_vec();
+        assert!(tone.set_delay_time_ms(1010.0).is_err());
+        assert_eq!(tone.as_bytes(), before);
+    }
+
+    #[test]
+    fn delay_note_library_and_bundle_paths_revert_save_and_reopen() {
+        let original = delay_note_fixture(
+            DELAY_SLOT,
+            0x0202_0002,
+            0,
+            0x3e80_0000,
+            Some(MOD_SLOT),
+            MOD_CONTROL_MODEL_IDS[0],
+            0,
+            Some(120.0),
+        );
+        let mut library = Library::default();
+        let index = library.import_bytes(original.clone()).unwrap();
+        library
+            .set_delay_note_choice(index, DelayNoteChoice::Quarter)
+            .unwrap();
+        assert_eq!(
+            parm_bits(library.tone(index).unwrap(), DELAY_SLOT, 0x0020_0000),
+            6
+        );
+        assert!(library.is_dirty(index));
+        library.revert_unsaved(index).unwrap();
+        assert_eq!(library.tone(index).unwrap().as_bytes(), original);
+        library.set_delay_time_ms(index, 1010.0).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("delay-note.l6c");
+        library.tone(index).unwrap().save_copy(&path).unwrap();
+        let saved = std::fs::read(&path).unwrap();
+        assert_eq!(PodTone::parse(saved.clone()).unwrap().as_bytes(), saved);
+        assert!(library.tone(index).unwrap().save_copy(&path).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), saved);
+
+        let mut bundle = PodBundleLibrary::parse(bundle_with_tone(&original)).unwrap();
+        let before = bundle.as_bytes().to_vec();
+        bundle
+            .set_delay_note_choice(0, DelayNoteChoice::Quarter)
+            .unwrap();
+        assert!(bundle.is_dirty());
+        let (bank, preset) = bundle.entry_location(0).unwrap();
+        assert_eq!(
+            parm_bits(&bundle.tone(bank, preset).unwrap(), DELAY_SLOT, 0x0020_0000),
+            6
+        );
+        assert_eq!(bundle.as_bytes().len(), before.len());
+        bundle.revert().unwrap();
+        assert_eq!(bundle.as_bytes(), before);
     }
 
     fn edited_name_too_long(tone: &PodTone) -> bool {

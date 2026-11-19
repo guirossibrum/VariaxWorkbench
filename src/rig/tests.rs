@@ -677,6 +677,47 @@ fn pod_cab_and_mic_apply_are_role_gated_and_keep_their_separate_write_sets() {
 }
 
 #[test]
+fn pod_delay_note_session_is_role_gated_and_uses_the_shared_offline_backend() {
+    use crate::pod_preset::{self, DELAY_SLOT, DelayNoteChoice, MOD_SLOT};
+    let bytes = pod_preset::tests::delay_note_fixture(
+        DELAY_SLOT,
+        0x0202_0002,
+        0,
+        0x3e80_0000,
+        Some(MOD_SLOT),
+        pod_preset::MOD_CONTROL_MODEL_IDS[0],
+        0,
+        Some(120.0),
+    );
+    let session = Session::initial_rig();
+    let applied = session
+        .set_pod_delay_note_choice(RoleKind::Pod, &bytes, DelayNoteChoice::Quarter)
+        .unwrap();
+    let tone = pod_preset::PodTone::parse(applied.clone()).unwrap();
+    assert_eq!(
+        tone.delay_note_value().unwrap(),
+        pod_preset::DelayNoteValue::Known(DelayNoteChoice::Quarter)
+    );
+    let time_applied = session
+        .set_pod_delay_time_ms(RoleKind::Pod, &applied, 1010.0)
+        .unwrap();
+    let tone = pod_preset::PodTone::parse(time_applied).unwrap();
+    assert_eq!(tone.delay_time_ms().unwrap(), 1010.0);
+    assert_eq!(
+        tone.delay_note_value().unwrap(),
+        pod_preset::DelayNoteValue::Known(DelayNoteChoice::Off)
+    );
+    assert!(matches!(
+        session.set_pod_delay_note_choice(RoleKind::Guitar, &bytes, DelayNoteChoice::Quarter),
+        Err(Rejection::Unsupported {
+            operation: Operation::EditPodPreset,
+            ..
+        })
+    ));
+    assert!(session.live_backend_is_absent());
+}
+
+#[test]
 fn pod_stomp_harmony_session_is_role_gated_and_changes_one_selected_word() {
     use crate::pod_preset::{
         StompHarmony1M335Selection, StompHarmony1457Selection, StompHarmonySelection,

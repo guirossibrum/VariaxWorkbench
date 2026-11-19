@@ -252,6 +252,32 @@ HEADS/BITS and the dedicated Delay time/note/mix/xover selectors are outside
 this numeric allowlist. The exposed `FXParams` are finite `0..=1` PERCENT
 floats and edits patch only the selected existing PARM value word.
 
+## Bounded Delay NOTE/TIME writer
+
+`PodTone` and the offline session/library APIs support the source-listed Delay
+NOTE choices (Off through sixteenth triplet) and explicit Delay TIME in
+milliseconds. The GUI stages one choice per selected tone and requires Apply;
+switching tones clears pending state. Apply remains local and unsaved until the
+normal tone save-copy operation. The operation edits existing canonical PARM
+records only, preserves all other bytes, and rejects missing, duplicate,
+opaque, wrong-type, noncanonical, out-of-range, or ambiguous controls without
+partially changing the tone. NOTE choices require the source-matched Delay and
+Mod model context; positive synchronized values also require the canonical
+System/Tempo context. NOTE Off only turns off the existing Delay and Mod NOTE
+selectors. The TIME operation validates its displayed 20–2000 ms range and does
+not depend on or change Mod/System state. It does not create model/parameter
+records or implement general Mod editing.
+
+The NOTE-to-time arithmetic follows the recovered `Note2TimeSpeed` float steps
+and `RangeFormat` interpolation precision, including f64 conversion of the
+display-value numerator and a f32-computed range denominator. Synthetic tests
+compare literal raw float words at BPM 30, 120, and 240 for every positive NOTE
+choice. These are source-compatible calculations and synthetic regression
+results, not captured device values, audio equivalence, or proof of device
+acceptance. The bounded writer and GUI are implemented on the issue branch;
+the coordinator's exact-head focused checks and independent review remain
+pending.
+
 An applied name is unsaved until that tone's copy is written. Quitting asks
 to save, discard, or keep editing, one tone at a time. Cancel, or a save that
 is cancelled or refused, keeps the edit and leaves the application open.
