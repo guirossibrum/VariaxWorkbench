@@ -3798,7 +3798,7 @@ mod tests {
         assert_eq!(std::fs::read(&output).unwrap(), expected);
         let reopened = pod_preset::OpaqueH5epPreset::parse(std::fs::read(output).unwrap()).unwrap();
         assert_eq!(reopened.effect_model_id(0), Some(0x020c_000e));
-        assert_eq!(reopened.trailing_bytes(), &[]);
+        assert!(reopened.trailing_bytes().is_empty());
         assert!(app.read_worker.is_none());
         const {
             assert!(LIVE_ACCESS_LOCKED);

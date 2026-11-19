@@ -284,15 +284,15 @@ fn shared_session_replaces_one_octave_fuzz_with_source_defaults_and_reopens_copy
         0x3f10_0002,
         0x3f10_0004,
     ];
-    for row in 0..12 {
-        let row_at = block + 0x10 + row * 0x14;
-        let key = if row < 5 {
-            keys[row]
-        } else if row == 6 {
+    for (row, key) in keys.iter().copied().enumerate().chain((5..12).map(|row| {
+        let key = if row == 6 {
             0x3f10_0005
         } else {
             0x6abc_0000 + row as u32
         };
+        (row, key)
+    })) {
+        let row_at = block + 0x10 + row * 0x14;
         original[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
         original[row_at + 4..row_at + 8]
             .copy_from_slice(&(0x3e80_0000u32 + row as u32).to_be_bytes());
