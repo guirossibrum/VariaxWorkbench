@@ -1988,8 +1988,7 @@ impl OpaqueH5epPreset {
             return Err(format_error(prefix_error));
         }
         for row in 0..HD_PARAMETER_ROW_COUNT {
-            let marker_at =
-                block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE + 0x10;
+            let marker_at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE + 0x10;
             if !matches!(body[marker_at], 0..=2) {
                 return Err(ToneError::format(format!(
                     "{target_label} replacement requires canonical effect assignment marker bytes"
@@ -3581,10 +3580,7 @@ mod tests {
             (HdDistortionDefault::TubeDrive, 0x0205_000d),
         ];
         assert_eq!(HdDistortionDefault::ALL.len(), 12);
-        assert_eq!(
-            HdDistortionDefault::ALL,
-            TARGETS.map(|(target, _)| target)
-        );
+        assert_eq!(HdDistortionDefault::ALL, TARGETS.map(|(target, _)| target));
         assert_eq!(
             TARGETS.map(|(target, _)| target.model_id()),
             TARGETS.map(|(_, model_id)| model_id)
@@ -3623,7 +3619,11 @@ mod tests {
                         target,
                     )
                     .unwrap();
-                assert_eq!(preset.as_bytes(), expected, "{target:?}, slot {public_slot}");
+                assert_eq!(
+                    preset.as_bytes(),
+                    expected,
+                    "{target:?}, slot {public_slot}"
+                );
                 assert_eq!(preset.effect_model_id(public_slot), Some(target_id));
                 assert_eq!(preset.trailing_bytes(), b"private-tail");
             }

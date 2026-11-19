@@ -278,25 +278,54 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
     let batch_targets = [
         (crate::pod_preset::HdDistortionDefault::JetFuzz, 0x0205_000a),
         (crate::pod_preset::HdDistortionDefault::BuzzSaw, 0x0205_0015),
-        (crate::pod_preset::HdDistortionDefault::ClassicDistortion, 0x0205_000b),
-        (crate::pod_preset::HdDistortionDefault::ColorDrive, 0x0205_0018),
-        (crate::pod_preset::HdDistortionDefault::FacialFuzz, 0x0205_0011),
+        (
+            crate::pod_preset::HdDistortionDefault::ClassicDistortion,
+            0x0205_000b,
+        ),
+        (
+            crate::pod_preset::HdDistortionDefault::ColorDrive,
+            0x0205_0018,
+        ),
+        (
+            crate::pod_preset::HdDistortionDefault::FacialFuzz,
+            0x0205_0011,
+        ),
         (crate::pod_preset::HdDistortionDefault::FuzzPi, 0x0205_000f),
-        (crate::pod_preset::HdDistortionDefault::HeavyDistortion, 0x0205_0016),
-        (crate::pod_preset::HdDistortionDefault::JumboFuzz, 0x0205_0017),
-        (crate::pod_preset::HdDistortionDefault::Line6Distortion, 0x0205_0012),
-        (crate::pod_preset::HdDistortionDefault::Line6Drive, 0x0205_0013),
-        (crate::pod_preset::HdDistortionDefault::Overdrive, 0x0205_0010),
-        (crate::pod_preset::HdDistortionDefault::TubeDrive, 0x0205_000d),
+        (
+            crate::pod_preset::HdDistortionDefault::HeavyDistortion,
+            0x0205_0016,
+        ),
+        (
+            crate::pod_preset::HdDistortionDefault::JumboFuzz,
+            0x0205_0017,
+        ),
+        (
+            crate::pod_preset::HdDistortionDefault::Line6Distortion,
+            0x0205_0012,
+        ),
+        (
+            crate::pod_preset::HdDistortionDefault::Line6Drive,
+            0x0205_0013,
+        ),
+        (
+            crate::pod_preset::HdDistortionDefault::Overdrive,
+            0x0205_0010,
+        ),
+        (
+            crate::pod_preset::HdDistortionDefault::TubeDrive,
+            0x0205_000d,
+        ),
     ];
-    assert!(session
-        .replace_hd_octave_fuzz_with_admitted_defaults(
-            &mut library,
-            parent.index,
-            crate::pod_preset::HdFxSlot::new(0).unwrap(),
-            crate::pod_preset::HdDistortionDefault::JetFuzz,
-        )
-        .is_err());
+    assert!(
+        session
+            .replace_hd_octave_fuzz_with_admitted_defaults(
+                &mut library,
+                parent.index,
+                crate::pod_preset::HdFxSlot::new(0).unwrap(),
+                crate::pod_preset::HdDistortionDefault::JetFuzz,
+            )
+            .is_err()
+    );
     assert_eq!(library.file(parent.index).unwrap().as_bytes(), parent_bytes);
     for (target, expected_model) in batch_targets {
         library.revert_unsaved(child.index).unwrap();
