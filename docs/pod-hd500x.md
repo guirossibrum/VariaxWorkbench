@@ -313,6 +313,25 @@ rejects nonzero/unknown flags without mutation. This is a conservative offline
 editing rule, not proof that a physical device or original editor accepts the
 result.
 
+### Criterion-to-operation boundary
+
+The admitted evidence was checked against the shared operations before adding
+more HD500X behavior. The result is a bounded offline file feature and explicit
+unsupported states for the other product operations; physical recording,
+flashing, and full editor parity are not prerequisites for offline progress.
+
+| Operation | Shared entry point and current result | Product-specific evidence and remaining relation |
+| --- | --- | --- |
+| Import, inspect, extract, edit, save HD Edit files | `Session::import_hd_editor_file`, `extract_hd_editor_preset`, `set_hd_screamer_control_percent`, and `save_hd_editor_copy` use the offline file library. Only the five keyed Screamer type-1 controls on their exact editor integer-percent grid are editable; other rows stay opaque. | Editor 2.27 file-group, row type/key, and formatter joins support this narrow subset. They do not establish that H5EP identifies the physical HD500X. The Windows writer reads context `nested+0x2c` into header word 2, but the bounded caller, constructor, reader, and setter joins did not find the store or initializer for that exact field. No additional model/control contract was admitted by the Mac counterpart. |
+| Select an HD500X audio route | `Session::select_record_route` remains `Unverified` for the HD500X; the PODxt-only planner is not reused. | Driver text supplies match IDs, interface roles, and 48 kHz/24-bit defaults. The Advanced Guide supplies documented routing behavior. Neither connects the HD500X audio endpoints/descriptors to driver callbacks, negotiated formats, and a selected product identity, so no product-qualified offline route plan is admitted. |
+| Inspect HD500X firmware offline | `Session::inspect_extension_firmware` returns `Unverified`; generic FORM/L6FF parsing does not imply HD500X applicability. | The public listing names Flash Memory v2.62/release 6260 and USB Firmware 1.04 separately. The examined private image has no admitted chain linking its provenance and container identity to either release or this product. A provenance-bearing image/release manifest or equivalent existing source that joins release, product ID, version, and container format would settle that gap. |
+| Plan maintenance | No HD500X maintenance plan is registered. Read-installed-version, flash, reset, install, and bind operations remain `Locked` for every profile. | The available listing and driver-match evidence do not define a product-qualified maintenance sequence or link a target image to the product. A release manifest plus an independently admitted maintenance protocol/source would be needed even for an offline plan; no physical operation is authorized here. |
+
+This matrix records the current offline boundary, not a promise that the listed
+missing inputs are sufficient for physical compatibility. The exact H5EP writer
+field producer remains a separate source join; a Mac field with a similar role
+does not resolve the Windows object's producer or semantics.
+
 ### Issue #32 acceptance status
 
 | Original acceptance criterion | Current status |
