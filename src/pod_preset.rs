@@ -13581,6 +13581,20 @@ pub(crate) mod tests {
             assert_eq!(tone.as_bytes(), before);
         }
 
+        let short_same_id = custom_tone(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: STOMP_SLOT,
+                model_id: choice.model_id(),
+                tail: &[],
+                parameters: &[],
+            }],
+        );
+        let mut tone = PodTone::parse(short_same_id).unwrap();
+        let before = tone.as_bytes().to_vec();
+        assert!(tone.set_stomp_model_choice(choice).is_err());
+        assert_eq!(tone.as_bytes(), before);
+
         for models in [
             vec![],
             vec![
@@ -13627,6 +13641,20 @@ pub(crate) mod tests {
         wrong_target[target + 3] ^= 1;
         assert!(PodTone::parse(wrong_target.clone()).is_err());
         assert_eq!(wrong_target[target + 3], 0x0b);
+
+        let mut wrong_layout = custom_tone(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: STOMP_SLOT,
+                model_id: choice.model_id(),
+                tail: &[0; 4],
+                parameters: &[],
+            }],
+        );
+        let pinf = find_chunk_data(&wrong_layout, b"PINF");
+        wrong_layout[pinf..pinf + 4].copy_from_slice(&2u32.to_be_bytes());
+        assert!(PodTone::parse(wrong_layout.clone()).is_err());
+        assert_eq!(wrong_layout[pinf..pinf + 4], 2u32.to_be_bytes());
 
         let old_profile = fixture(
             ContainerKind::L6pa,
@@ -13777,6 +13805,72 @@ pub(crate) mod tests {
         );
         bundle.revert().unwrap();
         assert_eq!(bundle.as_bytes(), before);
+        assert!(!bundle.is_dirty());
+    }
+
+    #[test]
+    fn stomp_model_failed_edit_preserves_dirty_library_and_bundle_baselines() {
+        let original = fixture(
+            ContainerKind::L6pa,
+            PODXT_LIVE_TONE_ID,
+            PODXT_LIVE_HOST_MIN_VERSION,
+            &[(STOMP_SLOT, 0x020a_000a)],
+        );
+        let unknown = custom_tone(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: STOMP_SLOT,
+                model_id: 0xdead_beef,
+                tail: &[0xa1, 0xb2, 0xc3, 0xd4],
+                parameters: &[],
+            }],
+        );
+        let choice = PodStompModelChoice::try_from(0x0205_0000).unwrap();
+
+        let mut library = Library::default();
+        let index = library.import_bytes(original.clone()).unwrap();
+        library
+            .set_stomp_model_choice(index, PodStompModelChoice::try_from(0x0205_0002).unwrap())
+            .unwrap();
+        library.replace(index, unknown.clone()).unwrap();
+        let before = library.tone(index).unwrap().as_bytes().to_vec();
+        assert!(library.is_dirty(index));
+        assert_eq!(
+            library.tone(index).unwrap().stomp_model_id(),
+            Some(0xdead_beef)
+        );
+        assert!(library.set_stomp_model_choice(index, choice).is_err());
+        assert_eq!(library.tone(index).unwrap().as_bytes(), before);
+        assert_eq!(
+            library.tone(index).unwrap().stomp_model_id(),
+            Some(0xdead_beef)
+        );
+        assert!(library.is_dirty(index));
+        library.revert_unsaved(index).unwrap();
+        assert_eq!(library.tone(index).unwrap().as_bytes(), original);
+        assert!(!library.is_dirty(index));
+
+        let mut bundle = PodBundleLibrary::parse(bundle_with_tone(&original)).unwrap();
+        bundle
+            .set_stomp_model_choice(0, PodStompModelChoice::try_from(0x0205_0002).unwrap())
+            .unwrap();
+        bundle.replace_entry(0, unknown).unwrap();
+        let before = bundle.as_bytes().to_vec();
+        assert!(bundle.is_dirty());
+        let (bank, preset) = bundle.entry_location(0).unwrap();
+        assert_eq!(
+            bundle.tone(bank, preset).unwrap().stomp_model_id(),
+            Some(0xdead_beef)
+        );
+        assert!(bundle.set_stomp_model_choice(0, choice).is_err());
+        assert_eq!(bundle.as_bytes(), before);
+        assert_eq!(
+            bundle.tone(bank, preset).unwrap().stomp_model_id(),
+            Some(0xdead_beef)
+        );
+        assert!(bundle.is_dirty());
+        bundle.revert().unwrap();
+        assert_eq!(bundle.as_bytes(), bundle_with_tone(&original));
         assert!(!bundle.is_dirty());
     }
 

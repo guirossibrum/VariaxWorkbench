@@ -7570,9 +7570,31 @@ mod tests {
         assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
         assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
 
+        app.pod_harmony_pending = Some((
+            0,
+            pod_preset::StompHarmonyControl::Harmony1M335,
+            PendingStompHarmony::Harmony1M335(pod_preset::StompHarmony1M335Selection::Unison),
+        ));
+        app.pod_delay_pending = Some((0, PendingDelayEdit::TimeMs(350.0)));
+        app.pod_mod_pending = Some((0, PendingModEdit::SpeedHz(2.0)));
         choose_stomp_model_popup(&context, &mut app, 0x0205_0002);
+        assert_eq!(
+            app.pod_harmony_pending.as_ref().map(|stage| stage.0),
+            Some(0)
+        );
+        assert_eq!(
+            app.pod_delay_pending,
+            Some((0, PendingDelayEdit::TimeMs(350.0)))
+        );
+        assert_eq!(app.pod_mod_pending, Some((0, PendingModEdit::SpeedHz(2.0))));
         click_pod_button_tall(&context, &mut app, "pod-stomp-model-apply");
         assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_eq!(app.pod_harmony_pending, None);
+        assert_eq!(
+            app.pod_delay_pending,
+            Some((0, PendingDelayEdit::TimeMs(350.0)))
+        );
+        assert_eq!(app.pod_mod_pending, Some((0, PendingModEdit::SpeedHz(2.0))));
         let bundle_tone = app.pod_bundle.as_ref().unwrap().tone(0, 0).unwrap();
         assert_eq!(bundle_tone.stomp_model_id(), Some(0x0205_0002));
         let directory = tempfile::tempdir().unwrap();
