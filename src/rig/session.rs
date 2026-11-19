@@ -262,7 +262,7 @@ impl Session {
         summarize_hd_editor_file(library, index)
     }
 
-    /// Applies the one admitted type-9 choice through the POD HD500X
+    /// Applies an admitted type-9 choice through the POD HD500X
     /// extension profile. H5EP file association is not physical applicability.
     pub fn set_hd_type9_choice(
         self,

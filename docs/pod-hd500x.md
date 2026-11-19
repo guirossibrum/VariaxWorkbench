@@ -383,18 +383,22 @@ blocks, version rejection, dirty/revert state, H5ES/H5EB parent preservation,
 target profile checks, and GUI save collision/failure/reopen/quit behavior.
 These tests do not validate a physical product or original-editor event parity.
 
-### Bounded type-9 three-choice control
+### Bounded type-9 three-choice controls
 
-The offline H5EP library additionally exposes one source-joined type-9 choice
-control for model `0x020A0014`, key `0x3F100004`, with neutral UI labels
-`Choice 0`, `Choice 1`, and `Choice 2`. Their serialized big-endian f32 words
-are exactly `00000000`, `3F000000`, and `3F800000`. The typed file slot is
+The offline H5EP library exposes four exact revision-3 Editor 2.27 type-9
+model/key associations: `0x020A0014/0x3F100004`,
+`0x020A0010/0x3F100004`, `0x020A000F/0x3F100004`, and
+`0x020A0012/0x3F100003`. Three additional tuples were admitted from the
+initialized descriptor stores in the private revision-3 static analysis; this
+bounded list is not an exhaustive descriptor catalog. All four use neutral UI
+labels `Choice 0`, `Choice 1`, and `Choice 2`, with exact serialized big-endian
+f32 words `00000000`, `3F000000`, and `3F800000`. The typed file slot is
 `HdFxSlot(0..=7)` and maps to body block `0x428 + slot*0x100`; descriptor
-ordinal 92 and the vendor runtime selector are not converted into a file slot.
-This source/applicability observation is not proof of a physical HD500X.
+ordinals and vendor runtime selectors are not converted into file slots. These
+source/applicability observations do not prove physical HD500X compatibility.
 
 The setter first relies on the full H5EP v1 parser, then requires the exact
-model, validity byte `B+0x0b == 1`, canonical enable byte `B+8` in 0/1, row
+exact model/key association, validity byte `B+0x0b == 1`, canonical enable byte `B+8` in 0/1, row
 count `B+0x0f` in 1..=12, exactly one matching key among all twelve rows (even
 outside the count), target row below the declared count, and zero assignment
 marker at row `+0x10`. The count rule is a conservative application guard;
@@ -673,7 +677,7 @@ context words, and it does not broaden the existing finite default operations.
 | Original acceptance criterion | Current status |
 | --- | --- |
 | Establish HD500X identity, editor/driver/firmware, preset/model/effect and audio evidence from primary sources. | **Partial.** Static Editor file-group association and a bounded writer/reader trace are recorded. Driver text matches USB `0x0E41:0x4159`, with the Mac audio personality on interface 0 and bulk personality on interface 1; the Advanced Guide names a processed stereo host feed, **1-2 Main Out**, plus playback return and 48 kHz native processing with documented conversion rates. This does not supply the device's USB audio descriptors/endpoints or connect them to driver callbacks, formats, and selected identity. Product attribution, complete model/effect catalog, firmware applicability and physical identity remain unresolved. |
-| Implement an independent offline backend integrated with shared interfaces and tests. | **Partial.** The shared offline Session/library interface and GUI import bounded H5EP/H5ES/H5EB files, extract children, preserve context and save new copies. They edit all 364 source-identified primary type-1 rows plus 80 selected non-type-1 numeric controls across 143 descriptor model IDs with canonical-grid and byte-preservation tests, and expose three earlier Octave Fuzz replacements, the closed twelve-target defaults action, the one-byte FX enable/disable operation, and one admitted type-9 three-choice row writer for model `0x020A0014`/key `0x3F100004`. The type-9 setter requires an explicit file slot, valid/enable/count/assignment-marker guards, a unique existing key, finite current value and complete-candidate reparse; its GUI stages per entry/slot and applies or discards explicitly. Expanded synthetic dirty-state, extracted-child isolation and GUI lifecycle tests are implemented; the exact-head configured check result is recorded on PR #109, while older totals remain historical. The HD500X session also exposes generic bounded FORM/L6FF inspection without applying header identity to a physical profile. Product-qualified route planning and maintenance remain unavailable; other type-family semantics, physical recording and original-editor parity are not implemented. |
+| Implement an independent offline backend integrated with shared interfaces and tests. | **Partial.** The shared offline Session/library interface and GUI import bounded H5EP/H5ES/H5EB files, extract children, preserve context and save new copies. They edit all 364 source-identified primary type-1 rows plus 80 selected non-type-1 numeric controls across 143 descriptor model IDs with canonical-grid and byte-preservation tests, and expose three earlier Octave Fuzz replacements, the closed twelve-target defaults action, the one-byte FX enable/disable operation, and four exact type-9 three-choice model/key rows: `0x020A0014/0x3F100004`, `0x020A0010/0x3F100004`, `0x020A000F/0x3F100004`, and `0x020A0012/0x3F100003`. The type-9 setter requires an explicit file slot, valid/enable/count/assignment-marker guards, a unique existing key, finite current value and complete-candidate reparse; its GUI stages per entry/slot and applies or discards explicitly. Expanded synthetic dirty-state, extracted-child isolation and GUI lifecycle tests cover the admitted catalog; configured checks are submitted on the final head through the coordinator. The HD500X session also exposes generic bounded FORM/L6FF inspection without applying header identity to a physical profile. Product-qualified route planning and maintenance remain unavailable; other type-family semantics, physical recording and original-editor parity are not implemented. |
 | Keep HD/JTV separate from PODxt/original Variax; prohibit cross-family conversion, flashing and live operations. | **Met as written.** Profiles remain separate; no cross-family conversion, upload, flash or live path is exposed, and hardware access remains locked. This criterion does not establish physical compatibility. |
 
 Issue #32 remains open. Synthetic tests do not complete source-identification,

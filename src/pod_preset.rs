@@ -62,7 +62,20 @@ const HD_SUB_OCTAVE_FUZZ_MODEL_ID: u32 = 0x0205_0014;
 const HD_TUBE_DRIVE_MODEL_ID: u32 = 0x0205_000d;
 const HD_OCTAVE_FUZZ_MODEL_ID: u32 = 0x0205_000c;
 pub const HD_TYPE9_CHOICE_MODEL_ID: u32 = 0x020a_0014;
-const HD_TYPE9_CHOICE_KEY: u32 = 0x3f10_0004;
+/// Exact source-admitted type-9 control associations. Descriptor ordinals and
+/// vendor runtime selectors are not file FX slots.
+pub const HD_TYPE9_CHOICE_MODEL_KEYS: [(u32, u32); 4] = [
+    (0x020a_0014, 0x3f10_0004),
+    (0x020a_0010, 0x3f10_0004),
+    (0x020a_000f, 0x3f10_0004),
+    (0x020a_0012, 0x3f10_0003),
+];
+
+pub fn hd_type9_choice_key(model_id: u32) -> Option<u32> {
+    HD_TYPE9_CHOICE_MODEL_KEYS
+        .iter()
+        .find_map(|(admitted_model, key)| (*admitted_model == model_id).then_some(*key))
+}
 const HD_BAND_SHIFT_EQ_MODEL_ID: u32 = 0x020c_000c;
 const HD_GRAPHIC_EQ_MODEL_ID: u32 = 0x020c_0009;
 const HD_STUDIO_EQ_MODEL_ID: u32 = 0x020c_000a;
@@ -234,7 +247,7 @@ impl HdType9Choice {
     }
 }
 
-/// Lossless read state for the one admitted type-9 row. Imported values are
+/// Lossless read state for an admitted type-9 row. Imported values are
 /// never normalized merely because they do not match the three choices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HdType9ChoiceValue {
@@ -1925,7 +1938,7 @@ impl OpaqueH5epPreset {
         exact_numeric_value(value, control.min, control.max)
     }
 
-    /// Reads the one statically joined type-9 choice control. Unknown finite
+    /// Reads a statically joined type-9 choice control. Unknown finite
     /// and non-finite words remain observable without being normalized.
     pub fn hd_type9_choice_value(&self, effect_slot: HdFxSlot) -> HdType9ChoiceValue {
         let Ok(value_at) = self.hd_type9_choice_value_offset(effect_slot) else {
@@ -1973,11 +1986,12 @@ impl OpaqueH5epPreset {
     fn hd_type9_choice_value_offset(&self, effect_slot: HdFxSlot) -> Result<usize, ToneError> {
         let body = self.body_bytes();
         let block = HD_EFFECT_BLOCK_OFFSET + effect_slot.index() * HD_EFFECT_BLOCK_STRIDE;
-        if read_be_u32(body, block) != Some(HD_TYPE9_CHOICE_MODEL_ID) {
+        let model_id = read_be_u32(body, block).unwrap_or_default();
+        let Some(key) = hd_type9_choice_key(model_id) else {
             return Err(ToneError::format(
-                "HD type-9 choice requires model 020a0014 in the selected FX slot",
+                "HD type-9 choice requires an admitted model in the selected FX slot",
             ));
-        }
+        };
         if body[block + 0x0b] != 1 {
             return Err(ToneError::format(
                 "HD type-9 choice requires a valid, non-empty effect slot",
@@ -1999,7 +2013,7 @@ impl OpaqueH5epPreset {
         let mut matches = 0;
         for row in 0..HD_PARAMETER_ROW_COUNT {
             let row_at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
-            if read_be_u32(body, row_at) == Some(HD_TYPE9_CHOICE_KEY) {
+            if read_be_u32(body, row_at) == Some(key) {
                 found = Some((row, row_at));
                 matches += 1;
             }
@@ -2547,7 +2561,7 @@ pub struct HdEditorLibrary {
 }
 
 impl HdEditorLibrary {
-    /// Applies one admitted type-9 choice to an extracted standalone H5EP.
+    /// Applies an admitted type-9 choice to an extracted standalone H5EP.
     /// H5ES/H5EB parent bytes remain independently preserved and unchanged.
     pub fn set_type9_choice(
         &mut self,
@@ -3680,16 +3694,34 @@ mod tests {
     }
 
     fn synthetic_type9_h5ep(slot: usize, row: usize, enabled: u8, value: u32) -> Vec<u8> {
+        synthetic_type9_h5ep_for(
+            slot,
+            row,
+            enabled,
+            value,
+            HD_TYPE9_CHOICE_MODEL_ID,
+            0x3f10_0004,
+        )
+    }
+
+    fn synthetic_type9_h5ep_for(
+        slot: usize,
+        row: usize,
+        enabled: u8,
+        value: u32,
+        model_id: u32,
+        key: u32,
+    ) -> Vec<u8> {
         let mut bytes = synthetic_h5ep(b"type9-tail");
         bytes[8..H5EP_HEADER_BYTES].fill(0x6d);
         bytes[H5EP_HEADER_BYTES + 0x040..H5EP_HEADER_BYTES + 0x050].fill(0x5a);
         let block = H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + slot * HD_EFFECT_BLOCK_STRIDE;
-        bytes[block..block + 4].copy_from_slice(&HD_TYPE9_CHOICE_MODEL_ID.to_be_bytes());
+        bytes[block..block + 4].copy_from_slice(&model_id.to_be_bytes());
         bytes[block + 8] = enabled;
         bytes[block + 0x0b] = 1;
         bytes[block + 0x0f] = 12;
         let row_at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
-        bytes[row_at..row_at + 4].copy_from_slice(&HD_TYPE9_CHOICE_KEY.to_be_bytes());
+        bytes[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
         bytes[row_at + 4..row_at + 8].copy_from_slice(&value.to_be_bytes());
         bytes[row_at + 8..row_at + 0x10].copy_from_slice(&[0x31; 8]);
         bytes[row_at + 0x10..row_at + HD_PARAMETER_ROW_STRIDE]
@@ -5824,6 +5856,126 @@ mod tests {
     }
 
     #[test]
+    fn type9_choice_catalog_requires_exact_model_key_pairs_and_preserves_other_bytes() {
+        for (association_index, (model_id, key)) in
+            HD_TYPE9_CHOICE_MODEL_KEYS.into_iter().enumerate()
+        {
+            assert_eq!(hd_type9_choice_key(model_id), Some(key));
+            let slot_index = [0, 3, 7, 5][association_index];
+            for row_index in [0, 5, 11] {
+                for enabled in [0, 1] {
+                    for choice in HdType9Choice::ALL {
+                        let original = synthetic_type9_h5ep_for(
+                            slot_index,
+                            row_index,
+                            enabled,
+                            0x3eaa_aaab,
+                            model_id,
+                            key,
+                        );
+                        let mut expected = original.clone();
+                        let value_at = H5EP_HEADER_BYTES
+                            + HD_EFFECT_BLOCK_OFFSET
+                            + slot_index * HD_EFFECT_BLOCK_STRIDE
+                            + HD_EFFECT_ROWS_OFFSET
+                            + row_index * HD_PARAMETER_ROW_STRIDE
+                            + 4;
+                        expected[value_at..value_at + 4]
+                            .copy_from_slice(&choice.bits().to_be_bytes());
+                        let mut preset = OpaqueH5epPreset::parse(original).unwrap();
+                        let slot = HdFxSlot::new(slot_index).unwrap();
+                        assert_eq!(
+                            preset.hd_type9_choice_value(slot),
+                            HdType9ChoiceValue::UnknownFinite(0x3eaa_aaab)
+                        );
+                        preset.set_hd_type9_choice(slot, choice).unwrap();
+                        assert_eq!(
+                            preset.as_bytes(),
+                            expected,
+                            "{model_id:#010x}/{key:#010x}, row {row_index}, enable {enabled}, choice {:?}",
+                            choice
+                        );
+                        assert_eq!(
+                            preset.hd_type9_choice_value(slot),
+                            HdType9ChoiceValue::Choice(choice)
+                        );
+                    }
+                }
+            }
+        }
+
+        for (model_id, key) in HD_TYPE9_CHOICE_MODEL_KEYS {
+            let make = || synthetic_type9_h5ep_for(0, 0, 0, 0x3f40_0000, model_id, key);
+            let block = H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET;
+            let row0 = block + HD_EFFECT_ROWS_OFFSET;
+            let mut invalid_cases = Vec::new();
+
+            let mut invalid_effect = make();
+            invalid_effect[block + 0x0b] = 0;
+            invalid_cases.push(("invalid effect", invalid_effect));
+            let mut invalid_enable = make();
+            invalid_enable[block + 8] = 2;
+            invalid_cases.push(("noncanonical enable", invalid_enable));
+            let mut invalid_count = make();
+            invalid_count[block + 0x0f] = 0;
+            invalid_cases.push(("invalid count", invalid_count));
+            let mut beyond_count = make();
+            beyond_count[row0..row0 + 4].fill(0);
+            let row5 = block + HD_EFFECT_ROWS_OFFSET + 5 * HD_PARAMETER_ROW_STRIDE;
+            beyond_count[row5..row5 + 4].copy_from_slice(&key.to_be_bytes());
+            beyond_count[block + 0x0f] = 5;
+            invalid_cases.push(("target beyond count", beyond_count));
+            let mut duplicate = make();
+            let row9 = block + HD_EFFECT_ROWS_OFFSET + 9 * HD_PARAMETER_ROW_STRIDE;
+            duplicate[row9..row9 + 4].copy_from_slice(&key.to_be_bytes());
+            invalid_cases.push(("duplicate key", duplicate));
+            let mut assigned = make();
+            assigned[row0 + HD_PARAMETER_ROW_FLAG_OFFSET] = 1;
+            invalid_cases.push(("assigned marker", assigned));
+            let mut nonfinite = make();
+            nonfinite[row0 + 4..row0 + 8].copy_from_slice(&0x7fc0_0001u32.to_be_bytes());
+            invalid_cases.push(("non-finite existing value", nonfinite));
+
+            for (reason, bytes) in invalid_cases {
+                let mut preset = OpaqueH5epPreset::parse(bytes.clone()).unwrap();
+                assert!(
+                    preset
+                        .set_hd_type9_choice(HdFxSlot::new(0).unwrap(), HdType9Choice::Choice1)
+                        .is_err(),
+                    "{model_id:#010x}/{key:#010x}: {reason} must reject"
+                );
+                assert_eq!(preset.as_bytes(), bytes, "{reason} must be atomic");
+            }
+        }
+
+        for (model_id, expected_key, wrong_key) in [
+            (0x020a_0010, Some(0x3f10_0004), 0x3f10_0003),
+            (0x020a_000f, Some(0x3f10_0004), 0x3f10_0003),
+            (0x020a_0012, Some(0x3f10_0003), 0x3f10_0004),
+            (0x020a_0014, Some(0x3f10_0004), 0x3f10_0003),
+            (0x020a_0013, None, 0x3f10_0004),
+        ] {
+            assert_eq!(hd_type9_choice_key(model_id), expected_key);
+            let bytes = synthetic_type9_h5ep_for(2, 4, 0, 0x3f40_0000, model_id, wrong_key);
+            let mut preset = OpaqueH5epPreset::parse(bytes.clone()).unwrap();
+            assert_eq!(
+                preset.hd_type9_choice_value(HdFxSlot::new(2).unwrap()),
+                HdType9ChoiceValue::Unavailable
+            );
+            assert!(
+                preset
+                    .set_hd_type9_choice(HdFxSlot::new(2).unwrap(), HdType9Choice::Choice1)
+                    .is_err()
+            );
+            assert_eq!(
+                preset.as_bytes(),
+                bytes,
+                "cross-pair {model_id:#010x}/{wrong_key:#010x}"
+            );
+        }
+    }
+
+    #[test]
     fn type9_choice_writer_rejects_invalid_inputs_atomically_and_scans_all_rows() {
         let slot = HdFxSlot::new(5).unwrap();
         let source = synthetic_type9_h5ep(5, 0, 0, 0x3f00_0000);
@@ -5848,7 +6000,7 @@ mod tests {
         let mut target_beyond_count = source.clone();
         let row5 = block + HD_EFFECT_ROWS_OFFSET + 5 * HD_PARAMETER_ROW_STRIDE;
         target_beyond_count[row0..row0 + 4].fill(0);
-        target_beyond_count[row5..row5 + 4].copy_from_slice(&HD_TYPE9_CHOICE_KEY.to_be_bytes());
+        target_beyond_count[row5..row5 + 4].copy_from_slice(&0x3f10_0004u32.to_be_bytes());
         target_beyond_count[block + 0x0f] = 5;
         cases.push(("target beyond count", target_beyond_count));
         let mut missing = source.clone();
@@ -5857,7 +6009,7 @@ mod tests {
         for duplicate_value in [0x3f00_0000u32, 0x3f80_0000] {
             let mut duplicate = source.clone();
             let row9 = block + HD_EFFECT_ROWS_OFFSET + 9 * HD_PARAMETER_ROW_STRIDE;
-            duplicate[row9..row9 + 4].copy_from_slice(&HD_TYPE9_CHOICE_KEY.to_be_bytes());
+            duplicate[row9..row9 + 4].copy_from_slice(&0x3f10_0004u32.to_be_bytes());
             duplicate[row9 + 4..row9 + 8].copy_from_slice(&duplicate_value.to_be_bytes());
             duplicate[block + 0x0f] = 1; // duplicate lies beyond the admitted count
             cases.push(("duplicate key beyond count", duplicate));

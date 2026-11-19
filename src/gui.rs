@@ -1404,7 +1404,12 @@ impl Workbench {
             if cancel {
                 self.pending = None;
             } else if apply {
-                self.apply_hd_type9_choice(staged.file_index, staged.slot, staged.choice);
+                self.apply_hd_type9_choice(
+                    staged.file_index,
+                    staged.slot,
+                    staged.model_id,
+                    staged.choice,
+                );
                 if self.hd_type9_pending.is_none()
                     && !self.hd_library.any_dirty()
                     && !self.pod_library.any_dirty()
@@ -1891,6 +1896,7 @@ impl Workbench {
                             self.apply_hd_type9_choice(
                                 pending.file_index,
                                 pending.slot,
+                                pending.model_id,
                                 pending.choice,
                             );
                         }
@@ -2244,7 +2250,7 @@ impl Workbench {
                         "Cleared a stale staged type-9 choice after the selected model changed."
                             .into();
                 }
-                if model_id == pod_preset::HD_TYPE9_CHOICE_MODEL_ID {
+                if pod_preset::hd_type9_choice_key(model_id).is_some() {
                     let slot = pod_preset::HdFxSlot::new(self.hd_effect_slot)
                         .expect("the visible FX slot slider is bounded to 0..=7");
                     let value = preset.hd_type9_choice_value(slot);
@@ -2312,7 +2318,7 @@ impl Workbench {
                                         response.rect,
                                     );
                                     if response.changed() {
-                                        self.stage_hd_type9_choice(index, slot, choice);
+                                        self.stage_hd_type9_choice(index, slot, model_id, choice);
                                     }
                                 }
                             },
@@ -2668,8 +2674,27 @@ impl Workbench {
         &mut self,
         file_index: usize,
         slot: pod_preset::HdFxSlot,
+        model_id: u32,
         choice: pod_preset::HdType9Choice,
     ) {
+        let current_model_id = self
+            .hd_library
+            .file(file_index)
+            .and_then(|file| match file {
+                pod_preset::PodPresetFile::H5ep(preset) => preset.effect_model_id(slot.index()),
+                _ => None,
+            });
+        if current_model_id != Some(model_id) {
+            if self
+                .hd_type9_pending
+                .is_some_and(|pending| pending.file_index == file_index && pending.slot == slot)
+            {
+                self.hd_type9_pending = None;
+            }
+            self.pod_message =
+                "Cleared a staged type-9 choice after its model context changed.".into();
+            return;
+        }
         let result = Session::extension(ProductProfile::PodHd500x).and_then(|session| {
             session.set_hd_type9_choice(&mut self.hd_library, file_index, slot, choice)
         });
@@ -2692,12 +2717,13 @@ impl Workbench {
         &mut self,
         file_index: usize,
         slot: pod_preset::HdFxSlot,
+        model_id: u32,
         choice: pod_preset::HdType9Choice,
     ) {
         self.hd_type9_pending = Some(PendingHdType9Choice {
             file_index,
             slot,
-            model_id: pod_preset::HD_TYPE9_CHOICE_MODEL_ID,
+            model_id,
             choice,
         });
     }
@@ -4042,15 +4068,30 @@ mod tests {
     }
 
     fn sample_hd_type9_preset(slot: usize, row: usize, bits: u32) -> Vec<u8> {
+        sample_hd_type9_preset_for(
+            slot,
+            row,
+            bits,
+            pod_preset::HD_TYPE9_CHOICE_MODEL_ID,
+            0x3f10_0004,
+        )
+    }
+
+    fn sample_hd_type9_preset_for(
+        slot: usize,
+        row: usize,
+        bits: u32,
+        model_id: u32,
+        key: u32,
+    ) -> Vec<u8> {
         let mut bytes = sample_hd_editor_preset();
         let block = pod_preset::H5EP_HEADER_BYTES + 0x428 + slot * 0x100;
-        bytes[block..block + 4]
-            .copy_from_slice(&pod_preset::HD_TYPE9_CHOICE_MODEL_ID.to_be_bytes());
+        bytes[block..block + 4].copy_from_slice(&model_id.to_be_bytes());
         bytes[block + 8] = 0;
         bytes[block + 0x0b] = 1;
         bytes[block + 0x0f] = 12;
         let row_at = block + 0x10 + row * 0x14;
-        bytes[row_at..row_at + 4].copy_from_slice(&0x3f10_0004u32.to_be_bytes());
+        bytes[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
         bytes[row_at + 4..row_at + 8].copy_from_slice(&bits.to_be_bytes());
         bytes[row_at + 8..row_at + 0x10].fill(0x31);
         bytes[row_at + 0x10..row_at + 0x14].copy_from_slice(&[0, 0x42, 0x43, 0x44]);
@@ -4800,12 +4841,22 @@ mod tests {
             .hd_library
             .import_bytes(sample_hd_editor_preset())
             .unwrap();
-        app.stage_hd_type9_choice(index, slot, pod_preset::HdType9Choice::Choice1);
+        app.stage_hd_type9_choice(
+            index,
+            slot,
+            pod_preset::HD_TYPE9_CHOICE_MODEL_ID,
+            pod_preset::HdType9Choice::Choice1,
+        );
         app.select_hd_file(other_index);
         assert!(app.hd_type9_pending.is_none());
         app.select_hd_file(index);
         app.hd_effect_slot = slot_index;
-        app.stage_hd_type9_choice(index, slot, pod_preset::HdType9Choice::Choice1);
+        app.stage_hd_type9_choice(
+            index,
+            slot,
+            pod_preset::HD_TYPE9_CHOICE_MODEL_ID,
+            pod_preset::HdType9Choice::Choice1,
+        );
         app.hd_effect_slot = 4;
         hd_editor_frame(&context, &mut app, vec![]);
         assert!(app.hd_type9_pending.is_none());
@@ -4844,6 +4895,76 @@ mod tests {
         );
         assert!(app.permit_close);
         assert!(app.read_worker.is_none());
+    }
+
+    #[test]
+    fn hd_type9_catalog_additions_use_the_existing_gui_staging_flow() {
+        let associations = [
+            (0x020a_0010, 0x3f10_0004, 1),
+            (0x020a_000f, 0x3f10_0004, 3),
+            (0x020a_0012, 0x3f10_0003, 7),
+        ];
+        for (model_id, key, slot_index) in associations {
+            let (context, mut app) = app();
+            context.style_mut(|style| style.animation_time = 0.0);
+            let row_index = 5;
+            let original =
+                sample_hd_type9_preset_for(slot_index, row_index, 0x3f40_0000, model_id, key);
+            let index = app.hd_library.import_bytes(original.clone()).unwrap();
+            app.select_hd_file(index);
+            app.pod_open = true;
+            app.hd_effect_slot = slot_index;
+
+            click_hd_type9_choice(&context, &mut app, 2);
+            hd_editor_frame(&context, &mut app, vec![]);
+            assert_hd_bytes_eq(
+                app.hd_library.file(index).unwrap().as_bytes(),
+                &original,
+                "new catalog selection stages without editing bytes",
+            );
+            assert_eq!(
+                app.hd_type9_pending,
+                Some(PendingHdType9Choice {
+                    file_index: index,
+                    slot: pod_preset::HdFxSlot::new(slot_index).unwrap(),
+                    model_id,
+                    choice: pod_preset::HdType9Choice::Choice2,
+                })
+            );
+
+            app.hd_effect_slot = (slot_index + 1) % 8;
+            hd_editor_frame(&context, &mut app, vec![]);
+            assert!(app.hd_type9_pending.is_none());
+            app.hd_effect_slot = slot_index;
+
+            click_hd_type9_choice(&context, &mut app, 1);
+            hd_editor_frame(&context, &mut app, vec![]);
+            click_hd_editor(&context, &mut app, "apply-hd-type9-choice");
+            let value_at = pod_preset::H5EP_HEADER_BYTES
+                + 0x428
+                + slot_index * 0x100
+                + 0x10
+                + row_index * 0x14
+                + 4;
+            let mut expected = original;
+            expected[value_at..value_at + 4].copy_from_slice(&0x3f00_0000u32.to_be_bytes());
+            assert_hd_bytes_eq(
+                app.hd_library.file(index).unwrap().as_bytes(),
+                &expected,
+                "new catalog GUI apply changes only the selected value word",
+            );
+            assert!(app.hd_library.is_dirty(index));
+
+            click_hd_type9_choice(&context, &mut app, 0);
+            hd_editor_frame(&context, &mut app, vec![]);
+            click_hd_editor(&context, &mut app, "discard-hd-type9-choice");
+            assert_hd_bytes_eq(
+                app.hd_library.file(index).unwrap().as_bytes(),
+                &expected,
+                "discarding a staged new catalog choice preserves applied bytes",
+            );
+            assert!(app.hd_type9_pending.is_none());
+        }
     }
 
     #[test]
