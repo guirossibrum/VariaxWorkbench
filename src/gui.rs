@@ -2260,7 +2260,12 @@ impl Workbench {
                             && pending.model_id == model_id
                     }) {
                         ui.horizontal(|ui| {
-                            if self.pod_button(ui, "apply-hd-type9-choice", "Apply offline choice")
+                            let response = ui.button("Apply offline choice");
+                            #[cfg(test)]
+                            self.pod_buttons
+                                .insert("apply-hd-type9-choice", response.rect);
+                            ui.scroll_to_rect(response.rect, Some(egui::Align::Center));
+                            if response.clicked()
                                 && let Some(pending) = self.hd_type9_pending
                             {
                                 self.apply_hd_type9_choice(
