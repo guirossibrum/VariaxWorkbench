@@ -1252,7 +1252,8 @@ impl Panel {
     pub fn take_pending_capture_events(
         &mut self,
     ) -> Result<Vec<capture::PendingCaptureEvent>, TakeError> {
-        let events = self.capture
+        let events = self
+            .capture
             .as_mut()
             .ok_or(TakeError::NotRecording)?
             .take_pending_events()
@@ -1566,7 +1567,10 @@ impl Panel {
             .ok_or(TakeError::NotStopped)?
             .save(path)?;
         self.take_saved = !self.recovery_events_outstanding
-            && self.capture.as_ref().is_none_or(|capture| capture.pending_events() == 0);
+            && self
+                .capture
+                .as_ref()
+                .is_none_or(|capture| capture.pending_events() == 0);
         self.message = format!("Saved {}", path.display());
         Ok(saved)
     }
@@ -1583,7 +1587,10 @@ impl Panel {
             .ok_or(TakeError::NotStopped)?
             .save_aiff(path)?;
         self.take_saved = !self.recovery_events_outstanding
-            && self.capture.as_ref().is_none_or(|capture| capture.pending_events() == 0);
+            && self
+                .capture
+                .as_ref()
+                .is_none_or(|capture| capture.pending_events() == 0);
         self.message = format!(
             "Saved exact-clock AIFF {}. Other software may round this rate; verify imports.",
             path.display()
@@ -2058,7 +2065,7 @@ mod tests {
                 installed_revision: None,
                 channels: 2,
                 clock: (78_125, 2),
-                format: SampleFormat::S24ThreeByteLe,
+                format: crate::rig::audio::SampleFormat::S24ThreeByteLe,
             },
             RecordRoute::SendCleanGuitar,
             1024,

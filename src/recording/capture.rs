@@ -603,7 +603,11 @@ impl CaptureSession {
     /// Queues an adapter-reported discontinuity in source order. The event is
     /// bounded by the same take budget as audio and becomes silence only when
     /// the consumer drains it into the Take.
-    pub fn callback_dropout(&mut self, generation: u64, missing_frames: u64) -> Result<(), CaptureError> {
+    pub fn callback_dropout(
+        &mut self,
+        generation: u64,
+        missing_frames: u64,
+    ) -> Result<(), CaptureError> {
         self.check_owner()?;
         if self.terminal || self.stopped || self.take.phase() != Phase::Recording {
             return Err(self.terminal_error.clone().unwrap_or(CaptureError::Stopped));
@@ -649,7 +653,11 @@ impl CaptureSession {
         self.terminal_failure(CaptureError::AdapterFailure(code))
     }
 
-    pub fn adapter_discontinuity(&mut self, generation: u64, code: i32) -> Result<(), CaptureError> {
+    pub fn adapter_discontinuity(
+        &mut self,
+        generation: u64,
+        code: i32,
+    ) -> Result<(), CaptureError> {
         self.check_owner()?;
         if self.terminal || self.stopped || self.take.phase() != Phase::Recording {
             return Err(self.terminal_error.clone().unwrap_or(CaptureError::Stopped));
@@ -946,8 +954,7 @@ mod tests {
         assert_eq!(
             session.take().pcm(),
             &[
-                0x11, 0x00, 0x22, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x33, 0x00,
-                0x44, 0x00,
+                0x11, 0x00, 0x22, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x33, 0x00, 0x44, 0x00,
             ]
         );
         assert_eq!(
@@ -1047,13 +1054,9 @@ mod tests {
     #[test]
     fn stale_and_wrong_thread_clock_observations_do_not_change_measurement() {
         let (registry, request) = native_request(None);
-        let plan = ValidatedPlan::native_podxt(
-            &registry,
-            request,
-            RecordRoute::SendCleanGuitar,
-            1024,
-        )
-        .unwrap();
+        let plan =
+            ValidatedPlan::native_podxt(&registry, request, RecordRoute::SendCleanGuitar, 1024)
+                .unwrap();
         let mut session = CaptureSession::start(plan, 111).unwrap();
         let origin = session.observe_software_clock(111, 0, 1_000, 0).unwrap();
         assert_eq!(

@@ -19,7 +19,7 @@ pub const ALSA_FORMAT_S24_3LE: i32 = 32;
 pub const ALSA_ERRNO_EPIPE: i32 = 32;
 pub const ALSA_ERRNO_ESTRPIPE: i32 = 86;
 const PODXT_FRAME_BYTES: usize = 6;
-const MAX_PERIOD_BYTES: usize = crate::recording::capture::STREAM_CHUNK_BYTES_MAX;
+const MAX_PERIOD_BYTES: usize = crate::recording::STREAM_CHUNK_BYTES_MAX;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AlsaNegotiatedPcm {
@@ -412,7 +412,9 @@ mod tests {
         .unwrap();
         assert_eq!(wrong_thread, Err(CaptureError::WrongThread));
         assert_eq!(adapter.session().clock_measurement(), Some(initial));
-        let valid = adapter.observe_software_clock(64, 1_000, 25_601_000, 0).unwrap();
+        let valid = adapter
+            .observe_software_clock(64, 1_000, 25_601_000, 0)
+            .unwrap();
         assert_eq!(valid.drift_ppm, Some(0));
         adapter.stop().unwrap();
         assert_eq!(
