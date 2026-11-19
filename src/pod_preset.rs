@@ -6829,20 +6829,100 @@ mod tests {
                             + HD_EFFECT_ROWS_OFFSET
                             + row_index * HD_PARAMETER_ROW_STRIDE
                             + 4;
-                        let mut expected = source.clone();
-                        expected[value_at..value_at + 4]
-                            .copy_from_slice(&0x3f80_0000u32.to_be_bytes());
-                        let mut preset = OpaqueH5epPreset::parse(source.clone()).unwrap();
                         let slot = HdFxSlot::new(slot_index).unwrap();
-                        assert_eq!(
-                            preset.hd_type10_choice_value(slot),
-                            HdType10ChoiceValue::UnknownFinite(0x3eaa_aaab)
-                        );
-                        preset
-                            .set_hd_type10_choice(slot, HdType10Choice::Choice1)
-                            .unwrap();
-                        assert_eq!(preset.as_bytes(), expected);
+                        for (choice, word) in [
+                            (HdType10Choice::Choice0, 0x0000_0000u32),
+                            (HdType10Choice::Choice1, 0x3f80_0000),
+                        ] {
+                            let mut expected = source.clone();
+                            expected[value_at..value_at + 4].copy_from_slice(&word.to_be_bytes());
+                            let mut preset = OpaqueH5epPreset::parse(source.clone()).unwrap();
+                            assert_eq!(
+                                preset.hd_type10_choice_value(slot),
+                                HdType10ChoiceValue::UnknownFinite(0x3eaa_aaab)
+                            );
+                            preset.set_hd_type10_choice(slot, choice).unwrap();
+                            assert_eq!(preset.as_bytes(), expected);
+                            assert_eq!(
+                                preset.hd_type10_choice_value(slot),
+                                HdType10ChoiceValue::Choice(choice)
+                            );
+
+                            let before_noop = preset.as_bytes().to_vec();
+                            preset.set_hd_type10_choice(slot, choice).unwrap();
+                            assert_eq!(
+                                preset.as_bytes(),
+                                before_noop,
+                                "same-choice no-op is byte-identical"
+                            );
+                        }
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn type10_nonfinite_and_malformed_equal_word_guards_apply_to_both_associations() {
+        let slot = HdFxSlot::new(5).unwrap();
+        let block = H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 5 * HD_EFFECT_BLOCK_STRIDE;
+        let row0 = block + HD_EFFECT_ROWS_OFFSET;
+        for (model_id, key) in HD_TYPE10_CHOICE_MODEL_KEYS {
+            for bits in [0x7fc0_0001u32, 0x7f80_0000, 0xff80_0000] {
+                let source = synthetic_type10_h5ep_for(5, 0, 1, bits, model_id, key);
+                let mut preset = OpaqueH5epPreset::parse(source.clone()).unwrap();
+                assert!(matches!(
+                    preset.hd_type10_choice_value(slot),
+                    HdType10ChoiceValue::NonFinite(_)
+                ));
+                for choice in HdType10Choice::ALL {
+                    assert!(preset.set_hd_type10_choice(slot, choice).is_err());
+                    assert_eq!(preset.as_bytes(), source);
+                }
+            }
+
+            let source = synthetic_type10_h5ep_for(5, 0, 1, 0x3eaa_aaab, model_id, key);
+            let mut cases = Vec::new();
+            let mut wrong_model = source.clone();
+            wrong_model[block..block + 4].copy_from_slice(&HD_TYPE9_CHOICE_MODEL_ID.to_be_bytes());
+            cases.push(("foreign model", wrong_model));
+            let mut wrong_key = source.clone();
+            wrong_key[row0..row0 + 4].copy_from_slice(&0x3f10_0004u32.to_be_bytes());
+            cases.push(("type-9 key", wrong_key));
+            for (offset, value) in [(0x0b, 0), (8, 2), (0x0f, 0), (0x0f, 13)] {
+                let mut bad = source.clone();
+                bad[block + offset] = value;
+                cases.push(("invalid block guard", bad));
+            }
+            let mut missing = source.clone();
+            missing[row0..row0 + 4].fill(0);
+            cases.push(("missing key", missing));
+            let mut duplicate = source.clone();
+            let row9 = block + HD_EFFECT_ROWS_OFFSET + 9 * HD_PARAMETER_ROW_STRIDE;
+            duplicate[row9..row9 + 4].copy_from_slice(&key.to_be_bytes());
+            duplicate[block + 0x0f] = 1;
+            cases.push(("duplicate beyond count", duplicate));
+            let mut beyond = source.clone();
+            let row5 = block + HD_EFFECT_ROWS_OFFSET + 5 * HD_PARAMETER_ROW_STRIDE;
+            beyond[row0..row0 + 4].fill(0);
+            beyond[row5..row5 + 4].copy_from_slice(&key.to_be_bytes());
+            beyond[block + 0x0f] = 5;
+            cases.push(("target beyond count", beyond));
+            let mut marker = source.clone();
+            marker[row0 + HD_PARAMETER_ROW_FLAG_OFFSET] = 1;
+            cases.push(("assigned marker", marker));
+
+            for (reason, mut malformed) in cases {
+                for choice in HdType10Choice::ALL {
+                    let word_at = row0 + 4;
+                    malformed[word_at..word_at + 4].copy_from_slice(&choice.bits().to_be_bytes());
+                    let before = malformed.clone();
+                    let mut preset = OpaqueH5epPreset::parse(malformed.clone()).unwrap();
+                    assert!(
+                        preset.set_hd_type10_choice(slot, choice).is_err(),
+                        "{reason}"
+                    );
+                    assert_eq!(preset.as_bytes(), before, "{reason} preserves bytes");
                 }
             }
         }

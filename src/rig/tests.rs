@@ -796,38 +796,161 @@ fn type10_choice_uses_independent_same_model_key_through_hd500x_session() {
 
 #[test]
 fn second_type10_association_flows_through_hd500x_session_and_extracted_child() {
-    use crate::pod_preset::{HdFxSlot, HdType10Choice};
+    use crate::pod_preset::{
+        H5EB_HEADER_BYTES, H5EP_HEADER_BYTES, H5EP_MIN_BYTES, H5ES_HEADER_BYTES, HdFxSlot,
+        HdType10Choice, OpaqueH5epPreset,
+    };
     let bytes: Vec<u8> = include_str!("../../tests/fixtures/type10-choice-000f-source.hex")
+        .split_ascii_whitespace()
+        .map(|b| u8::from_str_radix(b, 16).unwrap())
+        .collect();
+    let expected1: Vec<u8> = include_str!("../../tests/fixtures/type10-choice-000f-choice-1.hex")
         .split_ascii_whitespace()
         .map(|b| u8::from_str_radix(b, 16).unwrap())
         .collect();
     let slot = HdFxSlot::new(5).unwrap();
     let session = Session::extension(ProductProfile::PodHd500x).unwrap();
+
+    assert!(Session::extension(ProductProfile::PodxtLive).is_err());
+    let mut initial_library = HdEditorLibrary::default();
+    let initial_index = initial_library.import_bytes(bytes.clone()).unwrap();
+    assert!(
+        Session::initial_rig()
+            .set_hd_type10_choice(
+                &mut initial_library,
+                initial_index,
+                slot,
+                HdType10Choice::Choice1,
+            )
+            .is_err()
+    );
+    assert_eq!(
+        initial_library.file(initial_index).unwrap().as_bytes(),
+        bytes
+    );
+    assert!(!initial_library.is_dirty(initial_index));
+
+    for profile in [ProductProfile::WorkbenchHd, ProductProfile::Jtv69] {
+        let mut foreign_library = HdEditorLibrary::default();
+        let foreign_index = foreign_library.import_bytes(bytes.clone()).unwrap();
+        assert!(
+            Session::extension(profile)
+                .unwrap()
+                .set_hd_type10_choice(
+                    &mut foreign_library,
+                    foreign_index,
+                    slot,
+                    HdType10Choice::Choice1,
+                )
+                .is_err()
+        );
+        assert_eq!(
+            foreign_library.file(foreign_index).unwrap().as_bytes(),
+            bytes
+        );
+        assert!(!foreign_library.is_dirty(foreign_index));
+    }
+
+    let mut unsupported_version = bytes.clone();
+    unsupported_version[7] = 2;
+    assert!(OpaqueH5epPreset::parse(unsupported_version.clone()).is_err());
+    assert_eq!(unsupported_version[7], 2);
+
+    for foreign in [
+        {
+            let mut value = bytes.clone();
+            let block = H5EP_HEADER_BYTES + 0x428 + 5 * 0x100;
+            value[block..block + 4].copy_from_slice(&0x020a_0014u32.to_be_bytes());
+            value
+        },
+        {
+            let mut value = bytes.clone();
+            let row = 0x9d8;
+            value[row..row + 4].copy_from_slice(&0x3f10_0004u32.to_be_bytes());
+            value
+        },
+    ] {
+        let mut foreign_library = HdEditorLibrary::default();
+        let foreign_index = foreign_library.import_bytes(foreign.clone()).unwrap();
+        assert!(
+            session
+                .set_hd_type10_choice(
+                    &mut foreign_library,
+                    foreign_index,
+                    slot,
+                    HdType10Choice::Choice1,
+                )
+                .is_err()
+        );
+        assert_eq!(
+            foreign_library.file(foreign_index).unwrap().as_bytes(),
+            foreign
+        );
+        assert!(!foreign_library.is_dirty(foreign_index));
+    }
+
     let mut library = HdEditorLibrary::default();
     let index = library.import_bytes(bytes.clone()).unwrap();
     session
         .set_hd_type10_choice(&mut library, index, slot, HdType10Choice::Choice1)
         .unwrap();
-    assert_eq!(
-        &library.file(index).unwrap().as_bytes()[0x9dc..0x9e0],
-        &[0x3f, 0x80, 0, 0]
-    );
+    assert_eq!(library.file(index).unwrap().as_bytes(), expected1);
 
-    let child_start = crate::pod_preset::H5ES_HEADER_BYTES;
-    let child_len = crate::pod_preset::H5EP_MIN_BYTES;
+    let child_start = H5ES_HEADER_BYTES;
+    let child_len = H5EP_MIN_BYTES;
+    let mut expected_child1 = bytes[..child_len].to_vec();
+    expected_child1[0x9dc..0x9e0].copy_from_slice(&[0x3f, 0x80, 0, 0]);
     let mut parent_bytes = synthetic_h5es();
     parent_bytes[child_start..child_start + child_len].copy_from_slice(&bytes[..child_len]);
+    let sibling_start = child_start + child_len;
+    let sibling_bytes = parent_bytes[sibling_start..sibling_start + child_len].to_vec();
     let mut nested = HdEditorLibrary::default();
     let parent = nested.import_bytes(parent_bytes.clone()).unwrap();
     let child = Session::initial_rig()
         .extract_hd_editor_preset(&mut nested, parent, 0, 0)
         .unwrap()
         .index;
+    let sibling = Session::initial_rig()
+        .extract_hd_editor_preset(&mut nested, parent, 0, 1)
+        .unwrap()
+        .index;
     session
-        .set_hd_type10_choice(&mut nested, child, slot, HdType10Choice::Choice0)
+        .set_hd_type10_choice(&mut nested, child, slot, HdType10Choice::Choice1)
         .unwrap();
     assert_eq!(nested.file(parent).unwrap().as_bytes(), parent_bytes);
+    assert_eq!(nested.file(child).unwrap().as_bytes(), expected_child1);
+    assert_eq!(nested.file(sibling).unwrap().as_bytes(), sibling_bytes);
     assert!(nested.is_dirty(child));
+    assert!(!nested.is_dirty(sibling));
+    nested.revert_unsaved(child).unwrap();
+    assert_eq!(nested.file(child).unwrap().as_bytes(), &bytes[..child_len]);
+    assert!(!nested.is_dirty(child));
+    assert_eq!(nested.file(parent).unwrap().as_bytes(), parent_bytes);
+
+    let mut bad_setlist = synthetic_h5es();
+    bad_setlist[child_start..child_start + child_len].copy_from_slice(&bytes[..child_len]);
+    let mut bad_bundle = synthetic_h5eb_with_type9_child();
+    let bundle_child = H5EB_HEADER_BYTES + H5ES_HEADER_BYTES;
+    bad_bundle[bundle_child..bundle_child + child_len].copy_from_slice(&bytes[..child_len]);
+    for parent_bytes in [bad_setlist, bad_bundle] {
+        let mut parent_library = HdEditorLibrary::default();
+        let parent_index = parent_library.import_bytes(parent_bytes.clone()).unwrap();
+        assert!(
+            session
+                .set_hd_type10_choice(
+                    &mut parent_library,
+                    parent_index,
+                    slot,
+                    HdType10Choice::Choice1,
+                )
+                .is_err()
+        );
+        assert_eq!(
+            parent_library.file(parent_index).unwrap().as_bytes(),
+            parent_bytes
+        );
+        assert!(!parent_library.is_dirty(parent_index));
+    }
 }
 
 #[test]

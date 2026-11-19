@@ -4629,16 +4629,6 @@ mod tests {
         )
     }
 
-    fn sample_hd_type10_preset(slot: usize, row: usize, bits: u32) -> Vec<u8> {
-        sample_hd_type10_preset_for(
-            slot,
-            row,
-            bits,
-            pod_preset::HD_TYPE10_CHOICE_MODEL_ID,
-            pod_preset::HD_TYPE10_CHOICE_KEY,
-        )
-    }
-
     fn sample_hd_type10_preset_for(
         slot: usize,
         row: usize,
@@ -5756,11 +5746,19 @@ mod tests {
 
     #[test]
     fn hd_type10_and_type9_choices_stage_and_apply_independently_on_same_model() {
+        for model_id in [pod_preset::HD_TYPE10_CHOICE_MODEL_ID, 0x020a_000f] {
+            hd_type10_and_type9_choices_stage_and_apply_independently_for(model_id);
+        }
+    }
+
+    fn hd_type10_and_type9_choices_stage_and_apply_independently_for(model_id: u32) {
         let (context, mut app) = app();
         context.style_mut(|style| style.animation_time = 0.0);
         let slot_index = 5;
         let row_index = 8;
-        let original = sample_hd_type10_preset(slot_index, row_index, 0x3eaa_aaab);
+        let key = pod_preset::hd_type10_choice_key(model_id).unwrap();
+        let original =
+            sample_hd_type10_preset_for(slot_index, row_index, 0x3eaa_aaab, model_id, key);
         let index = app.hd_library.import_bytes(original.clone()).unwrap();
         app.select_hd_file(index);
         app.pod_open = true;
@@ -5775,7 +5773,15 @@ mod tests {
         );
         click_hd_type9_choice(&context, &mut app, 1);
         hd_editor_frame(&context, &mut app, vec![]);
-        assert!(app.hd_type9_pending.is_some());
+        assert_eq!(
+            app.hd_type9_pending,
+            Some(PendingHdType9Choice {
+                file_index: index,
+                slot: pod_preset::HdFxSlot::new(slot_index).unwrap(),
+                model_id,
+                choice: pod_preset::HdType9Choice::Choice1,
+            })
+        );
         assert!(
             app.hd_type10_pending.is_some(),
             "staging same-model type 9 must retain type-10 stage"
@@ -5795,7 +5801,15 @@ mod tests {
             + type9_row * 0x14
             + 4;
         let staged_type10 = app.hd_type10_pending;
-        assert!(staged_type10.is_some());
+        assert_eq!(
+            staged_type10,
+            Some(PendingHdType10Choice {
+                file_index: index,
+                slot: pod_preset::HdFxSlot::new(slot_index).unwrap(),
+                model_id,
+                choice: pod_preset::HdType10Choice::Choice1,
+            })
+        );
         click_hd_editor(&context, &mut app, "apply-hd-type9-choice");
         let after9 = app.hd_library.file(index).unwrap().as_bytes().to_vec();
         assert_eq!(&after9[type9_value..type9_value + 4], &[0x3f, 0, 0, 0]);
@@ -5823,27 +5837,37 @@ mod tests {
         hd_editor_frame(&context, &mut app, vec![]);
         click_hd_type9_choice(&context, &mut app, 2);
         hd_editor_frame(&context, &mut app, vec![]);
+        let staged_type10 = app.hd_type10_pending;
+        let staged_type9 = app.hd_type9_pending;
+        assert!(staged_type10.is_some() && staged_type9.is_some());
         click_hd_editor(&context, &mut app, "discard-hd-type9-choice");
         assert!(app.hd_type9_pending.is_none());
-        assert!(
-            app.hd_type10_pending.is_some(),
-            "discard type 9 preserves type 10"
+        assert_eq!(
+            app.hd_type10_pending, staged_type10,
+            "discard type 9 preserves the exact type-10 stage"
         );
+        assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), after10);
         click_hd_editor(&context, &mut app, "discard-hd-type10-choice");
         assert!(app.hd_type10_pending.is_none());
+        assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), after10);
 
         click_hd_type10_choice(&context, &mut app, 0);
         hd_editor_frame(&context, &mut app, vec![]);
         click_hd_type9_choice(&context, &mut app, 2);
         hd_editor_frame(&context, &mut app, vec![]);
+        let staged_type9 = app.hd_type9_pending;
+        let staged_type10 = app.hd_type10_pending;
+        assert!(staged_type10.is_some() && staged_type9.is_some());
         click_hd_editor(&context, &mut app, "discard-hd-type10-choice");
         assert!(app.hd_type10_pending.is_none());
-        assert!(
-            app.hd_type9_pending.is_some(),
-            "discard type 10 preserves type 9"
+        assert_eq!(
+            app.hd_type9_pending, staged_type9,
+            "discard type 10 preserves the exact type-9 stage"
         );
+        assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), after10);
         click_hd_editor(&context, &mut app, "discard-hd-type9-choice");
         assert!(app.hd_type9_pending.is_none());
+        assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), after10);
 
         let directory = tempfile::tempdir().unwrap();
         let collision = directory.path().join("type10-existing.5xe");
@@ -5933,10 +5957,17 @@ mod tests {
 
     #[test]
     fn hd_type10_pending_is_invalidated_on_same_entry_model_change_and_file_replacement() {
+        for model_id in [pod_preset::HD_TYPE10_CHOICE_MODEL_ID, 0x020a_000f] {
+            hd_type10_pending_is_invalidated_for(model_id);
+        }
+    }
+
+    fn hd_type10_pending_is_invalidated_for(model_id: u32) {
         let (context, mut app) = app();
         context.style_mut(|style| style.animation_time = 0.0);
         let slot_index = 5;
-        let bytes = sample_hd_type10_preset(slot_index, 8, 0x3eaa_aaab);
+        let key = pod_preset::hd_type10_choice_key(model_id).unwrap();
+        let bytes = sample_hd_type10_preset_for(slot_index, 8, 0x3eaa_aaab, model_id, key);
         let index = app.hd_library.import_bytes(bytes.clone()).unwrap();
         app.select_hd_file(index);
         app.pod_open = true;
@@ -5950,6 +5981,33 @@ mod tests {
             app.hd_type10_pending.is_none(),
             "slot change clears stale stage"
         );
+
+        let another_index = app
+            .hd_library
+            .import_bytes(sample_hd_type10_preset_for(
+                3,
+                4,
+                0x3eaa_aaab,
+                model_id,
+                key,
+            ))
+            .unwrap();
+        app.hd_effect_slot = slot_index;
+        click_hd_type10_choice(&context, &mut app, 1);
+        hd_editor_frame(&context, &mut app, vec![]);
+        assert_eq!(
+            app.hd_type10_pending,
+            Some(PendingHdType10Choice {
+                file_index: index,
+                slot: pod_preset::HdFxSlot::new(slot_index).unwrap(),
+                model_id,
+                choice: pod_preset::HdType10Choice::Choice1,
+            }),
+            "combo establishes the exact stage before selection changes"
+        );
+        app.select_hd_file(another_index);
+        assert!(app.hd_type10_pending.is_none(), "selection clears stage");
+        app.select_hd_file(index);
         app.hd_effect_slot = slot_index;
         click_hd_type10_choice(&context, &mut app, 1);
         hd_editor_frame(&context, &mut app, vec![]);
@@ -5960,8 +6018,13 @@ mod tests {
 
         let model_offset = pod_preset::H5EP_HEADER_BYTES + 0x428 + slot_index * 0x100;
         let mut changed_model = bytes.clone();
+        let other_admitted_model = if model_id == pod_preset::HD_TYPE10_CHOICE_MODEL_ID {
+            0x020a_000f
+        } else {
+            pod_preset::HD_TYPE10_CHOICE_MODEL_ID
+        };
         changed_model[model_offset..model_offset + 4]
-            .copy_from_slice(&0x020a_0014u32.to_be_bytes());
+            .copy_from_slice(&other_admitted_model.to_be_bytes());
         *app.hd_library.file_mut(index).unwrap() =
             PodPresetFile::parse(changed_model.clone()).unwrap();
         hd_editor_frame(&context, &mut app, vec![]);
@@ -5985,7 +6048,7 @@ mod tests {
             Some(PendingHdType10Choice {
                 file_index: index,
                 slot: pod_preset::HdFxSlot::new(slot_index).unwrap(),
-                model_id: pod_preset::HD_TYPE10_CHOICE_MODEL_ID,
+                model_id,
                 choice: pod_preset::HdType10Choice::Choice0,
             }),
             "actual combo interaction establishes the stage before Open"
@@ -5993,7 +6056,7 @@ mod tests {
 
         let directory = tempfile::tempdir().unwrap();
         let replacement_path = directory.path().join("replacement.5xe");
-        let replacement_bytes = sample_hd_type10_preset(2, 4, 0x3eaa_aaab);
+        let replacement_bytes = sample_hd_type10_preset_for(2, 4, 0x3eaa_aaab, model_id, key);
         std::fs::write(&replacement_path, &replacement_bytes).unwrap();
         app.dialogs = Box::new(FakeDialogs {
             pod_open: [None, Some(replacement_path)].into(),
@@ -6035,26 +6098,50 @@ mod tests {
 
     #[test]
     fn hd_revert_clears_only_pending_type10_for_the_reverted_file() {
-        let (_context, mut app) = app();
-        let bytes = sample_hd_type10_preset(5, 8, 0x3eaa_aaab);
+        for model_id in [pod_preset::HD_TYPE10_CHOICE_MODEL_ID, 0x020a_000f] {
+            hd_revert_clears_type10_pending_for(model_id);
+        }
+    }
+
+    fn hd_revert_clears_type10_pending_for(model_id: u32) {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let key = pod_preset::hd_type10_choice_key(model_id).unwrap();
+        let bytes = sample_hd_type10_preset_for(5, 8, 0x3eaa_aaab, model_id, key);
         let reverted = app.hd_library.import_bytes(bytes.clone()).unwrap();
         let unrelated = app.hd_library.import_bytes(bytes.clone()).unwrap();
+        app.select_hd_file(reverted);
+        app.pod_open = true;
+        app.hd_effect_slot = 5;
+        click_hd_type10_choice(&context, &mut app, 1);
+        hd_editor_frame(&context, &mut app, vec![]);
+        let staged = app.hd_type10_pending;
+        assert_eq!(
+            staged,
+            Some(PendingHdType10Choice {
+                file_index: reverted,
+                slot: pod_preset::HdFxSlot::new(5).unwrap(),
+                model_id,
+                choice: pod_preset::HdType10Choice::Choice1,
+            }),
+            "actual GUI interaction establishes stage before revert"
+        );
         let model_offset = pod_preset::H5EP_HEADER_BYTES + 0x428 + 5 * 0x100;
         let mut dirty_bytes = bytes.clone();
-        dirty_bytes[model_offset..model_offset + 4].copy_from_slice(&0x020a_0014u32.to_be_bytes());
+        let other_admitted_model = if model_id == pod_preset::HD_TYPE10_CHOICE_MODEL_ID {
+            0x020a_000f
+        } else {
+            pod_preset::HD_TYPE10_CHOICE_MODEL_ID
+        };
+        dirty_bytes[model_offset..model_offset + 4]
+            .copy_from_slice(&other_admitted_model.to_be_bytes());
         *app.hd_library.file_mut(reverted).unwrap() = PodPresetFile::parse(dirty_bytes).unwrap();
         assert!(app.hd_library.is_dirty(reverted));
         let slot = pod_preset::HdFxSlot::new(5).unwrap();
-        app.hd_type10_pending = Some(PendingHdType10Choice {
-            file_index: reverted,
-            slot,
-            model_id: pod_preset::HD_TYPE10_CHOICE_MODEL_ID,
-            choice: pod_preset::HdType10Choice::Choice1,
-        });
         app.hd_type9_pending = Some(PendingHdType9Choice {
             file_index: unrelated,
             slot,
-            model_id: pod_preset::HD_TYPE10_CHOICE_MODEL_ID,
+            model_id,
             choice: pod_preset::HdType9Choice::Choice1,
         });
 
@@ -6070,10 +6157,17 @@ mod tests {
 
     #[test]
     fn hd_type10_quit_apply_and_keep_editing_resolve_only_the_staged_choice() {
+        for model_id in [pod_preset::HD_TYPE10_CHOICE_MODEL_ID, 0x020a_000f] {
+            hd_type10_quit_apply_and_keep_editing_for(model_id);
+        }
+    }
+
+    fn hd_type10_quit_apply_and_keep_editing_for(model_id: u32) {
         let (context, mut app) = app();
         context.style_mut(|style| style.animation_time = 0.0);
         let slot_index = 5;
-        let bytes = sample_hd_type10_preset(slot_index, 8, 0x3eaa_aaab);
+        let key = pod_preset::hd_type10_choice_key(model_id).unwrap();
+        let bytes = sample_hd_type10_preset_for(slot_index, 8, 0x3eaa_aaab, model_id, key);
         let index = app.hd_library.import_bytes(bytes.clone()).unwrap();
         app.select_hd_file(index);
         app.pod_open = true;
@@ -6115,23 +6209,26 @@ mod tests {
         let (context, mut app) = app();
         context.style_mut(|style| style.animation_time = 0.0);
         app.pod_open = true;
-        for (bits, invalid_key) in [(0x7fc0_0001u32, false), (0x3f40_0000, true)] {
-            let mut bytes = sample_hd_type10_preset(3, 4, bits);
-            if invalid_key {
-                let row = pod_preset::H5EP_HEADER_BYTES + 0x428 + 3 * 0x100 + 0x10 + 4 * 0x14;
-                bytes[row..row + 4].fill(0);
+        for model_id in [pod_preset::HD_TYPE10_CHOICE_MODEL_ID, 0x020a_000f] {
+            let key = pod_preset::hd_type10_choice_key(model_id).unwrap();
+            for (bits, invalid_key) in [(0x7fc0_0001u32, false), (0x3f40_0000, true)] {
+                let mut bytes = sample_hd_type10_preset_for(3, 4, bits, model_id, key);
+                if invalid_key {
+                    let row = pod_preset::H5EP_HEADER_BYTES + 0x428 + 3 * 0x100 + 0x10 + 4 * 0x14;
+                    bytes[row..row + 4].fill(0);
+                }
+                let index = app.hd_library.import_bytes(bytes.clone()).unwrap();
+                app.select_hd_file(index);
+                app.hd_effect_slot = 3;
+                hd_editor_frame(&context, &mut app, vec![]);
+                click_hd_type10_choice(&context, &mut app, 1);
+                assert!(app.hd_type10_pending.is_none());
+                assert_hd_bytes_eq(
+                    app.hd_library.file(index).unwrap().as_bytes(),
+                    &bytes,
+                    "uneditable type-10 value stays untouched",
+                );
             }
-            let index = app.hd_library.import_bytes(bytes.clone()).unwrap();
-            app.select_hd_file(index);
-            app.hd_effect_slot = 3;
-            hd_editor_frame(&context, &mut app, vec![]);
-            click_hd_type10_choice(&context, &mut app, 1);
-            assert!(app.hd_type10_pending.is_none());
-            assert_hd_bytes_eq(
-                app.hd_library.file(index).unwrap().as_bytes(),
-                &bytes,
-                "uneditable type-10 value stays untouched",
-            );
         }
     }
 
