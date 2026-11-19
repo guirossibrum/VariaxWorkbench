@@ -298,6 +298,16 @@ impl Session {
         backend::set_pod_stomp_model_choice(bytes, choice)
     }
 
+    pub fn set_pod_reverb_model_choice(
+        self,
+        role: RoleKind,
+        bytes: &[u8],
+        choice: crate::pod_preset::PodReverbModelChoice,
+    ) -> Result<Vec<u8>, Rejection> {
+        self.require(role, Operation::EditPodPreset)?;
+        backend::set_pod_reverb_model_choice(bytes, choice)
+    }
+
     pub fn set_pod_cab_model_choice(
         self,
         role: RoleKind,

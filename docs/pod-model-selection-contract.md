@@ -416,6 +416,44 @@ set is pack-gated and rejects with no fallback. MIC class derives from the
 current exact CAB id. CAB changes preserve the raw MIC integer; a separate
 explicit MIC Apply changes it. Gatekeeper admitted this scoped offline operation.
 
+## Reverb model selector: conservative offline ID-only operation
+
+The offline selector exposes the 15 closed IDs 0x02040002 through 0x02040010. It accepts only FORM/L6PA, PINF layout 1, target 0x0003000a, and host profile >=0x03000000. Exactly one existing model must occupy either primary slot 0x00020006 or fallback slot 0x00050005; absent, duplicate, dual-slot, malformed, short-MINF, and unknown-current records remain uneditable. It never creates a slot or queries installation/entitlement state. After every guard, the writer clones the full buffer, changes only the first four big-endian MINF bytes, reparses and verifies the selected record, then publishes the candidate. Same-ID selection is a no-op only after all guards. No parameter reconciliation, reset/default, enable change or device operation is part of this behavior. Numeric labels are neutral IDs, not model names.
+
+An independent complete synthetic envelope fixture checks the byte write and reparse. This is a software policy fixture, not a vendor-produced tone or a claim about Java/native serialization or physical behavior.
+
+```text
+before (178 bytes):
+0000: 46 4f 52 4d 00 00 00 aa 4c 36 50 41 4a 55 4e 4b
+0010: 00 00 00 03 11 22 33 a5 50 49 4e 46 00 00 00 50
+0020: 00 00 00 01 00 03 00 0a 00 41 00 00 00 00 00 00
+0030: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0040: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0050: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0060: 00 00 00 00 00 00 00 00 03 00 00 00 5a a5 96 69
+0070: 4c 49 53 54 00 00 00 3a 50 41 54 43 4c 49 53 54
+0080: 00 00 00 2e 4d 4f 44 4c 4d 49 4e 46 00 00 00 0c
+0090: 02 04 00 02 00 02 00 06 fe 12 34 01 50 41 52 4d
+00a0: 00 00 00 03 de ad be a5 58 54 52 41 00 00 00 02
+00b0: 55 66
+
+after (178 bytes):
+0000: 46 4f 52 4d 00 00 00 aa 4c 36 50 41 4a 55 4e 4b
+0010: 00 00 00 03 11 22 33 a5 50 49 4e 46 00 00 00 50
+0020: 00 00 00 01 00 03 00 0a 00 41 00 00 00 00 00 00
+0030: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0040: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0050: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0060: 00 00 00 00 00 00 00 00 03 00 00 00 5a a5 96 69
+0070: 4c 49 53 54 00 00 00 3a 50 41 54 43 4c 49 53 54
+0080: 00 00 00 2e 4d 4f 44 4c 4d 49 4e 46 00 00 00 0c
+0090: 02 04 00 03 00 02 00 06 fe 12 34 01 50 41 52 4d
+00a0: 00 00 00 03 de ad be a5 58 54 52 41 00 00 00 02
+00b0: 55 66
+```
+
+Only offset 0x93 differs. Automated coverage exercises all 15 current IDs against all 15 requested IDs in both primary and representative fallback contexts, plus malformed and dirty-baseline rejection paths. The selector is connected through the tone, library, bundle, session and GUI.
+
 ## Delay model selector: source trace and proposed offline boundary
 
 This is a static, research-only contract for the next review. It does not add a

@@ -47,6 +47,12 @@ entitlement.
 
 ## Source-backed operations
 
+## Reverb model selector
+
+| Operation | Exact offline contract | Rejections and evidence |
+| --- | --- | --- |
+| Existing-slot Reverb model ID | Typed choice is the 15 IDs 0x02040002 through 0x02040010. FORM/L6PA, PINF layout 1, target 0x0003000a, profile >=0x03000000, and exactly one existing record across primary slot 0x00020006 and fallback slot 0x00050005 are required. Candidate clone patches only the first four big-endian MINF bytes, reparses and verifies before publication. | Unknown current/requested IDs, missing/dual/duplicate slot, missing/duplicate or 8..11-byte MINF, wrong container/target/layout/profile reject. No model creation, pack/entitlement query, parameter reconciliation, reset or defaults. Same-ID validates guards before no-op. Synthetic tests cover the full 15x15 current/requested matrix in primary and fallback contexts and byte-preserving failures. This is not vendor serializer or physical-device validation. |
+
 | Operation | Source contract | Rust operation and exact admission | Rejection and preservation |
 | --- | --- | --- | --- |
 | Open/rename a PODxt Live tone | `L6ToneFileIFFMap` recognizes FORM/L6PA, FORM/L6FS, FORM/L6AS; PINF product `0x0003000a`; name is fixed-width | Offline parser and librarian; name edit is bounded to its existing PINF name field | Wrong family/target, malformed files, and unsafe paths reject. Unrelated bytes remain copied from the retained source. New copies refuse overwrite. |

@@ -248,6 +248,7 @@ struct Workbench {
     pod_delay_model_pending: Option<(usize, pod_preset::PodDelayModelChoice)>,
     pod_mod_model_pending: Option<(usize, pod_preset::PodModModelChoice)>,
     pod_stomp_model_pending: Option<(usize, pod_preset::PodStompModelChoice)>,
+    pod_reverb_model_pending: Option<(usize, pod_preset::PodReverbModelChoice)>,
     pod_harmony_pending: Option<(usize, pod_preset::StompHarmonyControl, PendingStompHarmony)>,
     pod_delay_pending: Option<(usize, PendingDelayEdit)>,
     pod_mod_pending: Option<(usize, PendingModEdit)>,
@@ -307,6 +308,10 @@ struct Workbench {
     pod_stomp_model_combo: Option<Rect>,
     #[cfg(test)]
     pod_stomp_model_options: HashMap<u32, Rect>,
+    #[cfg(test)]
+    pod_reverb_model_combo: Option<Rect>,
+    #[cfg(test)]
+    pod_reverb_model_options: HashMap<u32, Rect>,
     #[cfg(test)]
     pod_mod_note_options: HashMap<pod_preset::ModNoteChoice, Rect>,
     #[cfg(test)]
@@ -381,6 +386,7 @@ impl Workbench {
             pod_delay_model_pending: None,
             pod_mod_model_pending: None,
             pod_stomp_model_pending: None,
+            pod_reverb_model_pending: None,
             pod_harmony_pending: None,
             pod_delay_pending: None,
             pod_mod_pending: None,
@@ -440,6 +446,10 @@ impl Workbench {
             pod_stomp_model_combo: None,
             #[cfg(test)]
             pod_stomp_model_options: HashMap::new(),
+            #[cfg(test)]
+            pod_reverb_model_combo: None,
+            #[cfg(test)]
+            pod_reverb_model_options: HashMap::new(),
             #[cfg(test)]
             pod_mod_note_options: HashMap::new(),
             #[cfg(test)]
@@ -1586,6 +1596,7 @@ impl Workbench {
         self.pod_delay_model_pending = None;
         self.pod_mod_model_pending = None;
         self.pod_stomp_model_pending = None;
+        self.pod_reverb_model_pending = None;
         self.pod_harmony_pending = None;
         self.pod_delay_pending = None;
         self.pod_mod_pending = None;
@@ -1929,6 +1940,8 @@ impl Workbench {
             self.pod_harmony2_choices.clear();
             self.pod_stomp_model_combo = None;
             self.pod_stomp_model_options.clear();
+            self.pod_reverb_model_combo = None;
+            self.pod_reverb_model_options.clear();
         }
         let mut open = true;
         egui::Window::new("Offline PODxt Live tones")
@@ -1950,6 +1963,61 @@ impl Workbench {
                 ui.label(pod_preset::PAYLOADS_NOT_DECODED);
                 ui.label(&self.pod_message);
                 ui.separator();
+                let reverb_model_state = self.pod_selected.and_then(|index| {
+                    self.pod_library.tone(index).and_then(|tone| {
+                        (tone.container() == pod_preset::ContainerKind::L6pa).then(|| {
+                            let ids: Vec<_> = tone.models().iter()
+                                .filter(|model| matches!(model.slot, pod_preset::REVERB_SLOT | pod_preset::REVERB_FALLBACK_SLOT))
+                                .map(|model| model.model_id).collect();
+                            (!ids.is_empty()).then_some((index, ids.first().copied(), ids.len()))
+                        }).flatten()
+                    })
+                });
+                if let Some((index, current, slot_count)) = reverb_model_state {
+                    if slot_count == 1 && current.and_then(pod_preset::PodReverbModelChoice::from_model_id).is_some() {
+                        let mut selected = self.pod_reverb_model_pending.filter(|(i, _)| *i == index).map(|(_, choice)| Some(choice))
+                            .or_else(|| current.and_then(pod_preset::PodReverbModelChoice::from_model_id).map(Some)).unwrap_or(None);
+                        let selected_text = selected.map(pod_preset::PodReverbModelChoice::numeric_label)
+                            .unwrap_or_else(|| "Select model".into());
+                        let mut changed = None;
+                        let combo = ui.horizontal(|ui| {
+                            ui.label(format!("Reverb ID · current {:08x}", current.unwrap()));
+                            let combo = egui::ComboBox::from_id_salt("pod-reverb-model-choice").selected_text(selected_text).show_ui(ui, |ui| {
+                                for id in pod_preset::PodReverbModelChoice::MODEL_IDS {
+                                    let choice = pod_preset::PodReverbModelChoice::from_model_id(id).expect("listed Reverb model id is admitted");
+                                    let response = ui.selectable_value(&mut selected, Some(choice), format!("{id:08x}"));
+                                    #[cfg(test)] self.pod_reverb_model_options.insert(id, response.rect);
+                                    if response.changed() { changed = Some(choice); }
+                                }
+                            });
+                            combo.response.rect
+                        });
+                        #[cfg(test)] { self.pod_reverb_model_combo = Some(combo.inner); }
+                        #[cfg(not(test))] let _ = combo;
+                        if let Some(choice) = changed { self.pod_reverb_model_pending = Some((index, choice)); }
+                        if let Some((pending_index, choice)) = self.pod_reverb_model_pending.filter(|(i, _)| *i == index) {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("Pending {} (not applied)", choice.numeric_label()));
+                                let apply = ui.button("Apply Reverb model");
+                                #[cfg(test)] self.pod_buttons.insert("pod-reverb-model-apply", apply.rect);
+                                if apply.clicked() {
+                                    match self.apply_pod_reverb_model_choice(pending_index, choice) {
+                                        Ok(changed) => {
+                                            if changed { self.pod_reverb_model_pending = None; }
+                                            self.pod_message = if changed { "Applied the Reverb model ID offline; stored parameters were retained. Nothing was sent.".into() } else { "The Reverb model ID already matched; no bytes or staging changed.".into() };
+                                        }
+                                        Err(error) => self.pod_message = error.detail(),
+                                    }
+                                }
+                                let discard = ui.button("Discard");
+                                #[cfg(test)] self.pod_buttons.insert("pod-reverb-model-discard", discard.rect);
+                                if discard.clicked() { self.pod_reverb_model_pending = None; }
+                            });
+                        }
+                    } else {
+                        ui.label(format!("Reverb ID · current {} (uneditable: requires one recognized primary or fallback model)", current.map_or_else(|| "unavailable".into(), |id| format!("{id:08x}"))));
+                    }
+                }
                 let membership_selection = self.pod_selected.and_then(|index| {
                     self.pod_bundle.as_ref().and_then(|bundle| {
                         let (bank, preset) = bundle.entry_location(index)?;
@@ -2056,6 +2124,7 @@ impl Workbench {
                             self.pod_delay_model_pending = None;
                             self.pod_mod_model_pending = None;
                             self.pod_stomp_model_pending = None;
+                            self.pod_reverb_model_pending = None;
                             self.pod_harmony_pending = None;
                             self.pod_delay_pending = None;
                             self.pod_mod_pending = None;
@@ -3412,6 +3481,7 @@ impl Workbench {
                                 self.pod_delay_model_pending = None;
                                 self.pod_mod_model_pending = None;
                                 self.pod_stomp_model_pending = None;
+                                self.pod_reverb_model_pending = None;
                                 self.pod_delay_pending = None;
                                 self.pod_mod_pending = None;
                                 self.pod_harmony_pending = None;
@@ -3583,6 +3653,27 @@ impl Workbench {
         {
             self.pod_harmony_pending = None;
         }
+        Ok(true)
+    }
+
+    fn apply_pod_reverb_model_choice(
+        &mut self,
+        index: usize,
+        choice: pod_preset::PodReverbModelChoice,
+    ) -> Result<bool, pod_preset::ToneError> {
+        let current = self
+            .pod_library
+            .tone(index)
+            .ok_or_else(|| pod_preset::ToneError::format("POD selection is out of range"))?
+            .as_bytes()
+            .to_vec();
+        let replacement = Session::initial_rig()
+            .set_pod_reverb_model_choice(RoleKind::Pod, &current, choice)
+            .map_err(|error| pod_preset::ToneError::format(rejection_text(&error)))?;
+        if replacement == current {
+            return Ok(false);
+        }
+        self.replace_pod_tone(index, replacement)?;
         Ok(true)
     }
 
@@ -4886,6 +4977,17 @@ mod tests {
         chunk(b"FORM", &data)
     }
 
+    fn sample_reverb_model_tone(model_id: u32, slot: u32) -> Vec<u8> {
+        let mut bytes = sample_stomp_model_tone(0x0205_0000);
+        let old_id = 0x0205_0000u32.to_be_bytes();
+        let id_offset = bytes.windows(4).position(|word| word == old_id).unwrap();
+        bytes[id_offset..id_offset + 4].copy_from_slice(&model_id.to_be_bytes());
+        let old_slot = pod_preset::STOMP_SLOT.to_be_bytes();
+        let slot_offset = bytes.windows(4).position(|word| word == old_slot).unwrap();
+        bytes[slot_offset..slot_offset + 4].copy_from_slice(&slot.to_be_bytes());
+        bytes
+    }
+
     fn sample_pod_bundle(tones: &[Vec<u8>]) -> Vec<u8> {
         fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
             let mut output = id.to_vec();
@@ -5647,6 +5749,18 @@ mod tests {
         click_pod_at_tall(context, app, combo.center());
         recording_frame_tall(context, app, vec![]);
         let option = app.pod_stomp_model_options[&model_id];
+        click_pod_at_tall(context, app, option.center());
+        recording_frame_tall(context, app, vec![]);
+    }
+
+    fn choose_reverb_model_popup(context: &egui::Context, app: &mut Workbench, model_id: u32) {
+        recording_frame_tall(context, app, vec![]);
+        let combo = app
+            .pod_reverb_model_combo
+            .expect("Reverb model selector is rendered");
+        click_pod_at_tall(context, app, combo.center());
+        recording_frame_tall(context, app, vec![]);
+        let option = app.pod_reverb_model_options[&model_id];
         click_pod_at_tall(context, app, option.center());
         recording_frame_tall(context, app, vec![]);
     }
@@ -7472,6 +7586,92 @@ mod tests {
             assert_eq!(app.pod_mod_model_pending, None);
             app.pod_delay_pending = None;
         }
+    }
+
+    #[test]
+    fn reverb_model_gui_apply_and_discard_preserve_other_stages_and_bundle_baseline() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let original = sample_reverb_model_tone(0x0204_0002, pod_preset::REVERB_FALLBACK_SLOT);
+        let index = app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_selected = Some(index);
+        recording_frame_tall(&context, &mut app, vec![]);
+        choose_reverb_model_popup(&context, &mut app, 0x0204_0003);
+        assert_eq!(
+            app.pod_reverb_model_pending.unwrap().1.model_id(),
+            0x0204_0003
+        );
+        assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), original);
+        app.pod_delay_pending = Some((index, PendingDelayEdit::TimeMs(350.0)));
+        app.pod_mod_pending = Some((index, PendingModEdit::SpeedHz(2.0)));
+        app.pod_stomp_model_pending = Some((
+            index,
+            pod_preset::PodStompModelChoice::try_from(0x0205_0000).unwrap(),
+        ));
+        choose_reverb_model_popup(&context, &mut app, 0x0204_0002);
+        assert_eq!(
+            app.pod_reverb_model_pending.unwrap().1.model_id(),
+            0x0204_0002
+        );
+        click_pod_button_tall(&context, &mut app, "pod-reverb-model-apply");
+        assert_eq!(
+            app.pod_reverb_model_pending.unwrap().1.model_id(),
+            0x0204_0002
+        );
+        assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), original);
+        assert!(app.pod_delay_pending.is_some() && app.pod_mod_pending.is_some());
+        click_pod_button_tall(&context, &mut app, "pod-reverb-model-discard");
+        assert_eq!(app.pod_reverb_model_pending, None);
+        assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), original);
+
+        choose_reverb_model_popup(&context, &mut app, 0x0204_0003);
+        click_pod_button_tall(&context, &mut app, "pod-reverb-model-apply");
+        assert_eq!(
+            app.pod_library.tone(index).unwrap().reverb_model_id(),
+            Some(0x0204_0003)
+        );
+        assert_eq!(app.pod_reverb_model_pending, None);
+        app.pod_library.revert_unsaved(index).unwrap();
+        app.refresh_selected_pod_name();
+        assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), original);
+
+        app.pod_delay_pending = Some((index, PendingDelayEdit::TimeMs(350.0)));
+        app.pod_mod_pending = Some((index, PendingModEdit::SpeedHz(2.0)));
+        app.pod_stomp_model_pending = Some((
+            index,
+            pod_preset::PodStompModelChoice::try_from(0x0205_0000).unwrap(),
+        ));
+        choose_reverb_model_popup(&context, &mut app, 0x0204_0003);
+        let bundle =
+            pod_preset::PodBundleLibrary::parse(sample_pod_bundle(std::slice::from_ref(&original)))
+                .unwrap();
+        let bundle_baseline = bundle.as_bytes().to_vec();
+        app.pod_bundle = Some(bundle);
+        click_pod_button_tall(&context, &mut app, "pod-reverb-model-apply");
+        let edited = app.pod_library.tone(index).unwrap();
+        assert_eq!(edited.reverb_model_id(), Some(0x0204_0003));
+        assert!(app.pod_library.is_dirty(index));
+        assert_eq!(app.pod_reverb_model_pending, None);
+        assert_eq!(
+            app.pod_delay_pending,
+            Some((index, PendingDelayEdit::TimeMs(350.0)))
+        );
+        assert_eq!(
+            app.pod_mod_pending,
+            Some((index, PendingModEdit::SpeedHz(2.0)))
+        );
+        assert_eq!(
+            app.pod_stomp_model_pending.unwrap().1.model_id(),
+            0x0205_0000
+        );
+        let bundle = app.pod_bundle.as_ref().unwrap();
+        assert_ne!(bundle.as_bytes(), bundle_baseline);
+        let (bank, preset) = bundle.entry_location(index).unwrap();
+        assert_eq!(
+            bundle.tone(bank, preset).unwrap().reverb_model_id(),
+            Some(0x0204_0003)
+        );
     }
 
     #[test]

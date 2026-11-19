@@ -389,6 +389,8 @@ impl TryFrom<u32> for PodModModelChoice {
 }
 /// PODxt Live Reverb model slot and source-listed provider profiles.
 pub const REVERB_SLOT: u32 = 0x0002_0006;
+/// Alternate persisted slot used by PODxt Reverb fallback tones.
+pub const REVERB_FALLBACK_SLOT: u32 = 0x0005_0005;
 pub const REVERB_CONTROL_MODEL_IDS: [u32; 15] = [
     0x0204_0002,
     0x0204_0003,
@@ -536,6 +538,33 @@ impl PodStompModelChoice {
 impl TryFrom<u32> for PodStompModelChoice {
     type Error = u32;
 
+    fn try_from(id: u32) -> Result<Self, Self::Error> {
+        Self::from_model_id(id).ok_or(id)
+    }
+}
+
+/// Closed set of Reverb IDs admitted by the conservative offline selector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PodReverbModelChoice(u32);
+
+impl PodReverbModelChoice {
+    pub const MODEL_IDS: [u32; 15] = REVERB_CONTROL_MODEL_IDS;
+
+    pub const fn model_id(self) -> u32 {
+        self.0
+    }
+
+    pub fn from_model_id(id: u32) -> Option<Self> {
+        Self::MODEL_IDS.contains(&id).then_some(Self(id))
+    }
+
+    pub fn numeric_label(self) -> String {
+        format!("Reverb {:08x}", self.0)
+    }
+}
+
+impl TryFrom<u32> for PodReverbModelChoice {
+    type Error = u32;
     fn try_from(id: u32) -> Result<Self, Self::Error> {
         Self::from_model_id(id).ok_or(id)
     }
@@ -2498,10 +2527,97 @@ impl PodTone {
     }
 
     pub fn reverb_model_id(&self) -> Option<u32> {
+        let matches: Vec<_> = self
+            .models
+            .iter()
+            .filter(|model| matches!(model.slot, REVERB_SLOT | REVERB_FALLBACK_SLOT))
+            .collect();
+        (matches.len() == 1).then(|| matches[0].model_id)
+    }
+
+    /// Number of persisted primary and fallback Reverb model records.
+    pub fn reverb_model_slot_count(&self) -> usize {
         self.models
             .iter()
-            .find(|model| model.slot == REVERB_SLOT)
-            .map(|model| model.model_id)
+            .filter(|model| matches!(model.slot, REVERB_SLOT | REVERB_FALLBACK_SLOT))
+            .count()
+    }
+
+    /// Change only the MINF ID word of one existing primary or fallback Reverb.
+    /// The input must satisfy the conservative PODxt profile and closed ID set.
+    pub fn set_reverb_model_choice(
+        &mut self,
+        choice: PodReverbModelChoice,
+    ) -> Result<(), ToneError> {
+        if self.container != ContainerKind::L6pa {
+            return Err(ToneError::format(
+                "Reverb model selection requires a FORM/L6PA tone",
+            ));
+        }
+        if self.device_id != PODXT_LIVE_TONE_ID {
+            return Err(ToneError::format(
+                "Reverb model selection requires the PODxt Live PINF target",
+            ));
+        }
+        if self.device_version < PODXT_LIVE_HOST_MIN_VERSION {
+            return Err(ToneError::format(
+                "Reverb model selection requires the PODxt Live host profile minimum 3.00",
+            ));
+        }
+        let matches: Vec<_> = self
+            .models
+            .iter()
+            .enumerate()
+            .filter(|(_, model)| matches!(model.slot, REVERB_SLOT | REVERB_FALLBACK_SLOT))
+            .map(|(index, _)| index)
+            .collect();
+        let [model_index] = matches.as_slice() else {
+            return Err(ToneError::format(
+                "Reverb model selection requires exactly one existing primary or fallback model",
+            ));
+        };
+        let model_index = *model_index;
+        let model = &self.models[model_index];
+        if !REVERB_CONTROL_MODEL_IDS.contains(&model.model_id) {
+            return Err(ToneError::format(format!(
+                "unknown current Reverb model id {:08x}",
+                model.model_id
+            )));
+        }
+        let slot = model.slot;
+        let range = self
+            .model_minfo_ranges
+            .get(model_index)
+            .cloned()
+            .ok_or_else(|| ToneError::format("Reverb model MINF source range is unavailable"))?;
+        if range.end > self.bytes.len()
+            || range
+                .start
+                .checked_add(12)
+                .is_none_or(|end| end > range.end)
+        {
+            return Err(ToneError::format(
+                "Reverb model selection requires an existing MINF body of at least 12 bytes",
+            ));
+        }
+        let requested = choice.model_id();
+        if model.model_id == requested {
+            return Ok(());
+        }
+        let mut candidate = self.bytes.clone();
+        candidate[range.start..range.start + 4].copy_from_slice(&requested.to_be_bytes());
+        let parsed = Self::parse(candidate)?;
+        if parsed
+            .models
+            .get(model_index)
+            .is_none_or(|model| model.model_id != requested || model.slot != slot)
+        {
+            return Err(ToneError::format(
+                "Reverb model candidate did not reparse to the requested model",
+            ));
+        }
+        *self = parsed;
+        Ok(())
     }
 
     pub fn delay_model_id(&self) -> Option<u32> {
@@ -4255,6 +4371,18 @@ impl Library {
         entry.tone.set_stomp_model_choice(choice)
     }
 
+    pub fn set_reverb_model_choice(
+        &mut self,
+        index: usize,
+        choice: PodReverbModelChoice,
+    ) -> Result<(), ToneError> {
+        let entry = self
+            .tones
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
+        entry.tone.set_reverb_model_choice(choice)
+    }
+
     pub fn set_cab_model_choice(
         &mut self,
         index: usize,
@@ -5170,6 +5298,14 @@ impl PodBundleLibrary {
         choice: PodStompModelChoice,
     ) -> Result<(), ToneError> {
         self.edit_entry(index, |tone| tone.set_stomp_model_choice(choice))
+    }
+
+    pub fn set_reverb_model_choice(
+        &mut self,
+        index: usize,
+        choice: PodReverbModelChoice,
+    ) -> Result<(), ToneError> {
+        self.edit_entry(index, |tone| tone.set_reverb_model_choice(choice))
     }
 
     pub fn set_cab_model_choice(
@@ -14376,6 +14512,308 @@ pub(crate) mod tests {
         );
         bundle.revert().unwrap();
         assert_eq!(bundle.as_bytes(), before);
+    }
+
+    #[test]
+    fn reverb_model_id_selector_is_exhaustive_and_changes_only_minf_id() {
+        assert_eq!(
+            PodReverbModelChoice::MODEL_IDS,
+            [
+                0x0204_0002,
+                0x0204_0003,
+                0x0204_0004,
+                0x0204_0005,
+                0x0204_0006,
+                0x0204_0007,
+                0x0204_0008,
+                0x0204_0009,
+                0x0204_000a,
+                0x0204_000b,
+                0x0204_000c,
+                0x0204_000d,
+                0x0204_000e,
+                0x0204_000f,
+                0x0204_0010,
+            ]
+        );
+        for slot in [REVERB_SLOT, REVERB_FALLBACK_SLOT] {
+            for current in PodReverbModelChoice::MODEL_IDS {
+                let original = custom_tone(
+                    ContainerKind::L6pa,
+                    &[BuiltModel {
+                        slot,
+                        model_id: current,
+                        tail: &[0xfe, 0x12, 0x34, 0x01],
+                        parameters: &[&[0xde, 0xad, 0xbe]],
+                    }],
+                );
+                for requested in PodReverbModelChoice::MODEL_IDS {
+                    let mut tone = PodTone::parse(original.clone()).unwrap();
+                    let range = tone.model_minfo_ranges[0].clone();
+                    tone.set_reverb_model_choice(
+                        PodReverbModelChoice::try_from(requested).unwrap(),
+                    )
+                    .unwrap();
+                    let mut expected = original.clone();
+                    expected[range.start..range.start + 4]
+                        .copy_from_slice(&requested.to_be_bytes());
+                    assert_eq!(
+                        tone.as_bytes(),
+                        expected,
+                        "slot={slot:08x} current={current:08x} requested={requested:08x}"
+                    );
+                    let reopened = PodTone::parse(tone.as_bytes().to_vec()).unwrap();
+                    assert_eq!(reopened.reverb_model_id(), Some(requested));
+                    assert_eq!(reopened.models()[0].slot, slot);
+                }
+            }
+        }
+        assert!(PodReverbModelChoice::try_from(0x0204_0001).is_err());
+        assert!(PodReverbModelChoice::try_from(0x0204_0011).is_err());
+    }
+
+    #[test]
+    fn reverb_selector_matches_independent_literal_complete_buffer_fixture() {
+        fn vector(text: &str, marker: &str, stop: &str) -> Vec<u8> {
+            text.split_once(marker)
+                .unwrap()
+                .1
+                .lines()
+                .take_while(|line| !line.starts_with(stop))
+                .filter_map(|line| line.split_once(':').map(|(_, bytes)| bytes))
+                .flat_map(str::split_whitespace)
+                .map(|byte| u8::from_str_radix(byte, 16).unwrap())
+                .collect()
+        }
+        let contract = include_str!("../docs/pod-model-selection-contract.md")
+            .split_once("## Reverb model selector: conservative offline ID-only operation")
+            .unwrap()
+            .1;
+        let before = vector(contract, "before (178 bytes):", "after (178 bytes):");
+        let expected = vector(contract, "after (178 bytes):", "Only offset");
+        assert_eq!(before.len(), 178);
+        assert_eq!(expected.len(), 178);
+        let mut tone = PodTone::parse(before).unwrap();
+        tone.set_reverb_model_choice(PodReverbModelChoice::try_from(0x0204_0003).unwrap())
+            .unwrap();
+        assert_eq!(tone.as_bytes(), expected);
+        assert_eq!(
+            PodTone::parse(expected).unwrap().reverb_model_id(),
+            Some(0x0204_0003)
+        );
+    }
+
+    #[test]
+    fn reverb_model_selector_rejects_ambiguous_unknown_and_short_models_without_mutation() {
+        let choice = PodReverbModelChoice::try_from(0x0204_0003).unwrap();
+        let absent = custom_tone(ContainerKind::L6pa, &[]);
+        let both = custom_tone(
+            ContainerKind::L6pa,
+            &[
+                BuiltModel {
+                    slot: REVERB_SLOT,
+                    model_id: 0x0204_0002,
+                    tail: &[1; 4],
+                    parameters: &[],
+                },
+                BuiltModel {
+                    slot: REVERB_FALLBACK_SLOT,
+                    model_id: 0x0204_0002,
+                    tail: &[2; 4],
+                    parameters: &[],
+                },
+            ],
+        );
+        let duplicate = custom_tone(
+            ContainerKind::L6pa,
+            &[
+                BuiltModel {
+                    slot: REVERB_SLOT,
+                    model_id: 0x0204_0002,
+                    tail: &[1; 4],
+                    parameters: &[],
+                },
+                BuiltModel {
+                    slot: REVERB_SLOT,
+                    model_id: 0x0204_0002,
+                    tail: &[2; 4],
+                    parameters: &[],
+                },
+            ],
+        );
+        let unknown = custom_tone(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: REVERB_SLOT,
+                model_id: 0xdead_beef,
+                tail: &[1; 4],
+                parameters: &[],
+            }],
+        );
+        assert!(PodTone::parse(duplicate).is_err());
+        for input in [absent, both, unknown] {
+            let mut tone = PodTone::parse(input).unwrap();
+            let before = tone.as_bytes().to_vec();
+            assert!(tone.set_reverb_model_choice(choice).is_err());
+            assert_eq!(tone.as_bytes(), before);
+        }
+        for tail_len in 0..4 {
+            let input = custom_tone(
+                ContainerKind::L6pa,
+                &[BuiltModel {
+                    slot: REVERB_SLOT,
+                    model_id: 0x0204_0002,
+                    tail: &[0xaa, 0xbb, 0xcc][..tail_len],
+                    parameters: &[],
+                }],
+            );
+            let mut tone = PodTone::parse(input).unwrap();
+            let before = tone.as_bytes().to_vec();
+            assert!(
+                tone.set_reverb_model_choice(choice).is_err(),
+                "MINF length {}",
+                8 + tail_len
+            );
+            assert_eq!(tone.as_bytes(), before);
+        }
+        let valid = custom_tone(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: REVERB_SLOT,
+                model_id: 0x0204_0002,
+                tail: &[1; 4],
+                parameters: &[],
+            }],
+        );
+        let malformed_minf = alter_first_model_minf(&valid, true);
+        assert!(PodTone::parse(malformed_minf).is_err());
+        assert!(PodTone::parse(alter_first_model_minf(&valid, false)).is_err());
+    }
+
+    #[test]
+    fn reverb_model_selector_enforces_target_container_and_profile_before_same_id_noop() {
+        let choice = PodReverbModelChoice::try_from(0x0204_0002).unwrap();
+        for (kind, target, version) in [
+            (
+                ContainerKind::L6pa,
+                PODXT_LIVE_TONE_ID + 1,
+                PODXT_LIVE_HOST_MIN_VERSION,
+            ),
+            (
+                ContainerKind::L6pa,
+                PODXT_LIVE_TONE_ID,
+                PODXT_LIVE_HOST_MIN_VERSION - 1,
+            ),
+            (
+                ContainerKind::L6fs,
+                PODXT_LIVE_TONE_ID,
+                PODXT_LIVE_HOST_MIN_VERSION,
+            ),
+        ] {
+            let input = fixture(kind, target, version, &[(REVERB_SLOT, choice.model_id())]);
+            let Ok(mut tone) = PodTone::parse(input) else {
+                continue;
+            };
+            let before = tone.as_bytes().to_vec();
+            assert!(tone.set_reverb_model_choice(choice).is_err());
+            assert_eq!(tone.as_bytes(), before);
+        }
+        let input = fixture(
+            ContainerKind::L6pa,
+            PODXT_LIVE_TONE_ID,
+            PODXT_LIVE_HOST_MIN_VERSION,
+            &[(REVERB_SLOT, choice.model_id())],
+        );
+        let mut tone = PodTone::parse(input.clone()).unwrap();
+        let before = tone.as_bytes().to_vec();
+        tone.set_reverb_model_choice(choice).unwrap();
+        assert_eq!(tone.as_bytes(), before);
+        let mut wrong_layout = input;
+        let pinf = find_chunk_data(&wrong_layout, b"PINF");
+        wrong_layout[pinf..pinf + 4].copy_from_slice(&2u32.to_be_bytes());
+        assert!(PodTone::parse(wrong_layout).is_err());
+    }
+
+    #[test]
+    fn reverb_model_selector_library_and_bundle_preserve_dirty_baselines() {
+        let original = fixture(
+            ContainerKind::L6pa,
+            PODXT_LIVE_TONE_ID,
+            PODXT_LIVE_HOST_MIN_VERSION,
+            &[(REVERB_FALLBACK_SLOT, 0x0204_0002)],
+        );
+        let choice = PodReverbModelChoice::try_from(0x0204_0003).unwrap();
+        let mut library = Library::default();
+        let index = library.import_bytes(original.clone()).unwrap();
+        library.set_reverb_model_choice(index, choice).unwrap();
+        assert!(library.is_dirty(index));
+        assert_eq!(
+            library.tone(index).unwrap().reverb_model_id(),
+            Some(choice.model_id())
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("reverb-choice.l6t");
+        library.tone(index).unwrap().save_copy(&path).unwrap();
+        let saved = std::fs::read(&path).unwrap();
+        assert_eq!(PodTone::parse(saved.clone()).unwrap().as_bytes(), saved);
+        assert!(library.tone(index).unwrap().save_copy(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), saved);
+        library.revert_unsaved(index).unwrap();
+        assert_eq!(library.tone(index).unwrap().as_bytes(), original);
+        assert!(!library.is_dirty(index));
+
+        let mut bundle = PodBundleLibrary::parse(bundle_with_tone(&original)).unwrap();
+        let before = bundle.as_bytes().to_vec();
+        bundle.set_reverb_model_choice(0, choice).unwrap();
+        assert!(bundle.is_dirty());
+        let (bank, preset) = bundle.entry_location(0).unwrap();
+        assert_eq!(
+            bundle.tone(bank, preset).unwrap().reverb_model_id(),
+            Some(choice.model_id())
+        );
+        bundle.revert().unwrap();
+        assert_eq!(bundle.as_bytes(), before);
+        assert!(!bundle.is_dirty());
+
+        let unknown = custom_tone(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: REVERB_FALLBACK_SLOT,
+                model_id: 0xdead_beef,
+                tail: &[0x55; 4],
+                parameters: &[],
+            }],
+        );
+        library.set_reverb_model_choice(index, choice).unwrap();
+        library.replace(index, unknown.clone()).unwrap();
+        let failed_bytes = library.tone(index).unwrap().as_bytes().to_vec();
+        assert!(library.is_dirty(index));
+        assert!(library.set_reverb_model_choice(index, choice).is_err());
+        assert_eq!(library.tone(index).unwrap().as_bytes(), failed_bytes);
+        assert_eq!(
+            library.tone(index).unwrap().reverb_model_id(),
+            Some(0xdead_beef)
+        );
+        assert!(library.is_dirty(index));
+        library.revert_unsaved(index).unwrap();
+        assert_eq!(library.tone(index).unwrap().as_bytes(), original);
+        assert!(!library.is_dirty(index));
+
+        bundle.set_reverb_model_choice(0, choice).unwrap();
+        bundle.replace_entry(0, unknown).unwrap();
+        let failed_bytes = bundle.as_bytes().to_vec();
+        let (bank, preset) = bundle.entry_location(0).unwrap();
+        assert!(bundle.is_dirty());
+        assert!(bundle.set_reverb_model_choice(0, choice).is_err());
+        assert_eq!(bundle.as_bytes(), failed_bytes);
+        assert_eq!(
+            bundle.tone(bank, preset).unwrap().reverb_model_id(),
+            Some(0xdead_beef)
+        );
+        assert!(bundle.is_dirty());
+        bundle.revert().unwrap();
+        assert_eq!(bundle.as_bytes(), before);
+        assert!(!bundle.is_dirty());
     }
 
     fn edited_name_too_long(tone: &PodTone) -> bool {
