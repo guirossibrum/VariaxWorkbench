@@ -5784,25 +5784,29 @@ mod tests {
             + 0x10
             + type9_row * 0x14
             + 4;
+        let staged_type10 = app.hd_type10_pending;
+        assert!(staged_type10.is_some());
+        click_hd_editor(&context, &mut app, "apply-hd-type9-choice");
+        let after9 = app.hd_library.file(index).unwrap().as_bytes().to_vec();
+        assert_eq!(&after9[type9_value..type9_value + 4], &[0x3f, 0, 0, 0]);
+        assert_eq!(
+            &after9[type10_value..type10_value + 4],
+            &original[type10_value..type10_value + 4],
+            "applying type 9 changes only its value word"
+        );
+        assert_eq!(
+            app.hd_type10_pending, staged_type10,
+            "applying type 9 preserves the exact staged type-10 value"
+        );
+
         click_hd_editor(&context, &mut app, "apply-hd-type10-choice");
-        let after10 = app.hd_library.file(index).unwrap().as_bytes();
+        let after10 = app.hd_library.file(index).unwrap().as_bytes().to_vec();
+        assert_eq!(&after10[type9_value..type9_value + 4], &[0x3f, 0, 0, 0]);
         assert_eq!(
             &after10[type10_value..type10_value + 4],
             &[0x3f, 0x80, 0, 0]
         );
-        assert_eq!(
-            &after10[type9_value..type9_value + 4],
-            &original[type9_value..type9_value + 4]
-        );
         assert!(app.hd_type10_pending.is_none());
-        assert!(
-            app.hd_type9_pending.is_some(),
-            "applying type 10 must retain type-9 stage"
-        );
-        click_hd_editor(&context, &mut app, "apply-hd-type9-choice");
-        let after9 = app.hd_library.file(index).unwrap().as_bytes().to_vec();
-        assert_eq!(&after9[type9_value..type9_value + 4], &[0x3f, 0, 0, 0]);
-        assert_eq!(&after9[type10_value..type10_value + 4], &[0x3f, 0x80, 0, 0]);
         assert!(app.hd_type9_pending.is_none());
 
         click_hd_type10_choice(&context, &mut app, 0);
@@ -5848,13 +5852,17 @@ mod tests {
             ..Default::default()
         });
         click_hd_editor(&context, &mut app, "save-hd-copy");
-        assert_hd_bytes_eq(&std::fs::read(&copy).unwrap(), &after9, "type-10 copy save");
+        assert_hd_bytes_eq(
+            &std::fs::read(&copy).unwrap(),
+            &after10,
+            "type-10 copy save",
+        );
         assert!(!app.hd_library.is_dirty(index));
         click_hd_editor(&context, &mut app, "load-hd-file");
         let reopened = app.hd_selected.expect("saved type-10 copy reopens");
         assert_hd_bytes_eq(
             app.hd_library.file(reopened).unwrap().as_bytes(),
-            &after9,
+            &after10,
             "type-10 copy reopen",
         );
         app.select_hd_file(index);
@@ -5865,7 +5873,7 @@ mod tests {
         let staged = app
             .hd_type10_pending
             .expect("second type-10 choice is staged");
-        let mut bad_marker = after9.clone();
+        let mut bad_marker = after10.clone();
         let marker = pod_preset::H5EP_HEADER_BYTES
             + 0x428
             + slot_index * 0x100
@@ -5888,7 +5896,7 @@ mod tests {
         app.hd_library.revert_unsaved(index).unwrap();
         assert_hd_bytes_eq(
             app.hd_library.file(index).unwrap().as_bytes(),
-            &after9,
+            &after10,
             "type-10 revert returns to saved baseline",
         );
         assert!(
@@ -5955,21 +5963,63 @@ mod tests {
             "same-entry model change clears both stale stages without editing bytes",
         );
 
+        app.hd_library.revert_unsaved(index).unwrap();
+        app.select_hd_file(index);
+        app.hd_effect_slot = slot_index;
+        hd_editor_frame(&context, &mut app, vec![]);
         click_hd_type10_choice(&context, &mut app, 0);
         hd_editor_frame(&context, &mut app, vec![]);
+        let staged = app.hd_type10_pending;
+        assert_eq!(
+            staged,
+            Some(PendingHdType10Choice {
+                file_index: index,
+                slot: pod_preset::HdFxSlot::new(slot_index).unwrap(),
+                model_id: pod_preset::HD_TYPE10_CHOICE_MODEL_ID,
+                choice: pod_preset::HdType10Choice::Choice0,
+            }),
+            "actual combo interaction establishes the stage before Open"
+        );
+
+        let directory = tempfile::tempdir().unwrap();
+        let replacement_path = directory.path().join("replacement.5xe");
+        let replacement_bytes = sample_hd_type10_preset(2, 4, 0x3eaa_aaab);
+        std::fs::write(&replacement_path, &replacement_bytes).unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [None, Some(replacement_path)].into(),
+            ..Default::default()
+        });
+        click_hd_editor(&context, &mut app, "load-hd-file");
+        assert_eq!(
+            app.hd_selected,
+            Some(index),
+            "cancel keeps the selected entry"
+        );
+        assert_eq!(
+            app.hd_type10_pending, staged,
+            "cancel keeps the established stage"
+        );
+        assert!(app.pod_message.contains("Load cancelled"));
+
+        click_hd_editor(&context, &mut app, "load-hd-file");
         let replacement = app
-            .hd_library
-            .import_bytes(sample_hd_type10_preset(2, 4, 0x3eaa_aaab))
-            .unwrap();
-        app.select_hd_file(replacement);
+            .hd_selected
+            .expect("successful Open selects imported file");
+        assert_ne!(replacement, index);
         assert!(
             app.hd_type10_pending.is_none(),
-            "file replacement clears stale stage"
+            "successful Open clears stale stage"
         );
         assert_hd_bytes_eq(
             app.hd_library.file(index).unwrap().as_bytes(),
-            &changed_model,
-            "replacing selection leaves the prior entry unchanged",
+            &bytes,
+            "successful Open leaves the previously staged source bytes/baseline intact",
+        );
+        assert!(!app.hd_library.is_dirty(index));
+        assert_hd_bytes_eq(
+            app.hd_library.file(replacement).unwrap().as_bytes(),
+            &replacement_bytes,
+            "successful Open imports the selected offline replacement",
         );
     }
 
