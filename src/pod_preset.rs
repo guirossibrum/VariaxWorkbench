@@ -277,6 +277,7 @@ pub const PODXT_LIVE_HOST_MIN_VERSION: u32 = 0x0300_0000;
 pub const CAB_SLOT: u32 = 0x0003_0001;
 /// Application bound for the offline librarian. Not a recovered Line 6 limit.
 pub const TONE_BYTES_CEILING: u64 = 1_048_576;
+pub const BUNDLE_BYTES_CEILING: u64 = 16_777_216;
 
 pub const OFFLINE_BANNER: &str =
     "Offline PODxt Live tone file. This does not edit a connected POD.";
@@ -900,7 +901,7 @@ pub enum ToneError {
 }
 
 impl ToneError {
-    fn format(detail: impl Into<String>) -> Self {
+    pub fn format(detail: impl Into<String>) -> Self {
         Self::Format {
             detail: detail.into(),
         }
@@ -1645,6 +1646,10 @@ pub struct Library {
 }
 
 impl Library {
+    pub fn clear(&mut self) {
+        self.tones.clear();
+    }
+
     pub fn import_bytes(&mut self, bytes: Vec<u8>) -> Result<usize, ToneError> {
         let tone = PodTone::parse(bytes)?;
         let saved = tone.as_bytes().to_vec();
@@ -1884,6 +1889,21 @@ impl PodBundleLibrary {
         self.banks.len()
     }
 
+    pub fn entry_count(&self) -> usize {
+        self.banks.iter().map(|bank| bank.entry_ranges.len()).sum()
+    }
+
+    pub fn entry_location(&self, index: usize) -> Option<(usize, usize)> {
+        let mut offset = index;
+        for (bank_index, bank) in self.banks.iter().enumerate() {
+            if offset < bank.entry_ranges.len() {
+                return Some((bank_index, offset));
+            }
+            offset -= bank.entry_ranges.len();
+        }
+        None
+    }
+
     pub fn preset_count(&self, bank: usize) -> Option<usize> {
         self.banks.get(bank).map(|entry| entry.entry_ranges.len())
     }
@@ -1918,6 +1938,25 @@ impl PodBundleLibrary {
         let mut tone = self.tone(bank, preset)?;
         edit(&mut tone)?;
         self.replace_tone(bank, preset, &tone)
+    }
+
+    pub fn edit_entry(
+        &mut self,
+        index: usize,
+        edit: impl FnOnce(&mut PodTone) -> Result<(), ToneError>,
+    ) -> Result<(), ToneError> {
+        let (bank, preset) = self
+            .entry_location(index)
+            .ok_or_else(|| ToneError::format("preset index is outside the library"))?;
+        self.edit_tone(bank, preset, edit)
+    }
+
+    pub fn replace_entry(&mut self, index: usize, bytes: Vec<u8>) -> Result<(), ToneError> {
+        let replacement = PodTone::parse(bytes)?;
+        let (bank, preset) = self
+            .entry_location(index)
+            .ok_or_else(|| ToneError::format("preset index is outside the library"))?;
+        self.replace_tone(bank, preset, &replacement)
     }
 
     fn replace_tone(
@@ -1989,6 +2028,10 @@ impl PodBundleLibrary {
         Ok(())
     }
 
+    pub fn note_saved(&mut self) {
+        self.saved = self.bytes.clone();
+    }
+
     pub fn save_copy(&self, path: &Path) -> Result<(), ToneError> {
         document::save_new(path, self.as_bytes()).map_err(ToneError::format)
     }
@@ -2046,6 +2089,31 @@ pub fn read_regular_tone(
     if bytes.len() as u64 > TONE_BYTES_CEILING {
         return Err(ToneError::format(
             "tone file exceeds the 1 MiB offline librarian ceiling",
+        ));
+    }
+    Ok(bytes)
+}
+
+/// Reads a bounded Workbench POD bank only after regular-file metadata checks.
+pub fn read_regular_bundle(
+    facts: std::io::Result<PathFacts>,
+    read: impl FnOnce() -> std::io::Result<Vec<u8>>,
+) -> Result<Vec<u8>, ToneError> {
+    let facts = facts.map_err(|error| ToneError::format(error.to_string()))?;
+    if !facts.regular_file {
+        return Err(ToneError::format(
+            "POD bank input must be a regular file. A pipe, socket, or device node is not opened.",
+        ));
+    }
+    if facts.len > BUNDLE_BYTES_CEILING {
+        return Err(ToneError::format(
+            "POD bank exceeds the 16 MiB offline librarian ceiling",
+        ));
+    }
+    let bytes = read().map_err(|error| ToneError::format(error.to_string()))?;
+    if bytes.len() as u64 > BUNDLE_BYTES_CEILING {
+        return Err(ToneError::format(
+            "POD bank exceeds the 16 MiB offline librarian ceiling",
         ));
     }
     Ok(bytes)
@@ -4418,6 +4486,39 @@ mod tests {
         let error = read_regular_tone(path_facts(&path), || panic!("directory must not be read"))
             .unwrap_err();
         assert!(error.detail().contains("regular file"));
+    }
+
+    #[test]
+    fn pod_bundle_reader_checks_regular_path_and_16_mib_ceiling_before_read() {
+        let mut called = false;
+        assert!(
+            read_regular_bundle(
+                Ok(PathFacts {
+                    regular_file: false,
+                    len: 0,
+                }),
+                || {
+                    called = true;
+                    Ok(vec![])
+                },
+            )
+            .is_err()
+        );
+        assert!(!called);
+        assert!(
+            read_regular_bundle(
+                Ok(PathFacts {
+                    regular_file: true,
+                    len: BUNDLE_BYTES_CEILING + 1,
+                }),
+                || {
+                    called = true;
+                    Ok(vec![])
+                },
+            )
+            .is_err()
+        );
+        assert!(!called);
     }
 
     fn edited_name_too_long(tone: &PodTone) -> bool {

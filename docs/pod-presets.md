@@ -77,8 +77,11 @@ embedded tones with `PodTone` rather than routing them through the stricter
 guitar `PresetFile` semantic parser; duplicate records and unrelated short
 opaque PARM children therefore remain inspectable and preservable under the
 POD contract. Ambiguous targeted controls still reject. It rejects empty and
-mixed-target bundles. GUI bank navigation remains unimplemented; this API does
-not synthesize bank membership or claim vendor save compatibility.
+mixed-target bundles. The GUI now lists bank/preset locations, supports selection
+across banks, and saves or discards edits for the collection as a whole. The GUI
+does not synthesize bank membership or claim vendor save compatibility. Bundle
+files are bounded to 16 MiB before UI reads; this is an application safety cap,
+not a recovered Workbench or Line 6 limit.
 
 The PINF name edit uses the same 32-unit NUL and length rule as the guitar
 renamer. Six host-scale edits are available for Drive, Bass, Mid, Treble,

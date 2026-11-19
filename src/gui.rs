@@ -209,6 +209,7 @@ struct Workbench {
     recorder: recording::Panel,
     pod_open: bool,
     pod_library: Library,
+    pod_bundle: Option<pod_preset::PodBundleLibrary>,
     pod_selected: Option<usize>,
     pod_name: String,
     pod_message: String,
@@ -290,6 +291,7 @@ impl Workbench {
             recorder: recording::Panel::new(),
             pod_open: false,
             pod_library: Library::default(),
+            pod_bundle: None,
             pod_selected: None,
             pod_name: String::new(),
             pod_message: String::new(),
@@ -1276,6 +1278,14 @@ impl Workbench {
     }
 
     fn pod_quit_dialog(&mut self, ctx: &egui::Context) {
+        if self
+            .pod_bundle
+            .as_ref()
+            .is_some_and(|bundle| bundle.is_dirty())
+        {
+            self.pod_bundle_quit_dialog(ctx);
+            return;
+        }
         let Some(index) = self.pod_library.first_dirty() else {
             self.continue_pending(ctx);
             return;
@@ -1339,6 +1349,53 @@ impl Workbench {
         }
     }
 
+    fn pod_bundle_quit_dialog(&mut self, ctx: &egui::Context) {
+        let mut discard = false;
+        let mut save_continue = false;
+        let mut cancel = false;
+        egui::Window::new("Unsaved POD bank or collection")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label("This bank/collection has offline edits that have not been saved.");
+                ui.horizontal(|ui| {
+                    let response = ui.button("Save bank copy and continue…");
+                    #[cfg(test)]
+                    self.pending_buttons.insert("save", response.rect);
+                    save_continue = response.clicked();
+                    let response = ui.button("Keep editing");
+                    #[cfg(test)]
+                    self.pending_buttons.insert("cancel", response.rect);
+                    cancel = response.clicked();
+                    let response = ui.button("Discard bank edits");
+                    #[cfg(test)]
+                    self.pending_buttons.insert("discard", response.rect);
+                    discard = response.clicked();
+                });
+            });
+        if cancel {
+            self.pending = None;
+        } else if save_continue {
+            let index = self.pod_library.first_dirty().unwrap_or(0);
+            if self.write_pod_copy(index) && !self.pod_library.any_dirty() {
+                self.continue_pending(ctx);
+            }
+        } else if discard {
+            let result = self
+                .pod_bundle
+                .as_mut()
+                .map_or(Ok(()), |bundle| bundle.revert());
+            match result.and_then(|()| self.refresh_pod_library_from_bundle()) {
+                Ok(()) => {
+                    self.pod_message = "Discarded offline bank edits. Nothing was sent.".into();
+                    self.continue_pending(ctx);
+                }
+                Err(error) => self.pod_message = error.detail(),
+            }
+        }
+    }
+
     fn save_next_dirty_pod(&mut self) -> bool {
         let Some(index) = self.pod_library.first_dirty() else {
             return false;
@@ -1347,6 +1404,22 @@ impl Workbench {
     }
 
     fn discard_next_dirty_pod(&mut self) -> bool {
+        if let Some(bundle) = &mut self.pod_bundle {
+            return match bundle
+                .revert()
+                .and_then(|()| self.refresh_pod_library_from_bundle())
+            {
+                Ok(()) => {
+                    self.refresh_selected_pod_name();
+                    self.pod_message = "Discarded unsaved bank edits. Nothing was sent.".into();
+                    true
+                }
+                Err(error) => {
+                    self.pod_message = error.detail();
+                    false
+                }
+            };
+        }
         let Some(index) = self.pod_library.first_dirty() else {
             return false;
         };
@@ -1689,7 +1762,7 @@ impl Workbench {
                 ui.label(&self.pod_message);
                 ui.separator();
                 ui.horizontal(|ui| {
-                    if self.pod_button(ui, "load-pod", "Load tone file…") {
+                    if self.pod_button(ui, "load-pod", "Load tone or bank…") {
                         self.load_pod_tone();
                     }
                     if self.pod_button(ui, "apply-pod-name", "Apply name") {
@@ -1702,10 +1775,21 @@ impl Workbench {
                 let rows: Vec<_> = (0..self.pod_library.len())
                     .filter_map(|index| {
                         let tone = self.pod_library.tone(index)?;
+                        let bank = self
+                            .pod_bundle
+                            .as_ref()
+                            .and_then(|bundle| {
+                                bundle.entry_location(index).and_then(|(bank, preset)| {
+                                bundle
+                                    .bank_name(bank)
+                                    .map(|name| format!("bank {name} preset {preset} · "))
+                                })
+                            })
+                            .unwrap_or_default();
                         Some((
                             index,
                             format!(
-                                "{index} {} {} amp {} stomp {} cab {}",
+                                "{bank}{index} {} {} amp {} stomp {} cab {}",
                                 tone.container().tag(),
                                 tone.name(),
                                 pod_preset::PodTone::model_label(tone.amp_model_id()),
@@ -1759,10 +1843,9 @@ impl Workbench {
                         if response.changed()
                             && let Some(index) = self.pod_selected
                         {
-                            match self
-                                .pod_library
-                                .set_amp_control_fraction(index, control, value)
-                            {
+                            match self.edit_pod_tone(index, |tone| {
+                                tone.set_amp_control_fraction(control, value)
+                            }) {
                                 Ok(()) => {
                                     self.pod_message = format!(
                                         "Applied Amp {} host-scale value {value}. Nothing was sent.",
@@ -1804,10 +1887,9 @@ impl Workbench {
                         if response.changed()
                             && let Some(index) = self.pod_selected
                         {
-                            match self
-                                .pod_library
-                                .set_stomp_control_fraction(index, control, value)
-                            {
+                            match self.edit_pod_tone(index, |tone| {
+                                tone.set_stomp_control_fraction(control, value)
+                            }) {
                                 Ok(()) => {
                                     self.pod_message = format!(
                                         "Applied Stomp {} host-scale value {value}. Nothing was sent.",
@@ -1849,10 +1931,9 @@ impl Workbench {
                         if response.changed()
                             && let Some(index) = self.pod_selected
                         {
-                            match self
-                                .pod_library
-                                .set_mod_control_fraction(index, control, value)
-                            {
+                            match self.edit_pod_tone(index, |tone| {
+                                tone.set_mod_control_fraction(control, value)
+                            }) {
                                 Ok(()) => {
                                     self.pod_message = format!(
                                         "Applied Mod {} host-scale value {value}. Nothing was sent.",
@@ -1894,10 +1975,9 @@ impl Workbench {
                         if response.changed()
                             && let Some(index) = self.pod_selected
                         {
-                            match self
-                                .pod_library
-                                .set_reverb_control_fraction(index, control, value)
-                            {
+                            match self.edit_pod_tone(index, |tone| {
+                                tone.set_reverb_control_fraction(control, value)
+                            }) {
                                 Ok(()) => {
                                     self.pod_message = format!(
                                         "Applied Reverb {} host-scale value {value}. Nothing was sent.",
@@ -1939,7 +2019,9 @@ impl Workbench {
                         if response.changed()
                             && let Some(index) = self.pod_selected
                         {
-                            match self.pod_library.set_delay_control_fraction(index, control, value) {
+                            match self.edit_pod_tone(index, |tone| {
+                                tone.set_delay_control_fraction(control, value)
+                            }) {
                                 Ok(()) => {
                                     self.pod_message = format!(
                                         "Applied Delay {} host-scale value {value}. Nothing was sent.",
@@ -2008,28 +2090,129 @@ impl Workbench {
         response.clicked()
     }
 
+    fn edit_pod_tone(
+        &mut self,
+        index: usize,
+        edit: impl FnOnce(&mut pod_preset::PodTone) -> Result<(), pod_preset::ToneError>,
+    ) -> Result<(), pod_preset::ToneError> {
+        if let Some(bundle) = &mut self.pod_bundle {
+            bundle.edit_entry(index, edit)?;
+            let (bank, preset) = bundle
+                .entry_location(index)
+                .ok_or_else(|| pod_preset::ToneError::format("POD selection is out of range"))?;
+            let bytes = bundle.tone(bank, preset)?.as_bytes().to_vec();
+            self.pod_library.replace(index, bytes)
+        } else {
+            let mut tone =
+                self.pod_library.tone(index).cloned().ok_or_else(|| {
+                    pod_preset::ToneError::format("POD selection is out of range")
+                })?;
+            edit(&mut tone)?;
+            self.pod_library.replace(index, tone.into_bytes())
+        }
+    }
+
+    fn replace_pod_tone(
+        &mut self,
+        index: usize,
+        bytes: Vec<u8>,
+    ) -> Result<(), pod_preset::ToneError> {
+        let mut library = self.pod_library.clone();
+        library.replace(index, bytes.clone())?;
+        let mut bundle = self.pod_bundle.clone();
+        if let Some(bundle) = &mut bundle {
+            bundle.replace_entry(index, bytes)?;
+        }
+        self.pod_library = library;
+        self.pod_bundle = bundle;
+        Ok(())
+    }
+
+    fn load_pod_bundle_bytes(&mut self, bytes: Vec<u8>) -> Result<(), pod_preset::ToneError> {
+        if self.pod_library.any_dirty() {
+            return Err(pod_preset::ToneError::format(
+                "save or discard individual POD edits before loading a bank",
+            ));
+        }
+        let bundle = pod_preset::PodBundleLibrary::parse(bytes)?;
+        let mut library = Library::default();
+        for index in 0..bundle.entry_count() {
+            let (bank_index, preset_index) = bundle
+                .entry_location(index)
+                .ok_or_else(|| pod_preset::ToneError::format("POD bundle index became invalid"))?;
+            library.import_bytes(bundle.tone(bank_index, preset_index)?.into_bytes())?;
+        }
+        self.pod_library = library;
+        self.pod_bundle = Some(bundle);
+        self.pod_selected = Some(0);
+        self.refresh_selected_pod_name();
+        Ok(())
+    }
+
+    fn refresh_pod_library_from_bundle(&mut self) -> Result<(), pod_preset::ToneError> {
+        let mut library = Library::default();
+        if let Some(bundle) = &self.pod_bundle {
+            for index in 0..bundle.entry_count() {
+                let (bank_index, preset_index) = bundle.entry_location(index).ok_or_else(|| {
+                    pod_preset::ToneError::format("POD bundle index became invalid")
+                })?;
+                library.import_bytes(bundle.tone(bank_index, preset_index)?.into_bytes())?;
+            }
+        }
+        self.pod_library = library;
+        Ok(())
+    }
+
     fn load_pod_tone(&mut self) {
         let Some(path) = self.dialogs.open_pod_tone() else {
             self.pod_message = "Load cancelled. No file was read.".into();
             return;
         };
-        match pod_preset::read_regular_tone(pod_preset::path_facts(&path), || fs::read(&path)) {
-            Ok(bytes) => match Session::initial_rig().open_pod_preset(RoleKind::Pod, &bytes) {
-                Ok(summary) => match self.pod_library.import_bytes(bytes) {
-                    Ok(index) => {
-                        self.pod_selected = Some(index);
-                        self.pod_name = summary.name;
+        match pod_preset::read_regular_bundle(pod_preset::path_facts(&path), || fs::read(&path)) {
+            Ok(bytes) if matches!(bytes.get(8..12), Some(b"L6BA" | b"L6CO")) => {
+                match self.load_pod_bundle_bytes(bytes) {
+                    Ok(()) => {
+                        let (banks, tones) = self
+                            .pod_bundle
+                            .as_ref()
+                            .map_or((0, 0), |bundle| (bundle.bank_count(), bundle.entry_count()));
                         self.pod_message = format!(
-                            "Loaded {} for PODxt Live {:08x}. {}",
-                            summary.container,
-                            summary.device_id,
-                            pod_preset::PAYLOADS_NOT_DECODED
+                            "Loaded PODxt Live collection with {banks} banks and {tones} tones. Offline edits only; nothing was sent."
                         );
                     }
                     Err(error) => self.pod_message = error.detail(),
-                },
-                Err(error) => self.pod_message = rejection_text(&error),
-            },
+                }
+            }
+            Ok(bytes) => {
+                if self.pod_bundle.is_some() && self.pod_library.any_dirty() {
+                    self.pod_message =
+                        "Save or discard bank edits before loading an individual tone.".into();
+                    return;
+                }
+                match Session::initial_rig().open_pod_preset(RoleKind::Pod, &bytes) {
+                    Ok(summary) => {
+                        if self.pod_bundle.is_some() {
+                            self.pod_bundle = None;
+                            self.pod_library.clear();
+                            self.pod_selected = None;
+                        }
+                        match self.pod_library.import_bytes(bytes) {
+                            Ok(index) => {
+                                self.pod_selected = Some(index);
+                                self.pod_name = summary.name;
+                                self.pod_message = format!(
+                                    "Loaded {} for PODxt Live {:08x}. {}",
+                                    summary.container,
+                                    summary.device_id,
+                                    pod_preset::PAYLOADS_NOT_DECODED
+                                );
+                            }
+                            Err(error) => self.pod_message = error.detail(),
+                        }
+                    }
+                    Err(error) => self.pod_message = rejection_text(&error),
+                }
+            }
             Err(error) => self.pod_message = error.detail(),
         }
     }
@@ -2048,7 +2231,7 @@ impl Workbench {
             return;
         };
         match Session::initial_rig().rename_pod_preset(RoleKind::Pod, &current, &self.pod_name) {
-            Ok(bytes) => match self.pod_library.replace(index, bytes) {
+            Ok(bytes) => match self.replace_pod_tone(index, bytes) {
                 Ok(()) => {
                     self.pod_message = format!(
                         "Renamed the in-memory tone to {}. Nothing was sent.",
@@ -2070,6 +2253,36 @@ impl Workbench {
     }
 
     fn write_pod_copy(&mut self, index: usize) -> bool {
+        if self.pod_bundle.is_some() {
+            let Some(path) = self.dialogs.save_pod_tone("podxt-live-bank.vwb") else {
+                self.pod_message = "Save cancelled. No file was written.".into();
+                return false;
+            };
+            let Some(bundle) = self.pod_bundle.as_ref() else {
+                return false;
+            };
+            match bundle.save_copy(&path) {
+                Ok(()) => {
+                    if let Some(bundle) = &mut self.pod_bundle {
+                        bundle.note_saved();
+                    }
+                    for tone_index in 0..self.pod_library.len() {
+                        if self.pod_library.is_dirty(tone_index) {
+                            let _ = self.pod_library.note_saved(tone_index);
+                        }
+                    }
+                    self.pod_message = format!(
+                        "Saved a new bank/collection copy at {}. Existing files were not replaced. Nothing was sent.",
+                        path.display()
+                    );
+                    return true;
+                }
+                Err(error) => {
+                    self.pod_message = error.detail();
+                    return false;
+                }
+            }
+        }
         let Some((bytes, suggested)) = self
             .pod_library
             .tone(index)
@@ -3107,6 +3320,34 @@ mod tests {
         chunk(b"FORM", &data)
     }
 
+    fn sample_pod_bundle(tones: &[Vec<u8>]) -> Vec<u8> {
+        fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+            let mut output = id.to_vec();
+            output.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            output.extend_from_slice(data);
+            if !data.len().is_multiple_of(2) {
+                output.push(0xa5);
+            }
+            output
+        }
+        let mut root = b"L6CO".to_vec();
+        root.extend(chunk(b"JUNK", &[0x71, 0x72, 0x73]));
+        for (index, tone) in tones.iter().enumerate() {
+            let mut bank = if index == 0 {
+                b"BANK".to_vec()
+            } else {
+                b"FLDR".to_vec()
+            };
+            let mut info = vec![0; 68];
+            info[4..6].copy_from_slice(&u16::from(b'A' + index as u8).to_be_bytes());
+            bank.extend(chunk(b"BINF", &info));
+            bank.extend(chunk(b"NOTE", &[0x91, 0x92, 0x93]));
+            bank.extend_from_slice(tone);
+            root.extend(chunk(b"LIST", &bank));
+        }
+        chunk(b"FORM", &root)
+    }
+
     fn sample_drive_pod_tone() -> Vec<u8> {
         fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
             let mut output = id.to_vec();
@@ -3459,6 +3700,79 @@ mod tests {
         assert_eq!(app.pod_library.len(), 1);
         assert_eq!(app.document.as_ref().unwrap().as_bytes(), guitar);
         app.start_read();
+        assert!(app.read_worker.is_none());
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn offline_pod_bundle_window_navigates_edits_saves_and_guards_quit() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let directory = tempfile::tempdir().unwrap();
+        let original_path = directory.path().join("source.vwb");
+        let blocked_path = directory.path().join("occupied.vwb");
+        let saved_path = directory.path().join("saved.vwb");
+        let first = sample_drive_pod_tone();
+        let second = sample_pod_tone();
+        let original = sample_pod_bundle(&[first.clone(), second.clone()]);
+        std::fs::write(&original_path, &original).unwrap();
+        std::fs::write(&blocked_path, b"preserve existing").unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(original_path.clone())].into(),
+            pod_save: [Some(blocked_path.clone()), Some(saved_path.clone())].into(),
+            ..Default::default()
+        });
+
+        click_pod(&context, &mut app, "open-pod");
+        click_pod(&context, &mut app, "load-pod");
+        assert_eq!(app.pod_bundle.as_ref().unwrap().bank_count(), 2);
+        assert_eq!(app.pod_library.len(), 2);
+        assert_eq!(app.pod_bundle.as_ref().unwrap().bank_name(1), Some("B"));
+        let second_row = app.pod_rows[&1].center();
+        click_pod_at(&context, &mut app, second_row);
+        assert_eq!(app.pod_selected, Some(1));
+        assert_eq!(app.pod_library.tone(1).unwrap().as_bytes(), second);
+        let first_row = app.pod_rows[&0].center();
+        click_pod_at(&context, &mut app, first_row);
+        drag_pod_drive_slider(&context, &mut app);
+        let selected_value = app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .amp_drive_fraction()
+            .unwrap();
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert!(app.pod_library.is_dirty(0));
+        assert!(!app.pod_library.is_dirty(1));
+
+        click_pod(&context, &mut app, "save-pod");
+        assert_eq!(std::fs::read(&blocked_path).unwrap(), b"preserve existing");
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        click_pod(&context, &mut app, "save-pod");
+        let saved = std::fs::read(&saved_path).unwrap();
+        let reopened = pod_preset::PodBundleLibrary::parse(saved.clone()).unwrap();
+        assert_eq!(
+            reopened.tone(0, 0).unwrap().amp_drive_fraction().unwrap(),
+            selected_value
+        );
+        assert_eq!(reopened.tone(1, 0).unwrap().as_bytes(), second);
+        assert_eq!(saved, app.pod_bundle.as_ref().unwrap().as_bytes());
+        assert_eq!(std::fs::read(&original_path).unwrap(), original);
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert!(!app.pod_library.any_dirty());
+
+        app.edit_pod_tone(0, |tone| {
+            tone.set_amp_control_fraction(pod_preset::AmpControl::Drive, 0.2)
+        })
+        .unwrap();
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "discard");
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert!(!app.pod_library.any_dirty());
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), saved);
         assert!(app.read_worker.is_none());
         const {
             assert!(LIVE_ACCESS_LOCKED);

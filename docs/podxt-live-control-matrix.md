@@ -83,7 +83,7 @@ with synthetic data, not a native vendor save/reopen oracle.
 | Cab models and microphone selection | Model IDs may be displayed; no numeric edit is exposed | Target-specific cab/mic definition, associated parameter ID/type/domain, model-dependent mapping, and exact preservation behavior. |
 | Non-scalar Stomp controls; Mod, delay, reverb and EQ models | All 31 Stomp layouts expose 86 source-mapped percent fields; 24 Mod layouts expose 52 fields; 14 Delay layouts expose 37 fields; 15 Reverb layouts expose 42 fields with family-specific selector and PARM mappings. Stomp SYNWAVE/WHAMMY_INTERVAL and Delay HEADS/BITS association formats remain raw. EQ numeric editing remains unavailable. | For omitted Stomp/Delay association formats, a compatible scalar contract; for EQ, exact target-specific model-to-slot and parameter mapping, representation, domain/units/scaling/steps, callbacks and failure behavior. Shared AX3 names or ids alone are insufficient. |
 | Amp enable, setup slots and model replacement | No numeric/model replacement API | Boolean/association contract, optional-pack policy, replacement side effects and transaction/failure semantics. `CheckCanWritePatch`'s installed-pack check is not an edit-domain or serializer contract. |
-| Tone setup, bank/collection organization and POD Farm interchange | Tone-file list/name workflow only; no bank/collection editor or POD Farm conversion | Concrete container schema, target/version gate, exact serializer, unknown-record retention and safe-copy workflow. The negative POD Farm 1.12 receiver result is scoped to that package; see [its historical investigation](pod-farm-112-target-applicability.md). |
+| Tone setup, bank/collection organization and POD Farm interchange | Existing L6BA/L6CO PODxt-only banks/collections can be inspected, navigated, edited, reverted and saved as a new copy in the offline GUI. Mixed-target and empty collections reject. Bank/preset creation/deletion and POD Farm conversion remain unavailable. | Source-backed container schema for creation/deletion, exact serializer rules for membership changes, and a target-specific POD Farm conversion contract. The negative POD Farm 1.12 receiver result is scoped to that package; see [its historical investigation](pod-farm-112-target-applicability.md). |
 | Send, switch, firmware, backup, audio and maintenance operations | Disabled or unimplemented | Separate future requirements and explicit authorization. No such live operation follows from the offline contracts here. |
 
 The current Rust implementation covers six shared amp controls across 106
@@ -91,10 +91,10 @@ source-listed amp models (excluding No Amp), 86 source-mapped Stomp percent
 controls across all 31 provider layouts, 52 source-mapped Mod percent controls
 across all 24 provider layouts, 37 source-mapped Delay percent controls across
 all 14 provider layouts, and 42 Reverb percent controls across all 15 provider
-layouts. Other
-controls and workflows remain rejected or unimplemented until their own source
-contract and synthetic compatibility tests are admitted. This matrix is not an
-issue-acceptance claim. The broader criteria for formats/models/effects,
-inspection/edit/library workflow, and compatibility/preservation/rejection
-testing remain partial. Lack of physical testing is not an offline criterion
-gap; hardware remains locked independently.
+layouts. The app can also navigate and edit existing homogeneous POD banks and
+collections in its offline library view. Other controls and workflows remain
+rejected or unimplemented until their own source contract and synthetic
+compatibility tests are admitted. This matrix is not an issue-acceptance claim.
+The broader criteria for formats/models/effects, editor workflows and
+compatibility/preservation/rejection testing remain partial. Lack of physical
+testing is not an offline criterion gap; hardware remains locked independently.
