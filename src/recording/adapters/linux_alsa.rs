@@ -77,9 +77,7 @@ impl AlsaPodxtCaptureAdapter {
         let capture_row = registry
             .rows()
             .iter()
-            .find(|row| {
-                row.name == "PODxt Live" && row.role == audio::SourceRole::Bridge
-            })
+            .find(|row| row.name == "PODxt Live" && row.role == audio::SourceRole::Bridge)
             .ok_or(AlsaAdapterError::Capture(
                 CaptureError::ForgedOrChangedRoute,
             ))?
@@ -97,12 +95,7 @@ impl AlsaPodxtCaptureAdapter {
             clock: (78_125, 2),
             format: audio::SampleFormat::S24ThreeByteLe,
         };
-        let plan = ValidatedPlan::native_podxt(
-            &registry,
-            request,
-            signal_route,
-            max_take_bytes,
-        )?;
+        let plan = ValidatedPlan::native_podxt(&registry, request, signal_route, max_take_bytes)?;
         let session = CaptureSession::start(plan, generation)?;
         Ok(Self { session })
     }
@@ -136,11 +129,8 @@ impl AlsaPodxtCaptureAdapter {
         monotonic_ns: u64,
         dropout_frames: u64,
     ) -> Result<ClockMeasurement, CaptureError> {
-        self.session.observe_software_clock(
-            cumulative_frames,
-            monotonic_ns,
-            dropout_frames,
-        )
+        self.session
+            .observe_software_clock(cumulative_frames, monotonic_ns, dropout_frames)
     }
 
     pub fn cancel(&mut self) -> Result<(), CaptureError> {

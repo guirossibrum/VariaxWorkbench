@@ -17,8 +17,8 @@ use crate::rig::audio::{
     Platform, Registry, Request, RouteKind, RuntimeState, SampleFormat,
 };
 
-use super::{FrameFormat, InputOrigin, Phase, SampleClock, Take, TakeError, TakeRequest};
 use super::clock::{ClockError, ClockMeasurement, SoftwareClockTracker};
+use super::{FrameFormat, InputOrigin, Phase, SampleClock, Take, TakeError, TakeRequest};
 
 pub const QUEUE_CAPACITY_BYTES: usize = 64 * 1024;
 pub const MAX_CHANNELS: u8 = 8;
@@ -504,10 +504,7 @@ impl CaptureSession {
     ) -> Result<ClockMeasurement, CaptureError> {
         self.check_owner()?;
         if self.take.phase() != Phase::Recording || self.terminal || self.stopped {
-            return Err(self
-                .terminal_error
-                .clone()
-                .unwrap_or(CaptureError::Stopped));
+            return Err(self.terminal_error.clone().unwrap_or(CaptureError::Stopped));
         }
         match self
             .clock

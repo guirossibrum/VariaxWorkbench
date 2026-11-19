@@ -202,14 +202,26 @@ mod tests {
             Err(ClockError::DropoutExceedsFrameDelta)
         );
         assert_eq!(clock.latest(), Some(next));
-        assert_eq!(clock.observe(44_201, 1_000_000_100, 0), Err(ClockError::NonMonotonicTime));
+        assert_eq!(
+            clock.observe(44_201, 1_000_000_100, 0),
+            Err(ClockError::NonMonotonicTime)
+        );
     }
 
     #[test]
     fn invalid_rates_and_arithmetic_overflow_fail_closed() {
-        assert_eq!(SoftwareClockTracker::new(0, 1), Err(ClockError::InvalidRate));
-        assert_eq!(SoftwareClockTracker::new(1, 0), Err(ClockError::InvalidRate));
+        assert_eq!(
+            SoftwareClockTracker::new(0, 1),
+            Err(ClockError::InvalidRate)
+        );
+        assert_eq!(
+            SoftwareClockTracker::new(1, 0),
+            Err(ClockError::InvalidRate)
+        );
         let slow = SoftwareClockTracker::new(1, 1).unwrap();
-        assert_eq!(slow.frames_to_ns(u64::MAX), Err(ClockError::ArithmeticOverflow));
+        assert_eq!(
+            slow.frames_to_ns(u64::MAX),
+            Err(ClockError::ArithmeticOverflow)
+        );
     }
 }

@@ -2536,9 +2536,10 @@ mod tests {
                 .contains(recording::DEVICE_CAPTURE_LOCKED)
         );
         assert!(app.recording_visible.contains(recording::NO_AUTO_START));
-        assert!(app
-            .recording_visible
-            .contains("Native live locked; external input unsupported."));
+        assert!(
+            app.recording_visible
+                .contains("Native live locked; external input unsupported.")
+        );
         assert!(app.recording_visible.contains(recording::PHASE_IDLE));
         assert!(app.recording_visible.contains("not a live route change"));
         assert!(app.read_worker.is_none());

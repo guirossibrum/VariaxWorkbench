@@ -5,8 +5,8 @@
 //! USB, or MIDI, and nothing changes a live record route, monitor mix, or
 //! re-amp path. `StartAudioCapture` stays locked in the session gate.
 
-pub mod aiff;
 pub mod adapters;
+pub mod aiff;
 pub mod capture;
 pub mod clock;
 
@@ -47,8 +47,7 @@ pub const INTEGER_WAV_RATES: [u32; 5] = [22_050, 44_100, 48_000, 88_200, 96_000]
 pub const OFFLINE_BANNER: &str =
     "Offline test recording. This is not a recording from a connected device.";
 pub const DEVICE_CAPTURE_LOCKED: &str = "Device capture and playback stay locked. No ALSA, PipeWire, PulseAudio, USB, or MIDI port is opened.";
-pub const NO_AUTO_START: &str =
-    "No auto-start, route change, or monitor/re-amp. Native live locked; external input unsupported.";
+pub const NO_AUTO_START: &str = "No auto-start, route change, or monitor/re-amp. Native live locked; external input unsupported.";
 pub const PHASE_IDLE: &str = "Idle. Device capture is locked.";
 pub const PHASE_RECORDING: &str = "Recording test audio in memory. No device is open.";
 pub const PHASE_STOPPED: &str = "Stopped. A file is written only when you save.";
