@@ -3258,6 +3258,12 @@ struct PodBundleChild {
     tone: bool,
 }
 
+fn span_identities(spans: &[Range<usize>]) -> Vec<(usize, usize)> {
+    let mut identities: Vec<_> = spans.iter().map(|span| (span.start, span.end)).collect();
+    identities.sort_unstable();
+    identities
+}
+
 impl PodBundleLibrary {
     pub fn parse(bytes: Vec<u8>) -> Result<Self, ToneError> {
         if bytes.len() as u64 > BUNDLE_BYTES_CEILING {
@@ -3344,6 +3350,132 @@ impl PodBundleLibrary {
     /// Membership edits are admitted only for existing folders in collections.
     pub fn membership_editable(&self, bank: usize) -> bool {
         self.collection && self.banks.get(bank).is_some_and(|bank| bank.folder)
+    }
+
+    /// Whether a bank is within the admitted fixed-bank tone reorder subset.
+    /// This is an offline file operation, not a physical slot-layout claim.
+    pub fn fixed_bank_reorder_editable(&self, bank: usize) -> bool {
+        self.fixed_bank_tone_spans(bank).is_ok()
+    }
+
+    /// Move one existing PODxt Live tone to a final slot index in one fixed
+    /// L6BA/BANK. Complete tone records are permuted only among their original
+    /// token positions; opaque siblings and all enclosing bytes stay in place.
+    pub fn reorder_fixed_bank_entry(
+        &mut self,
+        bank_index: usize,
+        from: usize,
+        to: usize,
+    ) -> Result<usize, ToneError> {
+        let mut tone_order = self.fixed_bank_tone_spans(bank_index)?;
+        if from >= tone_order.len() || to >= tone_order.len() {
+            return Err(ToneError::format("preset index is outside the fixed bank"));
+        }
+        if from == to {
+            return Ok(self.flat_index(bank_index, to));
+        }
+
+        let original_ids = span_identities(&tone_order);
+        let moved = tone_order.remove(from);
+        tone_order.insert(to, moved);
+        if span_identities(&tone_order) != original_ids {
+            return Err(ToneError::format(
+                "fixed-bank reorder must preserve every original tone exactly once",
+            ));
+        }
+
+        let bank = self
+            .banks
+            .get(bank_index)
+            .ok_or_else(|| ToneError::format("bank index is outside the file"))?;
+        let mut next_tone = tone_order.iter();
+        let mut replacement_children = Vec::with_capacity(bank.data_length - 4);
+        for child in &bank.children {
+            if child.tone {
+                let range = next_tone.next().ok_or_else(|| {
+                    ToneError::format("fixed-bank reorder has an invalid tone ordering")
+                })?;
+                replacement_children.extend_from_slice(&self.bytes[range.clone()]);
+            } else {
+                replacement_children.extend_from_slice(&self.bytes[child.range.clone()]);
+            }
+        }
+        if next_tone.next().is_some() || replacement_children.len() != bank.data_length - 4 {
+            return Err(ToneError::format(
+                "fixed-bank reorder spans do not preserve the bank length",
+            ));
+        }
+
+        let child_start = bank.chunk_start + 12;
+        let child_end = bank.chunk_start + 8 + bank.data_length;
+        if child_end.checked_sub(child_start) != Some(replacement_children.len()) {
+            return Err(ToneError::format(
+                "fixed-bank reorder has inconsistent child spans",
+            ));
+        }
+        let mut candidate = self.bytes.clone();
+        candidate[child_start..child_end].copy_from_slice(&replacement_children);
+
+        // Parse the complete candidate before publishing any state. The saved
+        // baseline is deliberately retained so moving back can become clean.
+        let saved = self.saved.clone();
+        let mut next = Self::parse(candidate)?;
+        next.fixed_bank_tone_spans(bank_index)?;
+        if next.preset_count(bank_index) != Some(tone_order.len()) {
+            return Err(ToneError::format(
+                "fixed-bank reorder changed the selected bank's tone count",
+            ));
+        }
+        for (slot, expected) in tone_order.iter().enumerate() {
+            let actual = &next.banks[bank_index].entry_ranges[slot];
+            let expected_end =
+                expected.start + 8 + preset::word(&self.bytes, expected.start + 4) as usize;
+            if next.tone(bank_index, slot)?.as_bytes() != &self.bytes[expected.start..expected_end]
+            {
+                return Err(ToneError::format(
+                    "fixed-bank reorder candidate did not preserve the requested tone order",
+                ));
+            }
+            if actual.end - actual.start != expected.end - expected.start {
+                return Err(ToneError::format(
+                    "fixed-bank reorder changed a tone token span length",
+                ));
+            }
+        }
+        next.saved = saved;
+        *self = next;
+        Ok(self.flat_index(bank_index, to))
+    }
+
+    fn fixed_bank_tone_spans(&self, bank_index: usize) -> Result<Vec<Range<usize>>, ToneError> {
+        if self.collection {
+            return Err(ToneError::format(
+                "fixed-bank reorder requires an L6BA root",
+            ));
+        }
+        let bank = self
+            .banks
+            .get(bank_index)
+            .ok_or_else(|| ToneError::format("bank index is outside the file"))?;
+        if bank.folder {
+            return Err(ToneError::format(
+                "fixed-bank reorder requires an existing BANK child",
+            ));
+        }
+        if bank.entry_ranges.is_empty() {
+            return Err(ToneError::format(
+                "fixed-bank reorder requires a nonempty bank",
+            ));
+        }
+        for index in 0..bank.entry_ranges.len() {
+            let tone = self.tone(bank_index, index)?;
+            if tone.container() != ContainerKind::L6pa || tone.device_id() != PODXT_LIVE_TONE_ID {
+                return Err(ToneError::format(
+                    "fixed-bank reorder accepts only existing PODxt Live L6PA tones",
+                ));
+            }
+        }
+        Ok(bank.entry_ranges.clone())
     }
 
     /// Duplicate an existing tone byte-for-byte after its current tone slot.
@@ -9113,6 +9245,213 @@ mod tests {
         assert!(capped_library.duplicate_entry(1, 0).is_err());
         assert_eq!(capped_library.as_bytes(), capped);
         assert!(!capped_library.is_dirty());
+    }
+
+    #[test]
+    fn fixed_bank_tone_reorder_preserves_raw_spans_tokens_lengths_and_baseline() {
+        fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+            let mut bytes = id.to_vec();
+            bytes.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(data);
+            if !data.len().is_multiple_of(2) {
+                bytes.push(0xa5);
+            }
+            bytes
+        }
+        fn tone(name: u16, extra_chunks: usize) -> Vec<u8> {
+            let mut bytes = fixture(
+                ContainerKind::L6pa,
+                PODXT_LIVE_TONE_ID,
+                PODXT_LIVE_HOST_MIN_VERSION,
+                &[(AMP_SLOT, 0x1111_0002)],
+            );
+            let pinf = find_chunk_data(&bytes, b"PINF");
+            bytes[pinf + 8..pinf + 10].copy_from_slice(&name.to_be_bytes());
+            let junk = find_chunk_data(&bytes, b"JUNK");
+            bytes[junk..junk + 3].copy_from_slice(&[
+                name as u8,
+                (name >> 8) as u8,
+                (name as u8) ^ 0x5a,
+            ]);
+            for _ in 0..extra_chunks {
+                bytes.extend_from_slice(&chunk(b"EXTR", &[name as u8; 3]));
+            }
+            let form_length = bytes.len() - 8;
+            bytes[4..8].copy_from_slice(&(form_length as u32).to_be_bytes());
+            bytes
+        }
+        fn bank_length(bytes: &[u8]) -> u32 {
+            let kind = bytes
+                .windows(4)
+                .position(|window| window == b"BANK")
+                .expect("fixed BANK type");
+            u32::from_be_bytes(bytes[kind - 4..kind].try_into().unwrap())
+        }
+
+        let first = tone(u16::from(b'A'), 0);
+        let second = tone(u16::from(b'B'), 1);
+        let third = tone(u16::from(b'C'), 2);
+        assert_ne!(first.len(), second.len());
+        assert_ne!(second.len(), third.len());
+        let before = chunk(b"BEFR", &[0x11, 0x22, 0x33]);
+        let middle_one = chunk(b"MID1", &[0x44, 0x55, 0x66]);
+        let middle_two = chunk(b"MID2", &[0x77, 0x88, 0x99]);
+        let after = chunk(b"AFTR", &[0xaa, 0xbb, 0xcc]);
+        let other_bank_tone = tone(u16::from(b'Z'), 0);
+        let original_children = vec![
+            before.clone(),
+            first.clone(),
+            middle_one.clone(),
+            second.clone(),
+            middle_two.clone(),
+            third.clone(),
+            after.clone(),
+        ];
+        let original = membership_bundle(
+            b"L6BA",
+            &original_children,
+            std::slice::from_ref(&other_bank_tone),
+        );
+        let expected_children = vec![
+            before.clone(),
+            second.clone(),
+            middle_one.clone(),
+            third.clone(),
+            middle_two.clone(),
+            first.clone(),
+            after.clone(),
+        ];
+        let expected = membership_bundle(
+            b"L6BA",
+            &expected_children,
+            std::slice::from_ref(&other_bank_tone),
+        );
+        let root_length = preset::word(&original, 4);
+        let fixed_bank_length = bank_length(&original);
+        let mut library = PodBundleLibrary::parse(original.clone()).unwrap();
+        assert!(library.fixed_bank_reorder_editable(0));
+        assert!(!library.fixed_bank_reorder_editable(1));
+        assert!(!library.is_dirty());
+
+        let unchanged = library.as_bytes().to_vec();
+        assert_eq!(library.reorder_fixed_bank_entry(0, 1, 1).unwrap(), 1);
+        assert_eq!(library.as_bytes(), unchanged);
+        assert!(!library.is_dirty(), "same-slot move is a clean byte no-op");
+
+        assert_eq!(library.reorder_fixed_bank_entry(0, 0, 2).unwrap(), 2);
+        assert_eq!(library.as_bytes(), expected);
+        assert_eq!(preset::word(library.as_bytes(), 4), root_length);
+        assert_eq!(bank_length(library.as_bytes()), fixed_bank_length);
+        assert!(library.is_dirty());
+        assert_eq!(library.preset_count(0), Some(3));
+        assert_eq!(library.tone(0, 0).unwrap().as_bytes(), second);
+        assert_eq!(library.tone(0, 1).unwrap().as_bytes(), third);
+        assert_eq!(library.tone(0, 2).unwrap().as_bytes(), first);
+        assert_eq!(library.tone(1, 0).unwrap().as_bytes(), other_bank_tone);
+        let reopened = PodBundleLibrary::parse(library.as_bytes().to_vec()).unwrap();
+        assert_eq!(reopened.as_bytes(), expected);
+        assert_eq!(reopened.tone(0, 0).unwrap().as_bytes(), second);
+        assert_eq!(reopened.tone(0, 1).unwrap().as_bytes(), third);
+        assert_eq!(reopened.tone(0, 2).unwrap().as_bytes(), first);
+
+        let directory = tempfile::tempdir().unwrap();
+        let copy = directory.path().join("fixed-bank.vwb");
+        library.save_copy(&copy).unwrap();
+        let saved_copy = std::fs::read(&copy).unwrap();
+        assert_eq!(saved_copy, expected);
+        assert_eq!(
+            PodBundleLibrary::parse(saved_copy)
+                .unwrap()
+                .tone(0, 0)
+                .unwrap()
+                .as_bytes(),
+            second
+        );
+        assert!(library.save_copy(&copy).is_err());
+        assert_eq!(std::fs::read(&copy).unwrap(), expected);
+        assert!(library.is_dirty(), "saving a copy does not change baseline");
+
+        assert_eq!(library.reorder_fixed_bank_entry(0, 1, 1).unwrap(), 1);
+        assert_eq!(library.as_bytes(), expected);
+        assert!(
+            library.is_dirty(),
+            "no-op preserves an existing dirty state"
+        );
+        assert_eq!(library.reorder_fixed_bank_entry(0, 2, 0).unwrap(), 0);
+        assert_eq!(library.as_bytes(), original);
+        assert!(!library.is_dirty(), "returning to saved bytes is clean");
+
+        let before_rejections = library.as_bytes().to_vec();
+        assert!(library.reorder_fixed_bank_entry(0, 0, 3).is_err());
+        assert!(library.reorder_fixed_bank_entry(99, 0, 0).is_err());
+        assert_eq!(library.as_bytes(), before_rejections);
+        assert!(!library.is_dirty());
+    }
+
+    #[test]
+    fn fixed_bank_tone_reorder_rejects_other_roots_banks_and_patch_types_atomically() {
+        let tone = || {
+            fixture(
+                ContainerKind::L6pa,
+                PODXT_LIVE_TONE_ID,
+                PODXT_LIVE_HOST_MIN_VERSION,
+                &[(AMP_SLOT, 0x1111_0002)],
+            )
+        };
+        let alternate = fixture(
+            ContainerKind::L6fs,
+            PODXT_LIVE_TONE_ID,
+            PODXT_LIVE_HOST_MIN_VERSION,
+            &[(AMP_SLOT, 0x1111_0002)],
+        );
+        let amp_setup = live_tone();
+        let live = tone();
+
+        let mixed_root_child = membership_bundle(
+            b"L6BA",
+            std::slice::from_ref(&live),
+            std::slice::from_ref(&live),
+        );
+        let mut mixed_root = PodBundleLibrary::parse(mixed_root_child).unwrap();
+        let original = mixed_root.as_bytes().to_vec();
+        assert!(!mixed_root.fixed_bank_reorder_editable(1));
+        assert!(mixed_root.reorder_fixed_bank_entry(1, 0, 0).is_err());
+        assert_eq!(mixed_root.as_bytes(), original);
+
+        let collection_bank = membership_bundle(
+            b"L6CO",
+            std::slice::from_ref(&live),
+            std::slice::from_ref(&live),
+        );
+        let mut collection = PodBundleLibrary::parse(collection_bank).unwrap();
+        let original = collection.as_bytes().to_vec();
+        assert!(!collection.fixed_bank_reorder_editable(0));
+        assert!(collection.reorder_fixed_bank_entry(0, 0, 0).is_err());
+        assert_eq!(collection.as_bytes(), original);
+
+        let empty_fixed = membership_bundle(b"L6BA", &[], std::slice::from_ref(&live));
+        let mut empty = PodBundleLibrary::parse(empty_fixed).unwrap();
+        let original = empty.as_bytes().to_vec();
+        assert!(!empty.fixed_bank_reorder_editable(0));
+        assert!(empty.reorder_fixed_bank_entry(0, 0, 0).is_err());
+        assert_eq!(empty.as_bytes(), original);
+
+        for unsupported in [alternate, amp_setup] {
+            let mixed = membership_bundle(b"L6BA", &[live.clone(), unsupported], &[]);
+            let mut library = PodBundleLibrary::parse(mixed).unwrap();
+            let original = library.as_bytes().to_vec();
+            assert!(!library.fixed_bank_reorder_editable(0));
+            assert!(library.reorder_fixed_bank_entry(0, 0, 1).is_err());
+            assert_eq!(library.as_bytes(), original);
+            assert!(!library.is_dirty());
+        }
+
+        let mut wrong_target = live.clone();
+        let pinf = find_chunk_data(&wrong_target, b"PINF");
+        wrong_target[pinf + 4..pinf + 8].copy_from_slice(&0x0003_000b_u32.to_be_bytes());
+        let wrong_target_bundle =
+            membership_bundle(b"L6BA", &[wrong_target], std::slice::from_ref(&live));
+        assert!(PodBundleLibrary::parse(wrong_target_bundle).is_err());
     }
 
     #[test]

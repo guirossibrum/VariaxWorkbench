@@ -1861,9 +1861,14 @@ impl Workbench {
                 let membership_selection = self.pod_selected.and_then(|index| {
                     self.pod_bundle.as_ref().and_then(|bundle| {
                         let (bank, preset) = bundle.entry_location(index)?;
-                        bundle
-                            .membership_editable(bank)
-                            .then_some((bank, preset, bundle.preset_count(bank)?))
+                        let folder_editable = bundle.membership_editable(bank);
+                        let fixed_bank_editable = bundle.fixed_bank_reorder_editable(bank);
+                        (folder_editable || fixed_bank_editable).then_some((
+                            bank,
+                            preset,
+                            bundle.preset_count(bank)?,
+                            folder_editable,
+                        ))
                     })
                 });
                 let mut membership_action = None;
@@ -1877,13 +1882,16 @@ impl Workbench {
                     if self.pod_button(ui, "save-pod", "Save copy…") {
                         self.save_pod_tone();
                     }
-                    if let Some((bank, preset, count)) = membership_selection {
-                        if self.pod_button(ui, "pod-duplicate-entry", "Duplicate") {
-                            membership_action =
-                                Some((PodMembershipAction::Duplicate, bank, preset));
-                        }
-                        if self.pod_button(ui, "pod-remove-entry", "Remove") {
-                            membership_action = Some((PodMembershipAction::Remove, bank, preset));
+                    if let Some((bank, preset, count, folder_editable)) = membership_selection {
+                        if folder_editable {
+                            if self.pod_button(ui, "pod-duplicate-entry", "Duplicate") {
+                                membership_action =
+                                    Some((PodMembershipAction::Duplicate, bank, preset));
+                            }
+                            if self.pod_button(ui, "pod-remove-entry", "Remove") {
+                                membership_action =
+                                    Some((PodMembershipAction::Remove, bank, preset));
+                            }
                         }
                         if self.pod_button_enabled(
                             ui,
@@ -1902,7 +1910,8 @@ impl Workbench {
                             membership_action =
                                 Some((PodMembershipAction::MoveDown, bank, preset));
                         }
-                        ui.label(format!("Folder slot {} of {count}", preset + 1));
+                        let slot_kind = if folder_editable { "Folder" } else { "Fixed bank" };
+                        ui.label(format!("{slot_kind} slot {} of {count}", preset + 1));
                     }
                     if let Some(index) = self.pod_selected {
                         let _response = ui.menu_button("Model flags…", |ui| {
@@ -2705,25 +2714,46 @@ impl Workbench {
         bank: usize,
         preset: usize,
     ) {
-        let result = match self.pod_bundle.as_mut() {
-            Some(bundle) => match action {
-                PodMembershipAction::Duplicate => bundle.duplicate_entry(bank, preset),
-                PodMembershipAction::Remove => bundle.remove_entry(bank, preset),
-                PodMembershipAction::MoveUp if preset > 0 => {
-                    bundle.reorder_entry(bank, preset, preset - 1)
-                }
-                PodMembershipAction::MoveDown => bundle.reorder_entry(bank, preset, preset + 1),
-                PodMembershipAction::MoveUp => return,
-            },
-            None => return,
+        let Some(mut candidate) = self.pod_bundle.clone() else {
+            return;
         };
-        match result.and_then(|selected| {
-            self.refresh_pod_library_from_bundle()?;
-            self.pod_selected = Some(selected);
-            self.refresh_selected_pod_name();
-            Ok(selected)
-        }) {
-            Ok(_) => {
+        let folder_editable = candidate.membership_editable(bank);
+        let result = match action {
+            PodMembershipAction::Duplicate => candidate.duplicate_entry(bank, preset),
+            PodMembershipAction::Remove => candidate.remove_entry(bank, preset),
+            PodMembershipAction::MoveUp if preset > 0 => {
+                if folder_editable {
+                    candidate.reorder_entry(bank, preset, preset - 1)
+                } else {
+                    candidate.reorder_fixed_bank_entry(bank, preset, preset - 1)
+                }
+            }
+            PodMembershipAction::MoveDown => {
+                if folder_editable {
+                    candidate.reorder_entry(bank, preset, preset + 1)
+                } else {
+                    candidate.reorder_fixed_bank_entry(bank, preset, preset + 1)
+                }
+            }
+            PodMembershipAction::MoveUp => return,
+        }
+        .and_then(|selected| {
+            let mut library = Library::default();
+            for index in 0..candidate.entry_count() {
+                let (bank_index, preset_index) =
+                    candidate.entry_location(index).ok_or_else(|| {
+                        pod_preset::ToneError::format("POD bundle index became invalid")
+                    })?;
+                library.import_bytes(candidate.tone(bank_index, preset_index)?.into_bytes())?;
+            }
+            Ok((selected, library))
+        });
+        match result {
+            Ok((selected, library)) => {
+                self.pod_bundle = Some(candidate);
+                self.pod_library = library;
+                self.pod_selected = Some(selected);
+                self.refresh_selected_pod_name();
                 self.pod_message = match action {
                     PodMembershipAction::Duplicate => {
                         "Duplicated the existing tone bytes in this folder. Nothing was sent."
@@ -2733,7 +2763,11 @@ impl Workbench {
                         "Removed the selected tone from this folder. Nothing was sent.".into()
                     }
                     PodMembershipAction::MoveUp | PodMembershipAction::MoveDown => {
-                        "Reordered tones in this folder. Nothing was sent.".into()
+                        if folder_editable {
+                            "Reordered tones in this folder. Nothing was sent.".into()
+                        } else {
+                            "Reordered tones in this fixed bank. Nothing was sent.".into()
+                        }
                     }
                 };
             }
@@ -4094,6 +4128,40 @@ mod tests {
         chunk(b"FORM", &root)
     }
 
+    fn sample_fixed_pod_bank(tones: &[Vec<u8>]) -> Vec<u8> {
+        fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+            let mut output = id.to_vec();
+            output.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            output.extend_from_slice(data);
+            if !data.len().is_multiple_of(2) {
+                output.push(0xa5);
+            }
+            output
+        }
+        let mut info = vec![0; 68];
+        info[4..6].copy_from_slice(&u16::from(b'A').to_be_bytes());
+        let mut bank = b"BANK".to_vec();
+        bank.extend(chunk(b"BINF", &info));
+        bank.extend(chunk(b"BEFR", &[0x11, 0x22, 0x33]));
+        for (index, tone) in tones.iter().enumerate() {
+            bank.extend_from_slice(tone);
+            if index + 1 < tones.len() {
+                bank.extend(chunk(b"MID!", &[0x44, 0x55, 0x66]));
+            }
+        }
+        bank.extend(chunk(b"AFTR", &[0x77, 0x88, 0x99]));
+        let mut root = b"L6BA".to_vec();
+        root.extend(chunk(b"ROOT", &[0xaa, 0xbb, 0xcc]));
+        root.extend(chunk(b"LIST", &bank));
+        root.extend(chunk(b"TAIL", &[0xdd, 0xee, 0xff]));
+        chunk(b"FORM", &root)
+    }
+
+    fn as_fixed_bank_tone(mut tone: Vec<u8>) -> Vec<u8> {
+        tone[8..12].copy_from_slice(b"L6PA");
+        tone
+    }
+
     fn sample_drive_pod_tone() -> Vec<u8> {
         fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
             let mut output = id.to_vec();
@@ -5314,6 +5382,113 @@ mod tests {
                 .name()
         );
         assert_eq!(std::fs::read(&source_path).unwrap(), original);
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn fixed_bank_reorder_controls_keep_selection_save_and_quit_state_offline() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let first = as_fixed_bank_tone(sample_drive_pod_tone());
+        let second = as_fixed_bank_tone(sample_pod_tone());
+        let original = sample_fixed_pod_bank(&[first.clone(), second.clone()]);
+        let directory = tempfile::tempdir().unwrap();
+        let collision = directory.path().join("occupied.vwb");
+        let saved = directory.path().join("saved.vwb");
+        std::fs::write(&collision, b"retain this destination").unwrap();
+
+        app.pod_open = true;
+        app.load_pod_bundle_bytes(original.clone()).unwrap();
+        recording_frame(&context, &mut app, vec![]);
+        assert!(app.pod_buttons.contains_key("pod-move-entry-up"));
+        assert!(app.pod_buttons.contains_key("pod-move-entry-down"));
+        assert!(!app.pod_buttons.contains_key("pod-duplicate-entry"));
+        assert!(!app.pod_buttons.contains_key("pod-remove-entry"));
+
+        app.pod_selected = Some(1);
+        app.refresh_selected_pod_name();
+        app.pod_cab_pending = Some((
+            1,
+            pod_preset::PodCabModelChoice::from_model_id(0x0102_0016).unwrap(),
+        ));
+        let pending_before_rejected_action = app.pod_cab_pending;
+        let original_bundle_bytes = app.pod_bundle.as_ref().unwrap().as_bytes().to_vec();
+        let original_library_tones: Vec<_> = (0..app.pod_library.len())
+            .map(|index| app.pod_library.tone(index).unwrap().as_bytes().to_vec())
+            .collect();
+        app.apply_pod_membership_action(PodMembershipAction::MoveDown, 99, 1);
+        assert_eq!(
+            app.pod_bundle.as_ref().unwrap().as_bytes(),
+            original_bundle_bytes
+        );
+        assert_eq!(app.pod_selected, Some(1));
+        assert_eq!(app.pod_cab_pending, pending_before_rejected_action);
+        assert_eq!(
+            (0..app.pod_library.len())
+                .map(|index| { app.pod_library.tone(index).unwrap().as_bytes().to_vec() })
+                .collect::<Vec<_>>(),
+            original_library_tones
+        );
+
+        click_pod(&context, &mut app, "pod-move-entry-up");
+        let bundle = app.pod_bundle.as_ref().unwrap();
+        assert_eq!(bundle.tone(0, 0).unwrap().as_bytes(), second);
+        assert_eq!(bundle.tone(0, 1).unwrap().as_bytes(), first);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), second);
+        assert_eq!(app.pod_selected, Some(0));
+        assert_eq!(
+            app.pod_name,
+            pod_preset::PodTone::parse(second.clone()).unwrap().name()
+        );
+        assert!(bundle.is_dirty());
+        assert!(app.pod_cab_pending.is_none());
+        assert!(app.pod_message.contains("fixed bank"));
+        assert!(std::fs::read(&collision).unwrap() == b"retain this destination");
+
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pending.is_none());
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+
+        app.request_close(&context);
+        app.dialogs.queue_pod_save(Some(collision.clone()));
+        click_prompt(&context, &mut app, "save");
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_eq!(
+            std::fs::read(&collision).unwrap(),
+            b"retain this destination"
+        );
+
+        app.dialogs.queue_pod_save(Some(saved.clone()));
+        click_prompt(&context, &mut app, "save");
+        assert!(app.pending.is_none());
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_eq!(
+            pod_preset::PodBundleLibrary::parse(std::fs::read(&saved).unwrap())
+                .unwrap()
+                .as_bytes(),
+            app.pod_bundle.as_ref().unwrap().as_bytes()
+        );
+
+        click_pod(&context, &mut app, "pod-move-entry-down");
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_eq!(app.pod_selected, Some(1));
+        app.permit_close = false;
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "discard");
+        assert!(app.pending.is_none());
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_eq!(
+            app.pod_bundle.as_ref().unwrap().as_bytes(),
+            std::fs::read(&saved).unwrap()
+        );
+        assert_eq!(app.pod_selected, Some(1));
+        assert_eq!(app.pod_library.len(), 2);
         const {
             assert!(LIVE_ACCESS_LOCKED);
         }

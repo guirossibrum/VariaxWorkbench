@@ -87,14 +87,29 @@ The 16 MiB cap and zero-tone rejection apply transactionally. Folder names,
 container types, unselected tones, opaque children, and original padding remain
 byte-preserved. Selection and pending CAB choice state refresh after an operation;
 collection dirty, save-copy, revert, and quit handling track membership changes.
-`L6BA` roots and `BANK` containers do not expose these controls; fixed-bank
-compatibility remains unimplemented. Static Line6Edit 3.06 references are
+`L6BA` roots and `BANK` containers do not expose the folder Duplicate/Remove
+controls. A separate admitted offline operation
+reorders existing type-0 `L6PA` tones only within one nonempty `BANK` of an
+`L6BA` file, and only when every recognized patch in that bank has PODxt Live
+PINF target `0x0003000a`. It preserves complete tone token bytes and padding,
+opaque sibling tokens in their original positions, metadata, other banks, and
+root/bank lengths. It constructs and reparses a candidate before replacing
+library state. `L6BA/FLDR`, `L6CO/BANK`, folders, empty banks, `L6FS`, `L6AS`,
+other targets, cross-bank moves, duplicate/remove, and creation/deletion remain
+rejected or unavailable. This does not establish a physical bank-slot layout or
+device acceptance. Static Line6Edit 3.06 references are
 `L6Bundle.GetBanks/SetBanks`, `L6PatchBank.GetPatches/SetPatches`,
 `L6PatchTree.DropPatch`, and
 `L6PatchTree$BundleStructureValidator.ValidateChangeBankStructure`; they support
 ordered membership and proposed-structure validation. They do not establish
-opaque-child preservation or device acceptance. This is a conservative Rust
-byte-preserving policy, not vendor writer equivalence. Bundle files are
+the Rust operation's byte-preservation contract or device acceptance. This is a
+conservative Rust byte-preserving policy, not vendor writer equivalence. Offline
+synthetic regressions cover unequal-length tones, opaque siblings, unchanged
+enclosing lengths, roundtrip, unsupported root/bank/patch types, save collision,
+selection, pending choices, and quit cancel/save/discard. Pinned Rust 1.99.1 local
+validation passed `cargo test --all-features` (261 library, 41 GUI, 26 integration
+tests; 328 total), Clippy with warnings denied, and formatting; configured exact-head
+checks are pending. Bundle files are
 bounded to 16 MiB before UI reads. The path is checked before open,
 the opened handle is checked again, and the reader consumes no more than the
 ceiling plus one sentinel byte if the file grows during reading. The public
