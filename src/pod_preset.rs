@@ -23,11 +23,10 @@
 //! The MIDI hardware id `L6HW_ID_PODXTLIVE` (18000) is a different namespace.
 //! The archived firmware version `0x03010000` is not a requirement of a tone file.
 
-use crate::bundle::BundleFile;
 use crate::document;
 use crate::pod_assets::{self, SlotRole};
 use crate::preset;
-use std::path::Path;
+use std::{ops::Range, path::Path};
 
 /// PINF target for PODxt Live. Equal to `L6ProductConstants.PODXT_LIVE`.
 pub const PODXT_LIVE_TONE_ID: u32 = 0x0003_000a;
@@ -1800,54 +1799,114 @@ impl Library {
 /// Live tones. The generic guitar document continues to reject such files.
 #[derive(Clone, Debug)]
 pub struct PodBundleLibrary {
-    file: BundleFile,
+    bytes: Vec<u8>,
     saved: Vec<u8>,
+    banks: Vec<PodBundleBank>,
+}
+
+#[derive(Clone, Debug)]
+struct PodBundleBank {
+    name: String,
+    entry_ranges: Vec<Range<usize>>,
+    chunk_start: usize,
+    data_length: usize,
 }
 
 impl PodBundleLibrary {
     pub fn parse(bytes: Vec<u8>) -> Result<Self, ToneError> {
-        let file = BundleFile::parse(bytes).map_err(ToneError::format)?;
-        let presets: Vec<_> = file
-            .banks()
-            .iter()
-            .flat_map(|bank| bank.presets())
-            .collect();
-        if presets.is_empty() {
+        if bytes.len() < 12 || &bytes[..4] != b"FORM" || !matches!(&bytes[8..12], b"L6BA" | b"L6CO")
+        {
+            return Err(ToneError::format(
+                "expected Workbench FORM/L6BA or FORM/L6CO",
+            ));
+        }
+        if preset::word(&bytes, 4) as usize != bytes.len() - 8 {
+            return Err(ToneError::format(
+                "bundle FORM length does not match the file",
+            ));
+        }
+        let mut banks = Vec::new();
+        let mut tone_count = 0;
+        let outer = preset::chunks(&bytes, 12..bytes.len()).map_err(ToneError::format)?;
+        for bank in outer.iter().filter(|entry| {
+            preset::container(&bytes, entry, b"BANK") || preset::container(&bytes, entry, b"FLDR")
+        }) {
+            let children = preset::chunks(&bytes, bank.data.start + 4..bank.data.end)
+                .map_err(ToneError::format)?;
+            let info = preset::unique(&children, b"BINF").map_err(ToneError::format)?;
+            if info.data.len() < 68 {
+                return Err(ToneError::format("truncated bank information"));
+            }
+            let units: Vec<_> = bytes[info.data.start + 4..info.data.start + 68]
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|unit| u16::from_be_bytes(*unit))
+                .take_while(|&unit| unit != 0)
+                .collect();
+            let name = String::from_utf16(&units)
+                .map_err(|_| ToneError::format("invalid UTF-16 bank name"))?
+                .trim_end()
+                .to_owned();
+            let mut entry_ranges = Vec::new();
+            for entry in children.iter().filter(|child| {
+                preset::container(&bytes, child, b"L6PA")
+                    || preset::container(&bytes, child, b"L6FS")
+                    || preset::container(&bytes, child, b"L6AS")
+            }) {
+                let payload_end = entry.data.end;
+                let full_end = payload_end + (entry.data.len() & 1);
+                let full_range = entry.data.start - 8..full_end;
+                let tone_range = entry.data.start - 8..payload_end;
+                PodTone::parse(bytes[tone_range].to_vec())?;
+                tone_count += 1;
+                entry_ranges.push(full_range);
+            }
+            banks.push(PodBundleBank {
+                name,
+                entry_ranges,
+                chunk_start: bank.data.start - 8,
+                data_length: bank.data.len(),
+            });
+        }
+        if tone_count == 0 {
             return Err(ToneError::format("POD bank/collection contains no tones"));
         }
-        for preset in presets {
-            if !preset.is_podxt_live_target() {
-                return Err(ToneError::WrongTarget {
-                    device_id: preset.device_id(),
-                });
-            }
-            PodTone::parse(preset.as_bytes().to_vec())?;
-        }
-        let saved = file.as_bytes().to_vec();
-        Ok(Self { file, saved })
+        let saved = bytes.clone();
+        Ok(Self {
+            bytes,
+            saved,
+            banks,
+        })
     }
 
     pub fn bank_count(&self) -> usize {
-        self.file.banks().len()
+        self.banks.len()
     }
 
     pub fn preset_count(&self, bank: usize) -> Option<usize> {
-        self.file
-            .banks()
-            .get(bank)
-            .map(|entry| entry.presets().len())
+        self.banks.get(bank).map(|entry| entry.entry_ranges.len())
+    }
+
+    pub fn bank_name(&self, bank: usize) -> Option<&str> {
+        self.banks.get(bank).map(|entry| entry.name.as_str())
     }
 
     pub fn tone(&self, bank: usize, preset: usize) -> Result<PodTone, ToneError> {
-        let bytes = self
-            .file
-            .banks()
+        let range = self
+            .banks
             .get(bank)
-            .and_then(|entry| entry.presets().get(preset))
+            .and_then(|entry| entry.entry_ranges.get(preset))
             .ok_or_else(|| ToneError::format("bank or preset index is outside the library"))?
-            .as_bytes()
-            .to_vec();
-        PodTone::parse(bytes)
+            .clone();
+        // Parse by the embedded FORM's own declared length so its parent's IFF
+        // alignment byte never enters PodTone.
+        let form_length = preset::word(&self.bytes, range.start + 4) as usize;
+        let end = range.start + 8 + form_length;
+        if end > range.end {
+            return Err(ToneError::format("embedded tone exceeds its IFF chunk"));
+        }
+        PodTone::parse(self.bytes[range.start..end].to_vec())
     }
 
     pub fn edit_tone(
@@ -1858,15 +1917,64 @@ impl PodBundleLibrary {
     ) -> Result<(), ToneError> {
         let mut tone = self.tone(bank, preset)?;
         edit(&mut tone)?;
-        let replacement =
-            crate::preset::PresetFile::parse(tone.into_bytes()).map_err(ToneError::format)?;
-        self.file
-            .replace(bank, preset, &replacement)
-            .map_err(ToneError::format)
+        self.replace_tone(bank, preset, &tone)
+    }
+
+    fn replace_tone(
+        &mut self,
+        bank_index: usize,
+        preset_index: usize,
+        replacement: &PodTone,
+    ) -> Result<(), ToneError> {
+        let bank = self
+            .banks
+            .get(bank_index)
+            .ok_or_else(|| ToneError::format("bank index is outside the library"))?;
+        let range = bank
+            .entry_ranges
+            .get(preset_index)
+            .ok_or_else(|| ToneError::format("preset index is outside the library"))?
+            .clone();
+        let old_span = range.end - range.start;
+        let old_form_length = preset::word(&self.bytes, range.start + 4) as usize;
+        let old_payload_length = 8 + old_form_length;
+        let tone_bytes = replacement.as_bytes();
+        let replacement_span = tone_bytes.len() + (tone_bytes.len() & 1);
+        let new_bank_length = bank
+            .data_length
+            .checked_sub(old_span)
+            .and_then(|length| length.checked_add(replacement_span))
+            .ok_or_else(|| ToneError::format("bundle size overflow"))?;
+        let new_file_length = self
+            .bytes
+            .len()
+            .checked_sub(old_span)
+            .and_then(|length| length.checked_add(replacement_span))
+            .ok_or_else(|| ToneError::format("bundle size overflow"))?;
+        let bank_length = u32::try_from(new_bank_length)
+            .map_err(|_| ToneError::format("bank exceeds IFF size capacity"))?;
+        let root_length = u32::try_from(new_file_length - 8)
+            .map_err(|_| ToneError::format("bundle exceeds IFF size capacity"))?;
+        let chunk_start = bank.chunk_start;
+        let mut encoded = tone_bytes.to_vec();
+        if tone_bytes.len() & 1 != 0 {
+            let original_pad =
+                (old_payload_length & 1 == 1).then(|| self.bytes[range.start + old_payload_length]);
+            encoded.push(original_pad.unwrap_or(0));
+        }
+        let mut bytes = self.bytes.clone();
+        bytes.splice(range, encoded);
+        bytes[chunk_start + 4..chunk_start + 8].copy_from_slice(&bank_length.to_be_bytes());
+        bytes[4..8].copy_from_slice(&root_length.to_be_bytes());
+        let saved = self.saved.clone();
+        let mut next = Self::parse(bytes)?;
+        next.saved = saved;
+        *self = next;
+        Ok(())
     }
 
     pub fn as_bytes(&self) -> &[u8] {
-        self.file.as_bytes()
+        &self.bytes
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -1875,7 +1983,8 @@ impl PodBundleLibrary {
 
     pub fn revert(&mut self) -> Result<(), ToneError> {
         if self.is_dirty() {
-            self.file = BundleFile::parse(self.saved.clone()).map_err(ToneError::format)?;
+            let restored = Self::parse(self.saved.clone())?;
+            *self = restored;
         }
         Ok(())
     }
@@ -2063,6 +2172,10 @@ mod tests {
     }
 
     fn bundle_with_tone(tone: &[u8]) -> Vec<u8> {
+        bundle_with_banks(&[vec![tone.to_vec()]])
+    }
+
+    fn bundle_with_banks(banks: &[Vec<Vec<u8>>]) -> Vec<u8> {
         fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
             let mut bytes = id.to_vec();
             bytes.extend_from_slice(&(data.len() as u32).to_be_bytes());
@@ -2072,15 +2185,23 @@ mod tests {
             }
             bytes
         }
-        let mut info = vec![0; 68];
-        info[4..6].copy_from_slice(&u16::from(b'P').to_be_bytes());
-        let mut bank = b"BANK".to_vec();
-        bank.extend(chunk(b"BINF", &info));
-        bank.extend(chunk(b"NOTE", &[0xde, 0xad, 0xbe]));
-        bank.extend_from_slice(tone);
         let mut root = b"L6CO".to_vec();
-        root.extend(chunk(b"JUNK", &[0x71, 0x72]));
-        root.extend(chunk(b"LIST", &bank));
+        root.extend(chunk(b"JUNK", &[0x71, 0x72, 0x73]));
+        for (index, entries) in banks.iter().enumerate() {
+            let mut info = vec![0; 68];
+            info[4..6].copy_from_slice(&u16::from(b'A' + index as u8).to_be_bytes());
+            let mut bank = if index % 2 == 0 {
+                b"BANK".to_vec()
+            } else {
+                b"FLDR".to_vec()
+            };
+            bank.extend(chunk(b"BINF", &info));
+            bank.extend(chunk(b"NOTE", &[0xde, 0xad, 0xbe]));
+            for tone in entries {
+                bank.extend_from_slice(tone);
+            }
+            root.extend(chunk(b"LIST", &bank));
+        }
         chunk(b"FORM", &root)
     }
 
@@ -4112,13 +4233,73 @@ mod tests {
     }
 
     #[test]
+    fn pod_bundle_library_admits_each_standalone_patch_form() {
+        for kind in [
+            ContainerKind::L6pa,
+            ContainerKind::L6fs,
+            ContainerKind::L6as,
+        ] {
+            let mut tone = drive_tone(PODXT_LIVE_HOST_MIN_VERSION, PLEXI_LEAD_100_MODEL, &[]);
+            tone[8..12].copy_from_slice(kind.tag().as_bytes());
+            let bundle = bundle_with_tone(&tone);
+            let mut library = PodBundleLibrary::parse(bundle).unwrap();
+            assert_eq!(library.tone(0, 0).unwrap().container(), kind);
+            library
+                .edit_tone(0, 0, |selected| selected.rename("Renamed"))
+                .unwrap();
+            let reopened = PodBundleLibrary::parse(library.as_bytes().to_vec()).unwrap();
+            assert_eq!(reopened.tone(0, 0).unwrap().container(), kind);
+            assert_eq!(reopened.tone(0, 0).unwrap().name(), "Renamed");
+        }
+    }
+
+    #[test]
     fn pod_bundle_library_edits_reverts_and_rejects_mixed_target_collections() {
-        let parm = drive_record(0x3f, 0x0010_0003, 1, 0x3e80_0000);
-        let tone = drive_tone(PODXT_LIVE_HOST_MIN_VERSION, PLEXI_LEAD_100_MODEL, &[&parm]);
-        let original = bundle_with_tone(&tone);
+        let first = drive_record(0x3f, 0x0010_0003, 1, 0x3e00_0000);
+        let last = drive_record(0x3f, 0x0010_0003, 1, 0x3e80_0000);
+        let opaque = [0xde, 0xad, 0xbe];
+        let tone = custom_tone(
+            ContainerKind::L6fs,
+            &[
+                BuiltModel {
+                    slot: AMP_SLOT,
+                    model_id: PLEXI_LEAD_100_MODEL,
+                    tail: &[0xa1, 0xb2, 0xc3, 0xd4],
+                    parameters: &[&first, &last],
+                },
+                BuiltModel {
+                    slot: STOMP_SLOT,
+                    model_id: 0x0200_0002,
+                    tail: &[0x11, 0x22, 0x33, 0x44],
+                    parameters: &[&opaque],
+                },
+            ],
+        );
+        let ambiguous = custom_tone(
+            ContainerKind::L6as,
+            &[BuiltModel {
+                slot: AMP_SLOT,
+                model_id: PLEXI_LEAD_100_MODEL,
+                tail: &[0xa1, 0xb2, 0xc3, 0xd4],
+                parameters: &[&first, &opaque],
+            }],
+        );
+        let third_parm = drive_record(0x3f, 0x0010_0003, 1, 0x3e00_0000);
+        let unselected = drive_tone(
+            PODXT_LIVE_HOST_MIN_VERSION,
+            PLEXI_LEAD_100_MODEL,
+            &[&third_parm],
+        );
+        let original = bundle_with_banks(&[
+            vec![tone.clone(), ambiguous.clone()],
+            vec![unselected.clone()],
+        ]);
         let mut library = PodBundleLibrary::parse(original.clone()).unwrap();
-        assert_eq!(library.bank_count(), 1);
-        assert_eq!(library.preset_count(0), Some(1));
+        assert_eq!(library.bank_count(), 2);
+        assert_eq!(library.preset_count(0), Some(2));
+        assert_eq!(library.preset_count(1), Some(1));
+        assert_eq!(library.bank_name(0), Some("A"));
+        assert_eq!(library.bank_name(1), Some("B"));
         assert_eq!(library.tone(0, 0).unwrap().as_bytes(), tone);
         assert!(!library.is_dirty());
 
@@ -4127,11 +4308,12 @@ mod tests {
             .windows(tone.len())
             .position(|window| window == tone)
             .unwrap();
-        let value_offset = tone
-            .windows(parm.len())
-            .position(|window| window == parm)
-            .unwrap()
-            + 8;
+        let parameter_positions: Vec<_> = tone
+            .windows(last.len())
+            .enumerate()
+            .filter_map(|(index, window)| (window == last).then_some(index))
+            .collect();
+        let value_offset = parameter_positions.last().copied().unwrap() + 8;
         expected[tone_start + value_offset..tone_start + value_offset + 4]
             .copy_from_slice(&0x3f00_0000u32.to_be_bytes());
         library
@@ -4141,14 +4323,31 @@ mod tests {
             .unwrap();
         assert_eq!(library.as_bytes(), expected);
         assert!(library.is_dirty());
+        assert_eq!(library.tone(1, 0).unwrap().as_bytes(), unselected);
+        assert!(
+            library
+                .tone(0, 0)
+                .unwrap()
+                .as_bytes()
+                .windows(opaque.len())
+                .any(|window| window == opaque)
+        );
         assert_eq!(
             library.tone(0, 0).unwrap().as_bytes()[value_offset..value_offset + 4],
             0x3f00_0000u32.to_be_bytes()
         );
+        let before_failed_edit = library.as_bytes().to_vec();
+        assert!(
+            library
+                .edit_tone(0, 1, |selected| selected
+                    .set_amp_control_fraction(AmpControl::Drive, 0.5))
+                .is_err()
+        );
+        assert_eq!(library.as_bytes(), before_failed_edit);
         library.revert().unwrap();
         assert_eq!(library.as_bytes(), original);
         assert!(!library.is_dirty());
-        assert!(library.edit_tone(1, 0, |_| Ok(())).is_err());
+        assert!(library.edit_tone(2, 0, |_| Ok(())).is_err());
 
         library
             .edit_tone(0, 0, |selected| {
@@ -4170,14 +4369,16 @@ mod tests {
             "save copy refuses overwrite"
         );
 
-        let mut other_target = tone.clone();
-        let pinf = find_chunk_data(&other_target, b"PINF");
-        other_target[pinf + 4..pinf + 8].copy_from_slice(&0x70000u32.to_be_bytes());
-        let mixed = bundle_with_tone(&other_target);
+        let guitar = include_bytes!("../tests/fixtures/editor-preset.vwm").to_vec();
+        let mixed = bundle_with_banks(&[vec![tone.clone()], vec![guitar]]);
         assert!(matches!(
             PodBundleLibrary::parse(mixed),
-            Err(ToneError::WrongTarget { device_id: 0x70000 })
+            Err(ToneError::WrongTarget { device_id }) if device_id != PODXT_LIVE_TONE_ID
         ));
+        assert!(PodBundleLibrary::parse(bundle_with_banks(&[vec![]])).is_err());
+        let mut malformed = original;
+        malformed[4..8].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(PodBundleLibrary::parse(malformed).is_err());
     }
 
     #[test]

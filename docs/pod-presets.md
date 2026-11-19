@@ -72,9 +72,13 @@ tone. The individual-tone GUI library is a list of those files.
 `PodBundleLibrary` also opens existing Workbench L6BA/L6CO banks and collections
 when every contained preset is a PODxt Live tone. It provides selected-tone
 editing, dirty tracking, revert and atomic non-overwriting save-copy while
-retaining the original bundle structure. It rejects empty and mixed-target
-bundles. GUI bank navigation remains unimplemented; this API does not synthesize
-bank membership or claim vendor save compatibility.
+retaining the original bundle structure. Its POD-specific IFF framing validates
+embedded tones with `PodTone` rather than routing them through the stricter
+guitar `PresetFile` semantic parser; duplicate records and unrelated short
+opaque PARM children therefore remain inspectable and preservable under the
+POD contract. Ambiguous targeted controls still reject. It rejects empty and
+mixed-target bundles. GUI bank navigation remains unimplemented; this API does
+not synthesize bank membership or claim vendor save compatibility.
 
 The PINF name edit uses the same 32-unit NUL and length rule as the guitar
 renamer. Six host-scale edits are available for Drive, Bass, Mid, Treble,
