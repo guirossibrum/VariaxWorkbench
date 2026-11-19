@@ -14693,31 +14693,40 @@ pub(crate) mod tests {
     #[test]
     fn reverb_model_selector_enforces_target_container_and_profile_before_same_id_noop() {
         let choice = PodReverbModelChoice::try_from(0x0204_0002).unwrap();
-        for (kind, target, version) in [
-            (
-                ContainerKind::L6pa,
-                PODXT_LIVE_TONE_ID + 1,
-                PODXT_LIVE_HOST_MIN_VERSION,
-            ),
-            (
-                ContainerKind::L6pa,
-                PODXT_LIVE_TONE_ID,
-                PODXT_LIVE_HOST_MIN_VERSION - 1,
-            ),
-            (
-                ContainerKind::L6fs,
-                PODXT_LIVE_TONE_ID,
-                PODXT_LIVE_HOST_MIN_VERSION,
-            ),
-        ] {
-            let input = fixture(kind, target, version, &[(REVERB_SLOT, choice.model_id())]);
-            let Ok(mut tone) = PodTone::parse(input) else {
-                continue;
-            };
-            let before = tone.as_bytes().to_vec();
-            assert!(tone.set_reverb_model_choice(choice).is_err());
-            assert_eq!(tone.as_bytes(), before);
-        }
+        let wrong_target = fixture(
+            ContainerKind::L6pa,
+            PODXT_LIVE_TONE_ID + 1,
+            PODXT_LIVE_HOST_MIN_VERSION,
+            &[(REVERB_SLOT, choice.model_id())],
+        );
+        assert!(
+            PodTone::parse(wrong_target).is_err(),
+            "wrong-target tone must be rejected at parser ingress"
+        );
+
+        let old_profile = fixture(
+            ContainerKind::L6pa,
+            PODXT_LIVE_TONE_ID,
+            PODXT_LIVE_HOST_MIN_VERSION - 1,
+            &[(REVERB_SLOT, choice.model_id())],
+        );
+        let mut old_profile = PodTone::parse(old_profile)
+            .expect("old-profile container is parseable before setter policy is checked");
+        let before = old_profile.as_bytes().to_vec();
+        assert!(old_profile.set_reverb_model_choice(choice).is_err());
+        assert_eq!(old_profile.as_bytes(), before);
+
+        let l6fs = fixture(
+            ContainerKind::L6fs,
+            PODXT_LIVE_TONE_ID,
+            PODXT_LIVE_HOST_MIN_VERSION,
+            &[(REVERB_SLOT, choice.model_id())],
+        );
+        let mut l6fs = PodTone::parse(l6fs)
+            .expect("L6FS container is parseable before setter policy is checked");
+        let before = l6fs.as_bytes().to_vec();
+        assert!(l6fs.set_reverb_model_choice(choice).is_err());
+        assert_eq!(l6fs.as_bytes(), before);
         let input = fixture(
             ContainerKind::L6pa,
             PODXT_LIVE_TONE_ID,

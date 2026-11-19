@@ -4977,15 +4977,39 @@ mod tests {
         chunk(b"FORM", &data)
     }
 
+    fn sample_reverb_model_tone_with_tail(model_id: u32, slot: u32, tail: &[u8]) -> Vec<u8> {
+        fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+            let mut bytes = id.to_vec();
+            bytes.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(data);
+            if !data.len().is_multiple_of(2) {
+                bytes.push(0xa5);
+            }
+            bytes
+        }
+        let mut info = vec![0; 80];
+        info[..4].copy_from_slice(&1u32.to_be_bytes());
+        info[4..8].copy_from_slice(&pod_preset::PODXT_LIVE_TONE_ID.to_be_bytes());
+        info[8..10].copy_from_slice(&u16::from(b'R').to_be_bytes());
+        info[72..76].copy_from_slice(&pod_preset::PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
+        let mut minf = Vec::new();
+        minf.extend_from_slice(&model_id.to_be_bytes());
+        minf.extend_from_slice(&slot.to_be_bytes());
+        minf.extend_from_slice(tail);
+        let mut model = b"MODL".to_vec();
+        model.extend(chunk(b"MINF", &minf));
+        model.extend(chunk(b"PARM", &[0xde, 0xad, 0xbe]));
+        model.extend(chunk(b"XTRA", &[0x55, 0x66]));
+        let mut patch = b"PATC".to_vec();
+        patch.extend(chunk(b"LIST", &model));
+        let mut data = b"L6PA".to_vec();
+        data.extend(chunk(b"PINF", &info));
+        data.extend(chunk(b"LIST", &patch));
+        chunk(b"FORM", &data)
+    }
+
     fn sample_reverb_model_tone(model_id: u32, slot: u32) -> Vec<u8> {
-        let mut bytes = sample_stomp_model_tone(0x0205_0000);
-        let old_id = 0x0205_0000u32.to_be_bytes();
-        let id_offset = bytes.windows(4).position(|word| word == old_id).unwrap();
-        bytes[id_offset..id_offset + 4].copy_from_slice(&model_id.to_be_bytes());
-        let old_slot = pod_preset::STOMP_SLOT.to_be_bytes();
-        let slot_offset = bytes.windows(4).position(|word| word == old_slot).unwrap();
-        bytes[slot_offset..slot_offset + 4].copy_from_slice(&slot.to_be_bytes());
-        bytes
+        sample_reverb_model_tone_with_tail(model_id, slot, &[0xfe, 0x12, 0x34, 0x01])
     }
 
     fn sample_pod_bundle(tones: &[Vec<u8>]) -> Vec<u8> {
@@ -7672,6 +7696,134 @@ mod tests {
             bundle.tone(bank, preset).unwrap().reverb_model_id(),
             Some(0x0204_0003)
         );
+    }
+
+    #[test]
+    fn reverb_model_gui_failed_apply_navigation_load_save_reopen_and_quit_guard() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let original = sample_reverb_model_tone(0x0204_0002, pod_preset::REVERB_FALLBACK_SLOT);
+        let other = sample_reverb_model_tone(0x0204_0003, pod_preset::REVERB_FALLBACK_SLOT);
+        let index = app.pod_library.import_bytes(original.clone()).unwrap();
+        let second = app.pod_library.import_bytes(other.clone()).unwrap();
+        app.pod_selected = Some(index);
+        recording_frame_tall(&context, &mut app, vec![]);
+
+        // Failed Apply retains the staged choice and the pre-existing dirty baseline.
+        choose_reverb_model_popup(&context, &mut app, 0x0204_0003);
+        let short_minf =
+            sample_reverb_model_tone_with_tail(0x0204_0002, pod_preset::REVERB_FALLBACK_SLOT, &[]);
+        app.pod_library.replace(index, short_minf.clone()).unwrap();
+        app.pod_delay_pending = Some((index, PendingDelayEdit::TimeMs(350.0)));
+        app.pod_mod_pending = Some((index, PendingModEdit::SpeedHz(2.0)));
+        app.pod_stomp_model_pending = Some((
+            index,
+            pod_preset::PodStompModelChoice::try_from(0x0205_0000).unwrap(),
+        ));
+        assert!(app.pod_library.is_dirty(index));
+        click_pod_button_tall(&context, &mut app, "pod-reverb-model-apply");
+        assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), short_minf);
+        assert_eq!(
+            app.pod_library.tone(index).unwrap().reverb_model_id(),
+            Some(0x0204_0002)
+        );
+        assert!(app.pod_library.is_dirty(index));
+        assert_eq!(
+            app.pod_reverb_model_pending.unwrap().1.model_id(),
+            0x0204_0003
+        );
+        assert_eq!(
+            app.pod_delay_pending,
+            Some((index, PendingDelayEdit::TimeMs(350.0)))
+        );
+        assert_eq!(
+            app.pod_mod_pending,
+            Some((index, PendingModEdit::SpeedHz(2.0)))
+        );
+        assert_eq!(
+            app.pod_stomp_model_pending.unwrap().1.model_id(),
+            0x0205_0000
+        );
+        app.pod_library.revert_unsaved(index).unwrap();
+        app.refresh_selected_pod_name();
+        assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), original);
+        assert!(!app.pod_library.is_dirty(index));
+        assert_eq!(app.pod_reverb_model_pending, None);
+
+        // Changing the selected row clears staged Reverb state.
+        choose_reverb_model_popup(&context, &mut app, 0x0204_0003);
+        let second_row = app.pod_rows[&second].center();
+        click_pod_at_tall(&context, &mut app, second_row);
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert_eq!(app.pod_selected, Some(second));
+        assert_eq!(app.pod_reverb_model_pending, None);
+        app.pod_selected = Some(index);
+        recording_frame_tall(&context, &mut app, vec![]);
+
+        // Loading through the actual button clears staged Reverb state.
+        let directory = tempfile::tempdir().unwrap();
+        let load_path = directory.path().join("loaded-reverb.tone");
+        std::fs::write(&load_path, &other).unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(load_path.clone())].into(),
+            ..Default::default()
+        });
+        choose_reverb_model_popup(&context, &mut app, 0x0204_0003);
+        click_pod_button_tall(&context, &mut app, "load-pod");
+        assert_eq!(app.pod_reverb_model_pending, None);
+        assert_eq!(
+            app.pod_library
+                .tone(app.pod_selected.unwrap())
+                .unwrap()
+                .as_bytes(),
+            other
+        );
+
+        // Collision, save/reopen, and quit confirmation preserve the edit guards.
+        let collision = directory.path().join("occupied.tone");
+        let saved = directory.path().join("reverb-model-copy.tone");
+        std::fs::write(&collision, b"keep existing destination").unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_save: [Some(collision.clone()), Some(saved.clone())].into(),
+            pod_open: [Some(saved.clone())].into(),
+            ..Default::default()
+        });
+        choose_reverb_model_popup(&context, &mut app, 0x0204_0002);
+        click_pod_button_tall(&context, &mut app, "pod-reverb-model-apply");
+        assert!(app.pod_dirty());
+        click_pod_button_tall(&context, &mut app, "save-pod");
+        assert!(app.pod_dirty());
+        assert_eq!(
+            std::fs::read(&collision).unwrap(),
+            b"keep existing destination"
+        );
+        click_pod_button_tall(&context, &mut app, "save-pod");
+        assert!(!app.pod_dirty());
+        click_pod_button_tall(&context, &mut app, "load-pod");
+        let reopened = app.pod_selected.unwrap();
+        assert_eq!(
+            app.pod_library.tone(reopened).unwrap().reverb_model_id(),
+            Some(0x0204_0002)
+        );
+        choose_reverb_model_popup(&context, &mut app, 0x0204_0003);
+        click_pod_button_tall(&context, &mut app, "pod-reverb-model-apply");
+        assert!(app.pod_dirty());
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pod_dirty());
+        app.pod_library.revert_unsaved(reopened).unwrap();
+        app.refresh_selected_pod_name();
+        assert!(!app.pod_dirty());
+        assert_eq!(
+            app.pod_library.tone(reopened).unwrap().reverb_model_id(),
+            Some(0x0204_0002)
+        );
+        assert_eq!(app.pod_reverb_model_pending, None);
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
     }
 
     #[test]
