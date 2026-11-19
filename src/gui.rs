@@ -4473,9 +4473,6 @@ mod tests {
             2 => "hd-type9-choice-option-2",
             _ => panic!("invalid type-9 choice index"),
         };
-        hd_editor_frame(context, app, vec![]);
-        scroll_hd_editor_control_into_view(context, app, option_id);
-        hd_editor_frame(context, app, vec![]);
         click_hd_editor(context, app, option_id);
     }
 
@@ -4638,7 +4635,7 @@ mod tests {
         let other_row = (row + 1) % 12;
         let at = block + 0x10 + other_row * 0x14;
         bytes[at..at + 4].copy_from_slice(&0x3f10_0004u32.to_be_bytes());
-        bytes[at + 4..at + 8].copy_from_slice(&0x3f00_0000u32.to_be_bytes());
+        bytes[at + 4..at + 8].copy_from_slice(&0x0000_0000u32.to_be_bytes());
         bytes
     }
 
