@@ -1819,12 +1819,12 @@ impl Workbench {
                         self.save_pod_tone();
                     }
                     if let Some(index) = self.pod_selected {
-                        let response = ui.menu_button("Model flags…", |ui| {
+                        let _response = ui.menu_button("Model flags…", |ui| {
                             self.model_enable_menu(ui, index);
                         });
                         #[cfg(test)]
                         {
-                            self.pod_model_enable_menu = Some(response.response.rect);
+                            self.pod_model_enable_menu = Some(_response.response.rect);
                         }
                     }
                 });
@@ -2372,7 +2372,10 @@ impl Workbench {
 
     fn model_enable_menu(&mut self, ui: &mut egui::Ui, index: usize) {
         ui.label("Stored model flags only; no bypass, audio, or device effect is claimed.");
-        for control in [pod_preset::PodModelEnable::Amp, pod_preset::PodModelEnable::Eq] {
+        for control in [
+            pod_preset::PodModelEnable::Amp,
+            pod_preset::PodModelEnable::Eq,
+        ] {
             let state = self
                 .pod_library
                 .tone(index)
@@ -2388,9 +2391,9 @@ impl Workbench {
                     #[cfg(test)]
                     self.pod_model_enable_checks.insert(control, response.rect);
                     if response.changed() {
-                        match self.edit_pod_tone(index, |tone| {
-                            tone.set_model_enabled(control, enabled)
-                        }) {
+                        match self
+                            .edit_pod_tone(index, |tone| tone.set_model_enabled(control, enabled))
+                        {
                             Ok(()) => {
                                 self.pod_message = format!(
                                     "Applied {} stored enable flag. Nothing was sent.",
@@ -3678,6 +3681,12 @@ mod tests {
 
     fn open_pod_model_enable_menu(context: &egui::Context, app: &mut Workbench) {
         recording_frame(context, app, vec![]);
+        click_pod_model_enable_menu(context, app);
+        recording_frame(context, app, vec![]);
+    }
+
+    fn click_pod_model_enable_menu(context: &egui::Context, app: &mut Workbench) {
+        recording_frame(context, app, vec![]);
         let pos = app.pod_model_enable_menu.unwrap().center();
         recording_frame(
             context,
@@ -3702,7 +3711,6 @@ mod tests {
                 modifiers: Default::default(),
             }],
         );
-        recording_frame(context, app, vec![]);
     }
 
     fn sample_pod_tone() -> Vec<u8> {
@@ -3952,6 +3960,7 @@ mod tests {
         );
         assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), noncanonical);
         assert!(!app.pod_library.is_dirty(0));
+        click_pod_model_enable_menu(&context, &mut app);
 
         let eq_tone = sample_pod_eq_tone();
         app.load_pod_bundle_bytes(sample_pod_bundle(std::slice::from_ref(&eq_tone)))
