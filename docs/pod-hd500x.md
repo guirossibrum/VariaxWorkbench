@@ -444,10 +444,17 @@ must be extracted before editing. The shared POD HD500X extension Session is
 required. GUI Apply/Discard is explicit and stages by entry/slot/model; a file,
 slot, or model-context change invalidates the stage. Tests cover the eight file
 slots, representative first/middle/last rows and both enable states, literal
-serialized words, unknown/non-finite reads, malformed and cross-type rejection,
-profile/library gates, extracted-child isolation, save collision/reopen/revert,
-and GUI apply/discard/context switching. These are offline synthetic checks,
-not physical-device evidence.
+serialized words, checked-in full-file source and both expected vectors with
+suffix/opaque-byte comparison and no-op, unknown/non-finite reads, malformed
+and cross-type rejection, profile/library gates, extracted-child isolation,
+save collision/reopen/revert, and GUI apply/discard/context switching,
+including same-file/same-slot type-9↔type-8 invalidation and invalid-marker
+Apply rejection with pending/dirty/baseline preservation. Non-finite and
+unavailable GUI inputs cannot be staged. These are offline synthetic checks,
+not physical-device evidence. The conditional editor/context path
+`0x00413EB0`/`0x00414E30` remains unresolved: its context checks and update
+notifications are not implemented here. This conservative file edit does not
+claim complete callback, UI, or runtime parity.
 
 ### Additional selected numeric control contracts
 

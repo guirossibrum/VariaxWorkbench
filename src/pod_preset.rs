@@ -3924,14 +3924,20 @@ mod tests {
     }
 
     fn synthetic_type8_h5ep(slot: usize, row: usize, enabled: u8, value: u32) -> Vec<u8> {
-        synthetic_type9_h5ep_for(
-            slot,
-            row,
-            enabled,
-            value,
-            HD_TYPE8_CHOICE_MODEL_ID,
-            HD_TYPE8_CHOICE_KEY,
-        )
+        let mut bytes = synthetic_h5ep(b"type8-tail");
+        // Keep this procedural matrix builder independent of the type-9
+        // fixture builder; the fixed full-file vectors below are the oracle.
+        let block = H5EP_HEADER_BYTES + 0x428 + slot * 0x100;
+        bytes[block..block + 4].copy_from_slice(&HD_TYPE8_CHOICE_MODEL_ID.to_be_bytes());
+        bytes[block + 8] = enabled;
+        bytes[block + 0x0b] = 1;
+        bytes[block + 0x0f] = 12;
+        let row_at = block + 0x10 + row * 0x14;
+        bytes[row_at..row_at + 4].copy_from_slice(&HD_TYPE8_CHOICE_KEY.to_be_bytes());
+        bytes[row_at + 4..row_at + 8].copy_from_slice(&value.to_be_bytes());
+        bytes[row_at + 8..row_at + 0x10].copy_from_slice(&[0x31; 8]);
+        bytes[row_at + 0x10..row_at + 0x14].copy_from_slice(&[0, 0x42, 0x43, 0x44]);
+        bytes
     }
 
     fn synthetic_enable_h5ep(effect_slot: usize, enabled_byte: u8) -> Vec<u8> {
@@ -6427,5 +6433,53 @@ mod tests {
                 .is_err()
         );
         assert_eq!(bad_marker.as_bytes(), before, "guards run before no-op");
+    }
+
+    fn decode_hex_fixture(hex: &str) -> Vec<u8> {
+        hex.split_whitespace()
+            .map(|byte| u8::from_str_radix(byte, 16).expect("fixture contains hex bytes"))
+            .collect()
+    }
+
+    #[test]
+    fn type8_choice_matches_independent_complete_file_vectors_and_noop() {
+        // These vectors are checked-in complete H5EP + suffix fixtures. The
+        // two expected outputs are literal files, not rebuilt with setter or
+        // production offset helpers. The target value is at fixed file offset
+        // 0x9dc in this independently specified source layout.
+        let source = decode_hex_fixture(include_str!("../tests/fixtures/type8-choice-source.hex"));
+        let choice0 = decode_hex_fixture(include_str!("../tests/fixtures/type8-choice-0.hex"));
+        let choice1 = decode_hex_fixture(include_str!("../tests/fixtures/type8-choice-1.hex"));
+        assert_eq!(source.len(), choice0.len());
+        assert_eq!(source.len(), choice1.len());
+        assert_eq!(&source[..8], b"H5EP\0\0\0\x01");
+        assert_eq!(&source[0x9dc..0x9e0], &[0x3e, 0xaa, 0xaa, 0xab]);
+        assert_eq!(&choice0[0x9dc..0x9e0], &[0x00, 0x00, 0x00, 0x00]);
+        assert_eq!(&choice1[0x9dc..0x9e0], &[0x3f, 0x80, 0x00, 0x00]);
+        for offset in 0..source.len() {
+            if !(0x9dc..0x9e0).contains(&offset) {
+                assert_eq!(source[offset], choice0[offset], "choice0 byte {offset:#x}");
+                assert_eq!(source[offset], choice1[offset], "choice1 byte {offset:#x}");
+            }
+        }
+        assert_eq!(&source[H5EP_MIN_BYTES..], b"TYPE8-SYNTHETIC-SUFFIX");
+
+        let slot = HdFxSlot::new(5).unwrap();
+        let mut to_zero = OpaqueH5epPreset::parse(source.clone()).unwrap();
+        to_zero
+            .set_hd_type8_choice(slot, HdType8Choice::Choice0)
+            .unwrap();
+        assert_eq!(to_zero.as_bytes(), choice0);
+        let mut to_one = OpaqueH5epPreset::parse(source).unwrap();
+        to_one
+            .set_hd_type8_choice(slot, HdType8Choice::Choice1)
+            .unwrap();
+        assert_eq!(to_one.as_bytes(), choice1);
+
+        let mut no_op = OpaqueH5epPreset::parse(choice0.clone()).unwrap();
+        no_op
+            .set_hd_type8_choice(slot, HdType8Choice::Choice0)
+            .unwrap();
+        assert_eq!(no_op.as_bytes(), choice0);
     }
 }

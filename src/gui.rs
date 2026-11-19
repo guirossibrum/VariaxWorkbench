@@ -5414,22 +5414,101 @@ mod tests {
         assert!(app.hd_type9_pending.is_none());
         assert!(app.hd_type8_pending.is_none());
 
+        // Same entry and same file slot can change type context while a choice
+        // is staged. A real editor frame must discard each stale stage without
+        // applying its previous value.
         app.hd_effect_slot = slot_index;
         click_hd_type8_choice(&context, &mut app, 0);
+        hd_editor_frame(&context, &mut app, vec![]);
+        assert!(app.hd_type8_pending.is_some());
+        let type9_same_context = sample_hd_type9_preset(slot_index, row_index, 0x3f40_0000);
+        *app.hd_library.file_mut(type8).unwrap() =
+            PodPresetFile::parse(type9_same_context.clone()).unwrap();
+        hd_editor_frame(&context, &mut app, vec![]);
+        assert!(app.hd_type8_pending.is_none());
+        assert!(app.hd_type9_pending.is_none());
+        assert_hd_bytes_eq(
+            app.hd_library.file(type8).unwrap().as_bytes(),
+            &type9_same_context,
+            "type-8 pending stage invalidated by same-file type-9 model",
+        );
+
+        click_hd_type9_choice(&context, &mut app, 2);
+        hd_editor_frame(&context, &mut app, vec![]);
+        assert!(app.hd_type9_pending.is_some());
+        *app.hd_library.file_mut(type8).unwrap() = PodPresetFile::parse(expected.clone()).unwrap();
+        hd_editor_frame(&context, &mut app, vec![]);
+        assert!(app.hd_type9_pending.is_none());
+        assert!(app.hd_type8_pending.is_none());
+        assert_hd_bytes_eq(
+            app.hd_library.file(type8).unwrap().as_bytes(),
+            &expected,
+            "type-9 pending stage invalidated by same-file type-8 model",
+        );
+
+        app.hd_effect_slot = slot_index;
+        click_hd_type8_choice(&context, &mut app, 0);
+        hd_editor_frame(&context, &mut app, vec![]);
+        let staged = app
+            .hd_type8_pending
+            .expect("GUI type-8 combo stages a value");
+        let mut bad_marker = expected.clone();
+        bad_marker[0xa4c] = 1;
+        *app.hd_library.file_mut(type8).unwrap() =
+            PodPresetFile::parse(bad_marker.clone()).unwrap();
+        assert!(app.hd_library.is_dirty(type8));
+        hd_editor_frame(&context, &mut app, vec![]);
+        click_hd_editor(&context, &mut app, "apply-hd-type8-choice");
+        assert_hd_bytes_eq(
+            app.hd_library.file(type8).unwrap().as_bytes(),
+            &bad_marker,
+            "invalid row marker makes actual Apply preserve current bytes",
+        );
+        assert!(app.hd_library.is_dirty(type8));
+        assert_eq!(app.hd_type8_pending, Some(staged));
+        assert!(app.pod_message.contains("marker"));
+
         app.request_close(&context);
         assert!(matches!(app.pending, Some(Pending::QuitPod)));
-        click_prompt(&context, &mut app, "cancel");
-        assert!(app.hd_type8_pending.is_some());
-        assert!(!app.permit_close);
-        app.request_close(&context);
-        click_prompt(&context, &mut app, "apply-type8");
+        click_prompt(&context, &mut app, "discard");
         assert!(app.hd_type8_pending.is_none());
         assert!(app.hd_library.is_dirty(type8));
-        assert!(matches!(app.pending, Some(Pending::QuitPod)));
-        click_prompt(&context, &mut app, "cancel");
-        assert!(app.hd_library.is_dirty(type8));
-        app.hd_library.revert_unsaved(type8).unwrap();
+        click_prompt(&context, &mut app, "discard");
+        assert_hd_bytes_eq(
+            app.hd_library.file(type8).unwrap().as_bytes(),
+            &expected,
+            "quit discard restores the previously saved baseline",
+        );
+        assert!(!app.hd_library.is_dirty(type8));
 
+        assert!(app.read_worker.is_none());
+    }
+
+    #[test]
+    fn hd_type8_gui_does_not_stage_nonfinite_or_unavailable_values() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        for (bits, invalid_marker) in [(0x7fc0_0001u32, false), (0x3f40_0000, true)] {
+            let mut bytes = sample_hd_type8_preset(3, 4, bits);
+            if invalid_marker {
+                let marker =
+                    pod_preset::H5EP_HEADER_BYTES + 0x428 + 3 * 0x100 + 0x10 + 4 * 0x14 + 0x10;
+                bytes[marker] = 1;
+            }
+            let index = app.hd_library.import_bytes(bytes.clone()).unwrap();
+            app.select_hd_file(index);
+            app.hd_effect_slot = 3;
+            hd_editor_frame(&context, &mut app, vec![]);
+            click_hd_type8_choice(&context, &mut app, 1);
+            assert!(app.hd_type8_pending.is_none());
+            assert!(app.hd_type9_pending.is_none());
+            assert_hd_bytes_eq(
+                app.hd_library.file(index).unwrap().as_bytes(),
+                &bytes,
+                "non-finite or unavailable input cannot stage a choice",
+            );
+        }
         assert!(app.read_worker.is_none());
     }
 
