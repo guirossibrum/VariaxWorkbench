@@ -783,15 +783,14 @@ flashing, or a driver install.
 
 ## Exact type-10 two-choice file operation
 
-The scoped coordinator admission for PR #109 records a source-derived Edit
-2.27 join (private evidence report SHA-256
-`c5c512351a407348a120bd79b8b58e01f53def488366c9dd6ae42ec26889bfe8`):
-model `0x020A0010`, key `0x3F100003`, descriptor row 1/type `0x0A`, and two
-closed choice indices stored as IEEE-754 words `0x00000000` and `0x3F800000`.
-The labels remain neutral. This is a narrow association, not a generic type-10
-catalog, a descriptor-to-file-slot mapping, or a POD HD500X product/device
-identity. The same model has a separate type-9 key `0x3F100004`; its bytes and
-staged value are independent.
+The scoped coordinator admission for PR #109 records two source-qualified Edit
+2.27 associations for descriptor type `0x0A`: model `0x020A0010` with key
+`0x3F100003`, and model `0x020A000F` with that same key. Both admit only choice
+indices stored as IEEE-754 words `0x00000000` and `0x3F800000`; labels remain
+neutral. The exact pair list is closed. It is not a generic type-10 catalog, a
+descriptor-to-file-slot mapping, or a POD HD500X product/device identity. Both
+models have a separate type-9 key `0x3F100004`; those bytes and staged values
+remain independent.
 
 The offline API reads unknown finite words losslessly and reports non-finite
 words without normalization. A write requires an explicit H5EP FX slot, the
@@ -801,8 +800,8 @@ assignment marker, and a finite current value. It clones, patches only the
 four-byte big-endian value and reparses before publishing. No-op requests pass
 the same guards. Complete synthetic vectors and the all-slot/representative-row
 matrix verify bytes outside the target word, including a same-model type-9 row
-and opaque suffix. These are authored test data and expected file outputs, not
-captures or claims of physical applicability.
+and opaque suffix for both admitted models. These are authored test data and
+expected file outputs, not captures or claims of physical applicability.
 
 The POD HD500X extension session gates the operation; GUI staging does not
 mutate the library. Apply and discard are explicit, and pending type-9/type-10

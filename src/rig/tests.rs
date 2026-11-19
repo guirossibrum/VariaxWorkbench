@@ -795,6 +795,42 @@ fn type10_choice_uses_independent_same_model_key_through_hd500x_session() {
 }
 
 #[test]
+fn second_type10_association_flows_through_hd500x_session_and_extracted_child() {
+    use crate::pod_preset::{HdFxSlot, HdType10Choice};
+    let bytes: Vec<u8> = include_str!("../../tests/fixtures/type10-choice-000f-source.hex")
+        .split_ascii_whitespace()
+        .map(|b| u8::from_str_radix(b, 16).unwrap())
+        .collect();
+    let slot = HdFxSlot::new(5).unwrap();
+    let session = Session::extension(ProductProfile::PodHd500x).unwrap();
+    let mut library = HdEditorLibrary::default();
+    let index = library.import_bytes(bytes.clone()).unwrap();
+    session
+        .set_hd_type10_choice(&mut library, index, slot, HdType10Choice::Choice1)
+        .unwrap();
+    assert_eq!(
+        &library.file(index).unwrap().as_bytes()[0x9dc..0x9e0],
+        &[0x3f, 0x80, 0, 0]
+    );
+
+    let child_start = crate::pod_preset::H5ES_HEADER_BYTES;
+    let child_len = crate::pod_preset::H5EP_MIN_BYTES;
+    let mut parent_bytes = synthetic_h5es();
+    parent_bytes[child_start..child_start + child_len].copy_from_slice(&bytes[..child_len]);
+    let mut nested = HdEditorLibrary::default();
+    let parent = nested.import_bytes(parent_bytes.clone()).unwrap();
+    let child = Session::initial_rig()
+        .extract_hd_editor_preset(&mut nested, parent, 0, 0)
+        .unwrap()
+        .index;
+    session
+        .set_hd_type10_choice(&mut nested, child, slot, HdType10Choice::Choice0)
+        .unwrap();
+    assert_eq!(nested.file(parent).unwrap().as_bytes(), parent_bytes);
+    assert!(nested.is_dirty(child));
+}
+
+#[test]
 fn type8_choice_is_a_separate_profile_gated_child_h5ep_edit() {
     use crate::pod_preset::{
         HD_TYPE8_CHOICE_KEY, HD_TYPE8_CHOICE_MODEL_ID, HdFxSlot, HdType8Choice, HdType8ChoiceValue,

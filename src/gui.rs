@@ -4630,13 +4630,23 @@ mod tests {
     }
 
     fn sample_hd_type10_preset(slot: usize, row: usize, bits: u32) -> Vec<u8> {
-        let mut bytes = sample_hd_type9_preset_for(
+        sample_hd_type10_preset_for(
             slot,
             row,
             bits,
             pod_preset::HD_TYPE10_CHOICE_MODEL_ID,
             pod_preset::HD_TYPE10_CHOICE_KEY,
-        );
+        )
+    }
+
+    fn sample_hd_type10_preset_for(
+        slot: usize,
+        row: usize,
+        bits: u32,
+        model_id: u32,
+        key: u32,
+    ) -> Vec<u8> {
+        let mut bytes = sample_hd_type9_preset_for(slot, row, bits, model_id, key);
         let block = pod_preset::H5EP_HEADER_BYTES + 0x428 + slot * 0x100;
         let other_row = (row + 1) % 12;
         let at = block + 0x10 + other_row * 0x14;
@@ -6150,6 +6160,41 @@ mod tests {
                 "non-finite or unavailable input cannot stage a choice",
             );
         }
+        assert!(app.read_worker.is_none());
+    }
+
+    #[test]
+    fn second_type10_association_gui_stage_apply_and_discard() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let slot = 5;
+        let row = 8;
+        let original = sample_hd_type10_preset_for(
+            slot,
+            row,
+            0x3eaa_aaab,
+            0x020a_000f,
+            pod_preset::HD_TYPE10_CHOICE_KEY,
+        );
+        let index = app.hd_library.import_bytes(original.clone()).unwrap();
+        app.select_hd_file(index);
+        app.pod_open = true;
+        app.hd_effect_slot = slot;
+        click_hd_type10_choice(&context, &mut app, 1);
+        hd_editor_frame(&context, &mut app, vec![]);
+        assert!(app.hd_type10_pending.is_some());
+        assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), original);
+        click_hd_editor(&context, &mut app, "discard-hd-type10-choice");
+        assert!(app.hd_type10_pending.is_none());
+        assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), original);
+
+        click_hd_type10_choice(&context, &mut app, 1);
+        hd_editor_frame(&context, &mut app, vec![]);
+        click_hd_editor(&context, &mut app, "apply-hd-type10-choice");
+        let changed = app.hd_library.file(index).unwrap().as_bytes();
+        let value_at = pod_preset::H5EP_HEADER_BYTES + 0x428 + slot * 0x100 + 0x10 + row * 0x14 + 4;
+        assert_eq!(&changed[value_at..value_at + 4], &[0x3f, 0x80, 0, 0]);
+        assert!(app.hd_type10_pending.is_none());
         assert!(app.read_worker.is_none());
     }
 

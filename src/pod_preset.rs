@@ -66,6 +66,10 @@ pub const HD_TYPE8_CHOICE_MODEL_ID: u32 = 0x020a_0013;
 pub const HD_TYPE8_CHOICE_KEY: u32 = 0x3f10_0004;
 pub const HD_TYPE10_CHOICE_MODEL_ID: u32 = 0x020a_0010;
 pub const HD_TYPE10_CHOICE_KEY: u32 = 0x3f10_0003;
+pub const HD_TYPE10_CHOICE_MODEL_KEYS: [(u32, u32); 2] = [
+    (HD_TYPE10_CHOICE_MODEL_ID, HD_TYPE10_CHOICE_KEY),
+    (0x020a_000f, 0x3f10_0003),
+];
 /// Exact source-admitted type-9 control associations. Descriptor ordinals and
 /// vendor runtime selectors are not file FX slots.
 pub const HD_TYPE9_CHOICE_MODEL_KEYS: [(u32, u32); 4] = [
@@ -87,9 +91,11 @@ pub fn hd_type8_choice_key(model_id: u32) -> Option<u32> {
     (model_id == HD_TYPE8_CHOICE_MODEL_ID).then_some(HD_TYPE8_CHOICE_KEY)
 }
 
-/// Exact independently admitted type-10 control association.
+/// Exact independently admitted type-10 control associations.
 pub fn hd_type10_choice_key(model_id: u32) -> Option<u32> {
-    (model_id == HD_TYPE10_CHOICE_MODEL_ID).then_some(HD_TYPE10_CHOICE_KEY)
+    HD_TYPE10_CHOICE_MODEL_KEYS
+        .iter()
+        .find_map(|(admitted_model, key)| (*admitted_model == model_id).then_some(*key))
 }
 const HD_BAND_SHIFT_EQ_MODEL_ID: u32 = 0x020c_000c;
 const HD_GRAPHIC_EQ_MODEL_ID: u32 = 0x020c_0009;
@@ -2184,7 +2190,7 @@ impl OpaqueH5epPreset {
         let model_id = read_be_u32(body, block).unwrap_or_default();
         let Some(key) = hd_type10_choice_key(model_id) else {
             return Err(ToneError::format(
-                "HD type-10 choice requires model 0x020a0010 in the selected FX slot",
+                "HD type-10 choice requires an admitted model in the selected FX slot",
             ));
         };
         if body[block + 0x0b] != 1 {
@@ -4105,19 +4111,37 @@ mod tests {
         bytes
     }
 
-    fn synthetic_type10_h5ep(slot: usize, row: usize, enabled: u8, value: u32) -> Vec<u8> {
+    fn synthetic_type10_h5ep_for(
+        slot: usize,
+        row: usize,
+        enabled: u8,
+        value: u32,
+        model_id: u32,
+        key: u32,
+    ) -> Vec<u8> {
         let mut bytes = synthetic_h5ep(b"type10-tail");
         let block = H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + slot * HD_EFFECT_BLOCK_STRIDE;
-        bytes[block..block + 4].copy_from_slice(&HD_TYPE10_CHOICE_MODEL_ID.to_be_bytes());
+        bytes[block..block + 4].copy_from_slice(&model_id.to_be_bytes());
         bytes[block + 8] = enabled;
         bytes[block + 0x0b] = 1;
         bytes[block + 0x0f] = 12;
         let row_at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
-        bytes[row_at..row_at + 4].copy_from_slice(&HD_TYPE10_CHOICE_KEY.to_be_bytes());
+        bytes[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
         bytes[row_at + 4..row_at + 8].copy_from_slice(&value.to_be_bytes());
         bytes[row_at + 8..row_at + 0x10].fill(0x35);
         bytes[row_at + 0x10..row_at + 0x14].copy_from_slice(&[0, 0x42, 0x43, 0x44]);
         bytes
+    }
+
+    fn synthetic_type10_h5ep(slot: usize, row: usize, enabled: u8, value: u32) -> Vec<u8> {
+        synthetic_type10_h5ep_for(
+            slot,
+            row,
+            enabled,
+            value,
+            HD_TYPE10_CHOICE_MODEL_ID,
+            HD_TYPE10_CHOICE_KEY,
+        )
     }
 
     fn synthetic_enable_h5ep(effect_slot: usize, enabled_byte: u8) -> Vec<u8> {
@@ -6777,6 +6801,54 @@ mod tests {
     }
 
     #[test]
+    fn type10_choice_is_closed_to_two_associations_and_covers_each_slot_and_row_edge() {
+        assert_eq!(HD_TYPE10_CHOICE_MODEL_KEYS.len(), 2);
+        assert_eq!(
+            hd_type10_choice_key(0x020a_000f),
+            Some(HD_TYPE10_CHOICE_KEY)
+        );
+        for unknown in [0, 0x020a_000e, 0x020a_0011, 0x020a_0014, u32::MAX] {
+            assert_eq!(hd_type10_choice_key(unknown), None);
+        }
+
+        for (model_id, key) in HD_TYPE10_CHOICE_MODEL_KEYS {
+            for slot_index in 0..HD_EFFECT_COUNT {
+                for row_index in [0, 5, 11] {
+                    for enabled in [0, 1] {
+                        let source = synthetic_type10_h5ep_for(
+                            slot_index,
+                            row_index,
+                            enabled,
+                            0x3eaa_aaab,
+                            model_id,
+                            key,
+                        );
+                        let value_at = H5EP_HEADER_BYTES
+                            + HD_EFFECT_BLOCK_OFFSET
+                            + slot_index * HD_EFFECT_BLOCK_STRIDE
+                            + HD_EFFECT_ROWS_OFFSET
+                            + row_index * HD_PARAMETER_ROW_STRIDE
+                            + 4;
+                        let mut expected = source.clone();
+                        expected[value_at..value_at + 4]
+                            .copy_from_slice(&0x3f80_0000u32.to_be_bytes());
+                        let mut preset = OpaqueH5epPreset::parse(source.clone()).unwrap();
+                        let slot = HdFxSlot::new(slot_index).unwrap();
+                        assert_eq!(
+                            preset.hd_type10_choice_value(slot),
+                            HdType10ChoiceValue::UnknownFinite(0x3eaa_aaab)
+                        );
+                        preset
+                            .set_hd_type10_choice(slot, HdType10Choice::Choice1)
+                            .unwrap();
+                        assert_eq!(preset.as_bytes(), expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn type10_choice_matches_checked_in_complete_h5ep_vectors_and_leaves_type9_control_untouched() {
         let source = decode_hex_fixture(include_str!("../tests/fixtures/type10-choice-source.hex"));
         let expected0 = decode_hex_fixture(include_str!("../tests/fixtures/type10-choice-0.hex"));
@@ -6825,5 +6897,31 @@ mod tests {
             before,
             "same-word write is byte-identical"
         );
+    }
+
+    #[test]
+    fn second_type10_association_matches_complete_synthetic_vectors() {
+        let source = decode_hex_fixture(include_str!(
+            "../tests/fixtures/type10-choice-000f-source.hex"
+        ));
+        let expected0 = decode_hex_fixture(include_str!(
+            "../tests/fixtures/type10-choice-000f-choice-0.hex"
+        ));
+        let expected1 = decode_hex_fixture(include_str!(
+            "../tests/fixtures/type10-choice-000f-choice-1.hex"
+        ));
+        assert_eq!(&source[0x950..0x954], &0x020a_000fu32.to_be_bytes());
+        assert_eq!(&source[0x9d8..0x9dc], &HD_TYPE10_CHOICE_KEY.to_be_bytes());
+        assert_eq!(&source[0x988..0x98c], &0x3f10_0004u32.to_be_bytes());
+        for (choice, expected) in [
+            (HdType10Choice::Choice0, expected0),
+            (HdType10Choice::Choice1, expected1),
+        ] {
+            let mut preset = OpaqueH5epPreset::parse(source.clone()).unwrap();
+            preset
+                .set_hd_type10_choice(HdFxSlot::new(5).unwrap(), choice)
+                .unwrap();
+            assert_eq!(preset.as_bytes(), expected);
+        }
     }
 }
