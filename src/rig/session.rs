@@ -10,6 +10,7 @@ use super::backend;
 use super::capability::{self, Capability, CapabilityState, Operation};
 use super::model::{self, Component, ProductProfile, RoleKind, VersionKnowledge};
 use super::registry::{INITIAL_HOST, PhysicalHost};
+pub use crate::pod_preset::HdEditorLibrary;
 
 /// No function constructs a live transport. This stays `None`.
 pub const LIVE_BACKEND_INITIALIZER: Option<fn() -> Session> = None;
@@ -60,6 +61,29 @@ pub struct PodToneSummary {
     pub recorded_parameter_chunks: usize,
     /// PARM chunks that are not the 12-byte record.
     pub undecoded_parameter_chunks: usize,
+}
+
+/// A file-format association only. It is not a connected-device identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OfflineFileFamily {
+    PodHdEdit,
+}
+
+/// Physical applicability remains unknown even when the editor file parses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PhysicalTargetApplicability {
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HdEditorFileSummary {
+    pub index: usize,
+    pub kind: &'static str,
+    pub file_family: OfflineFileFamily,
+    pub physical_target: PhysicalTargetApplicability,
+    /// Raw H5EP words from offsets 0x10 and 0x14. The Mac writer's producer
+    /// is traced, but the source editor for this file is not established.
+    pub header_words_10_14: Option<(u32, u32)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,6 +155,38 @@ impl Rejection {
     }
 }
 
+fn summarize_hd_editor_file(
+    library: &HdEditorLibrary,
+    index: usize,
+) -> Result<HdEditorFileSummary, Rejection> {
+    let file = library
+        .file(index)
+        .ok_or_else(|| Rejection::format("file index is outside the HD editor library"))?;
+    let kind = file
+        .hd_container_kind()
+        .ok_or_else(|| Rejection::format("file is outside the HD Edit file family"))?;
+    let header_words_10_14 = match file {
+        crate::pod_preset::PodPresetFile::H5ep(preset) => Some(preset.header_words_10_14()),
+        _ => None,
+    };
+    Ok(HdEditorFileSummary {
+        index,
+        kind,
+        file_family: OfflineFileFamily::PodHdEdit,
+        physical_target: PhysicalTargetApplicability::Unknown,
+        header_words_10_14,
+    })
+}
+
+fn map_hd_library_error(error: crate::pod_preset::ToneError) -> Rejection {
+    match error {
+        crate::pod_preset::ToneError::Format { detail } => Rejection::Format { detail },
+        crate::pod_preset::ToneError::WrongTarget { device_id } => Rejection::format(format!(
+            "PODxt tone target {device_id:08x} is outside the HD Edit file library"
+        )),
+    }
+}
+
 impl Session {
     /// The Variax 600 through PODxt Live rig. This does not scan USB.
     pub const fn initial_rig() -> Self {
@@ -154,6 +210,80 @@ impl Session {
 
     pub const fn live_backend_is_absent(self) -> bool {
         matches!(self.live, LiveBackend::Absent)
+    }
+
+    /// Creates an in-memory library for the statically framed HD Edit file
+    /// group. The file family does not identify a physical target.
+    pub fn new_hd_editor_library(self) -> HdEditorLibrary {
+        let _ = self;
+        HdEditorLibrary::default()
+    }
+
+    /// Imports one H5EP/H5ES/H5EB file through the shared offline session
+    /// interface. This does not promote any profile's physical capability.
+    pub fn import_hd_editor_file(
+        self,
+        library: &mut HdEditorLibrary,
+        bytes: Vec<u8>,
+    ) -> Result<HdEditorFileSummary, Rejection> {
+        let _ = self;
+        let index = library.import_bytes(bytes).map_err(map_hd_library_error)?;
+        summarize_hd_editor_file(library, index)
+    }
+
+    pub fn extract_hd_editor_preset(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        setlist: usize,
+        preset: usize,
+    ) -> Result<HdEditorFileSummary, Rejection> {
+        let _ = self;
+        let index = library
+            .extract_preset(file, setlist, preset)
+            .map_err(map_hd_library_error)?;
+        summarize_hd_editor_file(library, index)
+    }
+
+    pub fn set_hd_screamer_control_percent(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: usize,
+        control: crate::pod_preset::ScreamerControl,
+        percent: u8,
+    ) -> Result<(), Rejection> {
+        let _ = self;
+        let preset = match library.file_mut(file) {
+            Some(crate::pod_preset::PodPresetFile::H5ep(preset)) => preset,
+            Some(_) => {
+                return Err(Rejection::format(
+                    "Screamer controls require an H5EP preset",
+                ));
+            }
+            None => {
+                return Err(Rejection::format(
+                    "file index is outside the HD editor library",
+                ));
+            }
+        };
+        preset
+            .set_screamer_control_percent(effect_slot, control, percent)
+            .map_err(map_hd_library_error)
+    }
+
+    /// Writes the selected editor file using its non-overwriting copy save.
+    pub fn save_hd_editor_copy(
+        self,
+        library: &HdEditorLibrary,
+        path: &Path,
+        file: usize,
+    ) -> Result<(), Rejection> {
+        let _ = self;
+        let selected = library
+            .file(file)
+            .ok_or_else(|| Rejection::format("file index is outside the HD editor library"))?;
+        selected.save_copy(path).map_err(map_hd_library_error)
     }
 
     pub const fn host(self) -> Option<&'static PhysicalHost> {

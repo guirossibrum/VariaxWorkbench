@@ -27,10 +27,141 @@ fn synthetic_h5ep() -> Vec<u8> {
     bytes
 }
 
+fn synthetic_h5es() -> Vec<u8> {
+    let mut bytes = vec![0; crate::pod_preset::H5ES_MIN_BYTES];
+    bytes[..4].copy_from_slice(b"H5ES");
+    bytes[4..8].copy_from_slice(&1u32.to_be_bytes());
+    for index in 0..crate::pod_preset::H5ES_PRESET_COUNT {
+        let start =
+            crate::pod_preset::H5ES_HEADER_BYTES + index * crate::pod_preset::H5EP_MIN_BYTES;
+        bytes[start..start + crate::pod_preset::H5EP_MIN_BYTES].copy_from_slice(&synthetic_h5ep());
+    }
+    bytes
+}
+
 fn with_device_id(bytes: &[u8], device_id: u32) -> Vec<u8> {
     let mut owned = bytes.to_vec();
     owned[24..28].copy_from_slice(&device_id.to_be_bytes());
     owned
+}
+
+#[test]
+fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity() {
+    let session = Session::initial_rig();
+    let mut library = session.new_hd_editor_library();
+    let mut bytes = synthetic_h5ep();
+    // These arbitrary words are accepted and retained as source-qualified
+    // Mac writer context, not treated as target or firmware declarations.
+    bytes[0x10..0x14].copy_from_slice(&0x0014_0005u32.to_be_bytes());
+    bytes[0x14..0x18].copy_from_slice(&0x0000_0000u32.to_be_bytes());
+    let body = crate::pod_preset::H5EP_HEADER_BYTES;
+    let block = 0x428;
+    let row = body + block + 0x10;
+    bytes[body + block..body + block + 4].copy_from_slice(&0x0205_000du32.to_be_bytes());
+    bytes[row..row + 4].copy_from_slice(&0x3f10_0001u32.to_be_bytes());
+    bytes[row + 4..row + 8].copy_from_slice(&0.25f32.to_bits().to_be_bytes());
+    let original = bytes.clone();
+
+    let summary = session
+        .import_hd_editor_file(&mut library, bytes)
+        .expect("offline H5EP import");
+    assert_eq!(summary.kind, "H5EP preset");
+    assert_eq!(summary.file_family, OfflineFileFamily::PodHdEdit);
+    assert_eq!(
+        summary.physical_target,
+        PhysicalTargetApplicability::Unknown
+    );
+    assert_eq!(summary.header_words_10_14, Some((0x0014_0005, 0)));
+    assert_eq!(library.file(summary.index).unwrap().as_bytes(), original);
+    assert_eq!(
+        session.set_hd_screamer_control_percent(
+            &mut library,
+            summary.index,
+            0,
+            crate::pod_preset::ScreamerControl::Drive,
+            40,
+        ),
+        Ok(())
+    );
+    assert!(library.is_dirty(summary.index));
+
+    let directory = tempfile::tempdir().expect("temporary output directory");
+    let output = directory.path().join("edited.h5p");
+    session
+        .save_hd_editor_copy(&library, &output, summary.index)
+        .expect("new offline copy");
+    let saved = std::fs::read(&output).expect("saved bytes");
+    assert_eq!(&saved[..0x28], &original[..0x28]);
+    let value_at = row + 4;
+    assert_eq!(&saved[..value_at], &original[..value_at]);
+    assert_eq!(&saved[value_at + 4..], &original[value_at + 4..]);
+    assert!(matches!(
+        session.save_hd_editor_copy(&library, &output, summary.index),
+        Err(Rejection::Format { .. })
+    ));
+
+    let mut mapped_context = synthetic_h5ep();
+    mapped_context[0x10..0x14].copy_from_slice(&0x0021_0001u32.to_be_bytes());
+    mapped_context[0x14..0x18].copy_from_slice(&0x0003_0262u32.to_be_bytes());
+    let mapped_summary = session
+        .import_hd_editor_file(&mut library, mapped_context)
+        .expect("mapped-like context remains structural data");
+    assert_eq!(
+        mapped_summary.physical_target,
+        PhysicalTargetApplicability::Unknown
+    );
+    assert_eq!(
+        mapped_summary.header_words_10_14,
+        Some((0x0021_0001, 0x0003_0262))
+    );
+
+    let parent_bytes = synthetic_h5es();
+    let parent = session
+        .import_hd_editor_file(&mut library, parent_bytes.clone())
+        .expect("offline H5ES import");
+    let child = session
+        .extract_hd_editor_preset(&mut library, parent.index, 0, 17)
+        .expect("common child extraction");
+    assert_eq!(child.kind, "H5EP preset");
+    assert_eq!(child.header_words_10_14, Some((0, 0)));
+    assert_eq!(library.file(parent.index).unwrap().as_bytes(), parent_bytes);
+
+    let podxt = crate::pod_preset::fixture(
+        crate::pod_preset::ContainerKind::L6pa,
+        PODXT_LIVE_PRODUCT_ID,
+        1,
+        &[(crate::pod_preset::AMP_SLOT, 1)],
+    );
+    let rejection = session.import_hd_editor_file(&mut library, podxt);
+    assert!(matches!(rejection, Err(Rejection::Format { .. })));
+    assert_eq!(library.len(), 4, "rejected PODxt file is not imported");
+
+    let mut malformed = synthetic_h5ep();
+    malformed[7] = 2;
+    assert!(matches!(
+        session.import_hd_editor_file(&mut library, malformed),
+        Err(Rejection::Format { .. })
+    ));
+    assert_eq!(library.len(), 4, "malformed file is not imported");
+    assert_eq!(
+        capability::capability(ProductProfile::PodHd500x, Operation::OpenPodPreset).state,
+        CapabilityState::Unverified
+    );
+
+    // Unrecognized but structurally valid H5EP context remains opaque.
+    let mut unknown = synthetic_h5ep();
+    unknown[8..0x28].fill(0xa5);
+    let unknown_summary = session
+        .import_hd_editor_file(&mut library, unknown)
+        .expect("unknown context is preserved");
+    assert_eq!(
+        unknown_summary.physical_target,
+        PhysicalTargetApplicability::Unknown
+    );
+    assert_eq!(
+        unknown_summary.header_words_10_14,
+        Some((0xa5a5_a5a5, 0xa5a5_a5a5))
+    );
 }
 
 #[test]

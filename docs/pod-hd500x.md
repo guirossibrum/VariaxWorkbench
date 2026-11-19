@@ -261,6 +261,48 @@ Editor image identity is `871c86da6b6810307dc201297d8411f2b2f7eec7e4c3e150f0aa88
 The reports and binaries remain local; hashes are provenance pins, not a
 public reproduction package.
 
+The independent Mac Edit 2.27 trace resolves a different source for the same
+H5EP offsets. Its writer serializes `Memory+0x18` and `Memory+0x1c` at file
+offsets `0x10` and `0x14`. The `Memory` constructor initializes `+0x18` to
+`0x00140005`. `Memory::Init` skips the mapping when its communication argument
+is null. Otherwise `L6GBCIComm::GetDeviceID` at `0x10001afc8` returns zero
+for a null provider pointer, or calls `0x10001a620`, which reads the 16-bit
+field at provider `+0x10a`. A zero result
+keeps the default, recognized nonzero results map to editor-internal 32-bit
+values, and an unrecognized nonzero result stores `0xffffffff`. The mapping
+switch and tables are at `0x10006ea0c–0x10006ed3d`; for example, provider value
+`0x4241` maps to `0x00210001` and `0x5741` maps to `0x00190014`. This chain
+joins only the comm provider's stored field to the editor's internal switch; it
+does not assign that value a USB, firmware, or physical product namespace.
+AppShell's static provider-selection path calls the same getter and reads the
+same provider field (`0x1000024a5–0x1000024ba`), but this source was not executed
+and does not establish a connected unit. The paired `+0x1c` value is filled
+from a firmware-version call's successful result, or remains zero on error.
+This trace used the x86_64 Mac Editor 2.27 executable (SHA-256
+`34148643512ad6fc7e8415cfa10eb767d93d0aa457fd3c517b908677129d1ee0`), extracted
+statically from the retained DMG (SHA-256
+`7988e77f8ae615b5bd081893c64f582fa0f38a84ad5f6be88a8643b820f74e8e`). The
+coordinates above are original executable virtual addresses; no executable
+was launched.
+
+Mac `Patch::ReadFromStream` delegates to its H5EP reader, which reads 40 header
+bytes, byte-swaps all ten words, checks only H5EP magic and version 1, then
+reads and validates the 4096-byte body. It ignores words at `0x08` through
+`0x24`, including the two `Memory` context words. The shared Rust offline
+session interface now imports the H5EP/H5ES/H5EB file group, extracts child
+presets, supports the already traced controls, preserves the raw context,
+tracks dirty state through the library, and writes non-overwriting copies. Its
+summary labels the file family separately and reports physical target
+applicability as unknown. A PODxt FORM tone is rejected by the HD Edit library;
+no device-profile capability is promoted. Synthetic coverage checks
+default-like, mapped-like, and arbitrary unknown context values as opaque file
+data; it does not emulate or verify the vendor's mapping. The existing HD Edit
+window now routes import, extraction, supported control edits, and copy-save
+through the shared Session interface; this closes the concrete gap between the
+standalone window and common library boundary. This header trace establishes
+no additional model/control or audio contract; broader admitted Editor-source
+investigation remains open under criterion 1.
+
 The five control edits are intentionally narrow. In the pinned Editor image,
 `FUN_00411130`/`FUN_004127e0` resolve the first row matching the parameter key;
 the row flag is passed into widget assignment, and `FUN_00407ef0` gates the
@@ -276,7 +318,7 @@ result.
 | Original acceptance criterion | Current status |
 | --- | --- |
 | Establish HD500X identity, editor/driver/firmware, preset/model/effect and audio evidence from primary sources. | **Partial.** Static Editor file-group association and a bounded writer/reader trace are recorded. Driver text matches USB `0x0E41:0x4159`, with the Mac audio personality on interface 0 and bulk personality on interface 1; the Advanced Guide names a processed stereo host feed, **1-2 Main Out**, plus playback return and 48 kHz native processing with documented conversion rates. This does not supply the device's USB audio descriptors/endpoints or connect them to driver callbacks, formats, and selected identity. Product attribution, complete model/effect catalog, firmware applicability and physical identity remain unresolved. |
-| Implement an independent offline backend integrated with shared interfaces and tests. | **Partial.** The separate offline HD Edit library parses bounded H5EP/H5ES/H5EB framing, extracts children, saves new copies, and admits five restricted Screamer type-1 controls with synthetic tests. The shared session profile remains `Unverified`; these controls are not connected to a device-backed shared HD interface. Recording, maintenance, broad semantics and original-editor parity are not implemented. |
+| Implement an independent offline backend integrated with shared interfaces and tests. | **Partial.** The shared offline Session/library interface and GUI path now import bounded H5EP/H5ES/H5EB files, extract children, preserve context, save new copies and expose five restricted Screamer type-1 controls with synthetic tests. The physical POD HD500X profile remains `Unverified`; physical recording, maintenance, broad semantics and original-editor parity are not implemented. |
 | Keep HD/JTV separate from PODxt/original Variax; prohibit cross-family conversion, flashing and live operations. | **Met as written.** Profiles remain separate; no cross-family conversion, upload, flash or live path is exposed, and hardware access remains locked. This criterion does not establish physical compatibility. |
 
 Issue #32 remains open. Synthetic tests do not complete source-identification,

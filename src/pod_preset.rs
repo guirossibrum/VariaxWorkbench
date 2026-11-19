@@ -249,6 +249,17 @@ impl OpaqueH5epPreset {
         &self.bytes[..H5EP_HEADER_BYTES]
     }
 
+    /// Raw H5EP header words at offsets 0x10 and 0x14. The Mac Editor 2.27
+    /// writer sources them from `Memory + 0x18/+0x1c`, but a file alone does
+    /// not establish which editor wrote them or whether they identify a
+    /// physical target.
+    pub fn header_words_10_14(&self) -> (u32, u32) {
+        (
+            u32::from_be_bytes(self.bytes[0x10..0x14].try_into().unwrap()),
+            u32::from_be_bytes(self.bytes[0x14..0x18].try_into().unwrap()),
+        )
+    }
+
     pub fn body_bytes(&self) -> &[u8] {
         &self.bytes[H5EP_HEADER_BYTES..H5EP_MIN_BYTES]
     }

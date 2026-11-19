@@ -8,9 +8,9 @@ use std::{
     time::{Duration, Instant},
 };
 use variax_workbench::pod_audio::RecordRoute;
-use variax_workbench::pod_preset::{self, HdEditorLibrary, Library, PodPresetFile};
+use variax_workbench::pod_preset::{self, Library, PodPresetFile};
 use variax_workbench::recording::{self, ClockSelection};
-use variax_workbench::rig::{Rejection, RoleKind, Session};
+use variax_workbench::rig::{HdEditorLibrary, Rejection, RoleKind, Session};
 use variax_workbench::{document::EditorDocument, preset::PresetFile};
 
 const PICKUP1: u32 = 0x02010001;
@@ -285,7 +285,7 @@ impl Workbench {
             recorder: recording::Panel::new(),
             pod_open: false,
             pod_library: Library::default(),
-            hd_library: HdEditorLibrary::default(),
+            hd_library: Session::initial_rig().new_hd_editor_library(),
             pod_selected: None,
             hd_selected: None,
             hd_effect_slot: 0,
@@ -1934,12 +1934,14 @@ impl Workbench {
                 ui.label(format!("One setlist with {0} fixed preset entries. Extracted children become separate library items; the parent remains unchanged.", pod_preset::H5ES_PRESET_COUNT));
                 ui.add(egui::Slider::new(&mut self.hd_preset_index, 0..=63).text("Preset index"));
                 if self.pod_button(ui, "extract-hd-child", "Open child as separate preset") {
-                    match self
-                        .hd_library
-                        .extract_preset(index, 0, self.hd_preset_index)
-                    {
-                        Ok(child) => self.select_hd_file(child),
-                        Err(error) => self.pod_message = error.detail(),
+                    match Session::initial_rig().extract_hd_editor_preset(
+                        &mut self.hd_library,
+                        index,
+                        0,
+                        self.hd_preset_index,
+                    ) {
+                        Ok(child) => self.select_hd_file(child.index),
+                        Err(error) => self.pod_message = rejection_text(&error),
                     }
                 }
                 let _ = setlist;
@@ -1949,13 +1951,14 @@ impl Workbench {
                 ui.add(egui::Slider::new(&mut self.hd_setlist_index, 0..=7).text("Setlist index"));
                 ui.add(egui::Slider::new(&mut self.hd_preset_index, 0..=63).text("Preset index"));
                 if self.pod_button(ui, "extract-hd-child", "Open child as separate preset") {
-                    match self.hd_library.extract_preset(
+                    match Session::initial_rig().extract_hd_editor_preset(
+                        &mut self.hd_library,
                         index,
                         self.hd_setlist_index,
                         self.hd_preset_index,
                     ) {
-                        Ok(child) => self.select_hd_file(child),
-                        Err(error) => self.pod_message = error.detail(),
+                        Ok(child) => self.select_hd_file(child.index),
+                        Err(error) => self.pod_message = rejection_text(&error),
                     }
                 }
                 let _ = bundle;
@@ -1985,20 +1988,19 @@ impl Workbench {
     }
 
     fn apply_hd_control(&mut self, index: usize) {
-        let result = match self.hd_library.file_mut(index) {
-            Some(PodPresetFile::H5ep(preset)) => preset.set_screamer_control_percent(
-                self.hd_effect_slot,
-                self.hd_screamer_control,
-                self.hd_control_percent,
-            ),
-            _ => return,
-        };
+        let result = Session::initial_rig().set_hd_screamer_control_percent(
+            &mut self.hd_library,
+            index,
+            self.hd_effect_slot,
+            self.hd_screamer_control,
+            self.hd_control_percent,
+        );
         match result {
             Ok(()) => {
                 self.pod_message =
                     "Updated only the traced in-memory value. Nothing was sent.".into();
             }
-            Err(error) => self.pod_message = error.detail(),
+            Err(error) => self.pod_message = rejection_text(&error),
         }
     }
 
@@ -2043,13 +2045,15 @@ impl Workbench {
                     Err(error) => self.pod_message = rejection_text(&error),
                 }
             }
-            Ok((bytes, _)) => match self.hd_library.import_bytes(bytes) {
-                Ok(index) => {
-                    self.select_hd_file(index);
-                    self.pod_message = "Loaded an offline HD Edit file. Internal product target and physical compatibility remain unverified.".into();
+            Ok((bytes, _)) => {
+                match Session::initial_rig().import_hd_editor_file(&mut self.hd_library, bytes) {
+                    Ok(summary) => {
+                        self.select_hd_file(summary.index);
+                        self.pod_message = "Loaded an offline HD Edit file. Internal product target and physical compatibility remain unverified.".into();
+                    }
+                    Err(error) => self.pod_message = rejection_text(&error),
                 }
-                Err(error) => self.pod_message = error.detail(),
-            },
+            }
             Err(error) => self.pod_message = error.detail(),
         }
     }
@@ -2068,12 +2072,7 @@ impl Workbench {
             self.pod_message = "Save cancelled. No file was written.".into();
             return false;
         };
-        let result = self
-            .hd_library
-            .file(index)
-            .ok_or_else(|| "selected HD editor file disappeared".to_owned())
-            .and_then(|file| file.save_copy(&path).map_err(|error| error.detail()));
-        match result {
+        match Session::initial_rig().save_hd_editor_copy(&self.hd_library, &path, index) {
             Ok(()) => match self.hd_library.note_saved(index) {
                 Ok(()) => {
                     self.pod_message = format!(
@@ -2088,7 +2087,7 @@ impl Workbench {
                 }
             },
             Err(error) => {
-                self.pod_message = error;
+                self.pod_message = rejection_text(&error);
                 false
             }
         }
