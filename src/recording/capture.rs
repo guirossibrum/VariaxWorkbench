@@ -536,7 +536,7 @@ impl CaptureSession {
             return Err(self.error.clone().unwrap_or(CaptureError::Stopped));
         }
         if self.stopped {
-            return Err(self.terminal_error.clone().unwrap_or(CaptureError::Stopped));
+            return self.fail(self.terminal_error.clone().unwrap_or(CaptureError::Stopped));
         }
         if generation != self.generation {
             return self.fail(CaptureError::StaleGeneration);

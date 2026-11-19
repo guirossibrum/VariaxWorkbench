@@ -197,12 +197,19 @@ mod tests {
     }
 
     fn source(instrument: Option<ProductProfile>) -> ValidatedPlan {
+        source_with_capacity(instrument, 1024)
+    }
+
+    fn source_with_capacity(
+        instrument: Option<ProductProfile>,
+        max_take_bytes: u64,
+    ) -> ValidatedPlan {
         let (registry, request) = native_request(instrument);
         ValidatedPlan::native_podxt(
             &registry,
             request,
             RecordRoute::SendCleanGuitar,
-            1024,
+            max_take_bytes,
         )
         .unwrap()
     }
@@ -340,24 +347,43 @@ mod tests {
 
     #[test]
     fn period_translation_respects_frame_count_and_borrowed_buffer_bounds() {
-        let mut adapter = AlsaPodxtCaptureAdapter::from_negotiated(source(None), contract(), 62)
-            .unwrap();
-        let bytes = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        let mut adapter = AlsaPodxtCaptureAdapter::from_negotiated(
+            source_with_capacity(None, 16_384),
+            contract(),
+            62,
+        )
+        .unwrap();
+        // The admitted PODxt declaration rejects periods below 8,190 bytes.
+        let bytes: Vec<u8> = (0..8_190).map(|byte| byte as u8).collect();
         adapter
-            .translate_read_result(62, 1, 2, &bytes)
+            .translate_read_result(62, 1_365, 1_365, &bytes)
             .unwrap();
-        assert_eq!(adapter.drain().unwrap(), 1);
-        assert_eq!(adapter.session().take().pcm(), &bytes[..6]);
+        assert_eq!(adapter.drain().unwrap(), 1_365);
+        assert_eq!(adapter.session().take().pcm(), bytes.as_slice());
         assert_eq!(adapter.translate_read_result(62, 0, 0, &[]), Ok(()));
+
+        let mut overread = AlsaPodxtCaptureAdapter::from_negotiated(
+            source_with_capacity(None, 16_384),
+            contract(),
+            63,
+        )
+        .unwrap();
         assert_eq!(
-            adapter.translate_read_result(62, 3, 2, &bytes),
-            Err(CaptureError::MisalignedChunk)
+            overread.translate_read_result(63, 1_366, 1_365, &bytes),
+            Err(CaptureError::AdapterFailure(i32::MIN))
         );
+
+        let mut short_buffer = AlsaPodxtCaptureAdapter::from_negotiated(
+            source_with_capacity(None, 16_384),
+            contract(),
+            64,
+        )
+        .unwrap();
         assert_eq!(
-            adapter.translate_read_result(62, 1, 2, &bytes[..6]),
-            Err(CaptureError::MisalignedChunk)
+            short_buffer.translate_read_result(64, 1, 1_365, &bytes[..6]),
+            Err(CaptureError::AdapterFailure(i32::MIN))
         );
-        assert_eq!(adapter.session().take().pcm(), &bytes[..6]);
+        assert!(short_buffer.session().take().pcm().is_empty());
     }
 
     #[test]
