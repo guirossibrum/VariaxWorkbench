@@ -60,6 +60,14 @@ struct PendingHdType8Choice {
     choice: pod_preset::HdType8Choice,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PendingHdType10Choice {
+    file_index: usize,
+    slot: pod_preset::HdFxSlot,
+    model_id: u32,
+    choice: pod_preset::HdType10Choice,
+}
+
 trait FileDialogs {
     fn open(&mut self) -> Option<PathBuf>;
     fn save(&mut self, suggested: &str, extension: &str) -> Option<PathBuf>;
@@ -237,6 +245,7 @@ struct Workbench {
     hd_numeric_value: i32,
     hd_type9_pending: Option<PendingHdType9Choice>,
     hd_type8_pending: Option<PendingHdType8Choice>,
+    hd_type10_pending: Option<PendingHdType10Choice>,
     hd_setlist_index: usize,
     hd_preset_index: usize,
     pod_name: String,
@@ -321,6 +330,7 @@ impl Workbench {
             hd_numeric_value: 0,
             hd_type9_pending: None,
             hd_type8_pending: None,
+            hd_type10_pending: None,
             hd_setlist_index: 0,
             hd_preset_index: 0,
             pod_name: String::new(),
@@ -551,6 +561,7 @@ impl Workbench {
                     || self.hd_library.any_dirty()
                     || self.hd_type9_pending.is_some()
                     || self.hd_type8_pending.is_some()
+                    || self.hd_type10_pending.is_some()
                 {
                     self.pending = Some(Pending::QuitPod);
                     ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -1236,7 +1247,8 @@ impl Workbench {
         } else if (self.pod_library.any_dirty()
             || self.hd_library.any_dirty()
             || self.hd_type9_pending.is_some()
-            || self.hd_type8_pending.is_some())
+            || self.hd_type8_pending.is_some()
+            || self.hd_type10_pending.is_some())
             && !self.permit_close
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -1311,6 +1323,7 @@ impl Workbench {
             if self.hd_library.any_dirty()
                 || self.hd_type9_pending.is_some()
                 || self.hd_type8_pending.is_some()
+                || self.hd_type10_pending.is_some()
             {
                 self.hd_quit_dialog(ctx);
             } else {
@@ -1489,6 +1502,61 @@ impl Workbench {
             } else if discard {
                 self.hd_type9_pending = None;
                 self.pod_message = "Discarded the staged HD type-9 choice.".into();
+                if !self.hd_library.any_dirty() && !self.pod_library.any_dirty() {
+                    self.continue_pending(ctx);
+                }
+            }
+            return;
+        }
+        if let Some(staged) = self.hd_type10_pending {
+            let mut apply = false;
+            let mut discard = false;
+            let mut cancel = false;
+            egui::Window::new("Staged HD type-10 choice")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.label(format!(
+                        "{} for H5EP entry {} / FX slot {} is staged but not applied.",
+                        staged.choice.label(),
+                        staged.file_index,
+                        staged.slot.index()
+                    ));
+                    ui.label("Apply changes only the selected offline H5EP value.");
+                    ui.horizontal(|ui| {
+                        let r = ui.button("Apply staged choice");
+                        #[cfg(test)]
+                        self.pending_buttons.insert("apply-type10", r.rect);
+                        apply = r.clicked();
+                        let r = ui.button("Keep editing");
+                        #[cfg(test)]
+                        self.pending_buttons.insert("cancel", r.rect);
+                        cancel = r.clicked();
+                        let r = ui.button("Discard staged choice");
+                        #[cfg(test)]
+                        self.pending_buttons.insert("discard", r.rect);
+                        discard = r.clicked();
+                    });
+                });
+            if cancel {
+                self.pending = None;
+            } else if apply {
+                self.apply_hd_type10_choice(
+                    staged.file_index,
+                    staged.slot,
+                    staged.model_id,
+                    staged.choice,
+                );
+                if self.hd_type10_pending.is_none()
+                    && !self.hd_library.any_dirty()
+                    && !self.pod_library.any_dirty()
+                {
+                    self.continue_pending(ctx);
+                }
+            } else if discard {
+                self.hd_type10_pending = None;
+                self.pod_message = "Discarded the staged HD type-10 choice.".into();
                 if !self.hd_library.any_dirty() && !self.pod_library.any_dirty() {
                     self.continue_pending(ctx);
                 }
@@ -2018,6 +2086,16 @@ impl Workbench {
                         }
                     });
                 }
+                if let Some(pending) = self.hd_type10_pending
+                    && self.hd_selected == Some(pending.file_index)
+                    && self.hd_effect_slot == pending.slot.index()
+                {
+                    ui.label(format!("{} for FX slot {} is staged.", pending.choice.label(), pending.slot.index()));
+                    ui.horizontal(|ui| {
+                        if self.pod_button(ui, "apply-hd-type10-choice", "Apply offline choice") { self.apply_hd_type10_choice(pending.file_index,pending.slot,pending.model_id,pending.choice); }
+                        if self.pod_button(ui, "discard-hd-type10-choice", "Discard staged choice") { self.hd_type10_pending=None; self.pod_message="Discarded the staged HD type-10 choice.".into(); }
+                    });
+                }
                 if self.hd_selected.is_some_and(|index| {
                     self.hd_library
                         .file(index)
@@ -2303,6 +2381,10 @@ impl Workbench {
                         self.pod_message =
                             "Cleared the staged type-8 choice after changing FX slot.".into();
                     }
+                    if self.hd_type10_pending.take().is_some() {
+                        self.pod_message =
+                            "Cleared the staged type-10 choice after changing FX slot.".into();
+                    }
                     let selected_model_id = preset.effect_model_id(self.hd_effect_slot);
                     if let Some(model_id) = selected_model_id
                         && let Some(control) = pod_preset::HdType1Control::ALL
@@ -2370,6 +2452,16 @@ impl Workbench {
                     self.hd_type9_pending = None;
                     self.pod_message =
                         "Cleared a stale staged type-9 choice after the selected model changed."
+                            .into();
+                }
+                if self.hd_type10_pending.is_some_and(|pending| {
+                    pending.file_index == index
+                        && (pending.slot.index() != self.hd_effect_slot
+                            || pending.model_id != model_id)
+                }) {
+                    self.hd_type10_pending = None;
+                    self.pod_message =
+                        "Cleared a stale staged type-10 choice after the selected model changed."
                             .into();
                 }
                 if pod_preset::hd_type8_choice_key(model_id).is_some() {
@@ -2529,6 +2621,77 @@ impl Workbench {
                         .insert("hd-type9-choice-combo", _response.response.rect);
                     ui.label("Choice labels are neutral. Imported unknown values are preserved until you choose an explicit value.");
                     if matches!(value, pod_preset::HdType9ChoiceValue::NonFinite(_)) {
+                        ui.label("A non-finite imported value cannot be replaced by this editor operation.");
+                    }
+                }
+                if pod_preset::hd_type10_choice_key(model_id).is_some() {
+                    let slot = pod_preset::HdFxSlot::new(self.hd_effect_slot).unwrap();
+                    let value = preset.hd_type10_choice_value(slot);
+                    let staged = self.hd_type10_pending.filter(|p| {
+                        p.file_index == index && p.slot == slot && p.model_id == model_id
+                    });
+                    let choice = match value {
+                        pod_preset::HdType10ChoiceValue::Choice(c) => Some(c),
+                        _ => None,
+                    };
+                    let mut selected = staged.map(|p| p.choice).or(choice);
+                    let label = staged.map_or_else(
+                        || match value {
+                            pod_preset::HdType10ChoiceValue::Choice(c) => c.label().to_owned(),
+                            pod_preset::HdType10ChoiceValue::UnknownFinite(bits) => {
+                                format!("Unknown imported value 0x{bits:08x}")
+                            }
+                            pod_preset::HdType10ChoiceValue::NonFinite(bits) => {
+                                format!("Non-finite imported value 0x{bits:08x}")
+                            }
+                            pod_preset::HdType10ChoiceValue::Unavailable => {
+                                "Unavailable (row or guard not admitted)".to_owned()
+                            }
+                        },
+                        |p| format!("{} · staged", p.choice.label()),
+                    );
+                    ui.label("Recovered type-10 choice");
+                    let response = egui::ComboBox::from_id_salt((
+                        "hd-type10-choice",
+                        index,
+                        self.hd_effect_slot,
+                    ))
+                    .selected_text(label)
+                    .show_ui(ui, |ui| {
+                        ui.add_enabled_ui(
+                            matches!(
+                                value,
+                                pod_preset::HdType10ChoiceValue::Choice(_)
+                                    | pod_preset::HdType10ChoiceValue::UnknownFinite(_)
+                            ),
+                            |ui| {
+                                for choice in pod_preset::HdType10Choice::ALL {
+                                    let r = ui.selectable_value(
+                                        &mut selected,
+                                        Some(choice),
+                                        choice.label(),
+                                    );
+                                    #[cfg(test)]
+                                    self.pod_buttons.insert(
+                                        if choice.index() == 0 {
+                                            "hd-type10-choice-option-0"
+                                        } else {
+                                            "hd-type10-choice-option-1"
+                                        },
+                                        r.rect,
+                                    );
+                                    if r.changed() {
+                                        self.stage_hd_type10_choice(index, slot, model_id, choice);
+                                    }
+                                }
+                            },
+                        );
+                    });
+                    #[cfg(test)]
+                    self.pod_buttons
+                        .insert("hd-type10-choice-combo", response.response.rect);
+                    ui.label("Choice labels are neutral; the selected value is preserved as an opaque float word.");
+                    if matches!(value, pod_preset::HdType10ChoiceValue::NonFinite(_)) {
                         ui.label("A non-finite imported value cannot be replaced by this editor operation.");
                     }
                 }
@@ -2743,6 +2906,10 @@ impl Workbench {
         if self.hd_type8_pending.take().is_some() {
             self.pod_message =
                 "Cleared a staged type-8 choice after changing HD file selection.".into();
+        }
+        if self.hd_type10_pending.take().is_some() {
+            self.pod_message =
+                "Cleared a staged type-10 choice after changing HD file selection.".into();
         }
         self.hd_selected = Some(index);
         self.hd_effect_slot = 0;
@@ -2960,6 +3127,61 @@ impl Workbench {
             }
             Err(error) => self.pod_message = rejection_text(&error),
         }
+    }
+
+    fn apply_hd_type10_choice(
+        &mut self,
+        file_index: usize,
+        slot: pod_preset::HdFxSlot,
+        model_id: u32,
+        choice: pod_preset::HdType10Choice,
+    ) {
+        let current = self.hd_library.file(file_index).and_then(|f| match f {
+            PodPresetFile::H5ep(p) => p.effect_model_id(slot.index()),
+            _ => None,
+        });
+        if current != Some(model_id) || pod_preset::hd_type10_choice_key(model_id).is_none() {
+            if self
+                .hd_type10_pending
+                .is_some_and(|p| p.file_index == file_index && p.slot == slot)
+            {
+                self.hd_type10_pending = None;
+            }
+            self.pod_message =
+                "Cleared a staged type-10 choice after its model context changed.".into();
+            return;
+        }
+        let result = Session::extension(ProductProfile::PodHd500x)
+            .and_then(|s| s.set_hd_type10_choice(&mut self.hd_library, file_index, slot, choice));
+        match result {
+            Ok(()) => {
+                if self.hd_type10_pending.is_some_and(|p| {
+                    p.file_index == file_index
+                        && p.slot == slot
+                        && p.model_id == model_id
+                        && p.choice == choice
+                }) {
+                    self.hd_type10_pending = None;
+                }
+                self.pod_message = "Applied the type-10 choice to this offline H5EP entry. Nothing was sent; save a new copy to keep the change.".into();
+            }
+            Err(error) => self.pod_message = rejection_text(&error),
+        }
+    }
+
+    fn stage_hd_type10_choice(
+        &mut self,
+        file_index: usize,
+        slot: pod_preset::HdFxSlot,
+        model_id: u32,
+        choice: pod_preset::HdType10Choice,
+    ) {
+        self.hd_type10_pending = Some(PendingHdType10Choice {
+            file_index,
+            slot,
+            model_id,
+            choice,
+        });
     }
 
     fn stage_hd_type9_choice(
@@ -4180,11 +4402,15 @@ mod tests {
             id,
             "apply-hd-type9-choice"
                 | "discard-hd-type9-choice"
+                | "apply-hd-type10-choice"
+                | "discard-hd-type10-choice"
                 | "save-hd-copy"
                 | "load-hd-file"
                 | "hd-type9-choice-option-0"
                 | "hd-type9-choice-option-1"
                 | "hd-type9-choice-option-2"
+                | "hd-type10-choice-option-0"
+                | "hd-type10-choice-option-1"
         ) {
             scroll_hd_editor_control_into_view(context, app, id);
             hd_editor_frame(context, app, vec![]);
@@ -4256,6 +4482,18 @@ mod tests {
             0 => "hd-type8-choice-option-0",
             1 => "hd-type8-choice-option-1",
             _ => panic!("invalid type-8 choice index"),
+        };
+        click_hd_editor(context, app, option_id);
+    }
+
+    fn click_hd_type10_choice(context: &egui::Context, app: &mut Workbench, choice: usize) {
+        click_hd_editor(context, app, "hd-type10-choice-combo");
+        let option_id = if choice == 0 {
+            "hd-type10-choice-option-0"
+        } else if choice == 1 {
+            "hd-type10-choice-option-1"
+        } else {
+            panic!("invalid type-10 choice index")
         };
         click_hd_editor(context, app, option_id);
     }
@@ -4383,6 +4621,22 @@ mod tests {
             pod_preset::HD_TYPE8_CHOICE_MODEL_ID,
             pod_preset::HD_TYPE8_CHOICE_KEY,
         )
+    }
+
+    fn sample_hd_type10_preset(slot: usize, row: usize, bits: u32) -> Vec<u8> {
+        let mut bytes = sample_hd_type9_preset_for(
+            slot,
+            row,
+            bits,
+            pod_preset::HD_TYPE10_CHOICE_MODEL_ID,
+            pod_preset::HD_TYPE10_CHOICE_KEY,
+        );
+        let block = pod_preset::H5EP_HEADER_BYTES + 0x428 + slot * 0x100;
+        let other_row = (row + 1) % 12;
+        let at = block + 0x10 + other_row * 0x14;
+        bytes[at..at + 4].copy_from_slice(&0x3f10_0004u32.to_be_bytes());
+        bytes[at + 4..at + 8].copy_from_slice(&0x3f00_0000u32.to_be_bytes());
+        bytes
     }
 
     #[test]
@@ -5482,6 +5736,173 @@ mod tests {
         assert!(!app.hd_library.is_dirty(type8));
 
         assert!(app.read_worker.is_none());
+    }
+
+    #[test]
+    fn hd_type10_and_type9_choices_stage_and_apply_independently_on_same_model() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let slot_index = 5;
+        let row_index = 8;
+        let original = sample_hd_type10_preset(slot_index, row_index, 0x3eaa_aaab);
+        let index = app.hd_library.import_bytes(original.clone()).unwrap();
+        app.select_hd_file(index);
+        app.pod_open = true;
+        app.hd_effect_slot = slot_index;
+        click_hd_type10_choice(&context, &mut app, 1);
+        hd_editor_frame(&context, &mut app, vec![]);
+        assert!(app.hd_type10_pending.is_some());
+        assert_hd_bytes_eq(
+            app.hd_library.file(index).unwrap().as_bytes(),
+            &original,
+            "type-10 stage is display only",
+        );
+        click_hd_type9_choice(&context, &mut app, 1);
+        hd_editor_frame(&context, &mut app, vec![]);
+        assert!(app.hd_type9_pending.is_some());
+        assert!(
+            app.hd_type10_pending.is_some(),
+            "staging same-model type 9 must retain type-10 stage"
+        );
+
+        let type10_value = pod_preset::H5EP_HEADER_BYTES
+            + 0x428
+            + slot_index * 0x100
+            + 0x10
+            + row_index * 0x14
+            + 4;
+        let type9_row = (row_index + 1) % 12;
+        let type9_value = pod_preset::H5EP_HEADER_BYTES
+            + 0x428
+            + slot_index * 0x100
+            + 0x10
+            + type9_row * 0x14
+            + 4;
+        click_hd_editor(&context, &mut app, "apply-hd-type10-choice");
+        let after10 = app.hd_library.file(index).unwrap().as_bytes();
+        assert_eq!(
+            &after10[type10_value..type10_value + 4],
+            &[0x3f, 0x80, 0, 0]
+        );
+        assert_eq!(
+            &after10[type9_value..type9_value + 4],
+            &original[type9_value..type9_value + 4]
+        );
+        assert!(app.hd_type10_pending.is_none());
+        assert!(
+            app.hd_type9_pending.is_some(),
+            "applying type 10 must retain type-9 stage"
+        );
+        click_hd_editor(&context, &mut app, "apply-hd-type9-choice");
+        let after9 = app.hd_library.file(index).unwrap().as_bytes().to_vec();
+        assert_eq!(&after9[type9_value..type9_value + 4], &[0x3f, 0, 0, 0]);
+        assert_eq!(&after9[type10_value..type10_value + 4], &[0x3f, 0x80, 0, 0]);
+        assert!(app.hd_type9_pending.is_none());
+
+        let directory = tempfile::tempdir().unwrap();
+        let collision = directory.path().join("type10-existing.5xe");
+        std::fs::write(&collision, b"keep existing").unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_save: [Some(collision.clone())].into(),
+            ..Default::default()
+        });
+        click_hd_editor(&context, &mut app, "save-hd-copy");
+        assert_eq!(std::fs::read(&collision).unwrap(), b"keep existing");
+        assert!(app.hd_library.is_dirty(index));
+        let copy = directory.path().join("type10-copy.5xe");
+        app.dialogs = Box::new(FakeDialogs {
+            pod_save: [Some(copy.clone())].into(),
+            pod_open: [Some(copy.clone())].into(),
+            ..Default::default()
+        });
+        click_hd_editor(&context, &mut app, "save-hd-copy");
+        assert_hd_bytes_eq(&std::fs::read(&copy).unwrap(), &after9, "type-10 copy save");
+        assert!(!app.hd_library.is_dirty(index));
+        click_hd_editor(&context, &mut app, "load-hd-file");
+        let reopened = app.hd_selected.expect("saved type-10 copy reopens");
+        assert_hd_bytes_eq(
+            app.hd_library.file(reopened).unwrap().as_bytes(),
+            &after9,
+            "type-10 copy reopen",
+        );
+        app.select_hd_file(index);
+
+        click_hd_type10_choice(&context, &mut app, 0);
+        hd_editor_frame(&context, &mut app, vec![]);
+        let staged = app
+            .hd_type10_pending
+            .expect("second type-10 choice is staged");
+        let mut bad_marker = after9.clone();
+        let marker = pod_preset::H5EP_HEADER_BYTES
+            + 0x428
+            + slot_index * 0x100
+            + 0x10
+            + row_index * 0x14
+            + 0x10;
+        bad_marker[marker] = 1;
+        *app.hd_library.file_mut(index).unwrap() =
+            PodPresetFile::parse(bad_marker.clone()).unwrap();
+        assert!(app.hd_library.is_dirty(index));
+        hd_editor_frame(&context, &mut app, vec![]);
+        click_hd_editor(&context, &mut app, "apply-hd-type10-choice");
+        assert_hd_bytes_eq(
+            app.hd_library.file(index).unwrap().as_bytes(),
+            &bad_marker,
+            "failed type-10 Apply preserves bytes",
+        );
+        assert_eq!(app.hd_type10_pending, Some(staged));
+        assert!(app.hd_library.is_dirty(index));
+        app.hd_library.revert_unsaved(index).unwrap();
+        assert_hd_bytes_eq(
+            app.hd_library.file(index).unwrap().as_bytes(),
+            &after9,
+            "type-10 revert returns to saved baseline",
+        );
+        assert!(
+            app.hd_type10_pending.is_some(),
+            "failed Apply keeps its intended stage"
+        );
+        click_hd_type9_choice(&context, &mut app, 1);
+        assert!(app.hd_type9_pending.is_some());
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "discard");
+        assert!(app.hd_type9_pending.is_none());
+        assert!(
+            app.hd_type10_pending.is_some(),
+            "quit processes the remaining type-10 stage"
+        );
+        click_prompt(&context, &mut app, "discard");
+        assert!(app.hd_type10_pending.is_none());
+        assert!(
+            app.permit_close,
+            "quit closes only after all staged choices are resolved"
+        );
+    }
+
+    #[test]
+    fn hd_type10_gui_refuses_nonfinite_and_unavailable_rows() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        for (bits, invalid_key) in [(0x7fc0_0001u32, false), (0x3f40_0000, true)] {
+            let mut bytes = sample_hd_type10_preset(3, 4, bits);
+            if invalid_key {
+                let row = pod_preset::H5EP_HEADER_BYTES + 0x428 + 3 * 0x100 + 0x10 + 4 * 0x14;
+                bytes[row..row + 4].fill(0);
+            }
+            let index = app.hd_library.import_bytes(bytes.clone()).unwrap();
+            app.select_hd_file(index);
+            app.hd_effect_slot = 3;
+            hd_editor_frame(&context, &mut app, vec![]);
+            click_hd_type10_choice(&context, &mut app, 1);
+            assert!(app.hd_type10_pending.is_none());
+            assert_hd_bytes_eq(
+                app.hd_library.file(index).unwrap().as_bytes(),
+                &bytes,
+                "uneditable type-10 value stays untouched",
+            );
+        }
     }
 
     #[test]

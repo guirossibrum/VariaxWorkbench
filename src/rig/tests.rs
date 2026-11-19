@@ -657,6 +657,49 @@ fn type9_choice_writer_is_gated_to_the_hd500x_extension_and_standalone_h5ep() {
 }
 
 #[test]
+fn type10_choice_uses_independent_same_model_key_through_hd500x_session() {
+    use crate::pod_preset::{HdFxSlot, HdType10Choice};
+    let bytes: Vec<u8> = include_str!("../../tests/fixtures/type10-choice-source.hex")
+        .split_ascii_whitespace()
+        .map(|b| u8::from_str_radix(b, 16).unwrap())
+        .collect();
+    let mut library = HdEditorLibrary::default();
+    let index = library.import_bytes(bytes.clone()).unwrap();
+    let slot = HdFxSlot::new(5).unwrap();
+    assert!(
+        Session::initial_rig()
+            .set_hd_type10_choice(&mut library, index, slot, HdType10Choice::Choice1)
+            .is_err()
+    );
+    let session = Session::extension(ProductProfile::PodHd500x).unwrap();
+    session
+        .set_hd_type10_choice(&mut library, index, slot, HdType10Choice::Choice1)
+        .unwrap();
+    let changed = library.file(index).unwrap().as_bytes();
+    assert_eq!(&changed[0x9dc..0x9e0], &[0x3f, 0x80, 0, 0]);
+    assert_eq!(&changed[0x94c..0x954], &bytes[0x94c..0x954]);
+    assert_ne!(changed, bytes);
+    library.revert_unsaved(index).unwrap();
+    assert_eq!(library.file(index).unwrap().as_bytes(), bytes);
+
+    let mut setlist = synthetic_h5es();
+    let child_start = crate::pod_preset::H5ES_HEADER_BYTES;
+    let child_len = crate::pod_preset::H5EP_MIN_BYTES;
+    setlist[child_start..child_start + child_len].copy_from_slice(&bytes[..child_len]);
+    let mut nested = HdEditorLibrary::default();
+    let parent = nested.import_bytes(setlist).unwrap();
+    let parent_before = nested.file(parent).unwrap().as_bytes().to_vec();
+    let child = Session::initial_rig()
+        .extract_hd_editor_preset(&mut nested, parent, 0, 0)
+        .unwrap()
+        .index;
+    session
+        .set_hd_type10_choice(&mut nested, child, slot, HdType10Choice::Choice0)
+        .unwrap();
+    assert_eq!(nested.file(parent).unwrap().as_bytes(), parent_before);
+}
+
+#[test]
 fn type8_choice_is_a_separate_profile_gated_child_h5ep_edit() {
     use crate::pod_preset::{
         HD_TYPE8_CHOICE_KEY, HD_TYPE8_CHOICE_MODEL_ID, HdFxSlot, HdType8Choice, HdType8ChoiceValue,
