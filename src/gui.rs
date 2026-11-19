@@ -236,6 +236,10 @@ struct Workbench {
     #[cfg(test)]
     pod_whammy_knob_sliders: HashMap<pod_preset::StompWhammyKnob, Rect>,
     #[cfg(test)]
+    pod_eq_frequency_sliders: HashMap<pod_preset::PodxtEqBand, Rect>,
+    #[cfg(test)]
+    pod_eq_gain_sliders: HashMap<pod_preset::PodxtEqBand, Rect>,
+    #[cfg(test)]
     pod_mod_sliders: HashMap<pod_preset::ModControl, Rect>,
     #[cfg(test)]
     pod_reverb_sliders: HashMap<pod_preset::ReverbControl, Rect>,
@@ -325,6 +329,10 @@ impl Workbench {
             pod_stomp_sliders: HashMap::new(),
             #[cfg(test)]
             pod_whammy_knob_sliders: HashMap::new(),
+            #[cfg(test)]
+            pod_eq_frequency_sliders: HashMap::new(),
+            #[cfg(test)]
+            pod_eq_gain_sliders: HashMap::new(),
             #[cfg(test)]
             pod_mod_sliders: HashMap::new(),
             #[cfg(test)]
@@ -1758,6 +1766,8 @@ impl Workbench {
             self.pod_drive_slider = None;
             self.pod_stomp_sliders.clear();
             self.pod_whammy_knob_sliders.clear();
+            self.pod_eq_frequency_sliders.clear();
+            self.pod_eq_gain_sliders.clear();
             self.pod_mod_sliders.clear();
             self.pod_reverb_sliders.clear();
             self.pod_delay_sliders.clear();
@@ -1963,6 +1973,46 @@ impl Workbench {
                                         control.label()
                                     )
                                 }
+                                Err(error) => self.pod_message = error.detail(),
+                            }
+                        }
+                    });
+                }
+                let eq_bands = self
+                    .pod_selected
+                    .and_then(|index| self.pod_library.tone(index).map(|tone| (index, tone)))
+                    .map(|(index, tone)| {
+                        pod_preset::PodxtEqBand::ALL
+                            .into_iter()
+                            .filter_map(|band| {
+                                tone.podxt_eq_band_display_values(band)
+                                    .ok()
+                                    .map(|(frequency, gain)| (index, band, frequency, gain))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if !eq_bands.is_empty() {
+                    ui.small("PODxt four-band EQ graph values from Line6Edit 3.06; offline edit only. No device acceptance or audio behavior is claimed.");
+                }
+                for (index, band, mut frequency, mut gain) in eq_bands {
+                    let table = match band {
+                        pod_preset::PodxtEqBand::One => (50.0, 690.0),
+                        pod_preset::PodxtEqBand::Two => (50.0, 6050.0),
+                        pod_preset::PodxtEqBand::Three => (100.0, 11300.0),
+                        pod_preset::PodxtEqBand::Four => (500.0, 9300.0),
+                    };
+                    ui.label(format!("EQ band {}", match band { pod_preset::PodxtEqBand::One => 1, pod_preset::PodxtEqBand::Two => 2, pod_preset::PodxtEqBand::Three => 3, pod_preset::PodxtEqBand::Four => 4 }));
+                    ui.horizontal(|ui| {
+                        let frequency_response = ui.add(egui::Slider::new(&mut frequency, table.0..=table.1).text("Frequency").suffix(" Hz"));
+                        #[cfg(test)]
+                        self.pod_eq_frequency_sliders.insert(band, frequency_response.rect);
+                        let gain_response = ui.add(egui::Slider::new(&mut gain, -12.8..=12.6).text("Gain").suffix(" dB"));
+                        #[cfg(test)]
+                        self.pod_eq_gain_sliders.insert(band, gain_response.rect);
+                        if frequency_response.changed() || gain_response.changed() {
+                            match self.edit_pod_tone(index, |tone| tone.set_podxt_eq_band(band, frequency, gain)) {
+                                Ok(()) => self.pod_message = format!("Applied EQ band {} graph edit. Nothing was sent.", match band { pod_preset::PodxtEqBand::One => 1, pod_preset::PodxtEqBand::Two => 2, pod_preset::PodxtEqBand::Three => 3, pod_preset::PodxtEqBand::Four => 4 }),
                                 Err(error) => self.pod_message = error.detail(),
                             }
                         }
@@ -3658,6 +3708,41 @@ mod tests {
         chunk(b"FORM", &data)
     }
 
+    fn sample_pod_eq_tone() -> Vec<u8> {
+        fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+            let mut bytes = id.to_vec();
+            bytes.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(data);
+            if !data.len().is_multiple_of(2) {
+                bytes.push(0xa5);
+            }
+            bytes
+        }
+        let mut info = vec![0; 76];
+        info[..4].copy_from_slice(&1u32.to_be_bytes());
+        info[4..8].copy_from_slice(&pod_preset::PODXT_LIVE_TONE_ID.to_be_bytes());
+        info[72..76].copy_from_slice(&pod_preset::PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
+        let mut model = b"MODL".to_vec();
+        let mut minf = Vec::new();
+        minf.extend_from_slice(&pod_preset::PODXT_EQ_MODEL_ID.to_be_bytes());
+        minf.extend_from_slice(&pod_preset::PODXT_EQ_SLOT.to_be_bytes());
+        minf.extend_from_slice(&[0, 0, 0, 1]);
+        model.extend(chunk(b"MINF", &minf));
+        for id in 0x0010_0000u32..=0x0010_0007 {
+            let mut parm = Vec::new();
+            parm.extend_from_slice(&(0x3f00_0000 | id).to_be_bytes());
+            parm.extend_from_slice(&1u32.to_be_bytes());
+            parm.extend_from_slice(&0x3f00_0000u32.to_be_bytes());
+            model.extend(chunk(b"PARM", &parm));
+        }
+        let mut patch = b"PATC".to_vec();
+        patch.extend(chunk(b"LIST", &model));
+        let mut data = b"L6AS".to_vec();
+        data.extend(chunk(b"PINF", &info));
+        data.extend(chunk(b"LIST", &patch));
+        chunk(b"FORM", &data)
+    }
+
     fn sample_stomp_wave_pod_tone() -> Vec<u8> {
         sample_stomp_wave_pod_tone_with_bits(0x3f00_0000)
     }
@@ -3887,6 +3972,41 @@ mod tests {
     ) {
         recording_frame(context, app, vec![]);
         let rect = app.pod_whammy_knob_sliders[&control];
+        let start = Pos2::new(rect.left() + rect.width() * 0.35, rect.center().y);
+        let end = Pos2::new(rect.left() + rect.width() * 0.73, rect.center().y);
+        recording_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame(context, app, vec![egui::Event::PointerMoved(end)]);
+        recording_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
+    fn drag_pod_eq_frequency_slider(
+        context: &egui::Context,
+        app: &mut Workbench,
+        band: pod_preset::PodxtEqBand,
+    ) {
+        recording_frame(context, app, vec![]);
+        let rect = app.pod_eq_frequency_sliders[&band];
         let start = Pos2::new(rect.left() + rect.width() * 0.35, rect.center().y);
         let end = Pos2::new(rect.left() + rect.width() * 0.73, rect.center().y);
         recording_frame(
@@ -4171,6 +4291,67 @@ mod tests {
         const {
             assert!(LIVE_ACCESS_LOCKED);
         }
+    }
+
+    #[test]
+    fn podxt_eq_graph_slider_edits_two_words_and_preserves_failed_save_state() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("eq.l6t");
+        let collision = directory.path().join("occupied.l6t");
+        let saved = directory.path().join("saved.l6t");
+        let original = sample_pod_eq_tone();
+        std::fs::write(&source, &original).unwrap();
+        std::fs::write(&collision, b"keep this file").unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(source)].into(),
+            pod_save: [None, Some(collision.clone()), Some(saved.clone())].into(),
+            ..Default::default()
+        });
+        app.pod_open = true;
+        app.load_pod_tone();
+        recording_frame(&context, &mut app, vec![]);
+        assert_eq!(app.pod_eq_frequency_sliders.len(), 4);
+        assert_eq!(app.pod_eq_gain_sliders.len(), 4);
+        let before = app.pod_library.tone(0).unwrap().as_bytes().to_vec();
+        drag_pod_eq_frequency_slider(&context, &mut app, pod_preset::PodxtEqBand::One);
+        assert!(app.pod_library.is_dirty(0));
+        let after = app.pod_library.tone(0).unwrap().as_bytes();
+        let changed: Vec<_> = before
+            .iter()
+            .zip(after)
+            .enumerate()
+            .filter_map(|(i, (a, b))| (a != b).then_some(i))
+            .collect();
+        assert!(!changed.is_empty());
+        assert!(app.pod_message.contains("Nothing was sent"));
+
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        prompt_frame(&context, &mut app, vec![]);
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pending.is_none());
+        assert!(
+            app.pod_library.is_dirty(0),
+            "keep editing retains the applied EQ edit"
+        );
+
+        click_pod(&context, &mut app, "save-pod");
+        assert!(
+            app.pod_library.is_dirty(0),
+            "cancel keeps the applied EQ edit"
+        );
+        click_pod(&context, &mut app, "save-pod");
+        assert_eq!(std::fs::read(&collision).unwrap(), b"keep this file");
+        assert!(
+            app.pod_library.is_dirty(0),
+            "collision keeps the applied EQ edit"
+        );
+        click_pod(&context, &mut app, "save-pod");
+        assert!(!app.pod_library.is_dirty(0));
+        let reopened = pod_preset::PodTone::parse(std::fs::read(saved).unwrap()).unwrap();
+        assert_ne!(reopened.as_bytes(), before);
     }
 
     fn click_pod_window_close(context: &egui::Context, app: &mut Workbench) {
