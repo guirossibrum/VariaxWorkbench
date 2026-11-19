@@ -179,9 +179,11 @@ The distinct Stomp layout `0x020a0009` also exposes typed nine-choice
 `0x00100001` and `0x00100002`. Both use controller keys
 `0,16,32,48,64,80,96,112,127` and the exact float32 words documented in the
 [control matrix](podxt-live-control-matrix.md); their interval labels remain
-separate. This does not add key 127 to SYNWAVE. Each harmony edit requires one
-existing matching canonical float PARM on a PODxt Live target version `>=3.00`
-and one Stomp model `0x020a0009`; only that value word changes. Unknown finite
+separate. This does not add key 127 to SYNWAVE. Each harmony edit requires
+exactly one recorded matching canonical float PARM on a PODxt Live target
+version `>=3.00` and exactly one Stomp model `0x020a0009`; duplicate semantic
+PARMs remain preserved on read but getters and edit paths reject them rather
+than selecting the last record. Only the selected value word changes. Unknown finite
 words display as unknown and stay raw until a choice is explicitly staged and
 applied. Nonfinite existing words, opaque model records and failed target
 guards reject mutation. The GUI requires an explicit Apply button for either

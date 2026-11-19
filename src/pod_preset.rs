@@ -2743,12 +2743,23 @@ impl PodTone {
                 "Stomp harmony requires one existing model 0x020a0009 slot",
             ));
         }
-        self.control_location(
-            STOMP_SLOT,
-            &[0x020a_0009],
-            control.parameter_id(),
-            "Stomp harmony",
-        )
+        let parameter_id = control.parameter_id();
+        let target_count = self.models[model_index]
+            .parameters
+            .iter()
+            .filter(|parameter| {
+                matches!(
+                    parameter,
+                    ModelParameter::Recorded { id, .. } if *id == parameter_id
+                )
+            })
+            .count();
+        if target_count != 1 {
+            return Err(ToneError::format(format!(
+                "Stomp harmony requires exactly one existing PARM 0x{parameter_id:08x}"
+            )));
+        }
+        self.control_location(STOMP_SLOT, &[0x020a_0009], parameter_id, "Stomp harmony")
     }
 
     fn delay_association_bits_at(
@@ -4470,21 +4481,31 @@ mod tests {
         bytes
     }
 
+    fn stomp_harmony_tone_with_models(
+        models: &[BuiltModel<'_>],
+        target: u32,
+        version: u32,
+    ) -> Vec<u8> {
+        let mut bytes = custom_tone(ContainerKind::L6as, models);
+        let pinf = find_chunk_data(&bytes, b"PINF");
+        bytes[pinf + 4..pinf + 8].copy_from_slice(&target.to_be_bytes());
+        bytes[pinf + 72..pinf + 76].copy_from_slice(&version.to_be_bytes());
+        bytes
+    }
+
     fn stomp_harmony_tone(bits1: u32, bits2: u32) -> Vec<u8> {
         let p1 = drive_record(0x3f, 0x0010_0001, 1, bits1);
         let p2 = drive_record(0x3f, 0x0010_0002, 1, bits2);
-        let mut bytes = custom_tone(
-            ContainerKind::L6as,
+        stomp_harmony_tone_with_models(
             &[BuiltModel {
                 slot: STOMP_SLOT,
                 model_id: 0x020a_0009,
                 tail: &[0x91, 0x82, 0x73, 0x64],
                 parameters: &[&p1, &p2],
             }],
-        );
-        let pinf = find_chunk_data(&bytes, b"PINF");
-        bytes[pinf + 72..pinf + 76].copy_from_slice(&PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
-        bytes
+            PODXT_LIVE_TONE_ID,
+            PODXT_LIVE_HOST_MIN_VERSION,
+        )
     }
 
     fn bundle_with_tone(tone: &[u8]) -> Vec<u8> {
@@ -7153,7 +7174,7 @@ mod tests {
 
     #[test]
     fn stomp_harmony_choices_match_source_bits_and_patch_only_selected_existing_word() {
-        let expected = [
+        let expected_bits = [
             0xbb81_0204,
             0x3df9_f3e8,
             0x3e7d_fbf8,
@@ -7174,27 +7195,52 @@ mod tests {
         assert_eq!(StompHarmonyControl::Harmony1457.parameter_id(), 0x0010_0002);
         assert_eq!(StompHarmony1M335Selection::ALL.len(), 9);
         assert_eq!(StompHarmony1457Selection::ALL.len(), 9);
-        for (choice, bits) in StompHarmony1M335Selection::ALL.into_iter().zip(expected) {
-            assert_eq!(choice.float_bits(), bits);
-        }
-        for ((choice, bits), key) in StompHarmony1457Selection::ALL
+        let expected_labels1 = [
+            "-1 OCT", "-MAJ6TH", "-MIN6TH", "-4TH", "UNISON", "MIN3RD", "MAJ3RD", "5TH", "1 OCT",
+        ];
+        let expected_labels2 = [
+            "-1 OCT", "-5TH", "-4TH", "-2ND", "UNISON", "4TH", "5TH", "7TH", "1 OCT",
+        ];
+        for (((choice, bits), key), label) in StompHarmony1M335Selection::ALL
             .into_iter()
-            .zip(expected)
+            .zip(expected_bits)
             .zip(expected_keys)
+            .zip(expected_labels1)
         {
             assert_eq!(choice.float_bits(), bits);
             assert_eq!(choice.controller_key(), key);
+            assert_eq!(choice.label(), label);
         }
-        for (choice, key) in StompHarmony1M335Selection::ALL
+        for (((choice, bits), key), label) in StompHarmony1457Selection::ALL
             .into_iter()
+            .zip(expected_bits)
             .zip(expected_keys)
+            .zip(expected_labels2)
         {
+            assert_eq!(choice.float_bits(), bits);
             assert_eq!(choice.controller_key(), key);
+            assert_eq!(choice.label(), label);
         }
         let original = stomp_harmony_tone(0x3f00_0000, 0x3f40_8102);
-        for choice in StompHarmony1M335Selection::ALL {
+        let value_start1 = original
+            .windows(4)
+            .position(|w| w == ((0x3f10_0001u32).to_be_bytes()))
+            .unwrap()
+            + 8;
+        let value_start2 = original
+            .windows(4)
+            .position(|w| w == ((0x3f10_0002u32).to_be_bytes()))
+            .unwrap()
+            + 8;
+        for (choice, bits) in StompHarmony1M335Selection::ALL
+            .into_iter()
+            .zip(expected_bits)
+        {
             let mut tone = PodTone::parse(original.clone()).unwrap();
             tone.set_stomp_harmony_1m335_selection(choice).unwrap();
+            let mut expected_bytes = original.clone();
+            expected_bytes[value_start1..value_start1 + 4].copy_from_slice(&bits.to_be_bytes());
+            assert_eq!(tone.as_bytes(), expected_bytes);
             assert_eq!(
                 tone.stomp_harmony_1m335_selection().unwrap(),
                 StompHarmonyValue::Known(choice)
@@ -7203,30 +7249,16 @@ mod tests {
                 tone.stomp_harmony_1457_selection().unwrap(),
                 StompHarmonyValue::Known(StompHarmony1457Selection::Fifth)
             );
-            let differences = original
-                .iter()
-                .zip(tone.as_bytes())
-                .enumerate()
-                .filter_map(|(i, (a, b))| (a != b).then_some(i))
-                .collect::<Vec<_>>();
-            let start = original
-                .windows(12)
-                .rposition(|w| w[..8] == drive_record(0x3f, 0x0010_0001, 1, 0x3f00_0000)[..8])
-                .unwrap()
-                + 8;
-            let expected_differences = choice
-                .float_bits()
-                .to_be_bytes()
-                .into_iter()
-                .zip(0x3f00_0000u32.to_be_bytes())
-                .enumerate()
-                .filter_map(|(i, (a, b))| (a != b).then_some(start + i))
-                .collect::<Vec<_>>();
-            assert_eq!(differences, expected_differences);
         }
-        for choice in StompHarmony1457Selection::ALL {
+        for (choice, bits) in StompHarmony1457Selection::ALL
+            .into_iter()
+            .zip(expected_bits)
+        {
             let mut tone = PodTone::parse(original.clone()).unwrap();
             tone.set_stomp_harmony_1457_selection(choice).unwrap();
+            let mut expected_bytes = original.clone();
+            expected_bytes[value_start2..value_start2 + 4].copy_from_slice(&bits.to_be_bytes());
+            assert_eq!(tone.as_bytes(), expected_bytes);
             assert_eq!(
                 tone.stomp_harmony_1457_selection().unwrap(),
                 StompHarmonyValue::Known(choice)
@@ -7235,26 +7267,6 @@ mod tests {
                 tone.stomp_harmony_1m335_selection().unwrap(),
                 StompHarmonyValue::Known(StompHarmony1M335Selection::Unison)
             );
-            let differences = original
-                .iter()
-                .zip(tone.as_bytes())
-                .enumerate()
-                .filter_map(|(i, (a, b))| (a != b).then_some(i))
-                .collect::<Vec<_>>();
-            let start = original
-                .windows(12)
-                .rposition(|w| w[..8] == drive_record(0x3f, 0x0010_0002, 1, 0x3f40_8102)[..8])
-                .unwrap()
-                + 8;
-            let expected_differences = choice
-                .float_bits()
-                .to_be_bytes()
-                .into_iter()
-                .zip(0x3f40_8102u32.to_be_bytes())
-                .enumerate()
-                .filter_map(|(i, (a, b))| (a != b).then_some(start + i))
-                .collect::<Vec<_>>();
-            assert_eq!(differences, expected_differences);
         }
     }
 
@@ -7294,6 +7306,250 @@ mod tests {
             "same-choice requests must still validate the host profile"
         );
         assert_eq!(below_profile.as_bytes(), before);
+    }
+
+    #[test]
+    fn stomp_harmony_rejects_ambiguous_or_malformed_targets_without_mutation() {
+        let controls = [
+            StompHarmonyControl::Harmony1M335,
+            StompHarmonyControl::Harmony1457,
+        ];
+        for control in controls {
+            let target = control.parameter_id();
+            let sibling = match control {
+                StompHarmonyControl::Harmony1M335 => 0x0010_0002,
+                StompHarmonyControl::Harmony1457 => 0x0010_0001,
+            };
+            let canonical = drive_record(0x3f, target, 1, 0x3f00_0000);
+            let sibling_record = drive_record(0x3f, sibling, 1, 0x3f40_8102);
+            let equal_duplicate = canonical;
+            let different_duplicate = drive_record(0x3f, target, 1, 0x3f20_4081);
+            let bad_prefix_duplicate = drive_record(0x3e, target, 1, 0x3f20_4081);
+            let wrong_type = drive_record(0x3f, target, 0, 0x3f00_0000);
+            let opaque_target = ((0x3fu32 << 24) | target).to_be_bytes();
+            let mut invalid = Vec::new();
+            for (first, second) in [
+                (canonical.as_slice(), equal_duplicate.as_slice()),
+                (canonical.as_slice(), different_duplicate.as_slice()),
+                (bad_prefix_duplicate.as_slice(), canonical.as_slice()),
+            ] {
+                invalid.push(stomp_harmony_tone_with_models(
+                    &[BuiltModel {
+                        slot: STOMP_SLOT,
+                        model_id: 0x020a_0009,
+                        tail: &[0x91, 0x82, 0x73, 0x64],
+                        parameters: &[first, second, sibling_record.as_slice()],
+                    }],
+                    PODXT_LIVE_TONE_ID,
+                    PODXT_LIVE_HOST_MIN_VERSION,
+                ));
+            }
+            let duplicate_slots = stomp_harmony_tone_with_models(
+                &[
+                    BuiltModel {
+                        slot: STOMP_SLOT,
+                        model_id: 0x020a_0009,
+                        tail: &[0x91, 0x82, 0x73, 0x64],
+                        parameters: &[canonical.as_slice(), sibling_record.as_slice()],
+                    },
+                    BuiltModel {
+                        slot: STOMP_SLOT,
+                        model_id: 0x020a_0009,
+                        tail: &[0x91, 0x82, 0x73, 0x64],
+                        parameters: &[canonical.as_slice(), sibling_record.as_slice()],
+                    },
+                ],
+                PODXT_LIVE_TONE_ID,
+                PODXT_LIVE_HOST_MIN_VERSION,
+            );
+            assert!(
+                PodTone::parse(duplicate_slots.clone()).is_err(),
+                "duplicate Stomp slots must be rejected while original bytes stay available"
+            );
+            assert!(!duplicate_slots.is_empty());
+            invalid.push(stomp_harmony_tone_with_models(
+                &[BuiltModel {
+                    slot: STOMP_SLOT,
+                    model_id: 0x020a_0008,
+                    tail: &[0x91, 0x82, 0x73, 0x64],
+                    parameters: &[canonical.as_slice(), sibling_record.as_slice()],
+                }],
+                PODXT_LIVE_TONE_ID,
+                PODXT_LIVE_HOST_MIN_VERSION,
+            ));
+            invalid.push(stomp_harmony_tone_with_models(
+                &[BuiltModel {
+                    slot: STOMP_SLOT + 1,
+                    model_id: 0x020a_0009,
+                    tail: &[0x91, 0x82, 0x73, 0x64],
+                    parameters: &[canonical.as_slice(), sibling_record.as_slice()],
+                }],
+                PODXT_LIVE_TONE_ID,
+                PODXT_LIVE_HOST_MIN_VERSION,
+            ));
+            invalid.push(stomp_harmony_tone_with_models(
+                &[BuiltModel {
+                    slot: STOMP_SLOT,
+                    model_id: 0x020a_0009,
+                    tail: &[0x91, 0x82, 0x73, 0x64],
+                    parameters: &[sibling_record.as_slice()],
+                }],
+                PODXT_LIVE_TONE_ID,
+                PODXT_LIVE_HOST_MIN_VERSION,
+            ));
+            invalid.push(stomp_harmony_tone_with_models(
+                &[BuiltModel {
+                    slot: STOMP_SLOT,
+                    model_id: 0x020a_0009,
+                    tail: &[0x91, 0x82, 0x73, 0x64],
+                    parameters: &[wrong_type.as_slice(), sibling_record.as_slice()],
+                }],
+                PODXT_LIVE_TONE_ID,
+                PODXT_LIVE_HOST_MIN_VERSION,
+            ));
+            invalid.push(stomp_harmony_tone_with_models(
+                &[BuiltModel {
+                    slot: STOMP_SLOT,
+                    model_id: 0x020a_0009,
+                    tail: &[0x91, 0x82, 0x73, 0x64],
+                    parameters: &[bad_prefix_duplicate.as_slice(), sibling_record.as_slice()],
+                }],
+                PODXT_LIVE_TONE_ID,
+                PODXT_LIVE_HOST_MIN_VERSION,
+            ));
+            invalid.push(stomp_harmony_tone_with_models(
+                &[BuiltModel {
+                    slot: STOMP_SLOT,
+                    model_id: 0x020a_0009,
+                    tail: &[0x91, 0x82, 0x73, 0x64],
+                    parameters: &[
+                        opaque_target.as_slice(),
+                        canonical.as_slice(),
+                        sibling_record.as_slice(),
+                    ],
+                }],
+                PODXT_LIVE_TONE_ID,
+                PODXT_LIVE_HOST_MIN_VERSION,
+            ));
+            let wrong_target = stomp_harmony_tone_with_models(
+                &[BuiltModel {
+                    slot: STOMP_SLOT,
+                    model_id: 0x020a_0009,
+                    tail: &[0x91, 0x82, 0x73, 0x64],
+                    parameters: &[canonical.as_slice(), sibling_record.as_slice()],
+                }],
+                0x1234_5678,
+                PODXT_LIVE_HOST_MIN_VERSION,
+            );
+            assert!(PodTone::parse(wrong_target.clone()).is_err());
+            assert!(!wrong_target.is_empty());
+            invalid.push(stomp_harmony_tone_with_models(
+                &[BuiltModel {
+                    slot: STOMP_SLOT,
+                    model_id: 0x020a_0009,
+                    tail: &[0x91, 0x82, 0x73, 0x64],
+                    parameters: &[canonical.as_slice(), sibling_record.as_slice()],
+                }],
+                PODXT_LIVE_TONE_ID,
+                PODXT_LIVE_HOST_MIN_VERSION - 1,
+            ));
+
+            for (case, bytes) in invalid.into_iter().enumerate() {
+                let mut tone = PodTone::parse(bytes.clone()).unwrap();
+                let before = tone.as_bytes().to_vec();
+                let getter_rejected = match control {
+                    StompHarmonyControl::Harmony1M335 => {
+                        tone.stomp_harmony_1m335_selection().is_err()
+                    }
+                    StompHarmonyControl::Harmony1457 => {
+                        tone.stomp_harmony_1457_selection().is_err()
+                    }
+                };
+                assert!(
+                    getter_rejected,
+                    "getter admitted invalid case {case} for {control:?}"
+                );
+                let setter_rejected = match control {
+                    StompHarmonyControl::Harmony1M335 => tone
+                        .set_stomp_harmony_1m335_selection(StompHarmony1M335Selection::Unison)
+                        .is_err(),
+                    StompHarmonyControl::Harmony1457 => tone
+                        .set_stomp_harmony_1457_selection(StompHarmony1457Selection::Unison)
+                        .is_err(),
+                };
+                assert!(
+                    setter_rejected,
+                    "setter admitted invalid case {case} for {control:?}"
+                );
+                assert_eq!(tone.as_bytes(), before, "case {case} mutated tone");
+            }
+
+            let nonfinite_target = drive_record(0x3f, target, 1, 0x7fc0_1234);
+            let nonfinite = stomp_harmony_tone_with_models(
+                &[BuiltModel {
+                    slot: STOMP_SLOT,
+                    model_id: 0x020a_0009,
+                    tail: &[0x91, 0x82, 0x73, 0x64],
+                    parameters: &[nonfinite_target.as_slice(), sibling_record.as_slice()],
+                }],
+                PODXT_LIVE_TONE_ID,
+                PODXT_LIVE_HOST_MIN_VERSION,
+            );
+            let mut tone = PodTone::parse(nonfinite).unwrap();
+            let before = tone.as_bytes().to_vec();
+            let setter_rejected = match control {
+                StompHarmonyControl::Harmony1M335 => {
+                    assert_eq!(
+                        tone.stomp_harmony_1m335_selection().unwrap(),
+                        StompHarmonyValue::Unknown {
+                            raw_bits: 0x7fc0_1234
+                        }
+                    );
+                    tone.set_stomp_harmony_1m335_selection(StompHarmony1M335Selection::Unison)
+                        .is_err()
+                }
+                StompHarmonyControl::Harmony1457 => {
+                    assert_eq!(
+                        tone.stomp_harmony_1457_selection().unwrap(),
+                        StompHarmonyValue::Unknown {
+                            raw_bits: 0x7fc0_1234
+                        }
+                    );
+                    tone.set_stomp_harmony_1457_selection(StompHarmony1457Selection::Unison)
+                        .is_err()
+                }
+            };
+            assert!(setter_rejected);
+            assert_eq!(tone.as_bytes(), before);
+
+            // A duplicate that happens to contain the requested choice still fails admission.
+            let same_choice = stomp_harmony_tone_with_models(
+                &[BuiltModel {
+                    slot: STOMP_SLOT,
+                    model_id: 0x020a_0009,
+                    tail: &[0x91, 0x82, 0x73, 0x64],
+                    parameters: &[
+                        canonical.as_slice(),
+                        canonical.as_slice(),
+                        sibling_record.as_slice(),
+                    ],
+                }],
+                PODXT_LIVE_TONE_ID,
+                PODXT_LIVE_HOST_MIN_VERSION,
+            );
+            let mut tone = PodTone::parse(same_choice).unwrap();
+            let before = tone.as_bytes().to_vec();
+            let rejected = match control {
+                StompHarmonyControl::Harmony1M335 => tone
+                    .set_stomp_harmony_1m335_selection(StompHarmony1M335Selection::Unison)
+                    .is_err(),
+                StompHarmonyControl::Harmony1457 => tone
+                    .set_stomp_harmony_1457_selection(StompHarmony1457Selection::Unison)
+                    .is_err(),
+            };
+            assert!(rejected, "same-choice duplicate admitted for {control:?}");
+            assert_eq!(tone.as_bytes(), before);
+        }
     }
 
     #[test]
@@ -7340,6 +7596,55 @@ mod tests {
             tone.stomp_harmony_1457_selection().unwrap(),
             StompHarmonyValue::Known(StompHarmony1457Selection::Seventh)
         );
+
+        for (target, selector1) in [(0x0010_0001u32, true), (0x0010_0002, false)] {
+            let duplicate = drive_record(0x3f, target, 1, 0x3f00_0000);
+            let first = drive_record(0x3f, 0x0010_0001, 1, 0x3f00_0000);
+            let second = drive_record(0x3f, 0x0010_0002, 1, 0x3f40_8102);
+            let parameters = if selector1 {
+                [first.as_slice(), duplicate.as_slice(), second.as_slice()]
+            } else {
+                [first.as_slice(), second.as_slice(), duplicate.as_slice()]
+            };
+            let duplicate_bytes = stomp_harmony_tone_with_models(
+                &[BuiltModel {
+                    slot: STOMP_SLOT,
+                    model_id: 0x020a_0009,
+                    tail: &[0x91, 0x82, 0x73, 0x64],
+                    parameters: &parameters,
+                }],
+                PODXT_LIVE_TONE_ID,
+                PODXT_LIVE_HOST_MIN_VERSION,
+            );
+            let mut library = Library::default();
+            let index = library.import_bytes(duplicate_bytes.clone()).unwrap();
+            let setter_rejected = if selector1 {
+                library
+                    .set_stomp_harmony_1m335_selection(index, StompHarmony1M335Selection::Unison)
+                    .is_err()
+            } else {
+                library
+                    .set_stomp_harmony_1457_selection(index, StompHarmony1457Selection::Unison)
+                    .is_err()
+            };
+            assert!(setter_rejected);
+            assert!(!library.is_dirty(index));
+            assert_eq!(library.tone(index).unwrap().as_bytes(), duplicate_bytes);
+
+            let mut bundle = PodBundleLibrary::parse(bundle_with_tone(&duplicate_bytes)).unwrap();
+            let setter_rejected = if selector1 {
+                bundle
+                    .set_stomp_harmony_1m335_selection(0, StompHarmony1M335Selection::Unison)
+                    .is_err()
+            } else {
+                bundle
+                    .set_stomp_harmony_1457_selection(0, StompHarmony1457Selection::Unison)
+                    .is_err()
+            };
+            assert!(setter_rejected);
+            assert!(!bundle.is_dirty());
+            assert_eq!(bundle.tone(0, 0).unwrap().as_bytes(), duplicate_bytes);
+        }
     }
 
     #[test]

@@ -750,6 +750,43 @@ fn pod_stomp_harmony_session_is_role_gated_and_changes_one_selected_word() {
             ..
         })
     ));
+    let mut duplicate = original.clone();
+    let parm_start = duplicate
+        .windows(4)
+        .position(|word| word == b"PARM")
+        .unwrap();
+    let parm_span = 8 + u32::from_be_bytes(
+        duplicate[parm_start + 4..parm_start + 8]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    let duplicate_record = duplicate[parm_start..parm_start + parm_span].to_vec();
+    duplicate.splice(
+        parm_start + parm_span..parm_start + parm_span,
+        duplicate_record,
+    );
+    let list_offsets = duplicate
+        .windows(4)
+        .enumerate()
+        .filter_map(|(offset, word)| (word == b"LIST").then_some(offset))
+        .collect::<Vec<_>>();
+    for offset in list_offsets {
+        let size = u32::from_be_bytes(duplicate[offset + 4..offset + 8].try_into().unwrap());
+        duplicate[offset + 4..offset + 8].copy_from_slice(&(size + parm_span as u32).to_be_bytes());
+    }
+    let form_size = u32::from_be_bytes(duplicate[4..8].try_into().unwrap());
+    duplicate[4..8].copy_from_slice(&(form_size + parm_span as u32).to_be_bytes());
+    let duplicate_before = duplicate.clone();
+    assert!(
+        session
+            .set_pod_stomp_harmony_selection(
+                RoleKind::Pod,
+                &duplicate,
+                StompHarmonySelection::Harmony1M335(StompHarmony1M335Selection::Unison)
+            )
+            .is_err()
+    );
+    assert_eq!(duplicate, duplicate_before);
     assert!(session.live_backend_is_absent());
     assert!(LIVE_BACKEND_INITIALIZER.is_none());
 }

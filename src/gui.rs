@@ -4611,6 +4611,10 @@ mod tests {
     }
 
     fn sample_stomp_harmony_pod_tone() -> Vec<u8> {
+        sample_stomp_harmony_pod_tone_with_duplicate(None)
+    }
+
+    fn sample_stomp_harmony_pod_tone_with_duplicate(duplicate: Option<(u32, u8, u32)>) -> Vec<u8> {
         fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
             let mut out = id.to_vec();
             out.extend_from_slice(&(data.len() as u32).to_be_bytes());
@@ -4632,9 +4636,16 @@ mod tests {
         minf.extend_from_slice(&pod_preset::STOMP_SLOT.to_be_bytes());
         minf.extend_from_slice(&[1, 2, 3, 4]);
         model.extend(chunk(b"MINF", &minf));
-        for (id, bits) in [(0x0010_0001u32, 0x3f00_0000u32), (0x0010_0002, 0x3f40_8102)] {
+        let mut records = vec![
+            (0x0010_0001u32, 0x3fu8, 0x3f00_0000u32),
+            (0x0010_0002, 0x3f, 0x3f40_8102),
+        ];
+        if let Some(duplicate) = duplicate {
+            records.push(duplicate);
+        }
+        for (id, prefix, bits) in records {
             let mut parm = Vec::new();
-            parm.extend_from_slice(&((0x3fu32 << 24) | id).to_be_bytes());
+            parm.extend_from_slice(&((u32::from(prefix) << 24) | id).to_be_bytes());
             parm.extend_from_slice(&1u32.to_be_bytes());
             parm.extend_from_slice(&bits.to_be_bytes());
             model.extend(chunk(b"PARM", &parm));
@@ -6298,6 +6309,34 @@ mod tests {
         );
         const {
             assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn stomp_harmony_gui_hides_a_selector_with_duplicate_parameter_records() {
+        for target in [0x0010_0001u32, 0x0010_0002] {
+            let (context, mut app) = app();
+            app.pod_open = true;
+            let duplicate_tone =
+                sample_stomp_harmony_pod_tone_with_duplicate(Some((target, 0x3f, 0x3f00_0000)));
+            let index = app.pod_library.import_bytes(duplicate_tone).unwrap();
+            app.pod_selected = Some(index);
+            let original = app.pod_library.tone(index).unwrap().as_bytes().to_vec();
+            recording_frame_tall(&context, &mut app, vec![]);
+            if target == 0x0010_0001 {
+                assert!(app.pod_harmony1_choices.is_empty());
+                assert!(!app.pod_buttons.contains_key("pod-harmony1-apply"));
+                assert_eq!(app.pod_harmony2_choices.len(), 9);
+            } else {
+                assert!(app.pod_harmony2_choices.is_empty());
+                assert!(!app.pod_buttons.contains_key("pod-harmony2-apply"));
+                assert_eq!(app.pod_harmony1_choices.len(), 9);
+            }
+            assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), original);
+            assert!(!app.pod_library.is_dirty(index));
+            const {
+                assert!(LIVE_ACCESS_LOCKED);
+            }
         }
     }
 
