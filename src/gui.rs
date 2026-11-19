@@ -3724,7 +3724,7 @@ mod tests {
     fn exercise_hd_editor_explicit_replacement_lifecycle(
         target_model: u32,
         default_keys: [u32; 5],
-        button_id: &str,
+        button_id: &'static str,
         message_label: &str,
         output_name: &str,
     ) {
