@@ -5863,7 +5863,7 @@ mod tests {
             app.hd_type10_pending.is_some(),
             "failed Apply keeps its intended stage"
         );
-        click_hd_type9_choice(&context, &mut app, 1);
+        click_hd_type9_choice(&context, &mut app, 0);
         assert!(app.hd_type9_pending.is_some());
         app.request_close(&context);
         assert!(matches!(app.pending, Some(Pending::QuitPod)));
