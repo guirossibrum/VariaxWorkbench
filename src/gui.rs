@@ -3376,7 +3376,7 @@ mod tests {
                     preset.tube_drive_control_percent(0, pod_preset::TubeDriveControl::Mid),
                 _ => None,
             }),
-            Some(25)
+            Some(35)
         );
         app.hd_control_percent = 40;
         app.apply_hd_control(0);
