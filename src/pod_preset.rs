@@ -2032,6 +2032,60 @@ mod tests {
         bytes
     }
 
+    #[derive(Clone, Copy)]
+    enum MappedEffect {
+        Mod,
+        Reverb,
+        Delay,
+    }
+
+    fn set_mapped_effect(
+        tone: &mut PodTone,
+        effect: MappedEffect,
+        unsupported_control: bool,
+        value: f32,
+    ) -> Result<(), ToneError> {
+        match (effect, unsupported_control) {
+            (MappedEffect::Mod, false) => tone.set_mod_control_fraction(ModControl::Depth, value),
+            (MappedEffect::Mod, true) => tone.set_mod_control_fraction(ModControl::Manual, value),
+            (MappedEffect::Reverb, false) => {
+                tone.set_reverb_control_fraction(ReverbControl::Dwell, value)
+            }
+            (MappedEffect::Reverb, true) => {
+                tone.set_reverb_control_fraction(ReverbControl::Predelay, value)
+            }
+            (MappedEffect::Delay, false) => {
+                tone.set_delay_control_fraction(DelayControl::Feedback, value)
+            }
+            (MappedEffect::Delay, true) => {
+                tone.set_delay_control_fraction(DelayControl::Drive, value)
+            }
+        }
+    }
+
+    fn mapped_effect_value(tone: &PodTone, effect: MappedEffect) -> Result<f32, ToneError> {
+        match effect {
+            MappedEffect::Mod => tone.mod_control_fraction(ModControl::Depth),
+            MappedEffect::Reverb => tone.reverb_control_fraction(ReverbControl::Dwell),
+            MappedEffect::Delay => tone.delay_control_fraction(DelayControl::Feedback),
+        }
+    }
+
+    fn mapped_effect_tone(slot: u32, model_id: u32, version: u32, parameters: &[&[u8]]) -> Vec<u8> {
+        let mut bytes = custom_tone(
+            ContainerKind::L6as,
+            &[BuiltModel {
+                slot,
+                model_id,
+                tail: &[0x91, 0x82, 0x73, 0x64],
+                parameters,
+            }],
+        );
+        let pinf = find_chunk_data(&bytes, b"PINF");
+        bytes[pinf + 72..pinf + 76].copy_from_slice(&version.to_be_bytes());
+        bytes
+    }
+
     #[test]
     fn amp_drive_accepts_host_scale_values_and_changes_only_the_last_raw_value_word() {
         let first = drive_record(0x3f, AMP_DRIVE_PARAM, 1, 0x3e80_0000);
@@ -3039,6 +3093,245 @@ mod tests {
                     &0.317f32.to_bits().to_be_bytes()
                 );
             }
+        }
+    }
+
+    #[test]
+    fn mapped_effect_family_edits_have_independent_ids_full_file_preservation_and_saved_reparse() {
+        let cases = [
+            // Line6Edit positions are one-based here; these explicit expected
+            // selector/PARM pairs are kept separate from the Rust lookup tables.
+            (
+                MappedEffect::Mod,
+                MOD_SLOT,
+                0x0203_0004,
+                0x0004_0003,
+                0x0010_0001,
+            ),
+            // Reverb's provider selector order is not the semantic PARM order.
+            (
+                MappedEffect::Reverb,
+                REVERB_SLOT,
+                0x0204_0002,
+                0x0008_0001,
+                0x0010_0000,
+            ),
+            (
+                MappedEffect::Delay,
+                DELAY_SLOT,
+                0x0202_0002,
+                0x0005_0003,
+                0x0010_0001,
+            ),
+        ];
+
+        for (effect, slot, model_id, expected_selector, expected_parameter) in cases {
+            match effect {
+                MappedEffect::Mod => {
+                    assert_eq!(
+                        ModControl::Depth.selector_id(model_id),
+                        Some(expected_selector)
+                    );
+                    assert_eq!(
+                        ModControl::Depth.param_id(model_id),
+                        Some(expected_parameter)
+                    );
+                }
+                MappedEffect::Reverb => {
+                    assert_eq!(
+                        ReverbControl::Dwell.selector_id(model_id),
+                        Some(expected_selector)
+                    );
+                    assert_eq!(
+                        ReverbControl::Dwell.param_id(model_id),
+                        Some(expected_parameter)
+                    );
+                }
+                MappedEffect::Delay => {
+                    assert_eq!(
+                        DelayControl::Feedback.selector_id(model_id),
+                        Some(expected_selector)
+                    );
+                    assert_eq!(
+                        DelayControl::Feedback.param_id(model_id),
+                        Some(expected_parameter)
+                    );
+                }
+            }
+
+            let earlier = drive_record(0x3f, expected_parameter, 1, 0x3e80_0000);
+            let selected = drive_record(0x3f, expected_parameter, 1, 0x3f00_0000);
+            let unrelated = drive_record(0xa7, 0x0000_9876, 9, 0x1234_5678);
+            let other_model_parameter = drive_record(0x3f, AMP_DRIVE_PARAM, 1, 0x3e00_0000);
+            let target_parameters: [&[u8]; 3] = [&earlier, &unrelated, &selected];
+            let other_parameters: [&[u8]; 1] = [&other_model_parameter];
+            let original = custom_tone(
+                ContainerKind::L6as,
+                &[
+                    BuiltModel {
+                        slot,
+                        model_id,
+                        tail: &[0x91, 0x82, 0x73, 0x64],
+                        parameters: &target_parameters,
+                    },
+                    BuiltModel {
+                        slot: AMP_SLOT,
+                        model_id: PLEXI_LEAD_100_MODEL,
+                        tail: &[0x19, 0x28, 0x37, 0x46],
+                        parameters: &other_parameters,
+                    },
+                ],
+            );
+            let selected_offset = original
+                .windows(selected.len())
+                .rposition(|window| window == selected)
+                .unwrap()
+                + 8;
+            let mut expected = original.clone();
+            expected[selected_offset..selected_offset + 4]
+                .copy_from_slice(&0x3e00_0000u32.to_be_bytes());
+
+            let mut library = Library::default();
+            let index = library.import_bytes(original.clone()).unwrap();
+            match effect {
+                MappedEffect::Mod => library
+                    .set_mod_control_fraction(index, ModControl::Depth, 0.125)
+                    .unwrap(),
+                MappedEffect::Reverb => library
+                    .set_reverb_control_fraction(index, ReverbControl::Dwell, 0.125)
+                    .unwrap(),
+                MappedEffect::Delay => library
+                    .set_delay_control_fraction(index, DelayControl::Feedback, 0.125)
+                    .unwrap(),
+            }
+            let tone = library.tone(index).unwrap();
+            assert_eq!(tone.as_bytes(), expected);
+            assert_eq!(
+                mapped_effect_value(tone, effect).unwrap().to_bits(),
+                0x3e00_0000
+            );
+            assert!(library.is_dirty(index));
+
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("mapped-effect.l6t");
+            tone.save_copy(&path).unwrap();
+            let saved = std::fs::read(&path).unwrap();
+            assert_eq!(saved, expected);
+            let reopened = PodTone::parse(saved).unwrap();
+            assert_eq!(
+                mapped_effect_value(&reopened, effect).unwrap().to_bits(),
+                0x3e00_0000
+            );
+            assert_eq!(reopened.as_bytes(), expected);
+            assert_eq!(
+                &reopened.as_bytes()[selected_offset..selected_offset + 4],
+                &0x3e00_0000u32.to_be_bytes()
+            );
+            assert!(
+                reopened
+                    .as_bytes()
+                    .windows(earlier.len())
+                    .any(|w| w == earlier)
+            );
+            assert!(
+                reopened
+                    .as_bytes()
+                    .windows(unrelated.len())
+                    .any(|w| w == unrelated)
+            );
+            assert!(
+                reopened
+                    .as_bytes()
+                    .windows(other_model_parameter.len())
+                    .any(|w| w == other_model_parameter)
+            );
+        }
+    }
+
+    #[test]
+    fn each_mapped_effect_family_rejects_bad_targets_records_and_values_transactionally() {
+        let cases = [
+            (MappedEffect::Mod, MOD_SLOT, 0x0203_0004, 0x0010_0001),
+            (MappedEffect::Reverb, REVERB_SLOT, 0x0204_0002, 0x0010_0000),
+            (MappedEffect::Delay, DELAY_SLOT, 0x0202_0002, 0x0010_0001),
+        ];
+        let opaque = [1, 2, 3, 4];
+
+        for (effect, slot, model_id, parameter_id) in cases {
+            let valid = drive_record(0x3f, parameter_id, 1, 0x3f00_0000);
+            let bad_prefix = drive_record(0x7e, parameter_id, 1, 0x3f00_0000);
+            let bad_type = drive_record(0x3f, parameter_id, 0, 0x3f00_0000);
+            let missing = mapped_effect_tone(slot, model_id, PODXT_LIVE_HOST_MIN_VERSION, &[]);
+            let opaque_tone =
+                mapped_effect_tone(slot, model_id, PODXT_LIVE_HOST_MIN_VERSION, &[&opaque]);
+            let wrong_prefix =
+                mapped_effect_tone(slot, model_id, PODXT_LIVE_HOST_MIN_VERSION, &[&bad_prefix]);
+            let wrong_type =
+                mapped_effect_tone(slot, model_id, PODXT_LIVE_HOST_MIN_VERSION, &[&bad_type]);
+            let wrong_version =
+                mapped_effect_tone(slot, model_id, PODXT_LIVE_HOST_MIN_VERSION - 1, &[&valid]);
+            let unsupported_slot =
+                mapped_effect_tone(slot + 1, model_id, PODXT_LIVE_HOST_MIN_VERSION, &[&valid]);
+            let unsupported_model = mapped_effect_tone(
+                slot,
+                model_id + 0x1000,
+                PODXT_LIVE_HOST_MIN_VERSION,
+                &[&valid],
+            );
+            let nonfinite_current = drive_record(0x3f, parameter_id, 1, f32::NAN.to_bits());
+            let out_of_range_current = drive_record(0x3f, parameter_id, 1, 0x3f80_0001);
+            let invalid_floats = [
+                f32::from_bits(0x8000_0001),
+                f32::from_bits(0x3f80_0001),
+                f32::NAN,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+            ];
+
+            for bytes in [
+                missing,
+                opaque_tone,
+                wrong_prefix,
+                wrong_type,
+                wrong_version,
+                unsupported_slot,
+                unsupported_model,
+                mapped_effect_tone(
+                    slot,
+                    model_id,
+                    PODXT_LIVE_HOST_MIN_VERSION,
+                    &[&nonfinite_current],
+                ),
+                mapped_effect_tone(
+                    slot,
+                    model_id,
+                    PODXT_LIVE_HOST_MIN_VERSION,
+                    &[&out_of_range_current],
+                ),
+            ] {
+                let original = bytes.clone();
+                let mut tone = PodTone::parse(bytes.clone()).unwrap();
+                assert!(set_mapped_effect(&mut tone, effect, false, 0.25).is_err());
+                assert_eq!(tone.as_bytes(), original);
+                assert!(set_mapped_effect(&mut tone, effect, true, 0.25).is_err());
+                assert_eq!(tone.as_bytes(), original);
+            }
+
+            for invalid in invalid_floats {
+                let bytes =
+                    mapped_effect_tone(slot, model_id, PODXT_LIVE_HOST_MIN_VERSION, &[&valid]);
+                let mut tone = PodTone::parse(bytes.clone()).unwrap();
+                assert!(set_mapped_effect(&mut tone, effect, false, invalid).is_err());
+                assert_eq!(tone.as_bytes(), bytes);
+            }
+
+            let mut wrong_target =
+                mapped_effect_tone(slot, model_id, PODXT_LIVE_HOST_MIN_VERSION, &[&valid]);
+            let pinf = find_chunk_data(&wrong_target, b"PINF");
+            wrong_target[pinf + 4..pinf + 8].copy_from_slice(&0x0003_0002u32.to_be_bytes());
+            let original = wrong_target.clone();
+            assert!(PodTone::parse(wrong_target.clone()).is_err());
+            assert_eq!(wrong_target, original);
         }
     }
 

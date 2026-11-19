@@ -2,8 +2,9 @@
 
 Issue #29 adds an offline librarian for individual PODxt Live tone files.
 It does not edit a connected POD, send MIDI or USB, switch presets, or write
-firmware. Asset names and the 12-byte model and parameter records recovered
-below are shown. Parameter ranges and value editing are not recovered.
+firmware. This document separates historical findings from the later,
+source-backed Line6Edit host-scale control subset. Neither those source scales
+nor these offline edits establish device-accepted ranges or physical behavior.
 
 ## What was recovered
 
@@ -41,9 +42,10 @@ class used for other FORM tones. Local sources, kept out of git:
   as three 32-bit words: the low 24 bits of the first word are the id, the
   second word is the value type (0 int, 1 float), and the third word is the
   raw value. The stored high byte is kept and is not required to be `0x3F`.
-  Any other length stays opaque. No PODxt knob minimum, maximum, or unit
-  was found. `L6ParamDefinition` is constructed only for Variax and Variax
-  Acoustic.
+  Any other length stays opaque. This Workbench-source audit did not find
+  PODxt knob definitions in the inspected `L6ParamDefinition` classes; those
+  classes construct definitions for Variax and Variax Acoustic. That bounded
+  negative does not describe the separate Line6Edit source summarized below.
 - `analysis/decompiled/mac/cmn/l6java/midi/L6MIDIJava/L6MIDIJava.java` defines
   `L6HW_ID_PODXTLIVE` as 18000. That MIDI hardware id is not the PINF target.
 
@@ -85,6 +87,16 @@ installed-pack entitlement or physical applicability. `document::save_new`
 writes a new copy and refuses to replace an existing path. The guitar document
 refuses to open or rename a PODxt Live target, including a bank that contains
 one.
+
+## Separate Line6Edit 3.06 host-scale contract — 2026-11-19
+
+Static analysis of the separately supplied Line6Edit 3.06.0 original (11,742,080
+bytes; SHA-256 `426ddbb1559f445bfc8d0c29c316c80fe19f9bf8ff2e71d61b065342783dbe24`)
+found the PODxt device and parameter-map classes missing from the archived
+Workbench application packages described below. The source chain and relevant
+methods are recorded in the [source-to-operation matrix](podxt-live-control-matrix.md).
+This positive result supersedes the earlier broad wording about unavailable
+value editing; it leaves the historical Workbench-package observations intact.
 
 Static Line6Edit 3.06 source maps selector positions in Stomp slot `0x00020003`
 to semantic PARM ids `0x00100000 + position`. Rust exposes 86 source-derived
@@ -155,26 +167,29 @@ recovered Line 6 limit.
 
 ## Parameter domain boundary
 
-For these controls, static Line6Edit source identifies `L6PODxtDevice`,
+For the admitted controls, static Line6Edit source identifies `L6PODxtDevice`,
 `L6PODxtParamMap`, the PODxt amp model catalog and shared amp selectors, all 31
 Stomp model layouts, the selected `L6AX3ParamDefs` definitions, and
 `L6SharcTonePercentFormat`. The formatter maps finite host
 values through percent text and its quantizer is a no-op; display labels are
 derived through a 7-bit conversion. Rust edits the underlying finite float
 without treating those display labels as a supported integer grid. Other
-PODxt Live model/effect controls remain unresolved. See the
+PODxt Live model/effect controls remain unresolved. This is a dated static
+source result, not an executed vendor oracle. See the
 [source-to-operation matrix](podxt-live-control-matrix.md) for the admitted
 scope and remaining workflows. This is static source analysis plus independent
 Rust behavior, not an executed vendor oracle, device acceptance test, or
 installed-pack entitlement result. No DLL was loaded, no installer was run,
 and no device was opened.
 
-Three Stomp-specific Rust test methods cover exact-byte edits across all 31
-model layouts' supported percent fields, invalid target and value rejection, and library
-revert/copy collision/reopen behavior; the headless egui slider/quit-guard test
-exercises model-available Stomp sliders alongside the amp control. These are synthetic Rust behaviors, not a physical
-compatibility test or vendor runtime oracle. Exact-head configured checks are
-tracked separately.
+Three Stomp-specific Rust test methods cover the admitted fields across all 31
+model layouts, rejection, and library revert/copy-collision/reopen behavior.
+Separate Mod, Delay and Reverb tests cover source-listed layout mappings and
+focused independent semantic-id, complete-file preservation, family-specific
+transactional rejection, and saved/reparsed output cases. The headless egui
+slider/quit-guard test exercises the admitted controls. These are synthetic Rust
+behaviors, not a physical compatibility test or vendor runtime oracle.
+Exact-head configured checks are tracked separately.
 
 The [POD Farm 1.12 source-recovery milestone](pod-farm-112-source-recovery.md)
 uses a separate original and remains a historical negative for that package's
@@ -193,12 +208,10 @@ hardware access.
 - Mac and Windows `L6EditorAppDeviceMap` are identical. Device 196618 is
   named `modules.sharctone.device.podxt.L6PODxtDevice` and
   `modules.sharctone.editor.L6SharcToneEditor`. No class or Java file with
-  either name is present under `analysis/extracted/windows-app`,
-  `analysis/extracted/mac-jar`, or `analysis/decompiled`. `unzip -l` of
-  `analysis/extracted/windows-workbench.jar` and the mac
-  `VariaxWorkbench.jar` lists no `sharctone` entry. The packed `modules`
-  trees contain only `variax` and `variaxacoustic`. The named editor was
-  not available to recover a knob table from.
+  either name is present in the inspected Workbench `windows-app`, `mac-jar`,
+  or decompiled trees; the corresponding Workbench archives list no
+  `sharctone` entry. This is specific to those Workbench packages. The distinct
+  Line6Edit 3.06 source supplies the positive, limited control contract above.
 - Mac and Windows `L6ModelParam.java` are identical. `ReadIFFChunk` keeps
   the low 24 bits of the first word, the type word, and the raw value bits.
   The file defines id-class constants and no minimum, maximum, unit, or
@@ -218,9 +231,10 @@ hardware access.
 
 ## What stays undecoded
 
-- Parameter ranges, units, knob names, and value editing. A decoded PARM
-  shows its id, type, and raw bits, and the display says that no range is
-  known. Values are not edited.
+- Unmapped parameter ranges, physical units, device-accepted domains, and
+  controls outside the admitted Line6Edit host-scale subset. A raw PARM still
+  shows its id, type, and bits. Unsupported values are not edited. The admitted
+  edits do not establish hardware acceptance or physical behavior.
 - PARM chunks whose length is not 12 bytes.
 - Model ids the PODxt Live name path does not return. They stay raw.
 - Slot ids outside `kGPXTSlot_*`. A known slot can still hold an unnamed
