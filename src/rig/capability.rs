@@ -119,6 +119,9 @@ pub fn capability(profile: ProductProfile, operation: Operation) -> Capability {
 
 fn declared(profile: ProductProfile, operation: Operation) -> CapabilityState {
     match profile {
+        ProductProfile::PodHd500x if operation == Operation::InspectFirmware => {
+            CapabilityState::Offline
+        }
         ProductProfile::WorkbenchHd | ProductProfile::Jtv69 | ProductProfile::PodHd500x => {
             CapabilityState::Unverified
         }
@@ -244,7 +247,7 @@ fn hd500x_limit(operation: Operation) -> &'static str {
             "The Windows INF DefaultSampleRate is 48000 and DefaultWordSize is 24, with EngineFormatLock 0. Those are driver defaults. They do not select a PODxt Live record route and do not open a stream."
         }
         Operation::InspectFirmware => {
-            "The public listing names Flash Memory v2.62, release 6260, and the notes also name USB Firmware 1.04. Separately supplied private firmware-image material has been examined statically, but its release linkage/applicability is not admitted. FORM/L6FF inspection is not applied."
+            "The HD500X session can run generic bounded FORM/L6FF structure inspection on the supplied P25 image. Central's separate metadata name mapping and native parser/loader trace do not resolve the PHF header product/version consumer join. The public Flash Memory v2.62 release 6260 listing does not establish that link or the separate USB Firmware 1.04 component/installed state."
         }
         Operation::StartAudioCapture
         | Operation::StopAudioCapture

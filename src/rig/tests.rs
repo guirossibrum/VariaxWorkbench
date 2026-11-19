@@ -271,7 +271,7 @@ fn guitar_files_stay_on_the_variax_backend() {
 }
 
 #[test]
-fn firmware_inspection_rejects_the_other_family() {
+fn firmware_inspection_keeps_target_gates_and_generic_extension_scope_separate() {
     let session = Session::initial_rig();
     let variax = synthetic_container(
         VARIAX_300_600_PRODUCT_ID,
@@ -318,9 +318,53 @@ fn firmware_inspection_rejects_the_other_family() {
 
     let extension = Session::extension(ProductProfile::PodHd500x).expect("extension profile");
     assert_eq!(
-        extension.inspect_extension_firmware(&variax),
+        capability::capability(ProductProfile::PodHd500x, Operation::InspectFirmware).state,
+        CapabilityState::Offline
+    );
+    let hd500x_declaration = synthetic_container(0x0014_0005, 0x0262_0000, b"synthetic-p25-image");
+    let structural = extension
+        .inspect_extension_firmware(&hd500x_declaration)
+        .expect("generic structural inspection does not require target applicability");
+    assert_eq!(structural.declared_product_id, 0x0014_0005);
+    assert_eq!(structural.declared_version, 0x0262_0000);
+    assert_eq!(
+        structural.catalog_applicability,
+        crate::firmware::Applicability::UnknownProduct
+    );
+    assert_eq!(structural.image_bytes, b"synthetic-p25-image".len());
+    assert!(structural.header_md5_matches);
+    assert_eq!(structural.region_count, 1);
+    assert_eq!(
+        structural.physical_target,
+        PhysicalTargetApplicability::Unknown
+    );
+    assert!(structural.integrity_is_not_authentication);
+
+    // Even a known other-family declaration is only a structurally valid file
+    // here; the extension session never changes its physical target gate.
+    let other_family = extension
+        .inspect_extension_firmware(&synthetic_container(
+            PODXT_LIVE_PRODUCT_ID,
+            PODXT_LIVE_VERSION,
+            b"pod-image",
+        ))
+        .expect("generic inspection accepts a valid FORM/L6FF container");
+    assert_eq!(
+        other_family.physical_target,
+        PhysicalTargetApplicability::Unknown
+    );
+    assert_eq!(
+        extension.inspect_extension_firmware(b"not a firmware container"),
+        Err(Rejection::Format {
+            detail: "expected FORM/L6FF".into(),
+        })
+    );
+    assert_eq!(
+        Session::extension(ProductProfile::WorkbenchHd)
+            .expect("other extension")
+            .inspect_extension_firmware(&hd500x_declaration),
         Err(Rejection::Unverified {
-            profile: ProductProfile::PodHd500x,
+            profile: ProductProfile::WorkbenchHd,
             operation: Operation::InspectFirmware,
         })
     );
@@ -409,7 +453,14 @@ fn physical_claims_and_planned_work_do_not_start_a_backend() {
             if operation.is_physical() {
                 assert_eq!(claimed, CapabilityState::Locked);
             } else if profile.is_extension() {
-                assert_eq!(claimed, CapabilityState::Unverified);
+                let expected = if profile == ProductProfile::PodHd500x
+                    && operation == Operation::InspectFirmware
+                {
+                    CapabilityState::Offline
+                } else {
+                    CapabilityState::Unverified
+                };
+                assert_eq!(claimed, expected);
             }
         }
     }
@@ -900,12 +951,12 @@ fn pod_hd500x_identity_stays_on_its_profile_and_does_not_open_other_families() {
         b"variax-image",
     );
     for image in [&pod_image, &variax_image] {
+        let inspection = hd
+            .inspect_extension_firmware(image)
+            .expect("generic file inspection is not product application");
         assert_eq!(
-            hd.inspect_extension_firmware(image),
-            Err(Rejection::Unverified {
-                profile: ProductProfile::PodHd500x,
-                operation: Operation::InspectFirmware,
-            })
+            inspection.physical_target,
+            PhysicalTargetApplicability::Unknown
         );
     }
     let mut attempts = 0;

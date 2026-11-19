@@ -101,6 +101,23 @@ pub struct FirmwareSummary {
     pub integrity_is_not_authentication: bool,
 }
 
+/// Generic bounded FORM/L6FF structure observed through an extension profile.
+/// Declared header identity is data only; it does not establish target support.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FirmwareStructureSummary {
+    pub source_bytes: usize,
+    pub source_sha256: [u8; 32],
+    pub declared_product_id: u32,
+    pub declared_version: u32,
+    pub catalog_applicability: crate::firmware::Applicability,
+    pub image_bytes: usize,
+    pub image_sha256: [u8; 32],
+    pub header_md5_matches: bool,
+    pub region_count: usize,
+    pub physical_target: PhysicalTargetApplicability,
+    pub integrity_is_not_authentication: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Rejection {
     Locked {
@@ -386,13 +403,19 @@ impl Session {
         backend::inspect_firmware(profile, bytes)
     }
 
-    pub fn inspect_extension_firmware(self, _bytes: &[u8]) -> Result<FirmwareSummary, Rejection> {
+    pub fn inspect_extension_firmware(
+        self,
+        bytes: &[u8],
+    ) -> Result<FirmwareStructureSummary, Rejection> {
         let profile = self.extension_profile(Operation::InspectFirmware)?;
+        if profile != ProductProfile::PodHd500x {
+            return Err(Rejection::Unverified {
+                profile,
+                operation: Operation::InspectFirmware,
+            });
+        }
         self.require_profile(profile, Operation::InspectFirmware)?;
-        Err(Rejection::Unverified {
-            profile,
-            operation: Operation::InspectFirmware,
-        })
+        backend::inspect_extension_firmware(bytes)
     }
 
     /// Plans one documented PODxt Live record route. The returned plan keeps
