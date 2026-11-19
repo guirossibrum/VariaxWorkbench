@@ -263,20 +263,28 @@ records only, preserves all other bytes, and rejects missing, duplicate,
 opaque, wrong-type, noncanonical, out-of-range, or ambiguous controls without
 partially changing the tone. NOTE choices require the source-matched Delay and
 Mod model context; positive synchronized values also require the canonical
-System/Tempo context. NOTE Off only turns off the existing Delay and Mod NOTE
-selectors. The TIME operation validates its displayed 20–2000 ms range and does
-not depend on or change Mod/System state. It does not create model/parameter
+System/Tempo context. NOTE Off writes only the existing Delay NOTE selector.
+It still requires the existing Mod NOTE selector to be zero, rejects positive
+Mod NOTE, and preserves the Mod record unchanged; it does not require Delay
+TIME or Tempo. The TIME operation validates its displayed 20–2000 ms range and
+does not depend on or change Mod/System state. It does not create model/parameter
 records or implement general Mod editing.
 
 The NOTE-to-time arithmetic follows the recovered `Note2TimeSpeed` float steps
 and `RangeFormat` interpolation precision, including f64 conversion of the
 display-value numerator and a f32-computed range denominator. Synthetic tests
 compare literal raw float words at BPM 30, 120, and 240 for every positive NOTE
-choice. These are source-compatible calculations and synthetic regression
-results, not captured device values, audio equivalence, or proof of device
-acceptance. The bounded writer and GUI are implemented on the issue branch;
-the coordinator's exact-head focused checks and independent review remain
-pending.
+choice. All 14 supported Delay models are also checked in both primary and
+fallback slots against complete expected buffers, including unrelated records,
+model tails and odd padding. These are source-compatible calculations and
+synthetic regression results, not captured device values, audio equivalence, or
+proof of device acceptance. The bounded writer and GUI were implemented on the issue branch;
+all four configured checks passed on prior head
+`1cb466fcd623ad63aca41eb231374c70efcf9058` (278 library, 46 GUI, 26
+integration tests per functional profile; Clippy and format passed). The
+review-requested correction adds broader Delay regression coverage; exact-head
+check records for this revision are maintained in the PR description so the
+source ledger does not need another check-ID-only commit.
 
 An applied name is unsaved until that tone's copy is written. Quitting asks
 to save, discard, or keep editing, one tone at a time. Cancel, or a save that

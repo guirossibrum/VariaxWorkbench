@@ -5011,6 +5011,60 @@ pub(crate) mod tests {
         custom_tone(ContainerKind::L6as, &models)
     }
 
+    fn delay_context_fixture(
+        models: &[(u32, u32, Vec<Vec<u8>>)],
+        target: u32,
+        version: u32,
+    ) -> Vec<u8> {
+        fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+            let mut output = id.to_vec();
+            output.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            output.extend_from_slice(data);
+            if !data.len().is_multiple_of(2) {
+                output.push(0xa5);
+            }
+            output
+        }
+
+        let mut info = vec![0; 80];
+        info[..4].copy_from_slice(&1u32.to_be_bytes());
+        info[4..8].copy_from_slice(&target.to_be_bytes());
+        info[8..10].copy_from_slice(&u16::from(b'Z').to_be_bytes());
+        info[72..76].copy_from_slice(&version.to_be_bytes());
+        info[76..80].copy_from_slice(&[0x5a, 0xa5, 0x96, 0x69]);
+
+        let mut patch = b"PATC".to_vec();
+        for (index, (slot, model_id, parameters)) in models.iter().enumerate() {
+            let mut minf = Vec::new();
+            minf.extend_from_slice(&model_id.to_be_bytes());
+            minf.extend_from_slice(&slot.to_be_bytes());
+            minf.extend_from_slice(&[0x11 + index as u8, 0x22, 0x33, 0x44]);
+            let mut model = b"MODL".to_vec();
+            model.extend(chunk(b"MINF", &minf));
+            for parameter in parameters {
+                model.extend(chunk(b"PARM", parameter));
+            }
+            model.extend(chunk(b"XTRA", &[0xde, 0xad, 0xbe]));
+            patch.extend(chunk(b"LIST", &model));
+        }
+        let mut data = b"L6AS".to_vec();
+        data.extend(chunk(b"ODD!", &[0x17, 0x28, 0x39]));
+        data.extend(chunk(b"PINF", &info));
+        data.extend(chunk(b"LIST", &patch));
+        chunk(b"FORM", &data)
+    }
+
+    fn patch_expected_parameter(
+        tone: &PodTone,
+        expected: &mut [u8],
+        slot: u32,
+        id: u32,
+        bits: u32,
+    ) {
+        let offset = parameter_word0_offset(tone, slot, id) + 8;
+        expected[offset..offset + 4].copy_from_slice(&bits.to_be_bytes());
+    }
+
     fn parm_bits(tone: &PodTone, slot: u32, id: u32) -> u32 {
         let model = tone
             .models()
@@ -11095,6 +11149,545 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn delay_note_models_and_primary_fallback_slots_match_complete_expected_buffers() {
+        let delay_time = drive_record(0x3f, 0x0010_0000, 1, 0x3e80_0000).to_vec();
+        let delay_note = drive_record(0x3f, 0x0020_0000, 0, 0).to_vec();
+        let delay_sentinel = drive_record(0x3f, 0x007a_bcde, 0x7f, 0xdead_beef).to_vec();
+        let mod_note = drive_record(0x3f, 0x0020_0000, 0, 0).to_vec();
+        let mod_sentinel = drive_record(0x3f, 0x007a_bcde, 0, 0xface_cafe).to_vec();
+        let tempo = drive_record(0x3f, 0x0020_0001, 1, 120.0_f32.to_bits()).to_vec();
+        let expected_time = [
+            0x3f80_0000,
+            0x3f3f_5a81,
+            0x3efd_6a06,
+            0x3ea7_3807,
+            0x3ebc_c486,
+            0x3e78_3e11,
+            0x3e22_0c12,
+            0x3e37_9891,
+            0x3dede625,
+            0x3d97_b426,
+            0x3dad_40a5,
+            0x3d59_364f,
+            0x3d03_0450,
+        ];
+
+        for slot in [DELAY_SLOT, 0x0005_0004] {
+            for model_id in DELAY_CONTROL_MODEL_IDS {
+                let models = vec![
+                    (
+                        slot,
+                        model_id,
+                        vec![
+                            delay_time.clone(),
+                            delay_note.clone(),
+                            delay_sentinel.clone(),
+                        ],
+                    ),
+                    (
+                        MOD_SLOT,
+                        MOD_CONTROL_MODEL_IDS[0],
+                        vec![mod_note.clone(), mod_sentinel.clone()],
+                    ),
+                    (0x0001_0000, 0x3e80_0000, vec![tempo.clone()]),
+                ];
+                let original =
+                    delay_context_fixture(&models, PODXT_LIVE_TONE_ID, PODXT_LIVE_HOST_MIN_VERSION);
+                for (choice_index, choice) in DelayNoteChoice::ALL.into_iter().enumerate().skip(1) {
+                    let mut tone = PodTone::parse(original.clone()).unwrap();
+                    let mut expected = original.clone();
+                    patch_expected_parameter(
+                        &tone,
+                        &mut expected,
+                        slot,
+                        0x0020_0000,
+                        choice.value(),
+                    );
+                    patch_expected_parameter(
+                        &tone,
+                        &mut expected,
+                        slot,
+                        0x0010_0000,
+                        expected_time[choice_index - 1],
+                    );
+                    tone.set_delay_note_choice(choice).unwrap();
+                    assert_eq!(
+                        tone.as_bytes(),
+                        expected,
+                        "Delay model {model_id:08x}, slot {slot:08x}, choice {choice:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn delay_note_context_rejections_preserve_full_bytes_baseline_and_dirty_state() {
+        let dtime = drive_record(0x3f, 0x0010_0000, 1, 0x3e80_0000).to_vec();
+        let dnote = drive_record(0x3f, 0x0020_0000, 0, 0).to_vec();
+        let mnote = drive_record(0x3f, 0x0020_0000, 0, 0).to_vec();
+        let tempo = drive_record(0x3f, 0x0020_0001, 1, 120.0_f32.to_bits()).to_vec();
+        let delay_rows = vec![dtime.clone(), dnote.clone()];
+        let normal_mod = vec![(MOD_SLOT, MOD_CONTROL_MODEL_IDS[0], vec![mnote.clone()])];
+        let normal_system = vec![(0x0001_0000, 0x3e80_0000, vec![tempo.clone()])];
+        let make_tone = |delay_slot: u32,
+                         delay_model: u32,
+                         delay_rows: Vec<Vec<u8>>,
+                         mods: Vec<(u32, u32, Vec<Vec<u8>>)>,
+                         systems: Vec<(u32, u32, Vec<Vec<u8>>)>,
+                         target: u32| {
+            let mut models = vec![(delay_slot, delay_model, delay_rows)];
+            models.extend(mods);
+            models.extend(systems);
+            delay_context_fixture(&models, target, PODXT_LIVE_HOST_MIN_VERSION)
+        };
+
+        let mut cases = vec![
+            (
+                "missing Mod model",
+                make_tone(
+                    DELAY_SLOT,
+                    0x0202_0002,
+                    delay_rows.clone(),
+                    vec![],
+                    normal_system.clone(),
+                    PODXT_LIVE_TONE_ID,
+                ),
+            ),
+            (
+                "unsupported Mod model",
+                make_tone(
+                    DELAY_SLOT,
+                    0x0202_0002,
+                    delay_rows.clone(),
+                    vec![(MOD_SLOT, 0xdead_beef, vec![mnote.clone()])],
+                    normal_system.clone(),
+                    PODXT_LIVE_TONE_ID,
+                ),
+            ),
+            (
+                "duplicate Mod models",
+                make_tone(
+                    DELAY_SLOT,
+                    0x0202_0002,
+                    delay_rows.clone(),
+                    vec![
+                        normal_mod[0].clone(),
+                        (0x0005_0003, MOD_CONTROL_MODEL_IDS[1], vec![mnote.clone()]),
+                    ],
+                    normal_system.clone(),
+                    PODXT_LIVE_TONE_ID,
+                ),
+            ),
+            (
+                "opaque Mod PARM context",
+                make_tone(
+                    DELAY_SLOT,
+                    0x0202_0002,
+                    delay_rows.clone(),
+                    vec![(
+                        MOD_SLOT,
+                        MOD_CONTROL_MODEL_IDS[0],
+                        vec![mnote.clone(), vec![1, 2, 3]],
+                    )],
+                    normal_system.clone(),
+                    PODXT_LIVE_TONE_ID,
+                ),
+            ),
+            (
+                "duplicate Mod NOTE rows",
+                make_tone(
+                    DELAY_SLOT,
+                    0x0202_0002,
+                    delay_rows.clone(),
+                    vec![(
+                        MOD_SLOT,
+                        MOD_CONTROL_MODEL_IDS[0],
+                        vec![mnote.clone(), mnote.clone()],
+                    )],
+                    normal_system.clone(),
+                    PODXT_LIVE_TONE_ID,
+                ),
+            ),
+            (
+                "wrong-type Mod NOTE",
+                make_tone(
+                    DELAY_SLOT,
+                    0x0202_0002,
+                    delay_rows.clone(),
+                    vec![(
+                        MOD_SLOT,
+                        MOD_CONTROL_MODEL_IDS[0],
+                        vec![drive_record(0x3f, 0x0020_0000, 1, 0).to_vec()],
+                    )],
+                    normal_system.clone(),
+                    PODXT_LIVE_TONE_ID,
+                ),
+            ),
+            (
+                "noncanonical Mod NOTE",
+                make_tone(
+                    DELAY_SLOT,
+                    0x0202_0002,
+                    delay_rows.clone(),
+                    vec![(
+                        MOD_SLOT,
+                        MOD_CONTROL_MODEL_IDS[0],
+                        vec![drive_record(0x3e, 0x0020_0000, 0, 0).to_vec()],
+                    )],
+                    normal_system.clone(),
+                    PODXT_LIVE_TONE_ID,
+                ),
+            ),
+            (
+                "positive Mod NOTE blocks even NOTE Off",
+                make_tone(
+                    DELAY_SLOT,
+                    0x0202_0002,
+                    delay_rows.clone(),
+                    vec![(
+                        MOD_SLOT,
+                        MOD_CONTROL_MODEL_IDS[0],
+                        vec![drive_record(0x3f, 0x0020_0000, 0, 6).to_vec()],
+                    )],
+                    normal_system.clone(),
+                    PODXT_LIVE_TONE_ID,
+                ),
+            ),
+            (
+                "missing System model",
+                make_tone(
+                    DELAY_SLOT,
+                    0x0202_0002,
+                    delay_rows.clone(),
+                    normal_mod.clone(),
+                    vec![],
+                    PODXT_LIVE_TONE_ID,
+                ),
+            ),
+            (
+                "unsupported System model",
+                make_tone(
+                    DELAY_SLOT,
+                    0x0202_0002,
+                    delay_rows.clone(),
+                    normal_mod.clone(),
+                    vec![(0x0001_0000, 0xdead_beef, vec![tempo.clone()])],
+                    PODXT_LIVE_TONE_ID,
+                ),
+            ),
+            (
+                "opaque System PARM context",
+                make_tone(
+                    DELAY_SLOT,
+                    0x0202_0002,
+                    delay_rows.clone(),
+                    normal_mod.clone(),
+                    vec![(0x0001_0000, 0x3e80_0000, vec![tempo.clone(), vec![4, 5, 6]])],
+                    PODXT_LIVE_TONE_ID,
+                ),
+            ),
+            (
+                "duplicate Tempo rows",
+                make_tone(
+                    DELAY_SLOT,
+                    0x0202_0002,
+                    delay_rows.clone(),
+                    normal_mod.clone(),
+                    vec![(0x0001_0000, 0x3e80_0000, vec![tempo.clone(), tempo.clone()])],
+                    PODXT_LIVE_TONE_ID,
+                ),
+            ),
+            (
+                "wrong-type Tempo",
+                make_tone(
+                    DELAY_SLOT,
+                    0x0202_0002,
+                    delay_rows.clone(),
+                    normal_mod.clone(),
+                    vec![(
+                        0x0001_0000,
+                        0x3e80_0000,
+                        vec![drive_record(0x3f, 0x0020_0001, 0, 120).to_vec()],
+                    )],
+                    PODXT_LIVE_TONE_ID,
+                ),
+            ),
+            (
+                "noncanonical Tempo",
+                make_tone(
+                    DELAY_SLOT,
+                    0x0202_0002,
+                    delay_rows.clone(),
+                    normal_mod.clone(),
+                    vec![(
+                        0x0001_0000,
+                        0x3e80_0000,
+                        vec![drive_record(0x3e, 0x0020_0001, 1, 120.0_f32.to_bits()).to_vec()],
+                    )],
+                    PODXT_LIVE_TONE_ID,
+                ),
+            ),
+            (
+                "invalid Tempo range",
+                make_tone(
+                    DELAY_SLOT,
+                    0x0202_0002,
+                    delay_rows.clone(),
+                    normal_mod.clone(),
+                    vec![(
+                        0x0001_0000,
+                        0x3e80_0000,
+                        vec![drive_record(0x3f, 0x0020_0001, 1, 29.0_f32.to_bits()).to_vec()],
+                    )],
+                    PODXT_LIVE_TONE_ID,
+                ),
+            ),
+            (
+                "nonfinite Tempo",
+                make_tone(
+                    DELAY_SLOT,
+                    0x0202_0002,
+                    delay_rows.clone(),
+                    normal_mod.clone(),
+                    vec![(
+                        0x0001_0000,
+                        0x3e80_0000,
+                        vec![drive_record(0x3f, 0x0020_0001, 1, f32::NAN.to_bits()).to_vec()],
+                    )],
+                    PODXT_LIVE_TONE_ID,
+                ),
+            ),
+            (
+                "duplicate Delay TIME rows",
+                make_tone(
+                    DELAY_SLOT,
+                    0x0202_0002,
+                    vec![dtime.clone(), dtime.clone(), dnote.clone()],
+                    normal_mod.clone(),
+                    normal_system.clone(),
+                    PODXT_LIVE_TONE_ID,
+                ),
+            ),
+            (
+                "missing Delay TIME row",
+                make_tone(
+                    DELAY_SLOT,
+                    0x0202_0002,
+                    vec![dnote.clone()],
+                    normal_mod.clone(),
+                    normal_system.clone(),
+                    PODXT_LIVE_TONE_ID,
+                ),
+            ),
+            (
+                "unsupported Delay model",
+                make_tone(
+                    DELAY_SLOT,
+                    0xdead_beef,
+                    delay_rows.clone(),
+                    normal_mod.clone(),
+                    normal_system.clone(),
+                    PODXT_LIVE_TONE_ID,
+                ),
+            ),
+        ];
+        cases.push(("old profile", {
+            let mut bytes = make_tone(
+                DELAY_SLOT,
+                0x0202_0002,
+                delay_rows.clone(),
+                normal_mod.clone(),
+                normal_system.clone(),
+                PODXT_LIVE_TONE_ID,
+            );
+            let pinf = find_chunk_data(&bytes, b"PINF");
+            bytes[pinf + 72..pinf + 76]
+                .copy_from_slice(&(PODXT_LIVE_HOST_MIN_VERSION - 1).to_be_bytes());
+            bytes
+        }));
+
+        let duplicate_system = make_tone(
+            DELAY_SLOT,
+            0x0202_0002,
+            delay_rows.clone(),
+            normal_mod.clone(),
+            vec![normal_system[0].clone(), normal_system[0].clone()],
+            PODXT_LIVE_TONE_ID,
+        );
+        assert!(PodTone::parse(duplicate_system.clone()).is_err());
+        assert!(
+            Library::default()
+                .import_bytes(duplicate_system.clone())
+                .is_err()
+        );
+        let wrong_target = make_tone(
+            DELAY_SLOT,
+            0x0202_0002,
+            delay_rows.clone(),
+            normal_mod.clone(),
+            normal_system.clone(),
+            0x0007_0005,
+        );
+        assert!(PodTone::parse(wrong_target.clone()).is_err());
+        assert!(
+            Library::default()
+                .import_bytes(wrong_target.clone())
+                .is_err()
+        );
+        assert_eq!(
+            wrong_target,
+            make_tone(
+                DELAY_SLOT,
+                0x0202_0002,
+                delay_rows.clone(),
+                normal_mod.clone(),
+                normal_system.clone(),
+                0x0007_0005,
+            )
+        );
+        for (label, original) in cases {
+            let mut tone = PodTone::parse(original.clone()).unwrap();
+            let before = tone.as_bytes().to_vec();
+            assert!(
+                tone.set_delay_note_choice(DelayNoteChoice::Quarter)
+                    .is_err(),
+                "{label}"
+            );
+            assert_eq!(tone.as_bytes(), before, "{label} changed tone bytes");
+
+            let mut library = Library::default();
+            let index = library.import_bytes(original.clone()).unwrap();
+            library.tones[index].tone.rename("Already dirty").unwrap();
+            let dirty_before = library.tone(index).unwrap().as_bytes().to_vec();
+            let saved_before = library.tones[index].saved.clone();
+            assert!(library.is_dirty(index), "{label} dirty setup");
+            assert!(
+                library
+                    .set_delay_note_choice(index, DelayNoteChoice::Quarter)
+                    .is_err(),
+                "{label}"
+            );
+            assert_eq!(
+                library.tone(index).unwrap().as_bytes(),
+                dirty_before,
+                "{label} changed dirty bytes"
+            );
+            assert_eq!(
+                library.tones[index].saved, saved_before,
+                "{label} changed saved baseline"
+            );
+            assert!(library.is_dirty(index), "{label} cleared dirty state");
+        }
+    }
+
+    #[test]
+    fn delay_note_noop_validates_and_time_same_value_still_clears_positive_note() {
+        let time = drive_record(0x3f, 0x0010_0000, 1, 0x3e78_3e11).to_vec();
+        let note = drive_record(0x3f, 0x0020_0000, 0, 6).to_vec();
+        let mod_note = drive_record(0x3f, 0x0020_0000, 0, 0).to_vec();
+        let tempo = drive_record(0x3f, 0x0020_0001, 1, 120.0_f32.to_bits()).to_vec();
+        let models = vec![
+            (DELAY_SLOT, 0x0202_0002, vec![time.clone(), note.clone()]),
+            (MOD_SLOT, MOD_CONTROL_MODEL_IDS[0], vec![mod_note]),
+            (0x0001_0000, 0x3e80_0000, vec![tempo]),
+        ];
+        let original =
+            delay_context_fixture(&models, PODXT_LIVE_TONE_ID, PODXT_LIVE_HOST_MIN_VERSION);
+        let mut tone = PodTone::parse(original.clone()).unwrap();
+        tone.set_delay_note_choice(DelayNoteChoice::Quarter)
+            .unwrap();
+        assert_eq!(
+            tone.as_bytes(),
+            original,
+            "same-value NOTE must validate then no-op"
+        );
+
+        let same_display_time = drive_record(0x3f, 0x0010_0000, 1, 0x3f00_0000).to_vec();
+        let models = vec![(DELAY_SLOT, 0x0202_0002, vec![same_display_time, note])];
+        let original =
+            delay_context_fixture(&models, PODXT_LIVE_TONE_ID, PODXT_LIVE_HOST_MIN_VERSION);
+        let mut tone = PodTone::parse(original.clone()).unwrap();
+        let mut expected = original;
+        patch_expected_parameter(&tone, &mut expected, DELAY_SLOT, 0x0020_0000, 0);
+        tone.set_delay_time_ms(1010.0).unwrap();
+        assert_eq!(
+            tone.as_bytes(),
+            expected,
+            "same TIME must still clear positive NOTE"
+        );
+    }
+
+    #[test]
+    fn delay_time_rejections_preserve_full_bytes_and_dirty_library_baseline() {
+        let normal_time = drive_record(0x3f, 0x0010_0000, 1, 0x3e80_0000).to_vec();
+        let normal_note = drive_record(0x3f, 0x0020_0000, 0, 6).to_vec();
+        let cases = [
+            (
+                "duplicate TIME",
+                vec![
+                    normal_time.clone(),
+                    normal_time.clone(),
+                    normal_note.clone(),
+                ],
+                PODXT_LIVE_TONE_ID,
+            ),
+            (
+                "missing TIME",
+                vec![normal_note.clone()],
+                PODXT_LIVE_TONE_ID,
+            ),
+            (
+                "wrong-type TIME",
+                vec![
+                    drive_record(0x3f, 0x0010_0000, 0, 0x3e80_0000).to_vec(),
+                    normal_note.clone(),
+                ],
+                PODXT_LIVE_TONE_ID,
+            ),
+            (
+                "noncanonical TIME",
+                vec![
+                    drive_record(0x3e, 0x0010_0000, 1, 0x3e80_0000).to_vec(),
+                    normal_note.clone(),
+                ],
+                PODXT_LIVE_TONE_ID,
+            ),
+            (
+                "unknown NOTE",
+                vec![
+                    normal_time.clone(),
+                    drive_record(0x3f, 0x0020_0000, 0, 14).to_vec(),
+                ],
+                PODXT_LIVE_TONE_ID,
+            ),
+        ];
+
+        for (label, delay_rows, target) in cases {
+            let models = vec![(DELAY_SLOT, 0x0202_0002, delay_rows)];
+            let original = delay_context_fixture(&models, target, PODXT_LIVE_HOST_MIN_VERSION);
+            let mut tone = PodTone::parse(original.clone()).unwrap();
+            let before = tone.as_bytes().to_vec();
+            assert!(tone.set_delay_time_ms(1200.0).is_err(), "{label}");
+            assert_eq!(tone.as_bytes(), before, "{label} changed tone bytes");
+
+            let mut library = Library::default();
+            let index = library.import_bytes(original).unwrap();
+            library.tones[index].tone.rename("Already dirty").unwrap();
+            let dirty_before = library.tone(index).unwrap().as_bytes().to_vec();
+            let saved_before = library.tones[index].saved.clone();
+            assert!(library.set_delay_time_ms(index, 1200.0).is_err(), "{label}");
+            assert_eq!(
+                library.tone(index).unwrap().as_bytes(),
+                dirty_before,
+                "{label}"
+            );
+            assert_eq!(library.tones[index].saved, saved_before, "{label}");
+            assert!(library.is_dirty(index), "{label}");
+        }
+    }
+
+    #[test]
     fn delay_note_off_needs_no_time_or_tempo_and_preserves_time() {
         let note = drive_record(0x3f, 0x0020_0000, 0, 6);
         let mod_note = drive_record(0x3f, 0x0020_0000, 0, 0);
@@ -11112,9 +11705,14 @@ pub(crate) mod tests {
                 parameters: &[&mod_note],
             },
         ];
-        let mut tone = PodTone::parse(custom_tone(ContainerKind::L6as, &models)).unwrap();
+        let original = custom_tone(ContainerKind::L6as, &models);
+        let mut tone = PodTone::parse(original.clone()).unwrap();
+        let mut expected = original;
+        patch_expected_parameter(&tone, &mut expected, DELAY_SLOT, 0x0020_0000, 0);
         tone.set_delay_note_choice(DelayNoteChoice::Off).unwrap();
         assert_eq!(parm_bits(&tone, DELAY_SLOT, 0x0020_0000), 0);
+        assert_eq!(parm_bits(&tone, MOD_SLOT, 0x0020_0000), 0);
+        assert_eq!(tone.as_bytes(), expected);
         assert!(
             tone.models()
                 .iter()
@@ -11144,9 +11742,13 @@ pub(crate) mod tests {
         }];
         let original = custom_tone(ContainerKind::L6as, &models);
         let mut tone = PodTone::parse(original.clone()).unwrap();
+        let mut expected = original.clone();
+        patch_expected_parameter(&tone, &mut expected, DELAY_SLOT, 0x0010_0000, 0x3f00_0000);
+        patch_expected_parameter(&tone, &mut expected, DELAY_SLOT, 0x0020_0000, 0);
         tone.set_delay_time_ms(1010.0).unwrap();
         assert_eq!(parm_bits(&tone, DELAY_SLOT, 0x0010_0000), 0x3f00_0000);
         assert_eq!(parm_bits(&tone, DELAY_SLOT, 0x0020_0000), 0);
+        assert_eq!(tone.as_bytes(), expected);
         let untouched = PodTone::parse(original).unwrap();
         assert_eq!(tone.models()[0].model_id, untouched.models()[0].model_id);
         assert!(tone.set_delay_time_ms(f32::NAN).is_err());

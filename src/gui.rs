@@ -397,7 +397,6 @@ impl Workbench {
             #[cfg(test)]
             pod_delay_sliders: HashMap::new(),
             #[cfg(test)]
-            #[cfg(test)]
             pod_delay_note_options: HashMap::new(),
             #[cfg(test)]
             pod_delay_time_slider: None,
@@ -2571,7 +2570,11 @@ impl Workbench {
                                     Err(error) => self.pod_message = error.detail(),
                                 }
                             }
-                            if ui.button("Discard").clicked() { self.pod_delay_pending = None; }
+                            let discard = ui.button("Discard");
+                            #[cfg(test)]
+                            self.pod_buttons
+                                .insert("pod-delay-discard", discard.rect);
+                            if discard.clicked() { self.pod_delay_pending = None; }
                         });
                     }
                 }
@@ -4313,7 +4316,7 @@ mod tests {
         chunk(b"FORM", &data)
     }
 
-    fn sample_delay_note_tone() -> Vec<u8> {
+    fn sample_delay_note_tone(delay_note: u32, mod_note: u32) -> Vec<u8> {
         fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
             let mut output = id.to_vec();
             output.extend_from_slice(&(data.len() as u32).to_be_bytes());
@@ -4357,7 +4360,7 @@ mod tests {
             pod_preset::MOD_CONTROL_MODEL_IDS[0],
             &[
                 parameter(0x0010_0000, 1, 0x3e80_0000),
-                parameter(0x0020_0000, 0, 0),
+                parameter(0x0020_0000, 0, mod_note),
             ],
         );
         let delay = model(
@@ -4365,7 +4368,7 @@ mod tests {
             0x0202_0002,
             &[
                 parameter(0x0010_0000, 1, 0x3e80_0000),
-                parameter(0x0020_0000, 0, 0),
+                parameter(0x0020_0000, 0, delay_note),
             ],
         );
         let mut patch = b"PATC".to_vec();
@@ -5105,6 +5108,39 @@ mod tests {
         let option = app.pod_delay_note_options[&choice];
         click_pod_at_tall(context, app, option.center());
         recording_frame_tall(context, app, vec![]);
+    }
+
+    fn drag_delay_time_slider(context: &egui::Context, app: &mut Workbench, fraction: f32) {
+        recording_frame_tall(context, app, vec![]);
+        let rect = app
+            .pod_delay_time_slider
+            .expect("visible Delay TIME slider");
+        let start = Pos2::new(rect.center().x, rect.center().y);
+        let end = Pos2::new(rect.left() + rect.width() * fraction, rect.center().y);
+        recording_frame_tall(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame_tall(context, app, vec![egui::Event::PointerMoved(end)]);
+        recording_frame_tall(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
     }
 
     fn stage_stomp_harmony2_choice(
@@ -6518,11 +6554,22 @@ mod tests {
         context.style_mut(|style| style.animation_time = 0.0);
         let directory = tempfile::tempdir().unwrap();
         let saved = directory.path().join("delay-note-copy.l6c");
+        let blocked = directory.path().join("occupied-delay-copy.l6c");
+        let saved_time = directory.path().join("delay-time-copy.l6c");
+        let blocked_time = directory.path().join("occupied-delay-time-copy.l6c");
+        std::fs::write(&blocked, b"preserve existing NOTE destination").unwrap();
+        std::fs::write(&blocked_time, b"preserve existing TIME destination").unwrap();
         app.dialogs = Box::new(FakeDialogs {
-            pod_save: [Some(saved.clone())].into(),
+            pod_save: [
+                Some(blocked.clone()),
+                Some(saved.clone()),
+                Some(blocked_time.clone()),
+                Some(saved_time.clone()),
+            ]
+            .into(),
             ..Default::default()
         });
-        let original = sample_delay_note_tone();
+        let original = sample_delay_note_tone(0, 0);
         app.pod_open = true;
         app.pod_library.import_bytes(original.clone()).unwrap();
         app.pod_library.import_bytes(original.clone()).unwrap();
@@ -6558,6 +6605,12 @@ mod tests {
             pod_preset::DelayNoteValue::Known(pod_preset::DelayNoteChoice::Quarter)
         );
         click_pod(&context, &mut app, "save-pod");
+        assert_eq!(
+            std::fs::read(&blocked).unwrap(),
+            b"preserve existing NOTE destination"
+        );
+        assert!(app.pod_library.is_dirty(0));
+        click_pod(&context, &mut app, "save-pod");
         let reopened = pod_preset::PodTone::parse(std::fs::read(&saved).unwrap()).unwrap();
         assert_eq!(
             reopened.delay_note_value().unwrap(),
@@ -6565,7 +6618,59 @@ mod tests {
         );
         assert!(!app.pod_library.is_dirty(0));
 
-        stage_delay_note_choice(&context, &mut app, pod_preset::DelayNoteChoice::Off);
+        let saved_note = app.pod_library.tone(0).unwrap().as_bytes().to_vec();
+        drag_delay_time_slider(&context, &mut app, 0.75);
+        let PendingDelayEdit::TimeMs(staged_time) = app.pod_delay_pending.unwrap().1 else {
+            panic!("TIME slider should stage a TIME edit");
+        };
+        assert!(staged_time > app.pod_library.tone(0).unwrap().delay_time_ms().unwrap());
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert_eq!(
+            app.pod_delay_pending,
+            Some((0, PendingDelayEdit::TimeMs(staged_time))),
+            "TIME staging must persist across frames"
+        );
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), saved_note);
+        let second_row = app.pod_rows[&1].center();
+        click_pod_at_tall(&context, &mut app, second_row);
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert!(
+            app.pod_delay_pending.is_none(),
+            "tone switch clears staged TIME"
+        );
+        let first_row = app.pod_rows[&0].center();
+        click_pod_at_tall(&context, &mut app, first_row);
+        recording_frame_tall(&context, &mut app, vec![]);
+
+        drag_delay_time_slider(&context, &mut app, 0.75);
+        click_pod(&context, &mut app, "pod-delay-discard");
+        assert!(app.pod_delay_pending.is_none());
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), saved_note);
+        assert!(!app.pod_library.is_dirty(0));
+
+        drag_delay_time_slider(&context, &mut app, 0.75);
+        click_pod(&context, &mut app, "pod-delay-apply");
+        let time_applied = app.pod_library.tone(0).unwrap().as_bytes().to_vec();
+        assert_ne!(time_applied, saved_note);
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().delay_note_value().unwrap(),
+            pod_preset::DelayNoteValue::Known(pod_preset::DelayNoteChoice::Off),
+            "positive NOTE clears only when TIME Apply succeeds"
+        );
+        assert!(app.pod_library.is_dirty(0));
+        click_pod(&context, &mut app, "save-pod");
+        assert_eq!(
+            std::fs::read(&blocked_time).unwrap(),
+            b"preserve existing TIME destination"
+        );
+        assert!(app.pod_library.is_dirty(0));
+        click_pod(&context, &mut app, "save-pod");
+        let reopened_time =
+            pod_preset::PodTone::parse(std::fs::read(&saved_time).unwrap()).unwrap();
+        assert_eq!(reopened_time.as_bytes(), time_applied);
+        assert!(!app.pod_library.is_dirty(0));
+
+        stage_delay_note_choice(&context, &mut app, pod_preset::DelayNoteChoice::Quarter);
         click_pod(&context, &mut app, "pod-delay-apply");
         assert!(app.pod_library.is_dirty(0));
         app.request_close(&context);
@@ -6573,8 +6678,72 @@ mod tests {
         assert!(!app.permit_close);
         click_prompt(&context, &mut app, "discard");
         assert!(app.permit_close);
-        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), applied);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), time_applied);
         assert!(!app.pod_library.is_dirty(0));
+    }
+
+    #[test]
+    fn delay_note_gui_rejects_coupled_mod_state_without_mutating() {
+        let (context, mut app) = app();
+        app.pod_open = true;
+        let original = sample_delay_note_tone(0, 6);
+        app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_selected = Some(0);
+        recording_frame_tall(&context, &mut app, vec![]);
+        stage_delay_note_choice(&context, &mut app, pod_preset::DelayNoteChoice::Quarter);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        click_pod(&context, &mut app, "pod-delay-apply");
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert!(!app.pod_library.is_dirty(0));
+        assert!(app.pod_message.contains("Mod NOTE Off"));
+        assert_eq!(
+            app.pod_delay_pending,
+            Some((
+                0,
+                PendingDelayEdit::Note(pod_preset::DelayNoteChoice::Quarter)
+            ))
+        );
+    }
+
+    #[test]
+    fn delay_time_gui_bundle_apply_reverts_through_shared_bundle_path() {
+        let (context, mut app) = app();
+        let original = sample_delay_note_tone(6, 0);
+        let original_bundle = sample_pod_bundle(std::slice::from_ref(&original));
+        app.pod_open = true;
+        app.load_pod_bundle_bytes(original_bundle.clone()).unwrap();
+        recording_frame_tall(&context, &mut app, vec![]);
+
+        drag_delay_time_slider(&context, &mut app, 0.75);
+        let pending = app.pod_delay_pending;
+        assert!(matches!(pending, Some((0, PendingDelayEdit::TimeMs(_)))));
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+        click_pod(&context, &mut app, "pod-delay-apply");
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert!(app.pod_library.is_dirty(0));
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().delay_note_value().unwrap(),
+            pod_preset::DelayNoteValue::Known(pod_preset::DelayNoteChoice::Off)
+        );
+        assert!(app.pod_delay_pending.is_none());
+
+        stage_delay_note_choice(&context, &mut app, pod_preset::DelayNoteChoice::Quarter);
+        assert!(app.pod_delay_pending.is_some());
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "discard");
+        assert!(
+            app.pod_delay_pending.is_none(),
+            "bundle revert clears pending NOTE"
+        );
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert!(!app.pod_library.is_dirty(0));
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), original_bundle);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
     }
 
     #[test]
