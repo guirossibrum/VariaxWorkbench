@@ -189,6 +189,43 @@ pub const MOD_CONTROL_MODEL_IDS: [u32; 24] = [
     0x0203_0019,
     0x0203_001c,
 ];
+/// PODxt Live Reverb model slot and source-listed provider profiles.
+pub const REVERB_SLOT: u32 = 0x0002_0006;
+pub const REVERB_CONTROL_MODEL_IDS: [u32; 15] = [
+    0x0204_0002,
+    0x0204_0003,
+    0x0204_0004,
+    0x0204_0005,
+    0x0204_0006,
+    0x0204_0007,
+    0x0204_0008,
+    0x0204_0009,
+    0x0204_000a,
+    0x0204_000b,
+    0x0204_000c,
+    0x0204_000d,
+    0x0204_000e,
+    0x0204_000f,
+    0x0204_0010,
+];
+/// PODxt Live Delay model slot and source-listed provider profiles.
+pub const DELAY_SLOT: u32 = 0x0002_0005;
+pub const DELAY_CONTROL_MODEL_IDS: [u32; 14] = [
+    0x0202_0002,
+    0x0202_0003,
+    0x0202_0004,
+    0x0202_0005,
+    0x0202_0006,
+    0x0202_0007,
+    0x0202_0008,
+    0x0202_0009,
+    0x0202_000a,
+    0x0202_000c,
+    0x0202_000b,
+    0x0202_000d,
+    0x0202_000e,
+    0x0202_000f,
+];
 /// Facial Fuzz, the first model with the source-mapped Stomp control layout.
 pub const STOMP_DRIVE_MODEL_ID: u32 = 0x0205_0000;
 /// PODxt Live Stomp models with source-mapped percent control layouts.
@@ -246,10 +283,13 @@ pub const OFFLINE_BANNER: &str =
 pub const NOT_GUITAR: &str =
     "This is not the Variax guitar editor. Guitar model slots are not applied.";
 pub const NOT_SENT: &str = "Nothing is sent to a device. No preset is switched.";
-pub const PAYLOADS_NOT_DECODED: &str = "Known asset names and 12-byte parameter records are shown. Six shared amp controls on 106 source-listed models and 86 mapped Stomp percent controls across 31 layouts have host-scale editors; non-scalar and other parameter formats remain raw. Unknown ids stay raw.";
+pub const PAYLOADS_NOT_DECODED: &str = "Known asset names and 12-byte parameter records are shown. Six shared amp controls on 106 models, 86 Stomp controls on 31 layouts, 52 Mod controls on 24 layouts, 37 Delay controls on 14 layouts, and 42 Reverb controls on 15 layouts have host-scale editors; other parameter formats remain raw. Unknown ids stay raw.";
 pub const AMP_CONTROL_SCALE_LABEL: &str = "Line6Edit host scale 0–1 (not device-validated)";
 pub const STOMP_CONTROL_SCALE_LABEL: &str = "Line6Edit Stomp host scale 0–1 (not device-validated)";
 pub const MOD_CONTROL_SCALE_LABEL: &str = "Line6Edit Mod host scale 0–1 (not device-validated)";
+pub const REVERB_CONTROL_SCALE_LABEL: &str =
+    "Line6Edit Reverb host scale 0–1 (not device-validated)";
+pub const DELAY_CONTROL_SCALE_LABEL: &str = "Line6Edit Delay host scale 0–1 (not device-validated)";
 
 /// PODxt Live amp controls with an admitted Line6Edit host scale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -639,6 +679,184 @@ impl ModControl {
     }
 }
 
+/// Source-mapped finite percent controls from PODxt Reverb layouts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ReverbControl {
+    Dwell,
+    Tone,
+    Predelay,
+    Decay,
+}
+
+impl ReverbControl {
+    pub const ALL: [Self; 4] = [Self::Dwell, Self::Tone, Self::Predelay, Self::Decay];
+
+    pub const fn selector_id(self, model_id: u32) -> Option<u32> {
+        match self.position(model_id) {
+            Some(position) => Some(match position {
+                0 => 0x0008_0002,
+                1 => 0x0008_0001,
+                2 => 0x0008_0003,
+                _ => return None,
+            }),
+            None => None,
+        }
+    }
+
+    pub const fn param_id(self, model_id: u32) -> Option<u32> {
+        match self.selector_id(model_id) {
+            Some(0x0008_0001) => Some(0x0010_0000),
+            Some(0x0008_0002) => Some(0x0010_0001),
+            Some(0x0008_0003) => Some(0x0010_0002),
+            _ => None,
+        }
+    }
+
+    const fn position(self, model_id: u32) -> Option<u32> {
+        match (model_id, self) {
+            (0x0204_0002..=0x0204_0004, Self::Dwell) => Some(1),
+            (0x0204_0002..=0x0204_0004, Self::Tone) => Some(2),
+            (0x0204_0005..=0x0204_0010, Self::Predelay) => Some(0),
+            (0x0204_0005..=0x0204_0010, Self::Decay) => Some(1),
+            (0x0204_0005..=0x0204_0010, Self::Tone) => Some(2),
+            _ => None,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Dwell => "Dwell",
+            Self::Tone => "Tone",
+            Self::Predelay => "Pre-delay",
+            Self::Decay => "Decay",
+        }
+    }
+}
+
+/// Source-mapped finite percent controls from PODxt Delay layouts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DelayControl {
+    Feedback,
+    ModSpeed,
+    Depth,
+    Speed,
+    Bass,
+    Treble,
+    Flutter,
+    Drive,
+    Offset,
+    FeedbackLeft,
+    FeedbackRight,
+    Spread,
+    Tone,
+}
+
+impl DelayControl {
+    pub const ALL: [Self; 13] = [
+        Self::Feedback,
+        Self::ModSpeed,
+        Self::Depth,
+        Self::Speed,
+        Self::Bass,
+        Self::Treble,
+        Self::Flutter,
+        Self::Drive,
+        Self::Offset,
+        Self::FeedbackLeft,
+        Self::FeedbackRight,
+        Self::Spread,
+        Self::Tone,
+    ];
+
+    pub const fn selector_id(self, model_id: u32) -> Option<u32> {
+        match self.position(model_id) {
+            Some(position) => Some(0x0005_0002 + position),
+            None => None,
+        }
+    }
+
+    pub const fn param_id(self, model_id: u32) -> Option<u32> {
+        match self.position(model_id) {
+            Some(position) => Some(0x0010_0000 + position),
+            None => None,
+        }
+    }
+
+    const fn position(self, model_id: u32) -> Option<u32> {
+        match model_id {
+            0x0202_0002 | 0x0202_0007 | 0x0202_000b => match self {
+                Self::Feedback => Some(1),
+                Self::Bass => Some(2),
+                Self::Treble => Some(3),
+                _ => None,
+            },
+            0x0202_0003 | 0x0202_000e => match self {
+                Self::Feedback => Some(1),
+                Self::ModSpeed => Some(2),
+                Self::Depth => Some(3),
+                _ => None,
+            },
+            0x0202_0004 => match self {
+                Self::Feedback => Some(1),
+                Self::Flutter => Some(2),
+                Self::Drive => Some(3),
+                _ => None,
+            },
+            0x0202_0005 | 0x0202_000c => match self {
+                Self::Feedback => Some(1),
+                Self::Flutter => Some(3),
+                _ => None,
+            },
+            0x0202_0006 | 0x0202_000f => match self {
+                Self::Feedback => Some(1),
+                Self::Speed => Some(2),
+                Self::Depth => Some(3),
+                _ => None,
+            },
+            0x0202_0008 => match self {
+                Self::Offset => Some(1),
+                Self::FeedbackLeft => Some(2),
+                Self::FeedbackRight => Some(3),
+                _ => None,
+            },
+            0x0202_0009 => match self {
+                Self::Feedback => Some(1),
+                Self::Offset => Some(2),
+                Self::Spread => Some(3),
+                _ => None,
+            },
+            0x0202_000a => match self {
+                Self::Feedback => Some(1),
+                _ => None,
+            },
+            0x0202_000d => match self {
+                Self::Feedback => Some(1),
+                Self::Tone => Some(2),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Feedback => "Feedback",
+            Self::ModSpeed => "Mod Speed",
+            Self::Depth => "Depth",
+            Self::Speed => "Speed",
+            Self::Bass => "Bass",
+            Self::Treble => "Treble",
+            Self::Flutter => "Flutter",
+            Self::Drive => "Drive",
+            Self::Offset => "Offset",
+            Self::FeedbackLeft => "Feedback Left",
+            Self::FeedbackRight => "Feedback Right",
+            Self::Spread => "Spread",
+            Self::Tone => "Tone",
+        }
+    }
+}
+
 const VARIAX_FAMILY_MASK: u32 = 0xffff_0000;
 const VARIAX_FAMILY_HIGH: u32 = 0x0007_0000;
 
@@ -956,6 +1174,20 @@ impl PodTone {
             .map(|model| model.model_id)
     }
 
+    pub fn reverb_model_id(&self) -> Option<u32> {
+        self.models
+            .iter()
+            .find(|model| model.slot == REVERB_SLOT)
+            .map(|model| model.model_id)
+    }
+
+    pub fn delay_model_id(&self) -> Option<u32> {
+        self.models
+            .iter()
+            .find(|model| model.slot == DELAY_SLOT)
+            .map(|model| model.model_id)
+    }
+
     /// Asset name for the amp model id, when the PODxt Live table has one.
     pub fn amp_asset_name(&self) -> Option<&'static str> {
         self.amp_model_id().and_then(pod_assets::asset_name)
@@ -995,6 +1227,24 @@ impl PodTone {
             model_index,
             parameter_index,
             &format!("Mod {}", control.label()),
+        )
+    }
+
+    pub fn reverb_control_fraction(&self, control: ReverbControl) -> Result<f32, ToneError> {
+        let (model_index, parameter_index) = self.reverb_control_location(control)?;
+        self.float_control_fraction_at(
+            model_index,
+            parameter_index,
+            &format!("Reverb {}", control.label()),
+        )
+    }
+
+    pub fn delay_control_fraction(&self, control: DelayControl) -> Result<f32, ToneError> {
+        let (model_index, parameter_index) = self.delay_control_location(control)?;
+        self.float_control_fraction_at(
+            model_index,
+            parameter_index,
+            &format!("Delay {}", control.label()),
         )
     }
 
@@ -1044,6 +1294,28 @@ impl PodTone {
         self.set_float_control_fraction_at(model_index, parameter_index, value, &label)
     }
 
+    pub fn set_reverb_control_fraction(
+        &mut self,
+        control: ReverbControl,
+        value: f32,
+    ) -> Result<(), ToneError> {
+        let label = format!("Reverb {}", control.label());
+        Self::validate_host_fraction(value, &label)?;
+        let (model_index, parameter_index) = self.reverb_control_location(control)?;
+        self.set_float_control_fraction_at(model_index, parameter_index, value, &label)
+    }
+
+    pub fn set_delay_control_fraction(
+        &mut self,
+        control: DelayControl,
+        value: f32,
+    ) -> Result<(), ToneError> {
+        let label = format!("Delay {}", control.label());
+        Self::validate_host_fraction(value, &label)?;
+        let (model_index, parameter_index) = self.delay_control_location(control)?;
+        self.set_float_control_fraction_at(model_index, parameter_index, value, &label)
+    }
+
     /// Compatibility convenience for callers that only use Drive.
     pub fn set_amp_drive_fraction(&mut self, value: f32) -> Result<(), ToneError> {
         self.set_amp_control_fraction(AmpControl::Drive, value)
@@ -1084,6 +1356,34 @@ impl PodTone {
             ToneError::format(format!("{label} is not defined for model 0x{model_id:08x}"))
         })?;
         self.control_location(MOD_SLOT, &[model_id], parameter_id, &label)
+    }
+
+    fn reverb_control_location(&self, control: ReverbControl) -> Result<(usize, usize), ToneError> {
+        let label = format!("Reverb {}", control.label());
+        let model_id = self
+            .models
+            .iter()
+            .find(|model| model.slot == REVERB_SLOT)
+            .map(|model| model.model_id)
+            .ok_or_else(|| ToneError::format(format!("{label} requires an existing model slot")))?;
+        let parameter_id = control.param_id(model_id).ok_or_else(|| {
+            ToneError::format(format!("{label} is not defined for model 0x{model_id:08x}"))
+        })?;
+        self.control_location(REVERB_SLOT, &[model_id], parameter_id, &label)
+    }
+
+    fn delay_control_location(&self, control: DelayControl) -> Result<(usize, usize), ToneError> {
+        let label = format!("Delay {}", control.label());
+        let model_id = self
+            .models
+            .iter()
+            .find(|model| model.slot == DELAY_SLOT)
+            .map(|model| model.model_id)
+            .ok_or_else(|| ToneError::format(format!("{label} requires an existing model slot")))?;
+        let parameter_id = control.param_id(model_id).ok_or_else(|| {
+            ToneError::format(format!("{label} is not defined for model 0x{model_id:08x}"))
+        })?;
+        self.control_location(DELAY_SLOT, &[model_id], parameter_id, &label)
     }
 
     fn control_location(
@@ -1411,6 +1711,32 @@ impl Library {
         entry.tone.set_mod_control_fraction(control, value)
     }
 
+    pub fn set_reverb_control_fraction(
+        &mut self,
+        index: usize,
+        control: ReverbControl,
+        value: f32,
+    ) -> Result<(), ToneError> {
+        let entry = self
+            .tones
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
+        entry.tone.set_reverb_control_fraction(control, value)
+    }
+
+    pub fn set_delay_control_fraction(
+        &mut self,
+        index: usize,
+        control: DelayControl,
+        value: f32,
+    ) -> Result<(), ToneError> {
+        let entry = self
+            .tones
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
+        entry.tone.set_delay_control_fraction(control, value)
+    }
+
     pub fn replace(&mut self, index: usize, bytes: Vec<u8>) -> Result<(), ToneError> {
         let tone = PodTone::parse(bytes)?;
         let slot = self
@@ -1666,6 +1992,36 @@ mod tests {
             ContainerKind::L6as,
             &[BuiltModel {
                 slot: MOD_SLOT,
+                model_id: model,
+                tail: &[0xa1, 0xb2, 0xc3, 0xd4],
+                parameters,
+            }],
+        );
+        let pinf = find_chunk_data(&bytes, b"PINF");
+        bytes[pinf + 72..pinf + 76].copy_from_slice(&version.to_be_bytes());
+        bytes
+    }
+
+    fn reverb_tone(version: u32, model: u32, parameters: &[&[u8]]) -> Vec<u8> {
+        let mut bytes = custom_tone(
+            ContainerKind::L6as,
+            &[BuiltModel {
+                slot: REVERB_SLOT,
+                model_id: model,
+                tail: &[0xa1, 0xb2, 0xc3, 0xd4],
+                parameters,
+            }],
+        );
+        let pinf = find_chunk_data(&bytes, b"PINF");
+        bytes[pinf + 72..pinf + 76].copy_from_slice(&version.to_be_bytes());
+        bytes
+    }
+
+    fn delay_tone(version: u32, model: u32, parameters: &[&[u8]]) -> Vec<u8> {
+        let mut bytes = custom_tone(
+            ContainerKind::L6as,
+            &[BuiltModel {
+                slot: DELAY_SLOT,
                 model_id: model,
                 tail: &[0xa1, 0xb2, 0xc3, 0xd4],
                 parameters,
@@ -2355,6 +2711,334 @@ mod tests {
                 );
             }
             assert_eq!(tone.models()[0].model_id, model_id);
+        }
+    }
+
+    #[test]
+    fn source_mapped_reverb_percent_controls_patch_only_their_existing_value_words() {
+        assert_eq!(REVERB_SLOT, 0x0002_0006);
+        let profiles: [(u32, [Option<ReverbControl>; 3]); 15] = [
+            (
+                0x0204_0002,
+                [None, Some(ReverbControl::Dwell), Some(ReverbControl::Tone)],
+            ),
+            (
+                0x0204_0003,
+                [None, Some(ReverbControl::Dwell), Some(ReverbControl::Tone)],
+            ),
+            (
+                0x0204_0004,
+                [None, Some(ReverbControl::Dwell), Some(ReverbControl::Tone)],
+            ),
+            (
+                0x0204_0005,
+                [
+                    Some(ReverbControl::Predelay),
+                    Some(ReverbControl::Decay),
+                    Some(ReverbControl::Tone),
+                ],
+            ),
+            (
+                0x0204_0006,
+                [
+                    Some(ReverbControl::Predelay),
+                    Some(ReverbControl::Decay),
+                    Some(ReverbControl::Tone),
+                ],
+            ),
+            (
+                0x0204_0007,
+                [
+                    Some(ReverbControl::Predelay),
+                    Some(ReverbControl::Decay),
+                    Some(ReverbControl::Tone),
+                ],
+            ),
+            (
+                0x0204_0008,
+                [
+                    Some(ReverbControl::Predelay),
+                    Some(ReverbControl::Decay),
+                    Some(ReverbControl::Tone),
+                ],
+            ),
+            (
+                0x0204_0009,
+                [
+                    Some(ReverbControl::Predelay),
+                    Some(ReverbControl::Decay),
+                    Some(ReverbControl::Tone),
+                ],
+            ),
+            (
+                0x0204_000a,
+                [
+                    Some(ReverbControl::Predelay),
+                    Some(ReverbControl::Decay),
+                    Some(ReverbControl::Tone),
+                ],
+            ),
+            (
+                0x0204_000b,
+                [
+                    Some(ReverbControl::Predelay),
+                    Some(ReverbControl::Decay),
+                    Some(ReverbControl::Tone),
+                ],
+            ),
+            (
+                0x0204_000c,
+                [
+                    Some(ReverbControl::Predelay),
+                    Some(ReverbControl::Decay),
+                    Some(ReverbControl::Tone),
+                ],
+            ),
+            (
+                0x0204_000d,
+                [
+                    Some(ReverbControl::Predelay),
+                    Some(ReverbControl::Decay),
+                    Some(ReverbControl::Tone),
+                ],
+            ),
+            (
+                0x0204_000e,
+                [
+                    Some(ReverbControl::Predelay),
+                    Some(ReverbControl::Decay),
+                    Some(ReverbControl::Tone),
+                ],
+            ),
+            (
+                0x0204_000f,
+                [
+                    Some(ReverbControl::Predelay),
+                    Some(ReverbControl::Decay),
+                    Some(ReverbControl::Tone),
+                ],
+            ),
+            (
+                0x0204_0010,
+                [
+                    Some(ReverbControl::Predelay),
+                    Some(ReverbControl::Decay),
+                    Some(ReverbControl::Tone),
+                ],
+            ),
+        ];
+        assert_eq!(
+            profiles.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            REVERB_CONTROL_MODEL_IDS
+        );
+        for (model_id, layout) in profiles {
+            for control in ReverbControl::ALL {
+                assert_eq!(
+                    control.selector_id(model_id).is_some(),
+                    layout.contains(&Some(control)),
+                    "unexpected {} mapping on model {model_id:08x}",
+                    control.label()
+                );
+            }
+            let mut records = Vec::new();
+            for control in layout.into_iter().flatten() {
+                let parameter_id = control.param_id(model_id).unwrap();
+                records.push(drive_record(0x3f, parameter_id, 1, 0x3f00_0000));
+            }
+            let record_refs: Vec<&[u8]> = records.iter().map(|r| r.as_slice()).collect();
+            let bytes = reverb_tone(PODXT_LIVE_HOST_MIN_VERSION, model_id, &record_refs);
+            let mut tone = PodTone::parse(bytes.clone()).unwrap();
+            for control in ReverbControl::ALL {
+                if control.selector_id(model_id).is_none() {
+                    continue;
+                }
+                let parameter_id = control.param_id(model_id).unwrap();
+                assert_eq!(tone.reverb_control_fraction(control).unwrap(), 0.5);
+                tone.set_reverb_control_fraction(control, 0.317).unwrap();
+                let record = drive_record(0x3f, parameter_id, 1, 0x3f00_0000);
+                let offset = bytes.windows(12).position(|w| w == record).unwrap() + 8;
+                assert_eq!(
+                    &tone.as_bytes()[offset..offset + 4],
+                    &0.317f32.to_bits().to_be_bytes()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn source_mapped_delay_percent_controls_patch_only_their_existing_value_words() {
+        assert_eq!(DELAY_SLOT, 0x0002_0005);
+        let profiles: [(u32, [Option<DelayControl>; 4]); 14] = [
+            (
+                0x0202_0002,
+                [
+                    None,
+                    Some(DelayControl::Feedback),
+                    Some(DelayControl::Bass),
+                    Some(DelayControl::Treble),
+                ],
+            ),
+            (
+                0x0202_0003,
+                [
+                    None,
+                    Some(DelayControl::Feedback),
+                    Some(DelayControl::ModSpeed),
+                    Some(DelayControl::Depth),
+                ],
+            ),
+            (
+                0x0202_0004,
+                [
+                    None,
+                    Some(DelayControl::Feedback),
+                    Some(DelayControl::Flutter),
+                    Some(DelayControl::Drive),
+                ],
+            ),
+            (
+                0x0202_0005,
+                [
+                    None,
+                    Some(DelayControl::Feedback),
+                    None,
+                    Some(DelayControl::Flutter),
+                ],
+            ),
+            (
+                0x0202_0006,
+                [
+                    None,
+                    Some(DelayControl::Feedback),
+                    Some(DelayControl::Speed),
+                    Some(DelayControl::Depth),
+                ],
+            ),
+            (
+                0x0202_0007,
+                [
+                    None,
+                    Some(DelayControl::Feedback),
+                    Some(DelayControl::Bass),
+                    Some(DelayControl::Treble),
+                ],
+            ),
+            (
+                0x0202_0008,
+                [
+                    None,
+                    Some(DelayControl::Offset),
+                    Some(DelayControl::FeedbackLeft),
+                    Some(DelayControl::FeedbackRight),
+                ],
+            ),
+            (
+                0x0202_0009,
+                [
+                    None,
+                    Some(DelayControl::Feedback),
+                    Some(DelayControl::Offset),
+                    Some(DelayControl::Spread),
+                ],
+            ),
+            (
+                0x0202_000a,
+                [None, Some(DelayControl::Feedback), None, None],
+            ),
+            (
+                0x0202_000c,
+                [
+                    None,
+                    Some(DelayControl::Feedback),
+                    None,
+                    Some(DelayControl::Flutter),
+                ],
+            ),
+            (
+                0x0202_000b,
+                [
+                    None,
+                    Some(DelayControl::Feedback),
+                    Some(DelayControl::Bass),
+                    Some(DelayControl::Treble),
+                ],
+            ),
+            (
+                0x0202_000d,
+                [
+                    None,
+                    Some(DelayControl::Feedback),
+                    Some(DelayControl::Tone),
+                    None,
+                ],
+            ),
+            (
+                0x0202_000e,
+                [
+                    None,
+                    Some(DelayControl::Feedback),
+                    Some(DelayControl::ModSpeed),
+                    Some(DelayControl::Depth),
+                ],
+            ),
+            (
+                0x0202_000f,
+                [
+                    None,
+                    Some(DelayControl::Feedback),
+                    Some(DelayControl::Speed),
+                    Some(DelayControl::Depth),
+                ],
+            ),
+        ];
+        assert_eq!(
+            profiles.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            DELAY_CONTROL_MODEL_IDS
+        );
+        assert_eq!(
+            profiles
+                .iter()
+                .map(|(_, row)| row.iter().flatten().count())
+                .sum::<usize>(),
+            37
+        );
+        for (model_id, layout) in profiles {
+            for control in DelayControl::ALL {
+                assert_eq!(
+                    control.selector_id(model_id).is_some(),
+                    layout.contains(&Some(control)),
+                    "unexpected {} mapping on model {model_id:08x}",
+                    control.label()
+                );
+            }
+            let mut records = Vec::new();
+            for control in layout.into_iter().flatten() {
+                records.push(drive_record(
+                    0x3f,
+                    control.param_id(model_id).unwrap(),
+                    1,
+                    0x3f00_0000,
+                ));
+            }
+            let record_refs: Vec<&[u8]> = records.iter().map(|r| r.as_slice()).collect();
+            let bytes = delay_tone(PODXT_LIVE_HOST_MIN_VERSION, model_id, &record_refs);
+            let mut tone = PodTone::parse(bytes.clone()).unwrap();
+            for control in DelayControl::ALL {
+                let Some(selector) = control.selector_id(model_id) else {
+                    continue;
+                };
+                let position = selector - 0x0005_0002;
+                assert_eq!(selector, 0x0005_0002 + position);
+                assert_eq!(control.param_id(model_id), Some(0x0010_0000 + position));
+                assert_eq!(tone.delay_control_fraction(control).unwrap(), 0.5);
+                tone.set_delay_control_fraction(control, 0.317).unwrap();
+                let record = drive_record(0x3f, 0x0010_0000 + position, 1, 0x3f00_0000);
+                let offset = bytes.windows(12).position(|w| w == record).unwrap() + 8;
+                assert_eq!(
+                    &tone.as_bytes()[offset..offset + 4],
+                    &0.317f32.to_bits().to_be_bytes()
+                );
+            }
         }
     }
 

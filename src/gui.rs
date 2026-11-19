@@ -235,6 +235,10 @@ struct Workbench {
     #[cfg(test)]
     pod_mod_sliders: HashMap<pod_preset::ModControl, Rect>,
     #[cfg(test)]
+    pod_reverb_sliders: HashMap<pod_preset::ReverbControl, Rect>,
+    #[cfg(test)]
+    pod_delay_sliders: HashMap<pod_preset::DelayControl, Rect>,
+    #[cfg(test)]
     pod_visible: String,
     read_receiver:
         Option<std::sync::mpsc::Receiver<Result<variax_workbench::usb::CurrentPreset, String>>>,
@@ -311,6 +315,10 @@ impl Workbench {
             pod_stomp_sliders: HashMap::new(),
             #[cfg(test)]
             pod_mod_sliders: HashMap::new(),
+            #[cfg(test)]
+            pod_reverb_sliders: HashMap::new(),
+            #[cfg(test)]
+            pod_delay_sliders: HashMap::new(),
             #[cfg(test)]
             pod_visible: String::new(),
             read_receiver: None,
@@ -1661,6 +1669,8 @@ impl Workbench {
             self.pod_drive_slider = None;
             self.pod_stomp_sliders.clear();
             self.pod_mod_sliders.clear();
+            self.pod_reverb_sliders.clear();
+            self.pod_delay_sliders.clear();
         }
         let mut open = true;
         egui::Window::new("Offline PODxt Live tones")
@@ -1846,6 +1856,93 @@ impl Workbench {
                                 Ok(()) => {
                                     self.pod_message = format!(
                                         "Applied Mod {} host-scale value {value}. Nothing was sent.",
+                                        control.label()
+                                    )
+                                }
+                                Err(error) => self.pod_message = error.detail(),
+                            }
+                        }
+                    });
+                }
+                let reverb_controls = self
+                    .pod_selected
+                    .and_then(|index| self.pod_library.tone(index))
+                    .map(|tone| {
+                        pod_preset::ReverbControl::ALL
+                            .into_iter()
+                            .filter_map(|control| {
+                                tone.reverb_control_fraction(control)
+                                    .ok()
+                                    .map(|value| (control, value))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if !reverb_controls.is_empty() {
+                    ui.small(pod_preset::REVERB_CONTROL_SCALE_LABEL);
+                }
+                for (control, mut value) in reverb_controls {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Reverb {}", control.label()));
+                        let response = ui
+                            .add(egui::Slider::new(&mut value, 0.0..=1.0).show_value(true))
+                            .on_hover_text(pod_preset::REVERB_CONTROL_SCALE_LABEL);
+                        #[cfg(test)]
+                        {
+                            self.pod_reverb_sliders.insert(control, response.rect);
+                        }
+                        if response.changed()
+                            && let Some(index) = self.pod_selected
+                        {
+                            match self
+                                .pod_library
+                                .set_reverb_control_fraction(index, control, value)
+                            {
+                                Ok(()) => {
+                                    self.pod_message = format!(
+                                        "Applied Reverb {} host-scale value {value}. Nothing was sent.",
+                                        control.label()
+                                    )
+                                }
+                                Err(error) => self.pod_message = error.detail(),
+                            }
+                        }
+                    });
+                }
+                let delay_controls = self
+                    .pod_selected
+                    .and_then(|index| self.pod_library.tone(index))
+                    .map(|tone| {
+                        pod_preset::DelayControl::ALL
+                            .into_iter()
+                            .filter_map(|control| {
+                                tone.delay_control_fraction(control)
+                                    .ok()
+                                    .map(|value| (control, value))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if !delay_controls.is_empty() {
+                    ui.small(pod_preset::DELAY_CONTROL_SCALE_LABEL);
+                }
+                for (control, mut value) in delay_controls {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Delay {}", control.label()));
+                        let response = ui
+                            .add(egui::Slider::new(&mut value, 0.0..=1.0).show_value(true))
+                            .on_hover_text(pod_preset::DELAY_CONTROL_SCALE_LABEL);
+                        #[cfg(test)]
+                        {
+                            self.pod_delay_sliders.insert(control, response.rect);
+                        }
+                        if response.changed()
+                            && let Some(index) = self.pod_selected
+                        {
+                            match self.pod_library.set_delay_control_fraction(index, control, value) {
+                                Ok(()) => {
+                                    self.pod_message = format!(
+                                        "Applied Delay {} host-scale value {value}. Nothing was sent.",
                                         control.label()
                                     )
                                 }
@@ -3070,6 +3167,20 @@ mod tests {
                 parameter(0x0010_0003, 0.6),
             ],
         ));
+        patch.extend(model(
+            pod_preset::REVERB_SLOT,
+            pod_preset::REVERB_CONTROL_MODEL_IDS[0],
+            &[parameter(0x0010_0000, 0.3), parameter(0x0010_0002, 0.6)],
+        ));
+        patch.extend(model(
+            pod_preset::DELAY_SLOT,
+            pod_preset::DELAY_CONTROL_MODEL_IDS[0],
+            &[
+                parameter(0x0010_0001, 0.2),
+                parameter(0x0010_0002, 0.4),
+                parameter(0x0010_0003, 0.6),
+            ],
+        ));
         let mut data = b"L6AS".to_vec();
         data.extend(chunk(b"ODD!", &[0x17, 0x28, 0x39]));
         data.extend(chunk(b"PINF", &info));
@@ -3176,6 +3287,76 @@ mod tests {
     ) {
         recording_frame(context, app, vec![]);
         let rect = app.pod_mod_sliders[&control];
+        let start = Pos2::new(rect.left() + rect.width() * 0.35, rect.center().y);
+        let end = Pos2::new(rect.left() + rect.width() * 0.73, rect.center().y);
+        recording_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame(context, app, vec![egui::Event::PointerMoved(end)]);
+        recording_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
+    fn drag_pod_reverb_slider(
+        context: &egui::Context,
+        app: &mut Workbench,
+        control: pod_preset::ReverbControl,
+    ) {
+        recording_frame(context, app, vec![]);
+        let rect = app.pod_reverb_sliders[&control];
+        let start = Pos2::new(rect.left() + rect.width() * 0.35, rect.center().y);
+        let end = Pos2::new(rect.left() + rect.width() * 0.73, rect.center().y);
+        recording_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame(context, app, vec![egui::Event::PointerMoved(end)]);
+        recording_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
+    fn drag_pod_delay_slider(
+        context: &egui::Context,
+        app: &mut Workbench,
+        control: pod_preset::DelayControl,
+    ) {
+        recording_frame(context, app, vec![]);
+        let rect = app.pod_delay_sliders[&control];
         let start = Pos2::new(rect.left() + rect.width() * 0.35, rect.center().y);
         let end = Pos2::new(rect.left() + rect.width() * 0.73, rect.center().y);
         recording_frame(
@@ -3461,7 +3642,8 @@ mod tests {
     }
 
     #[test]
-    fn amp_stomp_and_mod_sliders_edit_selected_tone_and_quit_guard_keeps_or_saves_it() {
+    fn amp_stomp_mod_delay_and_reverb_sliders_edit_selected_tone_and_quit_guard_keeps_or_saves_it()
+    {
         let (context, mut app) = app();
         context.style_mut(|style| {
             style.animation_time = 0.0;
@@ -3513,6 +3695,8 @@ mod tests {
         ];
         assert_eq!(app.pod_stomp_sliders.len(), stomp_controls.len());
         assert_eq!(app.pod_mod_sliders.len(), 3);
+        assert_eq!(app.pod_reverb_sliders.len(), 2);
+        assert_eq!(app.pod_delay_sliders.len(), 3);
         let original_drive = app
             .pod_library
             .tone(0)
@@ -3534,6 +3718,8 @@ mod tests {
             drag_pod_stomp_slider(&context, &mut app, control);
         }
         drag_pod_mod_slider(&context, &mut app, pod_preset::ModControl::Depth);
+        drag_pod_reverb_slider(&context, &mut app, pod_preset::ReverbControl::Dwell);
+        drag_pod_delay_slider(&context, &mut app, pod_preset::DelayControl::Feedback);
         let edited_drive = app
             .pod_library
             .tone(0)
@@ -3564,6 +3750,22 @@ mod tests {
             .unwrap();
         assert!((0.0..=1.0).contains(&edited_mod));
         assert_ne!(edited_mod.to_bits(), 0.2f32.to_bits());
+        let edited_reverb = app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .reverb_control_fraction(pod_preset::ReverbControl::Dwell)
+            .unwrap();
+        assert!((0.0..=1.0).contains(&edited_reverb));
+        assert_ne!(edited_reverb.to_bits(), 0.3f32.to_bits());
+        let edited_delay = app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .delay_control_fraction(pod_preset::DelayControl::Feedback)
+            .unwrap();
+        assert!((0.0..=1.0).contains(&edited_delay));
+        assert_ne!(edited_delay.to_bits(), 0.2f32.to_bits());
         assert!(app.pod_library.is_dirty(0));
         assert!(!app.pod_library.is_dirty(1));
         assert_eq!(
@@ -3631,6 +3833,20 @@ mod tests {
                 .unwrap()
                 .to_bits(),
             edited_mod.to_bits()
+        );
+        assert_eq!(
+            reopened
+                .reverb_control_fraction(pod_preset::ReverbControl::Dwell)
+                .unwrap()
+                .to_bits(),
+            edited_reverb.to_bits()
+        );
+        assert_eq!(
+            reopened
+                .delay_control_fraction(pod_preset::DelayControl::Feedback)
+                .unwrap()
+                .to_bits(),
+            edited_delay.to_bits()
         );
         assert_eq!(
             app.pod_library.tone(1).unwrap().as_bytes(),

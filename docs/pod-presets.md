@@ -107,7 +107,7 @@ WHAMMY_INTERVAL Heel/Toe values are not percent controls and remain unavailable.
 All exposed definitions use finite host-scale floats `0..=1` with the percent
 formatter; the source labels do not establish physical units. Rust applies the
 same target/version/prefix/type/range checks and four-byte raw patch as the amp
-controls. Delay, reverb, EQ and cab controls remain unavailable.
+controls. EQ and cab controls remain unavailable.
 This allowlist does not establish installed-pack entitlement, device
 acceptance or physical behavior.
 
@@ -118,6 +118,24 @@ Frequency, Flutter, and Distortion, only at the model-specific positions in
 floats using the percent formatter. Rust requires the matching existing model
 and PARM record and edits only its four value bytes. The percent labels do not
 assert physical units or device acceptance.
+
+Its 15 Reverb layouts in slot `0x00020006` expose 42 percent fields: Dwell and
+Tone at positions 1/2 on the first three models, and Pre-delay, Decay, and Tone
+at positions 0/1/2 on the remaining twelve. Their selector IDs and semantic
+PARM IDs use the family-specific mapping from `GetFXParamDef` and `GetFXParam`;
+the Rust table preserves that distinction. The selected definitions are finite
+`0..=1` PERCENT floats. Edits require the corresponding existing record and
+change only its value word. These host scales do not establish physical units
+or device acceptance.
+
+The 14 Delay layouts in slot `0x00020005` expose 37 scalar percent fields.
+`SetupDelayLayouts` selects Feedback, Mod Speed, Depth, Speed, Bass, Treble,
+Flutter, Drive, Offset, Feedback Left/Right, Spread and Tone by model and
+selector position. The selector family uses `0x00050002 + position`; its
+semantic PARM ids are `0x00100000 + position`. Source association formats for
+HEADS/BITS and the dedicated Delay time/note/mix/xover selectors are outside
+this numeric allowlist. The exposed `FXParams` are finite `0..=1` PERCENT
+floats and edits patch only the selected existing PARM value word.
 
 An applied name is unsaved until that tone's copy is written. Quitting asks
 to save, discard, or keep editing, one tone at a time. Cancel, or a save that
