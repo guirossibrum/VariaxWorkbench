@@ -1,8 +1,7 @@
-# PODxt model selection: source edge and bounded contract
+# PODxt model selection: source contract and bounded implementation
 
-This is a static source trace for VariaxWorkbench issue #29. It does not add a
-model selector or claim behavior for any connected POD. The current exact-head
-implementation continues to edit only already-present, source-admitted fields.
+This is a static source trace and offline implementation record for VariaxWorkbench
+issue #29. It does not claim behavior for any connected POD.
 
 ## What the supplied Line6Edit source establishes
 
@@ -398,9 +397,13 @@ The Rust implementation is in `PodTone::set_delay_model_choice`, with typed
 choice admission, library and bundle entry points, the POD-role session gate,
 and an explicit per-tone GUI Apply/Discard selector. The GUI labels this as an
 ID-only edit that retains stored parameters and performs no reset. Successful
-apply reparses the candidate before publishing it. This does not claim that
-the entire legacy control-refresh/merge callback is reproduced. Issue #29's
-three parent acceptance criteria remain partial/open.
+apply reparses the candidate before publishing it. A successful actual model
+ID change also invalidates staged Delay parameter edits; rejected or same-ID
+operations preserve them. Selector interaction, discard, tone navigation,
+failed apply, bundle apply, save collision, save/reopen, revert, and unsaved-quit
+guard are covered offline. This does not claim that the entire legacy
+control-refresh/merge callback is reproduced. Issue #29's three parent
+acceptance criteria remain partial/open.
 
 **Literal synthetic full-buffer vector.** These independent 188-byte
 `FORM/L6PA` buffers contain a valid PODxt Live PINF, a primary Delay model in
@@ -440,14 +443,14 @@ after (188 bytes):
 00b0: 58 54 52 41 00 00 00 03 de ad be a5
 ```
 
-This is static Java bytecode and a synthetic byte vector only. The source-backed
-contract and proposed edge matrix should receive technical review before any
-Delay model writer is implemented. Any such writer still needs independent
-synthetic tests for every admitted choice, byte-isolated full-buffer output,
-unknown-byte preservation, missing/duplicate/short/opaque target structures,
-unknown current/requested models, pack-gated requests, same-value validation,
-atomic rejection, primary/fallback resolution, and library/bundle/session/GUI
-lifecycle paths as applicable.
+This is static Java bytecode and a synthetic byte vector only. Offline tests
+cover every admitted choice and byte-isolated full-buffer output, opaque-byte
+preservation, MINF bodies of 8–11 bytes, missing/duplicate MINF and slots,
+primary/fallback resolution, wrong PINF layout/target/profile/container,
+unknown current/requested models, all five pack-gated IDs, same-ID validation,
+atomic rejection, and direct-tone/library/bundle/GUI lifecycle paths. These
+tests establish Rust behavior against the admitted static contract; they do
+not establish vendor-runtime or hardware behavior.
 
 ## Admitted CAB/MIC operation contract
 

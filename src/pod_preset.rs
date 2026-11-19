@@ -5260,6 +5260,38 @@ fn custom_tone(kind: ContainerKind, models: &[BuiltModel<'_>]) -> Vec<u8> {
 }
 
 #[cfg(test)]
+fn alter_first_model_minf(bytes: &[u8], duplicate: bool) -> Vec<u8> {
+    let root = preset::chunks(bytes, 12..bytes.len()).unwrap();
+    let patch = root
+        .iter()
+        .find(|chunk| preset::container(bytes, chunk, b"PATC"))
+        .unwrap();
+    let models = preset::chunks(bytes, patch.data.start + 4..patch.data.end).unwrap();
+    let model = models
+        .iter()
+        .find(|chunk| preset::container(bytes, chunk, b"MODL"))
+        .unwrap();
+    let fields = preset::chunks(bytes, model.data.start + 4..model.data.end).unwrap();
+    let minf = fields.iter().find(|chunk| chunk.id == *b"MINF").unwrap();
+    let chunk_start = minf.data.start - 8;
+    let full_end = minf.data.end + (minf.data.len() & 1);
+    let raw = bytes[chunk_start..full_end].to_vec();
+    let mut result = bytes.to_vec();
+    if duplicate {
+        result.splice(model.data.end..model.data.end, raw.iter().copied());
+    } else {
+        result.drain(chunk_start..full_end);
+    }
+    let delta = raw.len() as i64 * if duplicate { 1 } else { -1 };
+    for length_offset in [model.data.start - 4, patch.data.start - 4, 4] {
+        let old = u32::from_be_bytes(result[length_offset..length_offset + 4].try_into().unwrap());
+        result[length_offset..length_offset + 4]
+            .copy_from_slice(&u32::try_from(i64::from(old) + delta).unwrap().to_be_bytes());
+    }
+    result
+}
+
+#[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use crate::pod_assets::{self, SlotRole};
@@ -13226,20 +13258,83 @@ pub(crate) mod tests {
         let before = tone.as_bytes().to_vec();
         assert!(tone.set_delay_model_choice(choice).is_err());
         assert_eq!(tone.as_bytes(), before);
-        assert!(PodDelayModelChoice::try_from(0x0202_000b).is_err());
-        let short = custom_tone(
-            ContainerKind::L6pa,
-            &[BuiltModel {
-                slot: DELAY_SLOT,
-                model_id: 0x0202_0002,
-                tail: &[],
-                parameters: &[],
-            }],
-        );
-        let mut tone = PodTone::parse(short).unwrap();
+        for gated in 0x0202_000b..=0x0202_000f {
+            assert!(PodDelayModelChoice::try_from(gated).is_err());
+        }
+        for (tail, body_len) in [
+            (&[][..], 8),
+            (&[0][..], 9),
+            (&[0, 0][..], 10),
+            (&[0, 0, 1][..], 11),
+        ] {
+            let short = custom_tone(
+                ContainerKind::L6pa,
+                &[BuiltModel {
+                    slot: DELAY_SLOT,
+                    model_id: 0x0202_0002,
+                    tail,
+                    parameters: &[],
+                }],
+            );
+            let mut tone = PodTone::parse(short).unwrap();
+            assert_eq!(tone.model_minfo_ranges[0].len(), body_len);
+            let before = tone.as_bytes().to_vec();
+            assert!(tone.set_delay_model_choice(choice).is_err());
+            assert_eq!(tone.as_bytes(), before);
+        }
+        for duplicate in [false, true] {
+            let valid = make(ContainerKind::L6pa, DELAY_SLOT, 0x0202_0002);
+            let malformed = alter_first_model_minf(&valid, duplicate);
+            let untouched = malformed.clone();
+            assert!(PodTone::parse(malformed.clone()).is_err());
+            assert_eq!(malformed, untouched);
+        }
+        for (offset, value) in [(4, 2u32), (8, 0x0003_000b)] {
+            let mut invalid = make(ContainerKind::L6pa, DELAY_SLOT, 0x0202_0002);
+            if offset == 4 {
+                let pinf = find_chunk_data(&invalid, b"PINF");
+                invalid[pinf..pinf + 4].copy_from_slice(&value.to_be_bytes());
+            } else {
+                let pinf = find_chunk_data(&invalid, b"PINF");
+                invalid[pinf + 4..pinf + 8].copy_from_slice(&value.to_be_bytes());
+            }
+            let untouched = invalid.clone();
+            assert!(PodTone::parse(invalid.clone()).is_err());
+            assert_eq!(invalid, untouched);
+        }
+        let same_id_l6as = make(ContainerKind::L6as, DELAY_SLOT, 0x0202_0003);
+        let mut tone = PodTone::parse(same_id_l6as).unwrap();
         let before = tone.as_bytes().to_vec();
         assert!(tone.set_delay_model_choice(choice).is_err());
         assert_eq!(tone.as_bytes(), before);
+
+        let unknown_current = make(ContainerKind::L6pa, DELAY_SLOT, 0x3333_0001);
+        let mut library = Library::default();
+        let index = library.import_bytes(unknown_current.clone()).unwrap();
+        assert!(!library.is_dirty(index));
+        assert!(library.set_delay_model_choice(index, choice).is_err());
+        assert_eq!(library.tone(index).unwrap().as_bytes(), unknown_current);
+        assert!(!library.is_dirty(index));
+        let mut changed = PodTone::parse(unknown_current.clone()).unwrap();
+        changed.rename("dirty baseline").unwrap();
+        library.replace(index, changed.into_bytes()).unwrap();
+        let before_failure = library.tone(index).unwrap().as_bytes().to_vec();
+        assert!(library.set_delay_model_choice(index, choice).is_err());
+        assert_eq!(library.tone(index).unwrap().as_bytes(), before_failure);
+        assert!(library.is_dirty(index));
+        library.revert_unsaved(index).unwrap();
+        assert_eq!(library.tone(index).unwrap().as_bytes(), unknown_current);
+
+        let mut bundle = PodBundleLibrary::parse(bundle_with_tone(&unknown_current)).unwrap();
+        bundle
+            .edit_entry(0, |tone| tone.rename("dirty bundle baseline"))
+            .unwrap();
+        let before_failure = bundle.as_bytes().to_vec();
+        assert!(bundle.set_delay_model_choice(0, choice).is_err());
+        assert_eq!(bundle.as_bytes(), before_failure);
+        assert!(bundle.is_dirty());
+        bundle.revert().unwrap();
+        assert_eq!(bundle.as_bytes(), bundle_with_tone(&unknown_current));
     }
 
     #[test]

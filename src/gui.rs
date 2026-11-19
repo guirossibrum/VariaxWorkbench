@@ -294,6 +294,10 @@ struct Workbench {
     #[cfg(test)]
     pod_delay_note_options: HashMap<pod_preset::DelayNoteChoice, Rect>,
     #[cfg(test)]
+    pod_delay_model_combo: Option<Rect>,
+    #[cfg(test)]
+    pod_delay_model_options: HashMap<u32, Rect>,
+    #[cfg(test)]
     pod_mod_note_options: HashMap<pod_preset::ModNoteChoice, Rect>,
     #[cfg(test)]
     pod_delay_time_slider: Option<Rect>,
@@ -412,6 +416,10 @@ impl Workbench {
             pod_delay_sliders: HashMap::new(),
             #[cfg(test)]
             pod_delay_note_options: HashMap::new(),
+            #[cfg(test)]
+            pod_delay_model_combo: None,
+            #[cfg(test)]
+            pod_delay_model_options: HashMap::new(),
             #[cfg(test)]
             pod_mod_note_options: HashMap::new(),
             #[cfg(test)]
@@ -2528,15 +2536,29 @@ impl Workbench {
                     (tone.container() == pod_preset::ContainerKind::L6pa).then_some((index, tone.models().iter().find(|m| m.slot == pod_preset::DELAY_SLOT || m.slot == 0x0005_0004).map(|m| m.model_id)))
                 }));
                 if let Some((index, current)) = delay_model_state {
-                    let mut selected = self.pod_delay_model_pending.filter(|(i, _)| *i == index).map(|(_, c)| c).or_else(|| current.and_then(pod_preset::PodDelayModelChoice::from_model_id));
+                    let fallback = pod_preset::PodDelayModelChoice::from_model_id(
+                        pod_preset::PodDelayModelChoice::MODEL_IDS[0],
+                    ).expect("Delay model choices are nonempty");
+                    let mut selected = self.pod_delay_model_pending
+                        .filter(|(i, _)| *i == index)
+                        .map(|(_, choice)| choice)
+                        .or_else(|| current.and_then(pod_preset::PodDelayModelChoice::from_model_id))
+                        .unwrap_or(fallback);
                     ui.separator();
                     ui.label(format!("Delay model ID (offline; stored parameters are retained, no reset) · current {}", current.map_or_else(|| "unavailable".into(), |id| format!("{id:08x}"))));
                     let mut changed = None;
-                    ui.horizontal_wrapped(|ui| for id in pod_preset::PodDelayModelChoice::MODEL_IDS {
-                        let Some(choice) = pod_preset::PodDelayModelChoice::from_model_id(id) else { continue };
-                        let response = ui.selectable_value(&mut selected, Some(choice), format!("{id:08x}"));
-                        if response.changed() { changed = selected; }
-                    });
+                    let _combo = egui::ComboBox::from_id_salt("pod-delay-model-choice")
+                        .selected_text(selected.numeric_label())
+                        .show_ui(ui, |ui| {
+                            for id in pod_preset::PodDelayModelChoice::MODEL_IDS {
+                                let choice = pod_preset::PodDelayModelChoice::from_model_id(id)
+                                    .expect("listed Delay model id is admitted");
+                                let response = ui.selectable_value(&mut selected, choice, format!("{id:08x}"));
+                                #[cfg(test)] { self.pod_delay_model_options.insert(id, response.rect); }
+                                if response.changed() { changed = Some(choice); }
+                            }
+                        });
+                    #[cfg(test)] { self.pod_delay_model_combo = Some(_combo.response.rect); }
                     if let Some(choice) = changed { self.pod_delay_model_pending = Some((index, choice)); }
                     if let Some((pending_index, choice)) = self.pod_delay_model_pending.filter(|(i, _)| *i == index) {
                         ui.horizontal(|ui| {
@@ -2947,7 +2969,7 @@ impl Workbench {
         index: usize,
         edit: impl FnOnce(&mut pod_preset::PodTone) -> Result<(), pod_preset::ToneError>,
     ) -> Result<(), pod_preset::ToneError> {
-        let result = if let Some(bundle) = &mut self.pod_bundle {
+        if let Some(bundle) = &mut self.pod_bundle {
             bundle.edit_entry(index, edit)?;
             let (bank, preset) = bundle
                 .entry_location(index)
@@ -2961,11 +2983,7 @@ impl Workbench {
                 })?;
             edit(&mut tone)?;
             self.pod_library.replace(index, tone.into_bytes())
-        };
-        if result.is_ok() {
-            self.pod_delay_model_pending = None;
         }
-        result
     }
 
     fn replace_pod_tone(
@@ -3283,7 +3301,30 @@ impl Workbench {
         index: usize,
         choice: pod_preset::PodDelayModelChoice,
     ) -> Result<(), pod_preset::ToneError> {
-        self.edit_pod_tone(index, |tone| tone.set_delay_model_choice(choice))
+        let slot_ids = [pod_preset::DELAY_SLOT, 0x0005_0004];
+        let before = self
+            .pod_library
+            .tone(index)
+            .and_then(|tone| {
+                tone.models()
+                    .iter()
+                    .find(|model| slot_ids.contains(&model.slot))
+            })
+            .map(|model| model.model_id);
+        self.edit_pod_tone(index, |tone| tone.set_delay_model_choice(choice))?;
+        let after = self
+            .pod_library
+            .tone(index)
+            .and_then(|tone| {
+                tone.models()
+                    .iter()
+                    .find(|model| slot_ids.contains(&model.slot))
+            })
+            .map(|model| model.model_id);
+        if before != after {
+            self.pod_delay_pending = None;
+        }
+        Ok(())
     }
 
     fn apply_pod_cab_model_choice(&mut self, choice: pod_preset::PodCabModelChoice) {
@@ -5284,6 +5325,24 @@ mod tests {
         recording_frame_tall(context, app, vec![]);
     }
 
+    fn choose_delay_model_popup(context: &egui::Context, app: &mut Workbench, model_id: u32) {
+        recording_frame_tall(context, app, vec![]);
+        let combo = app
+            .pod_delay_model_combo
+            .expect("Delay model selector is rendered");
+        click_pod_at_tall(context, app, combo.center());
+        recording_frame_tall(context, app, vec![]);
+        let option = app.pod_delay_model_options[&model_id];
+        click_pod_at_tall(context, app, option.center());
+        recording_frame_tall(context, app, vec![]);
+    }
+
+    fn click_pod_button_tall(context: &egui::Context, app: &mut Workbench, id: &'static str) {
+        recording_frame_tall(context, app, vec![]);
+        let position = app.pod_buttons[id].center();
+        click_pod_at_tall(context, app, position);
+    }
+
     fn stage_mod_note_choice(
         context: &egui::Context,
         app: &mut Workbench,
@@ -6944,23 +7003,23 @@ mod tests {
     #[test]
     fn delay_model_gui_stages_per_tone_applies_only_id_and_can_discard() {
         let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
         app.pod_open = true;
         let mut original = sample_delay_note_tone(0, 0);
         original[8..12].copy_from_slice(b"L6PA");
         let index = app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_library.import_bytes(original.clone()).unwrap();
         app.pod_selected = Some(index);
         recording_frame_tall(&context, &mut app, vec![]);
-        app.pod_delay_model_pending = Some((
-            index,
-            pod_preset::PodDelayModelChoice::try_from(0x0202_0003).unwrap(),
-        ));
-        recording_frame_tall(&context, &mut app, vec![]);
+        stage_delay_note_choice(&context, &mut app, pod_preset::DelayNoteChoice::Quarter);
+        assert!(app.pod_delay_pending.is_some());
+        choose_delay_model_popup(&context, &mut app, 0x0202_0003);
         assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), original);
         assert_eq!(
             app.pod_delay_model_pending.unwrap().1.model_id(),
             0x0202_0003
         );
-        click_pod(&context, &mut app, "pod-delay-model-apply");
+        click_pod_button_tall(&context, &mut app, "pod-delay-model-apply");
         let applied = app.pod_library.tone(index).unwrap();
         assert_eq!(
             applied
@@ -6979,15 +7038,170 @@ mod tests {
             .collect();
         assert_eq!(changed.len(), 1);
         assert_eq!(app.pod_delay_model_pending, None);
+        assert_eq!(app.pod_delay_pending, None);
 
-        recording_frame_tall(&context, &mut app, vec![]);
-        app.pod_delay_model_pending = Some((
-            index,
-            pod_preset::PodDelayModelChoice::try_from(0x0202_0004).unwrap(),
-        ));
-        recording_frame_tall(&context, &mut app, vec![]);
-        click_pod(&context, &mut app, "pod-delay-model-discard");
+        choose_delay_model_popup(&context, &mut app, 0x0202_0004);
+        click_pod_button_tall(&context, &mut app, "pod-delay-model-discard");
         assert_eq!(app.pod_delay_model_pending, None);
+        assert_eq!(
+            app.pod_library
+                .tone(index)
+                .unwrap()
+                .models()
+                .iter()
+                .find(|model| model.slot == pod_preset::DELAY_SLOT)
+                .unwrap()
+                .model_id,
+            0x0202_0003
+        );
+
+        // A staged selector is isolated to its tone and discarded on navigation.
+        choose_delay_model_popup(&context, &mut app, 0x0202_0004);
+        assert!(app.pod_delay_model_pending.is_some());
+        let second_row = app.pod_rows[&1];
+        click_pod_at_tall(&context, &mut app, second_row.center());
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert_eq!(app.pod_selected, Some(1));
+        assert_eq!(app.pod_delay_model_pending, None);
+
+        // A failed model Apply preserves prior parameter staging and source bytes.
+        let mut invalid = sample_delay_note_tone(0, 0);
+        let model_id = 0x0202_0002u32.to_be_bytes();
+        let offset = invalid
+            .windows(4)
+            .position(|word| word == model_id)
+            .unwrap();
+        invalid[offset..offset + 4].copy_from_slice(&0x3333_0001u32.to_be_bytes());
+        invalid[8..12].copy_from_slice(b"L6PA");
+        app.pod_library.replace(1, invalid.clone()).unwrap();
+        app.pod_delay_pending = Some((1, PendingDelayEdit::TimeMs(350.0)));
+        app.pod_delay_model_pending = Some((
+            1,
+            pod_preset::PodDelayModelChoice::try_from(0x0202_0003).unwrap(),
+        ));
+        let failed_choice = app.pod_delay_model_pending.unwrap().1;
+        assert!(app.apply_pod_delay_model_choice(1, failed_choice).is_err());
+        assert_eq!(
+            app.pod_delay_pending,
+            Some((1, PendingDelayEdit::TimeMs(350.0)))
+        );
+        assert_eq!(app.pod_library.tone(1).unwrap().as_bytes(), invalid);
+        assert_eq!(app.pod_delay_model_pending, Some((1, failed_choice)));
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn delay_model_apply_invalidates_stale_parameter_stage_in_bundle() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let mut original = sample_delay_note_tone(0, 0);
+        original[8..12].copy_from_slice(b"L6PA");
+        app.load_pod_bundle_bytes(sample_pod_bundle(&[original.clone()]))
+            .unwrap();
+        recording_frame_tall(&context, &mut app, vec![]);
+        stage_delay_note_choice(&context, &mut app, pod_preset::DelayNoteChoice::Quarter);
+        assert!(app.pod_delay_pending.is_some());
+        choose_delay_model_popup(&context, &mut app, 0x0202_0003);
+        click_pod_button_tall(&context, &mut app, "pod-delay-model-apply");
+        assert_eq!(app.pod_delay_pending, None);
+        let (bank, preset) = app.pod_bundle.as_ref().unwrap().entry_location(0).unwrap();
+        assert_eq!(
+            app.pod_bundle
+                .as_ref()
+                .unwrap()
+                .tone(bank, preset)
+                .unwrap()
+                .models()
+                .iter()
+                .find(|model| model.slot == pod_preset::DELAY_SLOT)
+                .unwrap()
+                .model_id,
+            0x0202_0003
+        );
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn delay_model_apply_save_collision_reopen_revert_and_quit_guard() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let directory = tempfile::tempdir().unwrap();
+        let collision = directory.path().join("occupied.tone");
+        let saved = directory.path().join("delay-model-copy.tone");
+        std::fs::write(&collision, b"keep existing destination").unwrap();
+        let mut original = sample_delay_note_tone(0, 0);
+        original[8..12].copy_from_slice(b"L6PA");
+        app.pod_library.import_bytes(original).unwrap();
+        app.pod_selected = Some(0);
+        app.dialogs = Box::new(FakeDialogs {
+            pod_save: [Some(collision.clone()), Some(saved.clone())].into(),
+            pod_open: [Some(saved.clone())].into(),
+            ..Default::default()
+        });
+        recording_frame_tall(&context, &mut app, vec![]);
+        choose_delay_model_popup(&context, &mut app, 0x0202_0003);
+        click_pod_button_tall(&context, &mut app, "pod-delay-model-apply");
+        assert!(app.pod_dirty());
+        click_pod_button_tall(&context, &mut app, "save-pod");
+        assert!(app.pod_dirty());
+        assert_eq!(
+            std::fs::read(&collision).unwrap(),
+            b"keep existing destination"
+        );
+        click_pod_button_tall(&context, &mut app, "save-pod");
+        assert!(!app.pod_dirty());
+        let saved_tone = pod_preset::PodTone::parse(std::fs::read(&saved).unwrap()).unwrap();
+        assert_eq!(
+            saved_tone
+                .models()
+                .iter()
+                .find(|m| m.slot == pod_preset::DELAY_SLOT)
+                .unwrap()
+                .model_id,
+            0x0202_0003
+        );
+
+        choose_delay_model_popup(&context, &mut app, 0x0202_0004);
+        click_pod_button_tall(&context, &mut app, "pod-delay-model-apply");
+        assert!(app.pod_dirty());
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pod_dirty());
+        app.pod_library.revert_unsaved(0).unwrap();
+        app.refresh_selected_pod_name();
+        assert!(!app.pod_dirty());
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .models()
+                .iter()
+                .find(|m| m.slot == pod_preset::DELAY_SLOT)
+                .unwrap()
+                .model_id,
+            0x0202_0003
+        );
+        click_pod(&context, &mut app, "load-pod");
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .models()
+                .iter()
+                .find(|m| m.slot == pod_preset::DELAY_SLOT)
+                .unwrap()
+                .model_id,
+            0x0202_0003
+        );
+        assert!(!app.pod_dirty());
         const {
             assert!(LIVE_ACCESS_LOCKED);
         }
