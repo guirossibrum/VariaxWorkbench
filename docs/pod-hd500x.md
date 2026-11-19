@@ -214,9 +214,11 @@ fixed nested framing, preserves unknown header/context and trailing bytes,
 extracts child records as separate items, and saves new copies without
 overwriting. H5EP parsing also validates a bounded subset of model classes and
 tail flags. Its reversible word conversion is limited to statically traced
-fields. The library edits only the Screamer DRIVE row for the recovered model
-and key, and only when its existing value is exactly on the editor's
-integer-percent float grid. Other rows and unknown words remain unchanged.
+fields. The library edits only five Screamer type-1 rows (DRIVE, BASS, MID,
+TREBLE, OUTPUT) for the recovered model and keys, and only when each existing
+value is exactly on the editor's normalized integer-percent float grid. This
+is an editor widget domain, not a physical unit or a claim of device
+availability. Other rows and unknown words remain unchanged.
 
 This Edit file association does not prove device target compatibility. In
 particular, H5EP byte `0x0b` belongs to a context dword supplied by the writer;
@@ -234,17 +236,20 @@ materials.
 ### Writer context and the limits of byte `0x0b`
 
 The Editor 2.27 static source trace follows `FUN_0040dd80` through
-`FUN_00410730` to `FUN_004108f0`. The writer selects patch state through a
-setlist/preset-slot table and emits ten big-endian 32-bit header words. Words
-0–1 (offsets `0x00` and `0x04`) are the magic and version. Words 2–5
-(`0x08`–`0x17`) are copied from writer context; words 6–9 (`0x18`–`0x27`) are
-zeroed. Thus `0x0b` is the last byte of context word 2, not a separately
-validated product field. Reader `FUN_00410a50` converts the body back and
-checks only the magic and version words; it does not compare `0x0b`.
+`FUN_00410730` to `FUN_004108f0`. `FUN_0040dd80` bounds the setlist and preset
+indices, selects the patch pointer from the table at state offset `0x44`, and
+passes that patch into the copy/write path. The raw writer reads header word 2
+from the nested context object's `+0x2c` field and word 3 from `+0x1950`,
+placing them at file offsets `0x08` and `0x0c`. It emits ten big-endian 32-bit
+words: words 0–1 are magic/version, words 2–5 (`0x08`–`0x17`) come from
+context, and words 6–9 (`0x18`–`0x27`) are zeroed. Thus byte `0x0b` is the
+fourth byte of the copied `+0x2c` field. The upstream store/constructor that
+assigns this field, and any relationship to a product/profile selector, remain
+untraced. Reader `FUN_00410a50` converts the body back and checks only
+magic/version; it does not compare or retain header words 2–9 as identity.
 
-The immediate writer producer for word 2 is in-memory patch/context state.
-The upstream def-use path from that word to a product or profile selector is
-not established. A separate Central static product key (`0x00140005`) has no
+The field read is established; its semantic producer is not. A separate
+Central static product key (`0x00140005`) has no
 proven join to this H5EP field or reader. Consequently, neither the writer
 trace nor the file-group association establishes a POD HD500X target ID. The
 often repeated third-party `0x2d`/`0x2e` labels remain unregistered claims.
@@ -256,12 +261,12 @@ Editor image identity is `871c86da6b6810307dc201297d8411f2b2f7eec7e4c3e150f0aa88
 The reports and binaries remain local; hashes are provenance pins, not a
 public reproduction package.
 
-The DRIVE edit is intentionally narrower still. In the pinned Editor image,
+The five control edits are intentionally narrow. In the pinned Editor image,
 `FUN_00411130`/`FUN_004127e0` resolve the first row matching the parameter key;
 the row flag is passed into widget assignment, and `FUN_00407ef0` gates the
 write callback through `expc` before `FUN_0040a610`. The complete assignment
-state path is unresolved. Rust therefore admits only a zero row flag and an
-exact integer-percent float value, preserves the remaining row bytes, and
+state path is unresolved. For each of the five statically joined controls,
+Rust therefore admits only a zero row flag and an exact integer-percent float value, preserves the remaining row bytes, and
 rejects nonzero/unknown flags without mutation. This is a conservative offline
 editing rule, not proof that a physical device or original editor accepts the
 result.
@@ -270,9 +275,9 @@ result.
 
 | Original acceptance criterion | Current status |
 | --- | --- |
-| Establish HD500X identity, editor/driver/firmware, preset/model/effect and audio evidence from primary sources. | **Partial.** Static Editor file-group association and a bounded writer/reader trace are recorded. Product attribution, complete model/effect catalog, firmware applicability, physical identity, and USB-audio behavior remain unresolved. |
-| Implement an independent offline backend integrated with shared interfaces and tests. | **Partial.** The separate offline HD Edit library parses bounded H5EP/H5ES/H5EB framing, extracts children, saves new copies, and admits one restricted DRIVE field edit with synthetic tests. The shared session profile remains `Unverified`; recording, maintenance, broad semantics and original-editor parity are not implemented. |
-| Keep HD/JTV separate from PODxt/original Variax; prohibit cross-family conversion, flashing and live operations. | **Partial.** Profile gates remain separate and this work adds no conversion, upload, flash or live path. Physical cross-family compatibility has not been established; hardware access remains locked. |
+| Establish HD500X identity, editor/driver/firmware, preset/model/effect and audio evidence from primary sources. | **Partial.** Static Editor file-group association and a bounded writer/reader trace are recorded. Driver text matches USB `0x0E41:0x4159`, with the Mac audio personality on interface 0 and bulk personality on interface 1; the Advanced Guide names a processed stereo host feed, **1-2 Main Out**, plus playback return and 48 kHz native processing with documented conversion rates. This does not supply the device's USB audio descriptors/endpoints or connect them to driver callbacks, formats, and selected identity. Product attribution, complete model/effect catalog, firmware applicability and physical identity remain unresolved. |
+| Implement an independent offline backend integrated with shared interfaces and tests. | **Partial.** The separate offline HD Edit library parses bounded H5EP/H5ES/H5EB framing, extracts children, saves new copies, and admits five restricted Screamer type-1 controls with synthetic tests. The shared session profile remains `Unverified`; these controls are not connected to a device-backed shared HD interface. Recording, maintenance, broad semantics and original-editor parity are not implemented. |
+| Keep HD/JTV separate from PODxt/original Variax; prohibit cross-family conversion, flashing and live operations. | **Met as written.** Profiles remain separate; no cross-family conversion, upload, flash or live path is exposed, and hardware access remains locked. This criterion does not establish physical compatibility. |
 
 Issue #32 remains open. Synthetic tests do not complete source-identification,
 device-compatibility or physical-safety criteria.

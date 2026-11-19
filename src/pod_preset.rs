@@ -58,6 +58,10 @@ const HD_PARAMETER_ROW_FLAG_OFFSET: usize = 0x10;
 const HD_PARAMETER_ROW_COUNT: usize = 12;
 const HD_SCREAMER_MODEL_ID: u32 = 0x0205_000d;
 const HD_SCREAMER_DRIVE_KEY: u32 = 0x3f10_0001;
+const HD_SCREAMER_BASS_KEY: u32 = 0x3f10_0002;
+const HD_SCREAMER_MID_KEY: u32 = 0x3f10_0003;
+const HD_SCREAMER_TREBLE_KEY: u32 = 0x3f10_0004;
+const HD_SCREAMER_OUTPUT_KEY: u32 = 0x3f10_0005;
 
 pub const OFFLINE_BANNER: &str =
     "Offline PODxt Live tone file. This does not edit a connected POD.";
@@ -136,6 +140,48 @@ pub struct H5esSetlist {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct H5ebBundle {
     bytes: Vec<u8>,
+}
+
+/// Screamer controls whose Editor 2.27 descriptor, numeric widget, and keyed
+/// float write path are statically joined. This describes editor behavior,
+/// not availability on a physical device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScreamerControl {
+    Drive,
+    Bass,
+    Mid,
+    Treble,
+    Output,
+}
+
+impl ScreamerControl {
+    pub const ALL: [Self; 5] = [
+        Self::Drive,
+        Self::Bass,
+        Self::Mid,
+        Self::Treble,
+        Self::Output,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Drive => "DRIVE",
+            Self::Bass => "BASS",
+            Self::Mid => "MID",
+            Self::Treble => "TREBLE",
+            Self::Output => "OUTPUT",
+        }
+    }
+
+    const fn key(self) -> u32 {
+        match self {
+            Self::Drive => HD_SCREAMER_DRIVE_KEY,
+            Self::Bass => HD_SCREAMER_BASS_KEY,
+            Self::Mid => HD_SCREAMER_MID_KEY,
+            Self::Treble => HD_SCREAMER_TREBLE_KEY,
+            Self::Output => HD_SCREAMER_OUTPUT_KEY,
+        }
+    }
 }
 
 impl PodPresetFile {
@@ -223,10 +269,19 @@ impl OpaqueH5epPreset {
     /// the first matching effect row. The result is editor data, not a claim
     /// of physical-device availability.
     pub fn screamer_drive_percent(&self, effect_slot: usize) -> Option<u8> {
-        let value_at = self.screamer_drive_value_offset(effect_slot)?;
+        self.screamer_control_percent(effect_slot, ScreamerControl::Drive)
+    }
+
+    /// Reads a statically joined Screamer type-1 control from its first keyed
+    /// row when the row assignment state is admitted.
+    pub fn screamer_control_percent(
+        &self,
+        effect_slot: usize,
+        control: ScreamerControl,
+    ) -> Option<u8> {
+        let value_at = self.screamer_control_value_offset(effect_slot, control)?;
         let value = f32::from_bits(read_be_u32(self.body_bytes(), value_at)?);
-        let percent = exact_drive_percent(value)?;
-        Some(percent)
+        exact_drive_percent(value)
     }
 
     /// Edits only the first statically identified Screamer DRIVE value word.
@@ -236,14 +291,28 @@ impl OpaqueH5epPreset {
         effect_slot: usize,
         percent: u8,
     ) -> Result<(), ToneError> {
+        self.set_screamer_control_percent(effect_slot, ScreamerControl::Drive, percent)
+    }
+
+    /// Edits only the first matching keyed value for an admitted Screamer
+    /// control. All unrelated rows and bytes are preserved.
+    pub fn set_screamer_control_percent(
+        &mut self,
+        effect_slot: usize,
+        control: ScreamerControl,
+        percent: u8,
+    ) -> Result<(), ToneError> {
         if percent > 100 {
-            return Err(ToneError::format("Screamer DRIVE must be in 0..=100"));
+            return Err(ToneError::format(format!(
+                "Screamer {} must be in 0..=100",
+                control.label()
+            )));
         }
         let value_at = self
-            .screamer_drive_value_offset(effect_slot)
+            .screamer_control_value_offset(effect_slot, control)
             .ok_or_else(|| {
                 ToneError::format(
-                    "Screamer DRIVE slot, key, or assignment state is not admitted for editing",
+                    "Screamer control slot, key, or assignment state is not admitted for editing",
                 )
             })?;
         let current = f32::from_bits(
@@ -252,7 +321,7 @@ impl OpaqueH5epPreset {
         );
         exact_drive_percent(current).ok_or_else(|| {
             ToneError::format(
-                "existing Screamer DRIVE value is outside the exact recovered editor encoding",
+                "existing Screamer control value is outside the exact recovered editor encoding",
             )
         })?;
         let file_at = H5EP_HEADER_BYTES + value_at;
@@ -270,7 +339,11 @@ impl OpaqueH5epPreset {
         document::save_new(path, &self.bytes).map_err(ToneError::format)
     }
 
-    fn screamer_drive_value_offset(&self, effect_slot: usize) -> Option<usize> {
+    fn screamer_control_value_offset(
+        &self,
+        effect_slot: usize,
+        control: ScreamerControl,
+    ) -> Option<usize> {
         if effect_slot >= HD_EFFECT_COUNT {
             return None;
         }
@@ -281,7 +354,7 @@ impl OpaqueH5epPreset {
         }
         for row in 0..HD_PARAMETER_ROW_COUNT {
             let row_at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
-            if read_be_u32(body, row_at)? == HD_SCREAMER_DRIVE_KEY {
+            if read_be_u32(body, row_at)? == control.key() {
                 // The source sends the row flag into widget assignment state,
                 // while the callback suppresses writes for expression controls.
                 // Only the zero-flag state is admitted; auxiliary flag bytes
@@ -1612,6 +1685,44 @@ mod tests {
         let non_grid_before = non_grid.as_bytes().to_vec();
         assert!(non_grid.set_screamer_drive_percent(0, 12).is_err());
         assert_eq!(non_grid.as_bytes(), non_grid_before);
+    }
+
+    #[test]
+    fn screamer_type1_controls_read_and_edit_only_their_first_keyed_value() {
+        let mut original = synthetic_h5ep(&[]);
+        let body_start = H5EP_HEADER_BYTES;
+        let block = HD_EFFECT_BLOCK_OFFSET;
+        original[body_start + block..body_start + block + 4]
+            .copy_from_slice(&HD_SCREAMER_MODEL_ID.to_be_bytes());
+        let first_row = body_start + block + HD_EFFECT_ROWS_OFFSET;
+        for (index, control) in ScreamerControl::ALL.into_iter().enumerate() {
+            let row = first_row + index * HD_PARAMETER_ROW_STRIDE;
+            original[row..row + 4].copy_from_slice(&control.key().to_be_bytes());
+            original[row + 4..row + 8]
+                .copy_from_slice(&((index as u32 + 10) as f32 / 100.0).to_bits().to_be_bytes());
+            original[row + HD_PARAMETER_ROW_FLAG_OFFSET..row + HD_PARAMETER_ROW_STRIDE]
+                .copy_from_slice(&[
+                    0,
+                    0x41 + index as u8,
+                    0x51 + index as u8,
+                    0x61 + index as u8,
+                ]);
+        }
+        let mut preset = OpaqueH5epPreset::parse(original).unwrap();
+
+        for (index, control) in ScreamerControl::ALL.into_iter().enumerate() {
+            assert_eq!(
+                preset.screamer_control_percent(0, control),
+                Some(10 + index as u8)
+            );
+            let before = preset.as_bytes().to_vec();
+            preset.set_screamer_control_percent(0, control, 73).unwrap();
+            assert_eq!(preset.screamer_control_percent(0, control), Some(73));
+            let value_at = first_row + index * HD_PARAMETER_ROW_STRIDE + 4;
+            let mut expected = before;
+            expected[value_at..value_at + 4].copy_from_slice(&0.73f32.to_bits().to_be_bytes());
+            assert_eq!(preset.as_bytes(), expected);
+        }
     }
 
     #[test]

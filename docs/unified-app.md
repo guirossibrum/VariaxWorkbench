@@ -56,8 +56,10 @@ and does not open that capture path. Maintenance
 beyond offline inspection stays on #30.
 
 The GUI also has a separate offline HD Edit library for statically associated
-H5EP/H5ES/H5EB files, including child extraction and one narrowly traced
-Screamer DRIVE edit. It does not change the shared HD500X session capability
+H5EP/H5ES/H5EB files, including child extraction and five narrowly traced
+Screamer type-1 controls (DRIVE, BASS, MID, TREBLE, OUTPUT) on the editor's
+normalized integer-percent grid. These values have no established physical
+units or device availability. This does not change the shared HD500X session capability
 from `Unverified`, because the file group and preserved header context do not
 establish physical target compatibility.
 
