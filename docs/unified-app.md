@@ -56,8 +56,9 @@ and does not open that capture path. Maintenance
 beyond offline inspection stays on #30.
 
 The GUI also has a separate offline HD Edit library for statically associated
-H5EP/H5ES/H5EB files, including child extraction and 40 selected source-joined
-type-1 and numeric controls across nine effect models. Type-1 controls use the
+H5EP/H5ES/H5EB files, including child extraction and 99 selected source-joined
+type-1 and numeric controls across 68 descriptor model IDs. One numeric row
+remains opaque because source ESI and EDI widget bounds differ. Type-1 controls use the
 editor's normalized integer-percent grid. Numeric controls use the selected
 descriptor's integer widget bounds and exact normalized float grid; these
 bounds are not physical units. Auxiliary widgets and remaining model/control
