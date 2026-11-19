@@ -2999,7 +2999,7 @@ mod tests {
         let mut patch = b"PATC".to_vec();
         patch.extend(model(
             pod_preset::AMP_SLOT,
-            pod_preset::PLEXI_LEAD_100_MODEL,
+            pod_preset::PLEXI_45_MODEL,
             &[parameter(pod_preset::AMP_DRIVE_PARAM, 0.5)],
         ));
         patch.extend(model(

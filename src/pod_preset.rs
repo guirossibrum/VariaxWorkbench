@@ -12,11 +12,13 @@
 //! returns a Java signed byte on both mac and Windows. `L6Model` stores that
 //! byte in `int m_ordinal` and sets enabled from `Read8() > 0`, so bytes
 //! `0x80` through `0xFF` are negative and disabled. The file bytes stay as
-//! stored. A 12-byte PARM carries an id, a value type, and raw bits. No
-//! Line6Edit 3.06 source maps six classic amp controls to the same finite
-//! 0..=1 host scale. Rust exposes those controls only on Plexi Lead 100 when
-//! each existing 12-byte PARM has the expected id, prefix and float type.
-//! This is not a device-accepted-domain claim. Other bytes are preserved.
+//! stored. A 12-byte PARM carries an id, a value type, and raw bits. For the
+//! PODxt product, Line6Edit 3.06 maps six amp selectors to shared semantic
+//! PARM ids and finite 0..=1 host-scale definitions. Rust allows these edits
+//! for source-listed amp models except the `No Amp` association, and only when
+//! each existing 12-byte PARM has the expected id, prefix and float type. This
+//! is not a device-accepted-domain or model-entitlement claim. Other bytes are
+//! preserved.
 //!
 //! The MIDI hardware id `L6HW_ID_PODXTLIVE` (18000) is a different namespace.
 //! The archived firmware version `0x03010000` is not a requirement of a tone file.
@@ -32,6 +34,8 @@ pub const PODXT_LIVE_TONE_ID: u32 = 0x0003_000a;
 pub const AMP_SLOT: u32 = 0x0003_0000;
 /// PODxt Live Plexi Lead 100 model from the device-specific model table.
 pub const PLEXI_LEAD_100_MODEL: u32 = 0x0002_001b;
+/// PODxt Live Plexi 45 model from the device-specific model table.
+pub const PLEXI_45_MODEL: u32 = 0x0002_001a;
 /// Semantic Amp Drive parameter id in the PODxt Sharc parameter map.
 pub const AMP_DRIVE_PARAM: u32 = 0x0010_0003;
 /// Semantic Amp Bass parameter id in the PODxt Sharc parameter map.
@@ -44,6 +48,116 @@ pub const AMP_TREBLE_PARAM: u32 = 0x0010_0002;
 pub const AMP_PRESENCE_PARAM: u32 = 0x0010_0004;
 /// Semantic Amp Channel Volume parameter id in the PODxt Sharc parameter map.
 pub const AMP_CHANNEL_VOLUME_PARAM: u32 = 0x0010_0005;
+/// Models listed by PODxt Live `GetAmpModelList` that represent an amp.
+/// The provider's `0x00020000` No Amp association is intentionally excluded.
+pub const AMP_CONTROL_MODEL_IDS: [u32; 106] = [
+    0x0002_002e,
+    0x0002_0001,
+    0x0002_0005,
+    0x0002_0006,
+    0x0002_0007,
+    0x0002_0008,
+    0x0002_000a,
+    0x0002_000c,
+    0x0002_000f,
+    0x0002_0010,
+    0x0002_0011,
+    0x0002_0012,
+    0x0002_0013,
+    0x0002_0014,
+    0x0002_0015,
+    0x0002_0018,
+    0x0002_0019,
+    0x0002_001a,
+    0x0002_001b,
+    0x0002_001d,
+    0x0002_001e,
+    0x0002_0020,
+    0x0002_0021,
+    0x0002_0022,
+    0x0002_0023,
+    0x0002_0024,
+    0x0002_0026,
+    0x0002_0027,
+    0x0002_0029,
+    0x0002_002a,
+    0x0002_002c,
+    0x0002_002d,
+    0x0002_003d,
+    0x0002_003c,
+    0x0002_003b,
+    0x0002_0032,
+    0x0002_002f,
+    0x0002_003e,
+    0x0002_0040,
+    0x0002_0041,
+    0x0002_0031,
+    0x0002_0045,
+    0x0002_0046,
+    0x0002_0047,
+    0x0002_0048,
+    0x0002_0025,
+    0x0002_0049,
+    0x0002_003a,
+    0x0002_0039,
+    0x0002_0038,
+    0x0002_000d,
+    0x0002_0037,
+    0x0002_0035,
+    0x0002_0009,
+    0x0002_0030,
+    0x0002_003f,
+    0x0002_0042,
+    0x0002_0043,
+    0x0002_0044,
+    0x0002_0016,
+    0x0002_0017,
+    0x0002_001c,
+    0x0002_001f,
+    0x0002_0028,
+    0x0002_002b,
+    0x0002_0004,
+    0x0002_0036,
+    0x0002_000b,
+    0x0002_0002,
+    0x0002_0033,
+    0x0002_0034,
+    0x0002_0003,
+    0x0003_0001,
+    0x0003_0002,
+    0x0003_0003,
+    0x0003_0004,
+    0x0003_0005,
+    0x0003_0006,
+    0x0003_0007,
+    0x0003_0008,
+    0x0003_0009,
+    0x0003_000a,
+    0x0003_000b,
+    0x0003_000c,
+    0x0003_000d,
+    0x0003_000e,
+    0x0003_000f,
+    0x0003_0010,
+    0x0003_0011,
+    0x0003_0012,
+    0x0003_0013,
+    0x0003_0014,
+    0x0003_0015,
+    0x0003_0016,
+    0x0003_0017,
+    0x0003_0018,
+    0x0003_0019,
+    0x0003_001a,
+    0x0003_001b,
+    0x0003_001c,
+    0x0002_004a,
+    0x0002_004b,
+    0x0002_004c,
+    0x0002_004d,
+    0x0002_004e,
+    0x0002_004f,
+];
 /// PODxt Live stomp model slot from `GetStompModel`.
 pub const STOMP_SLOT: u32 = 0x0002_0003;
 /// Facial Fuzz, the first model with the source-mapped Stomp control layout.
@@ -88,11 +202,11 @@ pub const OFFLINE_BANNER: &str =
 pub const NOT_GUITAR: &str =
     "This is not the Variax guitar editor. Guitar model slots are not applied.";
 pub const NOT_SENT: &str = "Nothing is sent to a device. No preset is switched.";
-pub const PAYLOADS_NOT_DECODED: &str = "Known asset names and 12-byte parameter records are shown. Six Plexi Lead 100 amp controls and source-mapped Stomp controls on sixteen models have host-scale editors; other parameter ranges are not decoded. Unknown ids stay raw.";
+pub const PAYLOADS_NOT_DECODED: &str = "Known asset names and 12-byte parameter records are shown. Six shared amp controls on 106 source-listed models and source-mapped Stomp controls on sixteen models have host-scale editors; other parameter ranges are not decoded. Unknown ids stay raw.";
 pub const AMP_CONTROL_SCALE_LABEL: &str = "Line6Edit host scale 0–1 (not device-validated)";
 pub const STOMP_CONTROL_SCALE_LABEL: &str = "Line6Edit Stomp host scale 0–1 (not device-validated)";
 
-/// Plexi Lead 100 amp controls with an admitted Line6Edit host scale.
+/// PODxt Live amp controls with an admitted Line6Edit host scale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AmpControl {
     Drive,
@@ -669,7 +783,7 @@ impl PodTone {
     fn amp_control_location(&self, control: AmpControl) -> Result<(usize, usize), ToneError> {
         self.control_location(
             AMP_SLOT,
-            &[PLEXI_LEAD_100_MODEL],
+            &AMP_CONTROL_MODEL_IDS,
             control.param_id(),
             &format!("Amp {}", control.label()),
         )
@@ -1314,40 +1428,54 @@ mod tests {
 
     #[test]
     fn source_mapped_amp_controls_have_distinct_ids_and_preserve_every_other_byte() {
-        let records: Vec<_> = AmpControl::ALL
-            .into_iter()
-            .enumerate()
-            .map(|(index, control)| {
-                drive_record(
-                    0x3f,
-                    control.param_id(),
-                    1,
-                    (0.1f32 + index as f32 * 0.1).to_bits(),
-                )
-            })
-            .collect();
-        let refs: Vec<_> = records.iter().map(|record| &record[..]).collect();
-        let original = drive_tone(PODXT_LIVE_HOST_MIN_VERSION, PLEXI_LEAD_100_MODEL, &refs);
-        for control in AmpControl::ALL {
-            let mut tone = PodTone::parse(original.clone()).unwrap();
-            let previous = tone.amp_control_fraction(control).unwrap();
-            let new_value = (previous + 0.01).min(1.0);
-            tone.set_amp_control_fraction(control, new_value).unwrap();
-            assert_eq!(
-                tone.amp_control_fraction(control).unwrap().to_bits(),
-                new_value.to_bits(),
-                "{}",
-                control.label()
-            );
-            let (model_index, parameter_index) = tone.amp_control_location(control).unwrap();
-            let offset = tone.parameter_value_offsets[model_index][parameter_index].unwrap();
-            let expected = [
-                original[..offset].to_vec(),
-                new_value.to_bits().to_be_bytes().to_vec(),
-                original[offset + 4..].to_vec(),
-            ]
-            .concat();
-            assert_eq!(tone.as_bytes(), expected, "{}", control.label());
+        assert_eq!(AMP_CONTROL_MODEL_IDS.len(), 106);
+        assert!(!AMP_CONTROL_MODEL_IDS.contains(&0x0002_0000)); // No Amp
+        let mut unique = AMP_CONTROL_MODEL_IDS.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), AMP_CONTROL_MODEL_IDS.len());
+
+        for model_id in AMP_CONTROL_MODEL_IDS {
+            let records: Vec<_> = AmpControl::ALL
+                .into_iter()
+                .enumerate()
+                .map(|(index, control)| {
+                    drive_record(
+                        0x3f,
+                        control.param_id(),
+                        1,
+                        (0.1f32 + index as f32 * 0.1).to_bits(),
+                    )
+                })
+                .collect();
+            let refs: Vec<_> = records.iter().map(|record| &record[..]).collect();
+            let original = drive_tone(PODXT_LIVE_HOST_MIN_VERSION, model_id, &refs);
+            for control in AmpControl::ALL {
+                let mut tone = PodTone::parse(original.clone()).unwrap();
+                let previous = tone.amp_control_fraction(control).unwrap();
+                let new_value = (previous + 0.01).min(1.0);
+                tone.set_amp_control_fraction(control, new_value).unwrap();
+                assert_eq!(
+                    tone.amp_control_fraction(control).unwrap().to_bits(),
+                    new_value.to_bits(),
+                    "{} on amp model {model_id:08x}",
+                    control.label()
+                );
+                let (model_index, parameter_index) = tone.amp_control_location(control).unwrap();
+                let offset = tone.parameter_value_offsets[model_index][parameter_index].unwrap();
+                let expected = [
+                    original[..offset].to_vec(),
+                    new_value.to_bits().to_be_bytes().to_vec(),
+                    original[offset + 4..].to_vec(),
+                ]
+                .concat();
+                assert_eq!(
+                    tone.as_bytes(),
+                    expected,
+                    "{} on amp model {model_id:08x}",
+                    control.label()
+                );
+            }
         }
     }
 
@@ -1743,12 +1871,14 @@ mod tests {
                     PLEXI_LEAD_100_MODEL,
                     &[&record],
                 ),
+                drive_tone(PODXT_LIVE_HOST_MIN_VERSION, PLEXI_LEAD_100_MODEL, &[]),
+                drive_tone(PODXT_LIVE_HOST_MIN_VERSION, 0x0002_0000, &[&record]),
                 drive_tone(
                     PODXT_LIVE_HOST_MIN_VERSION,
-                    PLEXI_LEAD_100_MODEL + 1,
+                    STOMP_DRIVE_MODEL_ID,
                     &[&record],
                 ),
-                drive_tone(PODXT_LIVE_HOST_MIN_VERSION, PLEXI_LEAD_100_MODEL, &[]),
+                drive_tone(PODXT_LIVE_HOST_MIN_VERSION, 0x0002_0050, &[&record]),
             ];
             for bytes in fixtures {
                 let mut tone = PodTone::parse(bytes.clone()).unwrap();

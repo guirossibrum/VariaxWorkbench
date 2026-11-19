@@ -68,8 +68,9 @@ format.
 
 The PINF name edit uses the same 32-unit NUL and length rule as the guitar
 renamer. Six host-scale edits are available for Drive, Bass, Mid, Treble,
-Presence, and Channel Volume on model `0x0002001b` (Plexi Lead 100) in amp slot
-`0x00030000`. The source maps these controls to float PARM identifiers
+Presence, and Channel Volume in amp slot `0x00030000`, for the 106 amp models
+in PODxt Live `GetAmpModelList` after excluding its `0x00020000` No Amp
+association. The source maps these controls to float PARM identifiers
 `0x00100003`, `0x00100000`, `0x00100001`, `0x00100002`, `0x00100004`, and
 `0x00100005`, respectively. Their finite host scale is 0 through 1; this does
 not claim a device-accepted range or physical behavior. Each edit requires the
@@ -78,10 +79,12 @@ device-version word at least `3.00` under this offline profile. It patches only
 the last matching parameter's four value bytes, following the source reader's
 reverse lookup; it does not create a missing parameter or rewrite the
 surrounding file. Unknown IDs, unsupported prefixes/types, opaque amp PARM
-chunks, missing controls, out-of-domain values and other amp models remain
-uneditable. `document::save_new` writes a new copy and refuses to replace an
-existing path. The guitar document refuses to open or rename a PODxt Live
-target, including a bank that contains one.
+chunks, missing controls, out-of-domain values, No Amp and ids outside the
+provider catalog remain uneditable. This source catalog does not establish
+installed-pack entitlement or physical applicability. `document::save_new`
+writes a new copy and refuses to replace an existing path. The guitar document
+refuses to open or rename a PODxt Live target, including a bank that contains
+one.
 
 Static Line6Edit 3.06 source maps selector positions in Stomp slot `0x00020003`
 to semantic PARM ids `0x00100000 + position`. Rust exposes source-derived
@@ -118,8 +121,8 @@ recovered Line 6 limit.
 ## Parameter domain boundary
 
 For these controls, static Line6Edit source identifies `L6PODxtDevice`,
-`L6PODxtParamMap`, the Plexi Lead 100 amp model, 16 selected Stomp model
-layouts, the selected `L6AX3ParamDefs` definitions, and
+`L6PODxtParamMap`, the PODxt amp model catalog and shared amp selectors, 16
+selected Stomp model layouts, the selected `L6AX3ParamDefs` definitions, and
 `L6SharcTonePercentFormat`. The formatter maps finite host
 values through percent text and its quantizer is a no-op; display labels are
 derived through a 7-bit conversion. Rust edits the underlying finite float
