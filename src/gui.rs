@@ -53,6 +53,10 @@ trait FileDialogs {
     fn save_aiff(&mut self, suggested: &str) -> Option<PathBuf>;
     fn open_pod_tone(&mut self) -> Option<PathBuf>;
     fn save_pod_tone(&mut self, suggested: &str) -> Option<PathBuf>;
+    #[cfg(test)]
+    fn queue_pod_save(&mut self, _path: Option<PathBuf>) {
+        panic!("POD save queue is available only on fake dialogs");
+    }
 }
 
 #[cfg(not(test))]
@@ -140,6 +144,9 @@ impl FileDialogs for FakeDialogs {
         self.pod_save
             .pop_front()
             .expect("unexpected POD save dialog")
+    }
+    fn queue_pod_save(&mut self, path: Option<PathBuf>) {
+        self.pod_save.push_back(path);
     }
 }
 
@@ -3853,12 +3860,14 @@ mod tests {
         app.pod_selected = Some(0);
         app.pod_open = true;
         recording_frame(&context, &mut app, vec![]);
-        assert!(app
-            .pod_model_enable_checks
-            .contains_key(&pod_preset::PodModelEnable::Amp));
-        assert!(!app
-            .pod_model_enable_checks
-            .contains_key(&pod_preset::PodModelEnable::Eq));
+        assert!(
+            app.pod_model_enable_checks
+                .contains_key(&pod_preset::PodModelEnable::Amp)
+        );
+        assert!(
+            !app.pod_model_enable_checks
+                .contains_key(&pod_preset::PodModelEnable::Eq)
+        );
         let mut marker = 0x1111_0002u32.to_be_bytes().to_vec();
         marker.extend_from_slice(&pod_preset::AMP_SLOT.to_be_bytes());
         let minf_body = original
@@ -3891,9 +3900,10 @@ mod tests {
         app.pod_library.import_bytes(noncanonical.clone()).unwrap();
         app.pod_selected = Some(0);
         recording_frame(&context, &mut app, vec![]);
-        assert!(!app
-            .pod_model_enable_checks
-            .contains_key(&pod_preset::PodModelEnable::Amp));
+        assert!(
+            !app.pod_model_enable_checks
+                .contains_key(&pod_preset::PodModelEnable::Amp)
+        );
         assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), noncanonical);
         assert!(!app.pod_library.is_dirty(0));
 
@@ -3902,9 +3912,10 @@ mod tests {
             .unwrap();
         app.pod_open = true;
         recording_frame(&context, &mut app, vec![]);
-        assert!(app
-            .pod_model_enable_checks
-            .contains_key(&pod_preset::PodModelEnable::Eq));
+        assert!(
+            app.pod_model_enable_checks
+                .contains_key(&pod_preset::PodModelEnable::Eq)
+        );
         click_pod_model_enable(&context, &mut app, pod_preset::PodModelEnable::Eq);
         assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
         assert_eq!(
@@ -3931,7 +3942,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let collision = dir.path().join("existing.vwb");
         std::fs::write(&collision, b"keep existing bytes").unwrap();
-        app.dialogs.pod_save.push_back(Some(collision.clone()));
+        app.dialogs.queue_pod_save(Some(collision.clone()));
         app.pending = Some(Pending::QuitPod);
         click_prompt(&context, &mut app, "cancel");
         assert!(app.pending.is_none());
@@ -3944,7 +3955,7 @@ mod tests {
         assert_eq!(std::fs::read(&collision).unwrap(), b"keep existing bytes");
 
         let saved = dir.path().join("saved.vwb");
-        app.dialogs.pod_save.push_back(Some(saved.clone()));
+        app.dialogs.queue_pod_save(Some(saved.clone()));
         click_prompt(&context, &mut app, "save");
         assert!(app.pending.is_none());
         assert!(app.permit_close);

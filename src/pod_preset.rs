@@ -353,7 +353,10 @@ impl PodModelEnable {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelEnableState {
     Canonical(bool),
-    NonCanonical { raw: u8, source_interpretation: bool },
+    NonCanonical {
+        raw: u8,
+        source_interpretation: bool,
+    },
 }
 
 impl PodxtEqBand {
@@ -1580,10 +1583,7 @@ impl PodTone {
         Ok(())
     }
 
-    fn model_enable_location(
-        &self,
-        control: PodModelEnable,
-    ) -> Result<(usize, usize), ToneError> {
+    fn model_enable_location(&self, control: PodModelEnable) -> Result<(usize, usize), ToneError> {
         if self.device_id != PODXT_LIVE_TONE_ID {
             return Err(ToneError::format(
                 "model-enable edit requires the PODxt Live PINF target",
@@ -1616,10 +1616,14 @@ impl PodTone {
                 "EQ enable edit requires model {expected:08x} in slot {slot:08x}"
             )));
         }
-        let offset = *self.model_minfo_offsets.get(model_index).ok_or_else(|| {
-            ToneError::format("model MINF source offset is unavailable")
-        })?;
-        if offset.checked_add(12).is_none_or(|end| end > self.bytes.len()) {
+        let offset = *self
+            .model_minfo_offsets
+            .get(model_index)
+            .ok_or_else(|| ToneError::format("model MINF source offset is unavailable"))?;
+        if offset
+            .checked_add(12)
+            .is_none_or(|end| end > self.bytes.len())
+        {
             return Err(ToneError::format(format!(
                 "{} enable edit requires an existing MINF body of at least 12 bytes",
                 control.label()
@@ -3623,11 +3627,16 @@ mod tests {
                 assert_eq!(tone.as_bytes(), after_change, "same value changed bytes");
                 assert_eq!(tone.models()[model_index].ordinal, Some(-128));
                 assert_eq!(tone.models()[model_index].reserved, Some([0xa1, 0xb2]));
-                assert!(tone.models()[0]
-                    .parameters
-                    .iter()
-                    .any(|parameter| matches!(parameter, ModelParameter::Opaque { len: 3 })));
-                assert_eq!(PodTone::parse(tone.as_bytes().to_vec()).unwrap().as_bytes(), expected);
+                assert!(
+                    tone.models()[0]
+                        .parameters
+                        .iter()
+                        .any(|parameter| matches!(parameter, ModelParameter::Opaque { len: 3 }))
+                );
+                assert_eq!(
+                    PodTone::parse(tone.as_bytes().to_vec()).unwrap().as_bytes(),
+                    expected
+                );
             }
         }
     }
@@ -3648,11 +3657,15 @@ mod tests {
             assert_eq!(tone.models()[0].enabled, Some(source_interpretation));
             for control in [PodModelEnable::Amp, PodModelEnable::Eq] {
                 let before = tone.clone();
-                assert!(tone
-                    .set_model_enabled(control, source_interpretation)
-                    .is_err());
+                assert!(
+                    tone.set_model_enabled(control, source_interpretation)
+                        .is_err()
+                );
                 assert_eq!(tone, before, "rejected edit mutated tone for {raw:02x}");
-                assert!(tone.set_model_enabled(control, !source_interpretation).is_err());
+                assert!(
+                    tone.set_model_enabled(control, !source_interpretation)
+                        .is_err()
+                );
                 assert_eq!(tone, before, "rejected edit mutated tone for {raw:02x}");
             }
         }
@@ -3662,9 +3675,11 @@ mod tests {
     fn pod_model_enable_rejects_wrong_target_missing_short_and_duplicate_models() {
         let mut wrong_eq = PodTone::parse(enable_tone(1, 0x020c_0003, 0, 0)).unwrap();
         let before = wrong_eq.clone();
-        assert!(wrong_eq
-            .set_model_enabled(PodModelEnable::Eq, true)
-            .is_err());
+        assert!(
+            wrong_eq
+                .set_model_enabled(PodModelEnable::Eq, true)
+                .is_err()
+        );
         assert_eq!(wrong_eq, before);
 
         let mut no_amp = PodTone::parse(custom_tone(
@@ -3677,9 +3692,11 @@ mod tests {
             }],
         ))
         .unwrap();
-        assert!(no_amp
-            .set_model_enabled(PodModelEnable::Amp, false)
-            .is_err());
+        assert!(
+            no_amp
+                .set_model_enabled(PodModelEnable::Amp, false)
+                .is_err()
+        );
 
         let mut short = PodTone::parse(custom_tone(
             ContainerKind::L6as,
@@ -3692,9 +3709,7 @@ mod tests {
         ))
         .unwrap();
         let before = short.clone();
-        assert!(short
-            .set_model_enabled(PodModelEnable::Amp, false)
-            .is_err());
+        assert!(short.set_model_enabled(PodModelEnable::Amp, false).is_err());
         assert_eq!(short, before);
 
         let duplicate = custom_tone(
@@ -3719,9 +3734,11 @@ mod tests {
         let mut old_version = PodTone::parse(enable_tone(1, PODXT_EQ_MODEL_ID, 0, 0)).unwrap();
         old_version.device_version = PODXT_LIVE_HOST_MIN_VERSION - 1;
         let before = old_version.clone();
-        assert!(old_version
-            .set_model_enabled(PodModelEnable::Amp, true)
-            .is_err());
+        assert!(
+            old_version
+                .set_model_enabled(PodModelEnable::Amp, true)
+                .is_err()
+        );
         assert_eq!(old_version, before);
     }
 
@@ -3732,9 +3749,11 @@ mod tests {
         let mut library = Library::default();
         let index = library.import_bytes(original.clone()).unwrap();
         let rejected_index = library.import_bytes(wrong_eq.clone()).unwrap();
-        assert!(library
-            .set_model_enabled(rejected_index, PodModelEnable::Eq, true)
-            .is_err());
+        assert!(
+            library
+                .set_model_enabled(rejected_index, PodModelEnable::Eq, true)
+                .is_err()
+        );
         assert_eq!(library.tone(rejected_index).unwrap().as_bytes(), wrong_eq);
         assert!(!library.is_dirty(rejected_index));
         library
@@ -3756,9 +3775,11 @@ mod tests {
         let bundle_before = bundle.as_bytes().to_vec();
         let mut rejected_bundle = PodBundleLibrary::parse(bundle_with_tone(&wrong_eq)).unwrap();
         let rejected_bytes = rejected_bundle.as_bytes().to_vec();
-        assert!(rejected_bundle
-            .set_model_enabled(0, PodModelEnable::Eq, true)
-            .is_err());
+        assert!(
+            rejected_bundle
+                .set_model_enabled(0, PodModelEnable::Eq, true)
+                .is_err()
+        );
         assert_eq!(rejected_bundle.as_bytes(), rejected_bytes);
         assert!(!rejected_bundle.is_dirty());
         assert!(!bundle.is_dirty());
@@ -3778,10 +3799,16 @@ mod tests {
         assert_eq!(std::fs::read(&copy).unwrap(), edited_bundle);
         let reopened = PodBundleLibrary::parse(std::fs::read(&copy).unwrap()).unwrap();
         assert_eq!(
-            reopened.tone(0, 0).unwrap().model_enable_state(PodModelEnable::Eq),
+            reopened
+                .tone(0, 0)
+                .unwrap()
+                .model_enable_state(PodModelEnable::Eq),
             Ok(ModelEnableState::Canonical(false))
         );
-        assert!(bundle.is_dirty(), "saving a copy must not move the baseline");
+        assert!(
+            bundle.is_dirty(),
+            "saving a copy must not move the baseline"
+        );
         bundle.revert().unwrap();
         assert_eq!(bundle.as_bytes(), bundle_before);
         assert!(!bundle.is_dirty());
