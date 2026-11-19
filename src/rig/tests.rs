@@ -616,6 +616,67 @@ fn pod_amp_model_choice_session_is_role_gated_and_changes_only_the_minf_id() {
 }
 
 #[test]
+fn pod_cab_and_mic_apply_are_role_gated_and_keep_their_separate_write_sets() {
+    use crate::pod_preset::{CAB_SLOT, PODXT_BASS_CAB_MODEL_IDS, PodCabModelChoice, PodMicChoice};
+
+    let session = Session::initial_rig();
+    let mut original = crate::pod_preset::fixture(
+        crate::pod_preset::ContainerKind::L6as,
+        PODXT_LIVE_PRODUCT_ID,
+        crate::pod_preset::PODXT_LIVE_HOST_MIN_VERSION,
+        &[(CAB_SLOT, PODXT_BASS_CAB_MODEL_IDS[0])],
+    );
+    let parm_start = original
+        .windows(4)
+        .position(|word| word == [0xab, 0xcd, 0xef, 0x01])
+        .expect("fixture recorded PARM");
+    let value_offset = parm_start + 8;
+    original[parm_start..parm_start + 4].copy_from_slice(&0x3f00_0000u32.to_be_bytes());
+    original[parm_start + 4..parm_start + 8].copy_from_slice(&0u32.to_be_bytes());
+    original[value_offset..value_offset + 4].copy_from_slice(&2u32.to_be_bytes());
+
+    let cab_choice = PodCabModelChoice::try_from(0x0102_0001).unwrap();
+    let id_offset = original
+        .windows(4)
+        .position(|word| word == PODXT_BASS_CAB_MODEL_IDS[0].to_be_bytes())
+        .expect("CAB MINF model id");
+    let mut cab_expected = original.clone();
+    cab_expected[id_offset..id_offset + 4].copy_from_slice(&cab_choice.model_id().to_be_bytes());
+    let after_cab = session
+        .set_pod_cab_model_choice(RoleKind::Pod, &original, cab_choice)
+        .expect("offline CAB Apply");
+    assert_eq!(after_cab, cab_expected);
+    assert_eq!(
+        &after_cab[value_offset..value_offset + 4],
+        &2u32.to_be_bytes()
+    );
+
+    let mic_choice = PodMicChoice::try_from(3).unwrap();
+    let mut mic_expected = after_cab.clone();
+    mic_expected[value_offset..value_offset + 4].copy_from_slice(&3u32.to_be_bytes());
+    assert_eq!(
+        session.set_pod_mic_choice(RoleKind::Pod, &after_cab, mic_choice),
+        Ok(mic_expected)
+    );
+    assert!(matches!(
+        session.set_pod_cab_model_choice(RoleKind::Guitar, &original, cab_choice),
+        Err(Rejection::Unsupported {
+            operation: Operation::EditPodPreset,
+            ..
+        })
+    ));
+    assert!(matches!(
+        session.set_pod_mic_choice(RoleKind::Guitar, &after_cab, mic_choice),
+        Err(Rejection::Unsupported {
+            operation: Operation::EditPodPreset,
+            ..
+        })
+    ));
+    assert!(session.live_backend_is_absent());
+    assert!(LIVE_BACKEND_INITIALIZER.is_none());
+}
+
+#[test]
 fn pod_model_enable_session_rejects_short_minf_with_canonical_padding() {
     let session = Session::initial_rig();
     for padding in [0, 1] {

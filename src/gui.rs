@@ -218,6 +218,7 @@ struct Workbench {
     pod_library: Library,
     pod_bundle: Option<pod_preset::PodBundleLibrary>,
     pod_selected: Option<usize>,
+    pod_cab_pending: Option<(usize, pod_preset::PodCabModelChoice)>,
     pod_name: String,
     pod_message: String,
     #[cfg(test)]
@@ -236,6 +237,10 @@ struct Workbench {
     pod_buttons: HashMap<&'static str, Rect>,
     #[cfg(test)]
     pod_rows: HashMap<usize, Rect>,
+    #[cfg(test)]
+    pod_cab_combo: Option<Rect>,
+    #[cfg(test)]
+    pod_cab_options: HashMap<u32, Rect>,
     #[cfg(test)]
     pod_drive_slider: Option<Rect>,
     #[cfg(test)]
@@ -316,6 +321,7 @@ impl Workbench {
             pod_library: Library::default(),
             pod_bundle: None,
             pod_selected: None,
+            pod_cab_pending: None,
             pod_name: String::new(),
             pod_message: String::new(),
             #[cfg(test)]
@@ -334,6 +340,10 @@ impl Workbench {
             pod_buttons: HashMap::new(),
             #[cfg(test)]
             pod_rows: HashMap::new(),
+            #[cfg(test)]
+            pod_cab_combo: None,
+            #[cfg(test)]
+            pod_cab_options: HashMap::new(),
             #[cfg(test)]
             pod_drive_slider: None,
             #[cfg(test)]
@@ -1477,6 +1487,7 @@ impl Workbench {
     }
 
     fn refresh_selected_pod_name(&mut self) {
+        self.pod_cab_pending = None;
         if let Some(index) = self.pod_selected
             && let Some(tone) = self.pod_library.tone(index)
         {
@@ -1778,6 +1789,8 @@ impl Workbench {
         #[cfg(test)]
         {
             self.pod_rows.clear();
+            self.pod_cab_combo = None;
+            self.pod_cab_options.clear();
             self.pod_drive_slider = None;
             self.pod_stomp_sliders.clear();
             self.pod_whammy_knob_sliders.clear();
@@ -1865,6 +1878,9 @@ impl Workbench {
                     #[cfg(test)]
                     self.pod_rows.insert(index, response.rect);
                     if response.clicked() {
+                        if self.pod_selected != Some(index) {
+                            self.pod_cab_pending = None;
+                        }
                         self.pod_selected = Some(index);
                         self.pod_name = name;
                     }
@@ -1906,18 +1922,39 @@ impl Workbench {
                         .then_some((index, tone.cab_model_id(), tone.cab_class(), tone.mic_choice()))
                 }));
                 if let Some((index, cab_id, class, mic)) = cab_state {
-                    let mut selected_cab = cab_id.and_then(pod_preset::PodCabModelChoice::from_model_id).unwrap_or_else(|| pod_preset::PodCabModelChoice::from_model_id(pod_preset::PODXT_CAB_MODEL_IDS[0]).expect("source CAB allowlist is nonempty"));
+                    let fallback = pod_preset::PodCabModelChoice::from_model_id(
+                        pod_preset::PODXT_CAB_MODEL_IDS[0],
+                    )
+                    .expect("source CAB allowlist is nonempty");
+                    let mut selected_cab = self
+                        .pod_cab_pending
+                        .filter(|(pending_index, _)| *pending_index == index)
+                        .map(|(_, choice)| choice)
+                        .or_else(|| {
+                            cab_id.and_then(pod_preset::PodCabModelChoice::from_model_id)
+                        })
+                        .unwrap_or(fallback);
                     ui.label(format!("CAB (offline) · current {} · MIC class {}", cab_id.map_or_else(|| "unavailable".into(), |id| format!("{id:08x}")), match class { Some(pod_preset::PodCabClass::Bass) => "bass", Some(pod_preset::PodCabClass::Other) => "standard", None => "unknown" }));
                     ui.horizontal(|ui| {
-                        egui::ComboBox::from_id_salt("pod-cab-choice")
+                        #[cfg(test)]
+                        let mut option_rects = Vec::new();
+                        let _combo = egui::ComboBox::from_id_salt("pod-cab-choice")
                             .selected_text(selected_cab.numeric_label())
                             .show_ui(ui, |ui| {
                                 for id in pod_preset::PODXT_CAB_MODEL_IDS {
                                     if let Some(choice) = pod_preset::PodCabModelChoice::from_model_id(id) {
-                                        ui.selectable_value(&mut selected_cab, choice, format!("CAB {id:08x}"));
+                                        let _response = ui.selectable_value(&mut selected_cab, choice, format!("CAB {id:08x}"));
+                                        #[cfg(test)]
+                                        option_rects.push((id, _response.rect));
                                     }
                                 }
                             });
+                        #[cfg(test)]
+                        {
+                            self.pod_cab_combo = Some(_combo.response.rect);
+                            self.pod_cab_options.extend(option_rects);
+                        }
+                        self.pod_cab_pending = Some((index, selected_cab));
                         if self.pod_button(ui, "pod-cab-apply", "Apply CAB") {
                             self.pod_selected = Some(index);
                             self.apply_pod_cab_model_choice(selected_cab);
@@ -2555,6 +2592,7 @@ impl Workbench {
         self.pod_library = library;
         self.pod_bundle = Some(bundle);
         self.pod_selected = Some(0);
+        self.pod_cab_pending = None;
         self.refresh_selected_pod_name();
         Ok(())
     }
@@ -2570,6 +2608,7 @@ impl Workbench {
             }
         }
         self.pod_library = library;
+        self.pod_cab_pending = None;
         Ok(())
     }
 
@@ -2615,10 +2654,12 @@ impl Workbench {
                             self.pod_bundle = None;
                             self.pod_library.clear();
                             self.pod_selected = None;
+                            self.pod_cab_pending = None;
                         }
                         match self.pod_library.import_bytes(bytes) {
                             Ok(index) => {
                                 self.pod_selected = Some(index);
+                                self.pod_cab_pending = None;
                                 self.pod_name = summary.name;
                                 self.pod_message = format!(
                                     "Loaded {} for PODxt Live {:08x}. {}",
@@ -4005,6 +4046,40 @@ mod tests {
         chunk(b"FORM", &data)
     }
 
+    fn sample_cab_mic_pod_tone(cab_id: u32, mic_value: u32) -> Vec<u8> {
+        fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+            let mut out = id.to_vec();
+            out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            out.extend_from_slice(data);
+            if !data.len().is_multiple_of(2) {
+                out.push(0xa5);
+            }
+            out
+        }
+        let mut info = vec![0; 76];
+        info[..4].copy_from_slice(&1u32.to_be_bytes());
+        info[4..8].copy_from_slice(&pod_preset::PODXT_LIVE_TONE_ID.to_be_bytes());
+        info[8..10].copy_from_slice(&u16::from(b'C').to_be_bytes());
+        info[72..76].copy_from_slice(&pod_preset::PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
+        let mut minf = Vec::new();
+        minf.extend_from_slice(&cab_id.to_be_bytes());
+        minf.extend_from_slice(&pod_preset::CAB_SLOT.to_be_bytes());
+        minf.extend_from_slice(&[0x80, 0xa1, 0xb2, 0xfe]);
+        let mut mic = Vec::new();
+        mic.extend_from_slice(&0x3f00_0000u32.to_be_bytes());
+        mic.extend_from_slice(&0u32.to_be_bytes());
+        mic.extend_from_slice(&mic_value.to_be_bytes());
+        let mut model = b"MODL".to_vec();
+        model.extend(chunk(b"MINF", &minf));
+        model.extend(chunk(b"PARM", &mic));
+        let mut patch = b"PATC".to_vec();
+        patch.extend(chunk(b"LIST", &model));
+        let mut data = b"L6AS".to_vec();
+        data.extend(chunk(b"PINF", &info));
+        data.extend(chunk(b"LIST", &patch));
+        chunk(b"FORM", &data)
+    }
+
     fn sample_pod_eq_tone() -> Vec<u8> {
         fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
             let mut bytes = id.to_vec();
@@ -4315,6 +4390,144 @@ mod tests {
                 modifiers: Default::default(),
             }],
         );
+    }
+
+    fn choose_cab_popup(context: &egui::Context, app: &mut Workbench, model_id: u32) {
+        recording_frame(context, app, vec![]);
+        let combo = app.pod_cab_combo.expect("CAB choice combo is rendered");
+        click_pod_at(context, app, combo.center());
+        recording_frame(context, app, vec![]);
+        let option = app.pod_cab_options[&model_id].center();
+        click_pod_at(context, app, option);
+        recording_frame(context, app, vec![]);
+    }
+
+    #[test]
+    fn cab_popup_choice_persists_until_apply_and_isolated_per_tone() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let first = sample_cab_mic_pod_tone(0x0102_0000, 1);
+        let second = sample_cab_mic_pod_tone(0x0102_0001, 2);
+        app.pod_library.import_bytes(first.clone()).unwrap();
+        app.pod_library.import_bytes(second.clone()).unwrap();
+        app.pod_selected = Some(0);
+
+        recording_frame(&context, &mut app, vec![]);
+        choose_cab_popup(&context, &mut app, 0x0102_0002);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), first);
+        assert!(!app.pod_library.is_dirty(0));
+        assert_eq!(
+            app.pod_cab_pending,
+            Some((
+                0,
+                pod_preset::PodCabModelChoice::try_from(0x0102_0002).unwrap()
+            ))
+        );
+        recording_frame(&context, &mut app, vec![]);
+        assert_eq!(app.pod_cab_pending.unwrap().1.model_id(), 0x0102_0002);
+
+        click_pod(&context, &mut app, "pod-cab-apply");
+        let applied = app.pod_library.tone(0).unwrap();
+        assert_eq!(applied.cab_model_id(), Some(0x0102_0002));
+        assert_eq!(applied.mic_choice().unwrap().value(), 1);
+        assert!(app.pod_library.is_dirty(0));
+        assert_eq!(app.pod_library.tone(1).unwrap().as_bytes(), second);
+
+        choose_cab_popup(&context, &mut app, 0x0102_0003);
+        assert_eq!(app.pod_cab_pending.unwrap().1.model_id(), 0x0102_0003);
+        recording_frame(&context, &mut app, vec![]);
+        let second_row = app.pod_rows[&1].center();
+        click_pod_at(&context, &mut app, second_row);
+        recording_frame(&context, &mut app, vec![]);
+        assert_eq!(app.pod_selected, Some(1));
+        assert_eq!(app.pod_cab_pending.unwrap().0, 1);
+        assert_eq!(app.pod_cab_pending.unwrap().1.model_id(), 0x0102_0001);
+        assert_eq!(app.pod_library.tone(1).unwrap().as_bytes(), second);
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn cab_mic_gui_apply_collision_save_reopen_revert_and_quit_cancel() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let original = sample_cab_mic_pod_tone(0x0102_0000, 1);
+        app.pod_library.import_bytes(original).unwrap();
+        app.pod_selected = Some(0);
+        recording_frame(&context, &mut app, vec![]);
+
+        choose_cab_popup(&context, &mut app, 0x0102_0002);
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().cab_model_id(),
+            Some(0x0102_0000)
+        );
+        click_pod(&context, &mut app, "pod-cab-apply");
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().cab_model_id(),
+            Some(0x0102_0002)
+        );
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .mic_choice()
+                .unwrap()
+                .value(),
+            1
+        );
+        assert!(app.pod_library.is_dirty(0));
+
+        let directory = tempfile::tempdir().unwrap();
+        let collision = directory.path().join("occupied.tone");
+        std::fs::write(&collision, b"preserve existing destination").unwrap();
+        let saved = directory.path().join("cab-copy.tone");
+        app.dialogs = Box::new(FakeDialogs {
+            pod_save: [Some(collision.clone()), Some(saved.clone())].into(),
+            ..Default::default()
+        });
+        click_pod(&context, &mut app, "save-pod");
+        assert!(app.pod_library.is_dirty(0));
+        assert_eq!(
+            std::fs::read(&collision).unwrap(),
+            b"preserve existing destination"
+        );
+        click_pod(&context, &mut app, "save-pod");
+        assert!(!app.pod_library.is_dirty(0));
+        let reopened = pod_preset::PodTone::parse(std::fs::read(&saved).unwrap()).unwrap();
+        assert_eq!(reopened.cab_model_id(), Some(0x0102_0002));
+        assert_eq!(reopened.mic_choice().unwrap().value(), 1);
+
+        choose_cab_popup(&context, &mut app, 0x0102_0003);
+        click_pod(&context, &mut app, "pod-cab-apply");
+        assert!(app.pod_library.is_dirty(0));
+        app.pod_library.revert_unsaved(0).unwrap();
+        app.refresh_selected_pod_name();
+        assert_eq!(app.pod_cab_pending, None);
+        recording_frame(&context, &mut app, vec![]);
+        assert_eq!(app.pod_cab_pending.unwrap().1.model_id(), 0x0102_0002);
+
+        click_pod(&context, &mut app, "pod-mic-3");
+        assert!(app.pod_library.is_dirty(0));
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .mic_choice()
+                .unwrap()
+                .value(),
+            3
+        );
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pod_library.is_dirty(0));
+        assert!(!app.permit_close);
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
     }
 
     fn select_delay_heads_choice(

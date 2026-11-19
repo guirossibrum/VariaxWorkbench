@@ -1501,6 +1501,8 @@ pub struct PodTone {
     /// Parsed MINF body ranges parallel to `models`; never extend into padding.
     model_minfo_ranges: Vec<std::ops::Range<usize>>,
     parameter_value_offsets: Vec<Vec<Option<usize>>>,
+    /// Semantic ids decoded from the first word when an opaque PARM is at least four bytes.
+    opaque_parameter_id_hints: Vec<Vec<Option<u32>>>,
 }
 
 impl ParameterValue {
@@ -1516,7 +1518,7 @@ impl ParameterValue {
 fn read_parameters(
     bytes: &[u8],
     fields: &[preset::Chunk],
-) -> (Vec<ModelParameter>, Vec<Option<usize>>) {
+) -> (Vec<ModelParameter>, Vec<Option<usize>>, Vec<Option<u32>>) {
     let parameters = fields
         .iter()
         .filter(|chunk| chunk.id == *b"PARM")
@@ -1549,7 +1551,14 @@ fn read_parameters(
         .filter(|chunk| chunk.id == *b"PARM")
         .map(|chunk| (chunk.data.len() == 12).then_some(chunk.data.start + 8))
         .collect();
-    (parameters, offsets)
+    let id_hints = fields
+        .iter()
+        .filter(|chunk| chunk.id == *b"PARM")
+        .map(|chunk| {
+            (chunk.data.len() >= 4).then(|| preset::word(bytes, chunk.data.start) & 0x00ff_ffff)
+        })
+        .collect();
+    (parameters, offsets, id_hints)
 }
 
 impl PodTone {
@@ -1603,6 +1612,7 @@ impl PodTone {
         let mut models = Vec::new();
         let mut model_minfo_ranges = Vec::new();
         let mut parameter_value_offsets = Vec::new();
+        let mut opaque_parameter_id_hints = Vec::new();
         for entry in model_chunks
             .iter()
             .filter(|chunk| preset::container(&bytes, chunk, b"MODL"))
@@ -1630,7 +1640,7 @@ impl PodTone {
             } else {
                 (None, None, None)
             };
-            let (parameters, offsets) = read_parameters(&bytes, &fields);
+            let (parameters, offsets, id_hints) = read_parameters(&bytes, &fields);
             model_minfo_ranges.push(minf.data.clone());
             models.push(ModelSlot {
                 slot,
@@ -1641,6 +1651,7 @@ impl PodTone {
                 parameters,
             });
             parameter_value_offsets.push(offsets);
+            opaque_parameter_id_hints.push(id_hints);
         }
         Ok(Self {
             bytes,
@@ -1652,6 +1663,7 @@ impl PodTone {
             models,
             model_minfo_ranges,
             parameter_value_offsets,
+            opaque_parameter_id_hints,
         })
     }
 
@@ -2766,20 +2778,21 @@ impl PodTone {
     /// Return a currently interpretable MIC integer; unknown raw integers remain preserved.
     pub fn mic_choice(&self) -> Option<PodMicChoice> {
         let (mi, _) = self.cab_edit_location().ok()?;
-        let matches: Vec<_> = self.models[mi]
-            .parameters
+        let cab_id = self.models[mi].model_id;
+        if !PODXT_CAB_MODEL_IDS.contains(&cab_id) && !PODXT_BASS_CAB_MODEL_IDS.contains(&cab_id) {
+            return None;
+        }
+        let matches: Vec<_> = self.opaque_parameter_id_hints[mi]
             .iter()
             .enumerate()
-            .filter_map(|(i, p)| match p {
-                ModelParameter::Recorded { id: 0, .. } => Some(i),
-                _ => None,
-            })
+            .filter_map(|(i, id)| (*id == Some(PODXT_MIC_PARAM)).then_some(i))
             .collect();
         let [pi] = matches.as_slice() else {
             return None;
         };
         match &self.models[mi].parameters[*pi] {
             ModelParameter::Recorded {
+                prefix: 0x3f,
                 value: ParameterValue::Int { bits },
                 ..
             } => PodMicChoice::from_value(*bits),
@@ -2796,14 +2809,10 @@ impl PodTone {
                 "MIC editing requires a source-listed current CAB id",
             ));
         }
-        let matches: Vec<_> = self.models[mi]
-            .parameters
+        let matches: Vec<_> = self.opaque_parameter_id_hints[mi]
             .iter()
             .enumerate()
-            .filter_map(|(i, p)| match p {
-                ModelParameter::Recorded { id: 0, .. } => Some(i),
-                _ => None,
-            })
+            .filter_map(|(i, id)| (*id == Some(PODXT_MIC_PARAM)).then_some(i))
             .collect();
         let [pi] = matches.as_slice() else {
             return Err(ToneError::format(
@@ -3755,6 +3764,14 @@ mod tests {
         bytes
     }
 
+    fn int_parameter(id: u32, bits: u32, prefix: u8) -> [u8; 12] {
+        drive_record(prefix, id, 0, bits)
+    }
+
+    fn typed_int_parameter(id: u32, bits: u32, prefix: u8, type_word: u32) -> [u8; 12] {
+        drive_record(prefix, id, type_word, bits)
+    }
+
     fn drive_tone(version: u32, model: u32, parameters: &[&[u8]]) -> Vec<u8> {
         let mut bytes = custom_tone(
             ContainerKind::L6as,
@@ -4389,51 +4406,382 @@ mod tests {
 
     #[test]
     fn cab_mic_edits_use_exact_source_ids_and_patch_only_admitted_words() {
-        let mut mic = Vec::new();
-        mic.extend_from_slice(&0x3f00_0000u32.to_be_bytes());
-        mic.extend_from_slice(&0u32.to_be_bytes());
-        mic.extend_from_slice(&2u32.to_be_bytes());
+        // Kept independent from the production allowlist to catch omissions and accidental ranges.
+        let literal_ids = [
+            0x0102_0000,
+            0x0102_0001,
+            0x0102_0002,
+            0x0102_0003,
+            0x0102_0004,
+            0x0102_0005,
+            0x0102_0006,
+            0x0102_0007,
+            0x0102_0008,
+            0x0102_0009,
+            0x0102_000a,
+            0x0102_000b,
+            0x0102_000c,
+            0x0102_000d,
+            0x0102_000e,
+            0x0102_000f,
+            0x0102_0010,
+            0x0102_0011,
+            0x0102_0012,
+            0x0102_0013,
+            0x0102_0014,
+            0x0102_0015,
+            0x0102_0016,
+            0x0102_0018,
+            0x0102_001a,
+        ];
+        assert_eq!(PODXT_CAB_MODEL_IDS, literal_ids);
+        let literal_gated_ids = [
+            0x0103_0001,
+            0x0103_0002,
+            0x0103_0003,
+            0x0103_0004,
+            0x0103_0005,
+            0x0103_0006,
+            0x0103_0007,
+            0x0103_0008,
+            0x0103_0009,
+            0x0103_000a,
+            0x0103_000b,
+            0x0103_000c,
+            0x0103_000d,
+            0x0103_000e,
+            0x0103_000f,
+            0x0103_0010,
+            0x0103_0011,
+            0x0103_0012,
+            0x0103_0013,
+            0x0103_0014,
+            0x0103_0015,
+            0x0103_0016,
+        ];
+        assert_eq!(PODXT_BASS_CAB_MODEL_IDS, literal_gated_ids);
+        for id in literal_ids {
+            let mic = int_parameter(0, 0xdead_beef, 0x3f);
+            let original = custom_tone(
+                ContainerKind::L6as,
+                &[BuiltModel {
+                    slot: CAB_SLOT,
+                    model_id: 0xfedc_ba98,
+                    tail: &[0x80, 0xa1, 0xb2, 0xfe],
+                    parameters: &[&mic],
+                }],
+            );
+            let mut tone = PodTone::parse(original.clone()).unwrap();
+            assert_eq!(
+                tone.mic_choice(),
+                None,
+                "unsupported stored MIC must remain raw"
+            );
+            let choice = PodCabModelChoice::try_from(id).unwrap();
+            let offset = tone.model_minfo_ranges[0].start;
+            let mut expected = original.clone();
+            expected[offset..offset + 4].copy_from_slice(&id.to_be_bytes());
+            tone.set_cab_model_choice(choice).unwrap();
+            assert_eq!(
+                tone.as_bytes(),
+                expected,
+                "unexpected write set for CAB {id:08x}"
+            );
+            assert_eq!(tone.models()[0].model_id, id);
+            assert_eq!(tone.models()[0].ordinal, Some(-128));
+            assert_eq!(tone.models()[0].reserved, Some([0xa1, 0xb2]));
+            assert_eq!(tone.models()[0].enabled, Some(false));
+            tone.set_cab_model_choice(choice).unwrap();
+            assert_eq!(tone.as_bytes(), expected, "same CAB choice must be a no-op");
+            assert_eq!(
+                PodTone::parse(expected.clone()).unwrap().as_bytes(),
+                expected
+            );
+        }
+        for id in
+            PODXT_BASS_CAB_MODEL_IDS
+                .into_iter()
+                .chain([0x0102_0017, 0x0102_0019, 0xdead_beef])
+        {
+            assert!(
+                PodCabModelChoice::try_from(id).is_err(),
+                "CAB {id:08x} must reject"
+            );
+        }
+    }
+
+    #[test]
+    fn mic_edits_cover_both_classes_all_choices_and_exact_value_word() {
+        for cab in [PODXT_CAB_MODEL_IDS[0], PODXT_BASS_CAB_MODEL_IDS[0]] {
+            for value in 0..=3 {
+                let mic = int_parameter(PODXT_MIC_PARAM, 0xffff_fffe, 0x3f);
+                let original = custom_tone(
+                    ContainerKind::L6as,
+                    &[BuiltModel {
+                        slot: CAB_SLOT,
+                        model_id: cab,
+                        tail: &[0, 0, 0, 1],
+                        parameters: &[&mic],
+                    }],
+                );
+                let mut tone = PodTone::parse(original.clone()).unwrap();
+                assert_eq!(
+                    tone.cab_class(),
+                    Some(if PODXT_BASS_CAB_MODEL_IDS.contains(&cab) {
+                        PodCabClass::Bass
+                    } else {
+                        PodCabClass::Other
+                    })
+                );
+                assert_eq!(
+                    tone.mic_choice(),
+                    None,
+                    "unknown integer must not display as a valid choice"
+                );
+                let choice = PodMicChoice::try_from(value).unwrap();
+                let offset = tone.parameter_value_offsets[0][0].unwrap();
+                let mut expected = original;
+                expected[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
+                tone.set_mic_choice(choice).unwrap();
+                assert_eq!(
+                    tone.as_bytes(),
+                    expected,
+                    "MIC value {value} for CAB {cab:08x}"
+                );
+                assert_eq!(tone.mic_choice(), Some(choice));
+                tone.set_mic_choice(choice).unwrap();
+                assert_eq!(tone.as_bytes(), expected, "same MIC choice must be a no-op");
+            }
+        }
+    }
+
+    #[test]
+    fn cab_apply_preserves_missing_opaque_and_noncanonical_mic_records() {
+        let opaque = [0x3f, 0, 0, 0, 0xaa];
+        let noncanonical = int_parameter(0, 2, 0x3e);
+        for parameters in [&[][..], &[&opaque[..]][..], &[&noncanonical[..]][..]] {
+            let original = custom_tone(
+                ContainerKind::L6as,
+                &[BuiltModel {
+                    slot: CAB_SLOT,
+                    model_id: PODXT_BASS_CAB_MODEL_IDS[0],
+                    tail: &[0x80, 0xa1, 0xb2, 0xfe],
+                    parameters,
+                }],
+            );
+            let mut tone = PodTone::parse(original.clone()).unwrap();
+            let mut expected = original;
+            let id_offset = tone.model_minfo_ranges[0].start;
+            let id = PODXT_CAB_MODEL_IDS[0];
+            expected[id_offset..id_offset + 4].copy_from_slice(&id.to_be_bytes());
+            tone.set_cab_model_choice(PodCabModelChoice::try_from(id).unwrap())
+                .unwrap();
+            assert_eq!(tone.as_bytes(), expected);
+        }
+    }
+
+    #[test]
+    fn mic_target_ambiguity_and_inapplicable_cab_reject_atomically() {
+        let valid = int_parameter(0, 1, 0x3f);
+        let bad_type = typed_int_parameter(0, 1, 0x3f, 7);
+        let bad_prefix = int_parameter(0, 1, 0x3e);
+        let opaque_target = [0x3f, 0, 0, 0, 0xaa];
+        let unrelated_opaque = [0x3f, 0x12, 0x34, 0x56, 0xaa];
+        let cases: Vec<Vec<Vec<u8>>> = vec![
+            vec![],
+            vec![bad_type.to_vec()],
+            vec![bad_prefix.to_vec()],
+            vec![opaque_target.to_vec()],
+            vec![valid.to_vec(), valid.to_vec()],
+            vec![unrelated_opaque.to_vec(), valid.to_vec()],
+        ];
+        for (case_index, records) in cases.into_iter().enumerate() {
+            let refs: Vec<&[u8]> = records.iter().map(Vec::as_slice).collect();
+            let original = custom_tone(
+                ContainerKind::L6as,
+                &[BuiltModel {
+                    slot: CAB_SLOT,
+                    model_id: PODXT_CAB_MODEL_IDS[0],
+                    tail: &[0, 0, 0, 1],
+                    parameters: &refs,
+                }],
+            );
+            let mut tone = PodTone::parse(original.clone()).unwrap();
+            if case_index == 5 {
+                tone.set_mic_choice(PodMicChoice::try_from(3).unwrap())
+                    .unwrap();
+                continue;
+            }
+            let before_models = tone.models().to_vec();
+            assert!(
+                tone.set_mic_choice(PodMicChoice::try_from(3).unwrap())
+                    .is_err()
+            );
+            assert_eq!(tone.as_bytes(), original);
+            assert_eq!(tone.models(), before_models);
+        }
+        let raw = int_parameter(0, 1, 0x3f);
+        let unknown_cab = custom_tone(
+            ContainerKind::L6as,
+            &[BuiltModel {
+                slot: CAB_SLOT,
+                model_id: 0xdead_beef,
+                tail: &[0, 0, 0, 1],
+                parameters: &[&raw],
+            }],
+        );
+        let mut tone = PodTone::parse(unknown_cab.clone()).unwrap();
+        assert_eq!(tone.mic_choice(), None);
+        assert!(
+            tone.set_mic_choice(PodMicChoice::try_from(2).unwrap())
+                .is_err()
+        );
+        assert_eq!(tone.as_bytes(), unknown_cab);
+    }
+
+    #[test]
+    fn cab_mic_validation_and_shared_library_bundle_lifecycle_are_atomic() {
+        let mic = int_parameter(0, 1, 0x3f);
         let original = custom_tone(
             ContainerKind::L6as,
             &[BuiltModel {
                 slot: CAB_SLOT,
-                model_id: PODXT_BASS_CAB_MODEL_IDS[0],
-                tail: &[0x80, 0xa1, 0xb2, 0xfe],
+                model_id: PODXT_CAB_MODEL_IDS[0],
+                tail: &[0, 0, 0, 1],
                 parameters: &[&mic],
             }],
         );
-        assert_eq!(PODXT_CAB_MODEL_IDS.len(), 25);
-        for id in PODXT_CAB_MODEL_IDS {
-            assert!(PodCabModelChoice::from_model_id(id).is_some());
-        }
-        for id in [
-            0x0102_0017,
-            0x0102_0019,
-            0x0103_0001,
-            0x0103_0016,
-            0xdead_beef,
-        ] {
-            assert!(PodCabModelChoice::from_model_id(id).is_none());
-        }
-        let mut tone = PodTone::parse(original.clone()).unwrap();
-        assert_eq!(tone.cab_class(), Some(PodCabClass::Bass));
-        assert_eq!(tone.mic_choice(), Some(PodMicChoice::try_from(2).unwrap()));
-        let choice = PodCabModelChoice::from_model_id(PODXT_CAB_MODEL_IDS[0]).unwrap();
-        let mut expected = original.clone();
-        let offset = tone.model_minfo_ranges[0].start;
-        expected[offset..offset + 4].copy_from_slice(&choice.model_id().to_be_bytes());
-        tone.set_cab_model_choice(choice).unwrap();
-        assert_eq!(tone.as_bytes(), expected);
-        assert_eq!(tone.mic_choice(), Some(PodMicChoice::try_from(2).unwrap()));
-        let mic_value_offset = tone.parameter_value_offsets[0][0].unwrap();
-        expected[mic_value_offset..mic_value_offset + 4].copy_from_slice(&3u32.to_be_bytes());
-        tone.set_mic_choice(PodMicChoice::try_from(3).unwrap())
+        let mut library = Library::default();
+        library.import_bytes(original.clone()).unwrap();
+        let cab = PodCabModelChoice::try_from(PODXT_CAB_MODEL_IDS[1]).unwrap();
+        library.set_cab_model_choice(0, cab).unwrap();
+        assert!(library.is_dirty(0));
+        library
+            .set_mic_choice(0, PodMicChoice::try_from(3).unwrap())
             .unwrap();
-        assert_eq!(tone.as_bytes(), expected);
         assert_eq!(
-            PodTone::parse(expected.clone()).unwrap().as_bytes(),
-            expected
+            library.tone(0).unwrap().cab_model_id(),
+            Some(cab.model_id())
         );
+        assert_eq!(library.tone(0).unwrap().mic_choice().unwrap().value(), 3);
+        library.note_saved(0).unwrap();
+        assert!(!library.is_dirty(0));
+        let saved = library.tone(0).unwrap().as_bytes().to_vec();
+        assert!(
+            library
+                .set_mic_choice(9, PodMicChoice::try_from(0).unwrap())
+                .is_err()
+        );
+        assert!(!library.is_dirty(0));
+        assert_eq!(library.tone(0).unwrap().as_bytes(), saved);
+        library
+            .set_cab_model_choice(
+                0,
+                PodCabModelChoice::try_from(PODXT_CAB_MODEL_IDS[2]).unwrap(),
+            )
+            .unwrap();
+        assert!(library.is_dirty(0));
+        library.revert_unsaved(0).unwrap();
+        assert!(!library.is_dirty(0));
+        assert_eq!(library.tone(0).unwrap().as_bytes(), saved);
+
+        let mut bundle = PodBundleLibrary::parse(bundle_with_tone(&original)).unwrap();
+        bundle.set_cab_model_choice(0, cab).unwrap();
+        bundle
+            .set_mic_choice(0, PodMicChoice::try_from(2).unwrap())
+            .unwrap();
+        assert!(bundle.is_dirty());
+        let reopened = PodBundleLibrary::parse(bundle.as_bytes().to_vec()).unwrap();
+        assert_eq!(
+            reopened.tone(0, 0).unwrap().cab_model_id(),
+            Some(cab.model_id())
+        );
+        assert_eq!(
+            reopened.tone(0, 0).unwrap().mic_choice().unwrap().value(),
+            2
+        );
+        bundle.revert().unwrap();
+        assert!(!bundle.is_dirty());
+        assert_eq!(bundle.tone(0, 0).unwrap().as_bytes(), original);
+    }
+
+    #[test]
+    fn cab_mic_guards_reject_wrong_target_version_container_and_short_or_missing_cab() {
+        let id = PODXT_CAB_MODEL_IDS[0];
+        let choice = PodCabModelChoice::try_from(id).unwrap();
+        let original = custom_tone(
+            ContainerKind::L6as,
+            &[BuiltModel {
+                slot: CAB_SLOT,
+                model_id: 0xdead_beef,
+                tail: &[0x80, 0xa1, 0xb2, 0xfe],
+                parameters: &[],
+            }],
+        );
+        let mut old_version = original.clone();
+        let pinf = old_version
+            .windows(4)
+            .position(|window| window == b"PINF")
+            .unwrap()
+            + 8;
+        old_version[pinf + 72..pinf + 76]
+            .copy_from_slice(&(PODXT_LIVE_HOST_MIN_VERSION - 1).to_be_bytes());
+        let mut tone = PodTone::parse(old_version.clone()).unwrap();
+        assert!(tone.set_cab_model_choice(choice).is_err());
+        assert_eq!(tone.as_bytes(), old_version);
+        let mut wrong_target = original.clone();
+        let pinf = wrong_target
+            .windows(4)
+            .position(|window| window == b"PINF")
+            .unwrap()
+            + 8;
+        wrong_target[pinf + 4..pinf + 8].copy_from_slice(&0x0003_000b_u32.to_be_bytes());
+        assert!(matches!(
+            PodTone::parse(wrong_target),
+            Err(ToneError::WrongTarget { .. })
+        ));
+        let mut wrong_container = original.clone();
+        wrong_container[8..12].copy_from_slice(b"L6PA");
+        let mut tone = PodTone::parse(wrong_container.clone()).unwrap();
+        assert!(tone.set_cab_model_choice(choice).is_err());
+        assert_eq!(tone.as_bytes(), wrong_container);
+
+        let short = custom_tone(
+            ContainerKind::L6as,
+            &[BuiltModel {
+                slot: CAB_SLOT,
+                model_id: 0xdead_beef,
+                tail: &[0x80, 0xa1, 0xb2],
+                parameters: &[],
+            }],
+        );
+        let mut tone = PodTone::parse(short.clone()).unwrap();
+        assert!(tone.set_cab_model_choice(choice).is_err());
+        assert_eq!(tone.as_bytes(), short);
+
+        let missing = custom_tone(ContainerKind::L6as, &[]);
+        let mut tone = PodTone::parse(missing.clone()).unwrap();
+        assert!(tone.set_cab_model_choice(choice).is_err());
+        assert_eq!(tone.as_bytes(), missing);
+
+        let duplicate = custom_tone(
+            ContainerKind::L6as,
+            &[
+                BuiltModel {
+                    slot: CAB_SLOT,
+                    model_id: 1,
+                    tail: &[0, 0, 0, 1],
+                    parameters: &[],
+                },
+                BuiltModel {
+                    slot: CAB_SLOT,
+                    model_id: 2,
+                    tail: &[0, 0, 0, 1],
+                    parameters: &[],
+                },
+            ],
+        );
+        assert!(PodTone::parse(duplicate).is_err());
     }
 
     #[test]
