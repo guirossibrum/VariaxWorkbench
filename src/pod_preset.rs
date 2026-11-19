@@ -163,23 +163,38 @@ pub const STOMP_SLOT: u32 = 0x0002_0003;
 /// Facial Fuzz, the first model with the source-mapped Stomp control layout.
 pub const STOMP_DRIVE_MODEL_ID: u32 = 0x0205_0000;
 /// PODxt Live Stomp models with source-mapped percent control layouts.
-pub const STOMP_CONTROL_MODEL_IDS: [u32; 16] = [
-    0x0200_0002,
-    0x0200_0003,
-    0x0200_0004,
-    0x0200_0005,
-    0x0200_0006,
-    0x0200_0007,
+pub const STOMP_CONTROL_MODEL_IDS: [u32; 31] = [
     0x0205_0000, // Facial Fuzz
-    0x0205_0001, // FX-Tube Drive
     0x0205_0002, // Fuzz Pi
     0x0205_0003, // Screamer
-    0x0205_0004, // Octave Fuzz
     0x0205_0005, // Classic Dist
+    0x0205_0004, // Octave Fuzz
+    0x0200_0002,
+    0x0200_0004,
+    0x0200_0005,
+    0x0200_0007,
+    0x020a_0000,
     0x0205_0006, // FX-Killer Z
+    0x0205_0001, // FX-Tube Drive
+    0x0200_0006,
     0x0205_0007, // FX-Boost + EQ
+    0x0200_0003,
+    0x020a_000a,
+    0x020a_000b,
+    0x020a_000c,
+    0x020a_0008,
+    0x020a_0005,
+    0x020a_0006,
+    0x020a_0007,
+    0x020a_0003,
+    0x020a_0004,
+    0x020a_0009,
+    0x020a_0001,
+    0x020a_0002,
     0x0205_0008, // Bass Overdrive
     0x0205_0009, // Bronze Master
+    0x020a_000d,
+    0x020a_000e,
 ];
 /// Stomp Drive selector passed through `GetFXParamDef`.
 pub const STOMP_DRIVE_SELECTOR: u32 = 0x0003_0001;
@@ -202,7 +217,7 @@ pub const OFFLINE_BANNER: &str =
 pub const NOT_GUITAR: &str =
     "This is not the Variax guitar editor. Guitar model slots are not applied.";
 pub const NOT_SENT: &str = "Nothing is sent to a device. No preset is switched.";
-pub const PAYLOADS_NOT_DECODED: &str = "Known asset names and 12-byte parameter records are shown. Six shared amp controls on 106 source-listed models and source-mapped Stomp controls on sixteen models have host-scale editors; other parameter ranges are not decoded. Unknown ids stay raw.";
+pub const PAYLOADS_NOT_DECODED: &str = "Known asset names and 12-byte parameter records are shown. Six shared amp controls on 106 source-listed models and 86 mapped Stomp percent controls across 31 layouts have host-scale editors; non-scalar and other parameter formats remain raw. Unknown ids stay raw.";
 pub const AMP_CONTROL_SCALE_LABEL: &str = "Line6Edit host scale 0–1 (not device-validated)";
 pub const STOMP_CONTROL_SCALE_LABEL: &str = "Line6Edit Stomp host scale 0–1 (not device-validated)";
 
@@ -269,10 +284,18 @@ pub enum StompControl {
     Amount,
     Ramp,
     Depth,
+    Q,
+    Filter,
+    Decay,
+    Mix,
+    Attack,
+    S1Ogt,
+    S2Ogt,
+    Position,
 }
 
 impl StompControl {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 23] = [
         Self::Drive,
         Self::Gain,
         Self::Tone,
@@ -288,6 +311,14 @@ impl StompControl {
         Self::Amount,
         Self::Ramp,
         Self::Depth,
+        Self::Q,
+        Self::Filter,
+        Self::Decay,
+        Self::Mix,
+        Self::Attack,
+        Self::S1Ogt,
+        Self::S2Ogt,
+        Self::Position,
     ];
 
     /// Selector position established by `GetFXParamDef` for a particular model.
@@ -375,6 +406,49 @@ impl StompControl {
                 Self::Depth => Some(2),
                 _ => None,
             },
+            0x020a_0000 => match self {
+                Self::Sensitivity => Some(1),
+                Self::Q => Some(2),
+                _ => None,
+            },
+            0x020a_0001 | 0x020a_0003 | 0x020a_0004 | 0x020a_0005 | 0x020a_0006 => match self {
+                Self::Filter => Some(2),
+                Self::Decay => Some(3),
+                Self::Mix => Some(4),
+                _ => None,
+            },
+            0x020a_0002 | 0x020a_0009 => match self {
+                Self::Filter => Some(2),
+                Self::Attack => Some(3),
+                Self::Mix => Some(4),
+                _ => None,
+            },
+            0x020a_0007 | 0x020a_000c => match self {
+                Self::Mix => Some(4),
+                _ => None,
+            },
+            0x020a_0008 | 0x020a_000d => match self {
+                Self::S1Ogt => Some(1),
+                Self::S2Ogt => Some(2),
+                Self::Mix => Some(4),
+                _ => None,
+            },
+            0x020a_000a => match self {
+                Self::Sensitivity => Some(2),
+                Self::Q => Some(3),
+                _ => None,
+            },
+            0x020a_000b => match self {
+                Self::Decay => Some(1),
+                Self::Sensitivity => Some(2),
+                Self::Q => Some(3),
+                _ => None,
+            },
+            0x020a_000e => match self {
+                Self::Position => Some(1),
+                Self::Mix => Some(4),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -396,6 +470,14 @@ impl StompControl {
             Self::Amount => "Amount",
             Self::Ramp => "Ramp",
             Self::Depth => "Depth",
+            Self::Q => "Q",
+            Self::Filter => "Filter",
+            Self::Decay => "Decay",
+            Self::Mix => "Mix",
+            Self::Attack => "Attack",
+            Self::S1Ogt => "-1OCTG",
+            Self::S2Ogt => "-2OCTG",
+            Self::Position => "Position",
         }
     }
 }
@@ -1483,6 +1565,7 @@ mod tests {
     fn source_mapped_stomp_controls_patch_only_their_existing_value_words() {
         assert_eq!(STOMP_SLOT, 0x0002_0003);
         assert_eq!(STOMP_DRIVE_MODEL_ID, 0x0205_0000);
+        assert_eq!(STOMP_CONTROL_MODEL_IDS.len(), 31);
         let unknown = drive_record(0xa7, 0x0000_9876, 9, 0x1234_5678);
         let profiles = [
             (
@@ -1544,6 +1627,124 @@ mod tests {
                     None,
                     None,
                 ],
+            ),
+            (
+                0x020a_0000,
+                [
+                    Some(StompControl::Sensitivity),
+                    Some(StompControl::Q),
+                    None,
+                    None,
+                    None,
+                ],
+            ),
+            (
+                0x020a_0001,
+                [
+                    None,
+                    Some(StompControl::Filter),
+                    Some(StompControl::Decay),
+                    Some(StompControl::Mix),
+                    None,
+                ],
+            ),
+            (
+                0x020a_0002,
+                [
+                    None,
+                    Some(StompControl::Filter),
+                    Some(StompControl::Attack),
+                    Some(StompControl::Mix),
+                    None,
+                ],
+            ),
+            (
+                0x020a_0003,
+                [
+                    None,
+                    Some(StompControl::Filter),
+                    Some(StompControl::Decay),
+                    Some(StompControl::Mix),
+                    None,
+                ],
+            ),
+            (
+                0x020a_0004,
+                [
+                    None,
+                    Some(StompControl::Filter),
+                    Some(StompControl::Decay),
+                    Some(StompControl::Mix),
+                    None,
+                ],
+            ),
+            (
+                0x020a_0005,
+                [
+                    None,
+                    Some(StompControl::Filter),
+                    Some(StompControl::Decay),
+                    Some(StompControl::Mix),
+                    None,
+                ],
+            ),
+            (
+                0x020a_0006,
+                [
+                    None,
+                    Some(StompControl::Filter),
+                    Some(StompControl::Decay),
+                    Some(StompControl::Mix),
+                    None,
+                ],
+            ),
+            (
+                0x020a_0007,
+                [None, None, None, Some(StompControl::Mix), None],
+            ),
+            (
+                0x020a_0008,
+                [
+                    Some(StompControl::S1Ogt),
+                    Some(StompControl::S2Ogt),
+                    None,
+                    Some(StompControl::Mix),
+                    None,
+                ],
+            ),
+            (
+                0x020a_0009,
+                [
+                    None,
+                    Some(StompControl::Filter),
+                    Some(StompControl::Attack),
+                    Some(StompControl::Mix),
+                    None,
+                ],
+            ),
+            (
+                0x020a_000a,
+                [
+                    None,
+                    Some(StompControl::Sensitivity),
+                    Some(StompControl::Q),
+                    None,
+                    None,
+                ],
+            ),
+            (
+                0x020a_000b,
+                [
+                    Some(StompControl::Decay),
+                    Some(StompControl::Sensitivity),
+                    Some(StompControl::Q),
+                    None,
+                    None,
+                ],
+            ),
+            (
+                0x020a_000c,
+                [None, None, None, Some(StompControl::Mix), None],
             ),
             (
                 0x0205_0000,
@@ -1645,9 +1846,49 @@ mod tests {
                     None,
                 ],
             ),
+            (
+                0x020a_000d,
+                [
+                    Some(StompControl::S1Ogt),
+                    Some(StompControl::S2Ogt),
+                    None,
+                    Some(StompControl::Mix),
+                    None,
+                ],
+            ),
+            (
+                0x020a_000e,
+                [
+                    Some(StompControl::Position),
+                    None,
+                    None,
+                    Some(StompControl::Mix),
+                    None,
+                ],
+            ),
         ];
+        assert_eq!(profiles.len(), STOMP_CONTROL_MODEL_IDS.len());
+        assert_eq!(
+            profiles
+                .iter()
+                .map(|(_, expected_layout)| expected_layout.iter().flatten().count())
+                .sum::<usize>(),
+            86
+        );
+        let mut profile_ids: Vec<_> = profiles.iter().map(|(model_id, _)| *model_id).collect();
+        profile_ids.sort_unstable();
+        profile_ids.dedup();
+        assert_eq!(profile_ids.len(), profiles.len());
         for (model_id, expected_layout) in profiles {
             assert!(STOMP_CONTROL_MODEL_IDS.contains(&model_id));
+            for control in StompControl::ALL {
+                assert_eq!(
+                    control.selector_id(model_id).is_some(),
+                    expected_layout.contains(&Some(control)),
+                    "unexpected {} mapping on model {model_id:08x}",
+                    control.label()
+                );
+            }
             for (position, expected_control) in expected_layout.into_iter().enumerate() {
                 let Some(control) = expected_control else {
                     continue;

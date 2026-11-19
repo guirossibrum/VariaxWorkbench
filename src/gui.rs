@@ -3127,7 +3127,7 @@ mod tests {
         assert!(app.pod_visible.contains(pod_preset::OFFLINE_BANNER));
         assert!(app.pod_visible.contains(pod_preset::NOT_GUITAR));
         assert!(app.pod_visible.contains(pod_preset::NOT_SENT));
-        assert!(app.pod_visible.contains("not decoded"));
+        assert!(app.pod_visible.contains("remain raw"));
         assert!(app.read_worker.is_none());
         assert!(!app.is_reading());
         assert_eq!(app.pod_library.len(), 0);
@@ -3151,7 +3151,7 @@ mod tests {
         assert!(app.pod_visible.contains("L6AS"));
         assert!(app.pod_visible.contains("11110002"));
         assert!(app.pod_visible.contains("22220003"));
-        assert!(app.pod_visible.contains("not decoded"));
+        assert!(app.pod_visible.contains("remain raw"));
         assert!(
             app.pod_message.contains("Nothing is sent")
                 || app.pod_visible.contains(pod_preset::NOT_SENT)

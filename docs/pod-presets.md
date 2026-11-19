@@ -87,20 +87,29 @@ refuses to open or rename a PODxt Live target, including a bank that contains
 one.
 
 Static Line6Edit 3.06 source maps selector positions in Stomp slot `0x00020003`
-to semantic PARM ids `0x00100000 + position`. Rust exposes source-derived
-percent controls for these 16 model layouts: `0x02000002` Sustain/Level,
+to semantic PARM ids `0x00100000 + position`. Rust exposes 86 source-derived
+percent controls across all 31 PODxt Stomp model layouts. The original 16 are
+`0x02000002` Sustain/Level,
 `0x02000003` Level/Sustain, `0x02000004` Sustain/Level, `0x02000005`
 Sensitivity/Level, `0x02000006` Amount/Level, `0x02000007` Ramp/Depth;
 `0x02050000`, `02`–`05` Drive/Gain/Tone; `0x02050001` Drive/Treble/Gain/Bass;
 `0x02050006` Drive/Contour/Gain/Mid/Mid Frequency; `0x02050007`
 Gain/Bass/Treble/Mid/Mid Frequency; `0x02050008` Bass/Treble/Drive/Gain; and
-`0x02050009` Drive/Tone/Blend, with the source's selector position 3 left
-empty. The selected `L6AX3ParamDefs` use finite host-scale floats `0..=1` and
-the percent formatter. Rust applies the same target/version/prefix/type/range
-checks and four-byte raw patch as the amp controls. Other Stomp models and
-modulation, delay, reverb, EQ and cab controls remain unavailable. This
-allowlist does not establish installed-pack entitlement, device acceptance or
-physical behavior.
+`0x02050009` Drive/Tone/Blend, with selector position 3 left empty. The
+additional layouts expose these scalar percent fields: `0x020a0000` Sensitivity
+and Q at positions 1/2; `0x020a0001`, `03`–`06` Filter/Decay/Mix at positions
+2/3/4; `0x020a0002` and `09` Filter/Attack/Mix at positions 2/3/4;
+`0x020a0007` and `0c` Mix at position 4; `0x020a0008` and `0d` S1OG/S2OG/Mix
+at positions 1/2/4; `0x020a000a` Sensitivity/Q at positions 2/3; `0x020a000b`
+Decay/Sensitivity/Q at positions 1/2/3; and `0x020a000e` Position/Mix at
+positions 1/4. The source's SYNWAVE association values and the special
+WHAMMY_INTERVAL Heel/Toe values are not percent controls and remain unavailable.
+All exposed definitions use finite host-scale floats `0..=1` with the percent
+formatter; the source labels do not establish physical units. Rust applies the
+same target/version/prefix/type/range checks and four-byte raw patch as the amp
+controls. Modulation, delay, reverb, EQ and cab controls remain unavailable.
+This allowlist does not establish installed-pack entitlement, device
+acceptance or physical behavior.
 
 An applied name is unsaved until that tone's copy is written. Quitting asks
 to save, discard, or keep editing, one tone at a time. Cancel, or a save that
@@ -121,8 +130,8 @@ recovered Line 6 limit.
 ## Parameter domain boundary
 
 For these controls, static Line6Edit source identifies `L6PODxtDevice`,
-`L6PODxtParamMap`, the PODxt amp model catalog and shared amp selectors, 16
-selected Stomp model layouts, the selected `L6AX3ParamDefs` definitions, and
+`L6PODxtParamMap`, the PODxt amp model catalog and shared amp selectors, all 31
+Stomp model layouts, the selected `L6AX3ParamDefs` definitions, and
 `L6SharcTonePercentFormat`. The formatter maps finite host
 values through percent text and its quantizer is a no-op; display labels are
 derived through a 7-bit conversion. Rust edits the underlying finite float
@@ -134,8 +143,8 @@ Rust behavior, not an executed vendor oracle, device acceptance test, or
 installed-pack entitlement result. No DLL was loaded, no installer was run,
 and no device was opened.
 
-Three Stomp-specific Rust test methods cover exact-byte edits across the
-selected model layouts, invalid target and value rejection, and library
+Three Stomp-specific Rust test methods cover exact-byte edits across all 31
+model layouts' supported percent fields, invalid target and value rejection, and library
 revert/copy collision/reopen behavior; the headless egui slider/quit-guard test
 exercises model-available Stomp sliders alongside the amp control. These are synthetic Rust behaviors, not a physical
 compatibility test or vendor runtime oracle. Exact-head configured checks are
