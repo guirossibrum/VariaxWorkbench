@@ -285,6 +285,14 @@ pub const STOMP_GAIN_SELECTOR: u32 = 0x0003_0002;
 pub const STOMP_GAIN_PARAM: u32 = 0x0010_0002;
 pub const STOMP_TONE_SELECTOR: u32 = 0x0003_0003;
 pub const STOMP_TONE_PARAM: u32 = 0x0010_0003;
+/// Stomp Whammy model whose two controls use the Line6Edit WHAMMY_INTERVAL format.
+pub const STOMP_WHAMMY_INTERVAL_MODEL_ID: u32 = 0x020a_000e;
+pub const STOMP_WHAMMY_HEEL_SELECTOR: u32 = 0x0003_0002;
+pub const STOMP_WHAMMY_HEEL_PARAM: u32 = 0x0010_0002;
+pub const STOMP_WHAMMY_TOE_SELECTOR: u32 = 0x0003_0003;
+pub const STOMP_WHAMMY_TOE_PARAM: u32 = 0x0010_0003;
+const WHAMMY_INTERVAL_RESOLUTION: f32 = 63.75;
+const WHAMMY_INTERVAL_RESOLUTION_RECIPROCAL: f32 = f32::from_bits(0x3c80_8081);
 /// Host provider minimum from `ParseVersionString("3.00")`; not a file-loader rule.
 pub const PODXT_LIVE_HOST_MIN_VERSION: u32 = 0x0300_0000;
 /// Cab model slot from `L6Patch.UpdateMetaNotesForSetup` and `kGPXTSlot_Cab`.
@@ -564,6 +572,39 @@ impl StompControl {
             Self::S1Ogt => "-1OCTG",
             Self::S2Ogt => "-2OCTG",
             Self::Position => "Position",
+        }
+    }
+}
+
+/// PODxt Live Whammy Stomp knob whose input is the editor's normalized knob
+/// position. This is distinct from a formatted display value or a stored value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StompWhammyKnob {
+    Heel,
+    Toe,
+}
+
+impl StompWhammyKnob {
+    pub const ALL: [Self; 2] = [Self::Heel, Self::Toe];
+
+    pub const fn selector_id(self) -> u32 {
+        match self {
+            Self::Heel => STOMP_WHAMMY_HEEL_SELECTOR,
+            Self::Toe => STOMP_WHAMMY_TOE_SELECTOR,
+        }
+    }
+
+    pub const fn param_id(self) -> u32 {
+        match self {
+            Self::Heel => STOMP_WHAMMY_HEEL_PARAM,
+            Self::Toe => STOMP_WHAMMY_TOE_PARAM,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Heel => "Heel",
+            Self::Toe => "Toe",
         }
     }
 }
@@ -1461,6 +1502,17 @@ impl PodTone {
         )
     }
 
+    /// Read a source-backed Whammy knob position without quantizing or
+    /// normalizing the imported word. The definition range is `0..=1`.
+    pub fn stomp_whammy_knob_position(&self, control: StompWhammyKnob) -> Result<f32, ToneError> {
+        let (model_index, parameter_index) = self.stomp_whammy_knob_location(control)?;
+        self.float_control_fraction_at(
+            model_index,
+            parameter_index,
+            &format!("Stomp Whammy {} knob position", control.label()),
+        )
+    }
+
     /// Read the existing Stomp SYNWAVE value without snapping unknown raw words.
     pub fn stomp_wave_selection(&self) -> Result<StompWaveValue, ToneError> {
         let (model_index, parameter_index) = self.stomp_wave_location()?;
@@ -1564,6 +1616,39 @@ impl PodTone {
         Self::validate_host_fraction(value, &label)?;
         let (model_index, parameter_index) = self.stomp_control_location(control)?;
         self.set_float_control_fraction_at(model_index, parameter_index, value, &label)
+    }
+
+    /// Apply a finite normalized editor knob position through the original
+    /// WHAMMY_INTERVAL float32 truncating quantizer. This is not a display-value
+    /// parser and does not accept raw stored values.
+    pub fn set_stomp_whammy_knob_position(
+        &mut self,
+        control: StompWhammyKnob,
+        position: f32,
+    ) -> Result<(), ToneError> {
+        let label = format!("Stomp Whammy {} knob position", control.label());
+        Self::validate_host_fraction(position, &label)?;
+        let (model_index, parameter_index) = self.stomp_whammy_knob_location(control)?;
+        let current = match &self.models[model_index].parameters[parameter_index] {
+            ModelParameter::Recorded {
+                value: ParameterValue::Float { bits },
+                ..
+            } => f32::from_bits(*bits),
+            _ => {
+                return Err(ToneError::format(format!(
+                    "{label} target is not a float PARM"
+                )));
+            }
+        };
+        if !current.is_finite() || !(0.0..=1.0).contains(&current) {
+            return Err(ToneError::format(format!(
+                "existing {label} value is outside the finite definition range 0..=1"
+            )));
+        }
+        let scaled = position * WHAMMY_INTERVAL_RESOLUTION;
+        let steps = scaled as i32;
+        let stored = (steps as f32) * WHAMMY_INTERVAL_RESOLUTION_RECIPROCAL;
+        self.set_float_control_fraction_at(model_index, parameter_index, stored, &label)
     }
 
     /// Replace only the existing Stomp SYNWAVE value word with a typed choice.
@@ -1675,6 +1760,46 @@ impl PodTone {
             ToneError::format(format!("{label} is not defined for model 0x{model_id:08x}"))
         })?;
         self.control_location(STOMP_SLOT, &[model_id], parameter_id, &label)
+    }
+
+    fn stomp_whammy_knob_location(
+        &self,
+        control: StompWhammyKnob,
+    ) -> Result<(usize, usize), ToneError> {
+        let label = format!("Stomp Whammy {} knob position", control.label());
+        if self
+            .models
+            .iter()
+            .filter(|model| model.slot == STOMP_SLOT)
+            .count()
+            != 1
+        {
+            return Err(ToneError::format(format!(
+                "{label} requires one unambiguous existing Stomp slot"
+            )));
+        }
+        let model_id = self
+            .models
+            .iter()
+            .find(|model| model.slot == STOMP_SLOT)
+            .map(|model| model.model_id)
+            .ok_or_else(|| ToneError::format(format!("{label} requires an existing Stomp slot")))?;
+        if model_id != STOMP_WHAMMY_INTERVAL_MODEL_ID {
+            return Err(ToneError::format(format!(
+                "{label} applies only to Stomp model 0x{STOMP_WHAMMY_INTERVAL_MODEL_ID:08x}"
+            )));
+        }
+        let expected_param = match control {
+            StompWhammyKnob::Heel => STOMP_WHAMMY_HEEL_PARAM,
+            StompWhammyKnob::Toe => STOMP_WHAMMY_TOE_PARAM,
+        };
+        debug_assert_eq!(control.param_id(), expected_param);
+        self.control_location(
+            STOMP_SLOT,
+            &[STOMP_WHAMMY_INTERVAL_MODEL_ID],
+            expected_param,
+            &label,
+        )
     }
 
     fn mod_control_location(&self, control: ModControl) -> Result<(usize, usize), ToneError> {
@@ -2164,6 +2289,33 @@ impl Library {
         entry.tone.set_stomp_control_fraction(control, value)
     }
 
+    pub fn stomp_whammy_knob_position(
+        &self,
+        index: usize,
+        control: StompWhammyKnob,
+    ) -> Result<f32, ToneError> {
+        self.tones
+            .get(index)
+            .ok_or_else(|| ToneError::format("tone index is outside the library"))?
+            .tone
+            .stomp_whammy_knob_position(control)
+    }
+
+    pub fn set_stomp_whammy_knob_position(
+        &mut self,
+        index: usize,
+        control: StompWhammyKnob,
+        position: f32,
+    ) -> Result<(), ToneError> {
+        let entry = self
+            .tones
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
+        entry
+            .tone
+            .set_stomp_whammy_knob_position(control, position)
+    }
+
     pub fn stomp_wave_selection(&self, index: usize) -> Result<StompWaveValue, ToneError> {
         self.tones
             .get(index)
@@ -2459,6 +2611,28 @@ impl PodBundleLibrary {
             .entry_location(index)
             .ok_or_else(|| ToneError::format("preset index is outside the library"))?;
         self.edit_tone(bank, preset, edit)
+    }
+
+    pub fn stomp_whammy_knob_position(
+        &self,
+        index: usize,
+        control: StompWhammyKnob,
+    ) -> Result<f32, ToneError> {
+        let (bank, preset) = self
+            .entry_location(index)
+            .ok_or_else(|| ToneError::format("preset index is outside the bundle"))?;
+        self.tone(bank, preset)?.stomp_whammy_knob_position(control)
+    }
+
+    pub fn set_stomp_whammy_knob_position(
+        &mut self,
+        index: usize,
+        control: StompWhammyKnob,
+        position: f32,
+    ) -> Result<(), ToneError> {
+        self.edit_entry(index, |tone| {
+            tone.set_stomp_whammy_knob_position(control, position)
+        })
     }
 
     pub fn stomp_wave_selection(&self, index: usize) -> Result<StompWaveValue, ToneError> {
@@ -2868,6 +3042,10 @@ mod tests {
         let pinf = find_chunk_data(&bytes, b"PINF");
         bytes[pinf + 72..pinf + 76].copy_from_slice(&version.to_be_bytes());
         bytes
+    }
+
+    fn whammy_tone(version: u32, model: u32, parameters: &[&[u8]]) -> Vec<u8> {
+        stomp_tone(version, model, parameters)
     }
 
     fn mod_tone(version: u32, model: u32, parameters: &[&[u8]]) -> Vec<u8> {
@@ -4109,6 +4287,173 @@ mod tests {
             reopened_bundle.tone(0, 0).unwrap().as_bytes(),
             bundled_tone.as_bytes()
         );
+    }
+
+    #[test]
+    fn whammy_knob_position_uses_source_float_quantizer_and_patches_only_selected_word() {
+        let heel = drive_record(0x3f, STOMP_WHAMMY_HEEL_PARAM, 1, 0x3e80_0000);
+        let toe = drive_record(0x3f, STOMP_WHAMMY_TOE_PARAM, 1, 0x3f00_0000);
+        let unrelated = drive_record(0x3f, 0x0010_00aa, 1, 0x3e00_0000);
+        let original = custom_tone(
+            ContainerKind::L6as,
+            &[
+                BuiltModel { slot: STOMP_SLOT, model_id: STOMP_WHAMMY_INTERVAL_MODEL_ID, tail: &[0x91, 0x82, 0x73, 0x64], parameters: &[&heel, &toe, &unrelated] },
+                BuiltModel { slot: AMP_SLOT, model_id: PLEXI_45_MODEL, tail: &[0xde, 0xad, 0xbe, 0xef], parameters: &[&unrelated] },
+            ],
+        );
+        let cases = [
+            (0.0f32, 0x0000_0000),
+            (0.25, 0x3e70_f0f2),
+            (0.5, 0x3ef8_f8fa),
+            (0.75, 0x3f3c_bcbd),
+            (1.0, 0x3f7c_fcfe),
+            (0.1234567, 0x3de0_e0e2),
+        ];
+        for control in StompWhammyKnob::ALL {
+            for (position, expected_bits) in cases {
+                let mut tone = PodTone::parse(original.clone()).unwrap();
+                assert_eq!(tone.stomp_whammy_knob_position(control).unwrap().to_bits(), if control == StompWhammyKnob::Heel { 0x3e80_0000 } else { 0x3f00_0000 });
+                tone.set_stomp_whammy_knob_position(control, position).unwrap();
+                let mut expected = original.clone();
+                let (_, parameter_index) = tone.stomp_whammy_knob_location(control).unwrap();
+                let model_index = tone.models.iter().position(|model| model.slot == STOMP_SLOT).unwrap();
+                let offset = tone.parameter_value_offsets[model_index][parameter_index].unwrap();
+                expected[offset..offset + 4].copy_from_slice(&expected_bits.to_be_bytes());
+                assert_eq!(tone.as_bytes(), expected, "{control:?} at {position}");
+            }
+        }
+    }
+
+    #[test]
+    fn whammy_quantizer_transition_neighbors_and_fixed_points_match_source_float32_steps() {
+        let record = drive_record(0x3f, STOMP_WHAMMY_HEEL_PARAM, 1, 0);
+        let original = whammy_tone(PODXT_LIVE_HOST_MIN_VERSION, STOMP_WHAMMY_INTERVAL_MODEL_ID, &[&record]);
+        let boundaries = [
+            (0x3c80_8080, 0x0000_0000), (0x3c80_8081, 0x3c80_8081), (0x3c80_8082, 0x3c80_8081),
+            (0x3f00_8080, 0x3ef8_f8fa), (0x3f00_8081, 0x3f00_8081), (0x3f00_8082, 0x3f00_8081),
+            (0x3f7c_fcfc, 0x3f78_f8fa), (0x3f7c_fcfd, 0x3f7c_fcfe), (0x3f7c_fcfe, 0x3f7c_fcfe),
+        ];
+        for (input, expected) in boundaries {
+            let mut tone = PodTone::parse(original.clone()).unwrap();
+            tone.set_stomp_whammy_knob_position(StompWhammyKnob::Heel, f32::from_bits(input)).unwrap();
+            assert_eq!(tone.stomp_whammy_knob_position(StompWhammyKnob::Heel).unwrap().to_bits(), expected, "input {input:08x}");
+        }
+        for control in StompWhammyKnob::ALL {
+            for step in 0..=63 {
+                let quantized = ((step as f32) * WHAMMY_INTERVAL_RESOLUTION_RECIPROCAL).to_bits();
+                let mut tone = PodTone::parse(original.clone()).unwrap();
+                tone.set_stomp_whammy_knob_position(control, f32::from_bits(quantized)).unwrap();
+                assert_eq!(tone.stomp_whammy_knob_position(control).unwrap().to_bits(), quantized, "{control:?}, step {step}");
+            }
+        }
+    }
+
+    #[test]
+    fn whammy_knob_rejects_invalid_inputs_and_existing_values_without_mutation() {
+        let valid = drive_record(0x3f, STOMP_WHAMMY_HEEL_PARAM, 1, 0x3e80_0000);
+        let original = whammy_tone(PODXT_LIVE_HOST_MIN_VERSION, STOMP_WHAMMY_INTERVAL_MODEL_ID, &[&valid]);
+        for input in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.01, 1.01] {
+            let mut tone = PodTone::parse(original.clone()).unwrap();
+            assert!(tone.set_stomp_whammy_knob_position(StompWhammyKnob::Heel, input).is_err());
+            assert_eq!(tone.as_bytes(), original);
+        }
+        for bits in [f32::NAN.to_bits(), f32::INFINITY.to_bits(), f32::NEG_INFINITY.to_bits(), (-0.01f32).to_bits(), 1.01f32.to_bits()] {
+            let invalid = drive_record(0x3f, STOMP_WHAMMY_HEEL_PARAM, 1, bits);
+            let bytes = whammy_tone(PODXT_LIVE_HOST_MIN_VERSION, STOMP_WHAMMY_INTERVAL_MODEL_ID, &[&invalid]);
+            let mut tone = PodTone::parse(bytes.clone()).unwrap();
+            assert!(tone.stomp_whammy_knob_position(StompWhammyKnob::Heel).is_err());
+            assert!(tone.set_stomp_whammy_knob_position(StompWhammyKnob::Heel, 0.75).is_err());
+            assert_eq!(tone.as_bytes(), bytes);
+        }
+        let imported_raw = drive_record(0x3f, STOMP_WHAMMY_HEEL_PARAM, 1, 0x3e12_3456);
+        let bytes = whammy_tone(PODXT_LIVE_HOST_MIN_VERSION, STOMP_WHAMMY_INTERVAL_MODEL_ID, &[&imported_raw]);
+        let mut tone = PodTone::parse(bytes.clone()).unwrap();
+        assert_eq!(tone.stomp_whammy_knob_position(StompWhammyKnob::Heel).unwrap().to_bits(), 0x3e12_3456);
+        assert_eq!(tone.as_bytes(), bytes, "reading an unquantized imported value is lossless");
+    }
+
+    #[test]
+    fn whammy_knob_admission_checks_target_version_model_slot_record_prefix_type_and_opaque_data() {
+        let valid = drive_record(0x3f, STOMP_WHAMMY_HEEL_PARAM, 1, 0x3e80_0000);
+        for bytes in [
+            stomp_tone(PODXT_LIVE_HOST_MIN_VERSION - 1, STOMP_WHAMMY_INTERVAL_MODEL_ID, &[&valid]),
+            stomp_tone(PODXT_LIVE_HOST_MIN_VERSION, 0x020a_000d, &[&valid]),
+            stomp_tone(PODXT_LIVE_HOST_MIN_VERSION, STOMP_WHAMMY_INTERVAL_MODEL_ID, &[]),
+            stomp_tone(PODXT_LIVE_HOST_MIN_VERSION, STOMP_WHAMMY_INTERVAL_MODEL_ID, &[&drive_record(0x3e, STOMP_WHAMMY_HEEL_PARAM, 1, 0x3e80_0000)]),
+            stomp_tone(PODXT_LIVE_HOST_MIN_VERSION, STOMP_WHAMMY_INTERVAL_MODEL_ID, &[&drive_record(0x3f, STOMP_WHAMMY_HEEL_PARAM, 2, 0x3e80_0000)]),
+        ] {
+            let mut tone = PodTone::parse(bytes.clone()).unwrap();
+            assert!(tone.stomp_whammy_knob_position(StompWhammyKnob::Heel).is_err());
+            assert!(tone.set_stomp_whammy_knob_position(StompWhammyKnob::Heel, 0.5).is_err());
+            assert_eq!(tone.as_bytes(), bytes);
+        }
+        let wrong_target = custom_tone(ContainerKind::L6pa, &[BuiltModel { slot: STOMP_SLOT, model_id: STOMP_WHAMMY_INTERVAL_MODEL_ID, tail: &[], parameters: &[&valid] }]);
+        let mut tone = PodTone::parse(wrong_target.clone()).unwrap();
+        assert!(tone.set_stomp_whammy_knob_position(StompWhammyKnob::Heel, 0.5).is_err());
+        assert_eq!(tone.as_bytes(), wrong_target);
+
+        let wrong_slot = custom_tone(
+            ContainerKind::L6as,
+            &[BuiltModel {
+                slot: AMP_SLOT,
+                model_id: STOMP_WHAMMY_INTERVAL_MODEL_ID,
+                tail: &[],
+                parameters: &[&valid],
+            }],
+        );
+        let mut tone = PodTone::parse(wrong_slot.clone()).unwrap();
+        assert!(tone.set_stomp_whammy_knob_position(StompWhammyKnob::Heel, 0.5).is_err());
+        assert_eq!(tone.as_bytes(), wrong_slot);
+
+        let opaque = custom_tone(ContainerKind::L6as, &[BuiltModel { slot: STOMP_SLOT, model_id: STOMP_WHAMMY_INTERVAL_MODEL_ID, tail: &[], parameters: &[&valid, b"\x00\x00\x00\x0c\x00\x10\x00\x02\x00\x00\x00\x01"] }]);
+        let mut tone = PodTone::parse(opaque.clone()).unwrap();
+        assert!(tone.set_stomp_whammy_knob_position(StompWhammyKnob::Heel, 0.5).is_err());
+        assert_eq!(tone.as_bytes(), opaque);
+    }
+
+    #[test]
+    fn whammy_knob_library_and_bundle_edits_revert_save_reopen_and_preserve_first_duplicate() {
+        let early = drive_record(0x3f, STOMP_WHAMMY_HEEL_PARAM, 1, 0x3e00_0000);
+        let later = drive_record(0x3f, STOMP_WHAMMY_HEEL_PARAM, 1, 0x3e80_0000);
+        let toe = drive_record(0x3f, STOMP_WHAMMY_TOE_PARAM, 1, 0x3f00_0000);
+        let original = whammy_tone(PODXT_LIVE_HOST_MIN_VERSION, STOMP_WHAMMY_INTERVAL_MODEL_ID, &[&early, &later, &toe]);
+        let mut library = Library::default();
+        let index = library.import_bytes(original.clone()).unwrap();
+        assert_eq!(library.stomp_whammy_knob_position(index, StompWhammyKnob::Heel).unwrap().to_bits(), 0x3e80_0000, "last matching source record is selected");
+        library.set_stomp_whammy_knob_position(index, StompWhammyKnob::Heel, 0.75).unwrap();
+        assert!(library.is_dirty(index));
+        let edited = library.tone(index).unwrap().as_bytes().to_vec();
+        let changed: Vec<_> = original.iter().zip(&edited).enumerate().filter_map(|(i, (a, b))| (a != b).then_some(i)).collect();
+        assert_eq!(changed.len(), 4);
+        let (_, parameter_index) = library.tone(index).unwrap().stomp_whammy_knob_location(StompWhammyKnob::Heel).unwrap();
+        let model_index = library.tone(index).unwrap().models.iter().position(|model| model.slot == STOMP_SLOT).unwrap();
+        let selected = library.tone(index).unwrap().parameter_value_offsets[model_index][parameter_index].unwrap();
+        assert_eq!(changed, (selected..selected + 4).collect::<Vec<_>>());
+        let first_parameter = library.tone(index).unwrap().models[model_index].parameters.iter().position(|parameter| matches!(parameter, ModelParameter::Recorded { id, .. } if *id == STOMP_WHAMMY_HEEL_PARAM)).unwrap();
+        let earlier = library.tone(index).unwrap().parameter_value_offsets[model_index][first_parameter].unwrap();
+        assert_eq!(&edited[earlier..earlier + 4], &original[earlier..earlier + 4]);
+        library.revert_unsaved(index).unwrap();
+        assert!(!library.is_dirty(index));
+        assert_eq!(library.tone(index).unwrap().as_bytes(), original);
+        library.set_stomp_whammy_knob_position(index, StompWhammyKnob::Heel, 0.75).unwrap();
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("whammy-copy.l6t");
+        std::fs::write(&path, b"keep existing copy").unwrap();
+        assert!(library.tone(index).unwrap().save_copy(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"keep existing copy");
+        let successful = directory.path().join("whammy-saved.l6t");
+        library.tone(index).unwrap().save_copy(&successful).unwrap();
+        let reopened = PodTone::parse(std::fs::read(successful).unwrap()).unwrap();
+        assert_eq!(reopened.stomp_whammy_knob_position(StompWhammyKnob::Heel).unwrap().to_bits(), 0x3f3c_bcbd);
+        assert_eq!(reopened.stomp_whammy_knob_position(StompWhammyKnob::Toe).unwrap().to_bits(), 0x3f00_0000);
+
+        let mut bundle = PodBundleLibrary::parse(bundle_with_tone(&original)).unwrap();
+        bundle.set_stomp_whammy_knob_position(0, StompWhammyKnob::Toe, 0.25).unwrap();
+        assert!(bundle.is_dirty());
+        let reopened_bundle = PodBundleLibrary::parse(bundle.as_bytes().to_vec()).unwrap();
+        assert_eq!(reopened_bundle.stomp_whammy_knob_position(0, StompWhammyKnob::Toe).unwrap().to_bits(), 0x3e70_f0f2);
+        assert_eq!(reopened_bundle.stomp_whammy_knob_position(0, StompWhammyKnob::Heel).unwrap().to_bits(), 0x3e80_0000);
     }
 
     #[test]

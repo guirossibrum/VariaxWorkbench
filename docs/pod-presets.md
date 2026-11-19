@@ -136,7 +136,15 @@ Decay/Sensitivity/Q at positions 1/2/3; and `0x020a000e` Position/Mix at
 positions 1/4. SYNWAVE is a typed eight-choice association for models `0x020a0001`,
 `0x020a0002`, `0x020a0003`, `0x020a0004`, `0x020a0005`, `0x020a0006`,
 `0x020a0007`, and `0x020a000c`; model `0x020a0009` uses separate percent WAVE.
-The special WHAMMY_INTERVAL Heel/Toe values remain unavailable. The SYNWAVE
+The Stomp `0x020a000e` WHAMMY_INTERVAL Heel and Toe knob positions are editable
+offline through their existing type-1 PARM records: Heel selector/PARM
+`0x00030002`/`0x00100002`, Toe `0x00030003`/`0x00100003`. This operation takes
+a finite normalized editor knob position in `[0,1]`; it does not parse the
+separate formatted display text or assign semitone/physical units. The
+source-backed float32 operation multiplies by `63.75`, truncates toward zero,
+then multiplies by the float32 reciprocal `0x3c808081`, preserving each
+rounding stage. Imported finite values remain raw until an explicit edit.
+The SYNWAVE
 association choices use exact f32 values from the source's controller-key
 conversion, in the shown order:
 
@@ -218,8 +226,12 @@ Rust behavior, not an executed vendor oracle, device acceptance test, or
 installed-pack entitlement result. No DLL was loaded, no installer was run,
 and no device was opened.
 
-Three Stomp-specific Rust test methods cover the admitted fields across all 31
-model layouts, rejection, and library revert/copy-collision/reopen behavior.
+Three earlier Stomp-specific Rust test methods cover the admitted fields across
+all 31 model layouts, rejection, and library revert/copy-collision/reopen
+behavior. This change adds five source-contract core test methods for typed
+WHAMMY_INTERVAL Heel/Toe position editing, float32 fixtures and transition
+neighbors, fixed points, rejection, preservation and library/bundle save/reopen;
+two GUI methods cover direct-tone and bundle dirty/save/reopen/quit paths.
 Separate Mod, Delay and Reverb tests cover source-listed layout mappings and
 focused independent semantic-id, complete-file preservation, family-specific
 transactional rejection, and saved/reparsed output cases. The headless egui
