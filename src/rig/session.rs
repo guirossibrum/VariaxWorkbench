@@ -255,6 +255,18 @@ impl Session {
         backend::set_pod_model_enabled(bytes, control, enabled)
     }
 
+    /// Applies one admitted AMP model-id choice to an existing FORM/L6PA tone.
+    /// This explicit offline edit changes only its MINF model-id word.
+    pub fn set_pod_amp_model_choice(
+        self,
+        role: RoleKind,
+        bytes: &[u8],
+        choice: crate::pod_preset::PodAmpModelChoice,
+    ) -> Result<Vec<u8>, Rejection> {
+        self.require(role, Operation::EditPodPreset)?;
+        backend::set_pod_amp_model_choice(bytes, choice)
+    }
+
     /// Writes a new copy through the non-overwriting save. It does not upload.
     pub fn save_pod_copy(self, role: RoleKind, path: &Path, bytes: &[u8]) -> Result<(), Rejection> {
         self.require(role, Operation::EditPodPreset)?;

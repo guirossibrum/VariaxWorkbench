@@ -85,6 +85,17 @@ pub(crate) fn set_pod_model_enabled(
     Ok(tone.into_bytes())
 }
 
+pub(crate) fn set_pod_amp_model_choice(
+    bytes: &[u8],
+    choice: pod_preset::PodAmpModelChoice,
+) -> Result<Vec<u8>, Rejection> {
+    let mut tone = pod_preset::PodTone::parse(bytes.to_vec())
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    tone.set_amp_model_choice(choice)
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    Ok(tone.into_bytes())
+}
+
 pub(crate) fn save_pod_copy(path: &Path, bytes: &[u8]) -> Result<(), Rejection> {
     let tone = pod_preset::PodTone::parse(bytes.to_vec())
         .map_err(|error| map_tone(error, Operation::EditPodPreset))?;

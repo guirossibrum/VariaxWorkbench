@@ -31,6 +31,48 @@ use std::{ops::Range, path::Path};
 
 /// PINF target for PODxt Live. Equal to `L6ProductConstants.PODXT_LIVE`.
 pub const PODXT_LIVE_TONE_ID: u32 = 0x0003_000a;
+/// Exact AMP model choices admitted for the bounded existing-slot operation.
+pub const PODXT_AMP_MODEL_CHOICES: [PodAmpModelChoice; 2] =
+    [PodAmpModelChoice::NoAmp, PodAmpModelChoice::Line6Clean];
+
+/// One source-admitted AMP model-id choice. This is not a device-support claim.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PodAmpModelChoice {
+    NoAmp,
+    Line6Clean,
+}
+
+impl PodAmpModelChoice {
+    pub const fn model_id(self) -> u32 {
+        match self {
+            Self::NoAmp => 0x0002_0000,
+            Self::Line6Clean => 0x0002_0001,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::NoAmp => "No Amp",
+            Self::Line6Clean => "Line 6 Clean",
+        }
+    }
+
+    pub const fn from_model_id(model_id: u32) -> Option<Self> {
+        match model_id {
+            0x0002_0000 => Some(Self::NoAmp),
+            0x0002_0001 => Some(Self::Line6Clean),
+            _ => None,
+        }
+    }
+}
+
+impl TryFrom<u32> for PodAmpModelChoice {
+    type Error = u32;
+
+    fn try_from(model_id: u32) -> Result<Self, Self::Error> {
+        Self::from_model_id(model_id).ok_or(model_id)
+    }
+}
 /// Amp model slot from `L6Patch.UpdateMetaAmpName` and `kGPXTSlot_Amp`.
 pub const AMP_SLOT: u32 = 0x0003_0000;
 /// Stomp selector resolved to the SYNWAVE definition at layout position 1.
@@ -1540,6 +1582,65 @@ impl PodTone {
         &self.models
     }
 
+    /// Apply one admitted AMP choice to the existing AMP MINF model-id word.
+    /// This file-only Apply path never creates a slot or rewrites PARMs.
+    pub fn set_amp_model_choice(
+        &mut self,
+        choice: PodAmpModelChoice,
+    ) -> Result<(), ToneError> {
+        if self.container != ContainerKind::L6pa {
+            return Err(ToneError::format(
+                "AMP model selection requires a FORM/L6PA tone",
+            ));
+        }
+        if self.device_id != PODXT_LIVE_TONE_ID {
+            return Err(ToneError::format(
+                "AMP model selection requires the PODxt Live PINF target",
+            ));
+        }
+        if self.device_version < PODXT_LIVE_HOST_MIN_VERSION {
+            return Err(ToneError::format(
+                "AMP model selection requires the PODxt Live host profile minimum 3.00",
+            ));
+        }
+
+        let matches: Vec<_> = self
+            .models
+            .iter()
+            .enumerate()
+            .filter(|(_, model)| model.slot == AMP_SLOT)
+            .map(|(index, _)| index)
+            .collect();
+        let [model_index] = matches.as_slice() else {
+            return Err(ToneError::format(format!(
+                "AMP model selection requires exactly one existing model in slot {AMP_SLOT:08x}"
+            )));
+        };
+        let model_index = *model_index;
+        let range = self
+            .model_minfo_ranges
+            .get(model_index)
+            .ok_or_else(|| ToneError::format("AMP model MINF source range is unavailable"))?;
+        if range.end > self.bytes.len()
+            || range
+                .start
+                .checked_add(12)
+                .is_none_or(|minimum_end| minimum_end > range.end)
+        {
+            return Err(ToneError::format(
+                "AMP model selection requires an existing MINF body of at least 12 bytes",
+            ));
+        }
+
+        let requested = choice.model_id();
+        if self.models[model_index].model_id == requested {
+            return Ok(());
+        }
+        self.bytes[range.start..range.start + 4].copy_from_slice(&requested.to_be_bytes());
+        self.models[model_index].model_id = requested;
+        Ok(())
+    }
+
     /// Return the parsed source interpretation of one applicable model flag.
     /// Noncanonical bytes remain readable and are reported with their raw byte.
     pub fn model_enable_state(
@@ -2639,6 +2740,18 @@ impl Library {
         entry.tone.set_model_enabled(control, enabled)
     }
 
+    pub fn set_amp_model_choice(
+        &mut self,
+        index: usize,
+        choice: PodAmpModelChoice,
+    ) -> Result<(), ToneError> {
+        let entry = self
+            .tones
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
+        entry.tone.set_amp_model_choice(choice)
+    }
+
     pub fn set_amp_drive_fraction(&mut self, index: usize, value: f32) -> Result<(), ToneError> {
         self.set_amp_control_fraction(index, AmpControl::Drive, value)
     }
@@ -3054,6 +3167,14 @@ impl PodBundleLibrary {
         enabled: bool,
     ) -> Result<(), ToneError> {
         self.edit_entry(index, |tone| tone.set_model_enabled(control, enabled))
+    }
+
+    pub fn set_amp_model_choice(
+        &mut self,
+        index: usize,
+        choice: PodAmpModelChoice,
+    ) -> Result<(), ToneError> {
+        self.edit_entry(index, |tone| tone.set_amp_model_choice(choice))
     }
 
     pub fn stomp_wave_selection(&self, index: usize) -> Result<StompWaveValue, ToneError> {
@@ -3635,6 +3756,368 @@ mod tests {
             bytes[body + 11] = following_byte;
         }
         bytes
+    }
+
+    #[test]
+    fn amp_model_apply_changes_only_the_existing_amp_minf_id_and_noops_same_choice() {
+        let opaque_parameter = [0xde, 0xad, 0xbe];
+        let unusual_parameter = [
+            0xff, 0x12, 0x34, 0x56, 0x7f, 0x00, 0x00, 0x01, 0x7f, 0xc0, 0x00, 0x01,
+        ];
+        let original = custom_tone(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: AMP_SLOT,
+                model_id: 0xdead_beef,
+                // Signed ordinal, reserved bytes and noncanonical enabled byte.
+                tail: &[0x80, 0xa1, 0xb2, 0xfe],
+                parameters: &[&opaque_parameter, &unusual_parameter],
+            }],
+        );
+        let mut tone = PodTone::parse(original.clone()).unwrap();
+        assert_eq!(tone.models()[0].ordinal, Some(-128));
+        assert_eq!(tone.models()[0].reserved, Some([0xa1, 0xb2]));
+        assert_eq!(tone.models()[0].enabled, Some(false));
+
+        tone.set_amp_model_choice(PodAmpModelChoice::NoAmp).unwrap();
+        let changed = tone.as_bytes().to_vec();
+        let id_offset = find_chunk_data(&original, b"MINF");
+        assert_eq!(id_offset, find_chunk_data(&changed, b"MINF"));
+        for index in 0..original.len() {
+            if !(id_offset..id_offset + 4).contains(&index) {
+                assert_eq!(changed[index], original[index], "changed byte {index:#x}");
+            }
+        }
+        assert_eq!(
+            &changed[id_offset..id_offset + 4],
+            &PodAmpModelChoice::NoAmp.model_id().to_be_bytes()
+        );
+        assert_eq!(tone.amp_model_id(), Some(PodAmpModelChoice::NoAmp.model_id()));
+        assert_eq!(tone.models()[0].ordinal, Some(-128));
+        assert_eq!(tone.models()[0].reserved, Some([0xa1, 0xb2]));
+        assert_eq!(tone.models()[0].enabled, Some(false));
+        assert_eq!(
+            tone.models()[0].parameters,
+            vec![
+                ModelParameter::Opaque { len: 3 },
+                ModelParameter::Recorded {
+                    prefix: 0xff,
+                    id: 0x0012_3456,
+                    value: ParameterValue::Other {
+                        type_word: 0x7f00_0001,
+                        bits: 0x7fc0_0001,
+                    },
+                },
+            ]
+        );
+
+        tone.set_amp_model_choice(PodAmpModelChoice::Line6Clean)
+            .unwrap();
+        let restored_id = find_chunk_data(tone.as_bytes(), b"MINF");
+        assert_eq!(
+            &tone.as_bytes()[restored_id..restored_id + 4],
+            &PodAmpModelChoice::Line6Clean.model_id().to_be_bytes()
+        );
+        let line6_clean = tone.as_bytes().to_vec();
+        tone.set_amp_model_choice(PodAmpModelChoice::NoAmp).unwrap();
+        let no_amp_id = find_chunk_data(tone.as_bytes(), b"MINF");
+        assert_eq!(
+            &tone.as_bytes()[no_amp_id..no_amp_id + 4],
+            &PodAmpModelChoice::NoAmp.model_id().to_be_bytes()
+        );
+        tone.set_amp_model_choice(PodAmpModelChoice::Line6Clean)
+            .unwrap();
+        assert_eq!(tone.as_bytes(), line6_clean);
+        let before_noop = tone.as_bytes().to_vec();
+        tone.set_amp_model_choice(PodAmpModelChoice::Line6Clean)
+            .unwrap();
+        assert_eq!(tone.as_bytes(), before_noop);
+        assert_eq!(
+            PodAmpModelChoice::try_from(0xdead_beef),
+            Err(0xdead_beef)
+        );
+    }
+
+    #[test]
+    fn amp_model_apply_uses_the_documented_literal_whole_buffer() {
+        let literal = "46 4f 52 4d 00 00 00 aa 4c 36 50 41 4a 55 4e 4b
+            00 00 00 03 11 22 33 a5 50 49 4e 46 00 00 00 50
+            00 00 00 01 00 03 00 0a 00 41 00 00 00 00 00 00
+            00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+            00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+            00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+            00 00 00 00 00 00 00 00 03 00 00 00 5a a5 96 69
+            4c 49 53 54 00 00 00 3a 50 41 54 43 4c 49 53 54
+            00 00 00 2e 4d 4f 44 4c 4d 49 4e 46 00 00 00 0c
+            00 02 00 01 00 03 00 00 fe 12 34 01 50 41 52 4d
+            00 00 00 03 de ad be a5 58 54 52 41 00 00 00 02
+            55 66";
+        let original: Vec<u8> = literal
+            .split_whitespace()
+            .map(|byte| u8::from_str_radix(byte, 16).unwrap())
+            .collect();
+        assert_eq!(original.len(), 178);
+        let mut tone = PodTone::parse(original.clone()).unwrap();
+        tone.set_amp_model_choice(PodAmpModelChoice::NoAmp).unwrap();
+        let mut expected = original;
+        expected[0x93] = 0x00;
+        assert_eq!(tone.as_bytes(), expected);
+        assert_eq!(tone.amp_model_id(), Some(0x0002_0000));
+    }
+
+    #[test]
+    fn amp_model_apply_rejects_scope_and_structure_before_mutation() {
+        let parameters: [&[u8]; 0] = [];
+        for container in [ContainerKind::L6fs, ContainerKind::L6as] {
+            let bytes = custom_tone(
+                container,
+                &[BuiltModel {
+                    slot: AMP_SLOT,
+                    model_id: 0xdead_beef,
+                    tail: &[0, 0, 0, 1],
+                    parameters: &parameters,
+                }],
+            );
+            let mut tone = PodTone::parse(bytes.clone()).unwrap();
+            let before = tone.clone();
+            assert!(tone
+                .set_amp_model_choice(PodAmpModelChoice::NoAmp)
+                .is_err());
+            assert_eq!(tone, before);
+        }
+
+        let short_minf = custom_tone(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: AMP_SLOT,
+                model_id: 0xdead_beef,
+                tail: &[],
+                parameters: &parameters,
+            }],
+        );
+        let mut tone = PodTone::parse(short_minf).unwrap();
+        let before = tone.clone();
+        assert!(tone
+            .set_amp_model_choice(PodAmpModelChoice::NoAmp)
+            .is_err());
+        assert_eq!(tone, before);
+
+        let missing_amp = custom_tone(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: STOMP_SLOT,
+                model_id: 0xdead_beef,
+                tail: &[0, 0, 0, 1],
+                parameters: &parameters,
+            }],
+        );
+        let mut tone = PodTone::parse(missing_amp).unwrap();
+        let before = tone.clone();
+        assert!(tone
+            .set_amp_model_choice(PodAmpModelChoice::NoAmp)
+            .is_err());
+        assert_eq!(tone, before);
+
+        let mut old_version = custom_tone(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: AMP_SLOT,
+                model_id: 0xdead_beef,
+                tail: &[0, 0, 0, 1],
+                parameters: &parameters,
+            }],
+        );
+        let pinf = find_chunk_data(&old_version, b"PINF");
+        old_version[pinf + 72..pinf + 76]
+            .copy_from_slice(&(PODXT_LIVE_HOST_MIN_VERSION - 1).to_be_bytes());
+        let mut tone = PodTone::parse(old_version).unwrap();
+        let before = tone.clone();
+        assert!(tone
+            .set_amp_model_choice(PodAmpModelChoice::NoAmp)
+            .is_err());
+        assert_eq!(tone, before);
+
+        let wrong_target = {
+            let mut bytes = custom_tone(
+                ContainerKind::L6pa,
+                &[BuiltModel {
+                    slot: AMP_SLOT,
+                    model_id: 0xdead_beef,
+                    tail: &[0, 0, 0, 1],
+                    parameters: &parameters,
+                }],
+            );
+            let pinf = find_chunk_data(&bytes, b"PINF");
+            bytes[pinf + 4..pinf + 8].copy_from_slice(&0x0007_0001u32.to_be_bytes());
+            bytes
+        };
+        assert!(PodTone::parse(wrong_target).is_err());
+
+        let wrong_layout_version = {
+            let mut bytes = custom_tone(
+                ContainerKind::L6pa,
+                &[BuiltModel {
+                    slot: AMP_SLOT,
+                    model_id: 0xdead_beef,
+                    tail: &[0, 0, 0, 1],
+                    parameters: &parameters,
+                }],
+            );
+            let pinf = find_chunk_data(&bytes, b"PINF");
+            bytes[pinf..pinf + 4].copy_from_slice(&2u32.to_be_bytes());
+            bytes
+        };
+        assert!(PodTone::parse(wrong_layout_version).is_err());
+
+        let duplicate_slot = custom_tone(
+            ContainerKind::L6pa,
+            &[
+                BuiltModel {
+                    slot: AMP_SLOT,
+                    model_id: 0xdead_beef,
+                    tail: &[0, 0, 0, 1],
+                    parameters: &parameters,
+                },
+                BuiltModel {
+                    slot: AMP_SLOT,
+                    model_id: 0xfeed_beef,
+                    tail: &[0, 0, 0, 1],
+                    parameters: &parameters,
+                },
+            ],
+        );
+        let duplicate_slot_before = duplicate_slot.clone();
+        assert!(PodTone::parse(duplicate_slot.clone()).is_err());
+        assert_eq!(duplicate_slot, duplicate_slot_before);
+
+        let mut missing_minf = custom_tone(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: AMP_SLOT,
+                model_id: 0xdead_beef,
+                tail: &[0, 0, 0, 1],
+                parameters: &parameters,
+            }],
+        );
+        let minf = find_chunk_data(&missing_minf, b"MINF");
+        missing_minf[minf - 8..minf - 4].copy_from_slice(b"XXXX");
+        let missing_minf_before = missing_minf.clone();
+        assert!(PodTone::parse(missing_minf.clone()).is_err());
+        assert_eq!(missing_minf, missing_minf_before);
+
+        let mut duplicate_minf = custom_tone(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: AMP_SLOT,
+                model_id: 0xdead_beef,
+                tail: &[0x80, 0xa1, 0xb2, 0xfe],
+                parameters: &[&opaque_parameter, &unusual_parameter],
+            }],
+        );
+        let top = preset::chunks(&duplicate_minf, 12..duplicate_minf.len()).unwrap();
+        let patch = preset::unique(&top, b"LIST").unwrap();
+        let model_chunks = preset::chunks(
+            &duplicate_minf,
+            patch.data.start + 4..patch.data.end,
+        )
+        .unwrap();
+        let model = model_chunks
+            .iter()
+            .find(|chunk| preset::container(&duplicate_minf, chunk, b"MODL"))
+            .unwrap();
+        let fields = preset::chunks(
+            &duplicate_minf,
+            model.data.start + 4..model.data.end,
+        )
+        .unwrap();
+        let minf = preset::unique(&fields, b"MINF").unwrap();
+        let duplicate_chunk = duplicate_minf[minf.data.start - 8..minf.data.end].to_vec();
+        let inserted_len = duplicate_chunk.len();
+        let model_length_offset = model.data.start - 4;
+        let patch_length_offset = patch.data.start - 4;
+        let insert_at = model.data.end;
+        duplicate_minf.splice(insert_at..insert_at, duplicate_chunk);
+        for offset in [model_length_offset, patch_length_offset, 4] {
+            let length = preset::word(&duplicate_minf, offset) as usize;
+            duplicate_minf[offset..offset + 4]
+                .copy_from_slice(&((length + inserted_len) as u32).to_be_bytes());
+        }
+        let duplicate_minf_before = duplicate_minf.clone();
+        assert!(PodTone::parse(duplicate_minf.clone()).is_err());
+        assert_eq!(duplicate_minf, duplicate_minf_before);
+    }
+
+    #[test]
+    fn amp_model_apply_updates_library_and_bundle_dirty_state_and_revert() {
+        let original = custom_tone(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: AMP_SLOT,
+                model_id: 0x0002_0000,
+                tail: &[0x80, 0xa1, 0xb2, 0xfe],
+                parameters: &[],
+            }],
+        );
+        let mut library = Library::default();
+        library.import_bytes(original.clone()).unwrap();
+        library
+            .set_amp_model_choice(0, PodAmpModelChoice::NoAmp)
+            .unwrap();
+        assert!(!library.is_dirty(0));
+        library
+            .set_amp_model_choice(0, PodAmpModelChoice::Line6Clean)
+            .unwrap();
+        assert!(library.is_dirty(0));
+        assert_eq!(
+            library.tone(0).unwrap().amp_model_id(),
+            Some(PodAmpModelChoice::Line6Clean.model_id())
+        );
+        library.revert_unsaved(0).unwrap();
+        assert!(!library.is_dirty(0));
+        assert_eq!(library.tone(0).unwrap().as_bytes(), original);
+
+        let mut bundle = PodBundleLibrary::parse(bundle_with_tone(&original)).unwrap();
+        bundle
+            .set_amp_model_choice(0, PodAmpModelChoice::Line6Clean)
+            .unwrap();
+        assert!(bundle.is_dirty());
+        assert_eq!(
+            bundle.tone(0, 0).unwrap().amp_model_id(),
+            Some(PodAmpModelChoice::Line6Clean.model_id())
+        );
+        bundle.revert().unwrap();
+        assert!(!bundle.is_dirty());
+        assert_eq!(bundle.tone(0, 0).unwrap().as_bytes(), original);
+
+        let wrong_container = custom_tone(
+            ContainerKind::L6as,
+            &[BuiltModel {
+                slot: AMP_SLOT,
+                model_id: 0xdead_beef,
+                tail: &[0x80, 0xa1, 0xb2, 0xfe],
+                parameters: &[],
+            }],
+        );
+        let mut rejected_library = Library::default();
+        rejected_library
+            .import_bytes(wrong_container.clone())
+            .unwrap();
+        assert!(rejected_library
+            .set_amp_model_choice(0, PodAmpModelChoice::NoAmp)
+            .is_err());
+        assert!(!rejected_library.is_dirty(0));
+        assert_eq!(
+            rejected_library.tone(0).unwrap().as_bytes(),
+            wrong_container
+        );
+
+        let mut rejected_bundle =
+            PodBundleLibrary::parse(bundle_with_tone(&wrong_container)).unwrap();
+        assert!(rejected_bundle
+            .set_amp_model_choice(0, PodAmpModelChoice::NoAmp)
+            .is_err());
+        assert!(!rejected_bundle.is_dirty());
+        assert_eq!(rejected_bundle.tone(0, 0).unwrap().as_bytes(), wrong_container);
     }
 
     #[test]

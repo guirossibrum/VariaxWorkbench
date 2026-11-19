@@ -219,6 +219,7 @@ struct Workbench {
     pod_bundle: Option<pod_preset::PodBundleLibrary>,
     pod_selected: Option<usize>,
     pod_name: String,
+    pod_pending_amp_choice: Option<(usize, pod_preset::PodAmpModelChoice)>,
     pod_message: String,
     #[cfg(test)]
     bank_rows: HashMap<(usize, usize), Rect>,
@@ -238,6 +239,8 @@ struct Workbench {
     pod_rows: HashMap<usize, Rect>,
     #[cfg(test)]
     pod_drive_slider: Option<Rect>,
+    pod_amp_model_choices: HashMap<pod_preset::PodAmpModelChoice, Rect>,
+    pod_apply_amp_model_button: Option<Rect>,
     #[cfg(test)]
     pod_stomp_sliders: HashMap<pod_preset::StompControl, Rect>,
     #[cfg(test)]
@@ -317,6 +320,7 @@ impl Workbench {
             pod_bundle: None,
             pod_selected: None,
             pod_name: String::new(),
+            pod_pending_amp_choice: None,
             pod_message: String::new(),
             #[cfg(test)]
             bank_rows: HashMap::new(),
@@ -336,6 +340,8 @@ impl Workbench {
             pod_rows: HashMap::new(),
             #[cfg(test)]
             pod_drive_slider: None,
+            pod_amp_model_choices: HashMap::new(),
+            pod_apply_amp_model_button: None,
             #[cfg(test)]
             pod_stomp_sliders: HashMap::new(),
             #[cfg(test)]
@@ -1779,6 +1785,8 @@ impl Workbench {
         {
             self.pod_rows.clear();
             self.pod_drive_slider = None;
+            self.pod_amp_model_choices.clear();
+            self.pod_apply_amp_model_button = None;
             self.pod_stomp_sliders.clear();
             self.pod_whammy_knob_sliders.clear();
             self.pod_eq_frequency_sliders.clear();
@@ -1799,6 +1807,12 @@ impl Workbench {
             .resizable(false)
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-24.0, 64.0))
             .show(ctx, |ui| {
+                #[cfg(test)]
+                {
+                    self.pod_drive_slider = None;
+                    self.pod_amp_model_choices.clear();
+                    self.pod_apply_amp_model_button = None;
+                }
                 if self.pending.is_some() {
                     ui.disable();
                 }
@@ -1861,8 +1875,55 @@ impl Workbench {
                     #[cfg(test)]
                     self.pod_rows.insert(index, response.rect);
                     if response.clicked() {
+                        if self.pod_selected != Some(index) {
+                            self.pod_pending_amp_choice = None;
+                        }
                         self.pod_selected = Some(index);
                         self.pod_name = name;
+                    }
+                }
+                let amp_choice_state = self.pod_selected.and_then(|index| {
+                    self.pod_library.tone(index).and_then(|tone| {
+                        if tone.container() != pod_preset::ContainerKind::L6pa {
+                            return None;
+                        }
+                        let model_id = tone.amp_model_id()?;
+                        let current = pod_preset::PodAmpModelChoice::from_model_id(model_id);
+                        let pending = self
+                            .pod_pending_amp_choice
+                            .filter(|(pending_index, _)| *pending_index == index)
+                            .map(|(_, choice)| choice);
+                        Some((index, current, pending))
+                    })
+                });
+                if let Some((index, current, pending)) = amp_choice_state {
+                    let mut selected = pending.or(current);
+                    let mut apply_clicked = false;
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("AMP model (offline)");
+                        for choice in pod_preset::PODXT_AMP_MODEL_CHOICES {
+                            let label = format!("{} · {:08x}", choice.label(), choice.model_id());
+                            let response = ui.selectable_value(&mut selected, Some(choice), label);
+                            #[cfg(test)]
+                            self.pod_amp_model_choices.insert(choice, response.rect);
+                        }
+                        if current.is_none() {
+                            ui.small("Current id is outside the admitted choice list.");
+                        }
+                        let response = ui.button("Apply AMP model");
+                        #[cfg(test)]
+                        {
+                            self.pod_apply_amp_model_button = Some(response.rect);
+                        }
+                        apply_clicked = response.clicked();
+                    });
+                    if apply_clicked {
+                        if let Some(choice) = selected {
+                            self.apply_pod_amp_model_choice(choice);
+                        }
+                    } else if let Some(choice) = selected {
+                        self.pod_pending_amp_choice =
+                            (Some(choice) != current).then_some((index, choice));
                     }
                 }
                 ui.horizontal(|ui| {
@@ -2587,6 +2648,35 @@ impl Workbench {
                     self.pod_message = format!(
                         "Renamed the in-memory tone to {}. Nothing was sent.",
                         self.pod_name
+                    );
+                }
+                Err(error) => self.pod_message = error.detail(),
+            },
+            Err(error) => self.pod_message = rejection_text(&error),
+        }
+    }
+
+    fn apply_pod_amp_model_choice(&mut self, choice: pod_preset::PodAmpModelChoice) {
+        let Some(index) = self.pod_selected else {
+            self.pod_message = "Select a tone before applying an AMP model.".into();
+            return;
+        };
+        let Some(current) = self
+            .pod_library
+            .tone(index)
+            .map(|tone| tone.as_bytes().to_vec())
+        else {
+            self.pod_message = "Select a tone before applying an AMP model.".into();
+            return;
+        };
+        match Session::initial_rig().set_pod_amp_model_choice(RoleKind::Pod, &current, choice) {
+            Ok(bytes) => match self.replace_pod_tone(index, bytes) {
+                Ok(()) => {
+                    self.pod_pending_amp_choice = None;
+                    self.pod_message = format!(
+                        "Applied AMP model {} (0x{:08x}) to the offline tone. Nothing was sent.",
+                        choice.label(),
+                        choice.model_id()
                     );
                 }
                 Err(error) => self.pod_message = error.detail(),
@@ -4583,6 +4673,104 @@ mod tests {
         assert_eq!(app.document.as_ref().unwrap().as_bytes(), guitar);
         app.start_read();
         assert!(app.read_worker.is_none());
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn pod_amp_model_requires_apply_and_preserves_save_revert_and_quit_guards() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let mut original = sample_drive_pod_tone();
+        original[8..12].copy_from_slice(b"L6PA");
+        app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_selected = Some(0);
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert!(app.pod_drive_slider.is_some());
+
+        let no_amp = pod_preset::PodAmpModelChoice::NoAmp;
+        let choice_rect = app.pod_amp_model_choices[&no_amp];
+        click_pod_at_tall(&context, &mut app, choice_rect.center());
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert!(!app.pod_library.is_dirty(0));
+
+        let apply_rect = app.pod_apply_amp_model_button.unwrap();
+        click_pod_at_tall(&context, &mut app, apply_rect.center());
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().amp_model_id(),
+            Some(no_amp.model_id())
+        );
+        assert!(app.pod_library.is_dirty(0));
+        assert!(app.pod_drive_slider.is_none());
+        assert!(app.pod_message.contains("Nothing was sent"));
+
+        let directory = tempfile::tempdir().unwrap();
+        let collision = directory.path().join("existing.tone");
+        std::fs::write(&collision, b"keep original").unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_save: [Some(collision.clone()), None].into(),
+            ..Default::default()
+        });
+        click_pod(&context, &mut app, "save-pod");
+        assert!(app.pod_library.is_dirty(0));
+        assert_eq!(std::fs::read(&collision).unwrap(), b"keep original");
+        click_pod(&context, &mut app, "save-pod");
+        assert!(app.pod_library.is_dirty(0));
+        assert!(app.pod_message.contains("cancelled"));
+
+        let saved = directory.path().join("saved.tone");
+        app.dialogs.queue_pod_save(Some(saved.clone()));
+        click_pod(&context, &mut app, "save-pod");
+        assert!(!app.pod_library.is_dirty(0));
+        let reopened = pod_preset::PodTone::parse(std::fs::read(&saved).unwrap()).unwrap();
+        assert_eq!(reopened.amp_model_id(), Some(no_amp.model_id()));
+        recording_frame_tall(&context, &mut app, vec![]);
+        let same_choice_apply = app.pod_apply_amp_model_button.unwrap();
+        click_pod_at_tall(&context, &mut app, same_choice_apply.center());
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert!(!app.pod_library.is_dirty(0));
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().amp_model_id(),
+            Some(no_amp.model_id())
+        );
+
+        let clean = pod_preset::PodAmpModelChoice::Line6Clean;
+        recording_frame_tall(&context, &mut app, vec![]);
+        let choice_rect = app.pod_amp_model_choices[&clean];
+        click_pod_at_tall(&context, &mut app, choice_rect.center());
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert_eq!(reopened.amp_model_id(), Some(no_amp.model_id()));
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().amp_model_id(),
+            Some(no_amp.model_id())
+        );
+        let apply_rect = app.pod_apply_amp_model_button.unwrap();
+        click_pod_at_tall(&context, &mut app, apply_rect.center());
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().amp_model_id(),
+            Some(clean.model_id())
+        );
+        assert!(app.pod_library.is_dirty(0));
+
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert!(!app.permit_close);
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pod_library.is_dirty(0));
+        assert!(!app.permit_close);
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "discard");
+        assert!(app.permit_close);
+        assert!(!app.pod_library.is_dirty(0));
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().amp_model_id(),
+            Some(no_amp.model_id())
+        );
         const {
             assert!(LIVE_ACCESS_LOCKED);
         }

@@ -82,10 +82,10 @@ events or runtime dirty notifications.
 
 ## Concrete AMP operation record for technical admission
 
-This is one conservative existing-slot AMP model-id operation for Gatekeeper
-review. It is not admitted for implementation yet. The complete allowed choice
-set is intentionally smaller than either the 107-entry `AMP_MODELS` array or
-the separate 106-model numeric-control set:
+This is one conservative existing-slot AMP model-id operation admitted by
+Gatekeeper. Its complete allowed choice set is intentionally smaller than
+either the 107-entry `AMP_MODELS` array or the separate 106-model numeric-
+control set:
 
 | Exact allowed AMP id | Static source evidence | Eligibility evidence |
 | --- | --- | --- |
@@ -174,12 +174,12 @@ after (178 bytes; FORM length 0x000000aa):
 00b0: 55 66
 ```
 
-**Technical admission question.** Is a two-choice, file-only AMP operation
-admissible on the static evidence above, where both choices take the original
-editor's unconditional default-true pack-eligibility branch? If a stronger
-physical pack/device guarantee is required even for offline file editing,
-identify the source-backed requirement: the current scope forbids device
-queries, and neither this record nor a software test claims physical support.
+**Technical admission decision.** Gatekeeper admitted this two-choice,
+file-only AMP operation on the static source evidence above. A stronger
+physical pack/device guarantee is not required for this bounded offline edit;
+physical applicability remains unverified. No hardware query is needed or
+permitted. The explicit Apply and same-choice no-op behavior remain this
+application's file policy, not a claim about vendor combo events.
 
 ## Proposed operation contract for Gatekeeper admission
 
@@ -225,10 +225,11 @@ operation is implemented by this document.
    contract must precede these tests; synthetic fixtures cannot establish
    vendor applicability.
 
-**Admission status:** no new selection operation is admitted yet. The concrete
-two-choice AMP record above is submitted for technical admission. The separate
-CAB/MIC operations and broader AMP choices remain out of scope until their own
-contracts are reviewed. Historical GUI same-choice event emission is unknown,
-but does not block this explicit Apply/file-diff policy. Existing admitted
-operations, including AMP/EQ stored model-enable flags, do not need renewed
-per-leaf scope approval.
+**Admission status:** the concrete two-choice AMP record above is admitted and
+implemented in the current PR #95 branch for existing-slot FORM/L6PA MINF model
+IDs only. Its exact-head configured checks and independent review remain
+pending. The separate CAB/MIC operations and broader AMP choices remain out of
+scope until their own contracts are reviewed. Historical GUI same-choice event
+emission is unknown, but does not block this explicit Apply/file-diff policy.
+Existing admitted operations, including AMP/EQ stored model-enable flags, do
+not need renewed per-leaf scope approval.

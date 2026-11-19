@@ -575,6 +575,51 @@ fn pod_model_enable_session_edit_is_role_gated_offline_and_byte_preserving() {
 }
 
 #[test]
+fn pod_amp_model_choice_session_is_role_gated_and_changes_only_the_minf_id() {
+    use crate::pod_preset::{PodAmpModelChoice, AMP_SLOT};
+
+    let session = Session::initial_rig();
+    let original = crate::pod_preset::fixture(
+        crate::pod_preset::ContainerKind::L6pa,
+        PODXT_LIVE_PRODUCT_ID,
+        crate::pod_preset::PODXT_LIVE_HOST_MIN_VERSION,
+        &[(AMP_SLOT, 0xdead_beef)],
+    );
+    let id_offset = original
+        .windows(4)
+        .position(|word| word == 0xdead_beefu32.to_be_bytes())
+        .expect("AMP MINF model id");
+    let mut expected = original.clone();
+    expected[id_offset..id_offset + 4]
+        .copy_from_slice(&PodAmpModelChoice::NoAmp.model_id().to_be_bytes());
+    let edited = session
+        .set_pod_amp_model_choice(RoleKind::Pod, &original, PodAmpModelChoice::NoAmp)
+        .expect("offline AMP id edit");
+    assert_eq!(edited, expected);
+    assert_eq!(
+        edited
+            .iter()
+            .zip(&original)
+            .filter(|(left, right)| left != right)
+            .count(),
+        4
+    );
+    assert_eq!(
+        session.set_pod_amp_model_choice(
+            RoleKind::Guitar,
+            &original,
+            PodAmpModelChoice::NoAmp,
+        ),
+        Err(Rejection::Unsupported {
+            profile: ProductProfile::Variax600,
+            operation: Operation::EditPodPreset,
+        })
+    );
+    assert!(session.live_backend_is_absent());
+    assert!(LIVE_BACKEND_INITIALIZER.is_none());
+}
+
+#[test]
 fn pod_model_enable_session_rejects_short_minf_with_canonical_padding() {
     let session = Session::initial_rig();
     for padding in [0, 1] {
