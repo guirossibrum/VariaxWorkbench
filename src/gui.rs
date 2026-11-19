@@ -1900,61 +1900,73 @@ impl Workbench {
                     });
                 }
                 if let Some(index) = self.pod_selected {
-                    ui.small("Stored model enable flags only. No bypass, audio, or device effect is claimed.");
-                    for control in [pod_preset::PodModelEnable::Amp, pod_preset::PodModelEnable::Eq] {
-                        let state = self
-                            .pod_library
-                            .tone(index)
-                            .ok_or_else(|| pod_preset::ToneError::format("POD selection is out of range"))
-                            .and_then(|tone| tone.model_enable_state(control));
-                        match state {
-                            Ok(pod_preset::ModelEnableState::Canonical(mut enabled)) => {
-                                let label = match control {
-                                    pod_preset::PodModelEnable::Amp => "Amp enabled (stored flag)",
-                                    pod_preset::PodModelEnable::Eq => "EQ enabled (stored flag)",
-                                };
-                                let response = ui.checkbox(&mut enabled, label);
-                                #[cfg(test)]
-                                self.pod_model_enable_checks.insert(control, response.rect);
-                                if response.changed() {
-                                    match self.edit_pod_tone(index, |tone| {
-                                        tone.set_model_enabled(control, enabled)
-                                    }) {
-                                        Ok(()) => {
-                                            self.pod_message = format!(
-                                                "Applied {} stored enable flag. Nothing was sent.",
-                                                match control {
-                                                    pod_preset::PodModelEnable::Amp => "Amp",
-                                                    pod_preset::PodModelEnable::Eq => "EQ",
-                                                }
-                                            )
+                    ui.horizontal_wrapped(|ui| {
+                        for control in [pod_preset::PodModelEnable::Amp, pod_preset::PodModelEnable::Eq] {
+                            let state = self
+                                .pod_library
+                                .tone(index)
+                                .ok_or_else(|| {
+                                    pod_preset::ToneError::format("POD selection is out of range")
+                                })
+                                .and_then(|tone| tone.model_enable_state(control));
+                            match state {
+                                Ok(pod_preset::ModelEnableState::Canonical(mut enabled)) => {
+                                    let label = match control {
+                                        pod_preset::PodModelEnable::Amp => {
+                                            "Amp enabled (stored flag)"
                                         }
-                                        Err(error) => self.pod_message = error.detail(),
+                                        pod_preset::PodModelEnable::Eq => {
+                                            "EQ enabled (stored flag)"
+                                        }
+                                    };
+                                    let response = ui
+                                        .checkbox(&mut enabled, label)
+                                        .on_hover_text("Stored model flag only. No bypass, audio, or device effect is claimed.");
+                                    #[cfg(test)]
+                                    self.pod_model_enable_checks.insert(control, response.rect);
+                                    if response.changed() {
+                                        match self.edit_pod_tone(index, |tone| {
+                                            tone.set_model_enabled(control, enabled)
+                                        }) {
+                                            Ok(()) => {
+                                                self.pod_message = format!(
+                                                    "Applied {} stored enable flag. Nothing was sent.",
+                                                    match control {
+                                                        pod_preset::PodModelEnable::Amp => "Amp",
+                                                        pod_preset::PodModelEnable::Eq => "EQ",
+                                                    }
+                                                )
+                                            }
+                                            Err(error) => self.pod_message = error.detail(),
+                                        }
                                     }
                                 }
-                            }
-                            Ok(pod_preset::ModelEnableState::NonCanonical {
-                                raw,
-                                source_interpretation,
-                            }) => {
-                                let label = match control {
-                                    pod_preset::PodModelEnable::Amp => "Amp",
-                                    pod_preset::PodModelEnable::Eq => "EQ",
-                                };
-                                ui.label(format!(
-                                    "{label} enable edit unavailable: MINF byte 0x{raw:02x} is noncanonical (Line6Edit reads it as {}). It is preserved unchanged.",
-                                    if source_interpretation { "enabled" } else { "disabled" }
-                                ));
-                            }
-                            Err(error) => {
-                                let label = match control {
-                                    pod_preset::PodModelEnable::Amp => "Amp",
-                                    pod_preset::PodModelEnable::Eq => "EQ",
-                                };
-                                ui.label(format!("{label} enable edit unavailable: {}", error.detail()));
+                                Ok(pod_preset::ModelEnableState::NonCanonical {
+                                    raw,
+                                    source_interpretation,
+                                }) => {
+                                    let label = match control {
+                                        pod_preset::PodModelEnable::Amp => "Amp",
+                                        pod_preset::PodModelEnable::Eq => "EQ",
+                                    };
+                                    ui.label(format!(
+                                        "{label} enable edit unavailable: MINF byte 0x{raw:02x} is noncanonical (Line6Edit reads it as {}). It is preserved unchanged.",
+                                        if source_interpretation { "enabled" } else { "disabled" }
+                                    ));
+                                }
+                                Err(error) => {
+                                    let label = match control {
+                                        pod_preset::PodModelEnable::Amp => "Amp",
+                                        pod_preset::PodModelEnable::Eq => "EQ",
+                                    };
+                                    ui.label(format!(
+                                        "{label} enable edit unavailable: {}",
+                                        error.detail()
+                                    ));
+                                }
                             }
                         }
-                    }
+                    });
                 }
                 let stomp_controls = self
                     .pod_selected
