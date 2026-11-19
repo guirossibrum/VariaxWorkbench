@@ -260,6 +260,21 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
     assert_ne!(replaced_child.as_bytes(), mutated_child_before);
     assert_eq!(library.file(parent.index).unwrap().as_bytes(), parent_bytes);
 
+    library.revert_unsaved(child.index).unwrap();
+    session
+        .replace_hd_octave_fuzz_with_sub_octave_fuzz_defaults(
+            &mut library,
+            child.index,
+            crate::pod_preset::HdFxSlot::new(0).unwrap(),
+        )
+        .expect("bounded Sub Octave Fuzz replacement through the shared session");
+    let crate::pod_preset::PodPresetFile::H5ep(replaced_child) = library.file(child.index).unwrap()
+    else {
+        panic!("extracted child remains H5EP");
+    };
+    assert_eq!(replaced_child.effect_model_id(0), Some(0x0205_0014));
+    assert_eq!(library.file(parent.index).unwrap().as_bytes(), parent_bytes);
+
     let podxt = crate::pod_preset::fixture(
         crate::pod_preset::ContainerKind::L6pa,
         PODXT_LIVE_PRODUCT_ID,
@@ -318,6 +333,24 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
         library.file(bundle_child.index).unwrap().as_bytes(),
         bundle_child_original
     );
+    assert_eq!(library.file(bundle.index).unwrap().as_bytes(), bundle_bytes);
+    session
+        .replace_hd_octave_fuzz_with_sub_octave_fuzz_defaults(
+            &mut library,
+            bundle_child.index,
+            crate::pod_preset::HdFxSlot::new(0).unwrap(),
+        )
+        .expect("bounded Sub Octave Fuzz replacement in extracted H5EB child");
+    let crate::pod_preset::PodPresetFile::H5ep(bundle_replaced_child) =
+        library.file(bundle_child.index).unwrap()
+    else {
+        panic!("extracted bundle child remains H5EP");
+    };
+    assert_eq!(bundle_replaced_child.effect_model_id(0), Some(0x0205_0014));
+    assert!(library.is_dirty(bundle_child.index));
+    assert_eq!(library.file(bundle.index).unwrap().as_bytes(), bundle_bytes);
+    library.revert_unsaved(bundle_child.index).unwrap();
+    assert!(!library.is_dirty(bundle_child.index));
     assert_eq!(library.file(bundle.index).unwrap().as_bytes(), bundle_bytes);
     assert_eq!(
         capability::capability(ProductProfile::PodHd500x, Operation::OpenPodPreset).state,

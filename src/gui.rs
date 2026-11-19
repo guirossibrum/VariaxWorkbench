@@ -1818,6 +1818,29 @@ impl Workbench {
                             Err(error) => self.pod_message = error.detail(),
                         }
                     }
+                    ui.label("This explicit action replaces the current model and resets its five source-defined values to Sub Octave Fuzz defaults.");
+                    if self.pod_button(
+                        ui,
+                        "replace-octave-fuzz-sub-octave-fuzz",
+                        "Replace Octave Fuzz with Sub Octave Fuzz defaults",
+                    ) {
+                        let index = self.hd_selected.expect("selected HD file");
+                        match pod_preset::HdFxSlot::new(self.hd_effect_slot) {
+                            Ok(slot) => match Session::initial_rig()
+                                .replace_hd_octave_fuzz_with_sub_octave_fuzz_defaults(
+                                    &mut self.hd_library,
+                                    index,
+                                    slot,
+                                )
+                            {
+                                Ok(()) => {
+                                    self.pod_message = "Replaced this offline effect with Sub Octave Fuzz defaults. Nothing was sent; save a new copy to keep the change.".into();
+                                }
+                                Err(error) => self.pod_message = rejection_text(&error),
+                            },
+                            Err(error) => self.pod_message = error.detail(),
+                        }
+                    }
                     ui.separator();
                 }
                 ui.separator();
@@ -3870,6 +3893,19 @@ mod tests {
             "replace-octave-fuzz-screamer",
             "Screamer defaults",
             "screamer-copy.5xe",
+        );
+        exercise_hd_editor_explicit_replacement_lifecycle(
+            0x0205_0014,
+            [
+                0x3f10_0001,
+                0x3f10_0002,
+                0x3f10_0003,
+                0x3f10_0004,
+                0x3f10_0005,
+            ],
+            "replace-octave-fuzz-sub-octave-fuzz",
+            "Sub Octave Fuzz defaults",
+            "sub-octave-fuzz-copy.5xe",
         );
     }
 
