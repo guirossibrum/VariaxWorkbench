@@ -2536,24 +2536,24 @@ impl Workbench {
                     (tone.container() == pod_preset::ContainerKind::L6pa).then_some((index, tone.models().iter().find(|m| m.slot == pod_preset::DELAY_SLOT || m.slot == 0x0005_0004).map(|m| m.model_id)))
                 }));
                 if let Some((index, current)) = delay_model_state {
-                    let fallback = pod_preset::PodDelayModelChoice::from_model_id(
-                        pod_preset::PodDelayModelChoice::MODEL_IDS[0],
-                    ).expect("Delay model choices are nonempty");
                     let mut selected = self.pod_delay_model_pending
                         .filter(|(i, _)| *i == index)
-                        .map(|(_, choice)| choice)
-                        .or_else(|| current.and_then(pod_preset::PodDelayModelChoice::from_model_id))
-                        .unwrap_or(fallback);
+                        .map(|(_, choice)| Some(choice))
+                        .or_else(|| current.and_then(pod_preset::PodDelayModelChoice::from_model_id).map(Some))
+                        .unwrap_or(None);
+                    let selected_text = selected
+                        .map(pod_preset::PodDelayModelChoice::numeric_label)
+                        .unwrap_or_else(|| current.map_or_else(|| "Select model".into(), |id| format!("{id:08x} (outside choices)")));
                     ui.separator();
                     ui.label(format!("Delay model ID (offline; stored parameters are retained, no reset) · current {}", current.map_or_else(|| "unavailable".into(), |id| format!("{id:08x}"))));
                     let mut changed = None;
                     let _combo = egui::ComboBox::from_id_salt("pod-delay-model-choice")
-                        .selected_text(selected.numeric_label())
+                        .selected_text(selected_text)
                         .show_ui(ui, |ui| {
                             for id in pod_preset::PodDelayModelChoice::MODEL_IDS {
                                 let choice = pod_preset::PodDelayModelChoice::from_model_id(id)
                                     .expect("listed Delay model id is admitted");
-                                let response = ui.selectable_value(&mut selected, choice, format!("{id:08x}"));
+                                let response = ui.selectable_value(&mut selected, Some(choice), format!("{id:08x}"));
                                 #[cfg(test)] { self.pod_delay_model_options.insert(id, response.rect); }
                                 if response.changed() { changed = Some(choice); }
                             }
@@ -7087,6 +7087,88 @@ mod tests {
         );
         assert_eq!(app.pod_library.tone(1).unwrap().as_bytes(), invalid);
         assert_eq!(app.pod_delay_model_pending, Some((1, failed_choice)));
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn delay_model_gui_can_directly_replace_each_pack_gated_current_model() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+
+        for (ordinal, current_id) in (0x0202_000bu32..=0x0202_000fu32).enumerate() {
+            let mut original = sample_delay_note_tone(0, 0);
+            original[8..12].copy_from_slice(b"L6PA");
+            let old_id = 0x0202_0002u32.to_be_bytes();
+            let old_id_offset = original
+                .windows(4)
+                .position(|word| word == old_id)
+                .expect("fixture has a Delay model id");
+            original[old_id_offset..old_id_offset + 4].copy_from_slice(&current_id.to_be_bytes());
+            let index = app.pod_library.import_bytes(original.clone()).unwrap();
+            app.pod_selected = Some(index);
+
+            recording_frame_tall(&context, &mut app, vec![]);
+            stage_delay_note_choice(&context, &mut app, pod_preset::DelayNoteChoice::Quarter);
+            assert!(app.pod_delay_pending.is_some());
+            choose_delay_model_popup(&context, &mut app, 0x0202_0002);
+            assert_eq!(
+                app.pod_delay_model_pending.unwrap().1.model_id(),
+                0x0202_0002,
+                "pack-gated current model {current_id:08x} must allow direct first-choice staging"
+            );
+
+            if ordinal == 0 {
+                click_pod_button_tall(&context, &mut app, "pod-delay-model-discard");
+                assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), original);
+                assert!(app.pod_delay_pending.is_some());
+                choose_delay_model_popup(&context, &mut app, 0x0202_0002);
+            }
+
+            click_pod_button_tall(&context, &mut app, "pod-delay-model-apply");
+            let applied = app.pod_library.tone(index).unwrap();
+            let changed: Vec<_> = original
+                .iter()
+                .zip(applied.as_bytes())
+                .enumerate()
+                .filter_map(|(offset, (before, after))| (before != after).then_some(offset))
+                .collect();
+            let id_offset = original
+                .windows(4)
+                .position(|word| word == current_id.to_be_bytes())
+                .unwrap();
+            assert!(!changed.is_empty());
+            assert!(
+                changed
+                    .iter()
+                    .all(|offset| (id_offset..id_offset + 4).contains(offset)),
+                "only the Delay MINF model-id word may change"
+            );
+            assert_eq!(
+                applied
+                    .models()
+                    .iter()
+                    .find(|model| model.slot == pod_preset::DELAY_SLOT)
+                    .unwrap()
+                    .model_id,
+                0x0202_0002
+            );
+            assert_eq!(app.pod_delay_pending, None);
+            assert_eq!(app.pod_delay_model_pending, None);
+        }
+
+        // A same-ID apply leaves a fresh NOTE/TIME stage available.
+        let same_id = app.pod_selected.unwrap();
+        app.pod_delay_pending = Some((same_id, PendingDelayEdit::TimeMs(350.0)));
+        let same_choice = pod_preset::PodDelayModelChoice::try_from(0x0202_0002).unwrap();
+        app.apply_pod_delay_model_choice(same_id, same_choice)
+            .unwrap();
+        assert_eq!(
+            app.pod_delay_pending,
+            Some((same_id, PendingDelayEdit::TimeMs(350.0)))
+        );
         const {
             assert!(LIVE_ACCESS_LOCKED);
         }

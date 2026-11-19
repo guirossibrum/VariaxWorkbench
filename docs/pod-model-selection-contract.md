@@ -447,10 +447,13 @@ This is static Java bytecode and a synthetic byte vector only. Offline tests
 cover every admitted choice and byte-isolated full-buffer output, opaque-byte
 preservation, MINF bodies of 8–11 bytes, missing/duplicate MINF and slots,
 primary/fallback resolution, wrong PINF layout/target/profile/container,
-unknown current/requested models, all five pack-gated IDs, same-ID validation,
-atomic rejection, and direct-tone/library/bundle/GUI lifecycle paths. These
-tests establish Rust behavior against the admitted static contract; they do
-not establish vendor-runtime or hardware behavior.
+unknown current/requested models, all five pack-gated requested IDs, same-ID
+validation, atomic rejection, and direct-tone/library/bundle/GUI lifecycle
+paths. GUI interaction additionally verifies direct selection of the first
+allowed model from each of the five pack-gated current IDs, plus discard and
+same-ID/rejected staging preservation. These tests establish Rust behavior
+against the admitted static contract; they do not establish vendor-runtime or
+hardware behavior.
 
 ## Admitted CAB/MIC operation contract
 
