@@ -4159,11 +4159,7 @@ mod tests {
         }
         app.pod_open = true;
         recording_frame(&context, &mut app, vec![]);
-        assert_hd_bytes_eq(
-            app.hd_library.file(index).unwrap().as_bytes(),
-            &original,
-            "staging must not alter file bytes",
-        );
+        assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), original);
 
         let mut expected = original.clone();
         expected[block..block + 4].copy_from_slice(&target_model.to_be_bytes());
@@ -4183,11 +4179,7 @@ mod tests {
             "{}",
             app.pod_message
         );
-        assert_hd_bytes_eq(
-            app.hd_library.file(index).unwrap().as_bytes(),
-            &expected,
-            "applying the staged GUI choice",
-        );
+        assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), expected);
         assert!(app.hd_library.is_dirty(index));
         assert_eq!(app.document.as_ref().unwrap().as_bytes(), source_document);
         app.hd_library.revert_unsaved(index).unwrap();
@@ -4553,11 +4545,7 @@ mod tests {
         assert!(app.hd_library.is_dirty(index));
         let mut expected = original.clone();
         expected[row + 4..row + 8].copy_from_slice(&0x3f7f_fba2u32.to_be_bytes());
-        assert_hd_bytes_eq(
-            app.hd_library.file(index).unwrap().as_bytes(),
-            &expected,
-            "discarding a later staged GUI choice",
-        );
+        assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), expected);
 
         let directory = tempfile::tempdir().unwrap();
         let collision = directory.path().join("existing.h5p");
@@ -4646,7 +4634,11 @@ mod tests {
         ));
         app.stage_hd_type9_choice(index, slot, pod_preset::HdType9Choice::Choice2);
         hd_editor_frame(&context, &mut app, vec![]);
-        assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), original);
+        assert_hd_bytes_eq(
+            app.hd_library.file(index).unwrap().as_bytes(),
+            &original,
+            "staging must not alter file bytes",
+        );
         assert_eq!(
             app.hd_type9_pending,
             Some(PendingHdType9Choice {
@@ -4665,7 +4657,11 @@ mod tests {
             + 4;
         let mut expected = original.clone();
         expected[value_at..value_at + 4].copy_from_slice(&[0x3f, 0x80, 0x00, 0x00]);
-        assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), expected);
+        assert_hd_bytes_eq(
+            app.hd_library.file(index).unwrap().as_bytes(),
+            &expected,
+            "applying the staged GUI choice",
+        );
         assert!(app.hd_library.is_dirty(index));
         assert!(app.hd_type9_pending.is_none());
         assert!(app.pod_message.contains("Nothing was sent"));
@@ -4673,7 +4669,11 @@ mod tests {
         app.stage_hd_type9_choice(index, slot, pod_preset::HdType9Choice::Choice0);
         hd_editor_frame(&context, &mut app, vec![]);
         click_hd_editor(&context, &mut app, "discard-hd-type9-choice");
-        assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), expected);
+        assert_hd_bytes_eq(
+            app.hd_library.file(index).unwrap().as_bytes(),
+            &expected,
+            "discarding a later staged GUI choice",
+        );
         assert!(app.hd_type9_pending.is_none());
 
         let other_index = app
