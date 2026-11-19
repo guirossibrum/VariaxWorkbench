@@ -246,6 +246,7 @@ struct Workbench {
     pod_selected: Option<usize>,
     pod_cab_pending: Option<(usize, pod_preset::PodCabModelChoice)>,
     pod_delay_model_pending: Option<(usize, pod_preset::PodDelayModelChoice)>,
+    pod_mod_model_pending: Option<(usize, pod_preset::PodModModelChoice)>,
     pod_harmony_pending: Option<(usize, pod_preset::StompHarmonyControl, PendingStompHarmony)>,
     pod_delay_pending: Option<(usize, PendingDelayEdit)>,
     pod_mod_pending: Option<(usize, PendingModEdit)>,
@@ -297,6 +298,10 @@ struct Workbench {
     pod_delay_model_combo: Option<Rect>,
     #[cfg(test)]
     pod_delay_model_options: HashMap<u32, Rect>,
+    #[cfg(test)]
+    pod_mod_model_combo: Option<Rect>,
+    #[cfg(test)]
+    pod_mod_model_options: HashMap<u32, Rect>,
     #[cfg(test)]
     pod_mod_note_options: HashMap<pod_preset::ModNoteChoice, Rect>,
     #[cfg(test)]
@@ -369,6 +374,7 @@ impl Workbench {
             pod_selected: None,
             pod_cab_pending: None,
             pod_delay_model_pending: None,
+            pod_mod_model_pending: None,
             pod_harmony_pending: None,
             pod_delay_pending: None,
             pod_mod_pending: None,
@@ -420,6 +426,10 @@ impl Workbench {
             pod_delay_model_combo: None,
             #[cfg(test)]
             pod_delay_model_options: HashMap::new(),
+            #[cfg(test)]
+            pod_mod_model_combo: None,
+            #[cfg(test)]
+            pod_mod_model_options: HashMap::new(),
             #[cfg(test)]
             pod_mod_note_options: HashMap::new(),
             #[cfg(test)]
@@ -1564,6 +1574,7 @@ impl Workbench {
     fn refresh_selected_pod_name(&mut self) {
         self.pod_cab_pending = None;
         self.pod_delay_model_pending = None;
+        self.pod_mod_model_pending = None;
         self.pod_harmony_pending = None;
         self.pod_delay_pending = None;
         self.pod_mod_pending = None;
@@ -2030,6 +2041,7 @@ impl Workbench {
                         if self.pod_selected != Some(index) {
                             self.pod_cab_pending = None;
                             self.pod_delay_model_pending = None;
+                            self.pod_mod_model_pending = None;
                             self.pod_harmony_pending = None;
                             self.pod_delay_pending = None;
                             self.pod_mod_pending = None;
@@ -2652,6 +2664,101 @@ impl Workbench {
                             self.pod_buttons
                                 .insert("pod-delay-discard", discard.rect);
                             if discard.clicked() { self.pod_delay_pending = None; }
+                        });
+                    }
+                }
+                let mod_model_state = self.pod_selected.and_then(|index| {
+                    self.pod_library.tone(index).and_then(|tone| {
+                        (tone.container() == pod_preset::ContainerKind::L6pa).then_some((
+                            index,
+                            tone.models()
+                                .iter()
+                                .find(|model| {
+                                    model.slot == pod_preset::MOD_SLOT || model.slot == 0x0005_0003
+                                })
+                                .map(|model| model.model_id),
+                        ))
+                    })
+                });
+                if let Some((index, current)) = mod_model_state {
+                    let mut selected = self
+                        .pod_mod_model_pending
+                        .filter(|(pending_index, _)| *pending_index == index)
+                        .map(|(_, choice)| Some(choice))
+                        .or_else(|| {
+                            current
+                                .and_then(pod_preset::PodModModelChoice::from_model_id)
+                                .map(Some)
+                        })
+                        .unwrap_or(None);
+                    let selected_text = selected
+                        .map(pod_preset::PodModModelChoice::numeric_label)
+                        .unwrap_or_else(|| {
+                            current.map_or_else(
+                                || "Select model".into(),
+                                |id| format!("{id:08x} (outside choices)"),
+                            )
+                        });
+                    ui.separator();
+                    ui.label(format!(
+                        "Mod model ID (offline; parameters retained, no reset) · current {}",
+                        current.map_or_else(|| "unavailable".into(), |id| format!("{id:08x}"))
+                    ));
+                    let mut changed = None;
+                    let combo = egui::ComboBox::from_id_salt("pod-mod-model-choice")
+                        .selected_text(selected_text)
+                        .show_ui(ui, |ui| {
+                            for id in pod_preset::PodModModelChoice::MODEL_IDS {
+                                let choice = pod_preset::PodModModelChoice::from_model_id(id)
+                                    .expect("listed Mod model id is admitted");
+                                let response = ui.selectable_value(
+                                    &mut selected,
+                                    Some(choice),
+                                    format!("{id:08x}"),
+                                );
+                                #[cfg(test)]
+                                self.pod_mod_model_options.insert(id, response.rect);
+                                if response.changed() {
+                                    changed = Some(choice);
+                                }
+                            }
+                        });
+                    #[cfg(test)]
+                    {
+                        self.pod_mod_model_combo = Some(combo.response.rect);
+                    }
+                    #[cfg(not(test))]
+                    let _ = combo;
+                    if let Some(choice) = changed {
+                        self.pod_mod_model_pending = Some((index, choice));
+                    }
+                    if let Some((pending_index, choice)) = self
+                        .pod_mod_model_pending
+                        .filter(|(pending_index, _)| *pending_index == index)
+                    {
+                        ui.horizontal(|ui| {
+                            ui.label(format!(
+                                "Pending {} (parameters retained)",
+                                choice.numeric_label()
+                            ));
+                            let apply = ui.button("Apply Mod model");
+                            #[cfg(test)]
+                            self.pod_buttons.insert("pod-mod-model-apply", apply.rect);
+                            if apply.clicked() {
+                                match self.apply_pod_mod_model_choice(pending_index, choice) {
+                                    Ok(()) => {
+                                        self.pod_mod_model_pending = None;
+                                        self.pod_message = "Applied the Mod model ID offline; stored parameters were retained. Nothing was sent.".into();
+                                    }
+                                    Err(error) => self.pod_message = error.detail(),
+                                }
+                            }
+                            let discard = ui.button("Discard");
+                            #[cfg(test)]
+                            self.pod_buttons.insert("pod-mod-model-discard", discard.rect);
+                            if discard.clicked() {
+                                self.pod_mod_model_pending = None;
+                            }
                         });
                     }
                 }
@@ -3323,6 +3430,46 @@ impl Workbench {
             .map(|model| model.model_id);
         if before != after {
             self.pod_delay_pending = None;
+        }
+        Ok(())
+    }
+
+    fn apply_pod_mod_model_choice(
+        &mut self,
+        index: usize,
+        choice: pod_preset::PodModModelChoice,
+    ) -> Result<(), pod_preset::ToneError> {
+        let slots = [pod_preset::MOD_SLOT, 0x0005_0003];
+        let before = self
+            .pod_library
+            .tone(index)
+            .and_then(|tone| {
+                tone.models()
+                    .iter()
+                    .find(|model| slots.contains(&model.slot))
+            })
+            .map(|model| model.model_id);
+        let bytes = self
+            .pod_library
+            .tone(index)
+            .ok_or_else(|| pod_preset::ToneError::format("POD selection is out of range"))?
+            .as_bytes()
+            .to_vec();
+        let replacement = Session::initial_rig()
+            .set_pod_mod_model_choice(RoleKind::Pod, &bytes, choice)
+            .map_err(|error| pod_preset::ToneError::format(rejection_text(&error)))?;
+        self.replace_pod_tone(index, replacement)?;
+        let after = self
+            .pod_library
+            .tone(index)
+            .and_then(|tone| {
+                tone.models()
+                    .iter()
+                    .find(|model| slots.contains(&model.slot))
+            })
+            .map(|model| model.model_id);
+        if before != after {
+            self.pod_mod_pending = None;
         }
         Ok(())
     }
@@ -5337,6 +5484,18 @@ mod tests {
         recording_frame_tall(context, app, vec![]);
     }
 
+    fn choose_mod_model_popup(context: &egui::Context, app: &mut Workbench, model_id: u32) {
+        recording_frame_tall(context, app, vec![]);
+        let combo = app
+            .pod_mod_model_combo
+            .expect("Mod model selector is rendered");
+        click_pod_at_tall(context, app, combo.center());
+        recording_frame_tall(context, app, vec![]);
+        let option = app.pod_mod_model_options[&model_id];
+        click_pod_at_tall(context, app, option.center());
+        recording_frame_tall(context, app, vec![]);
+    }
+
     fn click_pod_button_tall(context: &egui::Context, app: &mut Workbench, id: &'static str) {
         recording_frame_tall(context, app, vec![]);
         let position = app.pod_buttons[id].center();
@@ -7090,6 +7249,136 @@ mod tests {
         const {
             assert!(LIVE_ACCESS_LOCKED);
         }
+    }
+
+    #[test]
+    fn mod_model_gui_directly_replaces_each_gated_current_id_and_invalidates_note_stage() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let gated: [u32; 13] = [
+            0x0203_0015,
+            0x0203_0012,
+            0x0203_001e,
+            0x0203_0014,
+            0x0203_001f,
+            0x0203_0013,
+            0x0203_0011,
+            0x0203_001a,
+            0x0203_001b,
+            0x0203_0017,
+            0x0203_0018,
+            0x0203_0019,
+            0x0203_001c,
+        ];
+        for current_id in gated {
+            let mut original = sample_delay_note_tone(0, 0);
+            original[8..12].copy_from_slice(b"L6PA");
+            let old_id = 0x0203_0004u32.to_be_bytes();
+            let offset = original
+                .windows(4)
+                .position(|word| word == old_id)
+                .expect("fixture has a Mod model id");
+            original[offset..offset + 4].copy_from_slice(&current_id.to_be_bytes());
+            let index = app.pod_library.import_bytes(original.clone()).unwrap();
+            app.pod_selected = Some(index);
+            recording_frame_tall(&context, &mut app, vec![]);
+            stage_mod_note_choice(&context, &mut app, pod_preset::ModNoteChoice::Quarter);
+            choose_mod_model_popup(&context, &mut app, 0x0203_0005);
+            assert_eq!(app.pod_mod_model_pending.unwrap().1.model_id(), 0x0203_0005);
+            click_pod_button_tall(&context, &mut app, "pod-mod-model-apply");
+            let applied = app.pod_library.tone(index).unwrap();
+            let changed: Vec<_> = original
+                .iter()
+                .zip(applied.as_bytes())
+                .enumerate()
+                .filter_map(|(offset, (before, after))| (before != after).then_some(offset))
+                .collect();
+            assert!(!changed.is_empty());
+            assert!(
+                changed
+                    .iter()
+                    .all(|byte| (offset..offset + 4).contains(byte))
+            );
+            assert_eq!(app.pod_mod_pending, None);
+            assert_eq!(app.pod_mod_model_pending, None);
+        }
+    }
+
+    #[test]
+    fn mod_model_gui_applies_and_discards_within_the_selected_bundle_entry() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let mut original = sample_delay_note_tone(0, 0);
+        original[8..12].copy_from_slice(b"L6PA");
+        let old = 0x0203_0004u32.to_be_bytes();
+        let offset = original
+            .windows(4)
+            .position(|word| word == old)
+            .expect("fixture has a Mod model id");
+        original[offset..offset + 4].copy_from_slice(&0x0203_0015u32.to_be_bytes());
+        app.load_pod_bundle_bytes(sample_pod_bundle(&[original.clone()]))
+            .unwrap();
+
+        recording_frame_tall(&context, &mut app, vec![]);
+        choose_mod_model_popup(&context, &mut app, 0x0203_0005);
+        click_pod_button_tall(&context, &mut app, "pod-mod-model-discard");
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+
+        choose_mod_model_popup(&context, &mut app, 0x0203_0005);
+        click_pod_button_tall(&context, &mut app, "pod-mod-model-apply");
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_eq!(
+            app.pod_bundle
+                .as_ref()
+                .unwrap()
+                .tone(0, 0)
+                .unwrap()
+                .models()
+                .iter()
+                .find(|model| model.slot == pod_preset::MOD_SLOT)
+                .unwrap()
+                .model_id,
+            0x0203_0005
+        );
+    }
+
+    #[test]
+    fn mod_model_same_id_and_rejected_apply_preserve_staged_note() {
+        let (_context, mut app) = app();
+        let mut original = sample_delay_note_tone(0, 0);
+        original[8..12].copy_from_slice(b"L6PA");
+        let index = app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_mod_pending = Some((
+            index,
+            PendingModEdit::Note(pod_preset::ModNoteChoice::Quarter),
+        ));
+        let same = pod_preset::PodModModelChoice::try_from(0x0203_0004).unwrap();
+        app.apply_pod_mod_model_choice(index, same).unwrap();
+        assert_eq!(
+            app.pod_mod_pending,
+            Some((
+                index,
+                PendingModEdit::Note(pod_preset::ModNoteChoice::Quarter)
+            ))
+        );
+        assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), original);
+
+        let mut invalid = original;
+        let current = 0x0203_0004u32.to_be_bytes();
+        let offset = invalid.windows(4).position(|word| word == current).unwrap();
+        invalid[offset..offset + 4].copy_from_slice(&0x3333_0001u32.to_be_bytes());
+        app.pod_library.replace(index, invalid.clone()).unwrap();
+        let pending = Some((
+            index,
+            PendingModEdit::Note(pod_preset::ModNoteChoice::Quarter),
+        ));
+        app.pod_mod_pending = pending;
+        assert!(app.apply_pod_mod_model_choice(index, same).is_err());
+        assert_eq!(app.pod_mod_pending, pending);
+        assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), invalid);
     }
 
     #[test]

@@ -348,6 +348,45 @@ pub const MOD_CONTROL_MODEL_IDS: [u32; 24] = [
     0x0203_0019,
     0x0203_001c,
 ];
+/// Eleven Mod model IDs with no Pack 4 predicate in the PODxt source selector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PodModModelChoice(u32);
+
+impl PodModModelChoice {
+    pub const MODEL_IDS: [u32; 11] = [
+        0x0203_0004,
+        0x0203_0005,
+        0x0203_0006,
+        0x0203_0007,
+        0x0203_0008,
+        0x0203_0009,
+        0x0203_000a,
+        0x0203_000b,
+        0x0203_000c,
+        0x0203_000d,
+        0x0203_000e,
+    ];
+
+    pub const fn model_id(self) -> u32 {
+        self.0
+    }
+
+    pub fn from_model_id(id: u32) -> Option<Self> {
+        Self::MODEL_IDS.contains(&id).then_some(Self(id))
+    }
+
+    pub fn numeric_label(self) -> String {
+        format!("Mod {:08x}", self.0)
+    }
+}
+
+impl TryFrom<u32> for PodModModelChoice {
+    type Error = u32;
+
+    fn try_from(id: u32) -> Result<Self, Self::Error> {
+        Self::from_model_id(id).ok_or(id)
+    }
+}
 /// PODxt Live Reverb model slot and source-listed provider profiles.
 pub const REVERB_SLOT: u32 = 0x0002_0006;
 pub const REVERB_CONTROL_MODEL_IDS: [u32; 15] = [
@@ -2138,6 +2177,82 @@ impl PodTone {
         {
             return Err(ToneError::format(
                 "Delay model candidate did not reparse to the requested model",
+            ));
+        }
+        *self = parsed;
+        Ok(())
+    }
+
+    /// Change only the existing Mod MINF model ID in an individual L6PA tone.
+    /// This conservative offline policy admits only source-listed choices
+    /// without a Pack 4 selector predicate and requires one existing slot.
+    pub fn set_mod_model_choice(&mut self, choice: PodModModelChoice) -> Result<(), ToneError> {
+        if self.container != ContainerKind::L6pa {
+            return Err(ToneError::format(
+                "Mod model selection requires a FORM/L6PA tone",
+            ));
+        }
+        if self.device_id != PODXT_LIVE_TONE_ID {
+            return Err(ToneError::format(
+                "Mod model selection requires the PODxt Live PINF target",
+            ));
+        }
+        if self.device_version < PODXT_LIVE_HOST_MIN_VERSION {
+            return Err(ToneError::format(
+                "Mod model selection requires the PODxt Live host profile minimum 3.00",
+            ));
+        }
+
+        let mod_slots = [MOD_SLOT, 0x0005_0003];
+        let matches: Vec<_> = self
+            .models
+            .iter()
+            .enumerate()
+            .filter(|(_, model)| mod_slots.contains(&model.slot))
+            .map(|(index, _)| index)
+            .collect();
+        let [model_index] = matches.as_slice() else {
+            return Err(ToneError::format(
+                "Mod model selection requires exactly one existing primary or fallback model",
+            ));
+        };
+        let model_index = *model_index;
+        let current = self.models[model_index].model_id;
+        if !MOD_CONTROL_MODEL_IDS.contains(&current) {
+            return Err(ToneError::format(format!(
+                "unknown current Mod model id {current:08x}"
+            )));
+        }
+        let range = self
+            .model_minfo_ranges
+            .get(model_index)
+            .cloned()
+            .ok_or_else(|| ToneError::format("Mod model MINF source range is unavailable"))?;
+        if range.end > self.bytes.len()
+            || range
+                .start
+                .checked_add(12)
+                .is_none_or(|end| end > range.end)
+        {
+            return Err(ToneError::format(
+                "Mod model selection requires an existing MINF body of at least 12 bytes",
+            ));
+        }
+
+        let requested = choice.model_id();
+        if current == requested {
+            return Ok(());
+        }
+        let mut candidate = self.bytes.clone();
+        candidate[range.start..range.start + 4].copy_from_slice(&requested.to_be_bytes());
+        let parsed = Self::parse(candidate)?;
+        if parsed
+            .models
+            .get(model_index)
+            .is_none_or(|model| model.model_id != requested)
+        {
+            return Err(ToneError::format(
+                "Mod model candidate did not reparse to the requested model",
             ));
         }
         *self = parsed;
@@ -3996,6 +4111,18 @@ impl Library {
         entry.tone.set_delay_model_choice(choice)
     }
 
+    pub fn set_mod_model_choice(
+        &mut self,
+        index: usize,
+        choice: PodModModelChoice,
+    ) -> Result<(), ToneError> {
+        let entry = self
+            .tones
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
+        entry.tone.set_mod_model_choice(choice)
+    }
+
     pub fn set_cab_model_choice(
         &mut self,
         index: usize,
@@ -4895,6 +5022,14 @@ impl PodBundleLibrary {
         choice: PodDelayModelChoice,
     ) -> Result<(), ToneError> {
         self.edit_entry(index, |tone| tone.set_delay_model_choice(choice))
+    }
+
+    pub fn set_mod_model_choice(
+        &mut self,
+        index: usize,
+        choice: PodModModelChoice,
+    ) -> Result<(), ToneError> {
+        self.edit_entry(index, |tone| tone.set_mod_model_choice(choice))
     }
 
     pub fn set_cab_model_choice(
@@ -13160,6 +13295,254 @@ pub(crate) mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn mod_model_id_selection_covers_current_and_requested_ids_losslessly() {
+        for current in MOD_CONTROL_MODEL_IDS {
+            let original = custom_tone(
+                ContainerKind::L6pa,
+                &[BuiltModel {
+                    slot: MOD_SLOT,
+                    model_id: current,
+                    // Preserve noncanonical enable/reserved bytes, opaque tail,
+                    // parameters, and unrelated children through the edit.
+                    tail: &[0x7f, 0xa5, 0x00, 0xfe, 0x55],
+                    parameters: &[&[0x11, 0x22, 0x33]],
+                }],
+            );
+            for requested in PodModModelChoice::MODEL_IDS {
+                let choice = PodModModelChoice::try_from(requested).unwrap();
+                let mut tone = PodTone::parse(original.clone()).unwrap();
+                let before = tone.as_bytes().to_vec();
+                let minf_start = tone.model_minfo_ranges[0].start;
+                let mut expected = before.clone();
+                expected[minf_start..minf_start + 4].copy_from_slice(&requested.to_be_bytes());
+
+                tone.set_mod_model_choice(choice).unwrap();
+
+                assert_eq!(tone.as_bytes(), expected);
+                let reparsed = PodTone::parse(tone.as_bytes().to_vec()).unwrap();
+                assert_eq!(reparsed.models()[0].model_id, requested);
+                assert_eq!(reparsed.models()[0].slot, MOD_SLOT);
+            }
+        }
+    }
+
+    #[test]
+    fn mod_model_edit_matches_independent_documented_full_buffer_vector() {
+        fn vector(text: &str, marker: &str, stop: &str) -> Vec<u8> {
+            let section = text.split_once(marker).unwrap().1;
+            section
+                .lines()
+                .take_while(|line| !line.trim().starts_with("```") && !line.starts_with(stop))
+                .filter_map(|line| line.split_once(':').map(|(_, bytes)| bytes))
+                .flat_map(str::split_whitespace)
+                .map(|byte| u8::from_str_radix(byte, 16).unwrap())
+                .collect()
+        }
+        let contract = include_str!("../docs/pod-model-selection-contract.md")
+            .split_once("## Mod model selector")
+            .unwrap()
+            .1;
+        let before = vector(
+            contract,
+            "before (178 bytes; FORM length 0x000000aa):",
+            "after (178 bytes; FORM length 0x000000aa):",
+        );
+        let expected = vector(
+            contract,
+            "after (178 bytes; FORM length 0x000000aa):",
+            "```",
+        );
+        assert_eq!(before.len(), 178);
+        assert_eq!(expected.len(), 178);
+        let mut tone = PodTone::parse(before).unwrap();
+        tone.set_mod_model_choice(PodModModelChoice::try_from(0x0203_0005).unwrap())
+            .unwrap();
+        assert_eq!(tone.as_bytes(), expected);
+    }
+
+    #[test]
+    fn mod_model_id_selection_rejects_gated_requests_and_invalid_context_atomically() {
+        let make = |slot, id| {
+            custom_tone(
+                ContainerKind::L6pa,
+                &[BuiltModel {
+                    slot,
+                    model_id: id,
+                    tail: &[0x7f, 0xa5, 0x00, 0xfe],
+                    parameters: &[],
+                }],
+            )
+        };
+        let choice = PodModModelChoice::try_from(0x0203_0005).unwrap();
+        for gated in [
+            0x0203_0015,
+            0x0203_0012,
+            0x0203_001e,
+            0x0203_0014,
+            0x0203_001f,
+            0x0203_0013,
+            0x0203_0011,
+            0x0203_001a,
+            0x0203_001b,
+            0x0203_0017,
+            0x0203_0018,
+            0x0203_0019,
+            0x0203_001c,
+        ] {
+            assert!(PodModModelChoice::try_from(gated).is_err());
+        }
+
+        let fallback = make(0x0005_0003, 0x0203_0015);
+        let mut tone = PodTone::parse(fallback).unwrap();
+        tone.set_mod_model_choice(choice).unwrap();
+        assert_eq!(tone.models()[0].model_id, choice.model_id());
+        assert_eq!(tone.models()[0].slot, 0x0005_0003);
+
+        for (kind, slot, id) in [
+            (ContainerKind::L6as, MOD_SLOT, 0x0203_0004),
+            (ContainerKind::L6pa, MOD_SLOT, 0x3333_0001),
+            (ContainerKind::L6pa, 0x0009_0001, 0x0203_0004),
+        ] {
+            let mut tone = PodTone::parse(custom_tone(
+                kind,
+                &[BuiltModel {
+                    slot,
+                    model_id: id,
+                    tail: &[1, 2, 3, 4],
+                    parameters: &[],
+                }],
+            ))
+            .unwrap();
+            let before = tone.as_bytes().to_vec();
+            assert!(tone.set_mod_model_choice(choice).is_err());
+            assert_eq!(tone.as_bytes(), before);
+        }
+
+        let both = custom_tone(
+            ContainerKind::L6pa,
+            &[
+                BuiltModel {
+                    slot: MOD_SLOT,
+                    model_id: 0x0203_0004,
+                    tail: &[1, 2, 3, 4],
+                    parameters: &[],
+                },
+                BuiltModel {
+                    slot: 0x0005_0003,
+                    model_id: 0x0203_0005,
+                    tail: &[5, 6, 7, 8],
+                    parameters: &[],
+                },
+            ],
+        );
+        let mut tone = PodTone::parse(both).unwrap();
+        let before = tone.as_bytes().to_vec();
+        assert!(tone.set_mod_model_choice(choice).is_err());
+        assert_eq!(tone.as_bytes(), before);
+
+        let unknown = make(MOD_SLOT, 0x3333_0001);
+        let mut tone = PodTone::parse(unknown.clone()).unwrap();
+        assert!(tone.set_mod_model_choice(choice).is_err());
+        assert_eq!(tone.as_bytes(), unknown);
+
+        for (tail, body_len) in [
+            (&[][..], 8),
+            (&[0][..], 9),
+            (&[0, 0][..], 10),
+            (&[0, 0, 1][..], 11),
+        ] {
+            let short = custom_tone(
+                ContainerKind::L6pa,
+                &[BuiltModel {
+                    slot: MOD_SLOT,
+                    model_id: 0x0203_0004,
+                    tail,
+                    parameters: &[],
+                }],
+            );
+            let mut tone = PodTone::parse(short).unwrap();
+            assert_eq!(tone.model_minfo_ranges[0].len(), body_len);
+            let before = tone.as_bytes().to_vec();
+            assert!(tone.set_mod_model_choice(choice).is_err());
+            assert_eq!(tone.as_bytes(), before);
+        }
+
+        for duplicate in [false, true] {
+            let valid = make(MOD_SLOT, 0x0203_0004);
+            let malformed = alter_first_model_minf(&valid, duplicate);
+            assert!(PodTone::parse(malformed).is_err());
+        }
+
+        let mut old_profile = make(MOD_SLOT, 0x0203_0004);
+        let pinf = find_chunk_data(&old_profile, b"PINF");
+        old_profile[pinf + 72..pinf + 76].copy_from_slice(&0x02ff_ffffu32.to_be_bytes());
+        let mut tone = PodTone::parse(old_profile).unwrap();
+        let before = tone.as_bytes().to_vec();
+        assert!(tone.set_mod_model_choice(choice).is_err());
+        assert_eq!(tone.as_bytes(), before);
+
+        let same_id_wrong_context = custom_tone(
+            ContainerKind::L6as,
+            &[BuiltModel {
+                slot: MOD_SLOT,
+                model_id: choice.model_id(),
+                tail: &[1, 2, 3, 4],
+                parameters: &[],
+            }],
+        );
+        let mut tone = PodTone::parse(same_id_wrong_context).unwrap();
+        let before = tone.as_bytes().to_vec();
+        assert!(tone.set_mod_model_choice(choice).is_err());
+        assert_eq!(tone.as_bytes(), before);
+    }
+
+    #[test]
+    fn mod_model_id_selection_library_bundle_and_saved_baseline_are_isolated() {
+        let original = custom_tone(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: MOD_SLOT,
+                model_id: 0x0203_0004,
+                tail: &[0x7f, 0xa5, 0x00, 0xfe],
+                parameters: &[&[0x11, 0x22, 0x33]],
+            }],
+        );
+        let choice = PodModModelChoice::try_from(0x0203_0005).unwrap();
+
+        let mut library = Library::default();
+        let index = library.import_bytes(original.clone()).unwrap();
+        let baseline = library.tone(index).unwrap().as_bytes().to_vec();
+        library.set_mod_model_choice(index, choice).unwrap();
+        assert!(library.is_dirty(index));
+        assert_ne!(library.tone(index).unwrap().as_bytes(), baseline);
+        let directory = tempfile::tempdir().unwrap();
+        let collision = directory.path().join("existing-mod.l6p");
+        std::fs::write(&collision, b"keep existing bytes").unwrap();
+        assert!(library.tone(index).unwrap().save_copy(&collision).is_err());
+        assert_eq!(std::fs::read(&collision).unwrap(), b"keep existing bytes");
+        let saved = directory.path().join("edited-mod.l6p");
+        library.tone(index).unwrap().save_copy(&saved).unwrap();
+        let reopened = PodTone::parse(std::fs::read(saved).unwrap()).unwrap();
+        assert_eq!(reopened.models()[0].model_id, choice.model_id());
+        library.revert_unsaved(index).unwrap();
+        assert_eq!(library.tone(index).unwrap().as_bytes(), original);
+        assert!(!library.is_dirty(index));
+
+        let mut bundle = PodBundleLibrary::parse(bundle_with_tone(&original)).unwrap();
+        let bundle_before = bundle.as_bytes().to_vec();
+        bundle.set_mod_model_choice(0, choice).unwrap();
+        assert!(bundle.is_dirty());
+        let (bank, preset) = bundle.entry_location(0).unwrap();
+        assert_eq!(
+            bundle.tone(bank, preset).unwrap().models()[0].model_id,
+            choice.model_id()
+        );
+        bundle.revert().unwrap();
+        assert_eq!(bundle.as_bytes(), bundle_before);
+        assert!(!bundle.is_dirty());
     }
 
     #[test]

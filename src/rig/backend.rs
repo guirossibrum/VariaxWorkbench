@@ -107,6 +107,17 @@ pub(crate) fn set_pod_delay_model_choice(
     Ok(tone.into_bytes())
 }
 
+pub(crate) fn set_pod_mod_model_choice(
+    bytes: &[u8],
+    choice: pod_preset::PodModModelChoice,
+) -> Result<Vec<u8>, Rejection> {
+    let mut tone = pod_preset::PodTone::parse(bytes.to_vec())
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    tone.set_mod_model_choice(choice)
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    Ok(tone.into_bytes())
+}
+
 pub(crate) fn set_pod_cab_model_choice(
     bytes: &[u8],
     choice: pod_preset::PodCabModelChoice,

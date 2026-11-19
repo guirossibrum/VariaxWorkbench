@@ -180,6 +180,71 @@ physical applicability remains unverified. No hardware query is needed or
 permitted. The explicit Apply and same-choice no-op behavior remain this
 application's file policy, not a claim about vendor combo events.
 
+## Mod model selector: admitted static source contract and offline edit
+
+Static inspection of `L6PODxtParamMap.GetModModelList` and the Mod model
+catalog identifies 24 current Mod IDs. `L6SharcToneEditor.IsModelInstalled`
+classifies 13 of these as Pack 4 gated; the remaining 11 IDs (`0x02030004`
+through `0x0203000e`) take its default-available branch. This is source-level
+eligibility evidence, not device support or installed-pack evidence. The
+application therefore exposes only those 11 as typed requested choices while
+allowing any of the 24 recognized current IDs to transition to an admitted
+choice. Unknown current IDs remain readable but cannot be edited.
+
+The offline setter is scoped to one existing model in FORM/L6PA for PODxt Live
+(PINF layout 1, target `0x0003000A`, and the existing application profile floor
+`0x03000000`). Exactly one model must occupy either primary slot `0x00020004`
+or fallback slot `0x00050003`; absent, both-present, duplicate, or malformed
+model/MINF structures reject. A unique MINF must contain at least 12 actual
+bytes. The edit changes only its first four big-endian model-ID bytes; it
+preserves all remaining MINF, PARM, enable/reserved, padding, chunk, and
+unrelated bytes. It neither seeds nor resets parameters. The full clone is
+reparsed before publishing. All context checks precede the same-ID no-op.
+
+The static source supports the narrow choice admission, but the four-byte
+serialization strategy is the application's conservative policy. It does not
+claim full callback parity or prove vendor save behavior. A successful model
+change clears staged Mod NOTE/SPEED values tied to that model context; a
+rejected or same-ID Apply retains them. GUI rendering of a gated current ID is
+read-only and displays it outside the choices so the user can directly select
+one of the admitted IDs.
+
+**Literal synthetic whole-buffer example.** The complete fixture below is a valid
+`FORM/L6PA` tone with PINF v1 / PODxt Live / host-profile word `0x03000000`,
+one Mod model in slot `0x00020004`, an opaque PARM and an unknown model child.
+Applying `0x02030005` changes only the MINF ID bytes. The vector is independent
+of the setter and also exercises save/reparse preservation.
+
+```text
+before (178 bytes; FORM length 0x000000aa):
+0000: 46 4f 52 4d 00 00 00 aa 4c 36 50 41 4a 55 4e 4b
+0010: 00 00 00 03 11 22 33 a5 50 49 4e 46 00 00 00 50
+0020: 00 00 00 01 00 03 00 0a 00 41 00 00 00 00 00 00
+0030: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0040: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0050: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0060: 00 00 00 00 00 00 00 00 03 00 00 00 5a a5 96 69
+0070: 4c 49 53 54 00 00 00 3a 50 41 54 43 4c 49 53 54
+0080: 00 00 00 2e 4d 4f 44 4c 4d 49 4e 46 00 00 00 0c
+0090: 02 03 00 04 00 02 00 04 fe 12 34 01 50 41 52 4d
+00a0: 00 00 00 03 de ad be a5 58 54 52 41 00 00 00 02
+00b0: 55 66
+
+after (178 bytes; FORM length 0x000000aa):
+0000: 46 4f 52 4d 00 00 00 aa 4c 36 50 41 4a 55 4e 4b
+0010: 00 00 00 03 11 22 33 a5 50 49 4e 46 00 00 00 50
+0020: 00 00 00 01 00 03 00 0a 00 41 00 00 00 00 00 00
+0030: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0040: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0050: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0060: 00 00 00 00 00 00 00 00 03 00 00 00 5a a5 96 69
+0070: 4c 49 53 54 00 00 00 3a 50 41 54 43 4c 49 53 54
+0080: 00 00 00 2e 4d 4f 44 4c 4d 49 4e 46 00 00 00 0c
+0090: 02 03 00 05 00 02 00 04 fe 12 34 01 50 41 52 4d
+00a0: 00 00 00 03 de ad be a5 58 54 52 41 00 00 00 02
+00b0: 55 66
+```
+
 ## CAB/MIC source trace and proposed bounded operation
 
 This is a source-backed proposal for Gatekeeper technical admission. It adds no

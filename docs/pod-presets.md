@@ -426,6 +426,23 @@ NOTE; it does not require Delay or Tempo context. All operations reject
 ambiguous or unsupported context before mutation and preserve every untouched
 byte. The GUI stages changes per tone and applies or discards them explicitly.
 
+### Existing-slot Mod model ID
+
+The offline tone, library, bundle, session, and GUI also expose an explicit
+existing-slot Mod model-ID change. It is limited to FORM/L6PA for PODxt Live
+and the existing host-profile floor. Exactly one current model must occupy
+primary slot `0x00020004` or fallback slot `0x00050003`; the unique MINF body
+must be at least 12 bytes. The 11 unconditionally available source choices
+`0x02030004..=0x0203000e` are requestable. Thirteen source Pack-4-gated IDs are
+recognized only as current values, so they can transition directly to an
+admitted choice but cannot be requested, including as same-ID operations.
+Apply changes only the MINF model ID and retains all parameters and unknown
+bytes; it never resets parameters or contacts hardware. A changed model
+invalidates only staged Mod NOTE/SPEED edits. Invalid and same-ID operations
+preserve those staged edits. The complete independent synthetic vector and
+source/application boundary are recorded in the
+[model-selection contract](pod-model-selection-contract.md).
+
 The System id gate is a deliberately conservative application scope based on
 the recovered source default, not a claim that the original getter rejects
 other existing ids. Existing `0x3e800000` and unknown System ids remain

@@ -162,6 +162,16 @@ not synthesize missing models or PARMs. `NOTE` is the shared ordinal table
 0–13. `MODSPEED` is displayed in Hz over `[0.1,15]`; `DELAYTIME` is displayed
 in ms over `[20,2000]`; both `L6RangeFormat` definitions request clipping.
 
+The existing-slot Mod model selector is a separate admitted offline edit. It
+permits requested IDs `0x02030004..=0x0203000e` only, while recognizing all 24
+listed IDs as valid current models. The other 13 current IDs are source Pack-4
+gated and cannot be requested from an offline file. The writer requires one
+primary (`0x00020004`) or fallback (`0x00050003`) model in FORM/L6PA for PODxt
+Live, validates its unique full MINF, and changes only the four-byte ID. It
+does not reset/reconcile parameters or claim device/pack applicability. The
+literal full-container vector and exact tests are in the
+[model-selection contract](pod-model-selection-contract.md).
+
 `UpdateNoteValues()` reads Tempo as `f32`, then Mod NOTE and Delay NOTE as
 integers. For each NOTE ordinal greater than zero it calls
 `Note2TimeSpeed(note, tempo, true)` for Mod SPEED and
