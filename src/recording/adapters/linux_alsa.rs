@@ -358,7 +358,7 @@ mod tests {
         adapter
             .translate_read_result(62, 1_365, 1_365, &bytes)
             .unwrap();
-        assert_eq!(adapter.drain().unwrap(), 1_365);
+        assert_eq!(adapter.drain().unwrap(), 1);
         assert_eq!(adapter.session().take().pcm(), bytes.as_slice());
         assert_eq!(adapter.translate_read_result(62, 0, 0, &[]), Ok(()));
 
