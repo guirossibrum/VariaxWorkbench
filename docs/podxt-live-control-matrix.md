@@ -83,7 +83,7 @@ with synthetic data, not a native vendor save/reopen oracle.
 | Cab models and microphone selection | Model IDs may be displayed; no numeric edit is exposed | Target-specific cab/mic definition, associated parameter ID/type/domain, model-dependent mapping, and exact preservation behavior. |
 | Non-scalar Stomp controls; Mod, delay, reverb and EQ models | All 31 Stomp layouts expose 86 source-mapped percent fields; 24 Mod layouts expose 52 fields; 14 Delay layouts expose 37 fields; 15 Reverb layouts expose 42 fields with family-specific selector and PARM mappings. Stomp SYNWAVE/WHAMMY_INTERVAL and Delay HEADS/BITS association formats remain raw. EQ numeric editing remains unavailable. | For omitted Stomp/Delay association formats, a compatible scalar contract; for EQ, exact target-specific model-to-slot and parameter mapping, representation, domain/units/scaling/steps, callbacks and failure behavior. Shared AX3 names or ids alone are insufficient. |
 | Amp enable, setup slots and model replacement | No numeric/model replacement API | Boolean/association contract, optional-pack policy, replacement side effects and transaction/failure semantics. `CheckCanWritePatch`'s installed-pack check is not an edit-domain or serializer contract. |
-| Tone setup, bank/collection organization and POD Farm interchange | Existing L6BA/L6CO PODxt-only banks/collections can be inspected, navigated, edited, reverted and saved as a new copy in the offline GUI. Mixed-target and empty collections reject. Bank/preset creation/deletion and POD Farm conversion remain unavailable. | Source-backed container schema for creation/deletion, exact serializer rules for membership changes, and a target-specific POD Farm conversion contract. The negative POD Farm 1.12 receiver result is scoped to that package; see [its historical investigation](pod-farm-112-target-applicability.md). |
+| Tone setup, bank/collection organization and POD Farm interchange | Existing L6BA/L6CO PODxt-only banks/collections can be inspected, navigated, edited, reverted and saved as a new copy in the offline GUI. Reads are limited to 16 MiB plus one sentinel byte during I/O; parse and replacement enforce the same total cap transactionally. Mixed-target and empty collections reject. Bank/preset creation/deletion and POD Farm conversion remain unavailable. | Source-backed container schema for creation/deletion, exact serializer rules for membership changes, and a target-specific POD Farm conversion contract. The negative POD Farm 1.12 receiver result is scoped to that package; see [its historical investigation](pod-farm-112-target-applicability.md). |
 | Send, switch, firmware, backup, audio and maintenance operations | Disabled or unimplemented | Separate future requirements and explicit authorization. No such live operation follows from the offline contracts here. |
 
 The current Rust implementation covers six shared amp controls across 106
@@ -98,3 +98,28 @@ compatibility tests are admitted. This matrix is not an issue-acceptance claim.
 The broader criteria for formats/models/effects, editor workflows and
 compatibility/preservation/rejection testing remain partial. Lack of physical
 testing is not an offline criterion gap; hardware remains locked independently.
+
+## Remaining source/input blocker — 2026-11-19
+
+The admitted Line6Edit 3.06 contract covers the scalar amp, Stomp, Mod, Delay,
+and Reverb controls listed above. The exact target-specific serializer/API edge
+needed to extend that contract remains unresolved for Stomp `SYNWAVE` and
+`WHAMMY_INTERVAL` (including Heel/Toe), Delay `HEADS` and `BITS`, EQ model/slot
+selection and parameter definitions, amp enable/model replacement, and cab/mic
+selection. Names, selector ordinals, a shared AX3 id, or a generic float
+definition do not by themselves establish the PODxt association, stored type,
+domain, unit, side effects, error behavior, or preservation rules. These fields
+remain raw and uneditable.
+
+Bounded read-only searches of the retained archived Workbench trees
+`analysis/decompiled/mac/line6editbase`,
+`analysis/decompiled/windows/line6editbase`,
+`analysis/extracted/mac-jar/line6editbase`, and
+`analysis/extracted/windows-app/line6editbase` found no source member chain
+that fills those missing PODxt-specific serializer and control contracts. The
+Line6Edit scalar evidence above remains separately qualified and is not
+invalidated by this negative Workbench search. To proceed safely, the required
+input is a source-backed PODxt-specific mapping/serializer contract for each
+named association and model/slot operation, including applicable record type,
+read/write member behavior, failure semantics, and any model-dependent mapping.
+No new source was fetched or vendor code executed for this check.

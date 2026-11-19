@@ -2168,7 +2168,17 @@ impl Workbench {
             self.pod_message = "Load cancelled. No file was read.".into();
             return;
         };
-        match pod_preset::read_regular_bundle(pod_preset::path_facts(&path), || fs::read(&path)) {
+        match pod_preset::read_regular_bundle(pod_preset::path_facts(&path), || {
+            let file = fs::File::open(&path)?;
+            let metadata = file.metadata()?;
+            Ok((
+                pod_preset::PathFacts {
+                    regular_file: metadata.is_file(),
+                    len: metadata.len(),
+                },
+                file,
+            ))
+        }) {
             Ok(bytes) if matches!(bytes.get(8..12), Some(b"L6BA" | b"L6CO")) => {
                 match self.load_pod_bundle_bytes(bytes) {
                     Ok(()) => {

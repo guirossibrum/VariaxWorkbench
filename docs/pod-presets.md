@@ -80,8 +80,12 @@ POD contract. Ambiguous targeted controls still reject. It rejects empty and
 mixed-target bundles. The GUI now lists bank/preset locations, supports selection
 across banks, and saves or discards edits for the collection as a whole. The GUI
 does not synthesize bank membership or claim vendor save compatibility. Bundle
-files are bounded to 16 MiB before UI reads; this is an application safety cap,
-not a recovered Workbench or Line 6 limit.
+files are bounded to 16 MiB before UI reads. The path is checked before open,
+the opened handle is checked again, and the reader consumes no more than the
+ceiling plus one sentinel byte if the file grows during reading. The public
+parser rejects files over the same cap, and edits that would grow a collection
+past it fail before allocating or changing the library baseline. This is an
+application safety cap, not a recovered Workbench or Line 6 limit.
 
 The PINF name edit uses the same 32-unit NUL and length rule as the guitar
 renamer. Six host-scale edits are available for Drive, Bass, Mid, Treble,

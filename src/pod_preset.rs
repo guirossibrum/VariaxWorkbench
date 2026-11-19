@@ -1819,6 +1819,11 @@ struct PodBundleBank {
 
 impl PodBundleLibrary {
     pub fn parse(bytes: Vec<u8>) -> Result<Self, ToneError> {
+        if bytes.len() as u64 > BUNDLE_BYTES_CEILING {
+            return Err(ToneError::format(
+                "POD bank exceeds the 16 MiB offline librarian ceiling",
+            ));
+        }
         if bytes.len() < 12 || &bytes[..4] != b"FORM" || !matches!(&bytes[8..12], b"L6BA" | b"L6CO")
         {
             return Err(ToneError::format(
@@ -1990,6 +1995,11 @@ impl PodBundleLibrary {
             .checked_sub(old_span)
             .and_then(|length| length.checked_add(replacement_span))
             .ok_or_else(|| ToneError::format("bundle size overflow"))?;
+        if new_file_length as u64 > BUNDLE_BYTES_CEILING {
+            return Err(ToneError::format(
+                "POD bank exceeds the 16 MiB offline librarian ceiling",
+            ));
+        }
         let bank_length = u32::try_from(new_bank_length)
             .map_err(|_| ToneError::format("bank exceeds IFF size capacity"))?;
         let root_length = u32::try_from(new_file_length - 8)
@@ -2094,10 +2104,13 @@ pub fn read_regular_tone(
     Ok(bytes)
 }
 
-/// Reads a bounded Workbench POD bank only after regular-file metadata checks.
-pub fn read_regular_bundle(
+/// Reads a bounded Workbench POD bank after path and opened-handle checks.
+///
+/// The reader is limited to the application ceiling plus one sentinel byte,
+/// including when the file grows after either metadata check.
+pub fn read_regular_bundle<R: std::io::Read>(
     facts: std::io::Result<PathFacts>,
-    read: impl FnOnce() -> std::io::Result<Vec<u8>>,
+    open: impl FnOnce() -> std::io::Result<(PathFacts, R)>,
 ) -> Result<Vec<u8>, ToneError> {
     let facts = facts.map_err(|error| ToneError::format(error.to_string()))?;
     if !facts.regular_file {
@@ -2110,7 +2123,21 @@ pub fn read_regular_bundle(
             "POD bank exceeds the 16 MiB offline librarian ceiling",
         ));
     }
-    let bytes = read().map_err(|error| ToneError::format(error.to_string()))?;
+    let (opened_facts, reader) = open().map_err(|error| ToneError::format(error.to_string()))?;
+    if !opened_facts.regular_file {
+        return Err(ToneError::format(
+            "POD bank input must be a regular file. A pipe, socket, or device node is not read.",
+        ));
+    }
+    if opened_facts.len > BUNDLE_BYTES_CEILING {
+        return Err(ToneError::format(
+            "POD bank exceeds the 16 MiB offline librarian ceiling",
+        ));
+    }
+    let mut bytes = Vec::with_capacity(opened_facts.len.min(BUNDLE_BYTES_CEILING) as usize);
+    let mut bounded = std::io::Read::take(reader, BUNDLE_BYTES_CEILING + 1);
+    std::io::Read::read_to_end(&mut bounded, &mut bytes)
+        .map_err(|error| ToneError::format(error.to_string()))?;
     if bytes.len() as u64 > BUNDLE_BYTES_CEILING {
         return Err(ToneError::format(
             "POD bank exceeds the 16 MiB offline librarian ceiling",
@@ -2271,6 +2298,26 @@ mod tests {
             root.extend(chunk(b"LIST", &bank));
         }
         chunk(b"FORM", &root)
+    }
+
+    fn bundle_with_total_length(tone: &[u8], total_length: usize) -> Vec<u8> {
+        let mut bytes = bundle_with_tone(tone);
+        assert!(total_length >= bytes.len() + 8);
+        let payload_length = total_length - bytes.len() - 8;
+        assert!(payload_length.is_multiple_of(2));
+        bytes.extend_from_slice(b"JUNK");
+        bytes.extend_from_slice(&(payload_length as u32).to_be_bytes());
+        bytes.resize(total_length, 0x5a);
+        bytes[4..8].copy_from_slice(&((total_length - 8) as u32).to_be_bytes());
+        bytes
+    }
+
+    fn tone_with_empty_unknown_chunk(tone: &[u8]) -> Vec<u8> {
+        let mut bytes = tone.to_vec();
+        bytes.extend_from_slice(b"EXTR\0\0\0\0");
+        let form_length = bytes.len() - 8;
+        bytes[4..8].copy_from_slice(&(form_length as u32).to_be_bytes());
+        bytes
     }
 
     fn stomp_tone(version: u32, model: u32, parameters: &[&[u8]]) -> Vec<u8> {
@@ -4499,7 +4546,13 @@ mod tests {
                 }),
                 || {
                     called = true;
-                    Ok(vec![])
+                    Ok((
+                        PathFacts {
+                            regular_file: true,
+                            len: 0,
+                        },
+                        std::io::Cursor::new(vec![]),
+                    ))
                 },
             )
             .is_err()
@@ -4513,12 +4566,126 @@ mod tests {
                 }),
                 || {
                     called = true;
-                    Ok(vec![])
+                    Ok((
+                        PathFacts {
+                            regular_file: true,
+                            len: 0,
+                        },
+                        std::io::Cursor::new(vec![]),
+                    ))
                 },
             )
             .is_err()
         );
         assert!(!called);
+
+        let error = read_regular_bundle(
+            Ok(PathFacts {
+                regular_file: true,
+                len: 1,
+            }),
+            || {
+                Ok((
+                    PathFacts {
+                        regular_file: false,
+                        len: 0,
+                    },
+                    std::io::Cursor::new(vec![]),
+                ))
+            },
+        )
+        .unwrap_err();
+        assert!(error.detail().contains("regular file"));
+        assert!(error.detail().contains("not read"));
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("bounded-bank.vwb");
+        std::fs::write(&path, b"offline contents").unwrap();
+        let actual = read_regular_bundle(path_facts(&path), || {
+            let file = std::fs::File::open(&path)?;
+            let metadata = file.metadata()?;
+            Ok((
+                PathFacts {
+                    regular_file: metadata.is_file(),
+                    len: metadata.len(),
+                },
+                file,
+            ))
+        })
+        .unwrap();
+        assert_eq!(actual, b"offline contents");
+    }
+
+    #[test]
+    fn pod_bundle_reader_stops_at_ceiling_plus_one_when_file_grows() {
+        struct GrowingReader {
+            remaining: u64,
+            consumed: std::rc::Rc<std::cell::Cell<u64>>,
+        }
+
+        impl std::io::Read for GrowingReader {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                let count = output.len().min(self.remaining as usize);
+                output[..count].fill(0x5a);
+                self.remaining -= count as u64;
+                self.consumed.set(self.consumed.get() + count as u64);
+                Ok(count)
+            }
+        }
+
+        let consumed = std::rc::Rc::new(std::cell::Cell::new(0));
+        let reader_consumed = consumed.clone();
+        let error = read_regular_bundle(
+            Ok(PathFacts {
+                regular_file: true,
+                len: 12,
+            }),
+            move || {
+                Ok((
+                    PathFacts {
+                        regular_file: true,
+                        len: 12,
+                    },
+                    GrowingReader {
+                        remaining: BUNDLE_BYTES_CEILING * 2,
+                        consumed: reader_consumed,
+                    },
+                ))
+            },
+        )
+        .unwrap_err();
+        assert!(error.detail().contains("ceiling"));
+        assert_eq!(consumed.get(), BUNDLE_BYTES_CEILING + 1);
+    }
+
+    #[test]
+    fn pod_bundle_parse_rejects_structurally_valid_file_over_total_ceiling() {
+        let oversized =
+            bundle_with_total_length(&live_tone(), BUNDLE_BYTES_CEILING as usize + 2);
+        assert_eq!(oversized.len(), BUNDLE_BYTES_CEILING as usize + 2);
+        let error = PodBundleLibrary::parse(oversized).unwrap_err();
+        assert!(error.detail().contains("16 MiB"));
+    }
+
+    #[test]
+    fn pod_bundle_replacement_growth_over_ceiling_is_transactional() {
+        let original =
+            bundle_with_total_length(&live_tone(), BUNDLE_BYTES_CEILING as usize - 2);
+        let mut library = PodBundleLibrary::parse(original.clone()).unwrap();
+        library.edit_entry(0, |tone| tone.rename("Unsaved")).unwrap();
+        let before_replace = library.as_bytes().to_vec();
+        let saved_before = library.saved.clone();
+        assert!(library.is_dirty());
+        assert_eq!(library.entry_location(0), Some((0, 0)));
+
+        let replacement = tone_with_empty_unknown_chunk(&live_tone());
+        let error = library.replace_entry(0, replacement).unwrap_err();
+        assert!(error.detail().contains("16 MiB"));
+        assert_eq!(library.as_bytes(), before_replace);
+        assert_eq!(library.saved, saved_before);
+        assert!(library.is_dirty());
+        assert_eq!(library.entry_location(0), Some((0, 0)));
+        assert_eq!(library.tone(0, 0).unwrap().name(), "Unsaved");
     }
 
     fn edited_name_too_long(tone: &PodTone) -> bool {
