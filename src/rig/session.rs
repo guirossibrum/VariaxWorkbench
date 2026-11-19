@@ -262,6 +262,35 @@ impl Session {
         summarize_hd_editor_file(library, index)
     }
 
+    /// Applies the one admitted type-9 choice through the POD HD500X
+    /// extension profile. H5EP file association is not physical applicability.
+    pub fn set_hd_type9_choice(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: crate::pod_preset::HdFxSlot,
+        choice: crate::pod_preset::HdType9Choice,
+    ) -> Result<(), Rejection> {
+        match self.kind {
+            SessionKind::Extension(ProductProfile::PodHd500x) => {}
+            SessionKind::Extension(profile) => {
+                return Err(Rejection::Unsupported {
+                    profile,
+                    operation: Operation::EditPodPreset,
+                });
+            }
+            SessionKind::InitialRig => {
+                return Err(Rejection::Unsupported {
+                    profile: ProductProfile::Variax600,
+                    operation: Operation::EditPodPreset,
+                });
+            }
+        }
+        library
+            .set_type9_choice(file, effect_slot, choice)
+            .map_err(map_hd_library_error)
+    }
+
     /// Applies the admitted offline enable flag only through a POD HD500X
     /// extension session. H5EP v1 is enforced by the parser; file context does
     /// not establish a physical unit or firmware version.

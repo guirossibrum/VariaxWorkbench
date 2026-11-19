@@ -383,6 +383,42 @@ blocks, version rejection, dirty/revert state, H5ES/H5EB parent preservation,
 target profile checks, and GUI save collision/failure/reopen/quit behavior.
 These tests do not validate a physical product or original-editor event parity.
 
+### Bounded type-9 three-choice control
+
+The offline H5EP library additionally exposes one source-joined type-9 choice
+control for model `0x020A0014`, key `0x3F100004`, with neutral UI labels
+`Choice 0`, `Choice 1`, and `Choice 2`. Their serialized big-endian f32 words
+are exactly `00000000`, `3F000000`, and `3F800000`. The typed file slot is
+`HdFxSlot(0..=7)` and maps to body block `0x428 + slot*0x100`; descriptor
+ordinal 92 and the vendor runtime selector are not converted into a file slot.
+This source/applicability observation is not proof of a physical HD500X.
+
+The setter first relies on the full H5EP v1 parser, then requires the exact
+model, validity byte `B+0x0b == 1`, canonical enable byte `B+8` in 0/1, row
+count `B+0x0f` in 1..=12, exactly one matching key among all twelve rows (even
+outside the count), target row below the declared count, and zero assignment
+marker at row `+0x10`. The count rule is a conservative application guard;
+the legacy parser does not itself validate that byte. Disabled-but-valid
+effects remain editable and the enable byte is preserved. The operation rejects
+non-finite current values, while getters retain their raw bits as a distinct
+non-finite state; unknown finite values remain lossless on load and can be
+replaced only by an explicit choice. Same-word no-ops occur only after every
+guard succeeds. A candidate changes only the unique value DWORD, is reparsed as
+a complete H5EP record, then becomes the in-memory edit. H5ES/H5EB children
+must be independently extracted; the enclosing parents are never mutated.
+
+The GUI stages a choice per selected library entry and file FX slot across
+frames. Apply and Discard are explicit; changing file/slot/model, loading or
+reverting clears stale staged state. Staged choices participate in the quit
+guard and are never applied implicitly. The shared Session write requires the
+POD HD500X extension profile; other profiles and non-H5EP entries reject.
+Synthetic tests exercise all eight slots, rows 0/5/11, all choices, both enable
+states, unknown finite/no-op/non-finite values, malformed/count/model/validity/
+marker/missing/duplicate rejection, full-file preservation, session/library
+gates, and GUI stage/apply/discard/quit behavior. Current-head focused checks
+are pending; none of these tests establish physical compatibility or audio
+behavior.
+
 ### Additional selected numeric control contracts
 
 The retained Editor 2.27 callback matrix has 80 active non-type-1 numeric rows
@@ -636,7 +672,7 @@ context words, and it does not broaden the existing finite default operations.
 | Original acceptance criterion | Current status |
 | --- | --- |
 | Establish HD500X identity, editor/driver/firmware, preset/model/effect and audio evidence from primary sources. | **Partial.** Static Editor file-group association and a bounded writer/reader trace are recorded. Driver text matches USB `0x0E41:0x4159`, with the Mac audio personality on interface 0 and bulk personality on interface 1; the Advanced Guide names a processed stereo host feed, **1-2 Main Out**, plus playback return and 48 kHz native processing with documented conversion rates. This does not supply the device's USB audio descriptors/endpoints or connect them to driver callbacks, formats, and selected identity. Product attribution, complete model/effect catalog, firmware applicability and physical identity remain unresolved. |
-| Implement an independent offline backend integrated with shared interfaces and tests. | **Partial.** The shared offline Session/library interface and GUI import bounded H5EP/H5ES/H5EB files, extract children, preserve context and save new copies. They edit all 364 source-identified primary type-1 rows plus 80 selected non-type-1 numeric controls across 143 descriptor model IDs with canonical-grid and byte-preservation tests, and expose three earlier Octave Fuzz replacements, the closed twelve-target defaults action, and the newly admitted one-byte FX enable/disable operation. Seven new synthetic tests cover slot transitions, preservation, parent extraction, session/version rejection and GUI copy/quit flow; the exact-head configured checks are pending. The HD500X session also exposes generic bounded FORM/L6FF inspection without applying header identity to a physical profile. Product-qualified route planning and maintenance remain unavailable; other type-family semantics, physical recording and original-editor parity are not implemented. |
+| Implement an independent offline backend integrated with shared interfaces and tests. | **Partial.** The shared offline Session/library interface and GUI import bounded H5EP/H5ES/H5EB files, extract children, preserve context and save new copies. They edit all 364 source-identified primary type-1 rows plus 80 selected non-type-1 numeric controls across 143 descriptor model IDs with canonical-grid and byte-preservation tests, and expose three earlier Octave Fuzz replacements, the closed twelve-target defaults action, the one-byte FX enable/disable operation, and one admitted type-9 three-choice row writer for model `0x020A0014`/key `0x3F100004`. The type-9 setter requires an explicit file slot, valid/enable/count/assignment-marker guards, a unique existing key, finite current value and complete-candidate reparse; its GUI stages per entry/slot and applies or discards explicitly. New synthetic normal/edge and GUI lifecycle tests are implemented; exact-head configured checks are pending. The HD500X session also exposes generic bounded FORM/L6FF inspection without applying header identity to a physical profile. Product-qualified route planning and maintenance remain unavailable; other type-family semantics, physical recording and original-editor parity are not implemented. |
 | Keep HD/JTV separate from PODxt/original Variax; prohibit cross-family conversion, flashing and live operations. | **Met as written.** Profiles remain separate; no cross-family conversion, upload, flash or live path is exposed, and hardware access remains locked. This criterion does not establish physical compatibility. |
 
 Issue #32 remains open. Synthetic tests do not complete source-identification,

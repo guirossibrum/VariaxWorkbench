@@ -464,6 +464,125 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
 }
 
 #[test]
+fn type9_choice_writer_is_gated_to_the_hd500x_extension_and_standalone_h5ep() {
+    use crate::pod_preset::{HdFxSlot, HdType9Choice};
+    let mut bytes = synthetic_h5ep();
+    let block = crate::pod_preset::H5EP_HEADER_BYTES + 0x428 + 6 * 0x100;
+    bytes[block..block + 4].copy_from_slice(&0x020a_0014u32.to_be_bytes());
+    bytes[block + 8] = 1;
+    bytes[block + 0x0b] = 1;
+    bytes[block + 0x0f] = 1;
+    let row = block + 0x10;
+    bytes[row..row + 4].copy_from_slice(&0x3f10_0004u32.to_be_bytes());
+    bytes[row + 4..row + 8].copy_from_slice(&0x3e80_0000u32.to_be_bytes());
+    let mut library = HdEditorLibrary::default();
+    let index = library.import_bytes(bytes.clone()).unwrap();
+    let slot = HdFxSlot::new(6).unwrap();
+
+    assert!(matches!(
+        Session::initial_rig().set_hd_type9_choice(
+            &mut library,
+            index,
+            slot,
+            HdType9Choice::Choice2
+        ),
+        Err(Rejection::Unsupported {
+            profile: ProductProfile::Variax600,
+            operation: Operation::EditPodPreset
+        })
+    ));
+    for profile in [ProductProfile::WorkbenchHd, ProductProfile::Jtv69] {
+        assert!(matches!(
+            Session::extension(profile)
+                .unwrap()
+                .set_hd_type9_choice(
+                    &mut library,
+                    index,
+                    slot,
+                    HdType9Choice::Choice2
+                ),
+            Err(Rejection::Unsupported { profile: denied, .. }) if denied == profile
+        ));
+    }
+    let mut bad_marker = bytes.clone();
+    bad_marker[row + 0x10] = 1;
+    let mut rejected_library = HdEditorLibrary::default();
+    let rejected_index = rejected_library.import_bytes(bad_marker.clone()).unwrap();
+    assert!(
+        Session::extension(ProductProfile::PodHd500x)
+            .unwrap()
+            .set_hd_type9_choice(
+                &mut rejected_library,
+                rejected_index,
+                slot,
+                HdType9Choice::Choice1
+            )
+            .is_err()
+    );
+    assert_eq!(
+        rejected_library.file(rejected_index).unwrap().as_bytes(),
+        bad_marker
+    );
+    assert!(!rejected_library.is_dirty(rejected_index));
+    Session::extension(ProductProfile::PodHd500x)
+        .unwrap()
+        .set_hd_type9_choice(&mut library, index, slot, HdType9Choice::Choice2)
+        .expect("admitted offline profile edit");
+    assert!(library.is_dirty(index));
+    assert_eq!(
+        library.file(index).unwrap().as_bytes()[row + 4..row + 8],
+        0x3f80_0000u32.to_be_bytes()
+    );
+    assert_eq!(
+        library.file(index).unwrap().as_bytes()[row..row + 4],
+        0x3f10_0004u32.to_be_bytes()
+    );
+    library.revert_unsaved(index).unwrap();
+    assert_eq!(library.file(index).unwrap().as_bytes(), bytes.as_slice());
+    assert!(!library.is_dirty(index));
+
+    let hd_session = Session::extension(ProductProfile::PodHd500x).unwrap();
+    hd_session
+        .set_hd_type9_choice(&mut library, index, slot, HdType9Choice::Choice1)
+        .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let collision = directory.path().join("existing.5xe");
+    std::fs::write(&collision, b"preserve existing output").unwrap();
+    assert!(
+        hd_session
+            .save_hd_editor_copy(&library, &collision, index)
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read(&collision).unwrap(),
+        b"preserve existing output"
+    );
+    let output = directory.path().join("copy.5xe");
+    hd_session
+        .save_hd_editor_copy(&library, &output, index)
+        .unwrap();
+    let saved = std::fs::read(&output).unwrap();
+    assert_eq!(saved[row + 4..row + 8], [0x3f, 0x00, 0x00, 0x00]);
+    let reopened = crate::pod_preset::OpaqueH5epPreset::parse(saved).unwrap();
+    assert_eq!(
+        reopened.hd_type9_choice_value(slot),
+        crate::pod_preset::HdType9ChoiceValue::Choice(HdType9Choice::Choice1)
+    );
+    library.note_saved(index).unwrap();
+    assert!(!library.is_dirty(index));
+
+    let mut parent = HdEditorLibrary::default();
+    let h5es_index = parent.import_bytes(synthetic_h5es()).unwrap();
+    assert!(
+        Session::extension(ProductProfile::PodHd500x)
+            .unwrap()
+            .set_hd_type9_choice(&mut parent, h5es_index, slot, HdType9Choice::Choice1)
+            .is_err()
+    );
+    assert!(!parent.is_dirty(h5es_index));
+}
+
+#[test]
 fn hd500x_enable_session_is_profile_gated_and_keeps_file_and_version_guards() {
     let hd500x = Session::extension(ProductProfile::PodHd500x).unwrap();
     let mut library = hd500x.new_hd_editor_library();

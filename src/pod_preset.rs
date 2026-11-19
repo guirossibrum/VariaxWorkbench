@@ -61,6 +61,8 @@ const HD_SCREAMER_MODEL_ID: u32 = 0x0205_000e;
 const HD_SUB_OCTAVE_FUZZ_MODEL_ID: u32 = 0x0205_0014;
 const HD_TUBE_DRIVE_MODEL_ID: u32 = 0x0205_000d;
 const HD_OCTAVE_FUZZ_MODEL_ID: u32 = 0x0205_000c;
+pub const HD_TYPE9_CHOICE_MODEL_ID: u32 = 0x020a_0014;
+const HD_TYPE9_CHOICE_KEY: u32 = 0x3f10_0004;
 const HD_BAND_SHIFT_EQ_MODEL_ID: u32 = 0x020c_000c;
 const HD_GRAPHIC_EQ_MODEL_ID: u32 = 0x020c_0009;
 const HD_STUDIO_EQ_MODEL_ID: u32 = 0x020c_000a;
@@ -184,6 +186,62 @@ impl HdFxSlot {
     pub const fn index(self) -> usize {
         self.0
     }
+}
+
+/// One of the three source-joined type-9 choice indices. Labels intentionally
+/// remain neutral until their localized strings are independently decoded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum HdType9Choice {
+    Choice0,
+    Choice1,
+    Choice2,
+}
+
+impl HdType9Choice {
+    pub const ALL: [Self; 3] = [Self::Choice0, Self::Choice1, Self::Choice2];
+
+    pub const fn index(self) -> u8 {
+        match self {
+            Self::Choice0 => 0,
+            Self::Choice1 => 1,
+            Self::Choice2 => 2,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Choice0 => "Choice 0",
+            Self::Choice1 => "Choice 1",
+            Self::Choice2 => "Choice 2",
+        }
+    }
+
+    const fn bits(self) -> u32 {
+        match self {
+            Self::Choice0 => 0x0000_0000,
+            Self::Choice1 => 0x3f00_0000,
+            Self::Choice2 => 0x3f80_0000,
+        }
+    }
+
+    pub fn from_index(index: u8) -> Result<Self, ToneError> {
+        match index {
+            0 => Ok(Self::Choice0),
+            1 => Ok(Self::Choice1),
+            2 => Ok(Self::Choice2),
+            _ => Err(ToneError::format("HD type-9 choice index must be in 0..=2")),
+        }
+    }
+}
+
+/// Lossless read state for the one admitted type-9 row. Imported values are
+/// never normalized merely because they do not match the three choices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HdType9ChoiceValue {
+    Choice(HdType9Choice),
+    UnknownFinite(u32),
+    NonFinite(u32),
+    Unavailable,
 }
 
 pub const OFFLINE_BANNER: &str =
@@ -1867,6 +1925,106 @@ impl OpaqueH5epPreset {
         exact_numeric_value(value, control.min, control.max)
     }
 
+    /// Reads the one statically joined type-9 choice control. Unknown finite
+    /// and non-finite words remain observable without being normalized.
+    pub fn hd_type9_choice_value(&self, effect_slot: HdFxSlot) -> HdType9ChoiceValue {
+        let Ok(value_at) = self.hd_type9_choice_value_offset(effect_slot) else {
+            return HdType9ChoiceValue::Unavailable;
+        };
+        let Some(bits) = read_be_u32(self.body_bytes(), value_at) else {
+            return HdType9ChoiceValue::Unavailable;
+        };
+        match bits {
+            0x0000_0000 => HdType9ChoiceValue::Choice(HdType9Choice::Choice0),
+            0x3f00_0000 => HdType9ChoiceValue::Choice(HdType9Choice::Choice1),
+            0x3f80_0000 => HdType9ChoiceValue::Choice(HdType9Choice::Choice2),
+            _ if f32::from_bits(bits).is_finite() => HdType9ChoiceValue::UnknownFinite(bits),
+            _ => HdType9ChoiceValue::NonFinite(bits),
+        }
+    }
+
+    /// Writes one explicit type-9 choice into exactly one existing H5EP row.
+    /// All admission guards run before the byte-identical no-op check.
+    pub fn set_hd_type9_choice(
+        &mut self,
+        effect_slot: HdFxSlot,
+        choice: HdType9Choice,
+    ) -> Result<(), ToneError> {
+        let value_at = self.hd_type9_choice_value_offset(effect_slot)?;
+        let current = read_be_u32(self.body_bytes(), value_at)
+            .ok_or_else(|| ToneError::format("HD type-9 value word is truncated"))?;
+        if !f32::from_bits(current).is_finite() {
+            return Err(ToneError::format(
+                "existing HD type-9 value is non-finite and cannot be edited",
+            ));
+        }
+        if current == choice.bits() {
+            return Ok(());
+        }
+
+        let mut candidate = self.bytes.clone();
+        let file_at = H5EP_HEADER_BYTES + value_at;
+        candidate[file_at..file_at + 4].copy_from_slice(&choice.bits().to_be_bytes());
+        let staged = Self::parse(candidate)?;
+        self.bytes = staged.bytes;
+        Ok(())
+    }
+
+    fn hd_type9_choice_value_offset(&self, effect_slot: HdFxSlot) -> Result<usize, ToneError> {
+        let body = self.body_bytes();
+        let block = HD_EFFECT_BLOCK_OFFSET + effect_slot.index() * HD_EFFECT_BLOCK_STRIDE;
+        if read_be_u32(body, block) != Some(HD_TYPE9_CHOICE_MODEL_ID) {
+            return Err(ToneError::format(
+                "HD type-9 choice requires model 020a0014 in the selected FX slot",
+            ));
+        }
+        if body[block + 0x0b] != 1 {
+            return Err(ToneError::format(
+                "HD type-9 choice requires a valid, non-empty effect slot",
+            ));
+        }
+        if !matches!(body[block + 8], 0 | 1) {
+            return Err(ToneError::format(
+                "HD type-9 choice requires a canonical enable byte",
+            ));
+        }
+        let count = body[block + 0x0f] as usize;
+        if !(1..=HD_PARAMETER_ROW_COUNT).contains(&count) {
+            return Err(ToneError::format(
+                "HD type-9 choice requires an effect row count in 1..=12",
+            ));
+        }
+
+        let mut found = None;
+        let mut matches = 0;
+        for row in 0..HD_PARAMETER_ROW_COUNT {
+            let row_at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
+            if read_be_u32(body, row_at) == Some(HD_TYPE9_CHOICE_KEY) {
+                found = Some((row, row_at));
+                matches += 1;
+            }
+        }
+        if matches != 1 {
+            return Err(ToneError::format(if matches == 0 {
+                "HD type-9 choice row is missing"
+            } else {
+                "HD type-9 choice row key is ambiguous"
+            }));
+        }
+        let (row, row_at) = found.expect("one matching row was counted");
+        if row >= count {
+            return Err(ToneError::format(
+                "HD type-9 choice row is outside the declared effect row count",
+            ));
+        }
+        if body[row_at + HD_PARAMETER_ROW_FLAG_OFFSET] != 0 {
+            return Err(ToneError::format(
+                "HD type-9 choice row must have an unassigned marker",
+            ));
+        }
+        Ok(row_at + 4)
+    }
+
     pub fn effect_model_id(&self, effect_slot: usize) -> Option<u32> {
         if effect_slot >= HD_EFFECT_COUNT {
             return None;
@@ -2389,6 +2547,26 @@ pub struct HdEditorLibrary {
 }
 
 impl HdEditorLibrary {
+    /// Applies one admitted type-9 choice to an extracted standalone H5EP.
+    /// H5ES/H5EB parent bytes remain independently preserved and unchanged.
+    pub fn set_type9_choice(
+        &mut self,
+        index: usize,
+        effect_slot: HdFxSlot,
+        choice: HdType9Choice,
+    ) -> Result<(), ToneError> {
+        let entry = self
+            .files
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("file index is outside the HD editor library"))?;
+        match &mut entry.file {
+            PodPresetFile::H5ep(preset) => preset.set_hd_type9_choice(effect_slot, choice),
+            _ => Err(ToneError::format(
+                "HD type-9 choice requires an extracted H5EP preset",
+            )),
+        }
+    }
+
     /// Applies an enable flag to one standalone H5EP item. Extract a child
     /// first for H5ES/H5EB; the parents remain untouched in the library.
     pub fn set_effect_enabled(
@@ -3497,6 +3675,39 @@ mod tests {
                 0xd1 + row as u8,
                 0xe1 + row as u8,
             ]);
+        }
+        bytes
+    }
+
+    fn synthetic_type9_h5ep(slot: usize, row: usize, enabled: u8, value: u32) -> Vec<u8> {
+        let mut bytes = synthetic_h5ep(b"type9-tail");
+        bytes[8..H5EP_HEADER_BYTES].fill(0x6d);
+        bytes[H5EP_HEADER_BYTES + 0x040..H5EP_HEADER_BYTES + 0x050].fill(0x5a);
+        let block = H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + slot * HD_EFFECT_BLOCK_STRIDE;
+        bytes[block..block + 4].copy_from_slice(&HD_TYPE9_CHOICE_MODEL_ID.to_be_bytes());
+        bytes[block + 8] = enabled;
+        bytes[block + 0x0b] = 1;
+        bytes[block + 0x0f] = 12;
+        let row_at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
+        bytes[row_at..row_at + 4].copy_from_slice(&HD_TYPE9_CHOICE_KEY.to_be_bytes());
+        bytes[row_at + 4..row_at + 8].copy_from_slice(&value.to_be_bytes());
+        bytes[row_at + 8..row_at + 0x10].copy_from_slice(&[0x31; 8]);
+        bytes[row_at + 0x10..row_at + HD_PARAMETER_ROW_STRIDE]
+            .copy_from_slice(&[0, 0x42, 0x43, 0x44]);
+        for other_slot in 0..HD_EFFECT_COUNT {
+            if other_slot != slot {
+                let other = H5EP_HEADER_BYTES
+                    + HD_EFFECT_BLOCK_OFFSET
+                    + other_slot * HD_EFFECT_BLOCK_STRIDE;
+                bytes[other + 4..other + 8].fill(0x73);
+            }
+        }
+        for other_row in 0..HD_PARAMETER_ROW_COUNT {
+            if other_row != row {
+                let other = block + HD_EFFECT_ROWS_OFFSET + other_row * HD_PARAMETER_ROW_STRIDE;
+                bytes[other + 8..other + 0x10].fill(0x24 + other_row as u8);
+                bytes[other + 0x11..other + HD_PARAMETER_ROW_STRIDE].fill(0x44 + other_row as u8);
+            }
         }
         bytes
     }
@@ -5561,5 +5772,177 @@ mod tests {
     fn find_chunk_data(bytes: &[u8], id: &[u8; 4]) -> usize {
         let children = preset::chunks(bytes, 12..bytes.len()).unwrap();
         preset::unique(&children, id).unwrap().data.start
+    }
+
+    #[test]
+    fn type9_choice_writer_covers_all_file_slots_rows_choices_and_enable_states() {
+        let expected_values: [(HdType9Choice, [u8; 4]); 3] = [
+            (HdType9Choice::Choice0, [0x00, 0x00, 0x00, 0x00]),
+            (HdType9Choice::Choice1, [0x3f, 0x00, 0x00, 0x00]),
+            (HdType9Choice::Choice2, [0x3f, 0x80, 0x00, 0x00]),
+        ];
+        for slot_index in 0..8 {
+            for row_index in [0, 5, 11] {
+                for enabled in [0, 1] {
+                    for (choice, expected_word) in expected_values {
+                        let original =
+                            synthetic_type9_h5ep(slot_index, row_index, enabled, 0x3eaa_aaab);
+                        let mut expected = original.clone();
+                        let value_at = H5EP_HEADER_BYTES
+                            + HD_EFFECT_BLOCK_OFFSET
+                            + slot_index * HD_EFFECT_BLOCK_STRIDE
+                            + HD_EFFECT_ROWS_OFFSET
+                            + row_index * HD_PARAMETER_ROW_STRIDE
+                            + 4;
+                        expected[value_at..value_at + 4].copy_from_slice(&expected_word);
+                        let mut preset = OpaqueH5epPreset::parse(original).unwrap();
+                        preset
+                            .set_hd_type9_choice(HdFxSlot::new(slot_index).unwrap(), choice)
+                            .unwrap();
+                        assert_eq!(preset.as_bytes(), expected);
+                        assert_eq!(
+                            preset.as_bytes()[value_at - 4..value_at],
+                            0x3f10_0004u32.to_be_bytes()
+                        );
+                        assert_eq!(preset.as_bytes()[value_at + 4], 0x31);
+                        assert_eq!(preset.as_bytes()[value_at + 12], 0);
+                        assert_eq!(preset.as_bytes()[H5EP_MIN_BYTES..], b"type9-tail");
+                    }
+                }
+            }
+        }
+        assert!(HdFxSlot::new(8).is_err());
+
+        let mut count_one = synthetic_type9_h5ep(0, 0, 0, 0x3f40_0000);
+        let block = H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET;
+        count_one[block + 0x0f] = 1;
+        let mut preset = OpaqueH5epPreset::parse(count_one).unwrap();
+        preset
+            .set_hd_type9_choice(HdFxSlot::new(0).unwrap(), HdType9Choice::Choice0)
+            .unwrap();
+        assert_eq!(preset.as_bytes()[block + 0x0f], 1);
+    }
+
+    #[test]
+    fn type9_choice_writer_rejects_invalid_inputs_atomically_and_scans_all_rows() {
+        let slot = HdFxSlot::new(5).unwrap();
+        let source = synthetic_type9_h5ep(5, 0, 0, 0x3f00_0000);
+        let block = H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 5 * HD_EFFECT_BLOCK_STRIDE;
+        let row0 = block + HD_EFFECT_ROWS_OFFSET;
+        let mut cases: Vec<(&str, Vec<u8>)> = Vec::new();
+
+        let mut wrong_model = source.clone();
+        wrong_model[block..block + 4].copy_from_slice(&0x020a_0015u32.to_be_bytes());
+        cases.push(("wrong model", wrong_model));
+        let mut invalid_validity = source.clone();
+        invalid_validity[block + 0x0b] = 0;
+        cases.push(("invalid effect", invalid_validity));
+        let mut invalid_enable = source.clone();
+        invalid_enable[block + 8] = 2;
+        cases.push(("invalid enable", invalid_enable));
+        for count in [0, 13] {
+            let mut invalid_count = source.clone();
+            invalid_count[block + 0x0f] = count;
+            cases.push(("invalid count", invalid_count));
+        }
+        let mut target_beyond_count = source.clone();
+        let row5 = block + HD_EFFECT_ROWS_OFFSET + 5 * HD_PARAMETER_ROW_STRIDE;
+        target_beyond_count[row0..row0 + 4].fill(0);
+        target_beyond_count[row5..row5 + 4].copy_from_slice(&HD_TYPE9_CHOICE_KEY.to_be_bytes());
+        target_beyond_count[block + 0x0f] = 5;
+        cases.push(("target beyond count", target_beyond_count));
+        let mut missing = source.clone();
+        missing[row0..row0 + 4].fill(0);
+        cases.push(("missing key", missing));
+        for duplicate_value in [0x3f00_0000u32, 0x3f80_0000] {
+            let mut duplicate = source.clone();
+            let row9 = block + HD_EFFECT_ROWS_OFFSET + 9 * HD_PARAMETER_ROW_STRIDE;
+            duplicate[row9..row9 + 4].copy_from_slice(&HD_TYPE9_CHOICE_KEY.to_be_bytes());
+            duplicate[row9 + 4..row9 + 8].copy_from_slice(&duplicate_value.to_be_bytes());
+            duplicate[block + 0x0f] = 1; // duplicate lies beyond the admitted count
+            cases.push(("duplicate key beyond count", duplicate));
+        }
+        let mut assigned = source.clone();
+        assigned[row0 + HD_PARAMETER_ROW_FLAG_OFFSET] = 1;
+        cases.push(("assigned marker", assigned));
+        for bits in [0x7fc0_0001u32, 0x7f80_0000, 0xff80_0000] {
+            let mut non_finite = source.clone();
+            non_finite[row0 + 4..row0 + 8].copy_from_slice(&bits.to_be_bytes());
+            cases.push(("non-finite current value", non_finite));
+        }
+
+        for (label, bytes) in cases {
+            let mut preset = OpaqueH5epPreset::parse(bytes).unwrap();
+            let before = preset.as_bytes().to_vec();
+            assert!(
+                preset
+                    .set_hd_type9_choice(slot, HdType9Choice::Choice1)
+                    .is_err(),
+                "{label} must reject"
+            );
+            assert_eq!(preset.as_bytes(), before, "{label} must be atomic");
+        }
+
+        let mut malformed_magic = source.clone();
+        malformed_magic[..4].copy_from_slice(b"H5EX");
+        assert!(OpaqueH5epPreset::parse(malformed_magic).is_err());
+        let mut malformed_version = source.clone();
+        malformed_version[4..8].copy_from_slice(&2u32.to_be_bytes());
+        assert!(OpaqueH5epPreset::parse(malformed_version).is_err());
+        assert!(OpaqueH5epPreset::parse(source[..H5EP_MIN_BYTES - 1].to_vec()).is_err());
+
+        assert!(HdType9Choice::from_index(3).is_err());
+        assert!(HdType9Choice::from_index(255).is_err());
+    }
+
+    #[test]
+    fn type9_choice_read_is_lossless_and_equal_word_noop_still_checks_guards() {
+        let slot = HdFxSlot::new(2).unwrap();
+        for (bits, expected) in [
+            (
+                0x0000_0000,
+                HdType9ChoiceValue::Choice(HdType9Choice::Choice0),
+            ),
+            (
+                0x3f00_0000,
+                HdType9ChoiceValue::Choice(HdType9Choice::Choice1),
+            ),
+            (
+                0x3f80_0000,
+                HdType9ChoiceValue::Choice(HdType9Choice::Choice2),
+            ),
+            (0x3f40_0000, HdType9ChoiceValue::UnknownFinite(0x3f40_0000)),
+            (0x7fc0_0001, HdType9ChoiceValue::NonFinite(0x7fc0_0001)),
+            (0x7f80_0000, HdType9ChoiceValue::NonFinite(0x7f80_0000)),
+            (0xff80_0000, HdType9ChoiceValue::NonFinite(0xff80_0000)),
+        ] {
+            let bytes = synthetic_type9_h5ep(2, 11, 1, bits);
+            let preset = OpaqueH5epPreset::parse(bytes).unwrap();
+            assert_eq!(preset.hd_type9_choice_value(slot), expected);
+            assert_eq!(preset.serialize_noop(), preset.as_bytes());
+        }
+        let mut same =
+            OpaqueH5epPreset::parse(synthetic_type9_h5ep(2, 11, 1, 0x3f00_0000)).unwrap();
+        let before = same.as_bytes().to_vec();
+        same.set_hd_type9_choice(slot, HdType9Choice::Choice1)
+            .unwrap();
+        assert_eq!(same.as_bytes(), before);
+
+        let mut bad_marker = before.clone();
+        let marker = H5EP_HEADER_BYTES
+            + HD_EFFECT_BLOCK_OFFSET
+            + 2 * HD_EFFECT_BLOCK_STRIDE
+            + HD_EFFECT_ROWS_OFFSET
+            + 11 * HD_PARAMETER_ROW_STRIDE
+            + HD_PARAMETER_ROW_FLAG_OFFSET;
+        bad_marker[marker] = 1;
+        let mut bad_marker = OpaqueH5epPreset::parse(bad_marker).unwrap();
+        let original_bad_marker = bad_marker.as_bytes().to_vec();
+        assert!(
+            bad_marker
+                .set_hd_type9_choice(slot, HdType9Choice::Choice1)
+                .is_err()
+        );
+        assert_eq!(bad_marker.as_bytes(), original_bad_marker);
     }
 }
