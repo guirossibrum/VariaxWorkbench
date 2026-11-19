@@ -70,6 +70,31 @@ const HD_TYPE1_BASS_KEY: u32 = 0x3f10_0002;
 const HD_TYPE1_THIRD_KEY: u32 = 0x3f10_0003;
 const HD_TYPE1_TREBLE_KEY: u32 = 0x3f10_0004;
 const HD_TYPE1_OUTPUT_KEY: u32 = 0x3f10_0005;
+const HD_VINTAGE_PRE_MODEL_ID: u32 = 0x020c_000e;
+const HD_VINTAGE_PRE_DEFAULT_KEYS: [u32; 5] = [
+    0x3f10_0002,
+    0x3f10_0003,
+    0x3f10_0004,
+    0x3f10_0005,
+    0x3f10_0001,
+];
+/// One of the eight editable HD FX positions. This file-only slot type is
+/// independent of vendor runtime slot numbers (which are four through eleven).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HdFxSlot(usize);
+
+impl HdFxSlot {
+    pub fn new(index: usize) -> Result<Self, ToneError> {
+        if index >= HD_EFFECT_COUNT {
+            return Err(ToneError::format("HD FX slot must be in 0..=7"));
+        }
+        Ok(Self(index))
+    }
+
+    pub const fn index(self) -> usize {
+        self.0
+    }
+}
 
 pub const OFFLINE_BANNER: &str =
     "Offline PODxt Live tone file. This does not edit a connected POD.";
@@ -1760,6 +1785,92 @@ impl OpaqueH5epPreset {
         read_be_u32(self.body_bytes(), block)
     }
 
+    /// Replaces one existing Octave Fuzz with the source-derived Vintage Pre
+    /// default prefix. This pure file operation has no vendor runtime context
+    /// and makes no claim about physical target applicability.
+    pub fn replace_octave_fuzz_with_vintage_pre_defaults(
+        &mut self,
+        effect_slot: HdFxSlot,
+    ) -> Result<(), ToneError> {
+        let body = self.body_bytes();
+        let block = HD_EFFECT_BLOCK_OFFSET + effect_slot.index() * HD_EFFECT_BLOCK_STRIDE;
+
+        if read_be_u32(body, block) != Some(HD_OCTAVE_FUZZ_MODEL_ID) {
+            return Err(ToneError::format(
+                "replacement requires an existing Octave Fuzz model",
+            ));
+        }
+        if body[block + 0x0b] != 1 {
+            return Err(ToneError::format(
+                "replacement requires a valid, non-empty effect slot",
+            ));
+        }
+        if !matches!(body[block + 8], 0 | 1) {
+            return Err(ToneError::format(
+                "replacement requires a canonical effect enable byte",
+            ));
+        }
+        if !(5..=HD_PARAMETER_ROW_COUNT as u8).contains(&body[block + 0x0f]) {
+            return Err(ToneError::format(
+                "replacement requires an effect row count in 5..=12",
+            ));
+        }
+
+        let mut seen = [false; HD_VINTAGE_PRE_DEFAULT_KEYS.len()];
+        for row in 0..HD_VINTAGE_PRE_DEFAULT_KEYS.len() {
+            let row_at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
+            let key = read_be_u32(body, row_at)
+                .ok_or_else(|| ToneError::format("truncated HD effect parameter prefix"))?;
+            let Some(key_index) = HD_VINTAGE_PRE_DEFAULT_KEYS
+                .iter()
+                .position(|expected| *expected == key)
+            else {
+                return Err(ToneError::format(
+                    "replacement requires each Vintage Pre default key exactly once in the first five rows",
+                ));
+            };
+            if std::mem::replace(&mut seen[key_index], true) {
+                return Err(ToneError::format(
+                    "replacement requires each Vintage Pre default key exactly once in the first five rows",
+                ));
+            }
+        }
+        if seen.iter().any(|present| !present) {
+            return Err(ToneError::format(
+                "replacement requires each Vintage Pre default key exactly once in the first five rows",
+            ));
+        }
+        for row in 0..HD_PARAMETER_ROW_COUNT {
+            let marker_at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE + 0x10;
+            if !matches!(body[marker_at], 0..=2) {
+                return Err(ToneError::format(
+                    "replacement requires canonical effect assignment marker bytes",
+                ));
+            }
+        }
+
+        // Stage every write in a candidate. Parsing it again validates the
+        // complete record before the original object is changed.
+        let mut candidate = self.bytes.clone();
+        let file_block = H5EP_HEADER_BYTES + block;
+        candidate[file_block..file_block + 4]
+            .copy_from_slice(&HD_VINTAGE_PRE_MODEL_ID.to_be_bytes());
+        for (row, key) in HD_VINTAGE_PRE_DEFAULT_KEYS.into_iter().enumerate() {
+            let row_at = file_block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
+            candidate[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
+            candidate[row_at + 4..row_at + 8].copy_from_slice(&0u32.to_be_bytes());
+        }
+        candidate[file_block + 0x0f] = HD_VINTAGE_PRE_DEFAULT_KEYS.len() as u8;
+        for row in 0..HD_PARAMETER_ROW_COUNT {
+            let marker_at =
+                file_block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE + 0x10;
+            candidate[marker_at] = 0;
+        }
+        let staged = Self::parse(candidate)?;
+        self.bytes = staged.bytes;
+        Ok(())
+    }
+
     pub fn tube_drive_control_percent(
         &self,
         effect_slot: usize,
@@ -2126,6 +2237,28 @@ impl HdEditorLibrary {
         let saved = file.as_bytes().to_vec();
         self.files.push(StoredHdFile { file, saved });
         Ok(self.files.len() - 1)
+    }
+
+    /// Applies the one admitted model-default replacement to a standalone
+    /// H5EP item. For H5ES/H5EB parents, extract a child first; their bytes are
+    /// retained unchanged as separate library items.
+    pub fn replace_octave_fuzz_with_vintage_pre_defaults(
+        &mut self,
+        index: usize,
+        effect_slot: HdFxSlot,
+    ) -> Result<(), ToneError> {
+        let entry = self
+            .files
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("file index is outside the HD editor library"))?;
+        match &mut entry.file {
+            PodPresetFile::H5ep(preset) => {
+                preset.replace_octave_fuzz_with_vintage_pre_defaults(effect_slot)
+            }
+            _ => Err(ToneError::format(
+                "Vintage Pre replacement requires an extracted H5EP preset",
+            )),
+        }
     }
 
     pub fn is_dirty(&self, index: usize) -> bool {
@@ -3020,6 +3153,51 @@ mod tests {
         bytes
     }
 
+    fn synthetic_octave_fuzz_h5ep(effect_slot: usize, with_tail: bool) -> Vec<u8> {
+        let mut bytes = synthetic_h5ep(if with_tail { b"private-tail" } else { b"" });
+        let block =
+            H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + effect_slot * HD_EFFECT_BLOCK_STRIDE;
+        bytes[block..block + 4].copy_from_slice(&HD_OCTAVE_FUZZ_MODEL_ID.to_be_bytes());
+        bytes[block + 4..block + 8].copy_from_slice(&0x1122_3344u32.to_be_bytes());
+        bytes[block + 8] = (effect_slot % 2) as u8;
+        bytes[block + 9] = 0x5a;
+        bytes[block + 10] = 0xa5;
+        bytes[block + 0x0b] = 1;
+        bytes[block + 0x0f] = 8;
+
+        let permutation = [
+            HD_TYPE1_OUTPUT_KEY,
+            HD_TYPE1_DRIVE_KEY,
+            HD_TYPE1_THIRD_KEY,
+            HD_TYPE1_BASS_KEY,
+            HD_TYPE1_TREBLE_KEY,
+        ];
+        for row in 0..HD_PARAMETER_ROW_COUNT {
+            let row_at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
+            let key = if row < permutation.len() {
+                permutation[row]
+            } else if row == 6 {
+                HD_TYPE1_OUTPUT_KEY
+            } else {
+                0x6abc_0000 + row as u32
+            };
+            bytes[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
+            bytes[row_at + 4..row_at + 8]
+                .copy_from_slice(&(0x3e80_0000u32 + row as u32).to_be_bytes());
+            bytes[row_at + 8..row_at + 12]
+                .copy_from_slice(&(0x7100_0000u32 + row as u32).to_be_bytes());
+            bytes[row_at + 12..row_at + 16]
+                .copy_from_slice(&(0x7200_0000u32 + row as u32).to_be_bytes());
+            bytes[row_at + 0x10] = (row % 3) as u8;
+            bytes[row_at + 0x11..row_at + 0x14].copy_from_slice(&[
+                0xc1 + row as u8,
+                0xd1 + row as u8,
+                0xe1 + row as u8,
+            ]);
+        }
+        bytes
+    }
+
     #[test]
     fn opaque_h5ep_dispatch_and_noop_round_trip_preserve_every_byte() {
         let mut original = synthetic_h5ep(b"uninterpreted trailing bytes");
@@ -3055,6 +3233,103 @@ mod tests {
         bad_version[7] = 2;
         assert!(OpaqueH5epPreset::parse(bad_version).is_err());
         assert!(OpaqueH5epPreset::parse(vec![0; TONE_BYTES_CEILING as usize + 1]).is_err());
+    }
+
+    #[test]
+    fn octave_fuzz_replacement_rebuilds_the_ordered_prefix_for_every_fx_slot() {
+        for effect_slot in 0..HD_EFFECT_COUNT {
+            let original = synthetic_octave_fuzz_h5ep(effect_slot, true);
+            let mut expected = original.clone();
+            let block =
+                H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + effect_slot * HD_EFFECT_BLOCK_STRIDE;
+            expected[block..block + 4].copy_from_slice(&HD_VINTAGE_PRE_MODEL_ID.to_be_bytes());
+            for (row, key) in HD_VINTAGE_PRE_DEFAULT_KEYS.into_iter().enumerate() {
+                let row_at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
+                expected[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
+                expected[row_at + 4..row_at + 8].copy_from_slice(&0u32.to_be_bytes());
+            }
+            expected[block + 0x0f] = 5;
+            for row in 0..HD_PARAMETER_ROW_COUNT {
+                expected[block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE + 0x10] = 0;
+            }
+
+            let mut preset = OpaqueH5epPreset::parse(original.clone()).unwrap();
+            preset
+                .replace_octave_fuzz_with_vintage_pre_defaults(HdFxSlot::new(effect_slot).unwrap())
+                .unwrap();
+            assert_eq!(preset.as_bytes(), expected, "FX slot {effect_slot}");
+            assert_eq!(preset.trailing_bytes(), b"private-tail");
+            assert_eq!(
+                preset.effect_model_id(effect_slot),
+                Some(HD_VINTAGE_PRE_MODEL_ID)
+            );
+
+            let row6 = block + HD_EFFECT_ROWS_OFFSET + 6 * HD_PARAMETER_ROW_STRIDE;
+            assert_eq!(
+                &preset.as_bytes()[row6..row6 + 8],
+                &original[row6..row6 + 8]
+            );
+            assert_eq!(
+                &preset.as_bytes()[block + 4..block + 0x0b],
+                &original[block + 4..block + 0x0b]
+            );
+        }
+        assert!(HdFxSlot::new(8).is_err());
+    }
+
+    #[test]
+    fn octave_fuzz_replacement_rejects_noncanonical_inputs_without_mutation() {
+        let source = synthetic_octave_fuzz_h5ep(0, true);
+        let mut cases = Vec::new();
+
+        let mut wrong_model = source.clone();
+        wrong_model[H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET
+            ..H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 4]
+            .copy_from_slice(&HD_TUBE_DRIVE_MODEL_ID.to_be_bytes());
+        cases.push(("wrong model", wrong_model));
+        let mut invalid_slot = source.clone();
+        invalid_slot[H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 0x0b] = 0;
+        cases.push(("invalid slot", invalid_slot));
+        let mut invalid_enable = source.clone();
+        invalid_enable[H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 8] = 2;
+        cases.push(("enable", invalid_enable));
+        for count in [4, 13] {
+            let mut invalid_count = source.clone();
+            invalid_count[H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 0x0f] = count;
+            cases.push(("count", invalid_count));
+        }
+        let mut unknown_prefix = source.clone();
+        let row0 = H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + HD_EFFECT_ROWS_OFFSET;
+        unknown_prefix[row0..row0 + 4].copy_from_slice(&0xfeed_beefu32.to_be_bytes());
+        cases.push(("unknown prefix", unknown_prefix));
+        let mut duplicate_prefix = source.clone();
+        let row1 = row0 + HD_PARAMETER_ROW_STRIDE;
+        duplicate_prefix[row1..row1 + 4].copy_from_slice(&HD_TYPE1_OUTPUT_KEY.to_be_bytes());
+        cases.push(("duplicate prefix", duplicate_prefix));
+        let mut invalid_marker = source.clone();
+        let marker = H5EP_HEADER_BYTES
+            + HD_EFFECT_BLOCK_OFFSET
+            + HD_EFFECT_ROWS_OFFSET
+            + 11 * HD_PARAMETER_ROW_STRIDE
+            + 0x10;
+        invalid_marker[marker] = 3;
+        cases.push(("assignment marker", invalid_marker));
+
+        for (label, bytes) in cases {
+            let mut preset = OpaqueH5epPreset::parse(bytes).unwrap();
+            let before = preset.as_bytes().to_vec();
+            assert!(
+                preset
+                    .replace_octave_fuzz_with_vintage_pre_defaults(HdFxSlot::new(0).unwrap())
+                    .is_err(),
+                "{label}"
+            );
+            assert_eq!(
+                preset.as_bytes(),
+                before,
+                "{label} rejection must be atomic"
+            );
+        }
     }
 
     #[test]
@@ -3215,6 +3490,55 @@ mod tests {
             &parent_bytes[start..start + H5EP_MIN_BYTES]
         );
         assert!(!library.any_dirty());
+    }
+
+    #[test]
+    fn vintage_pre_replacement_operates_on_extracted_setlist_and_bundle_children_only() {
+        let slot = HdFxSlot::new(3).unwrap();
+        let source_child = synthetic_octave_fuzz_h5ep(slot.index(), false);
+        let mut expected_child = OpaqueH5epPreset::parse(source_child.clone()).unwrap();
+        expected_child
+            .replace_octave_fuzz_with_vintage_pre_defaults(slot)
+            .unwrap();
+
+        let mut setlist = synthetic_h5es(&[]);
+        let setlist_child_at = H5ES_HEADER_BYTES + 23 * H5EP_MIN_BYTES;
+        setlist[setlist_child_at..setlist_child_at + H5EP_MIN_BYTES].copy_from_slice(&source_child);
+        let mut library = HdEditorLibrary::default();
+        let parent = library.import_bytes(setlist.clone()).unwrap();
+        let child = library.extract_preset(parent, 0, 23).unwrap();
+        assert!(!library.is_dirty(parent));
+        library
+            .replace_octave_fuzz_with_vintage_pre_defaults(child, slot)
+            .unwrap();
+        assert_eq!(library.file(parent).unwrap().as_bytes(), setlist);
+        assert_eq!(
+            library.file(child).unwrap().as_bytes(),
+            expected_child.as_bytes()
+        );
+        assert!(!library.is_dirty(parent));
+        assert!(library.is_dirty(child));
+        library.revert_unsaved(child).unwrap();
+        assert_eq!(library.file(child).unwrap().as_bytes(), source_child);
+        assert!(!library.is_dirty(child));
+
+        let mut bundle = synthetic_h5eb(&[]);
+        let bundle_child_at =
+            H5EB_HEADER_BYTES + 6 * H5ES_MIN_BYTES + H5ES_HEADER_BYTES + 57 * H5EP_MIN_BYTES;
+        bundle[bundle_child_at..bundle_child_at + H5EP_MIN_BYTES].copy_from_slice(&source_child);
+        let bundle_original = bundle.clone();
+        let parent = library.import_bytes(bundle).unwrap();
+        let child = library.extract_preset(parent, 6, 57).unwrap();
+        library
+            .replace_octave_fuzz_with_vintage_pre_defaults(child, slot)
+            .unwrap();
+        assert_eq!(library.file(parent).unwrap().as_bytes(), bundle_original);
+        assert_eq!(
+            library.file(child).unwrap().as_bytes(),
+            expected_child.as_bytes()
+        );
+        assert!(!library.is_dirty(parent));
+        assert!(library.is_dirty(child));
     }
 
     #[test]

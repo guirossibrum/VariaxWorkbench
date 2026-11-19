@@ -265,6 +265,105 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
 }
 
 #[test]
+fn shared_session_replaces_one_octave_fuzz_with_source_defaults_and_reopens_copy() {
+    use crate::pod_preset::HdFxSlot;
+
+    let session = Session::initial_rig();
+    let mut library = session.new_hd_editor_library();
+    let mut original = synthetic_h5ep();
+    let body = crate::pod_preset::H5EP_HEADER_BYTES;
+    let block = body + 0x428;
+    original[block..block + 4].copy_from_slice(&0x0205_000cu32.to_be_bytes());
+    original[block + 4..block + 8].copy_from_slice(&0x1234_5678u32.to_be_bytes());
+    original[block + 8..block + 0x0c].copy_from_slice(&[1, 0x5a, 0xa5, 1]);
+    original[block + 0x0f] = 8;
+    let keys = [
+        0x3f10_0005u32,
+        0x3f10_0001,
+        0x3f10_0003,
+        0x3f10_0002,
+        0x3f10_0004,
+    ];
+    for row in 0..12 {
+        let row_at = block + 0x10 + row * 0x14;
+        let key = if row < 5 {
+            keys[row]
+        } else if row == 6 {
+            0x3f10_0005
+        } else {
+            0x6abc_0000 + row as u32
+        };
+        original[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
+        original[row_at + 4..row_at + 8]
+            .copy_from_slice(&(0x3e80_0000u32 + row as u32).to_be_bytes());
+        original[row_at + 8..row_at + 16]
+            .copy_from_slice(&(0x7100_0000u32 + row as u32).to_be_bytes());
+        original[row_at + 0x10] = (row % 3) as u8;
+        original[row_at + 0x11..row_at + 0x14].copy_from_slice(&[
+            0xc1 + row as u8,
+            0xd1 + row as u8,
+            0xe1 + row as u8,
+        ]);
+    }
+    let summary = session
+        .import_hd_editor_file(&mut library, original.clone())
+        .expect("H5EP file import");
+    let slot = HdFxSlot::new(0).unwrap();
+    session
+        .replace_hd_octave_fuzz_with_vintage_pre_defaults(&mut library, summary.index, slot)
+        .expect("typed offline model replacement");
+    assert!(library.is_dirty(summary.index));
+
+    let mut expected = original.clone();
+    expected[block..block + 4].copy_from_slice(&0x020c_000eu32.to_be_bytes());
+    for (row, key) in [
+        0x3f10_0002u32,
+        0x3f10_0003,
+        0x3f10_0004,
+        0x3f10_0005,
+        0x3f10_0001,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let row_at = block + 0x10 + row * 0x14;
+        expected[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
+        expected[row_at + 4..row_at + 8].copy_from_slice(&0u32.to_be_bytes());
+    }
+    expected[block + 0x0f] = 5;
+    for row in 0..12 {
+        expected[block + 0x10 + row * 0x14 + 0x10] = 0;
+    }
+    assert_eq!(library.file(summary.index).unwrap().as_bytes(), expected);
+    let directory = tempfile::tempdir().unwrap();
+    let collision = directory.path().join("existing.5xe");
+    let output = directory.path().join("vintage-pre-copy.5xe");
+    std::fs::write(&collision, b"keep destination").unwrap();
+    assert!(
+        session
+            .save_hd_editor_copy(&library, &collision, summary.index)
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&collision).unwrap(), b"keep destination");
+    assert!(library.is_dirty(summary.index));
+
+    session
+        .save_hd_editor_copy(&library, &output, summary.index)
+        .expect("non-overwriting copy save");
+    assert_eq!(std::fs::read(&output).unwrap(), expected);
+    library.note_saved(summary.index).unwrap();
+    assert!(!library.is_dirty(summary.index));
+    assert_eq!(
+        crate::pod_preset::OpaqueH5epPreset::parse(std::fs::read(output).unwrap())
+            .unwrap()
+            .effect_model_id(0),
+        Some(0x020c_000e)
+    );
+    library.revert_unsaved(summary.index).unwrap();
+    assert_eq!(library.file(summary.index).unwrap().as_bytes(), expected);
+}
+
+#[test]
 fn initial_rig_is_one_usb_pod_with_two_logical_roles() {
     let session = Session::initial_rig();
     assert!(session.live_backend_is_absent());

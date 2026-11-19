@@ -262,6 +262,20 @@ impl Session {
         summarize_hd_editor_file(library, index)
     }
 
+    /// Replaces an existing Octave Fuzz in one standalone offline H5EP item
+    /// with the admitted Vintage Pre source defaults. No device is contacted.
+    pub fn replace_hd_octave_fuzz_with_vintage_pre_defaults(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: crate::pod_preset::HdFxSlot,
+    ) -> Result<(), Rejection> {
+        let _ = self;
+        library
+            .replace_octave_fuzz_with_vintage_pre_defaults(file, effect_slot)
+            .map_err(map_hd_library_error)
+    }
+
     pub fn set_hd_screamer_control_percent(
         self,
         library: &mut HdEditorLibrary,

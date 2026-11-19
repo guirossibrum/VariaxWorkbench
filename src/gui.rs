@@ -1948,6 +1948,32 @@ impl Workbench {
                 let model_id = preset
                     .effect_model_id(self.hd_effect_slot)
                     .unwrap_or_default();
+                if model_id
+                    == pod_preset::HdType1Control::OctaveFuzz(pod_preset::OctaveFuzzControl::Drive)
+                        .model_id()
+                {
+                    ui.label("This explicit action replaces the current model and resets its five source-defined values to Vintage Pre defaults.");
+                    if self.pod_button(
+                        ui,
+                        "replace-octave-fuzz-vintage-pre",
+                        "Replace Octave Fuzz with Vintage Pre defaults",
+                    ) {
+                        match pod_preset::HdFxSlot::new(self.hd_effect_slot) {
+                            Ok(slot) => match Session::initial_rig()
+                                .replace_hd_octave_fuzz_with_vintage_pre_defaults(
+                                    &mut self.hd_library,
+                                    index,
+                                    slot,
+                                ) {
+                                Ok(()) => {
+                                    self.pod_message = "Replaced this offline effect with Vintage Pre defaults. Nothing was sent; save a new copy to keep the change.".into();
+                                }
+                                Err(error) => self.pod_message = rejection_text(&error),
+                            },
+                            Err(error) => self.pod_message = error.detail(),
+                        }
+                    }
+                }
                 let has_mapped_type1 = pod_preset::HD_TYPE1_MAPPED_CONTROLS.iter().any(|control| {
                     control.model_id() == model_id
                         && preset
@@ -3654,6 +3680,126 @@ mod tests {
         );
         assert!(app.read_worker.is_none());
         assert!(!app.is_reading());
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn hd_editor_explicit_vintage_pre_replacement_stages_reverts_saves_and_guards_quit() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let source_document = app.document.as_ref().unwrap().as_bytes().to_vec();
+        let mut original = sample_hd_editor_preset();
+        let block = pod_preset::H5EP_HEADER_BYTES + 0x428;
+        original[block..block + 4].copy_from_slice(&0x0205_000cu32.to_be_bytes());
+        original[block + 4..block + 8].copy_from_slice(&0x1234_5678u32.to_be_bytes());
+        original[block + 8..block + 0x0c].copy_from_slice(&[1, 0x5a, 0xa5, 1]);
+        original[block + 0x0f] = 8;
+        let keys = [
+            0x3f10_0005u32,
+            0x3f10_0001,
+            0x3f10_0003,
+            0x3f10_0002,
+            0x3f10_0004,
+        ];
+        for row in 0..12 {
+            let row_at = block + 0x10 + row * 0x14;
+            let key = if row < 5 {
+                keys[row]
+            } else if row == 6 {
+                0x3f10_0005
+            } else {
+                0x6abc_0000 + row as u32
+            };
+            original[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
+            original[row_at + 4..row_at + 8]
+                .copy_from_slice(&(0x3e80_0000u32 + row as u32).to_be_bytes());
+            original[row_at + 8..row_at + 16]
+                .copy_from_slice(&(0x7100_0000u32 + row as u32).to_be_bytes());
+            original[row_at + 0x10] = (row % 3) as u8;
+            original[row_at + 0x11..row_at + 0x14].copy_from_slice(&[
+                0xc1 + row as u8,
+                0xd1 + row as u8,
+                0xe1 + row as u8,
+            ]);
+        }
+        let index = app.hd_library.import_bytes(original.clone()).unwrap();
+        app.select_hd_file(index);
+        app.pod_open = true;
+
+        click_pod(&context, &mut app, "replace-octave-fuzz-vintage-pre");
+        let mut expected = original.clone();
+        expected[block..block + 4].copy_from_slice(&0x020c_000eu32.to_be_bytes());
+        for (row, key) in [
+            0x3f10_0002u32,
+            0x3f10_0003,
+            0x3f10_0004,
+            0x3f10_0005,
+            0x3f10_0001,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let row_at = block + 0x10 + row * 0x14;
+            expected[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
+            expected[row_at + 4..row_at + 8].copy_from_slice(&0u32.to_be_bytes());
+        }
+        expected[block + 0x0f] = 5;
+        for row in 0..12 {
+            expected[block + 0x10 + row * 0x14 + 0x10] = 0;
+        }
+        assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), expected);
+        assert!(app.hd_library.is_dirty(index));
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), source_document);
+        assert!(app.pod_message.contains("Vintage Pre defaults"));
+
+        app.hd_library.revert_unsaved(index).unwrap();
+        assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), original);
+        assert!(!app.hd_library.is_dirty(index));
+        click_pod(&context, &mut app, "replace-octave-fuzz-vintage-pre");
+        assert!(app.hd_library.is_dirty(index));
+
+        let directory = tempfile::tempdir().unwrap();
+        let blocked = directory.path().join("blocked-directory");
+        std::fs::create_dir(&blocked).unwrap();
+        let collision = directory.path().join("existing.5xe");
+        let output = directory.path().join("vintage-pre-copy.5xe");
+        std::fs::write(&collision, b"keep destination").unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_save: [
+                None,
+                Some(blocked.clone()),
+                Some(collision.clone()),
+                Some(output.clone()),
+            ]
+            .into(),
+            ..Default::default()
+        });
+        assert!(!app.write_hd_copy(index)); // Save dialog cancellation.
+        assert!(app.hd_library.is_dirty(index));
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pending.is_none());
+        assert!(app.hd_library.is_dirty(index));
+
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "save"); // A directory cannot be the destination.
+        assert!(app.pending.is_some());
+        assert!(app.hd_library.is_dirty(index));
+        click_prompt(&context, &mut app, "save"); // Existing destination is preserved.
+        assert!(app.pending.is_some());
+        assert!(app.hd_library.is_dirty(index));
+        assert_eq!(std::fs::read(&collision).unwrap(), b"keep destination");
+        click_prompt(&context, &mut app, "save");
+        assert!(app.permit_close);
+        assert!(!app.hd_library.any_dirty());
+        assert_eq!(std::fs::read(&output).unwrap(), expected);
+        let reopened = pod_preset::OpaqueH5epPreset::parse(std::fs::read(output).unwrap()).unwrap();
+        assert_eq!(reopened.effect_model_id(0), Some(0x020c_000e));
+        assert_eq!(reopened.trailing_bytes(), &[]);
+        assert!(app.read_worker.is_none());
         const {
             assert!(LIVE_ACCESS_LOCKED);
         }
