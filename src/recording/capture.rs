@@ -43,6 +43,7 @@ pub enum CaptureBackend {
     WindowsUnverified,
     MacOsUnverified,
     SoftwareFile,
+    SoftwareSynthetic,
     ExternalUnverified,
 }
 
@@ -229,13 +230,45 @@ impl ValidatedPlan {
                 identity: InterfaceIdentity::SoftwareSynthetic,
                 capture_row: None,
                 route_kind: None,
-                backend: CaptureBackend::SoftwareFile,
+                backend: CaptureBackend::SoftwareSynthetic,
                 contract: "software-synthetic-pcm-s16le-v1",
                 declaration: None,
                 channels,
                 clock: (rate_hz, 1),
                 format: SampleFormat::S16Le,
                 channel_map: map,
+                provenance: "owned deterministic software generator; no device source",
+            },
+            instrument: None,
+            native_admission: None,
+            input_origin: InputOrigin::Synthetic,
+            signal_route,
+            max_take_bytes,
+        })
+    }
+
+    /// Creates a software-only S24 test session at the exact PODxt clock.
+    /// The clock/format describe generated test bytes, not an admitted device
+    /// source or a native adapter.
+    pub fn software_synthetic_podxt_clock(
+        signal_route: RecordRoute,
+        max_take_bytes: u64,
+    ) -> Result<Self, CaptureError> {
+        if max_take_bytes == 0 || max_take_bytes > super::TAKE_BYTES_CEILING {
+            return Err(CaptureError::Take(TakeError::TakeCapInvalid));
+        }
+        Ok(Self {
+            contract: CaptureContract {
+                identity: InterfaceIdentity::SoftwareSynthetic,
+                capture_row: None,
+                route_kind: None,
+                backend: CaptureBackend::SoftwareSynthetic,
+                contract: "software-synthetic-podxt-clock-s24_3le-v1",
+                declaration: None,
+                channels: 2,
+                clock: (78_125, 2),
+                format: SampleFormat::S24ThreeByteLe,
+                channel_map: ChannelMap { left: 0, right: 1 },
                 provenance: "owned deterministic software generator; no device source",
             },
             instrument: None,
@@ -319,22 +352,37 @@ impl ValidatedPlan {
                 )?;
             }
             InterfaceIdentity::SoftwareSynthetic => {
-                if self.contract.backend != CaptureBackend::SoftwareFile
-                    || self.contract.contract != "software-synthetic-pcm-s16le-v1"
+                if self.contract.backend != CaptureBackend::SoftwareSynthetic
                     || self.contract.declaration.is_some()
                     || self.contract.capture_row.is_some()
                     || self.contract.route_kind.is_some()
-                    || self.contract.format != SampleFormat::S16Le
                     || self.input_origin != InputOrigin::Synthetic
                 {
                     return Err(CaptureError::ForgedOrChangedRoute);
                 }
-                validate_software_shape(
-                    self.contract.clock.0,
-                    self.contract.channels,
-                    self.contract.channel_map,
-                    self.max_take_bytes,
-                )?;
+                match self.contract.contract {
+                    "software-synthetic-pcm-s16le-v1"
+                        if self.contract.format == SampleFormat::S16Le
+                            && self.contract.clock.1 == 1 =>
+                    {
+                        validate_software_shape(
+                            self.contract.clock.0,
+                            self.contract.channels,
+                            self.contract.channel_map,
+                            self.max_take_bytes,
+                        )?;
+                    }
+                    "software-synthetic-podxt-clock-s24_3le-v1"
+                        if self.contract.format == SampleFormat::S24ThreeByteLe
+                            && self.contract.channels == 2
+                            && self.contract.clock == (78_125, 2)
+                            && self.contract.channel_map == (ChannelMap { left: 0, right: 1 })
+                            && self.max_take_bytes > 0
+                            && self.max_take_bytes <= super::TAKE_BYTES_CEILING
+                            && self.contract.provenance
+                                == "owned deterministic software generator; no device source" => {}
+                    _ => return Err(CaptureError::ForgedOrChangedRoute),
+                }
             }
             InterfaceIdentity::External { .. } => {
                 return Err(CaptureError::ExternalContractMissing);
@@ -347,12 +395,24 @@ impl ValidatedPlan {
         self.revalidate()?;
         let (clock, format) = match self.contract.identity {
             InterfaceIdentity::PodxtLive => (SampleClock::native_podxt(), FrameFormat::PodS24_3Le),
-            InterfaceIdentity::SoftwareFile | InterfaceIdentity::SoftwareSynthetic => (
+            InterfaceIdentity::SoftwareFile => (
                 SampleClock::Integer {
                     hz: self.contract.clock.0,
                 },
                 FrameFormat::PcmS16Le,
             ),
+            InterfaceIdentity::SoftwareSynthetic => match self.contract.format {
+                SampleFormat::S16Le => (
+                    SampleClock::Integer {
+                        hz: self.contract.clock.0,
+                    },
+                    FrameFormat::PcmS16Le,
+                ),
+                SampleFormat::S24ThreeByteLe => {
+                    (SampleClock::native_podxt(), FrameFormat::PodS24_3Le)
+                }
+                SampleFormat::Float32 => return Err(CaptureError::InvalidFormat),
+            },
             InterfaceIdentity::External { .. } => {
                 return Err(CaptureError::ExternalContractMissing);
             }

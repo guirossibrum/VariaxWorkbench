@@ -31,10 +31,11 @@ work and leaves prior saved files intact.
 The recording `Panel` routes selected WAV-file and synthetic input through this
 same `CaptureSession` and existing `Take` save path, while keeping the existing
 unsaved-take and non-overwriting-save checks. Integer-clock synthetic input is
-admitted as an explicitly generated S16 software source. The native PODxt clock
-selection revalidates the existing static Linux declaration but generates
-synthetic PCM only; it does not initialize ALSA or claim that the bytes came
-from a connected PODxt. It can also prepare and revalidate
+admitted as an explicitly generated S16 software source. The selected exact
+PODxt rational clock has a separate software-synthetic S24 plan with no device
+identity, declaration, or capture row; it does not initialize ALSA or claim
+that the bytes came from a connected PODxt. Separately, the Panel can prepare
+and revalidate
 the source-supported Linux PODxt Live declaration from the selected Record Send
 route, displaying its exact `78125/2` clock, S24_3LE format, channel map,
 provenance contract, and take cap. This only inspects a static plan: it creates
@@ -156,8 +157,8 @@ counts for criterion 2; it does not imply an adapter or live capability.
 
 | Criterion | Current implementation or evidence | Status and remaining dependency |
 | --- | --- | --- |
-| 1. Integrate recorder behavior with the common capture API | `ValidatedPlan` and `CaptureSession` own software-file and synthetic Panel sessions; `Take` remains the shared storage/save implementation. Tests cover queue bounds, lifecycle, and WAV-file Panel save behavior. | Partial. Offline UI/recorder integration exists, while platform source-plan execution and exact-head validation remain outstanding. |
-| 2. Establish each platform adapter contract or record a bounded blocker | Linux ALSA translation is source-qualified and inactive. Windows has the version-pinned ASIO static trace; exact versioned `ASIOCallbacks`/`ASIOTime` declarations and selector 7 semantics remain unavailable. macOS has the bounded driver declaration/buffer trace; Core Audio mapping remains unresolved. | Met with limits: blockers are explicitly recorded. Windows callback implementation requires the exact versioned declarations; macOS requires the matching Core Audio mapping and callback ownership contract. No acquisition or live probe is authorized. |
+| 1. Integrate recorder behavior with the common capture API | `ValidatedPlan` and `CaptureSession` own software-file and synthetic Panel sessions; `Take` remains the shared storage/save implementation. Tests cover queue bounds, lifecycle, and Panel synthetic/file behavior. | Partial. Offline UI/recorder integration exists, while the criterion's complete platform/source-planning operations and exact-head validation remain outstanding. |
+| 2. Establish each platform adapter contract or record a bounded blocker | Linux ALSA translation is source-qualified and inactive. Windows has the version-pinned ASIO static trace; exact versioned `ASIOCallbacks`/`ASIOTime` declarations and selector 7 semantics remain unavailable. macOS has the bounded driver declaration/buffer trace; Core Audio mapping remains unresolved. | Blockers are recorded within the criterion's explicit alternative. Windows callback implementation requires the exact versioned declarations; macOS requires the matching Core Audio mapping and callback ownership contract. No acquisition or live probe is authorized. |
 | 3. Admit source records and negotiated format/clock provenance | The frozen registry admits one static Linux PODxt Live declaration. External records remain absent; Windows and macOS facts do not provide an admitted plan or runtime negotiation. | Partial. Requires independently sourced identity/revision, channel map, format, rational clock, backend, and provenance for each additional source. |
 | 4. Preserve bounded queue, chronology, error, recovery, and lifecycle behavior | `CaptureSession` uses bounded chronological audio/dropout events, owner-thread drain, generation checks, terminal errors, recovery events, and stop/cancel ownership; deterministic tests exercise these paths without enumerating/opening devices. | Met with limits as an offline software contract; platform callback behavior and physical stream recovery remain unverified. |
 | 5. Use common controls for admitted native/external plans | Panel offers route, clock, input, and shared start/feed/stop/cancel/save controls; it can inspect the static PODxt plan and reports the missing external admission fields. No live native or external source plan is admitted. | Partial. Depends on independently admitted source records and platform adapters before any live route can be offered. |

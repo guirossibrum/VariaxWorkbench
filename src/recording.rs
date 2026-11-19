@@ -1487,39 +1487,7 @@ impl Panel {
                 )
             }
             (ClockSelection::NativePodxt, InputSelection::Synthetic) => {
-                let registry = crate::rig::audio::Registry::frozen()
-                    .map_err(|error| TakeError::Capture(error.to_string()))?;
-                let capture_row = registry
-                    .rows()
-                    .iter()
-                    .find(|row| {
-                        row.name == "PODxt Live"
-                            && row.role == crate::rig::audio::SourceRole::Bridge
-                            && row.classification
-                                == crate::rig::audio::Classification::NativeUsbDeclaration
-                    })
-                    .map(|row| row.ordinal)
-                    .ok_or_else(|| {
-                        TakeError::Capture("PODxt Live declaration is not admitted".into())
-                    })?;
-                capture::ValidatedPlan::native_podxt(
-                    &registry,
-                    crate::rig::audio::Request {
-                        capture_row,
-                        capture_profile: crate::rig::ProductProfile::PodxtLive,
-                        connected_instrument: None,
-                        platform: crate::rig::audio::Platform::Linux,
-                        state: crate::rig::audio::RuntimeState::Normal,
-                        endpoint_use: crate::rig::audio::EndpointUse::Capture,
-                        contract: crate::rig::audio::CONTRACT,
-                        installed_revision: None,
-                        channels: 2,
-                        clock: (78_125, 2),
-                        format: crate::rig::audio::SampleFormat::S24ThreeByteLe,
-                    },
-                    route,
-                    PANEL_TAKE_BYTES,
-                )
+                capture::ValidatedPlan::software_synthetic_podxt_clock(route, PANEL_TAKE_BYTES)
             }
             (ClockSelection::NativePodxt, InputSelection::File) => {
                 return Err(TakeError::RationalClockNotWav {
@@ -1770,6 +1738,25 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("native.wav");
         let mut panel = armed_panel(ClockSelection::NativePodxt);
+        let contract = panel.capture_session().unwrap().plan();
+        assert_eq!(
+            contract.identity,
+            capture::InterfaceIdentity::SoftwareSynthetic
+        );
+        assert_eq!(contract.backend, capture::CaptureBackend::SoftwareSynthetic);
+        assert_eq!(contract.capture_row, None);
+        assert_eq!(contract.declaration, None);
+        assert_eq!(contract.clock, (78_125, 2));
+        assert_eq!(
+            contract.format,
+            crate::rig::audio::SampleFormat::S24ThreeByteLe
+        );
+        assert_eq!(
+            contract.channel_map,
+            capture::ChannelMap { left: 0, right: 1 }
+        );
+        assert!(contract.provenance.contains("no device source"));
+        assert!(!panel.device_opened());
         panel.feed().unwrap();
         panel.stop().unwrap();
         let pcm = panel.current_take().unwrap().pcm().to_vec();
