@@ -108,41 +108,13 @@ impl AlsaPodxtCaptureAdapter {
         requested_frames: usize,
         buffer: &[u8],
     ) -> Result<(), CaptureError> {
-        if native_result_frames < 0 {
-            let Ok(error_code) = i32::try_from(native_result_frames) else {
-                return self.session.adapter_failure(generation, i32::MIN);
-            };
-            // ALSA reports overrun/suspend and other failures as negative
-            // errno values. The lost-frame count is not returned by readi;
-            // fail closed instead of inventing a dropout duration.
-            let positive_errno = error_code.checked_neg().unwrap_or(i32::MAX);
-            if positive_errno == ALSA_ERRNO_EPIPE {
-                return self.session.adapter_discontinuity(generation, error_code);
-            }
-            if positive_errno == ALSA_ERRNO_ESTRPIPE {
-                return self.session.adapter_suspended(generation, error_code);
-            }
-            return self.session.adapter_failure(generation, error_code);
-        }
-        let Some(expected_buffer_bytes) = requested_frames.checked_mul(PODXT_FRAME_BYTES) else {
-            return self.session.adapter_failure(generation, i32::MIN);
-        };
-        if expected_buffer_bytes > MAX_PERIOD_BYTES || buffer.len() != expected_buffer_bytes {
-            return self.session.adapter_failure(generation, i32::MIN);
-        }
-        let captured_frames = native_result_frames as usize;
-        if captured_frames > requested_frames {
-            return self.session.adapter_failure(generation, i32::MIN);
-        }
-        if captured_frames == 0 {
-            self.session.check_callback_admission(generation)?;
-            return Ok(());
-        }
-        let Some(captured_bytes) = captured_frames.checked_mul(PODXT_FRAME_BYTES) else {
-            return self.session.adapter_failure(generation, i32::MIN);
-        };
-        self.session
-            .callback_chunk(generation, &buffer[..captured_bytes])
+        translate_read_result_for_session(
+            &mut self.session,
+            generation,
+            native_result_frames,
+            requested_frames,
+            buffer,
+        )
     }
 
     pub fn drain(&mut self) -> Result<usize, CaptureError> {
@@ -187,6 +159,69 @@ impl AlsaPodxtCaptureAdapter {
     pub fn channel_map(&self) -> ChannelMap {
         ChannelMap { left: 0, right: 1 }
     }
+}
+
+/// Translates a supplied native read result directly into the shared session.
+/// Used by the owned ALSA adapter and the Panel's generated-data contract test;
+/// the input slice is borrowed only for this call.
+pub fn translate_read_result_for_session(
+    session: &mut CaptureSession,
+    generation: u64,
+    native_result_frames: isize,
+    requested_frames: usize,
+    buffer: &[u8],
+) -> Result<(), CaptureError> {
+    let contract = session.plan();
+    if contract.identity != InterfaceIdentity::PodxtLive
+        || contract.backend != CaptureBackend::LinuxDeclaredPod
+        || contract.capture_row.is_none()
+        || !matches!(
+            contract.route_kind,
+            Some(audio::RouteKind::NativeUsb | audio::RouteKind::SpecificBridge)
+        )
+        || contract.declaration != Some(audio::PODXT_LIVE_DECLARATION)
+        || contract.channels != 2
+        || contract.clock != (78_125, 2)
+        || contract.format != audio::SampleFormat::S24ThreeByteLe
+        || contract.channel_map != (ChannelMap { left: 0, right: 1 })
+        || contract.provenance != audio::PODXT_LIVE_DECLARATION.source
+    {
+        return Err(CaptureError::ForgedOrChangedRoute);
+    }
+    if native_result_frames < 0 {
+        let Ok(error_code) = i32::try_from(native_result_frames) else {
+            return session.adapter_failure(generation, i32::MIN);
+        };
+        // ALSA reports overrun/suspend and other failures as negative
+        // errno values. The lost-frame count is not returned by readi;
+        // fail closed instead of inventing a dropout duration.
+        let positive_errno = error_code.checked_neg().unwrap_or(i32::MAX);
+        if positive_errno == ALSA_ERRNO_EPIPE {
+            return session.adapter_discontinuity(generation, error_code);
+        }
+        if positive_errno == ALSA_ERRNO_ESTRPIPE {
+            return session.adapter_suspended(generation, error_code);
+        }
+        return session.adapter_failure(generation, error_code);
+    }
+    let Some(expected_buffer_bytes) = requested_frames.checked_mul(PODXT_FRAME_BYTES) else {
+        return session.adapter_failure(generation, i32::MIN);
+    };
+    if expected_buffer_bytes > MAX_PERIOD_BYTES || buffer.len() != expected_buffer_bytes {
+        return session.adapter_failure(generation, i32::MIN);
+    }
+    let captured_frames = native_result_frames as usize;
+    if captured_frames > requested_frames {
+        return session.adapter_failure(generation, i32::MIN);
+    }
+    if captured_frames == 0 {
+        session.check_callback_admission(generation)?;
+        return Ok(());
+    }
+    let Some(captured_bytes) = captured_frames.checked_mul(PODXT_FRAME_BYTES) else {
+        return session.adapter_failure(generation, i32::MIN);
+    };
+    session.callback_chunk(generation, &buffer[..captured_bytes])
 }
 
 #[cfg(test)]

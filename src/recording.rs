@@ -204,6 +204,7 @@ pub enum TakeError {
         numerator: u32,
         denominator: u32,
     },
+    InputClockMismatch,
     FormatClockMismatch,
     RateMismatch {
         header: u32,
@@ -268,6 +269,9 @@ impl std::fmt::Display for TakeError {
             } => write!(
                 formatter,
                 "only the source rational {RATE_NUMERATOR}/{RATE_DENOMINATOR} is accepted as the native clock; {numerator}/{denominator} is not that rational"
+            ),
+            Self::InputClockMismatch => formatter.write_str(
+                "the static PODxt declaration test input requires the exact 78125/2 clock",
             ),
             Self::FormatClockMismatch => formatter.write_str(
                 "integer clocks use 16-bit PCM frames, and the native 78125/2 clock uses declared S24_3LE frames. This pairing is rejected.",
@@ -1127,6 +1131,9 @@ pub enum ClockSelection {
 pub enum InputSelection {
     Unselected,
     Synthetic,
+    /// Generated test PCM routed through the revalidated static PODxt plan.
+    /// This never initializes a native backend or claims captured device data.
+    StaticPodxtSynthetic,
     File,
 }
 
@@ -1154,6 +1161,42 @@ pub const CLOCK_CHOICES: [(ClockSelection, &str); 3] = [
         "PODxt source clock 78125/2 (no WAV export)",
     ),
 ];
+
+fn static_podxt_plan(
+    route: RecordRoute,
+    platform: crate::rig::audio::Platform,
+) -> Result<capture::ValidatedPlan, capture::CaptureError> {
+    let registry = crate::rig::audio::Registry::frozen()
+        .map_err(|_| capture::CaptureError::ForgedOrChangedRoute)?;
+    let capture_row = registry
+        .rows()
+        .iter()
+        .find(|row| {
+            row.name == "PODxt Live"
+                && row.role == crate::rig::audio::SourceRole::Bridge
+                && row.classification == crate::rig::audio::Classification::NativeUsbDeclaration
+        })
+        .map(|row| row.ordinal)
+        .ok_or(capture::CaptureError::ForgedOrChangedRoute)?;
+    capture::ValidatedPlan::native_podxt(
+        &registry,
+        crate::rig::audio::Request {
+            capture_row,
+            capture_profile: crate::rig::ProductProfile::PodxtLive,
+            connected_instrument: None,
+            platform,
+            state: crate::rig::audio::RuntimeState::Normal,
+            endpoint_use: crate::rig::audio::EndpointUse::Capture,
+            contract: crate::rig::audio::CONTRACT,
+            installed_revision: None,
+            channels: 2,
+            clock: (78_125, 2),
+            format: crate::rig::audio::SampleFormat::S24ThreeByteLe,
+        },
+        route,
+        PANEL_TAKE_BYTES,
+    )
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Panel {
@@ -1351,18 +1394,6 @@ impl Panel {
         let signal_route = self
             .route
             .ok_or(TakeError::SelectionMissing("a record route"))?;
-        let registry = crate::rig::audio::Registry::frozen()
-            .map_err(|error| TakeError::Capture(error.to_string()))?;
-        let capture_row = registry
-            .rows()
-            .iter()
-            .find(|row| {
-                row.name == "PODxt Live"
-                    && row.role == crate::rig::audio::SourceRole::Bridge
-                    && row.classification == crate::rig::audio::Classification::NativeUsbDeclaration
-            })
-            .map(|row| row.ordinal)
-            .ok_or_else(|| TakeError::Capture("PODxt Live declaration is not admitted".into()))?;
         #[cfg(target_os = "linux")]
         let platform = crate::rig::audio::Platform::Linux;
         #[cfg(target_os = "windows")]
@@ -1371,25 +1402,8 @@ impl Panel {
         let platform = crate::rig::audio::Platform::MacOs;
         #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
         let platform = crate::rig::audio::Platform::Windows;
-        let plan = capture::ValidatedPlan::native_podxt(
-            &registry,
-            crate::rig::audio::Request {
-                capture_row,
-                capture_profile: crate::rig::ProductProfile::PodxtLive,
-                connected_instrument: None,
-                platform,
-                state: crate::rig::audio::RuntimeState::Normal,
-                endpoint_use: crate::rig::audio::EndpointUse::Capture,
-                contract: crate::rig::audio::CONTRACT,
-                installed_revision: None,
-                channels: 2,
-                clock: (78_125, 2),
-                format: crate::rig::audio::SampleFormat::S24ThreeByteLe,
-            },
-            signal_route,
-            PANEL_TAKE_BYTES,
-        )
-        .map_err(|error| TakeError::Capture(error.to_string()))?;
+        let plan = static_podxt_plan(signal_route, platform)
+            .map_err(|error| TakeError::Capture(error.to_string()))?;
         plan.revalidate()
             .map_err(|error| TakeError::Capture(error.to_string()))?;
         let contract = plan.contract();
@@ -1489,6 +1503,12 @@ impl Panel {
             (ClockSelection::NativePodxt, InputSelection::Synthetic) => {
                 capture::ValidatedPlan::software_synthetic_podxt_clock(route, PANEL_TAKE_BYTES)
             }
+            (ClockSelection::NativePodxt, InputSelection::StaticPodxtSynthetic) => {
+                static_podxt_plan(route, crate::rig::audio::Platform::Linux)
+            }
+            (ClockSelection::Integer(_), InputSelection::StaticPodxtSynthetic) => {
+                return Err(TakeError::InputClockMismatch);
+            }
             (ClockSelection::NativePodxt, InputSelection::File) => {
                 return Err(TakeError::RationalClockNotWav {
                     numerator: RATE_NUMERATOR,
@@ -1516,6 +1536,7 @@ impl Panel {
         self.message = match self.input {
             InputSelection::File => "Recording armed from the selected WAV through the bounded offline capture session. Feed a chunk, then stop; nothing is saved yet.",
             InputSelection::Synthetic => "Offline synthetic recording armed through the bounded common capture session. Feed a chunk, then stop; nothing is saved yet.",
+            InputSelection::StaticPodxtSynthetic => "Generated test PCM is routed through the revalidated static Linux PODxt declaration in the common offline session. No adapter or device stream is initialized.",
             InputSelection::Unselected => unreachable!("input was validated above"),
         }
         .into();
@@ -1553,7 +1574,25 @@ impl Panel {
         };
         let frames = (bytes.len() / frame_bytes) as u64;
         let levels = if let Some(capture) = self.capture.as_mut() {
-            if let Err(error) = capture.callback_chunk(self.capture_generation, &bytes) {
+            let callback_result = if self.input == InputSelection::StaticPodxtSynthetic {
+                #[cfg(target_os = "linux")]
+                {
+                    adapters::linux_alsa::translate_read_result_for_session(
+                        capture,
+                        self.capture_generation,
+                        frames as isize,
+                        frames as usize,
+                        &bytes,
+                    )
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    Err(capture::CaptureError::ForgedOrChangedRoute)
+                }
+            } else {
+                capture.callback_chunk(self.capture_generation, &bytes)
+            };
+            if let Err(error) = callback_result {
                 if error == capture::CaptureError::QueueFull {
                     self.cursor += frames;
                 }
@@ -1765,6 +1804,43 @@ mod tests {
         assert!(panel.has_unsaved_take());
         assert_eq!(panel.current_take().unwrap().pcm(), pcm);
         assert!(!path.exists());
+        assert!(!panel.device_opened());
+    }
+
+    #[test]
+    fn panel_runs_generated_pcm_through_the_revalidated_static_podxt_plan() {
+        let mut panel = Panel::new();
+        panel.select_route(RecordRoute::SendCleanGuitar).unwrap();
+        panel.select_clock(ClockSelection::Integer(48_000)).unwrap();
+        panel
+            .select_input(InputSelection::StaticPodxtSynthetic)
+            .unwrap();
+        assert_eq!(panel.start(), Err(TakeError::InputClockMismatch));
+        assert_eq!(panel.phase(), Phase::Idle);
+
+        panel.select_clock(ClockSelection::NativePodxt).unwrap();
+        let declaration = panel.inspect_native_plan().unwrap();
+        assert_eq!(declaration.identity, capture::InterfaceIdentity::PodxtLive);
+        assert_eq!(declaration.clock, (78_125, 2));
+        panel.start().unwrap();
+        let session = panel.capture_session().unwrap();
+        let plan = session.plan();
+        assert_eq!(plan.identity, capture::InterfaceIdentity::PodxtLive);
+        assert_eq!(plan.backend, capture::CaptureBackend::LinuxDeclaredPod);
+        assert_eq!(plan.clock, (78_125, 2));
+        assert_eq!(plan.capture_row, Some(declaration.capture_row.unwrap()));
+        assert_eq!(plan.declaration, declaration.declaration);
+        assert_eq!(session.take().origin, InputOrigin::Synthetic);
+        assert!(!panel.device_opened());
+
+        panel.feed().unwrap();
+        assert_eq!(
+            panel.current_take().unwrap().pcm().len(),
+            FEED_FRAMES as usize * FRAME_BYTES as usize
+        );
+        panel.stop().unwrap();
+        assert!(panel.take_can_save_aiff());
+        assert!(!panel.take_can_save_wav());
         assert!(!panel.device_opened());
     }
 

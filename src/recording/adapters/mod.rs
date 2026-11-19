@@ -7,10 +7,10 @@
 #[cfg(target_os = "linux")]
 pub mod linux_alsa;
 
-/// Windows WASAPI capture cannot be implemented from the source contracts in
+/// Windows ASIO capture cannot be implemented from the admitted contracts in
 /// this checkout. See `docs/audio-capture-session.md` for the exact blocker.
 #[cfg(target_os = "windows")]
-pub const WINDOWS_ADAPTER_BLOCKER: &str = "WASAPI capture ABI/format ownership contract and matching installed Windows SDK headers are not present in the admitted inputs.";
+pub const WINDOWS_ADAPTER_BLOCKER: &str = "The version-identified ASIOCallbacks/ASIOTime declarations and selector 7 semantics, plus a complete source-qualified input channel/rate contract, are not present in the admitted inputs.";
 
 /// macOS Core Audio capture cannot be implemented from the source contracts in
 /// this checkout. See `docs/audio-capture-session.md` for the exact blocker.

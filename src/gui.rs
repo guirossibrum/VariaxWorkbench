@@ -1599,6 +1599,20 @@ impl Workbench {
                 {
                     self.recorder.note(error.to_string());
                 }
+                #[cfg(target_os = "linux")]
+                if self.recorder.clock() == recording::ClockSelection::NativePodxt
+                    && self.record_choice(
+                        ui,
+                        "input-static-podxt-synthetic",
+                        self.recorder.input() == recording::InputSelection::StaticPodxtSynthetic,
+                        "PODxt static plan + generated test PCM",
+                    )
+                    && let Err(error) = self
+                        .recorder
+                        .select_input(recording::InputSelection::StaticPodxtSynthetic)
+                {
+                    self.recorder.note(error.to_string());
+                }
                 if self.record_choice(
                     ui,
                     "input-file",
