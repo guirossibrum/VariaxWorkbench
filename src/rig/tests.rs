@@ -616,6 +616,44 @@ fn pod_amp_model_choice_session_is_role_gated_and_changes_only_the_minf_id() {
 }
 
 #[test]
+fn pod_delay_model_choice_session_is_role_gated_and_offline() {
+    use crate::pod_preset::{DELAY_SLOT, PodDelayModelChoice};
+    let session = Session::initial_rig();
+    let original = crate::pod_preset::fixture(
+        crate::pod_preset::ContainerKind::L6pa,
+        PODXT_LIVE_PRODUCT_ID,
+        crate::pod_preset::PODXT_LIVE_HOST_MIN_VERSION,
+        &[(DELAY_SLOT, 0x0202_0002)],
+    );
+    let id_offset = original
+        .windows(4)
+        .position(|w| w == 0x0202_0002u32.to_be_bytes())
+        .unwrap();
+    let choice = PodDelayModelChoice::try_from(0x0202_000a).unwrap();
+    let edited = session
+        .set_pod_delay_model_choice(RoleKind::Pod, &original, choice)
+        .unwrap();
+    assert_eq!(
+        &edited[id_offset..id_offset + 4],
+        &choice.model_id().to_be_bytes()
+    );
+    assert!(
+        original
+            .iter()
+            .zip(&edited)
+            .enumerate()
+            .all(|(i, (a, b))| a == b || (id_offset..id_offset + 4).contains(&i))
+    );
+    assert!(matches!(
+        session.set_pod_delay_model_choice(RoleKind::Guitar, &original, choice),
+        Err(Rejection::Unsupported {
+            operation: Operation::EditPodPreset,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn pod_cab_and_mic_apply_are_role_gated_and_keep_their_separate_write_sets() {
     use crate::pod_preset::{CAB_SLOT, PODXT_BASS_CAB_MODEL_IDS, PodCabModelChoice, PodMicChoice};
 

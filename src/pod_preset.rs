@@ -385,6 +385,40 @@ pub const DELAY_CONTROL_MODEL_IDS: [u32; 14] = [
     0x0202_000e,
     0x0202_000f,
 ];
+/// Nine unconditional PODxt Live Delay choices admitted for the offline ID-only edit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PodDelayModelChoice(u32);
+
+impl PodDelayModelChoice {
+    pub const MODEL_IDS: [u32; 9] = [
+        0x0202_0002,
+        0x0202_0003,
+        0x0202_0004,
+        0x0202_0005,
+        0x0202_0006,
+        0x0202_0007,
+        0x0202_0008,
+        0x0202_0009,
+        0x0202_000a,
+    ];
+
+    pub const fn model_id(self) -> u32 {
+        self.0
+    }
+    pub fn from_model_id(id: u32) -> Option<Self> {
+        Self::MODEL_IDS.contains(&id).then_some(Self(id))
+    }
+    pub fn numeric_label(self) -> String {
+        format!("Delay {:08x}", self.0)
+    }
+}
+
+impl TryFrom<u32> for PodDelayModelChoice {
+    type Error = u32;
+    fn try_from(id: u32) -> Result<Self, Self::Error> {
+        Self::from_model_id(id).ok_or(id)
+    }
+}
 /// Facial Fuzz, the first model with the source-mapped Stomp control layout.
 pub const STOMP_DRIVE_MODEL_ID: u32 = 0x0205_0000;
 /// PODxt Live Stomp models with source-mapped percent control layouts.
@@ -2035,6 +2069,78 @@ impl PodTone {
         }
         self.bytes[range.start..range.start + 4].copy_from_slice(&requested.to_be_bytes());
         self.models[model_index].model_id = requested;
+        Ok(())
+    }
+
+    /// Change only the existing Delay model ID in an individual L6PA tone.
+    /// This application policy requires exactly one primary-or-fallback slot.
+    pub fn set_delay_model_choice(&mut self, choice: PodDelayModelChoice) -> Result<(), ToneError> {
+        if self.container != ContainerKind::L6pa {
+            return Err(ToneError::format(
+                "Delay model selection requires a FORM/L6PA tone",
+            ));
+        }
+        if self.device_id != PODXT_LIVE_TONE_ID {
+            return Err(ToneError::format(
+                "Delay model selection requires the PODxt Live PINF target",
+            ));
+        }
+        if self.device_version < PODXT_LIVE_HOST_MIN_VERSION {
+            return Err(ToneError::format(
+                "Delay model selection requires the PODxt Live host profile minimum 3.00",
+            ));
+        }
+        let delay_slots = [DELAY_SLOT, 0x0005_0004];
+        let matches: Vec<_> = self
+            .models
+            .iter()
+            .enumerate()
+            .filter(|(_, model)| delay_slots.contains(&model.slot))
+            .map(|(i, _)| i)
+            .collect();
+        let [model_index] = matches.as_slice() else {
+            return Err(ToneError::format(
+                "Delay model selection requires exactly one existing primary or fallback model",
+            ));
+        };
+        let model_index = *model_index;
+        let current = self.models[model_index].model_id;
+        if !DELAY_CONTROL_MODEL_IDS.contains(&current) {
+            return Err(ToneError::format(format!(
+                "unknown current Delay model id {current:08x}"
+            )));
+        }
+        let range = self
+            .model_minfo_ranges
+            .get(model_index)
+            .ok_or_else(|| ToneError::format("Delay model MINF source range is unavailable"))?;
+        if range.end > self.bytes.len()
+            || range
+                .start
+                .checked_add(12)
+                .is_none_or(|end| end > range.end)
+        {
+            return Err(ToneError::format(
+                "Delay model selection requires an existing MINF body of at least 12 bytes",
+            ));
+        }
+        let requested = choice.model_id();
+        if current == requested {
+            return Ok(());
+        }
+        let mut candidate = self.bytes.clone();
+        candidate[range.start..range.start + 4].copy_from_slice(&requested.to_be_bytes());
+        let parsed = Self::parse(candidate)?;
+        if parsed
+            .models
+            .get(model_index)
+            .is_none_or(|model| model.model_id != requested)
+        {
+            return Err(ToneError::format(
+                "Delay model candidate did not reparse to the requested model",
+            ));
+        }
+        *self = parsed;
         Ok(())
     }
 
@@ -3878,6 +3984,18 @@ impl Library {
         entry.tone.set_amp_model_choice(choice)
     }
 
+    pub fn set_delay_model_choice(
+        &mut self,
+        index: usize,
+        choice: PodDelayModelChoice,
+    ) -> Result<(), ToneError> {
+        let entry = self
+            .tones
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
+        entry.tone.set_delay_model_choice(choice)
+    }
+
     pub fn set_cab_model_choice(
         &mut self,
         index: usize,
@@ -4769,6 +4887,14 @@ impl PodBundleLibrary {
         choice: PodAmpModelChoice,
     ) -> Result<(), ToneError> {
         self.edit_entry(index, |tone| tone.set_amp_model_choice(choice))
+    }
+
+    pub fn set_delay_model_choice(
+        &mut self,
+        index: usize,
+        choice: PodDelayModelChoice,
+    ) -> Result<(), ToneError> {
+        self.edit_entry(index, |tone| tone.set_delay_model_choice(choice))
     }
 
     pub fn set_cab_model_choice(
@@ -12963,6 +13089,191 @@ pub(crate) mod tests {
             6
         );
         assert_eq!(bundle.as_bytes().len(), before.len());
+        bundle.revert().unwrap();
+        assert_eq!(bundle.as_bytes(), before);
+    }
+
+    #[test]
+    fn delay_model_id_selection_is_closed_exact_and_lossless() {
+        for current in DELAY_CONTROL_MODEL_IDS {
+            let original = custom_tone(
+                ContainerKind::L6pa,
+                &[BuiltModel {
+                    slot: DELAY_SLOT,
+                    model_id: current,
+                    tail: &[0x7f, 0xa5, 0x00, 0xfe, 0x55],
+                    parameters: &[&[0x11, 0x22, 0x33]],
+                }],
+            );
+            for requested in PodDelayModelChoice::MODEL_IDS {
+                let mut tone = PodTone::parse(original.clone()).unwrap();
+                let before = tone.as_bytes().to_vec();
+                tone.set_delay_model_choice(PodDelayModelChoice::try_from(requested).unwrap())
+                    .unwrap();
+                let differences: Vec<_> = before
+                    .iter()
+                    .zip(tone.as_bytes())
+                    .enumerate()
+                    .filter_map(|(i, (a, b))| (a != b).then_some(i))
+                    .collect();
+                if current == requested {
+                    assert!(differences.is_empty());
+                } else {
+                    let reparsed = PodTone::parse(tone.as_bytes().to_vec()).unwrap();
+                    assert_eq!(reparsed.models()[0].model_id, requested);
+                    let minf_word =
+                        tone.model_minfo_ranges[0].start..tone.model_minfo_ranges[0].start + 4;
+                    assert!(differences.iter().all(|offset| minf_word.contains(offset)));
+                    assert_eq!(&tone.as_bytes()[minf_word], &requested.to_be_bytes());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn delay_model_edit_matches_independent_documented_188_byte_vector() {
+        fn vector(text: &str, marker: &str, end_marker: &str) -> Vec<u8> {
+            let section = text.split_once(marker).unwrap().1;
+            section
+                .lines()
+                .take_while(|line| !line.trim().starts_with("```") && !line.starts_with(end_marker))
+                .filter_map(|line| line.split_once(':').map(|(_, bytes)| bytes))
+                .flat_map(str::split_whitespace)
+                .map(|byte| u8::from_str_radix(byte, 16).unwrap())
+                .collect()
+        }
+        let contract = include_str!("../docs/pod-model-selection-contract.md");
+        let before = vector(contract, "before (188 bytes):", "after (188 bytes):");
+        let expected = vector(contract, "after (188 bytes):", "```");
+        assert_eq!(before.len(), 188);
+        assert_eq!(expected.len(), 188);
+        let mut tone = PodTone::parse(before).unwrap();
+        tone.set_delay_model_choice(PodDelayModelChoice::try_from(0x0202_0003).unwrap())
+            .unwrap();
+        assert_eq!(tone.as_bytes(), expected);
+    }
+
+    #[test]
+    fn delay_model_id_selection_supports_fallback_and_rejects_invalid_context_atomically() {
+        let make = |kind, slot, id| {
+            custom_tone(
+                kind,
+                &[BuiltModel {
+                    slot,
+                    model_id: id,
+                    tail: &[1, 0x99, 0x88, 0xfe],
+                    parameters: &[],
+                }],
+            )
+        };
+        let choice = PodDelayModelChoice::try_from(0x0202_0003).unwrap();
+        let mut fallback =
+            PodTone::parse(make(ContainerKind::L6pa, 0x0005_0004, 0x0202_000f)).unwrap();
+        fallback.set_delay_model_choice(choice).unwrap();
+        assert_eq!(fallback.models()[0].model_id, choice.model_id());
+        for (kind, slot, id, version) in [
+            (
+                ContainerKind::L6as,
+                DELAY_SLOT,
+                0x0202_0002,
+                PODXT_LIVE_HOST_MIN_VERSION,
+            ),
+            (
+                ContainerKind::L6pa,
+                DELAY_SLOT,
+                0x3333_0001,
+                PODXT_LIVE_HOST_MIN_VERSION,
+            ),
+            (
+                ContainerKind::L6pa,
+                0x0009_0001,
+                0x0202_0002,
+                PODXT_LIVE_HOST_MIN_VERSION,
+            ),
+        ] {
+            let mut tone = PodTone::parse(make(kind, slot, id)).unwrap();
+            let before = tone.as_bytes().to_vec();
+            assert!(tone.set_delay_model_choice(choice).is_err());
+            assert_eq!(tone.as_bytes(), before);
+            let _ = version;
+        }
+        let both = custom_tone(
+            ContainerKind::L6pa,
+            &[
+                BuiltModel {
+                    slot: DELAY_SLOT,
+                    model_id: 0x0202_0002,
+                    tail: &[0, 0, 0, 1],
+                    parameters: &[],
+                },
+                BuiltModel {
+                    slot: 0x0005_0004,
+                    model_id: 0x0202_0003,
+                    tail: &[0, 0, 0, 1],
+                    parameters: &[],
+                },
+            ],
+        );
+        let mut tone = PodTone::parse(both).unwrap();
+        let before = tone.as_bytes().to_vec();
+        assert!(tone.set_delay_model_choice(choice).is_err());
+        assert_eq!(tone.as_bytes(), before);
+
+        let mut old_profile = make(ContainerKind::L6pa, DELAY_SLOT, 0x0202_0002);
+        let pinf = find_chunk_data(&old_profile, b"PINF");
+        old_profile[pinf + 72..pinf + 76].copy_from_slice(&0x02ff_ffffu32.to_be_bytes());
+        let mut tone = PodTone::parse(old_profile).unwrap();
+        let before = tone.as_bytes().to_vec();
+        assert!(tone.set_delay_model_choice(choice).is_err());
+        assert_eq!(tone.as_bytes(), before);
+        assert!(PodDelayModelChoice::try_from(0x0202_000b).is_err());
+        let short = custom_tone(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: DELAY_SLOT,
+                model_id: 0x0202_0002,
+                tail: &[],
+                parameters: &[],
+            }],
+        );
+        let mut tone = PodTone::parse(short).unwrap();
+        let before = tone.as_bytes().to_vec();
+        assert!(tone.set_delay_model_choice(choice).is_err());
+        assert_eq!(tone.as_bytes(), before);
+    }
+
+    #[test]
+    fn delay_model_choice_flows_through_library_and_transactional_bundle() {
+        let original = custom_tone(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: DELAY_SLOT,
+                model_id: 0x0202_0002,
+                tail: &[0, 0xa3, 0x91, 0xff],
+                parameters: &[&[0x1, 0x2, 0x3]],
+            }],
+        );
+        let choice = PodDelayModelChoice::try_from(0x0202_000a).unwrap();
+        let mut library = Library::default();
+        let index = library.import_bytes(original.clone()).unwrap();
+        library.set_delay_model_choice(index, choice).unwrap();
+        assert!(library.is_dirty(index));
+        assert_eq!(
+            library.tone(index).unwrap().models()[0].model_id,
+            choice.model_id()
+        );
+        library.revert_unsaved(index).unwrap();
+        assert_eq!(library.tone(index).unwrap().as_bytes(), original);
+
+        let mut bundle = PodBundleLibrary::parse(bundle_with_tone(&original)).unwrap();
+        let before = bundle.as_bytes().to_vec();
+        bundle.set_delay_model_choice(0, choice).unwrap();
+        assert!(bundle.is_dirty());
+        let (bank, preset) = bundle.entry_location(0).unwrap();
+        assert_eq!(
+            bundle.tone(bank, preset).unwrap().models()[0].model_id,
+            choice.model_id()
+        );
         bundle.revert().unwrap();
         assert_eq!(bundle.as_bytes(), before);
     }

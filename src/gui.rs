@@ -245,6 +245,7 @@ struct Workbench {
     pod_bundle: Option<pod_preset::PodBundleLibrary>,
     pod_selected: Option<usize>,
     pod_cab_pending: Option<(usize, pod_preset::PodCabModelChoice)>,
+    pod_delay_model_pending: Option<(usize, pod_preset::PodDelayModelChoice)>,
     pod_harmony_pending: Option<(usize, pod_preset::StompHarmonyControl, PendingStompHarmony)>,
     pod_delay_pending: Option<(usize, PendingDelayEdit)>,
     pod_mod_pending: Option<(usize, PendingModEdit)>,
@@ -363,6 +364,7 @@ impl Workbench {
             pod_bundle: None,
             pod_selected: None,
             pod_cab_pending: None,
+            pod_delay_model_pending: None,
             pod_harmony_pending: None,
             pod_delay_pending: None,
             pod_mod_pending: None,
@@ -1553,6 +1555,7 @@ impl Workbench {
 
     fn refresh_selected_pod_name(&mut self) {
         self.pod_cab_pending = None;
+        self.pod_delay_model_pending = None;
         self.pod_harmony_pending = None;
         self.pod_delay_pending = None;
         self.pod_mod_pending = None;
@@ -2018,6 +2021,7 @@ impl Workbench {
                     if response.clicked() {
                         if self.pod_selected != Some(index) {
                             self.pod_cab_pending = None;
+                            self.pod_delay_model_pending = None;
                             self.pod_harmony_pending = None;
                             self.pod_delay_pending = None;
                             self.pod_mod_pending = None;
@@ -2520,6 +2524,37 @@ impl Workbench {
                         (index, tone.delay_note_value(), tone.delay_time_ms())
                     })
                 });
+                let delay_model_state = self.pod_selected.and_then(|index| self.pod_library.tone(index).and_then(|tone| {
+                    (tone.container() == pod_preset::ContainerKind::L6pa).then_some((index, tone.models().iter().find(|m| m.slot == pod_preset::DELAY_SLOT || m.slot == 0x0005_0004).map(|m| m.model_id)))
+                }));
+                if let Some((index, current)) = delay_model_state {
+                    let mut selected = self.pod_delay_model_pending.filter(|(i, _)| *i == index).map(|(_, c)| c).or_else(|| current.and_then(pod_preset::PodDelayModelChoice::from_model_id));
+                    ui.separator();
+                    ui.label(format!("Delay model ID (offline; stored parameters are retained, no reset) · current {}", current.map_or_else(|| "unavailable".into(), |id| format!("{id:08x}"))));
+                    let mut changed = None;
+                    ui.horizontal_wrapped(|ui| for id in pod_preset::PodDelayModelChoice::MODEL_IDS {
+                        let Some(choice) = pod_preset::PodDelayModelChoice::from_model_id(id) else { continue };
+                        let response = ui.selectable_value(&mut selected, Some(choice), format!("{id:08x}"));
+                        if response.changed() { changed = selected; }
+                    });
+                    if let Some(choice) = changed { self.pod_delay_model_pending = Some((index, choice)); }
+                    if let Some((pending_index, choice)) = self.pod_delay_model_pending.filter(|(i, _)| *i == index) {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("Pending {} (parameters retained)", choice.numeric_label()));
+                            let response = ui.button("Apply Delay model");
+                            #[cfg(test)] { self.pod_buttons.insert("pod-delay-model-apply", response.rect); }
+                            if response.clicked() {
+                                match self.apply_pod_delay_model_choice(pending_index, choice) {
+                                    Ok(()) => { self.pod_delay_model_pending = None; self.pod_message = "Applied the Delay model ID offline; stored parameters were retained. Nothing was sent.".into(); }
+                                    Err(error) => self.pod_message = error.detail(),
+                                }
+                            }
+                            let discard = ui.button("Discard");
+                            #[cfg(test)] { self.pod_buttons.insert("pod-delay-model-discard", discard.rect); }
+                            if discard.clicked() { self.pod_delay_model_pending = None; }
+                        });
+                    }
+                }
                 if let Some((index, note_result, time_result)) = delay_note_state {
                     ui.separator();
                     ui.label("Delay NOTE / TIME");
@@ -2912,7 +2947,7 @@ impl Workbench {
         index: usize,
         edit: impl FnOnce(&mut pod_preset::PodTone) -> Result<(), pod_preset::ToneError>,
     ) -> Result<(), pod_preset::ToneError> {
-        if let Some(bundle) = &mut self.pod_bundle {
+        let result = if let Some(bundle) = &mut self.pod_bundle {
             bundle.edit_entry(index, edit)?;
             let (bank, preset) = bundle
                 .entry_location(index)
@@ -2926,7 +2961,11 @@ impl Workbench {
                 })?;
             edit(&mut tone)?;
             self.pod_library.replace(index, tone.into_bytes())
+        };
+        if result.is_ok() {
+            self.pod_delay_model_pending = None;
         }
+        result
     }
 
     fn replace_pod_tone(
@@ -3237,6 +3276,14 @@ impl Workbench {
             },
             Err(error) => self.pod_message = rejection_text(&error),
         }
+    }
+
+    fn apply_pod_delay_model_choice(
+        &mut self,
+        index: usize,
+        choice: pod_preset::PodDelayModelChoice,
+    ) -> Result<(), pod_preset::ToneError> {
+        self.edit_pod_tone(index, |tone| tone.set_delay_model_choice(choice))
     }
 
     fn apply_pod_cab_model_choice(&mut self, choice: pod_preset::PodCabModelChoice) {
@@ -6889,6 +6936,58 @@ mod tests {
             pod_preset::ModNoteValue::Known(pod_preset::ModNoteChoice::Off)
         );
         assert!(!app.pod_dirty());
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn delay_model_gui_stages_per_tone_applies_only_id_and_can_discard() {
+        let (context, mut app) = app();
+        app.pod_open = true;
+        let mut original = sample_delay_note_tone(0, 0);
+        original[8..12].copy_from_slice(b"L6PA");
+        let index = app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_selected = Some(index);
+        recording_frame_tall(&context, &mut app, vec![]);
+        app.pod_delay_model_pending = Some((
+            index,
+            pod_preset::PodDelayModelChoice::try_from(0x0202_0003).unwrap(),
+        ));
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), original);
+        assert_eq!(
+            app.pod_delay_model_pending.unwrap().1.model_id(),
+            0x0202_0003
+        );
+        click_pod(&context, &mut app, "pod-delay-model-apply");
+        let applied = app.pod_library.tone(index).unwrap();
+        assert_eq!(
+            applied
+                .models()
+                .iter()
+                .find(|m| m.slot == pod_preset::DELAY_SLOT)
+                .unwrap()
+                .model_id,
+            0x0202_0003
+        );
+        let changed: Vec<_> = original
+            .iter()
+            .zip(applied.as_bytes())
+            .enumerate()
+            .filter_map(|(i, (a, b))| (a != b).then_some(i))
+            .collect();
+        assert_eq!(changed.len(), 1);
+        assert_eq!(app.pod_delay_model_pending, None);
+
+        recording_frame_tall(&context, &mut app, vec![]);
+        app.pod_delay_model_pending = Some((
+            index,
+            pod_preset::PodDelayModelChoice::try_from(0x0202_0004).unwrap(),
+        ));
+        recording_frame_tall(&context, &mut app, vec![]);
+        click_pod(&context, &mut app, "pod-delay-model-discard");
+        assert_eq!(app.pod_delay_model_pending, None);
         const {
             assert!(LIVE_ACCESS_LOCKED);
         }

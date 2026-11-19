@@ -367,32 +367,40 @@ Opaque PARM data need not be interpreted for that one-word operation; malformed
 or opaque target MINF structure must reject. This is a proposed Rust
 preservation rule, not vendor behavior.
 
-**Proposed technical review boundary (no implementation admitted yet).** For a
+**Admitted bounded Rust operation.** For a
 first finite operation, limit writes to one existing individual PODxt Live
 `FORM/L6PA` tone with PINF layout 1, target `0x0003000A`, and the established
 offline editing-profile floor `0x03000000` on the PINF device-version word. The
 version floor is an application profile, not a selector-source precondition.
-Resolve Delay as the source does:
-existing primary slot `0x00020005`, otherwise existing fallback slot
-`0x00050004`; if neither exists, reject rather than creating a model. Duplicate
-occurrences of either slot reject during parsing. If both distinct slots are
-present, the source selects primary first; a proposed implementation should
-change only that primary MINF and preserve the fallback completely. The
+Resolve the existing primary slot `0x00020005` or fallback slot `0x00050004`,
+but require exactly one across both slots. This is a conservative application
+policy, narrower than the legacy primary-precedence resolver. If neither, both,
+or a duplicate exists, reject rather than creating or relocating a model. The
 selected current model id must be in the full source list, and the requested
 model id must be in the nine unconditional choices above. Unknown current or
 requested ids, pack-gated choices, wrong target/container/profile, missing or
 ambiguous model slot, truncated MINF, or non-unique MINF reject before mutation.
 An opaque/unknown PARM or unrelated MODL child remains uninterpreted and
-byte-preserved; it does not expand the accepted model-choice set. Validate all
+byte-preserved; it does not expand the accepted model-choice set. The target
+MINF body must be at least 12 bytes; shorter bodies reject even if following
+padding resembles the missing bytes. Validate all
 guards before treating same-id Apply as a no-op. A same-id valid request leaves
 the full buffer, decoded model, dirty state, and save baseline unchanged. Any
 failed guard likewise leaves all of them unchanged.
 
-For a valid changed request, the proposed offline raw write set is exactly the
+For a valid changed request, the offline raw write set is exactly the
 first four bytes of the selected existing MINF body, big-endian. It does not
 alter slot id, ordinal, reserved bytes, enabled state, any PARM id/type/value,
 the fallback model, or any outer IFF length. This avoids importing the source
 serializer's normalization and omission behavior.
+
+The Rust implementation is in `PodTone::set_delay_model_choice`, with typed
+choice admission, library and bundle entry points, the POD-role session gate,
+and an explicit per-tone GUI Apply/Discard selector. The GUI labels this as an
+ID-only edit that retains stored parameters and performs no reset. Successful
+apply reparses the candidate before publishing it. This does not claim that
+the entire legacy control-refresh/merge callback is reproduced. Issue #29's
+three parent acceptance criteria remain partial/open.
 
 **Literal synthetic full-buffer vector.** These independent 188-byte
 `FORM/L6PA` buffers contain a valid PODxt Live PINF, a primary Delay model in
