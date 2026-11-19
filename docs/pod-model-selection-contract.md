@@ -6,71 +6,79 @@ implementation continues to edit only already-present, source-admitted fields.
 
 ## What the supplied Line6Edit source establishes
 
-The shared macOS and Windows `L6EditorAppDeviceMap` entries map product id
-`196618` (`0x0003000A`, PODxt Live) to
+The earlier claim that PODxt-specific source was unavailable was incorrect:
+the classes are absent from the older `analysis/decompiled/mac` and
+`analysis/decompiled/windows` trees, but present in the supplied Line6Edit 3.06
+class payload. The shared `L6EditorAppDeviceMap` maps product `0x0003000A`
+(PODxt Live), along with other PODxt product ids, to
 `modules.sharctone.device.podxt.L6PODxtDevice` and
-`modules.sharctone.editor.L6SharcToneEditor`. Those classes are not present in
-the supplied `analysis/decompiled/mac` or `analysis/decompiled/windows` source
-trees. The class map establishes the intended product/editor binding, but does
-not reveal selector choices, defaults or state changes. `IsSharcTone` includes
-several other product ids, so a generic Sharc branch is not PODxt Live proof.
+`modules.sharctone.editor.L6SharcToneEditor`. `L6PODxtDevice` branches on the
+Live id and supplies `L6PODxtParamMap(product)`; a generic Sharc-family check
+alone would not establish this binding.
 
-The available common classes expose primitives, not a PODxt selection contract:
+Static inspection of the supplied `L6PODxtParamMap`,
+`L6SharcToneParamMap`, `L6SharcToneEditor`, `L6Editor`, and
+`L6PatchManager` class files establishes this selector path:
 
-- `L6Patch.LoadModel` stores a model in a map keyed by slot and replaces the
-  existing value at that key. It returns the displaced model and only records
-  that value when `CaptureDisplaced` has installed a vector. `UnloadModel`,
-  `MoveModel` and `SwapModels` have additional removal/collision behavior. These
-  are common data operations, not selector policy.
-- `L6Model.SetID` changes only the in-memory model id. `FindParam(id, true)` can
-  create an integer zero parameter; `SetParamFloat` may create a missing
-  parameter when its flag is true. The generic writer serializes the current
-  MINF fields with reserved bytes set to zero and emits stored parameters. It
-  does not preserve opaque MINF tails or establish what a PODxt selection
-  should do to model-specific parameters.
-- `L6ModelParam` declares generic `MODEL_SELECT`, `SLOT_SELECT` and
-  `MODEL_ENABLE` id-class constants. It supplies no target/model bindings.
-  `L6ParamMap.SetModelIndex` maps an index through a caller-supplied `int[]`;
-  the helper has no built-in list, and the supplied decompiled sources have no
-  call site for it.
-- `L6TonePatcher` performs versioned compatibility migrations; its Sharc path
-  applies broadly across products. `L6ToneTranslationUtils` translates
-  TonePort-family patches and can change model ids, move/unload models, clear
-  parameters and seed values such as `0.5`. These paths demonstrate that
-  conversions may have side effects; they are not the PODxt Live editor's
-  selection behavior and their defaults must not be copied into this feature.
-- `L6Patch.UpdateMetaAmpName` reads slot `0x00030000` for Sharc tones. Its
-  `UpdateMetaNotesForSetup` reads cab slot `0x00030001` only for type-2
-  (`L6AS`) setup patches. This is generated metadata display, not proof that a
-  selector exists or that every L6AS cab id is valid. No supplied PODxt Live
-  source identifies a microphone selector or microphone model slot.
+- `L6PODxtParamMap.GetAmpModelList` and `GetCabModelList` return static
+  PODxt-family model-id arrays (the supplied code does not define a separate
+  Live-only array). The shared map turns those arrays into
+  association-format definitions with names resolved by
+  `L6Assets.GetAssetName(product, id)`. `SetupAmpCabPanel` registers combos for
+  AMP selector id `0x10010000` and CAB selector id `0x10020000`;
+  `SetupMicPanel` registers a MIC combo for id `0x00020001`.
+- AMP and CAB selectors refer to slots `0x00030000` and `0x00030001`.
+  `GetModelForGroup` obtains those models with creation enabled. If a slot is
+  missing, `GetSingleSlotModel` creates a model with id `-1`, enabled `true`,
+  ordinal `0`, then `SetParam` assigns the selected id. For an existing model,
+  the model-selector branch calls `L6Model.SetID` only; it does not seed,
+  remove or replace PARMs. Existing PARMs and the other in-memory model fields
+  remain in place on that direct path.
+- MIC selection is a parameter on the CAB model, not a separate model slot:
+  selector id `0x00020001` maps to CAB `PARM` id `0`. Its association format
+  depends on whether the selected cab is classified as a bass cab. The supplied
+  parameter-format class defines PODxt mic choices. On a PODxt cab change the
+  editor refreshes the MIC control from the current patch. This establishes the
+  binding, not physical acceptance of every cab/mic pairing.
+- The control router forwards changed control ids and raw values to
+  `L6SharcToneEditor.OnParamChange`. Before the base handler, that method checks
+  AMP, CAB and effect-model choices with `IsModelInstalled`; an unavailable
+  model is replaced with a fallback id. The map writes a model id through
+  `SetID`. The broader `CheckPatchForInstalledModels` path can replace several
+  unavailable models, and for unavailable Mod/Delay models also clears their
+  enable flags. These are pack-eligibility substitutions, not model-specific
+  default PARMs.
+- `L6Editor.HandleParamChange` calls `L6PatchManager.ChangeParam`; that method
+  marks the patch dirty and calls the target param map. No equality guard is
+  visible in this path, so an emitted same-value event is still passed to the
+  setter and dirty-status path. The supplied payload omits `L6ComboBox` and
+  `L6ParamRouter`, so it does not establish whether the widget emits a change
+  event when the user reselects its current item.
+- After AMP changes, the Sharc editor refreshes controls and invokes
+  `MergeEditBuffer`; the CAB branch refreshes the room overlay and, for XT,
+  refreshes the MIC control. The common merge method returns if the device is
+  busy or not connected; no live operation was invoked during this static
+  trace. This work establishes no physical behavior or permission to exercise
+  the connected-device path.
+- `L6Patch.UpdateMetaAmpName` derives the displayed amp name from slot
+  `0x00030000`; `UpdateMetaNotesForSetup` reads cab slot `0x00030001` for
+  type-2 (`L6AS`) setup patches. The inspected selection callback does not call
+  these metadata helpers directly. This establishes the metadata inputs, not a
+  selector-specific save or rename effect.
 
-Useful local source references (private originals remain outside Git):
+These are positive static bytecode findings, not vendor execution. Private
+installer extracts and `javap` reports remain in ignored coordinator inputs and
+are not published. The earlier common-class findings remain relevant to
+serialization and translation, but do not support a claim that selector source
+is missing. In particular, generic writer reserved-byte normalization and
+cross-family translation defaults do not describe PODxt model selection.
 
-- `analysis/decompiled/mac/line6editbase/app/L6EditorAppDeviceMap.java:19`
-  (product-to-class mapping); mac and Windows copies match.
-- `analysis/decompiled/mac/cmn/l6java/device/L6ProductConstants.java:39-55`
-  (PODxt/Sharc product families).
-- `analysis/decompiled/mac/cmn/l6java/patch/L6Patch.java:101-178,347-390`
-  (generic slot map and generated amp/cab metadata).
-- `analysis/decompiled/mac/cmn/l6java/patch/L6Model.java:50-57,107-148,233-247`
-  (id mutation, optional parameter creation and writer behavior).
-- `analysis/decompiled/mac/cmn/l6java/patch/L6ModelParam.java:14-24`
-  (generic parameter id classes).
-- `analysis/decompiled/mac/cmn/l6java/patch/L6ParamMap.java:184-192`
-  (caller-supplied model list mapping).
-- `analysis/decompiled/mac/line6editbase/tonetranslation/L6TonePatcher.java:27-70`
-  and `L6ToneTranslationUtils.java:18-111` (versioned fixes and cross-family
-  translation, not an editor selector contract).
-
-The precise missing source edge is the PODxt-specific implementation and
-resource data referenced by `L6PODxtDevice` and `L6SharcToneEditor`: its
-selector event/handler, per-product model-id lists, and the functions or
-resources that initialize, remove or retain PARMs on a choice. For cab and mic,
-the corresponding target-specific selector bindings and applicability list are
-also required. No acquisition, execution or hardware observation is needed for
-this request; if these members are absent from the supplied originals, the
-selection edge remains unresolved.
+The precise remaining selector edge is the supplied GUI widget implementation:
+`L6ComboBox` and `L6ParamRouter` are not present in the class payload, so
+same-choice event emission cannot be determined. The PODxt classes, model-id
+arrays and association definitions are present; the unresolved question is not
+source presence. No acquisition, vendor execution or hardware observation is
+needed to state this limit.
 
 ## Proposed operation contract for Gatekeeper admission
 
@@ -81,19 +89,20 @@ operation is implemented by this document.
    supported individual-tone container `L6PA`, `L6FS` or `L6AS`. Never admit a
    product merely because it satisfies `IsSharcTone` or has a matching asset
    name.
-2. **Operations:** separate typed requests for selecting an AMP model at slot
-   `0x00030000` and a CAB model at slot `0x00030001`. The existing parser exposes
-   the cab slot as the tone's cab only for `L6AS`; the Gatekeeper must require
-   the recovered selector contract to confirm whether that is also its edit
-   applicability. A microphone operation is excluded unless the missing
-   PODxt-specific source explicitly identifies its control, target, slot and
-   mapping; it must not be inferred from Vetta, POD HD or asset labels.
+2. **Operations:** the source establishes AMP and CAB model selectors and a MIC
+   association parameter on CAB `PARM` id `0`. The current parser exposes the
+   cab slot as the tone's cab only for `L6AS`; the Gatekeeper must review that
+   file-container applicability against the source path before any Rust edit is
+   admitted. Do not infer a separate mic model slot or broader cab applicability.
 3. **Choice admission and side effects:** accept only an exact model id present
-   in a recovered PODxt Live selector table. The table must also state, for each
-   choice, its model-specific PARM additions, replacements, removals, defaults,
-   and any other changed fields. Do not invent defaults or assume changing only
-   MINF model id is equivalent. If the source does not fully describe a choice,
-   reject it without mutation.
+   in the supplied PODxt association list. The direct model-selection setter
+   changes the model id and retains existing PARMs; it does not apply per-model
+   PARM defaults. The vendor map can create an absent AMP/CAB model with id
+   `-1`, enabled `true`, ordinal `0` before assigning the requested id. A
+   conservative Rust edit may continue to reject an absent slot, but must not
+   claim that this matches vendor creation behavior. Review model-specific
+   control definitions and connected edit-buffer effects before admitting a
+   Rust operation; do not invent defaults or remove PARMs.
 4. **Atomicity and preservation:** prevalidate target, container, unique existing
    target slot, source-table choice, MINF/PARM structure and the complete
    source-defined change set before applying anything. Commit the set together
@@ -115,10 +124,9 @@ operation is implemented by this document.
    contract must precede these tests; synthetic fixtures cannot establish
    vendor applicability.
 
-**Admission blocker:** the available common primitives cannot fill the
-per-choice model lists or parameter side effects. Gatekeeper admission is
-requested for this bounded investigation and contract, not for implementing
-model selection, cab/mic selection, or model-specific PARM replacement without
-the named target-specific source evidence. Existing admitted operations,
-including AMP/EQ stored model-enable flags, do not need renewed per-leaf scope
-approval.
+**Admission status:** no new selection operation is admitted by this research
+correction. The target-specific classes and selector maps are present, and the
+direct setter behavior is now source-backed. Gatekeeper review is still needed
+before implementation, including `L6AS` cab applicability and the GUI
+same-choice event edge. Existing admitted operations, including AMP/EQ stored
+model-enable flags, do not need renewed per-leaf scope approval.
