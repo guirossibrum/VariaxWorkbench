@@ -267,8 +267,8 @@ System/Tempo context. NOTE Off writes only the existing Delay NOTE selector.
 It still requires the existing Mod NOTE selector to be zero, rejects positive
 Mod NOTE, and preserves the Mod record unchanged; it does not require Delay
 TIME or Tempo. The TIME operation validates its displayed 20–2000 ms range and
-does not depend on or change Mod/System state. It does not create model/parameter
-records or implement general Mod editing.
+does not depend on or change Mod/System state. Neither operation creates
+model/parameter records.
 
 The NOTE-to-time arithmetic follows the recovered `Note2TimeSpeed` float steps
 and `RangeFormat` interpolation precision, including f64 conversion of the
@@ -287,7 +287,11 @@ total); Clippy and format passed. The correction code head
 with 278 library, 46 GUI, and 26 integration tests per functional profile (350
 total). Its exact-head run IDs are recorded in the PR description. This later
 documentation-only evidence correction does not change those code results or
-claim that the follow-up documentation was rerun.
+claim that the follow-up documentation was rerun. A later implementation adds
+the conservative System default-id gate and bounded Mod NOTE/SPEED operations;
+its local full suite currently passes 284 library, 47 GUI, and 26 integration
+tests (357 total, 0 doc tests). Configured exact-head checks for that changed
+implementation have not yet run.
 
 An applied name is unsaved until that tone's copy is written. Quitting asks
 to save, discard, or keep editing, one tone at a time. Cancel, or a save that
@@ -406,3 +410,26 @@ Some names in the table, including POD 2.0 ordinals, `BX-` model ids, and
 acoustic-body ids, are returned by fall-through switches in `GetAssetName`.
 They are lookup results for those ids. They are not a claim that PODxt Live
 implements every one of those models.
+
+## Bounded Mod NOTE/SPEED editing
+
+The offline tone, library, bundle, session and GUI now expose existing-record
+Mod NOTE choices and explicit Mod SPEED input in Hz. Mod NOTE Off changes only
+NOTE and does not inspect SPEED or Tempo. Positive NOTE requires a unique
+source-listed Mod model and primary/fallback slot, canonical NOTE/SPEED
+records, a valid stored SPEED, one Delay model with canonical NOTE Off, and
+one System model at slot `0x00010000` with id `0x3e700000` and Tempo in
+30–240 BPM. This Delay NOTE guard prevents the original callback's cross-effect
+Delay TIME write. Manual SPEED requires valid existing Mod NOTE/SPEED values,
+converts 0.1–15 Hz through the recovered range conversion and clears a positive
+NOTE; it does not require Delay or Tempo context. All operations reject
+ambiguous or unsupported context before mutation and preserve every untouched
+byte. The GUI stages changes per tone and applies or discards them explicitly.
+
+The System id gate is a deliberately conservative application scope based on
+the recovered source default, not a claim that the original getter rejects
+other existing ids. Existing `0x3e800000` and unknown System ids remain
+losslessly readable but cannot authorize positive NOTE edits. Delay positive
+NOTE edits use the same corrected gate; Delay Off and explicit TIME retain
+their operation-specific dependencies. Source-backed formulas and literal
+synthetic expectations are recorded in the [control matrix](podxt-live-control-matrix.md).

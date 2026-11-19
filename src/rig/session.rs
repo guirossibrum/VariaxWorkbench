@@ -311,6 +311,26 @@ impl Session {
         backend::set_pod_delay_note_choice(bytes, choice)
     }
 
+    pub fn set_pod_mod_note_choice(
+        self,
+        role: RoleKind,
+        bytes: &[u8],
+        choice: crate::pod_preset::ModNoteChoice,
+    ) -> Result<Vec<u8>, Rejection> {
+        self.require(role, Operation::EditPodPreset)?;
+        backend::set_pod_mod_note_choice(bytes, choice)
+    }
+
+    pub fn set_pod_mod_speed_hz(
+        self,
+        role: RoleKind,
+        bytes: &[u8],
+        hz: f32,
+    ) -> Result<Vec<u8>, Rejection> {
+        self.require(role, Operation::EditPodPreset)?;
+        backend::set_pod_mod_speed_hz(bytes, hz)
+    }
+
     /// Applies a displayed Delay TIME value in milliseconds offline and clears
     /// a positive Delay NOTE. This isolated edit does not read Tempo or Mod.
     pub fn set_pod_delay_time_ms(

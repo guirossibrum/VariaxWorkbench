@@ -683,7 +683,7 @@ fn pod_delay_note_session_is_role_gated_and_uses_the_shared_offline_backend() {
         DELAY_SLOT,
         0x0202_0002,
         0,
-        0x3e80_0000,
+        0x3e70_0000,
         Some(MOD_SLOT),
         pod_preset::MOD_CONTROL_MODEL_IDS[0],
         0,
@@ -715,6 +715,40 @@ fn pod_delay_note_session_is_role_gated_and_uses_the_shared_offline_backend() {
         })
     ));
     assert!(session.live_backend_is_absent());
+}
+
+#[test]
+fn pod_mod_note_session_is_role_gated_and_uses_the_shared_offline_backend() {
+    use crate::pod_preset::{self, DELAY_SLOT, MOD_SLOT};
+    let bytes = pod_preset::tests::delay_note_fixture(
+        DELAY_SLOT,
+        pod_preset::DELAY_CONTROL_MODEL_IDS[0],
+        0,
+        0x3e80_0000,
+        Some(MOD_SLOT),
+        pod_preset::MOD_CONTROL_MODEL_IDS[0],
+        0,
+        Some(120.0),
+    );
+    let session = Session::initial_rig();
+    let applied = session
+        .set_pod_mod_note_choice(RoleKind::Pod, &bytes, pod_preset::ModNoteChoice::Quarter)
+        .unwrap();
+    let tone = pod_preset::PodTone::parse(applied).unwrap();
+    assert_eq!(
+        tone.mod_note_value().unwrap(),
+        pod_preset::ModNoteValue::Known(pod_preset::ModNoteChoice::Quarter)
+    );
+    assert!(
+        Session::initial_rig()
+            .set_pod_mod_speed_hz(RoleKind::Pod, &bytes, 3.0)
+            .is_ok()
+    );
+    assert!(
+        Session::initial_rig()
+            .set_pod_mod_note_choice(RoleKind::Guitar, &bytes, pod_preset::ModNoteChoice::Quarter,)
+            .is_err()
+    );
 }
 
 #[test]

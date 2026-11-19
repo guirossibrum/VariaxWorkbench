@@ -1055,8 +1055,7 @@ pub enum DelayControl {
 }
 
 /// Source-defined NOTE choices shared by PODxt Live Mod and Delay model
-/// parameter IDs. These choices are only admitted by the bounded Delay NOTE
-/// editor below; this is not a generic Mod editor.
+/// parameter IDs. Mod NOTE and Delay NOTE have separate edit operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u32)]
 pub enum DelayNoteChoice {
@@ -1161,6 +1160,15 @@ impl DelayNoteChoice {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DelayNoteValue {
     Known(DelayNoteChoice),
+    Unknown { raw_bits: u32 },
+}
+
+/// Mod NOTE uses the same source-defined ordinal table as Delay NOTE.
+pub type ModNoteChoice = DelayNoteChoice;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModNoteValue {
+    Known(ModNoteChoice),
     Unknown { raw_bits: u32 },
 }
 
@@ -2657,6 +2665,184 @@ impl PodTone {
         Ok(20.0 + raw * scale)
     }
 
+    pub fn mod_note_value(&self) -> Result<ModNoteValue, ToneError> {
+        let model = self.unique_control_model(
+            &[MOD_SLOT, 0x0005_0003],
+            &MOD_CONTROL_MODEL_IDS,
+            "Mod NOTE",
+        )?;
+        let (parameter, _) =
+            self.unique_control_parameter(model, 0x0020_0000, false, "Mod NOTE")?;
+        let bits = match self.models[model].parameters[parameter] {
+            ModelParameter::Recorded {
+                value: ParameterValue::Int { bits },
+                ..
+            } => bits,
+            _ => unreachable!("unique_control_parameter checked integer type"),
+        };
+        Ok(DelayNoteChoice::from_value(bits)
+            .map(ModNoteValue::Known)
+            .unwrap_or(ModNoteValue::Unknown { raw_bits: bits }))
+    }
+
+    pub fn mod_speed_hz(&self) -> Result<f32, ToneError> {
+        let model = self.unique_control_model(
+            &[MOD_SLOT, 0x0005_0003],
+            &MOD_CONTROL_MODEL_IDS,
+            "Mod SPEED",
+        )?;
+        let (parameter, _) =
+            self.unique_control_parameter(model, 0x0010_0000, true, "Mod SPEED")?;
+        let raw = self.float_parameter_bits(model, parameter, "Mod SPEED")?;
+        if !raw.is_finite() || !(0.0..=1.0).contains(&raw) {
+            return Err(ToneError::format(
+                "stored Mod SPEED is outside finite raw range 0..=1",
+            ));
+        }
+        Ok(0.1 + raw * (15.0_f32 - 0.1_f32))
+    }
+
+    /// Writes an existing Mod NOTE record. Positive choices recalculate SPEED
+    /// from the source System Tempo; Off changes only NOTE. Delay NOTE must be
+    /// Off because the original shared callback also recalculates Delay TIME.
+    pub fn set_mod_note_choice(&mut self, choice: ModNoteChoice) -> Result<(), ToneError> {
+        self.require_control_edit_profile("Mod NOTE")?;
+        let mod_model = self.unique_control_model(
+            &[MOD_SLOT, 0x0005_0003],
+            &MOD_CONTROL_MODEL_IDS,
+            "Mod NOTE",
+        )?;
+        let (note_index, note_offset) =
+            self.unique_control_parameter(mod_model, 0x0020_0000, false, "Mod NOTE")?;
+        let old_note = match self.models[mod_model].parameters[note_index] {
+            ModelParameter::Recorded {
+                value: ParameterValue::Int { bits },
+                ..
+            } => bits,
+            _ => unreachable!("unique_control_parameter checked integer type"),
+        };
+        if ModNoteChoice::from_value(old_note).is_none() {
+            return Err(ToneError::format("stored Mod NOTE is outside 0..=13"));
+        }
+
+        let delay_model = self.unique_control_model(
+            &[DELAY_SLOT, 0x0005_0004],
+            &DELAY_CONTROL_MODEL_IDS,
+            "Delay NOTE cross-effect guard",
+        )?;
+        let (delay_note_index, _) = self.unique_control_parameter(
+            delay_model,
+            0x0020_0000,
+            false,
+            "Delay NOTE cross-effect guard",
+        )?;
+        let delay_note = match self.models[delay_model].parameters[delay_note_index] {
+            ModelParameter::Recorded {
+                value: ParameterValue::Int { bits },
+                ..
+            } => bits,
+            _ => unreachable!("unique_control_parameter checked integer type"),
+        };
+        if delay_note != 0 {
+            return Err(ToneError::format(
+                "Mod NOTE edit requires Delay NOTE Off to avoid a coupled Delay TIME write",
+            ));
+        }
+
+        let speed_target = if choice != ModNoteChoice::Off {
+            Some(self.unique_control_parameter(mod_model, 0x0010_0000, true, "Mod SPEED")?)
+        } else {
+            None
+        };
+        let speed_bits = if let Some((speed_index, _)) = speed_target {
+            let old_speed = self.float_parameter_bits(mod_model, speed_index, "Mod SPEED")?;
+            if !old_speed.is_finite() || !(0.0..=1.0).contains(&old_speed) {
+                return Err(ToneError::format(
+                    "stored Mod SPEED is outside finite raw range 0..=1",
+                ));
+            }
+            let system_model =
+                self.unique_control_model(&[0x0001_0000], &[0x3e70_0000], "System Tempo context")?;
+            let (tempo_index, _) = self.unique_control_parameter(
+                system_model,
+                0x0020_0001,
+                true,
+                "System Tempo context",
+            )?;
+            let tempo =
+                self.float_parameter_bits(system_model, tempo_index, "System Tempo context")?;
+            if !tempo.is_finite() || !(30.0..=240.0).contains(&tempo) {
+                return Err(ToneError::format(
+                    "stored Tempo is outside finite BPM range 30..=240",
+                ));
+            }
+            let multiplier = choice.multiplier().expect("positive Mod NOTE choice");
+            let q = multiplier * 4.0_f32;
+            let displayed_hz = (tempo / (q * 60.0_f32)).clamp(0.1, 15.0);
+            Some(source_range_raw(displayed_hz, 0.1_f32, 15.0_f32).to_bits())
+        } else {
+            None
+        };
+
+        let current_speed_bits = speed_target
+            .map(|(index, _)| self.float_parameter_bits(mod_model, index, "Mod SPEED"))
+            .transpose()?
+            .map(f32::to_bits);
+        if old_note == choice.value() && speed_bits == current_speed_bits {
+            return Ok(());
+        }
+        self.write_parameter_bits(mod_model, note_index, note_offset, choice.value());
+        if let (Some(bits), Some((index, offset))) = (speed_bits, speed_target) {
+            self.write_parameter_bits(mod_model, index, offset, bits);
+        }
+        Ok(())
+    }
+
+    /// Writes displayed Mod SPEED in Hz through the original range format and
+    /// applies the source manual-speed event, which clears a positive NOTE.
+    pub fn set_mod_speed_hz(&mut self, hz: f32) -> Result<(), ToneError> {
+        self.require_control_edit_profile("Mod SPEED")?;
+        if !hz.is_finite() || !(0.1..=15.0).contains(&hz) {
+            return Err(ToneError::format(
+                "Mod SPEED edit requires finite displayed Hz in 0.1..=15",
+            ));
+        }
+        let model = self.unique_control_model(
+            &[MOD_SLOT, 0x0005_0003],
+            &MOD_CONTROL_MODEL_IDS,
+            "Mod SPEED",
+        )?;
+        let (speed_index, speed_offset) =
+            self.unique_control_parameter(model, 0x0010_0000, true, "Mod SPEED")?;
+        let old_speed = self.float_parameter_bits(model, speed_index, "Mod SPEED")?;
+        if !old_speed.is_finite() || !(0.0..=1.0).contains(&old_speed) {
+            return Err(ToneError::format(
+                "stored Mod SPEED is outside finite raw range 0..=1",
+            ));
+        }
+        let (note_index, note_offset) =
+            self.unique_control_parameter(model, 0x0020_0000, false, "Mod NOTE")?;
+        let old_note = match self.models[model].parameters[note_index] {
+            ModelParameter::Recorded {
+                value: ParameterValue::Int { bits },
+                ..
+            } => bits,
+            _ => unreachable!("unique_control_parameter checked integer type"),
+        };
+        if ModNoteChoice::from_value(old_note).is_none() {
+            return Err(ToneError::format("stored Mod NOTE is outside 0..=13"));
+        }
+        let new_speed = source_range_raw(hz, 0.1_f32, 15.0_f32).to_bits();
+        if old_speed.to_bits() == new_speed && old_note == 0 {
+            return Ok(());
+        }
+        self.write_parameter_bits(model, speed_index, speed_offset, new_speed);
+        if old_note != 0 {
+            self.write_parameter_bits(model, note_index, note_offset, 0);
+        }
+        Ok(())
+    }
+
     /// Apply a typed Delay NOTE choice to an existing target. Positive choices
     /// also update TIME using the original f32 NOTE formula and source range
     /// conversion. Off changes NOTE only. This operation never edits Mod.
@@ -2717,7 +2903,7 @@ impl PodTone {
                 ));
             }
             let system_model =
-                self.unique_control_model(&[0x0001_0000], &[0x3e80_0000], "System Tempo context")?;
+                self.unique_control_model(&[0x0001_0000], &[0x3e70_0000], "System Tempo context")?;
             let (tempo_index, _) = self.unique_control_parameter(
                 system_model,
                 0x0020_0001,
@@ -3884,6 +4070,26 @@ impl Library {
         entry.tone.set_delay_note_choice(choice)
     }
 
+    pub fn set_mod_note_choice(
+        &mut self,
+        index: usize,
+        choice: ModNoteChoice,
+    ) -> Result<(), ToneError> {
+        let entry = self
+            .tones
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
+        entry.tone.set_mod_note_choice(choice)
+    }
+
+    pub fn set_mod_speed_hz(&mut self, index: usize, hz: f32) -> Result<(), ToneError> {
+        let entry = self
+            .tones
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
+        entry.tone.set_mod_speed_hz(hz)
+    }
+
     pub fn set_delay_time_ms(&mut self, index: usize, milliseconds: f32) -> Result<(), ToneError> {
         let entry = self
             .tones
@@ -4498,6 +4704,18 @@ impl PodBundleLibrary {
         self.edit_entry(index, |tone| tone.set_delay_note_choice(choice))
     }
 
+    pub fn set_mod_note_choice(
+        &mut self,
+        index: usize,
+        choice: ModNoteChoice,
+    ) -> Result<(), ToneError> {
+        self.edit_entry(index, |tone| tone.set_mod_note_choice(choice))
+    }
+
+    pub fn set_mod_speed_hz(&mut self, index: usize, hz: f32) -> Result<(), ToneError> {
+        self.edit_entry(index, |tone| tone.set_mod_speed_hz(hz))
+    }
+
     pub fn set_delay_time_ms(&mut self, index: usize, milliseconds: f32) -> Result<(), ToneError> {
         self.edit_entry(index, |tone| tone.set_delay_time_ms(milliseconds))
     }
@@ -5003,7 +5221,7 @@ pub(crate) mod tests {
         if tempo_row.is_some() {
             models.push(BuiltModel {
                 slot: 0x0001_0000,
-                model_id: 0x3e80_0000,
+                model_id: 0x3e70_0000,
                 tail: &[9, 10, 11, 12],
                 parameters: tempo_rows.as_ref().unwrap(),
             });
@@ -11149,6 +11367,276 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn mod_note_speed_source_events_match_independent_literal_words() {
+        let original = delay_note_fixture(
+            DELAY_SLOT,
+            DELAY_CONTROL_MODEL_IDS[0],
+            0,
+            0x3e80_0000,
+            Some(MOD_SLOT),
+            MOD_CONTROL_MODEL_IDS[0],
+            0,
+            Some(120.0),
+        );
+        let mut tone = PodTone::parse(original.clone()).unwrap();
+        tone.set_mod_note_choice(ModNoteChoice::Quarter).unwrap();
+        let mut expected = original.clone();
+        patch_expected_parameter(&tone, &mut expected, MOD_SLOT, 0x0020_0000, 6);
+        patch_expected_parameter(&tone, &mut expected, MOD_SLOT, 0x0010_0000, 0x3e02_93c2);
+        assert_eq!(tone.as_bytes(), expected);
+        assert_eq!(
+            tone.mod_note_value().unwrap(),
+            ModNoteValue::Known(ModNoteChoice::Quarter)
+        );
+
+        let mut manual = PodTone::parse(delay_note_fixture(
+            DELAY_SLOT,
+            DELAY_CONTROL_MODEL_IDS[0],
+            0,
+            0x3e80_0000,
+            Some(MOD_SLOT),
+            MOD_CONTROL_MODEL_IDS[0],
+            6,
+            None,
+        ))
+        .unwrap();
+        let before_manual = manual.as_bytes().to_vec();
+        manual.set_mod_speed_hz(3.0).unwrap();
+        let mut expected_manual = before_manual;
+        patch_expected_parameter(
+            &manual,
+            &mut expected_manual,
+            MOD_SLOT,
+            0x0010_0000,
+            0x3e47_4d51,
+        );
+        patch_expected_parameter(&manual, &mut expected_manual, MOD_SLOT, 0x0020_0000, 0);
+        assert_eq!(manual.as_bytes(), expected_manual);
+    }
+
+    #[test]
+    fn mod_note_expected_speed_words_cover_every_choice_and_tempo_boundary() {
+        let expected = [
+            [
+                0x3adb_eb61,
+                0x3b92_9ced,
+                0x3c24_f08a,
+                0x3c97_31d4,
+                0x3c80_494f,
+                0x3cdb_eb62,
+                0x3d32_af40,
+                0x3d1b_c6bb,
+                0x3d77_68cf,
+                0x3dc0_6df6,
+                0x3da9_8571,
+                0x3e02_93c2,
+                0x3e47_4d51,
+            ],
+            [
+                0x3cdb_eb62,
+                0x3d1b_c6bb,
+                0x3d77_68cf,
+                0x3dc0_6df6,
+                0x3da9_8571,
+                0x3e02_93c2,
+                0x3e47_4d51,
+                0x3e30_64cd,
+                0x3e86_0370,
+                0x3eca_bcff,
+                0x3eb3_d47a,
+                0x3f07_bb47,
+                0x3f4c_74d5,
+            ],
+            [
+                0x3d77_68cf,
+                0x3da9_8571,
+                0x3e02_93c2,
+                0x3e47_4d51,
+                0x3e30_64cd,
+                0x3e86_0370,
+                0x3eca_bcff,
+                0x3eb3_d47a,
+                0x3f07_bb47,
+                0x3f4c_74d5,
+                0x3f35_8c51,
+                0x3f80_0000,
+                0x3f80_0000,
+            ],
+        ];
+        for (tempo_index, tempo) in [30.0_f32, 120.0, 240.0].into_iter().enumerate() {
+            for (choice_index, choice) in ModNoteChoice::ALL.into_iter().enumerate().skip(1) {
+                let bytes = delay_note_fixture(
+                    DELAY_SLOT,
+                    DELAY_CONTROL_MODEL_IDS[0],
+                    0,
+                    0x3e80_0000,
+                    Some(MOD_SLOT),
+                    MOD_CONTROL_MODEL_IDS[0],
+                    0,
+                    Some(tempo),
+                );
+                let mut tone = PodTone::parse(bytes).unwrap();
+                tone.set_mod_note_choice(choice).unwrap();
+                assert_eq!(
+                    parm_bits(&tone, MOD_SLOT, 0x0010_0000),
+                    expected[tempo_index][choice_index - 1],
+                    "Mod NOTE {choice_index} at {tempo} BPM"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mod_note_model_slots_and_manual_speed_lower_boundary_are_bounded() {
+        for slot in [MOD_SLOT, 0x0005_0003] {
+            for model_id in MOD_CONTROL_MODEL_IDS {
+                let bytes = delay_note_fixture(
+                    DELAY_SLOT,
+                    DELAY_CONTROL_MODEL_IDS[0],
+                    0,
+                    0x3e80_0000,
+                    Some(slot),
+                    model_id,
+                    0,
+                    Some(120.0),
+                );
+                let mut tone = PodTone::parse(bytes).unwrap();
+                tone.set_mod_note_choice(ModNoteChoice::Quarter).unwrap();
+                assert_eq!(parm_bits(&tone, slot, 0x0010_0000), 0x3e02_93c2);
+            }
+        }
+        let mut lower = PodTone::parse(delay_note_fixture(
+            DELAY_SLOT,
+            DELAY_CONTROL_MODEL_IDS[0],
+            0,
+            0x3e80_0000,
+            Some(MOD_SLOT),
+            MOD_CONTROL_MODEL_IDS[0],
+            0,
+            None,
+        ))
+        .unwrap();
+        lower.set_mod_speed_hz(0.1).unwrap();
+        assert_eq!(parm_bits(&lower, MOD_SLOT, 0x0010_0000), 0x0000_0000);
+
+        let mod_speed = drive_record(0x3f, 0x0010_0000, 1, 0x3e80_0000);
+        let mod_note = drive_record(0x3f, 0x0020_0000, 0, 6);
+        let model = BuiltModel {
+            slot: MOD_SLOT,
+            model_id: MOD_CONTROL_MODEL_IDS[0],
+            tail: &[1, 2, 3, 4],
+            parameters: &[&mod_speed, &mod_note],
+        };
+        let bytes = custom_tone(ContainerKind::L6as, &[model]);
+        let mut isolated_speed = PodTone::parse(bytes).unwrap();
+        isolated_speed.set_mod_speed_hz(3.0).unwrap();
+        assert_eq!(
+            parm_bits(&isolated_speed, MOD_SLOT, 0x0010_0000),
+            0x3e47_4d51
+        );
+        assert_eq!(parm_bits(&isolated_speed, MOD_SLOT, 0x0020_0000), 0);
+    }
+
+    #[test]
+    fn mod_note_off_isolated_and_positive_cross_effect_guard_is_atomic() {
+        let mut off = PodTone::parse(delay_note_fixture(
+            DELAY_SLOT,
+            DELAY_CONTROL_MODEL_IDS[0],
+            0,
+            0x3e80_0000,
+            Some(MOD_SLOT),
+            MOD_CONTROL_MODEL_IDS[0],
+            6,
+            None,
+        ))
+        .unwrap();
+        let original = off.as_bytes().to_vec();
+        off.set_mod_note_choice(ModNoteChoice::Off).unwrap();
+        let mut expected = original;
+        patch_expected_parameter(&off, &mut expected, MOD_SLOT, 0x0020_0000, 0);
+        assert_eq!(off.as_bytes(), expected);
+
+        let delay_time = drive_record(0x3f, 0x0010_0000, 1, 0x3e80_0000).to_vec();
+        let delay_note = drive_record(0x3f, 0x0020_0000, 0, 0).to_vec();
+        let invalid_speed_type = drive_record(0x3f, 0x0010_0000, 0, 0x3e80_0000).to_vec();
+        let active_mod_note = drive_record(0x3f, 0x0020_0000, 0, 6).to_vec();
+        let isolated_models = vec![
+            (
+                DELAY_SLOT,
+                DELAY_CONTROL_MODEL_IDS[0],
+                vec![delay_time, delay_note],
+            ),
+            (
+                MOD_SLOT,
+                MOD_CONTROL_MODEL_IDS[0],
+                vec![invalid_speed_type, active_mod_note],
+            ),
+        ];
+        let mut no_speed_read = PodTone::parse(delay_context_fixture(
+            &isolated_models,
+            PODXT_LIVE_TONE_ID,
+            PODXT_LIVE_HOST_MIN_VERSION,
+        ))
+        .unwrap();
+        let before = no_speed_read.as_bytes().to_vec();
+        no_speed_read
+            .set_mod_note_choice(ModNoteChoice::Off)
+            .unwrap();
+        let mut expected = before;
+        patch_expected_parameter(&no_speed_read, &mut expected, MOD_SLOT, 0x0020_0000, 0);
+        assert_eq!(no_speed_read.as_bytes(), expected);
+
+        let mut guarded = PodTone::parse(delay_note_fixture(
+            DELAY_SLOT,
+            DELAY_CONTROL_MODEL_IDS[0],
+            6,
+            0x3e80_0000,
+            Some(MOD_SLOT),
+            MOD_CONTROL_MODEL_IDS[0],
+            0,
+            Some(120.0),
+        ))
+        .unwrap();
+        let before = guarded.as_bytes().to_vec();
+        assert!(guarded.set_mod_note_choice(ModNoteChoice::Quarter).is_err());
+        assert_eq!(guarded.as_bytes(), before);
+    }
+
+    #[test]
+    fn delay_positive_note_uses_source_default_system_id_only() {
+        for system_id in [0x3e70_0000, 0x3e80_0000, 0xdead_beef] {
+            let tempo = drive_record(0x3f, 0x0020_0001, 1, 120.0_f32.to_bits());
+            let time = drive_record(0x3f, 0x0010_0000, 1, 0x3e80_0000);
+            let note = drive_record(0x3f, 0x0020_0000, 0, 0);
+            let mod_note = drive_record(0x3f, 0x0020_0000, 0, 0);
+            let models = vec![
+                (
+                    DELAY_SLOT,
+                    DELAY_CONTROL_MODEL_IDS[0],
+                    vec![time.to_vec(), note.to_vec()],
+                ),
+                (MOD_SLOT, MOD_CONTROL_MODEL_IDS[0], vec![mod_note.to_vec()]),
+                (0x0001_0000, system_id, vec![tempo.to_vec()]),
+            ];
+            let mut tone = PodTone::parse(delay_context_fixture(
+                &models,
+                PODXT_LIVE_TONE_ID,
+                PODXT_LIVE_HOST_MIN_VERSION,
+            ))
+            .unwrap();
+            let original = tone.as_bytes().to_vec();
+            let result = tone.set_delay_note_choice(DelayNoteChoice::Quarter);
+            if system_id == 0x3e70_0000 {
+                assert!(result.is_ok());
+                assert_ne!(tone.as_bytes(), original);
+            } else {
+                assert!(result.is_err());
+                assert_eq!(tone.as_bytes(), original);
+            }
+        }
+    }
+
+    #[test]
     fn delay_note_models_and_primary_fallback_slots_match_complete_expected_buffers() {
         let delay_time = drive_record(0x3f, 0x0010_0000, 1, 0x3e80_0000).to_vec();
         let delay_note = drive_record(0x3f, 0x0020_0000, 0, 0).to_vec();
@@ -11189,7 +11677,7 @@ pub(crate) mod tests {
                         MOD_CONTROL_MODEL_IDS[0],
                         vec![mod_note.clone(), mod_sentinel.clone()],
                     ),
-                    (0x0001_0000, 0x3e80_0000, vec![tempo.clone()]),
+                    (0x0001_0000, 0x3e70_0000, vec![tempo.clone()]),
                 ];
                 let original =
                     delay_context_fixture(&models, PODXT_LIVE_TONE_ID, PODXT_LIVE_HOST_MIN_VERSION);
@@ -11229,7 +11717,7 @@ pub(crate) mod tests {
         let tempo = drive_record(0x3f, 0x0020_0001, 1, 120.0_f32.to_bits()).to_vec();
         let delay_rows = vec![dtime.clone(), dnote.clone()];
         let normal_mod = vec![(MOD_SLOT, MOD_CONTROL_MODEL_IDS[0], vec![mnote.clone()])];
-        let normal_system = vec![(0x0001_0000, 0x3e80_0000, vec![tempo.clone()])];
+        let normal_system = vec![(0x0001_0000, 0x3e70_0000, vec![tempo.clone()])];
         let make_tone = |delay_slot: u32,
                          delay_model: u32,
                          delay_rows: Vec<Vec<u8>>,
@@ -11383,7 +11871,7 @@ pub(crate) mod tests {
                     0x0202_0002,
                     delay_rows.clone(),
                     normal_mod.clone(),
-                    vec![(0x0001_0000, 0x3e80_0000, vec![tempo.clone(), vec![4, 5, 6]])],
+                    vec![(0x0001_0000, 0x3e70_0000, vec![tempo.clone(), vec![4, 5, 6]])],
                     PODXT_LIVE_TONE_ID,
                 ),
             ),
@@ -11394,7 +11882,7 @@ pub(crate) mod tests {
                     0x0202_0002,
                     delay_rows.clone(),
                     normal_mod.clone(),
-                    vec![(0x0001_0000, 0x3e80_0000, vec![tempo.clone(), tempo.clone()])],
+                    vec![(0x0001_0000, 0x3e70_0000, vec![tempo.clone(), tempo.clone()])],
                     PODXT_LIVE_TONE_ID,
                 ),
             ),
@@ -11590,7 +12078,7 @@ pub(crate) mod tests {
         let models = vec![
             (DELAY_SLOT, 0x0202_0002, vec![time.clone(), note.clone()]),
             (MOD_SLOT, MOD_CONTROL_MODEL_IDS[0], vec![mod_note]),
-            (0x0001_0000, 0x3e80_0000, vec![tempo]),
+            (0x0001_0000, 0x3e70_0000, vec![tempo]),
         ];
         let original =
             delay_context_fixture(&models, PODXT_LIVE_TONE_ID, PODXT_LIVE_HOST_MIN_VERSION);
@@ -11900,7 +12388,7 @@ pub(crate) mod tests {
             },
             BuiltModel {
                 slot: 0x0001_0000,
-                model_id: 0x3e80_0000,
+                model_id: 0x3e70_0000,
                 tail: &[9, 10, 11, 12],
                 parameters: &tempo_rows,
             },
@@ -11934,7 +12422,7 @@ pub(crate) mod tests {
             },
             BuiltModel {
                 slot: 0x0001_0000,
-                model_id: 0x3e80_0000,
+                model_id: 0x3e70_0000,
                 tail: &[9, 10, 11, 12],
                 parameters: &tempo_rows,
             },

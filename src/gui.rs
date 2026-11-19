@@ -64,6 +64,12 @@ enum PendingDelayEdit {
     TimeMs(f32),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PendingModEdit {
+    Note(pod_preset::ModNoteChoice),
+    SpeedHz(f32),
+}
+
 trait FileDialogs {
     fn open(&mut self) -> Option<PathBuf>;
     fn save(&mut self, suggested: &str, extension: &str) -> Option<PathBuf>;
@@ -241,6 +247,7 @@ struct Workbench {
     pod_cab_pending: Option<(usize, pod_preset::PodCabModelChoice)>,
     pod_harmony_pending: Option<(usize, pod_preset::StompHarmonyControl, PendingStompHarmony)>,
     pod_delay_pending: Option<(usize, PendingDelayEdit)>,
+    pod_mod_pending: Option<(usize, PendingModEdit)>,
     pod_name: String,
     pod_message: String,
     #[cfg(test)]
@@ -286,7 +293,11 @@ struct Workbench {
     #[cfg(test)]
     pod_delay_note_options: HashMap<pod_preset::DelayNoteChoice, Rect>,
     #[cfg(test)]
+    pod_mod_note_options: HashMap<pod_preset::ModNoteChoice, Rect>,
+    #[cfg(test)]
     pod_delay_time_slider: Option<Rect>,
+    #[cfg(test)]
+    pod_mod_speed_slider: Option<Rect>,
     #[cfg(test)]
     pod_delay_heads_choices: HashMap<pod_preset::DelayHeadsSelection, Rect>,
     #[cfg(test)]
@@ -354,6 +365,7 @@ impl Workbench {
             pod_cab_pending: None,
             pod_harmony_pending: None,
             pod_delay_pending: None,
+            pod_mod_pending: None,
             pod_name: String::new(),
             pod_message: String::new(),
             #[cfg(test)]
@@ -399,7 +411,11 @@ impl Workbench {
             #[cfg(test)]
             pod_delay_note_options: HashMap::new(),
             #[cfg(test)]
+            pod_mod_note_options: HashMap::new(),
+            #[cfg(test)]
             pod_delay_time_slider: None,
+            #[cfg(test)]
+            pod_mod_speed_slider: None,
             #[cfg(test)]
             pod_delay_heads_choices: HashMap::new(),
             #[cfg(test)]
@@ -1539,6 +1555,7 @@ impl Workbench {
         self.pod_cab_pending = None;
         self.pod_harmony_pending = None;
         self.pod_delay_pending = None;
+        self.pod_mod_pending = None;
         match (self.pod_selected, self.pod_library.len()) {
             (Some(_), 0) => {
                 self.pod_selected = None;
@@ -1870,6 +1887,8 @@ impl Workbench {
             self.pod_delay_sliders.clear();
             self.pod_delay_note_options.clear();
             self.pod_delay_time_slider = None;
+            self.pod_mod_note_options.clear();
+            self.pod_mod_speed_slider = None;
             self.pod_delay_heads_choices.clear();
             self.pod_delay_bits_choices.clear();
             self.pod_stomp_wave_choices.clear();
@@ -2001,6 +2020,7 @@ impl Workbench {
                             self.pod_cab_pending = None;
                             self.pod_harmony_pending = None;
                             self.pod_delay_pending = None;
+                            self.pod_mod_pending = None;
                         }
                         self.pod_selected = Some(index);
                         self.pod_name = name;
@@ -2578,6 +2598,89 @@ impl Workbench {
                         });
                     }
                 }
+                let mod_state = self.pod_selected.and_then(|index| {
+                    self.pod_library.tone(index).map(|tone| {
+                        (index, tone.mod_note_value(), tone.mod_speed_hz())
+                    })
+                });
+                if let Some((index, note_result, speed_result)) = mod_state {
+                    ui.separator();
+                    ui.label("Mod NOTE / SPEED");
+                    match note_result {
+                        Ok(value) => {
+                            let current = match value {
+                                pod_preset::ModNoteValue::Known(choice) => Some(choice),
+                                pod_preset::ModNoteValue::Unknown { .. } => None,
+                            };
+                            let pending = match self.pod_mod_pending {
+                                Some((pending_index, PendingModEdit::Note(choice))) if pending_index == index => Some(choice),
+                                _ => current,
+                            };
+                            let label = match value {
+                                pod_preset::ModNoteValue::Known(choice) => choice.label().to_owned(),
+                                pod_preset::ModNoteValue::Unknown { raw_bits } => format!("Unknown NOTE {raw_bits}"),
+                            };
+                            ui.label(format!("Stored: {label}"));
+                            let mut selected = pending;
+                            let mut changed = None;
+                            ui.horizontal_wrapped(|ui| {
+                                for choice in pod_preset::DelayNoteChoice::ALL {
+                                    let response = ui.selectable_value(&mut selected, Some(choice), choice.label());
+                                    #[cfg(test)]
+                                    self.pod_mod_note_options.insert(choice, response.rect);
+                                    if response.changed() { changed = selected; }
+                                }
+                            });
+                            if let Some(choice) = changed {
+                                self.pod_mod_pending = Some((index, PendingModEdit::Note(choice)));
+                            }
+                        }
+                        Err(error) => { ui.small(format!("Mod NOTE unavailable: {}", error.detail())); }
+                    }
+                    match speed_result {
+                        Ok(current_hz) => {
+                            let pending_hz = match self.pod_mod_pending {
+                                Some((pending_index, PendingModEdit::SpeedHz(value))) if pending_index == index => value,
+                                _ => current_hz,
+                            };
+                            let mut value = pending_hz;
+                            ui.horizontal(|ui| {
+                                ui.label("SPEED (Hz)");
+                                let response = ui.add(egui::Slider::new(&mut value, 0.1..=15.0).show_value(true));
+                                #[cfg(test)] { self.pod_mod_speed_slider = Some(response.rect); }
+                                if response.changed() {
+                                    self.pod_mod_pending = Some((index, PendingModEdit::SpeedHz(value)));
+                                }
+                            });
+                        }
+                        Err(error) => { ui.small(format!("Mod SPEED unavailable: {}", error.detail())); }
+                    }
+                    if let Some((pending_index, edit)) = self.pod_mod_pending.filter(|(pending_index, _)| *pending_index == index) {
+                        let (label, button) = match edit {
+                            PendingModEdit::Note(choice) => (format!("{} (not applied)", choice.label()), "Apply Mod NOTE"),
+                            PendingModEdit::SpeedHz(value) => (format!("{value:.3} Hz (not applied)"), "Apply Mod SPEED"),
+                        };
+                        ui.horizontal(|ui| {
+                            ui.label(format!("Pending {label}"));
+                            let apply = ui.button(button);
+                            #[cfg(test)]
+                            self.pod_buttons.insert("pod-mod-apply", apply.rect);
+                            if apply.clicked() {
+                                match self.apply_pod_mod_edit(pending_index, edit) {
+                                    Ok(()) => {
+                                        self.pod_mod_pending = None;
+                                        self.pod_message = "Applied the staged Mod NOTE/SPEED edit offline. Nothing was sent.".into();
+                                    }
+                                    Err(error) => self.pod_message = error.detail(),
+                                }
+                            }
+                            let discard = ui.button("Discard");
+                            #[cfg(test)]
+                            self.pod_buttons.insert("pod-mod-discard", discard.rect);
+                            if discard.clicked() { self.pod_mod_pending = None; }
+                        });
+                    }
+                }
                 let delay_heads = self
                     .pod_selected
                     .and_then(|index| self.pod_library.tone(index))
@@ -2877,6 +2980,30 @@ impl Workbench {
             }
             PendingDelayEdit::TimeMs(milliseconds) => {
                 session.set_pod_delay_time_ms(RoleKind::Pod, &current, milliseconds)
+            }
+        }
+        .map_err(|error| pod_preset::ToneError::format(rejection_text(&error)))?;
+        self.replace_pod_tone(index, replacement)
+    }
+
+    fn apply_pod_mod_edit(
+        &mut self,
+        index: usize,
+        edit: PendingModEdit,
+    ) -> Result<(), pod_preset::ToneError> {
+        let current = self
+            .pod_library
+            .tone(index)
+            .ok_or_else(|| pod_preset::ToneError::format("POD selection is out of range"))?
+            .as_bytes()
+            .to_vec();
+        let session = Session::initial_rig();
+        let replacement = match edit {
+            PendingModEdit::Note(choice) => {
+                session.set_pod_mod_note_choice(RoleKind::Pod, &current, choice)
+            }
+            PendingModEdit::SpeedHz(hz) => {
+                session.set_pod_mod_speed_hz(RoleKind::Pod, &current, hz)
             }
         }
         .map_err(|error| pod_preset::ToneError::format(rejection_text(&error)))?;
@@ -4352,7 +4479,7 @@ mod tests {
         info[72..76].copy_from_slice(&pod_preset::PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
         let system = model(
             0x0001_0000,
-            0x3e80_0000,
+            0x3e70_0000,
             &[parameter(0x0020_0001, 1, 120.0_f32.to_bits())],
         );
         let modulation = model(
@@ -5106,6 +5233,17 @@ mod tests {
     ) {
         recording_frame_tall(context, app, vec![]);
         let option = app.pod_delay_note_options[&choice];
+        click_pod_at_tall(context, app, option.center());
+        recording_frame_tall(context, app, vec![]);
+    }
+
+    fn stage_mod_note_choice(
+        context: &egui::Context,
+        app: &mut Workbench,
+        choice: pod_preset::ModNoteChoice,
+    ) {
+        recording_frame_tall(context, app, vec![]);
+        let option = app.pod_mod_note_options[&choice];
         click_pod_at_tall(context, app, option.center());
         recording_frame_tall(context, app, vec![]);
     }
@@ -6543,6 +6681,63 @@ mod tests {
                 pod_preset::StompHarmony1M335Selection::MinusOctave
             )
         );
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn mod_note_gui_stages_per_tone_and_applies_only_on_request() {
+        let (context, mut app) = app();
+        app.pod_open = true;
+        app.pod_selected = Some(
+            app.pod_library
+                .import_bytes(sample_delay_note_tone(0, 0))
+                .unwrap(),
+        );
+        app.pod_library
+            .import_bytes(sample_delay_note_tone(0, 0))
+            .unwrap();
+        recording_frame_tall(&context, &mut app, vec![]);
+        let original = app.pod_library.tone(0).unwrap().as_bytes().to_vec();
+        stage_mod_note_choice(&context, &mut app, pod_preset::ModNoteChoice::Quarter);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert_eq!(
+            app.pod_mod_pending,
+            Some((0, PendingModEdit::Note(pod_preset::ModNoteChoice::Quarter)))
+        );
+
+        let second_row = app.pod_rows[&1].center();
+        click_pod_at_tall(&context, &mut app, second_row);
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert_eq!(app.pod_selected, Some(1));
+        assert!(app.pod_mod_pending.is_none());
+        let second_original = app.pod_library.tone(1).unwrap().as_bytes().to_vec();
+        stage_mod_note_choice(&context, &mut app, pod_preset::ModNoteChoice::Quarter);
+        click_pod(&context, &mut app, "pod-mod-discard");
+        assert!(app.pod_mod_pending.is_none());
+        assert_eq!(app.pod_library.tone(1).unwrap().as_bytes(), second_original);
+
+        let first_row = app.pod_rows[&0].center();
+        click_pod_at_tall(&context, &mut app, first_row);
+        recording_frame_tall(&context, &mut app, vec![]);
+        stage_mod_note_choice(&context, &mut app, pod_preset::ModNoteChoice::Quarter);
+        click_pod(&context, &mut app, "pod-mod-apply");
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().mod_note_value().unwrap(),
+            pod_preset::ModNoteValue::Known(pod_preset::ModNoteChoice::Quarter)
+        );
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .mod_speed_hz()
+                .unwrap()
+                .to_bits(),
+            2.0_f32.to_bits()
+        );
+        assert!(app.pod_library.is_dirty(0));
+        assert!(app.pod_mod_pending.is_none());
         const {
             assert!(LIVE_ACCESS_LOCKED);
         }

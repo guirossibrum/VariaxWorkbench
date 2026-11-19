@@ -180,15 +180,15 @@ The callback also establishes separate edit behavior. A positive Mod NOTE
 event updates Mod SPEED and updates Delay TIME if Delay NOTE is positive. A
 manual Mod SPEED event clears a positive Mod NOTE and otherwise writes SPEED;
 Mod NOTE Off does not recompute SPEED. System Tempo changes use the same
-`UpdateNoteValues()` path. The proposed initial Mod NOTE writer should require
-Delay NOTE to be the unique existing integer zero value to avoid the cross-
-Delay TIME side effect. For positive NOTE, update Mod NOTE and derived SPEED
-atomically; for Off, write only Mod NOTE. Offer manual SPEED separately; it
-clears an active Mod NOTE. Require valid unique Tempo only for positive NOTE,
-and an existing canonical Mod SPEED record for every operation. Reject
-opaque, duplicate, wrong-type, noncanonical, unknown NOTE, and invalid
-speed/tempo contexts without changing bytes or saved baseline. Off should not
-normalize imported SPEED.
+`UpdateNoteValues()` path. The bounded implementation requires Delay NOTE to
+be the unique existing integer zero value before either Mod NOTE event,
+preventing the cross-Delay TIME side effect. Positive Mod NOTE updates NOTE
+and derived SPEED atomically; Off writes only NOTE and does not read SPEED or
+Tempo. Manual SPEED is a separate Hz operation; it clears an active Mod NOTE
+and requires no Delay or System context. Positive Mod NOTE validates unique
+canonical Mod SPEED and Tempo. All touched values and required contexts are
+validated before writing; unsupported, ambiguous, opaque, wrong-type,
+noncanonical or unknown consumed values reject without changing bytes.
 
 Literal synthetic expectations for NOTE `6` (Quarter) at 120 BPM are `q =
 1.0f`, Mod SPEED `2.0f Hz`, normalized SPEED bits `0x3e0293c2`, Delay TIME
@@ -201,13 +201,14 @@ and SPEED bits `0x3e0293c2`, preserving Delay TIME and all other bytes. Manual
 Off preserves the prior SPEED word. These are synthetic expectations, not a
 runtime or device oracle.
 
-One source discrepancy must be resolved before implementing this proposal:
-`L6SharcToneParamMap.GetSystemModel` calls `GetSingleSlotModel` for slot
-`0x00010000` with default model id `0x3e700000`; the current bounded Delay
-writer admits Tempo only when that model id is `0x3e800000`. This proposal
-does not change existing Delay behavior. Owner review must clarify Tempo-model
-admission before a shared Mod NOTE writer uses that context. Until then Mod
-NOTE/SPEED remains research-only and no writer should be added.
+`GetSystemModel` uses default id `0x3e700000`, and `GetSingleSlotModel` returns
+an existing slot model without enforcing that default id. The bounded
+application deliberately admits positive NOTE edits only when exactly one
+System model at slot `0x00010000` has the default id `0x3e700000`; existing
+`0x3e800000` and unknown ids remain lossless but reject as Tempo context.
+This conservative gate is an application policy, not a claim about legacy
+getter rejection. Delay positive NOTE now uses the same gate; Delay Off and
+explicit TIME keep their isolated dependencies.
 
 ## Issue #29 acceptance gap ledger
 
@@ -216,7 +217,7 @@ partial; this PR and its bounded controls do not complete the issue.
 
 | Original criterion | Evidence already in this bounded implementation | Required work still missing | Explicitly outside the admitted contracts |
 | --- | --- | --- | --- |
-| Recover POD-specific formats, model/effect controls, source references, and synthetic fixtures | FORM/L6PA, L6FS, and L6AS parsing; source-backed existing-record controls and synthetic checks for the listed amp, Stomp, Mod/Delay/Reverb scalar layouts, selected associations, EQ, and model flags | Recover and validate remaining model/effect association definitions, per-model records, coupled side effects, domains, and precision; review proposed Mod NOTE/SPEED contract and resolve Tempo model discrepancy | Untraced associations, unsupported families, model/PARM creation or replacement, vendor runtime, and live behavior |
+| Recover POD-specific formats, model/effect controls, source references, and synthetic fixtures | FORM/L6PA, L6FS, and L6AS parsing; source-backed existing-record controls and synthetic checks for the listed amp, Stomp, Mod/Delay/Reverb scalar layouts, selected associations, EQ, and model flags | Recover and validate remaining model/effect association definitions, per-model records, coupled side effects, domains, and precision | Untraced associations, unsupported families, model/PARM creation or replacement, vendor runtime, and live behavior |
 | Implement offline POD inspection/editing/library workflows alongside guitar without target confusion | Separate POD parser/backend, offline tone/session/library/bundle views, bounded existing tone/bank organization operations, target rejection, and Apply/save-copy flows | Broader source-supported editor controls and workflows; model replacement; bank/folder creation/deletion and tone synthesis; compatibility across remaining admitted containers and model families | POD Farm conversion, unsupported container combinations, absent-record repair, and synthesis until their own contracts exist |
 | Test compatibility, unknown-field preservation, backups, and target-specific rejection while live transmission remains separately gated | Byte-preserving bounded writes, malformed/unknown/duplicate rejection, dirty/save-copy/reopen paths, and POD/guitar target guards for exercised operations | Broader compatibility fixtures for remaining formats, models/effects, and library paths; backup/recovery semantics if those operations are implemented | Physical acceptance, audio equivalence, recovery capability, hardware traffic, and lock overrides are not claims or substitutes for offline criteria |
 
