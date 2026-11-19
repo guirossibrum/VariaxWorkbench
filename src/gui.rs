@@ -2276,7 +2276,7 @@ impl Workbench {
                         |pending| format!("{} · staged", pending.choice.label()),
                     );
                     ui.label("Recovered type-9 choice");
-                    let response = egui::ComboBox::from_id_salt((
+                    let _response = egui::ComboBox::from_id_salt((
                         "hd-type9-choice",
                         index,
                         self.hd_effect_slot,
@@ -2320,7 +2320,7 @@ impl Workbench {
                     });
                     #[cfg(test)]
                     self.pod_buttons
-                        .insert("hd-type9-choice-combo", response.response.rect);
+                        .insert("hd-type9-choice-combo", _response.response.rect);
                     ui.label("Choice labels are neutral. Imported unknown values are preserved until you choose an explicit value.");
                     if matches!(value, pod_preset::HdType9ChoiceValue::NonFinite(_)) {
                         ui.label("A non-finite imported value cannot be replaced by this editor operation.");
