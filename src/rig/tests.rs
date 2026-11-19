@@ -296,7 +296,7 @@ fn shared_session_replaces_one_octave_fuzz_with_source_defaults_and_reopens_copy
         original[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
         original[row_at + 4..row_at + 8]
             .copy_from_slice(&(0x3e80_0000u32 + row as u32).to_be_bytes());
-        original[row_at + 8..row_at + 16]
+        original[row_at + 8..row_at + 12]
             .copy_from_slice(&(0x7100_0000u32 + row as u32).to_be_bytes());
         original[row_at + 0x10] = (row % 3) as u8;
         original[row_at + 0x11..row_at + 0x14].copy_from_slice(&[
