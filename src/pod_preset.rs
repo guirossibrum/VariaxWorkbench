@@ -4499,12 +4499,12 @@ mod tests {
         );
         let pinf = find_chunk_data(&wrong_target, b"PINF");
         wrong_target[pinf + 4..pinf + 8].copy_from_slice(&0x0003_000bu32.to_be_bytes());
-        let mut tone = PodTone::parse(wrong_target.clone()).unwrap();
-        assert!(
-            tone.set_stomp_whammy_knob_position(StompWhammyKnob::Heel, 0.5)
-                .is_err()
-        );
-        assert_eq!(tone.as_bytes(), wrong_target);
+        assert!(matches!(
+            PodTone::parse(wrong_target),
+            Err(ToneError::WrongTarget {
+                device_id: 0x0003_000b
+            })
+        ));
 
         let wrong_slot = custom_tone(
             ContainerKind::L6as,
