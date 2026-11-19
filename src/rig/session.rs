@@ -270,12 +270,23 @@ impl Session {
         control: crate::pod_preset::ScreamerControl,
         percent: u8,
     ) -> Result<(), Rejection> {
+        self.set_hd_type1_control_percent(library, file, effect_slot, crate::pod_preset::HdType1Control::Screamer(control), percent)
+    }
+
+    pub fn set_hd_type1_control_percent(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: usize,
+        control: crate::pod_preset::HdType1Control,
+        percent: u8,
+    ) -> Result<(), Rejection> {
         let _ = self;
         let preset = match library.file_mut(file) {
             Some(crate::pod_preset::PodPresetFile::H5ep(preset)) => preset,
             Some(_) => {
                 return Err(Rejection::format(
-                    "Screamer controls require an H5EP preset",
+                    "HD type-1 controls require an H5EP preset",
                 ));
             }
             None => {
@@ -285,7 +296,7 @@ impl Session {
             }
         };
         preset
-            .set_screamer_control_percent(effect_slot, control, percent)
+            .set_hd_type1_control_percent(effect_slot, control, percent)
             .map_err(map_hd_library_error)
     }
 

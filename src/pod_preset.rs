@@ -56,10 +56,11 @@ const HD_EFFECT_ROWS_OFFSET: usize = 0x10;
 const HD_PARAMETER_ROW_STRIDE: usize = 0x14;
 const HD_PARAMETER_ROW_FLAG_OFFSET: usize = 0x10;
 const HD_PARAMETER_ROW_COUNT: usize = 12;
-const HD_SCREAMER_MODEL_ID: u32 = 0x0205_000d;
+const HD_SCREAMER_MODEL_ID: u32 = 0x0205_000e;
+const HD_TUBE_DRIVE_MODEL_ID: u32 = 0x0205_000d;
 const HD_SCREAMER_DRIVE_KEY: u32 = 0x3f10_0001;
 const HD_SCREAMER_BASS_KEY: u32 = 0x3f10_0002;
-const HD_SCREAMER_MID_KEY: u32 = 0x3f10_0003;
+const HD_SCREAMER_TONE_KEY: u32 = 0x3f10_0003;
 const HD_SCREAMER_TREBLE_KEY: u32 = 0x3f10_0004;
 const HD_SCREAMER_OUTPUT_KEY: u32 = 0x3f10_0005;
 
@@ -149,7 +150,7 @@ pub struct H5ebBundle {
 pub enum ScreamerControl {
     Drive,
     Bass,
-    Mid,
+    Tone,
     Treble,
     Output,
 }
@@ -158,10 +159,45 @@ impl ScreamerControl {
     pub const ALL: [Self; 5] = [
         Self::Drive,
         Self::Bass,
-        Self::Mid,
+        Self::Tone,
         Self::Treble,
         Self::Output,
     ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Drive => "DRIVE",
+            Self::Bass => "BASS",
+            Self::Tone => "TONE",
+            Self::Treble => "TREBLE",
+            Self::Output => "OUTPUT",
+        }
+    }
+
+    const fn key(self) -> u32 {
+        match self {
+            Self::Drive => HD_SCREAMER_DRIVE_KEY,
+            Self::Bass => HD_SCREAMER_BASS_KEY,
+            Self::Tone => HD_SCREAMER_TONE_KEY,
+            Self::Treble => HD_SCREAMER_TREBLE_KEY,
+            Self::Output => HD_SCREAMER_OUTPUT_KEY,
+        }
+    }
+}
+
+/// Tube Drive's type-1 controls share the recovered key family but are
+/// admitted only for the Tube Drive model descriptor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TubeDriveControl {
+    Drive,
+    Bass,
+    Mid,
+    Treble,
+    Output,
+}
+
+impl TubeDriveControl {
+    pub const ALL: [Self; 5] = [Self::Drive, Self::Bass, Self::Mid, Self::Treble, Self::Output];
 
     pub const fn label(self) -> &'static str {
         match self {
@@ -177,10 +213,42 @@ impl ScreamerControl {
         match self {
             Self::Drive => HD_SCREAMER_DRIVE_KEY,
             Self::Bass => HD_SCREAMER_BASS_KEY,
-            Self::Mid => HD_SCREAMER_MID_KEY,
+            Self::Mid => HD_SCREAMER_TONE_KEY,
             Self::Treble => HD_SCREAMER_TREBLE_KEY,
             Self::Output => HD_SCREAMER_OUTPUT_KEY,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HdType1Control {
+    Screamer(ScreamerControl),
+    TubeDrive(TubeDriveControl),
+}
+
+impl HdType1Control {
+    pub const ALL: [Self; 10] = [
+        Self::Screamer(ScreamerControl::Drive), Self::Screamer(ScreamerControl::Bass),
+        Self::Screamer(ScreamerControl::Tone), Self::Screamer(ScreamerControl::Treble),
+        Self::Screamer(ScreamerControl::Output), Self::TubeDrive(TubeDriveControl::Drive),
+        Self::TubeDrive(TubeDriveControl::Bass), Self::TubeDrive(TubeDriveControl::Mid),
+        Self::TubeDrive(TubeDriveControl::Treble), Self::TubeDrive(TubeDriveControl::Output),
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self { Self::Screamer(c) => c.label(), Self::TubeDrive(c) => c.label() }
+    }
+
+    const fn key(self) -> u32 {
+        match self { Self::Screamer(c) => c.key(), Self::TubeDrive(c) => c.key() }
+    }
+
+    pub const fn model_label(self) -> &'static str {
+        match self { Self::Screamer(_) => "Screamer", Self::TubeDrive(_) => "Tube Drive" }
+    }
+
+    pub const fn model_id(self) -> u32 {
+        match self { Self::Screamer(_) => HD_SCREAMER_MODEL_ID, Self::TubeDrive(_) => HD_TUBE_DRIVE_MODEL_ID }
     }
 }
 
@@ -290,9 +358,23 @@ impl OpaqueH5epPreset {
         effect_slot: usize,
         control: ScreamerControl,
     ) -> Option<u8> {
-        let value_at = self.screamer_control_value_offset(effect_slot, control)?;
+        self.hd_type1_control_percent(effect_slot, HdType1Control::Screamer(control))
+    }
+
+    pub fn hd_type1_control_percent(&self, effect_slot: usize, control: HdType1Control) -> Option<u8> {
+        let value_at = self.hd_type1_control_value_offset(effect_slot, control)?;
         let value = f32::from_bits(read_be_u32(self.body_bytes(), value_at)?);
         exact_drive_percent(value)
+    }
+
+    pub fn effect_model_id(&self, effect_slot: usize) -> Option<u32> {
+        if effect_slot >= HD_EFFECT_COUNT { return None; }
+        let block = HD_EFFECT_BLOCK_OFFSET + effect_slot * HD_EFFECT_BLOCK_STRIDE;
+        read_be_u32(self.body_bytes(), block)
+    }
+
+    pub fn tube_drive_control_percent(&self, effect_slot: usize, control: TubeDriveControl) -> Option<u8> {
+        self.hd_type1_control_percent(effect_slot, HdType1Control::TubeDrive(control))
     }
 
     /// Edits only the first statically identified Screamer DRIVE value word.
@@ -313,17 +395,26 @@ impl OpaqueH5epPreset {
         control: ScreamerControl,
         percent: u8,
     ) -> Result<(), ToneError> {
+        self.set_hd_type1_control_percent(effect_slot, HdType1Control::Screamer(control), percent)
+    }
+
+    pub fn set_tube_drive_control_percent(&mut self, effect_slot: usize, control: TubeDriveControl, percent: u8) -> Result<(), ToneError> {
+        self.set_hd_type1_control_percent(effect_slot, HdType1Control::TubeDrive(control), percent)
+    }
+
+    pub fn set_hd_type1_control_percent(&mut self, effect_slot: usize, control: HdType1Control, percent: u8) -> Result<(), ToneError> {
         if percent > 100 {
             return Err(ToneError::format(format!(
-                "Screamer {} must be in 0..=100",
+                "{} {} must be in 0..=100",
+                control.model_label(),
                 control.label()
             )));
         }
         let value_at = self
-            .screamer_control_value_offset(effect_slot, control)
+            .hd_type1_control_value_offset(effect_slot, control)
             .ok_or_else(|| {
                 ToneError::format(
-                    "Screamer control slot, key, or assignment state is not admitted for editing",
+                    "HD type-1 control slot, key, model, or assignment state is not admitted for editing",
                 )
             })?;
         let current = f32::from_bits(
@@ -332,7 +423,7 @@ impl OpaqueH5epPreset {
         );
         exact_drive_percent(current).ok_or_else(|| {
             ToneError::format(
-                "existing Screamer control value is outside the exact recovered editor encoding",
+                "existing HD control value is outside the exact recovered editor encoding",
             )
         })?;
         let file_at = H5EP_HEADER_BYTES + value_at;
@@ -350,17 +441,17 @@ impl OpaqueH5epPreset {
         document::save_new(path, &self.bytes).map_err(ToneError::format)
     }
 
-    fn screamer_control_value_offset(
+    fn hd_type1_control_value_offset(
         &self,
         effect_slot: usize,
-        control: ScreamerControl,
+        control: HdType1Control,
     ) -> Option<usize> {
         if effect_slot >= HD_EFFECT_COUNT {
             return None;
         }
         let body = self.body_bytes();
         let block = HD_EFFECT_BLOCK_OFFSET + effect_slot * HD_EFFECT_BLOCK_STRIDE;
-        if read_be_u32(body, block)? != HD_SCREAMER_MODEL_ID {
+        if read_be_u32(body, block)? != control.model_id() {
             return None;
         }
         for row in 0..HD_PARAMETER_ROW_COUNT {
@@ -1733,6 +1824,46 @@ mod tests {
             let mut expected = before;
             expected[value_at..value_at + 4].copy_from_slice(&0.73f32.to_bits().to_be_bytes());
             assert_eq!(preset.as_bytes(), expected);
+        }
+    }
+
+    #[test]
+    fn screamer_and_tube_drive_contracts_keep_model_and_third_control_distinct() {
+        for (model, controls, mid_label) in [
+            (HD_SCREAMER_MODEL_ID, HdType1Control::ALL[..5].to_vec(), "TONE"),
+            (HD_TUBE_DRIVE_MODEL_ID, HdType1Control::ALL[5..].to_vec(), "MID"),
+        ] {
+            let mut bytes = synthetic_h5ep(&[]);
+            let body = H5EP_HEADER_BYTES;
+            let block = HD_EFFECT_BLOCK_OFFSET;
+            bytes[body + block..body + block + 4].copy_from_slice(&model.to_be_bytes());
+            let first = body + block + HD_EFFECT_ROWS_OFFSET;
+            for (index, control) in controls.iter().copied().enumerate() {
+                let row = first + index * HD_PARAMETER_ROW_STRIDE;
+                bytes[row..row + 4].copy_from_slice(&control.key().to_be_bytes());
+                bytes[row + 4..row + 8].copy_from_slice(&0.25f32.to_bits().to_be_bytes());
+            }
+            let mut preset = OpaqueH5epPreset::parse(bytes.clone()).unwrap();
+            let third = controls[2];
+            assert_eq!(third.label(), mid_label);
+            assert_eq!(preset.hd_type1_control_percent(0, third), Some(25));
+            let before = preset.as_bytes().to_vec();
+            preset.set_hd_type1_control_percent(0, third, 61).unwrap();
+            assert_eq!(preset.hd_type1_control_percent(0, third), Some(61));
+            let mut expected = before;
+            let value = first + 2 * HD_PARAMETER_ROW_STRIDE + 4;
+            expected[value..value + 4].copy_from_slice(&0.61f32.to_bits().to_be_bytes());
+            assert_eq!(preset.as_bytes(), expected);
+
+            let wrong_model_control = if model == HD_SCREAMER_MODEL_ID {
+                HdType1Control::TubeDrive(TubeDriveControl::Mid)
+            } else {
+                HdType1Control::Screamer(ScreamerControl::Tone)
+            };
+            assert_eq!(preset.hd_type1_control_percent(0, wrong_model_control), None);
+            let unchanged = preset.as_bytes().to_vec();
+            assert!(preset.set_hd_type1_control_percent(0, wrong_model_control, 50).is_err());
+            assert_eq!(preset.as_bytes(), unchanged);
         }
     }
 

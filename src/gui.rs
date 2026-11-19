@@ -213,7 +213,7 @@ struct Workbench {
     pod_selected: Option<usize>,
     hd_selected: Option<usize>,
     hd_effect_slot: usize,
-    hd_screamer_control: pod_preset::ScreamerControl,
+    hd_control: pod_preset::HdType1Control,
     hd_control_percent: u8,
     hd_setlist_index: usize,
     hd_preset_index: usize,
@@ -289,7 +289,7 @@ impl Workbench {
             pod_selected: None,
             hd_selected: None,
             hd_effect_slot: 0,
-            hd_screamer_control: pod_preset::ScreamerControl::Drive,
+            hd_control: pod_preset::HdType1Control::Screamer(pod_preset::ScreamerControl::Drive),
             hd_control_percent: 0,
             hd_setlist_index: 0,
             hd_preset_index: 0,
@@ -1845,7 +1845,7 @@ impl Workbench {
     fn hd_editor_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("POD HD Edit files · offline");
         ui.label(pod_preset::HD_EDITOR_OFFLINE_NOTICE);
-        ui.label("Fixed H5EP/H5ES/H5EB framing and five source-traced Screamer controls are supported. A file tag does not prove physical target compatibility.");
+        ui.label("Fixed H5EP/H5ES/H5EB framing and source-traced type-1 controls for Screamer and Tube Drive are supported. A file tag does not prove physical target compatibility.");
         ui.label("No device, audio, firmware or driver operation is available here. Copy saves never replace an existing file.");
         if self.pod_button(ui, "load-hd-file", "Open HD Edit file…") {
             self.load_hd_editor_file();
@@ -1893,35 +1893,44 @@ impl Workbench {
                     .add(egui::Slider::new(&mut self.hd_effect_slot, 0..=7).text("Effect slot"))
                     .changed();
                 if slot_changed {
+                    if let Some(model_id) = preset.effect_model_id(self.hd_effect_slot) {
+                        if let Some(control) = pod_preset::HdType1Control::ALL
+                            .into_iter()
+                            .find(|control| control.model_id() == model_id)
+                        {
+                            self.hd_control = control;
+                        }
+                    }
                     self.hd_control_percent = preset
-                        .screamer_control_percent(self.hd_effect_slot, self.hd_screamer_control)
+                        .hd_type1_control_percent(self.hd_effect_slot, self.hd_control)
                         .unwrap_or(0);
                 }
                 egui::ComboBox::from_label("Recovered control")
-                    .selected_text(self.hd_screamer_control.label())
+                    .selected_text(format!("{} {}", self.hd_control.model_label(), self.hd_control.label()))
                     .show_ui(ui, |ui| {
-                        for control in pod_preset::ScreamerControl::ALL {
+                        for control in pod_preset::HdType1Control::ALL {
+                            if control.model_id() != preset.effect_model_id(self.hd_effect_slot).unwrap_or_default() { continue; }
                             if ui
                                 .selectable_value(
-                                    &mut self.hd_screamer_control,
+                                    &mut self.hd_control,
                                     control,
-                                    control.label(),
+                                    format!("{} {}", control.model_label(), control.label()),
                                 )
                                 .changed()
                             {
                                 self.hd_control_percent = preset
-                                    .screamer_control_percent(self.hd_effect_slot, control)
+                                    .hd_type1_control_percent(self.hd_effect_slot, control)
                                     .unwrap_or(0);
                             }
                         }
                     });
                 if preset
-                    .screamer_control_percent(self.hd_effect_slot, self.hd_screamer_control)
+                    .hd_type1_control_percent(self.hd_effect_slot, self.hd_control)
                     .is_some()
                 {
                     ui.add(
                         egui::Slider::new(&mut self.hd_control_percent, 0..=100)
-                            .text(format!("Screamer {}", self.hd_screamer_control.label())),
+                            .text(format!("{} {}", self.hd_control.model_label(), self.hd_control.label())),
                     );
                     if self.pod_button(ui, "apply-hd-drive", "Apply offline control") {
                         self.apply_hd_control(index);
@@ -1974,13 +1983,27 @@ impl Workbench {
     fn select_hd_file(&mut self, index: usize) {
         self.hd_selected = Some(index);
         self.hd_effect_slot = 0;
-        self.hd_screamer_control = pod_preset::ScreamerControl::Drive;
+        self.hd_control = self
+            .hd_library
+            .file(index)
+            .and_then(|file| match file {
+                PodPresetFile::H5ep(preset) => {
+                    let model = preset.effect_model_id(0)?;
+                    pod_preset::HdType1Control::ALL
+                        .into_iter()
+                        .find(|control| control.model_id() == model)
+                }
+                _ => None,
+            })
+            .unwrap_or(pod_preset::HdType1Control::Screamer(
+                pod_preset::ScreamerControl::Drive,
+            ));
         self.hd_control_percent = self
             .hd_library
             .file(index)
             .and_then(|file| match file {
                 PodPresetFile::H5ep(preset) => {
-                    preset.screamer_control_percent(0, self.hd_screamer_control)
+                    preset.hd_type1_control_percent(0, self.hd_control)
                 }
                 _ => None,
             })
@@ -1988,11 +2011,11 @@ impl Workbench {
     }
 
     fn apply_hd_control(&mut self, index: usize) {
-        let result = Session::initial_rig().set_hd_screamer_control_percent(
+        let result = Session::initial_rig().set_hd_type1_control_percent(
             &mut self.hd_library,
             index,
             self.hd_effect_slot,
-            self.hd_screamer_control,
+            self.hd_control,
             self.hd_control_percent,
         );
         match result {
@@ -3223,6 +3246,9 @@ mod tests {
         let bass_row = row + 0x14;
         body[bass_row..bass_row + 4].copy_from_slice(&0x3f10_0002u32.to_be_bytes());
         body[bass_row + 4..bass_row + 8].copy_from_slice(&0.25f32.to_bits().to_be_bytes());
+        let mid_row = bass_row + 0x14;
+        body[mid_row..mid_row + 4].copy_from_slice(&0x3f10_0003u32.to_be_bytes());
+        body[mid_row + 4..mid_row + 8].copy_from_slice(&0.35f32.to_bits().to_be_bytes());
         bytes
     }
 
@@ -3333,11 +3359,11 @@ mod tests {
         assert_eq!(app.hd_control_percent, 50);
         app.hd_control_percent = 75;
         app.apply_hd_control(0);
-        app.hd_screamer_control = pod_preset::ScreamerControl::Bass;
+        app.hd_control = pod_preset::HdType1Control::TubeDrive(pod_preset::TubeDriveControl::Mid);
         assert_eq!(
             app.hd_library.file(0).and_then(|file| match file {
                 PodPresetFile::H5ep(preset) =>
-                    preset.screamer_control_percent(0, pod_preset::ScreamerControl::Bass,),
+                    preset.tube_drive_control_percent(0, pod_preset::TubeDriveControl::Mid),
                 _ => None,
             }),
             Some(25)
@@ -3365,7 +3391,7 @@ mod tests {
             &0.75f32.to_bits().to_be_bytes()
         );
         assert_eq!(
-            &written[0x28 + 0x428 + 0x10 + 0x14 + 4..0x28 + 0x428 + 0x10 + 0x14 + 8],
+            &written[0x28 + 0x428 + 0x10 + 2 * 0x14 + 4..0x28 + 0x428 + 0x10 + 2 * 0x14 + 8],
             &0.4f32.to_bits().to_be_bytes()
         );
         assert!(app.read_worker.is_none());
