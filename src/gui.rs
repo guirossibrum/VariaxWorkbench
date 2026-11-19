@@ -1902,7 +1902,8 @@ impl Workbench {
                     }
                 }
                 let cab_state = self.pod_selected.and_then(|index| self.pod_library.tone(index).and_then(|tone| {
-                    (tone.container() == pod_preset::ContainerKind::L6as).then_some((index, tone.cab_model_id(), tone.cab_class(), tone.mic_choice()))
+                    (tone.container() == pod_preset::ContainerKind::L6as && tone.cab_model_id().is_some())
+                        .then_some((index, tone.cab_model_id(), tone.cab_class(), tone.mic_choice()))
                 }));
                 if let Some((index, cab_id, class, mic)) = cab_state {
                     let mut selected_cab = cab_id.and_then(pod_preset::PodCabModelChoice::from_model_id).unwrap_or_else(|| pod_preset::PodCabModelChoice::from_model_id(pod_preset::PODXT_CAB_MODEL_IDS[0]).expect("source CAB allowlist is nonempty"));
