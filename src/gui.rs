@@ -5826,6 +5826,7 @@ mod tests {
             "type-10 copy reopen",
         );
         app.select_hd_file(index);
+        app.hd_effect_slot = slot_index;
 
         click_hd_type10_choice(&context, &mut app, 0);
         hd_editor_frame(&context, &mut app, vec![]);
