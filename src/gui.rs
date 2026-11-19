@@ -249,6 +249,8 @@ struct Workbench {
     #[cfg(test)]
     pod_model_enable_checks: HashMap<pod_preset::PodModelEnable, Rect>,
     #[cfg(test)]
+    pod_model_enable_menu: Option<Rect>,
+    #[cfg(test)]
     pod_mod_sliders: HashMap<pod_preset::ModControl, Rect>,
     #[cfg(test)]
     pod_reverb_sliders: HashMap<pod_preset::ReverbControl, Rect>,
@@ -344,6 +346,8 @@ impl Workbench {
             pod_eq_gain_sliders: HashMap::new(),
             #[cfg(test)]
             pod_model_enable_checks: HashMap::new(),
+            #[cfg(test)]
+            pod_model_enable_menu: None,
             #[cfg(test)]
             pod_mod_sliders: HashMap::new(),
             #[cfg(test)]
@@ -1780,6 +1784,7 @@ impl Workbench {
             self.pod_eq_frequency_sliders.clear();
             self.pod_eq_gain_sliders.clear();
             self.pod_model_enable_checks.clear();
+            self.pod_model_enable_menu = None;
             self.pod_mod_sliders.clear();
             self.pod_reverb_sliders.clear();
             self.pod_delay_sliders.clear();
@@ -1812,6 +1817,15 @@ impl Workbench {
                     }
                     if self.pod_button(ui, "save-pod", "Save copy…") {
                         self.save_pod_tone();
+                    }
+                    if let Some(index) = self.pod_selected {
+                        let response = ui.menu_button("Model flags…", |ui| {
+                            self.model_enable_menu(ui, index);
+                        });
+                        #[cfg(test)]
+                        {
+                            self.pod_model_enable_menu = Some(response.response.rect);
+                        }
                     }
                 });
                 let rows: Vec<_> = (0..self.pod_library.len())
@@ -1895,75 +1909,6 @@ impl Workbench {
                                     )
                                 }
                                 Err(error) => self.pod_message = error.detail(),
-                            }
-                        }
-                    });
-                }
-                if let Some(index) = self.pod_selected {
-                    ui.horizontal_wrapped(|ui| {
-                        for control in [pod_preset::PodModelEnable::Amp, pod_preset::PodModelEnable::Eq] {
-                            let state = self
-                                .pod_library
-                                .tone(index)
-                                .ok_or_else(|| {
-                                    pod_preset::ToneError::format("POD selection is out of range")
-                                })
-                                .and_then(|tone| tone.model_enable_state(control));
-                            match state {
-                                Ok(pod_preset::ModelEnableState::Canonical(mut enabled)) => {
-                                    let label = match control {
-                                        pod_preset::PodModelEnable::Amp => {
-                                            "Amp enabled (stored flag)"
-                                        }
-                                        pod_preset::PodModelEnable::Eq => {
-                                            "EQ enabled (stored flag)"
-                                        }
-                                    };
-                                    let response = ui
-                                        .checkbox(&mut enabled, label)
-                                        .on_hover_text("Stored model flag only. No bypass, audio, or device effect is claimed.");
-                                    #[cfg(test)]
-                                    self.pod_model_enable_checks.insert(control, response.rect);
-                                    if response.changed() {
-                                        match self.edit_pod_tone(index, |tone| {
-                                            tone.set_model_enabled(control, enabled)
-                                        }) {
-                                            Ok(()) => {
-                                                self.pod_message = format!(
-                                                    "Applied {} stored enable flag. Nothing was sent.",
-                                                    match control {
-                                                        pod_preset::PodModelEnable::Amp => "Amp",
-                                                        pod_preset::PodModelEnable::Eq => "EQ",
-                                                    }
-                                                )
-                                            }
-                                            Err(error) => self.pod_message = error.detail(),
-                                        }
-                                    }
-                                }
-                                Ok(pod_preset::ModelEnableState::NonCanonical {
-                                    raw,
-                                    source_interpretation,
-                                }) => {
-                                    let label = match control {
-                                        pod_preset::PodModelEnable::Amp => "Amp",
-                                        pod_preset::PodModelEnable::Eq => "EQ",
-                                    };
-                                    ui.label(format!(
-                                        "{label} enable edit unavailable: MINF byte 0x{raw:02x} is noncanonical (Line6Edit reads it as {}). It is preserved unchanged.",
-                                        if source_interpretation { "enabled" } else { "disabled" }
-                                    ));
-                                }
-                                Err(error) => {
-                                    let label = match control {
-                                        pod_preset::PodModelEnable::Amp => "Amp",
-                                        pod_preset::PodModelEnable::Eq => "EQ",
-                                    };
-                                    ui.label(format!(
-                                        "{label} enable edit unavailable: {}",
-                                        error.detail()
-                                    ));
-                                }
                             }
                         }
                     });
@@ -2423,6 +2368,64 @@ impl Workbench {
         #[cfg(not(test))]
         let _ = id;
         response.clicked()
+    }
+
+    fn model_enable_menu(&mut self, ui: &mut egui::Ui, index: usize) {
+        ui.label("Stored model flags only; no bypass, audio, or device effect is claimed.");
+        for control in [pod_preset::PodModelEnable::Amp, pod_preset::PodModelEnable::Eq] {
+            let state = self
+                .pod_library
+                .tone(index)
+                .ok_or_else(|| pod_preset::ToneError::format("POD selection is out of range"))
+                .and_then(|tone| tone.model_enable_state(control));
+            match state {
+                Ok(pod_preset::ModelEnableState::Canonical(mut enabled)) => {
+                    let label = match control {
+                        pod_preset::PodModelEnable::Amp => "Amp enabled (stored flag)",
+                        pod_preset::PodModelEnable::Eq => "EQ enabled (stored flag)",
+                    };
+                    let response = ui.checkbox(&mut enabled, label);
+                    #[cfg(test)]
+                    self.pod_model_enable_checks.insert(control, response.rect);
+                    if response.changed() {
+                        match self.edit_pod_tone(index, |tone| {
+                            tone.set_model_enabled(control, enabled)
+                        }) {
+                            Ok(()) => {
+                                self.pod_message = format!(
+                                    "Applied {} stored enable flag. Nothing was sent.",
+                                    match control {
+                                        pod_preset::PodModelEnable::Amp => "Amp",
+                                        pod_preset::PodModelEnable::Eq => "EQ",
+                                    }
+                                )
+                            }
+                            Err(error) => self.pod_message = error.detail(),
+                        }
+                    }
+                }
+                Ok(pod_preset::ModelEnableState::NonCanonical {
+                    raw,
+                    source_interpretation,
+                }) => {
+                    let label = match control {
+                        pod_preset::PodModelEnable::Amp => "Amp",
+                        pod_preset::PodModelEnable::Eq => "EQ",
+                    };
+                    ui.label(format!(
+                        "{label} edit unavailable: MINF byte 0x{raw:02x} is noncanonical (Line6Edit reads it as {}). Preserved unchanged.",
+                        if source_interpretation { "enabled" } else { "disabled" }
+                    ));
+                }
+                Err(error) => {
+                    let label = match control {
+                        pod_preset::PodModelEnable::Amp => "Amp",
+                        pod_preset::PodModelEnable::Eq => "EQ",
+                    };
+                    ui.label(format!("{label} edit unavailable: {}", error.detail()));
+                }
+            }
+        }
     }
 
     fn edit_pod_tone(
@@ -3673,6 +3676,35 @@ mod tests {
         );
     }
 
+    fn open_pod_model_enable_menu(context: &egui::Context, app: &mut Workbench) {
+        recording_frame(context, app, vec![]);
+        let pos = app.pod_model_enable_menu.unwrap().center();
+        recording_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+        recording_frame(context, app, vec![]);
+    }
+
     fn sample_pod_tone() -> Vec<u8> {
         fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
             let mut output = id.to_vec();
@@ -3872,6 +3904,7 @@ mod tests {
         app.pod_selected = Some(0);
         app.pod_open = true;
         recording_frame(&context, &mut app, vec![]);
+        open_pod_model_enable_menu(&context, &mut app);
         assert!(
             app.pod_model_enable_checks
                 .contains_key(&pod_preset::PodModelEnable::Amp)
@@ -3912,6 +3945,7 @@ mod tests {
         app.pod_library.import_bytes(noncanonical.clone()).unwrap();
         app.pod_selected = Some(0);
         recording_frame(&context, &mut app, vec![]);
+        open_pod_model_enable_menu(&context, &mut app);
         assert!(
             !app.pod_model_enable_checks
                 .contains_key(&pod_preset::PodModelEnable::Amp)
@@ -3924,6 +3958,7 @@ mod tests {
             .unwrap();
         app.pod_open = true;
         recording_frame(&context, &mut app, vec![]);
+        open_pod_model_enable_menu(&context, &mut app);
         assert!(
             app.pod_model_enable_checks
                 .contains_key(&pod_preset::PodModelEnable::Eq)
