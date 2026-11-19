@@ -3743,6 +3743,28 @@ mod tests {
         chunk(b"FORM", &data)
     }
 
+    fn sample_pod_eq_tone_with_words(frequency: u32, gain: u32) -> Vec<u8> {
+        let mut bytes = sample_pod_eq_tone();
+        let marker = 0x3f00_0000u32.to_be_bytes();
+        let mut offset = 0;
+        let mut parameter = 0;
+        while let Some(found) = bytes[offset..]
+            .windows(4)
+            .position(|window| window == marker)
+        {
+            let value_offset = offset + found;
+            let value = if parameter % 2 == 0 { frequency } else { gain };
+            bytes[value_offset..value_offset + 4].copy_from_slice(&value.to_be_bytes());
+            offset = value_offset + 4;
+            parameter += 1;
+            if parameter == 8 {
+                break;
+            }
+        }
+        assert_eq!(parameter, 8);
+        bytes
+    }
+
     fn sample_stomp_wave_pod_tone() -> Vec<u8> {
         sample_stomp_wave_pod_tone_with_bits(0x3f00_0000)
     }
@@ -4008,7 +4030,42 @@ mod tests {
         recording_frame(context, app, vec![]);
         let rect = app.pod_eq_frequency_sliders[&band];
         let start = Pos2::new(rect.left() + rect.width() * 0.35, rect.center().y);
-        let end = Pos2::new(rect.left() + rect.width() * 0.73, rect.center().y);
+        let end = Pos2::new(rect.left() + rect.width() * 0.17, rect.center().y);
+        recording_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame(context, app, vec![egui::Event::PointerMoved(end)]);
+        recording_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
+    fn drag_pod_eq_gain_slider(
+        context: &egui::Context,
+        app: &mut Workbench,
+        band: pod_preset::PodxtEqBand,
+    ) {
+        recording_frame(context, app, vec![]);
+        let rect = app.pod_eq_gain_sliders[&band];
+        let start = Pos2::new(rect.left() + rect.width() * 0.35, rect.center().y);
+        let end = Pos2::new(rect.left() + rect.width() * 0.17, rect.center().y);
         recording_frame(
             context,
             app,
@@ -4288,6 +4345,51 @@ mod tests {
         assert!(!app.pod_library.any_dirty());
         assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), saved);
         assert!(app.read_worker.is_none());
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn podxt_eq_gui_edits_preserve_maximum_frequency_and_gain_on_render() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("eq-endpoints.l6t");
+        let original = sample_pod_eq_tone_with_words(0x3f80_0000, 0x3f80_0000);
+        std::fs::write(&source, &original).unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(source)].into(),
+            ..Default::default()
+        });
+        app.pod_open = true;
+        app.load_pod_tone();
+        recording_frame(&context, &mut app, vec![]);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert!(!app.pod_library.is_dirty(0));
+        let band = pod_preset::PodxtEqBand::One;
+        drag_pod_eq_gain_slider(&context, &mut app, band);
+        let (frequency, _) = app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .podxt_eq_band_raw_values(band)
+            .unwrap();
+        assert_eq!(frequency.to_bits(), 0x3f80_0000);
+        assert!(app.pod_library.is_dirty(0));
+        app.pod_library.revert_unsaved(0).unwrap();
+        recording_frame(&context, &mut app, vec![]);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert!(!app.pod_library.is_dirty(0));
+        drag_pod_eq_frequency_slider(&context, &mut app, band);
+        let (_, gain) = app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .podxt_eq_band_raw_values(band)
+            .unwrap();
+        assert_eq!(gain.to_bits(), 0x3f80_0000);
+        assert!(app.pod_library.is_dirty(0));
         const {
             assert!(LIVE_ACCESS_LOCKED);
         }

@@ -155,8 +155,9 @@ The admitted Line6Edit 3.06 trace and synthetic Rust coverage establish
 Delay `HEADS` on `0x02020005`, `BITS` on `0x0202000D`, Stomp `SYNWAVE` on
 exactly eight models, and normalized Stomp `WHAMMY_INTERVAL` Heel/Toe positions
 on `0x020a000e` as editable offline controls under the restrictions above.
-Other Delay association layouts, EQ model/slot selection and parameter definitions, amp enable/model
-replacement, and cab/mic selection remain unresolved. Names, selector ordinals,
+Other Delay association layouts, EQ enable/reset/send, EQ model creation or
+replacement, unsupported EQ definition paths, amp enable/model replacement, and
+cab/mic selection remain unresolved. Names, selector ordinals,
 a shared AX3 id, or a generic float definition do not by themselves establish
 the PODxt association, stored type, domain, unit, side effects, error behavior,
 or preservation rules.

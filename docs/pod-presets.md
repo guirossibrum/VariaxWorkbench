@@ -163,7 +163,9 @@ The first choice is negative; discrete selection does not use the percent
 formatter or clamp to the nominal `0..=1` definition. The percent definitions
 use finite host-scale floats `0..=1`; their labels do not establish physical
 units. Rust applies target/version/prefix/type/range checks and a four-byte raw
-patch to those percent controls. EQ and cab controls remain unavailable.
+patch to those percent controls. The bounded four-band EQ frequency/gain graph
+edit is available for existing canonical records. EQ enable/reset/send, model
+creation or replacement, and cab controls remain unavailable.
 This allowlist does not establish installed-pack entitlement, device
 acceptance or physical behavior.
 

@@ -1687,12 +1687,26 @@ impl PodTone {
             ));
         }
         let table = &PODXT_EQ_FREQUENCY_TABLES[band.index()];
-        let key = (frequency * 127.0 + 0.5) as i32;
-        let point = (key >> 4).clamp(0, 7) as usize;
-        let fraction = (key & 0x0f) as f64 / 16.0;
-        let frequency_hz = (table[point] + (table[point + 1] - table[point]) * fraction) as f32;
+        // Line6Edit promotes the stored float to double before forming the
+        // 127-step controller key, then handles both endpoints explicitly.
+        let key = (f64::from(frequency) * 127.0 + 0.5) as i32;
+        let frequency_hz = if key <= 0 {
+            table[0]
+        } else if key >= 127 {
+            table[8]
+        } else {
+            let point = (key >> 4) as usize;
+            let fraction = (key & 0x0f) as f64 / 16.0;
+            table[point] + (table[point + 1] - table[point]) * fraction
+        } as f32;
         let width = PODXT_EQ_GAIN_MAX - PODXT_EQ_GAIN_MIN;
-        let gain_db = (PODXT_EQ_GAIN_MIN as f64 + gain as f64 * width as f64) as f32;
+        let gain_db = if gain <= 0.0 {
+            PODXT_EQ_GAIN_MIN
+        } else if gain >= 1.0 {
+            PODXT_EQ_GAIN_MAX
+        } else {
+            (f64::from(gain) * f64::from(width) + f64::from(PODXT_EQ_GAIN_MIN)) as f32
+        };
         Ok((frequency_hz, gain_db))
     }
 
@@ -3581,6 +3595,143 @@ mod tests {
                             .unwrap()
                     ),
                     0x3f80_0000
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn podxt_eq_display_matches_source_endpoints_and_double_key_boundaries() {
+        let bands = PodxtEqBand::ALL;
+        let first = [0x4248_0000, 0x4248_0000, 0x42c8_0000, 0x43fa_0000];
+        let last = [0x442c_8000, 0x45bd_1000, 0x4630_9000, 0x4611_5000];
+        let boundary_cases = [
+            (
+                [0x3b81_0203, 0x3b81_0204, 0x3b81_0205],
+                [
+                    [0x4248_0000, 0x4248_0000, 0x425c_0000],
+                    [0x4248_0000, 0x4248_0000, 0x425c_0000],
+                    [0x42c8_0000, 0x42c8_0000, 0x4316_0000],
+                    [0x43fa_0000, 0x43fa_0000, 0x4403_4000],
+                ],
+            ),
+            (
+                [0x3df9_f3e7, 0x3df9_f3e8, 0x3df9_f3e9],
+                [
+                    [0x42fa_0000, 0x4302_0000, 0x4302_0000],
+                    [0x42fa_0000, 0x4302_0000, 0x4302_0000],
+                    [0x4454_8000, 0x4461_0000, 0x4461_0000],
+                    [0x445a_c000, 0x4461_0000, 0x4461_0000],
+                ],
+            ),
+            (
+                [0x3f7e_fdfb, 0x3f7e_fdfc, 0x3f7e_fdfd],
+                [
+                    [0x442a_0000, 0x442c_8000, 0x442c_8000],
+                    [0x45b6_d000, 0x45bd_1000, 0x45bd_1000],
+                    [0x462d_7000, 0x4630_9000, 0x4630_9000],
+                    [0x460e_3000, 0x4611_5000, 0x4611_5000],
+                ],
+            ),
+        ];
+        for (band_index, band) in bands.into_iter().enumerate() {
+            for (raw, expected) in [
+                (0u32, first[band_index]),
+                (0x3f80_0000, last[band_index]),
+                (0x3b81_0204, first[band_index]),
+            ] {
+                let refs: Vec<_> = (0..8)
+                    .map(|i| {
+                        drive_record(0x3f, 0x0010_0000 + i, 1, if i % 2 == 0 { raw } else { 0 })
+                    })
+                    .collect();
+                let refs: Vec<_> = refs.iter().map(|v| &v[..]).collect();
+                let tone = PodTone::parse(eq_tone(
+                    PODXT_LIVE_HOST_MIN_VERSION,
+                    PODXT_EQ_MODEL_ID,
+                    PODXT_EQ_SLOT,
+                    &refs,
+                ))
+                .unwrap();
+                let (frequency, _) = tone.podxt_eq_band_display_values(band).unwrap();
+                assert_eq!(
+                    frequency.to_bits(),
+                    expected,
+                    "band {band_index}, raw {raw:#010x}"
+                );
+            }
+            for (raws, by_band) in boundary_cases {
+                for (raw, expected) in raws.into_iter().zip(by_band[band_index]) {
+                    let refs: Vec<_> = (0..8)
+                        .map(|i| {
+                            drive_record(0x3f, 0x0010_0000 + i, 1, if i % 2 == 0 { raw } else { 0 })
+                        })
+                        .collect();
+                    let refs: Vec<_> = refs.iter().map(|v| &v[..]).collect();
+                    let tone = PodTone::parse(eq_tone(
+                        PODXT_LIVE_HOST_MIN_VERSION,
+                        PODXT_EQ_MODEL_ID,
+                        PODXT_EQ_SLOT,
+                        &refs,
+                    ))
+                    .unwrap();
+                    let (frequency, _) = tone.podxt_eq_band_display_values(band).unwrap();
+                    assert_eq!(
+                        frequency.to_bits(),
+                        expected,
+                        "band {band_index}, boundary raw {raw:#010x}"
+                    );
+                }
+            }
+            let refs: Vec<_> = (0..8)
+                .map(|i| drive_record(0x3f, 0x0010_0000 + i, 1, 0x3f80_0000))
+                .collect();
+            let refs: Vec<_> = refs.iter().map(|v| &v[..]).collect();
+            let mut tone = PodTone::parse(eq_tone(
+                PODXT_LIVE_HOST_MIN_VERSION,
+                PODXT_EQ_MODEL_ID,
+                PODXT_EQ_SLOT,
+                &refs,
+            ))
+            .unwrap();
+            let (_, gain) = tone.podxt_eq_band_display_values(band).unwrap();
+            assert_eq!(gain.to_bits(), 0x4149_999a);
+            tone.set_podxt_eq_band(band, f32::from_bits(last[band_index]), gain)
+                .unwrap();
+            let (frequency_word, gain_word) = tone.podxt_eq_band_raw_values(band).unwrap();
+            assert_eq!(frequency_word.to_bits(), 0x3f80_0000);
+            assert_eq!(gain_word.to_bits(), 0x3f80_0000);
+
+            for (raw_gain, expected) in [
+                (0u32, 0xc14c_cccd),
+                (1, 0xc14c_cccd),
+                (0x3f7f_fffe, 0x4149_9998),
+                (0x3f7f_ffff, 0x4149_9999),
+                (0x3f80_0000, 0x4149_999a),
+            ] {
+                let refs: Vec<_> = (0..8)
+                    .map(|i| {
+                        drive_record(
+                            0x3f,
+                            0x0010_0000 + i,
+                            1,
+                            if i % 2 == 0 { 0x3f80_0000 } else { raw_gain },
+                        )
+                    })
+                    .collect();
+                let refs: Vec<_> = refs.iter().map(|v| &v[..]).collect();
+                let tone = PodTone::parse(eq_tone(
+                    PODXT_LIVE_HOST_MIN_VERSION,
+                    PODXT_EQ_MODEL_ID,
+                    PODXT_EQ_SLOT,
+                    &refs,
+                ))
+                .unwrap();
+                let (_, displayed) = tone.podxt_eq_band_display_values(band).unwrap();
+                assert_eq!(
+                    displayed.to_bits(),
+                    expected,
+                    "band {band_index}, gain raw {raw_gain:#010x}"
                 );
             }
         }
