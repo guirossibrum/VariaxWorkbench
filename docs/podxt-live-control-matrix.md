@@ -81,14 +81,15 @@ with synthetic data, not a native vendor save/reopen oracle.
 | --- | --- | --- |
 | Amp-model catalog outside the six shared controls | The 106 source-listed amp models are admitted for edits only when a matching canonical existing PARM is present; No Amp is rejected. Model selection/replacement remains unimplemented. | Source-defined model-selection association behavior, optional-pack transaction rules and model-specific defaults/side effects. Catalog membership does not prove installed entitlement or that a field is present in every model. |
 | Cab models and microphone selection | Model IDs may be displayed; no numeric edit is exposed | Target-specific cab/mic definition, associated parameter ID/type/domain, model-dependent mapping, and exact preservation behavior. |
-| Non-scalar Stomp controls; modulation, delay, reverb and EQ models | All 31 Stomp layouts have source-mapped percent fields where those exact fields exist; association-format SYNWAVE and special WHAMMY_INTERVAL Heel/Toe controls remain raw. Other effect categories expose no numeric editing. | For the omitted Stomp fields, a compatible percent contract for the exact association/interval formats; for other effect categories, exact target-specific model-to-slot and parameter mapping, representation, domain/units/scaling/steps, callbacks and failure behavior. Shared AX3 names or ids alone are insufficient. |
+| Non-scalar Stomp controls; Mod, delay, reverb and EQ models | All 31 Stomp layouts expose 86 source-mapped percent fields; the 24 Mod layouts expose 52 model-specific percent fields. Stomp SYNWAVE association and WHAMMY_INTERVAL Heel/Toe controls remain raw. Delay, reverb and EQ numeric editing remains unavailable. | For omitted Stomp fields, a compatible percent contract for the exact association/interval formats; for delay, reverb and EQ, exact target-specific model-to-slot and parameter mapping, representation, domain/units/scaling/steps, callbacks and failure behavior. Shared AX3 names or ids alone are insufficient. |
 | Amp enable, setup slots and model replacement | No numeric/model replacement API | Boolean/association contract, optional-pack policy, replacement side effects and transaction/failure semantics. `CheckCanWritePatch`'s installed-pack check is not an edit-domain or serializer contract. |
 | Tone setup, bank/collection organization and POD Farm interchange | Tone-file list/name workflow only; no bank/collection editor or POD Farm conversion | Concrete container schema, target/version gate, exact serializer, unknown-record retention and safe-copy workflow. The negative POD Farm 1.12 receiver result is scoped to that package; see [its historical investigation](pod-farm-112-target-applicability.md). |
 | Send, switch, firmware, backup, audio and maintenance operations | Disabled or unimplemented | Separate future requirements and explicit authorization. No such live operation follows from the offline contracts here. |
 
 The current Rust implementation covers six shared amp controls across 106
-source-listed amp models (excluding No Amp) and 86 source-mapped Stomp percent
-controls across all 31 provider layouts. Other
+source-listed amp models (excluding No Amp), 86 source-mapped Stomp percent
+controls across all 31 provider layouts, and 52 source-mapped Mod percent
+controls across all 24 provider layouts. Other
 controls and workflows remain rejected or unimplemented until their own source
 contract and synthetic compatibility tests are admitted. This matrix is not an
 issue-acceptance claim. The broader criteria for formats/models/effects,

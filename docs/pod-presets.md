@@ -107,9 +107,17 @@ WHAMMY_INTERVAL Heel/Toe values are not percent controls and remain unavailable.
 All exposed definitions use finite host-scale floats `0..=1` with the percent
 formatter; the source labels do not establish physical units. Rust applies the
 same target/version/prefix/type/range checks and four-byte raw patch as the amp
-controls. Modulation, delay, reverb, EQ and cab controls remain unavailable.
+controls. Delay, reverb, EQ and cab controls remain unavailable.
 This allowlist does not establish installed-pack entitlement, device
 acceptance or physical behavior.
+
+The provider also maps 52 percent controls across its 24 Mod layouts in slot
+`0x00020004`: Depth, Bass, Treble, Feedback, Manual, Pre-delay, Wave, Tone, Q,
+Frequency, Flutter, and Distortion, only at the model-specific positions in
+`SetupModLayouts`. These selected `FXParams` definitions are finite `0..=1`
+floats using the percent formatter. Rust requires the matching existing model
+and PARM record and edits only its four value bytes. The percent labels do not
+assert physical units or device acceptance.
 
 An applied name is unsaved until that tone's copy is written. Quitting asks
 to save, discard, or keep editing, one tone at a time. Cancel, or a save that

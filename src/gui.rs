@@ -233,6 +233,8 @@ struct Workbench {
     #[cfg(test)]
     pod_stomp_sliders: HashMap<pod_preset::StompControl, Rect>,
     #[cfg(test)]
+    pod_mod_sliders: HashMap<pod_preset::ModControl, Rect>,
+    #[cfg(test)]
     pod_visible: String,
     read_receiver:
         Option<std::sync::mpsc::Receiver<Result<variax_workbench::usb::CurrentPreset, String>>>,
@@ -307,6 +309,8 @@ impl Workbench {
             pod_drive_slider: None,
             #[cfg(test)]
             pod_stomp_sliders: HashMap::new(),
+            #[cfg(test)]
+            pod_mod_sliders: HashMap::new(),
             #[cfg(test)]
             pod_visible: String::new(),
             read_receiver: None,
@@ -1656,6 +1660,7 @@ impl Workbench {
             self.pod_rows.clear();
             self.pod_drive_slider = None;
             self.pod_stomp_sliders.clear();
+            self.pod_mod_sliders.clear();
         }
         let mut open = true;
         egui::Window::new("Offline PODxt Live tones")
@@ -1796,6 +1801,51 @@ impl Workbench {
                                 Ok(()) => {
                                     self.pod_message = format!(
                                         "Applied Stomp {} host-scale value {value}. Nothing was sent.",
+                                        control.label()
+                                    )
+                                }
+                                Err(error) => self.pod_message = error.detail(),
+                            }
+                        }
+                    });
+                }
+                let mod_controls = self
+                    .pod_selected
+                    .and_then(|index| self.pod_library.tone(index))
+                    .map(|tone| {
+                        pod_preset::ModControl::ALL
+                            .into_iter()
+                            .filter_map(|control| {
+                                tone.mod_control_fraction(control)
+                                    .ok()
+                                    .map(|value| (control, value))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if !mod_controls.is_empty() {
+                    ui.small(pod_preset::MOD_CONTROL_SCALE_LABEL);
+                }
+                for (control, mut value) in mod_controls {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Mod {}", control.label()));
+                        let response = ui
+                            .add(egui::Slider::new(&mut value, 0.0..=1.0).show_value(true))
+                            .on_hover_text(pod_preset::MOD_CONTROL_SCALE_LABEL);
+                        #[cfg(test)]
+                        {
+                            self.pod_mod_sliders.insert(control, response.rect);
+                        }
+                        if response.changed()
+                            && let Some(index) = self.pod_selected
+                        {
+                            match self
+                                .pod_library
+                                .set_mod_control_fraction(index, control, value)
+                            {
+                                Ok(()) => {
+                                    self.pod_message = format!(
+                                        "Applied Mod {} host-scale value {value}. Nothing was sent.",
                                         control.label()
                                     )
                                 }
@@ -3011,6 +3061,15 @@ mod tests {
                 parameter(pod_preset::STOMP_TONE_PARAM, 0.75),
             ],
         ));
+        patch.extend(model(
+            pod_preset::MOD_SLOT,
+            pod_preset::MOD_CONTROL_MODEL_IDS[0],
+            &[
+                parameter(0x0010_0001, 0.2),
+                parameter(0x0010_0002, 0.4),
+                parameter(0x0010_0003, 0.6),
+            ],
+        ));
         let mut data = b"L6AS".to_vec();
         data.extend(chunk(b"ODD!", &[0x17, 0x28, 0x39]));
         data.extend(chunk(b"PINF", &info));
@@ -3082,6 +3141,41 @@ mod tests {
     ) {
         recording_frame(context, app, vec![]);
         let rect = app.pod_stomp_sliders[&control];
+        let start = Pos2::new(rect.left() + rect.width() * 0.35, rect.center().y);
+        let end = Pos2::new(rect.left() + rect.width() * 0.73, rect.center().y);
+        recording_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame(context, app, vec![egui::Event::PointerMoved(end)]);
+        recording_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
+    fn drag_pod_mod_slider(
+        context: &egui::Context,
+        app: &mut Workbench,
+        control: pod_preset::ModControl,
+    ) {
+        recording_frame(context, app, vec![]);
+        let rect = app.pod_mod_sliders[&control];
         let start = Pos2::new(rect.left() + rect.width() * 0.35, rect.center().y);
         let end = Pos2::new(rect.left() + rect.width() * 0.73, rect.center().y);
         recording_frame(
@@ -3367,7 +3461,7 @@ mod tests {
     }
 
     #[test]
-    fn amp_and_stomp_drive_sliders_edit_selected_tone_and_quit_guard_keeps_or_saves_it() {
+    fn amp_stomp_and_mod_sliders_edit_selected_tone_and_quit_guard_keeps_or_saves_it() {
         let (context, mut app) = app();
         context.style_mut(|style| {
             style.animation_time = 0.0;
@@ -3418,6 +3512,7 @@ mod tests {
             pod_preset::StompControl::Tone,
         ];
         assert_eq!(app.pod_stomp_sliders.len(), stomp_controls.len());
+        assert_eq!(app.pod_mod_sliders.len(), 3);
         let original_drive = app
             .pod_library
             .tone(0)
@@ -3438,6 +3533,7 @@ mod tests {
         for control in stomp_controls {
             drag_pod_stomp_slider(&context, &mut app, control);
         }
+        drag_pod_mod_slider(&context, &mut app, pod_preset::ModControl::Depth);
         let edited_drive = app
             .pod_library
             .tone(0)
@@ -3460,6 +3556,14 @@ mod tests {
             assert_ne!(edited.to_bits(), original.to_bits());
             assert!((0.0..=1.0).contains(edited));
         }
+        let edited_mod = app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .mod_control_fraction(pod_preset::ModControl::Depth)
+            .unwrap();
+        assert!((0.0..=1.0).contains(&edited_mod));
+        assert_ne!(edited_mod.to_bits(), 0.2f32.to_bits());
         assert!(app.pod_library.is_dirty(0));
         assert!(!app.pod_library.is_dirty(1));
         assert_eq!(
@@ -3521,6 +3625,13 @@ mod tests {
                 edited.to_bits()
             );
         }
+        assert_eq!(
+            reopened
+                .mod_control_fraction(pod_preset::ModControl::Depth)
+                .unwrap()
+                .to_bits(),
+            edited_mod.to_bits()
+        );
         assert_eq!(
             app.pod_library.tone(1).unwrap().as_bytes(),
             unavailable_bytes

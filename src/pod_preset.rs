@@ -160,6 +160,35 @@ pub const AMP_CONTROL_MODEL_IDS: [u32; 106] = [
 ];
 /// PODxt Live stomp model slot from `GetStompModel`.
 pub const STOMP_SLOT: u32 = 0x0002_0003;
+/// PODxt Live modulation model slot from `GetModModel`.
+pub const MOD_SLOT: u32 = 0x0002_0004;
+/// PODxt Live Mod models listed by `GetModModelList`, in provider order.
+pub const MOD_CONTROL_MODEL_IDS: [u32; 24] = [
+    0x0203_0004,
+    0x0203_0005,
+    0x0203_0006,
+    0x0203_0007,
+    0x0203_0008,
+    0x0203_0009,
+    0x0203_000a,
+    0x0203_000b,
+    0x0203_000c,
+    0x0203_000d,
+    0x0203_000e,
+    0x0203_0015,
+    0x0203_0012,
+    0x0203_001e,
+    0x0203_0014,
+    0x0203_001f,
+    0x0203_0013,
+    0x0203_0011,
+    0x0203_001a,
+    0x0203_001b,
+    0x0203_0017,
+    0x0203_0018,
+    0x0203_0019,
+    0x0203_001c,
+];
 /// Facial Fuzz, the first model with the source-mapped Stomp control layout.
 pub const STOMP_DRIVE_MODEL_ID: u32 = 0x0205_0000;
 /// PODxt Live Stomp models with source-mapped percent control layouts.
@@ -220,6 +249,7 @@ pub const NOT_SENT: &str = "Nothing is sent to a device. No preset is switched."
 pub const PAYLOADS_NOT_DECODED: &str = "Known asset names and 12-byte parameter records are shown. Six shared amp controls on 106 source-listed models and 86 mapped Stomp percent controls across 31 layouts have host-scale editors; non-scalar and other parameter formats remain raw. Unknown ids stay raw.";
 pub const AMP_CONTROL_SCALE_LABEL: &str = "Line6Edit host scale 0–1 (not device-validated)";
 pub const STOMP_CONTROL_SCALE_LABEL: &str = "Line6Edit Stomp host scale 0–1 (not device-validated)";
+pub const MOD_CONTROL_SCALE_LABEL: &str = "Line6Edit Mod host scale 0–1 (not device-validated)";
 
 /// PODxt Live amp controls with an admitted Line6Edit host scale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -478,6 +508,133 @@ impl StompControl {
             Self::S1Ogt => "-1OCTG",
             Self::S2Ogt => "-2OCTG",
             Self::Position => "Position",
+        }
+    }
+}
+
+/// Source-mapped finite percent controls from PODxt Mod layouts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ModControl {
+    Depth,
+    Bass,
+    Treble,
+    Feedback,
+    Manual,
+    Predelay,
+    Wave,
+    Tone,
+    Q,
+    Frequency,
+    Flutter,
+    Distortion,
+}
+
+impl ModControl {
+    pub const ALL: [Self; 12] = [
+        Self::Depth,
+        Self::Bass,
+        Self::Treble,
+        Self::Feedback,
+        Self::Manual,
+        Self::Predelay,
+        Self::Wave,
+        Self::Tone,
+        Self::Q,
+        Self::Frequency,
+        Self::Flutter,
+        Self::Distortion,
+    ];
+
+    pub const fn selector_id(self, model_id: u32) -> Option<u32> {
+        match self.position(model_id) {
+            Some(position) => Some(0x0004_0002 + position),
+            None => None,
+        }
+    }
+
+    pub const fn param_id(self, model_id: u32) -> Option<u32> {
+        match self.position(model_id) {
+            Some(position) => Some(0x0010_0000 + position),
+            None => None,
+        }
+    }
+
+    const fn position(self, model_id: u32) -> Option<u32> {
+        match model_id {
+            0x0203_0004 | 0x0203_0005 | 0x0203_0015 | 0x0203_0014 | 0x0203_0011 => match self {
+                Self::Depth => Some(1),
+                Self::Bass => Some(2),
+                Self::Treble => Some(3),
+                _ => None,
+            },
+            0x0203_0006 | 0x0203_0009 => match self {
+                Self::Depth => Some(1),
+                _ => None,
+            },
+            0x0203_0007 => match self {
+                Self::Depth => Some(1),
+                Self::Feedback => Some(2),
+                Self::Manual => Some(3),
+                _ => None,
+            },
+            0x0203_0008 => match self {
+                Self::Feedback => Some(1),
+                _ => None,
+            },
+            0x0203_000a | 0x0203_000b | 0x0203_000e => match self {
+                Self::Wave => Some(1),
+                _ => None,
+            },
+            0x0203_000c | 0x0203_000d => match self {
+                Self::Tone => Some(2),
+                _ => None,
+            },
+            0x0203_0012 | 0x0203_001e | 0x0203_001f | 0x0203_0013 => match self {
+                Self::Depth => Some(1),
+                Self::Predelay => Some(2),
+                Self::Feedback => Some(3),
+                _ => None,
+            },
+            0x0203_001a | 0x0203_0018 | 0x0203_001c => match self {
+                Self::Depth => Some(1),
+                Self::Q => Some(2),
+                _ => None,
+            },
+            0x0203_001b => match self {
+                Self::Depth => Some(1),
+                Self::Q => Some(2),
+                Self::Frequency => Some(3),
+                _ => None,
+            },
+            0x0203_0017 => match self {
+                Self::Feedback => Some(1),
+                Self::Depth => Some(2),
+                _ => None,
+            },
+            0x0203_0019 => match self {
+                Self::Feedback => Some(1),
+                Self::Flutter => Some(2),
+                Self::Distortion => Some(3),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Depth => "Depth",
+            Self::Bass => "Bass",
+            Self::Treble => "Treble",
+            Self::Feedback => "Feedback",
+            Self::Manual => "Manual",
+            Self::Predelay => "Pre-delay",
+            Self::Wave => "Wave",
+            Self::Tone => "Tone",
+            Self::Q => "Q",
+            Self::Frequency => "Frequency",
+            Self::Flutter => "Flutter",
+            Self::Distortion => "Distortion",
         }
     }
 }
@@ -791,6 +948,14 @@ impl PodTone {
             .map(|model| model.model_id)
     }
 
+    /// Mod model id when the primary Mod slot `0x00020004` is present.
+    pub fn mod_model_id(&self) -> Option<u32> {
+        self.models
+            .iter()
+            .find(|model| model.slot == MOD_SLOT)
+            .map(|model| model.model_id)
+    }
+
     /// Asset name for the amp model id, when the PODxt Live table has one.
     pub fn amp_asset_name(&self) -> Option<&'static str> {
         self.amp_model_id().and_then(pod_assets::asset_name)
@@ -820,6 +985,16 @@ impl PodTone {
             model_index,
             parameter_index,
             &format!("Stomp {}", control.label()),
+        )
+    }
+
+    /// Read one source-backed Mod percent value (host scale 0..=1).
+    pub fn mod_control_fraction(&self, control: ModControl) -> Result<f32, ToneError> {
+        let (model_index, parameter_index) = self.mod_control_location(control)?;
+        self.float_control_fraction_at(
+            model_index,
+            parameter_index,
+            &format!("Mod {}", control.label()),
         )
     }
 
@@ -857,6 +1032,18 @@ impl PodTone {
         self.set_float_control_fraction_at(model_index, parameter_index, value, &label)
     }
 
+    /// Change only the existing raw value word for a source-mapped Mod percent control.
+    pub fn set_mod_control_fraction(
+        &mut self,
+        control: ModControl,
+        value: f32,
+    ) -> Result<(), ToneError> {
+        let label = format!("Mod {}", control.label());
+        Self::validate_host_fraction(value, &label)?;
+        let (model_index, parameter_index) = self.mod_control_location(control)?;
+        self.set_float_control_fraction_at(model_index, parameter_index, value, &label)
+    }
+
     /// Compatibility convenience for callers that only use Drive.
     pub fn set_amp_drive_fraction(&mut self, value: f32) -> Result<(), ToneError> {
         self.set_amp_control_fraction(AmpControl::Drive, value)
@@ -883,6 +1070,20 @@ impl PodTone {
             ToneError::format(format!("{label} is not defined for model 0x{model_id:08x}"))
         })?;
         self.control_location(STOMP_SLOT, &[model_id], parameter_id, &label)
+    }
+
+    fn mod_control_location(&self, control: ModControl) -> Result<(usize, usize), ToneError> {
+        let label = format!("Mod {}", control.label());
+        let model_id = self
+            .models
+            .iter()
+            .find(|model| model.slot == MOD_SLOT)
+            .map(|model| model.model_id)
+            .ok_or_else(|| ToneError::format(format!("{label} requires an existing model slot")))?;
+        let parameter_id = control.param_id(model_id).ok_or_else(|| {
+            ToneError::format(format!("{label} is not defined for model 0x{model_id:08x}"))
+        })?;
+        self.control_location(MOD_SLOT, &[model_id], parameter_id, &label)
     }
 
     fn control_location(
@@ -1197,6 +1398,19 @@ impl Library {
         entry.tone.set_stomp_control_fraction(control, value)
     }
 
+    pub fn set_mod_control_fraction(
+        &mut self,
+        index: usize,
+        control: ModControl,
+        value: f32,
+    ) -> Result<(), ToneError> {
+        let entry = self
+            .tones
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
+        entry.tone.set_mod_control_fraction(control, value)
+    }
+
     pub fn replace(&mut self, index: usize, bytes: Vec<u8>) -> Result<(), ToneError> {
         let tone = PodTone::parse(bytes)?;
         let slot = self
@@ -1437,6 +1651,21 @@ mod tests {
             ContainerKind::L6as,
             &[BuiltModel {
                 slot: STOMP_SLOT,
+                model_id: model,
+                tail: &[0xa1, 0xb2, 0xc3, 0xd4],
+                parameters,
+            }],
+        );
+        let pinf = find_chunk_data(&bytes, b"PINF");
+        bytes[pinf + 72..pinf + 76].copy_from_slice(&version.to_be_bytes());
+        bytes
+    }
+
+    fn mod_tone(version: u32, model: u32, parameters: &[&[u8]]) -> Vec<u8> {
+        let mut bytes = custom_tone(
+            ContainerKind::L6as,
+            &[BuiltModel {
+                slot: MOD_SLOT,
                 model_id: model,
                 tail: &[0xa1, 0xb2, 0xc3, 0xd4],
                 parameters,
@@ -1945,6 +2174,187 @@ mod tests {
                     control.label()
                 );
             }
+        }
+    }
+
+    #[test]
+    fn source_mapped_mod_percent_controls_patch_only_their_existing_value_words() {
+        assert_eq!(MOD_SLOT, 0x0002_0004);
+        assert_eq!(MOD_CONTROL_MODEL_IDS.len(), 24);
+        let profiles: [(u32, [Option<ModControl>; 3]); 24] = [
+            (
+                0x0203_0004,
+                [
+                    Some(ModControl::Depth),
+                    Some(ModControl::Bass),
+                    Some(ModControl::Treble),
+                ],
+            ),
+            (
+                0x0203_0005,
+                [
+                    Some(ModControl::Depth),
+                    Some(ModControl::Bass),
+                    Some(ModControl::Treble),
+                ],
+            ),
+            (0x0203_0006, [Some(ModControl::Depth), None, None]),
+            (
+                0x0203_0007,
+                [
+                    Some(ModControl::Depth),
+                    Some(ModControl::Feedback),
+                    Some(ModControl::Manual),
+                ],
+            ),
+            (0x0203_0008, [Some(ModControl::Feedback), None, None]),
+            (0x0203_0009, [Some(ModControl::Depth), None, None]),
+            (0x0203_000a, [Some(ModControl::Wave), None, None]),
+            (0x0203_000b, [Some(ModControl::Wave), None, None]),
+            (0x0203_000c, [None, Some(ModControl::Tone), None]),
+            (0x0203_000d, [None, Some(ModControl::Tone), None]),
+            (0x0203_000e, [Some(ModControl::Wave), None, None]),
+            (
+                0x0203_0015,
+                [
+                    Some(ModControl::Depth),
+                    Some(ModControl::Bass),
+                    Some(ModControl::Treble),
+                ],
+            ),
+            (
+                0x0203_0012,
+                [
+                    Some(ModControl::Depth),
+                    Some(ModControl::Predelay),
+                    Some(ModControl::Feedback),
+                ],
+            ),
+            (
+                0x0203_001e,
+                [
+                    Some(ModControl::Depth),
+                    Some(ModControl::Predelay),
+                    Some(ModControl::Feedback),
+                ],
+            ),
+            (
+                0x0203_0014,
+                [
+                    Some(ModControl::Depth),
+                    Some(ModControl::Bass),
+                    Some(ModControl::Treble),
+                ],
+            ),
+            (
+                0x0203_001f,
+                [
+                    Some(ModControl::Depth),
+                    Some(ModControl::Predelay),
+                    Some(ModControl::Feedback),
+                ],
+            ),
+            (
+                0x0203_0013,
+                [
+                    Some(ModControl::Depth),
+                    Some(ModControl::Predelay),
+                    Some(ModControl::Feedback),
+                ],
+            ),
+            (
+                0x0203_0011,
+                [
+                    Some(ModControl::Depth),
+                    Some(ModControl::Bass),
+                    Some(ModControl::Treble),
+                ],
+            ),
+            (
+                0x0203_001a,
+                [Some(ModControl::Depth), Some(ModControl::Q), None],
+            ),
+            (
+                0x0203_001b,
+                [
+                    Some(ModControl::Depth),
+                    Some(ModControl::Q),
+                    Some(ModControl::Frequency),
+                ],
+            ),
+            (
+                0x0203_0017,
+                [Some(ModControl::Feedback), Some(ModControl::Depth), None],
+            ),
+            (
+                0x0203_0018,
+                [Some(ModControl::Depth), Some(ModControl::Q), None],
+            ),
+            (
+                0x0203_0019,
+                [
+                    Some(ModControl::Feedback),
+                    Some(ModControl::Flutter),
+                    Some(ModControl::Distortion),
+                ],
+            ),
+            (
+                0x0203_001c,
+                [Some(ModControl::Depth), Some(ModControl::Q), None],
+            ),
+        ];
+        assert_eq!(
+            profiles
+                .iter()
+                .map(|(_, layout)| layout.iter().flatten().count())
+                .sum::<usize>(),
+            52
+        );
+        assert_eq!(
+            profiles
+                .iter()
+                .map(|(model_id, _)| *model_id)
+                .collect::<Vec<_>>(),
+            MOD_CONTROL_MODEL_IDS
+        );
+        for (model_id, layout) in profiles {
+            assert!(MOD_CONTROL_MODEL_IDS.contains(&model_id));
+            for control in ModControl::ALL {
+                assert_eq!(
+                    control.selector_id(model_id).is_some(),
+                    layout.contains(&Some(control)),
+                    "unexpected {} mapping on model {model_id:08x}",
+                    control.label()
+                );
+            }
+            let mut records = Vec::new();
+            for (index, expected) in layout.into_iter().enumerate() {
+                if expected.is_some() {
+                    let parameter_id = 0x0010_0000 + index as u32 + 1;
+                    records.push(drive_record(0x3f, parameter_id, 1, 0x3f00_0000));
+                }
+            }
+            let record_refs: Vec<&[u8]> = records.iter().map(|r| r.as_slice()).collect();
+            let bytes = mod_tone(PODXT_LIVE_HOST_MIN_VERSION, model_id, &record_refs);
+            let mut tone = PodTone::parse(bytes.clone()).unwrap();
+            for control in ModControl::ALL {
+                let Some(position) = control.selector_id(model_id).map(|id| id - 0x0004_0002)
+                else {
+                    continue;
+                };
+                assert_eq!(control.selector_id(model_id), Some(0x0004_0002 + position));
+                let parameter_id = 0x0010_0000 + position;
+                assert_eq!(control.param_id(model_id), Some(parameter_id));
+                assert_eq!(tone.mod_control_fraction(control).unwrap(), 0.5);
+                tone.set_mod_control_fraction(control, 0.317).unwrap();
+                let record = drive_record(0x3f, parameter_id, 1, 0x3f00_0000);
+                let offset = bytes.windows(12).position(|w| w == record).unwrap() + 8;
+                assert_eq!(
+                    &tone.as_bytes()[offset..offset + 4],
+                    &0.317f32.to_bits().to_be_bytes()
+                );
+            }
+            assert_eq!(tone.models()[0].model_id, model_id);
         }
     }
 
