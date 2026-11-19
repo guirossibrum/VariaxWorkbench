@@ -155,6 +155,51 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
         Some(167)
     );
 
+    let control_1b = crate::pod_preset::HD_NUMERIC_CONTROLS
+        .iter()
+        .copied()
+        .find(|control| control.raw_type() == 0x1b)
+        .expect("source-joined primary Vintage Pre tag-0x1B control");
+    let mut numeric_1b = synthetic_h5ep();
+    let block_1b = body + 0x428;
+    numeric_1b[block_1b..block_1b + 4].copy_from_slice(&control_1b.model_id().to_be_bytes());
+    let row_1b = block_1b + 0x10;
+    numeric_1b[row_1b..row_1b + 4].copy_from_slice(&0x3f10_0005u32.to_be_bytes());
+    numeric_1b[row_1b + 4..row_1b + 8].copy_from_slice(&0x3f00_0000u32.to_be_bytes());
+    let numeric_1b_before = numeric_1b.clone();
+    let numeric_1b_summary = session
+        .import_hd_editor_file(&mut library, numeric_1b)
+        .expect("offline type-0x1B H5EP import");
+    assert_eq!(control_1b.model_label(), "Vintage Pre");
+    assert_eq!(control_1b.label(), "Key 0x3F100005");
+    assert_eq!(control_1b.min(), 0);
+    assert_eq!(control_1b.max(), 15_000);
+    session
+        .set_hd_numeric_control_value(
+            &mut library,
+            numeric_1b_summary.index,
+            0,
+            control_1b,
+            12_345,
+        )
+        .expect("shared offline primary type-0x1B value patch");
+    assert!(library.is_dirty(numeric_1b_summary.index));
+    let numeric_1b_after = library.file(numeric_1b_summary.index).unwrap().as_bytes();
+    let mut numeric_1b_expected = numeric_1b_before.clone();
+    numeric_1b_expected[row_1b + 4..row_1b + 8].copy_from_slice(&0x3f52_b021u32.to_be_bytes());
+    assert_eq!(numeric_1b_after, numeric_1b_expected);
+    let numeric_1b_output = directory.path().join("numeric-1b-edited.h5p");
+    session
+        .save_hd_editor_copy(&library, &numeric_1b_output, numeric_1b_summary.index)
+        .expect("save source-qualified numeric type-0x1B copy");
+    let saved_numeric_1b = std::fs::read(numeric_1b_output).expect("read saved type-0x1B copy");
+    assert_eq!(saved_numeric_1b, numeric_1b_expected);
+    let reparsed_numeric_1b = crate::pod_preset::OpaqueH5epPreset::parse(saved_numeric_1b).unwrap();
+    assert_eq!(
+        reparsed_numeric_1b.hd_numeric_control_value(0, control_1b),
+        Some(12_345)
+    );
+
     let mut mapped_context = synthetic_h5ep();
     mapped_context[0x10..0x14].copy_from_slice(&0x0021_0001u32.to_be_bytes());
     mapped_context[0x14..0x18].copy_from_slice(&0x0003_0262u32.to_be_bytes());
@@ -189,7 +234,7 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
     );
     let rejection = session.import_hd_editor_file(&mut library, podxt);
     assert!(matches!(rejection, Err(Rejection::Format { .. })));
-    assert_eq!(library.len(), 5, "rejected PODxt file is not imported");
+    assert_eq!(library.len(), 6, "rejected PODxt file is not imported");
 
     let mut malformed = synthetic_h5ep();
     malformed[7] = 2;
@@ -197,7 +242,7 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
         session.import_hd_editor_file(&mut library, malformed),
         Err(Rejection::Format { .. })
     ));
-    assert_eq!(library.len(), 5, "malformed file is not imported");
+    assert_eq!(library.len(), 6, "malformed file is not imported");
     assert_eq!(
         capability::capability(ProductProfile::PodHd500x, Operation::OpenPodPreset).state,
         CapabilityState::Unverified

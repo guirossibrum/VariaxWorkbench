@@ -3712,6 +3712,79 @@ mod tests {
     }
 
     #[test]
+    fn hd_editor_vintage_pre_type1b_value_patches_through_gui_save_and_quit_offline() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let source_document = app.document.as_ref().unwrap().as_bytes().to_vec();
+        let control = pod_preset::HD_NUMERIC_CONTROLS
+            .into_iter()
+            .find(|control| control.raw_type() == 0x1b)
+            .unwrap();
+        let mut original = sample_hd_editor_preset();
+        let block = pod_preset::H5EP_HEADER_BYTES + 0x428;
+        original[block..block + 4].copy_from_slice(&control.model_id().to_be_bytes());
+        let row = block + 0x10;
+        original[row..row + 4].copy_from_slice(&0x3f10_0005u32.to_be_bytes());
+        original[row + 4..row + 8].copy_from_slice(&0x3f00_0000u32.to_be_bytes());
+        original[row + 0x10] = 0;
+        let index = app.hd_library.import_bytes(original.clone()).unwrap();
+        app.select_hd_file(index);
+
+        assert_eq!(app.hd_numeric_control, control);
+        assert_eq!(app.hd_numeric_control.raw_type(), 0x1b);
+        assert_eq!(
+            (app.hd_numeric_control.min(), app.hd_numeric_control.max()),
+            (0, 15_000)
+        );
+        assert_eq!(app.hd_numeric_value, 7_500);
+
+        // The existing library revert restores the exact loaded baseline.
+        app.hd_numeric_value = 12_000;
+        app.apply_hd_numeric_control(index);
+        assert!(app.hd_library.is_dirty(index));
+        app.hd_library.revert_unsaved(index).unwrap();
+        assert!(!app.hd_library.is_dirty(index));
+        assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), original);
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), source_document);
+
+        app.hd_numeric_value = 14_999;
+        app.apply_hd_numeric_control(index);
+        assert!(app.hd_library.is_dirty(index));
+        let mut expected = original.clone();
+        expected[row + 4..row + 8].copy_from_slice(&0x3f7f_fba2u32.to_be_bytes());
+        assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), expected);
+
+        let directory = tempfile::tempdir().unwrap();
+        let collision = directory.path().join("existing.h5p");
+        let output = directory.path().join("vintage-pre-copy.h5p");
+        std::fs::write(&collision, b"keep existing destination").unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_save: [Some(collision.clone()), Some(output.clone())].into(),
+            ..Default::default()
+        });
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "save");
+        assert!(app.hd_library.is_dirty(index));
+        assert!(!app.permit_close);
+        assert_eq!(
+            std::fs::read(&collision).unwrap(),
+            b"keep existing destination"
+        );
+        click_prompt(&context, &mut app, "save");
+        assert!(app.permit_close);
+        assert!(!app.hd_library.any_dirty());
+        assert!(app.read_worker.is_none());
+        assert_eq!(std::fs::read(&output).unwrap(), expected);
+        let reopened = pod_preset::OpaqueH5epPreset::parse(std::fs::read(output).unwrap())
+            .expect("reopen saved type-0x1B copy");
+        assert_eq!(reopened.hd_numeric_control_value(0, control), Some(14_999));
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
     fn hd_editor_mapped_type1_control_updates_its_traced_value_offline() {
         let (_context, mut app) = app();
         let control = pod_preset::HD_TYPE1_MAPPED_CONTROLS[0];
