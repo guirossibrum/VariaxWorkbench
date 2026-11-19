@@ -214,6 +214,7 @@ struct Workbench {
     hd_selected: Option<usize>,
     hd_effect_slot: usize,
     hd_control: pod_preset::HdType1Control,
+    hd_mapped_control: pod_preset::HdType1MappedControl,
     hd_control_percent: u8,
     hd_numeric_control: pod_preset::HdNumericControl,
     hd_numeric_value: i32,
@@ -292,6 +293,7 @@ impl Workbench {
             hd_selected: None,
             hd_effect_slot: 0,
             hd_control: pod_preset::HdType1Control::Screamer(pod_preset::ScreamerControl::Drive),
+            hd_mapped_control: pod_preset::HD_TYPE1_DELAY_CONTROLS[0],
             hd_control_percent: 0,
             hd_numeric_control: pod_preset::HD_NUMERIC_CONTROLS[0],
             hd_numeric_value: 0,
@@ -1897,7 +1899,8 @@ impl Workbench {
                     .add(egui::Slider::new(&mut self.hd_effect_slot, 0..=7).text("Effect slot"))
                     .changed();
                 if slot_changed {
-                    if let Some(model_id) = preset.effect_model_id(self.hd_effect_slot)
+                    let selected_model_id = preset.effect_model_id(self.hd_effect_slot);
+                    if let Some(model_id) = selected_model_id
                         && let Some(control) = pod_preset::HdType1Control::ALL
                             .into_iter()
                             .find(|control| control.model_id() == model_id)
@@ -1907,6 +1910,25 @@ impl Workbench {
                     self.hd_control_percent = preset
                         .hd_type1_control_percent(self.hd_effect_slot, self.hd_control)
                         .unwrap_or(0);
+                    if let Some(model_id) = selected_model_id
+                        && let Some(control) =
+                            pod_preset::HD_TYPE1_DELAY_CONTROLS
+                                .into_iter()
+                                .find(|control| {
+                                    control.model_id() == model_id
+                                        && preset
+                                            .hd_type1_mapped_control_percent(
+                                                self.hd_effect_slot,
+                                                *control,
+                                            )
+                                            .is_some()
+                                })
+                    {
+                        self.hd_mapped_control = control;
+                        self.hd_control_percent = preset
+                            .hd_type1_mapped_control_percent(self.hd_effect_slot, control)
+                            .unwrap_or(self.hd_control_percent);
+                    }
                     if let Some(control) =
                         pod_preset::HD_NUMERIC_CONTROLS.into_iter().find(|control| {
                             control.model_id()
@@ -1924,53 +1946,110 @@ impl Workbench {
                             .unwrap_or(control.min());
                     }
                 }
-                egui::ComboBox::from_label("Recovered control")
-                    .selected_text(format!(
-                        "{} {}",
-                        self.hd_control.model_label(),
-                        self.hd_control.label()
-                    ))
-                    .show_ui(ui, |ui| {
-                        for control in pod_preset::HdType1Control::ALL {
-                            if control.model_id()
-                                != preset
-                                    .effect_model_id(self.hd_effect_slot)
-                                    .unwrap_or_default()
-                            {
-                                continue;
+                let model_id = preset
+                    .effect_model_id(self.hd_effect_slot)
+                    .unwrap_or_default();
+                let has_mapped_type1 = pod_preset::HD_TYPE1_DELAY_CONTROLS.iter().any(|control| {
+                    control.model_id() == model_id
+                        && preset
+                            .hd_type1_mapped_control_percent(self.hd_effect_slot, *control)
+                            .is_some()
+                });
+                if has_mapped_type1 {
+                    egui::ComboBox::from_label("Recovered delay control")
+                        .selected_text(format!(
+                            "{} {}",
+                            self.hd_mapped_control.model_label(),
+                            self.hd_mapped_control.label()
+                        ))
+                        .show_ui(ui, |ui| {
+                            for control in pod_preset::HD_TYPE1_DELAY_CONTROLS {
+                                if control.model_id() != model_id
+                                    || preset
+                                        .hd_type1_mapped_control_percent(
+                                            self.hd_effect_slot,
+                                            control,
+                                        )
+                                        .is_none()
+                                {
+                                    continue;
+                                }
+                                if ui
+                                    .selectable_value(
+                                        &mut self.hd_mapped_control,
+                                        control,
+                                        format!("{} {}", control.model_label(), control.label()),
+                                    )
+                                    .changed()
+                                {
+                                    self.hd_control_percent = preset
+                                        .hd_type1_mapped_control_percent(
+                                            self.hd_effect_slot,
+                                            control,
+                                        )
+                                        .unwrap_or(0);
+                                }
                             }
-                            if ui
-                                .selectable_value(
-                                    &mut self.hd_control,
-                                    control,
-                                    format!("{} {}", control.model_label(), control.label()),
-                                )
-                                .changed()
-                            {
-                                self.hd_control_percent = preset
-                                    .hd_type1_control_percent(self.hd_effect_slot, control)
-                                    .unwrap_or(0);
-                            }
-                        }
-                    });
-                if preset
-                    .hd_type1_control_percent(self.hd_effect_slot, self.hd_control)
-                    .is_some()
-                {
+                        });
                     ui.add(
                         egui::Slider::new(&mut self.hd_control_percent, 0..=100).text(format!(
                             "{} {}",
-                            self.hd_control.model_label(),
-                            self.hd_control.label()
+                            self.hd_mapped_control.model_label(),
+                            self.hd_mapped_control.label()
                         )),
                     );
-                    if self.pod_button(ui, "apply-hd-drive", "Apply offline control") {
-                        self.apply_hd_control(index);
+                    if self.pod_button(ui, "apply-hd-delay-control", "Apply offline control") {
+                        self.apply_hd_mapped_control(index);
                     }
                 } else {
-                    ui.label(
-                        "No matching type-1 control is available; other rows remain unchanged.",
-                    );
+                    egui::ComboBox::from_label("Recovered control")
+                        .selected_text(format!(
+                            "{} {}",
+                            self.hd_control.model_label(),
+                            self.hd_control.label()
+                        ))
+                        .show_ui(ui, |ui| {
+                            for control in pod_preset::HdType1Control::ALL {
+                                if control.model_id()
+                                    != preset
+                                        .effect_model_id(self.hd_effect_slot)
+                                        .unwrap_or_default()
+                                {
+                                    continue;
+                                }
+                                if ui
+                                    .selectable_value(
+                                        &mut self.hd_control,
+                                        control,
+                                        format!("{} {}", control.model_label(), control.label()),
+                                    )
+                                    .changed()
+                                {
+                                    self.hd_control_percent = preset
+                                        .hd_type1_control_percent(self.hd_effect_slot, control)
+                                        .unwrap_or(0);
+                                }
+                            }
+                        });
+                    if preset
+                        .hd_type1_control_percent(self.hd_effect_slot, self.hd_control)
+                        .is_some()
+                    {
+                        ui.add(
+                            egui::Slider::new(&mut self.hd_control_percent, 0..=100).text(format!(
+                                "{} {}",
+                                self.hd_control.model_label(),
+                                self.hd_control.label()
+                            )),
+                        );
+                        if self.pod_button(ui, "apply-hd-drive", "Apply offline control") {
+                            self.apply_hd_control(index);
+                        }
+                    } else {
+                        ui.label(
+                            "No matching type-1 control is available; other rows remain unchanged.",
+                        );
+                    }
                 }
                 if pod_preset::HD_NUMERIC_CONTROLS.iter().any(|control| {
                     control.model_id()
@@ -2101,6 +2180,34 @@ impl Workbench {
                 _ => None,
             })
             .unwrap_or(0);
+        self.hd_mapped_control = self
+            .hd_library
+            .file(index)
+            .and_then(|file| match file {
+                PodPresetFile::H5ep(preset) => {
+                    let model = preset.effect_model_id(0)?;
+                    pod_preset::HD_TYPE1_DELAY_CONTROLS
+                        .into_iter()
+                        .find(|control| {
+                            control.model_id() == model
+                                && preset
+                                    .hd_type1_mapped_control_percent(0, *control)
+                                    .is_some()
+                        })
+                }
+                _ => None,
+            })
+            .unwrap_or(pod_preset::HD_TYPE1_DELAY_CONTROLS[0]);
+        self.hd_control_percent = self
+            .hd_library
+            .file(index)
+            .and_then(|file| match file {
+                PodPresetFile::H5ep(preset) => {
+                    preset.hd_type1_mapped_control_percent(0, self.hd_mapped_control)
+                }
+                _ => None,
+            })
+            .unwrap_or(self.hd_control_percent);
         self.hd_numeric_control = self
             .hd_library
             .file(index)
@@ -2133,6 +2240,23 @@ impl Workbench {
             index,
             self.hd_effect_slot,
             self.hd_control,
+            self.hd_control_percent,
+        );
+        match result {
+            Ok(()) => {
+                self.pod_message =
+                    "Updated only the traced in-memory value. Nothing was sent.".into();
+            }
+            Err(error) => self.pod_message = rejection_text(&error),
+        }
+    }
+
+    fn apply_hd_mapped_control(&mut self, index: usize) {
+        let result = Session::initial_rig().set_hd_type1_mapped_control_percent(
+            &mut self.hd_library,
+            index,
+            self.hd_effect_slot,
+            self.hd_mapped_control,
             self.hd_control_percent,
         );
         match result {
@@ -3585,6 +3709,42 @@ mod tests {
         const {
             assert!(LIVE_ACCESS_LOCKED);
         }
+    }
+
+    #[test]
+    fn hd_editor_mapped_delay_control_updates_its_traced_value_offline() {
+        let (_context, mut app) = app();
+        let control = pod_preset::HD_TYPE1_DELAY_CONTROLS[0];
+        let mut bytes = sample_hd_editor_preset();
+        let body = pod_preset::H5EP_HEADER_BYTES;
+        let block = body + 0x428;
+        bytes[block..block + 4].copy_from_slice(&control.model_id().to_be_bytes());
+        let row = block + 0x10;
+        bytes[row..row + 4].copy_from_slice(&control.key().to_be_bytes());
+        bytes[row + 4..row + 8].copy_from_slice(&0.5f32.to_bits().to_be_bytes());
+        bytes[row + 0x10] = 0;
+        let original = bytes.clone();
+        let index = app.hd_library.import_bytes(bytes).unwrap();
+        app.select_hd_file(index);
+        assert_eq!(app.hd_mapped_control, control);
+        assert_eq!(app.hd_control_percent, 50);
+
+        app.hd_control_percent = 75;
+        app.apply_hd_mapped_control(index);
+        assert_eq!(
+            app.hd_library.file(index).and_then(|file| match file {
+                PodPresetFile::H5ep(preset) => {
+                    preset.hd_type1_mapped_control_percent(0, control)
+                }
+                _ => None,
+            }),
+            Some(75)
+        );
+        let mut expected = original;
+        expected[row + 4..row + 8].copy_from_slice(&0.75f32.to_bits().to_be_bytes());
+        assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), expected);
+        assert!(app.hd_library.is_dirty(index));
+        assert!(app.read_worker.is_none());
     }
 
     fn click_pod_window_close(context: &egui::Context, app: &mut Workbench) {

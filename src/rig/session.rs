@@ -306,6 +306,35 @@ impl Session {
             .map_err(map_hd_library_error)
     }
 
+    /// Edits one source-joined primary type-1 delay control in the offline
+    /// HD Edit library. This does not establish physical target compatibility.
+    pub fn set_hd_type1_mapped_control_percent(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: usize,
+        control: crate::pod_preset::HdType1MappedControl,
+        percent: u8,
+    ) -> Result<(), Rejection> {
+        let _ = self;
+        let preset = match library.file_mut(file) {
+            Some(crate::pod_preset::PodPresetFile::H5ep(preset)) => preset,
+            Some(_) => {
+                return Err(Rejection::format(
+                    "HD mapped type-1 controls require an H5EP preset",
+                ));
+            }
+            None => {
+                return Err(Rejection::format(
+                    "file index is outside the HD editor library",
+                ));
+            }
+        };
+        preset
+            .set_hd_type1_mapped_control_percent(effect_slot, control, percent)
+            .map_err(map_hd_library_error)
+    }
+
     /// Edits one source-joined non-type-1 HD Edit numeric control in the
     /// shared offline library. The file association does not establish a
     /// physical product target.

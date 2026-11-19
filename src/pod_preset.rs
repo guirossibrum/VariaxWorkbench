@@ -412,6 +412,119 @@ impl HdType1Control {
     }
 }
 
+/// Source-joined primary type-1 controls for the selected delay model family.
+/// Labels come from Editor 2.27 `PRMS` resources; their physical meaning and
+/// availability are not asserted for any connected product.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HdType1MappedControl {
+    model_id: u32,
+    model_label: &'static str,
+    label: &'static str,
+    key: u32,
+}
+
+impl HdType1MappedControl {
+    const fn new(model_id: u32, model_label: &'static str, label: &'static str, key: u32) -> Self {
+        Self {
+            model_id,
+            model_label,
+            label,
+            key,
+        }
+    }
+
+    pub const fn model_id(self) -> u32 {
+        self.model_id
+    }
+    pub const fn model_label(self) -> &'static str {
+        self.model_label
+    }
+    pub const fn label(self) -> &'static str {
+        self.label
+    }
+    pub const fn key(self) -> u32 {
+        self.key
+    }
+}
+
+/// 73 active delay-family rows across 19 model IDs. Stereo Delay overlaps the
+/// existing typed descriptors; other rows use their joined resource labels.
+pub const HD_TYPE1_DELAY_CONTROLS: [HdType1MappedControl; 73] = [
+    HdType1MappedControl::new(0x0202001A, "Multi-Head Delay", "FDBACK", 0x3F100001),
+    HdType1MappedControl::new(0x0202001A, "Multi-Head Delay", "MIX", 0x3F100004),
+    HdType1MappedControl::new(0x02020023, "Auto-Volume", "FDBACK", 0x3F100001),
+    HdType1MappedControl::new(0x02020023, "Auto-Volume", "DEPTH", 0x3F100002),
+    HdType1MappedControl::new(0x02020023, "Auto-Volume", "SWELL", 0x3F100003),
+    HdType1MappedControl::new(0x02020023, "Auto-Volume", "MIX", 0x3F100004),
+    HdType1MappedControl::new(0x02020014, "Analog Echo", "FDBACK", 0x3F100001),
+    HdType1MappedControl::new(0x02020014, "Analog Echo", "BASS", 0x3F100002),
+    HdType1MappedControl::new(0x02020014, "Analog Echo", "TREBLE", 0x3F100003),
+    HdType1MappedControl::new(0x02020014, "Analog Echo", "MIX", 0x3F100004),
+    HdType1MappedControl::new(0x02020015, "Analog Dly w/Mod", "FDBACK", 0x3F100001),
+    HdType1MappedControl::new(0x02020015, "Analog Dly w/Mod", "MODSPD", 0x3F100002),
+    HdType1MappedControl::new(0x02020015, "Analog Dly w/Mod", "DEPTH", 0x3F100003),
+    HdType1MappedControl::new(0x02020015, "Analog Dly w/Mod", "MIX", 0x3F100004),
+    HdType1MappedControl::new(0x0202002E, "Sweep Echo", "FDBACK", 0x3F100001),
+    HdType1MappedControl::new(0x0202002E, "Sweep Echo", "SWPSPD", 0x3F100002),
+    HdType1MappedControl::new(0x0202002E, "Sweep Echo", "DEPTH", 0x3F100003),
+    HdType1MappedControl::new(0x0202002E, "Sweep Echo", "MIX", 0x3F100004),
+    HdType1MappedControl::new(0x0202002F, "Sweep Echo Dry", "FDBACK", 0x3F100001),
+    HdType1MappedControl::new(0x0202002F, "Sweep Echo Dry", "SWPSPD", 0x3F100002),
+    HdType1MappedControl::new(0x0202002F, "Sweep Echo Dry", "DEPTH", 0x3F100003),
+    HdType1MappedControl::new(0x0202002F, "Sweep Echo Dry", "MIX", 0x3F100004),
+    HdType1MappedControl::new(0x02020030, "Echo Platter", "FDBACK", 0x3F100001),
+    HdType1MappedControl::new(0x02020030, "Echo Platter", "WOWFLT", 0x3F100002),
+    HdType1MappedControl::new(0x02020030, "Echo Platter", "DRIVE", 0x3F100003),
+    HdType1MappedControl::new(0x02020030, "Echo Platter", "MIX", 0x3F100004),
+    HdType1MappedControl::new(0x02020031, "Echo Platter Dry", "FDBACK", 0x3F100001),
+    HdType1MappedControl::new(0x02020031, "Echo Platter Dry", "WOWFLT", 0x3F100002),
+    HdType1MappedControl::new(0x02020031, "Echo Platter Dry", "DRIVE", 0x3F100003),
+    HdType1MappedControl::new(0x02020031, "Echo Platter Dry", "MIX", 0x3F100004),
+    HdType1MappedControl::new(0x0202002A, "Tube Echo", "FDBACK", 0x3F100001),
+    HdType1MappedControl::new(0x0202002A, "Tube Echo", "WOWFLT", 0x3F100002),
+    HdType1MappedControl::new(0x0202002A, "Tube Echo", "DRIVE", 0x3F100003),
+    HdType1MappedControl::new(0x0202002A, "Tube Echo", "MIX", 0x3F100004),
+    HdType1MappedControl::new(0x0202002B, "Tube Echo Dry", "FDBACK", 0x3F100001),
+    HdType1MappedControl::new(0x0202002B, "Tube Echo Dry", "WOWFLT", 0x3F100002),
+    HdType1MappedControl::new(0x0202002B, "Tube Echo Dry", "DRIVE", 0x3F100003),
+    HdType1MappedControl::new(0x0202002B, "Tube Echo Dry", "MIX", 0x3F100004),
+    HdType1MappedControl::new(0x0202002C, "Tape Echo", "FDBACK", 0x3F100001),
+    HdType1MappedControl::new(0x0202002C, "Tape Echo", "BASS", 0x3F100002),
+    HdType1MappedControl::new(0x0202002C, "Tape Echo", "TREBLE", 0x3F100003),
+    HdType1MappedControl::new(0x0202002C, "Tape Echo", "MIX", 0x3F100004),
+    HdType1MappedControl::new(0x0202002D, "Tape Echo Dry", "FDBACK", 0x3F100001),
+    HdType1MappedControl::new(0x0202002D, "Tape Echo Dry", "BASS", 0x3F100002),
+    HdType1MappedControl::new(0x0202002D, "Tape Echo Dry", "TREBLE", 0x3F100003),
+    HdType1MappedControl::new(0x0202002D, "Tape Echo Dry", "MIX", 0x3F100004),
+    HdType1MappedControl::new(0x0202001D, "Lo Res Delay", "FDBACK", 0x3F100001),
+    HdType1MappedControl::new(0x0202001D, "Lo Res Delay", "TONE", 0x3F100002),
+    HdType1MappedControl::new(0x0202001D, "Lo Res Delay", "RESO", 0x3F100003),
+    HdType1MappedControl::new(0x0202001D, "Lo Res Delay", "MIX", 0x3F100004),
+    HdType1MappedControl::new(0x02020012, "Digital Dly w/Mod", "FDBACK", 0x3F100001),
+    HdType1MappedControl::new(0x02020012, "Digital Dly w/Mod", "MODSPD", 0x3F100002),
+    HdType1MappedControl::new(0x02020012, "Digital Dly w/Mod", "DEPTH", 0x3F100003),
+    HdType1MappedControl::new(0x02020012, "Digital Dly w/Mod", "MIX", 0x3F100004),
+    HdType1MappedControl::new(0x02020021, "Reverse Delay", "FDBACK", 0x3F100001),
+    HdType1MappedControl::new(0x02020021, "Reverse Delay", "MODSPD", 0x3F100002),
+    HdType1MappedControl::new(0x02020021, "Reverse Delay", "DEPTH", 0x3F100003),
+    HdType1MappedControl::new(0x02020021, "Reverse Delay", "MIX", 0x3F100004),
+    HdType1MappedControl::new(0x02020013, "Stereo Delay", "L FDBK", 0x3F100001),
+    HdType1MappedControl::new(0x02020013, "Stereo Delay", "R FDBK", 0x3F100003),
+    HdType1MappedControl::new(0x02020013, "Stereo Delay", "MIX", 0x3F100004),
+    HdType1MappedControl::new(0x02020011, "Digital Delay", "FDBACK", 0x3F100001),
+    HdType1MappedControl::new(0x02020011, "Digital Delay", "BASS", 0x3F100002),
+    HdType1MappedControl::new(0x02020011, "Digital Delay", "TREBLE", 0x3F100003),
+    HdType1MappedControl::new(0x02020011, "Digital Delay", "MIX", 0x3F100004),
+    HdType1MappedControl::new(0x02020022, "Dynamic Delay", "FDBACK", 0x3F100001),
+    HdType1MappedControl::new(0x02020022, "Dynamic Delay", "THRESH", 0x3F100002),
+    HdType1MappedControl::new(0x02020022, "Dynamic Delay", "DUCKING", 0x3F100003),
+    HdType1MappedControl::new(0x02020022, "Dynamic Delay", "MIX", 0x3F100004),
+    HdType1MappedControl::new(0x02020020, "Ping Pong", "FDBACK", 0x3F100001),
+    HdType1MappedControl::new(0x02020020, "Ping Pong", "OFFSET", 0x3F100002),
+    HdType1MappedControl::new(0x02020020, "Ping Pong", "SPREAD", 0x3F100003),
+    HdType1MappedControl::new(0x02020020, "Ping Pong", "MIX", 0x3F100004),
+];
+
 /// A source-joined non-type-1 numeric editor control. Bounds are the
 /// constructor's integer widget arguments, not named physical units.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1310,6 +1423,17 @@ impl OpaqueH5epPreset {
         exact_drive_percent(value)
     }
 
+    /// Reads a selected source-joined delay-family type-1 control.
+    pub fn hd_type1_mapped_control_percent(
+        &self,
+        effect_slot: usize,
+        control: HdType1MappedControl,
+    ) -> Option<u8> {
+        let value_at = self.hd_type1_mapped_control_value_offset(effect_slot, control)?;
+        let value = f32::from_bits(read_be_u32(self.body_bytes(), value_at)?);
+        exact_drive_percent(value)
+    }
+
     /// Returns a selected non-type-1 control's canonical editor integer value.
     /// Values outside the exact normalized integer grid remain opaque.
     pub fn hd_numeric_control_value(
@@ -1420,6 +1544,39 @@ impl OpaqueH5epPreset {
         Ok(())
     }
 
+    /// Edits only the first matching delay-family key's normalized value.
+    pub fn set_hd_type1_mapped_control_percent(
+        &mut self,
+        effect_slot: usize,
+        control: HdType1MappedControl,
+        percent: u8,
+    ) -> Result<(), ToneError> {
+        if percent > 100 {
+            return Err(ToneError::format(format!(
+                "{} {} must be in 0..=100",
+                control.model_label, control.label
+            )));
+        }
+        let value_at = self
+            .hd_type1_mapped_control_value_offset(effect_slot, control)
+            .ok_or_else(|| {
+                ToneError::format(
+                    "HD mapped type-1 control slot, key, model, or assignment state is not admitted for editing",
+                )
+            })?;
+        let current = f32::from_bits(
+            read_be_u32(self.body_bytes(), value_at)
+                .ok_or_else(|| ToneError::format("HD mapped type-1 row is truncated"))?,
+        );
+        exact_drive_percent(current).ok_or_else(|| {
+            ToneError::format("existing HD mapped type-1 value is outside the editor percent grid")
+        })?;
+        let file_at = H5EP_HEADER_BYTES + value_at;
+        self.bytes[file_at..file_at + 4]
+            .copy_from_slice(&(percent as f32 / 100.0).to_bits().to_be_bytes());
+        Ok(())
+    }
+
     /// Edits one selected non-type-1 numeric widget value. The stored float
     /// must already be on the exact source-configured integer grid; only its
     /// keyed value word changes.
@@ -1471,17 +1628,29 @@ impl OpaqueH5epPreset {
         effect_slot: usize,
         control: HdType1Control,
     ) -> Option<usize> {
+        self.hd_type1_value_offset(effect_slot, control.model_id(), control.key())
+    }
+
+    fn hd_type1_mapped_control_value_offset(
+        &self,
+        effect_slot: usize,
+        control: HdType1MappedControl,
+    ) -> Option<usize> {
+        self.hd_type1_value_offset(effect_slot, control.model_id, control.key)
+    }
+
+    fn hd_type1_value_offset(&self, effect_slot: usize, model_id: u32, key: u32) -> Option<usize> {
         if effect_slot >= HD_EFFECT_COUNT {
             return None;
         }
         let body = self.body_bytes();
         let block = HD_EFFECT_BLOCK_OFFSET + effect_slot * HD_EFFECT_BLOCK_STRIDE;
-        if read_be_u32(body, block)? != control.model_id() {
+        if read_be_u32(body, block)? != model_id {
             return None;
         }
         for row in 0..HD_PARAMETER_ROW_COUNT {
             let row_at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
-            if read_be_u32(body, row_at)? == control.key() {
+            if read_be_u32(body, row_at)? == key {
                 // The source sends the row flag into widget assignment state,
                 // while the callback suppresses writes for expression controls.
                 // Only the zero-flag state is admitted; auxiliary flag bytes
@@ -2895,6 +3064,58 @@ mod tests {
                 expected[value_at..value_at + 4].copy_from_slice(&0.73f32.to_bits().to_be_bytes());
                 assert_eq!(preset.as_bytes(), expected);
             }
+        }
+    }
+
+    #[test]
+    fn delay_family_type1_descriptors_are_model_gated_and_write_only_the_value_word() {
+        assert_eq!(HD_TYPE1_DELAY_CONTROLS.len(), 73);
+        for control in HD_TYPE1_DELAY_CONTROLS {
+            let mut original = synthetic_h5ep(&[]);
+            let body = H5EP_HEADER_BYTES;
+            let block = HD_EFFECT_BLOCK_OFFSET;
+            original[body + block..body + block + 4]
+                .copy_from_slice(&control.model_id().to_be_bytes());
+            let row = body + block + HD_EFFECT_ROWS_OFFSET;
+            original[row..row + 4].copy_from_slice(&control.key.to_be_bytes());
+            original[row + 4..row + 8].copy_from_slice(&0.37f32.to_bits().to_be_bytes());
+            original[row + HD_PARAMETER_ROW_FLAG_OFFSET] = 0;
+
+            let mut preset = OpaqueH5epPreset::parse(original).unwrap();
+            assert_eq!(preset.hd_type1_mapped_control_percent(0, control), Some(37));
+            let before = preset.as_bytes().to_vec();
+            preset
+                .set_hd_type1_mapped_control_percent(0, control, 73)
+                .unwrap();
+            assert_eq!(preset.hd_type1_mapped_control_percent(0, control), Some(73));
+            let mut expected = before;
+            expected[row + 4..row + 8].copy_from_slice(&0.73f32.to_bits().to_be_bytes());
+            assert_eq!(
+                preset.as_bytes(),
+                expected,
+                "{} {}",
+                control.model_label(),
+                control.label()
+            );
+
+            let before_invalid = preset.as_bytes().to_vec();
+            assert!(
+                preset
+                    .set_hd_type1_mapped_control_percent(0, control, 101)
+                    .is_err()
+            );
+            assert_eq!(preset.as_bytes(), before_invalid);
+
+            let mut assigned = preset.clone();
+            assigned.bytes[row + HD_PARAMETER_ROW_FLAG_OFFSET] = 1;
+            let before_assigned = assigned.as_bytes().to_vec();
+            assert_eq!(assigned.hd_type1_mapped_control_percent(0, control), None);
+            assert!(
+                assigned
+                    .set_hd_type1_mapped_control_percent(0, control, 50)
+                    .is_err()
+            );
+            assert_eq!(assigned.as_bytes(), before_assigned);
         }
     }
 
