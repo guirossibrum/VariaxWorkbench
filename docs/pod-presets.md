@@ -119,9 +119,9 @@ application safety cap, not a recovered Workbench or Line 6 limit.
 
 The PINF name edit uses the same 32-unit NUL and length rule as the guitar
 renamer. Six host-scale edits are available for Drive, Bass, Mid, Treble,
-Presence, and Channel Volume in amp slot `0x00030000`, for the 106 amp models
-in PODxt Live `GetAmpModelList` after excluding its `0x00020000` No Amp
-association. The source maps these controls to float PARM identifiers
+Presence, and Channel Volume in amp slot `0x00030000`, for the 106 non-No-Amp
+IDs from the 107-entry `AMP_MODELS` returned by PODxt Live
+`GetAmpModelList`. The source maps these controls to float PARM identifiers
 `0x00100003`, `0x00100000`, `0x00100001`, `0x00100002`, `0x00100004`, and
 `0x00100005`, respectively. Their finite host scale is 0 through 1; this does
 not claim a device-accepted range or physical behavior. Each edit requires the

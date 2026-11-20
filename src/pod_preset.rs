@@ -444,8 +444,8 @@ pub const AMP_TREBLE_PARAM: u32 = 0x0010_0002;
 pub const AMP_PRESENCE_PARAM: u32 = 0x0010_0004;
 /// Semantic Amp Channel Volume parameter id in the PODxt Sharc parameter map.
 pub const AMP_CHANNEL_VOLUME_PARAM: u32 = 0x0010_0005;
-/// Models listed by PODxt Live `GetAmpModelList` that represent an amp.
-/// The provider's `0x00020000` No Amp association is intentionally excluded.
+/// The 106 non-No-Amp IDs from `GetAmpModelList`'s 107-entry `AMP_MODELS`
+/// initializer. Scalar control definitions intentionally exclude No Amp.
 pub const AMP_CONTROL_MODEL_IDS: [u32; 106] = [
     0x0002_002e,
     0x0002_0001,
@@ -2420,8 +2420,8 @@ impl PodTone {
             choice,
             PodAmpModelChoice::NoAmp | PodAmpModelChoice::Line6Clean
         );
-        // The provider's 106-entry GetAmpModelList plus its No Amp association
-        // is the closed 107-ID current-value catalog. Only the two legacy
+        // GetAmpModelList returns its 107-entry AMP_MODELS initializer,
+        // including No Amp. Only the two legacy
         // requests remain available when the stored current ID is unknown.
         if !legacy_choice && !PODXT_AMP_SOURCE_MODEL_IDS.contains(&current) {
             return Err(ToneError::format(
@@ -6621,8 +6621,9 @@ pub(crate) mod tests {
             43
         );
 
-        // The existing 106-ID provider table plus its separate No Amp association
-        // is the complete current-ID classification set, including gated IDs.
+        // GetAmpModelList's 107-entry AMP_MODELS initializer includes No Amp;
+        // the separate 106-entry control table below omits only that ID. The
+        // current classification set also includes all gated model IDs.
         let current_ids = PODXT_AMP_SOURCE_MODEL_IDS.to_vec();
         assert_eq!(current_ids.len(), 107);
         assert_eq!(
@@ -6749,6 +6750,77 @@ pub(crate) mod tests {
         expected[0x93] = 0x00;
         assert_eq!(tone.as_bytes(), expected);
         assert_eq!(tone.amp_model_id(), Some(0x0002_0000));
+    }
+
+    #[test]
+    fn expanded_amp_choice_matches_independent_full_buffer_vector_everywhere() {
+        let original_hex = concat!(
+            "464f524d0000010c4c3650414a554e4b00000003112233a5",
+            "50494e4600000050000000010003000a0041000000000000",
+            "000000000000000000000000000000000000000000000000",
+            "000000000000000000000000000000000000000000000000",
+            "0000000000000000030000005aa596694c49535400000090",
+            "504154434c495354000000384d4f444c4d494e460000000c",
+            "0002000100030000fe1234015041524d0000000c3f001001",
+            "000000013f0000004f44442100000003deadbea54c495354",
+            "000000384d4f444c4d494e460000000c0102000000030001",
+            "80aabbff5041524d0000000c000000000000000300000005",
+            "4f44442100000003deadbea54d49432100000003919293a5",
+            "5349444500000003313233a5",
+        );
+        let expected_hex = concat!(
+            "464f524d0000010c4c3650414a554e4b00000003112233a5",
+            "50494e4600000050000000010003000a0041000000000000",
+            "000000000000000000000000000000000000000000000000",
+            "000000000000000000000000000000000000000000000000",
+            "0000000000000000030000005aa596694c49535400000090",
+            "504154434c495354000000384d4f444c4d494e460000000c",
+            "0002002e00030000fe1234015041524d0000000c3f001001",
+            "000000013f0000004f44442100000003deadbea54c495354",
+            "000000384d4f444c4d494e460000000c0102000000030001",
+            "80aabbff5041524d0000000c000000000000000300000005",
+            "4f44442100000003deadbea54d49432100000003919293a5",
+            "5349444500000003313233a5",
+        );
+        let decode = |hex: &str| {
+            let (pairs, remainder) = hex.as_bytes().as_chunks::<2>();
+            assert!(remainder.is_empty());
+            pairs
+                .iter()
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let original = decode(original_hex);
+        let expected = decode(expected_hex);
+        assert_eq!(original.len(), 276);
+        assert_eq!(&original[0x90..0x94], &[0x00, 0x02, 0x00, 0x01]);
+
+        let session_bytes = crate::rig::Session::initial_rig()
+            .set_pod_amp_model_choice(
+                crate::rig::RoleKind::Pod,
+                &original,
+                PodAmpModelChoice::Model2002e,
+            )
+            .unwrap();
+        assert_eq!(session_bytes, expected);
+
+        let mut library = Library::default();
+        library.import_bytes(original.clone()).unwrap();
+        library
+            .set_amp_model_choice(0, PodAmpModelChoice::Model2002e)
+            .unwrap();
+        assert_eq!(library.tone(0).unwrap().as_bytes(), expected);
+
+        let sibling = original.clone();
+        let mut bundle =
+            PodBundleLibrary::parse(bundle_with_banks(&[vec![original], vec![sibling.clone()]]))
+                .unwrap();
+        bundle
+            .set_amp_model_choice(0, PodAmpModelChoice::Model2002e)
+            .unwrap();
+        let expected_bundle = bundle_with_banks(&[vec![expected.clone()], vec![sibling.clone()]]);
+        assert_eq!(bundle.as_bytes(), expected_bundle);
+        assert_eq!(bundle.tone(1, 0).unwrap().as_bytes(), sibling);
     }
 
     #[test]

@@ -702,8 +702,9 @@ remain non-requestable:
 
 The existing `No Amp` and `Line 6 Clean` actions retain their prior behavior
 even when the current AMP ID is unknown. The other 41 choices require the
-current ID to belong to the complete 107-ID static catalog (the 106-entry
-`GetAmpModelList` plus its separate No Amp association). This is classification
+current ID to belong to the complete 107-ID static catalog returned by
+`GetAmpModelList` from its 107-entry `AMP_MODELS` initializer, including No
+Amp. The separate 106-entry control table omits only No Amp. This is classification
 of the stored value only; it is not a connected installed-pack query or
 runtime entitlement. Pack-gated catalog members remain raw/lossless current
 values and cannot be requested. An unknown current ID remains raw/lossless and
