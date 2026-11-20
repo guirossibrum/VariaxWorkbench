@@ -16,6 +16,7 @@ pub enum Operation {
     EditPodPreset,
     SelectRecordRoute,
     InspectFirmware,
+    InspectOfflineDeviceDescriptor,
     StartAudioCapture,
     StopAudioCapture,
     OpenAudioStream,
@@ -31,7 +32,7 @@ pub enum Operation {
 }
 
 impl Operation {
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 21] = [
         Self::OpenGuitarPreset,
         Self::OpenGuitarBank,
         Self::SaveGuitarCopy,
@@ -40,6 +41,7 @@ impl Operation {
         Self::EditPodPreset,
         Self::SelectRecordRoute,
         Self::InspectFirmware,
+        Self::InspectOfflineDeviceDescriptor,
         Self::StartAudioCapture,
         Self::StopAudioCapture,
         Self::OpenAudioStream,
@@ -119,7 +121,12 @@ pub fn capability(profile: ProductProfile, operation: Operation) -> Capability {
 
 fn declared(profile: ProductProfile, operation: Operation) -> CapabilityState {
     match profile {
-        ProductProfile::PodHd500x if operation == Operation::InspectFirmware => {
+        ProductProfile::PodHd500x
+            if matches!(
+                operation,
+                Operation::InspectFirmware | Operation::InspectOfflineDeviceDescriptor
+            ) =>
+        {
             CapabilityState::Offline
         }
         ProductProfile::WorkbenchHd | ProductProfile::Jtv69 | ProductProfile::PodHd500x => {
@@ -137,6 +144,7 @@ fn variax_state(operation: Operation) -> CapabilityState {
         | Operation::SaveGuitarCopy
         | Operation::ApplyFamilyMath
         | Operation::InspectFirmware => CapabilityState::Offline,
+        Operation::InspectOfflineDeviceDescriptor => CapabilityState::Unsupported,
         Operation::OpenPodPreset | Operation::EditPodPreset | Operation::SelectRecordRoute => {
             CapabilityState::Unsupported
         }
@@ -158,6 +166,7 @@ fn variax_state(operation: Operation) -> CapabilityState {
 fn pod_state(operation: Operation) -> CapabilityState {
     match operation {
         Operation::InspectFirmware => CapabilityState::Offline,
+        Operation::InspectOfflineDeviceDescriptor => CapabilityState::Unsupported,
         Operation::OpenPodPreset | Operation::EditPodPreset => CapabilityState::Offline,
         Operation::SelectRecordRoute => CapabilityState::Offline,
         Operation::OpenGuitarPreset
@@ -205,6 +214,9 @@ fn note(profile: ProductProfile, operation: Operation) -> &'static str {
         (ProductProfile::PodxtLive, Operation::InspectFirmware) => {
             "Inspects a FORM/L6FF container and requires the archived PODxt Live product and version. A Variax image is the wrong product."
         }
+        (_, Operation::InspectOfflineDeviceDescriptor) => {
+            "Offline Windows HD500X descriptor inspection is profile-gated; it is not live enumeration or a device query."
+        }
         (ProductProfile::PodxtLive, Operation::OpenPodPreset) => {
             "Opens one FORM/L6PA, FORM/L6FS, or FORM/L6AS tone whose PINF target is PODxt Live 0x0003000A. Amp slot 0x00030000 and, on L6AS only, cab slot 0x00030001 expose model ids. Known asset names and 12-byte parameter records are reported. No unit or range was recovered. Nothing is sent."
         }
@@ -248,6 +260,9 @@ fn hd500x_limit(operation: Operation) -> &'static str {
         }
         Operation::InspectFirmware => {
             "The HD500X session can run generic bounded FORM/L6FF structure inspection on the supplied P25 image. Central's separate metadata name mapping and native parser/loader trace do not resolve the PHF header product/version consumer join. The public Flash Memory v2.62 release 6260 listing does not establish that link or the separate USB Firmware 1.04 component/installed state."
+        }
+        Operation::InspectOfflineDeviceDescriptor => {
+            "Inspects only caller-owned synthetic/offline bytes from the Windows 4.2.7.7 descriptor result. It does not enumerate or query hardware."
         }
         Operation::StartAudioCapture
         | Operation::StopAudioCapture

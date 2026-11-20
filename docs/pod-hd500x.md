@@ -66,6 +66,33 @@ profile. POD HD500, without the X, is `USB\VID_0E41&PID_414D`. The Mac
 `0x5057`, and POD HD 400 is `0x5058`. PODxt Live on the initial rig remains
 `0x4650`.
 
+### Offline Windows descriptor result inspection
+
+`rig::windows_descriptor` inspects only caller-owned returned bytes and
+explicit offline completion status/count. Its source scope is Windows driver
+4.2.7.7 and the extracted INF SHA-256
+`50080c9e9efb7b104e2520ea577db3eb2c13f9c16fb0cf90c1628ef31f5b1790`.
+Success is accepted only when the supplied slice and reported actual length
+agree and both are exactly 18 bytes, with `bLength=18` and descriptor type 1.
+VID/PID are decoded little-endian from offsets 8/10, and all raw bytes are
+retained. Pending and negative completion return typed states without
+examining response bytes; absent, inconsistent, short, malformed, or
+contradictory success results are rejected before field access.
+
+The observed driver branch maps PID `0x4159` to two opaque record-list counts
+of 2/2, irrespective of VID; other PIDs are explicitly unmapped. Rust's
+conservative HD500X identity preflight separately requires the INF-qualified
+pair `0x0E41:0x4159`. A match is still only an offline identity comparison:
+hardware status stays `UnverifiedAndLocked`, endpoint knowledge stays
+`Unknown`, `select_record_route` stays rejected, and audio open/capture stays
+locked. Synthetic tests cover all 18 truncation lengths, malformed fields,
+completion/length contradictions, byte order, PID-only versus VID/PID gates,
+profile gating, and non-promotion of physical routes. Six synthetic test
+methods pass; full local validation passes 375 tests (290 library, 59 GUI,
+26 integration), Clippy with `-D warnings`, and formatting. These checks are
+offline only. No request builder, enumerator, device query, or route
+interpretation is implemented.
+
 ## Audio defaults
 
 `L6PODHD5SE_NT_AddReg` and the amd64 copy set:

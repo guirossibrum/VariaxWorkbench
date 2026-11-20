@@ -833,6 +833,25 @@ impl Session {
         backend::inspect_extension_firmware(bytes)
     }
 
+    /// Inspects a caller-owned offline descriptor result for the Windows
+    /// HD500X driver. This never builds a request or contacts a device.
+    pub fn inspect_hd500x_windows_descriptor(
+        self,
+        returned: crate::rig::windows_descriptor::ReturnedBytes<'_>,
+    ) -> Result<crate::rig::windows_descriptor::Inspection, Rejection> {
+        let operation = Operation::InspectOfflineDeviceDescriptor;
+        match self.kind {
+            SessionKind::InitialRig => Err(Rejection::Unsupported {
+                profile: ProductProfile::Variax600,
+                operation,
+            }),
+            SessionKind::Extension(ProductProfile::PodHd500x) => {
+                Ok(crate::rig::windows_descriptor::inspect(returned))
+            }
+            SessionKind::Extension(profile) => Err(Rejection::Unverified { profile, operation }),
+        }
+    }
+
     /// Plans one documented PODxt Live record route. The returned plan keeps
     /// `stream_opened` false and carries no outbound bytes.
     pub fn select_record_route(

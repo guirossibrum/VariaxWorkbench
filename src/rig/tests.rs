@@ -2379,8 +2379,10 @@ fn physical_claims_and_planned_work_do_not_start_a_backend() {
                 assert_eq!(claimed, CapabilityState::Locked);
             } else if profile.is_extension() {
                 let expected = if profile == ProductProfile::PodHd500x
-                    && operation == Operation::InspectFirmware
-                {
+                    && matches!(
+                        operation,
+                        Operation::InspectFirmware | Operation::InspectOfflineDeviceDescriptor
+                    ) {
                     CapabilityState::Offline
                 } else {
                     CapabilityState::Unverified

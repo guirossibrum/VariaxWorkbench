@@ -15,6 +15,7 @@ pub mod hd500x_audio;
 mod model;
 mod registry;
 mod session;
+pub mod windows_descriptor;
 
 pub use capability::{Capability, CapabilityState, Operation};
 pub use model::{Component, DeviceFamily, ProductProfile, RoleKind, VersionKnowledge};
