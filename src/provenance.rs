@@ -627,12 +627,16 @@ pub const ACQUISITION_GAPS: &[Gap] = &[
         detail: "Keeping the License Manager and Monkey installers does not keep their transaction server available after the announced 2026-04-10 retirement.",
     },
     Gap {
-        id: "hd500x-flash-2.62-not-obtained",
-        detail: "POD HD500X Flash Memory v2.62 is public release 6260, estimated 892 KB. The unauthenticated readeula request redirected to the account login page and getrelease returned HTTP 403. No image was saved. USB Firmware 1.04 is a separate name in those notes and was not downloaded.",
+        id: "hd500x-flash-public-route-unresolved",
+        detail: "POD HD500X Flash Memory v2.62 is public release 6260, estimated 892 KB. The unauthenticated readeula request redirected to the account login page and getrelease returned HTTP 403; these public routes did not supply the image. Separately supplied private firmware-image material has been examined statically but has not been linked to release 6260 or admitted for applicability. USB Firmware 1.04 is a separate note label and is not attributed to that material.",
     },
     Gap {
-        id: "hd500x-editor-not-obtained",
-        detail: "POD HD500X Edit releases 9781 and 8559 were not downloaded. On 2026-11-16 unauthenticated HEAD requests for both readeula links returned HTTP 302 to the account login page, and HEAD requests for the CDN directories media/software/9781/ and media/software/8559/ returned HTTP 404. No preset container, model id, or effect id was extracted.",
+        id: "hd500x-editor-public-routes-unresolved",
+        detail: "POD HD500X Edit releases 9781 and 8559 were not supplied by the public routes checked. On 2026-11-16 unauthenticated HEAD requests for both readeula links returned HTTP 302 to the account login page, and HEAD requests for the CDN directories media/software/9781/ and media/software/8559/ returned HTTP 404. Separate owner-supplied Editor/PHF/model-default material has since been examined statically. Its contents remain private and do not establish an admitted product-attributed preset schema or semantic support.",
+    },
+    Gap {
+        id: "hd500x-private-static-evidence-not-admitted",
+        detail: "Owner-supplied Editor/PHF/model-default and firmware-image materials have been examined statically. Their private contents are not distributed; source availability is distinct from public product identity, format admission, target attribution, firmware applicability, and supported editing behavior.",
     },
     Gap {
         id: "hd500x-independent-bytes-are-not-a-product",
@@ -831,8 +835,9 @@ pub fn validate_catalog() -> Result<(), String> {
         "variax-500-700-not-obtained",
         "source-urls-missing",
         "app-identifier-omitted",
-        "hd500x-flash-2.62-not-obtained",
-        "hd500x-editor-not-obtained",
+        "hd500x-flash-public-route-unresolved",
+        "hd500x-editor-public-routes-unresolved",
+        "hd500x-private-static-evidence-not-admitted",
         "hd500x-independent-bytes-are-not-a-product",
     ];
     for id in required {

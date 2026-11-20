@@ -16,6 +16,7 @@ pub enum Operation {
     EditPodPreset,
     SelectRecordRoute,
     InspectFirmware,
+    InspectOfflineDeviceDescriptor,
     StartAudioCapture,
     StopAudioCapture,
     OpenAudioStream,
@@ -28,10 +29,11 @@ pub enum Operation {
     SendControl,
     InstallModule,
     BindDriver,
+    TransformOfflineRecord,
 }
 
 impl Operation {
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 22] = [
         Self::OpenGuitarPreset,
         Self::OpenGuitarBank,
         Self::SaveGuitarCopy,
@@ -40,6 +42,7 @@ impl Operation {
         Self::EditPodPreset,
         Self::SelectRecordRoute,
         Self::InspectFirmware,
+        Self::InspectOfflineDeviceDescriptor,
         Self::StartAudioCapture,
         Self::StopAudioCapture,
         Self::OpenAudioStream,
@@ -52,6 +55,7 @@ impl Operation {
         Self::SendControl,
         Self::InstallModule,
         Self::BindDriver,
+        Self::TransformOfflineRecord,
     ];
 
     pub const fn is_physical(self) -> bool {
@@ -119,6 +123,16 @@ pub fn capability(profile: ProductProfile, operation: Operation) -> Capability {
 
 fn declared(profile: ProductProfile, operation: Operation) -> CapabilityState {
     match profile {
+        ProductProfile::PodHd500x
+            if matches!(
+                operation,
+                Operation::InspectFirmware
+                    | Operation::InspectOfflineDeviceDescriptor
+                    | Operation::TransformOfflineRecord
+            ) =>
+        {
+            CapabilityState::Offline
+        }
         ProductProfile::WorkbenchHd | ProductProfile::Jtv69 | ProductProfile::PodHd500x => {
             CapabilityState::Unverified
         }
@@ -134,9 +148,11 @@ fn variax_state(operation: Operation) -> CapabilityState {
         | Operation::SaveGuitarCopy
         | Operation::ApplyFamilyMath
         | Operation::InspectFirmware => CapabilityState::Offline,
+        Operation::InspectOfflineDeviceDescriptor => CapabilityState::Unsupported,
         Operation::OpenPodPreset | Operation::EditPodPreset | Operation::SelectRecordRoute => {
             CapabilityState::Unsupported
         }
+        Operation::TransformOfflineRecord => CapabilityState::Unsupported,
         Operation::StartAudioCapture
         | Operation::StopAudioCapture
         | Operation::OpenAudioStream
@@ -155,12 +171,14 @@ fn variax_state(operation: Operation) -> CapabilityState {
 fn pod_state(operation: Operation) -> CapabilityState {
     match operation {
         Operation::InspectFirmware => CapabilityState::Offline,
+        Operation::InspectOfflineDeviceDescriptor => CapabilityState::Unsupported,
         Operation::OpenPodPreset | Operation::EditPodPreset => CapabilityState::Offline,
         Operation::SelectRecordRoute => CapabilityState::Offline,
         Operation::OpenGuitarPreset
         | Operation::OpenGuitarBank
         | Operation::SaveGuitarCopy
         | Operation::ApplyFamilyMath => CapabilityState::Unsupported,
+        Operation::TransformOfflineRecord => CapabilityState::Unsupported,
         Operation::StartAudioCapture
         | Operation::StopAudioCapture
         | Operation::OpenAudioStream
@@ -199,8 +217,14 @@ fn note(profile: ProductProfile, operation: Operation) -> &'static str {
         (ProductProfile::Variax600, Operation::SelectRecordRoute) => {
             "USB audio belongs to the PODxt Live role on this rig. The guitar role has no recording route."
         }
+        (ProductProfile::PodHd500x, Operation::TransformOfflineRecord) => {
+            "Source-scoped policy-1 owned-memory transformation only. It is not an audio route, live queue, Windows adapter, callback model, or physical endpoint."
+        }
         (ProductProfile::PodxtLive, Operation::InspectFirmware) => {
             "Inspects a FORM/L6FF container and requires the archived PODxt Live product and version. A Variax image is the wrong product."
+        }
+        (_, Operation::InspectOfflineDeviceDescriptor) => {
+            "Offline Windows HD500X descriptor inspection is profile-gated; it is not live enumeration or a device query."
         }
         (ProductProfile::PodxtLive, Operation::OpenPodPreset) => {
             "Opens one FORM/L6PA, FORM/L6FS, or FORM/L6AS tone whose PINF target is PODxt Live 0x0003000A. Amp slot 0x00030000 and, on L6AS only, cab slot 0x00030001 expose model ids. Known asset names and 12-byte parameter records are reported. No unit or range was recovered. Nothing is sent."
@@ -235,16 +259,22 @@ fn hd500x_limit(operation: Operation) -> &'static str {
             "POD HD500X is a separate family from original Variax and from PODxt. No coefficient identity is registered."
         }
         Operation::OpenPodPreset => {
-            "No POD HD500X preset container, editor bytes, or file product id was acquired. Independent H5EP and H5ES measurements are not a registered container. Printed names in the 2013 public manuals are not a byte layout. A PODxt Live tone is not opened on this profile and is not converted."
+            "Offline library recognizes the statically traced Edit H5EP/H5ES/H5EB framing, validates the recovered body subset, and can extract child records. This file group does not prove physical target compatibility. A PODxt Live tone is not opened on this profile and is not converted."
         }
         Operation::EditPodPreset => {
-            "No POD HD500X model, effect, or parameter definition was recovered. Printed names in the public manuals are not ids. Values are not edited."
+            "Source-identified offline HD Edit operations cover 364 primary type-1 model/key rows across 108 descriptor models, 80 selected non-type-1 numeric controls across 65 descriptor models (444 controls across 143 descriptor model IDs), four exact type-9 three-choice model/key rows, four exact type-11 five-choice model/key rows, one static-derived type-0x0D four-choice candidate (model 0x020A001D/key 0x3F100003), and one static-derived type-0x13 (decimal 19) eight-choice candidate (model 0x020A0011/key 0x3F100003). Type-1 values use the editor integer-percent grid; numeric values use each descriptor's recovered primary-widget integer bounds and source-derived normalized float conversion, without assigning physical units. Type-9/type-11/type-0x0D/type-0x13 choices use closed neutral enums and exact binary32 words; type-0x0D words include statically traced intermediate f32 step rounding, while type-0x13 words are static candidates and neither is a runtime parity claim. No localized names or physical units are inferred. The active tag 0x1B entry admits only the Vintage Pre primary key 0x3F100005 value on the 0..15000 editor grid; the auxiliary EDI widget and post-event root callback remain unresolved. H5EP/H5ES/H5EB association and edits do not establish a physical product target or complete editor parity. Other effect/control contracts, product-qualified maintenance and remaining source joins remain unavailable."
         }
         Operation::SelectRecordRoute => {
-            "The Windows INF DefaultSampleRate is 48000 and DefaultWordSize is 24, with EngineFormatLock 0. Those are driver defaults. They do not select a PODxt Live record route and do not open a stream."
+            "HD500X record routing remains Unverified. The Windows INF's DefaultSampleRate 48000, DefaultWordSize 24 and EngineFormatLock 0 are driver defaults; guide routing statements do not provide the product-qualified USB endpoint, format, timing and callback join required for an offline route. No stream is opened."
         }
         Operation::InspectFirmware => {
-            "Public listing names Flash Memory v2.62, release 6260, and the notes also name USB Firmware 1.04. Neither image is local. FORM/L6FF inspection is not applied."
+            "The HD500X session can run generic bounded FORM/L6FF structure inspection on the supplied P25 image. Central's separate metadata name mapping and native parser/loader trace do not resolve the PHF header product/version consumer join. The public Flash Memory v2.62 release 6260 listing does not establish that link or the separate USB Firmware 1.04 component/installed state."
+        }
+        Operation::InspectOfflineDeviceDescriptor => {
+            "Inspects caller-owned offline Windows 4.2.7.7 device/configuration descriptor bytes and explicit selectors. It does not enumerate, query, configure, claim or open hardware; route status stays UnverifiedAndLocked."
+        }
+        Operation::TransformOfflineRecord => {
+            "Runs the source-scoped Windows 4.2.7.7 policy-1 transformation on owned initialized bytes. Nonzero source statuses may include copies or state effects. This is not product-qualified recording or endpoint evidence."
         }
         Operation::StartAudioCapture
         | Operation::StopAudioCapture

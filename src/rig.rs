@@ -11,16 +11,26 @@
 pub mod audio;
 mod backend;
 mod capability;
+pub mod hd500x_audio;
 mod model;
+mod record_transform;
 mod registry;
 mod session;
+pub mod windows_descriptor;
 
 pub use capability::{Capability, CapabilityState, Operation};
 pub use model::{Component, DeviceFamily, ProductProfile, RoleKind, VersionKnowledge};
+pub use record_transform::{
+    AdmissionError as RecordAdmissionError, EndpointState as RecordEndpointState, RecordSnapshot,
+    Segment as RecordSegment, SourceStatus as RecordSourceStatus,
+    TransferDirection as RecordTransferDirection, TransferReport as RecordTransferReport,
+    TransformError as RecordTransformError,
+};
 pub use registry::{INITIAL_HOST, LogicalRole, PhysicalHost, WORKBENCH_USB_IS_A_SEPARATE_MATCH};
 pub use session::{
-    FirmwareSummary, GuitarBankSummary, GuitarPresetSummary, LIVE_BACKEND_INITIALIZER,
-    OfflineRecordingGate, PodToneSummary, Rejection, Session,
+    FirmwareStructureSummary, FirmwareSummary, GuitarBankSummary, GuitarPresetSummary,
+    HdEditorFileSummary, HdEditorLibrary, LIVE_BACKEND_INITIALIZER, OfflineFileFamily,
+    OfflineRecordingGate, PhysicalTargetApplicability, PodToneSummary, Rejection, Session,
 };
 
 #[cfg(test)]

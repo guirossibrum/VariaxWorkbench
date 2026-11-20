@@ -10,6 +10,7 @@ use super::backend;
 use super::capability::{self, Capability, CapabilityState, Operation};
 use super::model::{self, Component, ProductProfile, RoleKind, VersionKnowledge};
 use super::registry::{INITIAL_HOST, PhysicalHost};
+pub use crate::pod_preset::HdEditorLibrary;
 
 /// No function constructs a live transport. This stays `None`.
 pub const LIVE_BACKEND_INITIALIZER: Option<fn() -> Session> = None;
@@ -62,6 +63,29 @@ pub struct PodToneSummary {
     pub undecoded_parameter_chunks: usize,
 }
 
+/// A file-format association only. It is not a connected-device identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OfflineFileFamily {
+    PodHdEdit,
+}
+
+/// Physical applicability remains unknown even when the editor file parses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PhysicalTargetApplicability {
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HdEditorFileSummary {
+    pub index: usize,
+    pub kind: &'static str,
+    pub file_family: OfflineFileFamily,
+    pub physical_target: PhysicalTargetApplicability,
+    /// Raw H5EP words from offsets 0x10 and 0x14. The Mac writer's producer
+    /// is traced, but the source editor for this file is not established.
+    pub header_words_10_14: Option<(u32, u32)>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GuitarBankSummary {
     pub banks: usize,
@@ -74,6 +98,23 @@ pub struct FirmwareSummary {
     pub product_id: u32,
     pub version: u32,
     pub applicability: &'static str,
+    pub integrity_is_not_authentication: bool,
+}
+
+/// Generic bounded FORM/L6FF structure observed through an extension profile.
+/// Declared header identity is data only; it does not establish target support.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FirmwareStructureSummary {
+    pub source_bytes: usize,
+    pub source_sha256: [u8; 32],
+    pub declared_product_id: u32,
+    pub declared_version: u32,
+    pub catalog_applicability: crate::firmware::Applicability,
+    pub image_bytes: usize,
+    pub image_sha256: [u8; 32],
+    pub header_md5_matches: bool,
+    pub region_count: usize,
+    pub physical_target: PhysicalTargetApplicability,
     pub integrity_is_not_authentication: bool,
 }
 
@@ -131,6 +172,38 @@ impl Rejection {
     }
 }
 
+fn summarize_hd_editor_file(
+    library: &HdEditorLibrary,
+    index: usize,
+) -> Result<HdEditorFileSummary, Rejection> {
+    let file = library
+        .file(index)
+        .ok_or_else(|| Rejection::format("file index is outside the HD editor library"))?;
+    let kind = file
+        .hd_container_kind()
+        .ok_or_else(|| Rejection::format("file is outside the HD Edit file family"))?;
+    let header_words_10_14 = match file {
+        crate::pod_preset::PodPresetFile::H5ep(preset) => Some(preset.header_words_10_14()),
+        _ => None,
+    };
+    Ok(HdEditorFileSummary {
+        index,
+        kind,
+        file_family: OfflineFileFamily::PodHdEdit,
+        physical_target: PhysicalTargetApplicability::Unknown,
+        header_words_10_14,
+    })
+}
+
+fn map_hd_library_error(error: crate::pod_preset::ToneError) -> Rejection {
+    match error {
+        crate::pod_preset::ToneError::Format { detail } => Rejection::Format { detail },
+        crate::pod_preset::ToneError::WrongTarget { device_id } => Rejection::format(format!(
+            "PODxt tone target {device_id:08x} is outside the HD Edit file library"
+        )),
+    }
+}
+
 impl Session {
     /// The Variax 600 through PODxt Live rig. This does not scan USB.
     pub const fn initial_rig() -> Self {
@@ -154,6 +227,495 @@ impl Session {
 
     pub const fn live_backend_is_absent(self) -> bool {
         matches!(self.live, LiveBackend::Absent)
+    }
+
+    /// Creates an in-memory library for the statically framed HD Edit file
+    /// group. The file family does not identify a physical target.
+    pub fn new_hd_editor_library(self) -> HdEditorLibrary {
+        let _ = self;
+        HdEditorLibrary::default()
+    }
+
+    /// Imports one H5EP/H5ES/H5EB file through the shared offline session
+    /// interface. This does not promote any profile's physical capability.
+    pub fn import_hd_editor_file(
+        self,
+        library: &mut HdEditorLibrary,
+        bytes: Vec<u8>,
+    ) -> Result<HdEditorFileSummary, Rejection> {
+        let _ = self;
+        let index = library.import_bytes(bytes).map_err(map_hd_library_error)?;
+        summarize_hd_editor_file(library, index)
+    }
+
+    pub fn extract_hd_editor_preset(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        setlist: usize,
+        preset: usize,
+    ) -> Result<HdEditorFileSummary, Rejection> {
+        let _ = self;
+        let index = library
+            .extract_preset(file, setlist, preset)
+            .map_err(map_hd_library_error)?;
+        summarize_hd_editor_file(library, index)
+    }
+
+    /// Applies an admitted type-9 choice through the POD HD500X
+    /// extension profile. H5EP file association is not physical applicability.
+    pub fn set_hd_type9_choice(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: crate::pod_preset::HdFxSlot,
+        choice: crate::pod_preset::HdType9Choice,
+    ) -> Result<(), Rejection> {
+        match self.kind {
+            SessionKind::Extension(ProductProfile::PodHd500x) => {}
+            SessionKind::Extension(profile) => {
+                return Err(Rejection::Unsupported {
+                    profile,
+                    operation: Operation::EditPodPreset,
+                });
+            }
+            SessionKind::InitialRig => {
+                return Err(Rejection::Unsupported {
+                    profile: ProductProfile::Variax600,
+                    operation: Operation::EditPodPreset,
+                });
+            }
+        }
+        library
+            .set_type9_choice(file, effect_slot, choice)
+            .map_err(map_hd_library_error)
+    }
+
+    /// Applies the exact admitted type-8 two-choice control through the
+    /// POD HD500X extension profile. File association is not physical
+    /// applicability.
+    pub fn set_hd_type8_choice(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: crate::pod_preset::HdFxSlot,
+        choice: crate::pod_preset::HdType8Choice,
+    ) -> Result<(), Rejection> {
+        match self.kind {
+            SessionKind::Extension(ProductProfile::PodHd500x) => {}
+            SessionKind::Extension(profile) => {
+                return Err(Rejection::Unsupported {
+                    profile,
+                    operation: Operation::EditPodPreset,
+                });
+            }
+            SessionKind::InitialRig => {
+                return Err(Rejection::Unsupported {
+                    profile: ProductProfile::Variax600,
+                    operation: Operation::EditPodPreset,
+                });
+            }
+        }
+        library
+            .set_type8_choice(file, effect_slot, choice)
+            .map_err(map_hd_library_error)
+    }
+
+    /// Applies the exact type-10 two-choice association only in the HD500X extension profile.
+    pub fn set_hd_type10_choice(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: crate::pod_preset::HdFxSlot,
+        choice: crate::pod_preset::HdType10Choice,
+    ) -> Result<(), Rejection> {
+        match self.kind {
+            SessionKind::Extension(ProductProfile::PodHd500x) => {}
+            SessionKind::Extension(profile) => {
+                return Err(Rejection::Unsupported {
+                    profile,
+                    operation: Operation::EditPodPreset,
+                });
+            }
+            SessionKind::InitialRig => {
+                return Err(Rejection::Unsupported {
+                    profile: ProductProfile::Variax600,
+                    operation: Operation::EditPodPreset,
+                });
+            }
+        }
+        library
+            .set_type10_choice(file, effect_slot, choice)
+            .map_err(map_hd_library_error)
+    }
+
+    /// Applies one exact type-11 model/key control only through the HD500X
+    /// extension profile. The H5EP association does not establish hardware
+    /// applicability.
+    pub fn set_hd_type11_choice(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: crate::pod_preset::HdFxSlot,
+        control: crate::pod_preset::HdType11Control,
+        choice: crate::pod_preset::HdType11Choice,
+    ) -> Result<(), Rejection> {
+        match self.kind {
+            SessionKind::Extension(ProductProfile::PodHd500x) => {}
+            SessionKind::Extension(profile) => {
+                return Err(Rejection::Unsupported {
+                    profile,
+                    operation: Operation::EditPodPreset,
+                });
+            }
+            SessionKind::InitialRig => {
+                return Err(Rejection::Unsupported {
+                    profile: ProductProfile::Variax600,
+                    operation: Operation::EditPodPreset,
+                });
+            }
+        }
+        library
+            .set_type11_choice(file, effect_slot, control, choice)
+            .map_err(map_hd_library_error)
+    }
+
+    /// Applies the one exact type-12 association only through the HD500X
+    /// extension profile. It does not establish physical applicability.
+    pub fn set_hd_type12_choice(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: crate::pod_preset::HdFxSlot,
+        control: crate::pod_preset::HdType12Control,
+        choice: crate::pod_preset::HdType12Choice,
+    ) -> Result<(), Rejection> {
+        match self.kind {
+            SessionKind::Extension(ProductProfile::PodHd500x) => {}
+            SessionKind::Extension(profile) => {
+                return Err(Rejection::Unsupported {
+                    profile,
+                    operation: Operation::EditPodPreset,
+                });
+            }
+            SessionKind::InitialRig => {
+                return Err(Rejection::Unsupported {
+                    profile: ProductProfile::Variax600,
+                    operation: Operation::EditPodPreset,
+                });
+            }
+        }
+        library
+            .set_type12_choice(file, effect_slot, control, choice)
+            .map_err(map_hd_library_error)
+    }
+
+    /// Applies the bounded static-derived type-0x0D choice only in the
+    /// offline HD500X extension profile; this is not physical applicability.
+    pub fn set_hd_type13_choice(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: crate::pod_preset::HdFxSlot,
+        control: crate::pod_preset::HdType13Control,
+        choice: crate::pod_preset::HdType13Choice,
+    ) -> Result<(), Rejection> {
+        match self.kind {
+            SessionKind::Extension(ProductProfile::PodHd500x) => {}
+            SessionKind::Extension(profile) => {
+                return Err(Rejection::Unsupported {
+                    profile,
+                    operation: Operation::EditPodPreset,
+                });
+            }
+            SessionKind::InitialRig => {
+                return Err(Rejection::Unsupported {
+                    profile: ProductProfile::Variax600,
+                    operation: Operation::EditPodPreset,
+                });
+            }
+        }
+        library
+            .set_type13_choice(file, effect_slot, control, choice)
+            .map_err(map_hd_library_error)
+    }
+
+    /// Applies the bounded static-derived descriptor type-0x13 (decimal 19)
+    /// candidate only in the offline HD500X extension profile.
+    pub fn set_hd_type19_choice(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: crate::pod_preset::HdFxSlot,
+        control: crate::pod_preset::HdType19Control,
+        choice: crate::pod_preset::HdType19Choice,
+    ) -> Result<(), Rejection> {
+        match self.kind {
+            SessionKind::Extension(ProductProfile::PodHd500x) => {}
+            SessionKind::Extension(profile) => {
+                return Err(Rejection::Unsupported {
+                    profile,
+                    operation: Operation::EditPodPreset,
+                });
+            }
+            SessionKind::InitialRig => {
+                return Err(Rejection::Unsupported {
+                    profile: ProductProfile::Variax600,
+                    operation: Operation::EditPodPreset,
+                });
+            }
+        }
+        library
+            .set_type19_choice(file, effect_slot, control, choice)
+            .map_err(map_hd_library_error)
+    }
+
+    /// Applies the admitted offline enable flag only through a POD HD500X
+    /// extension session. H5EP v1 is enforced by the parser; file context does
+    /// not establish a physical unit or firmware version.
+    pub fn set_hd_effect_enabled(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: crate::pod_preset::HdFxSlot,
+        enabled: bool,
+    ) -> Result<(), Rejection> {
+        match self.kind {
+            SessionKind::Extension(ProductProfile::PodHd500x) => {}
+            SessionKind::Extension(profile) => {
+                return Err(Rejection::Unsupported {
+                    profile,
+                    operation: Operation::EditPodPreset,
+                });
+            }
+            SessionKind::InitialRig => {
+                return Err(Rejection::Unsupported {
+                    profile: ProductProfile::Variax600,
+                    operation: Operation::EditPodPreset,
+                });
+            }
+        }
+        library
+            .set_effect_enabled(file, effect_slot, enabled)
+            .map_err(map_hd_library_error)
+    }
+
+    /// Replaces an existing Octave Fuzz in one standalone offline H5EP item
+    /// with the admitted Vintage Pre source defaults. No device is contacted.
+    pub fn replace_hd_octave_fuzz_with_vintage_pre_defaults(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: crate::pod_preset::HdFxSlot,
+    ) -> Result<(), Rejection> {
+        let _ = self;
+        library
+            .replace_octave_fuzz_with_vintage_pre_defaults(file, effect_slot)
+            .map_err(map_hd_library_error)
+    }
+
+    /// Replaces an existing Octave Fuzz in one offline H5EP item with the
+    /// admitted Screamer defaults. No device is contacted.
+    pub fn replace_hd_octave_fuzz_with_screamer_defaults(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: crate::pod_preset::HdFxSlot,
+    ) -> Result<(), Rejection> {
+        let _ = self;
+        library
+            .replace_octave_fuzz_with_screamer_defaults(file, effect_slot)
+            .map_err(map_hd_library_error)
+    }
+
+    /// Replaces an existing Octave Fuzz in one offline H5EP item with the
+    /// admitted Sub Octave Fuzz defaults. No device is contacted.
+    pub fn replace_hd_octave_fuzz_with_sub_octave_fuzz_defaults(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: crate::pod_preset::HdFxSlot,
+    ) -> Result<(), Rejection> {
+        let _ = self;
+        library
+            .replace_octave_fuzz_with_sub_octave_fuzz_defaults(file, effect_slot)
+            .map_err(map_hd_library_error)
+    }
+
+    /// Replaces an existing Octave Fuzz in one offline H5EP item with Noise
+    /// Gate defaults. No device is contacted.
+    pub fn replace_hd_octave_fuzz_with_noise_gate_defaults(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: crate::pod_preset::HdFxSlot,
+    ) -> Result<(), Rejection> {
+        let _ = self;
+        library
+            .replace_octave_fuzz_with_noise_gate_defaults(file, effect_slot)
+            .map_err(map_hd_library_error)
+    }
+
+    /// Applies one admitted closed-set distortion/fuzz default to a standalone
+    /// offline H5EP item. No device is contacted.
+    pub fn replace_hd_octave_fuzz_with_admitted_defaults(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: crate::pod_preset::HdFxSlot,
+        target: crate::pod_preset::HdDistortionDefault,
+    ) -> Result<(), Rejection> {
+        let _ = self;
+        library
+            .replace_octave_fuzz_with_admitted_defaults(file, effect_slot, target)
+            .map_err(map_hd_library_error)
+    }
+
+    /// Applies one admitted closed-set FX default to a standalone offline
+    /// H5EP item. No device is contacted.
+    pub fn replace_hd_octave_fuzz_with_admitted_dynamics_defaults(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: crate::pod_preset::HdFxSlot,
+        target: crate::pod_preset::HdDynamicsDefault,
+    ) -> Result<(), Rejection> {
+        let _ = self;
+        library
+            .replace_octave_fuzz_with_admitted_dynamics_defaults(file, effect_slot, target)
+            .map_err(map_hd_library_error)
+    }
+
+    /// Applies one closed-set reverb default to an offline standalone H5EP.
+    /// No device is contacted.
+    pub fn replace_hd_octave_fuzz_with_admitted_reverb_defaults(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: crate::pod_preset::HdFxSlot,
+        target: crate::pod_preset::HdReverbDefault,
+    ) -> Result<(), Rejection> {
+        let _ = self;
+        library
+            .replace_octave_fuzz_with_admitted_reverb_defaults(file, effect_slot, target)
+            .map_err(map_hd_library_error)
+    }
+
+    pub fn set_hd_screamer_control_percent(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: usize,
+        control: crate::pod_preset::ScreamerControl,
+        percent: u8,
+    ) -> Result<(), Rejection> {
+        self.set_hd_type1_control_percent(
+            library,
+            file,
+            effect_slot,
+            crate::pod_preset::HdType1Control::Screamer(control),
+            percent,
+        )
+    }
+
+    pub fn set_hd_type1_control_percent(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: usize,
+        control: crate::pod_preset::HdType1Control,
+        percent: u8,
+    ) -> Result<(), Rejection> {
+        let _ = self;
+        let preset = match library.file_mut(file) {
+            Some(crate::pod_preset::PodPresetFile::H5ep(preset)) => preset,
+            Some(_) => {
+                return Err(Rejection::format(
+                    "HD type-1 controls require an H5EP preset",
+                ));
+            }
+            None => {
+                return Err(Rejection::format(
+                    "file index is outside the HD editor library",
+                ));
+            }
+        };
+        preset
+            .set_hd_type1_control_percent(effect_slot, control, percent)
+            .map_err(map_hd_library_error)
+    }
+
+    /// Edits one source-joined primary type-1 delay control in the offline
+    /// HD Edit library. This does not establish physical target compatibility.
+    pub fn set_hd_type1_mapped_control_percent(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: usize,
+        control: crate::pod_preset::HdType1MappedControl,
+        percent: u8,
+    ) -> Result<(), Rejection> {
+        let _ = self;
+        let preset = match library.file_mut(file) {
+            Some(crate::pod_preset::PodPresetFile::H5ep(preset)) => preset,
+            Some(_) => {
+                return Err(Rejection::format(
+                    "HD mapped type-1 controls require an H5EP preset",
+                ));
+            }
+            None => {
+                return Err(Rejection::format(
+                    "file index is outside the HD editor library",
+                ));
+            }
+        };
+        preset
+            .set_hd_type1_mapped_control_percent(effect_slot, control, percent)
+            .map_err(map_hd_library_error)
+    }
+
+    /// Edits one source-joined non-type-1 HD Edit numeric control in the
+    /// shared offline library. The file association does not establish a
+    /// physical product target.
+    pub fn set_hd_numeric_control_value(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: usize,
+        control: crate::pod_preset::HdNumericControl,
+        value: i32,
+    ) -> Result<(), Rejection> {
+        let _ = self;
+        let preset = match library.file_mut(file) {
+            Some(crate::pod_preset::PodPresetFile::H5ep(preset)) => preset,
+            Some(_) => {
+                return Err(Rejection::format(
+                    "HD numeric controls require an H5EP preset",
+                ));
+            }
+            None => {
+                return Err(Rejection::format(
+                    "file index is outside the HD editor library",
+                ));
+            }
+        };
+        preset
+            .set_hd_numeric_control_value(effect_slot, control, value)
+            .map_err(map_hd_library_error)
+    }
+
+    /// Writes the selected editor file using its non-overwriting copy save.
+    pub fn save_hd_editor_copy(
+        self,
+        library: &HdEditorLibrary,
+        path: &Path,
+        file: usize,
+    ) -> Result<(), Rejection> {
+        let _ = self;
+        let selected = library
+            .file(file)
+            .ok_or_else(|| Rejection::format("file index is outside the HD editor library"))?;
+        selected.save_copy(path).map_err(map_hd_library_error)
     }
 
     pub const fn host(self) -> Option<&'static PhysicalHost> {
@@ -256,13 +818,64 @@ impl Session {
         backend::inspect_firmware(profile, bytes)
     }
 
-    pub fn inspect_extension_firmware(self, _bytes: &[u8]) -> Result<FirmwareSummary, Rejection> {
+    pub fn inspect_extension_firmware(
+        self,
+        bytes: &[u8],
+    ) -> Result<FirmwareStructureSummary, Rejection> {
         let profile = self.extension_profile(Operation::InspectFirmware)?;
+        if profile != ProductProfile::PodHd500x {
+            return Err(Rejection::Unverified {
+                profile,
+                operation: Operation::InspectFirmware,
+            });
+        }
         self.require_profile(profile, Operation::InspectFirmware)?;
-        Err(Rejection::Unverified {
-            profile,
-            operation: Operation::InspectFirmware,
-        })
+        backend::inspect_extension_firmware(bytes)
+    }
+
+    /// Inspects a caller-owned offline descriptor result for the Windows
+    /// HD500X driver. This never builds a request or contacts a device.
+    pub fn inspect_hd500x_windows_descriptor(
+        self,
+        returned: crate::rig::windows_descriptor::ReturnedBytes<'_>,
+    ) -> Result<crate::rig::windows_descriptor::Inspection, Rejection> {
+        let operation = Operation::InspectOfflineDeviceDescriptor;
+        match self.kind {
+            SessionKind::InitialRig => Err(Rejection::Unsupported {
+                profile: ProductProfile::Variax600,
+                operation,
+            }),
+            SessionKind::Extension(ProductProfile::PodHd500x) => {
+                Ok(crate::rig::windows_descriptor::inspect(returned))
+            }
+            SessionKind::Extension(profile) => Err(Rejection::Unverified { profile, operation }),
+        }
+    }
+
+    /// Inspects caller-owned configuration descriptor bytes and returns only
+    /// immutable offline metadata. It never builds a request, selects a live
+    /// USB configuration, or creates a stream/pipe handle.
+    pub fn inspect_hd500x_windows_configuration_snapshot(
+        self,
+        device: crate::rig::windows_descriptor::ReturnedBytes<'_>,
+        configuration: crate::rig::windows_descriptor::ReturnedBytes<'_>,
+        selection: crate::rig::windows_descriptor::ConfigurationSelection,
+    ) -> Result<crate::rig::windows_descriptor::ConfigurationInspection, Rejection> {
+        let operation = Operation::InspectOfflineDeviceDescriptor;
+        match self.kind {
+            SessionKind::InitialRig => Err(Rejection::Unsupported {
+                profile: ProductProfile::Variax600,
+                operation,
+            }),
+            SessionKind::Extension(ProductProfile::PodHd500x) => Ok(
+                crate::rig::windows_descriptor::inspect_configuration_snapshot(
+                    device,
+                    configuration,
+                    selection,
+                ),
+            ),
+            SessionKind::Extension(profile) => Err(Rejection::Unverified { profile, operation }),
+        }
     }
 
     /// Plans one documented PODxt Live record route. The returned plan keeps
@@ -275,6 +888,69 @@ impl Session {
     ) -> Result<crate::pod_audio::RoutePlan, Rejection> {
         self.require(RoleKind::Pod, Operation::SelectRecordRoute)?;
         crate::pod_audio::plan(route, period_bytes, periods, || {}).map_err(Rejection::format)
+    }
+
+    /// Runs the source-scoped policy-1 HD500X record-to-caller transformation
+    /// over owned initialized bytes. The endpoint remains unverified/locked.
+    pub fn transform_hd500x_record_to_caller(
+        self,
+        state: &mut super::record_transform::RecordSnapshot,
+        ring: &[u8],
+        destination: &mut [u8],
+        requested: usize,
+        policy: u8,
+    ) -> Result<super::record_transform::TransferReport, super::record_transform::TransformError>
+    {
+        super::record_transform::session_record_to_caller(
+            self,
+            state,
+            ring,
+            destination,
+            requested,
+            policy,
+        )
+    }
+
+    /// Runs the source-scoped policy-1 caller-to-record transformation over
+    /// owned initialized bytes. This does not connect an audio route.
+    pub fn transform_hd500x_caller_to_record(
+        self,
+        state: &mut super::record_transform::RecordSnapshot,
+        ring: &mut [u8],
+        source: &[u8],
+        requested: usize,
+        policy: u8,
+    ) -> Result<super::record_transform::TransferReport, super::record_transform::TransformError>
+    {
+        super::record_transform::session_caller_to_record(
+            self, state, ring, source, requested, policy,
+        )
+    }
+
+    pub(super) fn require_record_transform_profile(self) -> Result<(), Rejection> {
+        let operation = Operation::TransformOfflineRecord;
+        let profile = self.extension_profile(operation)?;
+        self.require_profile(profile, operation)
+    }
+
+    /// Validates a macOS 7.6.8 HD500X audio request as offline source-scoped
+    /// planning. It does not change `select_record_route`, infer provider
+    /// results, or enable an audio stream; the returned plan remains locked.
+    pub fn plan_hd500x_macos_audio_request(
+        self,
+        request: crate::rig::hd500x_audio::Request,
+    ) -> Result<crate::rig::hd500x_audio::StaticPlan, Rejection> {
+        let operation = Operation::SelectRecordRoute;
+        match self.kind {
+            SessionKind::InitialRig => Err(Rejection::Unsupported {
+                profile: ProductProfile::Variax600,
+                operation,
+            }),
+            SessionKind::Extension(ProductProfile::PodHd500x) => {
+                crate::rig::hd500x_audio::validate(request).map_err(Rejection::format)
+            }
+            SessionKind::Extension(profile) => Err(Rejection::Unverified { profile, operation }),
+        }
     }
 
     /// Arms the in-memory record-route check used by an offline test take.
