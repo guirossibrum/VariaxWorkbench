@@ -841,6 +841,7 @@ the target marker invalid without changing model identity, and clicks the
 rendered Apply. The failed Apply preserves bytes, dirty state, and both exact
 pending records; revert restores the saved source. The implementation does
 not reproduce unresolved owner-context side effects, infer product/slot
-identity, or establish physical applicability. The previous submitted head's
-four configured checks passed; these correction changes require fresh exact-head
-checks. Issue #32 remains open.
+identity, or establish physical applicability. Correction head
+`a31bbbe9cabf3a36690c695106222a4e402ee2d4` passed all four configured exact-head
+checks in coordinator run `c81785fb-4640-472b-a36b-1604730460ec`. Issue #32
+remains open.
