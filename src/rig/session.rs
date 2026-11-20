@@ -586,6 +586,21 @@ impl Session {
             .map_err(map_hd_library_error)
     }
 
+    /// Applies one closed-set reverb default to an offline standalone H5EP.
+    /// No device is contacted.
+    pub fn replace_hd_octave_fuzz_with_admitted_reverb_defaults(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: crate::pod_preset::HdFxSlot,
+        target: crate::pod_preset::HdReverbDefault,
+    ) -> Result<(), Rejection> {
+        let _ = self;
+        library
+            .replace_octave_fuzz_with_admitted_reverb_defaults(file, effect_slot, target)
+            .map_err(map_hd_library_error)
+    }
+
     pub fn set_hd_screamer_control_percent(
         self,
         library: &mut HdEditorLibrary,

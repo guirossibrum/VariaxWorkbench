@@ -489,6 +489,67 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
         assert_eq!(library.file(parent.index).unwrap().as_bytes(), parent_bytes);
     }
 
+    const REVERBS: [(crate::pod_preset::HdReverbDefault, u32); 8] = [
+        (crate::pod_preset::HdReverbDefault::Octo, 0x0204_0023),
+        (crate::pod_preset::HdReverbDefault::Ducking, 0x0204_0022),
+        (crate::pod_preset::HdReverbDefault::Plate, 0x0204_001e),
+        (crate::pod_preset::HdReverbDefault::Room, 0x0204_001f),
+        (crate::pod_preset::HdReverbDefault::Chamber, 0x0204_0020),
+        (crate::pod_preset::HdReverbDefault::Hall, 0x0204_0021),
+        (crate::pod_preset::HdReverbDefault::Cave, 0x0204_0024),
+        (crate::pod_preset::HdReverbDefault::Tile, 0x0204_0025),
+    ];
+    assert_eq!(
+        crate::pod_preset::HdReverbDefault::ALL,
+        REVERBS.map(|(target, _)| target)
+    );
+    assert!(
+        session
+            .replace_hd_octave_fuzz_with_admitted_reverb_defaults(
+                &mut library,
+                parent.index,
+                crate::pod_preset::HdFxSlot::new(0).unwrap(),
+                crate::pod_preset::HdReverbDefault::Octo,
+            )
+            .is_err()
+    );
+    assert_eq!(library.file(parent.index).unwrap().as_bytes(), parent_bytes);
+    for (target, expected_model) in REVERBS {
+        library.revert_unsaved(child.index).unwrap();
+        session
+            .replace_hd_octave_fuzz_with_admitted_reverb_defaults(
+                &mut library,
+                child.index,
+                crate::pod_preset::HdFxSlot::new(0).unwrap(),
+                target,
+            )
+            .expect("closed reverb defaults in extracted H5ES child");
+        let crate::pod_preset::PodPresetFile::H5ep(replaced_child) =
+            library.file(child.index).unwrap()
+        else {
+            panic!("extracted child remains H5EP");
+        };
+        assert_eq!(replaced_child.effect_model_id(0), Some(expected_model));
+        let mut expected = mutated_child_before.clone();
+        let block = crate::pod_preset::H5EP_HEADER_BYTES + 0x428;
+        expected[block..block + 4].copy_from_slice(&expected_model.to_be_bytes());
+        for (row, key) in [0x3f10_0001u32, 0x3f10_0002, 0x3f10_0003, 0x3f10_0005]
+            .into_iter()
+            .enumerate()
+        {
+            let at = block + 0x10 + row * 0x14;
+            expected[at..at + 4].copy_from_slice(&key.to_be_bytes());
+            expected[at + 4..at + 8].copy_from_slice(&0u32.to_be_bytes());
+        }
+        expected[block + 0x0f] = 4;
+        for row in 0..12 {
+            expected[block + 0x10 + row * 0x14 + 0x10] = 0;
+        }
+        assert_eq!(replaced_child.as_bytes(), expected, "target={target:?}");
+        assert!(library.is_dirty(child.index));
+        assert_eq!(library.file(parent.index).unwrap().as_bytes(), parent_bytes);
+    }
+
     let podxt = crate::pod_preset::fixture(
         crate::pod_preset::ContainerKind::L6pa,
         PODXT_LIVE_PRODUCT_ID,
@@ -532,6 +593,21 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
         .unwrap()
         .as_bytes()
         .to_vec();
+    session
+        .replace_hd_octave_fuzz_with_admitted_reverb_defaults(
+            &mut library,
+            bundle_child.index,
+            crate::pod_preset::HdFxSlot::new(0).unwrap(),
+            crate::pod_preset::HdReverbDefault::Octo,
+        )
+        .expect("closed-set reverb defaults in extracted H5EB child");
+    assert!(library.is_dirty(bundle_child.index));
+    assert_eq!(library.file(bundle.index).unwrap().as_bytes(), bundle_bytes);
+    library.revert_unsaved(bundle_child.index).unwrap();
+    assert_eq!(
+        library.file(bundle_child.index).unwrap().as_bytes(),
+        bundle_child_original
+    );
     session
         .replace_hd_octave_fuzz_with_screamer_defaults(
             &mut library,

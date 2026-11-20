@@ -696,6 +696,75 @@ impl HdDynamicsDefault {
         }
     }
 }
+
+/// One of the exact eight reverb defaults admitted for the explicit
+/// Octave Fuzz replacement action. This remains separate from the dynamics
+/// set even where source parameter keys overlap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HdReverbDefault {
+    Octo,
+    Ducking,
+    Plate,
+    Room,
+    Chamber,
+    Hall,
+    Cave,
+    Tile,
+}
+
+impl HdReverbDefault {
+    pub const ALL: [Self; 8] = [
+        Self::Octo,
+        Self::Ducking,
+        Self::Plate,
+        Self::Room,
+        Self::Chamber,
+        Self::Hall,
+        Self::Cave,
+        Self::Tile,
+    ];
+
+    pub const fn model_id(self) -> u32 {
+        match self {
+            Self::Octo => 0x0204_0023,
+            Self::Ducking => 0x0204_0022,
+            Self::Plate => 0x0204_001e,
+            Self::Room => 0x0204_001f,
+            Self::Chamber => 0x0204_0020,
+            Self::Hall => 0x0204_0021,
+            Self::Cave => 0x0204_0024,
+            Self::Tile => 0x0204_0025,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Octo => "Octo",
+            Self::Ducking => "Ducking",
+            Self::Plate => "Plate",
+            Self::Room => "Room",
+            Self::Chamber => "Chamber",
+            Self::Hall => "Hall",
+            Self::Cave => "Cave",
+            Self::Tile => "Tile",
+        }
+    }
+
+    pub const fn default_keys(self) -> &'static [u32] {
+        match self {
+            Self::Octo
+            | Self::Ducking
+            | Self::Plate
+            | Self::Room
+            | Self::Chamber
+            | Self::Hall
+            | Self::Cave
+            | Self::Tile => &HD_REVERB_DEFAULT_KEYS,
+        }
+    }
+}
+
+const HD_REVERB_DEFAULT_KEYS: [u32; 4] = [0x3f10_0001, 0x3f10_0002, 0x3f10_0003, 0x3f10_0005];
 // Retained Editor 2.27 source evidence identifies Screamer's five defaults
 // in ascending key order, with selector 1 and zero value bits for each row.
 const HD_SCREAMER_DEFAULT_KEYS: [u32; 5] = [
@@ -3453,6 +3522,21 @@ impl OpaqueH5epPreset {
         )
     }
 
+    /// Applies one member of the exact finite reverb default set admitted
+    /// for this explicit standalone replacement.
+    pub fn replace_octave_fuzz_with_admitted_reverb_defaults(
+        &mut self,
+        effect_slot: HdFxSlot,
+        target: HdReverbDefault,
+    ) -> Result<(), ToneError> {
+        self.replace_octave_fuzz_with_default_prefix(
+            effect_slot,
+            target.model_id(),
+            target.default_keys(),
+            target.label(),
+        )
+    }
+
     fn replace_octave_fuzz_with_default_prefix(
         &mut self,
         effect_slot: HdFxSlot,
@@ -4201,6 +4285,28 @@ impl HdEditorLibrary {
             }
             _ => Err(ToneError::format(
                 "admitted FX defaults replacement requires an extracted H5EP preset",
+            )),
+        }
+    }
+
+    /// Applies one admitted closed-set reverb default to an extracted H5EP
+    /// item. H5ES/H5EB parents remain separate and unchanged.
+    pub fn replace_octave_fuzz_with_admitted_reverb_defaults(
+        &mut self,
+        index: usize,
+        effect_slot: HdFxSlot,
+        target: HdReverbDefault,
+    ) -> Result<(), ToneError> {
+        let entry = self
+            .files
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("file index is outside the HD editor library"))?;
+        match &mut entry.file {
+            PodPresetFile::H5ep(preset) => {
+                preset.replace_octave_fuzz_with_admitted_reverb_defaults(effect_slot, target)
+            }
+            _ => Err(ToneError::format(
+                "admitted reverb defaults replacement requires an extracted H5EP preset",
             )),
         }
     }
@@ -6849,6 +6955,223 @@ mod tests {
             }
         }
         assert!(HdFxSlot::new(8).is_err());
+    }
+
+    #[test]
+    fn admitted_reverb_defaults_match_independent_full_file_vectors() {
+        const SOURCE: &[u8] = include_bytes!(
+            "../tests/fixtures/hd500x-next-fx-defaults-v1/before-ocfz-file-slot5-be.h5e"
+        );
+        const TARGETS: [(HdReverbDefault, u32, &[u8]); 8] = [
+            (
+                HdReverbDefault::Octo,
+                0x0204_0023,
+                include_bytes!(
+                    "../tests/fixtures/hd500x-next-fx-defaults-v1/after-octo-slot5.expected.h5e"
+                ),
+            ),
+            (
+                HdReverbDefault::Ducking,
+                0x0204_0022,
+                include_bytes!(
+                    "../tests/fixtures/hd500x-next-fx-defaults-v1/after-duck-slot5.expected.h5e"
+                ),
+            ),
+            (
+                HdReverbDefault::Plate,
+                0x0204_001e,
+                include_bytes!(
+                    "../tests/fixtures/hd500x-next-fx-defaults-v1/after-plat-slot5.expected.h5e"
+                ),
+            ),
+            (
+                HdReverbDefault::Room,
+                0x0204_001f,
+                include_bytes!(
+                    "../tests/fixtures/hd500x-next-fx-defaults-v1/after-room-slot5.expected.h5e"
+                ),
+            ),
+            (
+                HdReverbDefault::Chamber,
+                0x0204_0020,
+                include_bytes!(
+                    "../tests/fixtures/hd500x-next-fx-defaults-v1/after-chmb-slot5.expected.h5e"
+                ),
+            ),
+            (
+                HdReverbDefault::Hall,
+                0x0204_0021,
+                include_bytes!(
+                    "../tests/fixtures/hd500x-next-fx-defaults-v1/after-hall-slot5.expected.h5e"
+                ),
+            ),
+            (
+                HdReverbDefault::Cave,
+                0x0204_0024,
+                include_bytes!(
+                    "../tests/fixtures/hd500x-next-fx-defaults-v1/after-cave-slot5.expected.h5e"
+                ),
+            ),
+            (
+                HdReverbDefault::Tile,
+                0x0204_0025,
+                include_bytes!(
+                    "../tests/fixtures/hd500x-next-fx-defaults-v1/after-tile-slot5.expected.h5e"
+                ),
+            ),
+        ];
+        const KEYS: [u32; 4] = [0x3f10_0001, 0x3f10_0002, 0x3f10_0003, 0x3f10_0005];
+        assert_eq!(SOURCE.len(), 4151);
+        assert_eq!(HdReverbDefault::ALL, TARGETS.map(|(target, _, _)| target));
+        for (target, expected_model, expected) in TARGETS {
+            assert_eq!(expected.len(), SOURCE.len());
+            let mut preset = OpaqueH5epPreset::parse(SOURCE.to_vec()).unwrap();
+            preset
+                .replace_octave_fuzz_with_admitted_reverb_defaults(
+                    HdFxSlot::new(5).unwrap(),
+                    target,
+                )
+                .unwrap();
+            assert_eq!(preset.effect_model_id(5), Some(expected_model));
+            assert_eq!(preset.as_bytes(), expected, "target={target:?}");
+        }
+        assert_eq!(HdReverbDefault::Octo.default_keys(), &KEYS);
+        assert!(HdFxSlot::new(8).is_err());
+    }
+
+    #[test]
+    fn admitted_reverb_defaults_cover_slots_enable_counts_key_orders_and_guards() {
+        const TARGETS: [(HdReverbDefault, u32); 8] = [
+            (HdReverbDefault::Octo, 0x0204_0023),
+            (HdReverbDefault::Ducking, 0x0204_0022),
+            (HdReverbDefault::Plate, 0x0204_001e),
+            (HdReverbDefault::Room, 0x0204_001f),
+            (HdReverbDefault::Chamber, 0x0204_0020),
+            (HdReverbDefault::Hall, 0x0204_0021),
+            (HdReverbDefault::Cave, 0x0204_0024),
+            (HdReverbDefault::Tile, 0x0204_0025),
+        ];
+        const KEYS: [u32; 4] = [0x3f10_0001, 0x3f10_0002, 0x3f10_0003, 0x3f10_0005];
+        assert_eq!(HdReverbDefault::ALL, TARGETS.map(|(target, _)| target));
+        let permutations = five_key_permutations();
+        assert_eq!(permutations.len(), 120);
+        for (target, target_model) in TARGETS {
+            assert_eq!(target.model_id(), target_model);
+            assert_eq!(target.default_keys(), &KEYS);
+            for slot in 0..HD_EFFECT_COUNT {
+                for enabled in [0, 1] {
+                    for count in [5, 12] {
+                        for order in &permutations {
+                            let mut original = synthetic_octave_fuzz_h5ep(slot, true);
+                            let block = H5EP_HEADER_BYTES
+                                + HD_EFFECT_BLOCK_OFFSET
+                                + slot * HD_EFFECT_BLOCK_STRIDE;
+                            original[block + 8] = enabled;
+                            original[block + 0x0f] = count;
+                            for (row, key) in order.iter().copied().enumerate() {
+                                let at =
+                                    block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
+                                original[at..at + 4].copy_from_slice(&key.to_be_bytes());
+                            }
+                            let mut expected = original.clone();
+                            expected[block..block + 4].copy_from_slice(&target_model.to_be_bytes());
+                            for (row, key) in KEYS.into_iter().enumerate() {
+                                let at =
+                                    block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
+                                expected[at..at + 4].copy_from_slice(&key.to_be_bytes());
+                                expected[at + 4..at + 8].copy_from_slice(&0u32.to_be_bytes());
+                            }
+                            expected[block + 0x0f] = 4;
+                            for row in 0..HD_PARAMETER_ROW_COUNT {
+                                expected[block
+                                    + HD_EFFECT_ROWS_OFFSET
+                                    + row * HD_PARAMETER_ROW_STRIDE
+                                    + 0x10] = 0;
+                            }
+                            let mut preset = OpaqueH5epPreset::parse(original).unwrap();
+                            preset
+                                .replace_octave_fuzz_with_admitted_reverb_defaults(
+                                    HdFxSlot::new(slot).unwrap(),
+                                    target,
+                                )
+                                .unwrap();
+                            assert_eq!(
+                                preset.as_bytes(),
+                                expected,
+                                "target={target:?}, slot={slot}, enabled={enabled}, count={count}, order={order:?}"
+                            );
+                        }
+                    }
+                }
+                for row in 0..HD_PARAMETER_ROW_COUNT {
+                    for marker in 0..=2 {
+                        let mut bytes = synthetic_octave_fuzz_h5ep(slot, true);
+                        let at = H5EP_HEADER_BYTES
+                            + HD_EFFECT_BLOCK_OFFSET
+                            + slot * HD_EFFECT_BLOCK_STRIDE
+                            + HD_EFFECT_ROWS_OFFSET
+                            + row * HD_PARAMETER_ROW_STRIDE
+                            + 0x10;
+                        bytes[at] = marker;
+                        let mut preset = OpaqueH5epPreset::parse(bytes).unwrap();
+                        preset
+                            .replace_octave_fuzz_with_admitted_reverb_defaults(
+                                HdFxSlot::new(slot).unwrap(),
+                                target,
+                            )
+                            .unwrap();
+                    }
+                }
+            }
+            let source = synthetic_octave_fuzz_h5ep(0, true);
+            let mut invalid = Vec::new();
+            for model in [HD_NOISE_GATE_MODEL_ID, HD_SCREAMER_MODEL_ID, target_model] {
+                let mut bytes = source.clone();
+                let at = H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET;
+                bytes[at..at + 4].copy_from_slice(&model.to_be_bytes());
+                invalid.push(bytes);
+            }
+            for validity in [0, 2] {
+                let mut bytes = source.clone();
+                bytes[H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 0x0b] = validity;
+                invalid.push(bytes);
+            }
+            let mut bytes = source.clone();
+            bytes[H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 8] = 2;
+            invalid.push(bytes);
+            for count in [4, 13] {
+                let mut bytes = source.clone();
+                bytes[H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 0x0f] = count;
+                invalid.push(bytes);
+            }
+            let mut bytes = source.clone();
+            let row = H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + HD_EFFECT_ROWS_OFFSET;
+            bytes[row..row + 4].copy_from_slice(&0xfeed_beefu32.to_be_bytes());
+            invalid.push(bytes);
+            let mut bytes = source.clone();
+            bytes[H5EP_HEADER_BYTES
+                + HD_EFFECT_BLOCK_OFFSET
+                + HD_EFFECT_ROWS_OFFSET
+                + HD_PARAMETER_ROW_STRIDE..][..4]
+                .copy_from_slice(&HD_TYPE1_OUTPUT_KEY.to_be_bytes());
+            invalid.push(bytes);
+            let mut bytes = source.clone();
+            let marker = H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + HD_EFFECT_ROWS_OFFSET + 0x10;
+            bytes[marker] = 3;
+            invalid.push(bytes);
+            for bytes in invalid {
+                let mut preset = OpaqueH5epPreset::parse(bytes.clone()).unwrap();
+                assert!(
+                    preset
+                        .replace_octave_fuzz_with_admitted_reverb_defaults(
+                            HdFxSlot::new(0).unwrap(),
+                            target,
+                        )
+                        .is_err()
+                );
+                assert_eq!(preset.as_bytes(), bytes, "target={target:?}");
+            }
+        }
     }
 
     #[test]
