@@ -845,3 +845,23 @@ identity, or establish physical applicability. Correction head
 `a31bbbe9cabf3a36690c695106222a4e402ee2d4` passed all four configured exact-head
 checks in coordinator run `c81785fb-4640-472b-a36b-1604730460ec`. Issue #32
 remains open.
+
+## Exact type-12 two-choice file operation
+
+PR #109 separately admits only model/key `0x020A001E/0x3F100004` for
+descriptor type `0x0C`. Its closed API accepts neutral Choice 0/1 and writes
+the exact BE float words `00000000` / `3F800000`; labels, units, defaults and
+physical meaning remain unknown. The writer uses standalone H5EP v1 and an
+explicit FX slot 0–7, with the same valid-effect, canonical-enable, row-count,
+unique-key-across-all-12-rows, in-count target, zero-marker, finite-current,
+guard-before-no-op, clone/patch/reparse rules. Unknown finite words are read
+losslessly and non-finite words reject edits. It changes only the selected
+four-byte value word.
+
+For model `0x020A001E`, type-12 key `0x3F100004` remains independent from the
+existing type-11 keys `0x3F100002` and `0x3F100003`. The GUI stages all three
+independently, processes each before quit's dirty-file decision, and preserves
+other stages on Apply or Discard. Complete synthetic vectors retain both
+type-11 words and opaque suffix bytes. This does not establish complete UI or
+callback parity, physical applicability, product attribution, or a vendor
+preset observation. Local validation passes all 335 tests (259 library, 50 GUI, 26 integration), Clippy with `-D warnings`, formatting, and `git diff --check`; configured focused checks on the final committed head remain pending. Issue #32 remains partial and open.
