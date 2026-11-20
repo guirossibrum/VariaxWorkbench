@@ -70,6 +70,13 @@ enum PendingModEdit {
     SpeedHz(f32),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingPodEqReset {
+    document_generation: u64,
+    index: usize,
+    context: Vec<u8>,
+}
+
 trait FileDialogs {
     fn open(&mut self) -> Option<PathBuf>;
     fn save(&mut self, suggested: &str, extension: &str) -> Option<PathBuf>;
@@ -250,7 +257,8 @@ struct Workbench {
     pod_stomp_model_pending: Option<(usize, pod_preset::PodStompModelChoice)>,
     pod_reverb_model_pending: Option<(usize, pod_preset::PodReverbModelChoice)>,
     pod_amp_model_pending: Option<(usize, u32, pod_preset::PodAmpModelChoice)>,
-    pod_eq_reset_pending: Option<(usize, Vec<u8>)>,
+    pod_eq_reset_pending: Option<PendingPodEqReset>,
+    pod_document_generation: u64,
     pod_harmony_pending: Option<(usize, pod_preset::StompHarmonyControl, PendingStompHarmony)>,
     pod_delay_pending: Option<(usize, PendingDelayEdit)>,
     pod_mod_pending: Option<(usize, PendingModEdit)>,
@@ -395,6 +403,7 @@ impl Workbench {
             pod_reverb_model_pending: None,
             pod_amp_model_pending: None,
             pod_eq_reset_pending: None,
+            pod_document_generation: 0,
             pod_harmony_pending: None,
             pod_delay_pending: None,
             pod_mod_pending: None,
@@ -525,14 +534,16 @@ impl Workbench {
     }
 
     fn invalidate_stale_eq_reset_stage(&mut self) {
-        let Some((index, expected)) = self.pod_eq_reset_pending.as_ref() else {
+        let Some(pending) = self.pod_eq_reset_pending.as_ref() else {
             return;
         };
         let current = self
             .pod_library
-            .tone(*index)
+            .tone(pending.index)
             .and_then(|tone| tone.podxt_eq_reset_context().ok());
-        if current.as_ref() != Some(expected) {
+        if pending.document_generation != self.pod_document_generation
+            || current.as_ref() != Some(&pending.context)
+        {
             self.pod_eq_reset_pending = None;
             self.pod_message =
                 "Discarded a stale EQ reset because its entry or target EQ changed.".into();
@@ -1605,15 +1616,17 @@ impl Workbench {
     }
 
     fn pod_eq_reset_quit_dialog(&mut self, ctx: &egui::Context) {
-        let Some((index, context)) = self.pod_eq_reset_pending.clone() else {
+        let Some(pending) = self.pod_eq_reset_pending.clone() else {
             self.continue_staged_pod_quit(ctx);
             return;
         };
         let current_context = self
             .pod_library
-            .tone(index)
+            .tone(pending.index)
             .and_then(|tone| tone.podxt_eq_reset_context().ok());
-        if current_context.as_ref() != Some(&context) {
+        if pending.document_generation != self.pod_document_generation
+            || current_context.as_ref() != Some(&pending.context)
+        {
             self.pod_eq_reset_pending = None;
             self.pod_message = "Discarded a stale EQ reset because its target EQ changed.".into();
             self.continue_staged_pod_quit(ctx);
@@ -1629,7 +1642,7 @@ impl Workbench {
             .show(ctx, |ui| {
                 ui.label(format!(
                     "The four-band EQ reset is staged for tone {}. No bytes have changed yet.",
-                    index + 1
+                    pending.index + 1
                 ));
                 ui.horizontal(|ui| {
                     let response = ui.button("Apply reset and continue…");
@@ -1650,8 +1663,8 @@ impl Workbench {
                 });
             });
         if apply {
-            self.pod_selected = Some(index);
-            if self.apply_pod_eq_reset(Some(&context)) {
+            self.pod_selected = Some(pending.index);
+            if self.apply_pod_eq_reset(Some(&pending)) {
                 self.pod_eq_reset_pending = None;
                 self.continue_staged_pod_quit(ctx);
             }
@@ -2656,14 +2669,15 @@ impl Workbench {
                         .map(|context| (index, context))
                 });
                 if let Some((index, context)) = eq_reset_target {
-                    if let Some((pending_index, pending_context)) =
-                        self.pod_eq_reset_pending.clone()
-                    {
-                        if pending_index == index && pending_context == context {
+                    if let Some(pending) = self.pod_eq_reset_pending.clone() {
+                        if pending.document_generation == self.pod_document_generation
+                            && pending.index == index
+                            && pending.context == context
+                        {
                             ui.horizontal(|ui| {
                                 ui.label("Four-band EQ reset staged · offline only");
                                 if self.pod_button(ui, "pod-eq-reset-apply", "Apply reset")
-                                    && self.apply_pod_eq_reset(Some(&context))
+                                    && self.apply_pod_eq_reset(Some(&pending))
                                 {
                                     self.pod_eq_reset_pending = None;
                                 }
@@ -2675,7 +2689,7 @@ impl Workbench {
                         } else {
                             ui.label(format!(
                                 "EQ reset staged for tone {}. Select it to apply or discard.",
-                                pending_index + 1
+                                pending.index + 1
                             ));
                         }
                     } else if self.pod_button(
@@ -2683,16 +2697,20 @@ impl Workbench {
                         "pod-eq-reset-stage",
                         "Stage four-band EQ reset",
                     ) {
-                        self.pod_eq_reset_pending = Some((index, context));
+                        self.pod_eq_reset_pending = Some(PendingPodEqReset {
+                            document_generation: self.pod_document_generation,
+                            index,
+                            context,
+                        });
                         self.pod_message = "Staged the four-band EQ reset. No bytes changed; nothing will be sent.".into();
                     }
                 }
-                if let Some((pending_index, _)) = self.pod_eq_reset_pending.as_ref()
-                    && self.pod_selected != Some(*pending_index)
+                if let Some(pending) = self.pod_eq_reset_pending.as_ref()
+                    && self.pod_selected != Some(pending.index)
                 {
                     ui.small(format!(
                         "An EQ reset is staged for tone {}. Select that tone to apply or discard it.",
-                        pending_index + 1
+                        pending.index + 1
                     ));
                 }
                 let stomp_wave = self
@@ -3571,7 +3589,7 @@ impl Workbench {
             && self
                 .pod_eq_reset_pending
                 .as_ref()
-                .is_some_and(|(pending_index, _)| *pending_index == index)
+                .is_some_and(|pending| pending.index == index)
         {
             self.pod_eq_reset_pending = None;
             self.pod_message = "Discarded a staged EQ reset because its target EQ changed.".into();
@@ -3586,7 +3604,7 @@ impl Workbench {
         Ok(())
     }
 
-    fn apply_pod_eq_reset(&mut self, expected_context: Option<&[u8]>) -> bool {
+    fn apply_pod_eq_reset(&mut self, expected: Option<&PendingPodEqReset>) -> bool {
         let Some(index) = self.pod_selected else {
             self.pod_message = "Select a tone before applying an EQ reset.".into();
             return false;
@@ -3603,7 +3621,11 @@ impl Workbench {
             .pod_library
             .tone(index)
             .and_then(|tone| tone.podxt_eq_reset_context().ok());
-        if expected_context.is_some_and(|expected| current_context.as_deref() != Some(expected)) {
+        if expected.is_some_and(|pending| {
+            pending.document_generation != self.pod_document_generation
+                || pending.index != index
+                || current_context.as_deref() != Some(pending.context.as_slice())
+        }) {
             self.pod_eq_reset_pending = None;
             self.pod_message = "Discarded a stale EQ reset because its target EQ changed.".into();
             return false;
@@ -3709,6 +3731,7 @@ impl Workbench {
         }
         self.pod_library = library;
         self.pod_bundle = Some(bundle);
+        self.pod_document_generation = self.pod_document_generation.wrapping_add(1);
         self.pod_selected = Some(0);
         self.pod_eq_reset_pending = None;
         self.pod_cab_pending = None;
@@ -3839,15 +3862,23 @@ impl Workbench {
                 }
                 match Session::initial_rig().open_pod_preset(RoleKind::Pod, &bytes) {
                     Ok(summary) => {
-                        if self.pod_bundle.is_some() {
-                            self.pod_bundle = None;
-                            self.pod_library.clear();
-                            self.pod_selected = None;
-                            self.pod_cab_pending = None;
-                            self.pod_harmony_pending = None;
-                        }
-                        match self.pod_library.import_bytes(bytes) {
+                        let replaces_bundle_document = self.pod_bundle.is_some();
+                        let mut candidate_library = if replaces_bundle_document {
+                            Library::default()
+                        } else {
+                            self.pod_library.clone()
+                        };
+                        match candidate_library.import_bytes(bytes) {
                             Ok(index) => {
+                                self.pod_library = candidate_library;
+                                if replaces_bundle_document {
+                                    self.pod_bundle = None;
+                                    self.pod_document_generation =
+                                        self.pod_document_generation.wrapping_add(1);
+                                    self.pod_eq_reset_pending = None;
+                                    self.pod_cab_pending = None;
+                                    self.pod_harmony_pending = None;
+                                }
                                 self.pod_selected = Some(index);
                                 self.pod_cab_pending = None;
                                 self.pod_delay_model_pending = None;
@@ -5584,6 +5615,14 @@ mod tests {
     }
 
     fn sample_pod_eq_tone() -> Vec<u8> {
+        sample_pod_eq_tone_with_amp(false)
+    }
+
+    fn sample_pod_amp_eq_tone() -> Vec<u8> {
+        sample_pod_eq_tone_with_amp(true)
+    }
+
+    fn sample_pod_eq_tone_with_amp(include_amp: bool) -> Vec<u8> {
         fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
             let mut bytes = id.to_vec();
             bytes.extend_from_slice(&(data.len() as u32).to_be_bytes());
@@ -5612,6 +5651,15 @@ mod tests {
         }
         let mut patch = b"PATC".to_vec();
         patch.extend(chunk(b"LIST", &model));
+        if include_amp {
+            let mut amp_model = b"MODL".to_vec();
+            let mut amp_minf = Vec::new();
+            amp_minf.extend_from_slice(&pod_preset::PLEXI_45_MODEL.to_be_bytes());
+            amp_minf.extend_from_slice(&pod_preset::AMP_SLOT.to_be_bytes());
+            amp_minf.extend_from_slice(&[0, 0, 0, 1]);
+            amp_model.extend(chunk(b"MINF", &amp_minf));
+            patch.extend(chunk(b"LIST", &amp_model));
+        }
         let mut data = b"L6AS".to_vec();
         data.extend(chunk(b"PINF", &info));
         data.extend(chunk(b"LIST", &patch));
@@ -7828,6 +7876,198 @@ mod tests {
         click_prompt(&context, &mut app, "cancel");
         assert!(app.pending.is_none());
         assert!(app.pod_library.is_dirty(index));
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn podxt_eq_staged_in_bundle_cannot_cross_cancelled_or_successful_document_replacement() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let directory = tempfile::tempdir().unwrap();
+        let rejected_path = directory.path().join("rejected.l6t");
+        let replacement_path = directory.path().join("replacement.l6t");
+        std::fs::write(&rejected_path, b"not a tone").unwrap();
+
+        let mut original = sample_pod_eq_tone();
+        original[8..12].copy_from_slice(b"L6PA");
+        let mut replacement = original.clone();
+        replacement[28..32].copy_from_slice(b"NEW!");
+        assert_ne!(original, replacement);
+        assert_eq!(
+            &original[32..],
+            &replacement[32..],
+            "EQ bytes are identical"
+        );
+        std::fs::write(&replacement_path, &replacement).unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [None, Some(rejected_path), Some(replacement_path)].into(),
+            ..Default::default()
+        });
+        let bundle_bytes = sample_pod_bundle(std::slice::from_ref(&original));
+        app.load_pod_bundle_bytes(bundle_bytes.clone()).unwrap();
+        app.pod_open = true;
+
+        recording_frame_tall(&context, &mut app, vec![]);
+        click_pod_button_tall(&context, &mut app, "pod-eq-reset-stage");
+        let pending = app.pod_eq_reset_pending.clone().unwrap();
+        assert_eq!(pending.document_generation, app.pod_document_generation);
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), bundle_bytes);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert!(!app.pod_library.is_dirty(0));
+
+        // A cancelled dialog and a rejected file keep both the bundle and staged action.
+        click_pod_button_tall(&context, &mut app, "load-pod");
+        assert_eq!(app.pod_eq_reset_pending.as_ref(), Some(&pending));
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), bundle_bytes);
+        click_pod_button_tall(&context, &mut app, "load-pod");
+        assert_eq!(app.pod_eq_reset_pending.as_ref(), Some(&pending));
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), bundle_bytes);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+
+        // Replacing with a different Library document at the same index and EQ context
+        // must invalidate the old stage. A later Apply/quit cannot touch this tone.
+        click_pod_button_tall(&context, &mut app, "load-pod");
+        assert!(app.pod_bundle.is_none());
+        assert!(app.pod_eq_reset_pending.is_none());
+        assert!(app.pod_document_generation > pending.document_generation);
+        assert_eq!(app.pod_selected, Some(0));
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), replacement);
+        assert!(!app.pod_library.is_dirty(0));
+
+        app.pod_buttons.clear();
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert!(app.pod_buttons.contains_key("pod-eq-reset-stage"));
+        assert!(!app.pod_buttons.contains_key("pod-eq-reset-apply"));
+        app.request_close(&context);
+        app.pending_buttons.clear();
+        prompt_frame(&context, &mut app, vec![]);
+        assert!(!app.pending_buttons.contains_key("eq-reset-quit-apply"));
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), replacement);
+        assert!(!app.pod_library.is_dirty(0));
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn podxt_eq_and_amp_stages_resolve_against_a_loaded_bundle() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("eq-amp.vwb");
+        let mut original = sample_pod_amp_eq_tone();
+        original[8..12].copy_from_slice(b"L6PA");
+        let bundle_bytes = sample_pod_bundle(std::slice::from_ref(&original));
+        std::fs::write(&path, &bundle_bytes).unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(path)].into(),
+            ..Default::default()
+        });
+        app.load_pod_tone();
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert!(app.pod_bundle.is_some(), "{}", app.pod_message);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+
+        click_pod_button_tall(&context, &mut app, "pod-eq-reset-stage");
+        choose_amp_model_popup(&context, &mut app, 0x0002_002e);
+        let amp_stage = app.pod_amp_model_pending;
+        assert!(amp_stage.is_some());
+        assert!(app.pod_eq_reset_pending.is_some());
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), bundle_bytes);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert!(!app.pod_dirty());
+
+        // Keep then discard the EQ stage through the actual quit dialog. Discarding
+        // EQ continues into the independently staged AMP choice.
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "eq-reset-quit-keep");
+        assert!(app.pending.is_none());
+        assert!(app.pod_eq_reset_pending.is_some());
+        assert_eq!(app.pod_amp_model_pending, amp_stage);
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "eq-reset-quit-discard");
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert!(app.pod_eq_reset_pending.is_none());
+        assert_eq!(app.pod_amp_model_pending, amp_stage);
+        click_prompt(&context, &mut app, "amp-keep-editing");
+        assert!(app.pending.is_none());
+        assert_eq!(app.pod_amp_model_pending, amp_stage);
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), bundle_bytes);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert!(!app.pod_dirty());
+
+        // Apply EQ, then exercise the bundle cancel/discard path while the AMP
+        // choice remains independently staged.
+        click_pod_button_tall(&context, &mut app, "pod-eq-reset-stage");
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "eq-reset-quit-apply");
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert!(app.pod_eq_reset_pending.is_none());
+        assert_eq!(app.pod_amp_model_pending, amp_stage);
+        assert_ne!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pending.is_none());
+        assert!(app.pod_amp_model_pending.is_some());
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "discard");
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), bundle_bytes);
+        assert_eq!(app.pod_amp_model_pending, amp_stage);
+        click_prompt(&context, &mut app, "amp-keep-editing");
+        assert!(app.pending.is_none());
+        assert_eq!(app.pod_amp_model_pending, amp_stage);
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "amp-discard");
+        assert!(app.permit_close);
+        assert_eq!(app.pod_amp_model_pending, None);
+
+        // Exercise the Apply rejection path after a real bundle load. Removing
+        // the selected bundle row behind the Library forces atomic publication
+        // failure while the staged edit still has a valid source context.
+        let (context, mut app) = self::app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("eq-amp-failed-publication.vwb");
+        let mut original = sample_pod_amp_eq_tone();
+        original[8..12].copy_from_slice(b"L6PA");
+        let bundle_bytes = sample_pod_bundle(&[original.clone(), original.clone()]);
+        std::fs::write(&path, &bundle_bytes).unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(path)].into(),
+            ..Default::default()
+        });
+        app.load_pod_tone();
+        recording_frame_tall(&context, &mut app, vec![]);
+        app.pod_selected = Some(1);
+        assert_eq!(app.pod_library.tone(1).unwrap().as_bytes(), original);
+        click_pod_button_tall(&context, &mut app, "pod-eq-reset-stage");
+        choose_amp_model_popup(&context, &mut app, 0x0002_002e);
+        let amp_stage = app.pod_amp_model_pending;
+        app.pod_bundle.as_mut().unwrap().remove_entry(1, 0).unwrap();
+        let failed_publication_bundle = app.pod_bundle.as_ref().unwrap().as_bytes().to_vec();
+        let parsed_before = app.pod_library.tone(1).unwrap().models().to_vec();
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "eq-reset-quit-apply");
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert!(app.pod_eq_reset_pending.is_some());
+        assert_eq!(app.pod_amp_model_pending, amp_stage);
+        assert_eq!(app.pod_library.tone(1).unwrap().as_bytes(), original);
+        assert_eq!(app.pod_library.tone(1).unwrap().models(), parsed_before);
+        assert!(!app.pod_library.is_dirty(1));
+        assert_eq!(
+            app.pod_bundle.as_ref().unwrap().as_bytes(),
+            failed_publication_bundle
+        );
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert!(!app.permit_close);
         const {
             assert!(LIVE_ACCESS_LOCKED);
         }

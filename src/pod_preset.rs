@@ -8022,7 +8022,7 @@ pub(crate) mod tests {
         );
 
         let records: Vec<_> = (0..8)
-            .map(|index| drive_record(0x3f, 0x0010_0000 + index, 1, 0x3f00_0000))
+            .map(|index| drive_record(0x3f, 0x0010_0000 + index as u32, 1, 0x3f00_0000).to_vec())
             .collect();
         let refs: Vec<_> = records.iter().map(|record| &record[..]).collect();
         let original = eq_tone(
@@ -8476,6 +8476,95 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn podxt_eq_reset_matches_an_independent_full_envelope_and_literal_write_mask() {
+        let before_hex = "
+            464f524d000001804c3650414f44442100000003172839a550494e4600000050000000010003000a0041000000000000
+            000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+            0000000000000000030000005aa596694c49535400000110504154434c495354000000c44d4f444c4d494e460000000c
+            020c000200030004a1b2c3d45041524d0000000c3f100000000000013e8000005041524d0000000c3f10000100000001
+            3f0000005041524d0000000c3f100002000000013e4000005041524d0000000c3f100003000000013f4000005041524d
+            0000000c3f100004000000013e2000005041524d0000000c3f100005000000013f2000005041524d0000000c3f100006
+            000000013e1000005041524d0000000c3f100007000000013e0000005854524100000003deadbea54c49535400000038
+            4d4f444c4d494e460000000c0200000100030000112233445041524d0000000c3f00abcd000000001234567858545241
+            00000003cafe01a5
+        ";
+        let after_hex = "
+            464f524d000001804c3650414f44442100000003172839a550494e4600000050000000010003000a0041000000000000
+            000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+            0000000000000000030000005aa596694c49535400000110504154434c495354000000c44d4f444c4d494e460000000c
+            020c000200030004a1b2c3d45041524d0000000c3f100000000000013e0000005041524d0000000c3f10000100000001
+            3f0102045041524d0000000c3f100002000000013eec00005041524d0000000c3f100003000000013f0102045041524d
+            0000000c3f100004000000013ef000005041524d0000000c3f100005000000013f0102045041524d0000000c3f100006
+            000000013f5c00005041524d0000000c3f100007000000013f0102045854524100000003deadbea54c49535400000038
+            4d4f444c4d494e460000000c0200000100030000112233445041524d0000000c3f00abcd000000001234567858545241
+            00000003cafe01a5
+        ";
+        let decode = |hex: &str| {
+            hex.bytes()
+                .filter(u8::is_ascii_hexdigit)
+                .collect::<Vec<_>>()
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let before = decode(before_hex);
+        let expected = decode(after_hex);
+        assert_eq!(before.len(), 392);
+        assert_eq!(expected.len(), before.len());
+
+        // Offsets are literal envelope coordinates, authored from the independent
+        // chunk layout above; the production target finder is intentionally unused.
+        let value_offsets = [0xac, 0xc0, 0xd4, 0xe8, 0xfc, 0x110, 0x124, 0x138];
+        let reset_words = [
+            0x3e00_0000u32,
+            0x3f01_0204,
+            0x3eec_0000,
+            0x3f01_0204,
+            0x3ef0_0000,
+            0x3f01_0204,
+            0x3f5c_0000,
+            0x3f01_0204,
+        ];
+        let previous_words = [
+            0x3e80_0000u32,
+            0x3f00_0000,
+            0x3e40_0000,
+            0x3f40_0000,
+            0x3e20_0000,
+            0x3f20_0000,
+            0x3e10_0000,
+            0x3e00_0000,
+        ];
+        for ((offset, before_word), after_word) in value_offsets
+            .into_iter()
+            .zip(previous_words)
+            .zip(reset_words)
+        {
+            assert_eq!(&before[offset..offset + 4], &before_word.to_be_bytes());
+            assert_eq!(&expected[offset..offset + 4], &after_word.to_be_bytes());
+        }
+        let permitted: Vec<_> = value_offsets
+            .into_iter()
+            .flat_map(|offset| offset..offset + 4)
+            .collect();
+        assert!(
+            before
+                .iter()
+                .zip(&expected)
+                .enumerate()
+                .all(|(offset, (old, new))| old == new || permitted.contains(&offset))
+        );
+
+        let mut tone = PodTone::parse(before).unwrap();
+        tone.reset_podxt_eq().unwrap();
+        assert_eq!(tone.as_bytes(), expected);
+        let reparsed = PodTone::parse(expected.clone()).unwrap();
+        assert_eq!(reparsed.as_bytes(), expected);
+    }
+
+    #[test]
     fn podxt_eq_reset_rejects_unsupported_target_without_mutation() {
         let records: Vec<_> = (0..8)
             .map(|index| drive_record(0x3f, 0x0010_0000 + index, 1, 0x3f00_0000))
@@ -8548,8 +8637,186 @@ pub(crate) mod tests {
             }],
         );
         let mut tone = PodTone::parse(bytes.clone()).unwrap();
+        let parsed_before = tone.models().to_vec();
         assert!(tone.reset_podxt_eq().is_err());
         assert_eq!(tone.as_bytes(), bytes, "late guard failure is atomic");
+        assert_eq!(
+            tone.models(),
+            parsed_before,
+            "late failure preserves parsed state"
+        );
+        let mut library = Library::default();
+        library.import_bytes(bytes.clone()).unwrap();
+        assert!(library.reset_podxt_eq(0).is_err());
+        assert_eq!(library.tone(0).unwrap().as_bytes(), bytes);
+        assert!(
+            !library.is_dirty(0),
+            "late failure preserves saved baseline"
+        );
+    }
+
+    #[test]
+    fn podxt_eq_reset_checks_each_parameter_guard_and_duplicate_model_context() {
+        fn make_tone(parameters: &[&[u8]], models: Option<&[BuiltModel<'_>]>) -> Vec<u8> {
+            let fallback = [BuiltModel {
+                slot: PODXT_EQ_SLOT,
+                model_id: PODXT_EQ_MODEL_ID,
+                tail: &[1, 2, 3, 4],
+                parameters,
+            }];
+            custom_tone(ContainerKind::L6pa, models.unwrap_or(&fallback))
+        }
+        let records: Vec<_> = (0..8)
+            .map(|index| drive_record(0x3f, 0x0010_0000 + index as u32, 1, 0x3f00_0000).to_vec())
+            .collect();
+        let reset_words = [
+            0x3e00_0000u32,
+            0x3f01_0204,
+            0x3eec_0000,
+            0x3f01_0204,
+            0x3ef0_0000,
+            0x3f01_0204,
+            0x3f5c_0000,
+            0x3f01_0204,
+        ];
+
+        for target in 0..8 {
+            let mut cases = Vec::new();
+            let missing: Vec<_> = records
+                .iter()
+                .enumerate()
+                .filter_map(|(index, record)| (index != target).then_some(record.clone()))
+                .collect();
+            cases.push(missing);
+
+            let mut duplicate = records.clone();
+            duplicate
+                .push(drive_record(0x3e, 0x0010_0000 + target as u32, 1, 0x3f00_0000).to_vec());
+            cases.push(duplicate);
+
+            let mut wrong_prefix = records.clone();
+            wrong_prefix[target] =
+                drive_record(0x3e, 0x0010_0000 + target as u32, 1, 0x3f00_0000).to_vec();
+            cases.push(wrong_prefix);
+
+            let mut wrong_type = records.clone();
+            wrong_type[target] =
+                drive_record(0x3f, 0x0010_0000 + target as u32, 0, 0x3f00_0000).to_vec();
+            cases.push(wrong_type);
+
+            let mut malformed_length = records.clone();
+            let mut short = Vec::new();
+            short.extend_from_slice(&(0x3f00_0000 | (0x0010_0000 + target as u32)).to_be_bytes());
+            short.extend_from_slice(&1u32.to_be_bytes());
+            malformed_length.remove(target);
+            malformed_length.insert(target, short);
+            cases.push(malformed_length);
+
+            for case in cases {
+                let refs: Vec<_> = case.iter().map(|record| record.as_slice()).collect();
+                let bytes = make_tone(&refs, None);
+                let mut tone = PodTone::parse(bytes.clone()).unwrap();
+                let parsed_before = tone.models().to_vec();
+                assert!(tone.reset_podxt_eq().is_err(), "target PARM {target}");
+                assert_eq!(
+                    tone.as_bytes(),
+                    bytes,
+                    "failure mutated target PARM {target}"
+                );
+                assert_eq!(tone.models(), parsed_before);
+            }
+
+            let boundary_records: Vec<_> = (0..8)
+                .map(|index| {
+                    let value = if index == target { 0.0f32 } else { 1.0f32 };
+                    drive_record(0x3f, 0x0010_0000 + index as u32, 1, value.to_bits()).to_vec()
+                })
+                .collect();
+            let refs: Vec<_> = boundary_records
+                .iter()
+                .map(|record| record.as_slice())
+                .collect();
+            let bytes = make_tone(&refs, None);
+            let mut tone = PodTone::parse(bytes).unwrap();
+            tone.reset_podxt_eq().unwrap();
+            for (index, word) in reset_words.iter().enumerate() {
+                let values = tone
+                    .podxt_eq_band_raw_values(PodxtEqBand::ALL[index / 2])
+                    .unwrap();
+                let actual = if index % 2 == 0 { values.0 } else { values.1 };
+                assert_eq!(actual.to_bits(), *word);
+            }
+
+            for invalid_value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.01, 1.01] {
+                let invalid_records: Vec<_> = (0..8)
+                    .map(|index| {
+                        let value = if index == target { invalid_value } else { 0.5 };
+                        drive_record(0x3f, 0x0010_0000 + index as u32, 1, value.to_bits()).to_vec()
+                    })
+                    .collect();
+                let refs: Vec<_> = invalid_records
+                    .iter()
+                    .map(|record| record.as_slice())
+                    .collect();
+                let bytes = make_tone(&refs, None);
+                let mut library = Library::default();
+                library.import_bytes(bytes.clone()).unwrap();
+                assert!(!library.is_dirty(0));
+                assert!(library.reset_podxt_eq(0).is_err());
+                assert_eq!(library.tone(0).unwrap().as_bytes(), bytes);
+                assert!(!library.is_dirty(0), "failure changed dirty baseline");
+                library.revert_unsaved(0).unwrap();
+                assert_eq!(library.tone(0).unwrap().as_bytes(), bytes);
+            }
+        }
+
+        let short_opaque = [0x3f, 0x10, 0x00];
+        let refs: Vec<_> = records
+            .iter()
+            .map(|record| record.as_slice())
+            .chain([&short_opaque[..]])
+            .collect();
+        let bytes = make_tone(&refs, None);
+        let mut tone = PodTone::parse(bytes.clone()).unwrap();
+        assert!(tone.reset_podxt_eq().is_err());
+        assert_eq!(tone.as_bytes(), bytes, "short opaque EQ PARM is ambiguous");
+
+        let eq_refs: Vec<_> = records.iter().map(|record| record.as_slice()).collect();
+        let other_eq = BuiltModel {
+            slot: PODXT_EQ_SLOT + 1,
+            model_id: PODXT_EQ_MODEL_ID,
+            tail: &[5, 6, 7, 8],
+            parameters: &eq_refs,
+        };
+        let repeated_slot = BuiltModel {
+            slot: PODXT_EQ_SLOT,
+            model_id: PODXT_EQ_MODEL_ID + 1,
+            tail: &[9, 10, 11, 12],
+            parameters: &eq_refs,
+        };
+        for models in [&[other_eq][..], &[repeated_slot][..]] {
+            let bytes = make_tone(&eq_refs, Some(models));
+            let mut tone = PodTone::parse(bytes.clone()).unwrap();
+            assert!(tone.reset_podxt_eq().is_err());
+            assert_eq!(tone.as_bytes(), bytes);
+        }
+
+        let mut already_reset = Vec::new();
+        for (index, word) in reset_words.iter().enumerate() {
+            already_reset.push(drive_record(0x3f, 0x0010_0000 + index as u32, 1, *word));
+        }
+        already_reset[7] = drive_record(0x3e, 0x0010_0007, 1, reset_words[7]);
+        let refs: Vec<_> = already_reset
+            .iter()
+            .map(|record| record.as_slice())
+            .collect();
+        let bytes = make_tone(&refs, None);
+        let mut tone = PodTone::parse(bytes.clone()).unwrap();
+        assert!(
+            tone.reset_podxt_eq().is_err(),
+            "already-reset values do not bypass guards"
+        );
+        assert_eq!(tone.as_bytes(), bytes);
     }
 
     #[test]
@@ -8596,6 +8863,16 @@ pub(crate) mod tests {
         assert_eq!(bundle.tone(0, 0).unwrap().as_bytes(), expected.as_bytes());
         assert!(bundle.is_dirty());
         let directory = tempfile::tempdir().unwrap();
+        let collision = directory.path().join("occupied-reset-copy.vwb");
+        std::fs::write(&collision, b"preserve existing file").unwrap();
+        let edited_bundle = bundle.as_bytes().to_vec();
+        assert!(bundle.save_copy(&collision).is_err());
+        assert_eq!(
+            std::fs::read(&collision).unwrap(),
+            b"preserve existing file"
+        );
+        assert_eq!(bundle.as_bytes(), edited_bundle);
+        assert!(bundle.is_dirty(), "failed copy preserves edited state");
         let destination = directory.path().join("reset-copy.vwb");
         bundle.save_copy(&destination).unwrap();
         assert_eq!(
