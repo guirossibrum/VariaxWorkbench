@@ -2686,44 +2686,56 @@ impl Workbench {
                             Err(error) => self.pod_message = error.detail(),
                         }
                     }
-                    ui.label("Additional source-derived reverb defaults");
-                    egui::ComboBox::from_id_salt("hd-octave-fuzz-reverb-default-target")
-                        .selected_text(self.hd_reverb_default_target.label())
-                        .show_ui(ui, |ui| {
-                            for target in pod_preset::HdReverbDefault::ALL {
-                                ui.selectable_value(
-                                    &mut self.hd_reverb_default_target,
-                                    target,
-                                    target.label(),
-                                );
-                            }
-                        });
-                    if self.pod_button(
-                        ui,
-                        "replace-octave-fuzz-admitted-reverb-default",
-                        "Apply selected reverb defaults",
-                    ) {
-                        let index = self.hd_selected.expect("selected HD file");
-                        match pod_preset::HdFxSlot::new(self.hd_effect_slot) {
-                            Ok(slot) => match Session::initial_rig()
-                                .replace_hd_octave_fuzz_with_admitted_reverb_defaults(
-                                    &mut self.hd_library,
-                                    index,
-                                    slot,
-                                    self.hd_reverb_default_target,
-                                )
-                            {
-                                Ok(()) => {
-                                    self.pod_message = format!(
-                                        "Replaced this offline effect with {} defaults. Nothing was sent; save a new copy to keep the change.",
-                                        self.hd_reverb_default_target.label()
+                    let reverb_defaults = egui::CollapsingHeader::new(
+                        "Additional source-derived reverb defaults",
+                    )
+                    .id_salt("hd-octave-fuzz-reverb-defaults")
+                    .show(ui, |ui| {
+                        egui::ComboBox::from_id_salt("hd-octave-fuzz-reverb-default-target")
+                            .selected_text(self.hd_reverb_default_target.label())
+                            .show_ui(ui, |ui| {
+                                for target in pod_preset::HdReverbDefault::ALL {
+                                    ui.selectable_value(
+                                        &mut self.hd_reverb_default_target,
+                                        target,
+                                        target.label(),
                                     );
                                 }
-                                Err(error) => self.pod_message = rejection_text(&error),
-                            },
-                            Err(error) => self.pod_message = error.detail(),
+                            });
+                        if self.pod_button(
+                            ui,
+                            "replace-octave-fuzz-admitted-reverb-default",
+                            "Apply selected reverb defaults",
+                        ) {
+                            let index = self.hd_selected.expect("selected HD file");
+                            match pod_preset::HdFxSlot::new(self.hd_effect_slot) {
+                                Ok(slot) => match Session::initial_rig()
+                                    .replace_hd_octave_fuzz_with_admitted_reverb_defaults(
+                                        &mut self.hd_library,
+                                        index,
+                                        slot,
+                                        self.hd_reverb_default_target,
+                                    )
+                                {
+                                    Ok(()) => {
+                                        self.pod_message = format!(
+                                            "Replaced this offline effect with {} defaults. Nothing was sent; save a new copy to keep the change.",
+                                            self.hd_reverb_default_target.label()
+                                        );
+                                    }
+                                    Err(error) => self.pod_message = rejection_text(&error),
+                                },
+                                Err(error) => self.pod_message = error.detail(),
+                            }
                         }
-                    }
+                    });
+                    #[cfg(test)]
+                    self.pod_buttons.insert(
+                        "toggle-hd-reverb-defaults",
+                        reverb_defaults.header_response.rect,
+                    );
+                    #[cfg(not(test))]
+                    let _ = reverb_defaults;
                     ui.separator();
                 }
                 ui.separator();
@@ -8599,15 +8611,20 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct HdExplicitReplacementTargets {
+        distortion: Option<pod_preset::HdDistortionDefault>,
+        dynamics: Option<pod_preset::HdDynamicsDefault>,
+        reverb: Option<pod_preset::HdReverbDefault>,
+    }
+
     fn exercise_hd_editor_explicit_replacement_lifecycle(
         target_model: u32,
         default_keys: &[u32],
         button_id: &'static str,
         message_label: &str,
         output_name: &str,
-        batch_target: Option<pod_preset::HdDistortionDefault>,
-        dynamics_target: Option<pod_preset::HdDynamicsDefault>,
-        reverb_target: Option<pod_preset::HdReverbDefault>,
+        targets: HdExplicitReplacementTargets,
     ) {
         let (context, mut app) = app();
         context.style_mut(|style| style.animation_time = 0.0);
@@ -8648,13 +8665,13 @@ mod tests {
         }
         let index = app.hd_library.import_bytes(original.clone()).unwrap();
         app.select_hd_file(index);
-        if let Some(target) = batch_target {
+        if let Some(target) = targets.distortion {
             app.hd_default_target = target;
         }
-        if let Some(target) = dynamics_target {
+        if let Some(target) = targets.dynamics {
             app.hd_dynamics_default_target = target;
         }
-        if let Some(target) = reverb_target {
+        if let Some(target) = targets.reverb {
             app.hd_reverb_default_target = target;
         }
         app.pod_open = true;
@@ -8673,6 +8690,17 @@ mod tests {
             expected[block + 0x10 + row * 0x14 + 0x10] = 0;
         }
 
+        if targets.reverb.is_some() {
+            recording_frame(&context, &mut app, vec![]);
+            scroll_hd_editor_control_into_view(&context, &app, "toggle-hd-reverb-defaults");
+            click_pod(&context, &mut app, "toggle-hd-reverb-defaults");
+            recording_frame(&context, &mut app, vec![]);
+            scroll_hd_editor_control_into_view(
+                &context,
+                &app,
+                "replace-octave-fuzz-admitted-reverb-default",
+            );
+        }
         click_pod(&context, &mut app, button_id);
         assert!(
             app.pod_message.contains(message_label),
@@ -8829,9 +8857,7 @@ mod tests {
             "replace-octave-fuzz-vintage-pre",
             "Vintage Pre defaults",
             "vintage-pre-copy.5xe",
-            None,
-            None,
-            None,
+            HdExplicitReplacementTargets::default(),
         );
         exercise_hd_editor_explicit_replacement_lifecycle(
             0x0205_000e,
@@ -8845,9 +8871,7 @@ mod tests {
             "replace-octave-fuzz-screamer",
             "Screamer defaults",
             "screamer-copy.5xe",
-            None,
-            None,
-            None,
+            HdExplicitReplacementTargets::default(),
         );
         exercise_hd_editor_explicit_replacement_lifecycle(
             0x0205_0014,
@@ -8861,9 +8885,7 @@ mod tests {
             "replace-octave-fuzz-sub-octave-fuzz",
             "Sub Octave Fuzz defaults",
             "sub-octave-fuzz-copy.5xe",
-            None,
-            None,
-            None,
+            HdExplicitReplacementTargets::default(),
         );
         exercise_hd_editor_explicit_replacement_lifecycle(
             0x0200_0011,
@@ -8871,9 +8893,7 @@ mod tests {
             "replace-octave-fuzz-noise-gate",
             "Noise Gate defaults",
             "noise-gate-copy.5xe",
-            None,
-            None,
-            None,
+            HdExplicitReplacementTargets::default(),
         );
 
         const BATCH: [(pod_preset::HdDistortionDefault, u32, &str, &str); 12] = [
@@ -8963,9 +8983,10 @@ mod tests {
                 "replace-octave-fuzz-admitted-default",
                 label,
                 output_name,
-                Some(target),
-                None,
-                None,
+                HdExplicitReplacementTargets {
+                    distortion: Some(target),
+                    ..Default::default()
+                },
             );
         }
 
@@ -9040,9 +9061,10 @@ mod tests {
                 "replace-octave-fuzz-admitted-dynamics-default",
                 label,
                 output_name,
-                None,
-                Some(target),
-                None,
+                HdExplicitReplacementTargets {
+                    dynamics: Some(target),
+                    ..Default::default()
+                },
             );
         }
 
@@ -9103,9 +9125,10 @@ mod tests {
                 "replace-octave-fuzz-admitted-reverb-default",
                 label,
                 output_name,
-                None,
-                None,
-                Some(target),
+                HdExplicitReplacementTargets {
+                    reverb: Some(target),
+                    ..Default::default()
+                },
             );
         }
     }
