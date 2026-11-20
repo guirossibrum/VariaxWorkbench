@@ -2381,7 +2381,9 @@ fn physical_claims_and_planned_work_do_not_start_a_backend() {
                 let expected = if profile == ProductProfile::PodHd500x
                     && matches!(
                         operation,
-                        Operation::InspectFirmware | Operation::InspectOfflineDeviceDescriptor
+                        Operation::InspectFirmware
+                            | Operation::InspectOfflineDeviceDescriptor
+                            | Operation::TransformOfflineRecord
                     ) {
                     CapabilityState::Offline
                 } else {

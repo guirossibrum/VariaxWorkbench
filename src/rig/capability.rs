@@ -29,10 +29,11 @@ pub enum Operation {
     SendControl,
     InstallModule,
     BindDriver,
+    TransformOfflineRecord,
 }
 
 impl Operation {
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 22] = [
         Self::OpenGuitarPreset,
         Self::OpenGuitarBank,
         Self::SaveGuitarCopy,
@@ -54,6 +55,7 @@ impl Operation {
         Self::SendControl,
         Self::InstallModule,
         Self::BindDriver,
+        Self::TransformOfflineRecord,
     ];
 
     pub const fn is_physical(self) -> bool {
@@ -124,7 +126,9 @@ fn declared(profile: ProductProfile, operation: Operation) -> CapabilityState {
         ProductProfile::PodHd500x
             if matches!(
                 operation,
-                Operation::InspectFirmware | Operation::InspectOfflineDeviceDescriptor
+                Operation::InspectFirmware
+                    | Operation::InspectOfflineDeviceDescriptor
+                    | Operation::TransformOfflineRecord
             ) =>
         {
             CapabilityState::Offline
@@ -148,6 +152,7 @@ fn variax_state(operation: Operation) -> CapabilityState {
         Operation::OpenPodPreset | Operation::EditPodPreset | Operation::SelectRecordRoute => {
             CapabilityState::Unsupported
         }
+        Operation::TransformOfflineRecord => CapabilityState::Unsupported,
         Operation::StartAudioCapture
         | Operation::StopAudioCapture
         | Operation::OpenAudioStream
@@ -173,6 +178,7 @@ fn pod_state(operation: Operation) -> CapabilityState {
         | Operation::OpenGuitarBank
         | Operation::SaveGuitarCopy
         | Operation::ApplyFamilyMath => CapabilityState::Unsupported,
+        Operation::TransformOfflineRecord => CapabilityState::Unsupported,
         Operation::StartAudioCapture
         | Operation::StopAudioCapture
         | Operation::OpenAudioStream
@@ -210,6 +216,9 @@ fn note(profile: ProductProfile, operation: Operation) -> &'static str {
         }
         (ProductProfile::Variax600, Operation::SelectRecordRoute) => {
             "USB audio belongs to the PODxt Live role on this rig. The guitar role has no recording route."
+        }
+        (ProductProfile::PodHd500x, Operation::TransformOfflineRecord) => {
+            "Source-scoped policy-1 owned-memory transformation only. It is not an audio route, live queue, Windows adapter, callback model, or physical endpoint."
         }
         (ProductProfile::PodxtLive, Operation::InspectFirmware) => {
             "Inspects a FORM/L6FF container and requires the archived PODxt Live product and version. A Variax image is the wrong product."
@@ -263,6 +272,9 @@ fn hd500x_limit(operation: Operation) -> &'static str {
         }
         Operation::InspectOfflineDeviceDescriptor => {
             "Inspects only caller-owned synthetic/offline bytes from the Windows 4.2.7.7 descriptor result. It does not enumerate or query hardware."
+        }
+        Operation::TransformOfflineRecord => {
+            "Runs the source-scoped Windows 4.2.7.7 policy-1 transformation on owned initialized bytes. Nonzero source statuses may include copies or state effects. This is not product-qualified recording or endpoint evidence."
         }
         Operation::StartAudioCapture
         | Operation::StopAudioCapture

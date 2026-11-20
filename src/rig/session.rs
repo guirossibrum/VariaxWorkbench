@@ -864,6 +864,49 @@ impl Session {
         crate::pod_audio::plan(route, period_bytes, periods, || {}).map_err(Rejection::format)
     }
 
+    /// Runs the source-scoped policy-1 HD500X record-to-caller transformation
+    /// over owned initialized bytes. The endpoint remains unverified/locked.
+    pub fn transform_hd500x_record_to_caller(
+        self,
+        state: &mut super::record_transform::RecordSnapshot,
+        ring: &[u8],
+        destination: &mut [u8],
+        requested: usize,
+        policy: u8,
+    ) -> Result<super::record_transform::TransferReport, super::record_transform::TransformError>
+    {
+        super::record_transform::session_record_to_caller(
+            self,
+            state,
+            ring,
+            destination,
+            requested,
+            policy,
+        )
+    }
+
+    /// Runs the source-scoped policy-1 caller-to-record transformation over
+    /// owned initialized bytes. This does not connect an audio route.
+    pub fn transform_hd500x_caller_to_record(
+        self,
+        state: &mut super::record_transform::RecordSnapshot,
+        ring: &mut [u8],
+        source: &[u8],
+        requested: usize,
+        policy: u8,
+    ) -> Result<super::record_transform::TransferReport, super::record_transform::TransformError>
+    {
+        super::record_transform::session_caller_to_record(
+            self, state, ring, source, requested, policy,
+        )
+    }
+
+    pub(super) fn require_record_transform_profile(self) -> Result<(), Rejection> {
+        let operation = Operation::TransformOfflineRecord;
+        let profile = self.extension_profile(operation)?;
+        self.require_profile(profile, operation)
+    }
+
     /// Validates a macOS 7.6.8 HD500X audio request as offline source-scoped
     /// planning. It does not change `select_record_route`, infer provider
     /// results, or enable an audio stream; the returned plan remains locked.
