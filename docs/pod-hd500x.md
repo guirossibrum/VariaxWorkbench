@@ -870,7 +870,7 @@ preset observation. Local validation passes all 335 tests (259 library, 50 GUI, 
 
 PR #109 separately admits only the static-derived candidate model/key
 `0x020A001D/0x3F100003` for descriptor type `0x0D` (decimal 13). The distinct
-descriptor type `0x13` (decimal 19) remains deferred. A closed neutral enum
+descriptor type `0x13` (decimal 19) candidate is documented below. A closed neutral enum
 permits only Choice 0–3 and stores BE binary32 words `00000000`, `3EAAAAAB`,
 `3F2AAAAB`, and `3F800000`. These words follow the static callback's
 intermediate binary32 step spill before its index multiply; they are not a
@@ -893,8 +893,32 @@ guard rejection, a trailing duplicate outside count while the target remains
 inside it, exact stage records through Apply/Discard and quit, and the lifecycle
 through slot/model/entry invalidation, cancelled and successful Open, save
 collision, save/reopen, and revert to the saved baseline. Local validation
-passes 343 tests (262 library, 55 GUI, 26 integration), Clippy with
-`-D warnings`, formatting, and `git diff --check`; correction-head configured
-checks are to be queued after commit. This remains an offline file operation
+passed at the type-0x0D correction head: 343 tests (262 library, 55 GUI, 26 integration), Clippy with
+`-D warnings`, formatting, and `git diff --check`. The subsequent type-0x13
+increment passes 347 tests (265 library, 56 GUI, 26 integration), Clippy,
+formatting, and `git diff --check`; exact-head configured checks remain pending. This remains an offline file operation
 only. The indirect owner-context effects and complete editor/runtime parity are
 unresolved, and issue #32 remains partial and open.
+
+
+## Static-derived type-0x13 eight-choice file operation
+
+The bounded offline candidate is descriptor type `0x13` (decimal 19), model
+`0x020A0011`, key `0x3F100003`. Its closed neutral `Choice 0` through `Choice 7`
+values write the static-derived big-endian binary32 words
+`00000000`, `3E000000`, `3E800000`, `3EC00000`, `3F000000`, `3F200000`,
+`3F400000`, and `3F600000`. This exact association is supported by retained
+static source analysis; it is not a runtime or physical mapping claim. The
+source runtime row using the same key under a different descriptor/model is not
+joined to this control. No localized names, units, default, or physical effect
+are inferred.
+
+The Rust operation accepts only standalone/extracted H5EP v1 files and checks
+the exact model/key, slot validity, canonical enable, row count 1..=12, unique
+key across all twelve rows, target row in count, and unassigned row marker before
+a guarded no-op. It changes only the selected four-byte word in a clone and
+reparses. Unknown finite words remain readable, non-finite words remain raw and
+lossless but cannot be edited, and H5ES/H5EB parents are not direct edit targets.
+GUI selection is staged until explicit Apply; Discard does not change bytes.
+Parent and sibling isolation is checked offline. The candidate does not establish
+physical applicability, labels, units, editor parity, or device safety.

@@ -74,6 +74,10 @@ pub const HD_TYPE12_CHOICE_KEY: u32 = 0x3f10_0004;
 /// localized catalog identity.
 pub const HD_TYPE13_CHOICE_MODEL_ID: u32 = 0x020a_001d;
 pub const HD_TYPE13_CHOICE_KEY: u32 = 0x3f10_0003;
+/// Static-derived descriptor type 0x13 (decimal 19) candidate association.
+/// This is not a hardware or localized catalog identity.
+pub const HD_TYPE19_CHOICE_MODEL_ID: u32 = 0x020a_0011;
+pub const HD_TYPE19_CHOICE_KEY: u32 = 0x3f10_0003;
 pub const HD_TYPE10_CHOICE_MODEL_KEYS: [(u32, u32); 2] = [
     (HD_TYPE10_CHOICE_MODEL_ID, HD_TYPE10_CHOICE_KEY),
     (0x020a_000f, 0x3f10_0003),
@@ -407,6 +411,119 @@ impl HdType13Choice {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HdType13ChoiceValue {
     Choice(HdType13Choice),
+    UnknownFinite(u32),
+    NonFinite(u32),
+    Unavailable,
+}
+
+/// Closed identity for the single static-derived descriptor type-0x13
+/// (decimal 19) association. Kept distinct from `HdType13Control`, which is
+/// decimal type 13.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum HdType19Control {
+    Model020a0011Key3f100003,
+}
+
+impl HdType19Control {
+    pub const ALL: [Self; 1] = [Self::Model020a0011Key3f100003];
+
+    pub fn for_model(model_id: u32) -> &'static [Self] {
+        if model_id == HD_TYPE19_CHOICE_MODEL_ID {
+            &Self::ALL
+        } else {
+            &[]
+        }
+    }
+
+    pub const fn model_id(self) -> u32 {
+        HD_TYPE19_CHOICE_MODEL_ID
+    }
+
+    pub const fn key(self) -> u32 {
+        HD_TYPE19_CHOICE_KEY
+    }
+
+    pub const fn label(self) -> &'static str {
+        "Control key 0x3F100003"
+    }
+}
+
+/// Eight static-derived neutral choices for descriptor type 0x13 (decimal 19).
+/// The 0.125 step is exact in binary32; these are still static candidates, not
+/// observed runtime or physical values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum HdType19Choice {
+    Choice0,
+    Choice1,
+    Choice2,
+    Choice3,
+    Choice4,
+    Choice5,
+    Choice6,
+    Choice7,
+}
+
+impl HdType19Choice {
+    pub const ALL: [Self; 8] = [
+        Self::Choice0,
+        Self::Choice1,
+        Self::Choice2,
+        Self::Choice3,
+        Self::Choice4,
+        Self::Choice5,
+        Self::Choice6,
+        Self::Choice7,
+    ];
+
+    pub const fn index(self) -> u8 {
+        match self {
+            Self::Choice0 => 0,
+            Self::Choice1 => 1,
+            Self::Choice2 => 2,
+            Self::Choice3 => 3,
+            Self::Choice4 => 4,
+            Self::Choice5 => 5,
+            Self::Choice6 => 6,
+            Self::Choice7 => 7,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Choice0 => "Choice 0",
+            Self::Choice1 => "Choice 1",
+            Self::Choice2 => "Choice 2",
+            Self::Choice3 => "Choice 3",
+            Self::Choice4 => "Choice 4",
+            Self::Choice5 => "Choice 5",
+            Self::Choice6 => "Choice 6",
+            Self::Choice7 => "Choice 7",
+        }
+    }
+
+    pub const fn bits(self) -> u32 {
+        match self {
+            Self::Choice0 => 0x0000_0000,
+            Self::Choice1 => 0x3e00_0000,
+            Self::Choice2 => 0x3e80_0000,
+            Self::Choice3 => 0x3ec0_0000,
+            Self::Choice4 => 0x3f00_0000,
+            Self::Choice5 => 0x3f20_0000,
+            Self::Choice6 => 0x3f40_0000,
+            Self::Choice7 => 0x3f60_0000,
+        }
+    }
+
+    pub fn from_index(index: u8) -> Result<Self, ToneError> {
+        Self::ALL.get(index as usize).copied().ok_or_else(|| {
+            ToneError::format("HD descriptor type-0x13 choice index must be in 0..=7")
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HdType19ChoiceValue {
+    Choice(HdType19Choice),
     UnknownFinite(u32),
     NonFinite(u32),
     Unavailable,
@@ -2885,6 +3002,115 @@ impl OpaqueH5epPreset {
         Ok(row_at + 4)
     }
 
+    pub fn hd_type19_choice_value(
+        &self,
+        effect_slot: HdFxSlot,
+        control: HdType19Control,
+    ) -> HdType19ChoiceValue {
+        let Ok(value_at) = self.hd_type19_choice_value_offset(effect_slot, control) else {
+            return HdType19ChoiceValue::Unavailable;
+        };
+        let Some(bits) = read_be_u32(self.body_bytes(), value_at) else {
+            return HdType19ChoiceValue::Unavailable;
+        };
+        if let Some(choice) = HdType19Choice::ALL
+            .into_iter()
+            .find(|choice| choice.bits() == bits)
+        {
+            HdType19ChoiceValue::Choice(choice)
+        } else if f32::from_bits(bits).is_finite() {
+            HdType19ChoiceValue::UnknownFinite(bits)
+        } else {
+            HdType19ChoiceValue::NonFinite(bits)
+        }
+    }
+
+    pub fn set_hd_type19_choice(
+        &mut self,
+        effect_slot: HdFxSlot,
+        control: HdType19Control,
+        choice: HdType19Choice,
+    ) -> Result<(), ToneError> {
+        let value_at = self.hd_type19_choice_value_offset(effect_slot, control)?;
+        let current = read_be_u32(self.body_bytes(), value_at)
+            .ok_or_else(|| ToneError::format("HD descriptor type-0x13 value word is truncated"))?;
+        if !f32::from_bits(current).is_finite() {
+            return Err(ToneError::format(
+                "existing HD descriptor type-0x13 value is non-finite and cannot be edited",
+            ));
+        }
+        if current == choice.bits() {
+            return Ok(());
+        }
+        let mut candidate = self.bytes.clone();
+        let file_at = H5EP_HEADER_BYTES + value_at;
+        candidate[file_at..file_at + 4].copy_from_slice(&choice.bits().to_be_bytes());
+        self.bytes = Self::parse(candidate)?.bytes;
+        Ok(())
+    }
+
+    fn hd_type19_choice_value_offset(
+        &self,
+        effect_slot: HdFxSlot,
+        control: HdType19Control,
+    ) -> Result<usize, ToneError> {
+        let body = self.body_bytes();
+        let block = HD_EFFECT_BLOCK_OFFSET + effect_slot.index() * HD_EFFECT_BLOCK_STRIDE;
+        let model_id = read_be_u32(body, block).unwrap_or_default();
+        if model_id != HD_TYPE19_CHOICE_MODEL_ID
+            || control != HdType19Control::Model020a0011Key3f100003
+            || control.key() != HD_TYPE19_CHOICE_KEY
+        {
+            return Err(ToneError::format(
+                "HD descriptor type-0x13 choice requires model 0x020a0011 and key 0x3f100003 in the selected FX slot",
+            ));
+        }
+        if body[block + 0x0b] != 1 {
+            return Err(ToneError::format(
+                "HD descriptor type-0x13 choice requires a valid, non-empty effect slot",
+            ));
+        }
+        if !matches!(body[block + 8], 0 | 1) {
+            return Err(ToneError::format(
+                "HD descriptor type-0x13 choice requires a canonical enable byte",
+            ));
+        }
+        let count = body[block + 0x0f] as usize;
+        if !(1..=HD_PARAMETER_ROW_COUNT).contains(&count) {
+            return Err(ToneError::format(
+                "HD descriptor type-0x13 choice requires an effect row count in 1..=12",
+            ));
+        }
+        let mut found = None;
+        let mut matches = 0;
+        for row in 0..HD_PARAMETER_ROW_COUNT {
+            let row_at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
+            if read_be_u32(body, row_at) == Some(control.key()) {
+                found = Some((row, row_at));
+                matches += 1;
+            }
+        }
+        if matches != 1 {
+            return Err(ToneError::format(if matches == 0 {
+                "HD descriptor type-0x13 choice row is missing"
+            } else {
+                "HD descriptor type-0x13 choice row key is ambiguous"
+            }));
+        }
+        let (row, row_at) = found.expect("one matching key counted");
+        if row >= count {
+            return Err(ToneError::format(
+                "HD descriptor type-0x13 choice row is outside the declared effect row count",
+            ));
+        }
+        if body[row_at + HD_PARAMETER_ROW_FLAG_OFFSET] != 0 {
+            return Err(ToneError::format(
+                "HD descriptor type-0x13 choice row must have an unassigned marker",
+            ));
+        }
+        Ok(row_at + 4)
+    }
+
     fn hd_type8_choice_value_offset(&self, effect_slot: HdFxSlot) -> Result<usize, ToneError> {
         let body = self.body_bytes();
         let block = HD_EFFECT_BLOCK_OFFSET + effect_slot.index() * HD_EFFECT_BLOCK_STRIDE;
@@ -3641,6 +3867,29 @@ impl HdEditorLibrary {
             }
             _ => Err(ToneError::format(
                 "HD type-13 choice requires an extracted H5EP preset",
+            )),
+        }
+    }
+
+    /// Applies the single static-derived descriptor type-0x13 (decimal 19)
+    /// eight-choice candidate to an extracted H5EP only.
+    pub fn set_type19_choice(
+        &mut self,
+        index: usize,
+        effect_slot: HdFxSlot,
+        control: HdType19Control,
+        choice: HdType19Choice,
+    ) -> Result<(), ToneError> {
+        let entry = self
+            .files
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("file index is outside the HD editor library"))?;
+        match &mut entry.file {
+            PodPresetFile::H5ep(preset) => {
+                preset.set_hd_type19_choice(effect_slot, control, choice)
+            }
+            _ => Err(ToneError::format(
+                "HD descriptor type-0x13 choice requires an extracted H5EP preset",
             )),
         }
     }
@@ -5382,6 +5631,191 @@ mod tests {
         let mut p = OpaqueH5epPreset::parse(invalid_noop.clone()).unwrap();
         assert!(
             p.set_hd_type13_choice(slot, control, HdType13Choice::Choice2)
+                .is_err()
+        );
+        assert_eq!(p.as_bytes(), invalid_noop);
+    }
+
+    #[test]
+    fn type19_static_complete_vectors_match_exact_words_and_preserve_siblings() {
+        let source = include_bytes!("../tests/fixtures/type19-model-020a0011-source.h5ep");
+        let outputs = [
+            include_bytes!("../tests/fixtures/type19-model-020a0011-choice0.h5ep"),
+            include_bytes!("../tests/fixtures/type19-model-020a0011-choice1.h5ep"),
+            include_bytes!("../tests/fixtures/type19-model-020a0011-choice2.h5ep"),
+            include_bytes!("../tests/fixtures/type19-model-020a0011-choice3.h5ep"),
+            include_bytes!("../tests/fixtures/type19-model-020a0011-choice4.h5ep"),
+            include_bytes!("../tests/fixtures/type19-model-020a0011-choice5.h5ep"),
+            include_bytes!("../tests/fixtures/type19-model-020a0011-choice6.h5ep"),
+            include_bytes!("../tests/fixtures/type19-model-020a0011-choice7.h5ep"),
+        ];
+        assert_eq!(
+            HdType19Choice::ALL.map(HdType19Choice::bits),
+            [
+                0,
+                0x3e00_0000,
+                0x3e80_0000,
+                0x3ec0_0000,
+                0x3f00_0000,
+                0x3f20_0000,
+                0x3f40_0000,
+                0x3f60_0000
+            ]
+        );
+        assert!(HdType19Choice::from_index(8).is_err());
+        let control = HdType19Control::Model020a0011Key3f100003;
+        assert_eq!(
+            HdType19Control::for_model(0x020a_0011),
+            &HdType19Control::ALL
+        );
+        assert!(HdType19Control::for_model(0x020a_001d).is_empty());
+        let slot = HdFxSlot::new(4).unwrap();
+        let preset = OpaqueH5epPreset::parse(source.to_vec()).unwrap();
+        let target_value = H5EP_HEADER_BYTES
+            + HD_EFFECT_BLOCK_OFFSET
+            + slot.index() * HD_EFFECT_BLOCK_STRIDE
+            + HD_EFFECT_ROWS_OFFSET
+            + 9 * HD_PARAMETER_ROW_STRIDE
+            + 4;
+        assert_eq!(
+            preset.hd_type19_choice_value(slot, control),
+            HdType19ChoiceValue::UnknownFinite(0x3e12_3456)
+        );
+        for (choice, expected) in HdType19Choice::ALL.into_iter().zip(outputs) {
+            assert_eq!(expected.len(), source.len());
+            for offset in 0..source.len() {
+                if !(target_value..target_value + 4).contains(&offset) {
+                    assert_eq!(
+                        expected[offset], source[offset],
+                        "expected output changed byte {offset:#x}"
+                    );
+                }
+            }
+            assert_eq!(
+                &expected[target_value..target_value + 4],
+                &choice.bits().to_be_bytes()
+            );
+            let mut edited = OpaqueH5epPreset::parse(source.to_vec()).unwrap();
+            edited.set_hd_type19_choice(slot, control, choice).unwrap();
+            assert_eq!(edited.as_bytes(), expected);
+            let no_op = edited.as_bytes().to_vec();
+            edited.set_hd_type19_choice(slot, control, choice).unwrap();
+            assert_eq!(edited.as_bytes(), no_op, "guarded same-word no-op");
+        }
+        // Every slot, representative row positions, and both enable bytes;
+        // preserve exactly the requested value word and opaque surroundings.
+        for slot_index in 0..HD_EFFECT_COUNT {
+            for row in [0, 5, 11] {
+                for enabled in [0, 1] {
+                    for choice in HdType19Choice::ALL {
+                        let mut original =
+                            synthetic_type12_h5ep(slot_index, row, enabled, 0x3e12_3456);
+                        let block = H5EP_HEADER_BYTES
+                            + HD_EFFECT_BLOCK_OFFSET
+                            + slot_index * HD_EFFECT_BLOCK_STRIDE;
+                        original[block..block + 4]
+                            .copy_from_slice(&HD_TYPE19_CHOICE_MODEL_ID.to_be_bytes());
+                        let at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
+                        original[at..at + 4].copy_from_slice(&HD_TYPE19_CHOICE_KEY.to_be_bytes());
+                        let value_at = at + 4;
+                        let mut expected = original.clone();
+                        expected[value_at..value_at + 4]
+                            .copy_from_slice(&choice.bits().to_be_bytes());
+                        let mut preset = OpaqueH5epPreset::parse(original).unwrap();
+                        preset
+                            .set_hd_type19_choice(
+                                HdFxSlot::new(slot_index).unwrap(),
+                                control,
+                                choice,
+                            )
+                            .unwrap();
+                        assert_eq!(preset.as_bytes(), expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn type19_guards_precede_noop_and_preserve_nonfinite_and_unknown_words() {
+        let source = include_bytes!("../tests/fixtures/type19-model-020a0011-source.h5ep").to_vec();
+        let slot = HdFxSlot::new(4).unwrap();
+        let control = HdType19Control::Model020a0011Key3f100003;
+        let block = H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 4 * HD_EFFECT_BLOCK_STRIDE;
+        let row = block + HD_EFFECT_ROWS_OFFSET + 9 * HD_PARAMETER_ROW_STRIDE;
+        let mut cases = Vec::new();
+        let mut foreign = source.clone();
+        foreign[block..block + 4].copy_from_slice(&0x020a001e_u32.to_be_bytes());
+        cases.push(("foreign model", foreign));
+        let mut missing = source.clone();
+        missing[row..row + 4].fill(0);
+        cases.push(("missing key", missing));
+        let mut duplicate = source.clone();
+        let late = block + HD_EFFECT_ROWS_OFFSET + 11 * HD_PARAMETER_ROW_STRIDE;
+        duplicate[late..late + 4].copy_from_slice(&HD_TYPE19_CHOICE_KEY.to_be_bytes());
+        duplicate[block + 0x0f] = 10;
+        assert!(
+            9 < duplicate[block + 0x0f] as usize,
+            "target row 9 remains in count"
+        );
+        assert!(
+            11 >= duplicate[block + 0x0f] as usize,
+            "duplicate row 11 is outside count"
+        );
+        cases.push(("trailing duplicate beyond count", duplicate));
+        let mut beyond = source.clone();
+        beyond[block + 0x0f] = 9;
+        cases.push(("out of count", beyond));
+        let mut assigned = source.clone();
+        assigned[row + HD_PARAMETER_ROW_FLAG_OFFSET] = 1;
+        cases.push(("assigned", assigned));
+        for (offset, value, label) in [
+            (0x0b, 0, "invalid effect"),
+            (8, 2, "enable"),
+            (0x0f, 0, "zero count"),
+            (0x0f, 13, "excess count"),
+        ] {
+            let mut b = source.clone();
+            b[block + offset] = value;
+            cases.push((label, b));
+        }
+        for bits in [0x7fc0_0011_u32, 0x7f80_0000, 0xff80_0000] {
+            let mut b = source.clone();
+            b[row + 4..row + 8].copy_from_slice(&bits.to_be_bytes());
+            cases.push(("nonfinite", b));
+        }
+        for (label, bytes) in cases {
+            let mut p = OpaqueH5epPreset::parse(bytes.clone()).unwrap();
+            assert!(
+                p.set_hd_type19_choice(slot, control, HdType19Choice::Choice1)
+                    .is_err(),
+                "{label}"
+            );
+            assert_eq!(p.as_bytes(), bytes, "{label}");
+        }
+        let nonfinite = {
+            let mut b = source.clone();
+            b[row + 4..row + 8].copy_from_slice(&0x7fc0_0011_u32.to_be_bytes());
+            b
+        };
+        assert_eq!(
+            OpaqueH5epPreset::parse(nonfinite)
+                .unwrap()
+                .hd_type19_choice_value(slot, control),
+            HdType19ChoiceValue::NonFinite(0x7fc0_0011)
+        );
+        let mut invalid_noop = source.clone();
+        invalid_noop[row + 4..row + 8]
+            .copy_from_slice(&HdType19Choice::Choice2.bits().to_be_bytes());
+        invalid_noop[row + HD_PARAMETER_ROW_FLAG_OFFSET] = 1;
+        assert_eq!(
+            &invalid_noop[row + 4..row + 8],
+            &HdType19Choice::Choice2.bits().to_be_bytes(),
+            "requested choice is already present before the guard is corrupted"
+        );
+        let mut p = OpaqueH5epPreset::parse(invalid_noop.clone()).unwrap();
+        assert!(
+            p.set_hd_type19_choice(slot, control, HdType19Choice::Choice2)
                 .is_err()
         );
         assert_eq!(p.as_bytes(), invalid_noop);

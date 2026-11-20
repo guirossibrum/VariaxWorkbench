@@ -440,6 +440,36 @@ impl Session {
             .map_err(map_hd_library_error)
     }
 
+    /// Applies the bounded static-derived descriptor type-0x13 (decimal 19)
+    /// candidate only in the offline HD500X extension profile.
+    pub fn set_hd_type19_choice(
+        self,
+        library: &mut HdEditorLibrary,
+        file: usize,
+        effect_slot: crate::pod_preset::HdFxSlot,
+        control: crate::pod_preset::HdType19Control,
+        choice: crate::pod_preset::HdType19Choice,
+    ) -> Result<(), Rejection> {
+        match self.kind {
+            SessionKind::Extension(ProductProfile::PodHd500x) => {}
+            SessionKind::Extension(profile) => {
+                return Err(Rejection::Unsupported {
+                    profile,
+                    operation: Operation::EditPodPreset,
+                });
+            }
+            SessionKind::InitialRig => {
+                return Err(Rejection::Unsupported {
+                    profile: ProductProfile::Variax600,
+                    operation: Operation::EditPodPreset,
+                });
+            }
+        }
+        library
+            .set_type19_choice(file, effect_slot, control, choice)
+            .map_err(map_hd_library_error)
+    }
+
     /// Applies the admitted offline enable flag only through a POD HD500X
     /// extension session. H5EP v1 is enforced by the parser; file context does
     /// not establish a physical unit or firmware version.

@@ -95,6 +95,15 @@ struct PendingHdType13Choice {
     choice: pod_preset::HdType13Choice,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PendingHdType19Choice {
+    file_index: usize,
+    slot: pod_preset::HdFxSlot,
+    model_id: u32,
+    control: pod_preset::HdType19Control,
+    choice: pod_preset::HdType19Choice,
+}
+
 #[cfg(test)]
 fn hd_type12_combo_button() -> &'static str {
     "hd-type12-combo"
@@ -123,6 +132,25 @@ fn hd_type13_apply_button() -> &'static str {
 }
 fn hd_type13_discard_button() -> &'static str {
     "discard-hd-type13"
+}
+#[cfg(test)]
+fn hd_type19_option_button(choice: pod_preset::HdType19Choice) -> &'static str {
+    [
+        "hd-type19-option-0",
+        "hd-type19-option-1",
+        "hd-type19-option-2",
+        "hd-type19-option-3",
+        "hd-type19-option-4",
+        "hd-type19-option-5",
+        "hd-type19-option-6",
+        "hd-type19-option-7",
+    ][choice.index() as usize]
+}
+fn hd_type19_apply_button() -> &'static str {
+    "apply-hd-type19"
+}
+fn hd_type19_discard_button() -> &'static str {
+    "discard-hd-type19"
 }
 
 fn hd_type11_control_index(control: pod_preset::HdType11Control) -> usize {
@@ -384,6 +412,8 @@ struct Workbench {
         HashMap<(usize, pod_preset::HdFxSlot, pod_preset::HdType12Control), PendingHdType12Choice>,
     hd_type13_pending:
         HashMap<(usize, pod_preset::HdFxSlot, pod_preset::HdType13Control), PendingHdType13Choice>,
+    hd_type19_pending:
+        HashMap<(usize, pod_preset::HdFxSlot, pod_preset::HdType19Control), PendingHdType19Choice>,
     hd_setlist_index: usize,
     hd_preset_index: usize,
     pod_name: String,
@@ -472,6 +502,7 @@ impl Workbench {
             hd_type11_pending: HashMap::new(),
             hd_type12_pending: HashMap::new(),
             hd_type13_pending: HashMap::new(),
+            hd_type19_pending: HashMap::new(),
             hd_setlist_index: 0,
             hd_preset_index: 0,
             pod_name: String::new(),
@@ -706,6 +737,7 @@ impl Workbench {
                     || !self.hd_type11_pending.is_empty()
                     || !self.hd_type12_pending.is_empty()
                     || !self.hd_type13_pending.is_empty()
+                    || !self.hd_type19_pending.is_empty()
                 {
                     self.pending = Some(Pending::QuitPod);
                     ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -1395,7 +1427,8 @@ impl Workbench {
             || self.hd_type10_pending.is_some()
             || !self.hd_type11_pending.is_empty()
             || !self.hd_type12_pending.is_empty()
-            || !self.hd_type13_pending.is_empty())
+            || !self.hd_type13_pending.is_empty()
+            || !self.hd_type19_pending.is_empty())
             && !self.permit_close
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -1474,6 +1507,7 @@ impl Workbench {
                 || !self.hd_type11_pending.is_empty()
                 || !self.hd_type12_pending.is_empty()
                 || !self.hd_type13_pending.is_empty()
+                || !self.hd_type19_pending.is_empty()
             {
                 self.hd_quit_dialog(ctx);
             } else {
@@ -1869,6 +1903,52 @@ impl Workbench {
             }
             return;
         }
+        if let Some(staged) = self.hd_type19_pending.values().next().copied() {
+            let mut apply = false;
+            let mut discard = false;
+            let mut cancel = false;
+            egui::Window::new("Staged HD type-0x13 choice")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.label(format!("{} for H5EP entry {} / FX slot {} is staged but not applied.", staged.choice.label(), staged.file_index, staged.slot.index()));
+                    ui.label("Static-derived neutral choice; Apply changes only this offline H5EP value word.");
+                    ui.horizontal(|ui| {
+                        let r = ui.button("Apply staged choice");
+                        #[cfg(test)] self.pending_buttons.insert("apply-type19", r.rect);
+                        apply = r.clicked();
+                        let r = ui.button("Keep editing");
+                        #[cfg(test)] self.pending_buttons.insert("cancel", r.rect);
+                        cancel = r.clicked();
+                        let r = ui.button("Discard staged choice");
+                        #[cfg(test)] self.pending_buttons.insert("discard", r.rect);
+                        discard = r.clicked();
+                    });
+                });
+            let key = (staged.file_index, staged.slot, staged.control);
+            if cancel {
+                self.pending = None;
+            } else if apply {
+                self.apply_hd_type19_choice(staged);
+                if self.hd_type19_pending.is_empty()
+                    && !self.hd_library.any_dirty()
+                    && !self.pod_library.any_dirty()
+                {
+                    self.continue_pending(ctx);
+                }
+            } else if discard {
+                self.hd_type19_pending.remove(&key);
+                self.pod_message = "Discarded the staged type-0x13 choice.".into();
+                if self.hd_type19_pending.is_empty()
+                    && !self.hd_library.any_dirty()
+                    && !self.pod_library.any_dirty()
+                {
+                    self.continue_pending(ctx);
+                }
+            }
+            return;
+        }
         let Some(index) = self.hd_library.first_dirty() else {
             self.continue_pending(ctx);
             return;
@@ -1977,6 +2057,8 @@ impl Workbench {
                 self.hd_type12_pending
                     .retain(|(file_index, _, _), _| *file_index != index);
                 self.hd_type13_pending
+                    .retain(|(file_index, _, _), _| *file_index != index);
+                self.hd_type19_pending
                     .retain(|(file_index, _, _), _| *file_index != index);
                 self.pod_message = "Discarded one unsaved HD Edit file change.".into();
                 true
@@ -2730,6 +2812,15 @@ impl Workbench {
                         self.pod_message =
                             "Cleared the staged type-0x0D choice after changing FX slot.".into();
                     }
+                    if self.hd_selected.is_some_and(|index| {
+                        let before = self.hd_type19_pending.len();
+                        self.hd_type19_pending
+                            .retain(|(file_index, _, _), _| *file_index != index);
+                        before != self.hd_type19_pending.len()
+                    }) {
+                        self.pod_message =
+                            "Cleared the staged type-0x13 choice after changing FX slot.".into();
+                    }
                     let selected_model_id = preset.effect_model_id(self.hd_effect_slot);
                     if let Some(model_id) = selected_model_id
                         && let Some(control) = pod_preset::HdType1Control::ALL
@@ -2826,6 +2917,13 @@ impl Workbench {
                                 || pending.model_id != model_id))
                     });
                 self.hd_type13_pending
+                    .retain(|(_, slot, control), pending| {
+                        !(pending.file_index == index
+                            && (*slot != current_slot
+                                || control.model_id() != model_id
+                                || pending.model_id != model_id))
+                    });
+                self.hd_type19_pending
                     .retain(|(_, slot, control), pending| {
                         !(pending.file_index == index
                             && (*slot != current_slot
@@ -3326,6 +3424,92 @@ impl Workbench {
                         });
                     }
                 }
+                for control in pod_preset::HdType19Control::for_model(model_id) {
+                    let slot =
+                        pod_preset::HdFxSlot::new(self.hd_effect_slot).expect("bounded FX slot");
+                    let value = preset.hd_type19_choice_value(slot, *control);
+                    let pending_key = (index, slot, *control);
+                    let staged = self.hd_type19_pending.get(&pending_key).copied();
+                    let mut selected = staged.map(|pending| pending.choice).or(match value {
+                        pod_preset::HdType19ChoiceValue::Choice(choice) => Some(choice),
+                        _ => None,
+                    });
+                    let selected_text = staged.map_or_else(
+                        || match value {
+                            pod_preset::HdType19ChoiceValue::Choice(choice) => {
+                                choice.label().to_owned()
+                            }
+                            pod_preset::HdType19ChoiceValue::UnknownFinite(bits) => {
+                                format!("Unknown imported value 0x{bits:08x}")
+                            }
+                            pod_preset::HdType19ChoiceValue::NonFinite(bits) => {
+                                format!("Non-finite imported value 0x{bits:08x}")
+                            }
+                            pod_preset::HdType19ChoiceValue::Unavailable => {
+                                "Unavailable (row or guard not admitted)".to_owned()
+                            }
+                        },
+                        |pending| format!("{} · staged", pending.choice.label()),
+                    );
+                    ui.label("Static-derived type-0x13 menu · neutral Choice 0–7");
+                    let _combo = egui::ComboBox::from_id_salt((
+                        "hd-type19-choice",
+                        index,
+                        self.hd_effect_slot,
+                        control.key(),
+                    ))
+                    .height(400.0)
+                    .selected_text(selected_text)
+                    .show_ui(ui, |ui| {
+                        ui.add_enabled_ui(
+                            matches!(
+                                value,
+                                pod_preset::HdType19ChoiceValue::Choice(_)
+                                    | pod_preset::HdType19ChoiceValue::UnknownFinite(_)
+                            ),
+                            |ui| {
+                                for choice in pod_preset::HdType19Choice::ALL {
+                                    let response = ui.selectable_value(
+                                        &mut selected,
+                                        Some(choice),
+                                        choice.label(),
+                                    );
+                                    #[cfg(test)]
+                                    self.pod_buttons
+                                        .insert(hd_type19_option_button(choice), response.rect);
+                                    if response.changed() {
+                                        self.stage_hd_type19_choice(
+                                            index, slot, model_id, *control, choice,
+                                        );
+                                    }
+                                }
+                            },
+                        );
+                    });
+                    #[cfg(test)]
+                    self.pod_buttons
+                        .insert("hd-type19-choice-combo", _combo.response.rect);
+                    ui.label("Eight static-derived binary32 candidates; labels, units, and physical mapping remain unknown.");
+                    if matches!(value, pod_preset::HdType19ChoiceValue::NonFinite(_)) {
+                        ui.label("A non-finite imported value cannot be replaced by this editor operation.");
+                    }
+                    if let Some(pending) = staged {
+                        ui.horizontal(|ui| {
+                            if self.pod_button(ui, hd_type19_apply_button(), "Apply offline choice")
+                            {
+                                self.apply_hd_type19_choice(pending);
+                            }
+                            if self.pod_button(
+                                ui,
+                                hd_type19_discard_button(),
+                                "Discard staged choice",
+                            ) {
+                                self.hd_type19_pending.remove(&pending_key);
+                                self.pod_message = "Discarded the staged type-0x13 choice.".into();
+                            }
+                        });
+                    }
+                }
                 let has_mapped_type1 = pod_preset::HD_TYPE1_MAPPED_CONTROLS.iter().any(|control| {
                     control.model_id() == model_id
                         && preset
@@ -3536,6 +3720,8 @@ impl Workbench {
             self.hd_type12_pending
                 .retain(|(file_index, _, _), _| *file_index != previous);
             self.hd_type13_pending
+                .retain(|(file_index, _, _), _| *file_index != previous);
+            self.hd_type19_pending
                 .retain(|(file_index, _, _), _| *file_index != previous);
         }
         if self.hd_type9_pending.take().is_some() {
@@ -3938,6 +4124,65 @@ impl Workbench {
         self.hd_type13_pending.insert(
             (file_index, slot, control),
             PendingHdType13Choice {
+                file_index,
+                slot,
+                model_id,
+                control,
+                choice,
+            },
+        );
+    }
+
+    fn apply_hd_type19_choice(&mut self, pending: PendingHdType19Choice) {
+        let key = (pending.file_index, pending.slot, pending.control);
+        let current_model = self
+            .hd_library
+            .file(pending.file_index)
+            .and_then(|file| match file {
+                PodPresetFile::H5ep(preset) => preset.effect_model_id(pending.slot.index()),
+                _ => None,
+            });
+        if current_model != Some(pending.model_id) || pending.model_id != pending.control.model_id()
+        {
+            self.hd_type19_pending.remove(&key);
+            self.pod_message =
+                "Cleared the staged type-0x13 choice after its model context changed.".into();
+            return;
+        }
+        let result = Session::extension(ProductProfile::PodHd500x).and_then(|session| {
+            session.set_hd_type19_choice(
+                &mut self.hd_library,
+                pending.file_index,
+                pending.slot,
+                pending.control,
+                pending.choice,
+            )
+        });
+        match result {
+            Ok(()) => {
+                if self.hd_type19_pending.get(&key) == Some(&pending) {
+                    self.hd_type19_pending.remove(&key);
+                }
+                self.pod_message = "Applied the static-derived type-0x13 choice to this offline H5EP entry. Nothing was sent; save a new copy to keep the change.".into();
+            }
+            Err(error) => self.pod_message = rejection_text(&error),
+        }
+    }
+
+    fn stage_hd_type19_choice(
+        &mut self,
+        file_index: usize,
+        slot: pod_preset::HdFxSlot,
+        model_id: u32,
+        control: pod_preset::HdType19Control,
+        choice: pod_preset::HdType19Choice,
+    ) {
+        if model_id != control.model_id() {
+            return;
+        }
+        self.hd_type19_pending.insert(
+            (file_index, slot, control),
+            PendingHdType19Choice {
                 file_index,
                 slot,
                 model_id,
@@ -5239,6 +5484,14 @@ mod tests {
                 | "hd-type13-choice-option-1"
                 | "hd-type13-choice-option-2"
                 | "hd-type13-choice-option-3"
+                | "hd-type19-choice-option-0"
+                | "hd-type19-choice-option-1"
+                | "hd-type19-choice-option-2"
+                | "hd-type19-choice-option-3"
+                | "hd-type19-choice-option-4"
+                | "hd-type19-choice-option-5"
+                | "hd-type19-choice-option-6"
+                | "hd-type19-choice-option-7"
         ) {
             scroll_hd_editor_control_into_view(context, app, id);
             hd_editor_frame(context, app, vec![]);
@@ -5347,6 +5600,12 @@ mod tests {
         let choice = pod_preset::HdType13Choice::from_index(choice as u8).unwrap();
         click_hd_editor(context, app, "hd-type13-choice-combo");
         click_hd_editor(context, app, hd_type13_option_button(choice));
+    }
+
+    fn click_hd_type19_choice(context: &egui::Context, app: &mut Workbench, choice: usize) {
+        let choice = pod_preset::HdType19Choice::from_index(choice as u8).unwrap();
+        click_hd_editor(context, app, "hd-type19-choice-combo");
+        click_hd_editor(context, app, hd_type19_option_button(choice));
     }
 
     fn assert_hd_bytes_eq(actual: &[u8], expected: &[u8], context: &str) {
@@ -5557,6 +5816,63 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn hd_type19_rendered_combo_stages_applies_and_discards_all_eight_exact_words() {
+        let control = pod_preset::HdType19Control::ALL[0];
+        let slot = pod_preset::HdFxSlot::new(5).unwrap();
+        let model = pod_preset::HD_TYPE19_CHOICE_MODEL_ID;
+        for choice in pod_preset::HdType19Choice::ALL {
+            let (context, mut app) = app();
+            context.style_mut(|style| style.animation_time = 0.0);
+            let original = sample_hd_type9_preset_for(
+                5,
+                9,
+                0x3e12_3456,
+                model,
+                pod_preset::HD_TYPE19_CHOICE_KEY,
+            );
+            let index = app.hd_library.import_bytes(original.clone()).unwrap();
+            app.select_hd_file(index);
+            app.pod_open = true;
+            app.hd_effect_slot = 5;
+            click_hd_type19_choice(&context, &mut app, choice.index() as usize);
+            let staged = PendingHdType19Choice {
+                file_index: index,
+                slot,
+                model_id: model,
+                control,
+                choice,
+            };
+            assert_eq!(
+                app.hd_type19_pending.get(&(index, slot, control)),
+                Some(&staged)
+            );
+            assert_hd_bytes_eq(
+                app.hd_library.file(index).unwrap().as_bytes(),
+                &original,
+                "type-0x13 selection stages without changing bytes",
+            );
+            click_hd_editor(&context, &mut app, hd_type19_apply_button());
+            let value = pod_preset::H5EP_HEADER_BYTES + 0x428 + 5 * 0x100 + 0x10 + 9 * 0x14 + 4;
+            let mut expected = original.clone();
+            expected[value..value + 4].copy_from_slice(&choice.bits().to_be_bytes());
+            assert_hd_bytes_eq(
+                app.hd_library.file(index).unwrap().as_bytes(),
+                &expected,
+                "type-0x13 Apply changes only the selected word",
+            );
+            assert!(app.hd_type19_pending.is_empty());
+            click_hd_type19_choice(&context, &mut app, ((choice.index() + 1) % 8) as usize);
+            click_hd_editor(&context, &mut app, hd_type19_discard_button());
+            assert!(app.hd_type19_pending.is_empty());
+            assert_hd_bytes_eq(
+                app.hd_library.file(index).unwrap().as_bytes(),
+                &expected,
+                "discard preserves applied bytes",
+            );
         }
     }
 

@@ -1249,6 +1249,94 @@ fn type13_choice_uses_exact_profile_and_preserves_extracted_child_and_siblings()
 }
 
 #[test]
+fn type19_choice_uses_exact_profile_and_preserves_extracted_child_and_siblings() {
+    use crate::pod_preset::{
+        H5EP_MIN_BYTES, H5ES_HEADER_BYTES, HdFxSlot, HdType19Choice, HdType19Control,
+    };
+    let source = include_bytes!("../../tests/fixtures/type19-model-020a0011-source.h5ep");
+    let outputs = [
+        include_bytes!("../../tests/fixtures/type19-model-020a0011-choice0.h5ep"),
+        include_bytes!("../../tests/fixtures/type19-model-020a0011-choice1.h5ep"),
+        include_bytes!("../../tests/fixtures/type19-model-020a0011-choice2.h5ep"),
+        include_bytes!("../../tests/fixtures/type19-model-020a0011-choice3.h5ep"),
+        include_bytes!("../../tests/fixtures/type19-model-020a0011-choice4.h5ep"),
+        include_bytes!("../../tests/fixtures/type19-model-020a0011-choice5.h5ep"),
+        include_bytes!("../../tests/fixtures/type19-model-020a0011-choice6.h5ep"),
+        include_bytes!("../../tests/fixtures/type19-model-020a0011-choice7.h5ep"),
+    ];
+    let slot = HdFxSlot::new(4).unwrap();
+    let control = HdType19Control::ALL[0];
+    let session = Session::extension(ProductProfile::PodHd500x).unwrap();
+    let mut library = HdEditorLibrary::default();
+    let index = library.import_bytes(source.to_vec()).unwrap();
+    for (choice, expected) in HdType19Choice::ALL.into_iter().zip(outputs) {
+        session
+            .set_hd_type19_choice(&mut library, index, slot, control, choice)
+            .unwrap();
+        assert_eq!(library.file(index).unwrap().as_bytes(), expected);
+        assert!(library.is_dirty(index));
+        library.revert_unsaved(index).unwrap();
+        assert_eq!(library.file(index).unwrap().as_bytes(), source);
+        assert!(!library.is_dirty(index));
+    }
+    for profile in [ProductProfile::WorkbenchHd, ProductProfile::Jtv69] {
+        let before = library.file(index).unwrap().as_bytes().to_vec();
+        assert!(
+            Session::extension(profile)
+                .unwrap()
+                .set_hd_type19_choice(&mut library, index, slot, control, HdType19Choice::Choice1)
+                .is_err()
+        );
+        assert_eq!(library.file(index).unwrap().as_bytes(), before);
+    }
+    assert!(
+        Session::initial_rig()
+            .set_hd_type19_choice(&mut library, index, slot, control, HdType19Choice::Choice1)
+            .is_err()
+    );
+    let mut setlist = synthetic_h5es();
+    let child_at = H5ES_HEADER_BYTES;
+    setlist[child_at..child_at + H5EP_MIN_BYTES].copy_from_slice(&source[..H5EP_MIN_BYTES]);
+    let mut nested = HdEditorLibrary::default();
+    let parent = nested.import_bytes(setlist).unwrap();
+    let parent_before = nested.file(parent).unwrap().as_bytes().to_vec();
+    assert!(
+        session
+            .set_hd_type19_choice(&mut nested, parent, slot, control, HdType19Choice::Choice1)
+            .is_err()
+    );
+    assert_eq!(nested.file(parent).unwrap().as_bytes(), parent_before);
+    let child = session
+        .extract_hd_editor_preset(&mut nested, parent, 0, 0)
+        .unwrap()
+        .index;
+    let sibling = session
+        .extract_hd_editor_preset(&mut nested, parent, 0, 1)
+        .unwrap()
+        .index;
+    let sibling_before = nested.file(sibling).unwrap().as_bytes().to_vec();
+    session
+        .set_hd_type19_choice(&mut nested, child, slot, control, HdType19Choice::Choice7)
+        .unwrap();
+    assert_eq!(
+        nested.file(child).unwrap().as_bytes(),
+        &outputs[7][..H5EP_MIN_BYTES]
+    );
+    assert_eq!(nested.file(parent).unwrap().as_bytes(), parent_before);
+    assert_eq!(nested.file(sibling).unwrap().as_bytes(), sibling_before);
+    assert!(nested.is_dirty(child));
+    nested.revert_unsaved(child).unwrap();
+    assert_eq!(
+        nested.file(child).unwrap().as_bytes(),
+        &source[..H5EP_MIN_BYTES]
+    );
+    assert!(!nested.is_dirty(child));
+    let mut bad_version = source.to_vec();
+    bad_version[7] = 2;
+    assert!(library.import_bytes(bad_version).is_err());
+}
+
+#[test]
 fn second_type10_association_flows_through_hd500x_session_and_extracted_child() {
     use crate::pod_preset::{
         H5EB_HEADER_BYTES, H5EP_HEADER_BYTES, H5EP_MIN_BYTES, H5ES_HEADER_BYTES, HdFxSlot,
