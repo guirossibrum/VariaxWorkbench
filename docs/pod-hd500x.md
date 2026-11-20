@@ -894,9 +894,10 @@ inside it, exact stage records through Apply/Discard and quit, and the lifecycle
 through slot/model/entry invalidation, cancelled and successful Open, save
 collision, save/reopen, and revert to the saved baseline. Local validation
 passed at the type-0x0D correction head: 343 tests (262 library, 55 GUI, 26 integration), Clippy with
-`-D warnings`, formatting, and `git diff --check`. The subsequent type-0x13
-increment passes 347 tests (265 library, 56 GUI, 26 integration), Clippy,
-formatting, and `git diff --check`; exact-head configured checks remain pending. This remains an offline file operation
+`-D warnings`, formatting, and `git diff --check`. The type-0x13 GUI correction
+passes 350 tests (265 library, 59 GUI, 26 integration), Clippy, formatting, and
+`git diff --check`; exact-head configured checks are pending for the correction
+head. This remains an offline file operation
 only. The indirect owner-context effects and complete editor/runtime parity are
 unresolved, and issue #32 remains partial and open.
 
@@ -922,3 +923,14 @@ lossless but cannot be edited, and H5ES/H5EB parents are not direct edit targets
 GUI selection is staged until explicit Apply; Discard does not change bytes.
 Parent and sibling isolation is checked offline. The candidate does not establish
 physical applicability, labels, units, editor parity, or device safety.
+
+Rendered GUI regressions cover the type-19-specific quit paths from a clean
+stage-only entry: Apply advances to the dirty-file decision, Discard and
+Keep-editing retain their expected pending state, and a rejected Apply keeps the
+stage and window open. A separate failed-Apply case starts from a saved baseline
+with an independent dirty edit, stages through the actual type-19 combo, and
+checks the exact pending record, complete bytes, parsed state, dirty flag and
+saved baseline before reverting. Lifecycle cases assert the pending record before
+slot/model/entry changes, canceled and successful Open, save collision and
+success, saved-copy reopen, and revert to the successful-save baseline. These
+cases do not imply full editor parity or physical applicability.

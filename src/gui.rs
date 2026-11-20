@@ -5877,6 +5877,461 @@ mod tests {
     }
 
     #[test]
+    fn hd_type19_quit_handles_stage_only_apply_discard_keep_and_rejected_apply() {
+        let model = pod_preset::HD_TYPE19_CHOICE_MODEL_ID;
+        let control = pod_preset::HdType19Control::ALL[0];
+        let slot = pod_preset::HdFxSlot::new(5).unwrap();
+        let source = sample_hd_type9_preset_for(5, 9, 0x3e12_3456, model, control.key());
+        let pending = |index| PendingHdType19Choice {
+            file_index: index,
+            slot,
+            model_id: model,
+            control,
+            choice: pod_preset::HdType19Choice::Choice5,
+        };
+
+        for action in ["keep", "discard", "apply", "reject"] {
+            let (context, mut app) = app();
+            context.style_mut(|style| style.animation_time = 0.0);
+            let index = app.hd_library.import_bytes(source.clone()).unwrap();
+            app.select_hd_file(index);
+            app.pod_open = true;
+            app.hd_effect_slot = 5;
+            click_hd_type19_choice(&context, &mut app, 5);
+            let exact = pending(index);
+            assert_eq!(
+                app.hd_type19_pending.get(&(index, slot, control)),
+                Some(&exact)
+            );
+            let mut before_quit = source.clone();
+            if action == "reject" {
+                let marker =
+                    pod_preset::H5EP_HEADER_BYTES + 0x428 + 5 * 0x100 + 0x10 + 9 * 0x14 + 0x10;
+                before_quit[marker] = 1;
+                *app.hd_library.file_mut(index).unwrap() =
+                    PodPresetFile::parse(before_quit.clone()).unwrap();
+                assert!(
+                    matches!(
+                        app.hd_library.file(index),
+                        Some(PodPresetFile::H5ep(preset)) if preset.effect_model_id(5) == Some(model)
+                    ),
+                    "reject case retains model identity"
+                );
+            }
+            assert_hd_bytes_eq(
+                app.hd_library.file(index).unwrap().as_bytes(),
+                &before_quit,
+                "stage-only quit setup bytes",
+            );
+            app.request_close(&context);
+            assert!(matches!(app.pending, Some(Pending::QuitPod)));
+            assert_eq!(
+                app.hd_type19_pending.get(&(index, slot, control)),
+                Some(&exact)
+            );
+            assert!(!app.permit_close);
+
+            match action {
+                "keep" => {
+                    click_prompt(&context, &mut app, "cancel");
+                    assert!(app.pending.is_none());
+                    assert_eq!(
+                        app.hd_type19_pending.get(&(index, slot, control)),
+                        Some(&exact)
+                    );
+                    assert_hd_bytes_eq(
+                        app.hd_library.file(index).unwrap().as_bytes(),
+                        &source,
+                        "Keep editing preserves stage-only bytes",
+                    );
+                    assert!(!app.permit_close);
+                }
+                "discard" => {
+                    click_prompt(&context, &mut app, "discard");
+                    assert!(app.hd_type19_pending.is_empty());
+                    assert!(
+                        app.permit_close,
+                        "stage discard closes only after clearing the stage"
+                    );
+                    assert_hd_bytes_eq(
+                        app.hd_library.file(index).unwrap().as_bytes(),
+                        &source,
+                        "stage-only discard leaves bytes unchanged",
+                    );
+                }
+                "apply" => {
+                    click_prompt(&context, &mut app, "apply-type19");
+                    let value =
+                        pod_preset::H5EP_HEADER_BYTES + 0x428 + 5 * 0x100 + 0x10 + 9 * 0x14 + 4;
+                    let mut expected = source.clone();
+                    expected[value..value + 4].copy_from_slice(&exact.choice.bits().to_be_bytes());
+                    assert!(app.hd_type19_pending.is_empty());
+                    assert!(app.hd_library.is_dirty(index));
+                    assert!(!app.permit_close);
+                    assert!(
+                        matches!(app.pending, Some(Pending::QuitPod)),
+                        "Apply transitions to the dirty-file prompt"
+                    );
+                    assert_hd_bytes_eq(
+                        app.hd_library.file(index).unwrap().as_bytes(),
+                        &expected,
+                        "quit Apply changes only the target word",
+                    );
+                    click_prompt(&context, &mut app, "cancel");
+                    assert!(app.pending.is_none());
+                    assert!(!app.permit_close);
+                    assert_hd_bytes_eq(
+                        app.hd_library.file(index).unwrap().as_bytes(),
+                        &expected,
+                        "canceling dirty-file prompt retains applied bytes",
+                    );
+                }
+                "reject" => {
+                    click_prompt(&context, &mut app, "apply-type19");
+                    assert_eq!(
+                        app.hd_type19_pending.get(&(index, slot, control)),
+                        Some(&exact)
+                    );
+                    assert!(matches!(app.pending, Some(Pending::QuitPod)));
+                    assert!(app.hd_library.is_dirty(index));
+                    assert!(
+                        !app.permit_close,
+                        "rejected quit Apply keeps the window open"
+                    );
+                    assert_hd_bytes_eq(
+                        app.hd_library.file(index).unwrap().as_bytes(),
+                        &before_quit,
+                        "rejected quit Apply preserves complete bytes",
+                    );
+                    assert!(app.pod_message.contains("unassigned marker"));
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn hd_type19_failed_apply_preserves_dirty_saved_baseline_and_reverts_exactly() {
+        let model = pod_preset::HD_TYPE19_CHOICE_MODEL_ID;
+        let control = pod_preset::HdType19Control::ALL[0];
+        let slot = pod_preset::HdFxSlot::new(5).unwrap();
+        let source = sample_hd_type9_preset_for(5, 9, 0x3e12_3456, model, control.key());
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let index = app.hd_library.import_bytes(source.clone()).unwrap();
+        app.select_hd_file(index);
+        app.pod_open = true;
+        app.hd_effect_slot = 5;
+
+        app.hd_library
+            .set_effect_enabled(index, slot, true)
+            .unwrap();
+        app.hd_library.note_saved(index).unwrap();
+        let saved_baseline = app.hd_library.file(index).unwrap().as_bytes().to_vec();
+        assert!(!app.hd_library.is_dirty(index));
+        app.hd_library
+            .set_effect_enabled(index, slot, false)
+            .unwrap();
+        let independently_dirty = app.hd_library.file(index).unwrap().as_bytes().to_vec();
+        assert!(app.hd_library.is_dirty(index));
+        click_hd_type19_choice(&context, &mut app, 6);
+        let exact = PendingHdType19Choice {
+            file_index: index,
+            slot,
+            model_id: model,
+            control,
+            choice: pod_preset::HdType19Choice::Choice6,
+        };
+        assert_eq!(
+            app.hd_type19_pending.get(&(index, slot, control)),
+            Some(&exact)
+        );
+        assert_hd_bytes_eq(
+            app.hd_library.file(index).unwrap().as_bytes(),
+            &independently_dirty,
+            "actual type-19 combo stages over the independent dirty enable edit",
+        );
+
+        let target = pod_preset::H5EP_HEADER_BYTES + 0x428 + 5 * 0x100 + 0x10 + 9 * 0x14;
+        let mut invalid = independently_dirty.clone();
+        invalid[target + 0x10] = 1;
+        *app.hd_library.file_mut(index).unwrap() = PodPresetFile::parse(invalid.clone()).unwrap();
+        assert!(matches!(
+            app.hd_library.file(index),
+            Some(PodPresetFile::H5ep(preset)) if preset.effect_model_id(5) == Some(model)
+        ));
+        assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), invalid);
+        assert!(app.hd_library.is_dirty(index));
+        assert_eq!(
+            app.hd_type19_pending.get(&(index, slot, control)),
+            Some(&exact)
+        );
+        click_hd_editor(&context, &mut app, hd_type19_apply_button());
+        assert_eq!(
+            app.hd_type19_pending.get(&(index, slot, control)),
+            Some(&exact)
+        );
+        assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), invalid);
+        assert!(app.hd_library.is_dirty(index));
+        assert!(app.pod_message.contains("unassigned marker"));
+        assert!(app.discard_next_dirty_pod());
+        assert!(app.hd_type19_pending.is_empty());
+        assert_hd_bytes_eq(
+            app.hd_library.file(index).unwrap().as_bytes(),
+            &saved_baseline,
+            "revert restores the complete saved baseline",
+        );
+        assert!(!app.hd_library.is_dirty(index));
+    }
+
+    #[test]
+    fn hd_type19_stage_lifecycle_covers_context_open_save_collision_and_revert() {
+        let model = pod_preset::HD_TYPE19_CHOICE_MODEL_ID;
+        let control = pod_preset::HdType19Control::ALL[0];
+        let slot = pod_preset::HdFxSlot::new(5).unwrap();
+        let source = sample_hd_type9_preset_for(5, 9, 0x3e12_3456, model, control.key());
+        let pending = |index, choice| PendingHdType19Choice {
+            file_index: index,
+            slot,
+            model_id: model,
+            control,
+            choice,
+        };
+
+        let (context, mut by_slot) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let index = by_slot.hd_library.import_bytes(source.clone()).unwrap();
+        by_slot.select_hd_file(index);
+        by_slot.pod_open = true;
+        by_slot.hd_effect_slot = 5;
+        click_hd_type19_choice(&context, &mut by_slot, 2);
+        let exact = pending(index, pod_preset::HdType19Choice::Choice2);
+        assert_eq!(
+            by_slot.hd_type19_pending.get(&(index, slot, control)),
+            Some(&exact)
+        );
+        by_slot.hd_effect_slot = 4;
+        hd_editor_frame(&context, &mut by_slot, vec![]);
+        assert!(
+            by_slot.hd_type19_pending.is_empty(),
+            "slot change clears only stale type-19 stage"
+        );
+        assert_hd_bytes_eq(
+            by_slot.hd_library.file(index).unwrap().as_bytes(),
+            &source,
+            "slot invalidation preserves full source",
+        );
+
+        let (context, mut by_model) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let index = by_model.hd_library.import_bytes(source.clone()).unwrap();
+        by_model.select_hd_file(index);
+        by_model.pod_open = true;
+        by_model.hd_effect_slot = 5;
+        click_hd_type19_choice(&context, &mut by_model, 1);
+        let exact = pending(index, pod_preset::HdType19Choice::Choice1);
+        assert_eq!(
+            by_model.hd_type19_pending.get(&(index, slot, control)),
+            Some(&exact)
+        );
+        let mut replacement = source.clone();
+        let block = pod_preset::H5EP_HEADER_BYTES + 0x428 + 5 * 0x100;
+        replacement[block..block + 4].copy_from_slice(&0x020a_001e_u32.to_be_bytes());
+        *by_model.hd_library.file_mut(index).unwrap() =
+            PodPresetFile::parse(replacement.clone()).unwrap();
+        hd_editor_frame(&context, &mut by_model, vec![]);
+        assert!(
+            by_model.hd_type19_pending.is_empty(),
+            "model change clears stale type-19 stage"
+        );
+        assert_hd_bytes_eq(
+            by_model.hd_library.file(index).unwrap().as_bytes(),
+            &replacement,
+            "model invalidation preserves complete replacement bytes",
+        );
+
+        let (context, mut by_entry) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let index = by_entry.hd_library.import_bytes(source.clone()).unwrap();
+        by_entry.select_hd_file(index);
+        by_entry.pod_open = true;
+        by_entry.hd_effect_slot = 5;
+        click_hd_type19_choice(&context, &mut by_entry, 0);
+        let exact = pending(index, pod_preset::HdType19Choice::Choice0);
+        assert_eq!(
+            by_entry.hd_type19_pending.get(&(index, slot, control)),
+            Some(&exact)
+        );
+        let other = by_entry.hd_library.import_bytes(source.clone()).unwrap();
+        by_entry.select_hd_file(other);
+        assert!(
+            by_entry.hd_type19_pending.is_empty(),
+            "selection replacement invalidates old-entry stage"
+        );
+        assert_hd_bytes_eq(
+            by_entry.hd_library.file(index).unwrap().as_bytes(),
+            &source,
+            "entry invalidation preserves old complete bytes",
+        );
+
+        let (context, mut open) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let index = open.hd_library.import_bytes(source.clone()).unwrap();
+        open.select_hd_file(index);
+        open.pod_open = true;
+        open.hd_effect_slot = 5;
+        click_hd_type19_choice(&context, &mut open, 3);
+        let exact = pending(index, pod_preset::HdType19Choice::Choice3);
+        assert_eq!(
+            open.hd_type19_pending.get(&(index, slot, control)),
+            Some(&exact)
+        );
+        let replacement_dir = tempfile::tempdir().unwrap();
+        let replacement_path = replacement_dir.path().join("type19-open.5xe");
+        let replacement_bytes = sample_hd_type9_preset_for(5, 9, 0x3e00_0000, model, control.key());
+        std::fs::write(&replacement_path, &replacement_bytes).unwrap();
+        open.dialogs = Box::new(FakeDialogs {
+            pod_open: [None, Some(replacement_path)].into(),
+            ..Default::default()
+        });
+        click_hd_editor(&context, &mut open, "load-hd-file");
+        assert_eq!(
+            open.hd_type19_pending.get(&(index, slot, control)),
+            Some(&exact),
+            "canceled Open preserves exact stage"
+        );
+        assert_hd_bytes_eq(
+            open.hd_library.file(index).unwrap().as_bytes(),
+            &source,
+            "canceled Open preserves all bytes",
+        );
+        click_hd_editor(&context, &mut open, "load-hd-file");
+        let opened = open
+            .hd_selected
+            .expect("successful Open selects replacement");
+        assert_ne!(opened, index);
+        assert!(
+            open.hd_type19_pending.is_empty(),
+            "successful Open invalidates only the old entry stage"
+        );
+        assert_hd_bytes_eq(
+            open.hd_library.file(index).unwrap().as_bytes(),
+            &source,
+            "successful Open preserves old entry bytes",
+        );
+        assert_hd_bytes_eq(
+            open.hd_library.file(opened).unwrap().as_bytes(),
+            &replacement_bytes,
+            "successful Open preserves complete replacement bytes",
+        );
+
+        let (context, mut save) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let index = save.hd_library.import_bytes(source.clone()).unwrap();
+        save.select_hd_file(index);
+        save.pod_open = true;
+        save.hd_effect_slot = 5;
+        click_hd_type19_choice(&context, &mut save, 4);
+        let exact = pending(index, pod_preset::HdType19Choice::Choice4);
+        assert_eq!(
+            save.hd_type19_pending.get(&(index, slot, control)),
+            Some(&exact)
+        );
+        save.hd_library
+            .set_effect_enabled(index, slot, true)
+            .unwrap();
+        let mut dirty_bytes = source.clone();
+        dirty_bytes[pod_preset::H5EP_HEADER_BYTES + 0x428 + 5 * 0x100 + 8] = 1;
+        assert!(save.hd_library.is_dirty(index));
+        assert_eq!(
+            save.hd_type19_pending.get(&(index, slot, control)),
+            Some(&exact),
+            "independent edit retains exact stage"
+        );
+        assert_hd_bytes_eq(
+            save.hd_library.file(index).unwrap().as_bytes(),
+            &dirty_bytes,
+            "independent edit preserves full type-19 source word",
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let collision = directory.path().join("occupied.5xe");
+        let saved = directory.path().join("type19-lifecycle.5xe");
+        std::fs::write(&collision, b"keep existing").unwrap();
+        save.dialogs = Box::new(FakeDialogs {
+            pod_save: [Some(collision.clone()), Some(saved.clone())].into(),
+            ..Default::default()
+        });
+        assert!(!save.write_hd_copy(index));
+        assert_eq!(std::fs::read(&collision).unwrap(), b"keep existing");
+        assert_eq!(
+            save.hd_type19_pending.get(&(index, slot, control)),
+            Some(&exact),
+            "collision preserves exact stage"
+        );
+        assert_hd_bytes_eq(
+            save.hd_library.file(index).unwrap().as_bytes(),
+            &dirty_bytes,
+            "collision preserves every in-memory byte",
+        );
+        assert!(save.write_hd_copy(index));
+        assert_eq!(
+            std::fs::read(&saved).unwrap(),
+            dirty_bytes,
+            "successful save writes complete expected bytes"
+        );
+        assert!(!save.hd_library.is_dirty(index));
+        assert_eq!(
+            save.hd_type19_pending.get(&(index, slot, control)),
+            Some(&exact),
+            "successful save preserves exact stage"
+        );
+        let reopen_path = directory.path().join("reopen.5xe");
+        std::fs::write(&reopen_path, std::fs::read(&saved).unwrap()).unwrap();
+        save.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(reopen_path)].into(),
+            ..Default::default()
+        });
+        click_hd_editor(&context, &mut save, "load-hd-file");
+        let reopened = save.hd_selected.expect("saved copy reopens");
+        assert!(
+            save.hd_type19_pending.is_empty(),
+            "reopen invalidates stage belonging to prior entry"
+        );
+        assert_hd_bytes_eq(
+            save.hd_library.file(reopened).unwrap().as_bytes(),
+            &dirty_bytes,
+            "reopened saved file matches complete saved bytes",
+        );
+        assert!(!save.hd_library.is_dirty(reopened));
+
+        save.select_hd_file(index);
+        save.hd_effect_slot = 5;
+        click_hd_type19_choice(&context, &mut save, 7);
+        let revert_stage = pending(index, pod_preset::HdType19Choice::Choice7);
+        assert_eq!(
+            save.hd_type19_pending.get(&(index, slot, control)),
+            Some(&revert_stage)
+        );
+        save.hd_library
+            .set_effect_enabled(index, slot, false)
+            .unwrap();
+        assert!(save.hd_library.is_dirty(index));
+        assert_eq!(
+            save.hd_type19_pending.get(&(index, slot, control)),
+            Some(&revert_stage),
+            "dirty independent edit retains the exact stage before revert"
+        );
+        assert!(save.discard_next_dirty_pod());
+        assert!(save.hd_type19_pending.is_empty());
+        assert_hd_bytes_eq(
+            save.hd_library.file(index).unwrap().as_bytes(),
+            &dirty_bytes,
+            "revert returns to successful-save baseline",
+        );
+        assert!(!save.hd_library.is_dirty(index));
+    }
+
+    #[test]
     fn hd_type13_gui_applies_all_four_static_words_and_preserves_both_type11_controls() {
         let controls =
             pod_preset::HdType11Control::for_model(pod_preset::HD_TYPE13_CHOICE_MODEL_ID);
