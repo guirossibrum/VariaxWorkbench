@@ -2522,6 +2522,50 @@ impl Workbench {
                     .model_id(),
                 );
                 if selected_octave_fuzz {
+                    let _reverb_defaults = egui::CollapsingHeader::new(
+                        "Additional source-derived reverb defaults",
+                    )
+                    .id_salt("hd-octave-fuzz-reverb-defaults")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        egui::ComboBox::from_id_salt("hd-octave-fuzz-reverb-default-target")
+                            .selected_text(self.hd_reverb_default_target.label())
+                            .show_ui(ui, |ui| {
+                                for target in pod_preset::HdReverbDefault::ALL {
+                                    ui.selectable_value(
+                                        &mut self.hd_reverb_default_target,
+                                        target,
+                                        target.label(),
+                                    );
+                                }
+                            });
+                        if self.pod_button(
+                            ui,
+                            "replace-octave-fuzz-admitted-reverb-default",
+                            "Apply selected reverb defaults",
+                        ) {
+                            let index = self.hd_selected.expect("selected HD file");
+                            match pod_preset::HdFxSlot::new(self.hd_effect_slot) {
+                                Ok(slot) => match Session::initial_rig()
+                                    .replace_hd_octave_fuzz_with_admitted_reverb_defaults(
+                                        &mut self.hd_library,
+                                        index,
+                                        slot,
+                                        self.hd_reverb_default_target,
+                                    )
+                                {
+                                    Ok(()) => {
+                                        self.pod_message = format!(
+                                            "Replaced this offline effect with {} defaults. Nothing was sent; save a new copy to keep the change.",
+                                            self.hd_reverb_default_target.label()
+                                        );
+                                    }
+                                    Err(error) => self.pod_message = rejection_text(&error),
+                                },
+                                Err(error) => self.pod_message = error.detail(),
+                            }
+                        }
+                    });
                     ui.label("This explicit action replaces the current model and resets its five source-defined values to Vintage Pre defaults.");
                     if self.pod_button(
                         ui,
@@ -2686,50 +2730,6 @@ impl Workbench {
                             Err(error) => self.pod_message = error.detail(),
                         }
                     }
-                    let _reverb_defaults = egui::CollapsingHeader::new(
-                        "Additional source-derived reverb defaults",
-                    )
-                    .id_salt("hd-octave-fuzz-reverb-defaults")
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        egui::ComboBox::from_id_salt("hd-octave-fuzz-reverb-default-target")
-                            .selected_text(self.hd_reverb_default_target.label())
-                            .show_ui(ui, |ui| {
-                                for target in pod_preset::HdReverbDefault::ALL {
-                                    ui.selectable_value(
-                                        &mut self.hd_reverb_default_target,
-                                        target,
-                                        target.label(),
-                                    );
-                                }
-                            });
-                        if self.pod_button(
-                            ui,
-                            "replace-octave-fuzz-admitted-reverb-default",
-                            "Apply selected reverb defaults",
-                        ) {
-                            let index = self.hd_selected.expect("selected HD file");
-                            match pod_preset::HdFxSlot::new(self.hd_effect_slot) {
-                                Ok(slot) => match Session::initial_rig()
-                                    .replace_hd_octave_fuzz_with_admitted_reverb_defaults(
-                                        &mut self.hd_library,
-                                        index,
-                                        slot,
-                                        self.hd_reverb_default_target,
-                                    )
-                                {
-                                    Ok(()) => {
-                                        self.pod_message = format!(
-                                            "Replaced this offline effect with {} defaults. Nothing was sent; save a new copy to keep the change.",
-                                            self.hd_reverb_default_target.label()
-                                        );
-                                    }
-                                    Err(error) => self.pod_message = rejection_text(&error),
-                                },
-                                Err(error) => self.pod_message = error.detail(),
-                            }
-                        }
-                    });
                     ui.separator();
                 }
                 ui.separator();
@@ -2785,10 +2785,7 @@ impl Workbench {
                     })
                 });
                 if let Some(detail) = detail {
-                    egui::CollapsingHeader::new("Selected preset details")
-                        .id_salt("pod-selected-preset-details")
-                        .default_open(false)
-                        .show(ui, |ui| ui.label(detail));
+                    ui.label(detail);
                 }
                 #[cfg(test)]
                 {
