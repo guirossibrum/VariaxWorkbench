@@ -271,7 +271,7 @@ fn hd500x_limit(operation: Operation) -> &'static str {
             "The HD500X session can run generic bounded FORM/L6FF structure inspection on the supplied P25 image. Central's separate metadata name mapping and native parser/loader trace do not resolve the PHF header product/version consumer join. The public Flash Memory v2.62 release 6260 listing does not establish that link or the separate USB Firmware 1.04 component/installed state."
         }
         Operation::InspectOfflineDeviceDescriptor => {
-            "Inspects only caller-owned synthetic/offline bytes from the Windows 4.2.7.7 descriptor result. It does not enumerate or query hardware."
+            "Inspects caller-owned offline Windows 4.2.7.7 device/configuration descriptor bytes and explicit selectors. It does not enumerate, query, configure, claim or open hardware; route status stays UnverifiedAndLocked."
         }
         Operation::TransformOfflineRecord => {
             "Runs the source-scoped Windows 4.2.7.7 policy-1 transformation on owned initialized bytes. Nonzero source statuses may include copies or state effects. This is not product-qualified recording or endpoint evidence."

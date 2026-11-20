@@ -852,6 +852,32 @@ impl Session {
         }
     }
 
+    /// Inspects caller-owned configuration descriptor bytes and returns only
+    /// immutable offline metadata. It never builds a request, selects a live
+    /// USB configuration, or creates a stream/pipe handle.
+    pub fn inspect_hd500x_windows_configuration_snapshot(
+        self,
+        device: crate::rig::windows_descriptor::ReturnedBytes<'_>,
+        configuration: crate::rig::windows_descriptor::ReturnedBytes<'_>,
+        selection: crate::rig::windows_descriptor::ConfigurationSelection,
+    ) -> Result<crate::rig::windows_descriptor::ConfigurationInspection, Rejection> {
+        let operation = Operation::InspectOfflineDeviceDescriptor;
+        match self.kind {
+            SessionKind::InitialRig => Err(Rejection::Unsupported {
+                profile: ProductProfile::Variax600,
+                operation,
+            }),
+            SessionKind::Extension(ProductProfile::PodHd500x) => Ok(
+                crate::rig::windows_descriptor::inspect_configuration_snapshot(
+                    device,
+                    configuration,
+                    selection,
+                ),
+            ),
+            SessionKind::Extension(profile) => Err(Rejection::Unverified { profile, operation }),
+        }
+    }
+
     /// Plans one documented PODxt Live record route. The returned plan keeps
     /// `stream_opened` false and carries no outbound bytes.
     pub fn select_record_route(

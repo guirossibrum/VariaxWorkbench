@@ -66,18 +66,32 @@ profile. POD HD500, without the X, is `USB\VID_0E41&PID_414D`. The Mac
 `0x5057`, and POD HD 400 is `0x5058`. PODxt Live on the initial rig remains
 `0x4650`.
 
-### Offline Windows descriptor result inspection
+### Offline Windows descriptor snapshot inspection
 
 `rig::windows_descriptor` inspects only caller-owned returned bytes and
 explicit offline completion status/count. Its source scope is Windows driver
 4.2.7.7 and the extracted INF SHA-256
 `50080c9e9efb7b104e2520ea577db3eb2c13f9c16fb0cf90c1628ef31f5b1790`.
-Success is accepted only when the supplied slice and reported actual length
-agree and both are exactly 18 bytes, with `bLength=18` and descriptor type 1.
-VID/PID are decoded little-endian from offsets 8/10, and all raw bytes are
-retained. Pending and negative completion return typed states without
-examining response bytes; absent, inconsistent, short, malformed, or
-contradictory success results are rejected before field access.
+The device descriptor path accepts success only when the supplied slice and
+reported actual length agree and both are exactly 18 bytes, with `bLength=18`,
+descriptor type 1, and nonzero `bNumConfigurations`. VID/PID are decoded
+little-endian from offsets 8/10, and all raw bytes are retained. The
+configuration snapshot path revalidates that caller-owned result and requires
+the INF-qualified pair `0x0E41:0x4159`. It accepts caller-owned configuration
+bytes plus explicit completion/actual-length facts and explicit configuration
+index, configuration value, interface number, and alternate setting. Index is
+bounded by validated `bNumConfigurations` and remains distinct from
+`bConfigurationValue`; the source selection contract admits value 1. The
+parser enforces the 0x400-byte source window, exact `wTotalLength` (trailing
+bytes are rejected), descriptor bounds/progress, known descriptor minimum
+lengths, distinct interface count, per-alternate endpoint counts, selected
+interface/alternate presence, endpoint address/attribute reserved bits, and
+duplicate endpoint addresses within the selected alternate. Unknown and
+class-specific records and the complete bounded configuration are preserved.
+Results expose immutable metadata only; no pipe handle or route plan is
+constructed. Pending and negative completion return typed states without
+examining response bytes; absent, inconsistent, short, malformed, ambiguous,
+or contradictory results are rejected before field access.
 
 The observed driver branch maps PID `0x4159` to two opaque record-list counts
 of 2/2, irrespective of VID; other PIDs are explicitly unmapped. Rust's
@@ -85,12 +99,14 @@ conservative HD500X identity preflight separately requires the INF-qualified
 pair `0x0E41:0x4159`. A match is still only an offline identity comparison:
 hardware status stays `UnverifiedAndLocked`, endpoint knowledge stays
 `Unknown`, `select_record_route` stays rejected, and audio open/capture stays
-locked. Synthetic tests cover all 18 truncation lengths, malformed fields,
-completion/length contradictions, byte order, PID-only versus VID/PID gates,
-profile gating, and non-promotion of physical routes. Six synthetic test
-methods pass; full local validation passes 375 tests (290 library, 59 GUI,
-26 integration), Clippy with `-D warnings`, and formatting. These checks are
-offline only. No request builder, enumerator, device query, or route
+locked. Twelve synthetic module tests cover all device-descriptor truncation
+lengths, configuration index/value separation, alternate selection, endpoint
+decoding, opaque-byte preservation, configuration and nested-descriptor
+boundaries, completion/length contradictions, profile gating, and route
+non-promotion. Local `cargo test --offline --locked --all-features` passes 390
+tests (305 library, 59 GUI, 26 integration); Clippy, formatting and diff-check
+are verified for this implementation worktree. No request
+builder, enumerator, device query, live configuration, pipe handle, or route
 interpretation is implemented.
 
 ## Audio defaults
@@ -828,7 +844,7 @@ through the PR and coordinator handoff, avoiding a docs-only head change.
 | Operation | Shared entry point and current result | Product-specific evidence and remaining relation |
 | --- | --- | --- |
 | Import, inspect, extract, edit, save HD Edit files | `Session::import_hd_editor_file`, `extract_hd_editor_preset`, the four individual Octave Fuzz operations, the closed twelve-target `replace_octave_fuzz_with_admitted_defaults`, separate closed eight-target dynamics/FX and reverb batches, selected type-1/numeric setters, and `save_hd_editor_copy` use the offline file library. 444 selected controls across 143 descriptor model IDs use model/key gates, canonical integer grids and four-byte-only writes. | Editor 2.27 file-group, row type/key, model descriptor, widget-constructor, MPRE/Screamer/SFUZ/Noise Gate, dynamics/FX and reverb initializer joins support these bounded paths. The previous three replacements passed exact-head focused checks on `a2fc16839d18066866e9522a74297a9ef8d2b491` (280 tests/profile: 226 library, 28 GUI, 26 integration); retained configured-run logs for head `da3e9763afbf47c706b6d69997830875c44a4b33` report 358 tests per functional selection (273 library, 59 GUI, 26 integration), with Actions run 44685712396. The twelve-target distortion/fuzz and reverb batches pass all four configured focused checks on implementation head `979aba7bc04f4e135b9bc8e95e25ef4c43daee68` in run `4a575fd1-4511-46a0-8bc7-9decdec0694d` (360 tests per functional selection: 275 library, 59 GUI, 26 integration). The operations validate the old model, validity/enable/count bytes, complete required key prefix and recognized marker bytes before staging. The three five-row transitions change the model word, five ordered key/zero-value rows and count 5; Noise Gate and the two-row dynamics members change the model word, ordered key/zero-value rows and count 2; the reverb batch writes four ordered key/zero-value rows and count 4; each clears only first marker bytes. Other bytes remain preserved. The 364 type-1 rows use the shared primary editor widget grid; the 80 numeric bounds are primary-widget integer arguments, not physical units or defaults. The active tag `0x1B` entry admits only Vintage Pre model `0x020C000E`, key `0x3F100005`, primary range 0..15,000 and normalized float conversion. The separate EDI range and post-write UI callback are not included. These joins do not establish that H5EP identifies the physical HD500X. The Windows writer reads context `nested+0x2c` into header word 2, but the bounded caller, constructor, reader, and setter joins did not find the store or initializer for that exact field. |
-| Select an HD500X audio route | `Session::select_record_route` remains `Unverified` for the HD500X; the PODxt-only planner is not reused and no route plan is admitted. | Driver text supplies match IDs, interface roles, and 48 kHz/24-bit defaults. The Advanced Guide supplies documented routing behavior. Neither connects HD500X audio endpoint descriptors to driver callbacks, negotiated formats/timing, and a selected product identity. Device capture/playback remain `Locked`. |
+| Select an HD500X audio route | `Session::select_record_route` remains `Unverified` for the HD500X; the PODxt-only planner is not reused and no route plan is admitted. Offline snapshots can expose caller-supplied descriptor metadata and explicit interface/alternate selection only. | Driver text supplies match IDs, interface roles, 48 kHz/24-bit defaults, and static configuration/interface/endpoint-to-pipe construction. Product-qualified descriptor bytes, returned lengths, endpoint format/timing, negotiated state and callback-to-route join remain unknown. Static source analysis is not device behavior. Device capture/playback remain `Locked`. |
 | Inspect HD500X firmware offline | `Session::inspect_extension_firmware` performs bounded FORM/L6FF structure inspection for the HD500X session and returns declared header values, generic catalog classification, image digest/length, checksum result and region count. `physical_target` remains `Unknown`; this is not target acceptance. | The owner-supplied P25-2.62.00 PHF is task-scoped and its original release declaration is available. The existing Rust reader parses it as `0x00140005` / `0x02620000`, completes zlib decompression and MD5 comparison, and reports one covering region; the Rust offline product catalog classifies `0x00140005` as unknown. Central's metadata `id` mapper maps the same number to “POD HD500X”; separately, parser callback `0x101f3e70` reads a descriptor ID, factory `0x101f50e0` constructs the `0x00140005` object family, then that callback invokes the FORM/HEAD reader `0x101fe200` and loader `0x101f8af0`. The preserved traces do not show the PHF HEAD +8/+4 values being compared with that metadata ID and a product version. The resolved HEAD comparator `0x101aa540` instead compares HEAD +8 with a handler value supplied by an owner field whose observed producer yields `0x00200001..=0x00200007`; no join connects that handler to the `0x00140005` factory object or offline update path. The filename, release label, numeric match and adjacent call sequence do not by themselves settle that consumer relation. |
 | Plan maintenance | No HD500X maintenance plan is registered. Read-installed-version, flash, reset, install, and bind operations remain `Locked` for every profile; the offline capability matrix does not promote static image inspection into a plan. | The available listing, driver-match evidence, and statically inspected PHF do not define a product-qualified maintenance sequence or join the image header consumer to the product. A release manifest plus an independently admitted maintenance protocol/source would be needed even for an offline plan; no physical operation is authorized here. |
 
@@ -848,7 +864,7 @@ context words, and it does not broaden the existing finite default operations.
 | Original acceptance criterion | Current status |
 | --- | --- |
 | Establish HD500X identity, editor/driver/firmware, preset/model/effect and audio evidence from primary sources. | **Partial.** Static Editor file-group association and a bounded writer/reader trace are recorded. Driver text matches USB `0x0E41:0x4159`, with the Mac audio personality on interface 0 and bulk personality on interface 1; the Advanced Guide names a processed stereo host feed, **1-2 Main Out**, plus playback return and 48 kHz native processing with documented conversion rates. This does not supply the device's USB audio descriptors/endpoints or connect them to driver callbacks, formats, and selected identity. The Windows writer reads nested context `+0x2c` into H5EP header word 2, but its producer and consumer relation to a product/profile are unknown; the independent Mac `Memory+0x18` default does not join that field to a physical identity. The PHF parser/loader and comparator traces do not establish the applicability consumer join. Product attribution, complete model/effect catalog, firmware applicability, product-qualified route and maintenance sources, and physical identity remain unresolved. |
-| Implement an independent offline backend integrated with shared interfaces and tests. | **Partial.** The shared offline Session/library interface and GUI import bounded H5EP/H5ES/H5EB files, extract children, preserve context and save new copies. They edit all 364 source-identified primary type-1 rows plus 80 selected non-type-1 numeric controls across 143 descriptor model IDs with canonical-grid and byte-preservation tests, and expose four typed Octave Fuzz replacements, closed twelve-target distortion/fuzz and eight-target dynamics/FX and reverb default batches, the one-byte FX enable/disable operation, and four exact type-9 three-choice model/key rows: `0x020A0014/0x3F100004`, `0x020A0010/0x3F100004`, `0x020A000F/0x3F100004`, and `0x020A0012/0x3F100003`. The type-9 setter requires an explicit file slot, valid/enable/count/assignment-marker guards, a unique existing key, finite current value and complete-candidate reparse; its GUI stages per entry/slot and applies or discards explicitly. Expanded synthetic dirty-state, extracted-child isolation and GUI lifecycle tests cover the admitted catalog. All four configured focused checks pass on implementation head `979aba7bc04f4e135b9bc8e95e25ef4c43daee68` in coordinator run `4a575fd1-4511-46a0-8bc7-9decdec0694d` (360 tests per functional selection: 275 library, 59 GUI, 26 integration); this verifies the offline software paths only. The HD500X session also exposes generic bounded FORM/L6FF inspection without applying header identity to a physical profile. Product-qualified route planning and maintenance remain unavailable; other type-family semantics, physical recording and original-editor parity are not implemented. |
+| Implement an independent offline backend integrated with shared interfaces and tests. | **Partial.** The shared offline Session/library interface and GUI import bounded H5EP/H5ES/H5EB files, extract children, preserve context and save new copies. They edit all 364 source-identified primary type-1 rows plus 80 selected non-type-1 numeric controls across 143 descriptor model IDs with canonical-grid and byte-preservation tests, and expose four typed Octave Fuzz replacements, closed twelve-target distortion/fuzz and eight-target dynamics/FX and reverb default batches, the one-byte FX enable/disable operation, and four exact type-9 three-choice model/key rows: `0x020A0014/0x3F100004`, `0x020A0010/0x3F100004`, `0x020A000F/0x3F100004`, and `0x020A0012/0x3F100003`. The type-9 setter requires an explicit file slot, valid/enable/count/assignment-marker guards, a unique existing key, finite current value and complete-candidate reparse; its GUI stages per entry/slot and applies or discards explicitly. Expanded synthetic dirty-state, extracted-child isolation and GUI lifecycle tests cover the admitted catalog. All four configured focused checks pass on implementation head `979aba7bc04f4e135b9bc8e95e25ef4c43daee68` in coordinator run `4a575fd1-4511-46a0-8bc7-9decdec0694d` (360 tests per functional selection: 275 library, 59 GUI, 26 integration); this verifies the offline software paths only. The HD500X session also exposes generic bounded FORM/L6FF inspection without applying header identity to a physical profile. The new profile-gated Windows configuration snapshot parser accepts only caller-owned completed bytes and explicit index/value/interface/alternate selectors, and returns immutable unverified/locked metadata; twelve synthetic tests cover normal selection and malformed/boundary/identity/profile cases. Current worktree validation is `cargo test --offline --locked --all-features` (390 tests: 305 library, 59 GUI, 26 integration), Clippy with `-D warnings`, formatting, and `git diff --check`; these are offline software checks, not device evidence. Product-qualified route planning and maintenance remain unavailable; other type-family semantics, physical recording and original-editor parity are not implemented. |
 | Keep HD/JTV separate from PODxt/original Variax; prohibit cross-family conversion, flashing and live operations. | **Met as written.** Profiles remain separate; no cross-family conversion, upload, flash or live path is exposed, and hardware access remains locked. This criterion does not establish physical compatibility. |
 
 Issue #32 remains open. Synthetic tests do not complete source-identification,
@@ -886,20 +902,22 @@ new downloads, live traffic or publication of private analysis.
    identity and version fields it checks); nearby call order, release label,
    or matching numbers alone do not establish it. If retained source cannot
    show that join, further source acquisition requires prior owner permission.
-3. **Product-qualified route and maintenance sources.** The retained driver
-   match table supplies IDs and interface roles; the Advanced Guide supplies
-   historical processed-routing descriptions and rates. Neither provides a
-   USB audio descriptor/endpoint/alternate-setting and format/timing map joined
-   to the audio callbacks and selected product identity. No HD500X maintenance
-   plan or source-backed sequence is registered, and version/flash/reset/install
-   remain locked. Next, search only the already retained driver and manual
-   materials for descriptors, callback selection, stream formats and timing,
-   and for a product-qualified maintenance sequence that joins the firmware
-   consumer to a release/applicability record. The exact missing artifacts
-   are the product-qualified USB interface/endpoint/format source and the
-   product-qualified maintenance/applicability source. If neither is present,
-   request owner permission before any new official-source download; do not
-   contact a device or open an audio stream.
+3. **Product-qualified route and maintenance evidence.** The retained static
+   driver trace now follows device/configuration descriptor requests, the
+   configuration-value-1 predicate, the parser call bridge, configuration
+   request construction, selected endpoint-to-pipe mapping, and alternate
+   interface selection. It corrects the earlier narrow claim that executable
+   parser/configuration callsites were not proven; the private source graph and
+   provenance erratum preserve that history. These callsites do not include
+   actual descriptor bytes, successful selection, endpoint format/timing,
+   callback-to-route semantics, or audio state. The Advanced Guide supplies
+   historical processed-routing descriptions and rates, not that missing join.
+   No HD500X maintenance plan or source-backed sequence is registered, and
+   version/flash/reset/install remain locked. The exact missing evidence is a
+   product-qualified offline USB descriptor set joined to audio callback/format
+   semantics, plus a product-qualified maintenance/applicability source. Any
+   new official-source download requires prior owner permission; do not contact
+   a device or open an audio stream.
 
 These unresolved joins keep criterion 1 **Partial**. Criterion 2 remains
 **Partial** because the tested Session/library/GUI backend is connected for
