@@ -8,6 +8,8 @@ use std::collections::BTreeMap;
 
 pub mod body;
 pub mod bundle;
+pub mod device_inventory;
+pub mod device_probe;
 pub mod document;
 pub mod dsp;
 pub mod edit;
@@ -30,6 +32,7 @@ pub mod pod_hd_independent;
 pub mod pod_preset;
 pub mod pod_usb_firmware;
 pub mod preset;
+pub mod probe_check;
 pub mod provenance;
 pub mod read_session;
 pub mod recording;

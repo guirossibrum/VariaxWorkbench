@@ -22,6 +22,10 @@ name = "variax-check"
 path = "src/check_app.rs"
 
 [[bin]]
+name = "variax-device-probe"
+path = "src/probe_bin.rs"
+
+[[bin]]
 name = "variax-firmware-inspect"
 path = "src/firmware_inspect.rs"
 

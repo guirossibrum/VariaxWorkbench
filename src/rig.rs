@@ -14,7 +14,7 @@ mod model;
 mod registry;
 mod session;
 
-pub use capability::{Capability, CapabilityState, Operation};
+pub use capability::{Capability, CapabilityState, Operation, resolve};
 pub use model::{Component, DeviceFamily, ProductProfile, RoleKind, VersionKnowledge};
 pub use registry::{INITIAL_HOST, LogicalRole, PhysicalHost, WORKBENCH_USB_IS_A_SEPARATE_MATCH};
 pub use session::{

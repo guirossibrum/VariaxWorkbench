@@ -86,3 +86,32 @@ jobs:
         run: cargo test --locked --release --no-default-features --features portable-math
       - name: Core lint
         run: cargo clippy --locked --no-default-features --features portable-math --all-targets -- -D warnings
+
+  device-probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
+        with:
+          toolchain: "1.99.1"
+      - name: Offline device-check self-check
+        run: cargo run --locked --bin variax-device-probe -- --synthetic-self-check
+      - name: macOS Intel and Apple Silicon probe binaries
+        if: runner.os == 'macOS'
+        run: |
+          rustup target add x86_64-apple-darwin aarch64-apple-darwin
+          cargo build --locked --release --bin variax-device-probe --target aarch64-apple-darwin
+          cargo build --locked --release --bin variax-device-probe --target x86_64-apple-darwin
+          host=$(uname -m)
+          if [ "$host" = "arm64" ]; then
+            ./target/aarch64-apple-darwin/release/variax-device-probe --synthetic-self-check
+          elif [ "$host" = "x86_64" ]; then
+            ./target/x86_64-apple-darwin/release/variax-device-probe --synthetic-self-check
+          fi

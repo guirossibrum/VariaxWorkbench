@@ -1,0 +1,226 @@
+schema	2
+name	role	usb_vid	usb_pid	l6_product	engine_profile	engine_operation	capability_state	source	evidence	owner_live_rig	synthetic_fixture	gap
+Amplifi	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+AMPLIFi	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+AMPLIFi 150	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+AMPLIFi 30	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+AMPLIFi 75	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Amplifi Desktop	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+AMPLIFi FX100	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+AMPLIFi TT	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+AX2	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+BackTrack	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+BackTrack + Mic	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Bass POD	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Bass POD Pro	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Bass POD XT	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Bass POD XT Live	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Bass POD XT Pro	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Bass PODxt	product	-	-	0x00030006	none	none	none	workbench-product-constants	sourced-id	no	missing	no-settings-codec,fixture-missing
+Bass PODxt Live	product	-	0x4642	0x0003000B	none	none	none	monkey-default-cfg+workbench-product-constants	sourced-id	no	missing	no-settings-codec,fixture-missing
+Bass PODxt Pro	product	-	-	0x00030007	none	none	none	workbench-product-constants	sourced-id	no	missing	no-settings-codec,fixture-missing
+Catalyst	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Catalyst 100	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Catalyst 100-112	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Catalyst 200	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Catalyst 200-212	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Catalyst 60	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Catalyst 60-112	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Catalyst Bootloader	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Catalyst Freescale Bootloader	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+DL4 Mk	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+DL4 MK2	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+DL4 MK2 Bootloader	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+DL4 MkII	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+DT25 112	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+DT25 HD	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+DT50 112	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+DT50 212	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+DT50 Head	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Duoverb	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Echo Pro	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+FBV 2 MkII	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+FBV 3	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+FBV Express MkII	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+FBV MKIII	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+FBV Shortboard MkII	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Filter Pro	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Firehawk	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Firehawk 1500	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Firehawk Amp	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Firehawk FX	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Flextone II	product	-	-	0x00000200	none	none	none	workbench-product-constants	sourced-id	no	missing	no-settings-codec,fixture-missing
+Flextone III	product	-	-	0x00030003	none	none	none	workbench-product-constants	sourced-id	no	missing	no-settings-codec,fixture-missing
+Floor POD Plus	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+FX100	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Guitar Port	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+GuitarPort	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+GuitarPort 1	product	-	-	0x00080000	none	none	none	workbench-product-constants	sourced-id	no	missing	no-settings-codec,fixture-missing
+GuitarPort 2	product	-	-	0x00080001	none	none	none	workbench-product-constants	sourced-id	no	missing	no-settings-codec,fixture-missing
+HD 147	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+HD147	product	-	-	0x00030004	none	none	none	workbench-product-constants	sourced-id	no	missing	no-settings-codec,fixture-missing
+Helix	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Helix Control	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Helix Floor	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Helix LT	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Helix Rack	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+HX Effects	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+HX One	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+HX Stomp	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+HX Stomp XL	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+JM4	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+JTV-59	product	-	-	-	none	none	none	workbench-hd-static	name-only	no	missing	name-only,no-settings-codec,fixture-missing
+JTV-69	product	-	-	-	Jtv69	OpenGuitarPreset	Unverified	workbench-hd-static	name-only	no	missing	family-id-not-this-model,no-settings-codec,fixture-missing
+JTV-89	product	-	-	-	none	none	none	workbench-hd-static	name-only	no	missing	name-only,no-settings-codec,fixture-missing
+JTV-89F	product	-	-	-	none	none	none	workbench-hd-static	name-only	no	missing	name-only,no-settings-codec,fixture-missing
+KB37	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Line 6 POD HD Pro X	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Line 6 POD HD500X	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Line 6 UX8	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+M13	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+M5	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+M9	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Mod Pro	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Pocket POD	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+POD	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+POD 1.x	product	-	-	0x00000100	none	none	none	workbench-product-constants	sourced-id	no	missing	no-settings-codec,fixture-missing
+POD 2.0	product	-	-	0x00000300	none	none	none	workbench-product-constants	sourced-id	no	missing	no-settings-codec,fixture-missing
+POD 2.0 Pro	product	-	-	0x00000400	none	none	none	workbench-product-constants	sourced-id	no	missing	no-settings-codec,fixture-missing
+POD GO	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+POD Go	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+POD GO Wireless	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+POD Go Wireless	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+POD HD	product	0x0E41	0x4156	-	none	none	none	committed-usb-record	sourced-id	no	missing	no-settings-codec,fixture-missing
+POD HD 300	product	0x0E41	0x5057	-	none	none	none	committed-usb-record	sourced-id	no	missing	no-settings-codec,fixture-missing
+POD HD 400	product	0x0E41	0x5058	-	none	none	none	committed-usb-record	sourced-id	no	missing	no-settings-codec,fixture-missing
+POD HD 500	product	0x0E41	0x414D	-	none	none	none	committed-usb-record	sourced-id	no	missing	no-settings-codec,fixture-missing
+POD HD Bean	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+POD HD Pro	product	0x0E41	0x4157	-	none	none	none	committed-usb-record	sourced-id	no	missing	no-settings-codec,fixture-missing
+POD HD Pro SE	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+POD HD Pro X	product	0x0E41	0x415A	-	none	none	none	committed-usb-record	sourced-id	no	missing	no-settings-codec,fixture-missing
+POD HD300	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+POD HD400	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+POD HD500	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+POD HD500 SE	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+POD HD500X	product	0x0E41	0x4159	-	PodHd500x	OpenPodPreset	Unverified	committed-usb-record	sourced-id	no	missing	no-settings-codec,fixture-missing
+POD Pro	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+POD Studio GX	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+POD Studio KB37	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+POD Studio UX1	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+POD Studio UX2	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+POD X3	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+POD X3 Live	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+POD X3 Pro	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+PODxt	product	-	-	0x00030002	none	none	none	workbench-product-constants	sourced-id	no	missing	no-settings-codec,fixture-missing
+PODxt Live	bridge	0x0E41	0x4650	0x0003000A	PodxtLive	EnumerateUsb	Locked	committed-usb-record+monkey-default-cfg+workbench-product-constants	partial	yes	in-memory-read-session	read-requires-excluded-transfer,partial-metadata,not-a-backup
+PODxt Pro	product	-	-	0x00030005	none	none	none	workbench-product-constants	sourced-id	no	missing	no-settings-codec,fixture-missing
+Powercab	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Powercab 112	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Powercab 112 Plus	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Powercab 212 Plus	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+RELAY G10	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Relay G10R	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Relay G10S	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+RELAY G10S	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+RELAY G10T	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+RELAY G10TII	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Relay G30 Bodypack	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Relay G30 Bodypack (1.0)	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Relay G30 Receiver	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Relay G50 Bodypack	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Relay G50 Receiver	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Relay G50 Transmitter	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Relay G70	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+RELAY G70 Receiver	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Relay G75	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+RELAY G75 Receiver	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Relay G90 Bodypack	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Relay G90 Receiver	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Relay G90 Transmitter	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+RELAY TB516 G Transmitter	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Relay TB516G Beltpack	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Shuriken	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Shuriken SR-250	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Spider IV	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Spider IV 120	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Spider IV 15	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Spider IV 150	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Spider IV 30	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Spider IV 75	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Spider IV HD150	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Spider Jam	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Spider V 120	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Spider V 20	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Spider V 240	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Spider V 240 Head	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Spider V 30	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Spider V 60	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Spider Valve mkII	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Spider Valve MkII 112	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Spider Valve MkII 212	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Spider Valve mkII 212	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Spider Valve mkII HD	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Spider Valve MkII HD100	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Studio POD	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Studio POD 2	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+TonePort	product	-	-	0x00080002	none	none	none	workbench-product-constants	sourced-id	no	missing	no-settings-codec,fixture-missing
+TonePort	product	-	-	0x00080003	none	none	none	workbench-product-constants	sourced-id	no	missing	no-settings-codec,fixture-missing
+Toneport DI Gold	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+TonePort DI Gold	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Toneport DI Silver	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+TonePort DI Silver	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+TonePort DI-Gold	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+TonePort DI-Silver	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+TonePort GX	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Toneport GX	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+TonePort GX MKII	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+TonePort KB 37	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+TonePort KB37	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+TonePort KB61	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+TonePort UX1	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+TonePort UX1 MKII	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+TonePort UX2	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+TonePort UX2 MKII	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+TonePort UX8	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+TonePort/POD Studio KB37	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+TonePort/POD Studio UX1	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+TonePort/POD Studio UX2	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Tyler Variax	family	-	-	0x00070005	none	none	none	monkey-default-cfg+workbench-hd-static+workbench-product-constants	family-only	no	missing	family-only,no-settings-codec
+UX1	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+UX2	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+UX8	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Variax	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Variax 300	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Variax 300 600	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Variax 300/600	guitar	-	-	0x00070004	Variax600	EnumerateUsb	Locked	monkey-default-cfg+workbench-product-constants	partial	yes	in-memory-read-session	read-requires-excluded-transfer,partial-metadata,not-a-backup
+Variax 500	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Variax 500 700	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Variax 500/700	guitar	-	-	0x00070000	none	none	none	workbench-product-constants	sourced-id	no	missing	no-settings-codec,fixture-missing
+Variax 600	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Variax 700	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Variax Acoustic	guitar	-	-	0x00070001	none	none	none	monkey-default-cfg+workbench-product-constants	sourced-id	no	missing	no-settings-codec,fixture-missing
+Variax Bass	guitar	-	-	0x00070002	none	none	none	monkey-default-cfg+workbench-product-constants	sourced-id	no	missing	no-settings-codec,fixture-missing
+Variax Bass 705	guitar	-	-	0x00070006	none	none	none	monkey-default-cfg	sourced-id	no	missing	no-settings-codec,fixture-missing
+Variax Electric	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Variax Standard	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Variax Tyler	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Variax USB Interface	bridge	0x0E41	0x534D	0x00700001	none	none	none	committed-usb-record+monkey-default-cfg	sourced-id	no	missing	bridge-without-guitar,no-settings-codec,fixture-missing
+Vetta	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Vetta Combo	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Vetta Head	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+Vetta II	product	-	-	0x00030000	none	none	none	workbench-product-constants	sourced-id	no	missing	no-settings-codec,fixture-missing
+Vetta II Combo	product	-	-	0x00030008	none	none	none	workbench-product-constants	sourced-id	no	missing	no-settings-codec,fixture-missing
+Vetta II Head	product	-	-	0x00030009	none	none	none	workbench-product-constants	sourced-id	no	missing	no-settings-codec,fixture-missing
+Workbench HD	family	-	-	-	WorkbenchHd	OpenGuitarPreset	Unverified	workbench-hd-static	name-only	no	missing	name-only,no-settings-codec,fixture-missing
+XD-V30 Bodypack	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+XD-V30 Handheld	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+XD-V30 Receiver	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+XD-V35 Bodypack	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+XD-V35 Handheld	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+XD-V35 Receiver	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+XD-V70 Bodypack	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+XD-V70 Handheld	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+XD-V70 Receiver	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+XD-V75 Bodypack	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+XD-V75 Handheld	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
+XD-V75 Receiver	alias	-	-	-	-	-	-	owner-name-list	name-only	no	missing	alias-not-an-id
