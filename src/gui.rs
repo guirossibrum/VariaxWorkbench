@@ -2387,7 +2387,8 @@ impl Workbench {
                 ui.label(pod_preset::NOT_GUITAR);
                 ui.label(pod_preset::NOT_SENT);
                 ui.label(pod_preset::PAYLOADS_NOT_DECODED);
-                ui.label(&self.pod_message);
+                ui.add(egui::Label::new(&self.pod_message).truncate())
+                    .on_hover_text(&self.pod_message);
                 if self.pod_button(ui, "load-hd-file", "Open HD Edit file…") {
                     self.load_hd_editor_file();
                 }
