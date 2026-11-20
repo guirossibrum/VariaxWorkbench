@@ -2566,7 +2566,7 @@ impl Workbench {
                             }
                         }
                     });
-                    ui.label("This explicit action replaces the current model and resets its five source-defined values to Vintage Pre defaults.");
+                    ui.label("Reset five values to Vintage Pre defaults.");
                     if self.pod_button(
                         ui,
                         "replace-octave-fuzz-vintage-pre",
@@ -2589,7 +2589,7 @@ impl Workbench {
                             Err(error) => self.pod_message = error.detail(),
                         }
                     }
-                    ui.label("This explicit action replaces the current model and resets its five source-defined values to Screamer defaults.");
+                    ui.label("Reset five values to Screamer defaults.");
                     if self.pod_button(
                         ui,
                         "replace-octave-fuzz-screamer",
@@ -2612,7 +2612,7 @@ impl Workbench {
                             Err(error) => self.pod_message = error.detail(),
                         }
                     }
-                    ui.label("This explicit action replaces the current model and resets its five source-defined values to Sub Octave Fuzz defaults.");
+                    ui.label("Reset five values to Sub Octave Fuzz defaults.");
                     if self.pod_button(
                         ui,
                         "replace-octave-fuzz-sub-octave-fuzz",
@@ -2635,7 +2635,7 @@ impl Workbench {
                             Err(error) => self.pod_message = error.detail(),
                         }
                     }
-                    ui.label("This explicit action replaces the current model with Noise Gate defaults.");
+                    ui.label("Replace with Noise Gate defaults.");
                     if self.pod_button(ui, "replace-octave-fuzz-noise-gate", "Noise Gate defaults") {
                         let index = self.hd_selected.expect("selected HD file");
                         match pod_preset::HdFxSlot::new(self.hd_effect_slot) {
