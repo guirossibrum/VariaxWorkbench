@@ -1612,6 +1612,7 @@ impl Workbench {
                 self.continue_pending(ctx);
             }
         } else if discard {
+            let staged_amp = self.pod_amp_model_pending;
             let result = self
                 .pod_bundle
                 .as_mut()
@@ -1619,6 +1620,7 @@ impl Workbench {
             match result.and_then(|()| self.refresh_pod_library_from_bundle()) {
                 Ok(()) => {
                     self.refresh_selected_pod_name();
+                    self.restore_staged_amp_if_origin_matches(staged_amp);
                     self.pod_message = "Discarded offline bank edits. Nothing was sent.".into();
                     self.continue_pending(ctx);
                 }
@@ -6142,6 +6144,37 @@ mod tests {
         );
     }
 
+    fn drag_pod_drive_slider_tall(context: &egui::Context, app: &mut Workbench) {
+        recording_frame_tall(context, app, vec![]);
+        let rect = app.pod_drive_slider.expect("visible Amp Drive slider");
+        let start = Pos2::new(rect.left() + rect.width() * 0.45, rect.center().y);
+        let end = Pos2::new(rect.left() + rect.width() * 0.78, rect.center().y);
+        recording_frame_tall(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame_tall(context, app, vec![egui::Event::PointerMoved(end)]);
+        recording_frame_tall(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
     fn drag_pod_stomp_slider(
         context: &egui::Context,
         app: &mut Workbench,
@@ -6995,6 +7028,101 @@ mod tests {
         );
         assert!(!app.pod_library.is_dirty(0));
         assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn pod_amp_bundle_quit_discard_preserves_only_matching_stage_origin() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let directory = tempfile::tempdir().unwrap();
+        let bundle_path = directory.path().join("amp-stage.vwb");
+        let original_tone = as_fixed_bank_tone(sample_drive_pod_tone());
+        let original_bundle = sample_pod_bundle(std::slice::from_ref(&original_tone));
+        std::fs::write(&bundle_path, &original_bundle).unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(bundle_path.clone())].into(),
+            ..Default::default()
+        });
+        app.load_pod_tone();
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert!(app.pod_bundle.is_some(), "{}", app.pod_message);
+        assert_eq!(
+            app.pod_bundle.as_ref().unwrap().as_bytes(),
+            original_bundle.as_slice()
+        );
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original_tone);
+        assert!(!app.pod_dirty());
+
+        drag_pod_drive_slider_tall(&context, &mut app);
+        assert!(app.pod_library.is_dirty(0));
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().amp_model_id(),
+            Some(pod_preset::PLEXI_45_MODEL)
+        );
+        choose_amp_model_popup(&context, &mut app, 0x0002_002e);
+        let pending = Some((
+            0,
+            pod_preset::PLEXI_45_MODEL,
+            pod_preset::PodAmpModelChoice::Model2002e,
+        ));
+        assert_eq!(app.pod_amp_model_pending, pending);
+        let dirty_tone = app.pod_library.tone(0).unwrap().as_bytes().to_vec();
+        let dirty_bundle = app.pod_bundle.as_ref().unwrap().as_bytes().to_vec();
+        assert_ne!(dirty_tone, original_tone);
+        assert_ne!(dirty_bundle, original_bundle);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), dirty_tone);
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), dirty_bundle);
+
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert!(!app.permit_close);
+        click_prompt(&context, &mut app, "discard");
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), original_bundle);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original_tone);
+        assert!(!app.pod_dirty());
+        assert_eq!(app.pod_amp_model_pending, pending);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert!(!app.permit_close);
+
+        click_prompt(&context, &mut app, "amp-keep-editing");
+        assert!(app.pending.is_none());
+        assert_eq!(app.pod_amp_model_pending, pending);
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "amp-discard");
+        assert_eq!(app.pod_amp_model_pending, None);
+        assert!(app.permit_close);
+
+        let (context, mut app) = self::app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(bundle_path)].into(),
+            ..Default::default()
+        });
+        app.load_pod_tone();
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original_tone);
+        click_pod_button_tall(&context, &mut app, "pod-amp-line6-clean");
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        choose_amp_model_popup(&context, &mut app, 0x0002_002e);
+        let invalidated_pending = Some((
+            0,
+            pod_preset::PodAmpModelChoice::Line6Clean.model_id(),
+            pod_preset::PodAmpModelChoice::Model2002e,
+        ));
+        assert_eq!(app.pod_amp_model_pending, invalidated_pending);
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "discard");
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), original_bundle);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original_tone);
+        assert_eq!(app.pod_amp_model_pending, None);
+        assert!(app.permit_close);
         const {
             assert!(LIVE_ACCESS_LOCKED);
         }
