@@ -7,10 +7,14 @@
 #[cfg(target_os = "linux")]
 pub mod linux_alsa;
 
+/// Rust-owned software model of an ASIO-style callback boundary. This is not
+/// a Windows adapter and does not load or call ASIO, Windows, or device APIs.
+pub mod offline_asio;
+
 /// Windows ASIO capture cannot be implemented from the admitted contracts in
 /// this checkout. See `docs/audio-capture-session.md` for the exact blocker.
 #[cfg(target_os = "windows")]
-pub const WINDOWS_ADAPTER_BLOCKER: &str = "The version-identified ASIOCallbacks/ASIOTime declarations and selector 7 semantics, plus a complete source-qualified input channel/rate contract, are not present in the admitted inputs.";
+pub const WINDOWS_ADAPTER_BLOCKER: &str = "An offline software-only ASIO-style callback model exists, but the complete versioned native ABI, source-qualified physical input channel/rate contract, interface admission, and concrete Windows capture adapter remain unavailable.";
 
 /// macOS Core Audio capture cannot be implemented from the source contracts in
 /// this checkout. See `docs/audio-capture-session.md` for the exact blocker.
