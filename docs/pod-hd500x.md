@@ -374,9 +374,11 @@ cover all eight outputs; additional checks cover all slots, both enable states,
 count boundaries, all 120 accepted source-key orders, marker values and
 atomic guard rejection. The shared-session and rendered GUI tests cover
 extracted-child isolation and the explicit Apply/save/reopen/dirty/quit path.
-The new implementation's configured focused checks are pending for its exact
-head. Evidence is static and synthetic; no vendor runtime, physical
-applicability or callback-context parity is claimed.
+On implementation head `4081049d8fbbf75b226afe75c2f620f7f89d9ddd`, focused run
+`0c0a44d2-fe52-421a-b774-5cbd21dce0c8` passed `functional:cargo-gui-usb`
+(358 tests: 275 library, 59 GUI, 24 integration) and
+`lint:cargo-clippy` (`-D warnings`). Evidence is static and synthetic; no
+vendor runtime, physical applicability or callback-context parity is claimed.
 
 ### Bounded Octave Fuzz to Sub Octave Fuzz defaults
 
