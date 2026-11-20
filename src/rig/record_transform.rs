@@ -230,18 +230,32 @@ fn byte_sum(segments: [Option<Segment>; 2]) -> u32 {
         .fold(0u32, |sum, part| sum.wrapping_add(part.len))
 }
 
-fn update_read_derived(next: &mut RecordSnapshot, capacity: u32, old_a: u32) {
+fn update_read_derived_unwrapped(next: &mut RecordSnapshot, capacity: u32, old_a: u32) {
+    next.derived_a = u64::from(next.cursor_b).wrapping_sub(u64::from(old_a));
+    next.derived_b = u64::from(old_a)
+        .wrapping_sub(u64::from(next.cursor_b))
+        .wrapping_add(u64::from(capacity));
+}
+
+fn update_read_derived_wrapped(next: &mut RecordSnapshot, capacity: u32, old_a: u32) {
     next.derived_a = u64::from(next.cursor_b)
         .wrapping_sub(u64::from(old_a))
         .wrapping_add(u64::from(capacity));
     next.derived_b = u64::from(old_a).wrapping_sub(u64::from(next.cursor_b));
 }
 
-fn update_write_derived(next: &mut RecordSnapshot, capacity: u32, old_b: u32) {
+fn update_write_derived_unwrapped(next: &mut RecordSnapshot, capacity: u32, old_b: u32) {
     next.derived_a = u64::from(old_b).wrapping_sub(u64::from(next.cursor_a));
     next.derived_b = u64::from(next.cursor_a)
         .wrapping_sub(u64::from(old_b))
         .wrapping_add(u64::from(capacity));
+}
+
+fn update_write_derived_wrapped(next: &mut RecordSnapshot, capacity: u32, old_b: u32) {
+    next.derived_a = u64::from(old_b)
+        .wrapping_sub(u64::from(next.cursor_a))
+        .wrapping_add(u64::from(capacity));
+    next.derived_b = u64::from(next.cursor_a).wrapping_sub(u64::from(old_b));
 }
 
 fn plan_record_to_caller(
@@ -264,12 +278,17 @@ fn plan_record_to_caller(
         segments[0] = segment(original.cursor_b, first_len, capacity)?;
         if first_available >= requested {
             let mut new_b = original.cursor_b + requested;
-            if new_b == end {
+            let reached_end = new_b == end;
+            if reached_end {
                 new_b = base;
                 next.wrapped = true;
             }
             next.cursor_b = new_b;
-            update_read_derived(&mut next, capacity, original.cursor_a);
+            if reached_end {
+                update_read_derived_wrapped(&mut next, capacity, original.cursor_a);
+            } else {
+                update_read_derived_unwrapped(&mut next, capacity, original.cursor_a);
+            }
         } else {
             let remaining = requested - first_available;
             let second_available = original.cursor_a - base;
@@ -278,7 +297,7 @@ fn plan_record_to_caller(
                 segments[1] = segment(base, remaining, capacity)?;
                 next.cursor_b = base + remaining;
                 next.wrapped = true;
-                update_read_derived(&mut next, capacity, original.cursor_a);
+                update_read_derived_wrapped(&mut next, capacity, original.cursor_a);
             } else {
                 status = SourceStatus::ShortRead;
                 // In the observed policy-1 nonwrapped short branch, +0x18 is
@@ -297,7 +316,7 @@ fn plan_record_to_caller(
         if first_available >= requested {
             segments[0] = segment(original.cursor_b, requested, capacity)?;
             next.cursor_b = original.cursor_b + requested;
-            update_read_derived(&mut next, capacity, original.cursor_a);
+            update_read_derived_wrapped(&mut next, capacity, original.cursor_a);
         } else {
             status = SourceStatus::ShortRead;
             let tail_available = end - original.cursor_b;
@@ -351,7 +370,7 @@ fn plan_caller_to_record(
             if available >= requested {
                 segments[0] = segment(original.cursor_a, requested, capacity)?;
                 next.cursor_a = original.cursor_a + requested;
-                update_write_derived(&mut next, capacity, original.cursor_b);
+                update_write_derived_unwrapped(&mut next, capacity, original.cursor_b);
             } else {
                 segments[0] = None;
                 status = SourceStatus::ShortWrite;
@@ -365,12 +384,17 @@ fn plan_caller_to_record(
         if first_available >= requested {
             segments[0] = segment(original.cursor_a, requested, capacity)?;
             let mut new_a = original.cursor_a + requested;
-            if new_a == end {
+            let reached_end = new_a == end;
+            if reached_end {
                 new_a = base;
                 next.wrapped = false;
             }
             next.cursor_a = new_a;
-            update_write_derived(&mut next, capacity, original.cursor_b);
+            if reached_end {
+                update_write_derived_unwrapped(&mut next, capacity, original.cursor_b);
+            } else {
+                update_write_derived_wrapped(&mut next, capacity, original.cursor_b);
+            }
         } else {
             let remaining = requested - first_available;
             let second_available = original.cursor_b - base;
@@ -379,7 +403,7 @@ fn plan_caller_to_record(
                 segments[1] = segment(base, remaining, capacity)?;
                 next.cursor_a = base + remaining;
                 next.wrapped = false;
-                update_write_derived(&mut next, capacity, original.cursor_b);
+                update_write_derived_unwrapped(&mut next, capacity, original.cursor_b);
             } else {
                 // The helper clears first len, retains the second span and
                 // reports status 2 without committing cursors/derived state.
@@ -533,12 +557,18 @@ mod tests {
         assert_eq!(report.copied_bytes, 3);
         assert_eq!(&dst[..3], &[0x55, 0x66, 0x77]);
         assert_eq!(&dst[3..], &[0xa0; 5]);
-        assert_eq!(state.cursor_a, 2);
-        assert_eq!(state.cursor_b, 7);
-        assert!(!state.wrapped);
-        assert_eq!(state.derived_a, 13);
-        assert_eq!(state.derived_b, u64::MAX - 4);
-        assert_eq!(state.record_to_caller_bytes, 3);
+        assert_eq!(
+            state,
+            RecordSnapshot {
+                cursor_a: 2,
+                cursor_b: 7,
+                wrapped: false,
+                derived_a: 5,
+                derived_b: 3,
+                record_to_caller_bytes: 3,
+                caller_to_record_bytes: 0,
+            }
+        );
 
         let mut crossing = snap(2, 6, false);
         let mut crossing_dst = [0xa0; 8];
@@ -554,12 +584,61 @@ mod tests {
         );
         assert_eq!(&crossing_dst[..4], &[0x77, 0x88, 0x11, 0x22]);
         assert_eq!(crossing_report.status, SourceStatus::Success);
-        assert_eq!(crossing.cursor_a, 2);
-        assert_eq!(crossing.cursor_b, 2);
-        assert!(crossing.wrapped);
-        assert_eq!(crossing.derived_a, 8);
-        assert_eq!(crossing.derived_b, 0);
-        assert_eq!(crossing.record_to_caller_bytes, 4);
+        assert_eq!(
+            crossing,
+            RecordSnapshot {
+                cursor_a: 2,
+                cursor_b: 2,
+                wrapped: true,
+                derived_a: 8,
+                derived_b: 0,
+                record_to_caller_bytes: 4,
+                caller_to_record_bytes: 0,
+            }
+        );
+
+        let mut exact_end = snap(2, 5, false);
+        let mut exact_end_dst = [0xa0; 8];
+        let exact_end_report = session
+            .transform_hd500x_record_to_caller(&mut exact_end, &RING, &mut exact_end_dst, 3, 1)
+            .unwrap();
+        assert_eq!(
+            exact_end_report.segments,
+            [Some(Segment { offset: 5, len: 3 }), None]
+        );
+        assert_eq!(&exact_end_dst[..3], &[0x66, 0x77, 0x88]);
+        assert_eq!(
+            exact_end,
+            RecordSnapshot {
+                cursor_a: 2,
+                cursor_b: 0,
+                wrapped: true,
+                derived_a: 6,
+                derived_b: 2,
+                record_to_caller_bytes: 3,
+                caller_to_record_bytes: 0,
+            }
+        );
+
+        let mut zero_nonwrapped = snap(2, 4, false);
+        let mut zero_dst = [0xa0; 1];
+        let zero = session
+            .transform_hd500x_record_to_caller(&mut zero_nonwrapped, &RING, &mut zero_dst, 0, 1)
+            .unwrap();
+        assert_eq!(zero.segments, [None, None]);
+        assert_eq!(zero.status, SourceStatus::Success);
+        assert_eq!(
+            zero_nonwrapped,
+            RecordSnapshot {
+                cursor_a: 2,
+                cursor_b: 4,
+                wrapped: false,
+                derived_a: 2,
+                derived_b: 6,
+                record_to_caller_bytes: 0,
+                caller_to_record_bytes: 0,
+            }
+        );
     }
 
     #[test]
@@ -597,6 +676,8 @@ mod tests {
     fn policy_one_wrapped_short_read_has_both_exact_source_branches() {
         let session = hd_session();
         let mut crossing = snap(7, 6, true);
+        crossing.derived_a = 41;
+        crossing.derived_b = 42;
         let mut dst = [0xa0; 8];
         let report = session
             .transform_hd500x_record_to_caller(&mut crossing, &RING, &mut dst, 5, 1)
@@ -615,8 +696,12 @@ mod tests {
         assert_eq!(crossing.cursor_b, 3);
         assert!(crossing.wrapped);
         assert_eq!(crossing.record_to_caller_bytes, 5);
+        assert_eq!(crossing.derived_a, 41);
+        assert_eq!(crossing.derived_b, 42);
 
         let mut contiguous = snap(5, 4, true);
+        contiguous.derived_a = 51;
+        contiguous.derived_b = 52;
         let mut contiguous_dst = [0xa0; 8];
         let contiguous_report = session
             .transform_hd500x_record_to_caller(&mut contiguous, &RING, &mut contiguous_dst, 3, 1)
@@ -631,6 +716,8 @@ mod tests {
         assert_eq!(contiguous.cursor_b, 7);
         assert!(contiguous.wrapped);
         assert_eq!(contiguous.record_to_caller_bytes, 3);
+        assert_eq!(contiguous.derived_a, 51);
+        assert_eq!(contiguous.derived_b, 52);
     }
 
     #[test]
@@ -643,12 +730,18 @@ mod tests {
             .unwrap();
         assert_eq!(report.segments, [Some(Segment { offset: 2, len: 3 }), None]);
         assert_eq!(&dst[..3], &[0x33, 0x44, 0x55]);
-        assert_eq!(state.cursor_a, 6);
-        assert_eq!(state.cursor_b, 5);
-        assert!(state.wrapped);
-        assert_eq!(state.derived_a, 7);
-        assert_eq!(state.derived_b, 1);
-        assert_eq!(state.record_to_caller_bytes, 3);
+        assert_eq!(
+            state,
+            RecordSnapshot {
+                cursor_a: 6,
+                cursor_b: 5,
+                wrapped: true,
+                derived_a: 7,
+                derived_b: 1,
+                record_to_caller_bytes: 3,
+                caller_to_record_bytes: 0,
+            }
+        );
 
         let mut at_end = snap(2, 8, false);
         let mut empty_dst = [0xa0; 8];
@@ -658,12 +751,18 @@ mod tests {
         assert_eq!(empty.segments, [None, None]);
         assert_eq!(empty.status, SourceStatus::Success);
         assert_eq!(empty.copied_bytes, 0);
-        assert_eq!(at_end.cursor_a, 2);
-        assert_eq!(at_end.cursor_b, 0);
-        assert!(at_end.wrapped);
-        assert_eq!(at_end.derived_a, 6);
-        assert_eq!(at_end.derived_b, 2);
-        assert_eq!(at_end.record_to_caller_bytes, 0);
+        assert_eq!(
+            at_end,
+            RecordSnapshot {
+                cursor_a: 2,
+                cursor_b: 0,
+                wrapped: true,
+                derived_a: 6,
+                derived_b: 2,
+                record_to_caller_bytes: 0,
+                caller_to_record_bytes: 0,
+            }
+        );
 
         // A full-capacity request with the read cursor at the base is admitted
         // as one literal contiguous span.
@@ -680,10 +779,43 @@ mod tests {
         assert_eq!(full_report.requested_bytes, 8);
         assert_eq!(full_report.copied_bytes, 8);
         assert_eq!(full_report.status, SourceStatus::Success);
-        assert_eq!(full.cursor_a, 8);
-        assert_eq!(full.cursor_b, 8);
-        assert!(full.wrapped);
-        assert_eq!(full.record_to_caller_bytes, 8);
+        assert_eq!(
+            full,
+            RecordSnapshot {
+                cursor_a: 8,
+                cursor_b: 8,
+                wrapped: true,
+                derived_a: 8,
+                derived_b: 0,
+                record_to_caller_bytes: 8,
+                caller_to_record_bytes: 0,
+            }
+        );
+
+        let mut wrapped_zero_read = snap(6, 2, true);
+        let mut wrapped_zero_dst = [0xa0; 1];
+        let wrapped_zero_report = session
+            .transform_hd500x_record_to_caller(
+                &mut wrapped_zero_read,
+                &RING,
+                &mut wrapped_zero_dst,
+                0,
+                1,
+            )
+            .unwrap();
+        assert_eq!(wrapped_zero_report.segments, [None, None]);
+        assert_eq!(
+            wrapped_zero_read,
+            RecordSnapshot {
+                cursor_a: 6,
+                cursor_b: 2,
+                wrapped: true,
+                derived_a: 4,
+                derived_b: 4,
+                record_to_caller_bytes: 0,
+                caller_to_record_bytes: 0,
+            }
+        );
 
         // Feed the first operation's next snapshot into the opposite source
         // direction to prove that sequential state is carried explicitly.
@@ -694,9 +826,18 @@ mod tests {
             .unwrap();
         assert_eq!(sequence_dst, [0x55, 0x66, 0xa0, 0xa0]);
         assert_eq!(first.next, sequential);
-        assert_eq!(sequential.cursor_a, 2);
-        assert_eq!(sequential.cursor_b, 6);
-        assert_eq!(sequential.record_to_caller_bytes, 2);
+        assert_eq!(
+            sequential,
+            RecordSnapshot {
+                cursor_a: 2,
+                cursor_b: 6,
+                wrapped: false,
+                derived_a: 4,
+                derived_b: 4,
+                record_to_caller_bytes: 2,
+                caller_to_record_bytes: 0,
+            }
+        );
         let mut sequence_ring = RING;
         let second = session
             .transform_hd500x_caller_to_record(&mut sequential, &mut sequence_ring, &[0xb1], 1, 1)
@@ -706,10 +847,18 @@ mod tests {
             sequence_ring,
             [0x11, 0x22, 0xb1, 0x44, 0x55, 0x66, 0x77, 0x88]
         );
-        assert_eq!(sequential.cursor_a, 3);
-        assert_eq!(sequential.cursor_b, 6);
-        assert_eq!(sequential.record_to_caller_bytes, 2);
-        assert_eq!(sequential.caller_to_record_bytes, 1);
+        assert_eq!(
+            sequential,
+            RecordSnapshot {
+                cursor_a: 3,
+                cursor_b: 6,
+                wrapped: false,
+                derived_a: 3,
+                derived_b: 5,
+                record_to_caller_bytes: 2,
+                caller_to_record_bytes: 1,
+            }
+        );
     }
 
     #[test]
@@ -724,11 +873,44 @@ mod tests {
         assert_eq!(ring, [0x11, 0x22, 0xd1, 0xd2, 0xd3, 0x66, 0x77, 0x88]);
         assert_eq!(report.status, SourceStatus::Success);
         assert_eq!(report.direction, TransferDirection::CallerToRecord);
-        assert_eq!(state.cursor_a, 5);
-        assert_eq!(state.cursor_b, 5);
-        assert_eq!(state.derived_a, 0);
-        assert_eq!(state.derived_b, 8);
-        assert_eq!(state.caller_to_record_bytes, 3);
+        assert_eq!(
+            state,
+            RecordSnapshot {
+                cursor_a: 5,
+                cursor_b: 5,
+                wrapped: false,
+                derived_a: 0,
+                derived_b: 8,
+                record_to_caller_bytes: 0,
+                caller_to_record_bytes: 3,
+            }
+        );
+
+        let mut unwrapped_zero_ring = RING;
+        let mut unwrapped_zero = snap(2, 5, false);
+        let unwrapped_zero_report = session
+            .transform_hd500x_caller_to_record(
+                &mut unwrapped_zero,
+                &mut unwrapped_zero_ring,
+                &[],
+                0,
+                1,
+            )
+            .unwrap();
+        assert_eq!(unwrapped_zero_report.segments, [None, None]);
+        assert_eq!(unwrapped_zero_ring, RING);
+        assert_eq!(
+            unwrapped_zero,
+            RecordSnapshot {
+                cursor_a: 2,
+                cursor_b: 5,
+                wrapped: false,
+                derived_a: 3,
+                derived_b: 5,
+                record_to_caller_bytes: 0,
+                caller_to_record_bytes: 0,
+            }
+        );
 
         let mut wrapped_ring = RING;
         let mut wrapped = snap(6, 2, true);
@@ -752,10 +934,18 @@ mod tests {
             wrapped_ring,
             [0xe3, 0xe4, 0x33, 0x44, 0x55, 0x66, 0xe1, 0xe2]
         );
-        assert_eq!(wrapped.cursor_a, 2);
-        assert_eq!(wrapped.cursor_b, 2);
-        assert!(!wrapped.wrapped);
-        assert_eq!(wrapped.caller_to_record_bytes, 4);
+        assert_eq!(
+            wrapped,
+            RecordSnapshot {
+                cursor_a: 2,
+                cursor_b: 2,
+                wrapped: false,
+                derived_a: 0,
+                derived_b: 8,
+                record_to_caller_bytes: 0,
+                caller_to_record_bytes: 4,
+            }
+        );
 
         let mut full_ring = RING;
         let mut full = snap(0, 8, false);
@@ -771,9 +961,158 @@ mod tests {
         assert_eq!(full_report.requested_bytes, 8);
         assert_eq!(full_report.copied_bytes, 8);
         assert_eq!(full_report.status, SourceStatus::Success);
-        assert_eq!(full.cursor_a, 8);
-        assert_eq!(full.cursor_b, 8);
-        assert_eq!(full.caller_to_record_bytes, 8);
+        assert_eq!(
+            full,
+            RecordSnapshot {
+                cursor_a: 8,
+                cursor_b: 8,
+                wrapped: false,
+                derived_a: 0,
+                derived_b: 8,
+                record_to_caller_bytes: 0,
+                caller_to_record_bytes: 8,
+            }
+        );
+
+        // Source-confirmed wrapped contiguous non-end branch: capacity is
+        // included in derived_a, not derived_b.
+        let mut wrapped_contiguous_ring = RING;
+        let mut wrapped_contiguous = snap(4, 2, true);
+        let wrapped_contiguous_report = session
+            .transform_hd500x_caller_to_record(
+                &mut wrapped_contiguous,
+                &mut wrapped_contiguous_ring,
+                &[0xd7],
+                1,
+                1,
+            )
+            .unwrap();
+        assert_eq!(
+            wrapped_contiguous_report.segments,
+            [Some(Segment { offset: 4, len: 1 }), None]
+        );
+        assert_eq!(
+            wrapped_contiguous_ring,
+            [0x11, 0x22, 0x33, 0x44, 0xd7, 0x66, 0x77, 0x88]
+        );
+        assert_eq!(
+            wrapped_contiguous,
+            RecordSnapshot {
+                cursor_a: 5,
+                cursor_b: 2,
+                wrapped: true,
+                derived_a: 5,
+                derived_b: 3,
+                record_to_caller_bytes: 0,
+                caller_to_record_bytes: 1,
+            }
+        );
+
+        // A zero request in this same branch still refreshes the source's
+        // derived fields, even though it copies no bytes.
+        let mut wrapped_zero = snap(4, 2, true);
+        let wrapped_zero_report = session
+            .transform_hd500x_caller_to_record(&mut wrapped_zero, &mut full_ring, &[], 0, 1)
+            .unwrap();
+        assert_eq!(wrapped_zero_report.segments, [None, None]);
+        assert_eq!(
+            wrapped_zero,
+            RecordSnapshot {
+                cursor_a: 4,
+                cursor_b: 2,
+                wrapped: true,
+                derived_a: 6,
+                derived_b: 2,
+                record_to_caller_bytes: 0,
+                caller_to_record_bytes: 0,
+            }
+        );
+
+        let mut wrapped_zero_at_base = snap(0, 0, true);
+        let wrapped_zero_at_base_report = session
+            .transform_hd500x_caller_to_record(&mut wrapped_zero_at_base, &mut full_ring, &[], 0, 1)
+            .unwrap();
+        assert_eq!(wrapped_zero_at_base_report.segments, [None, None]);
+        assert_eq!(
+            wrapped_zero_at_base,
+            RecordSnapshot {
+                cursor_a: 0,
+                cursor_b: 0,
+                wrapped: true,
+                derived_a: 8,
+                derived_b: 0,
+                record_to_caller_bytes: 0,
+                caller_to_record_bytes: 0,
+            }
+        );
+
+        // Reaching capacity from a wrapped ring normalizes to base and takes
+        // the source's end/crossing (unwrapped-derived) formula.
+        let mut wrapped_end = snap(6, 2, true);
+        let mut wrapped_end_ring = RING;
+        let wrapped_end_report = session
+            .transform_hd500x_caller_to_record(
+                &mut wrapped_end,
+                &mut wrapped_end_ring,
+                &[0xe1, 0xe2],
+                2,
+                1,
+            )
+            .unwrap();
+        assert_eq!(
+            wrapped_end_report.segments,
+            [Some(Segment { offset: 6, len: 2 }), None]
+        );
+        assert_eq!(
+            wrapped_end_ring,
+            [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0xe1, 0xe2]
+        );
+        assert_eq!(
+            wrapped_end,
+            RecordSnapshot {
+                cursor_a: 0,
+                cursor_b: 2,
+                wrapped: false,
+                derived_a: 2,
+                derived_b: 6,
+                record_to_caller_bytes: 0,
+                caller_to_record_bytes: 2,
+            }
+        );
+
+        // An unwrapped writer that lands exactly at E keeps the cursor at E
+        // and uses the ordinary unwrapped formula.
+        let mut unwrapped_end = snap(5, 8, false);
+        let mut unwrapped_end_ring = RING;
+        let unwrapped_end_report = session
+            .transform_hd500x_caller_to_record(
+                &mut unwrapped_end,
+                &mut unwrapped_end_ring,
+                &[0xf1, 0xf2, 0xf3],
+                3,
+                1,
+            )
+            .unwrap();
+        assert_eq!(
+            unwrapped_end_report.segments,
+            [Some(Segment { offset: 5, len: 3 }), None]
+        );
+        assert_eq!(
+            unwrapped_end_ring,
+            [0x11, 0x22, 0x33, 0x44, 0x55, 0xf1, 0xf2, 0xf3]
+        );
+        assert_eq!(
+            unwrapped_end,
+            RecordSnapshot {
+                cursor_a: 8,
+                cursor_b: 8,
+                wrapped: false,
+                derived_a: 0,
+                derived_b: 8,
+                record_to_caller_bytes: 0,
+                caller_to_record_bytes: 3,
+            }
+        );
     }
 
     #[test]
