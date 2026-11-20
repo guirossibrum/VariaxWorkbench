@@ -126,7 +126,9 @@ impl StaticPlan {
         evidence: &OfflineProviderEvidence,
     ) -> Result<ProviderAssessment, EvidenceError> {
         validate_evidence_lengths(evidence)?;
-        if let Some(state) = assess_one(evidence.alternate_setting, Stage::AlternateSetting, None) {
+        if let Some(state) =
+            assess_one(evidence.alternate_setting, Stage::AlternateSetting, None, 0)
+        {
             return Ok(state);
         }
         if let Some(state) = assess_ordered(&evidence.ordered_pipe_lookups, 2, Stage::PipeLookup) {
@@ -274,12 +276,10 @@ fn assess_one(
     result: OfflineResult,
     stage: Stage,
     ordinal: Option<usize>,
+    completed: usize,
 ) -> Option<ProviderAssessment> {
     match result {
-        OfflineResult::Pending => Some(ProviderAssessment::Pending {
-            stage,
-            completed: 0,
-        }),
+        OfflineResult::Pending => Some(ProviderAssessment::Pending { stage, completed }),
         OfflineResult::SyntheticSuccess => None,
         OfflineResult::SyntheticFailure => {
             Some(ProviderAssessment::SyntheticFailure { stage, ordinal })
@@ -293,7 +293,7 @@ fn assess_ordered(
     stage: Stage,
 ) -> Option<ProviderAssessment> {
     for (ordinal, result) in results.iter().copied().enumerate() {
-        if let Some(assessment) = assess_one(result, stage, Some(ordinal)) {
+        if let Some(assessment) = assess_one(result, stage, Some(ordinal), ordinal) {
             return Some(assessment);
         }
     }
@@ -343,8 +343,10 @@ mod tests {
     }
 
     #[test]
-    fn every_source_declared_sample_rate_is_accepted_and_neighbors_are_rejected() {
-        for rate in ALLOWED_SAMPLE_RATES_HZ {
+    fn independent_source_declared_sample_rate_set_is_accepted_and_neighbors_rejected() {
+        let independently_declared_rates = [44_100, 48_000, 88_200, 96_000];
+        assert_eq!(ALLOWED_SAMPLE_RATES_HZ, independently_declared_rates);
+        for rate in independently_declared_rates {
             assert_eq!(
                 validate(Request {
                     sample_rate_hz: rate,
@@ -545,6 +547,109 @@ mod tests {
             Ok(ProviderAssessment::Pending {
                 stage: Stage::TransferPreparation,
                 completed: 0
+            })
+        );
+    }
+
+    #[test]
+    fn explicit_pending_preserves_prefix_and_matches_omitted_status_in_ordered_stages() {
+        let plan = validate(synthetic_request()).unwrap();
+        let pending_pipe = |pipe_results: Vec<OfflineResult>| OfflineProviderEvidence {
+            alternate_setting: OfflineResult::SyntheticSuccess,
+            ordered_pipe_lookups: pipe_results,
+            ordered_transfer_preparations: vec![OfflineResult::SyntheticFailure; 2],
+        };
+        let omitted_pipe_pending = pending_pipe(vec![OfflineResult::SyntheticSuccess]);
+        let explicit_second_pipe_pending = pending_pipe(vec![
+            OfflineResult::SyntheticSuccess,
+            OfflineResult::Pending,
+        ]);
+        let expected_pipe_pending = Ok(ProviderAssessment::Pending {
+            stage: Stage::PipeLookup,
+            completed: 1,
+        });
+        assert_eq!(
+            plan.assess_offline_provider(&omitted_pipe_pending),
+            expected_pipe_pending
+        );
+        assert_eq!(
+            plan.assess_offline_provider(&explicit_second_pipe_pending),
+            expected_pipe_pending
+        );
+        assert_eq!(
+            plan.assess_offline_provider(&explicit_second_pipe_pending),
+            expected_pipe_pending,
+            "repeated assessments are stateless"
+        );
+
+        let explicit_first_pipe_pending = pending_pipe(vec![
+            OfflineResult::Pending,
+            OfflineResult::SyntheticSuccess,
+        ]);
+        assert_eq!(
+            plan.assess_offline_provider(&explicit_first_pipe_pending),
+            Ok(ProviderAssessment::Pending {
+                stage: Stage::PipeLookup,
+                completed: 0,
+            })
+        );
+
+        let pending_transfer = |transfer_results: Vec<OfflineResult>| OfflineProviderEvidence {
+            alternate_setting: OfflineResult::SyntheticSuccess,
+            ordered_pipe_lookups: vec![OfflineResult::SyntheticSuccess; 2],
+            ordered_transfer_preparations: transfer_results,
+        };
+        let omitted_transfer_pending = pending_transfer(vec![OfflineResult::SyntheticSuccess]);
+        let explicit_second_transfer_pending = pending_transfer(vec![
+            OfflineResult::SyntheticSuccess,
+            OfflineResult::Pending,
+        ]);
+        let expected_transfer_pending = Ok(ProviderAssessment::Pending {
+            stage: Stage::TransferPreparation,
+            completed: 1,
+        });
+        assert_eq!(
+            plan.assess_offline_provider(&omitted_transfer_pending),
+            expected_transfer_pending
+        );
+        assert_eq!(
+            plan.assess_offline_provider(&explicit_second_transfer_pending),
+            expected_transfer_pending
+        );
+        let explicit_first_transfer_pending = pending_transfer(vec![
+            OfflineResult::Pending,
+            OfflineResult::SyntheticSuccess,
+        ]);
+        assert_eq!(
+            plan.assess_offline_provider(&explicit_first_transfer_pending),
+            Ok(ProviderAssessment::Pending {
+                stage: Stage::TransferPreparation,
+                completed: 0,
+            })
+        );
+
+        let mut earlier_stage_pending = explicit_second_transfer_pending.clone();
+        earlier_stage_pending.ordered_pipe_lookups[1] = OfflineResult::Pending;
+        assert_eq!(
+            plan.assess_offline_provider(&earlier_stage_pending),
+            expected_pipe_pending
+        );
+        earlier_stage_pending.alternate_setting = OfflineResult::Pending;
+        assert_eq!(
+            plan.assess_offline_provider(&earlier_stage_pending),
+            Ok(ProviderAssessment::Pending {
+                stage: Stage::AlternateSetting,
+                completed: 0,
+            })
+        );
+
+        let mut earlier_failure = explicit_second_transfer_pending;
+        earlier_failure.ordered_pipe_lookups[1] = OfflineResult::SyntheticFailure;
+        assert_eq!(
+            plan.assess_offline_provider(&earlier_failure),
+            Ok(ProviderAssessment::SyntheticFailure {
+                stage: Stage::PipeLookup,
+                ordinal: Some(1),
             })
         );
     }
