@@ -292,6 +292,10 @@ impl ValidatedPlan {
         self.instrument
     }
 
+    pub(crate) fn signal_route(&self) -> RecordRoute {
+        self.signal_route
+    }
+
     /// Rechecks the plan before every session; private fields prevent callers
     /// from changing identity, timing, format, map, or provenance in between.
     pub fn revalidate(&self) -> Result<(), CaptureError> {
@@ -667,6 +671,96 @@ impl CaptureSession {
         Ok(())
     }
 
+    /// Atomically stages one already source-interleaved chunk and optional
+    /// caller-supplied software timing. Only the bounded clock tracker and the
+    /// current chunk are staged; accumulated Take PCM is never cloned. Unlike
+    /// `callback_chunk`, rejected backpressure does not append a dropout event.
+    pub(crate) fn callback_chunk_atomic(
+        &mut self,
+        generation: u64,
+        bytes: &[u8],
+        software_clock: Option<(u64, u64, u64)>,
+    ) -> Result<Option<ClockMeasurement>, CaptureError> {
+        self.check_callback_admission(generation)?;
+        if bytes.is_empty() {
+            return Err(CaptureError::EmptyChunk);
+        }
+        let sample_bytes = match self.plan.contract.format {
+            SampleFormat::S16Le => 2,
+            SampleFormat::S24ThreeByteLe => 3,
+            SampleFormat::Float32 => return Err(CaptureError::InvalidFormat),
+        };
+        let input_frame_bytes = usize::from(self.plan.contract.channels)
+            .checked_mul(sample_bytes)
+            .ok_or(CaptureError::MisalignedChunk)?;
+        if bytes.len() > super::STREAM_CHUNK_BYTES_MAX
+            || !bytes.len().is_multiple_of(input_frame_bytes)
+        {
+            return Err(CaptureError::MisalignedChunk);
+        }
+
+        let frames = bytes.len() / input_frame_bytes;
+        let output_frame_bytes = self.output_frame_bytes();
+        let output_bytes = frames
+            .checked_mul(output_frame_bytes)
+            .ok_or(CaptureError::MisalignedChunk)?;
+        let mut stereo = Vec::with_capacity(output_bytes);
+        for frame in bytes.chunks_exact(input_frame_bytes) {
+            for channel in [
+                self.plan.contract.channel_map.left,
+                self.plan.contract.channel_map.right,
+            ] {
+                let start = usize::from(channel) * sample_bytes;
+                stereo.extend_from_slice(&frame[start..start + sample_bytes]);
+            }
+        }
+
+        let staged_clock =
+            if let Some((cumulative_frames, monotonic_ns, dropout_frames)) = software_clock {
+                let mut clock = self.clock.clone();
+                let measurement = clock
+                    .observe(cumulative_frames, monotonic_ns, dropout_frames)
+                    .map_err(CaptureError::Clock)?;
+                Some((clock, measurement))
+            } else {
+                None
+            };
+
+        let used_bytes = u64::try_from(self.take.pcm().len())
+            .ok()
+            .and_then(|take| take.checked_add(self.queued_bytes as u64))
+            .and_then(|queued| {
+                self.queued_gap_frames
+                    .checked_mul(output_frame_bytes as u64)
+                    .and_then(|gaps| queued.checked_add(gaps))
+            })
+            .ok_or(CaptureError::Take(TakeError::CapExceeded))?;
+        let next_queued_bytes = self
+            .queued_bytes
+            .checked_add(stereo.len())
+            .ok_or(CaptureError::QueueFull)?;
+        if next_queued_bytes > QUEUE_CAPACITY_BYTES {
+            return Err(CaptureError::QueueFull);
+        }
+        if used_bytes
+            .checked_add(stereo.len() as u64)
+            .is_none_or(|used| used > self.plan.max_take_bytes)
+        {
+            return Err(CaptureError::Take(TakeError::CapExceeded));
+        }
+        if self.queue.len() >= MAX_QUEUE_EVENTS {
+            return Err(CaptureError::QueueFull);
+        }
+
+        self.queued_bytes = next_queued_bytes;
+        self.queue.push_back(QueueEvent::Audio(stereo));
+        let measurement = staged_clock.map(|(clock, measurement)| {
+            self.clock = clock;
+            measurement
+        });
+        Ok(measurement)
+    }
+
     /// Queues an adapter-reported discontinuity in source order. The event is
     /// bounded by the same take budget as audio and becomes silence only when
     /// the consumer drains it into the Take.
@@ -854,7 +948,7 @@ impl CaptureSession {
             .collect())
     }
 
-    fn check_owner(&self) -> Result<(), CaptureError> {
+    pub(crate) fn check_owner(&self) -> Result<(), CaptureError> {
         if std::thread::current().id() != self.owner {
             Err(CaptureError::WrongThread)
         } else {

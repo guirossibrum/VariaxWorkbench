@@ -4,6 +4,7 @@
 //! notifications into the common `CaptureSession` queue. It does not declare
 //! or emulate a native ABI, load vendor code, or admit a physical interface.
 
+use crate::pod_audio::RecordRoute;
 use crate::recording::capture::{
     CaptureError, CaptureSession, ChannelMap, InterfaceIdentity, MAX_CHANNELS, PendingCaptureEvent,
     QUEUE_CAPACITY_BYTES, ValidatedPlan,
@@ -12,6 +13,9 @@ use crate::recording::clock::ClockMeasurement;
 use crate::recording::{Phase, Take};
 
 const MAX_BUFFER_BYTES: usize = QUEUE_CAPACITY_BYTES;
+/// At most one source-order chunk plus one mapped stereo chunk coexist while
+/// delivering a callback. This payload bound does not include pre-owned buffers.
+pub const MAX_CALLBACK_STAGED_PCM_BYTES: usize = crate::recording::STREAM_CHUNK_BYTES_MAX * 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChannelDirection {
@@ -88,6 +92,7 @@ pub enum OfflineAsioError {
     NotificationModeMismatch,
     TimeUnavailable,
     InvalidTimeProvenance,
+    UnsupportedRoute(RecordRoute),
     NotRunning,
     Disposed,
 }
@@ -137,6 +142,12 @@ impl OfflineAsioAdapter {
             || contract.clock.1 != 1
         {
             return Err(OfflineAsioError::NotSoftwareSynthetic);
+        }
+        if matches!(
+            plan.signal_route(),
+            RecordRoute::SendCleanGuitarReampPlayback | RecordRoute::SendReampPlayback
+        ) {
+            return Err(OfflineAsioError::UnsupportedRoute(plan.signal_route()));
         }
         if descriptors.len() != usize::from(contract.channels) || halves.len() != descriptors.len()
         {
@@ -188,6 +199,12 @@ impl OfflineAsioAdapter {
                 return Err(OfflineAsioError::MissingChannel(channel));
             }
         }
+        let source_half_bytes = expected_len
+            .and_then(|bytes| bytes.checked_mul(usize::from(contract.channels)))
+            .ok_or(OfflineAsioError::BufferTooLarge)?;
+        if source_half_bytes > crate::recording::STREAM_CHUNK_BYTES_MAX {
+            return Err(OfflineAsioError::BufferTooLarge);
+        }
         validate_map(contract.channel_map, contract.channels)?;
         let mode = notification_mode(selector_response);
         let available = match mode {
@@ -209,6 +226,7 @@ impl OfflineAsioAdapter {
     }
 
     pub fn start(&mut self) -> Result<(), OfflineAsioError> {
+        self.session.check_owner()?;
         match self.lifecycle {
             Lifecycle::Prepared => {
                 self.lifecycle = Lifecycle::Running;
@@ -225,7 +243,9 @@ impl OfflineAsioAdapter {
         notification: SimulatedNotification,
     ) -> Result<Option<ClockMeasurement>, OfflineAsioError> {
         let result = self.deliver_inner(generation, notification);
-        if let Err(error) = &result {
+        if let Err(error) = &result
+            && *error != OfflineAsioError::Capture(CaptureError::WrongThread)
+        {
             self.retained_error.get_or_insert_with(|| error.clone());
         }
         result
@@ -267,32 +287,26 @@ impl OfflineAsioAdapter {
         }
         self.session.check_callback_admission(generation)?;
         let bytes = self.channel_chunk(half)?;
-        // Run both timing and queue mutation on a cloned session so malformed,
-        // stale, discontinuous, or backpressured delivery cannot partially
-        // change the accepted queue or clock state.
-        let mut candidate = self.session.clone();
-        let measurement = if let Some(time) = observation {
-            Some(candidate.observe_software_clock(
-                generation,
+        let software_clock = observation.map(|time| {
+            (
                 time.cumulative_frames,
                 time.monotonic_ns,
                 time.dropout_frames,
-            )?)
-        } else {
-            None
-        };
-        candidate.callback_chunk(generation, &bytes)?;
-        self.session = candidate;
-        Ok(measurement)
+            )
+        });
+        Ok(self
+            .session
+            .callback_chunk_atomic(generation, &bytes, software_clock)?)
     }
 
     fn channel_chunk(&self, half: u8) -> Result<Vec<u8>, OfflineAsioError> {
-        let map = self.session.plan().channel_map;
-        let left = self.channel(map.left, half)?;
-        let right = self.channel(map.right, half)?;
-        let frames = left.len() / 2;
+        let channels = self.session.plan().channels;
+        let frames = self.channel(0, half)?.len() / 2;
+        let frame_bytes = usize::from(channels)
+            .checked_mul(2)
+            .ok_or(OfflineAsioError::BufferTooLarge)?;
         let out_len = frames
-            .checked_mul(4)
+            .checked_mul(frame_bytes)
             .ok_or(OfflineAsioError::BufferTooLarge)?;
         if out_len > crate::recording::STREAM_CHUNK_BYTES_MAX {
             return Err(OfflineAsioError::BufferTooLarge);
@@ -300,8 +314,10 @@ impl OfflineAsioAdapter {
         let mut output = Vec::with_capacity(out_len);
         for frame in 0..frames {
             let sample = frame * 2;
-            output.extend_from_slice(&left[sample..sample + 2]);
-            output.extend_from_slice(&right[sample..sample + 2]);
+            for channel in 0..channels {
+                let source = self.channel(channel, half)?;
+                output.extend_from_slice(&source[sample..sample + 2]);
+            }
         }
         Ok(output)
     }
@@ -319,8 +335,14 @@ impl OfflineAsioAdapter {
     }
 
     pub fn stop(&mut self) -> Result<(), CaptureError> {
+        self.session.check_owner()?;
+        if self.lifecycle == Lifecycle::Disposed {
+            return Err(CaptureError::Stopped);
+        }
         let result = self.session.stop();
-        self.lifecycle = Lifecycle::Stopped;
+        if self.session.take().phase() != Phase::Recording {
+            self.lifecycle = Lifecycle::Stopped;
+        }
         if let Err(error) = &result {
             self.retained_error
                 .get_or_insert_with(|| OfflineAsioError::Capture(error.clone()));
@@ -329,8 +351,14 @@ impl OfflineAsioAdapter {
     }
 
     pub fn cancel(&mut self) -> Result<(), CaptureError> {
+        self.session.check_owner()?;
+        if self.lifecycle == Lifecycle::Disposed {
+            return Err(CaptureError::Stopped);
+        }
         let result = self.session.cancel();
-        self.lifecycle = Lifecycle::Stopped;
+        if result.is_ok() {
+            self.lifecycle = Lifecycle::Stopped;
+        }
         if let Err(error) = &result {
             self.retained_error
                 .get_or_insert_with(|| OfflineAsioError::Capture(error.clone()));
@@ -339,8 +367,14 @@ impl OfflineAsioAdapter {
     }
 
     pub fn disconnect(&mut self) -> Result<(), CaptureError> {
+        self.session.check_owner()?;
+        if self.lifecycle == Lifecycle::Disposed {
+            return Err(CaptureError::Stopped);
+        }
         let result = self.session.disconnect();
-        self.lifecycle = Lifecycle::Disconnected;
+        if self.session.take().phase() != Phase::Recording {
+            self.lifecycle = Lifecycle::Disconnected;
+        }
         if let Err(error) = &result {
             self.retained_error
                 .get_or_insert_with(|| OfflineAsioError::Capture(error.clone()));
@@ -349,6 +383,7 @@ impl OfflineAsioAdapter {
     }
 
     pub fn dispose(&mut self) -> Result<(), OfflineAsioError> {
+        self.session.check_owner()?;
         if self.lifecycle == Lifecycle::Disposed {
             return Ok(());
         }
@@ -357,6 +392,17 @@ impl OfflineAsioAdapter {
         {
             self.retained_error
                 .get_or_insert(OfflineAsioError::Capture(error));
+            if self.session.take().phase() == Phase::Recording {
+                return Err(self
+                    .retained_error
+                    .clone()
+                    .unwrap_or(OfflineAsioError::NotRunning));
+            }
+            self.lifecycle = Lifecycle::Disposed;
+            return Err(self
+                .retained_error
+                .clone()
+                .unwrap_or(OfflineAsioError::NotRunning));
         }
         self.lifecycle = Lifecycle::Disposed;
         Ok(())
@@ -416,19 +462,32 @@ mod tests {
     }
 
     fn plan() -> ValidatedPlan {
-        ValidatedPlan::software_synthetic(
-            48_000,
+        plan_with(
             2,
             ChannelMap { left: 0, right: 1 },
             RecordRoute::SendProcessedGuitar,
-            4096,
         )
-        .unwrap()
+    }
+
+    fn plan_with(channels: u8, map: ChannelMap, route: RecordRoute) -> ValidatedPlan {
+        ValidatedPlan::software_synthetic(48_000, channels, map, route, 4096).unwrap()
     }
 
     fn prepare(response: Option<i32>) -> OfflineAsioAdapter {
-        OfflineAsioAdapter::prepare(plan(), descriptors(), halves(), response, true, true, 7)
-            .unwrap()
+        prepare_generation(response, 7)
+    }
+
+    fn prepare_generation(response: Option<i32>, generation: u64) -> OfflineAsioAdapter {
+        OfflineAsioAdapter::prepare(
+            plan(),
+            descriptors(),
+            halves(),
+            response,
+            true,
+            true,
+            generation,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -494,6 +553,123 @@ mod tests {
             adapter.deliver(7, SimulatedNotification::Ordinary { half: 0 }),
             Err(OfflineAsioError::NotRunning)
         );
+    }
+
+    #[test]
+    fn reversed_stereo_and_shuffled_descriptors_map_once_through_take_and_wav() {
+        let descriptors = vec![
+            ChannelDescriptor {
+                direction: ChannelDirection::Input,
+                channel: 1,
+            },
+            ChannelDescriptor {
+                direction: ChannelDirection::Input,
+                channel: 0,
+            },
+        ];
+        let buffers = vec![
+            [vec![0x22, 0x22, 0x44, 0x44], vec![0x66, 0x66, 0x88, 0x88]],
+            [vec![0x11, 0x11, 0x33, 0x33], vec![0x55, 0x55, 0x77, 0x77]],
+        ];
+        let mut adapter = OfflineAsioAdapter::prepare(
+            plan_with(
+                2,
+                ChannelMap { left: 1, right: 0 },
+                RecordRoute::SendCleanGuitar,
+            ),
+            descriptors,
+            buffers,
+            None,
+            true,
+            true,
+            18,
+        )
+        .unwrap();
+        adapter.start().unwrap();
+        adapter
+            .deliver(18, SimulatedNotification::Ordinary { half: 0 })
+            .unwrap();
+        adapter.drain().unwrap();
+        assert_eq!(
+            adapter.take().pcm(),
+            &[0x22, 0x22, 0x11, 0x11, 0x44, 0x44, 0x33, 0x33]
+        );
+        adapter.stop().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let wav_path = directory.path().join("reversed.wav");
+        adapter.take().save(&wav_path).unwrap();
+        let wav = std::fs::read(wav_path).unwrap();
+        assert_eq!(
+            &wav[44..],
+            &[0x22, 0x22, 0x11, 0x11, 0x44, 0x44, 0x33, 0x33]
+        );
+    }
+
+    #[test]
+    fn multichannel_source_order_selects_nontrivial_map_exactly_once() {
+        let descriptors = vec![
+            ChannelDescriptor {
+                direction: ChannelDirection::Input,
+                channel: 2,
+            },
+            ChannelDescriptor {
+                direction: ChannelDirection::Input,
+                channel: 0,
+            },
+            ChannelDescriptor {
+                direction: ChannelDirection::Input,
+                channel: 1,
+            },
+        ];
+        let buffers = vec![
+            [vec![21, 0, 22, 0], vec![31, 0, 32, 0]],
+            [vec![1, 0, 2, 0], vec![11, 0, 12, 0]],
+            [vec![101, 0, 102, 0], vec![111, 0, 112, 0]],
+        ];
+        let mut adapter = OfflineAsioAdapter::prepare(
+            plan_with(
+                3,
+                ChannelMap { left: 2, right: 0 },
+                RecordRoute::SendProcessedGuitar,
+            ),
+            descriptors,
+            buffers,
+            None,
+            true,
+            true,
+            19,
+        )
+        .unwrap();
+        adapter.start().unwrap();
+        adapter
+            .deliver(19, SimulatedNotification::Ordinary { half: 0 })
+            .unwrap();
+        adapter.drain().unwrap();
+        assert_eq!(adapter.take().pcm(), &[21, 0, 1, 0, 22, 0, 2, 0]);
+        adapter.stop().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let wav_path = directory.path().join("multichannel.wav");
+        adapter.take().save(&wav_path).unwrap();
+        let wav = std::fs::read(wav_path).unwrap();
+        assert_eq!(&wav[44..], &[21, 0, 1, 0, 22, 0, 2, 0]);
+    }
+
+    #[test]
+    fn callback_staging_bound_does_not_grow_with_drained_take() {
+        let mut adapter = prepare(None);
+        adapter.start().unwrap();
+        for _ in 0..256 {
+            adapter
+                .deliver(7, SimulatedNotification::Ordinary { half: 0 })
+                .unwrap();
+            adapter.drain().unwrap();
+        }
+        assert!(adapter.take().pcm().len() > 1024);
+        assert_eq!(
+            MAX_CALLBACK_STAGED_PCM_BYTES,
+            crate::recording::STREAM_CHUNK_BYTES_MAX * 2
+        );
+        adapter.stop().unwrap();
     }
 
     #[test]
@@ -576,6 +752,27 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+        let accepted_clock = adapter.session().clock_measurement();
+        assert_eq!(adapter.session().pending_events(), 2);
+        assert_eq!(
+            adapter.deliver(
+                7,
+                SimulatedNotification::TimeInfo {
+                    half: 0,
+                    observation: Some(SoftwareTimeObservation {
+                        cumulative_frames: 1,
+                        monotonic_ns: 100_000,
+                        provenance: "caller synthetic monotonic clock",
+                        dropout_frames: 0,
+                    }),
+                }
+            ),
+            Err(OfflineAsioError::Capture(CaptureError::Clock(
+                crate::recording::clock::ClockError::NonMonotonicFrames
+            )))
+        );
+        assert_eq!(adapter.session().pending_events(), 2);
+        assert_eq!(adapter.session().clock_measurement(), accepted_clock);
         adapter.drain().unwrap();
         assert_eq!(adapter.take().pcm().len(), 16);
         assert_eq!(adapter.session().plan().clock, (48_000, 1));
@@ -595,6 +792,23 @@ mod tests {
             OfflineAsioAdapter::prepare(plan(), output, halves(), None, true, true, 9),
             Err(OfflineAsioError::OutputChannel(1))
         );
+        for route in [
+            RecordRoute::SendCleanGuitarReampPlayback,
+            RecordRoute::SendReampPlayback,
+        ] {
+            assert_eq!(
+                OfflineAsioAdapter::prepare(
+                    plan_with(2, ChannelMap { left: 0, right: 1 }, route),
+                    descriptors(),
+                    halves(),
+                    None,
+                    true,
+                    true,
+                    9,
+                ),
+                Err(OfflineAsioError::UnsupportedRoute(route))
+            );
+        }
         let mut missing = descriptors();
         missing[1].channel = 2;
         assert_eq!(
@@ -606,6 +820,28 @@ mod tests {
         assert_eq!(
             OfflineAsioAdapter::prepare(plan(), descriptors(), malformed, None, true, true, 9),
             Err(OfflineAsioError::InvalidBufferLength)
+        );
+        let mut partial_sample = halves();
+        partial_sample[0][0].push(0);
+        assert_eq!(
+            OfflineAsioAdapter::prepare(plan(), descriptors(), partial_sample, None, true, true, 9,),
+            Err(OfflineAsioError::InvalidBufferLength)
+        );
+        let long_half = vec![0; crate::recording::STREAM_CHUNK_BYTES_MAX];
+        assert_eq!(
+            OfflineAsioAdapter::prepare(
+                plan(),
+                descriptors(),
+                vec![
+                    [long_half.clone(), long_half.clone()],
+                    [long_half.clone(), long_half]
+                ],
+                None,
+                true,
+                true,
+                9,
+            ),
+            Err(OfflineAsioError::BufferTooLarge)
         );
     }
 
@@ -683,6 +919,13 @@ mod tests {
             adapter.retained_error(),
             Some(&OfflineAsioError::Capture(CaptureError::QueueFull))
         );
+        adapter.drain().unwrap();
+        assert_eq!(adapter.session().pending_events(), 0);
+        assert_eq!(adapter.take().pcm().len(), QUEUE_CAPACITY_BYTES);
+        adapter
+            .deliver(12, SimulatedNotification::Ordinary { half: 1 })
+            .unwrap();
+        assert_eq!(adapter.session().queued_bytes(), 8192);
     }
 
     #[test]
@@ -755,11 +998,12 @@ mod tests {
     }
 
     #[test]
-    fn wrong_owner_cannot_publish_callback_data() {
-        let mut adapter = prepare(None);
-        adapter.start().unwrap();
-        let result = std::thread::spawn(move || {
-            adapter.deliver(7, SimulatedNotification::Ordinary { half: 0 })
+    fn wrong_owner_lifecycle_attempts_preserve_state_and_accepted_data() {
+        let adapter = prepare(None);
+        let (result, lifecycle, mut adapter) = std::thread::spawn(move || {
+            let mut adapter = adapter;
+            let result = adapter.start();
+            (result, adapter.lifecycle(), adapter)
         })
         .join()
         .unwrap();
@@ -767,5 +1011,110 @@ mod tests {
             result,
             Err(OfflineAsioError::Capture(CaptureError::WrongThread))
         );
+        assert_eq!(lifecycle, Lifecycle::Prepared);
+        assert_eq!(adapter.lifecycle(), Lifecycle::Prepared);
+        adapter.start().unwrap();
+        adapter
+            .deliver(7, SimulatedNotification::Ordinary { half: 0 })
+            .unwrap();
+
+        let (attempts, lifecycle, retained_error, mut adapter) = std::thread::spawn(move || {
+            let mut adapter = adapter;
+            let attempts = (
+                adapter.start(),
+                adapter.stop(),
+                adapter.cancel(),
+                adapter.disconnect(),
+                adapter.dispose(),
+                adapter.deliver(7, SimulatedNotification::Ordinary { half: 1 }),
+            );
+            (
+                attempts,
+                adapter.lifecycle(),
+                adapter.retained_error().cloned(),
+                adapter,
+            )
+        })
+        .join()
+        .unwrap();
+        assert_eq!(
+            attempts.0,
+            Err(OfflineAsioError::Capture(CaptureError::WrongThread))
+        );
+        assert_eq!(attempts.1, Err(CaptureError::WrongThread));
+        assert_eq!(attempts.2, Err(CaptureError::WrongThread));
+        assert_eq!(attempts.3, Err(CaptureError::WrongThread));
+        assert_eq!(
+            attempts.4,
+            Err(OfflineAsioError::Capture(CaptureError::WrongThread))
+        );
+        assert_eq!(
+            attempts.5,
+            Err(OfflineAsioError::Capture(CaptureError::WrongThread))
+        );
+        assert_eq!(lifecycle, Lifecycle::Running);
+        assert_eq!(adapter.lifecycle(), Lifecycle::Running);
+        assert_eq!(retained_error, None);
+        assert_eq!(adapter.session().pending_events(), 1);
+        adapter
+            .deliver(7, SimulatedNotification::Ordinary { half: 1 })
+            .unwrap();
+        adapter.stop().unwrap();
+        assert_eq!(
+            adapter.take().pcm(),
+            &[1, 0, 11, 0, 2, 0, 12, 0, 3, 0, 13, 0, 4, 0, 14, 0]
+        );
+    }
+
+    #[test]
+    fn cancellation_disconnect_dispose_and_fresh_generation_are_deterministic() {
+        let mut cancelled = prepare(None);
+        cancelled.start().unwrap();
+        cancelled
+            .deliver(7, SimulatedNotification::Ordinary { half: 0 })
+            .unwrap();
+        cancelled.cancel().unwrap();
+        cancelled.cancel().unwrap();
+        assert_eq!(cancelled.lifecycle(), Lifecycle::Stopped);
+        assert!(cancelled.take().pcm().is_empty());
+
+        let mut disconnected = prepare(None);
+        disconnected.start().unwrap();
+        disconnected
+            .deliver(7, SimulatedNotification::Ordinary { half: 0 })
+            .unwrap();
+        assert_eq!(disconnected.disconnect(), Err(CaptureError::Disconnected));
+        assert_eq!(disconnected.lifecycle(), Lifecycle::Disconnected);
+        assert_eq!(disconnected.take().pcm(), &[1, 0, 11, 0, 2, 0, 12, 0]);
+        assert_eq!(disconnected.disconnect(), Err(CaptureError::Disconnected));
+
+        let mut disposed = prepare(None);
+        disposed.start().unwrap();
+        disposed
+            .deliver(7, SimulatedNotification::Ordinary { half: 0 })
+            .unwrap();
+        disposed.dispose().unwrap();
+        disposed.dispose().unwrap();
+        assert_eq!(disposed.lifecycle(), Lifecycle::Disposed);
+        assert_eq!(
+            disposed.deliver(7, SimulatedNotification::Ordinary { half: 1 }),
+            Err(OfflineAsioError::Disposed)
+        );
+
+        let mut old = prepare(None);
+        old.start().unwrap();
+        old.stop().unwrap();
+        let mut restarted = prepare_generation(None, 8);
+        restarted.start().unwrap();
+        assert_eq!(
+            restarted.deliver(7, SimulatedNotification::Ordinary { half: 0 }),
+            Err(OfflineAsioError::Capture(CaptureError::StaleGeneration))
+        );
+        assert_eq!(restarted.session().pending_events(), 0);
+        restarted
+            .deliver(8, SimulatedNotification::Ordinary { half: 0 })
+            .unwrap();
+        restarted.stop().unwrap();
+        assert_eq!(restarted.take().pcm(), &[1, 0, 11, 0, 2, 0, 12, 0]);
     }
 }
