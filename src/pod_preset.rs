@@ -540,6 +540,8 @@ const HD_TYPE1_THIRD_KEY: u32 = 0x3f10_0003;
 const HD_TYPE1_TREBLE_KEY: u32 = 0x3f10_0004;
 const HD_TYPE1_OUTPUT_KEY: u32 = 0x3f10_0005;
 const HD_VINTAGE_PRE_MODEL_ID: u32 = 0x020c_000e;
+const HD_NOISE_GATE_MODEL_ID: u32 = 0x0200_0011;
+const HD_NOISE_GATE_DEFAULT_KEYS: [u32; 2] = [0x3f10_0001, 0x3f10_0002];
 const HD_VINTAGE_PRE_DEFAULT_KEYS: [u32; 5] = [
     0x3f10_0002,
     0x3f10_0003,
@@ -3297,7 +3299,7 @@ impl OpaqueH5epPreset {
         self.replace_octave_fuzz_with_default_prefix(
             effect_slot,
             HD_VINTAGE_PRE_MODEL_ID,
-            HD_VINTAGE_PRE_DEFAULT_KEYS,
+            &HD_VINTAGE_PRE_DEFAULT_KEYS,
             "replacement",
         )
     }
@@ -3311,7 +3313,7 @@ impl OpaqueH5epPreset {
         self.replace_octave_fuzz_with_default_prefix(
             effect_slot,
             HD_SCREAMER_MODEL_ID,
-            HD_SCREAMER_DEFAULT_KEYS,
+            &HD_SCREAMER_DEFAULT_KEYS,
             "Screamer",
         )
     }
@@ -3325,8 +3327,22 @@ impl OpaqueH5epPreset {
         self.replace_octave_fuzz_with_default_prefix(
             effect_slot,
             HD_SUB_OCTAVE_FUZZ_MODEL_ID,
-            HD_SUB_OCTAVE_FUZZ_DEFAULT_KEYS,
+            &HD_SUB_OCTAVE_FUZZ_DEFAULT_KEYS,
             "Sub Octave Fuzz",
+        )
+    }
+
+    /// Replaces one existing Octave Fuzz with the two source-derived Noise
+    /// Gate default rows. This remains a typed standalone file operation.
+    pub fn replace_octave_fuzz_with_noise_gate_defaults(
+        &mut self,
+        effect_slot: HdFxSlot,
+    ) -> Result<(), ToneError> {
+        self.replace_octave_fuzz_with_default_prefix(
+            effect_slot,
+            HD_NOISE_GATE_MODEL_ID,
+            &HD_NOISE_GATE_DEFAULT_KEYS,
+            "Noise Gate",
         )
     }
 
@@ -3340,7 +3356,7 @@ impl OpaqueH5epPreset {
         self.replace_octave_fuzz_with_default_prefix(
             effect_slot,
             target.model_id(),
-            HD_SCREAMER_DEFAULT_KEYS,
+            &HD_SCREAMER_DEFAULT_KEYS,
             target.label(),
         )
     }
@@ -3349,7 +3365,7 @@ impl OpaqueH5epPreset {
         &mut self,
         effect_slot: HdFxSlot,
         target_model_id: u32,
-        default_keys: [u32; 5],
+        default_keys: &[u32],
         target_label: &str,
     ) -> Result<(), ToneError> {
         let body = self.body_bytes();
@@ -3414,7 +3430,7 @@ impl OpaqueH5epPreset {
         let mut candidate = self.bytes.clone();
         let file_block = H5EP_HEADER_BYTES + block;
         candidate[file_block..file_block + 4].copy_from_slice(&target_model_id.to_be_bytes());
-        for (row, key) in default_keys.into_iter().enumerate() {
+        for (row, key) in default_keys.iter().copied().enumerate() {
             let row_at = file_block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
             candidate[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
             candidate[row_at + 4..row_at + 8].copy_from_slice(&0u32.to_be_bytes());
@@ -4028,6 +4044,27 @@ impl HdEditorLibrary {
             }
             _ => Err(ToneError::format(
                 "Sub Octave Fuzz replacement requires an extracted H5EP preset",
+            )),
+        }
+    }
+
+    /// Applies the bounded Noise Gate defaults replacement to a standalone
+    /// H5EP item. Extract H5ES/H5EB children first; parents remain untouched.
+    pub fn replace_octave_fuzz_with_noise_gate_defaults(
+        &mut self,
+        index: usize,
+        effect_slot: HdFxSlot,
+    ) -> Result<(), ToneError> {
+        let entry = self
+            .files
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("file index is outside the HD editor library"))?;
+        match &mut entry.file {
+            PodPresetFile::H5ep(preset) => {
+                preset.replace_octave_fuzz_with_noise_gate_defaults(effect_slot)
+            }
+            _ => Err(ToneError::format(
+                "Noise Gate replacement requires an extracted H5EP preset",
             )),
         }
     }
@@ -5004,6 +5041,24 @@ mod tests {
             ]);
         }
         bytes
+    }
+
+    fn five_key_permutations() -> Vec<[u32; 5]> {
+        fn visit(values: &mut [u32; 5], start: usize, output: &mut Vec<[u32; 5]>) {
+            if start == values.len() {
+                output.push(*values);
+                return;
+            }
+            for index in start..values.len() {
+                values.swap(start, index);
+                visit(values, start + 1, output);
+                values.swap(start, index);
+            }
+        }
+        let mut values = HD_SCREAMER_DEFAULT_KEYS;
+        let mut output = Vec::with_capacity(120);
+        visit(&mut values, 0, &mut output);
+        output
     }
 
     fn synthetic_type9_h5ep(slot: usize, row: usize, enabled: u8, value: u32) -> Vec<u8> {
@@ -6095,6 +6150,256 @@ mod tests {
             assert_eq!(preset.effect_model_id(public_slot), Some(TARGET_ID));
             assert_eq!(preset.trailing_bytes(), b"private-tail");
         }
+        assert!(HdFxSlot::new(8).is_err());
+    }
+
+    #[test]
+    fn octave_fuzz_to_noise_gate_matches_exact_expected_bytes_across_slots_and_source_orders() {
+        const TARGET_ID: u32 = 0x0200_0011;
+        const TARGET_KEYS: [u32; 2] = [0x3f10_0001, 0x3f10_0002];
+        let permutations = five_key_permutations();
+        assert_eq!(permutations.len(), 120);
+
+        for slot in 0..HD_EFFECT_COUNT {
+            for enabled in [0, 1] {
+                for source_count in [5, 12] {
+                    for source_keys in &permutations {
+                        let mut original = synthetic_octave_fuzz_h5ep(slot, true);
+                        let block = H5EP_HEADER_BYTES
+                            + HD_EFFECT_BLOCK_OFFSET
+                            + slot * HD_EFFECT_BLOCK_STRIDE;
+                        original[block + 8] = enabled;
+                        original[block + 0x0f] = source_count;
+                        for (row, key) in source_keys.iter().copied().enumerate() {
+                            let row_at =
+                                block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
+                            original[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
+                        }
+
+                        // Independently authored expected write set: model, the
+                        // two ordered key/value rows, count and marker byte 0
+                        // for every row. Every other byte comes from source.
+                        let mut expected = original.clone();
+                        expected[block..block + 4].copy_from_slice(&TARGET_ID.to_be_bytes());
+                        for (row, key) in TARGET_KEYS.iter().copied().enumerate() {
+                            let row_at =
+                                block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
+                            expected[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
+                            expected[row_at + 4..row_at + 8].copy_from_slice(&0u32.to_be_bytes());
+                        }
+                        expected[block + 0x0f] = 2;
+                        for row in 0..HD_PARAMETER_ROW_COUNT {
+                            expected[block
+                                + HD_EFFECT_ROWS_OFFSET
+                                + row * HD_PARAMETER_ROW_STRIDE
+                                + 0x10] = 0;
+                        }
+
+                        let mut preset = OpaqueH5epPreset::parse(original).unwrap();
+                        preset
+                            .replace_octave_fuzz_with_noise_gate_defaults(
+                                HdFxSlot::new(slot).unwrap(),
+                            )
+                            .unwrap();
+                        assert_eq!(
+                            preset.as_bytes(),
+                            expected,
+                            "slot={slot}, enabled={enabled}, count={source_count}, keys={source_keys:?}"
+                        );
+                        assert_eq!(preset.effect_model_id(slot), Some(TARGET_ID));
+                        assert_eq!(preset.trailing_bytes(), b"private-tail");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn noise_gate_replacement_checks_each_marker_value_position_and_rejects_atomically() {
+        let source = synthetic_octave_fuzz_h5ep(0, true);
+        for row in 0..HD_PARAMETER_ROW_COUNT {
+            for marker in 0..=2 {
+                let mut bytes = source.clone();
+                let at = H5EP_HEADER_BYTES
+                    + HD_EFFECT_BLOCK_OFFSET
+                    + HD_EFFECT_ROWS_OFFSET
+                    + row * HD_PARAMETER_ROW_STRIDE
+                    + 0x10;
+                bytes[at] = marker;
+                let preset = OpaqueH5epPreset::parse(bytes.clone()).unwrap();
+                let mut expected = bytes;
+                let block = H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET;
+                expected[block..block + 4].copy_from_slice(&HD_NOISE_GATE_MODEL_ID.to_be_bytes());
+                for (index, key) in HD_NOISE_GATE_DEFAULT_KEYS.iter().copied().enumerate() {
+                    let row_at = block + HD_EFFECT_ROWS_OFFSET + index * HD_PARAMETER_ROW_STRIDE;
+                    expected[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
+                    expected[row_at + 4..row_at + 8].copy_from_slice(&0u32.to_be_bytes());
+                }
+                expected[block + 0x0f] = 2;
+                for index in 0..HD_PARAMETER_ROW_COUNT {
+                    expected
+                        [block + HD_EFFECT_ROWS_OFFSET + index * HD_PARAMETER_ROW_STRIDE + 0x10] =
+                        0;
+                }
+                let mut preset = preset;
+                preset
+                    .replace_octave_fuzz_with_noise_gate_defaults(HdFxSlot::new(0).unwrap())
+                    .unwrap();
+                assert_eq!(
+                    preset.as_bytes(),
+                    expected,
+                    "marker row={row}, value={marker}"
+                );
+            }
+
+            let mut bytes = source.clone();
+            let at = H5EP_HEADER_BYTES
+                + HD_EFFECT_BLOCK_OFFSET
+                + HD_EFFECT_ROWS_OFFSET
+                + row * HD_PARAMETER_ROW_STRIDE
+                + 0x10;
+            bytes[at] = 3;
+            let mut preset = OpaqueH5epPreset::parse(bytes.clone()).unwrap();
+            assert!(
+                preset
+                    .replace_octave_fuzz_with_noise_gate_defaults(HdFxSlot::new(0).unwrap())
+                    .is_err()
+            );
+            assert_eq!(preset.as_bytes(), bytes, "invalid marker row={row}");
+        }
+    }
+
+    #[test]
+    fn noise_gate_replacement_preserves_unknown_finite_and_nonfinite_suffix_words() {
+        let mut original = synthetic_octave_fuzz_h5ep(3, true);
+        original.extend_from_slice(&[0x3f, 0x80, 0, 0, 0x7f, 0xc0, 0, 1]);
+        let mut expected = original.clone();
+        let block = H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 3 * HD_EFFECT_BLOCK_STRIDE;
+        expected[block..block + 4].copy_from_slice(&HD_NOISE_GATE_MODEL_ID.to_be_bytes());
+        for (row, key) in HD_NOISE_GATE_DEFAULT_KEYS.iter().copied().enumerate() {
+            let row_at = block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE;
+            expected[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
+            expected[row_at + 4..row_at + 8].copy_from_slice(&0u32.to_be_bytes());
+        }
+        expected[block + 0x0f] = 2;
+        for row in 0..HD_PARAMETER_ROW_COUNT {
+            expected[block + HD_EFFECT_ROWS_OFFSET + row * HD_PARAMETER_ROW_STRIDE + 0x10] = 0;
+        }
+        let mut preset = OpaqueH5epPreset::parse(original).unwrap();
+        preset
+            .replace_octave_fuzz_with_noise_gate_defaults(HdFxSlot::new(3).unwrap())
+            .unwrap();
+        assert_eq!(preset.as_bytes(), expected);
+        assert!(
+            preset
+                .as_bytes()
+                .ends_with(&[0x3f, 0x80, 0, 0, 0x7f, 0xc0, 0, 1])
+        );
+    }
+
+    #[test]
+    fn noise_gate_library_operation_rejects_container_parents_unchanged() {
+        let mut library = HdEditorLibrary::default();
+        let index = library
+            .import_bytes(synthetic_h5es(b"parent-tail"))
+            .unwrap();
+        let before = library.file(index).unwrap().as_bytes().to_vec();
+        assert!(
+            library
+                .replace_octave_fuzz_with_noise_gate_defaults(index, HdFxSlot::new(0).unwrap())
+                .is_err()
+        );
+        assert_eq!(library.file(index).unwrap().as_bytes(), before);
+        assert!(!library.is_dirty(index));
+    }
+
+    #[test]
+    fn noise_gate_replacement_rejects_guard_failures_and_preserves_library_baseline() {
+        let source = synthetic_octave_fuzz_h5ep(0, true);
+        let mut cases = Vec::new();
+        for model in [
+            HD_NOISE_GATE_MODEL_ID,
+            HD_SCREAMER_MODEL_ID,
+            HD_SUB_OCTAVE_FUZZ_MODEL_ID,
+        ] {
+            let mut bytes = source.clone();
+            bytes[H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET
+                ..H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 4]
+                .copy_from_slice(&model.to_be_bytes());
+            cases.push(("wrong current model", bytes));
+        }
+        for validity in [0, 2] {
+            let mut bytes = source.clone();
+            bytes[H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 0x0b] = validity;
+            cases.push(("validity", bytes));
+        }
+        let mut bytes = source.clone();
+        bytes[H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 8] = 2;
+        cases.push(("enable", bytes));
+        for count in [4, 13] {
+            let mut bytes = source.clone();
+            bytes[H5EP_HEADER_BYTES + HD_EFFECT_BLOCK_OFFSET + 0x0f] = count;
+            cases.push(("count", bytes));
+        }
+        for row in 0..5 {
+            let mut bytes = source.clone();
+            let at = H5EP_HEADER_BYTES
+                + HD_EFFECT_BLOCK_OFFSET
+                + HD_EFFECT_ROWS_OFFSET
+                + row * HD_PARAMETER_ROW_STRIDE;
+            bytes[at..at + 4].copy_from_slice(&0xfeed_beefu32.to_be_bytes());
+            cases.push(("missing source key", bytes));
+        }
+        let mut bytes = source.clone();
+        let row1 = H5EP_HEADER_BYTES
+            + HD_EFFECT_BLOCK_OFFSET
+            + HD_EFFECT_ROWS_OFFSET
+            + HD_PARAMETER_ROW_STRIDE;
+        bytes[row1..row1 + 4].copy_from_slice(&HD_TYPE1_OUTPUT_KEY.to_be_bytes());
+        cases.push(("duplicate source key", bytes));
+
+        for (label, bytes) in cases {
+            let mut preset = OpaqueH5epPreset::parse(bytes.clone()).unwrap();
+            assert!(
+                preset
+                    .replace_octave_fuzz_with_noise_gate_defaults(HdFxSlot::new(0).unwrap())
+                    .is_err(),
+                "{label}"
+            );
+            assert_eq!(preset.as_bytes(), bytes, "{label}");
+            let mut library = HdEditorLibrary::default();
+            let index = library.import_bytes(bytes.clone()).unwrap();
+            assert!(
+                library
+                    .replace_octave_fuzz_with_noise_gate_defaults(index, HdFxSlot::new(0).unwrap())
+                    .is_err(),
+                "library {label}"
+            );
+            assert_eq!(
+                library.file(index).unwrap().as_bytes(),
+                bytes,
+                "library {label}"
+            );
+            assert!(!library.is_dirty(index), "library baseline {label}");
+        }
+
+        let mut library = HdEditorLibrary::default();
+        let index = library.import_bytes(source.clone()).unwrap();
+        library
+            .replace_octave_fuzz_with_screamer_defaults(index, HdFxSlot::new(0).unwrap())
+            .unwrap();
+        let dirty_before = library.file(index).unwrap().as_bytes().to_vec();
+        assert!(library.is_dirty(index));
+        assert!(
+            library
+                .replace_octave_fuzz_with_noise_gate_defaults(index, HdFxSlot::new(0).unwrap())
+                .is_err()
+        );
+        assert_eq!(library.file(index).unwrap().as_bytes(), dirty_before);
+        assert!(library.is_dirty(index));
+        library.revert_unsaved(index).unwrap();
+        assert_eq!(library.file(index).unwrap().as_bytes(), source);
+        assert!(!library.is_dirty(index));
         assert!(HdFxSlot::new(8).is_err());
     }
 

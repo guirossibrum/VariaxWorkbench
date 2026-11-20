@@ -302,6 +302,25 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
     assert_eq!(replaced_child.effect_model_id(0), Some(0x0205_0014));
     assert_eq!(library.file(parent.index).unwrap().as_bytes(), parent_bytes);
 
+    library.revert_unsaved(child.index).unwrap();
+    session
+        .replace_hd_octave_fuzz_with_noise_gate_defaults(
+            &mut library,
+            child.index,
+            crate::pod_preset::HdFxSlot::new(0).unwrap(),
+        )
+        .expect("bounded Noise Gate replacement through the shared session");
+    let crate::pod_preset::PodPresetFile::H5ep(replaced_child) = library.file(child.index).unwrap()
+    else {
+        panic!("extracted child remains H5EP");
+    };
+    assert_eq!(replaced_child.effect_model_id(0), Some(0x0200_0011));
+    assert_eq!(
+        replaced_child.as_bytes()[crate::pod_preset::H5EP_HEADER_BYTES + 0x428 + 0x0f],
+        2
+    );
+    assert_eq!(library.file(parent.index).unwrap().as_bytes(), parent_bytes);
+
     let batch_targets = [
         (crate::pod_preset::HdDistortionDefault::JetFuzz, 0x0205_000a),
         (crate::pod_preset::HdDistortionDefault::BuzzSaw, 0x0205_0015),

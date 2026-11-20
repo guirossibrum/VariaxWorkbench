@@ -224,8 +224,9 @@ normalized float path. These are editor values, not physical units or device
 defaults. Auxiliary widgets and the separate EDI widget path remain opaque;
 non-value bytes are preserved. General model defaults and replacement
 semantics remain unavailable except for the three earlier typed Octave Fuzz
-replacements and the newly admitted finite twelve-target batch documented
-below. None of these editor values establish physical device availability.
+replacements, the Noise Gate operation and the finite twelve-target batch
+documented below. None of these editor values establish physical device
+availability.
 
 ### Bounded Octave Fuzz to Vintage Pre defaults
 
@@ -283,9 +284,35 @@ colliding save destinations, successful save/reopen, and quit protection.
 Extracted H5ES and H5EB child tests check parent preservation; the H5EB case
 also checks dirty/revert state.
 
+### Bounded Octave Fuzz to Noise Gate defaults
+
+The standalone H5EP library, shared Session, and explicit GUI action also
+admit one separate Noise Gate transition (`0x02000011`) with two ordered
+default keys, `0x3F100001` and `0x3F100002`, both written with zero values.
+The static source is the POD HD500X Edit 2.27 PE32 i386 image, SHA-256
+`871c86da6b6810307dc201297d8411f2b2f7eec7e4c3e150f0aa881f8c89afe2`; its
+retained model/default record identifies the Noise Gate row and these two
+ordered keys with selected zero DWORDs. This is source evidence for the
+offline default bytes only, not an execution or compatibility result.
+This target remains a dedicated typed operation and does not expand the
+closed twelve-target distortion/fuzz enum. It accepts only an existing
+Octave Fuzz (`0x0205000C`) in an explicit slot 0–7, a standalone H5EP v1
+record (or separately extracted child), validity byte 1, enable byte 0/1,
+count 5–12, the five source keys exactly once in the first five rows in any
+order, and all twelve marker bytes in 0/1/2. It stages and reparses before
+publication. Success writes the model word, the two ordered key/zero-value
+rows, count 2, and zeroes only the first marker byte of each of twelve rows.
+Enable, validity, reserved bytes, marker bytes 1–3, rows 2–11 (including later
+duplicates), unrelated slots, framing, suffixes and any container parent stay
+byte-identical. This bounded static-derived write does not claim physical
+applicability or original-editor callback parity. The local all-features suite
+passes 357 tests (270 library, 59 GUI, 28 integration); Clippy with
+`-D warnings`, formatting and `git diff --check` pass. The four configured
+exact-head focused checks are pending.
+
 ### Bounded Octave Fuzz to Sub Octave Fuzz defaults
 
-The third separately typed operation replaces an existing Octave Fuzz
+The fourth separately typed operation replaces an existing Octave Fuzz
 (`0x0205000C`) in public FX slot 0–7 with Sub Octave Fuzz
 (`0x02050014`, SFUZ). The retained POD HD500X Edit 2.27 PE32 i386 image
 (SHA-256 `871c86da6b6810307dc201297d8411f2b2f7eec7e4c3e150f0aa881f8c89afe2`)
@@ -533,8 +560,8 @@ type-1 rows across 108 IDs and 80 numeric rows across 65 IDs, covering 17
 widget tags). No active primary type-1 model/key row in the corrected matrix
 remains unexposed. This remains a bounded subset: auxiliary widgets, option
 controls and other type families remain unimplemented. General model defaults
-and replacements remain unavailable beyond the three earlier bounded Octave
-Fuzz operations and the exact twelve-target batch above. The batch is awaiting
+and replacements remain unavailable beyond the four bounded Octave Fuzz
+operations and the exact twelve-target batch above. The batch is awaiting
 exact-head focused validation. Original-editor parity is not established.
 Unknown, assigned, or
 off-grid values stay unchanged.
@@ -688,7 +715,7 @@ through the PR and coordinator handoff, avoiding a docs-only head change.
 
 | Operation | Shared entry point and current result | Product-specific evidence and remaining relation |
 | --- | --- | --- |
-| Import, inspect, extract, edit, save HD Edit files | `Session::import_hd_editor_file`, `extract_hd_editor_preset`, the three retained typed Octave Fuzz operations, the closed twelve-target `replace_hd_octave_fuzz_with_admitted_defaults`, selected type-1/numeric setters, and `save_hd_editor_copy` use the offline file library. 444 selected controls across 143 descriptor model IDs use model/key gates, canonical integer grids and four-byte-only writes. | Editor 2.27 file-group, row type/key, model descriptor, widget-constructor, MPRE/Screamer/SFUZ and twelve-target default initializer joins support these bounded paths. The previous three replacements passed exact-head focused checks on `a2fc16839d18066866e9522a74297a9ef8d2b491` (280 tests/profile: 226 library, 28 GUI, 26 integration); the twelve-target batch is awaiting focused checks. Each replacement validates the old model, validity/enable/count bytes, complete known-key prefix and recognized marker bytes before staging. It changes only the model word, five ordered key/zero-value rows, count 5 and first marker bytes; other bytes remain preserved. The 364 type-1 rows use the shared primary editor widget grid; the 80 numeric bounds are primary-widget integer arguments, not physical units or defaults. The active tag `0x1B` entry admits only Vintage Pre model `0x020C000E`, key `0x3F100005`, primary range 0..15,000 and normalized float conversion. The separate EDI range and post-write UI callback are not included. These joins do not establish that H5EP identifies the physical HD500X. The Windows writer reads context `nested+0x2c` into header word 2, but the bounded caller, constructor, reader, and setter joins did not find the store or initializer for that exact field. |
+| Import, inspect, extract, edit, save HD Edit files | `Session::import_hd_editor_file`, `extract_hd_editor_preset`, the four retained typed Octave Fuzz operations, the closed twelve-target `replace_octave_fuzz_with_admitted_defaults`, selected type-1/numeric setters, and `save_hd_editor_copy` use the offline file library. 444 selected controls across 143 descriptor model IDs use model/key gates, canonical integer grids and four-byte-only writes. | Editor 2.27 file-group, row type/key, model descriptor, widget-constructor, MPRE/Screamer/SFUZ/Noise Gate and twelve-target initializer joins support these bounded paths. The previous three replacements passed exact-head focused checks on `a2fc16839d18066866e9522a74297a9ef8d2b491` (280 tests/profile: 226 library, 28 GUI, 26 integration); Noise Gate local tests pass and its four focused checks are pending. The twelve-target batch is also awaiting focused checks. The four replacements validate the old model, validity/enable/count bytes, complete known-key prefix and recognized marker bytes before staging. The three five-row transitions change the model word, five ordered key/zero-value rows and count 5; Noise Gate changes the model word, two ordered key/zero-value rows and count 2; each clears only first marker bytes. Other bytes remain preserved. The 364 type-1 rows use the shared primary editor widget grid; the 80 numeric bounds are primary-widget integer arguments, not physical units or defaults. The active tag `0x1B` entry admits only Vintage Pre model `0x020C000E`, key `0x3F100005`, primary range 0..15,000 and normalized float conversion. The separate EDI range and post-write UI callback are not included. These joins do not establish that H5EP identifies the physical HD500X. The Windows writer reads context `nested+0x2c` into header word 2, but the bounded caller, constructor, reader, and setter joins did not find the store or initializer for that exact field. |
 | Select an HD500X audio route | `Session::select_record_route` remains `Unverified` for the HD500X; the PODxt-only planner is not reused and no route plan is admitted. | Driver text supplies match IDs, interface roles, and 48 kHz/24-bit defaults. The Advanced Guide supplies documented routing behavior. Neither connects HD500X audio endpoint descriptors to driver callbacks, negotiated formats/timing, and a selected product identity. Device capture/playback remain `Locked`. |
 | Inspect HD500X firmware offline | `Session::inspect_extension_firmware` performs bounded FORM/L6FF structure inspection for the HD500X session and returns declared header values, generic catalog classification, image digest/length, checksum result and region count. `physical_target` remains `Unknown`; this is not target acceptance. | The owner-supplied P25-2.62.00 PHF is task-scoped and its original release declaration is available. The existing Rust reader parses it as `0x00140005` / `0x02620000`, completes zlib decompression and MD5 comparison, and reports one covering region; the Rust offline product catalog classifies `0x00140005` as unknown. Central's metadata `id` mapper maps the same number to “POD HD500X”; separately, parser callback `0x101f3e70` reads a descriptor ID, factory `0x101f50e0` constructs the `0x00140005` object family, then that callback invokes the FORM/HEAD reader `0x101fe200` and loader `0x101f8af0`. The preserved traces do not show the PHF HEAD +8/+4 values being compared with that metadata ID and a product version. The resolved HEAD comparator `0x101aa540` instead compares HEAD +8 with a handler value supplied by an owner field whose observed producer yields `0x00200001..=0x00200007`; no join connects that handler to the `0x00140005` factory object or offline update path. The filename, release label, numeric match and adjacent call sequence do not by themselves settle that consumer relation. |
 | Plan maintenance | No HD500X maintenance plan is registered. Read-installed-version, flash, reset, install, and bind operations remain `Locked` for every profile; the offline capability matrix does not promote static image inspection into a plan. | The available listing, driver-match evidence, and statically inspected PHF do not define a product-qualified maintenance sequence or join the image header consumer to the product. A release manifest plus an independently admitted maintenance protocol/source would be needed even for an offline plan; no physical operation is authorized here. |
@@ -709,7 +736,7 @@ context words, and it does not broaden the existing finite default operations.
 | Original acceptance criterion | Current status |
 | --- | --- |
 | Establish HD500X identity, editor/driver/firmware, preset/model/effect and audio evidence from primary sources. | **Partial.** Static Editor file-group association and a bounded writer/reader trace are recorded. Driver text matches USB `0x0E41:0x4159`, with the Mac audio personality on interface 0 and bulk personality on interface 1; the Advanced Guide names a processed stereo host feed, **1-2 Main Out**, plus playback return and 48 kHz native processing with documented conversion rates. This does not supply the device's USB audio descriptors/endpoints or connect them to driver callbacks, formats, and selected identity. Product attribution, complete model/effect catalog, firmware applicability and physical identity remain unresolved. |
-| Implement an independent offline backend integrated with shared interfaces and tests. | **Partial.** The shared offline Session/library interface and GUI import bounded H5EP/H5ES/H5EB files, extract children, preserve context and save new copies. They edit all 364 source-identified primary type-1 rows plus 80 selected non-type-1 numeric controls across 143 descriptor model IDs with canonical-grid and byte-preservation tests, and expose three earlier Octave Fuzz replacements, the closed twelve-target defaults action, the one-byte FX enable/disable operation, and four exact type-9 three-choice model/key rows: `0x020A0014/0x3F100004`, `0x020A0010/0x3F100004`, `0x020A000F/0x3F100004`, and `0x020A0012/0x3F100003`. The type-9 setter requires an explicit file slot, valid/enable/count/assignment-marker guards, a unique existing key, finite current value and complete-candidate reparse; its GUI stages per entry/slot and applies or discards explicitly. Expanded synthetic dirty-state, extracted-child isolation and GUI lifecycle tests cover the admitted catalog; configured checks are submitted on the final head through the coordinator. The HD500X session also exposes generic bounded FORM/L6FF inspection without applying header identity to a physical profile. Product-qualified route planning and maintenance remain unavailable; other type-family semantics, physical recording and original-editor parity are not implemented. |
+| Implement an independent offline backend integrated with shared interfaces and tests. | **Partial.** The shared offline Session/library interface and GUI import bounded H5EP/H5ES/H5EB files, extract children, preserve context and save new copies. They edit all 364 source-identified primary type-1 rows plus 80 selected non-type-1 numeric controls across 143 descriptor model IDs with canonical-grid and byte-preservation tests, and expose four typed Octave Fuzz replacements, the closed twelve-target defaults action, the one-byte FX enable/disable operation, and four exact type-9 three-choice model/key rows: `0x020A0014/0x3F100004`, `0x020A0010/0x3F100004`, `0x020A000F/0x3F100004`, and `0x020A0012/0x3F100003`. The type-9 setter requires an explicit file slot, valid/enable/count/assignment-marker guards, a unique existing key, finite current value and complete-candidate reparse; its GUI stages per entry/slot and applies or discards explicitly. Expanded synthetic dirty-state, extracted-child isolation and GUI lifecycle tests cover the admitted catalog; configured checks are submitted on the final head through the coordinator. The HD500X session also exposes generic bounded FORM/L6FF inspection without applying header identity to a physical profile. Product-qualified route planning and maintenance remain unavailable; other type-family semantics, physical recording and original-editor parity are not implemented. |
 | Keep HD/JTV separate from PODxt/original Variax; prohibit cross-family conversion, flashing and live operations. | **Met as written.** Profiles remain separate; no cross-family conversion, upload, flash or live path is exposed, and hardware access remains locked. This criterion does not establish physical compatibility. |
 
 Issue #32 remains open. Synthetic tests do not complete source-identification,

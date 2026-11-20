@@ -2587,6 +2587,25 @@ impl Workbench {
                             Err(error) => self.pod_message = error.detail(),
                         }
                     }
+                    ui.label("This explicit action replaces the current model with Noise Gate defaults.");
+                    if self.pod_button(ui, "replace-octave-fuzz-noise-gate", "Noise Gate defaults") {
+                        let index = self.hd_selected.expect("selected HD file");
+                        match pod_preset::HdFxSlot::new(self.hd_effect_slot) {
+                            Ok(slot) => match Session::initial_rig()
+                                .replace_hd_octave_fuzz_with_noise_gate_defaults(
+                                    &mut self.hd_library,
+                                    index,
+                                    slot,
+                                )
+                            {
+                                Ok(()) => {
+                                    self.pod_message = "Replaced this offline effect with Noise Gate defaults. Nothing was sent; save a new copy to keep the change.".into();
+                                }
+                                Err(error) => self.pod_message = rejection_text(&error),
+                            },
+                            Err(error) => self.pod_message = error.detail(),
+                        }
+                    }
                     ui.label("Additional source-derived distortion/fuzz defaults");
                     egui::ComboBox::from_id_salt("hd-octave-fuzz-default-target")
                         .selected_text(self.hd_default_target.label())
@@ -8502,7 +8521,7 @@ mod tests {
 
     fn exercise_hd_editor_explicit_replacement_lifecycle(
         target_model: u32,
-        default_keys: [u32; 5],
+        default_keys: &[u32],
         button_id: &'static str,
         message_label: &str,
         output_name: &str,
@@ -8556,12 +8575,12 @@ mod tests {
 
         let mut expected = original.clone();
         expected[block..block + 4].copy_from_slice(&target_model.to_be_bytes());
-        for (row, key) in default_keys.into_iter().enumerate() {
+        for (row, key) in default_keys.iter().copied().enumerate() {
             let row_at = block + 0x10 + row * 0x14;
             expected[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
             expected[row_at + 4..row_at + 8].copy_from_slice(&0u32.to_be_bytes());
         }
-        expected[block + 0x0f] = 5;
+        expected[block + 0x0f] = default_keys.len() as u8;
         for row in 0..12 {
             expected[block + 0x10 + row * 0x14 + 0x10] = 0;
         }
@@ -8712,7 +8731,7 @@ mod tests {
     fn hd_editor_explicit_default_replacements_stages_reverts_saves_and_guards_quit() {
         exercise_hd_editor_explicit_replacement_lifecycle(
             0x020c_000e,
-            [
+            &[
                 0x3f10_0002,
                 0x3f10_0003,
                 0x3f10_0004,
@@ -8726,7 +8745,7 @@ mod tests {
         );
         exercise_hd_editor_explicit_replacement_lifecycle(
             0x0205_000e,
-            [
+            &[
                 0x3f10_0001,
                 0x3f10_0002,
                 0x3f10_0003,
@@ -8740,7 +8759,7 @@ mod tests {
         );
         exercise_hd_editor_explicit_replacement_lifecycle(
             0x0205_0014,
-            [
+            &[
                 0x3f10_0001,
                 0x3f10_0002,
                 0x3f10_0003,
@@ -8750,6 +8769,14 @@ mod tests {
             "replace-octave-fuzz-sub-octave-fuzz",
             "Sub Octave Fuzz defaults",
             "sub-octave-fuzz-copy.5xe",
+            None,
+        );
+        exercise_hd_editor_explicit_replacement_lifecycle(
+            0x0200_0011,
+            &[0x3f10_0001, 0x3f10_0002],
+            "replace-octave-fuzz-noise-gate",
+            "Noise Gate defaults",
+            "noise-gate-copy.5xe",
             None,
         );
 
@@ -8830,7 +8857,7 @@ mod tests {
         for (target, model_id, label, output_name) in BATCH {
             exercise_hd_editor_explicit_replacement_lifecycle(
                 model_id,
-                [
+                &[
                     0x3f10_0001,
                     0x3f10_0002,
                     0x3f10_0003,
