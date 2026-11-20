@@ -837,6 +837,17 @@ const PODXT_EQ_FREQUENCY_TABLES: [[f64; 9]; 4] = [
 ];
 const PODXT_EQ_GAIN_MIN: f32 = -12.8;
 const PODXT_EQ_GAIN_MAX: f32 = 12.6;
+/// Four source-backed non-Bass PODxt reset frequencies/gains, as serialized f32 bits.
+const PODXT_EQ_RESET_WORDS: [u32; 8] = [
+    0x3e00_0000,
+    0x3f01_0204,
+    0x3eec_0000,
+    0x3f01_0204,
+    0x3ef0_0000,
+    0x3f01_0204,
+    0x3f5c_0000,
+    0x3f01_0204,
+];
 
 /// One of the four non-Bass PODxt Live EQ graph bands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -2172,6 +2183,8 @@ pub struct PodTone {
     models: Vec<ModelSlot>,
     /// Parsed MINF body ranges parallel to `models`; never extend into padding.
     model_minfo_ranges: Vec<std::ops::Range<usize>>,
+    /// Complete MODL chunk spans parallel to `models`, including their padding.
+    model_chunk_ranges: Vec<std::ops::Range<usize>>,
     parameter_value_offsets: Vec<Vec<Option<usize>>>,
     /// Semantic ids decoded from the first word when an opaque PARM is at least four bytes.
     opaque_parameter_id_hints: Vec<Vec<Option<u32>>>,
@@ -2283,6 +2296,7 @@ impl PodTone {
             .map_err(ToneError::format)?;
         let mut models = Vec::new();
         let mut model_minfo_ranges = Vec::new();
+        let mut model_chunk_ranges = Vec::new();
         let mut parameter_value_offsets = Vec::new();
         let mut opaque_parameter_id_hints = Vec::new();
         for entry in model_chunks
@@ -2314,6 +2328,7 @@ impl PodTone {
             };
             let (parameters, offsets, id_hints) = read_parameters(&bytes, &fields);
             model_minfo_ranges.push(minf.data.clone());
+            model_chunk_ranges.push(entry.data.start - 8..entry.data.end + (entry.data.len() & 1));
             models.push(ModelSlot {
                 slot,
                 model_id: preset::word(&bytes, minf.data.start),
@@ -2334,6 +2349,7 @@ impl PodTone {
             container,
             models,
             model_minfo_ranges,
+            model_chunk_ranges,
             parameter_value_offsets,
             opaque_parameter_id_hints,
         })
@@ -3198,6 +3214,177 @@ impl PodTone {
                 *stored = bits;
             }
         }
+        Ok(())
+    }
+
+    fn podxt_eq_reset_targets(&self) -> Result<[(usize, u32); 8], ToneError> {
+        if self.container != ContainerKind::L6pa {
+            return Err(ToneError::format(
+                "EQ reset requires an individual FORM/L6PA PODxt Live tone",
+            ));
+        }
+        if self.device_id != PODXT_LIVE_TONE_ID {
+            return Err(ToneError::format(
+                "EQ reset requires PODxt Live target 0x0003000a",
+            ));
+        }
+        if self.device_version < PODXT_LIVE_HOST_MIN_VERSION {
+            return Err(ToneError::format(
+                "EQ reset requires the PODxt Live host profile minimum 3.00",
+            ));
+        }
+
+        let slot_models: Vec<_> = self
+            .models
+            .iter()
+            .enumerate()
+            .filter_map(|(index, model)| (model.slot == PODXT_EQ_SLOT).then_some(index))
+            .collect();
+        let model_ids: Vec<_> = self
+            .models
+            .iter()
+            .enumerate()
+            .filter_map(|(index, model)| (model.model_id == PODXT_EQ_MODEL_ID).then_some(index))
+            .collect();
+        let [model_index] = slot_models.as_slice() else {
+            return Err(ToneError::format(
+                "EQ reset requires exactly one existing fixed EQ slot",
+            ));
+        };
+        if model_ids.as_slice() != [*model_index]
+            || self.models[*model_index].model_id != PODXT_EQ_MODEL_ID
+        {
+            return Err(ToneError::format(
+                "EQ reset requires exactly one EQ model 0x020c0002 in slot 0x00030004",
+            ));
+        }
+        if self.model_minfo_ranges[*model_index].len() < 12 {
+            return Err(ToneError::format(
+                "EQ reset requires a parseable MINF body of at least 12 bytes",
+            ));
+        }
+        if self.models[*model_index]
+            .parameters
+            .iter()
+            .any(|parameter| matches!(parameter, ModelParameter::Opaque { .. }))
+        {
+            return Err(ToneError::format(
+                "opaque or malformed PARM in EQ model makes reset ambiguous",
+            ));
+        }
+
+        let mut targets = [(0usize, 0u32); 8];
+        for (index, parameter_id) in (0x0010_0000..=0x0010_0007).enumerate() {
+            let matches: Vec<_> = self.opaque_parameter_id_hints[*model_index]
+                .iter()
+                .enumerate()
+                .filter_map(|(parameter_index, hint)| {
+                    (*hint == Some(parameter_id)).then_some(parameter_index)
+                })
+                .collect();
+            let [parameter_index] = matches.as_slice() else {
+                return Err(ToneError::format(format!(
+                    "EQ reset requires exactly one existing PARM 0x{parameter_id:08x}"
+                )));
+            };
+            let parameter_index = *parameter_index;
+            let ModelParameter::Recorded {
+                prefix: 0x3f,
+                id,
+                value: ParameterValue::Float { bits },
+            } = &self.models[*model_index].parameters[parameter_index]
+            else {
+                return Err(ToneError::format(format!(
+                    "EQ reset PARM 0x{parameter_id:08x} must be canonical 0x3f/type-1 float"
+                )));
+            };
+            if *id != parameter_id {
+                return Err(ToneError::format(format!(
+                    "EQ reset PARM 0x{parameter_id:08x} has an ambiguous raw identifier"
+                )));
+            }
+            let value = f32::from_bits(*bits);
+            if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                return Err(ToneError::format(format!(
+                    "existing EQ PARM 0x{parameter_id:08x} is outside finite range 0..=1"
+                )));
+            }
+            let value_offset = self.parameter_value_offsets[*model_index][parameter_index]
+                .ok_or_else(|| {
+                    ToneError::format(format!(
+                        "EQ reset PARM 0x{parameter_id:08x} has no unique raw value word"
+                    ))
+                })?;
+            let value_end = value_offset
+                .checked_add(4)
+                .ok_or_else(|| ToneError::format("EQ reset PARM raw value offset overflows"))?;
+            if value_end > self.bytes.len()
+                || self.bytes.get(value_offset..value_end) != Some(bits.to_be_bytes().as_slice())
+            {
+                return Err(ToneError::format(format!(
+                    "EQ reset PARM 0x{parameter_id:08x} has an invalid raw value offset"
+                )));
+            }
+            targets[index] = (value_offset, *bits);
+        }
+        Ok(targets)
+    }
+
+    /// Stable bytes for the current validated EQ model, used to invalidate a
+    /// staged reset if that model or any of its opaque records changes.
+    pub fn podxt_eq_reset_context(&self) -> Result<Vec<u8>, ToneError> {
+        self.podxt_eq_reset_targets()?;
+        let model_index = self
+            .models
+            .iter()
+            .position(|model| model.slot == PODXT_EQ_SLOT)
+            .ok_or_else(|| ToneError::format("EQ reset target disappeared"))?;
+        let range = self.model_chunk_ranges[model_index].clone();
+        self.bytes
+            .get(range)
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| ToneError::format("EQ reset model span is invalid"))
+    }
+
+    /// Atomically reset the four-band EQ in an existing PODxt Live L6PA tone.
+    /// This is an offline file operation; it never sends an edit buffer.
+    pub fn reset_podxt_eq(&mut self) -> Result<(), ToneError> {
+        let targets = self.podxt_eq_reset_targets()?;
+        let original = self.bytes.clone();
+        let mut candidate_bytes = original.clone();
+        for ((offset, _), word) in targets.iter().zip(PODXT_EQ_RESET_WORDS) {
+            candidate_bytes[*offset..*offset + 4].copy_from_slice(&word.to_be_bytes());
+        }
+        if candidate_bytes == original {
+            return Ok(());
+        }
+
+        let candidate = PodTone::parse(candidate_bytes)?;
+        let candidate_targets = candidate.podxt_eq_reset_targets()?;
+        if candidate_targets
+            .iter()
+            .zip(PODXT_EQ_RESET_WORDS)
+            .any(|((_, actual), expected)| *actual != expected)
+        {
+            return Err(ToneError::format(
+                "EQ reset candidate did not preserve all eight requested value words",
+            ));
+        }
+        let allowed: Vec<_> = targets
+            .iter()
+            .flat_map(|(offset, _)| *offset..*offset + 4)
+            .collect();
+        if original
+            .iter()
+            .zip(candidate.as_bytes())
+            .enumerate()
+            .any(|(offset, (before, after))| before != after && !allowed.contains(&offset))
+        {
+            return Err(ToneError::format(
+                "EQ reset candidate changed bytes outside the eight selected value words",
+            ));
+        }
+        *self = candidate;
         Ok(())
     }
 
@@ -4908,6 +5095,14 @@ impl Library {
         entry.tone.set_podxt_eq_band(band, frequency_hz, gain_db)
     }
 
+    pub fn reset_podxt_eq(&mut self, index: usize) -> Result<(), ToneError> {
+        let entry = self
+            .tones
+            .get_mut(index)
+            .ok_or_else(|| ToneError::format("tone index is outside the library"))?;
+        entry.tone.reset_podxt_eq()
+    }
+
     pub fn replace(&mut self, index: usize, bytes: Vec<u8>) -> Result<(), ToneError> {
         let tone = PodTone::parse(bytes)?;
         let slot = self
@@ -5524,6 +5719,10 @@ impl PodBundleLibrary {
         self.edit_entry(index, |tone| {
             tone.set_podxt_eq_band(band, frequency_hz, gain_db)
         })
+    }
+
+    pub fn reset_podxt_eq(&mut self, index: usize) -> Result<(), ToneError> {
+        self.edit_entry(index, PodTone::reset_podxt_eq)
     }
 
     pub fn set_model_enabled(
@@ -8213,6 +8412,204 @@ pub(crate) mod tests {
         );
         assert!(tone.podxt_eq_band_display_values(PodxtEqBand::One).is_err());
         assert_eq!(tone.as_bytes(), bytes);
+    }
+
+    #[test]
+    fn podxt_eq_reset_is_atomic_and_writes_only_the_eight_independent_words() {
+        const RESET: [u32; 8] = [
+            0x3e00_0000,
+            0x3f01_0204,
+            0x3eec_0000,
+            0x3f01_0204,
+            0x3ef0_0000,
+            0x3f01_0204,
+            0x3f5c_0000,
+            0x3f01_0204,
+        ];
+        let records: Vec<_> = (0..8)
+            .map(|index| {
+                drive_record(
+                    0x3f,
+                    0x0010_0000 + index,
+                    1,
+                    f32::from_bits(0x3e80_0000 + (index << 12)).to_bits(),
+                )
+            })
+            .collect();
+        let refs: Vec<_> = records.iter().map(|record| &record[..]).collect();
+        let original = custom_tone(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: PODXT_EQ_SLOT,
+                model_id: PODXT_EQ_MODEL_ID,
+                tail: &[0xa1, 0xb2, 0xc3, 0xd4],
+                parameters: &refs,
+            }],
+        );
+        let before = PodTone::parse(original.clone()).unwrap();
+        let targets = before.podxt_eq_reset_targets().unwrap();
+        let mut expected = original.clone();
+        for ((offset, _), word) in targets.iter().zip(RESET) {
+            expected[*offset..*offset + 4].copy_from_slice(&word.to_be_bytes());
+        }
+
+        let mut tone = before;
+        tone.reset_podxt_eq().unwrap();
+        assert_eq!(tone.as_bytes(), expected);
+        assert_eq!(
+            tone.models()[0]
+                .parameters
+                .iter()
+                .filter_map(|parameter| match parameter {
+                    ModelParameter::Recorded {
+                        value: ParameterValue::Float { bits },
+                        ..
+                    } => Some(*bits),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            RESET
+        );
+        let already_reset = tone.as_bytes().to_vec();
+        tone.reset_podxt_eq().unwrap();
+        assert_eq!(tone.as_bytes(), already_reset);
+    }
+
+    #[test]
+    fn podxt_eq_reset_rejects_unsupported_target_without_mutation() {
+        let records: Vec<_> = (0..8)
+            .map(|index| drive_record(0x3f, 0x0010_0000 + index, 1, 0x3f00_0000))
+            .collect();
+        let refs: Vec<_> = records.iter().map(|record| &record[..]).collect();
+        for (kind, version, model, slot, parameters) in [
+            (
+                ContainerKind::L6as,
+                PODXT_LIVE_HOST_MIN_VERSION,
+                PODXT_EQ_MODEL_ID,
+                PODXT_EQ_SLOT,
+                &refs[..],
+            ),
+            (
+                ContainerKind::L6pa,
+                PODXT_LIVE_HOST_MIN_VERSION - 1,
+                PODXT_EQ_MODEL_ID,
+                PODXT_EQ_SLOT,
+                &refs[..],
+            ),
+            (
+                ContainerKind::L6pa,
+                PODXT_LIVE_HOST_MIN_VERSION,
+                PODXT_EQ_MODEL_ID + 1,
+                PODXT_EQ_SLOT,
+                &refs[..],
+            ),
+            (
+                ContainerKind::L6pa,
+                PODXT_LIVE_HOST_MIN_VERSION,
+                PODXT_EQ_MODEL_ID,
+                PODXT_EQ_SLOT + 1,
+                &refs[..],
+            ),
+            (
+                ContainerKind::L6pa,
+                PODXT_LIVE_HOST_MIN_VERSION,
+                PODXT_EQ_MODEL_ID,
+                PODXT_EQ_SLOT,
+                &refs[..7],
+            ),
+        ] {
+            let mut bytes = custom_tone(
+                kind,
+                &[BuiltModel {
+                    slot,
+                    model_id: model,
+                    tail: &[1, 2, 3, 4],
+                    parameters,
+                }],
+            );
+            let pinf = find_chunk_data(&bytes, b"PINF");
+            bytes[pinf + 72..pinf + 76].copy_from_slice(&version.to_be_bytes());
+            let mut tone = PodTone::parse(bytes.clone()).unwrap();
+            assert!(tone.reset_podxt_eq().is_err());
+            assert_eq!(tone.as_bytes(), bytes);
+        }
+
+        let bad_last = drive_record(0x3f, 0x0010_0007, 1, f32::NAN.to_bits());
+        let mut bad_records = records[..7].to_vec();
+        bad_records.push(bad_last);
+        let bad_refs: Vec<_> = bad_records.iter().map(|record| &record[..]).collect();
+        let bytes = custom_tone(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: PODXT_EQ_SLOT,
+                model_id: PODXT_EQ_MODEL_ID,
+                tail: &[1, 2, 3, 4],
+                parameters: &bad_refs,
+            }],
+        );
+        let mut tone = PodTone::parse(bytes.clone()).unwrap();
+        assert!(tone.reset_podxt_eq().is_err());
+        assert_eq!(tone.as_bytes(), bytes, "late guard failure is atomic");
+    }
+
+    #[test]
+    fn podxt_eq_reset_library_and_bundle_paths_keep_revert_and_copy_baselines() {
+        let records: Vec<_> = (0..8)
+            .map(|index| drive_record(0x3f, 0x0010_0000 + index, 1, 0x3f00_0000))
+            .collect();
+        let refs: Vec<_> = records.iter().map(|record| &record[..]).collect();
+        let original = custom_tone(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: PODXT_EQ_SLOT,
+                model_id: PODXT_EQ_MODEL_ID,
+                tail: &[0x91, 0x82, 0x73, 0x64],
+                parameters: &refs,
+            }],
+        );
+        let mut expected = PodTone::parse(original.clone()).unwrap();
+        expected.reset_podxt_eq().unwrap();
+        assert_eq!(
+            crate::rig::Session::initial_rig()
+                .reset_pod_eq(crate::rig::RoleKind::Pod, &original)
+                .unwrap(),
+            expected.as_bytes()
+        );
+        assert!(
+            crate::rig::Session::initial_rig()
+                .reset_pod_eq(crate::rig::RoleKind::Guitar, &original)
+                .is_err()
+        );
+
+        let mut library = Library::default();
+        let index = library.import_bytes(original.clone()).unwrap();
+        library.reset_podxt_eq(index).unwrap();
+        assert_eq!(library.tone(index).unwrap().as_bytes(), expected.as_bytes());
+        assert!(library.is_dirty(index));
+        library.revert_unsaved(index).unwrap();
+        assert_eq!(library.tone(index).unwrap().as_bytes(), original);
+        assert!(!library.is_dirty(index));
+
+        let mut bundle = PodBundleLibrary::parse(bundle_with_tone(&original)).unwrap();
+        let before = bundle.as_bytes().to_vec();
+        bundle.reset_podxt_eq(0).unwrap();
+        assert_eq!(bundle.tone(0, 0).unwrap().as_bytes(), expected.as_bytes());
+        assert!(bundle.is_dirty());
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("reset-copy.vwb");
+        bundle.save_copy(&destination).unwrap();
+        assert_eq!(
+            PodBundleLibrary::parse(std::fs::read(&destination).unwrap())
+                .unwrap()
+                .tone(0, 0)
+                .unwrap()
+                .as_bytes(),
+            expected.as_bytes()
+        );
+        assert!(bundle.is_dirty(), "saving a copy must keep the baseline");
+        bundle.revert().unwrap();
+        assert_eq!(bundle.as_bytes(), before);
+        assert!(!bundle.is_dirty());
     }
 
     #[test]

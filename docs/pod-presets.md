@@ -222,7 +222,10 @@ in-memory metadata. Missing/duplicate/
 wrong EQ targets, short MINF and noncanonical current bytes reject atomically.
 The edit preserves model id, slot, ordinal, reserved bytes, MINF tail, all PARM
 children and surrounding file bytes; it does not create or replace models or
-parameters and makes no bypass/audio/device-effect claim. EQ reset/send and cab
+parameters and makes no bypass/audio/device-effect claim. A strict offline
+four-band EQ reset is available for existing canonical L6PA EQ records only;
+it validates the whole target, updates the eight existing float words atomically,
+and never creates records or sends data. EQ reset transmission and cab
 controls remain unavailable. This allowlist does not establish installed-pack
 entitlement, device acceptance or physical behavior.
 

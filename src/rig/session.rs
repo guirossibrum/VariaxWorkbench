@@ -255,6 +255,13 @@ impl Session {
         backend::set_pod_model_enabled(bytes, control, enabled)
     }
 
+    /// Atomically resets all four bands of an existing PODxt Live EQ offline.
+    /// It edits the preset bytes only and never sends an edit buffer.
+    pub fn reset_pod_eq(self, role: RoleKind, bytes: &[u8]) -> Result<Vec<u8>, Rejection> {
+        self.require(role, Operation::EditPodPreset)?;
+        backend::reset_pod_eq(bytes)
+    }
+
     /// Applies one admitted AMP model-id choice to an existing FORM/L6PA tone.
     /// This explicit offline edit changes only its MINF model-id word.
     pub fn set_pod_amp_model_choice(
