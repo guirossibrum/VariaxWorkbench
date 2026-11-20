@@ -277,8 +277,9 @@ Delay `HEADS` on `0x02020005`, `BITS` on `0x0202000D`, Stomp `SYNWAVE` on
 exactly eight models, and normalized Stomp `WHAMMY_INTERVAL` Heel/Toe positions
 on `0x020a000e` as editable offline controls under the restrictions above.
 Other Delay association layouts, EQ reset transmission, EQ model creation or
-replacement, unsupported EQ definition paths, and amp model
-selection/replacement remain unresolved. CAB/MIC edits follow the separate
+replacement, unsupported EQ definition paths, broad amp model
+replacement/creation/defaults, and pack conversion remain unresolved. The
+source-backed selector for 43 existing AMP choices is implemented above. CAB/MIC edits follow the separate
 L6AS behavior and strict existing-slot L6PA contract in the table above;
 missing-slot creation and invalid MIC repair remain unresolved. Names, selector ordinals,
 a shared AX3 id, or a generic float definition do not by themselves establish

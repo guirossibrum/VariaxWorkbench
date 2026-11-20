@@ -6189,6 +6189,128 @@ mod tests {
     }
 
     #[test]
+    fn l6pa_cab_stage_replacement_and_save_quit_failures_use_real_gui_paths() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let original = include_bytes!("../tests/fixtures/pod-l6pa-cab-mic/cab.before.bin").to_vec();
+        app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_selected = Some(0);
+        recording_frame(&context, &mut app, vec![]);
+
+        choose_cab_popup(&context, &mut app, 0x0102_0002);
+        assert_eq!(app.pod_cab_pending.unwrap().1.model_id(), 0x0102_0002);
+        let old_generation = app.pod_document_generation;
+        let mut replacement = original.clone();
+        let pinf = replacement
+            .windows(4)
+            .position(|word| word == b"PINF")
+            .unwrap()
+            + 8;
+        replacement[pinf + 8..pinf + 10].copy_from_slice(&[0, b'R']);
+        let original_tone = pod_preset::PodTone::parse(original.clone()).unwrap();
+        let replacement_tone = pod_preset::PodTone::parse(replacement.clone()).unwrap();
+        assert_eq!(
+            original_tone.cab_edit_model_id(),
+            replacement_tone.cab_edit_model_id()
+        );
+        assert_eq!(original_tone.mic_choice(), replacement_tone.mic_choice());
+        assert_ne!(original, replacement);
+
+        // A successful clean collection replacement reuses index zero and keeps
+        // CAB/MIC bytes identical while changing an unrelated PINF name byte.
+        app.load_pod_bundle_bytes(sample_pod_bundle(&[replacement.clone()]))
+            .unwrap();
+        assert_eq!(app.pod_document_generation, old_generation + 1);
+        assert_eq!(app.pod_selected, Some(0));
+        assert!(app.pod_cab_pending.is_none());
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), replacement);
+        assert!(!app.pod_dirty());
+
+        recording_frame(&context, &mut app, vec![]);
+        choose_cab_popup(&context, &mut app, 0x0102_0003);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), replacement);
+        click_pod(&context, &mut app, "pod-cab-apply");
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().cab_edit_model_id(),
+            Some(0x0102_0003)
+        );
+        assert!(app.pod_dirty());
+
+        let directory = tempfile::tempdir().unwrap();
+        let failed = directory.path().join("missing-parent/copy.vwb");
+        let collision = directory.path().join("occupied.vwb");
+        std::fs::write(&collision, b"keep original collision bytes").unwrap();
+        let saved = directory.path().join("saved.vwb");
+        app.dialogs = Box::new(FakeDialogs {
+            pod_save: [
+                None,
+                Some(failed.clone()),
+                Some(collision.clone()),
+                Some(saved.clone()),
+            ]
+            .into(),
+            ..Default::default()
+        });
+
+        click_pod(&context, &mut app, "save-pod");
+        assert!(app.pod_dirty());
+        assert!(!failed.exists());
+        click_pod(&context, &mut app, "save-pod");
+        assert!(app.pod_dirty());
+        assert!(!failed.exists());
+        click_pod(&context, &mut app, "save-pod");
+        assert!(app.pod_dirty());
+        assert_eq!(
+            std::fs::read(&collision).unwrap(),
+            b"keep original collision bytes"
+        );
+        click_pod(&context, &mut app, "save-pod");
+        assert!(!app.pod_dirty());
+        let reopened = pod_preset::PodBundleLibrary::parse(std::fs::read(&saved).unwrap()).unwrap();
+        assert_eq!(
+            reopened.tone(0, 0).unwrap().cab_edit_model_id(),
+            Some(0x0102_0003)
+        );
+        assert_eq!(
+            reopened.tone(0, 0).unwrap().mic_choice().unwrap().value(),
+            2
+        );
+
+        click_pod(&context, &mut app, "pod-mic-3");
+        assert!(app.pod_dirty());
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pending.is_none());
+        assert!(app.pod_dirty());
+        assert!(!app.permit_close);
+
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "discard");
+        assert!(app.pending.is_none());
+        assert!(!app.pod_dirty());
+        assert!(app.permit_close);
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().cab_edit_model_id(),
+            Some(0x0102_0003)
+        );
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .mic_choice()
+                .unwrap()
+                .value(),
+            2
+        );
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
     fn cab_mic_gui_apply_collision_save_reopen_revert_and_quit_cancel() {
         let (context, mut app) = app();
         context.style_mut(|style| style.animation_time = 0.0);

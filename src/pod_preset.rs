@@ -6302,7 +6302,9 @@ fn custom_tone_with_pinf_len(
     info[..4].copy_from_slice(&1u32.to_be_bytes());
     info[4..8].copy_from_slice(&PODXT_LIVE_TONE_ID.to_be_bytes());
     info[8..10].copy_from_slice(&u16::from(b'A').to_be_bytes());
-    info[72..76].copy_from_slice(&PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
+    if pinf_len >= 76 {
+        info[72..76].copy_from_slice(&PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
+    }
     if pinf_len >= 80 {
         info[76..80].copy_from_slice(&[0x5a, 0xa5, 0x96, 0x69]);
     }
@@ -7603,11 +7605,64 @@ pub(crate) mod tests {
         let mut cab = PodTone::parse(cab_before.clone()).unwrap();
         assert_eq!(cab.container(), ContainerKind::L6pa);
         assert_eq!(cab.pinf_data_len, 76);
+        assert_eq!(cab.device_version, PODXT_LIVE_HOST_MIN_VERSION);
         assert!(cab.cab_mic_editable());
         let desired_cab = PodCabModelChoice::try_from(PODXT_CAB_MODEL_IDS[0]).unwrap();
         cab.set_cab_model_choice(desired_cab).unwrap();
         assert_eq!(cab.as_bytes(), cab_after);
         assert_eq!(cab.cab_edit_model_id(), Some(desired_cab.model_id()));
+
+        // Keep this independent literal request list beside the full-file expected
+        // word mask: each transition starts from the different known bass CAB.
+        let transition_ids = [
+            0x0102_0000,
+            0x0102_0001,
+            0x0102_0002,
+            0x0102_0003,
+            0x0102_0004,
+            0x0102_0005,
+            0x0102_0006,
+            0x0102_0007,
+            0x0102_0008,
+            0x0102_0009,
+            0x0102_000a,
+            0x0102_000b,
+            0x0102_000c,
+            0x0102_000d,
+            0x0102_000e,
+            0x0102_000f,
+            0x0102_0010,
+            0x0102_0011,
+            0x0102_0012,
+            0x0102_0013,
+            0x0102_0014,
+            0x0102_0015,
+            0x0102_0016,
+            0x0102_0018,
+            0x0102_001a,
+        ];
+        assert_eq!(transition_ids, PODXT_CAB_MODEL_IDS);
+        let original_mic_word = &cab_before[0xa8..0xac];
+        for id in transition_ids {
+            let mut tone = PodTone::parse(cab_before.clone()).unwrap();
+            assert_eq!(tone.cab_edit_model_id(), Some(0x0103_0001));
+            assert_eq!(tone.cab_edit_class(), Some(PodCabClass::Bass));
+            assert_eq!(tone.mic_choice().unwrap().value(), 2);
+            let choice = PodCabModelChoice::try_from(id).unwrap();
+            tone.set_cab_model_choice(choice).unwrap();
+
+            let mut expected = cab_before.clone();
+            expected[0x8c..0x90].copy_from_slice(&id.to_be_bytes());
+            assert_eq!(tone.as_bytes(), expected, "CAB transition to {id:08x}");
+            assert_eq!(&tone.as_bytes()[0xa8..0xac], original_mic_word);
+            assert_eq!(tone.cab_edit_model_id(), Some(id));
+            assert_eq!(tone.cab_edit_class(), Some(PodCabClass::Other));
+            assert_eq!(tone.mic_choice().unwrap().value(), 2);
+            assert_eq!(
+                PodTone::parse(expected.clone()).unwrap().as_bytes(),
+                expected
+            );
+        }
 
         let mic_cases = [
             (guitar_before, guitar_after, 0x0102_0000, 1, 3),
@@ -7816,6 +7871,10 @@ pub(crate) mod tests {
         );
         let mut tone = PodTone::parse(short_profile.clone()).unwrap();
         assert!(tone.set_cab_model_choice(choice).is_err());
+        assert!(
+            tone.set_mic_choice(PodMicChoice::try_from(2).unwrap())
+                .is_err()
+        );
         assert_eq!(tone.as_bytes(), short_profile);
 
         let unknown = custom_tone_with_pinf_len(
@@ -7835,6 +7894,142 @@ pub(crate) mod tests {
                 .is_err()
         );
         assert_eq!(tone.as_bytes(), unknown);
+    }
+
+    #[test]
+    fn l6pa_public_boundary_checks_exact_floor_target_layout_container_and_duplicates() {
+        let source =
+            include_bytes!("../tests/fixtures/pod-l6pa-cab-mic/mic-guitar.before.bin").to_vec();
+        let choice = PodCabModelChoice::try_from(PODXT_CAB_MODEL_IDS[0]).unwrap();
+        let mic_choice = PodMicChoice::try_from(1).unwrap();
+        let pinf_start = source.windows(4).position(|word| word == b"PINF").unwrap() + 8;
+
+        let mut at_floor = PodTone::parse(source.clone()).unwrap();
+        assert_eq!(at_floor.device_version, PODXT_LIVE_HOST_MIN_VERSION);
+        at_floor.set_cab_model_choice(choice).unwrap();
+        let mut at_floor_mic = PodTone::parse(source.clone()).unwrap();
+        at_floor_mic.set_mic_choice(mic_choice).unwrap();
+
+        let mut below_floor = source.clone();
+        below_floor[pinf_start + 72..pinf_start + 76]
+            .copy_from_slice(&(PODXT_LIVE_HOST_MIN_VERSION - 1).to_be_bytes());
+        let mut tone = PodTone::parse(below_floor.clone()).unwrap();
+        assert!(
+            tone.set_cab_model_choice(PodCabModelChoice::from_model_id(0x0102_0000).unwrap())
+                .is_err()
+        );
+        assert_eq!(tone.as_bytes(), below_floor);
+        let mut tone = PodTone::parse(below_floor.clone()).unwrap();
+        assert!(tone.set_mic_choice(mic_choice).is_err());
+        assert_eq!(tone.as_bytes(), below_floor);
+
+        let mut wrong_target = source.clone();
+        wrong_target[pinf_start + 4..pinf_start + 8].copy_from_slice(&0xdead_beefu32.to_be_bytes());
+        assert!(matches!(
+            PodTone::parse(wrong_target.clone()),
+            Err(ToneError::WrongTarget { .. })
+        ));
+
+        let mut wrong_layout = source.clone();
+        wrong_layout[pinf_start..pinf_start + 4].copy_from_slice(&2u32.to_be_bytes());
+        assert!(PodTone::parse(wrong_layout.clone()).is_err());
+        let truncated_pinf = custom_tone_with_pinf_len(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: CAB_SLOT,
+                model_id: PODXT_CAB_MODEL_IDS[0],
+                tail: &[1, 2, 3, 1],
+                parameters: &[],
+            }],
+            75,
+        );
+        let before_truncated = truncated_pinf.clone();
+        assert!(PodTone::parse(truncated_pinf.clone()).is_err());
+        assert_eq!(truncated_pinf, before_truncated);
+
+        let mut wrong_container = source.clone();
+        wrong_container[8..12].copy_from_slice(b"L6FS");
+        let mut tone = PodTone::parse(wrong_container.clone()).unwrap();
+        assert!(tone.set_cab_model_choice(choice).is_err());
+        assert!(tone.set_mic_choice(mic_choice).is_err());
+        assert_eq!(tone.as_bytes(), wrong_container);
+
+        let missing_cab = custom_tone_with_pinf_len(ContainerKind::L6pa, &[], 76);
+        let mut tone = PodTone::parse(missing_cab.clone()).unwrap();
+        assert!(tone.set_cab_model_choice(choice).is_err());
+        assert!(tone.set_mic_choice(mic_choice).is_err());
+        assert_eq!(tone.as_bytes(), missing_cab);
+
+        let mic = int_parameter(0, 1, 0x3f);
+        let duplicate_cab = custom_tone_with_pinf_len(
+            ContainerKind::L6pa,
+            &[
+                BuiltModel {
+                    slot: CAB_SLOT,
+                    model_id: PODXT_CAB_MODEL_IDS[0],
+                    tail: &[1, 2, 3, 1],
+                    parameters: &[&mic],
+                },
+                BuiltModel {
+                    slot: CAB_SLOT,
+                    model_id: PODXT_CAB_MODEL_IDS[1],
+                    tail: &[1, 2, 3, 1],
+                    parameters: &[&mic],
+                },
+            ],
+            76,
+        );
+        assert!(PodTone::parse(duplicate_cab.clone()).is_err());
+        assert!(!duplicate_cab.is_empty());
+
+        let missing_mic = custom_tone_with_pinf_len(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: CAB_SLOT,
+                model_id: PODXT_CAB_MODEL_IDS[0],
+                tail: &[1, 2, 3, 1],
+                parameters: &[],
+            }],
+            76,
+        );
+        let mut tone = PodTone::parse(missing_mic.clone()).unwrap();
+        assert!(tone.set_cab_model_choice(choice).is_err());
+        assert!(tone.set_mic_choice(mic_choice).is_err());
+        assert_eq!(tone.as_bytes(), missing_mic);
+
+        let duplicate_mic = custom_tone_with_pinf_len(
+            ContainerKind::L6pa,
+            &[BuiltModel {
+                slot: CAB_SLOT,
+                model_id: PODXT_CAB_MODEL_IDS[0],
+                tail: &[1, 2, 3, 1],
+                parameters: &[&mic, &mic],
+            }],
+            76,
+        );
+        let mut tone = PodTone::parse(duplicate_mic.clone()).unwrap();
+        assert!(tone.set_cab_model_choice(choice).is_err());
+        assert!(tone.set_mic_choice(mic_choice).is_err());
+        assert_eq!(tone.as_bytes(), duplicate_mic);
+
+        for remove in [false, true] {
+            let mut malformed = source.clone();
+            let chunks = preset::chunks(&malformed, 12..malformed.len()).unwrap();
+            let pinf = chunks.iter().find(|chunk| chunk.id == *b"PINF").unwrap();
+            let start = pinf.data.start - 8;
+            let end = pinf.data.end + (pinf.data.len() & 1);
+            let raw = malformed[start..end].to_vec();
+            if remove {
+                malformed.drain(start..end);
+            } else {
+                malformed.splice(end..end, raw);
+            }
+            let new_len = u32::try_from(malformed.len() - 8).unwrap();
+            malformed[4..8].copy_from_slice(&new_len.to_be_bytes());
+            let malformed_before = malformed.clone();
+            assert!(PodTone::parse(malformed.clone()).is_err());
+            assert_eq!(malformed, malformed_before);
+        }
     }
 
     #[test]
