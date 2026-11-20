@@ -2686,10 +2686,11 @@ impl Workbench {
                             Err(error) => self.pod_message = error.detail(),
                         }
                     }
-                    let reverb_defaults = egui::CollapsingHeader::new(
+                    let _reverb_defaults = egui::CollapsingHeader::new(
                         "Additional source-derived reverb defaults",
                     )
                     .id_salt("hd-octave-fuzz-reverb-defaults")
+                    .default_open(true)
                     .show(ui, |ui| {
                         egui::ComboBox::from_id_salt("hd-octave-fuzz-reverb-default-target")
                             .selected_text(self.hd_reverb_default_target.label())
@@ -2729,13 +2730,6 @@ impl Workbench {
                             }
                         }
                     });
-                    #[cfg(test)]
-                    self.pod_buttons.insert(
-                        "toggle-hd-reverb-defaults",
-                        reverb_defaults.header_response.rect,
-                    );
-                    #[cfg(not(test))]
-                    let _ = reverb_defaults;
                     ui.separator();
                 }
                 ui.separator();
@@ -8611,7 +8605,7 @@ mod tests {
         }
     }
 
-    #[derive(Default)]
+    #[derive(Debug, Default)]
     struct HdExplicitReplacementTargets {
         distortion: Option<pod_preset::HdDistortionDefault>,
         dynamics: Option<pod_preset::HdDynamicsDefault>,
@@ -8692,9 +8686,6 @@ mod tests {
 
         if targets.reverb.is_some() {
             recording_frame(&context, &mut app, vec![]);
-            scroll_hd_editor_control_into_view(&context, &app, "toggle-hd-reverb-defaults");
-            click_pod(&context, &mut app, "toggle-hd-reverb-defaults");
-            recording_frame(&context, &mut app, vec![]);
             scroll_hd_editor_control_into_view(
                 &context,
                 &app,
@@ -8704,8 +8695,10 @@ mod tests {
         click_pod(&context, &mut app, button_id);
         assert!(
             app.pod_message.contains(message_label),
-            "{}",
-            app.pod_message
+            "button={button_id:?}, targets={targets:?}, message={:?}, button_rect={:?}, scroll={:?}",
+            app.pod_message,
+            app.pod_buttons.get(button_id),
+            app.pod_scroll_area
         );
         assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), expected);
         assert!(app.hd_library.is_dirty(index));
