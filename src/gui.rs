@@ -8685,14 +8685,6 @@ mod tests {
             expected[block + 0x10 + row * 0x14 + 0x10] = 0;
         }
 
-        if targets.reverb.is_some() {
-            recording_frame(&context, &mut app, vec![]);
-            scroll_hd_editor_control_into_view(
-                &context,
-                &app,
-                "replace-octave-fuzz-admitted-reverb-default",
-            );
-        }
         click_pod(&context, &mut app, button_id);
         assert!(
             app.pod_message.contains(message_label),
@@ -8702,7 +8694,12 @@ mod tests {
             app.pod_scroll_area
         );
         assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), expected);
-        assert!(app.hd_library.is_dirty(index));
+        assert!(
+            app.hd_library.is_dirty(index),
+            "targets={targets:?}, source_matches_expected={}, button_rect={:?}",
+            original == expected,
+            app.pod_buttons.get(button_id)
+        );
         assert_eq!(app.document.as_ref().unwrap().as_bytes(), source_document);
         app.hd_library.revert_unsaved(index).unwrap();
         assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), original);
