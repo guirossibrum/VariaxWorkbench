@@ -242,6 +242,7 @@ impl OfflineAsioAdapter {
         generation: u64,
         notification: SimulatedNotification,
     ) -> Result<Option<ClockMeasurement>, OfflineAsioError> {
+        self.session.check_owner()?;
         let result = self.deliver_inner(generation, notification);
         if let Err(error) = &result
             && *error != OfflineAsioError::Capture(CaptureError::WrongThread)
@@ -1064,6 +1065,190 @@ mod tests {
             adapter.take().pcm(),
             &[1, 0, 11, 0, 2, 0, 12, 0, 3, 0, 13, 0, 4, 0, 14, 0]
         );
+    }
+
+    #[test]
+    fn malformed_foreign_delivery_preserves_state_and_owner_can_continue() {
+        let mut adapter = prepare(None);
+        adapter.start().unwrap();
+        assert_eq!(
+            adapter.deliver(7, SimulatedNotification::Ordinary { half: 2 }),
+            Err(OfflineAsioError::InvalidHalf(2))
+        );
+        let owner_error = adapter.retained_error().cloned();
+        assert_eq!(owner_error, Some(OfflineAsioError::InvalidHalf(2)));
+        adapter
+            .deliver(7, SimulatedNotification::Ordinary { half: 0 })
+            .unwrap();
+        let before_clock = adapter.session().clock_measurement();
+        let before_pcm = adapter.take().pcm().to_vec();
+        let before_events = adapter.session().pending_events();
+        let before_bytes = adapter.session().queued_bytes();
+
+        let (attempts, mut adapter) = std::thread::spawn(move || {
+            let attempts = [
+                adapter.deliver(7, SimulatedNotification::Ordinary { half: 2 }),
+                adapter.deliver(
+                    7,
+                    SimulatedNotification::TimeInfo {
+                        half: 0,
+                        observation: None,
+                    },
+                ),
+            ];
+            (attempts, adapter)
+        })
+        .join()
+        .unwrap();
+        assert_eq!(
+            attempts,
+            [
+                Err(OfflineAsioError::Capture(CaptureError::WrongThread)),
+                Err(OfflineAsioError::Capture(CaptureError::WrongThread)),
+            ]
+        );
+        assert_eq!(adapter.lifecycle(), Lifecycle::Running);
+        assert_eq!(adapter.retained_error().cloned(), owner_error);
+        assert_eq!(adapter.session().clock_measurement(), before_clock);
+        assert_eq!(adapter.session().pending_events(), before_events);
+        assert_eq!(adapter.session().queued_bytes(), before_bytes);
+        assert_eq!(adapter.take().pcm(), before_pcm.as_slice());
+
+        adapter
+            .deliver(7, SimulatedNotification::Ordinary { half: 1 })
+            .unwrap();
+        adapter.stop().unwrap();
+        assert_eq!(
+            adapter.take().pcm(),
+            &[1, 0, 11, 0, 2, 0, 12, 0, 3, 0, 13, 0, 4, 0, 14, 0]
+        );
+    }
+
+    #[test]
+    fn foreign_time_info_errors_are_rejected_before_validation() {
+        let mut adapter = prepare(Some(1));
+        adapter.start().unwrap();
+        let origin = SoftwareTimeObservation {
+            cumulative_frames: 0,
+            monotonic_ns: 10,
+            provenance: "owner software clock",
+            dropout_frames: 0,
+        };
+        adapter
+            .deliver(
+                7,
+                SimulatedNotification::TimeInfo {
+                    half: 0,
+                    observation: Some(origin),
+                },
+            )
+            .unwrap();
+        let before_clock = adapter.session().clock_measurement();
+        let before_bytes = adapter.session().queued_bytes();
+        let before_events = adapter.session().pending_events();
+
+        let (attempts, mut adapter) = std::thread::spawn(move || {
+            let attempts = [
+                adapter.deliver(
+                    7,
+                    SimulatedNotification::TimeInfo {
+                        half: 0,
+                        observation: None,
+                    },
+                ),
+                adapter.deliver(
+                    7,
+                    SimulatedNotification::TimeInfo {
+                        half: 0,
+                        observation: Some(SoftwareTimeObservation {
+                            cumulative_frames: 2,
+                            monotonic_ns: 41_676,
+                            provenance: "  ",
+                            dropout_frames: 0,
+                        }),
+                    },
+                ),
+                adapter.deliver(7, SimulatedNotification::Ordinary { half: 0 }),
+                adapter.deliver(
+                    7,
+                    SimulatedNotification::TimeInfo {
+                        half: 2,
+                        observation: None,
+                    },
+                ),
+            ];
+            (attempts, adapter)
+        })
+        .join()
+        .unwrap();
+        assert!(attempts.iter().all(|result| {
+            result == &Err(OfflineAsioError::Capture(CaptureError::WrongThread))
+        }));
+        assert_eq!(adapter.lifecycle(), Lifecycle::Running);
+        assert_eq!(adapter.retained_error(), None);
+        assert_eq!(adapter.session().clock_measurement(), before_clock);
+        assert_eq!(adapter.session().pending_events(), before_events);
+        assert_eq!(adapter.session().queued_bytes(), before_bytes);
+        adapter
+            .deliver(
+                7,
+                SimulatedNotification::TimeInfo {
+                    half: 1,
+                    observation: Some(SoftwareTimeObservation {
+                        cumulative_frames: 2,
+                        monotonic_ns: 41_676,
+                        provenance: "owner software clock",
+                        dropout_frames: 0,
+                    }),
+                },
+            )
+            .unwrap();
+        adapter.stop().unwrap();
+        assert_eq!(
+            adapter.take().pcm(),
+            &[1, 0, 11, 0, 2, 0, 12, 0, 3, 0, 13, 0, 4, 0, 14, 0]
+        );
+    }
+
+    #[test]
+    fn foreign_delivery_checks_owner_before_prepared_stopped_and_disposed_state() {
+        for expected in [Lifecycle::Prepared, Lifecycle::Stopped, Lifecycle::Disposed] {
+            let mut adapter = prepare(None);
+            match expected {
+                Lifecycle::Prepared => {}
+                Lifecycle::Stopped => {
+                    adapter.start().unwrap();
+                    adapter.stop().unwrap();
+                }
+                Lifecycle::Disposed => adapter.dispose().unwrap(),
+                _ => unreachable!(),
+            }
+            let previous_error = adapter.retained_error().cloned();
+            let (result, lifecycle, retained_error, adapter) = std::thread::spawn(move || {
+                let mut adapter = adapter;
+                let result = adapter.deliver(7, SimulatedNotification::Ordinary { half: 2 });
+                (
+                    result,
+                    adapter.lifecycle(),
+                    adapter.retained_error().cloned(),
+                    adapter,
+                )
+            })
+            .join()
+            .unwrap();
+            assert_eq!(
+                result,
+                Err(OfflineAsioError::Capture(CaptureError::WrongThread))
+            );
+            assert_eq!(lifecycle, expected);
+            assert_eq!(adapter.lifecycle(), expected);
+            assert_eq!(retained_error, previous_error);
+            assert_eq!(adapter.retained_error().cloned(), previous_error);
+            assert_eq!(adapter.session().clock_measurement(), None);
+            assert_eq!(adapter.session().pending_events(), 0);
+            assert_eq!(adapter.session().queued_bytes(), 0);
+            assert!(adapter.take().pcm().is_empty());
+        }
     }
 
     #[test]
