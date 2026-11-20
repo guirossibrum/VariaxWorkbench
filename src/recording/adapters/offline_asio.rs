@@ -5,12 +5,12 @@
 //! or emulate a native ABI, load vendor code, or admit a physical interface.
 
 use crate::pod_audio::RecordRoute;
+use crate::recording::Phase;
 use crate::recording::capture::{
-    CaptureError, CaptureSession, ChannelMap, InterfaceIdentity, MAX_CHANNELS, PendingCaptureEvent,
+    CaptureContract, CaptureError, CaptureSession, ChannelMap, InterfaceIdentity, MAX_CHANNELS,
     QUEUE_CAPACITY_BYTES, ValidatedPlan,
 };
 use crate::recording::clock::ClockMeasurement;
-use crate::recording::{Phase, Take};
 
 const MAX_BUFFER_BYTES: usize = QUEUE_CAPACITY_BYTES;
 /// At most one source-order chunk plus one mapped stereo chunk coexist while
@@ -103,6 +103,12 @@ impl From<CaptureError> for OfflineAsioError {
     }
 }
 
+impl std::fmt::Display for OfflineAsioError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct OwnedChannel {
     descriptor: ChannelDescriptor,
@@ -114,7 +120,8 @@ struct OwnedChannel {
 /// into the common bounded session queue.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OfflineAsioAdapter {
-    session: CaptureSession,
+    contract: CaptureContract,
+    generation: u64,
     channels: Vec<OwnedChannel>,
     mode: NotificationMode,
     ordinary_callback_available: bool,
@@ -199,6 +206,7 @@ impl OfflineAsioAdapter {
                 return Err(OfflineAsioError::MissingChannel(channel));
             }
         }
+        channels.sort_by_key(|channel| channel.descriptor.channel);
         let source_half_bytes = expected_len
             .and_then(|bytes| bytes.checked_mul(usize::from(contract.channels)))
             .ok_or(OfflineAsioError::BufferTooLarge)?;
@@ -215,7 +223,8 @@ impl OfflineAsioAdapter {
             return Err(OfflineAsioError::CallbackUnavailable(mode));
         }
         Ok(Self {
-            session: CaptureSession::start(plan, generation)?,
+            contract,
+            generation,
             channels,
             mode,
             ordinary_callback_available,
@@ -225,8 +234,44 @@ impl OfflineAsioAdapter {
         })
     }
 
-    pub fn start(&mut self) -> Result<(), OfflineAsioError> {
-        self.session.check_owner()?;
+    pub(crate) fn prepare_generated_stereo(
+        plan: ValidatedPlan,
+        generation: u64,
+        frames_per_half: usize,
+    ) -> Result<Self, OfflineAsioError> {
+        if plan.contract().channels != 2
+            || plan.contract().format != crate::rig::audio::SampleFormat::S16Le
+            || frames_per_half == 0
+        {
+            return Err(OfflineAsioError::NotSoftwareSynthetic);
+        }
+        let channel_bytes = frames_per_half
+            .checked_mul(2)
+            .ok_or(OfflineAsioError::BufferTooLarge)?;
+        let channel0 = ChannelDescriptor {
+            direction: ChannelDirection::Input,
+            channel: 0,
+        };
+        let channel1 = ChannelDescriptor {
+            direction: ChannelDirection::Input,
+            channel: 1,
+        };
+        Self::prepare(
+            plan,
+            vec![channel0, channel1],
+            vec![
+                [vec![0; channel_bytes], vec![0; channel_bytes]],
+                [vec![0; channel_bytes], vec![0; channel_bytes]],
+            ],
+            None,
+            true,
+            true,
+            generation,
+        )
+    }
+
+    pub fn start(&mut self, session: &CaptureSession) -> Result<(), OfflineAsioError> {
+        self.check_session(session)?;
         match self.lifecycle {
             Lifecycle::Prepared => {
                 self.lifecycle = Lifecycle::Running;
@@ -239,11 +284,12 @@ impl OfflineAsioAdapter {
 
     pub fn deliver(
         &mut self,
+        session: &mut CaptureSession,
         generation: u64,
         notification: SimulatedNotification,
     ) -> Result<Option<ClockMeasurement>, OfflineAsioError> {
-        self.session.check_owner()?;
-        let result = self.deliver_inner(generation, notification);
+        self.check_session(session)?;
+        let result = self.deliver_inner(session, generation, notification);
         if let Err(error) = &result
             && *error != OfflineAsioError::Capture(CaptureError::WrongThread)
         {
@@ -254,6 +300,7 @@ impl OfflineAsioAdapter {
 
     fn deliver_inner(
         &mut self,
+        session: &mut CaptureSession,
         generation: u64,
         notification: SimulatedNotification,
     ) -> Result<Option<ClockMeasurement>, OfflineAsioError> {
@@ -286,7 +333,7 @@ impl OfflineAsioAdapter {
                 return Err(OfflineAsioError::InvalidTimeProvenance);
             }
         }
-        self.session.check_callback_admission(generation)?;
+        session.check_callback_admission(generation)?;
         let bytes = self.channel_chunk(half)?;
         let software_clock = observation.map(|time| {
             (
@@ -295,13 +342,66 @@ impl OfflineAsioAdapter {
                 time.dropout_frames,
             )
         });
-        Ok(self
-            .session
-            .callback_chunk_atomic(generation, &bytes, software_clock)?)
+        Ok(session.callback_chunk_atomic(generation, &bytes, software_clock)?)
+    }
+
+    /// Replaces one preowned synthetic half from a full source-order
+    /// interleaved S16 chunk. Validation completes before any channel buffer is
+    /// mutated; no device buffer or session storage is retained.
+    pub(crate) fn write_interleaved_half(
+        &mut self,
+        session: &CaptureSession,
+        half: u8,
+        bytes: &[u8],
+    ) -> Result<(), OfflineAsioError> {
+        self.check_session(session)?;
+        if self.lifecycle != Lifecycle::Running {
+            return Err(OfflineAsioError::NotRunning);
+        }
+        if half > 1 {
+            return Err(OfflineAsioError::InvalidHalf(half));
+        }
+        if self.contract.format != crate::rig::audio::SampleFormat::S16Le
+            || self.contract.channels == 0
+        {
+            return Err(OfflineAsioError::NotSoftwareSynthetic);
+        }
+        let channels = usize::from(self.contract.channels);
+        let bytes_per_channel = self
+            .channels
+            .first()
+            .ok_or(OfflineAsioError::InvalidDescriptor)?
+            .halves[usize::from(half)]
+        .len();
+        let expected_len = bytes_per_channel
+            .checked_mul(channels)
+            .ok_or(OfflineAsioError::BufferTooLarge)?;
+        if bytes.is_empty()
+            || bytes.len() != expected_len
+            || bytes.len() > crate::recording::STREAM_CHUNK_BYTES_MAX
+            || !bytes.len().is_multiple_of(channels * 2)
+            || self.channels.len() != channels
+            || self
+                .channels
+                .iter()
+                .any(|channel| channel.halves[usize::from(half)].len() != bytes_per_channel)
+        {
+            return Err(OfflineAsioError::InvalidBufferLength);
+        }
+
+        for (frame_index, frame) in bytes.chunks_exact(channels * 2).enumerate() {
+            for channel in 0..channels {
+                let source = channel * 2;
+                let destination = frame_index * 2;
+                self.channels[channel].halves[usize::from(half)][destination..destination + 2]
+                    .copy_from_slice(&frame[source..source + 2]);
+            }
+        }
+        Ok(())
     }
 
     fn channel_chunk(&self, half: u8) -> Result<Vec<u8>, OfflineAsioError> {
-        let channels = self.session.plan().channels;
+        let channels = self.contract.channels;
         let frames = self.channel(0, half)?.len() / 2;
         let frame_bytes = usize::from(channels)
             .checked_mul(2)
@@ -331,17 +431,13 @@ impl OfflineAsioAdapter {
             .ok_or(OfflineAsioError::MissingChannel(index))
     }
 
-    pub fn drain(&mut self) -> Result<usize, CaptureError> {
-        self.session.drain()
-    }
-
-    pub fn stop(&mut self) -> Result<(), CaptureError> {
-        self.session.check_owner()?;
+    pub fn stop(&mut self, session: &mut CaptureSession) -> Result<(), CaptureError> {
+        self.check_session(session)?;
         if self.lifecycle == Lifecycle::Disposed {
             return Err(CaptureError::Stopped);
         }
-        let result = self.session.stop();
-        if self.session.take().phase() != Phase::Recording {
+        let result = session.stop();
+        if session.take().phase() != Phase::Recording {
             self.lifecycle = Lifecycle::Stopped;
         }
         if let Err(error) = &result {
@@ -351,12 +447,12 @@ impl OfflineAsioAdapter {
         result
     }
 
-    pub fn cancel(&mut self) -> Result<(), CaptureError> {
-        self.session.check_owner()?;
+    pub fn cancel(&mut self, session: &mut CaptureSession) -> Result<(), CaptureError> {
+        self.check_session(session)?;
         if self.lifecycle == Lifecycle::Disposed {
             return Err(CaptureError::Stopped);
         }
-        let result = self.session.cancel();
+        let result = session.cancel();
         if result.is_ok() {
             self.lifecycle = Lifecycle::Stopped;
         }
@@ -367,13 +463,13 @@ impl OfflineAsioAdapter {
         result
     }
 
-    pub fn disconnect(&mut self) -> Result<(), CaptureError> {
-        self.session.check_owner()?;
+    pub fn disconnect(&mut self, session: &mut CaptureSession) -> Result<(), CaptureError> {
+        self.check_session(session)?;
         if self.lifecycle == Lifecycle::Disposed {
             return Err(CaptureError::Stopped);
         }
-        let result = self.session.disconnect();
-        if self.session.take().phase() != Phase::Recording {
+        let result = session.disconnect();
+        if session.take().phase() != Phase::Recording {
             self.lifecycle = Lifecycle::Disconnected;
         }
         if let Err(error) = &result {
@@ -383,17 +479,17 @@ impl OfflineAsioAdapter {
         result
     }
 
-    pub fn dispose(&mut self) -> Result<(), OfflineAsioError> {
-        self.session.check_owner()?;
+    pub fn dispose(&mut self, session: &mut CaptureSession) -> Result<(), OfflineAsioError> {
+        self.check_session(session)?;
         if self.lifecycle == Lifecycle::Disposed {
             return Ok(());
         }
-        if self.session.take().phase() == Phase::Recording
-            && let Err(error) = self.session.stop()
+        if session.take().phase() == Phase::Recording
+            && let Err(error) = session.stop()
         {
             self.retained_error
                 .get_or_insert(OfflineAsioError::Capture(error));
-            if self.session.take().phase() == Phase::Recording {
+            if session.take().phase() == Phase::Recording {
                 return Err(self
                     .retained_error
                     .clone()
@@ -409,18 +505,6 @@ impl OfflineAsioAdapter {
         Ok(())
     }
 
-    pub fn session(&self) -> &CaptureSession {
-        &self.session
-    }
-
-    pub fn take(&self) -> &Take {
-        self.session.take()
-    }
-
-    pub fn take_pending_events(&mut self) -> Result<Vec<PendingCaptureEvent>, CaptureError> {
-        self.session.take_pending_events()
-    }
-
     pub const fn mode(&self) -> NotificationMode {
         self.mode
     }
@@ -431,6 +515,14 @@ impl OfflineAsioAdapter {
 
     pub fn retained_error(&self) -> Option<&OfflineAsioError> {
         self.retained_error.as_ref()
+    }
+
+    fn check_session(&self, session: &CaptureSession) -> Result<(), CaptureError> {
+        session.check_owner()?;
+        if session.generation() != self.generation || session.plan() != self.contract {
+            return Err(CaptureError::ForgedOrChangedRoute);
+        }
+        Ok(())
     }
 }
 
@@ -445,6 +537,84 @@ fn validate_map(map: ChannelMap, channels: u8) -> Result<(), OfflineAsioError> {
 mod tests {
     use super::*;
     use crate::pod_audio::RecordRoute;
+    use crate::recording::Take;
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct AdapterHarness {
+        adapter: super::OfflineAsioAdapter,
+        session: CaptureSession,
+    }
+
+    // Preserve the focused adapter tests while making the production adapter
+    // feed the same externally owned session that Panel and Take use.
+    #[allow(non_camel_case_types)]
+    type OfflineAsioAdapter = AdapterHarness;
+
+    impl AdapterHarness {
+        fn prepare(
+            plan: ValidatedPlan,
+            descriptors: Vec<ChannelDescriptor>,
+            buffers: Vec<[Vec<u8>; 2]>,
+            response: Option<i32>,
+            ordinary: bool,
+            time_info: bool,
+            generation: u64,
+        ) -> Result<Self, OfflineAsioError> {
+            let session = CaptureSession::start(plan.clone(), generation)?;
+            let adapter = super::OfflineAsioAdapter::prepare(
+                plan,
+                descriptors,
+                buffers,
+                response,
+                ordinary,
+                time_info,
+                generation,
+            )?;
+            Ok(Self { adapter, session })
+        }
+
+        fn start(&mut self) -> Result<(), OfflineAsioError> {
+            self.adapter.start(&self.session)
+        }
+        fn deliver(
+            &mut self,
+            generation: u64,
+            notification: SimulatedNotification,
+        ) -> Result<Option<ClockMeasurement>, OfflineAsioError> {
+            self.adapter
+                .deliver(&mut self.session, generation, notification)
+        }
+        fn stop(&mut self) -> Result<(), CaptureError> {
+            self.adapter.stop(&mut self.session)
+        }
+        fn cancel(&mut self) -> Result<(), CaptureError> {
+            self.adapter.cancel(&mut self.session)
+        }
+        fn disconnect(&mut self) -> Result<(), CaptureError> {
+            self.adapter.disconnect(&mut self.session)
+        }
+        fn dispose(&mut self) -> Result<(), OfflineAsioError> {
+            self.adapter.dispose(&mut self.session)
+        }
+        fn lifecycle(&self) -> Lifecycle {
+            self.adapter.lifecycle()
+        }
+        fn retained_error(&self) -> Option<&OfflineAsioError> {
+            self.adapter.retained_error()
+        }
+        fn mode(&self) -> NotificationMode {
+            self.adapter.mode()
+        }
+        fn session(&self) -> &CaptureSession {
+            &self.session
+        }
+        fn take(&self) -> &Take {
+            self.session.take()
+        }
+        fn drain(&mut self) -> Result<usize, CaptureError> {
+            self.session.drain()
+        }
+    }
 
     fn descriptors() -> Vec<ChannelDescriptor> {
         (0..2)

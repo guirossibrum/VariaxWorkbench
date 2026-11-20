@@ -1135,6 +1135,9 @@ pub enum ClockSelection {
 pub enum InputSelection {
     Unselected,
     Synthetic,
+    /// Generated PCM delivered through a software-only double-buffer callback
+    /// model. This is not an ASIO device or a physical capture source.
+    SimulatedCallback,
     /// Generated test PCM routed through the revalidated static PODxt plan.
     /// This never initializes a native backend or claims captured device data.
     StaticPodxtSynthetic,
@@ -1212,6 +1215,7 @@ pub struct Panel {
     pattern: SyntheticPattern,
     take: Option<Take>,
     capture: Option<capture::CaptureSession>,
+    callback_adapter: Option<adapters::offline_asio::OfflineAsioAdapter>,
     capture_generation: u64,
     take_saved: bool,
     recovery_events_outstanding: bool,
@@ -1240,6 +1244,7 @@ impl Panel {
             },
             take: None,
             capture: None,
+            callback_adapter: None,
             capture_generation: 0,
             take_saved: false,
             recovery_events_outstanding: false,
@@ -1472,7 +1477,7 @@ impl Panel {
         if self.input == InputSelection::StaticPodxtSynthetic {
             return Err(TakeError::StaticInputUnavailableOnPlatform);
         }
-        if self.take.is_some() || self.capture.is_some() {
+        if self.take.is_some() || self.capture.is_some() || self.callback_adapter.is_some() {
             return Err(TakeError::AlreadyStarted);
         }
         let route = self
@@ -1480,6 +1485,15 @@ impl Panel {
             .ok_or(TakeError::SelectionMissing("a record route"))?;
         let plan = match (self.clock, self.input) {
             (ClockSelection::Integer(hz), InputSelection::Synthetic) => {
+                capture::ValidatedPlan::software_synthetic(
+                    hz,
+                    2,
+                    capture::ChannelMap { left: 0, right: 1 },
+                    route,
+                    PANEL_TAKE_BYTES,
+                )
+            }
+            (ClockSelection::Integer(hz), InputSelection::SimulatedCallback) => {
                 capture::ValidatedPlan::software_synthetic(
                     hz,
                     2,
@@ -1511,6 +1525,9 @@ impl Panel {
             (ClockSelection::NativePodxt, InputSelection::Synthetic) => {
                 capture::ValidatedPlan::software_synthetic_podxt_clock(route, PANEL_TAKE_BYTES)
             }
+            (ClockSelection::NativePodxt, InputSelection::SimulatedCallback) => {
+                return Err(TakeError::InputClockMismatch);
+            }
             (ClockSelection::NativePodxt, InputSelection::StaticPodxtSynthetic) => {
                 #[cfg(target_os = "linux")]
                 {
@@ -1538,11 +1555,29 @@ impl Panel {
             }
         }
         .map_err(|error| TakeError::Capture(error.to_string()))?;
-        self.capture_generation = self.capture_generation.wrapping_add(1);
-        self.capture = Some(
-            capture::CaptureSession::start(plan, self.capture_generation)
+        let generation = self.capture_generation.wrapping_add(1);
+        let mut callback_adapter = if self.input == InputSelection::SimulatedCallback {
+            Some(
+                adapters::offline_asio::OfflineAsioAdapter::prepare_generated_stereo(
+                    plan.clone(),
+                    generation,
+                    FEED_FRAMES as usize,
+                )
                 .map_err(|error| TakeError::Capture(error.to_string()))?,
-        );
+            )
+        } else {
+            None
+        };
+        let capture = capture::CaptureSession::start(plan, generation)
+            .map_err(|error| TakeError::Capture(error.to_string()))?;
+        if let Some(adapter) = callback_adapter.as_mut() {
+            adapter
+                .start(&capture)
+                .map_err(|error| TakeError::Capture(error.to_string()))?;
+        }
+        self.capture_generation = generation;
+        self.capture = Some(capture);
+        self.callback_adapter = callback_adapter;
         self.take = None;
         self.cursor = 0;
         self.levels = Levels::default();
@@ -1551,6 +1586,7 @@ impl Panel {
         self.message = match self.input {
             InputSelection::File => "Recording armed from the selected WAV through the bounded offline capture session. Feed a chunk, then stop; nothing is saved yet.",
             InputSelection::Synthetic => "Offline synthetic recording armed through the bounded common capture session. Feed a chunk, then stop; nothing is saved yet.",
+            InputSelection::SimulatedCallback => "Generated software test data armed through the common capture queue. No hardware connection or device callback is used.",
             InputSelection::StaticPodxtSynthetic => "Generated test PCM is routed through the revalidated static Linux PODxt declaration in the common offline session. No adapter or device stream is initialized.",
             InputSelection::Unselected => unreachable!("input was validated above"),
         }
@@ -1589,7 +1625,24 @@ impl Panel {
         };
         let frames = (bytes.len() / frame_bytes) as u64;
         let levels = if let Some(capture) = self.capture.as_mut() {
-            let callback_result = if self.input == InputSelection::StaticPodxtSynthetic {
+            let callback_result = if let Some(adapter) = self.callback_adapter.as_mut() {
+                let half = ((self.cursor / u64::from(FEED_FRAMES)) % 2) as u8;
+                adapter
+                    .write_interleaved_half(capture, half, &bytes)
+                    .and_then(|()| {
+                        adapter
+                            .deliver(
+                                capture,
+                                self.capture_generation,
+                                adapters::offline_asio::SimulatedNotification::Ordinary { half },
+                            )
+                            .map(|_| ())
+                    })
+                    .map_err(|error| match error {
+                        adapters::offline_asio::OfflineAsioError::Capture(error) => error,
+                        _ => capture::CaptureError::ForgedOrChangedRoute,
+                    })
+            } else if self.input == InputSelection::StaticPodxtSynthetic {
                 #[cfg(target_os = "linux")]
                 {
                     adapters::linux_alsa::translate_read_result_for_session(
@@ -1630,9 +1683,12 @@ impl Panel {
 
     pub fn stop(&mut self) -> Result<(), TakeError> {
         if let Some(capture) = self.capture.as_mut() {
-            capture
-                .stop()
-                .map_err(|error| TakeError::Capture(error.to_string()))?;
+            if let Some(adapter) = self.callback_adapter.as_mut() {
+                adapter.stop(capture)
+            } else {
+                capture.stop()
+            }
+            .map_err(|error| TakeError::Capture(error.to_string()))?;
         } else {
             self.take.as_mut().ok_or(TakeError::NotRecording)?.stop()?;
         }
@@ -1643,10 +1699,14 @@ impl Panel {
 
     pub fn cancel(&mut self) -> Result<(), TakeError> {
         if let Some(capture) = self.capture.as_mut() {
-            capture
-                .cancel()
-                .map_err(|error| TakeError::Capture(error.to_string()))?;
+            if let Some(adapter) = self.callback_adapter.as_mut() {
+                adapter.cancel(capture)
+            } else {
+                capture.cancel()
+            }
+            .map_err(|error| TakeError::Capture(error.to_string()))?;
             self.capture = None;
+            self.callback_adapter = None;
         } else {
             self.take
                 .as_mut()
@@ -1715,7 +1775,7 @@ impl Panel {
     }
 
     fn ensure_idle(&self) -> Result<(), TakeError> {
-        if self.take.is_some() || self.capture.is_some() {
+        if self.take.is_some() || self.capture.is_some() || self.callback_adapter.is_some() {
             Err(TakeError::Busy)
         } else {
             Ok(())
@@ -1755,6 +1815,91 @@ mod tests {
         panel.select_input(InputSelection::Synthetic).unwrap();
         panel.start().unwrap();
         panel
+    }
+
+    fn callback_panel(clock: ClockSelection, route: RecordRoute) -> Panel {
+        let mut panel = Panel::new();
+        panel.select_route(route).unwrap();
+        panel.select_clock(clock).unwrap();
+        panel
+            .select_input(InputSelection::SimulatedCallback)
+            .unwrap();
+        panel
+    }
+
+    #[test]
+    fn simulated_callback_uses_common_take_at_both_integer_rates_and_saves_exact_pcm() {
+        let directory = tempfile::tempdir().unwrap();
+        for hz in [44_100, 48_000] {
+            let mut panel =
+                callback_panel(ClockSelection::Integer(hz), RecordRoute::SendCleanGuitar);
+            panel.pattern = SyntheticPattern::Constant {
+                left: 0x0102,
+                right: -2,
+            };
+            panel.start().unwrap();
+            assert_eq!(panel.capture_generation, 1);
+            assert!(panel.capture_session().is_some());
+            assert!(panel.has_unsaved_take());
+            panel.feed().unwrap();
+            assert_eq!(
+                panel.current_take().unwrap().pcm()[..8],
+                [2, 1, 254, 255, 2, 1, 254, 255]
+            );
+            panel.stop().unwrap();
+            let path = directory.path().join(format!("callback-{hz}.wav"));
+            let collision = directory.path().join("collision.wav");
+            std::fs::write(&collision, b"retain original").unwrap();
+            let before = panel.current_take().unwrap().pcm().to_vec();
+            assert!(panel.save(&collision).is_err());
+            assert!(panel.has_unsaved_take());
+            assert_eq!(panel.current_take().unwrap().pcm(), before);
+            assert!(
+                panel
+                    .save(&directory.path().join("missing-dir/take.wav"))
+                    .is_err()
+            );
+            assert!(panel.has_unsaved_take());
+            let saved = panel.save(&path).unwrap();
+            assert!(!panel.has_unsaved_take());
+            assert_eq!(std::fs::read(&collision).unwrap(), b"retain original");
+            let wav = std::fs::read(&path).unwrap();
+            assert_eq!(&wav[44..], before.as_slice());
+            assert_eq!(parse_wav(&wav).unwrap().data, before);
+            assert!(
+                std::fs::read_to_string(saved.sidecar_path)
+                    .unwrap()
+                    .contains("\"sample_rate_hz\"")
+            );
+            panel.cancel().unwrap();
+            assert_eq!(panel.phase(), Phase::Idle);
+            assert!(!panel.has_unsaved_take());
+        }
+    }
+
+    #[test]
+    fn simulated_callback_rejects_native_clock_and_reamp_routes_before_start() {
+        let mut native = callback_panel(ClockSelection::NativePodxt, RecordRoute::SendCleanGuitar);
+        let generation = native.capture_generation;
+        assert_eq!(native.start(), Err(TakeError::InputClockMismatch));
+        assert_eq!(native.capture_generation, generation);
+        assert!(native.capture.is_none());
+        assert!(native.callback_adapter.is_none());
+        assert!(!native.has_unsaved_take());
+
+        for route in [
+            RecordRoute::SendCleanGuitarReampPlayback,
+            RecordRoute::SendReampPlayback,
+        ] {
+            let mut panel = callback_panel(ClockSelection::Integer(48_000), route);
+            let generation = panel.capture_generation;
+            assert!(panel.start().is_err());
+            assert_eq!(panel.capture_generation, generation);
+            assert_eq!(panel.phase(), Phase::Idle);
+            assert!(panel.capture.is_none());
+            assert!(panel.callback_adapter.is_none());
+            assert!(!panel.has_unsaved_take());
+        }
     }
 
     #[test]

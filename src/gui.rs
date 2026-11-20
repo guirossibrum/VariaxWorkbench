@@ -1599,6 +1599,19 @@ impl Workbench {
                 {
                     self.recorder.note(error.to_string());
                 }
+                if matches!(self.recorder.clock(), recording::ClockSelection::Integer(_))
+                    && self.record_choice(
+                        ui,
+                        "input-simulated-callback",
+                        self.recorder.input() == recording::InputSelection::SimulatedCallback,
+                        "Simulated callback test data",
+                    )
+                    && let Err(error) = self
+                        .recorder
+                        .select_input(recording::InputSelection::SimulatedCallback)
+                {
+                    self.recorder.note(error.to_string());
+                }
                 #[cfg(target_os = "linux")]
                 if self.recorder.clock() == recording::ClockSelection::NativePodxt
                     && self.record_choice(
@@ -2643,6 +2656,42 @@ mod tests {
         const {
             assert!(LIVE_ACCESS_LOCKED);
         }
+    }
+
+    #[test]
+    fn rendered_simulated_callback_workflow_is_synthetic_and_offline() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("simulated-callback.wav");
+        app.dialogs = Box::new(FakeDialogs {
+            save: [Some(path.clone())].into(),
+            ..Default::default()
+        });
+        click_recording(&context, &mut app, "open-recording");
+        click_recording(&context, &mut app, "route-clean");
+        click_recording(&context, &mut app, "clock-48000");
+        click_recording(&context, &mut app, "input-simulated-callback");
+        click_recording(&context, &mut app, "start");
+        assert_eq!(app.recorder.phase(), recording::Phase::Recording);
+        assert!(app.recording_visible.contains("No hardware connection"));
+        assert!(
+            app.recording_visible
+                .contains("Generated software test data")
+        );
+        assert_eq!(app.recording_capture_attempts, 0);
+        assert!(app.read_worker.is_none());
+        assert!(!app.recorder.device_opened());
+        click_recording(&context, &mut app, "feed");
+        click_recording(&context, &mut app, "stop");
+        click_recording(&context, &mut app, "save");
+        let wav = std::fs::read(&path).unwrap();
+        assert_eq!(&wav[0..4], b"RIFF");
+        assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 48_000);
+        assert_eq!(&wav[44..48], &[0xe8, 0x03, 0x30, 0xf8]);
+        assert_eq!(app.recording_capture_attempts, 0);
+        assert!(app.read_worker.is_none());
+        assert!(!app.recorder.device_opened());
     }
 
     fn prepare_quit_take(app: &mut Workbench, clock: ClockSelection) {
