@@ -87,6 +87,18 @@ The 16 MiB cap and zero-tone rejection apply transactionally. Folder names,
 container types, unselected tones, opaque children, and original padding remain
 byte-preserved. Selection and pending CAB choice state refresh after an operation;
 collection dirty, save-copy, revert, and quit handling track membership changes.
+The offline CAB/MIC editor retains its existing L6AS path and adds a separate
+strict L6PA path. L6PA editing requires a complete 76-byte target/profile PINF,
+one existing CAB with exactly 12 MINF bytes, a source-listed current CAB id,
+and one canonical existing integer MIC PARM id 0. CAB requests are limited to
+the 25 unconditional ids; numeric MIC choices are `0..=3` for either known
+class. Each operation validates before no-op handling, edits a clone, reparses,
+checks that only its selected four-byte word changed, and publishes only on
+success. GUI CAB stages are bound to the document generation, tone index and
+original bytes. These edits do not replace/create records, repair invalid MIC
+data, test installed-pack entitlement, or establish vendor-runtime/device
+behavior. Synthetic r4 full-file before/after cases and admission failures are
+covered separately from the unchanged L6AS tests.
 `L6BA` roots and `BANK` containers do not expose the folder Duplicate/Remove
 controls. A separate admitted offline operation
 reorders existing type-0 `L6PA` tones only within one nonempty `BANK` of an

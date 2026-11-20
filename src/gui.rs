@@ -252,6 +252,7 @@ struct Workbench {
     pod_bundle: Option<pod_preset::PodBundleLibrary>,
     pod_selected: Option<usize>,
     pod_cab_pending: Option<(usize, pod_preset::PodCabModelChoice)>,
+    pod_cab_pending_origin: Option<(u64, usize, Vec<u8>)>,
     pod_delay_model_pending: Option<(usize, pod_preset::PodDelayModelChoice)>,
     pod_mod_model_pending: Option<(usize, pod_preset::PodModModelChoice)>,
     pod_stomp_model_pending: Option<(usize, pod_preset::PodStompModelChoice)>,
@@ -397,6 +398,7 @@ impl Workbench {
             pod_bundle: None,
             pod_selected: None,
             pod_cab_pending: None,
+            pod_cab_pending_origin: None,
             pod_delay_model_pending: None,
             pod_mod_model_pending: None,
             pod_stomp_model_pending: None,
@@ -1799,6 +1801,7 @@ impl Workbench {
 
     fn refresh_selected_pod_name(&mut self) {
         self.pod_cab_pending = None;
+        self.pod_cab_pending_origin = None;
         self.pod_delay_model_pending = None;
         self.pod_mod_model_pending = None;
         self.pod_stomp_model_pending = None;
@@ -2430,23 +2433,25 @@ impl Workbench {
                     }
                 }
                 let cab_state = self.pod_selected.and_then(|index| self.pod_library.tone(index).and_then(|tone| {
-                    (tone.container() == pod_preset::ContainerKind::L6as && tone.cab_model_id().is_some())
-                        .then_some((index, tone.cab_model_id(), tone.cab_class(), tone.mic_choice()))
+                    (matches!(tone.container(), pod_preset::ContainerKind::L6as | pod_preset::ContainerKind::L6pa)
+                        && tone.cab_edit_model_id().is_some())
+                        .then_some((index, tone.container(), tone.cab_edit_model_id(), tone.cab_edit_class(), tone.mic_choice(), tone.cab_mic_editable()))
                 }));
-                if let Some((index, cab_id, class, mic)) = cab_state {
+                if let Some((index, container, cab_id, class, mic, editable)) = cab_state {
                     let fallback = pod_preset::PodCabModelChoice::from_model_id(
                         pod_preset::PODXT_CAB_MODEL_IDS[0],
                     )
                     .expect("source CAB allowlist is nonempty");
+                    ui.label(format!("CAB (offline) · current {} · MIC class {}", cab_id.map_or_else(|| "unavailable".into(), |id| format!("{id:08x}")), match class { Some(pod_preset::PodCabClass::Bass) => "bass", Some(pod_preset::PodCabClass::Other) => "standard", None => "unknown" }));
+                    if editable {
                     let mut selected_cab = self
                         .pod_cab_pending
                         .filter(|(pending_index, _)| *pending_index == index)
                         .map(|(_, choice)| choice)
-                        .or_else(|| {
-                            cab_id.and_then(pod_preset::PodCabModelChoice::from_model_id)
-                        })
+                        .or_else(|| cab_id.and_then(pod_preset::PodCabModelChoice::from_model_id))
                         .unwrap_or(fallback);
-                    ui.label(format!("CAB (offline) · current {} · MIC class {}", cab_id.map_or_else(|| "unavailable".into(), |id| format!("{id:08x}")), match class { Some(pod_preset::PodCabClass::Bass) => "bass", Some(pod_preset::PodCabClass::Other) => "standard", None => "unknown" }));
+                    let original_choice = selected_cab;
+                    let mut choice_changed = false;
                     ui.horizontal(|ui| {
                         #[cfg(test)]
                         let mut option_rects = Vec::new();
@@ -2456,6 +2461,7 @@ impl Workbench {
                                 for id in pod_preset::PODXT_CAB_MODEL_IDS {
                                     if let Some(choice) = pod_preset::PodCabModelChoice::from_model_id(id) {
                                         let _response = ui.selectable_value(&mut selected_cab, choice, format!("CAB {id:08x}"));
+                                        choice_changed |= _response.changed();
                                         #[cfg(test)]
                                         option_rects.push((id, _response.rect));
                                     }
@@ -2466,10 +2472,32 @@ impl Workbench {
                             self.pod_cab_combo = Some(_combo.response.rect);
                             self.pod_cab_options.extend(option_rects);
                         }
-                        self.pod_cab_pending = Some((index, selected_cab));
+                        if choice_changed && selected_cab != original_choice {
+                            self.pod_cab_pending = Some((index, selected_cab));
+                            self.pod_cab_pending_origin = self.pod_library.tone(index).map(|tone| (
+                                self.pod_document_generation,
+                                index,
+                                tone.as_bytes().to_vec(),
+                            ));
+                        }
+                        if self.pod_cab_pending.is_none_or(|(pending_index, _)| pending_index != index) {
+                            self.pod_cab_pending = Some((index, selected_cab));
+                        }
+                        if self.pod_cab_pending_origin.is_none() {
+                            self.pod_cab_pending_origin = self.pod_library.tone(index).map(|tone| (
+                                self.pod_document_generation,
+                                index,
+                                tone.as_bytes().to_vec(),
+                            ));
+                        }
                         if self.pod_button(ui, "pod-cab-apply", "Apply CAB") {
                             self.pod_selected = Some(index);
                             self.apply_pod_cab_model_choice(selected_cab);
+                        }
+                        let discard = self.pod_button(ui, "pod-cab-discard", "Discard");
+                        if discard {
+                            self.pod_cab_pending = None;
+                            self.pod_cab_pending_origin = None;
                         }
                     });
                     ui.horizontal_wrapped(|ui| {
@@ -2482,6 +2510,9 @@ impl Workbench {
                             }
                         }
                     });
+                    } else if container == pod_preset::ContainerKind::L6pa {
+                        ui.label("CAB/MIC editing is unavailable because this L6PA tone fails strict offline admission.");
+                    }
                 }
                 ui.horizontal(|ui| {
                     ui.label("PINF name");
@@ -3581,6 +3612,14 @@ impl Workbench {
         }
         self.pod_library = library;
         self.pod_bundle = bundle;
+        self.pod_document_generation = self.pod_document_generation.wrapping_add(1);
+        if self
+            .pod_cab_pending
+            .is_some_and(|(pending_index, _)| pending_index == index)
+        {
+            self.pod_cab_pending = None;
+            self.pod_cab_pending_origin = None;
+        }
         let new_eq_context = self
             .pod_library
             .tone(index)
@@ -4113,6 +4152,21 @@ impl Workbench {
         else {
             return;
         };
+        let Some((generation, pending_index, original)) = self.pod_cab_pending_origin.take() else {
+            self.pod_message =
+                "Discarded the staged CAB choice because its original tone state is unavailable."
+                    .into();
+            self.pod_cab_pending = None;
+            return;
+        };
+        if generation != self.pod_document_generation
+            || pending_index != index
+            || current != original
+        {
+            self.pod_message = "Discarded the staged CAB choice because its tone changed or selection became stale.".into();
+            self.pod_cab_pending = None;
+            return;
+        }
         match Session::initial_rig().set_pod_cab_model_choice(RoleKind::Pod, &current, choice) {
             Ok(bytes) => match self.replace_pod_tone(index, bytes) {
                 Ok(()) => {
@@ -6042,6 +6096,93 @@ mod tests {
         assert_eq!(app.pod_cab_pending.unwrap().0, 1);
         assert_eq!(app.pod_cab_pending.unwrap().1.model_id(), 0x0102_0001);
         assert_eq!(app.pod_library.tone(1).unwrap().as_bytes(), second);
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn l6pa_cab_mic_controls_render_and_apply_only_after_explicit_choice() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let original = include_bytes!("../tests/fixtures/pod-l6pa-cab-mic/cab.before.bin").to_vec();
+        app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_selected = Some(0);
+        recording_frame(&context, &mut app, vec![]);
+        assert!(app.pod_cab_combo.is_some());
+        choose_cab_popup(&context, &mut app, 0x0102_0002);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        click_pod(&context, &mut app, "pod-cab-apply");
+        let changed = app.pod_library.tone(0).unwrap();
+        assert_eq!(changed.cab_edit_model_id(), Some(0x0102_0002));
+        assert_eq!(changed.mic_choice().unwrap().value(), 2);
+        assert!(app.pod_library.is_dirty(0));
+
+        click_pod(&context, &mut app, "pod-mic-3");
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .mic_choice()
+                .unwrap()
+                .value(),
+            3
+        );
+        let staged = app.pod_cab_pending;
+        click_pod(&context, &mut app, "pod-cab-discard");
+        assert!(app.pod_cab_pending.is_none() || app.pod_cab_pending != staged);
+        const {
+            assert!(LIVE_ACCESS_LOCKED);
+        }
+    }
+
+    #[test]
+    fn l6pa_cab_edit_saves_reopens_and_stale_stages_do_not_cross_tones() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let original = include_bytes!("../tests/fixtures/pod-l6pa-cab-mic/cab.before.bin").to_vec();
+        let sibling =
+            include_bytes!("../tests/fixtures/pod-l6pa-cab-mic/mic-guitar.before.bin").to_vec();
+        app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_library.import_bytes(sibling.clone()).unwrap();
+        app.pod_selected = Some(0);
+        recording_frame(&context, &mut app, vec![]);
+
+        choose_cab_popup(&context, &mut app, 0x0102_0002);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        click_pod(&context, &mut app, "pod-cab-apply");
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().cab_edit_model_id(),
+            Some(0x0102_0002)
+        );
+        assert_eq!(app.pod_library.tone(1).unwrap().as_bytes(), sibling);
+        assert!(app.pod_library.is_dirty(0));
+
+        let directory = tempfile::tempdir().unwrap();
+        let saved = directory.path().join("l6pa-copy.tone");
+        app.dialogs = Box::new(FakeDialogs {
+            pod_save: [Some(saved.clone())].into(),
+            ..Default::default()
+        });
+        click_pod(&context, &mut app, "save-pod");
+        assert!(!app.pod_library.is_dirty(0));
+        let reopened = pod_preset::PodTone::parse(std::fs::read(saved).unwrap()).unwrap();
+        assert_eq!(reopened.cab_edit_model_id(), Some(0x0102_0002));
+        assert_eq!(reopened.mic_choice().unwrap().value(), 2);
+
+        choose_cab_popup(&context, &mut app, 0x0102_0003);
+        let staged = app.pod_cab_pending;
+        let sibling_row = app.pod_rows[&1].center();
+        click_pod_at(&context, &mut app, sibling_row);
+        recording_frame(&context, &mut app, vec![]);
+        assert_eq!(app.pod_selected, Some(1));
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().cab_edit_model_id(),
+            Some(0x0102_0002)
+        );
+        assert!(app.pod_cab_pending.is_none() || app.pod_cab_pending != staged);
         const {
             assert!(LIVE_ACCESS_LOCKED);
         }
