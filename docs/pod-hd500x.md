@@ -865,3 +865,29 @@ other stages on Apply or Discard. Complete synthetic vectors retain both
 type-11 words and opaque suffix bytes. This does not establish complete UI or
 callback parity, physical applicability, product attribution, or a vendor
 preset observation. Local validation passes all 335 tests (259 library, 50 GUI, 26 integration), Clippy with `-D warnings`, formatting, and `git diff --check`; configured focused checks on the final committed head remain pending. Issue #32 remains partial and open.
+
+## Static-derived type-0x0D four-choice file operation
+
+PR #109 separately admits only the static-derived candidate model/key
+`0x020A001D/0x3F100003` for descriptor type `0x0D` (decimal 13). The distinct
+descriptor type `0x13` (decimal 19) remains deferred. A closed neutral enum
+permits only Choice 0–3 and stores BE binary32 words `00000000`, `3EAAAAAB`,
+`3F2AAAAB`, and `3F800000`. These words follow the static callback's
+intermediate binary32 step spill before its index multiply; they are not a
+historical runtime control-word validation. Choice labels, units, defaults,
+physical meaning, and actual preset presence remain unknown.
+
+The writer is restricted to standalone H5EP v1 with an explicit FX slot 0–7.
+It checks the exact model/key, valid effect, canonical enable byte, count
+1–12, one matching key across all twelve rows, in-count target, unassigned
+marker, and finite existing word before even a same-word no-op. It clones,
+patches only the selected value DWORD, and fully reparses before replacement.
+Unknown finite words load losslessly; non-finite values display as raw words
+and reject edits. H5ES/H5EB parents must be extracted first and remain unchanged.
+
+The GUI stages by entry/slot/model/control, with explicit Apply and Discard.
+The model `0x020A001D` retains its two independent type-11 controls at keys
+`0x3F100001` and `0x3F100002`; all three stages coexist and are resolved before
+the quit dirty-file prompt. This remains an offline file operation only. The
+indirect owner-context effects and complete editor/runtime parity are
+unresolved, and issue #32 remains partial and open.
