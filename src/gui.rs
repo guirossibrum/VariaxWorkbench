@@ -2785,7 +2785,10 @@ impl Workbench {
                     })
                 });
                 if let Some(detail) = detail {
-                    ui.label(detail);
+                    egui::CollapsingHeader::new("Selected preset details")
+                        .id_salt("pod-selected-preset-details")
+                        .default_open(false)
+                        .show(ui, |ui| ui.label(detail));
                 }
                 #[cfg(test)]
                 {
