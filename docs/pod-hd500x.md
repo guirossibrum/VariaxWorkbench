@@ -832,9 +832,15 @@ reject mutation. Synthetic complete vectors for both models contain both keys
 and pin every choice output independently.
 
 The GUI displays both key-labelled controls for either admitted model. Stages
-are keyed by entry, slot, model, and control key; applying or discarding one
-leaves its sibling stage and value intact. Quit handling processes all staged
-type-11 controls before any remaining dirty-file decision. The implementation
-does not reproduce unresolved owner-context side effects, infer product/slot
-identity, or establish physical applicability. Exact-head configured checks
-remain pending until coordinator results are returned; issue #32 remains open.
+are keyed by entry, slot, model, and control key; both Apply orders prove that
+the sibling stage remains exact, and both Discard directions retain the other
+stage. Keep-editing preserves both stages on either model. For each of the four
+associations, failure testing stages the target and sibling through the visible
+choices, saves a baseline, creates dirty state by applying the sibling, makes
+the target marker invalid without changing model identity, and clicks the
+rendered Apply. The failed Apply preserves bytes, dirty state, and both exact
+pending records; revert restores the saved source. The implementation does
+not reproduce unresolved owner-context side effects, infer product/slot
+identity, or establish physical applicability. The previous submitted head's
+four configured checks passed; these correction changes require fresh exact-head
+checks. Issue #32 remains open.
