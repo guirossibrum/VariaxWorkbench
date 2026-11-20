@@ -594,10 +594,14 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
         panic!("extracted bundle child remains H5EP");
     };
     assert_eq!(bundle_dynamics_child.effect_model_id(0), Some(0x0200_000d));
+    let dynamics_rows = crate::pod_preset::H5EP_HEADER_BYTES + 0x428 + 0x10;
     assert_eq!(
-        &bundle_dynamics_child.as_bytes()[crate::pod_preset::H5EP_HEADER_BYTES + 0x428 + 0x10
-            ..crate::pod_preset::H5EP_HEADER_BYTES + 0x428 + 0x18],
-        &[0x3f10_0002u32.to_be_bytes(), 0x3f10_0001u32.to_be_bytes()].concat()
+        &bundle_dynamics_child.as_bytes()[dynamics_rows..dynamics_rows + 4],
+        &0x3f10_0002u32.to_be_bytes()
+    );
+    assert_eq!(
+        &bundle_dynamics_child.as_bytes()[dynamics_rows + 0x14..dynamics_rows + 0x18],
+        &0x3f10_0001u32.to_be_bytes()
     );
     assert!(library.is_dirty(bundle_child.index));
     assert_eq!(library.file(bundle.index).unwrap().as_bytes(), bundle_bytes);
