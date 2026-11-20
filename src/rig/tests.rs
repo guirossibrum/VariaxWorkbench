@@ -2526,6 +2526,101 @@ fn pod_record_route_stays_offline_while_capture_stays_locked() {
 }
 
 #[test]
+fn hd500x_macos_audio_request_planning_is_scoped_without_route_or_capture_promotion() {
+    use crate::rig::hd500x_audio::{
+        AUDIO_INTERFACE, BULK_INTERFACE, CHANNELS_PER_STREAM, CONFIGURATION, HD500X_PRODUCT_ID,
+        HD500X_VENDOR_ID, HardwareStatus, INPUT_STREAMS, OUTPUT_STREAMS, OfflineProviderEvidence,
+        OfflineResult, ProviderAssessment, REQUESTED_ALTERNATE_SETTING, Request,
+        SETUP_FORMAT_VALUE, Stage,
+    };
+
+    let synthetic_request = Request {
+        vendor_id: HD500X_VENDOR_ID,
+        product_id: HD500X_PRODUCT_ID,
+        configuration: CONFIGURATION,
+        audio_interface: AUDIO_INTERFACE,
+        bulk_interface: BULK_INTERFACE,
+        requested_alternate_setting: REQUESTED_ALTERNATE_SETTING,
+        input_streams: INPUT_STREAMS,
+        output_streams: OUTPUT_STREAMS,
+        input_channels_per_stream: CHANNELS_PER_STREAM,
+        output_channels_per_stream: CHANNELS_PER_STREAM,
+        sample_rate_hz: 48_000,
+        setup_format_value: SETUP_FORMAT_VALUE,
+    };
+    let hd = Session::extension(ProductProfile::PodHd500x).expect("HD500X extension");
+    let plan = hd
+        .plan_hd500x_macos_audio_request(synthetic_request)
+        .expect("declared static request");
+    assert_eq!(plan.requested_sample_rate_hz, 48_000);
+    assert_eq!(plan.hardware_status(), HardwareStatus::UnverifiedAndLocked);
+    assert!(!plan.stream_opened());
+
+    let offline_only = OfflineProviderEvidence {
+        alternate_setting: OfflineResult::SyntheticSuccess,
+        ordered_pipe_lookups: vec![OfflineResult::SyntheticSuccess; 2],
+        ordered_transfer_preparations: vec![OfflineResult::SyntheticSuccess; 2],
+    };
+    assert_eq!(
+        plan.assess_offline_provider(&offline_only),
+        Ok(ProviderAssessment::SyntheticPrerequisitesReported)
+    );
+    assert_eq!(plan.hardware_status(), HardwareStatus::UnverifiedAndLocked);
+    assert!(!plan.stream_opened());
+    assert_eq!(
+        hd.select_record_route(crate::pod_audio::RecordRoute::SendProcessedGuitar, 66, 1),
+        Err(Rejection::Unverified {
+            profile: ProductProfile::PodHd500x,
+            operation: Operation::SelectRecordRoute,
+        })
+    );
+    assert_eq!(
+        hd.plan_hd500x_macos_audio_request(Request {
+            sample_rate_hz: 0,
+            ..synthetic_request
+        }),
+        Err(Rejection::Format {
+            detail: crate::rig::hd500x_audio::RequestError::UnsupportedSampleRate.to_string(),
+        })
+    );
+
+    let mut attempts = 0;
+    assert_eq!(
+        hd.reject_extension_physical(Operation::OpenAudioStream, None, || {
+            attempts += 1;
+            Ok(())
+        }),
+        Err(Rejection::Locked {
+            operation: Operation::OpenAudioStream,
+        })
+    );
+    assert_eq!(attempts, 0);
+    assert_eq!(
+        plan.assess_offline_provider(&OfflineProviderEvidence::default()),
+        Ok(ProviderAssessment::Pending {
+            stage: Stage::AlternateSetting,
+            completed: 0,
+        })
+    );
+
+    let other = Session::extension(ProductProfile::Jtv69).expect("JTV extension");
+    assert_eq!(
+        other.plan_hd500x_macos_audio_request(synthetic_request),
+        Err(Rejection::Unverified {
+            profile: ProductProfile::Jtv69,
+            operation: Operation::SelectRecordRoute,
+        })
+    );
+    assert_eq!(
+        Session::initial_rig().plan_hd500x_macos_audio_request(synthetic_request),
+        Err(Rejection::Unsupported {
+            profile: ProductProfile::Variax600,
+            operation: Operation::SelectRecordRoute,
+        })
+    );
+}
+
+#[test]
 fn pod_tone_open_rename_and_save_stay_offline_and_reject_variax() {
     let session = Session::initial_rig();
     assert!(LIVE_BACKEND_INITIALIZER.is_none());

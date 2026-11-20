@@ -11,6 +11,7 @@
 pub mod audio;
 mod backend;
 mod capability;
+pub mod hd500x_audio;
 mod model;
 mod registry;
 mod session;

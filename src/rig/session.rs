@@ -845,6 +845,26 @@ impl Session {
         crate::pod_audio::plan(route, period_bytes, periods, || {}).map_err(Rejection::format)
     }
 
+    /// Validates a macOS 7.6.8 HD500X audio request as offline source-scoped
+    /// planning. It does not change `select_record_route`, infer provider
+    /// results, or enable an audio stream; the returned plan remains locked.
+    pub fn plan_hd500x_macos_audio_request(
+        self,
+        request: crate::rig::hd500x_audio::Request,
+    ) -> Result<crate::rig::hd500x_audio::StaticPlan, Rejection> {
+        let operation = Operation::SelectRecordRoute;
+        match self.kind {
+            SessionKind::InitialRig => Err(Rejection::Unsupported {
+                profile: ProductProfile::Variax600,
+                operation,
+            }),
+            SessionKind::Extension(ProductProfile::PodHd500x) => {
+                crate::rig::hd500x_audio::validate(request).map_err(Rejection::format)
+            }
+            SessionKind::Extension(profile) => Err(Rejection::Unverified { profile, operation }),
+        }
+    }
+
     /// Arms the in-memory record-route check used by an offline test take.
     ///
     /// `attempt_capture` is the physical capture closure. It is not called.

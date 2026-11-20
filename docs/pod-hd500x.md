@@ -1071,6 +1071,28 @@ head `979aba7bc04f4e135b9bc8e95e25ef4c43daee68` in run
 only. The indirect owner-context effects and complete editor/runtime parity are
 unresolved, and issue #32 remains partial and open.
 
+## macOS 7.6.8 audio request validation
+
+The pure Rust `rig::hd500x_audio` validator records source-declared request
+constraints from the macOS Line 6 Audio-Midi Driver 7.6.8 package, SHA-256
+`48099370936bea11e09b9d8ee4828e2c9050dd1a1da1586828b7f5a72b559436`. The
+declared scope is HD500X USB identity `0x0E41:0x4159`, configuration 1, audio
+interface 0, a separate bulk interface 1, requested alternate setting 1, one
+input and one output stream, two channels per stream, requested rates 44100,
+48000, 88200 or 96000 Hz, and setup-format value 24. This value is a request
+predicate; it does not define sample packing, wire encoding, byte order,
+alignment, or endpoint/channel mapping. The source-selected internal engine
+branch is provenance only and does not establish equivalence with another
+product or driver family.
+
+The shared Session entry point validates these semantic inputs and can assess
+only synthetic status for alternate-setting selection, two ordered generic
+pipe lookups, and two ordered transfer preparations. Missing and failed
+statuses are explicit; synthetic success is never hardware readiness. Runtime
+results, actual negotiated format, endpoint topology, stream behavior, and
+audio equivalence remain unknown. `SelectRecordRoute` remains `Unverified`,
+and device capture/open remains `Locked`. No OS audio API is used.
+
 
 ## Static-derived type-0x13 eight-choice file operation
 
