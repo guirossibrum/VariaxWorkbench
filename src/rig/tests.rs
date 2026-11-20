@@ -373,6 +373,17 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
             .is_err()
     );
     assert_eq!(library.file(parent.index).unwrap().as_bytes(), parent_bytes);
+    assert!(
+        session
+            .replace_hd_octave_fuzz_with_admitted_dynamics_defaults(
+                &mut library,
+                parent.index,
+                crate::pod_preset::HdFxSlot::new(0).unwrap(),
+                crate::pod_preset::HdDynamicsDefault::HardGate,
+            )
+            .is_err()
+    );
+    assert_eq!(library.file(parent.index).unwrap().as_bytes(), parent_bytes);
     for (target, expected_model) in batch_targets {
         library.revert_unsaved(child.index).unwrap();
         session
@@ -389,6 +400,91 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
             panic!("extracted child remains H5EP");
         };
         assert_eq!(replaced_child.effect_model_id(0), Some(expected_model));
+        assert!(library.is_dirty(child.index));
+        assert_eq!(library.file(parent.index).unwrap().as_bytes(), parent_bytes);
+    }
+
+    let dynamics_targets: [(crate::pod_preset::HdDynamicsDefault, u32, &[u32]); 8] = [
+        (
+            crate::pod_preset::HdDynamicsDefault::HardGate,
+            0x0200_0013,
+            &[0x3f10_0000, 0x3f10_0001, 0x3f10_0002, 0x3f10_0003],
+        ),
+        (
+            crate::pod_preset::HdDynamicsDefault::BoostComp,
+            0x0200_0012,
+            &[
+                0x3f10_0001,
+                0x3f10_0002,
+                0x3f10_0003,
+                0x3f10_0004,
+                0x3f10_0005,
+            ],
+        ),
+        (
+            crate::pod_preset::HdDynamicsDefault::RedComp,
+            0x0200_000b,
+            &[0x3f10_0001, 0x3f10_0002],
+        ),
+        (
+            crate::pod_preset::HdDynamicsDefault::BlueComp,
+            0x0200_000c,
+            &[0x3f10_0001, 0x3f10_0002],
+        ),
+        (
+            crate::pod_preset::HdDynamicsDefault::BlueCompTreb,
+            0x0200_000d,
+            &[0x3f10_0002, 0x3f10_0001],
+        ),
+        (
+            crate::pod_preset::HdDynamicsDefault::VettaComp,
+            0x0200_000f,
+            &[0x3f10_0001, 0x3f10_0002],
+        ),
+        (
+            crate::pod_preset::HdDynamicsDefault::VettaJuice,
+            0x0200_0010,
+            &[0x3f10_0001, 0x3f10_0002],
+        ),
+        (
+            crate::pod_preset::HdDynamicsDefault::TubeComp,
+            0x0200_000e,
+            &[0x3f10_0001, 0x3f10_0002],
+        ),
+    ];
+    assert_eq!(
+        crate::pod_preset::HdDynamicsDefault::ALL,
+        dynamics_targets.map(|(target, _, _)| target)
+    );
+    for (target, expected_model, keys) in dynamics_targets {
+        library.revert_unsaved(child.index).unwrap();
+        session
+            .replace_hd_octave_fuzz_with_admitted_dynamics_defaults(
+                &mut library,
+                child.index,
+                crate::pod_preset::HdFxSlot::new(0).unwrap(),
+                target,
+            )
+            .expect("closed dynamics/FX defaults through shared session");
+        let crate::pod_preset::PodPresetFile::H5ep(replaced_child) =
+            library.file(child.index).unwrap()
+        else {
+            panic!("extracted child remains H5EP");
+        };
+        assert_eq!(replaced_child.effect_model_id(0), Some(expected_model));
+        let mut expected = mutated_child_before.clone();
+        let block = crate::pod_preset::H5EP_HEADER_BYTES + 0x428;
+        expected[block..block + 4].copy_from_slice(&expected_model.to_be_bytes());
+        for (row, key) in keys.iter().copied().enumerate() {
+            let row_at = block + 0x10 + row * 0x14;
+            expected[row_at..row_at + 4].copy_from_slice(&key.to_be_bytes());
+            expected[row_at + 4..row_at + 8].copy_from_slice(&0u32.to_be_bytes());
+        }
+        expected[block + 0x0f] = keys.len() as u8;
+        for row in 0..12 {
+            expected[block + 0x10 + row * 0x14 + 0x10] = 0;
+        }
+        assert_eq!(replaced_child.as_bytes(), expected, "target={target:?}");
         assert!(library.is_dirty(child.index));
         assert_eq!(library.file(parent.index).unwrap().as_bytes(), parent_bytes);
     }
@@ -482,6 +578,28 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
         panic!("extracted bundle child remains H5EP");
     };
     assert_eq!(bundle_batch_child.effect_model_id(0), Some(0x0205_000d));
+    assert_eq!(library.file(bundle.index).unwrap().as_bytes(), bundle_bytes);
+    library.revert_unsaved(bundle_child.index).unwrap();
+    session
+        .replace_hd_octave_fuzz_with_admitted_dynamics_defaults(
+            &mut library,
+            bundle_child.index,
+            crate::pod_preset::HdFxSlot::new(0).unwrap(),
+            crate::pod_preset::HdDynamicsDefault::BlueCompTreb,
+        )
+        .expect("closed-set dynamics defaults in extracted H5EB child");
+    let crate::pod_preset::PodPresetFile::H5ep(bundle_dynamics_child) =
+        library.file(bundle_child.index).unwrap()
+    else {
+        panic!("extracted bundle child remains H5EP");
+    };
+    assert_eq!(bundle_dynamics_child.effect_model_id(0), Some(0x0200_000d));
+    assert_eq!(
+        &bundle_dynamics_child.as_bytes()[crate::pod_preset::H5EP_HEADER_BYTES + 0x428 + 0x10
+            ..crate::pod_preset::H5EP_HEADER_BYTES + 0x428 + 0x18],
+        &[0x3f10_0002u32.to_be_bytes(), 0x3f10_0001u32.to_be_bytes()].concat()
+    );
+    assert!(library.is_dirty(bundle_child.index));
     assert_eq!(library.file(bundle.index).unwrap().as_bytes(), bundle_bytes);
     library.revert_unsaved(bundle_child.index).unwrap();
     assert_eq!(library.file(bundle.index).unwrap().as_bytes(), bundle_bytes);

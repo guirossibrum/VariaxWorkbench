@@ -398,6 +398,7 @@ struct Workbench {
     hd_selected: Option<usize>,
     hd_effect_slot: usize,
     hd_default_target: pod_preset::HdDistortionDefault,
+    hd_dynamics_default_target: pod_preset::HdDynamicsDefault,
     hd_control: pod_preset::HdType1Control,
     hd_mapped_control: pod_preset::HdType1MappedControl,
     hd_control_percent: u8,
@@ -491,6 +492,7 @@ impl Workbench {
             hd_selected: None,
             hd_effect_slot: 0,
             hd_default_target: pod_preset::HdDistortionDefault::JetFuzz,
+            hd_dynamics_default_target: pod_preset::HdDynamicsDefault::HardGate,
             hd_control: pod_preset::HdType1Control::Screamer(pod_preset::ScreamerControl::Drive),
             hd_mapped_control: pod_preset::HD_TYPE1_MAPPED_CONTROLS[0],
             hd_control_percent: 0,
@@ -2637,6 +2639,44 @@ impl Workbench {
                                     self.pod_message = format!(
                                         "Replaced this offline effect with {} defaults. Nothing was sent; save a new copy to keep the change.",
                                         self.hd_default_target.label()
+                                    );
+                                }
+                                Err(error) => self.pod_message = rejection_text(&error),
+                            },
+                            Err(error) => self.pod_message = error.detail(),
+                        }
+                    }
+                    ui.label("Additional source-derived dynamics / FX defaults");
+                    egui::ComboBox::from_id_salt("hd-octave-fuzz-dynamics-default-target")
+                        .selected_text(self.hd_dynamics_default_target.label())
+                        .show_ui(ui, |ui| {
+                            for target in pod_preset::HdDynamicsDefault::ALL {
+                                ui.selectable_value(
+                                    &mut self.hd_dynamics_default_target,
+                                    target,
+                                    target.label(),
+                                );
+                            }
+                        });
+                    if self.pod_button(
+                        ui,
+                        "replace-octave-fuzz-admitted-dynamics-default",
+                        "Apply selected dynamics / FX defaults",
+                    ) {
+                        let index = self.hd_selected.expect("selected HD file");
+                        match pod_preset::HdFxSlot::new(self.hd_effect_slot) {
+                            Ok(slot) => match Session::initial_rig()
+                                .replace_hd_octave_fuzz_with_admitted_dynamics_defaults(
+                                    &mut self.hd_library,
+                                    index,
+                                    slot,
+                                    self.hd_dynamics_default_target,
+                                )
+                            {
+                                Ok(()) => {
+                                    self.pod_message = format!(
+                                        "Replaced this offline effect with {} defaults. Nothing was sent; save a new copy to keep the change.",
+                                        self.hd_dynamics_default_target.label()
                                     );
                                 }
                                 Err(error) => self.pod_message = rejection_text(&error),
@@ -8526,6 +8566,7 @@ mod tests {
         message_label: &str,
         output_name: &str,
         batch_target: Option<pod_preset::HdDistortionDefault>,
+        dynamics_target: Option<pod_preset::HdDynamicsDefault>,
     ) {
         let (context, mut app) = app();
         context.style_mut(|style| style.animation_time = 0.0);
@@ -8568,6 +8609,9 @@ mod tests {
         app.select_hd_file(index);
         if let Some(target) = batch_target {
             app.hd_default_target = target;
+        }
+        if let Some(target) = dynamics_target {
+            app.hd_dynamics_default_target = target;
         }
         app.pod_open = true;
         recording_frame(&context, &mut app, vec![]);
@@ -8742,6 +8786,7 @@ mod tests {
             "Vintage Pre defaults",
             "vintage-pre-copy.5xe",
             None,
+            None,
         );
         exercise_hd_editor_explicit_replacement_lifecycle(
             0x0205_000e,
@@ -8755,6 +8800,7 @@ mod tests {
             "replace-octave-fuzz-screamer",
             "Screamer defaults",
             "screamer-copy.5xe",
+            None,
             None,
         );
         exercise_hd_editor_explicit_replacement_lifecycle(
@@ -8770,6 +8816,7 @@ mod tests {
             "Sub Octave Fuzz defaults",
             "sub-octave-fuzz-copy.5xe",
             None,
+            None,
         );
         exercise_hd_editor_explicit_replacement_lifecycle(
             0x0200_0011,
@@ -8777,6 +8824,7 @@ mod tests {
             "replace-octave-fuzz-noise-gate",
             "Noise Gate defaults",
             "noise-gate-copy.5xe",
+            None,
             None,
         );
 
@@ -8867,6 +8915,83 @@ mod tests {
                 "replace-octave-fuzz-admitted-default",
                 label,
                 output_name,
+                Some(target),
+                None,
+            );
+        }
+
+        const DYNAMICS: [(pod_preset::HdDynamicsDefault, u32, &[u32], &str, &str); 8] = [
+            (
+                pod_preset::HdDynamicsDefault::HardGate,
+                0x0200_0013,
+                &[0x3f10_0000, 0x3f10_0001, 0x3f10_0002, 0x3f10_0003],
+                "Hard Gate defaults",
+                "hard-gate-copy.5xe",
+            ),
+            (
+                pod_preset::HdDynamicsDefault::BoostComp,
+                0x0200_0012,
+                &[
+                    0x3f10_0001,
+                    0x3f10_0002,
+                    0x3f10_0003,
+                    0x3f10_0004,
+                    0x3f10_0005,
+                ],
+                "Boost Comp defaults",
+                "boost-comp-copy.5xe",
+            ),
+            (
+                pod_preset::HdDynamicsDefault::RedComp,
+                0x0200_000b,
+                &[0x3f10_0001, 0x3f10_0002],
+                "Red Comp defaults",
+                "red-comp-copy.5xe",
+            ),
+            (
+                pod_preset::HdDynamicsDefault::BlueComp,
+                0x0200_000c,
+                &[0x3f10_0001, 0x3f10_0002],
+                "Blue Comp defaults",
+                "blue-comp-copy.5xe",
+            ),
+            (
+                pod_preset::HdDynamicsDefault::BlueCompTreb,
+                0x0200_000d,
+                &[0x3f10_0002, 0x3f10_0001],
+                "Blue Comp Treb defaults",
+                "blue-comp-treb-copy.5xe",
+            ),
+            (
+                pod_preset::HdDynamicsDefault::VettaComp,
+                0x0200_000f,
+                &[0x3f10_0001, 0x3f10_0002],
+                "Vetta Comp defaults",
+                "vetta-comp-copy.5xe",
+            ),
+            (
+                pod_preset::HdDynamicsDefault::VettaJuice,
+                0x0200_0010,
+                &[0x3f10_0001, 0x3f10_0002],
+                "Vetta Juice defaults",
+                "vetta-juice-copy.5xe",
+            ),
+            (
+                pod_preset::HdDynamicsDefault::TubeComp,
+                0x0200_000e,
+                &[0x3f10_0001, 0x3f10_0002],
+                "Tube Comp defaults",
+                "tube-comp-copy.5xe",
+            ),
+        ];
+        for (target, model_id, keys, label, output_name) in DYNAMICS {
+            exercise_hd_editor_explicit_replacement_lifecycle(
+                model_id,
+                keys,
+                "replace-octave-fuzz-admitted-dynamics-default",
+                label,
+                output_name,
+                None,
                 Some(target),
             );
         }
