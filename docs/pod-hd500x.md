@@ -809,3 +809,32 @@ choices remain independent for the same file/slot/model. This establishes only
 the admitted offline file operation. It does not resolve the editor's indirect
 listener/callback effects, full UI/runtime parity, labels, units, defaults,
 physical compatibility, or preset-product attribution; issue #32 remains open.
+
+## Exact type-11 five-choice file operation
+
+The scoped admission for PR #109 records four Edit 2.27 associations with
+descriptor type `0x0B`: model/key pairs `0x020A001E/0x3F100002`,
+`0x020A001E/0x3F100003`, `0x020A001D/0x3F100001`, and
+`0x020A001D/0x3F100002`. The API requires a closed typed control identity that
+includes both model and key. Each control accepts only neutral Choice 0–4,
+stored as the exact big-endian float words `00000000`, `3E800000`, `3F000000`,
+`3F400000`, and `3F800000`. This is a discrete choice operation, not an
+arbitrary normalized-float setter. Descriptor ordinals 95 and 100 are not file
+FX slots; labels, units, defaults, and physical model identity remain unknown.
+
+The offline writer uses the established standalone H5EP v1 guards, an explicit
+FX slot, the exact model/key, a valid block, canonical enable, count 1–12, one
+matching key across all twelve rows, an in-count target with a zero assignment
+marker, and a finite current word. It validates before same-word no-op, clones
+and reparses the candidate, and changes only the selected value word. Unknown
+finite imports remain lossless until an explicit choice; non-finite values
+reject mutation. Synthetic complete vectors for both models contain both keys
+and pin every choice output independently.
+
+The GUI displays both key-labelled controls for either admitted model. Stages
+are keyed by entry, slot, model, and control key; applying or discarding one
+leaves its sibling stage and value intact. Quit handling processes all staged
+type-11 controls before any remaining dirty-file decision. The implementation
+does not reproduce unresolved owner-context side effects, infer product/slot
+identity, or establish physical applicability. Exact-head configured checks
+remain pending until coordinator results are returned; issue #32 remains open.

@@ -795,6 +795,266 @@ fn type10_choice_uses_independent_same_model_key_through_hd500x_session() {
 }
 
 #[test]
+fn type11_choice_uses_explicit_control_and_preserves_h5es_h5eb_parents() {
+    use crate::pod_preset::{
+        H5EB_HEADER_BYTES, H5EP_MIN_BYTES, H5ES_HEADER_BYTES, HdFxSlot, HdType11Choice,
+        HdType11Control,
+    };
+    let cases = [
+        (
+            HdType11Control::Model020a001eKey3f100002,
+            include_str!("../../tests/fixtures/type11-model-020a001e-source.hex"),
+            [
+                include_str!(
+                    "../../tests/fixtures/type11-model-020a001e-key-3f100002-choice-0.hex"
+                ),
+                include_str!(
+                    "../../tests/fixtures/type11-model-020a001e-key-3f100002-choice-1.hex"
+                ),
+                include_str!(
+                    "../../tests/fixtures/type11-model-020a001e-key-3f100002-choice-2.hex"
+                ),
+                include_str!(
+                    "../../tests/fixtures/type11-model-020a001e-key-3f100002-choice-3.hex"
+                ),
+                include_str!(
+                    "../../tests/fixtures/type11-model-020a001e-key-3f100002-choice-4.hex"
+                ),
+            ],
+        ),
+        (
+            HdType11Control::Model020a001eKey3f100003,
+            include_str!("../../tests/fixtures/type11-model-020a001e-source.hex"),
+            [
+                include_str!(
+                    "../../tests/fixtures/type11-model-020a001e-key-3f100003-choice-0.hex"
+                ),
+                include_str!(
+                    "../../tests/fixtures/type11-model-020a001e-key-3f100003-choice-1.hex"
+                ),
+                include_str!(
+                    "../../tests/fixtures/type11-model-020a001e-key-3f100003-choice-2.hex"
+                ),
+                include_str!(
+                    "../../tests/fixtures/type11-model-020a001e-key-3f100003-choice-3.hex"
+                ),
+                include_str!(
+                    "../../tests/fixtures/type11-model-020a001e-key-3f100003-choice-4.hex"
+                ),
+            ],
+        ),
+        (
+            HdType11Control::Model020a001dKey3f100001,
+            include_str!("../../tests/fixtures/type11-model-020a001d-source.hex"),
+            [
+                include_str!(
+                    "../../tests/fixtures/type11-model-020a001d-key-3f100001-choice-0.hex"
+                ),
+                include_str!(
+                    "../../tests/fixtures/type11-model-020a001d-key-3f100001-choice-1.hex"
+                ),
+                include_str!(
+                    "../../tests/fixtures/type11-model-020a001d-key-3f100001-choice-2.hex"
+                ),
+                include_str!(
+                    "../../tests/fixtures/type11-model-020a001d-key-3f100001-choice-3.hex"
+                ),
+                include_str!(
+                    "../../tests/fixtures/type11-model-020a001d-key-3f100001-choice-4.hex"
+                ),
+            ],
+        ),
+        (
+            HdType11Control::Model020a001dKey3f100002,
+            include_str!("../../tests/fixtures/type11-model-020a001d-source.hex"),
+            [
+                include_str!(
+                    "../../tests/fixtures/type11-model-020a001d-key-3f100002-choice-0.hex"
+                ),
+                include_str!(
+                    "../../tests/fixtures/type11-model-020a001d-key-3f100002-choice-1.hex"
+                ),
+                include_str!(
+                    "../../tests/fixtures/type11-model-020a001d-key-3f100002-choice-2.hex"
+                ),
+                include_str!(
+                    "../../tests/fixtures/type11-model-020a001d-key-3f100002-choice-3.hex"
+                ),
+                include_str!(
+                    "../../tests/fixtures/type11-model-020a001d-key-3f100002-choice-4.hex"
+                ),
+            ],
+        ),
+    ];
+    let decode = |hex: &str| {
+        hex.split_ascii_whitespace()
+            .map(|byte| u8::from_str_radix(byte, 16).unwrap())
+            .collect::<Vec<_>>()
+    };
+    let session = Session::extension(ProductProfile::PodHd500x).unwrap();
+    let slot = HdFxSlot::new(5).unwrap();
+
+    for (control, source_hex, expected_hex) in cases {
+        let source = decode(source_hex);
+        let mut library = HdEditorLibrary::default();
+        let index = library.import_bytes(source.clone()).unwrap();
+        for (choice, expected_hex) in HdType11Choice::ALL.into_iter().zip(expected_hex) {
+            let expected = decode(expected_hex);
+            session
+                .set_hd_type11_choice(&mut library, index, slot, control, choice)
+                .unwrap();
+            assert_eq!(library.file(index).unwrap().as_bytes(), expected);
+            assert!(library.is_dirty(index));
+            library.revert_unsaved(index).unwrap();
+            assert_eq!(library.file(index).unwrap().as_bytes(), source);
+            assert!(!library.is_dirty(index));
+        }
+        let mut unsupported_version = source.clone();
+        unsupported_version[7] = 2;
+        assert!(library.import_bytes(unsupported_version.clone()).is_err());
+        assert_eq!(
+            unsupported_version[7], 2,
+            "rejected source remains unchanged"
+        );
+
+        for profile in [ProductProfile::WorkbenchHd, ProductProfile::Jtv69] {
+            let before = library.file(index).unwrap().as_bytes().to_vec();
+            assert!(
+                Session::extension(profile)
+                    .unwrap()
+                    .set_hd_type11_choice(
+                        &mut library,
+                        index,
+                        slot,
+                        control,
+                        HdType11Choice::Choice4
+                    )
+                    .is_err()
+            );
+            assert_eq!(library.file(index).unwrap().as_bytes(), before);
+            assert!(!library.is_dirty(index));
+        }
+        assert!(
+            Session::initial_rig()
+                .set_hd_type11_choice(&mut library, index, slot, control, HdType11Choice::Choice4)
+                .is_err()
+        );
+        assert!(Session::extension(ProductProfile::PodxtLive).is_err());
+
+        let child_source = &source[..H5EP_MIN_BYTES];
+        let child_expected = &decode(expected_hex[4])[..H5EP_MIN_BYTES];
+        let mut setlist = synthetic_h5es();
+        let setlist_child = H5ES_HEADER_BYTES;
+        setlist[setlist_child..setlist_child + H5EP_MIN_BYTES].copy_from_slice(child_source);
+        let mut setlist_library = HdEditorLibrary::default();
+        let parent = setlist_library.import_bytes(setlist).unwrap();
+        let parent_before = setlist_library.file(parent).unwrap().as_bytes().to_vec();
+        assert!(
+            session
+                .set_hd_type11_choice(
+                    &mut setlist_library,
+                    parent,
+                    slot,
+                    control,
+                    HdType11Choice::Choice4,
+                )
+                .is_err()
+        );
+        assert_eq!(
+            setlist_library.file(parent).unwrap().as_bytes(),
+            parent_before
+        );
+        assert!(!setlist_library.is_dirty(parent));
+        let child = session
+            .extract_hd_editor_preset(&mut setlist_library, parent, 0, 0)
+            .unwrap()
+            .index;
+        session
+            .set_hd_type11_choice(
+                &mut setlist_library,
+                child,
+                slot,
+                control,
+                HdType11Choice::Choice4,
+            )
+            .unwrap();
+        assert_eq!(
+            setlist_library.file(child).unwrap().as_bytes(),
+            child_expected
+        );
+        assert_eq!(
+            setlist_library.file(parent).unwrap().as_bytes(),
+            parent_before
+        );
+        assert!(!setlist_library.is_dirty(parent));
+        assert!(setlist_library.is_dirty(child));
+        setlist_library.revert_unsaved(child).unwrap();
+        assert_eq!(
+            setlist_library.file(child).unwrap().as_bytes(),
+            child_source
+        );
+        assert_eq!(
+            setlist_library.file(parent).unwrap().as_bytes(),
+            parent_before
+        );
+        assert!(!setlist_library.is_dirty(child));
+
+        let mut bundle = synthetic_h5eb_with_type9_child();
+        let bundle_child = H5EB_HEADER_BYTES + H5ES_HEADER_BYTES;
+        bundle[bundle_child..bundle_child + H5EP_MIN_BYTES].copy_from_slice(child_source);
+        let mut bundle_library = HdEditorLibrary::default();
+        let parent = bundle_library.import_bytes(bundle).unwrap();
+        let parent_before = bundle_library.file(parent).unwrap().as_bytes().to_vec();
+        assert!(
+            session
+                .set_hd_type11_choice(
+                    &mut bundle_library,
+                    parent,
+                    slot,
+                    control,
+                    HdType11Choice::Choice4,
+                )
+                .is_err()
+        );
+        assert_eq!(
+            bundle_library.file(parent).unwrap().as_bytes(),
+            parent_before
+        );
+        assert!(!bundle_library.is_dirty(parent));
+        let child = session
+            .extract_hd_editor_preset(&mut bundle_library, parent, 0, 0)
+            .unwrap()
+            .index;
+        session
+            .set_hd_type11_choice(
+                &mut bundle_library,
+                child,
+                slot,
+                control,
+                HdType11Choice::Choice4,
+            )
+            .unwrap();
+        assert_eq!(
+            bundle_library.file(child).unwrap().as_bytes(),
+            child_expected
+        );
+        assert_eq!(
+            bundle_library.file(parent).unwrap().as_bytes(),
+            parent_before
+        );
+        assert!(!bundle_library.is_dirty(parent));
+        assert!(bundle_library.is_dirty(child));
+        bundle_library.revert_unsaved(child).unwrap();
+        assert_eq!(bundle_library.file(child).unwrap().as_bytes(), child_source);
+        assert_eq!(
+            bundle_library.file(parent).unwrap().as_bytes(),
+            parent_before
+        );
+        assert!(!bundle_library.is_dirty(child));
+    }
+}
+
+#[test]
 fn second_type10_association_flows_through_hd500x_session_and_extracted_child() {
     use crate::pod_preset::{
         H5EB_HEADER_BYTES, H5EP_HEADER_BYTES, H5EP_MIN_BYTES, H5ES_HEADER_BYTES, HdFxSlot,
