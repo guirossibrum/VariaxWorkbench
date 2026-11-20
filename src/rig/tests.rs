@@ -1126,16 +1126,26 @@ fn type12_choice_uses_exact_profile_and_preserves_extracted_child_baseline() {
         .extract_hd_editor_preset(&mut nested, parent, 0, 0)
         .unwrap()
         .index;
-    let sibling_before = nested.file(child).unwrap().as_bytes().to_vec();
+    let child_baseline = nested.file(child).unwrap().as_bytes().to_vec();
+    let sibling = session
+        .extract_hd_editor_preset(&mut nested, parent, 0, 1)
+        .unwrap()
+        .index;
+    let sibling_entry_before = nested.file(sibling).unwrap().as_bytes().to_vec();
     session
         .set_hd_type12_choice(&mut nested, child, slot, control, HdType12Choice::Choice1)
         .unwrap();
     assert_eq!(nested.file(child).unwrap().as_bytes(), child_expected);
     assert_eq!(nested.file(parent).unwrap().as_bytes(), parent_before);
+    assert_eq!(
+        nested.file(sibling).unwrap().as_bytes(),
+        sibling_entry_before,
+        "independently extracted sibling entry stays unchanged"
+    );
     assert!(nested.is_dirty(child));
     assert!(!nested.is_dirty(parent));
     nested.revert_unsaved(child).unwrap();
-    assert_eq!(nested.file(child).unwrap().as_bytes(), sibling_before);
+    assert_eq!(nested.file(child).unwrap().as_bytes(), child_baseline);
     assert_eq!(nested.file(child).unwrap().as_bytes(), child_source);
     assert!(!nested.is_dirty(child));
 
