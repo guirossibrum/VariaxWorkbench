@@ -6091,6 +6091,7 @@ pub(crate) fn fixture(
 }
 
 #[cfg(test)]
+#[derive(Clone, Copy)]
 struct BuiltModel<'a> {
     slot: u32,
     model_id: u32,
@@ -8781,42 +8782,173 @@ pub(crate) mod tests {
         assert!(tone.reset_podxt_eq().is_err());
         assert_eq!(tone.as_bytes(), bytes, "short opaque EQ PARM is ambiguous");
 
-        let eq_refs: Vec<_> = records.iter().map(|record| record.as_slice()).collect();
-        let other_eq = BuiltModel {
-            slot: PODXT_EQ_SLOT + 1,
-            model_id: PODXT_EQ_MODEL_ID,
-            tail: &[5, 6, 7, 8],
-            parameters: &eq_refs,
-        };
-        let repeated_slot = BuiltModel {
-            slot: PODXT_EQ_SLOT,
-            model_id: PODXT_EQ_MODEL_ID + 1,
-            tail: &[9, 10, 11, 12],
-            parameters: &eq_refs,
-        };
-        for models in [&[other_eq][..], &[repeated_slot][..]] {
-            let bytes = make_tone(&eq_refs, Some(models));
-            let mut tone = PodTone::parse(bytes.clone()).unwrap();
-            assert!(tone.reset_podxt_eq().is_err());
-            assert_eq!(tone.as_bytes(), bytes);
-        }
+        let duplicate_model_opaque = [0x11, 0x22, 0x33];
+        let duplicate_model_parameters = [&duplicate_model_opaque[..]];
+        let sibling_opaque = [0x44, 0x55, 0x66];
+        let sibling_parameters = [&sibling_opaque[..]];
+        for already_reset in [false, true] {
+            let canonical_records: Vec<_> = reset_words
+                .iter()
+                .enumerate()
+                .map(|(index, word)| {
+                    let bits = if already_reset { *word } else { 0x3f00_0000 };
+                    drive_record(0x3f, 0x0010_0000 + index as u32, 1, bits).to_vec()
+                })
+                .collect();
+            let canonical_parameters: Vec<_> = canonical_records
+                .iter()
+                .map(|record| record.as_slice())
+                .collect();
+            let duplicate_records: Vec<_> = (0..8)
+                .map(|index| {
+                    let bits = if already_reset {
+                        reset_words[index] ^ 0x0000_0001
+                    } else {
+                        0x3e80_0000 + index as u32
+                    };
+                    drive_record(0x3f, 0x0010_0000 + index as u32, 1, bits).to_vec()
+                })
+                .collect();
+            let duplicate_parameters: Vec<_> = duplicate_records
+                .iter()
+                .map(|record| record.as_slice())
+                .collect();
 
-        let mut already_reset = Vec::new();
-        for (index, word) in reset_words.iter().enumerate() {
-            already_reset.push(drive_record(0x3f, 0x0010_0000 + index as u32, 1, *word));
+            let canonical_eq = BuiltModel {
+                slot: PODXT_EQ_SLOT,
+                model_id: PODXT_EQ_MODEL_ID,
+                tail: &[0xa1, 0xb2, 0xc3, 0xd4],
+                parameters: &canonical_parameters,
+            };
+            let sibling = BuiltModel {
+                slot: AMP_SLOT,
+                model_id: 0x1111_0002,
+                tail: &[0xe1, 0xf2, 0x83, 0x94],
+                parameters: &sibling_parameters,
+            };
+
+            for (duplicate_eq_model, conflict_tail) in [
+                (true, [0x05, 0x16, 0x27, 0x38]),
+                (false, [0x49, 0x5a, 0x6b, 0x7c]),
+            ] {
+                let conflicting_model = if duplicate_eq_model {
+                    BuiltModel {
+                        slot: PODXT_EQ_SLOT + 1,
+                        model_id: PODXT_EQ_MODEL_ID,
+                        tail: &conflict_tail,
+                        parameters: &duplicate_parameters,
+                    }
+                } else {
+                    BuiltModel {
+                        slot: PODXT_EQ_SLOT,
+                        model_id: PODXT_EQ_MODEL_ID + 1,
+                        tail: &conflict_tail,
+                        parameters: &duplicate_model_parameters,
+                    }
+                };
+                let models = [canonical_eq, conflicting_model, sibling];
+                let bytes = custom_tone(ContainerKind::L6pa, &models);
+                let mut tone = if duplicate_eq_model {
+                    PodTone::parse(bytes.clone()).unwrap()
+                } else {
+                    // A duplicate fixed slot is rejected by the file parser, so
+                    // exercise the reset guard with the parsed state it must
+                    // reject while retaining the actual conflicting raw file.
+                    assert!(PodTone::parse(bytes.clone()).is_err());
+                    let valid_models = [canonical_eq, sibling];
+                    let mut parsed =
+                        PodTone::parse(custom_tone(ContainerKind::L6pa, &valid_models)).unwrap();
+                    let conflicting_only =
+                        PodTone::parse(custom_tone(ContainerKind::L6pa, &[conflicting_model]))
+                            .unwrap();
+                    parsed.bytes = bytes.clone();
+                    parsed.models.insert(1, conflicting_only.models[0].clone());
+                    parsed
+                        .model_minfo_ranges
+                        .insert(1, conflicting_only.model_minfo_ranges[0].clone());
+                    parsed
+                        .model_chunk_ranges
+                        .insert(1, conflicting_only.model_chunk_ranges[0].clone());
+                    parsed
+                        .parameter_value_offsets
+                        .insert(1, conflicting_only.parameter_value_offsets[0].clone());
+                    parsed
+                        .opaque_parameter_id_hints
+                        .insert(1, conflicting_only.opaque_parameter_id_hints[0].clone());
+                    parsed
+                };
+                let parsed_before = tone.models().to_vec();
+                assert_eq!(tone.models().len(), 3);
+                assert_eq!(tone.models()[0].slot, PODXT_EQ_SLOT);
+                assert_eq!(tone.models()[0].model_id, PODXT_EQ_MODEL_ID);
+                assert_eq!(tone.models()[2].slot, AMP_SLOT);
+                assert_eq!(tone.models()[2].model_id, 0x1111_0002);
+                if duplicate_eq_model {
+                    assert_eq!(tone.models()[1].model_id, PODXT_EQ_MODEL_ID);
+                    assert_ne!(tone.models()[1].slot, PODXT_EQ_SLOT);
+                } else {
+                    assert_eq!(tone.models()[1].slot, PODXT_EQ_SLOT);
+                    assert_ne!(tone.models()[1].model_id, PODXT_EQ_MODEL_ID);
+                }
+                assert_eq!(tone.as_bytes(), bytes, "fixture bytes differ before reset");
+                let detail = format!(
+                    "duplicate_eq_model={duplicate_eq_model}, already_reset={already_reset}"
+                );
+                assert!(tone.reset_podxt_eq().is_err(), "{detail}");
+                assert_eq!(tone.as_bytes(), bytes, "raw bytes changed: {detail}");
+                assert_eq!(
+                    tone.models(),
+                    parsed_before,
+                    "parsed state changed: {detail}"
+                );
+
+                if duplicate_eq_model {
+                    let mut library = Library::default();
+                    library.import_bytes(bytes.clone()).unwrap();
+                    assert!(!library.is_dirty(0));
+                    assert!(library.reset_podxt_eq(0).is_err(), "{detail}");
+                    assert_eq!(library.tone(0).unwrap().as_bytes(), bytes, "{detail}");
+                    assert_eq!(library.tone(0).unwrap().models(), parsed_before, "{detail}");
+                    assert!(
+                        !library.is_dirty(0),
+                        "saved Library baseline changed: {detail}"
+                    );
+                    library.revert_unsaved(0).unwrap();
+                    assert_eq!(library.tone(0).unwrap().as_bytes(), bytes, "{detail}");
+
+                    let mut bundle = PodBundleLibrary::parse(bundle_with_tone(&bytes)).unwrap();
+                    let bundle_baseline = bundle.as_bytes().to_vec();
+                    assert!(!bundle.is_dirty());
+                    assert!(bundle.reset_podxt_eq(0).is_err(), "{detail}");
+                    assert_eq!(
+                        bundle.as_bytes(),
+                        bundle_baseline,
+                        "bundle changed: {detail}"
+                    );
+                    assert_eq!(bundle.tone(0, 0).unwrap().as_bytes(), bytes, "{detail}");
+                    assert!(
+                        !bundle.is_dirty(),
+                        "saved Bundle baseline changed: {detail}"
+                    );
+                    bundle.revert().unwrap();
+                    assert_eq!(bundle.as_bytes(), bundle_baseline, "{detail}");
+                } else {
+                    // The file parser refuses duplicate fixed slots. Confirm a
+                    // failed import also leaves an existing saved Library entry
+                    // and its baseline untouched.
+                    let mut library = Library::default();
+                    let valid_models = [canonical_eq, sibling];
+                    let valid_bytes = custom_tone(ContainerKind::L6pa, &valid_models);
+                    library.import_bytes(valid_bytes.clone()).unwrap();
+                    assert!(!library.is_dirty(0));
+                    assert!(library.import_bytes(bytes.clone()).is_err());
+                    assert_eq!(library.tone(0).unwrap().as_bytes(), valid_bytes);
+                    assert!(!library.is_dirty(0));
+                    library.revert_unsaved(0).unwrap();
+                    assert_eq!(library.tone(0).unwrap().as_bytes(), valid_bytes);
+                }
+            }
         }
-        already_reset[7] = drive_record(0x3e, 0x0010_0007, 1, reset_words[7]);
-        let refs: Vec<_> = already_reset
-            .iter()
-            .map(|record| record.as_slice())
-            .collect();
-        let bytes = make_tone(&refs, None);
-        let mut tone = PodTone::parse(bytes.clone()).unwrap();
-        assert!(
-            tone.reset_podxt_eq().is_err(),
-            "already-reset values do not bypass guards"
-        );
-        assert_eq!(tone.as_bytes(), bytes);
     }
 
     #[test]
