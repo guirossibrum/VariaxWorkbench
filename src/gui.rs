@@ -2817,6 +2817,7 @@ impl Workbench {
                 }
                 ui.separator();
                 let scroll = egui::ScrollArea::vertical()
+                    .max_height(560.0)
                     .id_salt("pod-hd-editor-panel")
                     .show(ui, |ui| self.hd_editor_panel(ui));
                 #[cfg(test)]
