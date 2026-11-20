@@ -5687,7 +5687,7 @@ mod tests {
         click_hd_editor(&context, &mut app, hd_type13_apply_button());
         assert_eq!(
             app.hd_type11_pending, before,
-            "type-0x0D Apply preserves both type-11 stages"
+            "type-0x0D Apply preserves the remaining type-11 stage"
         );
         assert!(app.hd_type13_pending.is_empty());
         let at = pod_preset::H5EP_HEADER_BYTES + 0x428 + 5 * 0x100 + 0x10 + 4 * 0x14 + 4;
@@ -5701,6 +5701,400 @@ mod tests {
             &after_type11,
             "type-0x0D Apply preserves prior type-11 write",
         );
+    }
+
+    #[test]
+    fn hd_type13_apply_and_discard_preserve_exact_simultaneous_sibling_stages() {
+        let controls =
+            pod_preset::HdType11Control::for_model(pod_preset::HD_TYPE13_CHOICE_MODEL_ID);
+        let type13 = pod_preset::HdType13Control::ALL[0];
+        let slot = pod_preset::HdFxSlot::new(5).unwrap();
+        let source = sample_hd_type11_preset(pod_preset::HD_TYPE13_CHOICE_MODEL_ID);
+        for apply in [true, false] {
+            let (context, mut app) = app();
+            context.style_mut(|style| style.animation_time = 0.0);
+            let index = app.hd_library.import_bytes(source.clone()).unwrap();
+            app.select_hd_file(index);
+            app.pod_open = true;
+            app.hd_effect_slot = 5;
+            click_hd_type11_choice(&context, &mut app, controls[0], 1);
+            click_hd_type11_choice(&context, &mut app, controls[1], 4);
+            click_hd_type13_choice(&context, &mut app, 3);
+            let first = PendingHdType11Choice {
+                file_index: index,
+                slot,
+                model_id: pod_preset::HD_TYPE13_CHOICE_MODEL_ID,
+                control: controls[0],
+                choice: pod_preset::HdType11Choice::Choice1,
+            };
+            let second = PendingHdType11Choice {
+                file_index: index,
+                slot,
+                model_id: pod_preset::HD_TYPE13_CHOICE_MODEL_ID,
+                control: controls[1],
+                choice: pod_preset::HdType11Choice::Choice4,
+            };
+            let type13_stage = PendingHdType13Choice {
+                file_index: index,
+                slot,
+                model_id: pod_preset::HD_TYPE13_CHOICE_MODEL_ID,
+                control: type13,
+                choice: pod_preset::HdType13Choice::Choice3,
+            };
+            assert_eq!(
+                app.hd_type11_pending.get(&(index, slot, controls[0])),
+                Some(&first)
+            );
+            assert_eq!(
+                app.hd_type11_pending.get(&(index, slot, controls[1])),
+                Some(&second)
+            );
+            assert_eq!(
+                app.hd_type13_pending.get(&(index, slot, type13)),
+                Some(&type13_stage)
+            );
+
+            if apply {
+                click_hd_editor(&context, &mut app, hd_type13_apply_button());
+                let type13_at =
+                    pod_preset::H5EP_HEADER_BYTES + 0x428 + 5 * 0x100 + 0x10 + 4 * 0x14 + 4;
+                let mut expected = source.clone();
+                expected[type13_at..type13_at + 4]
+                    .copy_from_slice(&pod_preset::HdType13Choice::Choice3.bits().to_be_bytes());
+                assert_hd_bytes_eq(
+                    app.hd_library.file(index).unwrap().as_bytes(),
+                    &expected,
+                    "type-0x0D Apply changes only its own value with both siblings staged",
+                );
+                assert!(app.hd_type13_pending.is_empty());
+                assert_eq!(
+                    app.hd_type11_pending.get(&(index, slot, controls[0])),
+                    Some(&first)
+                );
+                assert_eq!(
+                    app.hd_type11_pending.get(&(index, slot, controls[1])),
+                    Some(&second)
+                );
+            } else {
+                click_hd_editor(&context, &mut app, hd_type13_discard_button());
+                assert_hd_bytes_eq(
+                    app.hd_library.file(index).unwrap().as_bytes(),
+                    &source,
+                    "type-0x0D Discard changes no bytes with both siblings staged",
+                );
+                assert_eq!(app.hd_type13_pending.len(), 0);
+                assert_eq!(
+                    app.hd_type11_pending.get(&(index, slot, controls[0])),
+                    Some(&first)
+                );
+                assert_eq!(
+                    app.hd_type11_pending.get(&(index, slot, controls[1])),
+                    Some(&second)
+                );
+            }
+        }
+
+        for sibling_index in 0..2 {
+            for apply in [true, false] {
+                let (context, mut app) = app();
+                context.style_mut(|style| style.animation_time = 0.0);
+                let index = app.hd_library.import_bytes(source.clone()).unwrap();
+                app.select_hd_file(index);
+                app.pod_open = true;
+                app.hd_effect_slot = 5;
+                click_hd_type11_choice(&context, &mut app, controls[0], 1);
+                click_hd_type11_choice(&context, &mut app, controls[1], 4);
+                click_hd_type13_choice(&context, &mut app, 2);
+                let kept_control = controls[1 - sibling_index];
+                let kept_choice = if sibling_index == 0 {
+                    pod_preset::HdType11Choice::Choice4
+                } else {
+                    pod_preset::HdType11Choice::Choice1
+                };
+                let kept = PendingHdType11Choice {
+                    file_index: index,
+                    slot,
+                    model_id: pod_preset::HD_TYPE13_CHOICE_MODEL_ID,
+                    control: kept_control,
+                    choice: kept_choice,
+                };
+                let type13_stage = PendingHdType13Choice {
+                    file_index: index,
+                    slot,
+                    model_id: pod_preset::HD_TYPE13_CHOICE_MODEL_ID,
+                    control: type13,
+                    choice: pod_preset::HdType13Choice::Choice2,
+                };
+                let acted_control = controls[sibling_index];
+                if apply {
+                    click_hd_editor(&context, &mut app, hd_type11_apply_button(acted_control));
+                } else {
+                    click_hd_editor(&context, &mut app, hd_type11_discard_button(acted_control));
+                }
+                assert_eq!(app.hd_type11_pending.len(), 1);
+                assert_eq!(
+                    app.hd_type11_pending.get(&(index, slot, kept_control)),
+                    Some(&kept)
+                );
+                assert_eq!(
+                    app.hd_type13_pending.get(&(index, slot, type13)),
+                    Some(&type13_stage)
+                );
+                let mut expected = source.clone();
+                if apply {
+                    let row = if sibling_index == 0 { 3 } else { 8 };
+                    let at =
+                        pod_preset::H5EP_HEADER_BYTES + 0x428 + 5 * 0x100 + 0x10 + row * 0x14 + 4;
+                    let choice = if sibling_index == 0 {
+                        pod_preset::HdType11Choice::Choice1
+                    } else {
+                        pod_preset::HdType11Choice::Choice4
+                    };
+                    expected[at..at + 4].copy_from_slice(&choice.bits().to_be_bytes());
+                }
+                assert_hd_bytes_eq(
+                    app.hd_library.file(index).unwrap().as_bytes(),
+                    &expected,
+                    "type-11 action changes only the acted-on control",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hd_type13_stage_lifecycle_covers_context_open_save_collision_and_revert() {
+        let control = pod_preset::HdType13Control::ALL[0];
+        let slot = pod_preset::HdFxSlot::new(5).unwrap();
+        let model_id = pod_preset::HD_TYPE13_CHOICE_MODEL_ID;
+        let source = sample_hd_type11_preset(model_id);
+        let pending = |index, choice| PendingHdType13Choice {
+            file_index: index,
+            slot,
+            model_id,
+            control,
+            choice,
+        };
+
+        // Changing the selected FX slot clears only the stale type-0x0D stage.
+        let (context, mut by_slot) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let index = by_slot.hd_library.import_bytes(source.clone()).unwrap();
+        by_slot.select_hd_file(index);
+        by_slot.pod_open = true;
+        by_slot.hd_effect_slot = 5;
+        click_hd_type13_choice(&context, &mut by_slot, 2);
+        assert_eq!(
+            by_slot.hd_type13_pending.get(&(index, slot, control)),
+            Some(&pending(index, pod_preset::HdType13Choice::Choice2))
+        );
+        by_slot.hd_effect_slot = 4;
+        hd_editor_frame(&context, &mut by_slot, vec![]);
+        assert!(
+            by_slot.hd_type13_pending.is_empty(),
+            "slot change clears stale stage"
+        );
+        assert_hd_bytes_eq(
+            by_slot.hd_library.file(index).unwrap().as_bytes(),
+            &source,
+            "slot invalidation leaves full source unchanged",
+        );
+
+        // Replacing the model in the staged slot invalidates the stage without
+        // altering the replacement record or any unrelated bytes.
+        let (context, mut by_model) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let index = by_model.hd_library.import_bytes(source.clone()).unwrap();
+        by_model.select_hd_file(index);
+        by_model.pod_open = true;
+        by_model.hd_effect_slot = 5;
+        click_hd_type13_choice(&context, &mut by_model, 1);
+        let mut changed_model = source.clone();
+        let model_at = pod_preset::H5EP_HEADER_BYTES + 0x428 + 5 * 0x100;
+        changed_model[model_at..model_at + 4].copy_from_slice(&0x020a_001e_u32.to_be_bytes());
+        *by_model.hd_library.file_mut(index).unwrap() =
+            PodPresetFile::parse(changed_model.clone()).unwrap();
+        hd_editor_frame(&context, &mut by_model, vec![]);
+        assert!(
+            by_model.hd_type13_pending.is_empty(),
+            "model change clears stale stage"
+        );
+        assert_hd_bytes_eq(
+            by_model.hd_library.file(index).unwrap().as_bytes(),
+            &changed_model,
+            "model invalidation preserves all replacement bytes",
+        );
+
+        // Selecting another file clears the prior entry's exact stage.
+        let (context, mut by_entry) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let index = by_entry.hd_library.import_bytes(source.clone()).unwrap();
+        by_entry.select_hd_file(index);
+        by_entry.pod_open = true;
+        by_entry.hd_effect_slot = 5;
+        click_hd_type13_choice(&context, &mut by_entry, 0);
+        assert_eq!(
+            by_entry.hd_type13_pending.get(&(index, slot, control)),
+            Some(&pending(index, pod_preset::HdType13Choice::Choice0))
+        );
+        let other = by_entry.hd_library.import_bytes(source.clone()).unwrap();
+        by_entry.select_hd_file(other);
+        assert!(
+            by_entry.hd_type13_pending.is_empty(),
+            "selection change clears prior entry stage"
+        );
+        assert_hd_bytes_eq(
+            by_entry.hd_library.file(index).unwrap().as_bytes(),
+            &source,
+            "entry invalidation preserves old bytes",
+        );
+
+        // Cancelled Open retains its stage; successful Open clears it and
+        // leaves exact complete-file bytes in both the old and new entries.
+        let (context, mut open) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let index = open.hd_library.import_bytes(source.clone()).unwrap();
+        open.select_hd_file(index);
+        open.pod_open = true;
+        open.hd_effect_slot = 5;
+        click_hd_type13_choice(&context, &mut open, 3);
+        let staged = pending(index, pod_preset::HdType13Choice::Choice3);
+        let replacement_dir = tempfile::tempdir().unwrap();
+        let replacement_path = replacement_dir.path().join("type13-open.5xe");
+        let replacement_bytes = sample_hd_type11_preset(0x020a_001e);
+        std::fs::write(&replacement_path, &replacement_bytes).unwrap();
+        open.dialogs = Box::new(FakeDialogs {
+            pod_open: [None, Some(replacement_path)].into(),
+            ..Default::default()
+        });
+        click_hd_editor(&context, &mut open, "load-hd-file");
+        assert_eq!(
+            open.hd_type13_pending.get(&(index, slot, control)),
+            Some(&staged),
+            "cancelled Open retains exact stage"
+        );
+        assert_hd_bytes_eq(
+            open.hd_library.file(index).unwrap().as_bytes(),
+            &source,
+            "cancelled Open retains full bytes",
+        );
+        click_hd_editor(&context, &mut open, "load-hd-file");
+        let opened = open
+            .hd_selected
+            .expect("successful Open selects replacement");
+        assert_ne!(opened, index);
+        assert!(
+            open.hd_type13_pending.is_empty(),
+            "successful Open clears old-entry stage"
+        );
+        assert_hd_bytes_eq(
+            open.hd_library.file(index).unwrap().as_bytes(),
+            &source,
+            "successful Open preserves old-entry bytes",
+        );
+        assert_hd_bytes_eq(
+            open.hd_library.file(opened).unwrap().as_bytes(),
+            &replacement_bytes,
+            "successful Open stores complete replacement bytes",
+        );
+
+        // An applied sibling makes the entry dirty while type-0x0D remains
+        // staged. Both failed collision and successful save preserve the exact
+        // pending record and current bytes; reopen intentionally invalidates it.
+        let (context, mut save) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let index = save.hd_library.import_bytes(source.clone()).unwrap();
+        save.select_hd_file(index);
+        save.pod_open = true;
+        save.hd_effect_slot = 5;
+        click_hd_type13_choice(&context, &mut save, 2);
+        let staged = pending(index, pod_preset::HdType13Choice::Choice2);
+        let controls = pod_preset::HdType11Control::for_model(model_id);
+        click_hd_type11_choice(&context, &mut save, controls[0], 1);
+        click_hd_editor(&context, &mut save, hd_type11_apply_button(controls[0]));
+        let type11_at = pod_preset::H5EP_HEADER_BYTES + 0x428 + 5 * 0x100 + 0x10 + 3 * 0x14 + 4;
+        let mut dirty_bytes = source.clone();
+        dirty_bytes[type11_at..type11_at + 4]
+            .copy_from_slice(&pod_preset::HdType11Choice::Choice1.bits().to_be_bytes());
+        assert!(save.hd_library.is_dirty(index));
+        assert_eq!(
+            save.hd_type13_pending.get(&(index, slot, control)),
+            Some(&staged)
+        );
+        assert_hd_bytes_eq(
+            save.hd_library.file(index).unwrap().as_bytes(),
+            &dirty_bytes,
+            "sibling Apply preserves staged source bytes",
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let collision = directory.path().join("occupied.5xe");
+        let saved = directory.path().join("type13-lifecycle.5xe");
+        std::fs::write(&collision, b"keep existing").unwrap();
+        save.dialogs = Box::new(FakeDialogs {
+            pod_save: [Some(collision.clone()), Some(saved.clone())].into(),
+            ..Default::default()
+        });
+        assert!(!save.write_hd_copy(index));
+        assert_eq!(std::fs::read(&collision).unwrap(), b"keep existing");
+        assert_eq!(
+            save.hd_type13_pending.get(&(index, slot, control)),
+            Some(&staged),
+            "collision retains exact stage"
+        );
+        assert_hd_bytes_eq(
+            save.hd_library.file(index).unwrap().as_bytes(),
+            &dirty_bytes,
+            "collision retains complete in-memory bytes",
+        );
+        assert!(save.write_hd_copy(index));
+        assert_eq!(
+            std::fs::read(&saved).unwrap(),
+            dirty_bytes,
+            "successful save writes complete expected bytes"
+        );
+        assert!(!save.hd_library.is_dirty(index));
+        assert_eq!(
+            save.hd_type13_pending.get(&(index, slot, control)),
+            Some(&staged),
+            "successful save preserves exact stage"
+        );
+        assert_hd_bytes_eq(
+            save.hd_library.file(index).unwrap().as_bytes(),
+            &dirty_bytes,
+            "save preserves complete current bytes",
+        );
+        let reopened_bytes = std::fs::read(&saved).unwrap();
+        let reopen_path = directory.path().join("reopen.5xe");
+        std::fs::write(&reopen_path, &reopened_bytes).unwrap();
+        save.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(reopen_path)].into(),
+            ..Default::default()
+        });
+        click_hd_editor(&context, &mut save, "load-hd-file");
+        let reopened = save.hd_selected.expect("saved copy reopens");
+        assert!(
+            save.hd_type13_pending.is_empty(),
+            "successful reopen clears old stage"
+        );
+        assert_hd_bytes_eq(
+            save.hd_library.file(reopened).unwrap().as_bytes(),
+            &dirty_bytes,
+            "reopened saved copy has complete expected bytes",
+        );
+        assert!(!save.hd_library.is_dirty(reopened));
+
+        save.select_hd_file(index);
+        save.hd_effect_slot = 5;
+        click_hd_type11_choice(&context, &mut save, controls[0], 4);
+        click_hd_editor(&context, &mut save, hd_type11_apply_button(controls[0]));
+        assert!(save.hd_library.is_dirty(index));
+        assert!(save.discard_next_dirty_pod());
+        assert_hd_bytes_eq(
+            save.hd_library.file(index).unwrap().as_bytes(),
+            &dirty_bytes,
+            "revert restores the exact successful-save baseline",
+        );
+        assert!(!save.hd_library.is_dirty(index));
+        assert!(save.hd_type13_pending.is_empty());
     }
 
     #[test]
@@ -5775,12 +6169,48 @@ mod tests {
         click_hd_type11_choice(&context, &mut keep, controls[0], 1);
         click_hd_type11_choice(&context, &mut keep, controls[1], 4);
         click_hd_type13_choice(&context, &mut keep, 2);
+        let keep_first = PendingHdType11Choice {
+            file_index: keep_index,
+            slot: pod_preset::HdFxSlot::new(5).unwrap(),
+            model_id: pod_preset::HD_TYPE13_CHOICE_MODEL_ID,
+            control: controls[0],
+            choice: pod_preset::HdType11Choice::Choice1,
+        };
+        let keep_second = PendingHdType11Choice {
+            file_index: keep_index,
+            slot: pod_preset::HdFxSlot::new(5).unwrap(),
+            model_id: pod_preset::HD_TYPE13_CHOICE_MODEL_ID,
+            control: controls[1],
+            choice: pod_preset::HdType11Choice::Choice4,
+        };
+        let keep_type13 = PendingHdType13Choice {
+            file_index: keep_index,
+            slot: pod_preset::HdFxSlot::new(5).unwrap(),
+            model_id: pod_preset::HD_TYPE13_CHOICE_MODEL_ID,
+            control: pod_preset::HdType13Control::ALL[0],
+            choice: pod_preset::HdType13Choice::Choice2,
+        };
         keep.request_close(&context);
         assert!(matches!(keep.pending, Some(Pending::QuitPod)));
         click_prompt(&context, &mut keep, "cancel");
         assert!(keep.pending.is_none());
         assert_eq!(keep.hd_type11_pending.len(), 2);
-        assert_eq!(keep.hd_type13_pending.len(), 1);
+        assert_eq!(
+            keep.hd_type11_pending
+                .get(&(keep_index, keep_type13.slot, controls[0])),
+            Some(&keep_first)
+        );
+        assert_eq!(
+            keep.hd_type11_pending
+                .get(&(keep_index, keep_type13.slot, controls[1])),
+            Some(&keep_second)
+        );
+        assert_eq!(
+            keep.hd_type13_pending
+                .get(&(keep_index, keep_type13.slot, keep_type13.control)),
+            Some(&keep_type13)
+        );
+        assert!(!keep.permit_close, "Keep editing must not close the window");
         assert_hd_bytes_eq(
             keep.hd_library.file(keep_index).unwrap().as_bytes(),
             &source,
@@ -5796,13 +6226,68 @@ mod tests {
         click_hd_type11_choice(&context, &mut discard, controls[0], 1);
         click_hd_type11_choice(&context, &mut discard, controls[1], 4);
         click_hd_type13_choice(&context, &mut discard, 2);
+        let discard_first = PendingHdType11Choice {
+            file_index: discard_index,
+            slot: pod_preset::HdFxSlot::new(5).unwrap(),
+            model_id: pod_preset::HD_TYPE13_CHOICE_MODEL_ID,
+            control: controls[0],
+            choice: pod_preset::HdType11Choice::Choice1,
+        };
+        let discard_second = PendingHdType11Choice {
+            file_index: discard_index,
+            slot: pod_preset::HdFxSlot::new(5).unwrap(),
+            model_id: pod_preset::HD_TYPE13_CHOICE_MODEL_ID,
+            control: controls[1],
+            choice: pod_preset::HdType11Choice::Choice4,
+        };
+        let discard_type13 = PendingHdType13Choice {
+            file_index: discard_index,
+            slot: pod_preset::HdFxSlot::new(5).unwrap(),
+            model_id: pod_preset::HD_TYPE13_CHOICE_MODEL_ID,
+            control: pod_preset::HdType13Control::ALL[0],
+            choice: pod_preset::HdType13Choice::Choice2,
+        };
         discard.request_close(&context);
         click_prompt(&context, &mut discard, "discard");
         assert_eq!(discard.hd_type11_pending.len(), 1);
-        assert_eq!(discard.hd_type13_pending.len(), 1);
+        let remaining = discard.hd_type11_pending.values().next().copied().unwrap();
+        assert!(remaining == discard_first || remaining == discard_second);
+        assert_eq!(
+            discard.hd_type13_pending.get(&(
+                discard_index,
+                discard_type13.slot,
+                discard_type13.control
+            )),
+            Some(&discard_type13)
+        );
+        assert!(
+            !discard.permit_close,
+            "one remaining type-11 stage blocks close"
+        );
+        assert_hd_bytes_eq(
+            discard.hd_library.file(discard_index).unwrap().as_bytes(),
+            &source,
+            "first quit Discard keeps complete source bytes",
+        );
         click_prompt(&context, &mut discard, "discard");
         assert!(discard.hd_type11_pending.is_empty());
-        assert_eq!(discard.hd_type13_pending.len(), 1);
+        assert_eq!(
+            discard.hd_type13_pending.get(&(
+                discard_index,
+                discard_type13.slot,
+                discard_type13.control
+            )),
+            Some(&discard_type13)
+        );
+        assert!(
+            !discard.permit_close,
+            "remaining type-0x0D stage blocks close"
+        );
+        assert_hd_bytes_eq(
+            discard.hd_library.file(discard_index).unwrap().as_bytes(),
+            &source,
+            "second quit Discard keeps complete source bytes",
+        );
         click_prompt(&context, &mut discard, "discard");
         assert!(discard.hd_type13_pending.is_empty());
         assert!(
@@ -5824,19 +6309,131 @@ mod tests {
         click_hd_type11_choice(&context, &mut apply, controls[0], 1);
         click_hd_type11_choice(&context, &mut apply, controls[1], 4);
         click_hd_type13_choice(&context, &mut apply, 3);
+        let apply_type13 = PendingHdType13Choice {
+            file_index: apply_index,
+            slot: pod_preset::HdFxSlot::new(5).unwrap(),
+            model_id: pod_preset::HD_TYPE13_CHOICE_MODEL_ID,
+            control: pod_preset::HdType13Control::ALL[0],
+            choice: pod_preset::HdType13Choice::Choice3,
+        };
+        let apply_first = PendingHdType11Choice {
+            file_index: apply_index,
+            slot: pod_preset::HdFxSlot::new(5).unwrap(),
+            model_id: pod_preset::HD_TYPE13_CHOICE_MODEL_ID,
+            control: controls[0],
+            choice: pod_preset::HdType11Choice::Choice1,
+        };
+        let apply_second = PendingHdType11Choice {
+            file_index: apply_index,
+            slot: pod_preset::HdFxSlot::new(5).unwrap(),
+            model_id: pod_preset::HD_TYPE13_CHOICE_MODEL_ID,
+            control: controls[1],
+            choice: pod_preset::HdType11Choice::Choice4,
+        };
+        assert_eq!(
+            apply
+                .hd_type11_pending
+                .get(&(apply_index, apply_first.slot, controls[0])),
+            Some(&apply_first)
+        );
+        assert_eq!(
+            apply
+                .hd_type11_pending
+                .get(&(apply_index, apply_second.slot, controls[1])),
+            Some(&apply_second)
+        );
+        assert_eq!(
+            apply
+                .hd_type13_pending
+                .get(&(apply_index, apply_type13.slot, apply_type13.control)),
+            Some(&apply_type13)
+        );
         apply.request_close(&context);
+        let before_first_apply = apply.hd_type11_pending.clone();
         click_prompt(&context, &mut apply, "apply-type11");
         assert_eq!(apply.hd_type11_pending.len(), 1);
-        assert_eq!(apply.hd_type13_pending.len(), 1);
+        assert_eq!(
+            apply
+                .hd_type13_pending
+                .get(&(apply_index, apply_type13.slot, apply_type13.control)),
+            Some(&apply_type13)
+        );
+        let first_applied = before_first_apply
+            .values()
+            .find(|pending| {
+                !apply
+                    .hd_type11_pending
+                    .contains_key(&(apply_index, pending.slot, pending.control))
+            })
+            .copied()
+            .unwrap();
+        let remaining_type11 = apply.hd_type11_pending.values().next().copied().unwrap();
+        let mut expected_after_first = source.clone();
+        let first_row = if first_applied.control == controls[0] {
+            3
+        } else {
+            8
+        };
+        let first_at =
+            pod_preset::H5EP_HEADER_BYTES + 0x428 + 5 * 0x100 + 0x10 + first_row * 0x14 + 4;
+        expected_after_first[first_at..first_at + 4]
+            .copy_from_slice(&first_applied.choice.bits().to_be_bytes());
+        assert_eq!(
+            apply.hd_type11_pending.get(&(
+                apply_index,
+                remaining_type11.slot,
+                remaining_type11.control
+            )),
+            Some(&remaining_type11)
+        );
+        assert_hd_bytes_eq(
+            apply.hd_library.file(apply_index).unwrap().as_bytes(),
+            &expected_after_first,
+            "first quit Apply changes only its exact type-11 stage",
+        );
+        let before_second_apply = apply.hd_type11_pending.values().next().copied().unwrap();
         click_prompt(&context, &mut apply, "apply-type11");
         assert!(apply.hd_type11_pending.is_empty());
-        assert_eq!(apply.hd_type13_pending.len(), 1);
+        assert_eq!(
+            apply
+                .hd_type13_pending
+                .get(&(apply_index, apply_type13.slot, apply_type13.control)),
+            Some(&apply_type13)
+        );
+        let second_row = if before_second_apply.control == controls[0] {
+            3
+        } else {
+            8
+        };
+        let second_at =
+            pod_preset::H5EP_HEADER_BYTES + 0x428 + 5 * 0x100 + 0x10 + second_row * 0x14 + 4;
+        let mut expected_after_second = expected_after_first.clone();
+        expected_after_second[second_at..second_at + 4]
+            .copy_from_slice(&before_second_apply.choice.bits().to_be_bytes());
+        assert_hd_bytes_eq(
+            apply.hd_library.file(apply_index).unwrap().as_bytes(),
+            &expected_after_second,
+            "second quit Apply changes only the remaining type-11 stage",
+        );
         click_prompt(&context, &mut apply, "apply-type13");
         assert!(apply.hd_type13_pending.is_empty());
+        let type13_at = pod_preset::H5EP_HEADER_BYTES + 0x428 + 5 * 0x100 + 0x10 + 4 * 0x14 + 4;
+        let mut expected_after_type13 = expected_after_second;
+        expected_after_type13[type13_at..type13_at + 4]
+            .copy_from_slice(&apply_type13.choice.bits().to_be_bytes());
+        assert_hd_bytes_eq(
+            apply.hd_library.file(apply_index).unwrap().as_bytes(),
+            &expected_after_type13,
+            "quit type-0x0D Apply follows both exact type-11 writes",
+        );
         assert!(apply.hd_library.is_dirty(apply_index));
         assert!(
             matches!(apply.pending, Some(Pending::QuitPod)),
             "the unsaved file decision follows all staged controls"
+        );
+        assert!(
+            !apply.permit_close,
+            "unsaved file decision keeps the window open"
         );
         click_prompt(&context, &mut apply, "discard");
         assert!(apply.permit_close);

@@ -888,6 +888,13 @@ and reject edits. H5ES/H5EB parents must be extracted first and remain unchanged
 The GUI stages by entry/slot/model/control, with explicit Apply and Discard.
 The model `0x020A001D` retains its two independent type-11 controls at keys
 `0x3F100001` and `0x3F100002`; all three stages coexist and are resolved before
-the quit dirty-file prompt. This remains an offline file operation only. The
-indirect owner-context effects and complete editor/runtime parity are
+the quit dirty-file prompt. Corrected synthetic checks prove the same-word
+guard rejection, a trailing duplicate outside count while the target remains
+inside it, exact stage records through Apply/Discard and quit, and the lifecycle
+through slot/model/entry invalidation, cancelled and successful Open, save
+collision, save/reopen, and revert to the saved baseline. Local validation
+passes 343 tests (262 library, 55 GUI, 26 integration), Clippy with
+`-D warnings`, formatting, and `git diff --check`; correction-head configured
+checks are to be queued after commit. This remains an offline file operation
+only. The indirect owner-context effects and complete editor/runtime parity are
 unresolved, and issue #32 remains partial and open.

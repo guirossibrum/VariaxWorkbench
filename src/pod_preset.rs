@@ -5319,8 +5319,16 @@ mod tests {
         let mut duplicate = source.clone();
         let late = block + HD_EFFECT_ROWS_OFFSET + 11 * HD_PARAMETER_ROW_STRIDE;
         duplicate[late..late + 4].copy_from_slice(&HD_TYPE13_CHOICE_KEY.to_be_bytes());
-        duplicate[block + 0x0f] = 5;
-        cases.push(("duplicate", duplicate));
+        duplicate[block + 0x0f] = 10;
+        assert!(
+            9 < duplicate[block + 0x0f] as usize,
+            "target row 9 remains in count"
+        );
+        assert!(
+            11 >= duplicate[block + 0x0f] as usize,
+            "duplicate row 11 is outside count"
+        );
+        cases.push(("trailing duplicate beyond count", duplicate));
         let mut beyond = source.clone();
         beyond[block + 0x0f] = 9;
         cases.push(("out of count", beyond));
@@ -5363,7 +5371,14 @@ mod tests {
             HdType13ChoiceValue::NonFinite(0x7fc0_0011)
         );
         let mut invalid_noop = source.clone();
+        invalid_noop[row + 4..row + 8]
+            .copy_from_slice(&HdType13Choice::Choice2.bits().to_be_bytes());
         invalid_noop[row + HD_PARAMETER_ROW_FLAG_OFFSET] = 1;
+        assert_eq!(
+            &invalid_noop[row + 4..row + 8],
+            &HdType13Choice::Choice2.bits().to_be_bytes(),
+            "requested choice is already present before the guard is corrupted"
+        );
         let mut p = OpaqueH5epPreset::parse(invalid_noop.clone()).unwrap();
         assert!(
             p.set_hd_type13_choice(slot, control, HdType13Choice::Choice2)
