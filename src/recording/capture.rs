@@ -8,6 +8,7 @@
 //! deterministic adapters and tests, not a real-time callback guarantee.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::thread::ThreadId;
 
 use crate::pod_audio::RecordRoute;
@@ -496,8 +497,11 @@ pub enum PendingCaptureEvent {
     Dropout { frames: u64 },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct CaptureSession {
+    // Clones preserve session data but receive a new identity so adapters can
+    // bind to one logical queue/Take instance.
+    identity: Arc<()>,
     plan: ValidatedPlan,
     owner: ThreadId,
     generation: u64,
@@ -514,6 +518,28 @@ pub struct CaptureSession {
     stopped: bool,
 }
 
+impl Clone for CaptureSession {
+    fn clone(&self) -> Self {
+        Self {
+            identity: Arc::new(()),
+            plan: self.plan.clone(),
+            owner: self.owner,
+            generation: self.generation,
+            queue: self.queue.clone(),
+            queued_bytes: self.queued_bytes,
+            queued_gap_frames: self.queued_gap_frames,
+            take: self.take.clone(),
+            clock: self.clock.clone(),
+            last_levels: self.last_levels,
+            error: self.error.clone(),
+            terminal_error: self.terminal_error.clone(),
+            terminal: self.terminal,
+            drain_blocked: self.drain_blocked,
+            stopped: self.stopped,
+        }
+    }
+}
+
 impl CaptureSession {
     pub fn start(plan: ValidatedPlan, generation: u64) -> Result<Self, CaptureError> {
         plan.revalidate()?;
@@ -521,6 +547,7 @@ impl CaptureSession {
             .map_err(CaptureError::Clock)?;
         let take = plan.prepare_take()?;
         Ok(Self {
+            identity: Arc::new(()),
             plan,
             owner: std::thread::current().id(),
             generation,
@@ -555,6 +582,12 @@ impl CaptureSession {
     }
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+    pub(crate) fn identity_token(&self) -> Arc<()> {
+        Arc::clone(&self.identity)
+    }
+    pub(crate) fn has_identity(&self, identity: &Arc<()>) -> bool {
+        Arc::ptr_eq(&self.identity, identity)
     }
     pub fn clock_measurement(&self) -> Option<ClockMeasurement> {
         self.clock.latest()

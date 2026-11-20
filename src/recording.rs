@@ -1661,7 +1661,7 @@ impl Panel {
                 capture.callback_chunk(self.capture_generation, &bytes)
             };
             if let Err(error) = callback_result {
-                if error == capture::CaptureError::QueueFull {
+                if self.callback_adapter.is_none() && error == capture::CaptureError::QueueFull {
                     self.cursor += frames;
                 }
                 return Err(TakeError::Capture(error.to_string()));
@@ -1900,6 +1900,96 @@ mod tests {
             assert!(panel.callback_adapter.is_none());
             assert!(!panel.has_unsaved_take());
         }
+    }
+
+    #[test]
+    fn simulated_callback_cancel_restart_and_recovery_events_remain_dirty_after_save() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut panel = callback_panel(
+            ClockSelection::Integer(44_100),
+            RecordRoute::SendCleanGuitar,
+        );
+        panel.pattern = SyntheticPattern::Ramp;
+        panel.start().unwrap();
+        panel.feed().unwrap();
+        panel.cancel().unwrap();
+        assert_eq!(panel.phase(), Phase::Idle);
+        assert!(!panel.has_unsaved_take());
+
+        panel.start().unwrap();
+        assert_eq!(panel.capture_generation, 2);
+        assert_eq!(panel.cursor, 0);
+        panel.feed().unwrap();
+        let committed = render_pcm_s16(SyntheticPattern::Ramp, 0, FEED_FRAMES).unwrap();
+        assert_eq!(panel.current_take().unwrap().pcm(), committed);
+        panel.stop().unwrap();
+        // Models recovery events already extracted and retained for explicit
+        // handling; saving committed PCM must not clear that guard.
+        panel.recovery_events_outstanding = true;
+        let path = directory.path().join("recovered-callback.wav");
+        panel.save(&path).unwrap();
+        assert_eq!(
+            parse_wav(&std::fs::read(&path).unwrap()).unwrap().data,
+            committed
+        );
+        assert!(panel.has_unsaved_take());
+        panel.acknowledge_recovered_capture_events();
+        assert!(panel.has_unsaved_take());
+        panel
+            .save(&directory.path().join("recovered-callback-final.wav"))
+            .unwrap();
+        assert!(!panel.has_unsaved_take());
+    }
+
+    #[test]
+    fn simulated_callback_queue_full_retries_same_nonconstant_frames_without_reordering() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut panel = callback_panel(
+            ClockSelection::Integer(48_000),
+            RecordRoute::SendCleanGuitar,
+        );
+        panel.pattern = SyntheticPattern::Ramp;
+        panel.start().unwrap();
+        let generation = panel.capture_generation;
+        let mut accepted = Vec::with_capacity(capture::QUEUE_CAPACITY_BYTES);
+        for chunk_index in 0..(capture::QUEUE_CAPACITY_BYTES / STREAM_CHUNK_BYTES_MAX) {
+            let chunk = vec![0x20 + chunk_index as u8; STREAM_CHUNK_BYTES_MAX];
+            panel.submit_capture_chunk(generation, &chunk).unwrap();
+            accepted.extend_from_slice(&chunk);
+        }
+        assert_eq!(
+            panel.capture_session().unwrap().queued_bytes(),
+            capture::QUEUE_CAPACITY_BYTES
+        );
+        let queued_events_before = panel.capture_session().unwrap().pending_events();
+        let original_cursor = panel.cursor;
+        let expected_retry =
+            render_pcm_s16(SyntheticPattern::Ramp, original_cursor, FEED_FRAMES).unwrap();
+        assert!(matches!(panel.feed(), Err(TakeError::Capture(_))));
+        assert_eq!(panel.cursor, original_cursor);
+        assert_eq!(
+            panel.capture_session().unwrap().queued_bytes(),
+            accepted.len()
+        );
+        assert_eq!(
+            panel.capture_session().unwrap().pending_events(),
+            queued_events_before
+        );
+        assert!(panel.current_take().unwrap().pcm().is_empty());
+
+        panel.drain_capture().unwrap();
+        assert_eq!(panel.current_take().unwrap().pcm(), accepted.as_slice());
+        panel.feed().unwrap();
+        assert_eq!(panel.cursor, original_cursor + u64::from(FEED_FRAMES));
+        let expected_pcm = [accepted.as_slice(), expected_retry.as_slice()].concat();
+        assert_eq!(panel.current_take().unwrap().pcm(), expected_pcm);
+        panel.stop().unwrap();
+        let path = directory.path().join("callback-retry.wav");
+        panel.save(&path).unwrap();
+        assert_eq!(
+            parse_wav(&std::fs::read(path).unwrap()).unwrap().data,
+            expected_pcm
+        );
     }
 
     #[test]

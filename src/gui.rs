@@ -2706,6 +2706,18 @@ mod tests {
         app.recorder.feed().unwrap();
     }
 
+    fn prepare_quit_callback_take(app: &mut Workbench, clock: ClockSelection) {
+        app.recorder
+            .select_route(RecordRoute::SendCleanGuitar)
+            .unwrap();
+        app.recorder.select_clock(clock).unwrap();
+        app.recorder
+            .select_input(recording::InputSelection::SimulatedCallback)
+            .unwrap();
+        app.recorder.start().unwrap();
+        app.recorder.feed().unwrap();
+    }
+
     #[test]
     fn recording_quit_cancel_and_failed_save_retain_audio_until_success() {
         let (context, mut app) = app();
@@ -2844,7 +2856,7 @@ mod tests {
         app.pod_selected = Some(index);
         app.pod_name = "POD changed".into();
         app.apply_pod_name();
-        prepare_quit_take(&mut app, ClockSelection::Integer(48_000));
+        prepare_quit_callback_take(&mut app, ClockSelection::Integer(48_000));
         app.request_close(&context);
         assert!(matches!(app.pending, Some(Pending::Quit)));
         click_prompt(&context, &mut app, "save");

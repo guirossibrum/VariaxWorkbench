@@ -11,6 +11,8 @@ use crate::recording::capture::{
     QUEUE_CAPACITY_BYTES, ValidatedPlan,
 };
 use crate::recording::clock::ClockMeasurement;
+use std::sync::Arc;
+use std::thread::ThreadId;
 
 const MAX_BUFFER_BYTES: usize = QUEUE_CAPACITY_BYTES;
 /// At most one source-order chunk plus one mapped stereo chunk coexist while
@@ -122,6 +124,8 @@ struct OwnedChannel {
 pub struct OfflineAsioAdapter {
     contract: CaptureContract,
     generation: u64,
+    session_identity: Option<Arc<()>>,
+    owner: Option<ThreadId>,
     channels: Vec<OwnedChannel>,
     mode: NotificationMode,
     ordinary_callback_available: bool,
@@ -225,6 +229,8 @@ impl OfflineAsioAdapter {
         Ok(Self {
             contract,
             generation,
+            session_identity: None,
+            owner: None,
             channels,
             mode,
             ordinary_callback_available,
@@ -271,7 +277,7 @@ impl OfflineAsioAdapter {
     }
 
     pub fn start(&mut self, session: &CaptureSession) -> Result<(), OfflineAsioError> {
-        self.check_session(session)?;
+        self.bind_or_check_session(session)?;
         match self.lifecycle {
             Lifecycle::Prepared => {
                 self.lifecycle = Lifecycle::Running;
@@ -480,7 +486,7 @@ impl OfflineAsioAdapter {
     }
 
     pub fn dispose(&mut self, session: &mut CaptureSession) -> Result<(), OfflineAsioError> {
-        self.check_session(session)?;
+        self.bind_or_check_session(session)?;
         if self.lifecycle == Lifecycle::Disposed {
             return Ok(());
         }
@@ -518,9 +524,46 @@ impl OfflineAsioAdapter {
     }
 
     fn check_session(&self, session: &CaptureSession) -> Result<(), CaptureError> {
+        if self
+            .owner
+            .is_some_and(|owner| owner != std::thread::current().id())
+        {
+            return Err(CaptureError::WrongThread);
+        }
+        session.check_owner()?;
+        let Some(identity) = self.session_identity.as_ref() else {
+            return Err(CaptureError::ForgedOrChangedRoute);
+        };
+        if !session.has_identity(identity) {
+            return Err(CaptureError::ForgedOrChangedRoute);
+        }
+        if session.generation() != self.generation || session.plan() != self.contract {
+            return Err(CaptureError::ForgedOrChangedRoute);
+        }
+        Ok(())
+    }
+
+    fn bind_or_check_session(&mut self, session: &CaptureSession) -> Result<(), CaptureError> {
+        if let Some(owner) = self.owner
+            && owner != std::thread::current().id()
+        {
+            return Err(CaptureError::WrongThread);
+        }
         session.check_owner()?;
         if session.generation() != self.generation || session.plan() != self.contract {
             return Err(CaptureError::ForgedOrChangedRoute);
+        }
+        match (&self.session_identity, self.owner) {
+            (Some(identity), Some(_)) => {
+                if !session.has_identity(identity) {
+                    return Err(CaptureError::ForgedOrChangedRoute);
+                }
+            }
+            (None, None) if self.lifecycle == Lifecycle::Prepared => {
+                self.session_identity = Some(session.identity_token());
+                self.owner = Some(std::thread::current().id());
+            }
+            _ => return Err(CaptureError::ForgedOrChangedRoute),
         }
         Ok(())
     }
@@ -1235,6 +1278,111 @@ mod tests {
             adapter.take().pcm(),
             &[1, 0, 11, 0, 2, 0, 12, 0, 3, 0, 13, 0, 4, 0, 14, 0]
         );
+    }
+
+    #[test]
+    fn same_thread_alternate_matching_session_is_rejected_without_affecting_original() {
+        let mut harness = prepare(None);
+        harness.start().unwrap();
+        let mut alternate = harness.session.clone();
+        let buffers_before = harness.adapter.channels.clone();
+        assert_eq!(
+            harness.adapter.start(&alternate),
+            Err(OfflineAsioError::Capture(
+                CaptureError::ForgedOrChangedRoute
+            ))
+        );
+        assert_eq!(
+            harness.adapter.deliver(
+                &mut alternate,
+                7,
+                SimulatedNotification::Ordinary { half: 0 }
+            ),
+            Err(OfflineAsioError::Capture(
+                CaptureError::ForgedOrChangedRoute
+            ))
+        );
+        assert_eq!(
+            harness.adapter.stop(&mut alternate),
+            Err(CaptureError::ForgedOrChangedRoute)
+        );
+        assert_eq!(
+            harness
+                .adapter
+                .write_interleaved_half(&alternate, 0, &[0x55; 8]),
+            Err(OfflineAsioError::Capture(
+                CaptureError::ForgedOrChangedRoute
+            ))
+        );
+        assert_eq!(harness.adapter.lifecycle(), Lifecycle::Running);
+        assert_eq!(harness.adapter.retained_error(), None);
+        assert_eq!(harness.adapter.channels, buffers_before);
+        assert_eq!(alternate.pending_events(), 0);
+        assert_eq!(harness.session.pending_events(), 0);
+        harness
+            .deliver(7, SimulatedNotification::Ordinary { half: 0 })
+            .unwrap();
+        harness.stop().unwrap();
+        assert_eq!(harness.take().pcm(), &[1, 0, 11, 0, 2, 0, 12, 0]);
+    }
+
+    #[test]
+    fn foreign_fresh_matching_session_cannot_substitute_for_bound_owner_session() {
+        let mut harness = prepare(None);
+        harness.start().unwrap();
+        let mut original_session = harness.session;
+        let adapter = harness.adapter;
+        let (results, lifecycle, retained_error, buffers_unchanged, mut adapter) =
+            std::thread::spawn(move || {
+                let mut adapter = adapter;
+                let mut fresh = CaptureSession::start(plan(), 7).unwrap();
+                let buffers_before = adapter.channels.clone();
+                let results = (
+                    adapter.deliver(&mut fresh, 7, SimulatedNotification::Ordinary { half: 0 }),
+                    adapter.start(&fresh),
+                    adapter.stop(&mut fresh),
+                    adapter.cancel(&mut fresh),
+                    adapter.disconnect(&mut fresh),
+                    adapter.dispose(&mut fresh),
+                    adapter.write_interleaved_half(&fresh, 0, &[0x55; 8]),
+                );
+                (
+                    results,
+                    adapter.lifecycle(),
+                    adapter.retained_error().cloned(),
+                    adapter.channels == buffers_before,
+                    adapter,
+                )
+            })
+            .join()
+            .unwrap();
+        let wrong_thread = OfflineAsioError::Capture(CaptureError::WrongThread);
+        assert_eq!(
+            results,
+            (
+                Err(wrong_thread.clone()),
+                Err(wrong_thread.clone()),
+                Err(CaptureError::WrongThread),
+                Err(CaptureError::WrongThread),
+                Err(CaptureError::WrongThread),
+                Err(wrong_thread),
+                Err(OfflineAsioError::Capture(CaptureError::WrongThread)),
+            )
+        );
+        assert!(buffers_unchanged);
+        assert_eq!(lifecycle, Lifecycle::Running);
+        assert_eq!(retained_error, None);
+        assert_eq!(adapter.lifecycle(), Lifecycle::Running);
+        assert_eq!(adapter.retained_error(), None);
+        adapter
+            .deliver(
+                &mut original_session,
+                7,
+                SimulatedNotification::Ordinary { half: 0 },
+            )
+            .unwrap();
+        adapter.stop(&mut original_session).unwrap();
+        assert_eq!(original_session.take().pcm(), &[1, 0, 11, 0, 2, 0, 12, 0]);
     }
 
     #[test]
