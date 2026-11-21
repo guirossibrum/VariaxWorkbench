@@ -1201,6 +1201,12 @@ impl Workbench {
         }
         let native = self.recorder.take_can_save_aiff();
         let can_save = self.recorder.take_can_save_wav() || native;
+        let save_label = match (native, self.recorder.phase()) {
+            (true, recording::Phase::Recording) => "Stop and save AIFF copy…",
+            (true, _) => "Save AIFF copy…",
+            (false, recording::Phase::Recording) => "Stop and save WAV copy…",
+            (false, _) => "Save WAV copy…",
+        };
         let mut save = false;
         let mut discard = false;
         let mut cancel = false;
@@ -1211,13 +1217,13 @@ impl Workbench {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
             .show(ctx, |ui| {
-                ui.label("This in-memory test take has not been saved.");
+                ui.label("This test take or its pending capture recovery data has not been fully saved or explicitly discarded.");
                 if native {
                     ui.label("Exact-clock AIFF preserves 78125/2. Other software may round this rate; verify imports.");
                 }
                 ui.label(self.recorder.message());
                 ui.horizontal(|ui| {
-                    let response = ui.add_enabled(can_save, egui::Button::new(if native { "Stop and save AIFF copy…" } else { "Stop and save WAV copy…" }));
+                    let response = ui.add_enabled(can_save, egui::Button::new(save_label));
                     #[cfg(test)]
                     self.pending_buttons.insert("save", response.rect);
                     save = response.clicked();
@@ -1569,6 +1575,19 @@ impl Workbench {
                         self.recorder.note(error.to_string());
                     }
                 }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if self.record_button(ui, "inspect-native-plan", "Inspect PODxt Live plan…")
+                        && let Err(error) = self.recorder.inspect_native_plan()
+                    {
+                        self.recorder.note(error.to_string());
+                    }
+                    if self.record_button(ui, "check-external-plan", "Check external interface…")
+                        && let Err(error) = self.recorder.external_plan_status()
+                    {
+                        self.recorder.note(error.to_string());
+                    }
+                });
                 if self.record_choice(
                     ui,
                     "input-synthetic",
@@ -1577,6 +1596,33 @@ impl Workbench {
                 ) && let Err(error) = self
                     .recorder
                     .select_input(recording::InputSelection::Synthetic)
+                {
+                    self.recorder.note(error.to_string());
+                }
+                if matches!(self.recorder.clock(), recording::ClockSelection::Integer(_))
+                    && self.record_choice(
+                        ui,
+                        "input-simulated-callback",
+                        self.recorder.input() == recording::InputSelection::SimulatedCallback,
+                        "Simulated callback test data",
+                    )
+                    && let Err(error) = self
+                        .recorder
+                        .select_input(recording::InputSelection::SimulatedCallback)
+                {
+                    self.recorder.note(error.to_string());
+                }
+                #[cfg(target_os = "linux")]
+                if self.recorder.clock() == recording::ClockSelection::NativePodxt
+                    && self.record_choice(
+                        ui,
+                        "input-static-podxt-synthetic",
+                        self.recorder.input() == recording::InputSelection::StaticPodxtSynthetic,
+                        "PODxt static plan + generated test PCM",
+                    )
+                    && let Err(error) = self
+                        .recorder
+                        .select_input(recording::InputSelection::StaticPodxtSynthetic)
                 {
                     self.recorder.note(error.to_string());
                 }
@@ -1593,24 +1639,26 @@ impl Workbench {
                     self.load_recording_wav();
                 }
                 ui.separator();
-                if self.record_button(ui, "start", "Start") {
-                    self.arm_recording();
-                }
-                if self.record_button(ui, "feed", "Feed chunk")
-                    && let Err(error) = self.recorder.feed()
-                {
-                    self.recorder.note(error.to_string());
-                }
-                if self.record_button(ui, "stop", "Stop")
-                    && let Err(error) = self.recorder.stop()
-                {
-                    self.recorder.note(error.to_string());
-                }
-                if self.record_button(ui, "cancel", "Cancel")
-                    && let Err(error) = self.recorder.cancel()
-                {
-                    self.recorder.note(error.to_string());
-                }
+                ui.horizontal(|ui| {
+                    if self.record_button(ui, "start", "Start") {
+                        self.arm_recording();
+                    }
+                    if self.record_button(ui, "feed", "Feed chunk")
+                        && let Err(error) = self.recorder.feed()
+                    {
+                        self.recorder.note(error.to_string());
+                    }
+                    if self.record_button(ui, "stop", "Stop")
+                        && let Err(error) = self.recorder.stop()
+                    {
+                        self.recorder.note(error.to_string());
+                    }
+                    if self.record_button(ui, "cancel", "Cancel")
+                        && let Err(error) = self.recorder.cancel()
+                    {
+                        self.recorder.note(error.to_string());
+                    }
+                });
                 let label = if self.recorder.take_can_save_aiff() {
                     "Save exact-clock AIFF…"
                 } else {
@@ -1622,13 +1670,14 @@ impl Workbench {
                 #[cfg(test)]
                 {
                     self.recording_visible = format!(
-                        "{}\n{}\n{}\n{}\n{}\n{}",
+                        "{}\n{}\n{}\n{}\n{}\n{}\n{}",
                         recording::OFFLINE_BANNER,
                         recording::DEVICE_CAPTURE_LOCKED,
                         recording::NO_AUTO_START,
                         self.recorder.phase_label(),
                         self.recorder.meter_line(),
                         self.recorder.guide_line(),
+                        self.recorder.message(),
                     );
                 }
             });
@@ -2536,6 +2585,10 @@ mod tests {
                 .contains(recording::DEVICE_CAPTURE_LOCKED)
         );
         assert!(app.recording_visible.contains(recording::NO_AUTO_START));
+        assert!(
+            app.recording_visible
+                .contains("Native live locked; external input unsupported.")
+        );
         assert!(app.recording_visible.contains(recording::PHASE_IDLE));
         assert!(app.recording_visible.contains("not a live route change"));
         assert!(app.read_worker.is_none());
@@ -2547,6 +2600,32 @@ mod tests {
         assert_eq!(app.recorder.phase(), recording::Phase::Idle);
         assert!(app.read_worker.is_none());
         click_recording(&context, &mut app, "route-clean");
+        click_recording(&context, &mut app, "inspect-native-plan");
+        #[cfg(target_os = "linux")]
+        {
+            assert!(app.recording_visible.contains("Prepared declaration only"));
+            assert!(app.recording_visible.contains("78125/2 Hz"));
+            assert!(app.recording_visible.contains("2 channels mapped 0→L, 1→R"));
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            assert!(app.recording_visible.contains("UnverifiedPlatform"));
+        }
+        assert_eq!(app.recorder.phase(), recording::Phase::Idle);
+        assert_eq!(
+            app.recorder.route(),
+            Some(variax_workbench::pod_audio::RecordRoute::SendCleanGuitar)
+        );
+        assert!(!app.recorder.live_monitor_changed());
+        assert!(!app.recorder.live_route_changed());
+        assert_eq!(app.recording_capture_attempts, 0);
+        click_recording(&context, &mut app, "check-external-plan");
+        assert!(
+            app.recording_visible
+                .contains("no independently admitted interface record")
+        );
+        assert_eq!(app.recorder.phase(), recording::Phase::Idle);
+        assert_eq!(app.recording_capture_attempts, 0);
         click_recording(&context, &mut app, "clock-44100");
         click_recording(&context, &mut app, "input-synthetic");
         assert!(app.recording_visible.contains("not a live route change"));
@@ -2579,6 +2658,42 @@ mod tests {
         }
     }
 
+    #[test]
+    fn rendered_simulated_callback_workflow_is_synthetic_and_offline() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("simulated-callback.wav");
+        app.dialogs = Box::new(FakeDialogs {
+            save: [Some(path.clone())].into(),
+            ..Default::default()
+        });
+        click_recording(&context, &mut app, "open-recording");
+        click_recording(&context, &mut app, "route-clean");
+        click_recording(&context, &mut app, "clock-48000");
+        click_recording(&context, &mut app, "input-simulated-callback");
+        click_recording(&context, &mut app, "start");
+        assert_eq!(app.recorder.phase(), recording::Phase::Recording);
+        assert!(app.recording_visible.contains("No hardware connection"));
+        assert!(
+            app.recording_visible
+                .contains("Generated software test data")
+        );
+        assert_eq!(app.recording_capture_attempts, 0);
+        assert!(app.read_worker.is_none());
+        assert!(!app.recorder.device_opened());
+        click_recording(&context, &mut app, "feed");
+        click_recording(&context, &mut app, "stop");
+        click_recording(&context, &mut app, "save");
+        let wav = std::fs::read(&path).unwrap();
+        assert_eq!(&wav[0..4], b"RIFF");
+        assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 48_000);
+        assert_eq!(&wav[44..48], &[0xe8, 0x03, 0x30, 0xf8]);
+        assert_eq!(app.recording_capture_attempts, 0);
+        assert!(app.read_worker.is_none());
+        assert!(!app.recorder.device_opened());
+    }
+
     fn prepare_quit_take(app: &mut Workbench, clock: ClockSelection) {
         app.recorder
             .select_route(RecordRoute::SendCleanGuitar)
@@ -2586,6 +2701,18 @@ mod tests {
         app.recorder.select_clock(clock).unwrap();
         app.recorder
             .select_input(recording::InputSelection::Synthetic)
+            .unwrap();
+        app.recorder.start().unwrap();
+        app.recorder.feed().unwrap();
+    }
+
+    fn prepare_quit_callback_take(app: &mut Workbench, clock: ClockSelection) {
+        app.recorder
+            .select_route(RecordRoute::SendCleanGuitar)
+            .unwrap();
+        app.recorder.select_clock(clock).unwrap();
+        app.recorder
+            .select_input(recording::InputSelection::SimulatedCallback)
             .unwrap();
         app.recorder.start().unwrap();
         app.recorder.feed().unwrap();
@@ -2729,7 +2856,7 @@ mod tests {
         app.pod_selected = Some(index);
         app.pod_name = "POD changed".into();
         app.apply_pod_name();
-        prepare_quit_take(&mut app, ClockSelection::Integer(48_000));
+        prepare_quit_callback_take(&mut app, ClockSelection::Integer(48_000));
         app.request_close(&context);
         assert!(matches!(app.pending, Some(Pending::Quit)));
         click_prompt(&context, &mut app, "save");

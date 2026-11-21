@@ -5,7 +5,10 @@
 //! USB, or MIDI, and nothing changes a live record route, monitor mix, or
 //! re-amp path. `StartAudioCapture` stays locked in the session gate.
 
+pub mod adapters;
 pub mod aiff;
+pub mod capture;
+pub mod clock;
 
 use std::path::{Path, PathBuf};
 
@@ -44,7 +47,8 @@ pub const INTEGER_WAV_RATES: [u32; 5] = [22_050, 44_100, 48_000, 88_200, 96_000]
 pub const OFFLINE_BANNER: &str =
     "Offline test recording. This is not a recording from a connected device.";
 pub const DEVICE_CAPTURE_LOCKED: &str = "Device capture and playback stay locked. No ALSA, PipeWire, PulseAudio, USB, or MIDI port is opened.";
-pub const NO_AUTO_START: &str = "Opening this window does not start a take, change a record route, or turn monitoring or re-amping on.";
+pub const NO_AUTO_START: &str = "No auto-start, route change, or monitor/re-amp. Native live locked; external input unsupported.";
+pub const EXTERNAL_PLAN_UNAVAILABLE: &str = "External interface plan unavailable: no independently admitted interface record binds identity/revision, route and channel map, sample format, rational clock, OS backend, and provenance.";
 pub const PHASE_IDLE: &str = "Idle. Device capture is locked.";
 pub const PHASE_RECORDING: &str = "Recording test audio in memory. No device is open.";
 pub const PHASE_STOPPED: &str = "Stopped. A file is written only when you save.";
@@ -200,6 +204,8 @@ pub enum TakeError {
         numerator: u32,
         denominator: u32,
     },
+    InputClockMismatch,
+    StaticInputUnavailableOnPlatform,
     FormatClockMismatch,
     RateMismatch {
         header: u32,
@@ -234,6 +240,7 @@ pub enum TakeError {
     LabelTooLong,
     Save(String),
     Integrity,
+    Capture(String),
 }
 
 impl std::fmt::Display for TakeError {
@@ -263,6 +270,12 @@ impl std::fmt::Display for TakeError {
             } => write!(
                 formatter,
                 "only the source rational {RATE_NUMERATOR}/{RATE_DENOMINATOR} is accepted as the native clock; {numerator}/{denominator} is not that rational"
+            ),
+            Self::InputClockMismatch => formatter.write_str(
+                "the static PODxt declaration test input requires the exact 78125/2 clock",
+            ),
+            Self::StaticInputUnavailableOnPlatform => formatter.write_str(
+                "the static PODxt declaration test input is available only on Linux",
             ),
             Self::FormatClockMismatch => formatter.write_str(
                 "integer clocks use 16-bit PCM frames, and the native 78125/2 clock uses declared S24_3LE frames. This pairing is rejected.",
@@ -329,6 +342,7 @@ impl std::fmt::Display for TakeError {
             Self::Integrity => {
                 formatter.write_str("stored audio length does not match the frame count")
             }
+            Self::Capture(detail) => write!(formatter, "capture session: {detail}"),
         }
     }
 }
@@ -1121,6 +1135,12 @@ pub enum ClockSelection {
 pub enum InputSelection {
     Unselected,
     Synthetic,
+    /// Generated PCM delivered through a software-only double-buffer callback
+    /// model. This is not an ASIO device or a physical capture source.
+    SimulatedCallback,
+    /// Generated test PCM routed through the revalidated static PODxt plan.
+    /// This never initializes a native backend or claims captured device data.
+    StaticPodxtSynthetic,
     File,
 }
 
@@ -1149,6 +1169,42 @@ pub const CLOCK_CHOICES: [(ClockSelection, &str); 3] = [
     ),
 ];
 
+fn static_podxt_plan(
+    route: RecordRoute,
+    platform: crate::rig::audio::Platform,
+) -> Result<capture::ValidatedPlan, capture::CaptureError> {
+    let registry = crate::rig::audio::Registry::frozen()
+        .map_err(|_| capture::CaptureError::ForgedOrChangedRoute)?;
+    let capture_row = registry
+        .rows()
+        .iter()
+        .find(|row| {
+            row.name == "PODxt Live"
+                && row.role == crate::rig::audio::SourceRole::Bridge
+                && row.classification == crate::rig::audio::Classification::NativeUsbDeclaration
+        })
+        .map(|row| row.ordinal)
+        .ok_or(capture::CaptureError::ForgedOrChangedRoute)?;
+    capture::ValidatedPlan::native_podxt(
+        &registry,
+        crate::rig::audio::Request {
+            capture_row,
+            capture_profile: crate::rig::ProductProfile::PodxtLive,
+            connected_instrument: None,
+            platform,
+            state: crate::rig::audio::RuntimeState::Normal,
+            endpoint_use: crate::rig::audio::EndpointUse::Capture,
+            contract: crate::rig::audio::CONTRACT,
+            installed_revision: None,
+            channels: 2,
+            clock: (78_125, 2),
+            format: crate::rig::audio::SampleFormat::S24ThreeByteLe,
+        },
+        route,
+        PANEL_TAKE_BYTES,
+    )
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Panel {
     route: Option<RecordRoute>,
@@ -1158,7 +1214,11 @@ pub struct Panel {
     file_label: String,
     pattern: SyntheticPattern,
     take: Option<Take>,
+    capture: Option<capture::CaptureSession>,
+    callback_adapter: Option<adapters::offline_asio::OfflineAsioAdapter>,
+    capture_generation: u64,
     take_saved: bool,
+    recovery_events_outstanding: bool,
     cursor: u64,
     levels: Levels,
     message: String,
@@ -1183,7 +1243,11 @@ impl Panel {
                 right: -2_000,
             },
             take: None,
+            capture: None,
+            callback_adapter: None,
+            capture_generation: 0,
             take_saved: false,
+            recovery_events_outstanding: false,
             cursor: 0,
             levels: Levels::default(),
             message: "Select a route, an input, and a clock. Nothing starts until you press Start."
@@ -1204,28 +1268,74 @@ impl Panel {
     }
 
     pub fn phase(&self) -> Phase {
-        self.take.as_ref().map(Take::phase).unwrap_or(Phase::Idle)
+        self.current_take().map(Take::phase).unwrap_or(Phase::Idle)
     }
 
     /// The current take has not completed a successful file save. Even an
     /// armed, empty take is protected until explicitly saved or discarded.
     pub fn has_unsaved_take(&self) -> bool {
-        self.take.is_some() && !self.take_saved
+        self.recovery_events_outstanding
+            || self
+                .capture
+                .as_ref()
+                .is_some_and(|capture| capture.pending_events() != 0)
+            || (self.current_take().is_some() && !self.take_saved)
     }
 
     /// PCM WAV capability only; exact-clock AIFF has separate admission.
     pub fn take_can_save_wav(&self) -> bool {
-        self.take.as_ref().is_some_and(|take| {
+        self.current_take().is_some_and(|take| {
             matches!(take.clock, SampleClock::Integer { .. })
                 && take.format == FrameFormat::PcmS16Le
         })
     }
 
     pub fn phase_label(&self) -> &'static str {
-        self.take
-            .as_ref()
+        self.current_take()
             .map(Take::phase_label)
             .unwrap_or(PHASE_IDLE)
+    }
+
+    /// Returns the software capture queue for callers that need to inspect or
+    /// recover accepted-but-uncommitted callback events after a stop error.
+    pub fn capture_session(&self) -> Option<&capture::CaptureSession> {
+        self.capture.as_ref()
+    }
+
+    pub fn take_pending_capture_events(
+        &mut self,
+    ) -> Result<Vec<capture::PendingCaptureEvent>, TakeError> {
+        let events = self
+            .capture
+            .as_mut()
+            .ok_or(TakeError::NotRecording)?
+            .take_pending_events()
+            .map_err(|error| TakeError::Capture(error.to_string()))?;
+        self.recovery_events_outstanding |= !events.is_empty();
+        Ok(events)
+    }
+
+    /// Clears the dirty recovery guard only after the caller has handled the
+    /// extracted events. Cancel/discard also clears this state explicitly.
+    pub fn acknowledge_recovered_capture_events(&mut self) {
+        self.recovery_events_outstanding = false;
+    }
+
+    pub fn submit_capture_chunk(&mut self, generation: u64, bytes: &[u8]) -> Result<(), TakeError> {
+        self.capture
+            .as_mut()
+            .ok_or(TakeError::NotRecording)?
+            .callback_chunk(generation, bytes)
+            .map_err(|error| TakeError::Capture(error.to_string()))
+    }
+
+    pub fn drain_capture(&mut self) -> Result<usize, TakeError> {
+        let capture = self.capture.as_mut().ok_or(TakeError::NotRecording)?;
+        let drained = capture
+            .drain()
+            .map_err(|error| TakeError::Capture(error.to_string()))?;
+        self.levels = capture.last_levels();
+        Ok(drained)
     }
 
     pub fn message(&self) -> &str {
@@ -1285,6 +1395,50 @@ impl Panel {
         Ok(())
     }
 
+    /// Prepare and inspect the source-supported PODxt declaration through the
+    /// same route selected for the recorder. This is planning only: it never
+    /// creates a take or initializes a live stream.
+    pub fn inspect_native_plan(&mut self) -> Result<capture::CaptureContract, TakeError> {
+        self.ensure_idle()?;
+        let signal_route = self
+            .route
+            .ok_or(TakeError::SelectionMissing("a record route"))?;
+        #[cfg(target_os = "linux")]
+        let platform = crate::rig::audio::Platform::Linux;
+        #[cfg(target_os = "windows")]
+        let platform = crate::rig::audio::Platform::Windows;
+        #[cfg(target_os = "macos")]
+        let platform = crate::rig::audio::Platform::MacOs;
+        #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+        let platform = crate::rig::audio::Platform::Windows;
+        let plan = static_podxt_plan(signal_route, platform)
+            .map_err(|error| TakeError::Capture(error.to_string()))?;
+        plan.revalidate()
+            .map_err(|error| TakeError::Capture(error.to_string()))?;
+        let contract = plan.contract();
+        self.message = format!(
+            "Prepared declaration only: {}; provenance {}; {} channels mapped {}→L, {}→R; exact source clock {}/{} Hz; {:?}. Capacity {} bytes. No take started; live capture remains locked.",
+            contract.contract,
+            contract.provenance,
+            contract.channels,
+            contract.channel_map.left,
+            contract.channel_map.right,
+            contract.clock.0,
+            contract.clock.1,
+            contract.format,
+            PANEL_TAKE_BYTES,
+        );
+        Ok(contract)
+    }
+
+    /// No external interface has an independently admitted capture record.
+    /// The UI can report the blocker without inventing an identity or plan.
+    pub fn external_plan_status(&mut self) -> Result<(), TakeError> {
+        self.ensure_idle()?;
+        self.message = EXTERNAL_PLAN_UNAVAILABLE.into();
+        Err(TakeError::Capture(EXTERNAL_PLAN_UNAVAILABLE.into()))
+    }
+
     pub fn load_wav(&mut self, label: &str, bytes: &[u8]) -> Result<(), TakeError> {
         self.ensure_idle()?;
         let selected = match self.clock {
@@ -1319,18 +1473,35 @@ impl Panel {
     }
 
     pub fn start(&mut self) -> Result<(), TakeError> {
-        if self.take.is_some() {
+        #[cfg(not(target_os = "linux"))]
+        if self.input == InputSelection::StaticPodxtSynthetic {
+            return Err(TakeError::StaticInputUnavailableOnPlatform);
+        }
+        if self.take.is_some() || self.capture.is_some() || self.callback_adapter.is_some() {
             return Err(TakeError::AlreadyStarted);
         }
         let route = self
             .route
             .ok_or(TakeError::SelectionMissing("a record route"))?;
-        let (clock, format, origin) = match (self.clock, self.input) {
-            (ClockSelection::Integer(hz), InputSelection::Synthetic) => (
-                SampleClock::Integer { hz },
-                FrameFormat::PcmS16Le,
-                InputOrigin::Synthetic,
-            ),
+        let plan = match (self.clock, self.input) {
+            (ClockSelection::Integer(hz), InputSelection::Synthetic) => {
+                capture::ValidatedPlan::software_synthetic(
+                    hz,
+                    2,
+                    capture::ChannelMap { left: 0, right: 1 },
+                    route,
+                    PANEL_TAKE_BYTES,
+                )
+            }
+            (ClockSelection::Integer(hz), InputSelection::SimulatedCallback) => {
+                capture::ValidatedPlan::software_synthetic(
+                    hz,
+                    2,
+                    capture::ChannelMap { left: 0, right: 1 },
+                    route,
+                    PANEL_TAKE_BYTES,
+                )
+            }
             (ClockSelection::Integer(hz), InputSelection::File) => {
                 let loaded = self
                     .loaded
@@ -1342,19 +1513,34 @@ impl Panel {
                         selected: hz,
                     });
                 }
-                (
-                    SampleClock::Integer { hz },
-                    FrameFormat::PcmS16Le,
-                    InputOrigin::File {
-                        label: self.file_label.clone(),
-                    },
+                capture::ValidatedPlan::software_file_labeled(
+                    hz,
+                    2,
+                    capture::ChannelMap { left: 0, right: 1 },
+                    self.file_label.clone(),
+                    route,
+                    PANEL_TAKE_BYTES,
                 )
             }
-            (ClockSelection::NativePodxt, InputSelection::Synthetic) => (
-                SampleClock::native_podxt(),
-                FrameFormat::PodS24_3Le,
-                InputOrigin::Synthetic,
-            ),
+            (ClockSelection::NativePodxt, InputSelection::Synthetic) => {
+                capture::ValidatedPlan::software_synthetic_podxt_clock(route, PANEL_TAKE_BYTES)
+            }
+            (ClockSelection::NativePodxt, InputSelection::SimulatedCallback) => {
+                return Err(TakeError::InputClockMismatch);
+            }
+            (ClockSelection::NativePodxt, InputSelection::StaticPodxtSynthetic) => {
+                #[cfg(target_os = "linux")]
+                {
+                    static_podxt_plan(route, crate::rig::audio::Platform::Linux)
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    return Err(TakeError::StaticInputUnavailableOnPlatform);
+                }
+            }
+            (ClockSelection::Integer(_), InputSelection::StaticPodxtSynthetic) => {
+                return Err(TakeError::InputClockMismatch);
+            }
             (ClockSelection::NativePodxt, InputSelection::File) => {
                 return Err(TakeError::RationalClockNotWav {
                     numerator: RATE_NUMERATOR,
@@ -1367,25 +1553,49 @@ impl Panel {
             (_, InputSelection::Unselected) => {
                 return Err(TakeError::SelectionMissing("an input"));
             }
+        }
+        .map_err(|error| TakeError::Capture(error.to_string()))?;
+        let generation = self.capture_generation.wrapping_add(1);
+        let mut callback_adapter = if self.input == InputSelection::SimulatedCallback {
+            Some(
+                adapters::offline_asio::OfflineAsioAdapter::prepare_generated_stereo(
+                    plan.clone(),
+                    generation,
+                    FEED_FRAMES as usize,
+                )
+                .map_err(|error| TakeError::Capture(error.to_string()))?,
+            )
+        } else {
+            None
         };
-        let mut take = Take::prepare(TakeRequest {
-            route,
-            clock,
-            format,
-            origin,
-            max_bytes: PANEL_TAKE_BYTES,
-        })?;
-        take.start()?;
+        let capture = capture::CaptureSession::start(plan, generation)
+            .map_err(|error| TakeError::Capture(error.to_string()))?;
+        if let Some(adapter) = callback_adapter.as_mut() {
+            adapter
+                .start(&capture)
+                .map_err(|error| TakeError::Capture(error.to_string()))?;
+        }
+        self.capture_generation = generation;
+        self.capture = Some(capture);
+        self.callback_adapter = callback_adapter;
+        self.take = None;
         self.cursor = 0;
         self.levels = Levels::default();
-        self.take = Some(take);
         self.take_saved = false;
-        self.message = "Recording armed. Feed a chunk, then stop. Nothing is saved yet.".into();
+        self.recovery_events_outstanding = false;
+        self.message = match self.input {
+            InputSelection::File => "Recording armed from the selected WAV through the bounded offline capture session. Feed a chunk, then stop; nothing is saved yet.",
+            InputSelection::Synthetic => "Offline synthetic recording armed through the bounded common capture session. Feed a chunk, then stop; nothing is saved yet.",
+            InputSelection::SimulatedCallback => "Generated software test data armed through the common capture queue. No hardware connection or device callback is used.",
+            InputSelection::StaticPodxtSynthetic => "Generated test PCM is routed through the revalidated static Linux PODxt declaration in the common offline session. No adapter or device stream is initialized.",
+            InputSelection::Unselected => unreachable!("input was validated above"),
+        }
+        .into();
         Ok(())
     }
 
     pub fn feed(&mut self) -> Result<(), TakeError> {
-        let format = self.take.as_ref().ok_or(TakeError::NotRecording)?.format();
+        let format = self.current_take().ok_or(TakeError::NotRecording)?.format();
         let bytes = match (format, self.input) {
             (FrameFormat::PcmS16Le, InputSelection::File) => {
                 let loaded = self
@@ -1414,30 +1624,98 @@ impl Panel {
             FRAME_BYTES as usize
         };
         let frames = (bytes.len() / frame_bytes) as u64;
-        let levels = self
-            .take
-            .as_mut()
-            .ok_or(TakeError::NotRecording)?
-            .push(&bytes)?;
+        let levels = if let Some(capture) = self.capture.as_mut() {
+            let callback_result = if let Some(adapter) = self.callback_adapter.as_mut() {
+                let half = ((self.cursor / u64::from(FEED_FRAMES)) % 2) as u8;
+                adapter
+                    .write_interleaved_half(capture, half, &bytes)
+                    .and_then(|()| {
+                        adapter
+                            .deliver(
+                                capture,
+                                self.capture_generation,
+                                adapters::offline_asio::SimulatedNotification::Ordinary { half },
+                            )
+                            .map(|_| ())
+                    })
+                    .map_err(|error| match error {
+                        adapters::offline_asio::OfflineAsioError::Capture(error) => error,
+                        _ => capture::CaptureError::ForgedOrChangedRoute,
+                    })
+            } else if self.input == InputSelection::StaticPodxtSynthetic {
+                #[cfg(target_os = "linux")]
+                {
+                    adapters::linux_alsa::translate_read_result_for_session(
+                        capture,
+                        self.capture_generation,
+                        frames as isize,
+                        frames as usize,
+                        &bytes,
+                    )
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    Err(capture::CaptureError::ForgedOrChangedRoute)
+                }
+            } else {
+                capture.callback_chunk(self.capture_generation, &bytes)
+            };
+            if let Err(error) = callback_result {
+                if self.callback_adapter.is_none() && error == capture::CaptureError::QueueFull {
+                    self.cursor += frames;
+                }
+                return Err(TakeError::Capture(error.to_string()));
+            }
+            capture
+                .drain()
+                .map_err(|error| TakeError::Capture(error.to_string()))?;
+            capture.last_levels()
+        } else {
+            self.take
+                .as_mut()
+                .ok_or(TakeError::NotRecording)?
+                .push(&bytes)?
+        };
         self.cursor += frames;
         self.levels = levels;
         Ok(())
     }
 
     pub fn stop(&mut self) -> Result<(), TakeError> {
-        self.take.as_mut().ok_or(TakeError::NotRecording)?.stop()?;
+        if let Some(capture) = self.capture.as_mut() {
+            if let Some(adapter) = self.callback_adapter.as_mut() {
+                adapter.stop(capture)
+            } else {
+                capture.stop()
+            }
+            .map_err(|error| TakeError::Capture(error.to_string()))?;
+        } else {
+            self.take.as_mut().ok_or(TakeError::NotRecording)?.stop()?;
+        }
         self.message =
             "Stopped. Save writes a new copy. Cancel discards only the in-memory take.".into();
         Ok(())
     }
 
     pub fn cancel(&mut self) -> Result<(), TakeError> {
-        self.take
-            .as_mut()
-            .ok_or(TakeError::NotRecording)?
-            .cancel()?;
+        if let Some(capture) = self.capture.as_mut() {
+            if let Some(adapter) = self.callback_adapter.as_mut() {
+                adapter.cancel(capture)
+            } else {
+                capture.cancel()
+            }
+            .map_err(|error| TakeError::Capture(error.to_string()))?;
+            self.capture = None;
+            self.callback_adapter = None;
+        } else {
+            self.take
+                .as_mut()
+                .ok_or(TakeError::NotRecording)?
+                .cancel()?;
+        }
         self.take = None;
         self.take_saved = false;
+        self.recovery_events_outstanding = false;
         self.cursor = 0;
         self.levels = Levels::default();
         self.message = PHASE_CANCELLED.into();
@@ -1446,28 +1724,34 @@ impl Panel {
 
     pub fn save(&mut self, path: &Path) -> Result<SavedTake, TakeError> {
         let saved = self
-            .take
-            .as_ref()
+            .current_take()
             .ok_or(TakeError::NotStopped)?
             .save(path)?;
-        self.take_saved = true;
+        self.take_saved = !self.recovery_events_outstanding
+            && self
+                .capture
+                .as_ref()
+                .is_none_or(|capture| capture.pending_events() == 0);
         self.message = format!("Saved {}", path.display());
         Ok(saved)
     }
 
     pub fn take_can_save_aiff(&self) -> bool {
-        self.take.as_ref().is_some_and(|take| {
+        self.current_take().is_some_and(|take| {
             take.clock == SampleClock::native_podxt() && take.format == FrameFormat::PodS24_3Le
         })
     }
 
     pub fn save_aiff(&mut self, path: &Path) -> Result<SavedAiffTake, TakeError> {
         let saved = self
-            .take
-            .as_ref()
+            .current_take()
             .ok_or(TakeError::NotStopped)?
             .save_aiff(path)?;
-        self.take_saved = true;
+        self.take_saved = !self.recovery_events_outstanding
+            && self
+                .capture
+                .as_ref()
+                .is_none_or(|capture| capture.pending_events() == 0);
         self.message = format!(
             "Saved exact-clock AIFF {}. Other software may round this rate; verify imports.",
             path.display()
@@ -1491,11 +1775,18 @@ impl Panel {
     }
 
     fn ensure_idle(&self) -> Result<(), TakeError> {
-        if self.take.is_some() {
+        if self.take.is_some() || self.capture.is_some() || self.callback_adapter.is_some() {
             Err(TakeError::Busy)
         } else {
             Ok(())
         }
+    }
+
+    fn current_take(&self) -> Option<&Take> {
+        self.capture
+            .as_ref()
+            .map(capture::CaptureSession::take)
+            .or(self.take.as_ref())
     }
 }
 
@@ -1526,6 +1817,181 @@ mod tests {
         panel
     }
 
+    fn callback_panel(clock: ClockSelection, route: RecordRoute) -> Panel {
+        let mut panel = Panel::new();
+        panel.select_route(route).unwrap();
+        panel.select_clock(clock).unwrap();
+        panel
+            .select_input(InputSelection::SimulatedCallback)
+            .unwrap();
+        panel
+    }
+
+    #[test]
+    fn simulated_callback_uses_common_take_at_both_integer_rates_and_saves_exact_pcm() {
+        let directory = tempfile::tempdir().unwrap();
+        for hz in [44_100, 48_000] {
+            let mut panel =
+                callback_panel(ClockSelection::Integer(hz), RecordRoute::SendCleanGuitar);
+            panel.pattern = SyntheticPattern::Constant {
+                left: 0x0102,
+                right: -2,
+            };
+            panel.start().unwrap();
+            assert_eq!(panel.capture_generation, 1);
+            assert!(panel.capture_session().is_some());
+            assert!(panel.has_unsaved_take());
+            panel.feed().unwrap();
+            assert_eq!(
+                panel.current_take().unwrap().pcm()[..8],
+                [2, 1, 254, 255, 2, 1, 254, 255]
+            );
+            panel.stop().unwrap();
+            let path = directory.path().join(format!("callback-{hz}.wav"));
+            let collision = directory.path().join("collision.wav");
+            std::fs::write(&collision, b"retain original").unwrap();
+            let before = panel.current_take().unwrap().pcm().to_vec();
+            assert!(panel.save(&collision).is_err());
+            assert!(panel.has_unsaved_take());
+            assert_eq!(panel.current_take().unwrap().pcm(), before);
+            assert!(
+                panel
+                    .save(&directory.path().join("missing-dir/take.wav"))
+                    .is_err()
+            );
+            assert!(panel.has_unsaved_take());
+            let saved = panel.save(&path).unwrap();
+            assert!(!panel.has_unsaved_take());
+            assert_eq!(std::fs::read(&collision).unwrap(), b"retain original");
+            let wav = std::fs::read(&path).unwrap();
+            assert_eq!(&wav[44..], before.as_slice());
+            assert_eq!(parse_wav(&wav).unwrap().data, before);
+            assert!(
+                std::fs::read_to_string(saved.sidecar_path)
+                    .unwrap()
+                    .contains("\"sample_rate_hz\"")
+            );
+            panel.cancel().unwrap();
+            assert_eq!(panel.phase(), Phase::Idle);
+            assert!(!panel.has_unsaved_take());
+        }
+    }
+
+    #[test]
+    fn simulated_callback_rejects_native_clock_and_reamp_routes_before_start() {
+        let mut native = callback_panel(ClockSelection::NativePodxt, RecordRoute::SendCleanGuitar);
+        let generation = native.capture_generation;
+        assert_eq!(native.start(), Err(TakeError::InputClockMismatch));
+        assert_eq!(native.capture_generation, generation);
+        assert!(native.capture.is_none());
+        assert!(native.callback_adapter.is_none());
+        assert!(!native.has_unsaved_take());
+
+        for route in [
+            RecordRoute::SendCleanGuitarReampPlayback,
+            RecordRoute::SendReampPlayback,
+        ] {
+            let mut panel = callback_panel(ClockSelection::Integer(48_000), route);
+            let generation = panel.capture_generation;
+            assert!(panel.start().is_err());
+            assert_eq!(panel.capture_generation, generation);
+            assert_eq!(panel.phase(), Phase::Idle);
+            assert!(panel.capture.is_none());
+            assert!(panel.callback_adapter.is_none());
+            assert!(!panel.has_unsaved_take());
+        }
+    }
+
+    #[test]
+    fn simulated_callback_cancel_restart_and_recovery_events_remain_dirty_after_save() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut panel = callback_panel(
+            ClockSelection::Integer(44_100),
+            RecordRoute::SendCleanGuitar,
+        );
+        panel.pattern = SyntheticPattern::Ramp;
+        panel.start().unwrap();
+        panel.feed().unwrap();
+        panel.cancel().unwrap();
+        assert_eq!(panel.phase(), Phase::Idle);
+        assert!(!panel.has_unsaved_take());
+
+        panel.start().unwrap();
+        assert_eq!(panel.capture_generation, 2);
+        assert_eq!(panel.cursor, 0);
+        panel.feed().unwrap();
+        let committed = render_pcm_s16(SyntheticPattern::Ramp, 0, FEED_FRAMES).unwrap();
+        assert_eq!(panel.current_take().unwrap().pcm(), committed);
+        panel.stop().unwrap();
+        // Models recovery events already extracted and retained for explicit
+        // handling; saving committed PCM must not clear that guard.
+        panel.recovery_events_outstanding = true;
+        let path = directory.path().join("recovered-callback.wav");
+        panel.save(&path).unwrap();
+        assert_eq!(
+            parse_wav(&std::fs::read(&path).unwrap()).unwrap().data,
+            committed
+        );
+        assert!(panel.has_unsaved_take());
+        panel.acknowledge_recovered_capture_events();
+        assert!(panel.has_unsaved_take());
+        panel
+            .save(&directory.path().join("recovered-callback-final.wav"))
+            .unwrap();
+        assert!(!panel.has_unsaved_take());
+    }
+
+    #[test]
+    fn simulated_callback_queue_full_retries_same_nonconstant_frames_without_reordering() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut panel = callback_panel(
+            ClockSelection::Integer(48_000),
+            RecordRoute::SendCleanGuitar,
+        );
+        panel.pattern = SyntheticPattern::Ramp;
+        panel.start().unwrap();
+        let generation = panel.capture_generation;
+        let mut accepted = Vec::with_capacity(capture::QUEUE_CAPACITY_BYTES);
+        for chunk_index in 0..(capture::QUEUE_CAPACITY_BYTES / STREAM_CHUNK_BYTES_MAX) {
+            let chunk = vec![0x20 + chunk_index as u8; STREAM_CHUNK_BYTES_MAX];
+            panel.submit_capture_chunk(generation, &chunk).unwrap();
+            accepted.extend_from_slice(&chunk);
+        }
+        assert_eq!(
+            panel.capture_session().unwrap().queued_bytes(),
+            capture::QUEUE_CAPACITY_BYTES
+        );
+        let queued_events_before = panel.capture_session().unwrap().pending_events();
+        let original_cursor = panel.cursor;
+        let expected_retry =
+            render_pcm_s16(SyntheticPattern::Ramp, original_cursor, FEED_FRAMES).unwrap();
+        assert!(matches!(panel.feed(), Err(TakeError::Capture(_))));
+        assert_eq!(panel.cursor, original_cursor);
+        assert_eq!(
+            panel.capture_session().unwrap().queued_bytes(),
+            accepted.len()
+        );
+        assert_eq!(
+            panel.capture_session().unwrap().pending_events(),
+            queued_events_before
+        );
+        assert!(panel.current_take().unwrap().pcm().is_empty());
+
+        panel.drain_capture().unwrap();
+        assert_eq!(panel.current_take().unwrap().pcm(), accepted.as_slice());
+        panel.feed().unwrap();
+        assert_eq!(panel.cursor, original_cursor + u64::from(FEED_FRAMES));
+        let expected_pcm = [accepted.as_slice(), expected_retry.as_slice()].concat();
+        assert_eq!(panel.current_take().unwrap().pcm(), expected_pcm);
+        panel.stop().unwrap();
+        let path = directory.path().join("callback-retry.wav");
+        panel.save(&path).unwrap();
+        assert_eq!(
+            parse_wav(&std::fs::read(path).unwrap()).unwrap().data,
+            expected_pcm
+        );
+    }
+
     #[test]
     fn panel_unsaved_status_belongs_to_the_current_successfully_saved_take() {
         let dir = tempfile::tempdir().unwrap();
@@ -1537,10 +2003,10 @@ mod tests {
         assert!(panel.take_can_save_wav());
         panel.feed().unwrap();
         panel.stop().unwrap();
-        let pcm = panel.take.as_ref().unwrap().pcm().to_vec();
+        let pcm = panel.current_take().unwrap().pcm().to_vec();
         assert!(panel.save(&blocked).is_err());
         assert!(panel.has_unsaved_take());
-        assert_eq!(panel.take.as_ref().unwrap().pcm(), pcm);
+        assert_eq!(panel.current_take().unwrap().pcm(), pcm);
         panel.save(&good).unwrap();
         assert!(!panel.has_unsaved_take());
         // A refused second copy does not erase the first successful save.
@@ -1561,15 +2027,133 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("native.wav");
         let mut panel = armed_panel(ClockSelection::NativePodxt);
+        let contract = panel.capture_session().unwrap().plan();
+        assert_eq!(
+            contract.identity,
+            capture::InterfaceIdentity::SoftwareSynthetic
+        );
+        assert_eq!(contract.backend, capture::CaptureBackend::SoftwareSynthetic);
+        assert_eq!(contract.capture_row, None);
+        assert_eq!(contract.declaration, None);
+        assert_eq!(contract.clock, (78_125, 2));
+        assert_eq!(
+            contract.format,
+            crate::rig::audio::SampleFormat::S24ThreeByteLe
+        );
+        assert_eq!(
+            contract.channel_map,
+            capture::ChannelMap { left: 0, right: 1 }
+        );
+        assert!(contract.provenance.contains("no device source"));
+        assert!(!panel.device_opened());
         panel.feed().unwrap();
         panel.stop().unwrap();
-        let pcm = panel.take.as_ref().unwrap().pcm().to_vec();
+        let pcm = panel.current_take().unwrap().pcm().to_vec();
         assert!(!panel.take_can_save_wav());
         assert!(panel.save(&path).is_err());
         assert!(panel.has_unsaved_take());
-        assert_eq!(panel.take.as_ref().unwrap().pcm(), pcm);
+        assert_eq!(panel.current_take().unwrap().pcm(), pcm);
         assert!(!path.exists());
         assert!(!panel.device_opened());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn panel_runs_generated_pcm_through_the_revalidated_static_podxt_plan() {
+        let mut panel = Panel::new();
+        panel.select_route(RecordRoute::SendCleanGuitar).unwrap();
+        panel.select_clock(ClockSelection::Integer(48_000)).unwrap();
+        panel
+            .select_input(InputSelection::StaticPodxtSynthetic)
+            .unwrap();
+        assert_eq!(panel.start(), Err(TakeError::InputClockMismatch));
+        assert_eq!(panel.phase(), Phase::Idle);
+
+        panel.select_clock(ClockSelection::NativePodxt).unwrap();
+        let declaration = panel.inspect_native_plan().unwrap();
+        assert_eq!(declaration.identity, capture::InterfaceIdentity::PodxtLive);
+        assert_eq!(declaration.clock, (78_125, 2));
+        panel.start().unwrap();
+        let session = panel.capture_session().unwrap();
+        let plan = session.plan();
+        assert_eq!(plan.identity, capture::InterfaceIdentity::PodxtLive);
+        assert_eq!(plan.backend, capture::CaptureBackend::LinuxDeclaredPod);
+        assert_eq!(plan.clock, (78_125, 2));
+        assert_eq!(plan.capture_row, Some(declaration.capture_row.unwrap()));
+        assert_eq!(plan.declaration, declaration.declaration);
+        assert_eq!(session.take().origin, InputOrigin::Synthetic);
+        assert!(!panel.device_opened());
+
+        panel.feed().unwrap();
+        assert_eq!(
+            panel.current_take().unwrap().pcm().len(),
+            FEED_FRAMES as usize * FRAME_BYTES as usize
+        );
+        panel.stop().unwrap();
+        assert!(panel.take_can_save_aiff());
+        assert!(!panel.take_can_save_wav());
+        assert!(!panel.device_opened());
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn panel_rejects_static_podxt_input_without_changing_recorder_state() {
+        let mut panel = Panel::new();
+        panel.select_route(RecordRoute::SendCleanGuitar).unwrap();
+        panel.select_clock(ClockSelection::NativePodxt).unwrap();
+        panel
+            .select_input(InputSelection::StaticPodxtSynthetic)
+            .unwrap();
+
+        let generation = panel.capture_generation;
+        let cursor = panel.cursor;
+        let levels = panel.levels;
+        let message = panel.message.clone();
+        assert_eq!(
+            panel.start(),
+            Err(TakeError::StaticInputUnavailableOnPlatform)
+        );
+        assert_eq!(panel.phase(), Phase::Idle);
+        assert!(panel.capture.is_none());
+        assert!(panel.take.is_none());
+        assert_eq!(panel.capture_generation, generation);
+        assert_eq!(panel.cursor, cursor);
+        assert_eq!(panel.levels, levels);
+        assert_eq!(panel.message, message);
+        assert!(!panel.has_unsaved_take());
+        assert!(!panel.device_opened());
+        assert!(crate::rig::LIVE_BACKEND_INITIALIZER.is_none());
+
+        panel.select_input(InputSelection::Synthetic).unwrap();
+        panel.start().unwrap();
+        panel.feed().unwrap();
+        panel.stop().unwrap();
+        assert!(panel.has_unsaved_take());
+        assert!(!panel.device_opened());
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn static_input_guard_preserves_an_existing_unsaved_take() {
+        let mut panel = armed_panel(ClockSelection::NativePodxt);
+        panel.feed().unwrap();
+        panel.stop().unwrap();
+        let pcm = panel.current_take().unwrap().pcm().to_vec();
+        let generation = panel.capture_generation;
+        let cursor = panel.cursor;
+        panel.input = InputSelection::StaticPodxtSynthetic;
+
+        assert_eq!(
+            panel.start(),
+            Err(TakeError::StaticInputUnavailableOnPlatform)
+        );
+        assert_eq!(panel.current_take().unwrap().pcm(), pcm);
+        assert_eq!(panel.capture_generation, generation);
+        assert_eq!(panel.cursor, cursor);
+        assert!(panel.has_unsaved_take());
+        assert_eq!(panel.phase(), Phase::Stopped);
+        assert!(!panel.device_opened());
+        assert!(crate::rig::LIVE_BACKEND_INITIALIZER.is_none());
     }
 
     #[test]
@@ -1871,6 +2455,109 @@ mod tests {
                 selected: 44_100,
             }
         );
+    }
+
+    #[test]
+    fn panel_file_input_runs_through_common_capture_and_keeps_save_dirty_guard() {
+        let directory = tempfile::tempdir().unwrap();
+        let pcm = render_pcm_s16(SyntheticPattern::Ramp, 0, 300).unwrap();
+        let encoded = write_wav(48_000, &pcm).unwrap();
+        let mut panel = Panel::new();
+        panel.select_route(RecordRoute::SendCleanGuitar).unwrap();
+        panel
+            .load_after_clock(48_000, "take.wav", &encoded)
+            .unwrap();
+        panel.start().unwrap();
+        assert!(panel.capture.is_some());
+        assert!(panel.take.is_none());
+        assert!(panel.has_unsaved_take());
+        panel.feed().unwrap();
+        panel.feed().unwrap();
+        assert_eq!(panel.current_take().unwrap().pcm(), pcm);
+        assert_eq!(panel.current_take().unwrap().frames(), 300);
+        panel.stop().unwrap();
+
+        let blocked = directory.path().join("blocked.wav");
+        std::fs::write(&blocked, b"keep").unwrap();
+        assert!(panel.save(&blocked).is_err());
+        assert!(panel.has_unsaved_take());
+        let saved = panel.save(&directory.path().join("saved.wav")).unwrap();
+        assert!(!panel.has_unsaved_take());
+        let output = parse_wav(&std::fs::read(saved.wav_path).unwrap()).unwrap();
+        assert_eq!(output.data, pcm);
+        assert!(
+            std::fs::read_to_string(saved.sidecar_path)
+                .unwrap()
+                .contains("\"file_label\": \"take.wav\"")
+        );
+        panel.cancel().unwrap();
+        assert!(!panel.has_unsaved_take());
+        assert_eq!(std::fs::read(blocked).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn committed_take_save_does_not_clear_uncommitted_capture_recovery_guard() {
+        let registry = crate::rig::audio::Registry::frozen().unwrap();
+        let capture_row = registry
+            .rows()
+            .iter()
+            .find(|row| {
+                row.name == "PODxt Live" && row.role == crate::rig::audio::SourceRole::Bridge
+            })
+            .unwrap()
+            .ordinal;
+        let plan = capture::ValidatedPlan::native_podxt(
+            &registry,
+            crate::rig::audio::Request {
+                capture_row,
+                capture_profile: crate::rig::ProductProfile::PodxtLive,
+                connected_instrument: None,
+                platform: crate::rig::audio::Platform::Linux,
+                state: crate::rig::audio::RuntimeState::Normal,
+                endpoint_use: crate::rig::audio::EndpointUse::Capture,
+                contract: crate::rig::audio::CONTRACT,
+                installed_revision: None,
+                channels: 2,
+                clock: (78_125, 2),
+                format: crate::rig::audio::SampleFormat::S24ThreeByteLe,
+            },
+            RecordRoute::SendCleanGuitar,
+            1024,
+        )
+        .unwrap();
+        let mut panel = Panel::new();
+        panel.route = Some(RecordRoute::SendCleanGuitar);
+        panel.clock = ClockSelection::NativePodxt;
+        panel.input = InputSelection::Synthetic;
+        panel.capture_generation = 700;
+        panel.capture = Some(capture::CaptureSession::start(plan, 700).unwrap());
+
+        let committed = [0x12; 66];
+        panel.submit_capture_chunk(700, &committed).unwrap();
+        panel.drain_capture().unwrap();
+        let pending = [1, 2, 3, 4, 5, 6];
+        panel.submit_capture_chunk(700, &pending).unwrap();
+        assert!(panel.stop().is_err());
+        assert_eq!(panel.capture_session().unwrap().take().pcm(), committed);
+        assert!(panel.has_unsaved_take());
+
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("committed-only.aiff");
+        panel.save_aiff(&first).unwrap();
+        assert!(first.exists());
+        assert!(panel.has_unsaved_take());
+        assert_eq!(
+            panel.take_pending_capture_events().unwrap(),
+            vec![capture::PendingCaptureEvent::Audio(pending.to_vec())]
+        );
+        assert!(panel.has_unsaved_take());
+
+        panel.acknowledge_recovered_capture_events();
+        assert!(panel.has_unsaved_take());
+        let second = directory.path().join("recovered.aiff");
+        panel.save_aiff(&second).unwrap();
+        assert!(second.exists());
+        assert!(!panel.has_unsaved_take());
     }
 
     #[test]
@@ -2239,8 +2926,10 @@ mod tests {
         panel.select_input(InputSelection::Synthetic).unwrap();
         assert!(!panel.live_monitor_changed());
         panel.start().unwrap();
+        assert!(panel.capture.is_some());
+        assert!(panel.take.is_none());
         assert_eq!(panel.phase_label(), PHASE_RECORDING);
-        assert!(panel.take.as_ref().unwrap().pcm().is_empty());
+        assert!(panel.current_take().unwrap().pcm().is_empty());
         panel.feed().unwrap();
         assert_eq!(panel.levels().left_peak, 1_000);
         assert_eq!(panel.levels().right_peak, 2_000);
