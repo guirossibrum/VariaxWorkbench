@@ -78,10 +78,14 @@ approval of its exact procedure. Approving one gate does not approve another.
   here. No read is authorized by this gate listing.
 - **System changes:** None established for an approved procedure; preservation,
   omissions, and recovery requirements remain for issue #23.
-- **Prerequisites and tracking:** Offline readiness and recovery review in
-  [issue #22](https://github.com/guirossibrum/VariaxWorkbench/issues/22),
-  [issue #16](https://github.com/guirossibrum/VariaxWorkbench/issues/16), and
-  #23, followed by separate exact-procedure authorization.
+- **Prerequisites and tracking:** Current native prerequisites are the timeout
+  diagnosis in [issue #119](https://github.com/guirossibrum/VariaxWorkbench/issues/119),
+  the full-backup specification in [issue #120](https://github.com/guirossibrum/VariaxWorkbench/issues/120),
+  and the G3 procedure in [issue #127](https://github.com/guirossibrum/VariaxWorkbench/issues/127).
+  [Issue #16](https://github.com/guirossibrum/VariaxWorkbench/issues/16) is the
+  completed offline source review. Issue #23 tracks backup planning and any
+  future capture under its own exact-procedure authorization. Issue #22 remains
+  a later G6/G7 write-readiness prerequisite, not a G5 prerequisite.
 
 ### G6 — Edit-buffer write
 
