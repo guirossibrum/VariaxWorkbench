@@ -14,8 +14,8 @@ pub mod edit;
 pub mod factory_comparison;
 pub mod factory_reference;
 pub mod firmware;
-pub mod host;
 pub mod hardware_gates;
+pub mod host;
 pub mod linux_transport;
 #[cfg(test)]
 pub mod linux_variax_prefix;
