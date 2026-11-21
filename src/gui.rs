@@ -7,6 +7,7 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
+use variax_workbench::hardware_gates::{self, Gate};
 use variax_workbench::pod_audio::RecordRoute;
 use variax_workbench::pod_preset::{self, Library};
 use variax_workbench::recording::{self, ClockSelection};
@@ -18,7 +19,6 @@ const PICKUP2: u32 = 0x02010002;
 const BODY: u32 = 0x02010003;
 const WIRING: u32 = 0x02010004;
 const TUNING: u32 = 0x02010005;
-const LIVE_ACCESS_LOCKED: bool = true;
 
 #[derive(Clone, Deserialize)]
 struct ModelArt {
@@ -356,7 +356,7 @@ impl Workbench {
 
     fn start_read(&mut self) {
         // The user has locked all physical-device access during offline validation.
-        if LIVE_ACCESS_LOCKED {
+        if hardware_gates::is_locked(Gate::CurrentSettingsRead) {
             self.status = "Live access is locked while offline validation is in progress.".into();
             return;
         }
@@ -371,7 +371,7 @@ impl Workbench {
     }
 
     fn launch_read(&mut self) {
-        if LIVE_ACCESS_LOCKED {
+        if hardware_gates::is_locked(Gate::CurrentSettingsRead) {
             self.status = "Live access is locked while offline validation is in progress.".into();
             return;
         }
@@ -2575,7 +2575,7 @@ mod tests {
         app.start_read();
         assert!(app.read_worker.is_none());
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -2756,7 +2756,7 @@ mod tests {
         assert!(!app.recorder.has_unsaved_take());
         assert!(app.read_worker.is_none());
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -2778,7 +2778,7 @@ mod tests {
         assert_eq!(app.recording_capture_attempts, 0);
         assert!(!app.recorder.device_opened());
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -2925,7 +2925,7 @@ mod tests {
         app.start_read();
         assert!(app.read_worker.is_none());
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -3101,7 +3101,7 @@ mod tests {
         assert_eq!(app.document.as_ref().unwrap().as_bytes(), guitar_edited);
         assert!(app.read_worker.is_none());
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 

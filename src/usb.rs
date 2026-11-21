@@ -3,6 +3,7 @@
 //! and its prior kernel driver reattached after every bounded operation.
 pub use crate::read_session::CurrentPreset;
 use crate::{
+    hardware_gates::{self, Gate},
     midi::SysexDecoder,
     midi_enable,
     read_session::{self, ControlTransport},
@@ -13,25 +14,22 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// User safety requirement: no live USB traffic until offline validation is
-/// complete and the user explicitly authorizes a later hardware phase. There
-/// is deliberately no environment variable, CLI flag or GUI override.
-pub const LIVE_ACCESS_LOCKED: bool = true;
-
 struct Session {
     handle: rusb::DeviceHandle<rusb::GlobalContext>,
     detached: bool,
     claimed: bool,
     enabled: bool,
+    response_gate: Gate,
     decoder: SysexDecoder,
     queue: VecDeque<Vec<u8>>,
 }
 
 impl Session {
     fn open() -> Result<Self, String> {
-        if LIVE_ACCESS_LOCKED {
-            return Err("Live USB access is locked during offline validation. No device was opened and no message was sent.".into());
-        }
+        hardware_gates::run_if_unlocked(Gate::OsDiscovery, Self::open_unlocked)
+    }
+
+    fn open_unlocked() -> Result<Self, String> {
         let devices = rusb::devices().map_err(|e| e.to_string())?;
         let matches: Vec<_> = devices
             .iter()
@@ -49,6 +47,7 @@ impl Session {
             detached: false,
             claimed: false,
             enabled: false,
+            response_gate: Gate::IdentityRequest,
             decoder: SysexDecoder::default(),
             queue: VecDeque::new(),
         };
@@ -75,12 +74,23 @@ impl Session {
         Ok(session)
     }
     fn send_read_command(&mut self, bytes: &[u8]) -> Result<(), String> {
-        if LIVE_ACCESS_LOCKED {
-            return Err("Live USB access is locked".into());
-        }
         if !read_session::is_read_session_message(bytes) {
             return Err("Command is not in the read-session allowlist".into());
         }
+        let gate = if bytes == read_session::IDENTITY_REQUEST {
+            Gate::IdentityRequest
+        } else {
+            Gate::CurrentSettingsRead
+        };
+        hardware_gates::run_if_unlocked(gate, || self.send_read_command_unlocked(bytes))
+    }
+
+    fn send_read_command_unlocked(&mut self, bytes: &[u8]) -> Result<(), String> {
+        self.response_gate = if bytes == read_session::IDENTITY_REQUEST {
+            Gate::IdentityRequest
+        } else {
+            Gate::CurrentSettingsRead
+        };
         if bytes == midi_enable() {
             self.enabled = true;
         }
@@ -100,6 +110,16 @@ impl Session {
         Ok(())
     }
     fn next_reply(
+        &mut self,
+        cancel: &AtomicBool,
+        timeout: Duration,
+    ) -> Result<Option<Vec<u8>>, String> {
+        hardware_gates::run_if_unlocked(self.response_gate, || {
+            self.next_reply_unlocked(cancel, timeout)
+        })
+    }
+
+    fn next_reply_unlocked(
         &mut self,
         cancel: &AtomicBool,
         timeout: Duration,
@@ -174,15 +194,19 @@ impl ControlTransport for Session {
 }
 
 pub fn read_current(cancel: &AtomicBool) -> Result<CurrentPreset, String> {
-    let mut session = Session::open()?;
-    let operation = read_session::read_current_on(&mut session, cancel);
-    let cleanup = session.cleanup();
-    match (operation, cleanup) {
-        (Ok(value), Ok(())) => Ok(value),
-        (Err(error), Ok(())) => Err(error),
-        (Ok(_), Err(error)) => Err(error),
-        (Err(error), Err(cleanup)) => Err(format!("{error}; {cleanup}")),
-    }
+    hardware_gates::run_if_unlocked(Gate::IdentityRequest, || {
+        hardware_gates::run_if_unlocked(Gate::CurrentSettingsRead, || {
+            let mut session = Session::open()?;
+            let operation = read_session::read_current_on(&mut session, cancel);
+            let cleanup = session.cleanup();
+            match (operation, cleanup) {
+                (Ok(value), Ok(())) => Ok(value),
+                (Err(error), Ok(())) => Err(error),
+                (Ok(_), Err(error)) => Err(error),
+                (Err(error), Err(cleanup)) => Err(format!("{error}; {cleanup}")),
+            }
+        })
+    })
 }
 
 #[cfg(test)]
@@ -193,6 +217,6 @@ mod tests {
         let error = read_current(&AtomicBool::new(false))
             .err()
             .expect("live access must be locked");
-        assert!(error.contains("No device was opened"));
+        assert!(error.contains("hardware gate") && error.contains("is locked"));
     }
 }

@@ -197,6 +197,8 @@ mod tests {
             ]
         );
         for opcode in [0x3b, 0x43, 0x61, 0x54, 0x56, 0x4c] {
+            // DSP writes, edit-buffer writes, store/restore, and preset/bank
+            // operations must never enter the identity/current-read backend.
             assert!(!is_read_session_message(&[
                 0xf0, 0, 1, 12, 7, 0, opcode, 0xf7
             ]));
