@@ -2,17 +2,21 @@
 
 ## Hardware boundary — user requirement
 
-PODxt Live and Variax 600 are irreplaceable. **No live device traffic is authorized
-during the current phase**, including identity queries and read requests, because
-they transmit USB/MIDI data and may change session state. Do not run `amidi`
-send/receive probes, direct USB scripts, updaters, reset commands, driver unbinds,
-or any other operation that contacts either device. USB may be disconnected.
+PODxt Live and Variax 600 are irreplaceable. Live device operations are divided
+into gates G1–G8 (see docs/hardware-gates.md). **No gate is authorized.** Each
+gate needs the owner's separate, explicit, written authorization of its exact
+procedure; approving one gate never approves another, and general permission to
+work on this project is not authorization.
 
-`src/usb.rs::LIVE_ACCESS_LOCKED` and the Python probe guard must remain locked.
-Do not add an environment, command-line, GUI, or test override. Use captured data,
-fake transports and CPU emulation. Future live operations require explicit user
-authorization after reviewing the offline validation ledger; general permission
-to work on this project is not authorization to unlock devices.
+Until a gate is authorized: no `amidi` send/receive, direct USB scripts,
+updaters, resets, driver unbinds/detaches, audio streams, or any operation that
+contacts either device. Per-gate compile-time locks in source must stay locked,
+with no environment, command-line, GUI or test override. Use captured data, fake
+transports and CPU emulation.
+
+Write gates (G6, G7) additionally require a verified backup (G5), the
+coefficient-parity decision recorded in #6/#22, and a separately approved
+restore procedure. Firmware (G8) is out of scope.
 
 No preset upload, flash write, firmware install, reset, or bank switching has been
 authorized. Firmware downloads, version comparison, static extraction and offline
@@ -55,6 +59,9 @@ use a disposable implementation worktree/branch per issue, preserve the main
 checkout, and merge each completed issue only after review and offline checks.
 Read `docs/parallel-work.md` for current issue ownership; do not duplicate another
 agent's reserved issues or remove another agent's worktree.
+
+Target 30–60 minutes of agent time per issue; after more than two review rounds,
+stop and propose splitting the issue.
 
 ## Product scope
 
