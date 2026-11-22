@@ -45,9 +45,13 @@ pub(super) fn milestones(ui: &mut egui::Ui) {
     ui.separator();
     ui.heading("Offline PODxt Live tones");
     ui.label(
-        "Use Practice to load Amp and Effects Tone for Drive, stompbox settings, and Delay \
-         and Mod model changes. Use Stompbox Collection to try a model change in a collection. \
-         Load tone or bank… opens your files. Save copy… writes a new file.",
+        "Open the PODxt Live tab. Bank Down and Bank Up move through the loaded banks, \
+         then A, B, C, and D choose a channel. Amp, Stomp, Mod, and Delay open that block. \
+         On/Bypass changes only the stored flag for the block you selected. Practice loads \
+         Amp and Effects Tone or Stompbox Collection. Load tone or bank… opens your files. \
+         Save copy… writes a new file and leaves the original alone. Revert tells you what \
+         it will put back before you discard it. Fetch from PODxt Live, Send current bank, \
+         and Send all banks stay off.",
     );
     ui.separator();
     ui.heading("Current phase · Stage 2 identification, offline only");

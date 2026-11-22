@@ -483,6 +483,42 @@ fn sample_drive_pod_tone() -> Vec<u8> {
     sample_amp_effects_tone(b"L6AS")
 }
 
+/// Pedalboard order for the PODxt Live tab. Amp, then Stomp, then Mod, then Delay.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum PodBlock {
+    Amp,
+    Stomp,
+    Mod,
+    Delay,
+}
+
+impl PodBlock {
+    const ALL: [PodBlock; 4] = [
+        PodBlock::Amp,
+        PodBlock::Stomp,
+        PodBlock::Mod,
+        PodBlock::Delay,
+    ];
+
+    const fn label(self) -> &'static str {
+        match self {
+            PodBlock::Amp => "Amp",
+            PodBlock::Stomp => "Stomp",
+            PodBlock::Mod => "Mod",
+            PodBlock::Delay => "Delay",
+        }
+    }
+
+    const fn enable(self) -> pod_preset::PodModelEnable {
+        match self {
+            PodBlock::Amp => pod_preset::PodModelEnable::Amp,
+            PodBlock::Stomp => pod_preset::PodModelEnable::Stomp,
+            PodBlock::Mod => pod_preset::PodModelEnable::Mod,
+            PodBlock::Delay => pod_preset::PodModelEnable::Delay,
+        }
+    }
+}
+
 fn sample_amp_effects_tone(container: &[u8; 4]) -> Vec<u8> {
     fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
         let mut output = id.to_vec();
@@ -684,6 +720,12 @@ struct Workbench {
     hd_preset_index: usize,
     pod_bundle: Option<pod_preset::PodBundleLibrary>,
     pod_selected: Option<usize>,
+    /// Bank shown by Bank Down / Bank Up. Channel clicks keep this in sync.
+    pod_bank: usize,
+    /// Block whose settings the pedalboard is showing. Switching it does not
+    /// discard edits on another block.
+    pod_block: PodBlock,
+    pod_revert_confirm: bool,
     pod_cab_pending: Option<(usize, pod_preset::PodCabModelChoice)>,
     pod_cab_pending_origin: Option<(u64, usize, Vec<u8>)>,
     pod_delay_model_pending: Option<(usize, pod_preset::PodDelayModelChoice)>,
@@ -886,6 +928,9 @@ impl Workbench {
             hd_preset_index: 0,
             pod_bundle: None,
             pod_selected: None,
+            pod_bank: 0,
+            pod_block: PodBlock::Amp,
+            pod_revert_confirm: false,
             pod_cab_pending: None,
             pod_cab_pending_origin: None,
             pod_delay_model_pending: None,
@@ -2525,11 +2570,18 @@ impl Workbench {
                     if response.clicked() {
                         self.recording_open = true;
                     }
-                    let response = ui.button("POD tones…");
+                    let pod_tab = ui.selectable_label(self.pod_open, "PODxt Live");
                     #[cfg(test)]
-                    self.pod_buttons.insert("open-pod", response.rect);
-                    if response.clicked() {
+                    self.pod_buttons.insert("open-pod", pod_tab.rect);
+                    if pod_tab.clicked() {
                         self.pod_open = true;
+                    }
+                    let variax_tab = ui.selectable_label(!self.pod_open, "Variax");
+                    #[cfg(test)]
+                    self.pod_buttons.insert("show-variax", variax_tab.rect);
+                    if variax_tab.clicked() {
+                        // Leaving the tab keeps the in-memory tones and unsaved edits.
+                        self.pod_open = false;
                     }
                 });
             });
@@ -2555,7 +2607,13 @@ impl Workbench {
                 });
             });
         });
-        egui::CentralPanel::default().show(ctx, |ui| self.guitar_workspace(ui));
+        egui::CentralPanel::default().show(ctx, |ui| {
+            if self.pod_open {
+                self.pod_window(ui);
+            } else {
+                self.guitar_workspace(ui);
+            }
+        });
         if self.help {
             egui::Window::new(format!("Workbench Help · {}", crate::APP_VERSION))
                 .open(&mut self.help)
@@ -2584,7 +2642,6 @@ impl Workbench {
         }
         self.pending_dialog(ctx);
         self.recording_window(ctx);
-        self.pod_window(ctx);
         self.device_check_window(ctx);
     }
 
@@ -3076,7 +3133,7 @@ impl Workbench {
         self.recording_open = open;
     }
 
-    fn pod_window(&mut self, ctx: &egui::Context) {
+    fn pod_window(&mut self, ui: &mut egui::Ui) {
         if !self.pod_open {
             return;
         }
@@ -3113,13 +3170,7 @@ impl Workbench {
             self.pod_amp_model_combo = None;
             self.pod_amp_model_options.clear();
         }
-        let mut open = true;
-        egui::Window::new("Offline PODxt Live tones")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-24.0, 64.0))
-            .show(ctx, |ui| {
+        ui.scope(|ui| {
                 #[cfg(test)]
                 {
                     self.pod_drive_slider = None;
@@ -3135,6 +3186,13 @@ impl Workbench {
                 // line pushes the HD replacement controls below the window.
                 ui.add(egui::Label::new(&self.pod_message).truncate())
                     .on_hover_text(&self.pod_message);
+                ui.separator();
+                // Keep these controls on their own id stack. Buttons use the
+                // parent auto-id counter, and a shift here sends later clicks
+                // to the wrong POD or HD control.
+                ui.push_id("pod-pedalboard", |ui| {
+                    self.pod_pedalboard(ui);
+                });
                 ui.separator();
                 let reverb_model_state = self.pod_selected.and_then(|index| {
                     self.pod_library.tone(index).and_then(|tone| {
@@ -3218,6 +3276,9 @@ impl Workbench {
                     if self.pod_button(ui, "save-pod", "Save copy…") {
                         self.save_pod_tone();
                     }
+                    if self.pod_button_enabled(ui, "revert-pod", "Revert", self.pod_can_revert()) {
+                        self.pod_revert_confirm = true;
+                    }
                     if let Some((bank, preset, count, folder_editable)) = membership_selection {
                         if folder_editable {
                             if self.pod_button(ui, "pod-duplicate-entry", "Duplicate") {
@@ -3290,24 +3351,12 @@ impl Workbench {
                         ))
                     })
                     .collect();
-                for (index, label, name) in rows {
+                for (index, label, _) in rows {
                     let response = ui.selectable_label(self.pod_selected == Some(index), label);
                     #[cfg(test)]
                     self.pod_rows.insert(index, response.rect);
                     if response.clicked() {
-                        if self.pod_selected != Some(index) {
-                            self.pod_cab_pending = None;
-                            self.pod_delay_model_pending = None;
-                            self.pod_mod_model_pending = None;
-                            self.pod_stomp_model_pending = None;
-                            self.pod_reverb_model_pending = None;
-                            self.pod_amp_model_pending = None;
-                            self.pod_harmony_pending = None;
-                            self.pod_delay_pending = None;
-                            self.pod_mod_pending = None;
-                        }
-                        self.pod_selected = Some(index);
-                        self.pod_name = name;
+                        self.select_pod_index(index);
                     }
                 }
                 let amp_choice_state = self.pod_selected.and_then(|index| {
@@ -4427,6 +4476,12 @@ impl Workbench {
                     if let Some(selected) = selected {
                         self.pod_visible.push_str(&selected);
                     }
+                    let scope = self.pod_revert_scope();
+                    self.pod_visible.push('\n');
+                    self.pod_visible.push_str(&scope);
+                    self.pod_visible.push_str(
+                        "\nFetch needs gate G5. Sending a bank needs the reviewed write and store workflow.",
+                    );
                 }
 
                 if self.pod_button(ui, "load-hd-file", "Open HD Edit file…") {
@@ -4563,8 +4618,474 @@ impl Workbench {
                 #[cfg(not(test))]
                 let _ = scroll;
             });
-        // Closing this window keeps the in-memory library, including unsaved names.
-        self.pod_open = open;
+    }
+
+    fn pod_bank_count(&self) -> usize {
+        if let Some(bundle) = &self.pod_bundle {
+            bundle.bank_count()
+        } else if !self.pod_library.is_empty() {
+            1
+        } else {
+            0
+        }
+    }
+
+    fn pod_channel_count(&self, bank: usize) -> usize {
+        if let Some(bundle) = &self.pod_bundle {
+            bundle.preset_count(bank).unwrap_or(0)
+        } else if bank == 0 {
+            self.pod_library.len()
+        } else {
+            0
+        }
+    }
+
+    fn pod_flat_index(&self, bank: usize, channel: usize) -> Option<usize> {
+        if let Some(bundle) = &self.pod_bundle {
+            if channel >= bundle.preset_count(bank)? {
+                return None;
+            }
+            let mut index = 0;
+            for earlier in 0..bank {
+                index += bundle.preset_count(earlier)?;
+            }
+            Some(index + channel)
+        } else if bank == 0 && channel < self.pod_library.len() {
+            Some(channel)
+        } else {
+            None
+        }
+    }
+
+    fn pod_selected_channel(&self) -> Option<usize> {
+        let index = self.pod_selected?;
+        if let Some(bundle) = &self.pod_bundle {
+            bundle.entry_location(index).map(|(_, preset)| preset)
+        } else {
+            Some(index)
+        }
+    }
+
+    fn select_pod_index(&mut self, index: usize) {
+        if self.pod_selected != Some(index) {
+            self.pod_cab_pending = None;
+            self.pod_delay_model_pending = None;
+            self.pod_mod_model_pending = None;
+            self.pod_stomp_model_pending = None;
+            self.pod_reverb_model_pending = None;
+            self.pod_amp_model_pending = None;
+            self.pod_harmony_pending = None;
+            self.pod_delay_pending = None;
+            self.pod_mod_pending = None;
+        }
+        self.pod_selected = Some(index);
+        if let Some(tone) = self.pod_library.tone(index) {
+            self.pod_name = tone.name().to_owned();
+        }
+        if let Some((bank, _)) = self
+            .pod_bundle
+            .as_ref()
+            .and_then(|bundle| bundle.entry_location(index))
+        {
+            self.pod_bank = bank;
+        } else {
+            self.pod_bank = 0;
+        }
+    }
+
+    fn show_pod_channel(&mut self, bank: usize, channel: usize) {
+        let Some(index) = self.pod_flat_index(bank, channel) else {
+            return;
+        };
+        self.select_pod_index(index);
+    }
+
+    fn pod_has_staged_choice(&self) -> bool {
+        self.pod_has_staged_edit()
+            || self.pod_cab_pending.is_some()
+            || self.pod_delay_model_pending.is_some()
+            || self.pod_mod_model_pending.is_some()
+            || self.pod_stomp_model_pending.is_some()
+            || self.pod_reverb_model_pending.is_some()
+            || self.pod_harmony_pending.is_some()
+            || self.pod_delay_pending.is_some()
+            || self.pod_mod_pending.is_some()
+    }
+
+    fn pod_can_revert(&self) -> bool {
+        self.pod_dirty() || self.pod_has_staged_choice()
+    }
+
+    fn pod_revert_scope(&self) -> String {
+        let stored = if self
+            .pod_bundle
+            .as_ref()
+            .is_some_and(pod_preset::PodBundleLibrary::is_dirty)
+        {
+            let banks = self
+                .pod_bundle
+                .as_ref()
+                .map(pod_preset::PodBundleLibrary::bank_count)
+                .unwrap_or(0);
+            format!("Revert restores all {banks} loaded banks to the imported copy.")
+        } else if self.pod_library.any_dirty() {
+            format!(
+                "Revert restores {} unsaved tone(s). Other tones stay as they are.",
+                self.pod_library.dirty_count()
+            )
+        } else {
+            "No stored edits to revert.".to_owned()
+        };
+        let staged = if self.pod_has_staged_choice() {
+            " Staged model choices that are not applied yet are dropped."
+        } else {
+            ""
+        };
+        format!("{stored}{staged} Save copy… writes a new file and leaves the original untouched.")
+    }
+
+    fn clear_pod_stages(&mut self) {
+        self.pod_cab_pending = None;
+        self.pod_cab_pending_origin = None;
+        self.pod_delay_model_pending = None;
+        self.pod_mod_model_pending = None;
+        self.pod_stomp_model_pending = None;
+        self.pod_reverb_model_pending = None;
+        self.pod_amp_model_pending = None;
+        self.pod_eq_reset_pending = None;
+        self.pod_harmony_pending = None;
+        self.pod_delay_pending = None;
+        self.pod_mod_pending = None;
+    }
+
+    fn revert_pod_edits(&mut self) {
+        self.pod_revert_confirm = false;
+        let staged_amp = self.pod_amp_model_pending;
+        if self.pod_bundle.is_some() {
+            let result = self
+                .pod_bundle
+                .as_mut()
+                .map_or(Ok(()), pod_preset::PodBundleLibrary::revert);
+            if let Err(error) = result.and_then(|()| self.refresh_pod_library_from_bundle()) {
+                self.pod_message = error.detail();
+                return;
+            }
+        } else {
+            let dirty: Vec<_> = (0..self.pod_library.len())
+                .filter(|index| self.pod_library.is_dirty(*index))
+                .collect();
+            for index in dirty {
+                if let Err(error) = self.pod_library.revert_unsaved(index) {
+                    self.pod_message = error.detail();
+                    return;
+                }
+            }
+        }
+        self.clear_pod_stages();
+        self.refresh_selected_pod_name();
+        self.restore_staged_amp_if_origin_matches(staged_amp);
+        if self.pod_amp_model_pending.is_some() {
+            self.pod_message =
+                "Reverted stored edits. The staged Amp choice still matches this tone and was kept."
+                    .into();
+        } else {
+            self.pod_message = "Reverted unsaved PODxt Live edits. Nothing was sent.".into();
+        }
+    }
+
+    fn pod_block_state_label(&self, block: PodBlock) -> String {
+        let Some(index) = self.pod_selected else {
+            return format!("{} · no tone", block.label());
+        };
+        let Some(tone) = self.pod_library.tone(index) else {
+            return format!("{} · no tone", block.label());
+        };
+        match tone.model_enable_state(block.enable()) {
+            Ok(pod_preset::ModelEnableState::Canonical(true)) => {
+                format!("{} · On", block.label())
+            }
+            Ok(pod_preset::ModelEnableState::Canonical(false)) => {
+                format!("{} · Bypassed", block.label())
+            }
+            Ok(pod_preset::ModelEnableState::NonCanonical { raw, .. }) => {
+                format!("{} · stored 0x{raw:02x}", block.label())
+            }
+            Err(_) => format!("{} · no model", block.label()),
+        }
+    }
+
+    fn pod_block_model_line(&self, block: PodBlock) -> String {
+        let Some(index) = self.pod_selected else {
+            return "Load a tone to see this block.".to_owned();
+        };
+        let Some(tone) = self.pod_library.tone(index) else {
+            return "The selected tone is no longer in the bank.".to_owned();
+        };
+        let model_id = match block {
+            PodBlock::Amp => tone.amp_model_id(),
+            PodBlock::Stomp => tone.stomp_model_id(),
+            PodBlock::Mod => tone.mod_model_id(),
+            PodBlock::Delay => tone.delay_model_id(),
+        };
+        let Some(model_id) = model_id else {
+            return format!(
+                "This tone has no {} model record. No model or parameters were added.",
+                block.label()
+            );
+        };
+        let pending = match block {
+            PodBlock::Amp => self
+                .pod_amp_model_pending
+                .filter(|(pending_index, _, _)| *pending_index == index)
+                .map(|(_, _, choice)| choice.model_id()),
+            PodBlock::Stomp => self
+                .pod_stomp_model_pending
+                .filter(|(pending_index, _)| *pending_index == index)
+                .map(|(_, choice)| choice.model_id()),
+            PodBlock::Mod => self
+                .pod_mod_model_pending
+                .filter(|(pending_index, _)| *pending_index == index)
+                .map(|(_, choice)| choice.model_id()),
+            PodBlock::Delay => self
+                .pod_delay_model_pending
+                .filter(|(pending_index, _)| *pending_index == index)
+                .map(|(_, choice)| choice.model_id()),
+        };
+        let staged = pending.map_or(String::new(), |id| {
+            format!(" Staged model {id:08x} is not applied yet.")
+        });
+        format!("Model {model_id:08x}.{staged}")
+    }
+
+    fn pod_block_controls_line(&self, block: PodBlock) -> String {
+        let Some(tone) = self
+            .pod_selected
+            .and_then(|index| self.pod_library.tone(index))
+        else {
+            return String::new();
+        };
+        let labels: Vec<&str> = match block {
+            PodBlock::Amp => pod_preset::AmpControl::ALL
+                .into_iter()
+                .filter(|control| tone.amp_control_fraction(*control).is_ok())
+                .map(|control| control.label())
+                .collect(),
+            PodBlock::Stomp => pod_preset::StompControl::ALL
+                .into_iter()
+                .filter(|control| tone.stomp_control_fraction(*control).is_ok())
+                .map(|control| control.label())
+                .collect(),
+            PodBlock::Mod => pod_preset::ModControl::ALL
+                .into_iter()
+                .filter(|control| tone.mod_control_fraction(*control).is_ok())
+                .map(|control| control.label())
+                .collect(),
+            PodBlock::Delay => pod_preset::DelayControl::ALL
+                .into_iter()
+                .filter(|control| tone.delay_control_fraction(*control).is_ok())
+                .map(|control| control.label())
+                .collect(),
+        };
+        if labels.is_empty() {
+            format!(
+                "No supported {} controls are stored in this tone.",
+                block.label()
+            )
+        } else {
+            format!("Controls in this tone: {}.", labels.join(", "))
+        }
+    }
+
+    fn toggle_pod_block_bypass(&mut self) {
+        let Some(index) = self.pod_selected else {
+            self.pod_message = "Select a channel before changing On or Bypass.".into();
+            return;
+        };
+        let block = self.pod_block;
+        let control = block.enable();
+        let state = self
+            .pod_library
+            .tone(index)
+            .ok_or_else(|| pod_preset::ToneError::format("POD selection is out of range"))
+            .and_then(|tone| tone.model_enable_state(control));
+        let Ok(pod_preset::ModelEnableState::Canonical(enabled)) = state else {
+            self.pod_message = format!(
+                "{} On/Bypass stays unchanged. {}",
+                block.label(),
+                self.pod_block_model_line(block)
+            );
+            return;
+        };
+        match self.edit_pod_tone(index, |tone| tone.set_model_enabled(control, !enabled)) {
+            Ok(()) => {
+                self.pod_message = format!(
+                    "{} is now {}. The model, its settings, and the other blocks were kept. Nothing was sent.",
+                    block.label(),
+                    if enabled { "bypassed" } else { "on" }
+                );
+            }
+            Err(error) => self.pod_message = error.detail(),
+        }
+    }
+
+    fn pod_pedalboard(&mut self, ui: &mut egui::Ui) {
+        if let Some(index) = self.pod_selected
+            && let Some((bank, _)) = self
+                .pod_bundle
+                .as_ref()
+                .and_then(|bundle| bundle.entry_location(index))
+        {
+            self.pod_bank = bank;
+        }
+        let banks = self.pod_bank_count();
+        if self.pod_bank >= banks {
+            self.pod_bank = banks.saturating_sub(1);
+        }
+        let bank_name = self
+            .pod_bundle
+            .as_ref()
+            .and_then(|bundle| bundle.bank_name(self.pod_bank))
+            .unwrap_or("");
+        let bank_label = if banks == 0 {
+            "No bank loaded".to_owned()
+        } else if self.pod_bundle.is_none() {
+            "Current tone".to_owned()
+        } else if bank_name.is_empty() {
+            format!("Bank {} of {banks}", self.pod_bank + 1)
+        } else {
+            format!("Bank {} of {banks}: {bank_name}", self.pod_bank + 1)
+        };
+        ui.horizontal(|ui| {
+            if self.pod_button_enabled(ui, "pod-bank-down", "Bank Down", self.pod_bank > 0) {
+                let channel = self.pod_selected_channel().unwrap_or(0);
+                let count = self.pod_channel_count(self.pod_bank - 1);
+                let channel = channel.min(count.saturating_sub(1));
+                self.show_pod_channel(self.pod_bank - 1, channel);
+            }
+            ui.label(bank_label);
+            if self.pod_button_enabled(
+                ui,
+                "pod-bank-up",
+                "Bank Up",
+                banks > 0 && self.pod_bank + 1 < banks,
+            ) {
+                let channel = self.pod_selected_channel().unwrap_or(0);
+                let count = self.pod_channel_count(self.pod_bank + 1);
+                let channel = channel.min(count.saturating_sub(1));
+                self.show_pod_channel(self.pod_bank + 1, channel);
+            }
+        });
+        let channels = self.pod_channel_count(self.pod_bank);
+        let selected_channel = self.pod_selected_channel();
+        ui.horizontal(|ui| {
+            for channel in 0..4 {
+                let letter = ["A", "B", "C", "D"][channel];
+                let available = channel < channels;
+                let selected = available && selected_channel == Some(channel);
+                let response =
+                    ui.add_enabled(available, egui::Button::new(letter).selected(selected));
+                #[cfg(test)]
+                self.pod_buttons.insert(
+                    match channel {
+                        0 => "pod-channel-a",
+                        1 => "pod-channel-b",
+                        2 => "pod-channel-c",
+                        _ => "pod-channel-d",
+                    },
+                    response.rect,
+                );
+                if response.clicked() {
+                    self.show_pod_channel(self.pod_bank, channel);
+                }
+            }
+            if let Some(index) = self.pod_selected
+                && let Some(tone) = self.pod_library.tone(index)
+            {
+                let letter = selected_channel
+                    .filter(|channel| *channel < 4)
+                    .map(|channel| ["A", "B", "C", "D"][channel])
+                    .unwrap_or("—");
+                let dirty = if self.pod_library.is_dirty(index) {
+                    " · unsaved changes"
+                } else {
+                    ""
+                };
+                ui.label(format!("Channel {letter} · {}{dirty}", tone.name()));
+            } else {
+                ui.label("No channel selected");
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            for block in PodBlock::ALL {
+                let selected = self.pod_block == block;
+                let response =
+                    ui.add(egui::Button::new(self.pod_block_state_label(block)).selected(selected));
+                #[cfg(test)]
+                self.pod_buttons.insert(
+                    match block {
+                        PodBlock::Amp => "pod-block-amp",
+                        PodBlock::Stomp => "pod-block-stomp",
+                        PodBlock::Mod => "pod-block-mod",
+                        PodBlock::Delay => "pod-block-delay",
+                    },
+                    response.rect,
+                );
+                if response.clicked() {
+                    self.pod_block = block;
+                }
+            }
+            let can_toggle = self.pod_selected.is_some_and(|index| {
+                self.pod_library.tone(index).is_some_and(|tone| {
+                    matches!(
+                        tone.model_enable_state(self.pod_block.enable()),
+                        Ok(pod_preset::ModelEnableState::Canonical(_))
+                    )
+                })
+            });
+            if self.pod_button_enabled(ui, "pod-block-bypass", "On / Bypass", can_toggle) {
+                self.toggle_pod_block_bypass();
+            }
+        });
+        ui.small(self.pod_block_model_line(self.pod_block));
+        ui.small(self.pod_block_controls_line(self.pod_block));
+        let enable_note = self.pod_selected.and_then(|index| {
+            self.pod_library.tone(index).and_then(|tone| {
+                match tone.model_enable_state(self.pod_block.enable()) {
+                    Ok(pod_preset::ModelEnableState::Canonical(_)) => None,
+                    Ok(pod_preset::ModelEnableState::NonCanonical {
+                        raw,
+                        source_interpretation,
+                    }) => Some(format!(
+                        "On/Bypass is unavailable. Stored flag 0x{raw:02x} reads as {} and was left unchanged.",
+                        if source_interpretation { "on" } else { "bypassed" }
+                    )),
+                    Err(error) => Some(format!("On/Bypass is unavailable. {}", error.detail())),
+                }
+            })
+        });
+        if let Some(note) = enable_note {
+            ui.small(note);
+        }
+        if self.pod_revert_confirm {
+            ui.small(self.pod_revert_scope());
+            ui.horizontal(|ui| {
+                ui.label("Discard those edits?");
+                if self.pod_button(ui, "revert-pod-confirm", "Discard those edits") {
+                    self.revert_pod_edits();
+                }
+                if self.pod_button(ui, "revert-pod-cancel", "Cancel") {
+                    self.pod_revert_confirm = false;
+                }
+            });
+        }
+        ui.horizontal(|ui| {
+            let _fetch = self.pod_button_enabled(ui, "fetch-pod", "Fetch from PODxt Live", false);
+            let _send_bank = self.pod_button_enabled(ui, "send-bank", "Send current bank", false);
+            let _send_all = self.pod_button_enabled(ui, "send-all", "Send all banks", false);
+            ui.small(
+                "Fetch needs gate G5. Sending a bank needs the reviewed write and store workflow.",
+            );
+        });
     }
 
     fn pod_button(&mut self, ui: &mut egui::Ui, id: &'static str, label: &str) -> bool {
@@ -4630,10 +5151,7 @@ impl Workbench {
                 .and_then(|tone| tone.model_enable_state(control));
             match state {
                 Ok(pod_preset::ModelEnableState::Canonical(mut enabled)) => {
-                    let label = match control {
-                        pod_preset::PodModelEnable::Amp => "Amp enabled (stored flag)",
-                        pod_preset::PodModelEnable::Eq => "EQ enabled (stored flag)",
-                    };
+                    let label = format!("{} enabled (stored flag)", control.label());
                     let response = ui.checkbox(&mut enabled, label);
                     #[cfg(test)]
                     self.pod_model_enable_checks.insert(control, response.rect);
@@ -4644,10 +5162,7 @@ impl Workbench {
                             Ok(()) => {
                                 self.pod_message = format!(
                                     "Applied {} stored enable flag. Nothing was sent.",
-                                    match control {
-                                        pod_preset::PodModelEnable::Amp => "Amp",
-                                        pod_preset::PodModelEnable::Eq => "EQ",
-                                    }
+                                    control.label()
                                 )
                             }
                             Err(error) => self.pod_message = error.detail(),
@@ -4658,21 +5173,18 @@ impl Workbench {
                     raw,
                     source_interpretation,
                 }) => {
-                    let label = match control {
-                        pod_preset::PodModelEnable::Amp => "Amp",
-                        pod_preset::PodModelEnable::Eq => "EQ",
-                    };
                     ui.label(format!(
-                        "{label} edit unavailable: MINF byte 0x{raw:02x} is noncanonical (Line6Edit reads it as {}). Preserved unchanged.",
+                        "{} edit unavailable: MINF byte 0x{raw:02x} is noncanonical (Line6Edit reads it as {}). Preserved unchanged.",
+                        control.label(),
                         if source_interpretation { "enabled" } else { "disabled" }
                     ));
                 }
                 Err(error) => {
-                    let label = match control {
-                        pod_preset::PodModelEnable::Amp => "Amp",
-                        pod_preset::PodModelEnable::Eq => "EQ",
-                    };
-                    ui.label(format!("{label} edit unavailable: {}", error.detail()));
+                    ui.label(format!(
+                        "{} edit unavailable: {}",
+                        control.label(),
+                        error.detail()
+                    ));
                 }
             }
         }
@@ -8013,9 +8525,11 @@ mod tests {
     use super::*;
 
     fn hd_editor_frame(context: &egui::Context, app: &mut Workbench, events: Vec<egui::Event>) {
+        // 820px leaves the HD scroll area shorter than its content, so the
+        // idle-scroll fixture can move the type-9 control fully off screen.
         let _ = context.run(
             egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 900.0))),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 820.0))),
                 events,
                 ..Default::default()
             },
@@ -11870,7 +12384,10 @@ mod tests {
         let (scroll_id, viewport, content_height) =
             app.pod_scroll_area.expect("rendered HD editor scroll area");
         let max_offset = (content_height - viewport.height()).max(0.0);
-        assert!(max_offset > 0.0, "fixture must require vertical scrolling");
+        assert!(
+            max_offset > 0.0,
+            "fixture must require vertical scrolling; content={content_height} viewport={viewport:?}"
+        );
         let mut state = egui::scroll_area::State::load(&context, scroll_id).unwrap();
         state.offset.y = max_offset;
         state.store(&context, scroll_id);
@@ -13103,9 +13620,10 @@ mod tests {
     }
 
     fn recording_frame(context: &egui::Context, app: &mut Workbench, events: Vec<egui::Event>) {
+        // Tall enough for the PODxt Live pedalboard plus the controls under it.
         let _ = context.run(
             egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 900.0))),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 8000.0))),
                 events,
                 ..Default::default()
             },
@@ -13120,7 +13638,7 @@ mod tests {
     ) {
         let _ = context.run(
             egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 1600.0))),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 8000.0))),
                 events,
                 ..Default::default()
             },
@@ -15020,6 +15538,343 @@ mod tests {
         assert!(app.pod_buttons.contains_key("load-pod"));
         const {
             assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    fn named_amp_effects_tone(letter: u8) -> Vec<u8> {
+        let mut tone = sample_amp_effects_tone(b"L6PA");
+        let marker = pod_preset::PODXT_LIVE_TONE_ID.to_be_bytes();
+        let pos = tone
+            .windows(4)
+            .position(|word| word == marker)
+            .expect("PINF device id");
+        tone[pos + 4..pos + 6].copy_from_slice(&u16::from(letter).to_be_bytes());
+        tone
+    }
+
+    fn fixed_pod_banks(banks: &[Vec<Vec<u8>>]) -> Vec<u8> {
+        fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+            let mut output = id.to_vec();
+            output.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            output.extend_from_slice(data);
+            if !data.len().is_multiple_of(2) {
+                output.push(0xa5);
+            }
+            output
+        }
+        let mut root = b"L6BA".to_vec();
+        root.extend(chunk(b"ROOT", &[0xaa]));
+        for (bank_index, tones) in banks.iter().enumerate() {
+            let mut info = vec![0; 68];
+            let name = format!("Bank{}", bank_index + 1);
+            for (unit_index, unit) in name.encode_utf16().enumerate() {
+                let at = 4 + unit_index * 2;
+                if at + 2 > info.len() {
+                    break;
+                }
+                info[at..at + 2].copy_from_slice(&unit.to_be_bytes());
+            }
+            let mut bank = b"BANK".to_vec();
+            bank.extend(chunk(b"BINF", &info));
+            for tone in tones {
+                bank.extend_from_slice(tone);
+            }
+            root.extend(chunk(b"LIST", &bank));
+        }
+        chunk(b"FORM", &root)
+    }
+
+    #[test]
+    fn pod_tab_navigates_banks_channels_and_preserves_block_edits() {
+        let (context, mut app) = app();
+        context.style_mut(|style| {
+            style.animation_time = 0.0;
+            style.spacing.slider_width = 220.0;
+        });
+        let bank_one = vec![
+            named_amp_effects_tone(b'A'),
+            named_amp_effects_tone(b'B'),
+            named_amp_effects_tone(b'C'),
+            named_amp_effects_tone(b'D'),
+        ];
+        let bank_two = vec![named_amp_effects_tone(b'E'), named_amp_effects_tone(b'F')];
+        let original_d = bank_one[3].clone();
+        let original_a = bank_one[0].clone();
+        let original_e = bank_two[0].clone();
+        app.load_pod_bundle_bytes(fixed_pod_banks(&[bank_one, bank_two]))
+            .unwrap();
+        app.pod_open = true;
+        recording_frame(&context, &mut app, vec![]);
+        assert!(app.pod_buttons.contains_key("pod-channel-a"));
+        assert!(app.pod_buttons.contains_key("pod-channel-d"));
+        assert!(app.pod_visible.contains("Fetch needs gate G5"));
+        assert!(
+            app.pod_visible
+                .contains("reviewed write and store workflow")
+        );
+        let before_fetch = app.pod_bundle.as_ref().unwrap().as_bytes().to_vec();
+        click_pod(&context, &mut app, "fetch-pod");
+        click_pod(&context, &mut app, "send-bank");
+        click_pod(&context, &mut app, "send-all");
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), before_fetch);
+        assert!(!app.pod_message.contains("sent to"));
+
+        click_pod(&context, &mut app, "pod-channel-d");
+        assert_eq!(app.pod_selected, Some(3));
+        assert!(app.pod_library.tone(3).unwrap().name().contains('D'));
+        let drive_before = app
+            .pod_library
+            .tone(3)
+            .unwrap()
+            .amp_drive_fraction()
+            .unwrap();
+        drag_pod_drive_slider_tall(&context, &mut app);
+        let drive_after = app
+            .pod_library
+            .tone(3)
+            .unwrap()
+            .amp_drive_fraction()
+            .unwrap();
+        assert_ne!(drive_before.to_bits(), drive_after.to_bits());
+        click_pod(&context, &mut app, "pod-block-stomp");
+        assert_eq!(app.pod_block, PodBlock::Stomp);
+        assert_eq!(app.pod_selected, Some(3));
+        let amp_on = app
+            .pod_library
+            .tone(3)
+            .unwrap()
+            .model_enable_state(pod_preset::PodModelEnable::Amp);
+        let mod_on = app
+            .pod_library
+            .tone(3)
+            .unwrap()
+            .model_enable_state(pod_preset::PodModelEnable::Mod);
+        let delay_on = app
+            .pod_library
+            .tone(3)
+            .unwrap()
+            .model_enable_state(pod_preset::PodModelEnable::Delay);
+        let stomp_model = app.pod_library.tone(3).unwrap().stomp_model_id();
+        click_pod(&context, &mut app, "pod-block-bypass");
+        assert_eq!(
+            app.pod_library
+                .tone(3)
+                .unwrap()
+                .model_enable_state(pod_preset::PodModelEnable::Stomp)
+                .unwrap(),
+            pod_preset::ModelEnableState::Canonical(false)
+        );
+        assert_eq!(
+            app.pod_library
+                .tone(3)
+                .unwrap()
+                .model_enable_state(pod_preset::PodModelEnable::Amp)
+                .unwrap(),
+            amp_on.unwrap()
+        );
+        assert_eq!(
+            app.pod_library
+                .tone(3)
+                .unwrap()
+                .model_enable_state(pod_preset::PodModelEnable::Mod)
+                .unwrap(),
+            mod_on.unwrap()
+        );
+        assert_eq!(
+            app.pod_library
+                .tone(3)
+                .unwrap()
+                .model_enable_state(pod_preset::PodModelEnable::Delay)
+                .unwrap(),
+            delay_on.unwrap()
+        );
+        assert_eq!(
+            app.pod_library.tone(3).unwrap().stomp_model_id(),
+            stomp_model
+        );
+        assert_eq!(
+            app.pod_library
+                .tone(3)
+                .unwrap()
+                .amp_drive_fraction()
+                .unwrap()
+                .to_bits(),
+            drive_after.to_bits()
+        );
+        let edited_d = app.pod_library.tone(3).unwrap().as_bytes().to_vec();
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original_a);
+
+        click_pod(&context, &mut app, "pod-channel-a");
+        assert_eq!(app.pod_selected, Some(0));
+        assert_eq!(app.pod_library.tone(3).unwrap().as_bytes(), edited_d);
+        click_pod(&context, &mut app, "show-variax");
+        assert!(!app.pod_open);
+        assert_eq!(app.pod_library.tone(3).unwrap().as_bytes(), edited_d);
+        click_pod(&context, &mut app, "open-pod");
+        assert!(app.pod_open);
+        assert_eq!(app.pod_library.tone(3).unwrap().as_bytes(), edited_d);
+
+        click_pod(&context, &mut app, "pod-bank-up");
+        assert_eq!(app.pod_bank, 1);
+        assert_eq!(app.pod_selected, Some(4));
+        click_pod(&context, &mut app, "pod-channel-d");
+        assert_eq!(app.pod_selected, Some(4), "empty channel D stays disabled");
+        click_pod(&context, &mut app, "pod-channel-b");
+        assert_eq!(app.pod_selected, Some(5));
+        click_pod(&context, &mut app, "pod-bank-down");
+        assert_eq!(app.pod_bank, 0);
+        assert_eq!(app.pod_library.tone(3).unwrap().as_bytes(), edited_d);
+        assert_eq!(
+            app.pod_bundle
+                .as_ref()
+                .unwrap()
+                .tone(1, 0)
+                .unwrap()
+                .as_bytes(),
+            original_e
+        );
+
+        recording_frame(&context, &mut app, vec![]);
+        assert!(app.pod_visible.contains("Revert restores"));
+        click_pod(&context, &mut app, "revert-pod");
+        click_pod(&context, &mut app, "revert-pod-cancel");
+        assert_eq!(app.pod_library.tone(3).unwrap().as_bytes(), edited_d);
+        click_pod(&context, &mut app, "revert-pod");
+        click_pod(&context, &mut app, "revert-pod-confirm");
+        assert_eq!(app.pod_library.tone(3).unwrap().as_bytes(), original_d);
+        assert!(!app.pod_dirty());
+
+        click_pod(&context, &mut app, "pod-channel-d");
+        drag_pod_drive_slider_tall(&context, &mut app);
+        click_pod(&context, &mut app, "pod-block-delay");
+        click_pod(&context, &mut app, "pod-block-bypass");
+        assert_eq!(
+            app.pod_library
+                .tone(3)
+                .unwrap()
+                .model_enable_state(pod_preset::PodModelEnable::Delay)
+                .unwrap(),
+            pod_preset::ModelEnableState::Canonical(false)
+        );
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .model_enable_state(pod_preset::PodModelEnable::Delay)
+                .unwrap(),
+            pod_preset::ModelEnableState::Canonical(true)
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let saved = directory.path().join("bank-copy.vwb");
+        app.dialogs = Box::new(FakeDialogs {
+            pod_save: [Some(saved.clone())].into(),
+            pod_open: [Some(saved.clone())].into(),
+            ..Default::default()
+        });
+        click_pod(&context, &mut app, "save-pod");
+        assert!(!app.pod_dirty());
+        let reopened = pod_preset::PodBundleLibrary::parse(std::fs::read(&saved).unwrap()).unwrap();
+        assert_eq!(reopened.bank_count(), 2);
+        assert_eq!(reopened.preset_count(0), Some(4));
+        assert_eq!(reopened.preset_count(1), Some(2));
+        assert_eq!(reopened.tone(0, 0).unwrap().as_bytes(), original_a);
+        assert_eq!(reopened.tone(1, 0).unwrap().as_bytes(), original_e);
+        assert_ne!(reopened.tone(0, 3).unwrap().as_bytes(), original_d);
+        assert_eq!(
+            reopened
+                .tone(0, 3)
+                .unwrap()
+                .model_enable_state(pod_preset::PodModelEnable::Delay)
+                .unwrap(),
+            pod_preset::ModelEnableState::Canonical(false)
+        );
+        assert_eq!(
+            reopened
+                .tone(0, 3)
+                .unwrap()
+                .model_enable_state(pod_preset::PodModelEnable::Amp)
+                .unwrap(),
+            pod_preset::ModelEnableState::Canonical(true)
+        );
+        click_pod(&context, &mut app, "load-pod");
+        assert_eq!(
+            app.pod_bundle
+                .as_ref()
+                .unwrap()
+                .tone(0, 3)
+                .unwrap()
+                .model_enable_state(pod_preset::PodModelEnable::Stomp)
+                .unwrap(),
+            pod_preset::ModelEnableState::Canonical(true)
+        );
+        const {
+            assert!(hardware_gates::is_locked(Gate::FullBackupRead));
+            assert!(hardware_gates::is_locked(Gate::EditBufferWrite));
+            assert!(hardware_gates::is_locked(Gate::StoreRestore));
+            assert!(hardware_gates::is_locked(Gate::IdentityRequest));
+        }
+    }
+
+    #[test]
+    fn pod_tab_browses_thirty_two_banks_and_a_short_bank() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        recording_frame(&context, &mut app, vec![]);
+        choose_practice_tone(&context, &mut app, PracticeTone::AmpAndEffects);
+        recording_frame(&context, &mut app, vec![]);
+        click_pod(&context, &mut app, "pod-channel-b");
+        assert_eq!(app.pod_selected, Some(0));
+        click_pod(&context, &mut app, "pod-channel-d");
+        assert_eq!(app.pod_selected, Some(0));
+        assert!(app.pod_buttons.contains_key("pod-bank-up"));
+
+        let tone = sample_stomp_model_tone(0x0205_0006);
+        let banks: Vec<Vec<Vec<u8>>> = (0..32)
+            .map(|_| (0..4).map(|_| tone.clone()).collect())
+            .collect();
+        app.load_pod_bundle_bytes(fixed_pod_banks(&banks)).unwrap();
+        assert_eq!(app.pod_bundle.as_ref().unwrap().bank_count(), 32);
+        recording_frame(&context, &mut app, vec![]);
+        for bank in 0..32 {
+            app.show_pod_channel(bank, 3);
+            recording_frame(&context, &mut app, vec![]);
+            assert_eq!(app.pod_bank, bank);
+            assert_eq!(app.pod_selected, Some(bank * 4 + 3));
+            assert!(app.pod_buttons.contains_key("pod-channel-a"));
+            assert!(app.pod_buttons.contains_key("pod-channel-d"));
+        }
+        click_pod(&context, &mut app, "pod-bank-down");
+        assert_eq!(app.pod_bank, 30);
+        click_pod(&context, &mut app, "pod-channel-a");
+        assert_eq!(app.pod_selected, Some(30 * 4));
+
+        let factory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("analysis/reports/podxt-live-3.01-factory/PODxt Live 3.01 Factory.vwb");
+        if factory.is_file() {
+            let bytes = std::fs::read(&factory).unwrap();
+            app.load_pod_bundle_bytes(bytes).unwrap();
+            let bundle = app.pod_bundle.as_ref().unwrap();
+            assert_eq!(bundle.bank_count(), 32);
+            for bank in 0..32 {
+                assert_eq!(bundle.preset_count(bank), Some(4));
+            }
+            app.pod_open = true;
+            recording_frame(&context, &mut app, vec![]);
+            click_pod(&context, &mut app, "pod-bank-up");
+            click_pod(&context, &mut app, "pod-channel-d");
+            assert_eq!(app.pod_bank, 1);
+            assert_eq!(app.pod_selected, Some(7));
+            app.show_pod_channel(31, 0);
+            recording_frame(&context, &mut app, vec![]);
+            assert_eq!(app.pod_bank, 31);
+            assert_eq!(app.pod_bundle.as_ref().unwrap().preset_count(31), Some(4));
+            click_pod(&context, &mut app, "fetch-pod");
+            click_pod(&context, &mut app, "send-all");
+            assert_eq!(app.pod_bank, 31);
+        }
+        const {
+            assert!(hardware_gates::is_locked(Gate::FullBackupRead));
         }
     }
 
@@ -17233,34 +18088,7 @@ mod tests {
     }
 
     fn click_pod_window_close(context: &egui::Context, app: &mut Workbench) {
-        recording_frame(context, app, vec![]);
-        let rect = context
-            .memory(|memory| memory.area_rect(egui::Id::new("Offline PODxt Live tones")))
-            .expect("POD window");
-        let pos = Pos2::new(rect.right() - 20.0, rect.top() + 18.0);
-        recording_frame(
-            context,
-            app,
-            vec![
-                egui::Event::PointerMoved(pos),
-                egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed: true,
-                    modifiers: Default::default(),
-                },
-            ],
-        );
-        recording_frame(
-            context,
-            app,
-            vec![egui::Event::PointerButton {
-                pos,
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: Default::default(),
-            }],
-        );
+        click_pod(context, app, "show-variax");
     }
 
     fn pod_tone_name(app: &Workbench, index: usize) -> String {

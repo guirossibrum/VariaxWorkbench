@@ -859,31 +859,49 @@ pub enum PodxtEqBand {
     Four,
 }
 
-/// The two independently recovered Line6Edit model-enable controls.
+/// Line 6 Edit model-enable controls stored as MINF body byte 11.
+///
+/// `L6SharcToneParamMap` handles `AMP_ENABLE` (`0x40010001`), `STOMP_ENABLE`
+/// (`0x40030006`), `MOD_ENABLE` (`0x40040009`) and `DELAY_ENABLE`
+/// (`0x40050009`) as the `0x40000000` enable flag. `SetParam` calls
+/// `L6Model.SetEnabled` on the group model, and `WriteIFFContainer` writes
+/// `(m_enabled ? 1 : 0)` at MINF byte 11. That write does not change the
+/// model id, PARM records, or any other model. Amp and EQ already use this
+/// byte. Stomp, Mod, and Delay use the same byte on their one existing model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PodModelEnable {
     Amp,
+    Stomp,
+    Mod,
+    Delay,
     Eq,
 }
 
 impl PodModelEnable {
-    const fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Amp => "Amp",
+            Self::Stomp => "Stomp",
+            Self::Mod => "Mod",
+            Self::Delay => "Delay",
             Self::Eq => "EQ",
         }
     }
 
-    const fn slot(self) -> u32 {
+    const fn slots(self) -> &'static [u32] {
         match self {
-            Self::Amp => AMP_SLOT,
-            Self::Eq => PODXT_EQ_SLOT,
+            Self::Amp => &[AMP_SLOT],
+            Self::Stomp => &[STOMP_SLOT],
+            // Same primary-or-fallback slots as Mod and Delay model selection.
+            Self::Mod => &[MOD_SLOT, 0x0005_0003],
+            Self::Delay => &[DELAY_SLOT, 0x0005_0004],
+            Self::Eq => &[PODXT_EQ_SLOT],
         }
     }
 
     const fn expected_model_id(self) -> Option<u32> {
         match self {
-            Self::Amp => None,
+            Self::Amp | Self::Stomp | Self::Mod | Self::Delay => None,
             Self::Eq => Some(PODXT_EQ_MODEL_ID),
         }
     }
@@ -7137,17 +7155,17 @@ impl PodTone {
                 "model-enable edit requires the PODxt Live host profile minimum 3.00",
             ));
         }
-        let slot = control.slot();
+        let slots = control.slots();
         let matches: Vec<_> = self
             .models
             .iter()
             .enumerate()
-            .filter(|(_, model)| model.slot == slot)
+            .filter(|(_, model)| slots.contains(&model.slot))
             .map(|(index, _)| index)
             .collect();
         let [model_index] = matches.as_slice() else {
             return Err(ToneError::format(format!(
-                "{} enable edit requires exactly one existing model in slot {slot:08x}",
+                "{} enable edit requires exactly one existing model in its slot",
                 control.label()
             )));
         };
@@ -7155,6 +7173,7 @@ impl PodTone {
         if let Some(expected) = control.expected_model_id()
             && self.models[model_index].model_id != expected
         {
+            let slot = self.models[model_index].slot;
             return Err(ToneError::format(format!(
                 "EQ enable edit requires model {expected:08x} in slot {slot:08x}"
             )));
@@ -16134,6 +16153,90 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn stomp_mod_and_delay_bypass_changes_only_the_selected_minf_byte() {
+        let original = custom_tone(
+            ContainerKind::L6pa,
+            &[
+                BuiltModel {
+                    slot: AMP_SLOT,
+                    model_id: 0x0003_0001,
+                    tail: &[0x10, 0x20, 0x30, 1],
+                    parameters: &[&[0x11, 0x22, 0x33]],
+                },
+                BuiltModel {
+                    slot: STOMP_SLOT,
+                    model_id: 0x0205_0006,
+                    tail: &[0x40, 0x50, 0x60, 1],
+                    parameters: &[&[0x44, 0x55]],
+                },
+                BuiltModel {
+                    slot: MOD_SLOT,
+                    model_id: 0x0206_0001,
+                    tail: &[0x70, 0x80, 0x90, 1],
+                    parameters: &[&[0x66]],
+                },
+                BuiltModel {
+                    slot: DELAY_SLOT,
+                    model_id: 0x0207_0002,
+                    tail: &[0xa0, 0xb0, 0xc0, 1],
+                    parameters: &[&[0x77, 0x88, 0x99]],
+                },
+            ],
+        );
+        let mut tone = PodTone::parse(original).unwrap();
+        let identities: Vec<_> = tone
+            .models()
+            .iter()
+            .map(|model| (model.slot, model.model_id, model.parameters.len()))
+            .collect();
+        for control in [
+            PodModelEnable::Stomp,
+            PodModelEnable::Mod,
+            PodModelEnable::Delay,
+        ] {
+            let before = tone.as_bytes().to_vec();
+            let slot = tone
+                .models()
+                .iter()
+                .find(|model| control.slots().contains(&model.slot))
+                .unwrap()
+                .slot;
+            let model_index = tone
+                .models()
+                .iter()
+                .position(|model| model.slot == slot)
+                .unwrap();
+            let offset = tone.model_minfo_ranges[model_index].start + 11;
+            tone.set_model_enabled(control, false).unwrap();
+            let mut expected = before.clone();
+            expected[offset] = 0;
+            assert_eq!(tone.as_bytes(), expected, "{}", control.label());
+            assert_eq!(
+                tone.model_enable_state(control).unwrap(),
+                ModelEnableState::Canonical(false)
+            );
+            assert_eq!(
+                tone.model_enable_state(PodModelEnable::Amp).unwrap(),
+                ModelEnableState::Canonical(true)
+            );
+            let after: Vec<_> = tone
+                .models()
+                .iter()
+                .map(|model| (model.slot, model.model_id, model.parameters.len()))
+                .collect();
+            assert_eq!(after, identities);
+        }
+        let bypassed = tone.as_bytes().to_vec();
+        tone.set_model_enabled(PodModelEnable::Stomp, false)
+            .unwrap();
+        assert_eq!(
+            tone.as_bytes(),
+            bypassed,
+            "bypassing again must keep the bytes"
+        );
+    }
+
+    #[test]
     fn pod_model_enable_patches_only_the_selected_minf_byte_and_noops_same_value() {
         for control in [PodModelEnable::Amp, PodModelEnable::Eq] {
             for initial in [0u8, 1] {
@@ -16146,6 +16249,9 @@ pub(crate) mod tests {
                 let model_index = match control {
                     PodModelEnable::Amp => 0,
                     PodModelEnable::Eq => 1,
+                    PodModelEnable::Stomp | PodModelEnable::Mod | PodModelEnable::Delay => {
+                        unreachable!("this loop covers only Amp and EQ")
+                    }
                 };
                 let enabled_offset = tone.model_minfo_ranges[model_index].start + 11;
                 let desired = initial == 0;
@@ -16158,8 +16264,11 @@ pub(crate) mod tests {
                 tone.set_model_enabled(control, desired).unwrap();
                 assert_eq!(tone.as_bytes(), after_change, "same value changed bytes");
                 let (ordinal, reserved) = match control {
-                    PodModelEnable::Amp => (-128, [0xa1, 0xb2]),
+                    PodModelEnable::Amp => (-128i8, [0xa1, 0xb2]),
                     PodModelEnable::Eq => (-1, [0xc3, 0xd4]),
+                    PodModelEnable::Stomp | PodModelEnable::Mod | PodModelEnable::Delay => {
+                        unreachable!("this loop covers only Amp and EQ")
+                    }
                 };
                 assert_eq!(tone.models()[model_index].ordinal, Some(ordinal));
                 assert_eq!(tone.models()[model_index].reserved, Some(reserved));
