@@ -10,6 +10,45 @@ Work sequentially in project Order, respecting dependencies and the authorizatio
 Project Order is a topological ordering; issue numbers are identifiers, not execution order.
 Issues #1 and #2 are complete; #3 is In Progress. Consult the GitHub project for current status.
 
+## Current plan (delivery reset, 2026-11-20) — read this first
+
+The owner-approved delivery reset replaced the dependency chain below for
+hardware gates. Live work is split into operation gates G1–G8 and delivered in
+phases of increasing risk, each ending with an owner hands-on test and an
+owner-only exit review:
+
+| Phase | Scope | Gate | Exit review |
+| --- | --- | --- | --- |
+| 1 | Clean-up and landing | — | [#148](https://github.com/guirossibrum/VariaxWorkbench/issues/148) — signed off 2026-11-22 |
+| 2 | USB recognition | G1 [#125](https://github.com/guirossibrum/VariaxWorkbench/issues/125) | [#149](https://github.com/guirossibrum/VariaxWorkbench/issues/149) |
+| 3 | Identification | G2 [#126](https://github.com/guirossibrum/VariaxWorkbench/issues/126) | GitHub project |
+| 4 | Settings read | G3 [#127](https://github.com/guirossibrum/VariaxWorkbench/issues/127) | GitHub project |
+| 5 | Sound in the app | G4 [#128](https://github.com/guirossibrum/VariaxWorkbench/issues/128) | GitHub project |
+| 6 | Backup | G5 [#23](https://github.com/guirossibrum/VariaxWorkbench/issues/23) | GitHub project |
+| 7 | Upload | G6 [#25](https://github.com/guirossibrum/VariaxWorkbench/issues/25), G7 [#22](https://github.com/guirossibrum/VariaxWorkbench/issues/22) | GitHub project |
+| 8 | Firmware | G8 [#30](https://github.com/guirossibrum/VariaxWorkbench/issues/30) | GitHub project |
+
+Phase 1 was signed off on the owner's hands-on offline test; its unfinished
+items moved to the *Phase 1 carry-over (non-blocking)* milestone, except
+[#122](https://github.com/guirossibrum/VariaxWorkbench/issues/122) and [#130](https://github.com/guirossibrum/VariaxWorkbench/issues/130), which are now Phase 2 safety prerequisites.
+The editor work the Device check window builds on is [#166](https://github.com/guirossibrum/VariaxWorkbench/issues/166).
+
+Phase 2 deliverables: [#131](https://github.com/guirossibrum/VariaxWorkbench/issues/131)
+G1 procedure and form, [#134](https://github.com/guirossibrum/VariaxWorkbench/issues/134)
+probe stage 1, [#137](https://github.com/guirossibrum/VariaxWorkbench/issues/137)
+prototype decision, [#157](https://github.com/guirossibrum/VariaxWorkbench/issues/157)
+Device check window, [#158](https://github.com/guirossibrum/VariaxWorkbench/issues/158)
+G1-only test build (after the owner signs), then #125 and #149.
+
+**#5, #6, #33 and #22 are not prerequisites for G1–G3.** #5's known
+coefficient difference is recorded and no longer blocks reads; #6 and #33 are
+sound/coefficient validation needed before audio claims and writes; #22 is now
+G7 (store/restore). G1–G3 depend on the [#112](https://github.com/guirossibrum/VariaxWorkbench/issues/112)
+ledger and [#110](https://github.com/guirossibrum/VariaxWorkbench/issues/110),
+not on #5, #6 or #33. No gate is authorized. GitHub issues and the project
+remain the source of truth; the list below is the original backlog, kept for
+its history.
+
 All issues remain subject to [AGENTS.md](../AGENTS.md). Live USB/MIDI access
 is locked; creating an issue does not authorize its hardware steps.
 
@@ -46,7 +85,7 @@ is locked; creating an issue does not authorize its hardware steps.
 - [ ] [#20: Determine PODxt Live USB firmware version requirements](https://github.com/guirossibrum/VariaxWorkbench/issues/20)
 - [ ] [#21: Investigate Linux Variax identity matching and POD bridge behavior](https://github.com/guirossibrum/VariaxWorkbench/issues/21)
 - [ ] [#22: Complete offline readiness ledger and hardware-operation review gate](https://github.com/guirossibrum/VariaxWorkbench/issues/22)
-  Depends on #6, #18, #21, #33.
+  Depends on #6, #18, #21, #33. Now gate G7 (store/restore, phase 7); it no longer gates reads.
 - [ ] [#25: Define a future preset-write safety design without enabling writes](https://github.com/guirossibrum/VariaxWorkbench/issues/25)
   Depends on #6, #18, #23, #24.
 
@@ -69,9 +108,9 @@ the current implementation remains sequential with #3 In Progress.
 ## Future hardware work — explicit authorization required
 
 - [ ] [#23: Plan and obtain comprehensive verified device backups after authorization](https://github.com/guirossibrum/VariaxWorkbench/issues/23)
-  Depends on #22, #16.
+  Depends on #22, #16. Now gate G5 (phase 6).
 - [ ] [#24: Plan staged read-only integration after explicit authorization](https://github.com/guirossibrum/VariaxWorkbench/issues/24)
-  Depends on #22, #21.
+  Depends on #22, #21 (superseded: G1–G3 now depend on #112 and #110 through #125–#127).
 
 - [ ] [#34: Add a short guided hardware and playing check](https://github.com/guirossibrum/VariaxWorkbench/issues/34)
   Depends on #24, #28. The [offline rehearsal app](manual-check.md) exists; control recognition and audio measurement remain pending. Target roughly five minutes, with selectors/knobs, a small note sample, bends and optional existing alternate tuning.
