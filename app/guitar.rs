@@ -43,7 +43,35 @@ pub(super) fn milestones(ui: &mut egui::Ui) {
          controls or tuning, then choose Save copy… to keep your original file.",
     );
     ui.separator();
-    ui.heading("Offline validation before device writes");
+    ui.heading("Current phase · Stage 1: USB recognition (G1)");
+    ui.label(
+        "Device check… shows the four device steps in simulation. Each step asks first and \
+         the answer is No unless you choose Yes. The real step 1 only reads what Linux already \
+         knows about the PODxt Live and sends it nothing. It stays locked until you sign the \
+         G1 procedure and a separate test build opens only that lock.",
+    );
+    for (label, url) in [
+        (
+            "G1 procedure and sign-off form (#131)",
+            "https://github.com/guirossibrum/VariaxWorkbench/issues/131",
+        ),
+        (
+            "Your G1 test (#125)",
+            "https://github.com/guirossibrum/VariaxWorkbench/issues/125",
+        ),
+        (
+            "Phase 2 exit review (#149)",
+            "https://github.com/guirossibrum/VariaxWorkbench/issues/149",
+        ),
+    ] {
+        ui.hyperlink_to(label, url);
+    }
+    ui.separator();
+    ui.heading("Later phases · before sound checks and device writes");
+    ui.label(
+        "These do not block USB recognition, identification or settings reads (delivery reset, \
+         2026-11-20).",
+    );
     for (label, url, status) in [
         (
             "Compare complete presets with original Workbench (#6)",
