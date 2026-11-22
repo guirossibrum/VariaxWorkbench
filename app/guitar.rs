@@ -48,9 +48,14 @@ pub(super) fn milestones(ui: &mut egui::Ui) {
         "Device check… opens in Simulation, which shows the four device steps with pretend \
          devices. Each step asks first and the answer is No unless you choose Yes. G1 is open \
          in this build only, by your direct permission (2026-11-22): the mode \"This computer \
-         (G1)\" runs the real step 1, which only reads what Linux already knows about the \
-         PODxt Live and sends it nothing. Steps 2–4 stay locked. Follow the Phase 2 test card \
-         and paste the Report into #125.",
+         (G1)\" is shown only on Linux and runs the real step 1, which only reads what Linux \
+         already knows about the PODxt Live and sends it nothing. Steps 2–4 stay locked. \
+         Closing Device check cancels a Yes pressed in the same moment. Offline checks on \
+         this build, using pretend devices only, passed 458 tests with every feature \
+         (339 library, 93 window, 26 integration), 457 for the window profile \
+         (338 library, 93 window, 26 integration), and 364 for portable math \
+         (338 library, 26 integration). Follow the Phase 2 test card and paste the Report \
+         into #125.",
     );
     for (label, url) in [
         (

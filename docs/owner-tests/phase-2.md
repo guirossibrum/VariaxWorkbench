@@ -10,7 +10,20 @@ G1 is open in that build by your direct permission of 2026-11-22
 ([G1 ledger, section 5](../hardware-gates/g1.md#5-g1-authorization-record)).
 Only step 1 can run on real hardware. It reads what Linux already knows about
 connected USB devices and sound cards and sends nothing to the PODxt Live or
-the guitar. Steps 2–4 (gates G2–G3) stay locked.
+the guitar. Steps 2–4 (gates G2–G3) stay locked. **This computer (G1)** is
+shown only on Linux. Closing the window in the same moment as Yes cancels,
+and nothing is read.
+
+## Already checked, without the guitar
+
+These counts are from the unfinished #158 working tree. They used pretend
+devices and temporary fake trees. They are not the real step, and they did
+not read this computer's `/sys` or `/proc`.
+
+- `cargo test --all-features`: **458** (339 library, 93 window, 26 integration).
+- `cargo test --no-default-features --features gui`: **457** (338 library, 93 window, 26 integration).
+- `cargo test --locked --no-default-features --features portable-math`: **364** (338 library, 26 integration). The window is not part of this check.
+- Clippy, with warnings denied, passed for those three setups and for the Windows portable-math target. That Windows check does not build the window, so hiding **This computer (G1)** outside Linux was read from the code only.
 
 ## You need
 
