@@ -1,7 +1,8 @@
 [package]
 name = "variax-workbench"
-version = "0.1.0"
+version = "0.9.0"
 edition = "2024"
+default-run = "variax-workbench-gui"
 description = "Linux Variax 600 editor investigation and offline protocol tools"
 publish = false
 
@@ -14,7 +15,7 @@ path = "src/main.rs"
 
 [[bin]]
 name = "variax-workbench-gui"
-path = "src/gui.rs"
+path = "app/main.rs"
 required-features = ["gui"]
 
 [[bin]]
@@ -26,17 +27,19 @@ name = "variax-firmware-inspect"
 path = "src/firmware_inspect.rs"
 
 [features]
-default = []
+default = ["gui"]
 # Experimental, versioned software mathematics; normal builds retain host math.
 portable-math = ["dep:libm"]
-gui = ["usb", "dep:eframe", "dep:winit", "dep:image", "dep:rfd", "dep:serde", "dep:serde_json"]
+gui = ["dep:eframe", "dep:winit", "dep:image", "dep:rfd", "dep:serde", "dep:serde_json"]
+# Live USB adapter (rusb/libusb). Separate from `gui`: offline GUI builds never link libusb.
+# Every live call stays behind the compile-time hardware gates.
 usb = ["dep:rusb"]
 
 [dependencies]
 libm = { version = "=0.2.16", optional = true, default-features = false, features = ["force-soft-floats"] }
 tempfile = "3"
 rusb = { version = "0.9.4", optional = true }
-eframe = { version = "=0.33.3", optional = true, default-features = false, features = ["default_fonts", "glow", "wayland", "x11", "__screenshot"] }
+eframe = { version = "=0.33.3", optional = true, default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 winit = { version = "=0.30.13", optional = true, default-features = false, features = ["wayland", "x11"] }
 image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
 rfd = { version = "0.18", optional = true }
@@ -50,3 +53,7 @@ sha2 = "0.10"
 # Already used by the GUI; tests read independent derived oracle references.
 # This does not add a JSON dependency to the core application runtime.
 serde_json = "1"
+# eframe's private screenshot hook (EFRAME_SCREENSHOT_TO) is for test builds only.
+# `x11` only gives winit a Linux backend in core-only test builds (X11 is loaded
+# at run time, so no system library is needed to build); it is a no-op elsewhere.
+eframe = { version = "=0.33.3", default-features = false, features = ["x11", "__screenshot"] }

@@ -8,12 +8,14 @@ use std::collections::BTreeMap;
 
 pub mod body;
 pub mod bundle;
+pub mod device_probe;
 pub mod document;
 pub mod dsp;
 pub mod edit;
 pub mod factory_comparison;
 pub mod factory_reference;
 pub mod firmware;
+pub mod hardware_gates;
 pub mod host;
 pub mod linux_transport;
 #[cfg(test)]

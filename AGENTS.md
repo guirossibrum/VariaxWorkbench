@@ -2,17 +2,28 @@
 
 ## Hardware boundary — user requirement
 
-PODxt Live and Variax 600 are irreplaceable. **No live device traffic is authorized
-during the current phase**, including identity queries and read requests, because
-they transmit USB/MIDI data and may change session state. Do not run `amidi`
-send/receive probes, direct USB scripts, updaters, reset commands, driver unbinds,
-or any other operation that contacts either device. USB may be disconnected.
+PODxt Live and Variax 600 are irreplaceable. Live device operations are divided
+into gates G1–G8 (see docs/hardware-gates.md). **G1 is authorized by the owner's
+direct permission (2026-11-22)**, for the procedure in
+[docs/hardware-gates/g1.md](docs/hardware-gates/g1.md) only. It takes effect
+only in the build from issue #158, which opens only the G1 lock. Until that
+build exists, `hardware_gates::G1_OS_DISCOVERY_LOCKED` stays true and the
+Device check runs in simulation only. **G2–G8 are not authorized.** Each gate
+needs the owner's own direct permission. Permission for one gate never extends
+to another, and general permission to work on this project is not gate
+permission. The owner does not authorize a gate by signing a GitHub issue.
 
-`src/usb.rs::LIVE_ACCESS_LOCKED` and the Python probe guard must remain locked.
-Do not add an environment, command-line, GUI, or test override. Use captured data,
-fake transports and CPU emulation. Future live operations require explicit user
-authorization after reviewing the offline validation ledger; general permission
-to work on this project is not authorization to unlock devices.
+Until the gate that covers an operation is both authorized and opened by its
+build: no `amidi` send/receive, direct USB scripts, updaters, resets, driver
+unbinds/detaches, audio streams, or any operation that contacts either device.
+Per-gate compile-time locks stay locked, with no environment, command-line,
+GUI, or test override, except the #158 build opening only the G1 lock. Use
+captured data, fake transports and CPU emulation. Agents do not run the real
+G1 step; the owner runs that test.
+
+Write gates (G6, G7) additionally require a verified backup (G5), the
+coefficient-parity decision recorded in #6/#22, and a separately approved
+restore procedure. Firmware (G8) is out of scope.
 
 No preset upload, flash write, firmware install, reset, or bank switching has been
 authorized. Firmware downloads, version comparison, static extraction and offline
@@ -55,6 +66,9 @@ use a disposable implementation worktree/branch per issue, preserve the main
 checkout, and merge each completed issue only after review and offline checks.
 Read `docs/parallel-work.md` for current issue ownership; do not duplicate another
 agent's reserved issues or remove another agent's worktree.
+
+Target 30–60 minutes of agent time per issue; after more than two review rounds,
+stop and propose splitting the issue.
 
 ## Product scope
 
