@@ -1635,12 +1635,12 @@ mod tests {
         ));
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     fn host_session(root: &Path) -> ProbeSession<HostRig<LinuxSysfs>> {
         ProbeSession::new(HostRig::new(injected_reader(root)))
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn this_computer_mode_runs_step_one_only_and_reports_without_serial() {
         let root = fake_tree();
@@ -1712,7 +1712,7 @@ mod tests {
         assert!(!report.contains("SIMULATED"));
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn this_computer_mode_decline_and_cancel_read_nothing() {
         let root = fake_tree();
@@ -1729,7 +1729,7 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn this_computer_mode_stops_when_no_or_two_pods_are_listed() {
         let root = fake_tree();
