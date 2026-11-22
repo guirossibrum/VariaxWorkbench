@@ -6,15 +6,16 @@ Issues [#134](https://github.com/guirossibrum/VariaxWorkbench/issues/134),
 [#113](https://github.com/guirossibrum/VariaxWorkbench/issues/113).
 **G1 is authorized by the owner's direct permission (2026-11-22) and is open in this build only.**
 G2–G8 are not authorized. See [the G1 procedure](hardware-gates/g1.md).
-The window still opens in **Simulation**. **This computer (G1)** is offered only
-when step 1's live form is available, and only step 1 can run in that mode.
+The window still opens in **Simulation**. **This computer** is offered only
+when a live step is available. Its label, banner, and report name the gates
+this build can actually run. In this build that is step 1 only.
 
 ## Stages
 
 | Step | Name | Gate | What the live form would do |
 | --- | --- | --- | --- |
 | 1 | USB recognition | G1 | Read what Linux already holds (USB ids, cached descriptor fields, bound drivers, ALSA card list). Sends nothing. |
-| 2 | Device identification | G2 | Proposed, not observed: the same universal identity question twice (bridge, then guitar) over interface 1, then release and reattach. Simulation feeds pretend replies and only proves those inputs were accepted. The 2026-11-14 capture summary is one identity request followed by a settings read. |
+| 2 | Device identification | G2 | One universal identity question for the Variax 600 over interface 1, then release and reattach. Simulation feeds one pretend Variax reply and only proves that input was accepted. The 2026-11-14 captures show that one request and that reply, then a settings read. PODxt Live identity is not requested. |
 | 3 | Settings read | G3 | MIDI enable, two metadata requests, MIDI disable. Partial current settings, not a backup. |
 | 4 | Change check | G3 | The person changes `string1_tuning` on the guitar; the same read runs again. |
 
@@ -25,9 +26,21 @@ in `src/device_probe.rs`; the window shows them verbatim before asking.
 
 - The default answer is **No** (`Consent::default()`); in the window the
   focused default button is **No, stop**.
-- Only **Yes** runs the waiting step. No, cancel (closing the window), a
-  failure, no device, several devices or unreadable metadata stop the whole
-  sequence.
+- Step 2's Yes button says **Yes, send one Variax identity request** on a
+  real computer, and **Yes, rehearse one Variax identity request
+  (simulation)** in Simulation. The rehearsal does not claim a live send.
+- Only **Yes** runs the waiting step. No, or closing the window before the
+  step starts, stops the sequence and sends nothing. Close in the same
+  moment as Yes wins. Once Yes has started, the exchange runs on the window
+  thread and the window cannot cancel it.
+- Step 2 is offered only after this session's step 1 has passed for one
+  PODxt Live with `snd-usb-pod` on interface 0 and `snd-usb-variax` on
+  interface 1. A mismatched binding stops step 1 and does not offer step 2.
+  A new Device check starts at step 1 again.
+- After step 2 has been answered, **Start over** does not discard the check
+  until the steps 1–2 report is saved. **Save the step 2 report, then run
+  step 1 again** writes that report first and starts a fresh step 1 only
+  when the save succeeds.
 - A passed step makes the next step *wait*; it never runs it.
 - The detailed report (schema 1) is plain text with fixed keys (`stage`,
   `gate`, `decision`, `status`, `detail`). The window labels it for issue
@@ -48,16 +61,17 @@ in `src/device_probe.rs`; the window shows them verbatim before asking.
   layout through the `OsMetadataSource` trait. Choosing Simulation never
   constructs `LinuxSysfs`.
 - Stage 2 uses an in-memory identity script (`src/identity_stage.rs`). The
-  script is given a bridge reply and then a guitar reply. That is simulated
-  behavior. Stages 3–4 still use `simulation::VirtualControl` and
+  success script is given one Variax 600 reply. That is simulated behavior.
+  Stages 3–4 still use `simulation::VirtualControl` and
   `read_session::read_current_on` (revision `0001`, preset name `SIMULATED`).
 - The **Pretend setup** list picks a scenario: connected, nothing connected,
   two PODxt Live units, unreadable information, a silent guitar, or tuning
   left unchanged.
 
-**This computer (G1)** uses `HostRig` around `LinuxSysfs`. It is offered only
-when `live_stage_available(Stage::UsbRecognition)` is true (G1 open, and step 1
-is the only live stage). The reader is built only when that mode is chosen.
+**This computer** uses `HostRig` around `LinuxSysfs`. It is offered only
+when `live_stage_available(Stage::UsbRecognition)` is true. The mode label
+and the banner come from `open_gates()`, which is G1 in this build. The
+reader is built only when that mode is chosen.
 It reads only the [g1.md section 1](hardware-gates/g1.md#1-what-the-app-reads)
 paths under a configurable root (the app uses `/`; tests inject a temporary
 fake tree) with `read_dir`, `read_to_string` and `read_link`, fills the same
@@ -114,11 +128,20 @@ only.
   normal and the owner observed no display or light change after Yes.
   The [Phase 2 test card](owner-tests/phase-2.md) specifies a master build.
   Results belong on #125.
-- Stage 2 in Simulation feeds the published 2026-11-14 reply shapes
-  (PODxt Live 3.01 and Variax 600 3.10) to a proposed two-request exchange.
-  That proves the simulation accepts those inputs. The capture summary is a
-  different sequence: one identity request, then a settings read. The capture
-  files stay private. See [the G2 ledger](hardware-gates/g2.md).
-  Gate G2 stays locked, and this mode does not open the live adapter.
+- Stage 2 in Simulation feeds one published Variax 600 3.10 reply to one
+  identity request, then keeps listening until the three-second window ends.
+  A second reply that arrives after the first does not pass. That proves the
+  simulation's decision. The 2026-11-14 captures show the same request and
+  reply, then a settings read that this stage does not send. A PODxt Live
+  3.01 reply is recorded and does not pass. The capture files stay private.
+  See [the G2 ledger](hardware-gates/g2.md). Gate G2 stays locked. The live
+  identity path does not use the settings-read entry, and This computer still
+  offers only step 1. The banner and the steps 1–2 report say `gates-open=G1`
+  on Linux because that is the live gate this build can run. Step 2's live
+  Yes label is in the code and is not shown on this computer while G2 is locked.
 - The inventory table (`supported_devices.txt` schema 2, `device_inventory.rs`)
   from `508cd00` is not part of this change.
+- Issue #114 stays open. This checkout tracks both `supported_devices.txt`
+  (a name list) and `supported-devices.txt` (USB and Line 6 id rows). Neither
+  file was edited. `src/usb.rs` has the locked identity-only entry; it returns
+  before any USB open while G2 is locked. One versioned inventory is still unmet.

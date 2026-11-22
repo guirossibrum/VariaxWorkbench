@@ -52,16 +52,24 @@ pub(super) fn milestones(ui: &mut egui::Ui) {
     ui.separator();
     ui.heading("Current phase · Stage 2 identification, offline only");
     ui.label(
-        "Device check… opens in Simulation. Step 2 requires a passed step 1 and a separate \
-         Yes. No is the default. The rehearsal supplies pretend PODxt Live and Variax replies \
-         to two identical requests. The November 14 capture summary describes a single \
-         request followed by a settings read. G2 remains locked.",
+        "Device check… opens in Simulation. No is the default. Step 2 is offered only after \
+         a fresh step 1 pass for one PODxt Live with snd-usb-pod on interface 0 and \
+         snd-usb-variax on interface 1. The Yes button for that step says it sends one \
+         Variax identity request. In Simulation the button rehearses the request and nothing \
+         is sent. The rehearsal accepts only the Variax 600 answer, keeps listening for the \
+         rest of the three seconds, and a second answer does not pass. That one request is \
+         the app's. After the driver is given back, Linux's own snd-usb-variax startup can \
+         send the same kind of question. That later traffic is Linux, not a second request \
+         from this app. Close stops a step before it starts. Once Yes has started, this \
+         window cannot cancel the exchange. G2 remains locked, so This computer offers only \
+         the steps this build actually has open.",
     );
     ui.label(
-        "This computer (G1) is Linux-only and reads cached OS information under your direct \
-         G1 permission of November 22, 2026. Closing Device check cancels a Yes in the same \
-         frame. Copy detailed report (#125) is for G1 results. Save steps 1–2 report writes \
-         the shorter sanitized record.",
+        "This computer is offered only for the gates this build can run. The banner and the \
+         report name those gates. On this build that is G1, under your direct permission of \
+         November 22, 2026. Closing Device check cancels a Yes in the same moment, before \
+         the step starts. Save the step 2 report before you run step 1 again to check the \
+         driver. Copy detailed report (#125) is for G1 results.",
     );
     for (label, url) in [
         (

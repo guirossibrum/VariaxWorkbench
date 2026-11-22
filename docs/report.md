@@ -154,11 +154,13 @@ no persistent udev rule was installed. Read queries transmit data and session
 commands, so the report does not describe that earlier interaction as passive.
 
 That session is one identity request followed by a settings read. It records
-the reply shapes in the table above. It does not establish how a later
-proposal — two identical identity requests, bridge then guitar, with no
-settings read — would behave. An offline simulation can feed those two reply
-shapes after two identical requests. A simulation pass shows that the fake
-transport accepted those inputs. It is not a replay of this capture.
+the Variax reply in the table above on the wire. The PODxt Live row is the
+published identity shape; these capture files do not contain that reply, and
+they do not record a request, interface, or time for it. The proposed G2
+check is the one identity request and the Variax reply only. The settings
+read stays with gate G3. An offline simulation can feed the Variax reply
+after one request. A simulation pass shows that the fake transport accepted
+that input. It is not a replay of this capture.
 
 The captured current preset is **“Reso-5”**. Raw replies are in
 `analysis/captures/variax-usb-20261114-235059/`; the Rust settings file is

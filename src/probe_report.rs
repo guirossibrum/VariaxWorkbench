@@ -105,9 +105,31 @@ pub struct StageFact {
     pub guitar: ReportIdentity,
 }
 
+/// Which live gates this binary can run. The report copies the value it is
+/// given; it does not invent an open gate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpenGates {
+    None,
+    G1,
+    G2,
+    G1AndG2,
+}
+
+impl OpenGates {
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::None => "gates-open=none",
+            Self::G1 => "gates-open=G1",
+            Self::G2 => "gates-open=G2",
+            Self::G1AndG2 => "gates-open=G1,G2",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SanitizedFacts {
     pub mode: ReportMode,
+    pub gates: OpenGates,
     pub stages: [StageFact; 2],
 }
 
@@ -116,7 +138,10 @@ const TOKENS: &[&str] = &[
     "schema=2",
     "mode=simulation",
     "mode=this-computer",
+    "gates-open=none",
     "gates-open=G1",
+    "gates-open=G2",
+    "gates-open=G1,G2",
     "writes=none",
     "stage=1",
     "stage=2",
@@ -142,6 +167,10 @@ const TOKENS: &[&str] = &[
     "stop=inconsistent",
     "stop=timed-out",
     "stop=cleanup-failed",
+    "stop=detach-failed",
+    "stop=claim-failed",
+    "stop=alternate-failed",
+    "stop=open-failed",
     "bridge=none",
     "bridge=podxt-live-3.01",
     "guitar=none",
@@ -211,7 +240,8 @@ pub fn render(facts: &SanitizedFacts) -> String {
         ReportMode::ThisComputer => "mode=this-computer",
     };
     let mut lines = vec![format!(
-        "device-check schema={SCHEMA} {mode} gates-open=G1 writes=none"
+        "device-check schema={SCHEMA} {mode} {} writes=none",
+        facts.gates.token()
     )];
     for stage in facts.stages {
         lines.push(format!(
@@ -315,6 +345,7 @@ mod tests {
             let known = stop == ReportStop::None;
             let facts = SanitizedFacts {
                 mode: ReportMode::Simulation,
+                gates: OpenGates::G1,
                 stages: [
                     fact(
                         1,
@@ -364,6 +395,7 @@ mod tests {
         let path = dir.path().join("SECRET-USER-report.txt");
         let facts = SanitizedFacts {
             mode: ReportMode::ThisComputer,
+            gates: OpenGates::G1,
             stages: [
                 fact(
                     1,
@@ -409,6 +441,7 @@ mod tests {
         );
         let blank = render(&SanitizedFacts {
             mode: ReportMode::Simulation,
+            gates: OpenGates::G1,
             stages: [
                 fact(
                     1,
@@ -452,5 +485,34 @@ mod tests {
             ReportIdentity::from_observed(IdentityRole::Guitar, GUITAR_PRODUCT, "3.02"),
             ReportIdentity::None
         );
+    }
+
+    #[test]
+    fn report_names_the_gates_it_was_given() {
+        let stage = fact(
+            1,
+            ReportStop::None,
+            ReportIdentity::None,
+            ReportIdentity::None,
+            ReportCleanup::NotRun,
+        );
+        for gates in [
+            OpenGates::None,
+            OpenGates::G1,
+            OpenGates::G2,
+            OpenGates::G1AndG2,
+        ] {
+            let text = render(&SanitizedFacts {
+                mode: ReportMode::ThisComputer,
+                gates,
+                stages: [stage, stage],
+            });
+            assert!(allowlisted(&text), "{text}");
+            assert!(text.starts_with(&format!(
+                "device-check schema=2 mode=this-computer {} writes=none",
+                gates.token()
+            )));
+            assert_eq!(text.matches("gates-open=").count(), 1, "{text}");
+        }
     }
 }
