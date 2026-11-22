@@ -1,0 +1,176 @@
+Amplifi | USB=0x0E41:0x5061 | L6=not-in-material | referenced-only
+AMPLIFi 150 | USB=not-in-material | L6=0x00200002 | referenced-only
+AMPLIFi 30 | USB=not-in-material | L6=0x00200007 | referenced-only
+AMPLIFi 75 | USB=not-in-material | L6=0x00200001 | referenced-only
+Amplifi Desktop | USB=0x0E41:0x5064 | L6=not-in-material | referenced-only
+AMPLIFi FX100 | USB=not-in-material | L6=0x00200003 | referenced-only
+AMPLIFi TT | USB=not-in-material | L6=0x00200005 | referenced-only
+AX2 | USB=not-in-material | L6=not-in-material | referenced-only
+BackTrack | USB=?:0x5052 | L6=0x000F0000 | referenced-only
+BackTrack + Mic | USB=?:0x5053 | L6=0x000F0001 | referenced-only
+Bass POD | USB=not-in-material | L6=not-in-material | referenced-only
+Bass POD Pro | USB=not-in-material | L6=not-in-material | referenced-only
+Bass PODxt | USB=0x0E41:0x4250 | L6=0x00030006 | referenced-only
+Bass PODxt Live | USB=0x0E41:0x4642 | L6=0x0003000B | referenced-only
+Bass PODxt Pro | USB=0x0E41:0x4252 | L6=0x00030007 | referenced-only
+Catalyst | USB=not-in-material | L6=not-in-material | referenced-only
+Catalyst 100 | USB=not-in-material | L6=0x00250002 | referenced-only
+Catalyst 100-112 | USB=not-in-material | L6=not-in-material | referenced-only
+Catalyst 200 | USB=not-in-material | L6=0x00250003 | referenced-only
+Catalyst 200-212 | USB=not-in-material | L6=not-in-material | referenced-only
+Catalyst 60 | USB=not-in-material | L6=0x00250001 | referenced-only
+Catalyst 60-112 | USB=not-in-material | L6=not-in-material | referenced-only
+DL4 MK2 | USB=not-in-material | L6=0x00250000;bootloader=0x00251002 | referenced-only
+DT25 112 | USB=not-in-material | L6=0x00150003 | referenced-only
+DT25 HD | USB=not-in-material | L6=0x00150004 | referenced-only
+DT50 112 | USB=not-in-material | L6=0x00150000 | referenced-only
+DT50 212 | USB=not-in-material | L6=0x00150001 | referenced-only
+DT50 Head | USB=not-in-material | L6=0x00150002 | referenced-only
+Duoverb | USB=not-in-material | L6=not-in-material | referenced-only
+Echo Pro | USB=not-in-material | L6=not-in-material | referenced-only
+FBV 2 MkII | USB=not-in-material | L6=not-in-material | referenced-only
+FBV 3 | USB=not-in-material | L6=not-in-material | referenced-only
+FBV Express MkII | USB=?:0x5055 | L6=0x00110001 | referenced-only
+FBV MKIII | USB=not-in-material | L6=0x00110003 | referenced-only
+FBV Shortboard MkII | USB=?:0x5056 | L6=0x00110002 | referenced-only
+Filter Pro | USB=not-in-material | L6=not-in-material | referenced-only
+Firehawk | USB=not-in-material | L6=not-in-material | referenced-only
+Firehawk 1500 | USB=not-in-material | L6=0x00200006 | referenced-only
+Firehawk Amp | USB=0x0E41:0x5065 | L6=not-in-material | referenced-only
+Firehawk FX | USB=0x0E41:0x5063 | L6=0x00200004 | referenced-only
+Flextone II | USB=not-in-material | L6=0x00000200 | referenced-only
+Flextone III | USB=not-in-material | L6=0x00030003 | referenced-only
+Floor POD Plus | USB=not-in-material | L6=0x00000500 | referenced-only
+FX100 | USB=0x0E41:0x5062 | L6=not-in-material | referenced-only
+GuitarPort | USB=0x0E41:0x4750 | L6=0x00080001 | referenced-only
+HD147 | USB=not-in-material | L6=0x00030004 | referenced-only
+Helix Control | USB=not-in-material | L6=0x00210003 | referenced-only
+Helix Floor | USB=not-in-material | L6=0x00210001 | referenced-only
+Helix LT | USB=not-in-material | L6=0x00210004 | referenced-only
+Helix Rack | USB=not-in-material | L6=0x00210002 | referenced-only
+HX Effects | USB=not-in-material | L6=0x00210005 | referenced-only
+HX One | USB=not-in-material | L6=0x00250005 | referenced-only
+HX Stomp | USB=not-in-material | L6=0x00210006 | referenced-only
+HX Stomp XL | USB=not-in-material | L6=0x0021000B | referenced-only
+JM4 | USB=not-in-material | L6=0x000D0001 | referenced-only
+JTV-59 | USB=not-in-material | L6=family:0x00070005;name-selector:0x03 | referenced-only
+JTV-69 | USB=not-in-material | L6=family:0x00070005;name-selector:0x01 | partial
+JTV-89 | USB=not-in-material | L6=family:0x00070005;name-selector:0x02 | referenced-only
+JTV-89F | USB=not-in-material | L6=family:0x00070005;name-selector:0x04 | referenced-only
+KB37 | USB=0x0E41:0x4152 | L6=not-in-material | referenced-only
+M13 | USB=not-in-material | L6=not-in-material | referenced-only
+M5 | USB=not-in-material | L6=0x000E0002 | referenced-only
+M9 | USB=not-in-material | L6=0x000E0001 | referenced-only
+Mod Pro | USB=not-in-material | L6=not-in-material | referenced-only
+Pocket POD | USB=?:0x5051 | L6=0x00000600 | referenced-only
+POD | USB=not-in-material | L6=0x00000100 | referenced-only
+POD 2.0 | USB=not-in-material | L6=0x00000300 | referenced-only
+POD GO | USB=not-in-material | L6=0x00210007 | referenced-only
+POD GO Wireless | USB=not-in-material | L6=0x00210008 | referenced-only
+POD HD | USB=0x0E41:0x4156 | L6=0x00140003 | referenced-only
+POD HD Pro | USB=0x0E41:0x4157 | L6=0x00140004 | referenced-only
+POD HD Pro X | USB=0x0E41:0x415A | L6=0x00140006 | referenced-only
+POD HD300 | USB=0x0E41:0x5057 | L6=0x00140000 | referenced-only
+POD HD400 | USB=0x0E41:0x5058 | L6=0x00140001 | referenced-only
+POD HD500 | USB=0x0E41:0x414D | L6=0x00140002 | referenced-only
+POD HD500X | USB=0x0E41:0x4159 | L6=0x00140005 | partial
+POD Pro | USB=not-in-material | L6=0x00000400 | referenced-only
+POD Studio GX | USB=0x0E41:0x4153 | L6=0x0008000D | referenced-only
+POD Studio KB37 | USB=0x0E41:0x4152 | L6=0x0008000C | referenced-only
+POD Studio UX1 | USB=0x0E41:0x4150 | L6=0x0008000A | referenced-only
+POD Studio UX2 | USB=0x0E41:0x4151 | L6=0x0008000B | referenced-only
+POD X3 | USB=0x0E41:0x414A | L6=0x000C0000 | referenced-only
+POD X3 Live | USB=0x0E41:0x414B | L6=0x000C0001 | referenced-only
+POD X3 Pro | USB=0x0E41:0x414C,?:0x414D | L6=0x000C0002 | referenced-only
+PODxt | USB=0x0E41:0x5044 | L6=0x00030002 | referenced-only
+PODxt Live | USB=0x0E41:0x4650 | L6=0x0003000A | partial
+PODxt Pro | USB=0x0E41:0x5050 | L6=0x00030005 | referenced-only
+Powercab | USB=not-in-material | L6=not-in-material | referenced-only
+Powercab 112 | USB=not-in-material | L6=0x00230000 | referenced-only
+Powercab 112 Plus | USB=not-in-material | L6=0x00230001 | referenced-only
+Powercab 212 Plus | USB=not-in-material | L6=0x00230002 | referenced-only
+RELAY G10 | USB=not-in-material | L6=0x00190104 | referenced-only
+Relay G10R | USB=not-in-material | L6=0x00190104 | referenced-only
+Relay G10S | USB=not-in-material | L6=0x00190109 | referenced-only
+RELAY G10S | USB=not-in-material | L6=0x00190109 | referenced-only
+RELAY G10T | USB=not-in-material | L6=0x00190103 | referenced-only
+RELAY G10TII | USB=not-in-material | L6=0x0019010A | referenced-only
+Relay G30 Bodypack | USB=not-in-material | L6=not-in-material | referenced-only
+Relay G30 Bodypack (1.0) | USB=not-in-material | L6=not-in-material | referenced-only
+Relay G30 Receiver | USB=not-in-material | L6=not-in-material | referenced-only
+Relay G50 Bodypack | USB=not-in-material | L6=not-in-material | referenced-only
+Relay G50 Receiver | USB=not-in-material | L6=0x00190002 | referenced-only
+Relay G50 Transmitter | USB=not-in-material | L6=0x00190003 | referenced-only
+Relay G70 | USB=not-in-material | L6=0x00190100 | referenced-only
+RELAY G70 Receiver | USB=not-in-material | L6=0x00190100 | referenced-only
+Relay G75 | USB=not-in-material | L6=0x00190101 | referenced-only
+RELAY G75 Receiver | USB=not-in-material | L6=0x00190101 | referenced-only
+Relay G90 Bodypack | USB=not-in-material | L6=not-in-material | referenced-only
+Relay G90 Receiver | USB=not-in-material | L6=0x00190004 | referenced-only
+Relay G90 Transmitter | USB=not-in-material | L6=0x00190005 | referenced-only
+RELAY TB516 G Transmitter | USB=not-in-material | L6=0x00190102 | referenced-only
+Relay TB516G Beltpack | USB=not-in-material | L6=0x00190102 | referenced-only
+Shuriken | USB=not-in-material | L6=family:0x00070005;name-selector:0x06 | referenced-only
+Shuriken SR-250 | USB=not-in-material | L6=family:0x00070005;name-selector:0x07 | referenced-only
+Spider IV | USB=not-in-material | L6=not-in-material | referenced-only
+Spider IV 120 | USB=not-in-material | L6=0x00120003 | referenced-only
+Spider IV 15 | USB=not-in-material | L6=0x00120000 | referenced-only
+Spider IV 150 | USB=not-in-material | L6=0x00120004 | referenced-only
+Spider IV 30 | USB=not-in-material | L6=0x00120001 | referenced-only
+Spider IV 75 | USB=not-in-material | L6=0x00120002 | referenced-only
+Spider IV HD150 | USB=not-in-material | L6=0x00120005 | referenced-only
+Spider Jam | USB=not-in-material | L6=0x000D0000 | referenced-only
+Spider V 120 | USB=not-in-material | L6=0x00220002 | referenced-only
+Spider V 20 | USB=not-in-material | L6=0x00220005 | referenced-only
+Spider V 240 | USB=not-in-material | L6=0x00220003 | referenced-only
+Spider V 240 Head | USB=not-in-material | L6=0x00220004 | referenced-only
+Spider V 30 | USB=not-in-material | L6=0x00220000 | referenced-only
+Spider V 60 | USB=not-in-material | L6=0x00220001 | referenced-only
+Spider Valve mkII | USB=not-in-material | L6=not-in-material | referenced-only
+Spider Valve MkII 112 | USB=not-in-material | L6=0x00120006 | referenced-only
+Spider Valve MkII 212 | USB=not-in-material | L6=0x00120007 | referenced-only
+Spider Valve mkII 212 | USB=not-in-material | L6=0x00120007 | referenced-only
+Spider Valve mkII HD | USB=not-in-material | L6=not-in-material | referenced-only
+Spider Valve MkII HD100 | USB=not-in-material | L6=0x00120008 | referenced-only
+TonePort DI-Gold | USB=0x0E41:0x4145 | L6=0x00080006 | referenced-only
+TonePort DI-Silver | USB=0x0E41:0x4144 | L6=0x00080005 | referenced-only
+TonePort GX | USB=0x0E41:0x4147 | L6=0x00080008 | referenced-only
+TonePort GX MKII | USB=not-in-material | L6=0x0008000D | referenced-only
+TonePort KB37 | USB=0x0E41:0x4143 | L6=0x00080004 | referenced-only
+TonePort KB61 | USB=not-in-material | L6=not-in-material | referenced-only
+TonePort UX1 | USB=0x0E41:0x4141 | L6=0x00080002 | referenced-only
+TonePort UX1 MKII | USB=not-in-material | L6=0x0008000A | referenced-only
+TonePort UX2 | USB=0x0E41:0x4142 | L6=0x00080003 | referenced-only
+TonePort UX2 MKII | USB=not-in-material | L6=0x0008000B | referenced-only
+TonePort UX8 | USB=0x0E41:0x4149 | L6=0x00080009 | referenced-only
+Tyler Variax | USB=not-in-material | L6=0x00070005 | referenced-only
+UX1 | USB=0x0E41:0x4150 | L6=not-in-material | referenced-only
+UX2 | USB=0x0E41:0x4151 | L6=not-in-material | referenced-only
+UX8 | USB=0x0E41:0x4155 | L6=not-in-material | referenced-only
+Variax 300 | USB=not-in-material | L6=family:0x00070004 | referenced-only
+Variax 500 | USB=not-in-material | L6=family:0x00070000 | referenced-only
+Variax 600 | USB=not-in-material | L6=family:0x00070004 | partial
+Variax 700 | USB=not-in-material | L6=family:0x00070000 | referenced-only
+Variax Acoustic | USB=not-in-material | L6=0x00070001 | referenced-only
+Variax Bass | USB=not-in-material | L6=0x00070002 | referenced-only
+Variax Bass 705 | USB=not-in-material | L6=0x00070006 | referenced-only
+Variax Standard | USB=not-in-material | L6=family:0x00070005;name-selector:0x05 | referenced-only
+Variax USB Interface | USB=0x0E41:0x534D | L6=0x00700001 | referenced-only
+Vetta | USB=not-in-material | L6=not-in-material | referenced-only
+Vetta Combo | USB=not-in-material | L6=not-in-material | referenced-only
+Vetta Head | USB=not-in-material | L6=not-in-material | referenced-only
+Vetta II | USB=not-in-material | L6=0x00030000 | referenced-only
+Vetta II Combo | USB=not-in-material | L6=0x00030008 | referenced-only
+Vetta II Head | USB=not-in-material | L6=0x00030009 | referenced-only
+XD-V30 Bodypack | USB=not-in-material | L6=0x00190006 | referenced-only
+XD-V30 Handheld | USB=not-in-material | L6=0x00190007 | referenced-only
+XD-V30 Receiver | USB=not-in-material | L6=0x00190008 | referenced-only
+XD-V35 Bodypack | USB=not-in-material | L6=0x00190009 | referenced-only
+XD-V35 Handheld | USB=not-in-material | L6=0x0019000A | referenced-only
+XD-V35 Receiver | USB=not-in-material | L6=0x0019000B | referenced-only
+XD-V70 Bodypack | USB=not-in-material | L6=0x0019000F | referenced-only
+XD-V70 Handheld | USB=not-in-material | L6=0x00190010 | referenced-only
+XD-V70 Receiver | USB=not-in-material | L6=0x00190011 | referenced-only
+XD-V75 Bodypack | USB=not-in-material | L6=0x00190012 | referenced-only
+XD-V75 Handheld | USB=not-in-material | L6=0x00190013 | referenced-only
+XD-V75 Receiver | USB=?:0x5741 | L6=0x00190014 | referenced-only

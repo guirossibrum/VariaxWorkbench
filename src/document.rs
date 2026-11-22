@@ -41,13 +41,24 @@ impl DocumentState {
             .as_ref()
             .map_or_else(|| self.preset.as_bytes(), |b| b.file.as_bytes())
     }
+
+    fn slot_bytes(&self, bank: usize, preset: usize) -> Option<&[u8]> {
+        self.bundle
+            .as_ref()?
+            .file
+            .banks()
+            .get(bank)?
+            .presets()
+            .get(preset)
+            .map(PresetFile::as_bytes)
+    }
 }
 
 pub struct EditorDocument {
     state: DocumentState,
     undo: Vec<DocumentState>,
     redo: Vec<DocumentState>,
-    saved: Vec<u8>,
+    saved: DocumentState,
     group_base: Option<DocumentState>,
     pub source: PathBuf,
 }
@@ -113,7 +124,7 @@ impl EditorDocument {
 
     fn from_state(state: DocumentState, source: PathBuf) -> Self {
         Self {
-            saved: state.bytes().to_vec(),
+            saved: state.clone(),
             state,
             undo: vec![],
             redo: vec![],
@@ -166,7 +177,12 @@ impl EditorDocument {
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.as_bytes() != self.saved
+        self.as_bytes() != self.saved.bytes()
+    }
+
+    /// Compare one bundle slot with the last opened or successfully saved file.
+    pub fn slot_is_dirty(&self, bank: usize, preset: usize) -> bool {
+        self.state.slot_bytes(bank, preset) != self.saved.slot_bytes(bank, preset)
     }
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
@@ -211,7 +227,7 @@ impl EditorDocument {
     pub fn save_copy(&mut self, path: &Path) -> Result<(), String> {
         self.end_gesture();
         save_new(path, self.as_bytes())?;
-        self.saved = self.as_bytes().to_vec();
+        self.saved = self.state.clone();
         Ok(())
     }
     pub fn begin_gesture(&mut self) {

@@ -11,6 +11,7 @@ use super::capability::{self, Capability, CapabilityState, Operation};
 use super::model::{self, Component, ProductProfile, RoleKind, VersionKnowledge};
 use super::registry::{INITIAL_HOST, PhysicalHost};
 pub use crate::pod_preset::HdEditorLibrary;
+use crate::pod_preset::PodModelEnable;
 
 /// No function constructs a live transport. This stays `None`.
 pub const LIVE_BACKEND_INITIALIZER: Option<fn() -> Session> = None;
@@ -801,6 +802,155 @@ impl Session {
     ) -> Result<Vec<u8>, Rejection> {
         self.require(role, Operation::EditPodPreset)?;
         backend::rename_pod_preset(bytes, name)
+    }
+
+    /// Changes one source-backed stored PODxt model-enable flag in memory.
+    /// This is an offline file edit; it never sends the value to a device.
+    pub fn set_pod_model_enabled(
+        self,
+        role: RoleKind,
+        bytes: &[u8],
+        control: PodModelEnable,
+        enabled: bool,
+    ) -> Result<Vec<u8>, Rejection> {
+        self.require(role, Operation::EditPodPreset)?;
+        backend::set_pod_model_enabled(bytes, control, enabled)
+    }
+
+    /// Atomically resets all four bands of an existing PODxt Live EQ offline.
+    /// It edits the preset bytes only and never sends an edit buffer.
+    pub fn reset_pod_eq(self, role: RoleKind, bytes: &[u8]) -> Result<Vec<u8>, Rejection> {
+        self.require(role, Operation::EditPodPreset)?;
+        backend::reset_pod_eq(bytes)
+    }
+
+    /// Applies one admitted AMP model-id choice to an existing FORM/L6PA tone.
+    /// This explicit offline edit changes only its MINF model-id word.
+    pub fn set_pod_amp_model_choice(
+        self,
+        role: RoleKind,
+        bytes: &[u8],
+        choice: crate::pod_preset::PodAmpModelChoice,
+    ) -> Result<Vec<u8>, Rejection> {
+        self.require(role, Operation::EditPodPreset)?;
+        backend::set_pod_amp_model_choice(bytes, choice)
+    }
+
+    pub fn set_pod_delay_model_choice(
+        self,
+        role: RoleKind,
+        bytes: &[u8],
+        choice: crate::pod_preset::PodDelayModelChoice,
+    ) -> Result<Vec<u8>, Rejection> {
+        self.require(role, Operation::EditPodPreset)?;
+        backend::set_pod_delay_model_choice(bytes, choice)
+    }
+
+    pub fn set_pod_mod_model_choice(
+        self,
+        role: RoleKind,
+        bytes: &[u8],
+        choice: crate::pod_preset::PodModModelChoice,
+    ) -> Result<Vec<u8>, Rejection> {
+        self.require(role, Operation::EditPodPreset)?;
+        backend::set_pod_mod_model_choice(bytes, choice)
+    }
+
+    /// Applies one conservative typed Stomp MINF model-id choice offline.
+    pub fn set_pod_stomp_model_choice(
+        self,
+        role: RoleKind,
+        bytes: &[u8],
+        choice: crate::pod_preset::PodStompModelChoice,
+    ) -> Result<Vec<u8>, Rejection> {
+        self.require(role, Operation::EditPodPreset)?;
+        backend::set_pod_stomp_model_choice(bytes, choice)
+    }
+
+    pub fn set_pod_reverb_model_choice(
+        self,
+        role: RoleKind,
+        bytes: &[u8],
+        choice: crate::pod_preset::PodReverbModelChoice,
+    ) -> Result<Vec<u8>, Rejection> {
+        self.require(role, Operation::EditPodPreset)?;
+        backend::set_pod_reverb_model_choice(bytes, choice)
+    }
+
+    pub fn set_pod_cab_model_choice(
+        self,
+        role: RoleKind,
+        bytes: &[u8],
+        choice: crate::pod_preset::PodCabModelChoice,
+    ) -> Result<Vec<u8>, Rejection> {
+        self.require(role, Operation::EditPodPreset)?;
+        backend::set_pod_cab_model_choice(bytes, choice)
+    }
+
+    pub fn set_pod_mic_choice(
+        self,
+        role: RoleKind,
+        bytes: &[u8],
+        choice: crate::pod_preset::PodMicChoice,
+    ) -> Result<Vec<u8>, Rejection> {
+        self.require(role, Operation::EditPodPreset)?;
+        backend::set_pod_mic_choice(bytes, choice)
+    }
+
+    /// Applies one typed, source-backed Stomp harmony choice offline.
+    /// The returned tone bytes retain all unrelated data; nothing is sent.
+    pub fn set_pod_stomp_harmony_selection(
+        self,
+        role: RoleKind,
+        bytes: &[u8],
+        selection: crate::pod_preset::StompHarmonySelection,
+    ) -> Result<Vec<u8>, Rejection> {
+        self.require(role, Operation::EditPodPreset)?;
+        backend::set_pod_stomp_harmony_selection(bytes, selection)
+    }
+
+    /// Applies one typed Delay NOTE choice offline. Positive choices derive
+    /// TIME from stored Tempo; Off changes NOTE only. Nothing is sent.
+    pub fn set_pod_delay_note_choice(
+        self,
+        role: RoleKind,
+        bytes: &[u8],
+        choice: crate::pod_preset::DelayNoteChoice,
+    ) -> Result<Vec<u8>, Rejection> {
+        self.require(role, Operation::EditPodPreset)?;
+        backend::set_pod_delay_note_choice(bytes, choice)
+    }
+
+    pub fn set_pod_mod_note_choice(
+        self,
+        role: RoleKind,
+        bytes: &[u8],
+        choice: crate::pod_preset::ModNoteChoice,
+    ) -> Result<Vec<u8>, Rejection> {
+        self.require(role, Operation::EditPodPreset)?;
+        backend::set_pod_mod_note_choice(bytes, choice)
+    }
+
+    pub fn set_pod_mod_speed_hz(
+        self,
+        role: RoleKind,
+        bytes: &[u8],
+        hz: f32,
+    ) -> Result<Vec<u8>, Rejection> {
+        self.require(role, Operation::EditPodPreset)?;
+        backend::set_pod_mod_speed_hz(bytes, hz)
+    }
+
+    /// Applies a displayed Delay TIME value in milliseconds offline and clears
+    /// a positive Delay NOTE. This isolated edit does not read Tempo or Mod.
+    pub fn set_pod_delay_time_ms(
+        self,
+        role: RoleKind,
+        bytes: &[u8],
+        milliseconds: f32,
+    ) -> Result<Vec<u8>, Rejection> {
+        self.require(role, Operation::EditPodPreset)?;
+        backend::set_pod_delay_time_ms(bytes, milliseconds)
     }
 
     /// Writes a new copy through the non-overwriting save. It does not upload.

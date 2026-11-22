@@ -58,7 +58,13 @@ impl BundleFile {
                 .to_owned();
             let mut presets = Vec::new();
             let mut ranges = Vec::new();
-            for patch in children.iter().filter(|c| container(&bytes, c, b"L6PA")) {
+            // The Workbench IFF map treats L6PA, L6FS and L6AS as L6Patch
+            // entries. Preserve their concrete FORM type in PresetFile bytes.
+            for patch in children.iter().filter(|c| {
+                container(&bytes, c, b"L6PA")
+                    || container(&bytes, c, b"L6FS")
+                    || container(&bytes, c, b"L6AS")
+            }) {
                 let range = patch.data.start - 8..patch.data.end;
                 presets.push(PresetFile::parse(bytes[range.clone()].to_vec())?);
                 ranges.push(range);
@@ -164,11 +170,16 @@ mod tests {
         b
     }
     fn example() -> Vec<u8> {
+        example_with_patch_kind(*b"L6PA")
+    }
+    fn example_with_patch_kind(kind: [u8; 4]) -> Vec<u8> {
         let mut info = vec![0; 68];
         info[4..6].copy_from_slice(&('B' as u16).to_be_bytes());
         let mut bank = b"BANK".to_vec();
         bank.extend(chunk(b"BINF", &info));
-        bank.extend_from_slice(include_bytes!("../tests/fixtures/editor-preset.vwm"));
+        let mut preset = include_bytes!("../tests/fixtures/editor-preset.vwm").to_vec();
+        preset[8..12].copy_from_slice(&kind);
+        bank.extend_from_slice(&preset);
         let mut bundle = b"L6BA".to_vec();
         bundle.extend(chunk(b"HEAD", &1u32.to_be_bytes()));
         bundle.extend(chunk(b"LIST", &bank));
@@ -186,6 +197,23 @@ mod tests {
         assert_eq!(again.banks()[0].presets()[0].name(), "Changed 🎸");
         assert_eq!(again.banks()[0].name, "B");
         assert!(bundle.replace(0, 4, &replacement).is_err());
+    }
+    #[test]
+    fn all_workbench_patch_forms_are_retained_and_replaceable_in_bundles() {
+        for kind in [*b"L6PA", *b"L6FS", *b"L6AS"] {
+            let bytes = example_with_patch_kind(kind);
+            let mut bundle = BundleFile::parse(bytes.clone()).unwrap();
+            assert_eq!(bundle.as_bytes(), bytes);
+            assert_eq!(bundle.banks()[0].presets().len(), 1);
+            assert_eq!(&bundle.banks()[0].presets()[0].as_bytes()[8..12], &kind);
+            let mut replacement = bundle.banks()[0].presets()[0].clone();
+            replacement.rename("POD copy").unwrap();
+            bundle.replace(0, 0, &replacement).unwrap();
+            let reopened = BundleFile::parse(bundle.as_bytes().to_vec()).unwrap();
+            assert_eq!(reopened.banks()[0].presets()[0].name(), "POD copy");
+            assert_eq!(&reopened.banks()[0].presets()[0].as_bytes()[8..12], &kind);
+            assert_eq!(reopened.banks()[0].name, "B");
+        }
     }
     #[test]
     fn malformed_bundle_lengths_fail_without_panics() {

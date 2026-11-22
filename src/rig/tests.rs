@@ -2744,6 +2744,601 @@ fn pod_tone_open_rename_and_save_stay_offline_and_reject_variax() {
 }
 
 #[test]
+fn pod_model_enable_session_edit_is_role_gated_offline_and_byte_preserving() {
+    let session = Session::initial_rig();
+    let mut original = crate::pod_preset::fixture(
+        crate::pod_preset::ContainerKind::L6as,
+        PODXT_LIVE_PRODUCT_ID,
+        crate::pod_preset::PODXT_LIVE_HOST_MIN_VERSION,
+        &[(crate::pod_preset::AMP_SLOT, 0xdead_beef)],
+    );
+    let mut marker = 0xdead_beefu32.to_be_bytes().to_vec();
+    marker.extend_from_slice(&crate::pod_preset::AMP_SLOT.to_be_bytes());
+    let minf_body = original
+        .windows(marker.len())
+        .position(|window| window == marker)
+        .expect("amp MINF");
+    let enabled_offset = minf_body + 11;
+    original[enabled_offset] = 1;
+    let mut expected = original.clone();
+    expected[enabled_offset] = 0;
+    let edited = session
+        .set_pod_model_enabled(
+            RoleKind::Pod,
+            &original,
+            crate::pod_preset::PodModelEnable::Amp,
+            false,
+        )
+        .expect("offline stored-flag edit");
+    assert_eq!(edited, expected);
+    assert_eq!(
+        edited
+            .iter()
+            .zip(&original)
+            .filter(|(left, right)| left != right)
+            .count(),
+        1
+    );
+    assert_eq!(
+        session.set_pod_model_enabled(
+            RoleKind::Guitar,
+            &original,
+            crate::pod_preset::PodModelEnable::Amp,
+            false,
+        ),
+        Err(Rejection::Unsupported {
+            profile: ProductProfile::Variax600,
+            operation: Operation::EditPodPreset,
+        })
+    );
+    assert!(session.live_backend_is_absent());
+    assert!(LIVE_BACKEND_INITIALIZER.is_none());
+}
+
+#[test]
+fn pod_amp_model_choice_session_is_role_gated_and_changes_only_the_minf_id() {
+    use crate::pod_preset::{AMP_SLOT, PodAmpModelChoice};
+
+    let session = Session::initial_rig();
+    let original = crate::pod_preset::fixture(
+        crate::pod_preset::ContainerKind::L6pa,
+        PODXT_LIVE_PRODUCT_ID,
+        crate::pod_preset::PODXT_LIVE_HOST_MIN_VERSION,
+        &[(AMP_SLOT, 0xdead_beef)],
+    );
+    let id_offset = original
+        .windows(4)
+        .position(|word| word == 0xdead_beefu32.to_be_bytes())
+        .expect("AMP MINF model id");
+    let mut expected = original.clone();
+    expected[id_offset..id_offset + 4]
+        .copy_from_slice(&PodAmpModelChoice::NoAmp.model_id().to_be_bytes());
+    let edited = session
+        .set_pod_amp_model_choice(RoleKind::Pod, &original, PodAmpModelChoice::NoAmp)
+        .expect("offline AMP id edit");
+    assert_eq!(edited, expected);
+    assert_eq!(
+        edited
+            .iter()
+            .zip(&original)
+            .filter(|(left, right)| left != right)
+            .count(),
+        4
+    );
+    assert_eq!(
+        session.set_pod_amp_model_choice(RoleKind::Guitar, &original, PodAmpModelChoice::NoAmp,),
+        Err(Rejection::Unsupported {
+            profile: ProductProfile::Variax600,
+            operation: Operation::EditPodPreset,
+        })
+    );
+    assert!(session.live_backend_is_absent());
+    assert!(LIVE_BACKEND_INITIALIZER.is_none());
+}
+
+#[test]
+fn pod_delay_model_choice_session_is_role_gated_and_offline() {
+    use crate::pod_preset::{DELAY_SLOT, PodDelayModelChoice};
+    let session = Session::initial_rig();
+    let original = crate::pod_preset::fixture(
+        crate::pod_preset::ContainerKind::L6pa,
+        PODXT_LIVE_PRODUCT_ID,
+        crate::pod_preset::PODXT_LIVE_HOST_MIN_VERSION,
+        &[(DELAY_SLOT, 0x0202_0002)],
+    );
+    let id_offset = original
+        .windows(4)
+        .position(|w| w == 0x0202_0002u32.to_be_bytes())
+        .unwrap();
+    let choice = PodDelayModelChoice::try_from(0x0202_000a).unwrap();
+    let edited = session
+        .set_pod_delay_model_choice(RoleKind::Pod, &original, choice)
+        .unwrap();
+    assert_eq!(
+        &edited[id_offset..id_offset + 4],
+        &choice.model_id().to_be_bytes()
+    );
+    assert!(
+        original
+            .iter()
+            .zip(&edited)
+            .enumerate()
+            .all(|(i, (a, b))| a == b || (id_offset..id_offset + 4).contains(&i))
+    );
+    assert!(matches!(
+        session.set_pod_delay_model_choice(RoleKind::Guitar, &original, choice),
+        Err(Rejection::Unsupported {
+            operation: Operation::EditPodPreset,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn pod_mod_model_choice_session_checks_role_target_and_host_profile() {
+    use crate::pod_preset::{MOD_SLOT, PODXT_LIVE_HOST_MIN_VERSION, PodModModelChoice};
+
+    let session = Session::initial_rig();
+    let original = crate::pod_preset::fixture(
+        crate::pod_preset::ContainerKind::L6pa,
+        0x0003_000a,
+        PODXT_LIVE_HOST_MIN_VERSION,
+        &[(MOD_SLOT, 0x0203_0015)],
+    );
+    let choice = PodModModelChoice::try_from(0x0203_0004).unwrap();
+    let edited = session
+        .set_pod_mod_model_choice(RoleKind::Pod, &original, choice)
+        .unwrap();
+    let id_offset = original
+        .windows(4)
+        .position(|word| word == 0x0203_0015u32.to_be_bytes())
+        .unwrap();
+    assert_eq!(
+        &edited[id_offset..id_offset + 4],
+        &choice.model_id().to_be_bytes()
+    );
+    assert!(
+        original
+            .iter()
+            .zip(&edited)
+            .enumerate()
+            .all(|(offset, (before, after))| before == after
+                || (id_offset..id_offset + 4).contains(&offset))
+    );
+    assert_eq!(
+        session.set_pod_mod_model_choice(RoleKind::Guitar, &original, choice),
+        Err(Rejection::Unsupported {
+            profile: ProductProfile::Variax600,
+            operation: Operation::EditPodPreset,
+        })
+    );
+
+    let wrong_target = crate::pod_preset::fixture(
+        crate::pod_preset::ContainerKind::L6pa,
+        0x0003_000b,
+        PODXT_LIVE_HOST_MIN_VERSION,
+        &[(MOD_SLOT, 0x0203_0015)],
+    );
+    assert!(matches!(
+        session.set_pod_mod_model_choice(RoleKind::Pod, &wrong_target, choice),
+        Err(Rejection::Format { .. })
+    ));
+    let wrong_target_before = wrong_target.clone();
+    assert!(crate::pod_preset::PodTone::parse(wrong_target.clone()).is_err());
+    assert_eq!(wrong_target, wrong_target_before);
+
+    let old_profile = crate::pod_preset::fixture(
+        crate::pod_preset::ContainerKind::L6pa,
+        0x0003_000a,
+        PODXT_LIVE_HOST_MIN_VERSION - 1,
+        &[(MOD_SLOT, 0x0203_0015)],
+    );
+    assert!(matches!(
+        session.set_pod_mod_model_choice(RoleKind::Pod, &old_profile, choice),
+        Err(Rejection::Format { .. })
+    ));
+    assert_eq!(
+        crate::pod_preset::PodTone::parse(old_profile.clone())
+            .unwrap()
+            .as_bytes(),
+        old_profile
+    );
+}
+
+#[test]
+fn pod_stomp_model_choice_session_checks_role_target_profile_and_write_set() {
+    use crate::pod_preset::{PODXT_LIVE_HOST_MIN_VERSION, PodStompModelChoice, STOMP_SLOT};
+
+    let session = Session::initial_rig();
+    let original = crate::pod_preset::fixture(
+        crate::pod_preset::ContainerKind::L6pa,
+        PODXT_LIVE_PRODUCT_ID,
+        PODXT_LIVE_HOST_MIN_VERSION,
+        &[(STOMP_SLOT, 0x0205_0006)],
+    );
+    let choice = PodStompModelChoice::try_from(0x0205_0000).unwrap();
+    let edited = session
+        .set_pod_stomp_model_choice(RoleKind::Pod, &original, choice)
+        .unwrap();
+    let offset = original
+        .windows(4)
+        .position(|word| word == 0x0205_0006u32.to_be_bytes())
+        .unwrap();
+    assert_eq!(
+        &edited[offset..offset + 4],
+        &choice.model_id().to_be_bytes()
+    );
+    assert!(
+        original
+            .iter()
+            .zip(&edited)
+            .enumerate()
+            .all(|(i, (a, b))| { a == b || (offset..offset + 4).contains(&i) })
+    );
+    assert!(matches!(
+        session.set_pod_stomp_model_choice(RoleKind::Guitar, &original, choice),
+        Err(Rejection::Unsupported {
+            profile: ProductProfile::Variax600,
+            operation: Operation::EditPodPreset,
+        })
+    ));
+
+    let wrong_target = crate::pod_preset::fixture(
+        crate::pod_preset::ContainerKind::L6pa,
+        0x0003_000b,
+        PODXT_LIVE_HOST_MIN_VERSION,
+        &[(STOMP_SLOT, 0x0205_0006)],
+    );
+    assert!(matches!(
+        session.set_pod_stomp_model_choice(RoleKind::Pod, &wrong_target, choice),
+        Err(Rejection::Format { .. })
+    ));
+    let old_profile = crate::pod_preset::fixture(
+        crate::pod_preset::ContainerKind::L6pa,
+        PODXT_LIVE_PRODUCT_ID,
+        PODXT_LIVE_HOST_MIN_VERSION - 1,
+        &[(STOMP_SLOT, 0x0205_0006)],
+    );
+    assert!(matches!(
+        session.set_pod_stomp_model_choice(RoleKind::Pod, &old_profile, choice),
+        Err(Rejection::Format { .. })
+    ));
+}
+
+#[test]
+fn pod_reverb_model_choice_session_checks_role_and_preserves_fallback_slot() {
+    use crate::pod_preset::{
+        PODXT_LIVE_HOST_MIN_VERSION, PodReverbModelChoice, REVERB_FALLBACK_SLOT,
+    };
+    let session = Session::initial_rig();
+    let original = crate::pod_preset::fixture(
+        crate::pod_preset::ContainerKind::L6pa,
+        PODXT_LIVE_PRODUCT_ID,
+        PODXT_LIVE_HOST_MIN_VERSION,
+        &[(REVERB_FALLBACK_SLOT, 0x0204_0002)],
+    );
+    let choice = PodReverbModelChoice::try_from(0x0204_0003).unwrap();
+    let edited = session
+        .set_pod_reverb_model_choice(RoleKind::Pod, &original, choice)
+        .unwrap();
+    let after = crate::pod_preset::PodTone::parse(edited.clone()).unwrap();
+    assert_eq!(after.reverb_model_id(), Some(choice.model_id()));
+    assert_eq!(after.models()[0].slot, REVERB_FALLBACK_SLOT);
+    let offset = original
+        .windows(4)
+        .position(|word| word == 0x0204_0002u32.to_be_bytes())
+        .unwrap();
+    assert!(
+        original
+            .iter()
+            .zip(&edited)
+            .enumerate()
+            .all(|(i, (a, b))| { a == b || (offset..offset + 4).contains(&i) })
+    );
+    assert!(matches!(
+        session.set_pod_reverb_model_choice(RoleKind::Guitar, &original, choice),
+        Err(Rejection::Unsupported {
+            operation: Operation::EditPodPreset,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn pod_cab_and_mic_apply_are_role_gated_and_keep_their_separate_write_sets() {
+    use crate::pod_preset::{CAB_SLOT, PODXT_BASS_CAB_MODEL_IDS, PodCabModelChoice, PodMicChoice};
+
+    let session = Session::initial_rig();
+    let mut original = crate::pod_preset::fixture(
+        crate::pod_preset::ContainerKind::L6as,
+        PODXT_LIVE_PRODUCT_ID,
+        crate::pod_preset::PODXT_LIVE_HOST_MIN_VERSION,
+        &[(CAB_SLOT, PODXT_BASS_CAB_MODEL_IDS[0])],
+    );
+    let parm_start = original
+        .windows(4)
+        .position(|word| word == [0xab, 0xcd, 0xef, 0x01])
+        .expect("fixture recorded PARM");
+    let value_offset = parm_start + 8;
+    original[parm_start..parm_start + 4].copy_from_slice(&0x3f00_0000u32.to_be_bytes());
+    original[parm_start + 4..parm_start + 8].copy_from_slice(&0u32.to_be_bytes());
+    original[value_offset..value_offset + 4].copy_from_slice(&2u32.to_be_bytes());
+
+    let cab_choice = PodCabModelChoice::try_from(0x0102_0001).unwrap();
+    let id_offset = original
+        .windows(4)
+        .position(|word| word == PODXT_BASS_CAB_MODEL_IDS[0].to_be_bytes())
+        .expect("CAB MINF model id");
+    let mut cab_expected = original.clone();
+    cab_expected[id_offset..id_offset + 4].copy_from_slice(&cab_choice.model_id().to_be_bytes());
+    let after_cab = session
+        .set_pod_cab_model_choice(RoleKind::Pod, &original, cab_choice)
+        .expect("offline CAB Apply");
+    assert_eq!(after_cab, cab_expected);
+    assert_eq!(
+        &after_cab[value_offset..value_offset + 4],
+        &2u32.to_be_bytes()
+    );
+
+    let mic_choice = PodMicChoice::try_from(3).unwrap();
+    let mut mic_expected = after_cab.clone();
+    mic_expected[value_offset..value_offset + 4].copy_from_slice(&3u32.to_be_bytes());
+    assert_eq!(
+        session.set_pod_mic_choice(RoleKind::Pod, &after_cab, mic_choice),
+        Ok(mic_expected)
+    );
+    assert!(matches!(
+        session.set_pod_cab_model_choice(RoleKind::Guitar, &original, cab_choice),
+        Err(Rejection::Unsupported {
+            operation: Operation::EditPodPreset,
+            ..
+        })
+    ));
+    assert!(matches!(
+        session.set_pod_mic_choice(RoleKind::Guitar, &after_cab, mic_choice),
+        Err(Rejection::Unsupported {
+            operation: Operation::EditPodPreset,
+            ..
+        })
+    ));
+    assert!(session.live_backend_is_absent());
+    assert!(LIVE_BACKEND_INITIALIZER.is_none());
+}
+
+#[test]
+fn pod_delay_note_session_is_role_gated_and_uses_the_shared_offline_backend() {
+    use crate::pod_preset::{self, DELAY_SLOT, DelayNoteChoice, MOD_SLOT};
+    let bytes = pod_preset::tests::delay_note_fixture(
+        DELAY_SLOT,
+        0x0202_0002,
+        0,
+        0x3e70_0000,
+        Some(MOD_SLOT),
+        pod_preset::MOD_CONTROL_MODEL_IDS[0],
+        0,
+        Some(120.0),
+    );
+    let session = Session::initial_rig();
+    let applied = session
+        .set_pod_delay_note_choice(RoleKind::Pod, &bytes, DelayNoteChoice::Quarter)
+        .unwrap();
+    let tone = pod_preset::PodTone::parse(applied.clone()).unwrap();
+    assert_eq!(
+        tone.delay_note_value().unwrap(),
+        pod_preset::DelayNoteValue::Known(DelayNoteChoice::Quarter)
+    );
+    let time_applied = session
+        .set_pod_delay_time_ms(RoleKind::Pod, &applied, 1010.0)
+        .unwrap();
+    let tone = pod_preset::PodTone::parse(time_applied).unwrap();
+    assert_eq!(tone.delay_time_ms().unwrap(), 1010.0);
+    assert_eq!(
+        tone.delay_note_value().unwrap(),
+        pod_preset::DelayNoteValue::Known(DelayNoteChoice::Off)
+    );
+    assert!(matches!(
+        session.set_pod_delay_note_choice(RoleKind::Guitar, &bytes, DelayNoteChoice::Quarter),
+        Err(Rejection::Unsupported {
+            operation: Operation::EditPodPreset,
+            ..
+        })
+    ));
+    assert!(session.live_backend_is_absent());
+}
+
+#[test]
+fn pod_mod_note_session_is_role_gated_and_uses_the_shared_offline_backend() {
+    use crate::pod_preset::{self, DELAY_SLOT, MOD_SLOT};
+    let bytes = pod_preset::tests::delay_note_fixture(
+        DELAY_SLOT,
+        pod_preset::DELAY_CONTROL_MODEL_IDS[0],
+        0,
+        0x3e80_0000,
+        Some(MOD_SLOT),
+        pod_preset::MOD_CONTROL_MODEL_IDS[0],
+        0,
+        Some(120.0),
+    );
+    let session = Session::initial_rig();
+    let applied = session
+        .set_pod_mod_note_choice(RoleKind::Pod, &bytes, pod_preset::ModNoteChoice::Quarter)
+        .unwrap();
+    let tone = pod_preset::PodTone::parse(applied).unwrap();
+    assert_eq!(
+        tone.mod_note_value().unwrap(),
+        pod_preset::ModNoteValue::Known(pod_preset::ModNoteChoice::Quarter)
+    );
+    assert!(
+        Session::initial_rig()
+            .set_pod_mod_speed_hz(RoleKind::Pod, &bytes, 3.0)
+            .is_ok()
+    );
+    assert!(
+        Session::initial_rig()
+            .set_pod_mod_note_choice(RoleKind::Guitar, &bytes, pod_preset::ModNoteChoice::Quarter,)
+            .is_err()
+    );
+    assert!(
+        Session::initial_rig()
+            .set_pod_mod_speed_hz(RoleKind::Guitar, &bytes, 3.0)
+            .is_err()
+    );
+}
+
+#[test]
+fn pod_stomp_harmony_session_is_role_gated_and_changes_one_selected_word() {
+    use crate::pod_preset::{
+        StompHarmony1M335Selection, StompHarmony1457Selection, StompHarmonySelection,
+    };
+    fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut out = id.to_vec();
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        out.extend_from_slice(data);
+        if !data.len().is_multiple_of(2) {
+            out.push(0);
+        }
+        out
+    }
+    let mut info = vec![0; 80];
+    info[..4].copy_from_slice(&1u32.to_be_bytes());
+    info[4..8].copy_from_slice(&PODXT_LIVE_PRODUCT_ID.to_be_bytes());
+    info[8..10].copy_from_slice(&u16::from(b'A').to_be_bytes());
+    info[72..76].copy_from_slice(&crate::pod_preset::PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
+    let mut model = b"MODL".to_vec();
+    let mut minf = Vec::new();
+    minf.extend_from_slice(&0x020a_0009u32.to_be_bytes());
+    minf.extend_from_slice(&crate::pod_preset::STOMP_SLOT.to_be_bytes());
+    minf.extend_from_slice(&[0; 4]);
+    model.extend(chunk(b"MINF", &minf));
+    for (id, bits) in [(0x0010_0001u32, 0x3f00_0000u32), (0x0010_0002, 0x3f40_8102)] {
+        let mut parm = Vec::new();
+        parm.extend_from_slice(&((0x3fu32 << 24) | id).to_be_bytes());
+        parm.extend_from_slice(&1u32.to_be_bytes());
+        parm.extend_from_slice(&bits.to_be_bytes());
+        model.extend(chunk(b"PARM", &parm));
+    }
+    let mut patch = b"PATC".to_vec();
+    patch.extend(chunk(b"LIST", &model));
+    let mut data = b"L6AS".to_vec();
+    data.extend(chunk(b"PINF", &info));
+    data.extend(chunk(b"LIST", &patch));
+    let original = chunk(b"FORM", &data);
+    let tone = crate::pod_preset::PodTone::parse(original.clone()).unwrap();
+    let start = original
+        .windows(4)
+        .position(|w| w == (((0x3fu32 << 24) | 0x0010_0001).to_be_bytes()))
+        .unwrap()
+        + 8;
+    let mut expected = original.clone();
+    expected[start..start + 4].copy_from_slice(
+        &StompHarmony1M335Selection::MinusOctave
+            .float_bits()
+            .to_be_bytes(),
+    );
+    let session = Session::initial_rig();
+    assert_eq!(
+        session.set_pod_stomp_harmony_selection(
+            RoleKind::Pod,
+            &original,
+            StompHarmonySelection::Harmony1M335(StompHarmony1M335Selection::MinusOctave)
+        ),
+        Ok(expected)
+    );
+    assert_eq!(
+        tone.stomp_harmony_1457_selection().unwrap(),
+        crate::pod_preset::StompHarmonyValue::Known(StompHarmony1457Selection::Fifth)
+    );
+    assert!(matches!(
+        session.set_pod_stomp_harmony_selection(
+            RoleKind::Guitar,
+            &original,
+            StompHarmonySelection::Harmony1M335(StompHarmony1M335Selection::MinusOctave)
+        ),
+        Err(Rejection::Unsupported {
+            operation: Operation::EditPodPreset,
+            ..
+        })
+    ));
+    let mut duplicate = original.clone();
+    let parm_start = duplicate
+        .windows(4)
+        .position(|word| word == b"PARM")
+        .unwrap();
+    let parm_span = 8 + u32::from_be_bytes(
+        duplicate[parm_start + 4..parm_start + 8]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    let duplicate_record = duplicate[parm_start..parm_start + parm_span].to_vec();
+    duplicate.splice(
+        parm_start + parm_span..parm_start + parm_span,
+        duplicate_record,
+    );
+    let list_offsets = duplicate
+        .windows(4)
+        .enumerate()
+        .filter_map(|(offset, word)| (word == b"LIST").then_some(offset))
+        .collect::<Vec<_>>();
+    for offset in list_offsets {
+        let size = u32::from_be_bytes(duplicate[offset + 4..offset + 8].try_into().unwrap());
+        duplicate[offset + 4..offset + 8].copy_from_slice(&(size + parm_span as u32).to_be_bytes());
+    }
+    let form_size = u32::from_be_bytes(duplicate[4..8].try_into().unwrap());
+    duplicate[4..8].copy_from_slice(&(form_size + parm_span as u32).to_be_bytes());
+    let duplicate_before = duplicate.clone();
+    assert!(
+        session
+            .set_pod_stomp_harmony_selection(
+                RoleKind::Pod,
+                &duplicate,
+                StompHarmonySelection::Harmony1M335(StompHarmony1M335Selection::Unison)
+            )
+            .is_err()
+    );
+    assert_eq!(duplicate, duplicate_before);
+    assert!(session.live_backend_is_absent());
+    assert!(LIVE_BACKEND_INITIALIZER.is_none());
+}
+
+#[test]
+fn pod_model_enable_session_rejects_short_minf_with_canonical_padding() {
+    let session = Session::initial_rig();
+    for padding in [0, 1] {
+        let mut original = crate::pod_preset::fixture(
+            crate::pod_preset::ContainerKind::L6as,
+            PODXT_LIVE_PRODUCT_ID,
+            crate::pod_preset::PODXT_LIVE_HOST_MIN_VERSION,
+            &[(crate::pod_preset::AMP_SLOT, 0xdead_beef)],
+        );
+        let header = original
+            .windows(4)
+            .position(|window| window == b"MINF")
+            .expect("amp MINF header");
+        original[header + 4..header + 8].copy_from_slice(&11u32.to_be_bytes());
+        original[header + 8 + 11] = padding;
+        let before = original.clone();
+        let tone = crate::pod_preset::PodTone::parse(original.clone()).unwrap();
+        assert!(
+            tone.model_enable_state(crate::pod_preset::PodModelEnable::Amp)
+                .is_err()
+        );
+        for enabled in [false, true] {
+            assert!(
+                session
+                    .set_pod_model_enabled(
+                        RoleKind::Pod,
+                        &original,
+                        crate::pod_preset::PodModelEnable::Amp,
+                        enabled,
+                    )
+                    .is_err()
+            );
+            assert_eq!(original, before);
+        }
+    }
+}
+
+#[test]
 fn offline_recording_gate_does_not_call_capture_or_open_a_stream() {
     let session = Session::initial_rig();
     assert!(LIVE_BACKEND_INITIALIZER.is_none());
