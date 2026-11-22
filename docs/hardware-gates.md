@@ -35,9 +35,14 @@ a GitHub issue.
 - **Operation:** Request identity from the PODxt Live bridge and attached
   Variax 600, as defined by [issue #126](https://github.com/guirossibrum/VariaxWorkbench/issues/126)
   and the existing ledger in [issue #112](https://github.com/guirossibrum/VariaxWorkbench/issues/112).
-- **Application traffic:** One identity request per device through the
-  interface-1 control path. The exact request/reply details belong to issue
-  #112; this page does not authorize sending them.
+  The offline procedure, reply shapes and authorization form are in
+  [the G2 ledger](hardware-gates/g2.md). That page does not authorize G2.
+- **Application traffic:** Proposed, not observed: the same universal
+  identity request twice, once for the bridge and once for the guitar.
+  The [capture summary](report.md) describes one identity request followed
+  by a settings read, so it does not establish that two-request exchange.
+  The exact request bytes belong to issue #112; this page does not authorize
+  sending them.
 - **System changes:** The proposed procedure temporarily detaches the stock
   driver from PODxt Live interface 1, claims that interface, performs the
   bounded operation, releases it, and reattaches the driver. Interface 0 is

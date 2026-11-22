@@ -45,26 +45,23 @@ pub(super) fn milestones(ui: &mut egui::Ui) {
     ui.separator();
     ui.heading("Offline PODxt Live tones");
     ui.label(
-        "Practice, beside Load tone or bank…, offers two built-in examples. Amp and \
-         Effects Tone lets you try Amp Drive and stompbox settings. Stompbox Collection \
-         lets you change the stompbox model inside a collection. Choosing one loads and \
-         selects it immediately. Save copy… writes a new file. Load tone or bank… opens \
-         your own tones and banks. Unsaved edits must be saved or discarded first.",
+        "Use Practice to load Amp and Effects Tone for Drive, stompbox settings, and Delay \
+         and Mod model changes. Use Stompbox Collection to try a model change in a collection. \
+         Load tone or bank… opens your files. Save copy… writes a new file.",
     );
     ui.separator();
-    ui.heading("Current phase · Stage 1: USB recognition (G1)");
+    ui.heading("Current phase · Stage 2 identification, offline only");
     ui.label(
-        "Device check… opens in Simulation, which shows the four device steps with pretend \
-         devices. Each step asks first and the answer is No unless you choose Yes. G1 is open \
-         in this build only, by your direct permission (2026-11-22): the mode \"This computer \
-         (G1)\" is shown only on Linux and runs the real step 1, which only reads what Linux \
-         already knows about the PODxt Live and sends it nothing. Steps 2–4 stay locked. \
-         Closing Device check cancels a Yes pressed in the same moment. Offline checks on \
-         this build, using pretend devices only, passed 458 tests with every feature \
-         (339 library, 93 window, 26 integration), 457 for the window profile \
-         (338 library, 93 window, 26 integration), and 364 for portable math \
-         (338 library, 26 integration). Follow the Phase 2 test card and paste the Report \
-         into #125.",
+        "Device check… opens in Simulation. Step 2 requires a passed step 1 and a separate \
+         Yes. No is the default. The rehearsal supplies pretend PODxt Live and Variax replies \
+         to two identical requests. The November 14 capture summary describes a single \
+         request followed by a settings read. G2 remains locked.",
+    );
+    ui.label(
+        "This computer (G1) is Linux-only and reads cached OS information under your direct \
+         G1 permission of November 22, 2026. Closing Device check cancels a Yes in the same \
+         frame. Copy detailed report (#125) is for G1 results. Save steps 1–2 report writes \
+         the shorter sanitized record.",
     );
     for (label, url) in [
         (
@@ -78,6 +75,10 @@ pub(super) fn milestones(ui: &mut egui::Ui) {
         (
             "Phase 2 exit review (#149)",
             "https://github.com/guirossibrum/VariaxWorkbench/issues/149",
+        ),
+        (
+            "Phase 3 exit review (#150)",
+            "https://github.com/guirossibrum/VariaxWorkbench/issues/150",
         ),
     ] {
         ui.hyperlink_to(label, url);

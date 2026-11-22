@@ -17,6 +17,7 @@ pub mod factory_reference;
 pub mod firmware;
 pub mod hardware_gates;
 pub mod host;
+pub mod identity_stage;
 pub mod linux_transport;
 #[cfg(test)]
 pub mod linux_variax_prefix;
@@ -33,6 +34,7 @@ pub mod pod_hd_independent;
 pub mod pod_preset;
 pub mod pod_usb_firmware;
 pub mod preset;
+pub mod probe_report;
 pub mod provenance;
 pub mod read_session;
 pub mod recording;

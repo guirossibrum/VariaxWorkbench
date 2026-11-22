@@ -645,6 +645,7 @@ struct Workbench {
     recording_open: bool,
     recorder: recording::Panel,
     device_check_open: bool,
+    device_check_notice: String,
     device_check: ProbeSession<RigBackend>,
     device_check_scenario: device_probe::Scenario,
     /// Root the "This computer" reader uses: `/` in the app; tests inject a
@@ -845,6 +846,7 @@ impl Workbench {
             frame_count: 0,
             recording_open: false,
             device_check_open: false,
+            device_check_notice: String::new(),
             device_check: ProbeSession::new(RigBackend::Simulated(SimulatedRig::new(
                 device_probe::Scenario::Connected,
             ))),
@@ -2634,6 +2636,15 @@ impl Workbench {
     /// G1 is open. When that is not available the option is left out. Steps
     /// 2–4 show locked and are never offered. Closing the window in the same
     /// moment as Yes or Start over cancels; nothing is read.
+    /// Saves the sanitized report only. A failure is shown as a fixed phrase
+    /// and does not answer or rerun a stage.
+    fn note_sanitized_report_save(&mut self, path: &Path) {
+        self.device_check_notice = match self.device_check.save_sanitized_report(path) {
+            Ok(()) => "Steps 1–2 report saved.".into(),
+            Err(error) => error.to_string(),
+        };
+    }
+
     fn device_check_window(&mut self, ctx: &egui::Context) {
         if !self.device_check_open {
             return;
@@ -2797,7 +2808,7 @@ impl Workbench {
                         }
                         (None, ProbeMode::ThisComputer) => {
                             "Step 1 finished. Steps 2–4 stay locked in this build; nothing else \
-                             will run. Copy the Report into issue #125."
+                             will run. Copy the detailed report into issue #125."
                                 .into()
                         }
                     };
@@ -2805,14 +2816,35 @@ impl Workbench {
                     visible.push_str(&format!("\n{outcome}"));
                 }
                 let report = self.device_check.report();
+                let sanitized = self.device_check.sanitized_report();
                 ui.horizontal(|ui| {
-                    if self.device_check_button(ui, "copy", "Copy report").clicked() {
+                    if self
+                        .device_check_button(ui, "copy", "Copy detailed report (#125)")
+                        .clicked()
+                    {
                         ui.ctx().copy_text(report.clone());
                     }
                 });
-                ui.collapsing("Report", |ui| {
+                ui.collapsing("Reports", |ui| {
+                    ui.label("Detailed report (schema 1), for issue #125.");
                     ui.monospace(&report);
+                    ui.label(
+                        "Steps 1–2 report (schema 2). Its identities are the ones this check \
+                         decoded. Gate G2 stays locked.",
+                    );
+                    ui.monospace(&sanitized);
                 });
+                if self
+                    .device_check_button(ui, "save-report", "Save steps 1–2 report")
+                    .clicked()
+                    && let Some(path) = self.dialogs.save("device-check-report.txt", "txt")
+                {
+                    self.note_sanitized_report_save(&path);
+                }
+                if !self.device_check_notice.is_empty() {
+                    ui.label(&self.device_check_notice);
+                    visible.push_str(&format!("\n{}", self.device_check_notice));
+                }
                 #[cfg(test)]
                 {
                     self.device_check_visible = visible;
@@ -13075,6 +13107,23 @@ mod tests {
         click_device_check(&context, &mut app, "open");
         assert!(app.device_check_open);
         (context, app)
+    }
+
+    #[test]
+    fn device_check_save_failure_is_shown_and_does_not_rerun() {
+        let (context, mut app) = device_check_app();
+        click_device_check(&context, &mut app, "yes");
+        click_device_check(&context, &mut app, "yes");
+        let calls = app.device_check.backend().calls();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("SECRET-USER-report.txt");
+        app.note_sanitized_report_save(&path);
+        app.note_sanitized_report_save(&path);
+        recording_frame(&context, &mut app, vec![]);
+        assert!(app.device_check_visible.contains("report already exists"));
+        assert!(!app.device_check_visible.contains("SECRET"));
+        assert!(!app.device_check_notice.contains("SECRET"));
+        assert_eq!(app.device_check.backend().calls(), calls);
     }
 
     #[test]

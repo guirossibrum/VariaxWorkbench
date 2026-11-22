@@ -14,7 +14,7 @@ when step 1's live form is available, and only step 1 can run in that mode.
 | Step | Name | Gate | What the live form would do |
 | --- | --- | --- | --- |
 | 1 | USB recognition | G1 | Read what Linux already holds (USB ids, cached descriptor fields, bound drivers, ALSA card list). Sends nothing. |
-| 2 | Device identification | G2 | One identity request over PODxt Live interface 1 (temporary detach/reattach). |
+| 2 | Device identification | G2 | Proposed, not observed: the same universal identity question twice (bridge, then guitar) over interface 1, then release and reattach. Simulation feeds pretend replies and only proves those inputs were accepted. The 2026-11-14 capture summary is one identity request followed by a settings read. |
 | 3 | Settings read | G3 | MIDI enable, two metadata requests, MIDI disable. Partial current settings, not a backup. |
 | 4 | Change check | G3 | The person changes `string1_tuning` on the guitar; the same read runs again. |
 
@@ -29,8 +29,14 @@ in `src/device_probe.rs`; the window shows them verbatim before asking.
   failure, no device, several devices or unreadable metadata stop the whole
   sequence.
 - A passed step makes the next step *wait*; it never runs it.
-- The report is plain text with fixed keys (`stage`, `gate`, `decision`,
-  `status`, `detail`). It carries no serial number, preset name or path.
+- The detailed report (schema 1) is plain text with fixed keys (`stage`,
+  `gate`, `decision`, `status`, `detail`). The window labels it for issue
+  #125. It carries no serial number, preset name or path.
+- The steps 1–2 report (schema 2) is a second text, built only from fixed
+  tokens (`src/probe_report.rs`). Identity tokens come from the product and
+  version the check decoded. The gate is a typed field, not a free-form
+  label. Saving it creates a new file and refuses to overwrite. A save
+  failure does not run a stage again.
 
 ## Backends
 
@@ -41,9 +47,10 @@ in `src/device_probe.rs`; the window shows them verbatim before asking.
 - Stage 1 reads `SyntheticSysfs`, an in-memory copy of the sysfs/procfs
   layout through the `OsMetadataSource` trait. Choosing Simulation never
   constructs `LinuxSysfs`.
-- Stages 2–4 use the existing in-memory `simulation::VirtualControl` and the
-  shared `read_session::read_current_on`. Identities and metadata are
-  synthetic (revision `0001`, preset name `SIMULATED`).
+- Stage 2 uses an in-memory identity script (`src/identity_stage.rs`). The
+  script is given a bridge reply and then a guitar reply. That is simulated
+  behavior. Stages 3–4 still use `simulation::VirtualControl` and
+  `read_session::read_current_on` (revision `0001`, preset name `SIMULATED`).
 - The **Pretend setup** list picks a scenario: connected, nothing connected,
   two PODxt Live units, unreadable information, a silent guitar, or tuning
   left unchanged.
@@ -100,11 +107,18 @@ is no `preview/` directory and no second Cargo package or workspace member,
 and no build output is committed. The preservation branch remains as history
 only.
 
-## Not done here
+## Owner validation and scope
 
-- The owner has not run the real step 1. The card for that run, after #158 is
-  on `master`, is [phase 2](owner-tests/phase-2.md). Results belong on #125.
-- Replay of the private 2026-11-14 identity captures (#113) is not included;
-  committed fixtures stay synthetic.
+- The owner reported a step 1 pass on a v0.09 Linux development build.
+  The exact revision and behavior at plug-in were unrecorded. Sound remained
+  normal and the owner observed no display or light change after Yes.
+  The [Phase 2 test card](owner-tests/phase-2.md) specifies a master build.
+  Results belong on #125.
+- Stage 2 in Simulation feeds the published 2026-11-14 reply shapes
+  (PODxt Live 3.01 and Variax 600 3.10) to a proposed two-request exchange.
+  That proves the simulation accepts those inputs. The capture summary is a
+  different sequence: one identity request, then a settings read. The capture
+  files stay private. See [the G2 ledger](hardware-gates/g2.md).
+  Gate G2 stays locked, and this mode does not open the live adapter.
 - The inventory table (`supported_devices.txt` schema 2, `device_inventory.rs`)
   from `508cd00` is not part of this change.

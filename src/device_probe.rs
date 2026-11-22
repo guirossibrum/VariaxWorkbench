@@ -8,24 +8,27 @@
 //! cancel, a failure or an ambiguous result stops the whole sequence. A passed
 //! stage never starts the next one by itself.
 //!
-//! Two backends exist. [`SimulatedRig`] (the default) answers every stage from
-//! a synthetic sysfs fixture and the in-memory [`VirtualControl`]. [`HostRig`]
-//! ("This computer") runs **step 1 only**, with the real reader
-//! [`LinuxSysfs`], whose reads go through `run_if_unlocked(Gate::OsDiscovery,
-//! …)`. G1 is open by the owner's direct permission (g1.md section 5); G2–G7
-//! stay locked, so steps 2–4 are never offered in that mode.
+//! Two backends exist. [`SimulatedRig`] (the default) answers stage 1 from a
+//! synthetic sysfs fixture, stage 2 from the offline identity exchange, and
+//! stages 3–4 from the in-memory [`VirtualControl`]. [`HostRig`] ("This
+//! computer") runs **step 1 only**, with the real reader [`LinuxSysfs`], whose
+//! reads go through `run_if_unlocked(Gate::OsDiscovery, …)`. G1 is open by the
+//! owner's direct permission (g1.md section 5); G2–G7 stay locked, so steps
+//! 2–4 are never offered in that mode.
 //! See `docs/device-check.md` and `docs/hardware-gates/g1.md`.
 
 use crate::hardware_gates::{self, Gate};
-use crate::midi::Identity;
-use crate::read_session::{self, ControlTransport, IDENTITY_REQUEST};
+use crate::identity_stage::{
+    self, CanonicalIdentity, IdentifyError, IdentifyStop, IdentityFailure, IdentityPair,
+    IdentityRole,
+};
+use crate::read_session;
 use crate::simulation::{ControlFault, VirtualControl};
 use crate::{ParameterValue, PresetMetadata};
 use std::collections::BTreeMap;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
-use std::time::Duration;
 
 /// USB vendor/product of the PODxt Live (decimal 3649/18000).
 pub const PODXT_LIVE_USB: (u16, u16) = (0x0e41, 0x4650);
@@ -101,7 +104,7 @@ impl Stage {
                 "Look at what Linux already knows about connected USB devices: vendor and product numbers, the description Linux saved when the device was plugged in, which Linux driver owns each part of it, and the list of sound cards. The app sends nothing to the PODxt Live or the guitar."
             }
             Self::Identification => {
-                "Ask the PODxt Live and the attached guitar to say what they are, with one identity request. In the real version Linux's driver is briefly detached from the guitar-control part of the PODxt Live only, and reattached afterwards. Nothing is stored on the devices."
+                "Proposed check, rehearsed here only in Simulation. It would ask the same identity question twice, first for the PODxt Live and then for the guitar, using pretend answers supplied by this test. A pass shows that the simulation accepted those answers. A recording from 14 November 2026 shows one identity question followed by a settings read, and does not show how two questions would behave. A future real run would briefly take the guitar-control connection from Linux and put it back. Nothing is stored on the devices. Gate G2 is not open."
             }
             Self::SettingsRead => {
                 "Read the guitar's current model settings: turn the guitar-control session on, send two settings requests, then turn the session off. The result names the guitar model and the first-string tuning."
@@ -703,7 +706,7 @@ pub trait ProbeBackend {
     /// is never offered for consent.
     fn can_run(&self, stage: Stage) -> bool;
     fn os_metadata(&mut self) -> &dyn OsMetadataSource;
-    fn identify(&mut self) -> Result<Identity, String>;
+    fn identify(&mut self) -> Result<IdentityPair, IdentifyError>;
     fn read_settings(&mut self, pass: ReadPass) -> Result<PresetMetadata, String>;
 }
 
@@ -753,6 +756,7 @@ pub struct SimulatedRig {
     scenario: Scenario,
     sysfs: SyntheticSysfs,
     calls: BackendCalls,
+    identity: identity_stage::ScriptedIdentity,
 }
 
 /// Synthetic stage-1 fixture for a PODxt Live on bus path `1-2`.
@@ -791,6 +795,11 @@ pub fn synthetic_metadata(string1_tuning: i8) -> [u8; 192] {
 
 impl SimulatedRig {
     pub fn new(scenario: Scenario) -> Self {
+        Self::with_identity(scenario, identity_stage::happy_script())
+    }
+
+    /// Stage 2 reads this in-memory transport and nothing else.
+    pub fn with_identity(scenario: Scenario, identity: identity_stage::ScriptedIdentity) -> Self {
         let mut sysfs = synthetic_podxt_live();
         match scenario {
             Scenario::NothingConnected => {
@@ -822,7 +831,13 @@ impl SimulatedRig {
             scenario,
             sysfs,
             calls: BackendCalls::default(),
+            identity,
         }
+    }
+
+    /// Calls recorded by the stage 2 transport. Zero means it was not used.
+    pub fn identity_calls(&self) -> u32 {
+        self.identity.calls()
     }
 
     pub const fn scenario(&self) -> Scenario {
@@ -848,18 +863,23 @@ impl ProbeBackend for SimulatedRig {
         &self.sysfs
     }
 
-    fn identify(&mut self) -> Result<Identity, String> {
+    fn identify(&mut self) -> Result<IdentityPair, IdentifyError> {
         self.calls.identity_requests += 1;
-        let mut control = VirtualControl::new(synthetic_metadata(0))?;
-        control.send(&IDENTITY_REQUEST)?;
-        let cancel = AtomicBool::new(false);
-        let reply = control
-            .next_message(&cancel, Duration::from_secs(1))?
-            .ok_or("the simulated bridge did not answer")?;
-        let identity = Identity::parse(&reply)?;
-        // Leave the simulated session as the live cleanup would.
-        control.send(&read_session::MIDI_DISABLE)?;
-        Ok(identity)
+        let exchange =
+            identity_stage::run_identity_exchange(&mut self.identity, &AtomicBool::new(false));
+        if exchange.failure.is_none()
+            && exchange.cleanup_failure.is_none()
+            && let Some(pair) = exchange.pair
+        {
+            return Ok(pair);
+        }
+        Err(IdentifyError::Failed(IdentifyStop {
+            failure: exchange.failure.unwrap_or(IdentityFailure::CleanupFailed),
+            cleanup: exchange.cleanup_failure,
+            cleanup_ran: exchange.release_attempted,
+            bridge: exchange.bridge,
+            guitar: exchange.guitar,
+        }))
     }
 
     fn read_settings(&mut self, pass: ReadPass) -> Result<PresetMetadata, String> {
@@ -918,9 +938,9 @@ impl<S: OsMetadataSource> ProbeBackend for HostRig<S> {
         &self.reader
     }
 
-    fn identify(&mut self) -> Result<Identity, String> {
+    fn identify(&mut self) -> Result<IdentityPair, IdentifyError> {
         self.calls.identity_requests += 1;
-        Err(HOST_REFUSAL.into())
+        Err(IdentifyError::Locked)
     }
 
     fn read_settings(&mut self, _: ReadPass) -> Result<PresetMetadata, String> {
@@ -966,7 +986,7 @@ impl ProbeBackend for RigBackend {
         }
     }
 
-    fn identify(&mut self) -> Result<Identity, String> {
+    fn identify(&mut self) -> Result<IdentityPair, IdentifyError> {
         match self {
             Self::Simulated(rig) => rig.identify(),
             Self::ThisComputer(rig) => rig.identify(),
@@ -989,6 +1009,30 @@ impl ProbeBackend for RigBackend {
 pub struct Reading {
     pub body_model: i32,
     pub string1_tuning: i32,
+}
+
+fn observed_guitar(identity: &crate::midi::Identity) -> Option<CanonicalIdentity> {
+    let version = identity.version_string();
+    if identity.product_id() == identity_stage::GUITAR_PRODUCT
+        && version == identity_stage::GUITAR_VERSION
+    {
+        Some(CanonicalIdentity {
+            role: IdentityRole::Guitar,
+            product_id: identity.product_id(),
+            version: identity_stage::GUITAR_VERSION,
+        })
+    } else {
+        None
+    }
+}
+
+fn identity_detail(stop: &IdentifyStop) -> String {
+    match stop.cleanup {
+        Some(cleanup) if cleanup != stop.failure => {
+            format!("{} {}", stop.failure.sentence(), cleanup.sentence())
+        }
+        _ => stop.failure.sentence().to_owned(),
+    }
 }
 
 fn reading_of(metadata: &PresetMetadata) -> Result<Reading, String> {
@@ -1017,6 +1061,12 @@ pub struct ProbeSession<B: ProbeBackend> {
     awaiting: Option<Stage>,
     stop: Option<(Stage, StopReason)>,
     first_read: Option<Reading>,
+    identity_failure: Option<IdentityFailure>,
+    cleanup_failure: Option<IdentityFailure>,
+    /// True only after the fake identity exchange has run release/reattach.
+    cleanup_ran: bool,
+    decoded_bridge: Option<CanonicalIdentity>,
+    decoded_guitar: Option<CanonicalIdentity>,
 }
 
 impl<B: ProbeBackend> ProbeSession<B> {
@@ -1030,6 +1080,11 @@ impl<B: ProbeBackend> ProbeSession<B> {
             awaiting: first,
             stop: None,
             first_read: None,
+            identity_failure: None,
+            cleanup_failure: None,
+            cleanup_ran: false,
+            decoded_bridge: None,
+            decoded_guitar: None,
         }
     }
 
@@ -1115,22 +1170,24 @@ impl<B: ProbeBackend> ProbeSession<B> {
                     Err(summary)
                 }
             }
-            Stage::Identification => {
-                let identity = self
-                    .backend
-                    .identify()
-                    .map_err(|error| format!("Identification failed: {error}."))?;
-                match identity.product_id() {
-                    0x0007_0004 => Ok(format!(
-                        "Guitar answered as Variax 300/600 (product {:08x}), firmware {}.",
-                        identity.product_id(),
-                        identity.version_string()
-                    )),
-                    other => Err(format!(
-                        "The answer named product {other:08x}, not a Variax 300/600. Stopped."
-                    )),
+            Stage::Identification => match self.backend.identify() {
+                Ok(pair) => {
+                    self.remember_identity(Some(pair.bridge), observed_guitar(&pair.guitar), None);
+                    Ok(format!(
+                        "PODxt Live bridge {:08x} firmware {}; Variax 600 {:08x} firmware {}.",
+                        pair.bridge.product_id,
+                        pair.bridge.version,
+                        pair.guitar.product_id(),
+                        pair.guitar.version_string()
+                    ))
                 }
-            }
+                Err(IdentifyError::Locked) => Err(HOST_REFUSAL.into()),
+                Err(IdentifyError::Failed(stop)) => {
+                    self.cleanup_ran = stop.cleanup_ran;
+                    self.remember_identity(stop.bridge, stop.guitar, Some(stop));
+                    Err(identity_detail(&stop))
+                }
+            },
             Stage::SettingsRead => {
                 let metadata = self
                     .backend
@@ -1206,6 +1263,109 @@ impl<B: ProbeBackend> ProbeSession<B> {
             ));
         }
         lines.join("\n")
+    }
+
+    /// Stages 1–2 only, from fixed tokens. Saving it does not run a stage.
+    pub fn sanitized_report(&self) -> String {
+        crate::probe_report::render(&self.sanitized_facts())
+    }
+
+    pub fn save_sanitized_report(&self, path: &std::path::Path) -> Result<(), &'static str> {
+        crate::probe_report::save_sanitized_report(path, &self.sanitized_report())
+    }
+
+    fn remember_identity(
+        &mut self,
+        bridge: Option<CanonicalIdentity>,
+        guitar: Option<CanonicalIdentity>,
+        stop: Option<IdentifyStop>,
+    ) {
+        self.decoded_bridge = bridge;
+        self.decoded_guitar = guitar;
+        self.cleanup_ran = true;
+        if let Some(stop) = stop {
+            self.identity_failure = Some(stop.failure);
+            self.cleanup_failure = stop.cleanup;
+            self.cleanup_ran = stop.cleanup_ran;
+        }
+    }
+
+    fn sanitized_facts(&self) -> crate::probe_report::SanitizedFacts {
+        use crate::probe_report::{
+            ReportCleanup, ReportDecision, ReportGate, ReportIdentity, ReportMode, ReportStatus,
+            ReportStop, StageFact,
+        };
+        let mode = match self.mode() {
+            ProbeMode::Simulation => ReportMode::Simulation,
+            ProbeMode::ThisComputer => ReportMode::ThisComputer,
+        };
+        let fact = |stage: Stage| {
+            let index = stage.index();
+            let status = if self.locked(stage) && self.statuses[index] == StageStatus::NotRun {
+                ReportStatus::Locked
+            } else {
+                match self.statuses[index] {
+                    StageStatus::NotRun => ReportStatus::NotRun,
+                    StageStatus::Passed => ReportStatus::Passed,
+                    StageStatus::Stopped => ReportStatus::Stopped,
+                }
+            };
+            let decision = match self.decisions[index] {
+                Some(Consent::Yes) => ReportDecision::Yes,
+                Some(Consent::No) => ReportDecision::No,
+                Some(Consent::Cancel) => ReportDecision::Cancel,
+                None => ReportDecision::None,
+            };
+            let stop = match (status, decision, stage) {
+                (ReportStatus::Stopped, ReportDecision::No, _) => ReportStop::Declined,
+                (ReportStatus::Stopped, ReportDecision::Cancel, _) => ReportStop::Cancelled,
+                (ReportStatus::Stopped, ReportDecision::Yes, Stage::Identification) => self
+                    .identity_failure
+                    .map(ReportStop::Identity)
+                    .unwrap_or(ReportStop::Failed),
+                (ReportStatus::Stopped, _, _) => ReportStop::Failed,
+                _ => ReportStop::None,
+            };
+            let (bridge, guitar, cleanup) = if stage == Stage::Identification {
+                let cleanup = if !self.cleanup_ran {
+                    ReportCleanup::NotRun
+                } else if self.cleanup_failure.is_some() {
+                    ReportCleanup::Failed
+                } else {
+                    ReportCleanup::Ok
+                };
+                (
+                    ReportIdentity::from_canonical(self.decoded_bridge),
+                    ReportIdentity::from_canonical(self.decoded_guitar),
+                    cleanup,
+                )
+            } else {
+                (
+                    ReportIdentity::None,
+                    ReportIdentity::None,
+                    ReportCleanup::NotRun,
+                )
+            };
+            StageFact {
+                stage: stage.number(),
+                gate: match stage {
+                    Stage::Identification => ReportGate::IdentityRequest,
+                    Stage::UsbRecognition | Stage::SettingsRead | Stage::ChangeCheck => {
+                        ReportGate::OsDiscovery
+                    }
+                },
+                decision,
+                status,
+                stop,
+                cleanup,
+                bridge,
+                guitar,
+            }
+        };
+        crate::probe_report::SanitizedFacts {
+            mode,
+            stages: [fact(Stage::UsbRecognition), fact(Stage::Identification)],
+        }
     }
 }
 
@@ -1369,6 +1529,7 @@ mod tests {
             );
             assert!(probe.finished());
             assert_eq!(probe.backend().calls().identity_requests, 0);
+            assert_eq!(probe.backend().identity_calls(), 0);
         }
     }
 
@@ -1790,5 +1951,200 @@ mod tests {
                 .report()
                 .starts_with("device-check schema=1 mode=simulation")
         );
+        let sanitized = probe.sanitized_report();
+        assert!(crate::probe_report::allowlisted(&sanitized), "{sanitized}");
+        assert!(sanitized.contains("bridge=podxt-live-3.01"));
+        assert!(sanitized.contains("guitar=variax-600-3.10"));
+        assert!(!sanitized.contains("SIMULATED"));
+    }
+
+    struct FailIdentify {
+        sysfs: SyntheticSysfs,
+        calls: BackendCalls,
+        kind: IdentityFailure,
+    }
+
+    impl FailIdentify {
+        fn new(kind: IdentityFailure) -> Self {
+            Self {
+                sysfs: synthetic_podxt_live(),
+                calls: BackendCalls::default(),
+                kind,
+            }
+        }
+    }
+
+    impl ProbeBackend for FailIdentify {
+        fn mode(&self) -> ProbeMode {
+            ProbeMode::Simulation
+        }
+        fn can_run(&self, _: Stage) -> bool {
+            true
+        }
+        fn os_metadata(&mut self) -> &dyn OsMetadataSource {
+            self.calls.os_reads += 1;
+            &self.sysfs
+        }
+        fn identify(&mut self) -> Result<IdentityPair, IdentifyError> {
+            self.calls.identity_requests += 1;
+            Err(IdentifyError::Failed(IdentifyStop {
+                failure: self.kind,
+                cleanup: None,
+                cleanup_ran: false,
+                bridge: None,
+                guitar: None,
+            }))
+        }
+        fn read_settings(&mut self, _: ReadPass) -> Result<PresetMetadata, String> {
+            self.calls.settings_reads += 1;
+            Err("settings must not run after a failed identity".into())
+        }
+    }
+
+    #[test]
+    fn stage_two_waits_for_its_own_yes_and_each_bad_identity_stops() {
+        let mut waiting = ProbeSession::new(FailIdentify::new(IdentityFailure::Unknown));
+        assert_eq!(Consent::default(), Consent::No);
+        waiting.answer(Consent::Yes);
+        assert_eq!(waiting.awaiting(), Some(Stage::Identification));
+        assert_eq!(waiting.backend().calls.identity_requests, 0);
+        waiting.answer(Consent::No);
+        assert_eq!(waiting.backend().calls.identity_requests, 0);
+        assert!(waiting.finished());
+
+        for kind in [
+            IdentityFailure::Unknown,
+            IdentityFailure::Ambiguous,
+            IdentityFailure::Inconsistent,
+            IdentityFailure::TimedOut,
+        ] {
+            let mut probe = ProbeSession::new(FailIdentify::new(kind));
+            probe.answer(Consent::Yes);
+            probe.answer(Consent::Yes);
+            assert_eq!(probe.status(Stage::Identification), StageStatus::Stopped);
+            assert_eq!(probe.status(Stage::SettingsRead), StageStatus::NotRun);
+            assert_eq!(
+                probe.stopped(),
+                Some((Stage::Identification, StopReason::Failed))
+            );
+            assert_eq!(probe.backend().calls.identity_requests, 1);
+            assert_eq!(probe.backend().calls.settings_reads, 0);
+            let report = probe.sanitized_report();
+            assert!(report.contains(kind.stop_token()), "{report}");
+            assert!(crate::probe_report::allowlisted(&report), "{report}");
+            assert!(!report.contains('/'));
+        }
+    }
+
+    #[test]
+    fn saving_the_sanitized_report_does_not_run_another_stage() {
+        let mut probe = session(Scenario::Connected);
+        probe.answer(Consent::Yes);
+        probe.answer(Consent::Yes);
+        let calls = probe.backend().calls();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("SECRET-USER-report.txt");
+        probe.save_sanitized_report(&path).unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("guitar=variax-600-3.10"));
+        assert!(!body.contains("SECRET"));
+        assert_eq!(
+            probe.save_sanitized_report(&path),
+            Err("report already exists")
+        );
+        assert_eq!(probe.backend().calls(), calls);
+        assert_eq!(probe.backend().identity_calls(), 2 + 2 + 1);
+    }
+
+    fn scripted(script: identity_stage::ScriptedIdentity) -> ProbeSession<SimulatedRig> {
+        ProbeSession::new(SimulatedRig::with_identity(Scenario::Connected, script))
+    }
+
+    #[test]
+    fn stage_two_decline_and_cancel_make_zero_transport_calls() {
+        assert_eq!(Consent::default(), Consent::No);
+        for consent in [Consent::No, Consent::Cancel] {
+            let mut probe = scripted(identity_stage::happy_script());
+            probe.answer(Consent::Yes);
+            assert_eq!(probe.status(Stage::UsbRecognition), StageStatus::Passed);
+            assert_eq!(probe.awaiting(), Some(Stage::Identification));
+            assert_eq!(probe.status(Stage::Identification), StageStatus::NotRun);
+            assert_eq!(probe.backend().identity_calls(), 0);
+            probe.answer(consent);
+            assert_eq!(probe.backend().identity_calls(), 0);
+            assert_eq!(probe.backend().calls().identity_requests, 0);
+            assert_eq!(probe.status(Stage::SettingsRead), StageStatus::NotRun);
+            assert!(probe.finished());
+        }
+    }
+
+    #[test]
+    fn stage_two_stops_on_each_bad_identity_from_the_fake_transport() {
+        let mut unknown = identity_stage::bridge_reply();
+        unknown[8] = 1;
+        let cases = [
+            (
+                identity_stage::ScriptedIdentity::new([unknown]),
+                IdentityFailure::Unknown,
+            ),
+            (
+                identity_stage::ScriptedIdentity::several(vec![
+                    identity_stage::bridge_reply(),
+                    identity_stage::bridge_reply(),
+                ]),
+                IdentityFailure::Ambiguous,
+            ),
+            (
+                identity_stage::ScriptedIdentity::new([
+                    identity_stage::guitar_reply(),
+                    identity_stage::bridge_reply(),
+                ]),
+                IdentityFailure::Inconsistent,
+            ),
+            (
+                identity_stage::ScriptedIdentity::new([identity_stage::bridge_reply()]).silent(),
+                IdentityFailure::TimedOut,
+            ),
+        ];
+        for (script, kind) in cases {
+            let mut probe = scripted(script);
+            probe.answer(Consent::Yes);
+            assert_eq!(probe.backend().identity_calls(), 0, "{kind:?}");
+            probe.answer(Consent::Yes);
+            assert!(probe.backend().identity_calls() > 0, "{kind:?}");
+            assert_eq!(probe.status(Stage::Identification), StageStatus::Stopped);
+            assert_eq!(probe.status(Stage::SettingsRead), StageStatus::NotRun);
+            assert_eq!(probe.backend().calls().settings_reads, 0);
+            let report = probe.sanitized_report();
+            assert!(report.contains(kind.stop_token()), "{kind:?} {report}");
+            assert!(report.contains("cleanup=ok"), "{kind:?} {report}");
+            assert!(crate::probe_report::allowlisted(&report), "{report}");
+        }
+    }
+
+    #[test]
+    fn timeout_and_reattach_failure_are_both_in_the_report() {
+        let mut probe = scripted(
+            identity_stage::ScriptedIdentity::new([identity_stage::bridge_reply()]).fail_reattach(),
+        );
+        probe.answer(Consent::Yes);
+        probe.answer(Consent::Yes);
+        assert_eq!(probe.status(Stage::Identification), StageStatus::Stopped);
+        assert_eq!(probe.status(Stage::SettingsRead), StageStatus::NotRun);
+        let detail = probe.detail(Stage::Identification).unwrap();
+        assert!(detail.contains("No identity answer arrived in time"));
+        assert!(detail.contains("could not be put back"));
+        let report = probe.sanitized_report();
+        assert!(report.contains("stop=timed-out"), "{report}");
+        assert!(report.contains("cleanup=failed"), "{report}");
+        assert!(report.contains("bridge=podxt-live-3.01"), "{report}");
+        assert!(report.contains("guitar=none"), "{report}");
+        assert!(report.lines().any(|line| {
+            line.starts_with("stage=2 ")
+                && line.contains("status=stopped")
+                && !line.contains("guitar=variax-600-3.10")
+        }));
+        assert!(crate::probe_report::allowlisted(&report), "{report}");
+        assert!(probe.report().starts_with("device-check schema=1 "));
     }
 }

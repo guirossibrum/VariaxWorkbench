@@ -59,7 +59,9 @@ not read this computer's `/sys` or `/proc`.
    **Yes, read this computer's USB list**. (Pressing Enter instead answers No.)
 7. Step 1 finishes. The window says *Step 1 finished. Steps 2–4 stay locked in
    this build*, and no Yes/No buttons are shown any more.
-8. Click **Copy report** (or open **Report** and copy its text). Close the app.
+8. Click **Copy detailed report (#125)** (or open **Reports** and copy the
+   detailed report). That is the schema 1 text for this issue. The steps 1–2
+   report is a different, shorter text. Close the app.
 
 ## Expected display
 

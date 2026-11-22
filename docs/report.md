@@ -153,6 +153,13 @@ and released/reattached the driver. A temporary per-device permission ACL was us
 no persistent udev rule was installed. Read queries transmit data and session
 commands, so the report does not describe that earlier interaction as passive.
 
+That session is one identity request followed by a settings read. It records
+the reply shapes in the table above. It does not establish how a later
+proposal — two identical identity requests, bridge then guitar, with no
+settings read — would behave. An offline simulation can feed those two reply
+shapes after two identical requests. A simulation pass shows that the fake
+transport accepted those inputs. It is not a replay of this capture.
+
 The captured current preset is **“Reso-5”**. Raw replies are in
 `analysis/captures/variax-usb-20261114-235059/`; the Rust settings file is
 `backups/current-variax-600.vwm`. The original Java metadata decoder and Rust
