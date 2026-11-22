@@ -189,6 +189,8 @@ PRs #167–#172 were merged on 2026-11-22 by owner override, after local merge-r
 
 - [x] Offline PODxt Live Practice menu in the working tree: **Amp and Effects Tone** supports Amp Drive, Stomp Drive, and Delay and Mod model changes. Delay and Mod model selectors appear only when the tone meets the same checks used by Apply. **Two headless GUI tests** cover editing, saving and reopening both practice documents through the app. The collection test also covers a tone with no Delay or Mod slot.
 
+- [x] PODxt Live 3.01 factory channels reconstructed offline from firmware region 17 using the original Line 6 Edit decoder and bank writer. Rust reopened **32 banks / 128 tones** and verified all **512 Amp, Stomp, Mod, and Delay model IDs and enabled states**. The reconstructed files stay local and ignored. [Firmware map](docs/firmware-map.md#podxt-live-301-factory-channels)
+
 ### Currently unavailable or not working
 
 - [ ] The image-default Windows x87 math substitution fails the Mac generator's strict startup-constant check; its complete-generator replay stops. Historical Mac parity remains unresolved, and the optional portable profile is experimental.

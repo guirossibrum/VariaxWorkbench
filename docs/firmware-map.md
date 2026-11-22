@@ -74,7 +74,7 @@ outer region tag meanings:
 | Region 4, 0x10000 | Length/checksum wrapper and four complete load records | Loader implementation and hardware behavior unverified |
 | Region 5, 0x20000 | Length/checksum wrapper, 65,528-byte opaque payload | Payload ISA/encoding unverified; high entropy is not proof of encryption |
 | Regions 6–11, 0x30000–0x90000 | Resource directory, named records and padding | Record bodies, licensing and execution semantics unverified |
-| Region 17, 0xE0000 | Preset-name-bearing data | Editing/checksum/preservation rules unverified |
+| Region 17, 0xE0000 | Factory channel and setup records | Firmware programming and live device behavior remain unverified |
 | Regions 0, 12–16, 18 | Entirely FF | Their values do not establish permission or safety to overwrite |
 
 Regions 4 and 5 begin with a big-endian u32 count of 16-bit words, then a
@@ -140,6 +140,24 @@ resource relationship, not a proven DSP/flash memory mapping or license grant.
 No USB-component firmware, installed component version, calibration-safe update,
 or recovery sequence is established by this map. These unknowns remain on #20,
 #14, #16 and the later safety/readiness issues.
+
+### PODxt Live 3.01 factory channels
+
+The archived main-flash image contains the 128 factory channel tones in
+160-byte records. Line 6 Edit 3.06's `L6SharcTonePatchManager.TranslateAddr`
+maps channel indices 0–63 to region-17 records 0–63 and channel indices 64–127
+to records 192–255. The address mapping excludes the amp and effect setup
+records. The original `L6SharcToneMIDITranscoder.DecodePatch` decoded the
+channel records in memory, using the PODxt Live map with a null MIDI manager.
+The original IFF writer then produced a local `FORM/L6BA` bundle arranged as
+32 numbered banks with four tones each.
+
+The Rust POD bundle parser reopened all 128 tones. Each name, target, version,
+and all 512 Amp, Stomp, Mod, and Delay model IDs and enabled states matched the
+offline decode. The bundle is a host-format reconstruction of the archived
+3.01 defaults. The numbered bank labels were added during export. Earlier
+factory revisions, current device presets, and live restore remain unverified.
+The source firmware and derived tone files remain local and ignored.
 
 ## Reproduction and retained evidence
 
