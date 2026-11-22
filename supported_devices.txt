@@ -1,0 +1,216 @@
+Amplifi
+AMPLIFi
+AMPLIFi 150
+AMPLIFi 30
+AMPLIFi 75
+Amplifi Desktop
+AMPLIFi FX100
+AMPLIFi TT
+AX2
+BackTrack
+BackTrack + Mic
+Bass POD
+Bass POD Pro
+Bass POD XT
+Bass POD XT Live
+Bass POD XT Pro
+Bass PODxt
+Bass PODxt Live
+Bass PODxt Pro
+Catalyst
+Catalyst 100
+Catalyst 100-112
+Catalyst 200
+Catalyst 200-212
+Catalyst 60
+Catalyst 60-112
+Catalyst Bootloader
+Catalyst Freescale Bootloader
+DL4 Mk
+DL4 MK2
+DL4 MK2 Bootloader
+DL4 MkII
+DT25 112
+DT25 HD
+DT50 112
+DT50 212
+DT50 Head
+Duoverb
+Echo Pro
+FBV 2 MkII
+FBV 3
+FBV Express MkII
+FBV MKIII
+FBV Shortboard MkII
+Filter Pro
+Firehawk
+Firehawk 1500
+Firehawk Amp
+Firehawk FX
+Flextone II
+Flextone III
+Floor POD Plus
+FX100
+Guitar Port
+GuitarPort
+GuitarPort 1
+GuitarPort 2
+HD 147
+HD147
+Helix
+Helix Control
+Helix Floor
+Helix LT
+Helix Rack
+HX Effects
+HX One
+HX Stomp
+HX Stomp XL
+JM4
+JTV-59
+JTV-69
+JTV-89
+JTV-89F
+KB37
+Line 6 POD HD Pro X
+Line 6 POD HD500X
+Line 6 UX8
+M13
+M5
+M9
+Mod Pro
+Pocket POD
+POD
+POD 1.x
+POD 2.0
+POD 2.0 Pro
+POD GO
+POD Go
+POD GO Wireless
+POD Go Wireless
+POD HD
+POD HD 500
+POD HD Bean
+POD HD Pro
+POD HD Pro SE
+POD HD Pro X
+POD HD300
+POD HD400
+POD HD500
+POD HD500 SE
+POD HD500X
+POD Pro
+POD Studio GX
+POD Studio KB37
+POD Studio UX1
+POD Studio UX2
+POD X3
+POD X3 Live
+POD X3 Pro
+PODxt
+PODxt Live
+PODxt Pro
+Powercab
+Powercab 112
+Powercab 112 Plus
+Powercab 212 Plus
+RELAY G10
+Relay G10R
+Relay G10S
+RELAY G10S
+RELAY G10T
+RELAY G10TII
+Relay G30 Bodypack
+Relay G30 Bodypack (1.0)
+Relay G30 Receiver
+Relay G50 Bodypack
+Relay G50 Receiver
+Relay G50 Transmitter
+Relay G70
+RELAY G70 Receiver
+Relay G75
+RELAY G75 Receiver
+Relay G90 Bodypack
+Relay G90 Receiver
+Relay G90 Transmitter
+RELAY TB516 G Transmitter
+Relay TB516G Beltpack
+Shuriken
+Shuriken SR-250
+Spider IV
+Spider IV 120
+Spider IV 15
+Spider IV 150
+Spider IV 30
+Spider IV 75
+Spider IV HD150
+Spider Jam
+Spider V 120
+Spider V 20
+Spider V 240
+Spider V 240 Head
+Spider V 30
+Spider V 60
+Spider Valve mkII
+Spider Valve MkII 112
+Spider Valve MkII 212
+Spider Valve mkII 212
+Spider Valve mkII HD
+Spider Valve MkII HD100
+Studio POD
+Studio POD 2
+TonePort
+Toneport DI Gold
+TonePort DI Gold
+Toneport DI Silver
+TonePort DI Silver
+TonePort DI-Gold
+TonePort DI-Silver
+TonePort GX
+Toneport GX
+TonePort GX MKII
+TonePort KB 37
+TonePort KB37
+TonePort KB61
+TonePort UX1
+TonePort UX1 MKII
+TonePort UX2
+TonePort UX2 MKII
+TonePort UX8
+TonePort/POD Studio KB37
+TonePort/POD Studio UX1
+TonePort/POD Studio UX2
+Tyler Variax
+UX1
+UX2
+UX8
+Variax
+Variax 300 600
+Variax 300/600
+Variax 500 700
+Variax 500/700
+Variax Acoustic
+Variax Bass
+Variax Bass 705
+Variax Electric
+Variax Standard
+Variax Tyler
+Variax USB Interface
+Vetta
+Vetta Combo
+Vetta Head
+Vetta II
+Vetta II Combo
+Vetta II Head
+XD-V30 Bodypack
+XD-V30 Handheld
+XD-V30 Receiver
+XD-V35 Bodypack
+XD-V35 Handheld
+XD-V35 Receiver
+XD-V70 Bodypack
+XD-V70 Handheld
+XD-V70 Receiver
+XD-V75 Bodypack
+XD-V75 Handheld
+XD-V75 Receiver
