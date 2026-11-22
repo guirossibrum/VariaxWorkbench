@@ -7,6 +7,9 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
+use variax_workbench::device_probe::{
+    self, Consent, ProbeSession, SimulatedRig, Stage, StageStatus,
+};
 use variax_workbench::hardware_gates::{self, Gate};
 use variax_workbench::pod_audio::RecordRoute;
 use variax_workbench::pod_preset::{self, Library};
@@ -14,11 +17,34 @@ use variax_workbench::recording::{self, ClockSelection};
 use variax_workbench::rig::{Rejection, RoleKind, Session};
 use variax_workbench::{document::EditorDocument, preset::PresetFile};
 
+#[path = "../app/guitar.rs"]
+mod guitar_ui;
+
 const PICKUP1: u32 = 0x02010001;
 const PICKUP2: u32 = 0x02010002;
 const BODY: u32 = 0x02010003;
 const WIRING: u32 = 0x02010004;
 const TUNING: u32 = 0x02010005;
+const SYSTEM: u32 = variax_workbench::edit::SYSTEM;
+const GUITAR_SURFACE: Color32 = Color32::from_rgb(31, 31, 34);
+const GUITAR_EDGE: Color32 = Color32::from_rgb(62, 60, 59);
+const FRET_MARKER: Color32 = Color32::from_rgb(247, 189, 108);
+const GUITAR_SELECTION: egui::style::Selection = egui::style::Selection {
+    bg_fill: Color32::from_rgb(85, 59, 39),
+    stroke: egui::Stroke {
+        width: 1.0,
+        color: Color32::from_rgb(255, 221, 173),
+    },
+};
+const GUITAR_ART_SIZE: Vec2 = Vec2::new(426.0, 412.0);
+
+fn guitar_panel() -> egui::Frame {
+    egui::Frame::new()
+        .inner_margin(12)
+        .corner_radius(8)
+        .fill(GUITAR_SURFACE)
+        .stroke(egui::Stroke::new(1.0_f32, GUITAR_EDGE))
+}
 
 #[derive(Clone, Deserialize)]
 struct ModelArt {
@@ -28,20 +54,52 @@ struct ModelArt {
     image: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq)]
 enum Tab {
     Body,
     Pickups,
-    Tuning,
     Controls,
 }
 enum Pending {
     Open(PathBuf),
     ReadCurrent,
     Quit,
-    /// Quit while at least one PODxt Live tone has an applied unsaved edit.
+    /// Quit while a PODxt Live tone has applied or staged unsaved work.
     QuitPod,
     QuitRecording,
+}
+
+#[derive(Clone, Copy)]
+enum PodMembershipAction {
+    Duplicate,
+    Remove,
+    MoveUp,
+    MoveDown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PendingStompHarmony {
+    Harmony1M335(pod_preset::StompHarmony1M335Selection),
+    Harmony1457(pod_preset::StompHarmony1457Selection),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PendingDelayEdit {
+    Note(pod_preset::DelayNoteChoice),
+    TimeMs(f32),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PendingModEdit {
+    Note(pod_preset::ModNoteChoice),
+    SpeedHz(f32),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingPodEqReset {
+    document_generation: u64,
+    index: usize,
+    context: Vec<u8>,
 }
 
 trait FileDialogs {
@@ -53,6 +111,10 @@ trait FileDialogs {
     fn save_aiff(&mut self, suggested: &str) -> Option<PathBuf>;
     fn open_pod_tone(&mut self) -> Option<PathBuf>;
     fn save_pod_tone(&mut self, suggested: &str) -> Option<PathBuf>;
+    #[cfg(test)]
+    fn queue_pod_save(&mut self, _path: Option<PathBuf>) {
+        panic!("POD save queue is available only on fake dialogs");
+    }
 }
 
 #[cfg(not(test))]
@@ -141,6 +203,9 @@ impl FileDialogs for FakeDialogs {
             .pop_front()
             .expect("unexpected POD save dialog")
     }
+    fn queue_pod_save(&mut self, path: Option<PathBuf>) {
+        self.pod_save.push_back(path);
+    }
 }
 
 fn suggested_tone_name(name: &str) -> String {
@@ -200,36 +265,130 @@ struct Workbench {
     help: bool,
     pending: Option<Pending>,
     permit_close: bool,
-    drag_origin: Option<(u32, f32)>,
+    drag_origin: Option<(u32, f32, f32, f32)>,
+    link_tuning_mix: bool,
     theme_polled: Instant,
     theme_text: String,
     screenshot: Option<PathBuf>,
     frame_count: u32,
     recording_open: bool,
     recorder: recording::Panel,
+    device_check_open: bool,
+    device_check: ProbeSession<SimulatedRig>,
+    device_check_scenario: device_probe::Scenario,
     pod_open: bool,
     pod_library: Library,
+    pod_bundle: Option<pod_preset::PodBundleLibrary>,
     pod_selected: Option<usize>,
+    pod_cab_pending: Option<(usize, pod_preset::PodCabModelChoice)>,
+    pod_cab_pending_origin: Option<(u64, usize, Vec<u8>)>,
+    pod_delay_model_pending: Option<(usize, pod_preset::PodDelayModelChoice)>,
+    pod_mod_model_pending: Option<(usize, pod_preset::PodModModelChoice)>,
+    pod_stomp_model_pending: Option<(usize, pod_preset::PodStompModelChoice)>,
+    pod_reverb_model_pending: Option<(usize, pod_preset::PodReverbModelChoice)>,
+    pod_amp_model_pending: Option<(usize, u32, pod_preset::PodAmpModelChoice)>,
+    pod_eq_reset_pending: Option<PendingPodEqReset>,
+    pod_document_generation: u64,
+    pod_harmony_pending: Option<(usize, pod_preset::StompHarmonyControl, PendingStompHarmony)>,
+    pod_delay_pending: Option<(usize, PendingDelayEdit)>,
+    pod_mod_pending: Option<(usize, PendingModEdit)>,
     pod_name: String,
     pod_message: String,
     #[cfg(test)]
-    bank_rows: HashMap<(usize, usize), Rect>,
+    bank_slots: HashMap<usize, Rect>,
+    #[cfg(test)]
+    bank_options: HashMap<usize, Rect>,
+    #[cfg(test)]
+    bank_dropdown: Option<Rect>,
     #[cfg(test)]
     pending_buttons: HashMap<&'static str, Rect>,
     #[cfg(test)]
     pickup_slider: Option<Rect>,
     #[cfg(test)]
+    tuning_toggle: Option<Rect>,
+    #[cfg(test)]
+    tuning_widgets: HashMap<&'static str, Rect>,
+    #[cfg(test)]
     recording_buttons: HashMap<&'static str, Rect>,
     #[cfg(test)]
     recording_visible: String,
+    #[cfg(test)]
+    device_check_buttons: HashMap<&'static str, Rect>,
+    #[cfg(test)]
+    device_check_visible: String,
     #[cfg(test)]
     recording_capture_attempts: u32,
     #[cfg(test)]
     pod_buttons: HashMap<&'static str, Rect>,
     #[cfg(test)]
+    pod_rows: HashMap<usize, Rect>,
+    #[cfg(test)]
+    pod_cab_combo: Option<Rect>,
+    #[cfg(test)]
+    pod_cab_options: HashMap<u32, Rect>,
+    #[cfg(test)]
+    pod_drive_slider: Option<Rect>,
+    #[cfg(test)]
+    pod_stomp_sliders: HashMap<pod_preset::StompControl, Rect>,
+    #[cfg(test)]
+    pod_whammy_knob_sliders: HashMap<pod_preset::StompWhammyKnob, Rect>,
+    #[cfg(test)]
+    pod_eq_frequency_sliders: HashMap<pod_preset::PodxtEqBand, Rect>,
+    #[cfg(test)]
+    pod_eq_gain_sliders: HashMap<pod_preset::PodxtEqBand, Rect>,
+    #[cfg(test)]
+    pod_model_enable_checks: HashMap<pod_preset::PodModelEnable, Rect>,
+    #[cfg(test)]
+    pod_model_enable_menu: Option<Rect>,
+    #[cfg(test)]
+    pod_mod_sliders: HashMap<pod_preset::ModControl, Rect>,
+    #[cfg(test)]
+    pod_reverb_sliders: HashMap<pod_preset::ReverbControl, Rect>,
+    #[cfg(test)]
+    pod_delay_sliders: HashMap<pod_preset::DelayControl, Rect>,
+    #[cfg(test)]
+    pod_delay_note_options: HashMap<pod_preset::DelayNoteChoice, Rect>,
+    #[cfg(test)]
+    pod_delay_model_combo: Option<Rect>,
+    #[cfg(test)]
+    pod_delay_model_options: HashMap<u32, Rect>,
+    #[cfg(test)]
+    pod_mod_model_combo: Option<Rect>,
+    #[cfg(test)]
+    pod_mod_model_options: HashMap<u32, Rect>,
+    #[cfg(test)]
+    pod_stomp_model_combo: Option<Rect>,
+    #[cfg(test)]
+    pod_stomp_model_options: HashMap<u32, Rect>,
+    #[cfg(test)]
+    pod_reverb_model_combo: Option<Rect>,
+    #[cfg(test)]
+    pod_reverb_model_options: HashMap<u32, Rect>,
+    #[cfg(test)]
+    pod_amp_model_combo: Option<Rect>,
+    #[cfg(test)]
+    pod_amp_model_options: HashMap<u32, Rect>,
+    #[cfg(test)]
+    pod_mod_note_options: HashMap<pod_preset::ModNoteChoice, Rect>,
+    #[cfg(test)]
+    pod_delay_time_slider: Option<Rect>,
+    #[cfg(test)]
+    pod_mod_speed_slider: Option<Rect>,
+    #[cfg(test)]
+    pod_delay_heads_choices: HashMap<pod_preset::DelayHeadsSelection, Rect>,
+    #[cfg(test)]
+    pod_delay_bits_choices: HashMap<pod_preset::DelayBitsSelection, Rect>,
+    #[cfg(test)]
+    pod_stomp_wave_choices: HashMap<pod_preset::StompWaveSelection, Rect>,
+    #[cfg(test)]
+    pod_harmony1_choices: HashMap<pod_preset::StompHarmony1M335Selection, Rect>,
+    #[cfg(test)]
+    pod_harmony2_choices: HashMap<pod_preset::StompHarmony1457Selection, Rect>,
+    #[cfg(test)]
     pod_visible: String,
-    read_receiver:
-        Option<std::sync::mpsc::Receiver<Result<variax_workbench::usb::CurrentPreset, String>>>,
+    read_receiver: Option<
+        std::sync::mpsc::Receiver<Result<variax_workbench::read_session::CurrentPreset, String>>,
+    >,
     read_worker: Option<(
         std::sync::Arc<std::sync::atomic::AtomicBool>,
         std::thread::JoinHandle<()>,
@@ -237,11 +396,12 @@ struct Workbench {
 }
 
 impl Workbench {
-    fn new(cc: &eframe::CreationContext<'_>, preset: Option<PathBuf>, artwork: PathBuf) -> Self {
-        Self::with_context(&cc.egui_ctx, preset, artwork)
-    }
-
-    fn with_context(ctx: &egui::Context, preset: Option<PathBuf>, artwork: PathBuf) -> Self {
+    fn with_context(
+        ctx: &egui::Context,
+        preset: Option<PathBuf>,
+        artwork: PathBuf,
+        tab: Option<Tab>,
+    ) -> Self {
         ctx.set_visuals(egui::Visuals::dark());
         let mut style = (*ctx.style()).clone();
         style.spacing.item_spacing = Vec2::new(10.0, 10.0);
@@ -270,31 +430,124 @@ impl Workbench {
             pending: None,
             permit_close: false,
             drag_origin: None,
+            link_tuning_mix: false,
             theme_polled: Instant::now() - Duration::from_secs(2),
             theme_text: String::new(),
             screenshot: None,
             frame_count: 0,
             recording_open: false,
+            device_check_open: false,
+            device_check: ProbeSession::new(SimulatedRig::new(device_probe::Scenario::Connected)),
+            device_check_scenario: device_probe::Scenario::Connected,
             recorder: recording::Panel::new(),
             pod_open: false,
             pod_library: Library::default(),
+            pod_bundle: None,
             pod_selected: None,
+            pod_cab_pending: None,
+            pod_cab_pending_origin: None,
+            pod_delay_model_pending: None,
+            pod_mod_model_pending: None,
+            pod_stomp_model_pending: None,
+            pod_reverb_model_pending: None,
+            pod_amp_model_pending: None,
+            pod_eq_reset_pending: None,
+            pod_document_generation: 0,
+            pod_harmony_pending: None,
+            pod_delay_pending: None,
+            pod_mod_pending: None,
             pod_name: String::new(),
             pod_message: String::new(),
             #[cfg(test)]
-            bank_rows: HashMap::new(),
+            bank_slots: HashMap::new(),
+            #[cfg(test)]
+            bank_options: HashMap::new(),
+            #[cfg(test)]
+            bank_dropdown: None,
             #[cfg(test)]
             pending_buttons: HashMap::new(),
             #[cfg(test)]
             pickup_slider: None,
             #[cfg(test)]
+            tuning_toggle: None,
+            #[cfg(test)]
+            tuning_widgets: HashMap::new(),
+            #[cfg(test)]
             recording_buttons: HashMap::new(),
             #[cfg(test)]
             recording_visible: String::new(),
             #[cfg(test)]
+            device_check_buttons: HashMap::new(),
+            #[cfg(test)]
+            device_check_visible: String::new(),
+            #[cfg(test)]
             recording_capture_attempts: 0,
             #[cfg(test)]
             pod_buttons: HashMap::new(),
+            #[cfg(test)]
+            pod_rows: HashMap::new(),
+            #[cfg(test)]
+            pod_cab_combo: None,
+            #[cfg(test)]
+            pod_cab_options: HashMap::new(),
+            #[cfg(test)]
+            pod_drive_slider: None,
+            #[cfg(test)]
+            pod_stomp_sliders: HashMap::new(),
+            #[cfg(test)]
+            pod_whammy_knob_sliders: HashMap::new(),
+            #[cfg(test)]
+            pod_eq_frequency_sliders: HashMap::new(),
+            #[cfg(test)]
+            pod_eq_gain_sliders: HashMap::new(),
+            #[cfg(test)]
+            pod_model_enable_checks: HashMap::new(),
+            #[cfg(test)]
+            pod_model_enable_menu: None,
+            #[cfg(test)]
+            pod_mod_sliders: HashMap::new(),
+            #[cfg(test)]
+            pod_reverb_sliders: HashMap::new(),
+            #[cfg(test)]
+            pod_delay_sliders: HashMap::new(),
+            #[cfg(test)]
+            pod_delay_note_options: HashMap::new(),
+            #[cfg(test)]
+            pod_delay_model_combo: None,
+            #[cfg(test)]
+            pod_delay_model_options: HashMap::new(),
+            #[cfg(test)]
+            pod_mod_model_combo: None,
+            #[cfg(test)]
+            pod_mod_model_options: HashMap::new(),
+            #[cfg(test)]
+            pod_stomp_model_combo: None,
+            #[cfg(test)]
+            pod_stomp_model_options: HashMap::new(),
+            #[cfg(test)]
+            pod_reverb_model_combo: None,
+            #[cfg(test)]
+            pod_reverb_model_options: HashMap::new(),
+            #[cfg(test)]
+            pod_amp_model_combo: None,
+            #[cfg(test)]
+            pod_amp_model_options: HashMap::new(),
+            #[cfg(test)]
+            pod_mod_note_options: HashMap::new(),
+            #[cfg(test)]
+            pod_delay_time_slider: None,
+            #[cfg(test)]
+            pod_mod_speed_slider: None,
+            #[cfg(test)]
+            pod_delay_heads_choices: HashMap::new(),
+            #[cfg(test)]
+            pod_delay_bits_choices: HashMap::new(),
+            #[cfg(test)]
+            pod_stomp_wave_choices: HashMap::new(),
+            #[cfg(test)]
+            pod_harmony1_choices: HashMap::new(),
+            #[cfg(test)]
+            pod_harmony2_choices: HashMap::new(),
             #[cfg(test)]
             pod_visible: String::new(),
             read_receiver: None,
@@ -302,6 +555,11 @@ impl Workbench {
         };
         if let Some(preset) = preset {
             app.load(&preset);
+        } else {
+            app.open_example();
+        }
+        if let Some(tab) = tab {
+            app.tab = tab;
         }
         app
     }
@@ -313,6 +571,7 @@ impl Workbench {
         match EditorDocument::open(path) {
             Ok(document) => {
                 self.document = Some(document);
+                self.drag_origin = None;
                 self.error = None;
                 self.status = format!("Opened {}", path.display());
             }
@@ -323,6 +582,39 @@ impl Workbench {
     fn dirty(&self) -> bool {
         // Guitar open and read prompts use this. POD tones use the quit guard.
         self.document.as_ref().is_some_and(EditorDocument::is_dirty)
+    }
+
+    fn pod_dirty(&self) -> bool {
+        self.pod_library.any_dirty()
+            || self
+                .pod_bundle
+                .as_ref()
+                .is_some_and(pod_preset::PodBundleLibrary::is_dirty)
+    }
+
+    fn pod_has_staged_amp_choice(&self) -> bool {
+        self.pod_amp_model_pending.is_some()
+    }
+
+    fn pod_has_staged_edit(&self) -> bool {
+        self.pod_has_staged_amp_choice() || self.pod_eq_reset_pending.is_some()
+    }
+
+    fn invalidate_stale_eq_reset_stage(&mut self) {
+        let Some(pending) = self.pod_eq_reset_pending.as_ref() else {
+            return;
+        };
+        let current = self
+            .pod_library
+            .tone(pending.index)
+            .and_then(|tone| tone.podxt_eq_reset_context().ok());
+        if pending.document_generation != self.pod_document_generation
+            || current.as_ref() != Some(&pending.context)
+        {
+            self.pod_eq_reset_pending = None;
+            self.pod_message =
+                "Discarded a stale EQ reset because its entry or target EQ changed.".into();
+        }
     }
 
     fn is_reading(&self) -> bool {
@@ -379,7 +671,14 @@ impl Workbench {
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let worker_cancel = cancel.clone();
         let worker = std::thread::spawn(move || {
-            let _ = sender.send(variax_workbench::usb::read_current(&worker_cancel));
+            #[cfg(feature = "usb")]
+            let result = variax_workbench::usb::read_current(&worker_cancel);
+            #[cfg(not(feature = "usb"))]
+            let result = {
+                let _ = &worker_cancel;
+                Err("this build has no live USB adapter (built without the `usb` feature)".into())
+            };
+            let _ = sender.send(result);
         });
         self.read_worker = Some((cancel, worker));
         self.read_receiver = Some(receiver);
@@ -501,7 +800,7 @@ impl Workbench {
             Some(Pending::ReadCurrent) => self.launch_read(),
             Some(Pending::Quit | Pending::QuitPod | Pending::QuitRecording) => {
                 // Guitar save or discard must not close while a POD tone is unsaved.
-                if self.pod_library.any_dirty() {
+                if self.pod_dirty() || self.pod_has_staged_edit() {
                     self.pending = Some(Pending::QuitPod);
                     ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 } else if self.recorder.has_unsaved_take() {
@@ -513,77 +812,6 @@ impl Workbench {
                 }
             }
             None => {}
-        }
-    }
-
-    fn bank_browser(&mut self, ctx: &egui::Context) {
-        #[cfg(test)]
-        self.bank_rows.clear();
-        let Some(document) = &self.document else {
-            return;
-        };
-        let Some(banks) = document.banks() else {
-            return;
-        };
-        let selection = document.selection();
-        let labels: Vec<_> = banks
-            .iter()
-            .map(|b| {
-                (
-                    b.name.clone(),
-                    b.presets()
-                        .iter()
-                        .map(|p| p.name().to_owned())
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .collect();
-        let mut next = None;
-        egui::SidePanel::left("bank-browser")
-            .default_width(210.)
-            .show(ctx, |ui| {
-                ui.heading("Banks and presets");
-                ui.add_enabled_ui(!self.is_reading() && self.pending.is_none(), |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        for (bank, (name, presets)) in labels.iter().enumerate() {
-                            egui::CollapsingHeader::new(format!("{} · {}", bank + 1, name))
-                                .id_salt(("bank", bank))
-                                .default_open(true)
-                                .show(ui, |ui| {
-                                    if presets.is_empty() {
-                                        ui.weak("Empty bank");
-                                    }
-                                    for (preset, name) in presets.iter().enumerate() {
-                                        let response = ui.selectable_label(
-                                            selection == Some((bank, preset)),
-                                            format!("{} · {}", preset + 1, name),
-                                        );
-                                        #[cfg(test)]
-                                        self.bank_rows.insert((bank, preset), response.rect);
-                                        if response.clicked() {
-                                            next = Some((bank, preset));
-                                        }
-                                    }
-                                });
-                        }
-                    });
-                });
-            });
-        if let Some((bank, preset)) = next
-            && let Some(document) = &mut self.document
-        {
-            match document.select(bank, preset) {
-                Ok(()) => {
-                    self.drag_origin = None;
-                    self.error = None;
-                    self.status = format!(
-                        "Bank {}, preset {}. Edits stay in this bank copy.",
-                        bank + 1,
-                        preset + 1
-                    );
-                }
-                Err(error) => self.error = Some(error),
-            }
         }
     }
 
@@ -670,34 +898,6 @@ impl Workbench {
             }
         }
     }
-    fn float_drag_control(&mut self, ui: &mut egui::Ui, slot: u32, id: u32) {
-        let Some(mut value) = self.float(slot, id) else {
-            ui.label("—");
-            return;
-        };
-        let Some(variax_workbench::edit::Domain::Float { min, max, .. }) =
-            variax_workbench::edit::domain(slot, id)
-        else {
-            return;
-        };
-        if !value.is_finite() {
-            ui.label(format!("{value} (stored)"));
-            return;
-        }
-        if ui
-            .add_enabled(
-                self.can_edit(slot, Some(id)),
-                egui::DragValue::new(&mut value)
-                    .range(min..=max)
-                    .clamp_existing_to_range(false)
-                    .speed(0.01),
-            )
-            .changed()
-        {
-            self.change(|p| p.set_parameter(slot, id, 1, value.to_bits()));
-        }
-    }
-
     fn boolean_control(&mut self, ui: &mut egui::Ui, slot: u32, id: u32, label: &str) {
         if let Some(value) = self.integer(slot, id) {
             let mut checked = value != 0;
@@ -726,11 +926,12 @@ impl Workbench {
             })
             .map(|(_, text)| (*text).to_owned())
             .unwrap_or_else(|| format!("{value:.6} (stored)"));
-        ui.horizontal(|ui| {
+        ui.vertical(|ui| {
             ui.label(label);
             egui::ComboBox::from_id_salt(("electrical", id))
                 .selected_text(text)
-                .width(150.0)
+                .width(ui.available_width())
+                .truncate()
                 .show_ui(ui, |ui| {
                     for &(candidate, text) in choices {
                         ui.selectable_value(&mut selected, candidate.to_bits(), text);
@@ -747,9 +948,10 @@ impl Workbench {
             return;
         };
         let original = value;
-        ui.horizontal(|ui| {
-            ui.label("Volume taper");
+        ui.vertical(|ui| {
+            ui.label("Taper");
             egui::ComboBox::from_id_salt("volume-taper")
+                .width(ui.available_width())
                 .selected_text(match value {
                     0 => "Linear",
                     1 => "Audio",
@@ -767,13 +969,11 @@ impl Workbench {
     fn enabled_control(&mut self, ui: &mut egui::Ui, slot: u32, label: &str) {
         if let Some(model) = self.document.as_ref().and_then(|d| d.preset().model(slot)) {
             let mut enabled = model.enabled;
-            if ui
-                .add_enabled(
-                    self.can_edit(slot, None),
-                    egui::Checkbox::new(&mut enabled, label),
-                )
-                .changed()
-            {
+            let response = ui.add_enabled(
+                self.can_edit(slot, None),
+                egui::Checkbox::new(&mut enabled, label),
+            );
+            if response.changed() {
                 self.change(|p| p.set_enabled(slot, enabled));
             }
         }
@@ -785,7 +985,8 @@ impl Workbench {
         let previous = id;
         egui::ComboBox::from_id_salt(("model", slot))
             .selected_text(self.model_name(slot))
-            .width(280.0)
+            .width(ui.available_width())
+            .truncate()
             .show_ui(ui, |ui| {
                 for model in self.catalog.iter().filter(|a| a.kind == kind) {
                     ui.selectable_value(&mut id, model.id, &model.name);
@@ -820,26 +1021,34 @@ impl Workbench {
         }
     }
 
-    fn guitar(&mut self, ui: &mut egui::Ui) {
-        let size = Vec2::new(
-            ui.available_width().min(560.0),
-            ui.available_width().min(560.0) * 412.0 / 450.0,
-        );
-        let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-        let scale = size.x / 450.0;
+    fn guitar(&mut self, ui: &mut egui::Ui, height: f32) {
         let body = self
             .model_id(BODY)
             .and_then(|id| self.catalog.iter().find(|a| a.id == id))
-            .map(|a| a.image.clone());
-        if let Some(body) = body
-            && let Some(texture) = self.texture(ui.ctx(), &body)
-        {
-            let photo = Rect::from_min_size(rect.min, Vec2::new(426.0, 412.0) * scale);
+            .map(|a| a.image.clone())
+            .and_then(|path| self.texture(ui.ctx(), &path));
+        let scale = (ui.available_width() / GUITAR_ART_SIZE.x).min(height / GUITAR_ART_SIZE.y);
+        let (stage, _) = ui.allocate_exact_size(
+            Vec2::new(ui.available_width(), GUITAR_ART_SIZE.y * scale),
+            Sense::hover(),
+        );
+        let rect = Rect::from_center_size(stage.center(), GUITAR_ART_SIZE * scale);
+        ui.painter()
+            .rect_filled(rect, 5, Color32::from_rgb(20, 20, 22));
+        if let Some(texture) = body.as_ref() {
             ui.painter().image(
                 texture.id(),
-                photo,
+                rect,
                 Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
                 Color32::WHITE,
+            );
+        } else {
+            ui.painter().text(
+                stage.center(),
+                egui::Align2::CENTER_CENTER,
+                "Guitar artwork unavailable",
+                egui::FontId::proportional(15.0),
+                ui.visuals().weak_text_color(),
             );
         }
         for slot in [PICKUP2, PICKUP1] {
@@ -853,18 +1062,64 @@ impl Workbench {
                 .find(|a| a.id == model.id)
                 .map(|a| a.image.clone())
                 .unwrap_or_else(|| "pickups/unknown.png".into());
-            let position = self.float(slot, 0x200000).unwrap_or(2.0);
+            let stored_position = self.float(slot, 0x200000);
+            let position = stored_position.unwrap_or(2.0);
             let angle = self.float(slot, 0x200001).unwrap_or(0.0).to_radians();
             if !position.is_finite() || !angle.is_finite() {
                 continue;
             }
-            let center = rect.min
-                + Vec2::new(
-                    68.0 + 318.0 * ((position.clamp(0.1, 9.5) - 0.1) / 9.4),
-                    215.0,
-                ) * scale;
             if let Some(texture) = self.texture(ui.ctx(), &artwork) {
+                let center_at = |position: f32| {
+                    rect.min
+                        + Vec2::new(
+                            68.0 + 318.0 * ((position.clamp(0.1, 9.5) - 0.1) / 9.4),
+                            215.0,
+                        ) * scale
+                };
                 let dimension = texture.size_vec2() * scale;
+                let can_drag = ui.is_enabled()
+                    && stored_position.is_some()
+                    && self.can_edit(slot, Some(0x200000));
+                let response = ui.interact(
+                    Rect::from_center_size(center_at(position), dimension + Vec2::splat(12.0)),
+                    egui::Id::new(("pickup-drag", slot)),
+                    if can_drag {
+                        Sense::drag()
+                    } else {
+                        Sense::hover()
+                    },
+                );
+                if can_drag {
+                    let response = response
+                        .on_hover_and_drag_cursor(egui::CursorIcon::ResizeHorizontal)
+                        .on_hover_text(
+                            "Drag horizontally to move this pickup. Adjust rotation in Pickups.",
+                        );
+                    if let Some(pointer) = response.interact_pointer_pos() {
+                        if response.drag_started_by(egui::PointerButton::Primary)
+                            && let Some(delta) = response.total_drag_delta()
+                            && let Some(document) = &mut self.document
+                        {
+                            self.drag_origin =
+                                Some((slot, position.clamp(0.1, 9.5), pointer.x - delta.x, scale));
+                            document.begin_gesture();
+                        }
+                        if (response.dragged() || response.drag_stopped())
+                            && let Some((active, original, start_x, start_scale)) = self.drag_origin
+                            && active == slot
+                        {
+                            let value = (original
+                                + (pointer.x - start_x) / start_scale / 318.0 * 9.4)
+                                .clamp(0.1, 9.5);
+                            if value != position.clamp(0.1, 9.5) {
+                                self.change(|p| {
+                                    p.set_parameter(slot, 0x200000, 1, value.to_bits())
+                                });
+                            }
+                        }
+                    }
+                }
+                let center = center_at(self.float(slot, 0x200000).unwrap_or(position));
                 let rotation = egui::emath::Rot2::from_angle(angle);
                 let corners = [
                     Vec2::new(-0.5, -0.5),
@@ -888,70 +1143,64 @@ impl Workbench {
                 }
                 mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
                 ui.painter().add(egui::Shape::mesh(mesh));
-                let response = ui
-                    .interact(
-                        Rect::from_center_size(center, dimension + Vec2::splat(12.0)),
-                        egui::Id::new(("pickup-drag", slot)),
-                        if self.can_edit(slot, Some(0x200000)) {
-                            Sense::drag()
-                        } else {
-                            Sense::hover()
-                        },
-                    )
-                    .on_hover_text(
-                        "Drag horizontally to move this pickup. Adjust rotation in Pickups.",
-                    );
-                if response.drag_started() {
-                    self.drag_origin = Some((slot, position));
-                    if let Some(document) = &mut self.document {
-                        document.begin_gesture();
-                    }
-                }
-                if response.dragged()
-                    && let Some((active, original)) = self.drag_origin
-                    && active == slot
-                {
-                    let value =
-                        (original + response.drag_delta().x / scale / 318.0 * 9.4).clamp(0.1, 9.5);
-                    self.change(|p| p.set_parameter(slot, 0x200000, 1, value.to_bits()));
-                }
-                if response.drag_stopped() {
-                    self.drag_origin = None;
-                    if let Some(document) = &mut self.document {
-                        document.end_gesture();
-                    }
-                }
             }
         }
-        ui.label(
-            egui::RichText::new(self.model_name(BODY))
-                .size(23.0)
-                .strong(),
-        );
-        if self.textures.is_empty() {
-            ui.weak("Artwork is optional. Choose an extracted editor image folder to show the original graphics. All parameter controls remain available.");
-        } else {
-            ui.weak("Original Workbench artwork · drag pickups to position them");
+        if self.drag_origin.is_some() && !ui.input(|input| input.pointer.primary_down()) {
+            self.drag_origin = None;
+            if let Some(document) = &mut self.document {
+                document.end_gesture();
+            }
+        }
+        if body.is_some() {
+            ui.weak("Drag a pickup to move it");
         }
     }
 
-    fn controls(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            for (tab, title) in [
-                (Tab::Body, "Body"),
-                (Tab::Pickups, "Pickups"),
-                (Tab::Tuning, "Tuning"),
-                (Tab::Controls, "Controls"),
-            ] {
-                ui.selectable_value(&mut self.tab, tab, title);
-            }
-        });
-        ui.separator();
+    fn controls(&mut self, ui: &mut egui::Ui, height: f32) {
+        let slider_width = (ui.available_width() * 0.45).min(190.0);
+        let compact = ui.ctx().content_rect().height() < 720.0;
+        let style = ui.style_mut();
+        style.spacing.item_spacing.y = if compact { 1.0 } else { 3.0 };
+        style.spacing.button_padding.y = if compact { 1.0 } else { 2.0 };
+        style.spacing.interact_size.y = if compact { 15.0 } else { 17.0 };
+        style.spacing.slider_width = slider_width;
+        style.visuals.selection = GUITAR_SELECTION;
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), height),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                if self.can_edit(SYSTEM, Some(0x200000)) {
+                    egui::TopBottomPanel::bottom("output-trim")
+                        .frame(egui::Frame::NONE.inner_margin(egui::Margin {
+                            top: 6,
+                            ..egui::Margin::ZERO
+                        }))
+                        .show_inside(ui, |ui| {
+                            self.float_control(ui, SYSTEM, 0x200000, "Output trim", " dB");
+                        });
+                }
+                ui.horizontal_wrapped(|ui| {
+                    for (tab, title) in [
+                        (Tab::Body, "Body type"),
+                        (Tab::Pickups, "Pickups"),
+                        (Tab::Controls, "Controls"),
+                    ] {
+                        ui.selectable_value(&mut self.tab, tab, title);
+                    }
+                });
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .id_salt(self.tab)
+                    .show(ui, |ui| self.tab_controls(ui));
+            },
+        );
+    }
+
+    fn tab_controls(&mut self, ui: &mut egui::Ui) {
         let slot = match self.tab {
             Tab::Body => BODY,
             Tab::Pickups => PICKUP1,
-            Tab::Tuning => TUNING,
-            Tab::Controls => variax_workbench::edit::SYSTEM,
+            Tab::Controls => WIRING,
         };
         let availability = self
             .document
@@ -960,111 +1209,151 @@ impl Workbench {
         if let Some(Err(reason)) = &availability {
             ui.label(reason);
         }
-        ui.add_enabled_ui(availability.is_some_and(|a| a.is_ok()), |ui| { match self.tab {
-            Tab::Body => {
-                ui.heading("Guitar body");
-                ui.label("Choose the modeled instrument body.");
-                self.model_control(ui, BODY, "body");
-                ui.add_space(16.0);
-                ui.heading("Pickup combination");
-                ui.label(format!("Pickup 1: {}", self.model_name(PICKUP1)));
-                ui.label(format!("Pickup 2: {}", self.model_name(PICKUP2)));
-                ui.add_space(16.0);
-                ui.label("Edits stay in your preset copy. Sending changes to the guitar is not available yet.");
-            }
-            Tab::Pickups => {
-                for (slot, title) in [(PICKUP1, "Pickup 1"), (PICKUP2, "Pickup 2")] {
-                    ui.heading(title);
-                    self.enabled_control(ui, slot, "Enabled");
-                    self.model_control(ui, slot, "pickup");
-                    self.float_control(ui, slot, 0x200000, "Position", " in");
-                    self.float_control(ui, slot, 0x200001, "Angle", "°");
-                    self.float_control(ui, slot, 0x200003, "Level", " dB");
-                    ui.add_space(12.0);
+        ui.add_enabled_ui(availability.is_some_and(|a| a.is_ok()), |ui| {
+            match self.tab {
+                Tab::Body => {
+                    ui.strong("Guitar body");
+                    self.model_control(ui, BODY, "body");
                 }
-                self.boolean_control(ui, PICKUP2, 0x200002, "Reverse pickup 2 phase");
-                self.boolean_control(ui, PICKUP2, 0x200004, "Wire pickups in series");
-            }
-            Tab::Tuning => {
-                ui.heading("Alternate tuning");
-                self.enabled_control(ui, TUNING, "Enable alternate tuning");
-                ui.label("Strings are shown from low E to high E.");
-                egui::Grid::new("tuning").striped(true).show(ui, |ui| {
-                    ui.strong("String");
-                    ui.strong("Semitones");
-                    ui.strong("Detune (cents)");
-                    ui.strong("Mix");
-                    ui.end_row();
-                    for (i, label) in [
-                        "6 · Low E",
-                        "5 · A",
-                        "4 · D",
-                        "3 · G",
-                        "2 · B",
-                        "1 · High E",
-                    ]
-                    .into_iter()
-                    .enumerate()
-                    {
-                        ui.label(label);
-                        if let Some(mut value) = self.integer(TUNING, 0x200000 + i as u32) {
-                            if ui
-                                .add(egui::DragValue::new(&mut value).range(-12..=12).clamp_existing_to_range(false))
-                                .changed()
-                            {
-                                self.change(|p| {
-                                    p.set_parameter(TUNING, 0x200000 + i as u32, 0, value as u32)
-                                });
-                            }
-                        } else {
-                            ui.label("—");
+                Tab::Pickups => {
+                    for (slot, title) in [(PICKUP1, "Pickup 1"), (PICKUP2, "Pickup 2")] {
+                        if slot == PICKUP2 {
+                            ui.separator();
                         }
-                        self.float_drag_control(ui, TUNING, 0x200006 + i as u32);
-                        self.float_drag_control(ui, TUNING, 0x20000c + i as u32);
-                        ui.end_row();
+                        ui.horizontal(|ui| {
+                            ui.strong(title);
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    self.enabled_control(ui, slot, "Enabled");
+                                },
+                            );
+                        });
+                        self.model_control(ui, slot, "pickup");
+                        self.float_control(ui, slot, 0x200000, "Position", " in");
+                        self.float_control(ui, slot, 0x200001, "Angle", "°");
+                        self.float_control(ui, slot, 0x200003, "Level", " dB");
+                        if slot == PICKUP1 {
+                            ui.horizontal_wrapped(|ui| {
+                                self.boolean_control(
+                                    ui,
+                                    PICKUP2,
+                                    0x200002,
+                                    "Reverse pickup 2 phase",
+                                );
+                                self.boolean_control(
+                                    ui,
+                                    PICKUP2,
+                                    0x200004,
+                                    "Wire pickups in series",
+                                );
+                            });
+                        }
                     }
-                });
-                self.float_control(ui, TUNING, 0x200012, "String spread", "");
+                }
+                Tab::Controls => self.electrical_controls(ui),
             }
-            Tab::Controls => {
-                let availability = self.document.as_ref().unwrap().preset().edit_availability(WIRING, None);
-                if let Err(reason) = &availability { ui.label(reason); }
-                ui.add_enabled_ui(availability.is_ok(), |ui| {
-                ui.heading("Volume and tone");
-                let resistances = [
-                    (25.0, "25 kΩ"),
-                    (50.0, "50 kΩ"),
-                    (100.0, "100 kΩ"),
-                    (250.0, "250 kΩ"),
-                    (470.0, "470 kΩ"),
-                    (500.0, "500 kΩ"),
-                    (1000.0, "1 MΩ"),
-                ];
-                self.float_choices(ui, 0x200000, "Volume resistance", &resistances);
-                self.taper_control(ui);
-                self.float_choices(ui, 0x200002, "Tone resistance", &resistances);
-                self.float_choices(
-                    ui,
-                    0x200003,
-                    "Tone capacitance",
-                    &[
-                        (0.0011, "1.1 nF"),
-                        (0.0022, "2.2 nF"),
-                        (0.0047, "4.7 nF"),
-                        (0.011, "11 nF"),
-                        (0.022, "22 nF"),
-                        (0.047, "47 nF"),
-                        (0.1, "0.1 µF"),
-                        (-0.047, "Filter"),
-                    ],
-                );
-                self.float_control(ui, WIRING, 0x200004, "Tone position", "");
-                self.boolean_control(ui, WIRING, 0x200005, "Save tone-knob position");
+        });
+    }
+
+    fn electrical_controls(&mut self, ui: &mut egui::Ui) {
+        let resistances = [
+            (25.0, "25 kΩ"),
+            (50.0, "50 kΩ"),
+            (100.0, "100 kΩ"),
+            (250.0, "250 kΩ"),
+            (470.0, "470 kΩ"),
+            (500.0, "500 kΩ"),
+            (1000.0, "1 MΩ"),
+        ];
+        ui.strong("Volume knob");
+        ui.columns(2, |columns| {
+            self.float_choices(&mut columns[0], 0x200000, "Resistance", &resistances);
+            self.taper_control(&mut columns[1]);
+        });
+        ui.separator();
+        ui.strong("Tone knob");
+        ui.columns(2, |columns| {
+            self.float_choices(&mut columns[0], 0x200002, "Resistance", &resistances);
+            self.float_choices(
+                &mut columns[1],
+                0x200003,
+                "Capacitance",
+                &[
+                    (0.0011, "1.1 nF"),
+                    (0.0022, "2.2 nF"),
+                    (0.0047, "4.7 nF"),
+                    (0.011, "11 nF"),
+                    (0.022, "22 nF"),
+                    (0.047, "47 nF"),
+                    (0.1, "0.1 µF"),
+                    (-0.047, "Filter"),
+                ],
+            );
+        });
+        self.float_control(ui, WIRING, 0x200004, "Tone position", "");
+        self.boolean_control(ui, WIRING, 0x200005, "Save tone-knob position");
+    }
+
+    fn guitar_workspace(&mut self, ui: &mut egui::Ui) {
+        if self.document.is_none() {
+            guitar_panel().show(ui, |ui| {
+                ui.heading("Open a Variax preset, bank or collection");
+                ui.horizontal_wrapped(|ui| {
+                    ui.add_enabled_ui(!self.is_reading() && self.pending.is_none(), |ui| {
+                        if ui.button("Open file…").clicked() {
+                            self.open_dialog();
+                        }
+                        if ui.button("Try example banks").clicked() && self.document.is_none() {
+                            self.open_example();
+                        }
+                    });
                 });
-                ui.add_space(12.0);
-                self.float_control(ui, 0x02010000, 0x200000, "Output trim", " dB");
-            }
+            });
+            return;
         }
+        let available = !self.is_reading() && self.pending.is_none();
+        self.guitar_header(ui, available);
+        let editable = self
+            .document
+            .as_ref()
+            .is_some_and(|document| matches!(document.preset().device_id(), 0x70000 | 0x70004));
+        let can_edit = editable && available;
+        if !editable {
+            ui.label("Editing supports legacy electric Variax presets.");
+        }
+
+        egui::TopBottomPanel::bottom("guitar-tuning")
+            .default_height(132.0)
+            .show_separator_line(false)
+            .frame(guitar_panel().inner_margin(8).outer_margin(egui::Margin {
+                top: 7,
+                ..egui::Margin::ZERO
+            }))
+            .show_inside(ui, |ui| self.fretboard(ui, can_edit));
+        let panel_height = (ui.available_height() - 26.0).max(62.0);
+        ui.columns(2, |columns| {
+            guitar_panel().show(&mut columns[0], |ui| {
+                ui.set_min_height(panel_height);
+                ui.horizontal(|ui| {
+                    ui.heading(self.model_name(BODY));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add_enabled(available, egui::Button::new("Artwork folder…").small())
+                            .clicked()
+                        {
+                            self.artwork_dialog();
+                        }
+                    });
+                });
+                ui.add_enabled_ui(can_edit, |ui| {
+                    self.guitar(ui, (panel_height - 56.0).max(9.0));
+                });
+            });
+            guitar_panel().show(&mut columns[1], |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.add_enabled_ui(can_edit, |ui| self.controls(ui, panel_height));
+            });
         });
     }
 
@@ -1183,7 +1472,7 @@ impl Workbench {
         } else if self.dirty() && !self.permit_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.pending = Some(Pending::Quit);
-        } else if self.pod_library.any_dirty() && !self.permit_close {
+        } else if (self.pod_dirty() || self.pod_has_staged_edit()) && !self.permit_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.pending = Some(Pending::QuitPod);
         } else if self.recorder.has_unsaved_take() {
@@ -1252,7 +1541,23 @@ impl Workbench {
     }
 
     fn pod_quit_dialog(&mut self, ctx: &egui::Context) {
+        if self.pod_eq_reset_pending.is_some() {
+            self.pod_eq_reset_quit_dialog(ctx);
+            return;
+        }
+        if self
+            .pod_bundle
+            .as_ref()
+            .is_some_and(|bundle| bundle.is_dirty())
+        {
+            self.pod_bundle_quit_dialog(ctx);
+            return;
+        }
         let Some(index) = self.pod_library.first_dirty() else {
+            if self.pod_has_staged_amp_choice() {
+                self.pod_amp_quit_dialog(ctx);
+                return;
+            }
             self.continue_pending(ctx);
             return;
         };
@@ -1315,6 +1620,185 @@ impl Workbench {
         }
     }
 
+    fn pod_amp_quit_dialog(&mut self, ctx: &egui::Context) {
+        let Some((index, origin_id, choice)) = self.pod_amp_model_pending else {
+            self.continue_pending(ctx);
+            return;
+        };
+        let current_id = self
+            .pod_library
+            .tone(index)
+            .and_then(pod_preset::PodTone::amp_model_id);
+        if current_id != Some(origin_id) {
+            self.pod_amp_model_pending = None;
+            self.continue_pending(ctx);
+            return;
+        }
+
+        let mut apply = false;
+        let mut discard = false;
+        let mut keep_editing = false;
+        egui::Window::new("Unapplied PODxt Live AMP choice")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "AMP {:08x} is staged for tone {} but has not changed its bytes.",
+                    choice.model_id(),
+                    index + 1
+                ));
+                ui.horizontal(|ui| {
+                    let response = ui.button("Apply and continue…");
+                    #[cfg(test)]
+                    self.pending_buttons.insert("amp-apply", response.rect);
+                    apply = response.clicked();
+                    let response = ui.button("Discard AMP choice");
+                    #[cfg(test)]
+                    self.pending_buttons.insert("amp-discard", response.rect);
+                    discard = response.clicked();
+                    let response = ui.button("Keep editing");
+                    #[cfg(test)]
+                    self.pending_buttons
+                        .insert("amp-keep-editing", response.rect);
+                    keep_editing = response.clicked();
+                });
+            });
+
+        if apply {
+            self.pod_selected = Some(index);
+            if self.apply_pod_amp_model_choice(choice, Some(origin_id)) {
+                self.pod_amp_model_pending = None;
+                self.continue_staged_pod_quit(ctx);
+            }
+        } else if discard {
+            self.pod_amp_model_pending = None;
+            self.continue_staged_pod_quit(ctx);
+        } else if keep_editing {
+            self.pending = None;
+        }
+    }
+
+    fn pod_eq_reset_quit_dialog(&mut self, ctx: &egui::Context) {
+        let Some(pending) = self.pod_eq_reset_pending.clone() else {
+            self.continue_staged_pod_quit(ctx);
+            return;
+        };
+        let current_context = self
+            .pod_library
+            .tone(pending.index)
+            .and_then(|tone| tone.podxt_eq_reset_context().ok());
+        if pending.document_generation != self.pod_document_generation
+            || current_context.as_ref() != Some(&pending.context)
+        {
+            self.pod_eq_reset_pending = None;
+            self.pod_message = "Discarded a stale EQ reset because its target EQ changed.".into();
+            self.continue_staged_pod_quit(ctx);
+            return;
+        }
+        let mut apply = false;
+        let mut discard = false;
+        let mut keep_editing = false;
+        egui::Window::new("Unapplied PODxt Live EQ reset")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "The four-band EQ reset is staged for tone {}. No bytes have changed yet.",
+                    pending.index + 1
+                ));
+                ui.horizontal(|ui| {
+                    let response = ui.button("Apply reset and continue…");
+                    #[cfg(test)]
+                    self.pending_buttons
+                        .insert("eq-reset-quit-apply", response.rect);
+                    apply = response.clicked();
+                    let response = ui.button("Discard EQ reset");
+                    #[cfg(test)]
+                    self.pending_buttons
+                        .insert("eq-reset-quit-discard", response.rect);
+                    discard = response.clicked();
+                    let response = ui.button("Keep editing");
+                    #[cfg(test)]
+                    self.pending_buttons
+                        .insert("eq-reset-quit-keep", response.rect);
+                    keep_editing = response.clicked();
+                });
+            });
+        if apply {
+            self.pod_selected = Some(pending.index);
+            if self.apply_pod_eq_reset(Some(&pending)) {
+                self.pod_eq_reset_pending = None;
+                self.continue_staged_pod_quit(ctx);
+            }
+        } else if discard {
+            self.pod_eq_reset_pending = None;
+            self.continue_staged_pod_quit(ctx);
+        } else if keep_editing {
+            self.pending = None;
+        }
+    }
+
+    fn continue_staged_pod_quit(&mut self, ctx: &egui::Context) {
+        if self.pod_has_staged_edit() {
+            self.pending = Some(Pending::QuitPod);
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        } else {
+            self.continue_pending(ctx);
+        }
+    }
+
+    fn pod_bundle_quit_dialog(&mut self, ctx: &egui::Context) {
+        let mut discard = false;
+        let mut save_continue = false;
+        let mut cancel = false;
+        egui::Window::new("Unsaved POD bank or collection")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label("This bank/collection has offline edits that have not been saved.");
+                ui.horizontal(|ui| {
+                    let response = ui.button("Save bank copy and continue…");
+                    #[cfg(test)]
+                    self.pending_buttons.insert("save", response.rect);
+                    save_continue = response.clicked();
+                    let response = ui.button("Keep editing");
+                    #[cfg(test)]
+                    self.pending_buttons.insert("cancel", response.rect);
+                    cancel = response.clicked();
+                    let response = ui.button("Discard bank edits");
+                    #[cfg(test)]
+                    self.pending_buttons.insert("discard", response.rect);
+                    discard = response.clicked();
+                });
+            });
+        if cancel {
+            self.pending = None;
+        } else if save_continue {
+            let index = self.pod_library.first_dirty().unwrap_or(0);
+            if self.write_pod_copy(index) && !self.pod_library.any_dirty() {
+                self.continue_pending(ctx);
+            }
+        } else if discard {
+            let staged_amp = self.pod_amp_model_pending;
+            let result = self
+                .pod_bundle
+                .as_mut()
+                .map_or(Ok(()), |bundle| bundle.revert());
+            match result.and_then(|()| self.refresh_pod_library_from_bundle()) {
+                Ok(()) => {
+                    self.refresh_selected_pod_name();
+                    self.restore_staged_amp_if_origin_matches(staged_amp);
+                    self.pod_message = "Discarded offline bank edits. Nothing was sent.".into();
+                    self.continue_pending(ctx);
+                }
+                Err(error) => self.pod_message = error.detail(),
+            }
+        }
+    }
+
     fn save_next_dirty_pod(&mut self) -> bool {
         let Some(index) = self.pod_library.first_dirty() else {
             return false;
@@ -1323,12 +1807,32 @@ impl Workbench {
     }
 
     fn discard_next_dirty_pod(&mut self) -> bool {
+        if let Some(bundle) = &mut self.pod_bundle {
+            return match bundle
+                .revert()
+                .and_then(|()| self.refresh_pod_library_from_bundle())
+            {
+                Ok(()) => {
+                    let staged_amp = self.pod_amp_model_pending;
+                    self.refresh_selected_pod_name();
+                    self.restore_staged_amp_if_origin_matches(staged_amp);
+                    self.pod_message = "Discarded unsaved bank edits. Nothing was sent.".into();
+                    true
+                }
+                Err(error) => {
+                    self.pod_message = error.detail();
+                    false
+                }
+            };
+        }
         let Some(index) = self.pod_library.first_dirty() else {
             return false;
         };
         match self.pod_library.revert_unsaved(index) {
             Ok(()) => {
+                let staged_amp = self.pod_amp_model_pending;
                 self.refresh_selected_pod_name();
+                self.restore_staged_amp_if_origin_matches(staged_amp);
                 self.pod_message =
                     "Discarded the unsaved name edit for one tone. Nothing was sent.".into();
                 true
@@ -1340,15 +1844,59 @@ impl Workbench {
         }
     }
 
-    fn refresh_selected_pod_name(&mut self) {
-        if let Some(index) = self.pod_selected
-            && let Some(tone) = self.pod_library.tone(index)
+    fn restore_staged_amp_if_origin_matches(
+        &mut self,
+        staged_amp: Option<(usize, u32, pod_preset::PodAmpModelChoice)>,
+    ) {
+        let Some((index, origin_id, _)) = staged_amp else {
+            return;
+        };
+        if self
+            .pod_library
+            .tone(index)
+            .and_then(pod_preset::PodTone::amp_model_id)
+            == Some(origin_id)
         {
-            self.pod_name = tone.name().to_owned();
+            self.pod_amp_model_pending = staged_amp;
+        }
+    }
+
+    fn refresh_selected_pod_name(&mut self) {
+        self.pod_cab_pending = None;
+        self.pod_cab_pending_origin = None;
+        self.pod_delay_model_pending = None;
+        self.pod_mod_model_pending = None;
+        self.pod_stomp_model_pending = None;
+        self.pod_reverb_model_pending = None;
+        self.pod_amp_model_pending = None;
+        self.pod_harmony_pending = None;
+        self.pod_delay_pending = None;
+        self.pod_mod_pending = None;
+        match (self.pod_selected, self.pod_library.len()) {
+            (Some(_), 0) => {
+                self.pod_selected = None;
+                self.pod_name.clear();
+            }
+            (Some(index), len) if index >= len => {
+                let selected = len - 1;
+                self.pod_selected = Some(selected);
+                self.pod_name = self
+                    .pod_library
+                    .tone(selected)
+                    .map_or_else(String::new, |tone| tone.name().to_owned());
+            }
+            (Some(index), _) => {
+                self.pod_name = self
+                    .pod_library
+                    .tone(index)
+                    .map_or_else(String::new, |tone| tone.name().to_owned());
+            }
+            (None, _) => self.pod_name.clear(),
         }
     }
 
     fn render(&mut self, ctx: &egui::Context) {
+        self.invalidate_stale_eq_reset_stage();
         self.refresh_theme(ctx);
         self.poll_read();
         if self.read_receiver.is_some() {
@@ -1416,7 +1964,7 @@ impl Workbench {
                 ui.heading("Variax Workbench");
                 ui.weak("Offline validation");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("? Shortcuts").clicked() {
+                    if ui.button("Milestone & Help").clicked() {
                         self.help = true;
                     }
                     if ui.add_enabled(!self.is_reading() && self.pending.is_none(), egui::Button::new("Save copy…")).clicked() {
@@ -1427,13 +1975,19 @@ impl Workbench {
                             false,
                             egui::Button::new("Live access locked"),
                         )
-                        .on_hover_text("Physical device access is disabled while offline validation is in progress.")
+                        .on_disabled_hover_text("Hardware testing is locked during offline validation. Future testing starts with the lowest-risk operation and advances one explicitly approved step at a time.")
                         .clicked()
                     {
                         self.start_read();
                     }
                     if ui.add_enabled(!self.is_reading() && self.pending.is_none(), egui::Button::new("Open…")).clicked() {
                         self.open_dialog();
+                    }
+                    let response = ui.button("Device check…");
+                    #[cfg(test)]
+                    self.device_check_buttons.insert("open", response.rect);
+                    if response.clicked() {
+                        self.device_check_open = true;
                     }
                     let response = ui.button("Test recording…");
                     #[cfg(test)]
@@ -1449,7 +2003,6 @@ impl Workbench {
                     }
                 });
             });
-            ui.add_space(8.0);
         });
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             if self.is_reading() {
@@ -1461,57 +2014,35 @@ impl Workbench {
                     }
                 });
             }
-            ui.vertical(|ui| {
-                ui.weak(&self.status);
-                if let Some(error) = &self.error {
-                    ui.colored_label(Color32::LIGHT_RED, error);
-                }
-            });
-        });
-        self.bank_browser(ctx);
-        egui::CentralPanel::default().show(ctx, |ui| {
-            let Some(document) = &self.document else {
-                ui.heading("Open a Variax preset, bank or collection to begin"); return;
-            };
-            let mut name = document.preset().name().to_owned();
-            let editable = matches!(document.preset().device_id(), 0x70000 | 0x70004);
-            let dirty = document.is_dirty();
-            let can_edit = editable && !self.is_reading() && self.pending.is_none();
-            let can_undo = document.can_undo(); let can_redo = document.can_redo();
-            ui.horizontal(|ui| {
-                ui.label("Preset");
-                if ui.add_enabled(can_edit, egui::TextEdit::singleline(&mut name)).changed() { self.change(|p| p.rename(&name)); }
-                if dirty { ui.label(egui::RichText::new("Unsaved changes").color(Color32::from_rgb(255,200,90))); }
-                if ui.add_enabled(can_undo && can_edit, egui::Button::new("Undo")).clicked() { self.undo(); }
-                if ui.add_enabled(can_redo && can_edit, egui::Button::new("Redo")).clicked() { self.redo(); }
-            });
-            ui.add_space(16.0);
-            if !editable { ui.label("This preset can be inspected. Editing currently supports legacy electric Variax models."); }
-            ui.columns(2, |columns| {
-                egui::Frame::group(columns[0].style()).show(&mut columns[0], |ui| {
-                    ui.add_enabled_ui(can_edit, |ui| self.guitar(ui));
-                    ui.add_space(12.0);
-                    if ui.add_enabled(!self.is_reading() && self.pending.is_none(), egui::Button::new("Artwork folder…").small()).clicked() {
-                        self.artwork_dialog();
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui| {
+                ui.label(crate::APP_VERSION);
+                ui.vertical(|ui| {
+                    ui.weak(&self.status);
+                    if let Some(error) = &self.error {
+                        ui.colored_label(Color32::LIGHT_RED, error);
                     }
                 });
-                egui::Frame::group(columns[1].style()).show(&mut columns[1], |ui| {
-                    ui.add_enabled_ui(can_edit, |ui| { egui::ScrollArea::vertical().show(ui, |ui| self.controls(ui)); });
-                });
             });
         });
+        egui::CentralPanel::default().show(ctx, |ui| self.guitar_workspace(ui));
         if self.help {
-            egui::Window::new("Keyboard shortcuts")
+            egui::Window::new(format!("Workbench Help · {}", crate::APP_VERSION))
                 .open(&mut self.help)
                 .collapsible(false)
+                .default_width(400.0)
+                .default_height(600.0)
+                .vscroll(true)
                 .show(ctx, |ui| {
+                    guitar_ui::milestones(ui);
+                    ui.separator();
+                    ui.heading("Keyboard shortcuts");
                     for (key, action) in [
                         ("Ctrl+O", "Open preset"),
                         ("Ctrl+S", "Save a new copy"),
                         ("Ctrl+Z", "Undo"),
                         ("Ctrl+Shift+Z", "Redo"),
                         ("Q", "Quit"),
-                        ("?", "Show shortcuts"),
+                        ("?", "Toggle Help"),
                     ] {
                         ui.horizontal(|ui| {
                             ui.monospace(key);
@@ -1523,6 +2054,164 @@ impl Workbench {
         self.pending_dialog(ctx);
         self.recording_window(ctx);
         self.pod_window(ctx);
+        self.device_check_window(ctx);
+    }
+
+    fn device_check_button(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: &'static str,
+        label: &str,
+    ) -> egui::Response {
+        let response = ui.button(label);
+        #[cfg(test)]
+        self.device_check_buttons.insert(id, response.rect);
+        #[cfg(not(test))]
+        let _ = id;
+        response
+    }
+
+    /// Staged device check (#157). Simulation only: the session's backend is a
+    /// synthetic rig, and every hardware gate stays compile-time locked.
+    fn device_check_window(&mut self, ctx: &egui::Context) {
+        if !self.device_check_open {
+            return;
+        }
+        let mut open = true;
+        let mut answer = None;
+        let mut restart = None;
+        egui::Window::new("Device check")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(640.0)
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 56.0))
+            .show(ctx, |ui| {
+                if self.pending.is_some() {
+                    ui.disable();
+                }
+                let mut visible = String::new();
+                ui.colored_label(FRET_MARKER, device_probe::SIMULATION_LABEL);
+                ui.weak(
+                    "Every hardware lock stays closed in this build. Each step asks first, the \
+                     answer is No unless you choose Yes, and a passed step never starts the next one.",
+                );
+                visible.push_str(device_probe::SIMULATION_LABEL);
+                ui.horizontal(|ui| {
+                    ui.label("Pretend setup:");
+                    egui::ComboBox::from_id_salt("device-check-scenario")
+                        .width(300.0)
+                        .selected_text(self.device_check_scenario.label())
+                        .show_ui(ui, |ui| {
+                            for scenario in device_probe::Scenario::ALL {
+                                if ui
+                                    .selectable_label(
+                                        self.device_check_scenario == scenario,
+                                        scenario.label(),
+                                    )
+                                    .clicked()
+                                {
+                                    restart = Some(scenario);
+                                }
+                            }
+                        });
+                    if self.device_check_button(ui, "restart", "Start over").clicked() {
+                        restart = Some(self.device_check_scenario);
+                    }
+                });
+                ui.separator();
+                for stage in Stage::LADDER {
+                    let status = self.device_check.status(stage);
+                    let waiting = self.device_check.awaiting() == Some(stage);
+                    let (mark, colour, state) = match status {
+                        StageStatus::Passed => ("✔", Color32::from_rgb(167, 231, 133), status.label()),
+                        StageStatus::Stopped => ("■", Color32::LIGHT_RED, status.label()),
+                        StageStatus::NotRun if waiting => {
+                            ("▶", FRET_MARKER, "waiting for your answer")
+                        }
+                        StageStatus::NotRun => ("○", Color32::GRAY, status.label()),
+                    };
+                    ui.horizontal(|ui| {
+                        ui.colored_label(colour, mark);
+                        ui.strong(format!(
+                            "Step {} · {} ({})",
+                            stage.number(),
+                            stage.title(),
+                            stage.gate_label()
+                        ));
+                        ui.weak(state);
+                        let lock = if hardware_gates::is_locked(stage.gate()) {
+                            "real device: locked"
+                        } else {
+                            "real device: open"
+                        };
+                        ui.weak(format!("· {lock}"));
+                        visible.push_str(&format!("\nstep {} {state} {lock}", stage.number()));
+                    });
+                    if let Some(detail) = self.device_check.detail(stage) {
+                        ui.indent(("device-check-detail", stage.number()), |ui| {
+                            ui.label(detail);
+                        });
+                        visible.push_str(&format!(": {detail}"));
+                    }
+                }
+                ui.separator();
+                if let Some(stage) = self.device_check.awaiting() {
+                    ui.heading(format!("Step {}: {}", stage.number(), stage.title()));
+                    ui.strong("What it does");
+                    ui.label(stage.action());
+                    ui.strong("Risk");
+                    ui.label(stage.risk());
+                    visible.push_str(&format!("\n{}\n{}", stage.action(), stage.risk()));
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        let no = self.device_check_button(ui, "no", "No, stop");
+                        if ui.memory(|memory| memory.focused().is_none()) {
+                            no.request_focus();
+                        }
+                        if no.clicked() {
+                            answer = Some(Consent::No);
+                        }
+                        if self
+                            .device_check_button(ui, "yes", "Yes, run this step (simulation)")
+                            .clicked()
+                        {
+                            answer = Some(Consent::Yes);
+                        }
+                    });
+                } else {
+                    let outcome = match self.device_check.stopped() {
+                        Some((stage, _)) => format!(
+                            "Stopped at step {}. Nothing further runs; choose Start over to try again.",
+                            stage.number()
+                        ),
+                        None => "All four steps passed in simulation. No real device was used.".into(),
+                    };
+                    ui.label(&outcome);
+                    visible.push_str(&format!("\n{outcome}"));
+                }
+                ui.collapsing("Report", |ui| {
+                    ui.monospace(self.device_check.report());
+                });
+                #[cfg(test)]
+                {
+                    self.device_check_visible = visible;
+                }
+                #[cfg(not(test))]
+                let _ = visible;
+            });
+        if let Some(consent) = answer {
+            self.device_check.answer(consent);
+        }
+        if let Some(scenario) = restart {
+            self.device_check_scenario = scenario;
+            self.device_check = ProbeSession::new(SimulatedRig::new(scenario));
+        }
+        if !open {
+            // Closing the window cancels the waiting step; nothing runs.
+            self.device_check.answer(Consent::Cancel);
+            self.device_check_open = false;
+        }
     }
 
     fn recording_window(&mut self, ctx: &egui::Context) {
@@ -1639,6 +2328,37 @@ impl Workbench {
         if !self.pod_open {
             return;
         }
+        #[cfg(test)]
+        {
+            self.pod_rows.clear();
+            self.pod_cab_combo = None;
+            self.pod_cab_options.clear();
+            self.pod_drive_slider = None;
+            self.pod_stomp_sliders.clear();
+            self.pod_whammy_knob_sliders.clear();
+            self.pod_eq_frequency_sliders.clear();
+            self.pod_eq_gain_sliders.clear();
+            self.pod_model_enable_checks.clear();
+            self.pod_model_enable_menu = None;
+            self.pod_mod_sliders.clear();
+            self.pod_reverb_sliders.clear();
+            self.pod_delay_sliders.clear();
+            self.pod_delay_note_options.clear();
+            self.pod_delay_time_slider = None;
+            self.pod_mod_note_options.clear();
+            self.pod_mod_speed_slider = None;
+            self.pod_delay_heads_choices.clear();
+            self.pod_delay_bits_choices.clear();
+            self.pod_stomp_wave_choices.clear();
+            self.pod_harmony1_choices.clear();
+            self.pod_harmony2_choices.clear();
+            self.pod_stomp_model_combo = None;
+            self.pod_stomp_model_options.clear();
+            self.pod_reverb_model_combo = None;
+            self.pod_reverb_model_options.clear();
+            self.pod_amp_model_combo = None;
+            self.pod_amp_model_options.clear();
+        }
         let mut open = true;
         egui::Window::new("Offline PODxt Live tones")
             .open(&mut open)
@@ -1646,6 +2366,10 @@ impl Workbench {
             .resizable(false)
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-24.0, 64.0))
             .show(ctx, |ui| {
+                #[cfg(test)]
+                {
+                    self.pod_drive_slider = None;
+                }
                 if self.pending.is_some() {
                     ui.disable();
                 }
@@ -1655,16 +2379,151 @@ impl Workbench {
                 ui.label(pod_preset::PAYLOADS_NOT_DECODED);
                 ui.label(&self.pod_message);
                 ui.separator();
+                let reverb_model_state = self.pod_selected.and_then(|index| {
+                    self.pod_library.tone(index).and_then(|tone| {
+                        (tone.container() == pod_preset::ContainerKind::L6pa).then(|| {
+                            let ids: Vec<_> = tone.models().iter()
+                                .filter(|model| matches!(model.slot, pod_preset::REVERB_SLOT | pod_preset::REVERB_FALLBACK_SLOT))
+                                .map(|model| model.model_id).collect();
+                            (!ids.is_empty()).then_some((index, ids.first().copied(), ids.len()))
+                        }).flatten()
+                    })
+                });
+                if let Some((index, current, slot_count)) = reverb_model_state {
+                    if slot_count == 1 && current.and_then(pod_preset::PodReverbModelChoice::from_model_id).is_some() {
+                        let mut selected = self.pod_reverb_model_pending.filter(|(i, _)| *i == index).map(|(_, choice)| Some(choice))
+                            .or_else(|| current.and_then(pod_preset::PodReverbModelChoice::from_model_id).map(Some)).unwrap_or(None);
+                        let selected_text = selected.map(pod_preset::PodReverbModelChoice::numeric_label)
+                            .unwrap_or_else(|| "Select model".into());
+                        let mut changed = None;
+                        let combo = ui.horizontal(|ui| {
+                            ui.label(format!("Reverb ID · current {:08x}", current.unwrap()));
+                            let combo = egui::ComboBox::from_id_salt("pod-reverb-model-choice").selected_text(selected_text).show_ui(ui, |ui| {
+                                for id in pod_preset::PodReverbModelChoice::MODEL_IDS {
+                                    let choice = pod_preset::PodReverbModelChoice::from_model_id(id).expect("listed Reverb model id is admitted");
+                                    let response = ui.selectable_value(&mut selected, Some(choice), format!("{id:08x}"));
+                                    #[cfg(test)] self.pod_reverb_model_options.insert(id, response.rect);
+                                    if response.changed() { changed = Some(choice); }
+                                }
+                            });
+                            combo.response.rect
+                        });
+                        #[cfg(test)] { self.pod_reverb_model_combo = Some(combo.inner); }
+                        #[cfg(not(test))] let _ = combo;
+                        if let Some(choice) = changed { self.pod_reverb_model_pending = Some((index, choice)); }
+                        if let Some((pending_index, choice)) = self.pod_reverb_model_pending.filter(|(i, _)| *i == index) {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("Pending {} (not applied)", choice.numeric_label()));
+                                let apply = ui.button("Apply Reverb model");
+                                #[cfg(test)] self.pod_buttons.insert("pod-reverb-model-apply", apply.rect);
+                                if apply.clicked() {
+                                    match self.apply_pod_reverb_model_choice(pending_index, choice) {
+                                        Ok(changed) => {
+                                            if changed { self.pod_reverb_model_pending = None; }
+                                            self.pod_message = if changed { "Applied the Reverb model ID offline; stored parameters were retained. Nothing was sent.".into() } else { "The Reverb model ID already matched; no bytes or staging changed.".into() };
+                                        }
+                                        Err(error) => self.pod_message = error.detail(),
+                                    }
+                                }
+                                let discard = ui.button("Discard");
+                                #[cfg(test)] self.pod_buttons.insert("pod-reverb-model-discard", discard.rect);
+                                if discard.clicked() { self.pod_reverb_model_pending = None; }
+                            });
+                        }
+                    } else {
+                        ui.label(format!("Reverb ID · current {} (uneditable: requires one recognized primary or fallback model)", current.map_or_else(|| "unavailable".into(), |id| format!("{id:08x}"))));
+                    }
+                }
+                let membership_selection = self.pod_selected.and_then(|index| {
+                    self.pod_bundle.as_ref().and_then(|bundle| {
+                        let (bank, preset) = bundle.entry_location(index)?;
+                        let folder_editable = bundle.membership_editable(bank);
+                        let fixed_bank_editable = bundle.fixed_bank_reorder_editable(bank);
+                        (folder_editable || fixed_bank_editable).then_some((
+                            bank,
+                            preset,
+                            bundle.preset_count(bank)?,
+                            folder_editable,
+                        ))
+                    })
+                });
+                let mut membership_action = None;
+                ui.horizontal(|ui| {
+                    if self.pod_button(ui, "load-pod", "Load tone or bank…") {
+                        self.load_pod_tone();
+                    }
+                    if self.pod_button(ui, "apply-pod-name", "Apply name") {
+                        self.apply_pod_name();
+                    }
+                    if self.pod_button(ui, "save-pod", "Save copy…") {
+                        self.save_pod_tone();
+                    }
+                    if let Some((bank, preset, count, folder_editable)) = membership_selection {
+                        if folder_editable {
+                            if self.pod_button(ui, "pod-duplicate-entry", "Duplicate") {
+                                membership_action =
+                                    Some((PodMembershipAction::Duplicate, bank, preset));
+                            }
+                            if self.pod_button(ui, "pod-remove-entry", "Remove") {
+                                membership_action =
+                                    Some((PodMembershipAction::Remove, bank, preset));
+                            }
+                        }
+                        if self.pod_button_enabled(
+                            ui,
+                            "pod-move-entry-up",
+                            "Move up",
+                            preset > 0,
+                        ) {
+                            membership_action = Some((PodMembershipAction::MoveUp, bank, preset));
+                        }
+                        if self.pod_button_enabled(
+                            ui,
+                            "pod-move-entry-down",
+                            "Move down",
+                            preset + 1 < count,
+                        ) {
+                            membership_action =
+                                Some((PodMembershipAction::MoveDown, bank, preset));
+                        }
+                        let slot_kind = if folder_editable { "Folder" } else { "Fixed bank" };
+                        ui.label(format!("{slot_kind} slot {} of {count}", preset + 1));
+                    }
+                    if let Some(index) = self.pod_selected {
+                        let _response = ui.menu_button("Model flags…", |ui| {
+                            self.model_enable_menu(ui, index);
+                        });
+                        #[cfg(test)]
+                        {
+                            self.pod_model_enable_menu = Some(_response.response.rect);
+                        }
+                    }
+                });
+                if let Some((action, bank, preset)) = membership_action {
+                    self.apply_pod_membership_action(action, bank, preset);
+                }
                 let rows: Vec<_> = (0..self.pod_library.len())
                     .filter_map(|index| {
                         let tone = self.pod_library.tone(index)?;
+                        let bank = self
+                            .pod_bundle
+                            .as_ref()
+                            .and_then(|bundle| {
+                                bundle.entry_location(index).and_then(|(bank, preset)| {
+                                bundle
+                                    .bank_name(bank)
+                                    .map(|name| format!("bank {name} preset {preset} · "))
+                                })
+                            })
+                            .unwrap_or_default();
                         Some((
                             index,
                             format!(
-                                "{index} {} {} amp {} cab {}",
+                                "{bank}{index} {} {} amp {} stomp {} cab {}",
                                 tone.container().tag(),
                                 tone.name(),
                                 pod_preset::PodTone::model_label(tone.amp_model_id()),
+                                pod_preset::PodTone::model_label(tone.stomp_model_id()),
                                 pod_preset::PodTone::model_label(tone.cab_model_id()),
                             ),
                             tone.name().to_owned(),
@@ -1672,26 +2531,1110 @@ impl Workbench {
                     })
                     .collect();
                 for (index, label, name) in rows {
-                    if ui
-                        .selectable_label(self.pod_selected == Some(index), label)
-                        .clicked()
-                    {
+                    let response = ui.selectable_label(self.pod_selected == Some(index), label);
+                    #[cfg(test)]
+                    self.pod_rows.insert(index, response.rect);
+                    if response.clicked() {
+                        if self.pod_selected != Some(index) {
+                            self.pod_cab_pending = None;
+                            self.pod_delay_model_pending = None;
+                            self.pod_mod_model_pending = None;
+                            self.pod_stomp_model_pending = None;
+                            self.pod_reverb_model_pending = None;
+                            self.pod_amp_model_pending = None;
+                            self.pod_harmony_pending = None;
+                            self.pod_delay_pending = None;
+                            self.pod_mod_pending = None;
+                        }
                         self.pod_selected = Some(index);
                         self.pod_name = name;
+                    }
+                }
+                let amp_choice_state = self.pod_selected.and_then(|index| {
+                    self.pod_library.tone(index).and_then(|tone| {
+                        if tone.container() != pod_preset::ContainerKind::L6pa {
+                            return None;
+                        }
+                        Some((index, tone.amp_model_id()))
+                    })
+                });
+                if let Some((index, current)) = amp_choice_state {
+                    let current_id = current.unwrap_or_default();
+                    if self
+                        .pod_amp_model_pending
+                        .is_some_and(|(pending_index, origin_id, _)| {
+                            pending_index == index && current != Some(origin_id)
+                        })
+                    {
+                        self.pod_amp_model_pending = None;
+                    }
+                    let known_current = current == Some(0x0002_0000)
+                        || pod_preset::AMP_CONTROL_MODEL_IDS.contains(&current_id);
+                    let mut selected = self.pod_amp_model_pending
+                        .filter(|(pending_index, origin_id, _)| {
+                            *pending_index == index && current == Some(*origin_id)
+                        })
+                        .map(|(_, _, choice)| Some(choice))
+                        .or_else(|| current.and_then(pod_preset::PodAmpModelChoice::from_model_id).map(Some))
+                        .unwrap_or(None);
+                    let selected_text = selected.map_or_else(
+                        || format!("{current_id:08x} (current only)"),
+                        |choice| format!("{:08x}", choice.model_id()),
+                    );
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(format!(
+                            "AMP model ID (offline; parameters retained, no reset) · current {}",
+                            current.map_or_else(|| "unavailable".to_owned(), |id| format!("0x{id:08x}"))
+                        ));
+                        for (id, choice, label) in [
+                            ("pod-amp-no-amp", pod_preset::PodAmpModelChoice::NoAmp, "Apply No Amp · 00020000"),
+                            ("pod-amp-line6-clean", pod_preset::PodAmpModelChoice::Line6Clean, "Apply Line 6 Clean · 00020001"),
+                        ] {
+                            if self.pod_button(ui, id, label) {
+                                self.pod_selected = Some(index);
+                                if self.apply_pod_amp_model_choice(choice, None) {
+                                    self.pod_amp_model_pending = None;
+                                }
+                            }
+                        }
+                    });
+                    if known_current {
+                        let mut changed = None;
+                        let combo = egui::ComboBox::from_id_salt("pod-amp-model-choice")
+                            .selected_text(selected_text)
+                            .show_ui(ui, |ui| {
+                                for choice in pod_preset::PODXT_AMP_MODEL_CHOICES {
+                                    let id = choice.model_id();
+                                    let response = ui.selectable_value(&mut selected, Some(choice), format!("{id:08x}"));
+                                    #[cfg(test)] self.pod_amp_model_options.insert(id, response.rect);
+                                    if response.changed() { changed = Some(choice); }
+                                }
+                            });
+                        #[cfg(test)] { self.pod_amp_model_combo = Some(combo.response.rect); }
+                        #[cfg(not(test))] let _ = combo;
+                        if let Some(choice) = changed
+                            && let Some(origin_id) = current
+                        {
+                            self.pod_amp_model_pending = Some((index, origin_id, choice));
+                        }
+                        if let Some((pending_index, origin_id, choice)) = self.pod_amp_model_pending.filter(|(pending_index, origin_id, _)| *pending_index == index && current == Some(*origin_id)) {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("Pending AMP {:08x} (not applied)", choice.model_id()));
+                                let apply = ui.button("Apply AMP model");
+                                #[cfg(test)] self.pod_buttons.insert("pod-amp-model-apply", apply.rect);
+                                if apply.clicked() {
+                                    self.pod_selected = Some(pending_index);
+                                    if self.apply_pod_amp_model_choice(choice, Some(origin_id)) {
+                                        self.pod_amp_model_pending = None;
+                                    }
+                                }
+                                let discard = ui.button("Discard");
+                                #[cfg(test)] self.pod_buttons.insert("pod-amp-model-discard", discard.rect);
+                                if discard.clicked() { self.pod_amp_model_pending = None; }
+                            });
+                        }
+                    }
+                }
+                let cab_state = self.pod_selected.and_then(|index| self.pod_library.tone(index).and_then(|tone| {
+                    (matches!(tone.container(), pod_preset::ContainerKind::L6as | pod_preset::ContainerKind::L6pa)
+                        && tone.cab_edit_model_id().is_some())
+                        .then_some((index, tone.container(), tone.cab_edit_model_id(), tone.cab_edit_class(), tone.mic_choice(), tone.cab_mic_editable()))
+                }));
+                if let Some((index, container, cab_id, class, mic, editable)) = cab_state {
+                    let fallback = pod_preset::PodCabModelChoice::from_model_id(
+                        pod_preset::PODXT_CAB_MODEL_IDS[0],
+                    )
+                    .expect("source CAB allowlist is nonempty");
+                    ui.label(format!("CAB (offline) · current {} · MIC class {}", cab_id.map_or_else(|| "unavailable".into(), |id| format!("{id:08x}")), match class { Some(pod_preset::PodCabClass::Bass) => "bass", Some(pod_preset::PodCabClass::Other) => "standard", None => "unknown" }));
+                    if editable {
+                    let mut selected_cab = self
+                        .pod_cab_pending
+                        .filter(|(pending_index, _)| *pending_index == index)
+                        .map(|(_, choice)| choice)
+                        .or_else(|| cab_id.and_then(pod_preset::PodCabModelChoice::from_model_id))
+                        .unwrap_or(fallback);
+                    let original_choice = selected_cab;
+                    let mut choice_changed = false;
+                    ui.horizontal(|ui| {
+                        #[cfg(test)]
+                        let mut option_rects = Vec::new();
+                        let _combo = egui::ComboBox::from_id_salt("pod-cab-choice")
+                            .selected_text(selected_cab.numeric_label())
+                            .show_ui(ui, |ui| {
+                                for id in pod_preset::PODXT_CAB_MODEL_IDS {
+                                    if let Some(choice) = pod_preset::PodCabModelChoice::from_model_id(id) {
+                                        let _response = ui.selectable_value(&mut selected_cab, choice, format!("CAB {id:08x}"));
+                                        choice_changed |= _response.changed();
+                                        #[cfg(test)]
+                                        option_rects.push((id, _response.rect));
+                                    }
+                                }
+                            });
+                        #[cfg(test)]
+                        {
+                            self.pod_cab_combo = Some(_combo.response.rect);
+                            self.pod_cab_options.extend(option_rects);
+                        }
+                        if choice_changed && selected_cab != original_choice {
+                            self.pod_cab_pending = Some((index, selected_cab));
+                            self.pod_cab_pending_origin = self.pod_library.tone(index).map(|tone| (
+                                self.pod_document_generation,
+                                index,
+                                tone.as_bytes().to_vec(),
+                            ));
+                        }
+                        if self.pod_cab_pending.is_none_or(|(pending_index, _)| pending_index != index) {
+                            self.pod_cab_pending = Some((index, selected_cab));
+                        }
+                        if self.pod_cab_pending_origin.is_none() {
+                            self.pod_cab_pending_origin = self.pod_library.tone(index).map(|tone| (
+                                self.pod_document_generation,
+                                index,
+                                tone.as_bytes().to_vec(),
+                            ));
+                        }
+                        if self.pod_button(ui, "pod-cab-apply", "Apply CAB") {
+                            self.pod_selected = Some(index);
+                            self.apply_pod_cab_model_choice(selected_cab);
+                        }
+                        let discard = self.pod_button(ui, "pod-cab-discard", "Discard");
+                        if discard {
+                            self.pod_cab_pending = None;
+                            self.pod_cab_pending_origin = None;
+                        }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(format!("MIC current {}", mic.map_or_else(|| "unknown".into(), |m| m.value().to_string())));
+                        for value in 0..=3 {
+                            let id = ["pod-mic-0", "pod-mic-1", "pod-mic-2", "pod-mic-3"][value as usize];
+                            if self.pod_button(ui, id, &format!("Apply MIC {value}")) {
+                                self.pod_selected = Some(index);
+                                if let Some(choice) = pod_preset::PodMicChoice::from_value(value) { self.apply_pod_mic_choice(choice); }
+                            }
+                        }
+                    });
+                    } else if container == pod_preset::ContainerKind::L6pa {
+                        ui.label("CAB/MIC editing is unavailable because this L6PA tone fails strict offline admission.");
                     }
                 }
                 ui.horizontal(|ui| {
                     ui.label("PINF name");
                     ui.text_edit_singleline(&mut self.pod_name);
                 });
-                if self.pod_button(ui, "load-pod", "Load tone file…") {
-                    self.load_pod_tone();
+                let controls = self
+                    .pod_selected
+                    .and_then(|index| self.pod_library.tone(index))
+                    .map(|tone| {
+                        pod_preset::AmpControl::ALL
+                            .into_iter()
+                            .filter_map(|control| {
+                                tone.amp_control_fraction(control)
+                                    .ok()
+                                    .map(|value| (control, value))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if !controls.is_empty() {
+                    ui.small(pod_preset::AMP_CONTROL_SCALE_LABEL);
                 }
-                if self.pod_button(ui, "apply-pod-name", "Apply name") {
-                    self.apply_pod_name();
+                for (control, mut value) in controls {
+                    ui.horizontal(|ui| {
+                        ui.label(control.label());
+                        let response = ui
+                            .add(egui::Slider::new(&mut value, 0.0..=1.0).show_value(true))
+                            .on_hover_text(pod_preset::AMP_CONTROL_SCALE_LABEL);
+                        #[cfg(test)]
+                        if control == pod_preset::AmpControl::Drive {
+                            self.pod_drive_slider = Some(response.rect);
+                        }
+                        if response.changed()
+                            && let Some(index) = self.pod_selected
+                        {
+                            match self.edit_pod_tone(index, |tone| {
+                                tone.set_amp_control_fraction(control, value)
+                            }) {
+                                Ok(()) => {
+                                    self.pod_message = format!(
+                                        "Applied Amp {} host-scale value {value}. Nothing was sent.",
+                                        control.label()
+                                    )
+                                }
+                                Err(error) => self.pod_message = error.detail(),
+                            }
+                        }
+                    });
                 }
-                if self.pod_button(ui, "save-pod", "Save copy…") {
-                    self.save_pod_tone();
+                let stomp_controls = self
+                    .pod_selected
+                    .and_then(|index| self.pod_library.tone(index))
+                    .map(|tone| {
+                        pod_preset::StompControl::ALL
+                            .into_iter()
+                            .filter_map(|control| {
+                                tone.stomp_control_fraction(control)
+                                    .ok()
+                                    .map(|value| (control, value))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if !stomp_controls.is_empty() {
+                    ui.small(pod_preset::STOMP_CONTROL_SCALE_LABEL);
+                }
+                for (control, mut value) in stomp_controls {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Stomp {}", control.label()));
+                        let response = ui
+                            .add(egui::Slider::new(&mut value, 0.0..=1.0).show_value(true))
+                            .on_hover_text(pod_preset::STOMP_CONTROL_SCALE_LABEL);
+                        #[cfg(test)]
+                        {
+                            self.pod_stomp_sliders.insert(control, response.rect);
+                        }
+                        if response.changed()
+                            && let Some(index) = self.pod_selected
+                        {
+                            match self.edit_pod_tone(index, |tone| {
+                                tone.set_stomp_control_fraction(control, value)
+                            }) {
+                                Ok(()) => {
+                                    self.pod_message = format!(
+                                        "Applied Stomp {} host-scale value {value}. Nothing was sent.",
+                                        control.label()
+                                    )
+                                }
+                                Err(error) => self.pod_message = error.detail(),
+                            }
+                        }
+                    });
+                }
+                let whammy_knob_positions = self
+                    .pod_selected
+                    .and_then(|index| self.pod_library.tone(index).map(|tone| (index, tone)))
+                    .map(|(index, tone)| {
+                        pod_preset::StompWhammyKnob::ALL
+                            .into_iter()
+                            .filter_map(|control| {
+                                tone.stomp_whammy_knob_position(control)
+                                    .ok()
+                                    .map(|position| (index, control, position))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if !whammy_knob_positions.is_empty() {
+                    ui.small(
+                        "Line6Edit normalized knob position 0–1; source-quantized, not device-validated",
+                    );
+                }
+                for (index, control, mut position) in whammy_knob_positions {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Stomp Whammy {} knob position", control.label()));
+                        let response = ui
+                            .add(
+                                egui::Slider::new(&mut position, 0.0..=1.0).show_value(true),
+                            )
+                            .on_hover_text(
+                                "Normalized Line6Edit knob position; source quantization is applied. No physical units or device acceptance are claimed.",
+                            );
+                        #[cfg(test)]
+                        self.pod_whammy_knob_sliders
+                            .insert(control, response.rect);
+                        if response.changed() {
+                            match self.edit_pod_tone(index, |tone| {
+                                tone.set_stomp_whammy_knob_position(control, position)
+                            }) {
+                                Ok(()) => {
+                                    self.pod_message = format!(
+                                        "Applied Stomp Whammy {} knob position. Source quantization applied. Nothing was sent.",
+                                        control.label()
+                                    )
+                                }
+                                Err(error) => self.pod_message = error.detail(),
+                            }
+                        }
+                    });
+                }
+                let eq_bands = self
+                    .pod_selected
+                    .and_then(|index| self.pod_library.tone(index).map(|tone| (index, tone)))
+                    .map(|(index, tone)| {
+                        pod_preset::PodxtEqBand::ALL
+                            .into_iter()
+                            .filter_map(|band| {
+                                tone.podxt_eq_band_display_values(band)
+                                    .ok()
+                                    .map(|(frequency, gain)| (index, band, frequency, gain))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if !eq_bands.is_empty() {
+                    ui.small("PODxt four-band EQ graph values from Line6Edit 3.06; offline edit only. No device acceptance or audio behavior is claimed.");
+                }
+                for (index, band, mut frequency, mut gain) in eq_bands {
+                    let table = match band {
+                        pod_preset::PodxtEqBand::One => (50.0, 690.0),
+                        pod_preset::PodxtEqBand::Two => (50.0, 6050.0),
+                        pod_preset::PodxtEqBand::Three => (100.0, 11300.0),
+                        pod_preset::PodxtEqBand::Four => (500.0, 9300.0),
+                    };
+                    ui.label(format!("EQ band {}", match band { pod_preset::PodxtEqBand::One => 1, pod_preset::PodxtEqBand::Two => 2, pod_preset::PodxtEqBand::Three => 3, pod_preset::PodxtEqBand::Four => 4 }));
+                    ui.horizontal(|ui| {
+                        let frequency_response = ui.add(egui::Slider::new(&mut frequency, table.0..=table.1).text("Frequency").suffix(" Hz"));
+                        #[cfg(test)]
+                        self.pod_eq_frequency_sliders.insert(band, frequency_response.rect);
+                        let gain_response = ui.add(egui::Slider::new(&mut gain, -12.8..=12.6).text("Gain").suffix(" dB"));
+                        #[cfg(test)]
+                        self.pod_eq_gain_sliders.insert(band, gain_response.rect);
+                        if frequency_response.changed() || gain_response.changed() {
+                            match self.edit_pod_tone(index, |tone| tone.set_podxt_eq_band(band, frequency, gain)) {
+                                Ok(()) => self.pod_message = format!("Applied EQ band {} graph edit. Nothing was sent.", match band { pod_preset::PodxtEqBand::One => 1, pod_preset::PodxtEqBand::Two => 2, pod_preset::PodxtEqBand::Three => 3, pod_preset::PodxtEqBand::Four => 4 }),
+                                Err(error) => self.pod_message = error.detail(),
+                            }
+                        }
+                    });
+                }
+                let eq_reset_target = self.pod_selected.and_then(|index| {
+                    self.pod_library
+                        .tone(index)
+                        .and_then(|tone| tone.podxt_eq_reset_context().ok())
+                        .map(|context| (index, context))
+                });
+                if let Some((index, context)) = eq_reset_target {
+                    if let Some(pending) = self.pod_eq_reset_pending.clone() {
+                        if pending.document_generation == self.pod_document_generation
+                            && pending.index == index
+                            && pending.context == context
+                        {
+                            ui.horizontal(|ui| {
+                                ui.label("Four-band EQ reset staged · offline only");
+                                if self.pod_button(ui, "pod-eq-reset-apply", "Apply reset")
+                                    && self.apply_pod_eq_reset(Some(&pending))
+                                {
+                                    self.pod_eq_reset_pending = None;
+                                }
+                                if self.pod_button(ui, "pod-eq-reset-discard", "Discard") {
+                                    self.pod_eq_reset_pending = None;
+                                    self.pod_message = "Discarded the staged EQ reset. No bytes changed.".into();
+                                }
+                            });
+                        } else {
+                            ui.label(format!(
+                                "EQ reset staged for tone {}. Select it to apply or discard.",
+                                pending.index + 1
+                            ));
+                        }
+                    } else if self.pod_button(
+                        ui,
+                        "pod-eq-reset-stage",
+                        "Stage four-band EQ reset",
+                    ) {
+                        self.pod_eq_reset_pending = Some(PendingPodEqReset {
+                            document_generation: self.pod_document_generation,
+                            index,
+                            context,
+                        });
+                        self.pod_message = "Staged the four-band EQ reset. No bytes changed; nothing will be sent.".into();
+                    }
+                }
+                if let Some(pending) = self.pod_eq_reset_pending.as_ref()
+                    && self.pod_selected != Some(pending.index)
+                {
+                    ui.small(format!(
+                        "An EQ reset is staged for tone {}. Select that tone to apply or discard it.",
+                        pending.index + 1
+                    ));
+                }
+                let stomp_wave = self
+                    .pod_selected
+                    .and_then(|index| self.pod_library.tone(index))
+                    .and_then(|tone| tone.stomp_wave_selection().ok());
+                if let Some(current) = stomp_wave {
+                    let previous = match current {
+                        pod_preset::StompWaveValue::Known(choice) => Some(choice),
+                        pod_preset::StompWaveValue::Unknown { .. } => None,
+                    };
+                    let mut selected = previous;
+                    let selected_text = match current {
+                        pod_preset::StompWaveValue::Known(choice) => choice.label().to_owned(),
+                        pod_preset::StompWaveValue::Unknown { raw_bits } => {
+                            format!("Unknown float 0x{raw_bits:08x}")
+                        }
+                    };
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Stomp Wave");
+                        if matches!(current, pod_preset::StompWaveValue::Unknown { .. }) {
+                            ui.small(selected_text);
+                        }
+                        for choice in pod_preset::StompWaveSelection::ALL {
+                            let _response =
+                                ui.selectable_value(&mut selected, Some(choice), choice.label());
+                            #[cfg(test)]
+                            self.pod_stomp_wave_choices.insert(choice, _response.rect);
+                        }
+                    });
+                    if selected != previous
+                        && let (Some(index), Some(choice)) = (self.pod_selected, selected)
+                    {
+                        match self.edit_pod_tone(index, |tone| {
+                            tone.set_stomp_wave_selection(choice)
+                        }) {
+                            Ok(()) => {
+                                self.pod_message = format!(
+                                    "Applied Stomp Wave {} selection. Nothing was sent.",
+                                    choice.label()
+                                )
+                            }
+                            Err(error) => self.pod_message = error.detail(),
+                        }
+                    }
+                }
+                let harmony1 = self.pod_selected.and_then(|index| self.pod_library.tone(index))
+                    .and_then(|tone| tone.stomp_harmony_1m335_selection().ok());
+                if let Some(current) = harmony1 {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Stomp Harmony (-1/Maj3/5)");
+                        match current { pod_preset::StompHarmonyValue::Known(choice) => { ui.small(choice.label()); }, pod_preset::StompHarmonyValue::Unknown { raw_bits } => { ui.small(format!("Unknown float 0x{raw_bits:08x}")); } }
+                        for choice in pod_preset::StompHarmony1M335Selection::ALL {
+                            let previous = match self.pod_harmony_pending { Some((index, pod_preset::StompHarmonyControl::Harmony1M335, PendingStompHarmony::Harmony1M335(choice))) if Some(index) == self.pod_selected => Some(choice), _ => match current { pod_preset::StompHarmonyValue::Known(choice) => Some(choice), _ => None } };
+                            let mut selected = previous;
+                            let _response = ui.selectable_value(&mut selected, Some(choice), choice.label());
+                            #[cfg(test)] self.pod_harmony1_choices.insert(choice, _response.rect);
+                            if selected != previous && let Some(index) = self.pod_selected { self.pod_harmony_pending = Some((index, pod_preset::StompHarmonyControl::Harmony1M335, PendingStompHarmony::Harmony1M335(choice))); }
+                        }
+                    });
+                    if let Some((index, pod_preset::StompHarmonyControl::Harmony1M335, PendingStompHarmony::Harmony1M335(choice))) = self.pod_harmony_pending.filter(|(index, _, _)| Some(*index) == self.pod_selected) {
+                        ui.label(format!("Pending {} (not applied)", choice.label()));
+                        if self.pod_button(ui, "pod-harmony1-apply", "Apply Harmony 1") {
+                            match self.apply_pod_stomp_harmony(index, pod_preset::StompHarmonySelection::Harmony1M335(choice)) {
+                                Ok(()) => { self.pod_harmony_pending = None; self.pod_message = format!("Applied Stomp HARMONY_1M335 {}. Nothing was sent.", choice.label()); }
+                                Err(error) => self.pod_message = error.detail(),
+                            }
+                        }
+                    }
+                }
+                let harmony2 = self.pod_selected.and_then(|index| self.pod_library.tone(index))
+                    .and_then(|tone| tone.stomp_harmony_1457_selection().ok());
+                if let Some(current) = harmony2 {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Stomp Harmony (-1/2/4/7)");
+                        match current { pod_preset::StompHarmonyValue::Known(choice) => { ui.small(choice.label()); }, pod_preset::StompHarmonyValue::Unknown { raw_bits } => { ui.small(format!("Unknown float 0x{raw_bits:08x}")); } }
+                        for choice in pod_preset::StompHarmony1457Selection::ALL {
+                            let previous = match self.pod_harmony_pending { Some((index, pod_preset::StompHarmonyControl::Harmony1457, PendingStompHarmony::Harmony1457(choice))) if Some(index) == self.pod_selected => Some(choice), _ => match current { pod_preset::StompHarmonyValue::Known(choice) => Some(choice), _ => None } };
+                            let mut selected = previous;
+                            let _response = ui.selectable_value(&mut selected, Some(choice), choice.label());
+                            #[cfg(test)] self.pod_harmony2_choices.insert(choice, _response.rect);
+                            if selected != previous && let Some(index) = self.pod_selected { self.pod_harmony_pending = Some((index, pod_preset::StompHarmonyControl::Harmony1457, PendingStompHarmony::Harmony1457(choice))); }
+                        }
+                    });
+                    if let Some((index, pod_preset::StompHarmonyControl::Harmony1457, PendingStompHarmony::Harmony1457(choice))) = self.pod_harmony_pending.filter(|(index, _, _)| Some(*index) == self.pod_selected) {
+                        ui.label(format!("Pending {} (not applied)", choice.label()));
+                        if self.pod_button(ui, "pod-harmony2-apply", "Apply Harmony 2") {
+                            match self.apply_pod_stomp_harmony(index, pod_preset::StompHarmonySelection::Harmony1457(choice)) {
+                                Ok(()) => { self.pod_harmony_pending = None; self.pod_message = format!("Applied Stomp HARMONY_1457 {}. Nothing was sent.", choice.label()); }
+                                Err(error) => self.pod_message = error.detail(),
+                            }
+                        }
+                    }
+                }
+                let mod_controls = self
+                    .pod_selected
+                    .and_then(|index| self.pod_library.tone(index))
+                    .map(|tone| {
+                        pod_preset::ModControl::ALL
+                            .into_iter()
+                            .filter_map(|control| {
+                                tone.mod_control_fraction(control)
+                                    .ok()
+                                    .map(|value| (control, value))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if !mod_controls.is_empty() {
+                    ui.small(pod_preset::MOD_CONTROL_SCALE_LABEL);
+                }
+                for (control, mut value) in mod_controls {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Mod {}", control.label()));
+                        let response = ui
+                            .add(egui::Slider::new(&mut value, 0.0..=1.0).show_value(true))
+                            .on_hover_text(pod_preset::MOD_CONTROL_SCALE_LABEL);
+                        #[cfg(test)]
+                        {
+                            self.pod_mod_sliders.insert(control, response.rect);
+                        }
+                        if response.changed()
+                            && let Some(index) = self.pod_selected
+                        {
+                            match self.edit_pod_tone(index, |tone| {
+                                tone.set_mod_control_fraction(control, value)
+                            }) {
+                                Ok(()) => {
+                                    self.pod_message = format!(
+                                        "Applied Mod {} host-scale value {value}. Nothing was sent.",
+                                        control.label()
+                                    )
+                                }
+                                Err(error) => self.pod_message = error.detail(),
+                            }
+                        }
+                    });
+                }
+                let reverb_controls = self
+                    .pod_selected
+                    .and_then(|index| self.pod_library.tone(index))
+                    .map(|tone| {
+                        pod_preset::ReverbControl::ALL
+                            .into_iter()
+                            .filter_map(|control| {
+                                tone.reverb_control_fraction(control)
+                                    .ok()
+                                    .map(|value| (control, value))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if !reverb_controls.is_empty() {
+                    ui.small(pod_preset::REVERB_CONTROL_SCALE_LABEL);
+                }
+                for (control, mut value) in reverb_controls {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Reverb {}", control.label()));
+                        let response = ui
+                            .add(egui::Slider::new(&mut value, 0.0..=1.0).show_value(true))
+                            .on_hover_text(pod_preset::REVERB_CONTROL_SCALE_LABEL);
+                        #[cfg(test)]
+                        {
+                            self.pod_reverb_sliders.insert(control, response.rect);
+                        }
+                        if response.changed()
+                            && let Some(index) = self.pod_selected
+                        {
+                            match self.edit_pod_tone(index, |tone| {
+                                tone.set_reverb_control_fraction(control, value)
+                            }) {
+                                Ok(()) => {
+                                    self.pod_message = format!(
+                                        "Applied Reverb {} host-scale value {value}. Nothing was sent.",
+                                        control.label()
+                                    )
+                                }
+                                Err(error) => self.pod_message = error.detail(),
+                            }
+                        }
+                    });
+                }
+                let delay_controls = self
+                    .pod_selected
+                    .and_then(|index| self.pod_library.tone(index))
+                    .map(|tone| {
+                        pod_preset::DelayControl::ALL
+                            .into_iter()
+                            .filter_map(|control| {
+                                tone.delay_control_fraction(control)
+                                    .ok()
+                                    .map(|value| (control, value))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if !delay_controls.is_empty() {
+                    ui.small(pod_preset::DELAY_CONTROL_SCALE_LABEL);
+                }
+                for (control, mut value) in delay_controls {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Delay {}", control.label()));
+                        let response = ui
+                            .add(egui::Slider::new(&mut value, 0.0..=1.0).show_value(true))
+                            .on_hover_text(pod_preset::DELAY_CONTROL_SCALE_LABEL);
+                        #[cfg(test)]
+                        {
+                            self.pod_delay_sliders.insert(control, response.rect);
+                        }
+                        if response.changed()
+                            && let Some(index) = self.pod_selected
+                        {
+                            match self.edit_pod_tone(index, |tone| {
+                                tone.set_delay_control_fraction(control, value)
+                            }) {
+                                Ok(()) => {
+                                    self.pod_message = format!(
+                                        "Applied Delay {} host-scale value {value}. Nothing was sent.",
+                                        control.label()
+                                    )
+                                }
+                                Err(error) => self.pod_message = error.detail(),
+                            }
+                        }
+                    });
+                }
+                let delay_note_state = self.pod_selected.and_then(|index| {
+                    self.pod_library.tone(index).map(|tone| {
+                        (index, tone.delay_note_value(), tone.delay_time_ms())
+                    })
+                });
+                let delay_model_state = self.pod_selected.and_then(|index| self.pod_library.tone(index).and_then(|tone| {
+                    (tone.container() == pod_preset::ContainerKind::L6pa).then_some((index, tone.models().iter().find(|m| m.slot == pod_preset::DELAY_SLOT || m.slot == 0x0005_0004).map(|m| m.model_id)))
+                }));
+                let stomp_model_state = self.pod_selected.and_then(|index| {
+                    self.pod_library.tone(index).and_then(|tone| {
+                        (tone.container() == pod_preset::ContainerKind::L6pa).then(|| {
+                            let matches: Vec<_> = tone.models().iter()
+                                .filter(|model| model.slot == pod_preset::STOMP_SLOT)
+                                .map(|model| model.model_id)
+                                .collect();
+                            (index, matches.first().copied(), matches.len())
+                        })
+                    })
+                });
+                if let Some((index, current, slot_count)) = stomp_model_state {
+                    let mut selected = self.pod_stomp_model_pending
+                        .filter(|(pending_index, _)| *pending_index == index)
+                        .map(|(_, choice)| Some(choice))
+                        .or_else(|| current.and_then(pod_preset::PodStompModelChoice::from_model_id).map(Some))
+                        .unwrap_or(None);
+                    let selected_text = selected
+                        .map(pod_preset::PodStompModelChoice::numeric_label)
+                        .unwrap_or_else(|| current.map_or_else(|| "Select model".into(), |id| format!("{id:08x} (current only)")));
+                    ui.separator();
+                    let current_text = current.map_or_else(|| "unavailable".into(), |id| {
+                        if pod_preset::STOMP_CONTROL_MODEL_IDS.contains(&id) {
+                            format!("{id:08x}{}", if pod_preset::PodStompModelChoice::from_model_id(id).is_some() { "" } else { " (Pack 4 gated; preserved)" })
+                        } else { format!("{id:08x} (unknown; preserved)" ) }
+                    });
+                    ui.label(format!("Stomp model ID (offline; parameters retained, no reset) · current {current_text}"));
+                    if slot_count == 1 {
+                        let mut changed = None;
+                        let combo = egui::ComboBox::from_id_salt("pod-stomp-model-choice")
+                            .selected_text(selected_text)
+                            .show_ui(ui, |ui| {
+                                for id in pod_preset::PodStompModelChoice::MODEL_IDS {
+                                    let choice = pod_preset::PodStompModelChoice::from_model_id(id)
+                                        .expect("listed Stomp model id is admitted");
+                                    let response = ui.selectable_value(&mut selected, Some(choice), format!("{id:08x}"));
+                                    #[cfg(test)] self.pod_stomp_model_options.insert(id, response.rect);
+                                    if response.changed() { changed = Some(choice); }
+                                }
+                            });
+                        #[cfg(test)] { self.pod_stomp_model_combo = Some(combo.response.rect); }
+                        #[cfg(not(test))] let _ = combo;
+                        if let Some(choice) = changed { self.pod_stomp_model_pending = Some((index, choice)); }
+                        if let Some((pending_index, choice)) = self.pod_stomp_model_pending.filter(|(pending_index, _)| *pending_index == index) {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("Pending {} (not applied)", choice.numeric_label()));
+                                let apply = ui.button("Apply Stomp model");
+                                #[cfg(test)] self.pod_buttons.insert("pod-stomp-model-apply", apply.rect);
+                                if apply.clicked() {
+                                    match self.apply_pod_stomp_model_choice(pending_index, choice) {
+                                        Ok(changed) => {
+                                            if changed { self.pod_stomp_model_pending = None; }
+                                            self.pod_message = if changed { "Applied the Stomp model ID offline; stored parameters were retained. Nothing was sent.".into() } else { "The Stomp model ID already matched; no bytes or staging changed.".into() };
+                                        }
+                                        Err(error) => self.pod_message = error.detail(),
+                                    }
+                                }
+                                let discard = ui.button("Discard");
+                                #[cfg(test)] self.pod_buttons.insert("pod-stomp-model-discard", discard.rect);
+                                if discard.clicked() { self.pod_stomp_model_pending = None; }
+                            });
+                        }
+                    } else {
+                        ui.small("Stomp model selection requires exactly one existing Stomp slot; no slot will be created.");
+                    }
+                }
+                if let Some((index, current)) = delay_model_state {
+                    let mut selected = self.pod_delay_model_pending
+                        .filter(|(i, _)| *i == index)
+                        .map(|(_, choice)| Some(choice))
+                        .or_else(|| current.and_then(pod_preset::PodDelayModelChoice::from_model_id).map(Some))
+                        .unwrap_or(None);
+                    let selected_text = selected
+                        .map(pod_preset::PodDelayModelChoice::numeric_label)
+                        .unwrap_or_else(|| current.map_or_else(|| "Select model".into(), |id| format!("{id:08x} (outside choices)")));
+                    ui.separator();
+                    ui.label(format!("Delay model ID (offline; stored parameters are retained, no reset) · current {}", current.map_or_else(|| "unavailable".into(), |id| format!("{id:08x}"))));
+                    let mut changed = None;
+                    let _combo = egui::ComboBox::from_id_salt("pod-delay-model-choice")
+                        .selected_text(selected_text)
+                        .show_ui(ui, |ui| {
+                            for id in pod_preset::PodDelayModelChoice::MODEL_IDS {
+                                let choice = pod_preset::PodDelayModelChoice::from_model_id(id)
+                                    .expect("listed Delay model id is admitted");
+                                let response = ui.selectable_value(&mut selected, Some(choice), format!("{id:08x}"));
+                                #[cfg(test)] { self.pod_delay_model_options.insert(id, response.rect); }
+                                if response.changed() { changed = Some(choice); }
+                            }
+                        });
+                    #[cfg(test)] { self.pod_delay_model_combo = Some(_combo.response.rect); }
+                    if let Some(choice) = changed { self.pod_delay_model_pending = Some((index, choice)); }
+                    if let Some((pending_index, choice)) = self.pod_delay_model_pending.filter(|(i, _)| *i == index) {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("Pending {} (parameters retained)", choice.numeric_label()));
+                            let response = ui.button("Apply Delay model");
+                            #[cfg(test)] { self.pod_buttons.insert("pod-delay-model-apply", response.rect); }
+                            if response.clicked() {
+                                match self.apply_pod_delay_model_choice(pending_index, choice) {
+                                    Ok(()) => { self.pod_delay_model_pending = None; self.pod_message = "Applied the Delay model ID offline; stored parameters were retained. Nothing was sent.".into(); }
+                                    Err(error) => self.pod_message = error.detail(),
+                                }
+                            }
+                            let discard = ui.button("Discard");
+                            #[cfg(test)] { self.pod_buttons.insert("pod-delay-model-discard", discard.rect); }
+                            if discard.clicked() { self.pod_delay_model_pending = None; }
+                        });
+                    }
+                }
+                if let Some((index, note_result, time_result)) = delay_note_state {
+                    ui.separator();
+                    ui.label("Delay NOTE / TIME");
+                    match note_result {
+                        Ok(value) => {
+                            let selected_current = match value {
+                                pod_preset::DelayNoteValue::Known(choice) => Some(choice),
+                                pod_preset::DelayNoteValue::Unknown { .. } => None,
+                            };
+                            let selected_pending = match self.pod_delay_pending {
+                                Some((pending_index, PendingDelayEdit::Note(choice))) if pending_index == index => Some(choice),
+                                _ => selected_current,
+                            };
+                            let selected_label = match value {
+                                pod_preset::DelayNoteValue::Known(choice) => choice.label().to_owned(),
+                                pod_preset::DelayNoteValue::Unknown { raw_bits } => format!("Unknown NOTE {raw_bits}"),
+                            };
+                            ui.label(format!("Stored: {selected_label}"));
+                            let mut selected = selected_pending;
+                            let mut changed = None;
+                            ui.horizontal_wrapped(|ui| {
+                                for choice in pod_preset::DelayNoteChoice::ALL {
+                                    let response = ui.selectable_value(&mut selected, Some(choice), choice.label());
+                                    #[cfg(test)]
+                                    self.pod_delay_note_options.insert(choice, response.rect);
+                                    if response.changed() { changed = selected; }
+                                }
+                            });
+                            if let Some(choice) = changed {
+                                self.pod_delay_pending = Some((index, PendingDelayEdit::Note(choice)));
+                            }
+                        }
+                        Err(error) => { ui.small(format!("Delay NOTE unavailable: {}", error.detail())); }
+                    }
+                    match time_result {
+                        Ok(current_ms) => {
+                            let pending_ms = match self.pod_delay_pending {
+                                Some((pending_index, PendingDelayEdit::TimeMs(value))) if pending_index == index => value,
+                                _ => current_ms,
+                            };
+                            let mut value = pending_ms;
+                            ui.horizontal(|ui| {
+                                ui.label("TIME (ms)");
+                                let response = ui.add(egui::Slider::new(&mut value, 20.0..=2000.0).show_value(true));
+                                #[cfg(test)] { self.pod_delay_time_slider = Some(response.rect); }
+                                if response.changed() {
+                                    self.pod_delay_pending = Some((index, PendingDelayEdit::TimeMs(value)));
+                                }
+                            });
+                        }
+                        Err(error) => { ui.small(format!("Delay TIME unavailable: {}", error.detail())); }
+                    }
+                    if let Some((pending_index, edit)) = self.pod_delay_pending.filter(|(pending_index, _)| *pending_index == index) {
+                        let (label, button) = match edit {
+                            PendingDelayEdit::Note(choice) => (format!("{} (not applied)", choice.label()), "Apply Delay NOTE"),
+                            PendingDelayEdit::TimeMs(value) => (format!("{value:.3} ms (not applied)"), "Apply Delay TIME"),
+                        };
+                        ui.horizontal(|ui| {
+                            ui.label(format!("Pending {label}"));
+                            let response = ui.button(button);
+                            #[cfg(test)] { self.pod_buttons.insert("pod-delay-apply", response.rect); }
+                            if response.clicked() {
+                                match self.apply_pod_delay_edit(pending_index, edit) {
+                                    Ok(()) => {
+                                        self.pod_delay_pending = None;
+                                        self.pod_message = "Applied the staged Delay NOTE/TIME edit offline. Nothing was sent.".into();
+                                    }
+                                    Err(error) => self.pod_message = error.detail(),
+                                }
+                            }
+                            let discard = ui.button("Discard");
+                            #[cfg(test)]
+                            self.pod_buttons
+                                .insert("pod-delay-discard", discard.rect);
+                            if discard.clicked() { self.pod_delay_pending = None; }
+                        });
+                    }
+                }
+                let mod_model_state = self.pod_selected.and_then(|index| {
+                    self.pod_library.tone(index).and_then(|tone| {
+                        (tone.container() == pod_preset::ContainerKind::L6pa).then_some((
+                            index,
+                            tone.models()
+                                .iter()
+                                .find(|model| {
+                                    model.slot == pod_preset::MOD_SLOT || model.slot == 0x0005_0003
+                                })
+                                .map(|model| model.model_id),
+                        ))
+                    })
+                });
+                if let Some((index, current)) = mod_model_state {
+                    let mut selected = self
+                        .pod_mod_model_pending
+                        .filter(|(pending_index, _)| *pending_index == index)
+                        .map(|(_, choice)| Some(choice))
+                        .or_else(|| {
+                            current
+                                .and_then(pod_preset::PodModModelChoice::from_model_id)
+                                .map(Some)
+                        })
+                        .unwrap_or(None);
+                    let selected_text = selected
+                        .map(pod_preset::PodModModelChoice::numeric_label)
+                        .unwrap_or_else(|| {
+                            current.map_or_else(
+                                || "Select model".into(),
+                                |id| format!("{id:08x} (outside choices)"),
+                            )
+                        });
+                    ui.separator();
+                    ui.label(format!(
+                        "Mod model ID (offline; parameters retained, no reset) · current {}",
+                        current.map_or_else(|| "unavailable".into(), |id| format!("{id:08x}"))
+                    ));
+                    let mut changed = None;
+                    let combo = egui::ComboBox::from_id_salt("pod-mod-model-choice")
+                        .selected_text(selected_text)
+                        .show_ui(ui, |ui| {
+                            for id in pod_preset::PodModModelChoice::MODEL_IDS {
+                                let choice = pod_preset::PodModModelChoice::from_model_id(id)
+                                    .expect("listed Mod model id is admitted");
+                                let response = ui.selectable_value(
+                                    &mut selected,
+                                    Some(choice),
+                                    format!("{id:08x}"),
+                                );
+                                #[cfg(test)]
+                                self.pod_mod_model_options.insert(id, response.rect);
+                                if response.changed() {
+                                    changed = Some(choice);
+                                }
+                            }
+                        });
+                    #[cfg(test)]
+                    {
+                        self.pod_mod_model_combo = Some(combo.response.rect);
+                    }
+                    #[cfg(not(test))]
+                    let _ = combo;
+                    if let Some(choice) = changed {
+                        self.pod_mod_model_pending = Some((index, choice));
+                    }
+                    if let Some((pending_index, choice)) = self
+                        .pod_mod_model_pending
+                        .filter(|(pending_index, _)| *pending_index == index)
+                    {
+                        ui.horizontal(|ui| {
+                            ui.label(format!(
+                                "Pending {} (parameters retained)",
+                                choice.numeric_label()
+                            ));
+                            let apply = ui.button("Apply Mod model");
+                            #[cfg(test)]
+                            self.pod_buttons.insert("pod-mod-model-apply", apply.rect);
+                            if apply.clicked() {
+                                match self.apply_pod_mod_model_choice(pending_index, choice) {
+                                    Ok(()) => {
+                                        self.pod_mod_model_pending = None;
+                                        self.pod_message = "Applied the Mod model ID offline; stored parameters were retained. Nothing was sent.".into();
+                                    }
+                                    Err(error) => self.pod_message = error.detail(),
+                                }
+                            }
+                            let discard = ui.button("Discard");
+                            #[cfg(test)]
+                            self.pod_buttons.insert("pod-mod-model-discard", discard.rect);
+                            if discard.clicked() {
+                                self.pod_mod_model_pending = None;
+                            }
+                        });
+                    }
+                }
+                let mod_state = self.pod_selected.and_then(|index| {
+                    self.pod_library.tone(index).map(|tone| {
+                        (index, tone.mod_note_value(), tone.mod_speed_hz())
+                    })
+                });
+                if let Some((index, note_result, speed_result)) = mod_state {
+                    ui.separator();
+                    ui.label("Mod NOTE / SPEED");
+                    match note_result {
+                        Ok(value) => {
+                            let current = match value {
+                                pod_preset::ModNoteValue::Known(choice) => Some(choice),
+                                pod_preset::ModNoteValue::Unknown { .. } => None,
+                            };
+                            let pending = match self.pod_mod_pending {
+                                Some((pending_index, PendingModEdit::Note(choice))) if pending_index == index => Some(choice),
+                                _ => current,
+                            };
+                            let label = match value {
+                                pod_preset::ModNoteValue::Known(choice) => choice.label().to_owned(),
+                                pod_preset::ModNoteValue::Unknown { raw_bits } => format!("Unknown NOTE {raw_bits}"),
+                            };
+                            ui.label(format!("Stored: {label}"));
+                            let mut selected = pending;
+                            let mut changed = None;
+                            ui.horizontal_wrapped(|ui| {
+                                for choice in pod_preset::DelayNoteChoice::ALL {
+                                    let response = ui.selectable_value(&mut selected, Some(choice), choice.label());
+                                    #[cfg(test)]
+                                    self.pod_mod_note_options.insert(choice, response.rect);
+                                    if response.changed() { changed = selected; }
+                                }
+                            });
+                            if let Some(choice) = changed {
+                                self.pod_mod_pending = Some((index, PendingModEdit::Note(choice)));
+                            }
+                        }
+                        Err(error) => { ui.small(format!("Mod NOTE unavailable: {}", error.detail())); }
+                    }
+                    match speed_result {
+                        Ok(current_hz) => {
+                            let pending_hz = match self.pod_mod_pending {
+                                Some((pending_index, PendingModEdit::SpeedHz(value))) if pending_index == index => value,
+                                _ => current_hz,
+                            };
+                            let mut value = pending_hz;
+                            ui.horizontal(|ui| {
+                                ui.label("SPEED (Hz)");
+                                let response = ui.add(egui::Slider::new(&mut value, 0.1..=15.0).show_value(true));
+                                #[cfg(test)] { self.pod_mod_speed_slider = Some(response.rect); }
+                                if response.changed() {
+                                    self.pod_mod_pending = Some((index, PendingModEdit::SpeedHz(value)));
+                                }
+                            });
+                        }
+                        Err(error) => { ui.small(format!("Mod SPEED unavailable: {}", error.detail())); }
+                    }
+                    if let Some((pending_index, edit)) = self.pod_mod_pending.filter(|(pending_index, _)| *pending_index == index) {
+                        let (label, button) = match edit {
+                            PendingModEdit::Note(choice) => (format!("{} (not applied)", choice.label()), "Apply Mod NOTE"),
+                            PendingModEdit::SpeedHz(value) => (format!("{value:.3} Hz (not applied)"), "Apply Mod SPEED"),
+                        };
+                        ui.horizontal(|ui| {
+                            ui.label(format!("Pending {label}"));
+                            let apply = ui.button(button);
+                            #[cfg(test)]
+                            self.pod_buttons.insert("pod-mod-apply", apply.rect);
+                            if apply.clicked() {
+                                match self.apply_pod_mod_edit(pending_index, edit) {
+                                    Ok(()) => {
+                                        self.pod_mod_pending = None;
+                                        self.pod_message = "Applied the staged Mod NOTE/SPEED edit offline. Nothing was sent.".into();
+                                    }
+                                    Err(error) => self.pod_message = error.detail(),
+                                }
+                            }
+                            let discard = ui.button("Discard");
+                            #[cfg(test)]
+                            self.pod_buttons.insert("pod-mod-discard", discard.rect);
+                            if discard.clicked() { self.pod_mod_pending = None; }
+                        });
+                    }
+                }
+                let delay_heads = self
+                    .pod_selected
+                    .and_then(|index| self.pod_library.tone(index))
+                    .and_then(|tone| tone.delay_heads_selection().ok());
+                if let Some(current) = delay_heads {
+                    let previous = match current {
+                        pod_preset::DelayAssociationValue::Known(choice) => Some(choice),
+                        pod_preset::DelayAssociationValue::Unknown { .. } => None,
+                    };
+                    let mut selected = previous;
+                    let selected_text = match current {
+                        pod_preset::DelayAssociationValue::Known(choice) => {
+                            choice.label().to_owned()
+                        }
+                        pod_preset::DelayAssociationValue::Unknown { raw_bits } => {
+                            format!("Unknown float 0x{raw_bits:08x}")
+                        }
+                    };
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Delay Heads");
+                        if matches!(current, pod_preset::DelayAssociationValue::Unknown { .. }) {
+                            ui.small(selected_text);
+                        }
+                        for choice in pod_preset::DelayHeadsSelection::ALL {
+                            let _choice_response =
+                                ui.selectable_value(&mut selected, Some(choice), choice.label());
+                            #[cfg(test)]
+                            self.pod_delay_heads_choices
+                                .insert(choice, _choice_response.rect);
+                        }
+                    });
+                    if selected != previous
+                        && let (Some(index), Some(choice)) = (self.pod_selected, selected)
+                    {
+                        match self.edit_pod_tone(index, |tone| {
+                            tone.set_delay_heads_selection(choice)
+                        }) {
+                            Ok(()) => {
+                                self.pod_message = format!(
+                                    "Applied Delay Heads {} selection. Nothing was sent.",
+                                    choice.label()
+                                )
+                            }
+                            Err(error) => self.pod_message = error.detail(),
+                        }
+                    }
+                }
+                let delay_bits = self
+                    .pod_selected
+                    .and_then(|index| self.pod_library.tone(index))
+                    .and_then(|tone| tone.delay_bits_selection().ok());
+                if let Some(current) = delay_bits {
+                    let previous = match current {
+                        pod_preset::DelayAssociationValue::Known(choice) => Some(choice),
+                        pod_preset::DelayAssociationValue::Unknown { .. } => None,
+                    };
+                    let mut selected = previous;
+                    let selected_text = match current {
+                        pod_preset::DelayAssociationValue::Known(choice) => {
+                            choice.label().to_owned()
+                        }
+                        pod_preset::DelayAssociationValue::Unknown { raw_bits } => {
+                            format!("Unknown float 0x{raw_bits:08x}")
+                        }
+                    };
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Delay Bits");
+                        if matches!(current, pod_preset::DelayAssociationValue::Unknown { .. }) {
+                            ui.small(selected_text);
+                        }
+                        for choice in pod_preset::DelayBitsSelection::ALL {
+                            let _choice_response =
+                                ui.selectable_value(&mut selected, Some(choice), choice.label());
+                            #[cfg(test)]
+                            self.pod_delay_bits_choices.insert(choice, _choice_response.rect);
+                        }
+                    });
+                    if selected != previous
+                        && let (Some(index), Some(choice)) = (self.pod_selected, selected)
+                    {
+                        match self.edit_pod_tone(index, |tone| {
+                            tone.set_delay_bits_selection(choice)
+                        }) {
+                            Ok(()) => {
+                                self.pod_message = format!(
+                                    "Applied Delay Bits {} selection. Nothing was sent.",
+                                    choice.label()
+                                )
+                            }
+                            Err(error) => self.pod_message = error.detail(),
+                        }
+                    }
                 }
                 let detail = self.pod_selected.and_then(|index| {
                     self.pod_library.tone(index).map(|tone| {
@@ -1750,28 +3693,458 @@ impl Workbench {
         response.clicked()
     }
 
+    fn pod_button_enabled(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: &'static str,
+        label: &str,
+        enabled: bool,
+    ) -> bool {
+        let response = ui.add_enabled(enabled, egui::Button::new(label));
+        #[cfg(test)]
+        self.pod_buttons.insert(id, response.rect);
+        #[cfg(not(test))]
+        let _ = id;
+        response.clicked()
+    }
+
+    fn model_enable_menu(&mut self, ui: &mut egui::Ui, index: usize) {
+        ui.label("Stored model flags only; no bypass, audio, or device effect is claimed.");
+        for control in [
+            pod_preset::PodModelEnable::Amp,
+            pod_preset::PodModelEnable::Eq,
+        ] {
+            let state = self
+                .pod_library
+                .tone(index)
+                .ok_or_else(|| pod_preset::ToneError::format("POD selection is out of range"))
+                .and_then(|tone| tone.model_enable_state(control));
+            match state {
+                Ok(pod_preset::ModelEnableState::Canonical(mut enabled)) => {
+                    let label = match control {
+                        pod_preset::PodModelEnable::Amp => "Amp enabled (stored flag)",
+                        pod_preset::PodModelEnable::Eq => "EQ enabled (stored flag)",
+                    };
+                    let response = ui.checkbox(&mut enabled, label);
+                    #[cfg(test)]
+                    self.pod_model_enable_checks.insert(control, response.rect);
+                    if response.changed() {
+                        match self
+                            .edit_pod_tone(index, |tone| tone.set_model_enabled(control, enabled))
+                        {
+                            Ok(()) => {
+                                self.pod_message = format!(
+                                    "Applied {} stored enable flag. Nothing was sent.",
+                                    match control {
+                                        pod_preset::PodModelEnable::Amp => "Amp",
+                                        pod_preset::PodModelEnable::Eq => "EQ",
+                                    }
+                                )
+                            }
+                            Err(error) => self.pod_message = error.detail(),
+                        }
+                    }
+                }
+                Ok(pod_preset::ModelEnableState::NonCanonical {
+                    raw,
+                    source_interpretation,
+                }) => {
+                    let label = match control {
+                        pod_preset::PodModelEnable::Amp => "Amp",
+                        pod_preset::PodModelEnable::Eq => "EQ",
+                    };
+                    ui.label(format!(
+                        "{label} edit unavailable: MINF byte 0x{raw:02x} is noncanonical (Line6Edit reads it as {}). Preserved unchanged.",
+                        if source_interpretation { "enabled" } else { "disabled" }
+                    ));
+                }
+                Err(error) => {
+                    let label = match control {
+                        pod_preset::PodModelEnable::Amp => "Amp",
+                        pod_preset::PodModelEnable::Eq => "EQ",
+                    };
+                    ui.label(format!("{label} edit unavailable: {}", error.detail()));
+                }
+            }
+        }
+    }
+
+    fn edit_pod_tone(
+        &mut self,
+        index: usize,
+        edit: impl FnOnce(&mut pod_preset::PodTone) -> Result<(), pod_preset::ToneError>,
+    ) -> Result<(), pod_preset::ToneError> {
+        if let Some(bundle) = &mut self.pod_bundle {
+            bundle.edit_entry(index, edit)?;
+            let (bank, preset) = bundle
+                .entry_location(index)
+                .ok_or_else(|| pod_preset::ToneError::format("POD selection is out of range"))?;
+            let bytes = bundle.tone(bank, preset)?.as_bytes().to_vec();
+            self.pod_library.replace(index, bytes)
+        } else {
+            let mut tone =
+                self.pod_library.tone(index).cloned().ok_or_else(|| {
+                    pod_preset::ToneError::format("POD selection is out of range")
+                })?;
+            edit(&mut tone)?;
+            self.pod_library.replace(index, tone.into_bytes())
+        }
+    }
+
+    fn replace_pod_tone(
+        &mut self,
+        index: usize,
+        bytes: Vec<u8>,
+    ) -> Result<(), pod_preset::ToneError> {
+        let old_eq_context = self
+            .pod_library
+            .tone(index)
+            .and_then(|tone| tone.podxt_eq_reset_context().ok());
+        let old_amp_id = self
+            .pod_library
+            .tone(index)
+            .and_then(pod_preset::PodTone::amp_model_id);
+        let mut library = self.pod_library.clone();
+        library.replace(index, bytes.clone())?;
+        let new_amp_id = library
+            .tone(index)
+            .and_then(pod_preset::PodTone::amp_model_id);
+        let mut bundle = self.pod_bundle.clone();
+        if let Some(bundle) = &mut bundle {
+            bundle.replace_entry(index, bytes)?;
+        }
+        self.pod_library = library;
+        self.pod_bundle = bundle;
+        self.pod_document_generation = self.pod_document_generation.wrapping_add(1);
+        if self
+            .pod_cab_pending
+            .is_some_and(|(pending_index, _)| pending_index == index)
+        {
+            self.pod_cab_pending = None;
+            self.pod_cab_pending_origin = None;
+        }
+        let new_eq_context = self
+            .pod_library
+            .tone(index)
+            .and_then(|tone| tone.podxt_eq_reset_context().ok());
+        if old_eq_context != new_eq_context
+            && self
+                .pod_eq_reset_pending
+                .as_ref()
+                .is_some_and(|pending| pending.index == index)
+        {
+            self.pod_eq_reset_pending = None;
+            self.pod_message = "Discarded a staged EQ reset because its target EQ changed.".into();
+        }
+        if old_amp_id != new_amp_id
+            && self
+                .pod_amp_model_pending
+                .is_some_and(|(pending_index, _, _)| pending_index == index)
+        {
+            self.pod_amp_model_pending = None;
+        }
+        Ok(())
+    }
+
+    fn apply_pod_eq_reset(&mut self, expected: Option<&PendingPodEqReset>) -> bool {
+        let Some(index) = self.pod_selected else {
+            self.pod_message = "Select a tone before applying an EQ reset.".into();
+            return false;
+        };
+        let Some(current) = self
+            .pod_library
+            .tone(index)
+            .map(|tone| tone.as_bytes().to_vec())
+        else {
+            self.pod_message = "Select a tone before applying an EQ reset.".into();
+            return false;
+        };
+        let current_context = self
+            .pod_library
+            .tone(index)
+            .and_then(|tone| tone.podxt_eq_reset_context().ok());
+        if expected.is_some_and(|pending| {
+            pending.document_generation != self.pod_document_generation
+                || pending.index != index
+                || current_context.as_deref() != Some(pending.context.as_slice())
+        }) {
+            self.pod_eq_reset_pending = None;
+            self.pod_message = "Discarded a stale EQ reset because its target EQ changed.".into();
+            return false;
+        }
+        let replacement = match Session::initial_rig().reset_pod_eq(RoleKind::Pod, &current) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.pod_message = rejection_text(&error);
+                return false;
+            }
+        };
+        match self.replace_pod_tone(index, replacement) {
+            Ok(()) => {
+                self.pod_message =
+                    "Applied the four-band EQ reset to the offline tone. Nothing was sent.".into();
+                true
+            }
+            Err(error) => {
+                self.pod_message = error.detail();
+                false
+            }
+        }
+    }
+
+    fn apply_pod_stomp_harmony(
+        &mut self,
+        index: usize,
+        selection: pod_preset::StompHarmonySelection,
+    ) -> Result<(), pod_preset::ToneError> {
+        let current = self
+            .pod_library
+            .tone(index)
+            .ok_or_else(|| pod_preset::ToneError::format("POD selection is out of range"))?
+            .as_bytes()
+            .to_vec();
+        let replacement = Session::initial_rig()
+            .set_pod_stomp_harmony_selection(RoleKind::Pod, &current, selection)
+            .map_err(|error| pod_preset::ToneError::format(rejection_text(&error)))?;
+        self.replace_pod_tone(index, replacement)
+    }
+
+    fn apply_pod_delay_edit(
+        &mut self,
+        index: usize,
+        edit: PendingDelayEdit,
+    ) -> Result<(), pod_preset::ToneError> {
+        let current = self
+            .pod_library
+            .tone(index)
+            .ok_or_else(|| pod_preset::ToneError::format("POD selection is out of range"))?
+            .as_bytes()
+            .to_vec();
+        let session = Session::initial_rig();
+        let replacement = match edit {
+            PendingDelayEdit::Note(choice) => {
+                session.set_pod_delay_note_choice(RoleKind::Pod, &current, choice)
+            }
+            PendingDelayEdit::TimeMs(milliseconds) => {
+                session.set_pod_delay_time_ms(RoleKind::Pod, &current, milliseconds)
+            }
+        }
+        .map_err(|error| pod_preset::ToneError::format(rejection_text(&error)))?;
+        self.replace_pod_tone(index, replacement)
+    }
+
+    fn apply_pod_mod_edit(
+        &mut self,
+        index: usize,
+        edit: PendingModEdit,
+    ) -> Result<(), pod_preset::ToneError> {
+        let current = self
+            .pod_library
+            .tone(index)
+            .ok_or_else(|| pod_preset::ToneError::format("POD selection is out of range"))?
+            .as_bytes()
+            .to_vec();
+        let session = Session::initial_rig();
+        let replacement = match edit {
+            PendingModEdit::Note(choice) => {
+                session.set_pod_mod_note_choice(RoleKind::Pod, &current, choice)
+            }
+            PendingModEdit::SpeedHz(hz) => {
+                session.set_pod_mod_speed_hz(RoleKind::Pod, &current, hz)
+            }
+        }
+        .map_err(|error| pod_preset::ToneError::format(rejection_text(&error)))?;
+        self.replace_pod_tone(index, replacement)
+    }
+
+    fn load_pod_bundle_bytes(&mut self, bytes: Vec<u8>) -> Result<(), pod_preset::ToneError> {
+        if self.pod_dirty() {
+            return Err(pod_preset::ToneError::format(
+                "save or discard POD edits before loading a bank",
+            ));
+        }
+        let bundle = pod_preset::PodBundleLibrary::parse(bytes)?;
+        let mut library = Library::default();
+        for index in 0..bundle.entry_count() {
+            let (bank_index, preset_index) = bundle
+                .entry_location(index)
+                .ok_or_else(|| pod_preset::ToneError::format("POD bundle index became invalid"))?;
+            library.import_bytes(bundle.tone(bank_index, preset_index)?.into_bytes())?;
+        }
+        self.pod_library = library;
+        self.pod_bundle = Some(bundle);
+        self.pod_document_generation = self.pod_document_generation.wrapping_add(1);
+        self.pod_selected = Some(0);
+        self.pod_eq_reset_pending = None;
+        self.pod_cab_pending = None;
+        self.pod_harmony_pending = None;
+        self.refresh_selected_pod_name();
+        Ok(())
+    }
+
+    fn refresh_pod_library_from_bundle(&mut self) -> Result<(), pod_preset::ToneError> {
+        let mut library = Library::default();
+        if let Some(bundle) = &self.pod_bundle {
+            for index in 0..bundle.entry_count() {
+                let (bank_index, preset_index) = bundle.entry_location(index).ok_or_else(|| {
+                    pod_preset::ToneError::format("POD bundle index became invalid")
+                })?;
+                library.import_bytes(bundle.tone(bank_index, preset_index)?.into_bytes())?;
+            }
+        }
+        self.pod_library = library;
+        self.pod_cab_pending = None;
+        self.pod_harmony_pending = None;
+        Ok(())
+    }
+
+    fn apply_pod_membership_action(
+        &mut self,
+        action: PodMembershipAction,
+        bank: usize,
+        preset: usize,
+    ) {
+        let Some(mut candidate) = self.pod_bundle.clone() else {
+            return;
+        };
+        let folder_editable = candidate.membership_editable(bank);
+        let result = match action {
+            PodMembershipAction::Duplicate => candidate.duplicate_entry(bank, preset),
+            PodMembershipAction::Remove => candidate.remove_entry(bank, preset),
+            PodMembershipAction::MoveUp if preset > 0 => {
+                if folder_editable {
+                    candidate.reorder_entry(bank, preset, preset - 1)
+                } else {
+                    candidate.reorder_fixed_bank_entry(bank, preset, preset - 1)
+                }
+            }
+            PodMembershipAction::MoveDown => {
+                if folder_editable {
+                    candidate.reorder_entry(bank, preset, preset + 1)
+                } else {
+                    candidate.reorder_fixed_bank_entry(bank, preset, preset + 1)
+                }
+            }
+            PodMembershipAction::MoveUp => return,
+        }
+        .and_then(|selected| {
+            let mut library = Library::default();
+            for index in 0..candidate.entry_count() {
+                let (bank_index, preset_index) =
+                    candidate.entry_location(index).ok_or_else(|| {
+                        pod_preset::ToneError::format("POD bundle index became invalid")
+                    })?;
+                library.import_bytes(candidate.tone(bank_index, preset_index)?.into_bytes())?;
+            }
+            Ok((selected, library))
+        });
+        match result {
+            Ok((selected, library)) => {
+                self.pod_bundle = Some(candidate);
+                self.pod_library = library;
+                self.pod_selected = Some(selected);
+                self.pod_eq_reset_pending = None;
+                self.refresh_selected_pod_name();
+                self.pod_message = match action {
+                    PodMembershipAction::Duplicate => {
+                        "Duplicated the existing tone bytes in this folder. Nothing was sent."
+                            .into()
+                    }
+                    PodMembershipAction::Remove => {
+                        "Removed the selected tone from this folder. Nothing was sent.".into()
+                    }
+                    PodMembershipAction::MoveUp | PodMembershipAction::MoveDown => {
+                        if folder_editable {
+                            "Reordered tones in this folder. Nothing was sent.".into()
+                        } else {
+                            "Reordered tones in this fixed bank. Nothing was sent.".into()
+                        }
+                    }
+                };
+            }
+            Err(error) => self.pod_message = error.detail(),
+        }
+    }
+
     fn load_pod_tone(&mut self) {
         let Some(path) = self.dialogs.open_pod_tone() else {
             self.pod_message = "Load cancelled. No file was read.".into();
             return;
         };
-        match pod_preset::read_regular_tone(pod_preset::path_facts(&path), || fs::read(&path)) {
-            Ok(bytes) => match Session::initial_rig().open_pod_preset(RoleKind::Pod, &bytes) {
-                Ok(summary) => match self.pod_library.import_bytes(bytes) {
-                    Ok(index) => {
-                        self.pod_selected = Some(index);
-                        self.pod_name = summary.name;
+        match pod_preset::read_regular_bundle(pod_preset::path_facts(&path), || {
+            let file = fs::File::open(&path)?;
+            let metadata = file.metadata()?;
+            Ok((
+                pod_preset::PathFacts {
+                    regular_file: metadata.is_file(),
+                    len: metadata.len(),
+                },
+                file,
+            ))
+        }) {
+            Ok(bytes) if matches!(bytes.get(8..12), Some(b"L6BA" | b"L6CO")) => {
+                match self.load_pod_bundle_bytes(bytes) {
+                    Ok(()) => {
+                        let (banks, tones) = self
+                            .pod_bundle
+                            .as_ref()
+                            .map_or((0, 0), |bundle| (bundle.bank_count(), bundle.entry_count()));
                         self.pod_message = format!(
-                            "Loaded {} for PODxt Live {:08x}. {}",
-                            summary.container,
-                            summary.device_id,
-                            pod_preset::PAYLOADS_NOT_DECODED
+                            "Loaded PODxt Live collection with {banks} banks and {tones} tones. Offline edits only; nothing was sent."
                         );
                     }
                     Err(error) => self.pod_message = error.detail(),
-                },
-                Err(error) => self.pod_message = rejection_text(&error),
-            },
+                }
+            }
+            Ok(bytes) => {
+                if self.pod_bundle.is_some() && self.pod_dirty() {
+                    self.pod_message =
+                        "Save or discard bank edits before loading an individual tone.".into();
+                    return;
+                }
+                match Session::initial_rig().open_pod_preset(RoleKind::Pod, &bytes) {
+                    Ok(summary) => {
+                        let replaces_bundle_document = self.pod_bundle.is_some();
+                        let mut candidate_library = if replaces_bundle_document {
+                            Library::default()
+                        } else {
+                            self.pod_library.clone()
+                        };
+                        match candidate_library.import_bytes(bytes) {
+                            Ok(index) => {
+                                self.pod_library = candidate_library;
+                                if replaces_bundle_document {
+                                    self.pod_bundle = None;
+                                    self.pod_document_generation =
+                                        self.pod_document_generation.wrapping_add(1);
+                                    self.pod_eq_reset_pending = None;
+                                    self.pod_cab_pending = None;
+                                    self.pod_harmony_pending = None;
+                                }
+                                self.pod_selected = Some(index);
+                                self.pod_cab_pending = None;
+                                self.pod_delay_model_pending = None;
+                                self.pod_mod_model_pending = None;
+                                self.pod_stomp_model_pending = None;
+                                self.pod_reverb_model_pending = None;
+                                self.pod_amp_model_pending = None;
+                                self.pod_delay_pending = None;
+                                self.pod_mod_pending = None;
+                                self.pod_harmony_pending = None;
+                                self.pod_name = summary.name;
+                                self.pod_message = format!(
+                                    "Loaded {} for PODxt Live {:08x}. {}",
+                                    summary.container,
+                                    summary.device_id,
+                                    pod_preset::PAYLOADS_NOT_DECODED
+                                );
+                            }
+                            Err(error) => self.pod_message = error.detail(),
+                        }
+                    }
+                    Err(error) => self.pod_message = rejection_text(&error),
+                }
+            }
             Err(error) => self.pod_message = error.detail(),
         }
     }
@@ -1790,12 +4163,242 @@ impl Workbench {
             return;
         };
         match Session::initial_rig().rename_pod_preset(RoleKind::Pod, &current, &self.pod_name) {
-            Ok(bytes) => match self.pod_library.replace(index, bytes) {
+            Ok(bytes) => match self.replace_pod_tone(index, bytes) {
                 Ok(()) => {
                     self.pod_message = format!(
                         "Renamed the in-memory tone to {}. Nothing was sent.",
                         self.pod_name
                     );
+                }
+                Err(error) => self.pod_message = error.detail(),
+            },
+            Err(error) => self.pod_message = rejection_text(&error),
+        }
+    }
+
+    fn apply_pod_amp_model_choice(
+        &mut self,
+        choice: pod_preset::PodAmpModelChoice,
+        expected_current_id: Option<u32>,
+    ) -> bool {
+        let Some(index) = self.pod_selected else {
+            self.pod_message = "Select a tone before applying an AMP model.".into();
+            return false;
+        };
+        let Some(current) = self
+            .pod_library
+            .tone(index)
+            .map(|tone| tone.as_bytes().to_vec())
+        else {
+            self.pod_message = "Select a tone before applying an AMP model.".into();
+            return false;
+        };
+        let current_id = self
+            .pod_library
+            .tone(index)
+            .and_then(pod_preset::PodTone::amp_model_id);
+        if expected_current_id.is_some_and(|expected| current_id != Some(expected)) {
+            self.pod_amp_model_pending = None;
+            self.pod_message =
+                "Discarded a stale AMP choice because the stored model changed.".into();
+            return false;
+        }
+        match Session::initial_rig().set_pod_amp_model_choice(RoleKind::Pod, &current, choice) {
+            Ok(bytes) => match self.replace_pod_tone(index, bytes) {
+                Ok(()) => {
+                    self.pod_message = format!(
+                        "Applied AMP model {} (0x{:08x}) to the offline tone. Nothing was sent.",
+                        choice.label(),
+                        choice.model_id()
+                    );
+                    true
+                }
+                Err(error) => {
+                    self.pod_message = error.detail();
+                    false
+                }
+            },
+            Err(error) => {
+                self.pod_message = rejection_text(&error);
+                false
+            }
+        }
+    }
+
+    fn apply_pod_delay_model_choice(
+        &mut self,
+        index: usize,
+        choice: pod_preset::PodDelayModelChoice,
+    ) -> Result<(), pod_preset::ToneError> {
+        let slot_ids = [pod_preset::DELAY_SLOT, 0x0005_0004];
+        let before = self
+            .pod_library
+            .tone(index)
+            .and_then(|tone| {
+                tone.models()
+                    .iter()
+                    .find(|model| slot_ids.contains(&model.slot))
+            })
+            .map(|model| model.model_id);
+        self.edit_pod_tone(index, |tone| tone.set_delay_model_choice(choice))?;
+        let after = self
+            .pod_library
+            .tone(index)
+            .and_then(|tone| {
+                tone.models()
+                    .iter()
+                    .find(|model| slot_ids.contains(&model.slot))
+            })
+            .map(|model| model.model_id);
+        if before != after {
+            self.pod_delay_pending = None;
+        }
+        Ok(())
+    }
+
+    fn apply_pod_mod_model_choice(
+        &mut self,
+        index: usize,
+        choice: pod_preset::PodModModelChoice,
+    ) -> Result<(), pod_preset::ToneError> {
+        let slots = [pod_preset::MOD_SLOT, 0x0005_0003];
+        let before = self
+            .pod_library
+            .tone(index)
+            .and_then(|tone| {
+                tone.models()
+                    .iter()
+                    .find(|model| slots.contains(&model.slot))
+            })
+            .map(|model| model.model_id);
+        let bytes = self
+            .pod_library
+            .tone(index)
+            .ok_or_else(|| pod_preset::ToneError::format("POD selection is out of range"))?
+            .as_bytes()
+            .to_vec();
+        let replacement = Session::initial_rig()
+            .set_pod_mod_model_choice(RoleKind::Pod, &bytes, choice)
+            .map_err(|error| pod_preset::ToneError::format(rejection_text(&error)))?;
+        self.replace_pod_tone(index, replacement)?;
+        let after = self
+            .pod_library
+            .tone(index)
+            .and_then(|tone| {
+                tone.models()
+                    .iter()
+                    .find(|model| slots.contains(&model.slot))
+            })
+            .map(|model| model.model_id);
+        if before != after {
+            self.pod_mod_pending = None;
+        }
+        Ok(())
+    }
+
+    fn apply_pod_stomp_model_choice(
+        &mut self,
+        index: usize,
+        choice: pod_preset::PodStompModelChoice,
+    ) -> Result<bool, pod_preset::ToneError> {
+        let current = self
+            .pod_library
+            .tone(index)
+            .ok_or_else(|| pod_preset::ToneError::format("POD selection is out of range"))?
+            .as_bytes()
+            .to_vec();
+        let replacement = Session::initial_rig()
+            .set_pod_stomp_model_choice(RoleKind::Pod, &current, choice)
+            .map_err(|error| pod_preset::ToneError::format(rejection_text(&error)))?;
+        if replacement == current {
+            return Ok(false);
+        }
+        self.replace_pod_tone(index, replacement)?;
+        if self
+            .pod_harmony_pending
+            .is_some_and(|(pending_index, _, _)| pending_index == index)
+        {
+            self.pod_harmony_pending = None;
+        }
+        Ok(true)
+    }
+
+    fn apply_pod_reverb_model_choice(
+        &mut self,
+        index: usize,
+        choice: pod_preset::PodReverbModelChoice,
+    ) -> Result<bool, pod_preset::ToneError> {
+        let current = self
+            .pod_library
+            .tone(index)
+            .ok_or_else(|| pod_preset::ToneError::format("POD selection is out of range"))?
+            .as_bytes()
+            .to_vec();
+        let replacement = Session::initial_rig()
+            .set_pod_reverb_model_choice(RoleKind::Pod, &current, choice)
+            .map_err(|error| pod_preset::ToneError::format(rejection_text(&error)))?;
+        if replacement == current {
+            return Ok(false);
+        }
+        self.replace_pod_tone(index, replacement)?;
+        Ok(true)
+    }
+
+    fn apply_pod_cab_model_choice(&mut self, choice: pod_preset::PodCabModelChoice) {
+        let Some(index) = self.pod_selected else {
+            return;
+        };
+        let Some(current) = self
+            .pod_library
+            .tone(index)
+            .map(|tone| tone.as_bytes().to_vec())
+        else {
+            return;
+        };
+        let Some((generation, pending_index, original)) = self.pod_cab_pending_origin.take() else {
+            self.pod_message =
+                "Discarded the staged CAB choice because its original tone state is unavailable."
+                    .into();
+            self.pod_cab_pending = None;
+            return;
+        };
+        if generation != self.pod_document_generation
+            || pending_index != index
+            || current != original
+        {
+            self.pod_message = "Discarded the staged CAB choice because its tone changed or selection became stale.".into();
+            self.pod_cab_pending = None;
+            return;
+        }
+        match Session::initial_rig().set_pod_cab_model_choice(RoleKind::Pod, &current, choice) {
+            Ok(bytes) => match self.replace_pod_tone(index, bytes) {
+                Ok(()) => {
+                    self.pod_message = format!(
+                        "Applied CAB {}. MIC value was preserved; nothing was sent.",
+                        choice.numeric_label()
+                    )
+                }
+                Err(error) => self.pod_message = error.detail(),
+            },
+            Err(error) => self.pod_message = rejection_text(&error),
+        }
+    }
+
+    fn apply_pod_mic_choice(&mut self, choice: pod_preset::PodMicChoice) {
+        let Some(index) = self.pod_selected else {
+            return;
+        };
+        let Some(current) = self
+            .pod_library
+            .tone(index)
+            .map(|tone| tone.as_bytes().to_vec())
+        else {
+            return;
+        };
+        match Session::initial_rig().set_pod_mic_choice(RoleKind::Pod, &current, choice) {
+            Ok(bytes) => match self.replace_pod_tone(index, bytes) {
+                Ok(()) => {
+                    self.pod_message = format!("Applied MIC {}. Nothing was sent.", choice.value())
                 }
                 Err(error) => self.pod_message = error.detail(),
             },
@@ -1812,6 +4415,36 @@ impl Workbench {
     }
 
     fn write_pod_copy(&mut self, index: usize) -> bool {
+        if self.pod_bundle.is_some() {
+            let Some(path) = self.dialogs.save_pod_tone("podxt-live-bank.vwb") else {
+                self.pod_message = "Save cancelled. No file was written.".into();
+                return false;
+            };
+            let Some(bundle) = self.pod_bundle.as_ref() else {
+                return false;
+            };
+            match bundle.save_copy(&path) {
+                Ok(()) => {
+                    if let Some(bundle) = &mut self.pod_bundle {
+                        bundle.note_saved();
+                    }
+                    for tone_index in 0..self.pod_library.len() {
+                        if self.pod_library.is_dirty(tone_index) {
+                            let _ = self.pod_library.note_saved(tone_index);
+                        }
+                    }
+                    self.pod_message = format!(
+                        "Saved a new bank/collection copy at {}. Existing files were not replaced. Nothing was sent.",
+                        path.display()
+                    );
+                    return true;
+                }
+                Err(error) => {
+                    self.pod_message = error.detail();
+                    return false;
+                }
+            }
+        }
         let Some((bytes, suggested)) = self
             .pod_library
             .tone(index)
@@ -1983,7 +4616,7 @@ impl Drop for Workbench {
     }
 }
 
-const USAGE: &str = "Usage: variax-workbench-gui [FILE | --preset FILE] [--data-dir DIRECTORY] [--artwork EDITOR_IMAGE_FOLDER] [--tab body|pickups|tuning|controls] [--display auto|x11|wayland (Linux)] [--screenshot OUTPUT.png]";
+const USAGE: &str = "Usage: variax-workbench-gui [FILE | --preset FILE] [--data-dir DIRECTORY] [--artwork EDITOR_IMAGE_FOLDER] [--tab body|pickups|controls] [--display auto|x11|wayland (Linux)] [--screenshot OUTPUT.png]\n       variax-workbench-gui --version";
 
 fn save_screenshot(path: &Path, pixels: &[u8], width: u32, height: u32) -> Result<(), String> {
     use image::ImageEncoder;
@@ -1998,22 +4631,22 @@ struct GuiOptions {
     preset: Option<PathBuf>,
     artwork: PathBuf,
     screenshot: Option<PathBuf>,
-    tab: Tab,
+    tab: Option<Tab>,
     display: String,
 }
 
 fn parse_options(
     arguments: impl IntoIterator<Item = String>,
-    data_root: &Path,
+    default_artwork: &Path,
 ) -> Result<GuiOptions, String> {
     let mut options = GuiOptions {
         preset: None,
-        artwork: data_root.join("artwork"),
+        artwork: default_artwork.to_owned(),
         screenshot: None,
-        tab: Tab::Body,
+        tab: None,
         display: "auto".into(),
     };
-    let mut data_root = data_root.to_owned();
+    let mut data_root = None;
     let mut artwork = None;
     let mut args = arguments.into_iter();
     while let Some(arg) = args.next() {
@@ -2039,7 +4672,7 @@ fn parse_options(
                     return Err("Open one file at a time".into());
                 }
             }
-            "--data-dir" => data_root = PathBuf::from(value),
+            "--data-dir" => data_root = Some(PathBuf::from(value)),
             "--artwork" => artwork = Some(PathBuf::from(value)),
             "--display" => {
                 if !matches!(value.as_str(), "auto" | "x11" | "wayland") {
@@ -2058,30 +4691,46 @@ fn parse_options(
                 options.screenshot = Some(path);
             }
             "--tab" => {
-                options.tab = match value.as_str() {
+                options.tab = Some(match value.as_str() {
                     "body" => Tab::Body,
                     "pickups" => Tab::Pickups,
-                    "tuning" => Tab::Tuning,
+                    "tuning" => Tab::Pickups, // Tuning is always visible.
                     "controls" => Tab::Controls,
                     _ => return Err(format!("Unknown editor tab: {value}")),
-                }
+                });
             }
             _ => unreachable!(),
         }
     }
-    options.artwork = artwork.unwrap_or_else(|| data_root.join("artwork"));
+    if let Some(artwork) = artwork.or_else(|| data_root.map(|root| root.join("artwork"))) {
+        options.artwork = artwork;
+    }
     Ok(options)
 }
 
-fn default_data_root() -> PathBuf {
-    let absolute_env = |key| {
+fn default_artwork() -> PathBuf {
+    let absolute_env = |key: &str| {
         std::env::var_os(key)
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())
     };
     if let Some(path) = absolute_env("VARIAX_WORKBENCH_DATA_DIR") {
-        return path;
+        return path.join("artwork");
     }
+    let installed = platform_data_root(absolute_env).join("artwork");
+    default_artwork_from_checkout(installed, Path::new(env!("CARGO_MANIFEST_DIR")))
+}
+
+fn default_artwork_from_checkout(installed: PathBuf, checkout: &Path) -> PathBuf {
+    // A launcher can start the binary from outside the source checkout.
+    let extracted = checkout.join("assets/original-ui/modules/variax/editor/images");
+    if !installed.is_dir() && extracted.is_dir() {
+        return extracted;
+    }
+    installed
+}
+
+fn platform_data_root(absolute_env: impl Fn(&str) -> Option<PathBuf>) -> PathBuf {
     #[cfg(target_os = "windows")]
     if let Some(path) = absolute_env("LOCALAPPDATA") {
         return path.join("VariaxWorkbench");
@@ -2100,13 +4749,17 @@ fn default_data_root() -> PathBuf {
     std::env::temp_dir().join("variax-workbench")
 }
 
-fn main() -> eframe::Result {
+pub(crate) fn run(title: &str) -> eframe::Result {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
+    if arguments == ["--version"] {
+        println!("{title}");
+        return Ok(());
+    }
     if arguments.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!("{USAGE}");
         return Ok(());
     }
-    let arguments = match parse_options(arguments, &default_data_root()) {
+    let arguments = match parse_options(arguments, &default_artwork()) {
         Ok(options) => options,
         Err(error) => {
             eprintln!("{error}\n{USAGE}");
@@ -2139,13 +4792,19 @@ fn main() -> eframe::Result {
     };
     #[cfg(not(target_os = "linux"))]
     let _ = &arguments.display;
+    // Craft Anything saves the launcher's output in its play log.
+    eprintln!("Opening {title}");
     eframe::run_native(
-        "Variax Workbench",
+        title,
         options,
         Box::new(move |cc| {
-            let mut app = Workbench::new(cc, arguments.preset, arguments.artwork);
+            let mut app = Workbench::with_context(
+                &cc.egui_ctx,
+                arguments.preset,
+                arguments.artwork,
+                arguments.tab,
+            );
             app.screenshot = arguments.screenshot;
-            app.tab = arguments.tab;
             Ok(Box::new(app))
         }),
     )
@@ -2162,6 +4821,7 @@ mod tests {
             &context,
             Some(root.join("tests/fixtures/editor-preset.vwm")),
             root.join("assets/original-ui/modules/variax/editor/images"),
+            None,
         );
         // These tests exercise egui directly, without a display or theme polling.
         app.theme_polled = Instant::now();
@@ -2403,6 +5063,174 @@ mod tests {
     }
 
     #[test]
+    fn dragging_either_pickup_follows_the_pointer_and_undoes_in_one_step() {
+        fn frame(context: &egui::Context, app: &mut Workbench, events: Vec<egui::Event>) {
+            let _ = context.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1120., 760.))),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| app.render(ctx),
+            );
+        }
+        fn button(pos: Pos2, pressed: bool) -> egui::Event {
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            }
+        }
+
+        for (slot, other_slot, direction) in [(PICKUP1, PICKUP2, -1.0), (PICKUP2, PICKUP1, 1.0)] {
+            let context = egui::Context::default();
+            let artwork = tempfile::tempdir().unwrap();
+            let mut app = Workbench::with_context(&context, None, artwork.path().to_owned(), None);
+            app.theme_polled = Instant::now();
+            let texture = context.load_texture(
+                "synthetic pickup",
+                egui::ColorImage::filled([26, 92], Color32::WHITE),
+                egui::TextureOptions::LINEAR,
+            );
+            app.textures.insert("pickups/strat.png".into(), texture);
+            let before = app.document.as_ref().unwrap().as_bytes().to_vec();
+            let initial = app.float(slot, 0x200000).unwrap();
+            let other = app.float(other_slot, 0x200000).unwrap();
+            frame(&context, &mut app, vec![]);
+            frame(&context, &mut app, vec![]);
+            let id = egui::Id::new(("pickup-drag", slot));
+            let start = context.read_response(id).unwrap().rect.center();
+            let step = Vec2::new(10.0 * direction, 0.0);
+            frame(
+                &context,
+                &mut app,
+                vec![egui::Event::PointerMoved(start), button(start, true)],
+            );
+            frame(
+                &context,
+                &mut app,
+                vec![egui::Event::PointerMoved(start + step)],
+            );
+            let moved = app.float(slot, 0x200000).unwrap();
+            assert!((moved - initial) * direction > 0.0);
+            frame(&context, &mut app, vec![]);
+            assert_eq!(app.float(slot, 0x200000), Some(moved));
+
+            let second = start + step * 2.0 + Vec2::new(0.0, 10.0);
+            frame(&context, &mut app, vec![egui::Event::PointerMoved(second)]);
+            assert!((app.float(slot, 0x200000).unwrap() - (2.0 * moved - initial)).abs() < 1e-5);
+
+            let end = second + step;
+            frame(&context, &mut app, vec![button(end, false)]);
+            assert!(
+                (app.float(slot, 0x200000).unwrap() - (3.0 * moved - 2.0 * initial)).abs() < 1e-5
+            );
+            assert_eq!(app.float(other_slot, 0x200000), Some(other));
+            let changed = app.document.as_ref().unwrap().as_bytes().to_vec();
+            app.undo();
+            let document = app.document.as_ref().unwrap();
+            assert_eq!(document.as_bytes(), before);
+            assert!(!document.can_undo());
+            app.redo();
+            assert_eq!(app.document.as_ref().unwrap().as_bytes(), changed);
+        }
+    }
+
+    #[test]
+    fn fretboard_enable_button_uses_preset_history_and_respects_pending_actions() {
+        fn frame(context: &egui::Context, app: &mut Workbench, events: Vec<egui::Event>) {
+            let _ = context.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(960.0, 680.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| app.guitar_workspace(ui));
+                },
+            );
+        }
+
+        let (context, mut app) = app();
+        app.load(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/synthetic-host-preset.vwm"),
+        );
+        app.tab = Tab::Pickups;
+        let original = app.document.as_ref().unwrap().as_bytes().to_vec();
+        let tuning_enabled = |app: &Workbench| {
+            app.document
+                .as_ref()
+                .unwrap()
+                .preset()
+                .model(TUNING)
+                .unwrap()
+                .enabled
+        };
+        let was_enabled = tuning_enabled(&app);
+
+        let click_toggle = |app: &mut Workbench| {
+            frame(&context, app, vec![]);
+            frame(&context, app, vec![]);
+            let pos = app.tuning_toggle.unwrap().center();
+            for pressed in [true, false] {
+                frame(
+                    &context,
+                    app,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                );
+            }
+        };
+
+        app.pending = Some(Pending::Quit);
+        click_toggle(&mut app);
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), original);
+
+        app.pending = None;
+        click_toggle(&mut app);
+        assert_ne!(tuning_enabled(&app), was_enabled);
+        assert_eq!(app.tab, Tab::Pickups);
+        app.undo();
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), original);
+        assert!(!app.document.as_ref().unwrap().can_undo());
+        app.redo();
+        assert_ne!(tuning_enabled(&app), was_enabled);
+
+        app.tab = Tab::Controls;
+        click_toggle(&mut app);
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), original);
+        assert_eq!(app.tab, Tab::Controls);
+    }
+
+    #[test]
+    fn offline_example_opens_as_a_clean_editable_preset() {
+        let context = egui::Context::default();
+        let mut app = Workbench::with_context(&context, None, PathBuf::new(), None);
+
+        assert!(app.error.is_none());
+        assert_eq!(app.tab, Tab::Pickups);
+        assert_eq!(app.model_name(BODY), "Spank");
+        assert_eq!(app.float(SYSTEM, 0x200000), Some(0.0));
+        let document = app.document.as_ref().unwrap();
+        assert!(!document.is_dirty());
+        assert!(!document.can_undo());
+        let original = document.as_bytes().to_vec();
+
+        app.change(|preset| preset.rename("My example"));
+        assert!(app.dirty());
+        app.undo();
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), original);
+    }
+
+    #[test]
     fn artwork_dialog_cancel_and_folder_recovery_preserve_document() {
         let (context, mut app) = app();
         let directory = tempfile::tempdir().unwrap();
@@ -2488,6 +5316,171 @@ mod tests {
             },
             |ctx| app.render(ctx),
         );
+    }
+
+    fn recording_frame_tall(
+        context: &egui::Context,
+        app: &mut Workbench,
+        events: Vec<egui::Event>,
+    ) {
+        let _ = context.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 1600.0))),
+                events,
+                ..Default::default()
+            },
+            |ctx| app.render(ctx),
+        );
+    }
+
+    fn click_device_check(context: &egui::Context, app: &mut Workbench, id: &'static str) {
+        recording_frame(context, app, vec![]);
+        recording_frame(context, app, vec![]);
+        let pos = app.device_check_buttons[id].center();
+        recording_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+        recording_frame(context, app, vec![]);
+    }
+
+    fn device_check_app() -> (egui::Context, Workbench) {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        click_device_check(&context, &mut app, "open");
+        assert!(app.device_check_open);
+        (context, app)
+    }
+
+    #[test]
+    fn device_check_window_is_simulation_only_and_declines_by_default() {
+        let (context, mut app) = device_check_app();
+        assert!(app.device_check_visible.contains("Simulation"));
+        assert!(
+            app.device_check_visible
+                .contains("step 1 waiting for your answer real device: locked")
+        );
+        assert!(
+            app.device_check_visible
+                .contains(Stage::UsbRecognition.action())
+        );
+        assert!(
+            app.device_check_visible
+                .contains(Stage::UsbRecognition.risk())
+        );
+        const { assert!(!device_probe::LIVE_BACKEND_AVAILABLE) };
+        // Rendering alone never runs a step.
+        for _ in 0..5 {
+            recording_frame(&context, &mut app, vec![]);
+        }
+        assert_eq!(app.device_check.backend().calls(), Default::default());
+        // Enter on the focused default button answers No.
+        recording_frame(
+            &context,
+            &mut app,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+        );
+        recording_frame(&context, &mut app, vec![]);
+        assert_eq!(
+            app.device_check.status(Stage::UsbRecognition),
+            StageStatus::Stopped
+        );
+        assert_eq!(app.device_check.backend().calls(), Default::default());
+        assert!(app.device_check_visible.contains("Stopped at step 1"));
+        assert!(!app.device_check_buttons.is_empty());
+        assert!(app.read_worker.is_none());
+        assert!(!app.is_reading());
+    }
+
+    #[test]
+    fn device_check_decline_button_stops_without_running() {
+        let (context, mut app) = device_check_app();
+        click_device_check(&context, &mut app, "no");
+        assert_eq!(
+            app.device_check.status(Stage::UsbRecognition),
+            StageStatus::Stopped
+        );
+        assert!(app.device_check.finished());
+        assert_eq!(app.device_check.backend().calls(), Default::default());
+        assert!(app.device_check_visible.contains("You chose No"));
+    }
+
+    #[test]
+    fn device_check_passed_step_does_not_advance_by_itself() {
+        let (context, mut app) = device_check_app();
+        click_device_check(&context, &mut app, "yes");
+        assert_eq!(
+            app.device_check.status(Stage::UsbRecognition),
+            StageStatus::Passed
+        );
+        assert_eq!(app.device_check.awaiting(), Some(Stage::Identification));
+        for _ in 0..5 {
+            recording_frame(&context, &mut app, vec![]);
+        }
+        assert_eq!(
+            app.device_check.status(Stage::Identification),
+            StageStatus::NotRun
+        );
+        assert_eq!(app.device_check.backend().calls().identity_requests, 0);
+        assert!(
+            app.device_check_visible
+                .contains("step 2 waiting for your answer real device: locked")
+        );
+        assert!(app.device_check_visible.contains("0e41:4650"));
+        for _ in 0..3 {
+            click_device_check(&context, &mut app, "yes");
+        }
+        for stage in Stage::LADDER {
+            assert_eq!(app.device_check.status(stage), StageStatus::Passed);
+        }
+        assert!(
+            app.device_check_visible
+                .contains("All four steps passed in simulation")
+        );
+    }
+
+    #[test]
+    fn device_check_stops_on_failure_and_start_over_resets() {
+        let (context, mut app) = device_check_app();
+        app.device_check_scenario = device_probe::Scenario::TwoPods;
+        click_device_check(&context, &mut app, "restart");
+        click_device_check(&context, &mut app, "yes");
+        assert_eq!(
+            app.device_check.status(Stage::UsbRecognition),
+            StageStatus::Stopped
+        );
+        assert!(app.device_check.finished());
+        assert!(app.device_check_visible.contains("2 PODxt Live devices"));
+        assert!(!app.device_check_visible.contains("waiting for your answer"));
+        assert_eq!(app.device_check.backend().calls().identity_requests, 0);
+        click_device_check(&context, &mut app, "restart");
+        assert_eq!(app.device_check.awaiting(), Some(Stage::UsbRecognition));
+        assert_eq!(app.device_check.backend().calls(), Default::default());
     }
 
     fn click_recording(context: &egui::Context, app: &mut Workbench, id: &'static str) {
@@ -2810,6 +5803,72 @@ mod tests {
         );
     }
 
+    fn click_pod_model_enable(
+        context: &egui::Context,
+        app: &mut Workbench,
+        control: pod_preset::PodModelEnable,
+    ) {
+        recording_frame(context, app, vec![]);
+        let pos = app.pod_model_enable_checks[&control].center();
+        recording_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
+    fn open_pod_model_enable_menu(context: &egui::Context, app: &mut Workbench) {
+        recording_frame(context, app, vec![]);
+        click_pod_model_enable_menu(context, app);
+        recording_frame(context, app, vec![]);
+    }
+
+    fn click_pod_model_enable_menu(context: &egui::Context, app: &mut Workbench) {
+        recording_frame(context, app, vec![]);
+        let pos = app.pod_model_enable_menu.unwrap().center();
+        recording_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
     fn sample_pod_tone() -> Vec<u8> {
         fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
             let mut output = id.to_vec();
@@ -2849,6 +5908,1578 @@ mod tests {
         chunk(b"FORM", &data)
     }
 
+    fn sample_delay_note_tone(delay_note: u32, mod_note: u32) -> Vec<u8> {
+        fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+            let mut output = id.to_vec();
+            output.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            output.extend_from_slice(data);
+            if !data.len().is_multiple_of(2) {
+                output.push(0xa5);
+            }
+            output
+        }
+        fn parameter(id: u32, kind: u32, bits: u32) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&(0x3f00_0000 | id).to_be_bytes());
+            bytes.extend_from_slice(&kind.to_be_bytes());
+            bytes.extend_from_slice(&bits.to_be_bytes());
+            chunk(b"PARM", &bytes)
+        }
+        fn model(slot: u32, model_id: u32, parameters: &[Vec<u8>]) -> Vec<u8> {
+            let mut minf = Vec::new();
+            minf.extend_from_slice(&model_id.to_be_bytes());
+            minf.extend_from_slice(&slot.to_be_bytes());
+            minf.extend_from_slice(&[0, 0, 0, 1]);
+            let mut contents = b"MODL".to_vec();
+            contents.extend(chunk(b"MINF", &minf));
+            for parameter in parameters {
+                contents.extend_from_slice(parameter);
+            }
+            chunk(b"LIST", &contents)
+        }
+        let mut info = vec![0; 80];
+        info[..4].copy_from_slice(&1u32.to_be_bytes());
+        info[4..8].copy_from_slice(&pod_preset::PODXT_LIVE_TONE_ID.to_be_bytes());
+        info[8..10].copy_from_slice(&u16::from(b'D').to_be_bytes());
+        info[72..76].copy_from_slice(&pod_preset::PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
+        let system = model(
+            0x0001_0000,
+            0x3e70_0000,
+            &[parameter(0x0020_0001, 1, 120.0_f32.to_bits())],
+        );
+        let modulation = model(
+            pod_preset::MOD_SLOT,
+            pod_preset::MOD_CONTROL_MODEL_IDS[0],
+            &[
+                parameter(0x0010_0000, 1, 0x3e80_0000),
+                parameter(0x0020_0000, 0, mod_note),
+            ],
+        );
+        let delay = model(
+            pod_preset::DELAY_SLOT,
+            0x0202_0002,
+            &[
+                parameter(0x0010_0000, 1, 0x3e80_0000),
+                parameter(0x0020_0000, 0, delay_note),
+            ],
+        );
+        let mut patch = b"PATC".to_vec();
+        patch.extend(system);
+        patch.extend(modulation);
+        patch.extend(delay);
+        let mut data = b"L6AS".to_vec();
+        data.extend(chunk(b"PINF", &info));
+        data.extend(chunk(b"LIST", &patch));
+        chunk(b"FORM", &data)
+    }
+
+    fn sample_stomp_model_tone(model_id: u32) -> Vec<u8> {
+        fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+            let mut bytes = id.to_vec();
+            bytes.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(data);
+            if !data.len().is_multiple_of(2) {
+                bytes.push(0xa5);
+            }
+            bytes
+        }
+        let mut info = vec![0; 80];
+        info[..4].copy_from_slice(&1u32.to_be_bytes());
+        info[4..8].copy_from_slice(&pod_preset::PODXT_LIVE_TONE_ID.to_be_bytes());
+        info[8..10].copy_from_slice(&u16::from(b'S').to_be_bytes());
+        info[72..76].copy_from_slice(&pod_preset::PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
+        let mut minf = Vec::new();
+        minf.extend_from_slice(&model_id.to_be_bytes());
+        minf.extend_from_slice(&pod_preset::STOMP_SLOT.to_be_bytes());
+        minf.extend_from_slice(&[0xfe, 0x12, 0x34, 0x01]);
+        let mut model = b"MODL".to_vec();
+        model.extend(chunk(b"MINF", &minf));
+        model.extend(chunk(b"PARM", &[0xde, 0xad, 0xbe]));
+        model.extend(chunk(b"XTRA", &[0x55, 0x66]));
+        let mut patch = b"PATC".to_vec();
+        patch.extend(chunk(b"LIST", &model));
+        let mut data = b"L6PA".to_vec();
+        data.extend(chunk(b"PINF", &info));
+        data.extend(chunk(b"LIST", &patch));
+        chunk(b"FORM", &data)
+    }
+
+    fn sample_reverb_model_tone_with_tail(model_id: u32, slot: u32, tail: &[u8]) -> Vec<u8> {
+        fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+            let mut bytes = id.to_vec();
+            bytes.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(data);
+            if !data.len().is_multiple_of(2) {
+                bytes.push(0xa5);
+            }
+            bytes
+        }
+        let mut info = vec![0; 80];
+        info[..4].copy_from_slice(&1u32.to_be_bytes());
+        info[4..8].copy_from_slice(&pod_preset::PODXT_LIVE_TONE_ID.to_be_bytes());
+        info[8..10].copy_from_slice(&u16::from(b'R').to_be_bytes());
+        info[72..76].copy_from_slice(&pod_preset::PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
+        let mut minf = Vec::new();
+        minf.extend_from_slice(&model_id.to_be_bytes());
+        minf.extend_from_slice(&slot.to_be_bytes());
+        minf.extend_from_slice(tail);
+        let mut model = b"MODL".to_vec();
+        model.extend(chunk(b"MINF", &minf));
+        model.extend(chunk(b"PARM", &[0xde, 0xad, 0xbe]));
+        model.extend(chunk(b"XTRA", &[0x55, 0x66]));
+        let mut patch = b"PATC".to_vec();
+        patch.extend(chunk(b"LIST", &model));
+        let mut data = b"L6PA".to_vec();
+        data.extend(chunk(b"PINF", &info));
+        data.extend(chunk(b"LIST", &patch));
+        chunk(b"FORM", &data)
+    }
+
+    fn sample_reverb_model_tone(model_id: u32, slot: u32) -> Vec<u8> {
+        sample_reverb_model_tone_with_tail(model_id, slot, &[0xfe, 0x12, 0x34, 0x01])
+    }
+
+    fn sample_pod_bundle(tones: &[Vec<u8>]) -> Vec<u8> {
+        fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+            let mut output = id.to_vec();
+            output.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            output.extend_from_slice(data);
+            if !data.len().is_multiple_of(2) {
+                output.push(0xa5);
+            }
+            output
+        }
+        let mut root = b"L6CO".to_vec();
+        root.extend(chunk(b"JUNK", &[0x71, 0x72, 0x73]));
+        for (index, tone) in tones.iter().enumerate() {
+            let mut bank = if index == 0 {
+                b"BANK".to_vec()
+            } else {
+                b"FLDR".to_vec()
+            };
+            let mut info = vec![0; 68];
+            info[4..6].copy_from_slice(&u16::from(b'A' + index as u8).to_be_bytes());
+            bank.extend(chunk(b"BINF", &info));
+            bank.extend(chunk(b"NOTE", &[0x91, 0x92, 0x93]));
+            bank.extend_from_slice(tone);
+            root.extend(chunk(b"LIST", &bank));
+        }
+        chunk(b"FORM", &root)
+    }
+
+    fn sample_fixed_pod_bank(tones: &[Vec<u8>]) -> Vec<u8> {
+        fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+            let mut output = id.to_vec();
+            output.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            output.extend_from_slice(data);
+            if !data.len().is_multiple_of(2) {
+                output.push(0xa5);
+            }
+            output
+        }
+        let mut info = vec![0; 68];
+        info[4..6].copy_from_slice(&u16::from(b'A').to_be_bytes());
+        let mut bank = b"BANK".to_vec();
+        bank.extend(chunk(b"BINF", &info));
+        bank.extend(chunk(b"BEFR", &[0x11, 0x22, 0x33]));
+        for (index, tone) in tones.iter().enumerate() {
+            bank.extend_from_slice(tone);
+            if index + 1 < tones.len() {
+                bank.extend(chunk(b"MID!", &[0x44, 0x55, 0x66]));
+            }
+        }
+        bank.extend(chunk(b"AFTR", &[0x77, 0x88, 0x99]));
+        let mut root = b"L6BA".to_vec();
+        root.extend(chunk(b"ROOT", &[0xaa, 0xbb, 0xcc]));
+        root.extend(chunk(b"LIST", &bank));
+        root.extend(chunk(b"TAIL", &[0xdd, 0xee, 0xff]));
+        chunk(b"FORM", &root)
+    }
+
+    fn as_fixed_bank_tone(mut tone: Vec<u8>) -> Vec<u8> {
+        tone[8..12].copy_from_slice(b"L6PA");
+        tone
+    }
+
+    fn sample_drive_pod_tone() -> Vec<u8> {
+        fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+            let mut output = id.to_vec();
+            output.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            output.extend_from_slice(data);
+            if !data.len().is_multiple_of(2) {
+                output.push(0xa5);
+            }
+            output
+        }
+        fn parameter(id: u32, value: f32) -> Vec<u8> {
+            let mut data = Vec::new();
+            data.extend_from_slice(&((0x3fu32 << 24) | id).to_be_bytes());
+            data.extend_from_slice(&1u32.to_be_bytes());
+            data.extend_from_slice(&value.to_bits().to_be_bytes());
+            chunk(b"PARM", &data)
+        }
+        fn model(slot: u32, model_id: u32, parameters: &[Vec<u8>]) -> Vec<u8> {
+            let mut minf = Vec::new();
+            minf.extend_from_slice(&model_id.to_be_bytes());
+            minf.extend_from_slice(&slot.to_be_bytes());
+            minf.extend_from_slice(&[0, 0, 0, 1]);
+            let mut body = b"MODL".to_vec();
+            body.extend(chunk(b"MINF", &minf));
+            for parameter in parameters {
+                body.extend_from_slice(parameter);
+            }
+            body.extend(chunk(b"XTRA", &[0xde, 0xad, 0xbe]));
+            chunk(b"LIST", &body)
+        }
+
+        let mut info = vec![0; 76];
+        info[..4].copy_from_slice(&1u32.to_be_bytes());
+        info[4..8].copy_from_slice(&pod_preset::PODXT_LIVE_TONE_ID.to_be_bytes());
+        info[8..10].copy_from_slice(&u16::from(b'A').to_be_bytes());
+        info[72..76].copy_from_slice(&pod_preset::PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
+        let mut patch = b"PATC".to_vec();
+        patch.extend(model(
+            pod_preset::AMP_SLOT,
+            pod_preset::PLEXI_45_MODEL,
+            &[parameter(pod_preset::AMP_DRIVE_PARAM, 0.5)],
+        ));
+        patch.extend(model(
+            pod_preset::STOMP_SLOT,
+            pod_preset::STOMP_DRIVE_MODEL_ID,
+            &[
+                parameter(pod_preset::STOMP_DRIVE_PARAM, 0.25),
+                parameter(pod_preset::STOMP_GAIN_PARAM, 0.5),
+                parameter(pod_preset::STOMP_TONE_PARAM, 0.75),
+            ],
+        ));
+        patch.extend(model(
+            pod_preset::MOD_SLOT,
+            pod_preset::MOD_CONTROL_MODEL_IDS[0],
+            &[
+                parameter(0x0010_0001, 0.2),
+                parameter(0x0010_0002, 0.4),
+                parameter(0x0010_0003, 0.6),
+            ],
+        ));
+        patch.extend(model(
+            pod_preset::REVERB_SLOT,
+            pod_preset::REVERB_CONTROL_MODEL_IDS[0],
+            &[parameter(0x0010_0000, 0.3), parameter(0x0010_0002, 0.6)],
+        ));
+        patch.extend(model(
+            pod_preset::DELAY_SLOT,
+            pod_preset::DELAY_CONTROL_MODEL_IDS[0],
+            &[
+                parameter(0x0010_0001, 0.2),
+                parameter(0x0010_0002, 0.4),
+                parameter(0x0010_0003, 0.6),
+            ],
+        ));
+        let mut data = b"L6AS".to_vec();
+        data.extend(chunk(b"ODD!", &[0x17, 0x28, 0x39]));
+        data.extend(chunk(b"PINF", &info));
+        data.extend(chunk(b"LIST", &patch));
+        chunk(b"FORM", &data)
+    }
+
+    fn sample_cab_mic_pod_tone(cab_id: u32, mic_value: u32) -> Vec<u8> {
+        fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+            let mut out = id.to_vec();
+            out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            out.extend_from_slice(data);
+            if !data.len().is_multiple_of(2) {
+                out.push(0xa5);
+            }
+            out
+        }
+        let mut info = vec![0; 76];
+        info[..4].copy_from_slice(&1u32.to_be_bytes());
+        info[4..8].copy_from_slice(&pod_preset::PODXT_LIVE_TONE_ID.to_be_bytes());
+        info[8..10].copy_from_slice(&u16::from(b'C').to_be_bytes());
+        info[72..76].copy_from_slice(&pod_preset::PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
+        let mut minf = Vec::new();
+        minf.extend_from_slice(&cab_id.to_be_bytes());
+        minf.extend_from_slice(&pod_preset::CAB_SLOT.to_be_bytes());
+        minf.extend_from_slice(&[0x80, 0xa1, 0xb2, 0xfe]);
+        let mut mic = Vec::new();
+        mic.extend_from_slice(&0x3f00_0000u32.to_be_bytes());
+        mic.extend_from_slice(&0u32.to_be_bytes());
+        mic.extend_from_slice(&mic_value.to_be_bytes());
+        let mut model = b"MODL".to_vec();
+        model.extend(chunk(b"MINF", &minf));
+        model.extend(chunk(b"PARM", &mic));
+        let mut patch = b"PATC".to_vec();
+        patch.extend(chunk(b"LIST", &model));
+        let mut data = b"L6AS".to_vec();
+        data.extend(chunk(b"PINF", &info));
+        data.extend(chunk(b"LIST", &patch));
+        chunk(b"FORM", &data)
+    }
+
+    fn sample_pod_eq_tone() -> Vec<u8> {
+        sample_pod_eq_tone_with_amp(false)
+    }
+
+    fn sample_pod_amp_eq_tone() -> Vec<u8> {
+        sample_pod_eq_tone_with_amp(true)
+    }
+
+    fn sample_pod_eq_tone_with_amp(include_amp: bool) -> Vec<u8> {
+        fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+            let mut bytes = id.to_vec();
+            bytes.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(data);
+            if !data.len().is_multiple_of(2) {
+                bytes.push(0xa5);
+            }
+            bytes
+        }
+        let mut info = vec![0; 76];
+        info[..4].copy_from_slice(&1u32.to_be_bytes());
+        info[4..8].copy_from_slice(&pod_preset::PODXT_LIVE_TONE_ID.to_be_bytes());
+        info[72..76].copy_from_slice(&pod_preset::PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
+        let mut model = b"MODL".to_vec();
+        let mut minf = Vec::new();
+        minf.extend_from_slice(&pod_preset::PODXT_EQ_MODEL_ID.to_be_bytes());
+        minf.extend_from_slice(&pod_preset::PODXT_EQ_SLOT.to_be_bytes());
+        minf.extend_from_slice(&[0, 0, 0, 1]);
+        model.extend(chunk(b"MINF", &minf));
+        for id in 0x0010_0000u32..=0x0010_0007 {
+            let mut parm = Vec::new();
+            parm.extend_from_slice(&(0x3f00_0000 | id).to_be_bytes());
+            parm.extend_from_slice(&1u32.to_be_bytes());
+            parm.extend_from_slice(&0x3f00_0000u32.to_be_bytes());
+            model.extend(chunk(b"PARM", &parm));
+        }
+        let mut patch = b"PATC".to_vec();
+        patch.extend(chunk(b"LIST", &model));
+        if include_amp {
+            let mut amp_model = b"MODL".to_vec();
+            let mut amp_minf = Vec::new();
+            amp_minf.extend_from_slice(&pod_preset::PLEXI_45_MODEL.to_be_bytes());
+            amp_minf.extend_from_slice(&pod_preset::AMP_SLOT.to_be_bytes());
+            amp_minf.extend_from_slice(&[0, 0, 0, 1]);
+            amp_model.extend(chunk(b"MINF", &amp_minf));
+            patch.extend(chunk(b"LIST", &amp_model));
+        }
+        let mut data = b"L6AS".to_vec();
+        data.extend(chunk(b"PINF", &info));
+        data.extend(chunk(b"LIST", &patch));
+        chunk(b"FORM", &data)
+    }
+
+    #[test]
+    fn pod_model_enable_gui_clicks_direct_tone_and_bundle_and_disables_noncanonical_state() {
+        let (context, mut app) = app();
+        let mut amp_tone = sample_pod_tone();
+        let pinf_header = amp_tone
+            .windows(4)
+            .position(|window| window == b"PINF")
+            .unwrap();
+        let pinf_data = pinf_header + 8;
+        amp_tone[pinf_data + 72..pinf_data + 76]
+            .copy_from_slice(&pod_preset::PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
+        let original = amp_tone.clone();
+        app.pod_library.import_bytes(amp_tone).unwrap();
+        app.pod_selected = Some(0);
+        app.pod_open = true;
+        recording_frame(&context, &mut app, vec![]);
+        open_pod_model_enable_menu(&context, &mut app);
+        assert!(
+            app.pod_model_enable_checks
+                .contains_key(&pod_preset::PodModelEnable::Amp)
+        );
+        assert!(
+            !app.pod_model_enable_checks
+                .contains_key(&pod_preset::PodModelEnable::Eq)
+        );
+        let mut marker = 0x1111_0002u32.to_be_bytes().to_vec();
+        marker.extend_from_slice(&pod_preset::AMP_SLOT.to_be_bytes());
+        let minf_body = original
+            .windows(marker.len())
+            .position(|window| window == marker)
+            .unwrap();
+        let enabled_offset = minf_body + 11;
+        let mut expected = original.clone();
+        expected[enabled_offset] = 0;
+        click_pod_model_enable(&context, &mut app, pod_preset::PodModelEnable::Amp);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), expected);
+        assert!(app.pod_library.is_dirty(0));
+        app.pod_library.revert_unsaved(0).unwrap();
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+
+        let mut short_minfo = original.clone();
+        let minf_header = short_minfo
+            .windows(4)
+            .position(|window| window == b"MINF")
+            .unwrap();
+        short_minfo[minf_header + 4..minf_header + 8].copy_from_slice(&11u32.to_be_bytes());
+        short_minfo[minf_header + 8 + 11] = 0;
+        let short_original = short_minfo.clone();
+        app.pod_library.clear();
+        app.pod_library.import_bytes(short_minfo).unwrap();
+        app.pod_selected = Some(0);
+        recording_frame(&context, &mut app, vec![]);
+        open_pod_model_enable_menu(&context, &mut app);
+        assert!(
+            !app.pod_model_enable_checks
+                .contains_key(&pod_preset::PodModelEnable::Amp)
+        );
+        assert!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .model_enable_state(pod_preset::PodModelEnable::Amp)
+                .is_err()
+        );
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), short_original);
+        assert!(!app.pod_library.is_dirty(0));
+        click_pod_model_enable_menu(&context, &mut app);
+
+        let mut noncanonical = original;
+        noncanonical[enabled_offset] = 0x80;
+        let state = pod_preset::PodTone::parse(noncanonical.clone())
+            .unwrap()
+            .model_enable_state(pod_preset::PodModelEnable::Amp)
+            .unwrap();
+        assert_eq!(
+            state,
+            pod_preset::ModelEnableState::NonCanonical {
+                raw: 0x80,
+                source_interpretation: false,
+            }
+        );
+        app.pod_library.clear();
+        app.pod_library.import_bytes(noncanonical.clone()).unwrap();
+        app.pod_selected = Some(0);
+        recording_frame(&context, &mut app, vec![]);
+        open_pod_model_enable_menu(&context, &mut app);
+        assert!(
+            !app.pod_model_enable_checks
+                .contains_key(&pod_preset::PodModelEnable::Amp)
+        );
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), noncanonical);
+        assert!(!app.pod_library.is_dirty(0));
+        click_pod_model_enable_menu(&context, &mut app);
+
+        let eq_tone = sample_pod_eq_tone();
+        app.load_pod_bundle_bytes(sample_pod_bundle(std::slice::from_ref(&eq_tone)))
+            .unwrap();
+        app.pod_open = true;
+        recording_frame(&context, &mut app, vec![]);
+        open_pod_model_enable_menu(&context, &mut app);
+        assert!(
+            app.pod_model_enable_checks
+                .contains_key(&pod_preset::PodModelEnable::Eq)
+        );
+        click_pod_model_enable(&context, &mut app, pod_preset::PodModelEnable::Eq);
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_eq!(
+            app.pod_bundle
+                .as_ref()
+                .unwrap()
+                .tone(0, 0)
+                .unwrap()
+                .model_enable_state(pod_preset::PodModelEnable::Eq),
+            Ok(pod_preset::ModelEnableState::Canonical(false))
+        );
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .model_enable_state(pod_preset::PodModelEnable::Eq),
+            Ok(pod_preset::ModelEnableState::Canonical(false))
+        );
+        assert!(app.pod_message.contains("Nothing was sent"));
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let collision = dir.path().join("existing.vwb");
+        std::fs::write(&collision, b"keep existing bytes").unwrap();
+        app.dialogs.queue_pod_save(Some(collision.clone()));
+        app.pending = Some(Pending::QuitPod);
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pending.is_none());
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+
+        app.pending = Some(Pending::QuitPod);
+        click_prompt(&context, &mut app, "save");
+        assert!(app.pending.is_some(), "failed save must keep quit pending");
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_eq!(std::fs::read(&collision).unwrap(), b"keep existing bytes");
+
+        let saved = dir.path().join("saved.vwb");
+        app.dialogs.queue_pod_save(Some(saved.clone()));
+        click_prompt(&context, &mut app, "save");
+        assert!(app.pending.is_none());
+        assert!(app.permit_close);
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_eq!(
+            pod_preset::PodBundleLibrary::parse(std::fs::read(saved).unwrap())
+                .unwrap()
+                .tone(0, 0)
+                .unwrap()
+                .model_enable_state(pod_preset::PodModelEnable::Eq),
+            Ok(pod_preset::ModelEnableState::Canonical(false))
+        );
+    }
+
+    fn sample_pod_eq_tone_with_words(frequency: u32, gain: u32) -> Vec<u8> {
+        let mut bytes = sample_pod_eq_tone();
+        let marker = 0x3f00_0000u32.to_be_bytes();
+        let mut offset = 0;
+        let mut parameter = 0;
+        while let Some(found) = bytes[offset..]
+            .windows(4)
+            .position(|window| window == marker)
+        {
+            let value_offset = offset + found;
+            let value = if parameter % 2 == 0 { frequency } else { gain };
+            bytes[value_offset..value_offset + 4].copy_from_slice(&value.to_be_bytes());
+            offset = value_offset + 4;
+            parameter += 1;
+            if parameter == 8 {
+                break;
+            }
+        }
+        assert_eq!(parameter, 8);
+        bytes
+    }
+
+    fn sample_stomp_wave_pod_tone() -> Vec<u8> {
+        sample_stomp_wave_pod_tone_with_bits(0x3f00_0000)
+    }
+
+    fn sample_stomp_wave_pod_tone_with_bits(bits: u32) -> Vec<u8> {
+        let mut bytes = sample_drive_pod_tone();
+        let mut model_slot = pod_preset::STOMP_DRIVE_MODEL_ID.to_be_bytes().to_vec();
+        model_slot.extend_from_slice(&pod_preset::STOMP_SLOT.to_be_bytes());
+        let offset = bytes
+            .windows(model_slot.len())
+            .position(|window| window == model_slot)
+            .expect("synthetic Stomp MINF");
+        bytes[offset..offset + 4]
+            .copy_from_slice(&pod_preset::STOMP_SYNTH_WAVE_MODEL_IDS[0].to_be_bytes());
+        let mut value_record = Vec::new();
+        value_record.extend_from_slice(
+            &((0x3fu32 << 24) | pod_preset::STOMP_SYNTH_WAVE_PARAM).to_be_bytes(),
+        );
+        value_record.extend_from_slice(&1u32.to_be_bytes());
+        value_record.extend_from_slice(&0x3e80_0000u32.to_be_bytes());
+        let value_offset = bytes
+            .windows(value_record.len())
+            .rposition(|window| window == value_record)
+            .expect("synthetic Stomp wave PARM")
+            + 8;
+        bytes[value_offset..value_offset + 4].copy_from_slice(&bits.to_be_bytes());
+        bytes
+    }
+
+    fn sample_stomp_harmony_pod_tone() -> Vec<u8> {
+        sample_stomp_harmony_pod_tone_with_duplicate(None)
+    }
+
+    fn sample_stomp_harmony_pod_tone_with_duplicate(duplicate: Option<(u32, u8, u32)>) -> Vec<u8> {
+        fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+            let mut out = id.to_vec();
+            out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            out.extend_from_slice(data);
+            if !data.len().is_multiple_of(2) {
+                out.push(0xa5);
+            }
+            out
+        }
+        let mut info = vec![0; 80];
+        info[..4].copy_from_slice(&1u32.to_be_bytes());
+        info[4..8].copy_from_slice(&pod_preset::PODXT_LIVE_TONE_ID.to_be_bytes());
+        info[8..10].copy_from_slice(&u16::from(b'A').to_be_bytes());
+        info[72..76].copy_from_slice(&pod_preset::PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
+        let mut patch = b"PATC".to_vec();
+        let mut model = b"MODL".to_vec();
+        let mut minf = Vec::new();
+        minf.extend_from_slice(&0x020a_0009u32.to_be_bytes());
+        minf.extend_from_slice(&pod_preset::STOMP_SLOT.to_be_bytes());
+        minf.extend_from_slice(&[1, 2, 3, 4]);
+        model.extend(chunk(b"MINF", &minf));
+        let mut records = vec![
+            (0x0010_0001u32, 0x3fu8, 0x3f00_0000u32),
+            (0x0010_0002, 0x3f, 0x3f40_8102),
+        ];
+        if let Some(duplicate) = duplicate {
+            records.push(duplicate);
+        }
+        for (id, prefix, bits) in records {
+            let mut parm = Vec::new();
+            parm.extend_from_slice(&((u32::from(prefix) << 24) | id).to_be_bytes());
+            parm.extend_from_slice(&1u32.to_be_bytes());
+            parm.extend_from_slice(&bits.to_be_bytes());
+            model.extend(chunk(b"PARM", &parm));
+        }
+        patch.extend(chunk(b"LIST", &model));
+        let mut data = b"L6AS".to_vec();
+        data.extend(chunk(b"PINF", &info));
+        data.extend(chunk(b"LIST", &patch));
+        chunk(b"FORM", &data)
+    }
+
+    fn sample_whammy_pod_tone() -> Vec<u8> {
+        let mut bytes = sample_drive_pod_tone();
+        let old = pod_preset::STOMP_DRIVE_MODEL_ID.to_be_bytes();
+        let offset = bytes
+            .windows(4)
+            .position(|word| word == old)
+            .expect("synthetic Stomp MINF");
+        bytes[offset..offset + 4]
+            .copy_from_slice(&pod_preset::STOMP_WHAMMY_INTERVAL_MODEL_ID.to_be_bytes());
+        bytes
+    }
+
+    fn sample_delay_association_pod_tone(model_id: u32) -> Vec<u8> {
+        let default_bits = if model_id == 0x0202_0005 {
+            0.4f32.to_bits()
+        } else {
+            0.6f32.to_bits()
+        };
+        sample_delay_association_pod_tone_with_bits(model_id, default_bits)
+    }
+
+    fn sample_delay_association_pod_tone_with_bits(model_id: u32, value_bits: u32) -> Vec<u8> {
+        let mut bytes = sample_drive_pod_tone();
+        let old = pod_preset::DELAY_CONTROL_MODEL_IDS[0].to_be_bytes();
+        let offset = bytes.windows(4).position(|word| word == old).unwrap();
+        bytes[offset..offset + 4].copy_from_slice(&model_id.to_be_bytes());
+        let parameter_id = if model_id == 0x0202_0005 {
+            0x0010_0002
+        } else {
+            0x0010_0003
+        };
+        let mut marker = ((0x3fu32 << 24) | parameter_id).to_be_bytes().to_vec();
+        marker.extend_from_slice(&1u32.to_be_bytes());
+        let value_offset = bytes
+            .windows(marker.len())
+            .rposition(|window| window == marker)
+            .unwrap()
+            + 8;
+        bytes[value_offset..value_offset + 4].copy_from_slice(&value_bits.to_be_bytes());
+        bytes
+    }
+
+    fn click_pod_at(context: &egui::Context, app: &mut Workbench, pos: Pos2) {
+        recording_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
+    fn choose_cab_popup(context: &egui::Context, app: &mut Workbench, model_id: u32) {
+        recording_frame(context, app, vec![]);
+        let combo = app.pod_cab_combo.expect("CAB choice combo is rendered");
+        click_pod_at(context, app, combo.center());
+        recording_frame(context, app, vec![]);
+        let option = app.pod_cab_options[&model_id].center();
+        click_pod_at(context, app, option);
+        recording_frame(context, app, vec![]);
+    }
+
+    #[test]
+    fn cab_popup_choice_persists_until_apply_and_isolated_per_tone() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let first = sample_cab_mic_pod_tone(0x0102_0000, 1);
+        let second = sample_cab_mic_pod_tone(0x0102_0001, 2);
+        app.pod_library.import_bytes(first.clone()).unwrap();
+        app.pod_library.import_bytes(second.clone()).unwrap();
+        app.pod_selected = Some(0);
+
+        recording_frame(&context, &mut app, vec![]);
+        choose_cab_popup(&context, &mut app, 0x0102_0002);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), first);
+        assert!(!app.pod_library.is_dirty(0));
+        assert_eq!(
+            app.pod_cab_pending,
+            Some((
+                0,
+                pod_preset::PodCabModelChoice::try_from(0x0102_0002).unwrap()
+            ))
+        );
+        recording_frame(&context, &mut app, vec![]);
+        assert_eq!(app.pod_cab_pending.unwrap().1.model_id(), 0x0102_0002);
+
+        click_pod(&context, &mut app, "pod-cab-apply");
+        let applied = app.pod_library.tone(0).unwrap();
+        assert_eq!(applied.cab_model_id(), Some(0x0102_0002));
+        assert_eq!(applied.mic_choice().unwrap().value(), 1);
+        assert!(app.pod_library.is_dirty(0));
+        assert_eq!(app.pod_library.tone(1).unwrap().as_bytes(), second);
+
+        choose_cab_popup(&context, &mut app, 0x0102_0003);
+        assert_eq!(app.pod_cab_pending.unwrap().1.model_id(), 0x0102_0003);
+        recording_frame(&context, &mut app, vec![]);
+        let second_row = app.pod_rows[&1].center();
+        click_pod_at(&context, &mut app, second_row);
+        recording_frame(&context, &mut app, vec![]);
+        assert_eq!(app.pod_selected, Some(1));
+        assert_eq!(app.pod_cab_pending.unwrap().0, 1);
+        assert_eq!(app.pod_cab_pending.unwrap().1.model_id(), 0x0102_0001);
+        assert_eq!(app.pod_library.tone(1).unwrap().as_bytes(), second);
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn l6pa_cab_mic_controls_render_and_apply_only_after_explicit_choice() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let original = include_bytes!("../tests/fixtures/pod-l6pa-cab-mic/cab.before.bin").to_vec();
+        app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_selected = Some(0);
+        recording_frame(&context, &mut app, vec![]);
+        assert!(app.pod_cab_combo.is_some());
+        choose_cab_popup(&context, &mut app, 0x0102_0002);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        click_pod(&context, &mut app, "pod-cab-apply");
+        let changed = app.pod_library.tone(0).unwrap();
+        assert_eq!(changed.cab_edit_model_id(), Some(0x0102_0002));
+        assert_eq!(changed.mic_choice().unwrap().value(), 2);
+        assert!(app.pod_library.is_dirty(0));
+
+        click_pod(&context, &mut app, "pod-mic-3");
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .mic_choice()
+                .unwrap()
+                .value(),
+            3
+        );
+        let staged = app.pod_cab_pending;
+        click_pod(&context, &mut app, "pod-cab-discard");
+        assert!(app.pod_cab_pending.is_none() || app.pod_cab_pending != staged);
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn l6pa_cab_edit_saves_reopens_and_stale_stages_do_not_cross_tones() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let original = include_bytes!("../tests/fixtures/pod-l6pa-cab-mic/cab.before.bin").to_vec();
+        let sibling =
+            include_bytes!("../tests/fixtures/pod-l6pa-cab-mic/mic-guitar.before.bin").to_vec();
+        app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_library.import_bytes(sibling.clone()).unwrap();
+        app.pod_selected = Some(0);
+        recording_frame(&context, &mut app, vec![]);
+
+        choose_cab_popup(&context, &mut app, 0x0102_0002);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        click_pod(&context, &mut app, "pod-cab-apply");
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().cab_edit_model_id(),
+            Some(0x0102_0002)
+        );
+        assert_eq!(app.pod_library.tone(1).unwrap().as_bytes(), sibling);
+        assert!(app.pod_library.is_dirty(0));
+
+        let directory = tempfile::tempdir().unwrap();
+        let saved = directory.path().join("l6pa-copy.tone");
+        app.dialogs = Box::new(FakeDialogs {
+            pod_save: [Some(saved.clone())].into(),
+            ..Default::default()
+        });
+        click_pod(&context, &mut app, "save-pod");
+        assert!(!app.pod_library.is_dirty(0));
+        let reopened = pod_preset::PodTone::parse(std::fs::read(saved).unwrap()).unwrap();
+        assert_eq!(reopened.cab_edit_model_id(), Some(0x0102_0002));
+        assert_eq!(reopened.mic_choice().unwrap().value(), 2);
+
+        choose_cab_popup(&context, &mut app, 0x0102_0003);
+        let staged = app.pod_cab_pending;
+        let sibling_row = app.pod_rows[&1].center();
+        click_pod_at(&context, &mut app, sibling_row);
+        recording_frame(&context, &mut app, vec![]);
+        assert_eq!(app.pod_selected, Some(1));
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().cab_edit_model_id(),
+            Some(0x0102_0002)
+        );
+        assert!(app.pod_cab_pending.is_none() || app.pod_cab_pending != staged);
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn l6pa_cab_stage_replacement_and_save_quit_failures_use_real_gui_paths() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let original = include_bytes!("../tests/fixtures/pod-l6pa-cab-mic/cab.before.bin").to_vec();
+        app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_selected = Some(0);
+        recording_frame(&context, &mut app, vec![]);
+
+        choose_cab_popup(&context, &mut app, 0x0102_0002);
+        assert_eq!(app.pod_cab_pending.unwrap().1.model_id(), 0x0102_0002);
+        let old_generation = app.pod_document_generation;
+        let mut replacement = original.clone();
+        let pinf = replacement
+            .windows(4)
+            .position(|word| word == b"PINF")
+            .unwrap()
+            + 8;
+        replacement[pinf + 8..pinf + 10].copy_from_slice(&[0, b'R']);
+        let original_tone = pod_preset::PodTone::parse(original.clone()).unwrap();
+        let replacement_tone = pod_preset::PodTone::parse(replacement.clone()).unwrap();
+        assert_eq!(
+            original_tone.cab_edit_model_id(),
+            replacement_tone.cab_edit_model_id()
+        );
+        assert_eq!(original_tone.mic_choice(), replacement_tone.mic_choice());
+        assert_ne!(original, replacement);
+
+        // A successful clean collection replacement reuses index zero and keeps
+        // CAB/MIC bytes identical while changing an unrelated PINF name byte.
+        app.load_pod_bundle_bytes(sample_pod_bundle(&[replacement.clone()]))
+            .unwrap();
+        assert_eq!(app.pod_document_generation, old_generation + 1);
+        assert_eq!(app.pod_selected, Some(0));
+        assert!(app.pod_cab_pending.is_none());
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), replacement);
+        assert!(!app.pod_dirty());
+
+        recording_frame(&context, &mut app, vec![]);
+        choose_cab_popup(&context, &mut app, 0x0102_0003);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), replacement);
+        click_pod(&context, &mut app, "pod-cab-apply");
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().cab_edit_model_id(),
+            Some(0x0102_0003)
+        );
+        assert!(app.pod_dirty());
+
+        let directory = tempfile::tempdir().unwrap();
+        let failed = directory.path().join("missing-parent/copy.vwb");
+        let collision = directory.path().join("occupied.vwb");
+        std::fs::write(&collision, b"keep original collision bytes").unwrap();
+        let saved = directory.path().join("saved.vwb");
+        app.dialogs = Box::new(FakeDialogs {
+            pod_save: [
+                None,
+                Some(failed.clone()),
+                Some(collision.clone()),
+                Some(saved.clone()),
+            ]
+            .into(),
+            ..Default::default()
+        });
+
+        click_pod(&context, &mut app, "save-pod");
+        assert!(app.pod_dirty());
+        assert!(!failed.exists());
+        click_pod(&context, &mut app, "save-pod");
+        assert!(app.pod_dirty());
+        assert!(!failed.exists());
+        click_pod(&context, &mut app, "save-pod");
+        assert!(app.pod_dirty());
+        assert_eq!(
+            std::fs::read(&collision).unwrap(),
+            b"keep original collision bytes"
+        );
+        click_pod(&context, &mut app, "save-pod");
+        assert!(!app.pod_dirty());
+        let reopened = pod_preset::PodBundleLibrary::parse(std::fs::read(&saved).unwrap()).unwrap();
+        assert_eq!(
+            reopened.tone(0, 0).unwrap().cab_edit_model_id(),
+            Some(0x0102_0003)
+        );
+        assert_eq!(
+            reopened.tone(0, 0).unwrap().mic_choice().unwrap().value(),
+            2
+        );
+
+        click_pod(&context, &mut app, "pod-mic-3");
+        assert!(app.pod_dirty());
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pending.is_none());
+        assert!(app.pod_dirty());
+        assert!(!app.permit_close);
+
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "discard");
+        assert!(app.pending.is_none());
+        assert!(!app.pod_dirty());
+        assert!(app.permit_close);
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().cab_edit_model_id(),
+            Some(0x0102_0003)
+        );
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .mic_choice()
+                .unwrap()
+                .value(),
+            2
+        );
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn cab_mic_gui_apply_collision_save_reopen_revert_and_quit_cancel() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let original = sample_cab_mic_pod_tone(0x0102_0000, 1);
+        app.pod_library.import_bytes(original).unwrap();
+        app.pod_selected = Some(0);
+        recording_frame(&context, &mut app, vec![]);
+
+        choose_cab_popup(&context, &mut app, 0x0102_0002);
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().cab_model_id(),
+            Some(0x0102_0000)
+        );
+        click_pod(&context, &mut app, "pod-cab-apply");
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().cab_model_id(),
+            Some(0x0102_0002)
+        );
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .mic_choice()
+                .unwrap()
+                .value(),
+            1
+        );
+        assert!(app.pod_library.is_dirty(0));
+
+        let directory = tempfile::tempdir().unwrap();
+        let collision = directory.path().join("occupied.tone");
+        std::fs::write(&collision, b"preserve existing destination").unwrap();
+        let saved = directory.path().join("cab-copy.tone");
+        app.dialogs = Box::new(FakeDialogs {
+            pod_save: [Some(collision.clone()), Some(saved.clone())].into(),
+            ..Default::default()
+        });
+        click_pod(&context, &mut app, "save-pod");
+        assert!(app.pod_library.is_dirty(0));
+        assert_eq!(
+            std::fs::read(&collision).unwrap(),
+            b"preserve existing destination"
+        );
+        click_pod(&context, &mut app, "save-pod");
+        assert!(!app.pod_library.is_dirty(0));
+        let reopened = pod_preset::PodTone::parse(std::fs::read(&saved).unwrap()).unwrap();
+        assert_eq!(reopened.cab_model_id(), Some(0x0102_0002));
+        assert_eq!(reopened.mic_choice().unwrap().value(), 1);
+
+        choose_cab_popup(&context, &mut app, 0x0102_0003);
+        click_pod(&context, &mut app, "pod-cab-apply");
+        assert!(app.pod_library.is_dirty(0));
+        app.pod_library.revert_unsaved(0).unwrap();
+        app.refresh_selected_pod_name();
+        assert_eq!(app.pod_cab_pending, None);
+        recording_frame(&context, &mut app, vec![]);
+        assert_eq!(app.pod_cab_pending.unwrap().1.model_id(), 0x0102_0002);
+
+        click_pod(&context, &mut app, "pod-mic-3");
+        assert!(app.pod_library.is_dirty(0));
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .mic_choice()
+                .unwrap()
+                .value(),
+            3
+        );
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pod_library.is_dirty(0));
+        assert!(!app.permit_close);
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    fn select_delay_heads_choice(
+        context: &egui::Context,
+        app: &mut Workbench,
+        choice: pod_preset::DelayHeadsSelection,
+    ) {
+        recording_frame_tall(context, app, vec![]);
+        let choice_rect = app.pod_delay_heads_choices[&choice];
+        click_pod_at_tall(context, app, choice_rect.center());
+        recording_frame_tall(context, app, vec![]);
+    }
+
+    fn select_delay_bits_choice(
+        context: &egui::Context,
+        app: &mut Workbench,
+        choice: pod_preset::DelayBitsSelection,
+    ) {
+        recording_frame_tall(context, app, vec![]);
+        let choice_rect = app.pod_delay_bits_choices[&choice];
+        click_pod_at_tall(context, app, choice_rect.center());
+        recording_frame_tall(context, app, vec![]);
+    }
+
+    fn select_stomp_wave_choice(
+        context: &egui::Context,
+        app: &mut Workbench,
+        choice: pod_preset::StompWaveSelection,
+    ) {
+        recording_frame_tall(context, app, vec![]);
+        let choice_rect = app.pod_stomp_wave_choices[&choice];
+        click_pod_at_tall(context, app, choice_rect.center());
+        recording_frame_tall(context, app, vec![]);
+    }
+
+    fn stage_stomp_harmony1_choice(
+        context: &egui::Context,
+        app: &mut Workbench,
+        choice: pod_preset::StompHarmony1M335Selection,
+    ) {
+        recording_frame_tall(context, app, vec![]);
+        let rect = app.pod_harmony1_choices[&choice];
+        click_pod_at_tall(context, app, rect.center());
+        recording_frame_tall(context, app, vec![]);
+    }
+
+    fn stage_delay_note_choice(
+        context: &egui::Context,
+        app: &mut Workbench,
+        choice: pod_preset::DelayNoteChoice,
+    ) {
+        recording_frame_tall(context, app, vec![]);
+        let option = app.pod_delay_note_options[&choice];
+        click_pod_at_tall(context, app, option.center());
+        recording_frame_tall(context, app, vec![]);
+    }
+
+    fn choose_delay_model_popup(context: &egui::Context, app: &mut Workbench, model_id: u32) {
+        recording_frame_tall(context, app, vec![]);
+        let combo = app
+            .pod_delay_model_combo
+            .expect("Delay model selector is rendered");
+        click_pod_at_tall(context, app, combo.center());
+        recording_frame_tall(context, app, vec![]);
+        let option = app.pod_delay_model_options[&model_id];
+        click_pod_at_tall(context, app, option.center());
+        recording_frame_tall(context, app, vec![]);
+    }
+
+    fn choose_mod_model_popup(context: &egui::Context, app: &mut Workbench, model_id: u32) {
+        recording_frame_tall(context, app, vec![]);
+        let combo = app
+            .pod_mod_model_combo
+            .expect("Mod model selector is rendered");
+        click_pod_at_tall(context, app, combo.center());
+        recording_frame_tall(context, app, vec![]);
+        let option = app.pod_mod_model_options[&model_id];
+        click_pod_at_tall(context, app, option.center());
+        recording_frame_tall(context, app, vec![]);
+    }
+
+    fn choose_stomp_model_popup(context: &egui::Context, app: &mut Workbench, model_id: u32) {
+        recording_frame_tall(context, app, vec![]);
+        let combo = app
+            .pod_stomp_model_combo
+            .expect("Stomp model selector is rendered");
+        click_pod_at_tall(context, app, combo.center());
+        recording_frame_tall(context, app, vec![]);
+        let option = app.pod_stomp_model_options[&model_id];
+        click_pod_at_tall(context, app, option.center());
+        recording_frame_tall(context, app, vec![]);
+    }
+
+    fn choose_reverb_model_popup(context: &egui::Context, app: &mut Workbench, model_id: u32) {
+        recording_frame_tall(context, app, vec![]);
+        let combo = app
+            .pod_reverb_model_combo
+            .expect("Reverb model selector is rendered");
+        click_pod_at_tall(context, app, combo.center());
+        recording_frame_tall(context, app, vec![]);
+        let option = app.pod_reverb_model_options[&model_id];
+        click_pod_at_tall(context, app, option.center());
+        recording_frame_tall(context, app, vec![]);
+    }
+
+    fn choose_amp_model_popup(context: &egui::Context, app: &mut Workbench, model_id: u32) {
+        recording_frame_tall(context, app, vec![]);
+        let combo = app
+            .pod_amp_model_combo
+            .expect("AMP model selector is rendered");
+        click_pod_at_tall(context, app, combo.center());
+        recording_frame_tall(context, app, vec![]);
+        assert_eq!(app.pod_amp_model_options.len(), 43);
+        let option = app.pod_amp_model_options[&model_id];
+        click_pod_at_tall(context, app, option.center());
+        recording_frame_tall(context, app, vec![]);
+    }
+
+    fn click_pod_button_tall(context: &egui::Context, app: &mut Workbench, id: &'static str) {
+        recording_frame_tall(context, app, vec![]);
+        let position = app.pod_buttons[id].center();
+        click_pod_at_tall(context, app, position);
+    }
+
+    fn stage_mod_note_choice(
+        context: &egui::Context,
+        app: &mut Workbench,
+        choice: pod_preset::ModNoteChoice,
+    ) {
+        recording_frame_tall(context, app, vec![]);
+        let option = app.pod_mod_note_options[&choice];
+        click_pod_at_tall(context, app, option.center());
+        recording_frame_tall(context, app, vec![]);
+    }
+
+    fn drag_delay_time_slider(context: &egui::Context, app: &mut Workbench, fraction: f32) {
+        recording_frame_tall(context, app, vec![]);
+        let rect = app
+            .pod_delay_time_slider
+            .expect("visible Delay TIME slider");
+        let start = Pos2::new(rect.center().x, rect.center().y);
+        let end = Pos2::new(rect.left() + rect.width() * fraction, rect.center().y);
+        recording_frame_tall(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame_tall(context, app, vec![egui::Event::PointerMoved(end)]);
+        recording_frame_tall(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
+    fn drag_mod_speed_slider(context: &egui::Context, app: &mut Workbench, fraction: f32) {
+        recording_frame_tall(context, app, vec![]);
+        let rect = app.pod_mod_speed_slider.expect("visible Mod SPEED slider");
+        let start = Pos2::new(rect.center().x, rect.center().y);
+        let end = Pos2::new(rect.left() + rect.width() * fraction, rect.center().y);
+        recording_frame_tall(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame_tall(context, app, vec![egui::Event::PointerMoved(end)]);
+        recording_frame_tall(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
+    fn stage_stomp_harmony2_choice(
+        context: &egui::Context,
+        app: &mut Workbench,
+        choice: pod_preset::StompHarmony1457Selection,
+    ) {
+        recording_frame_tall(context, app, vec![]);
+        let rect = app.pod_harmony2_choices[&choice];
+        click_pod_at_tall(context, app, rect.center());
+        recording_frame_tall(context, app, vec![]);
+    }
+
+    fn click_pod_at_tall(context: &egui::Context, app: &mut Workbench, pos: Pos2) {
+        recording_frame_tall(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame_tall(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
+    fn drag_pod_drive_slider(context: &egui::Context, app: &mut Workbench) {
+        recording_frame(context, app, vec![]);
+        let rect = app.pod_drive_slider.expect("visible Amp Drive slider");
+        let start = Pos2::new(rect.left() + rect.width() * 0.45, rect.center().y);
+        let end = Pos2::new(rect.left() + rect.width() * 0.78, rect.center().y);
+        recording_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame(context, app, vec![egui::Event::PointerMoved(end)]);
+        recording_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
+    fn drag_pod_drive_slider_tall(context: &egui::Context, app: &mut Workbench) {
+        recording_frame_tall(context, app, vec![]);
+        let rect = app.pod_drive_slider.expect("visible Amp Drive slider");
+        let start = Pos2::new(rect.left() + rect.width() * 0.45, rect.center().y);
+        let end = Pos2::new(rect.left() + rect.width() * 0.78, rect.center().y);
+        recording_frame_tall(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame_tall(context, app, vec![egui::Event::PointerMoved(end)]);
+        recording_frame_tall(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
+    fn drag_pod_stomp_slider(
+        context: &egui::Context,
+        app: &mut Workbench,
+        control: pod_preset::StompControl,
+    ) {
+        recording_frame(context, app, vec![]);
+        let rect = app.pod_stomp_sliders[&control];
+        let start = Pos2::new(rect.left() + rect.width() * 0.35, rect.center().y);
+        let end = Pos2::new(rect.left() + rect.width() * 0.73, rect.center().y);
+        recording_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame(context, app, vec![egui::Event::PointerMoved(end)]);
+        recording_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
+    fn drag_pod_whammy_slider(
+        context: &egui::Context,
+        app: &mut Workbench,
+        control: pod_preset::StompWhammyKnob,
+    ) {
+        recording_frame(context, app, vec![]);
+        let rect = app.pod_whammy_knob_sliders[&control];
+        let start = Pos2::new(rect.left() + rect.width() * 0.35, rect.center().y);
+        let end = Pos2::new(rect.left() + rect.width() * 0.73, rect.center().y);
+        recording_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame(context, app, vec![egui::Event::PointerMoved(end)]);
+        recording_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
+    fn drag_pod_eq_frequency_slider(
+        context: &egui::Context,
+        app: &mut Workbench,
+        band: pod_preset::PodxtEqBand,
+    ) {
+        recording_frame(context, app, vec![]);
+        let rect = app.pod_eq_frequency_sliders[&band];
+        let start = Pos2::new(rect.left() + rect.width() * 0.35, rect.center().y);
+        let end = Pos2::new(rect.left() + rect.width() * 0.17, rect.center().y);
+        recording_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame(context, app, vec![egui::Event::PointerMoved(end)]);
+        recording_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
+    fn drag_pod_eq_gain_slider(
+        context: &egui::Context,
+        app: &mut Workbench,
+        band: pod_preset::PodxtEqBand,
+    ) {
+        recording_frame(context, app, vec![]);
+        let rect = app.pod_eq_gain_sliders[&band];
+        let start = Pos2::new(rect.left() + rect.width() * 0.35, rect.center().y);
+        let end = Pos2::new(rect.left() + rect.width() * 0.17, rect.center().y);
+        recording_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame(context, app, vec![egui::Event::PointerMoved(end)]);
+        recording_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
+    fn drag_pod_mod_slider(
+        context: &egui::Context,
+        app: &mut Workbench,
+        control: pod_preset::ModControl,
+    ) {
+        recording_frame(context, app, vec![]);
+        let rect = app.pod_mod_sliders[&control];
+        let start = Pos2::new(rect.left() + rect.width() * 0.35, rect.center().y);
+        let end = Pos2::new(rect.left() + rect.width() * 0.73, rect.center().y);
+        recording_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame(context, app, vec![egui::Event::PointerMoved(end)]);
+        recording_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
+    fn drag_pod_reverb_slider(
+        context: &egui::Context,
+        app: &mut Workbench,
+        control: pod_preset::ReverbControl,
+    ) {
+        recording_frame(context, app, vec![]);
+        let rect = app.pod_reverb_sliders[&control];
+        let start = Pos2::new(rect.left() + rect.width() * 0.35, rect.center().y);
+        let end = Pos2::new(rect.left() + rect.width() * 0.73, rect.center().y);
+        recording_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame(context, app, vec![egui::Event::PointerMoved(end)]);
+        recording_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
+    fn drag_pod_delay_slider(
+        context: &egui::Context,
+        app: &mut Workbench,
+        control: pod_preset::DelayControl,
+    ) {
+        recording_frame(context, app, vec![]);
+        let rect = app.pod_delay_sliders[&control];
+        let start = Pos2::new(rect.left() + rect.width() * 0.35, rect.center().y);
+        let end = Pos2::new(rect.left() + rect.width() * 0.73, rect.center().y);
+        recording_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame(context, app, vec![egui::Event::PointerMoved(end)]);
+        recording_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+    }
+
     #[test]
     fn offline_pod_tone_window_does_not_open_a_device_or_edit_the_guitar() {
         let (context, mut app) = app();
@@ -2866,11 +7497,11 @@ mod tests {
         assert!(app.pod_visible.contains(pod_preset::OFFLINE_BANNER));
         assert!(app.pod_visible.contains(pod_preset::NOT_GUITAR));
         assert!(app.pod_visible.contains(pod_preset::NOT_SENT));
-        assert!(app.pod_visible.contains("not decoded"));
+        assert!(app.pod_visible.contains("remain raw"));
         assert!(app.read_worker.is_none());
         assert!(!app.is_reading());
         assert_eq!(app.pod_library.len(), 0);
-        click_pod(&context, &mut app, "load-pod");
+        click_pod_button_tall(&context, &mut app, "load-pod");
         assert!(app.pod_message.contains("regular file"));
         assert!(app.pod_message.contains("not opened"));
         assert!(app.pod_library.is_empty());
@@ -2890,7 +7521,7 @@ mod tests {
         assert!(app.pod_visible.contains("L6AS"));
         assert!(app.pod_visible.contains("11110002"));
         assert!(app.pod_visible.contains("22220003"));
-        assert!(app.pod_visible.contains("not decoded"));
+        assert!(app.pod_visible.contains("remain raw"));
         assert!(
             app.pod_message.contains("Nothing is sent")
                 || app.pod_visible.contains(pod_preset::NOT_SENT)
@@ -2927,6 +7558,1391 @@ mod tests {
         const {
             assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
+    }
+
+    #[test]
+    fn pod_amp_model_apply_preserves_save_revert_and_quit_guards() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let mut original = sample_drive_pod_tone();
+        original[8..12].copy_from_slice(b"L6PA");
+        app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_selected = Some(0);
+        recording_frame(&context, &mut app, vec![]);
+        assert!(app.pod_drive_slider.is_some());
+
+        let no_amp = pod_preset::PodAmpModelChoice::NoAmp;
+        click_pod(&context, &mut app, "pod-amp-no-amp");
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().amp_model_id(),
+            Some(no_amp.model_id())
+        );
+        assert!(app.pod_library.is_dirty(0));
+        assert!(app.pod_drive_slider.is_none());
+        assert!(app.pod_message.contains("Nothing was sent"));
+
+        choose_amp_model_popup(&context, &mut app, 0x0002_002e);
+        let pending = app.pod_amp_model_pending;
+        assert!(pending.is_some());
+        assert!(app.pod_library.is_dirty(0));
+
+        let directory = tempfile::tempdir().unwrap();
+        let collision = directory.path().join("existing.tone");
+        std::fs::write(&collision, b"keep original").unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_save: [Some(collision.clone()), None].into(),
+            ..Default::default()
+        });
+        click_pod(&context, &mut app, "save-pod");
+        assert!(app.pod_library.is_dirty(0));
+        assert_eq!(std::fs::read(&collision).unwrap(), b"keep original");
+        assert_eq!(app.pod_amp_model_pending, pending);
+        click_pod(&context, &mut app, "save-pod");
+        assert!(app.pod_library.is_dirty(0));
+        assert!(app.pod_message.contains("cancelled"));
+        assert_eq!(app.pod_amp_model_pending, pending);
+
+        let saved = directory.path().join("saved.tone");
+        app.dialogs.queue_pod_save(Some(saved.clone()));
+        click_pod(&context, &mut app, "save-pod");
+        assert!(!app.pod_library.is_dirty(0));
+        assert_eq!(app.pod_amp_model_pending, pending);
+        let reopened = pod_preset::PodTone::parse(std::fs::read(&saved).unwrap()).unwrap();
+        assert_eq!(reopened.amp_model_id(), Some(no_amp.model_id()));
+        click_pod(&context, &mut app, "pod-amp-no-amp");
+        assert!(!app.pod_library.is_dirty(0));
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().amp_model_id(),
+            Some(no_amp.model_id())
+        );
+
+        let clean = pod_preset::PodAmpModelChoice::Line6Clean;
+        assert_eq!(reopened.amp_model_id(), Some(no_amp.model_id()));
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().amp_model_id(),
+            Some(no_amp.model_id())
+        );
+        click_pod(&context, &mut app, "pod-amp-line6-clean");
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().amp_model_id(),
+            Some(clean.model_id())
+        );
+        assert!(app.pod_library.is_dirty(0));
+        choose_amp_model_popup(&context, &mut app, 0x0002_002e);
+        let pending_before_close = app.pod_amp_model_pending;
+
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert!(!app.permit_close);
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pod_library.is_dirty(0));
+        assert_eq!(app.pod_amp_model_pending, pending_before_close);
+        assert!(!app.permit_close);
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "discard");
+        assert!(app.permit_close);
+        assert_eq!(app.pod_amp_model_pending, None);
+        assert!(!app.pod_library.is_dirty(0));
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().amp_model_id(),
+            Some(no_amp.model_id())
+        );
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn pod_amp_combo_stages_all_choices_and_applies_from_pack_gated_current_id() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let mut original = sample_drive_pod_tone();
+        original[8..12].copy_from_slice(b"L6PA");
+        let old_id = pod_preset::PLEXI_45_MODEL;
+        let marker = [old_id.to_be_bytes(), pod_preset::AMP_SLOT.to_be_bytes()].concat();
+        let amp = original
+            .windows(marker.len())
+            .position(|window| window == marker)
+            .unwrap();
+        original[amp..amp + 4].copy_from_slice(&0x0003_0001u32.to_be_bytes());
+        app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_selected = Some(0);
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert!(!app.pod_library.is_dirty(0));
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().amp_model_id(),
+            Some(0x0003_0001)
+        );
+
+        app.pod_reverb_model_pending = Some((
+            0,
+            pod_preset::PodReverbModelChoice::from_model_id(
+                pod_preset::REVERB_CONTROL_MODEL_IDS[1],
+            )
+            .unwrap(),
+        ));
+        choose_amp_model_popup(&context, &mut app, 0x0002_002e);
+        assert_eq!(app.pod_amp_model_pending.unwrap().2.model_id(), 0x0002_002e);
+        assert!(!app.pod_library.is_dirty(0));
+        click_pod_button_tall(&context, &mut app, "pod-amp-model-apply");
+        recording_frame_tall(&context, &mut app, vec![]);
+
+        let changed = app.pod_library.tone(0).unwrap();
+        assert_eq!(changed.amp_model_id(), Some(0x0002_002e));
+        assert!(app.pod_library.is_dirty(0));
+        assert_eq!(
+            app.pod_reverb_model_pending.unwrap().1.model_id(),
+            pod_preset::REVERB_CONTROL_MODEL_IDS[1]
+        );
+        let parsed = pod_preset::PodTone::parse(changed.as_bytes().to_vec()).unwrap();
+        let minf_offset = parsed
+            .models()
+            .iter()
+            .find(|model| model.slot == pod_preset::AMP_SLOT)
+            .unwrap()
+            .model_id;
+        assert_eq!(minf_offset, 0x0002_002e);
+        assert_eq!(app.pod_amp_model_pending, None);
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn pod_amp_first_choice_is_reachable_from_every_pack_gated_current_id() {
+        let gated: Vec<_> = pod_preset::AMP_CONTROL_MODEL_IDS
+            .into_iter()
+            .filter(|id| pod_preset::PodAmpModelChoice::from_model_id(*id).is_none())
+            .collect();
+        assert_eq!(gated.len(), 64);
+        for current_id in gated {
+            let (context, mut app) = app();
+            context.style_mut(|style| style.animation_time = 0.0);
+            app.pod_open = true;
+            let mut original = sample_drive_pod_tone();
+            original[8..12].copy_from_slice(b"L6PA");
+            let marker = [
+                pod_preset::PLEXI_45_MODEL.to_be_bytes(),
+                pod_preset::AMP_SLOT.to_be_bytes(),
+            ]
+            .concat();
+            let amp = original
+                .windows(marker.len())
+                .position(|window| window == marker)
+                .unwrap();
+            original[amp..amp + 4].copy_from_slice(&current_id.to_be_bytes());
+            app.pod_library.import_bytes(original).unwrap();
+            app.pod_selected = Some(0);
+            recording_frame_tall(&context, &mut app, vec![]);
+            choose_amp_model_popup(&context, &mut app, 0x0002_0000);
+            click_pod_button_tall(&context, &mut app, "pod-amp-model-apply");
+            recording_frame_tall(&context, &mut app, vec![]);
+            assert_eq!(
+                app.pod_library.tone(0).unwrap().amp_model_id(),
+                Some(0x0002_0000),
+                "current {current_id:08x}"
+            );
+            assert!(app.pod_library.is_dirty(0), "current {current_id:08x}");
+        }
+    }
+
+    #[test]
+    fn pod_amp_failed_apply_retains_pending_choice_and_tone_bytes() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let original = as_fixed_bank_tone(sample_drive_pod_tone());
+        app.pod_library.import_bytes(original.clone()).unwrap();
+        let sibling = as_fixed_bank_tone(sample_drive_pod_tone());
+        app.pod_library.import_bytes(sibling.clone()).unwrap();
+        app.pod_library.set_amp_drive_fraction(0, 0.7).unwrap();
+        app.pod_library.set_amp_drive_fraction(1, 0.8).unwrap();
+        app.pod_selected = Some(0);
+        let choice = pod_preset::PodAmpModelChoice::Model2002e;
+        recording_frame_tall(&context, &mut app, vec![]);
+        choose_amp_model_popup(&context, &mut app, choice.model_id());
+        let pending = Some((0, pod_preset::PLEXI_45_MODEL, choice));
+        assert_eq!(app.pod_amp_model_pending, pending);
+        app.pod_reverb_model_pending = Some((
+            0,
+            pod_preset::PodReverbModelChoice::from_model_id(
+                pod_preset::REVERB_CONTROL_MODEL_IDS[1],
+            )
+            .unwrap(),
+        ));
+
+        let before_edit = app.pod_library.tone(0).unwrap().as_bytes().to_vec();
+        let mut stale_profile = before_edit.clone();
+        let pinf = stale_profile
+            .windows(4)
+            .position(|bytes| bytes == b"PINF")
+            .unwrap();
+        let version = pinf + 8 + 72;
+        stale_profile[version..version + 4]
+            .copy_from_slice(&(pod_preset::PODXT_LIVE_HOST_MIN_VERSION - 1).to_be_bytes());
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().amp_model_id(),
+            Some(pod_preset::PLEXI_45_MODEL)
+        );
+        app.replace_pod_tone(0, stale_profile).unwrap();
+        let before = app.pod_library.tone(0).unwrap().as_bytes().to_vec();
+        assert_eq!(app.pod_amp_model_pending, pending);
+        assert!(app.pod_library.is_dirty(0));
+        assert!(app.pod_library.is_dirty(1));
+
+        click_pod_button_tall(&context, &mut app, "pod-amp-model-apply");
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), before);
+        assert_eq!(
+            pod_preset::PodTone::parse(before.clone()).unwrap(),
+            *app.pod_library.tone(0).unwrap()
+        );
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().amp_model_id(),
+            Some(pod_preset::PLEXI_45_MODEL)
+        );
+        assert_eq!(app.pod_amp_model_pending, pending);
+        assert_eq!(
+            app.pod_reverb_model_pending.unwrap().1.model_id(),
+            pod_preset::REVERB_CONTROL_MODEL_IDS[1]
+        );
+        assert!(app.pod_library.is_dirty(0));
+        assert!(app.pod_library.is_dirty(1));
+        assert_eq!(app.pod_library.tone(1).unwrap().as_bytes(), {
+            let mut expected = sibling.clone();
+            let mut dirty = pod_preset::PodTone::parse(expected.clone()).unwrap();
+            dirty
+                .set_amp_control_fraction(pod_preset::AmpControl::Drive, 0.8)
+                .unwrap();
+            expected = dirty.as_bytes().to_vec();
+            expected
+        });
+
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert_eq!(app.pod_amp_model_pending, pending);
+        click_prompt(&context, &mut app, "discard");
+        assert!(!app.pod_library.is_dirty(0));
+        assert!(app.pod_library.is_dirty(1));
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert_eq!(app.pod_amp_model_pending, pending);
+        click_prompt(&context, &mut app, "discard");
+        assert!(!app.pod_library.is_dirty(1));
+        assert_eq!(app.pod_library.tone(1).unwrap().as_bytes(), sibling);
+        assert_eq!(app.pod_amp_model_pending, pending);
+        click_prompt(&context, &mut app, "amp-discard");
+        assert_eq!(app.pod_amp_model_pending, None);
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn pod_amp_pending_survives_legacy_rejection_and_unrelated_edit() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let mut tone = sample_drive_pod_tone();
+        tone[8..12].copy_from_slice(b"L6PA");
+        let pinf = tone.windows(4).position(|bytes| bytes == b"PINF").unwrap();
+        let version = pinf + 8 + 72;
+        tone[version..version + 4]
+            .copy_from_slice(&(pod_preset::PODXT_LIVE_HOST_MIN_VERSION - 1).to_be_bytes());
+        app.pod_library.import_bytes(tone.clone()).unwrap();
+        app.pod_selected = Some(0);
+        recording_frame_tall(&context, &mut app, vec![]);
+        choose_amp_model_popup(&context, &mut app, 0x0002_002e);
+        let pending = Some((
+            0,
+            pod_preset::PLEXI_45_MODEL,
+            pod_preset::PodAmpModelChoice::Model2002e,
+        ));
+        assert_eq!(app.pod_amp_model_pending, pending);
+        assert!(!app.pod_library.is_dirty(0));
+        click_pod_button_tall(&context, &mut app, "pod-amp-no-amp");
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), tone);
+        assert!(!app.pod_library.is_dirty(0));
+        assert_eq!(app.pod_amp_model_pending, pending);
+
+        let mut tone = sample_drive_pod_tone();
+        tone[8..12].copy_from_slice(b"L6PA");
+        app.pod_library = pod_preset::Library::default();
+        app.pod_library.import_bytes(tone).unwrap();
+        app.pod_amp_model_pending = None;
+        app.pod_selected = Some(0);
+        recording_frame_tall(&context, &mut app, vec![]);
+        choose_amp_model_popup(&context, &mut app, 0x0002_002e);
+        drag_pod_drive_slider(&context, &mut app);
+        assert_eq!(app.pod_amp_model_pending, pending);
+        assert!(app.pod_library.is_dirty(0));
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().amp_model_id(),
+            Some(pod_preset::PLEXI_45_MODEL)
+        );
+    }
+
+    #[test]
+    fn pod_amp_stage_only_quit_resolves_failed_apply_and_other_quit_prompts() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let mut original = as_fixed_bank_tone(sample_drive_pod_tone());
+        let pinf = original
+            .windows(4)
+            .position(|bytes| bytes == b"PINF")
+            .unwrap();
+        original[pinf + 8 + 72..pinf + 8 + 76]
+            .copy_from_slice(&(pod_preset::PODXT_LIVE_HOST_MIN_VERSION - 1).to_be_bytes());
+        app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_selected = Some(0);
+        recording_frame_tall(&context, &mut app, vec![]);
+        choose_amp_model_popup(&context, &mut app, 0x0002_002e);
+        let pending = Some((
+            0,
+            pod_preset::PLEXI_45_MODEL,
+            pod_preset::PodAmpModelChoice::Model2002e,
+        ));
+        assert_eq!(app.pod_amp_model_pending, pending);
+        assert!(!app.pod_library.is_dirty(0));
+
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert!(!app.permit_close);
+        click_prompt(&context, &mut app, "amp-apply");
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert_eq!(app.pod_amp_model_pending, pending);
+        assert!(!app.permit_close);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        click_prompt(&context, &mut app, "amp-keep-editing");
+        assert!(app.pending.is_none());
+        assert_eq!(app.pod_amp_model_pending, pending);
+        assert!(!app.permit_close);
+
+        app.change(|preset| preset.rename("Continue to staged POD choice"));
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::Quit)));
+        click_prompt(&context, &mut app, "discard");
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert_eq!(app.pod_amp_model_pending, pending);
+        click_prompt(&context, &mut app, "amp-discard");
+        assert!(app.permit_close);
+        assert!(app.pending.is_none());
+        assert_eq!(app.pod_amp_model_pending, None);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert!(!app.pod_library.is_dirty(0));
+
+        let (context, mut app) = self::app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let original = as_fixed_bank_tone(sample_drive_pod_tone());
+        app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_selected = Some(0);
+        recording_frame_tall(&context, &mut app, vec![]);
+        choose_amp_model_popup(&context, &mut app, 0x0002_002e);
+        let pending = app.pod_amp_model_pending;
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "amp-apply");
+        assert_eq!(app.pod_amp_model_pending, None);
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().amp_model_id(),
+            Some(pod_preset::PodAmpModelChoice::Model2002e.model_id())
+        );
+        assert!(app.pod_library.is_dirty(0));
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert!(!app.permit_close);
+        click_prompt(&context, &mut app, "discard");
+        assert!(app.permit_close);
+        assert_eq!(app.pod_amp_model_pending, None);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert!(!app.pod_library.is_dirty(0));
+        assert!(pending.is_some());
+
+        let (context, mut app) = self::app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_selected = Some(0);
+        recording_frame_tall(&context, &mut app, vec![]);
+        choose_amp_model_popup(&context, &mut app, 0x0002_002e);
+        let staged_before_edit = app.pod_amp_model_pending;
+        app.pod_library.set_amp_drive_fraction(0, 0.6).unwrap();
+        assert!(app.pod_library.is_dirty(0));
+        app.request_close(&context);
+        assert_eq!(app.pod_amp_model_pending, staged_before_edit);
+        click_prompt(&context, &mut app, "discard");
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert!(!app.pod_library.is_dirty(0));
+        assert_eq!(app.pod_amp_model_pending, staged_before_edit);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "amp-discard");
+        assert_eq!(app.pod_amp_model_pending, None);
+        assert!(app.permit_close);
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn pod_amp_stage_load_navigation_and_explicit_discard_are_preserving() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let original = as_fixed_bank_tone(sample_drive_pod_tone());
+        let reopened = original.clone();
+        let second = sample_pod_tone();
+        let directory = tempfile::tempdir().unwrap();
+        let tone_path = directory.path().join("reopened.tone");
+        let bundle_path = directory.path().join("replacement.vwb");
+        std::fs::write(&tone_path, &reopened).unwrap();
+        std::fs::write(
+            &bundle_path,
+            sample_pod_bundle(std::slice::from_ref(&second)),
+        )
+        .unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [None, Some(tone_path.clone())].into(),
+            ..Default::default()
+        });
+        app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_selected = Some(0);
+        recording_frame_tall(&context, &mut app, vec![]);
+        choose_amp_model_popup(&context, &mut app, 0x0002_002e);
+        let pending = app.pod_amp_model_pending;
+        click_pod_button_tall(&context, &mut app, "load-pod");
+        assert_eq!(app.pod_amp_model_pending, pending);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert!(!app.pod_library.is_dirty(0));
+
+        click_pod_button_tall(&context, &mut app, "load-pod");
+        assert_eq!(app.pod_amp_model_pending, None);
+        assert_eq!(app.pod_library.len(), 2);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert_eq!(app.pod_library.tone(1).unwrap().as_bytes(), reopened);
+        assert!(!app.pod_library.is_dirty(0));
+        assert!(!app.pod_library.is_dirty(1));
+
+        app.pod_selected = Some(0);
+        choose_amp_model_popup(&context, &mut app, 0x0002_002e);
+        let navigation_stage = Some((
+            0,
+            pod_preset::PLEXI_45_MODEL,
+            pod_preset::PodAmpModelChoice::Model2002e,
+        ));
+        assert_eq!(app.pod_amp_model_pending, navigation_stage);
+        let first_baseline = app.pod_library.tone(0).unwrap().as_bytes().to_vec();
+        recording_frame_tall(&context, &mut app, vec![]);
+        let row = app.pod_rows[&1].center();
+        click_pod_at_tall(&context, &mut app, row);
+        assert_eq!(app.pod_selected, Some(1));
+        assert_eq!(app.pod_amp_model_pending, None);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), first_baseline);
+        assert_eq!(app.pod_library.tone(1).unwrap().as_bytes(), reopened);
+
+        app.pod_selected = Some(1);
+        recording_frame_tall(&context, &mut app, vec![]);
+        choose_amp_model_popup(&context, &mut app, 0x0002_002e);
+        let explicit_pending = app.pod_amp_model_pending;
+        app.pod_reverb_model_pending = Some((
+            1,
+            pod_preset::PodReverbModelChoice::from_model_id(
+                pod_preset::REVERB_CONTROL_MODEL_IDS[1],
+            )
+            .unwrap(),
+        ));
+        click_pod_button_tall(&context, &mut app, "pod-amp-model-discard");
+        assert_eq!(app.pod_amp_model_pending, None);
+        assert_eq!(app.pod_library.tone(1).unwrap().as_bytes(), reopened);
+        assert!(!app.pod_library.is_dirty(1));
+        assert_eq!(
+            app.pod_reverb_model_pending.unwrap().1.model_id(),
+            pod_preset::REVERB_CONTROL_MODEL_IDS[1]
+        );
+        assert!(explicit_pending.is_some());
+
+        let (context, mut app) = self::app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(bundle_path)].into(),
+            ..Default::default()
+        });
+        app.pod_library.import_bytes(original).unwrap();
+        app.pod_selected = Some(0);
+        recording_frame_tall(&context, &mut app, vec![]);
+        choose_amp_model_popup(&context, &mut app, 0x0002_002e);
+        assert!(app.pod_amp_model_pending.is_some());
+        click_pod_button_tall(&context, &mut app, "load-pod");
+        assert_eq!(app.pod_amp_model_pending, None);
+        assert_eq!(app.pod_library.len(), 1);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), second);
+        assert_eq!(
+            app.pod_bundle
+                .as_ref()
+                .unwrap()
+                .tone(0, 0)
+                .unwrap()
+                .as_bytes(),
+            second
+        );
+        assert!(!app.pod_library.is_dirty(0));
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn pod_amp_bundle_quit_discard_preserves_only_matching_stage_origin() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let directory = tempfile::tempdir().unwrap();
+        let bundle_path = directory.path().join("amp-stage.vwb");
+        let original_tone = as_fixed_bank_tone(sample_drive_pod_tone());
+        let original_bundle = sample_pod_bundle(std::slice::from_ref(&original_tone));
+        std::fs::write(&bundle_path, &original_bundle).unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(bundle_path.clone())].into(),
+            ..Default::default()
+        });
+        app.load_pod_tone();
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert!(app.pod_bundle.is_some(), "{}", app.pod_message);
+        assert_eq!(
+            app.pod_bundle.as_ref().unwrap().as_bytes(),
+            original_bundle.as_slice()
+        );
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original_tone);
+        assert!(!app.pod_dirty());
+
+        drag_pod_drive_slider_tall(&context, &mut app);
+        assert!(app.pod_library.is_dirty(0));
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().amp_model_id(),
+            Some(pod_preset::PLEXI_45_MODEL)
+        );
+        choose_amp_model_popup(&context, &mut app, 0x0002_002e);
+        let pending = Some((
+            0,
+            pod_preset::PLEXI_45_MODEL,
+            pod_preset::PodAmpModelChoice::Model2002e,
+        ));
+        assert_eq!(app.pod_amp_model_pending, pending);
+        let dirty_tone = app.pod_library.tone(0).unwrap().as_bytes().to_vec();
+        let dirty_bundle = app.pod_bundle.as_ref().unwrap().as_bytes().to_vec();
+        assert_ne!(dirty_tone, original_tone);
+        assert_ne!(dirty_bundle, original_bundle);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), dirty_tone);
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), dirty_bundle);
+
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert!(!app.permit_close);
+        click_prompt(&context, &mut app, "discard");
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), original_bundle);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original_tone);
+        assert!(!app.pod_dirty());
+        assert_eq!(app.pod_amp_model_pending, pending);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert!(!app.permit_close);
+
+        click_prompt(&context, &mut app, "amp-keep-editing");
+        assert!(app.pending.is_none());
+        assert_eq!(app.pod_amp_model_pending, pending);
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "amp-discard");
+        assert_eq!(app.pod_amp_model_pending, None);
+        assert!(app.permit_close);
+
+        let (context, mut app) = self::app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(bundle_path)].into(),
+            ..Default::default()
+        });
+        app.load_pod_tone();
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original_tone);
+        click_pod_button_tall(&context, &mut app, "pod-amp-line6-clean");
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        choose_amp_model_popup(&context, &mut app, 0x0002_002e);
+        let invalidated_pending = Some((
+            0,
+            pod_preset::PodAmpModelChoice::Line6Clean.model_id(),
+            pod_preset::PodAmpModelChoice::Model2002e,
+        ));
+        assert_eq!(app.pod_amp_model_pending, invalidated_pending);
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "discard");
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), original_bundle);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original_tone);
+        assert_eq!(app.pod_amp_model_pending, None);
+        assert!(app.permit_close);
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn pod_amp_context_change_clears_stale_stage_and_bundle_rejection_is_atomic() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let first = as_fixed_bank_tone(sample_drive_pod_tone());
+        let second = first.clone();
+        app.pod_library.import_bytes(first.clone()).unwrap();
+        app.pod_library.import_bytes(second.clone()).unwrap();
+        app.pod_library.set_amp_drive_fraction(1, 0.65).unwrap();
+        app.pod_selected = Some(1);
+        let pending = Some((
+            1,
+            pod_preset::PLEXI_45_MODEL,
+            pod_preset::PodAmpModelChoice::Model2002e,
+        ));
+        app.pod_amp_model_pending = pending;
+        app.pod_bundle = Some(
+            pod_preset::PodBundleLibrary::parse(sample_pod_bundle(std::slice::from_ref(&first)))
+                .unwrap(),
+        );
+        let dirty_second = app.pod_library.tone(1).unwrap().as_bytes().to_vec();
+        let replacement = Session::initial_rig()
+            .set_pod_amp_model_choice(
+                RoleKind::Pod,
+                &dirty_second,
+                pod_preset::PodAmpModelChoice::Model2002e,
+            )
+            .unwrap();
+        let before_bundle = app.pod_bundle.as_ref().unwrap().as_bytes().to_vec();
+        let before_tone = app.pod_library.tone(1).unwrap().as_bytes().to_vec();
+        let baseline = second.clone();
+        assert!(app.replace_pod_tone(1, replacement).is_err());
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), first);
+        assert_eq!(app.pod_library.tone(1).unwrap().as_bytes(), before_tone);
+        assert_eq!(
+            pod_preset::PodTone::parse(before_tone.clone()).unwrap(),
+            *app.pod_library.tone(1).unwrap()
+        );
+        assert!(!app.pod_library.is_dirty(0));
+        assert!(app.pod_library.is_dirty(1));
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), before_bundle);
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_eq!(app.pod_amp_model_pending, pending);
+
+        app.pod_selected = Some(1);
+        app.pod_library
+            .set_amp_model_choice(1, pod_preset::PodAmpModelChoice::Line6Clean)
+            .unwrap();
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert_eq!(app.pod_amp_model_pending, None);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), first);
+        let clean_model_id = app.pod_library.tone(1).unwrap().amp_model_id().unwrap();
+        app.pod_amp_model_pending =
+            Some((1, clean_model_id, pod_preset::PodAmpModelChoice::Model2002e));
+        app.pod_library.revert_unsaved(1).unwrap();
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert_eq!(app.pod_amp_model_pending, None);
+        assert_eq!(app.pod_library.tone(1).unwrap().as_bytes(), baseline);
+        assert!(!app.pod_library.is_dirty(1));
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), before_bundle);
+    }
+
+    #[test]
+    fn offline_pod_bundle_window_navigates_edits_saves_and_guards_quit() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let directory = tempfile::tempdir().unwrap();
+        let original_path = directory.path().join("source.vwb");
+        let blocked_path = directory.path().join("occupied.vwb");
+        let saved_path = directory.path().join("saved.vwb");
+        let first = sample_drive_pod_tone();
+        let second = sample_pod_tone();
+        let original = sample_pod_bundle(&[first.clone(), second.clone()]);
+        std::fs::write(&original_path, &original).unwrap();
+        std::fs::write(&blocked_path, b"preserve existing").unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(original_path.clone())].into(),
+            pod_save: [Some(blocked_path.clone()), Some(saved_path.clone())].into(),
+            ..Default::default()
+        });
+
+        click_pod(&context, &mut app, "open-pod");
+        click_pod(&context, &mut app, "load-pod");
+        assert_eq!(app.pod_bundle.as_ref().unwrap().bank_count(), 2);
+        assert_eq!(app.pod_library.len(), 2);
+        assert_eq!(app.pod_bundle.as_ref().unwrap().bank_name(1), Some("B"));
+        let second_row = app.pod_rows[&1].center();
+        click_pod_at(&context, &mut app, second_row);
+        assert_eq!(app.pod_selected, Some(1));
+        assert_eq!(app.pod_library.tone(1).unwrap().as_bytes(), second);
+        let first_row = app.pod_rows[&0].center();
+        click_pod_at(&context, &mut app, first_row);
+        drag_pod_drive_slider(&context, &mut app);
+        let selected_value = app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .amp_drive_fraction()
+            .unwrap();
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert!(app.pod_library.is_dirty(0));
+        assert!(!app.pod_library.is_dirty(1));
+
+        click_pod(&context, &mut app, "save-pod");
+        assert_eq!(std::fs::read(&blocked_path).unwrap(), b"preserve existing");
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        click_pod(&context, &mut app, "save-pod");
+        let saved = std::fs::read(&saved_path).unwrap();
+        let reopened = pod_preset::PodBundleLibrary::parse(saved.clone()).unwrap();
+        assert_eq!(
+            reopened.tone(0, 0).unwrap().amp_drive_fraction().unwrap(),
+            selected_value
+        );
+        assert_eq!(reopened.tone(1, 0).unwrap().as_bytes(), second);
+        assert_eq!(saved, app.pod_bundle.as_ref().unwrap().as_bytes());
+        assert_eq!(std::fs::read(&original_path).unwrap(), original);
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert!(!app.pod_library.any_dirty());
+
+        app.edit_pod_tone(0, |tone| {
+            tone.set_amp_control_fraction(pod_preset::AmpControl::Drive, 0.2)
+        })
+        .unwrap();
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "discard");
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert!(!app.pod_library.any_dirty());
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), saved);
+        assert!(app.read_worker.is_none());
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn pod_membership_controls_are_folder_only_and_refresh_selection_and_pending_choices() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let directory = tempfile::tempdir().unwrap();
+        let source_path = directory.path().join("source.l6c");
+        let saved_path = directory.path().join("saved.l6c");
+        let fixed_tone = sample_drive_pod_tone();
+        let folder_tone = sample_pod_tone();
+        let original = sample_pod_bundle(&[fixed_tone.clone(), folder_tone.clone()]);
+        std::fs::write(&source_path, &original).unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_save: [Some(saved_path.clone())].into(),
+            ..Default::default()
+        });
+        app.pod_open = true;
+        app.load_pod_bundle_bytes(original.clone()).unwrap();
+        recording_frame(&context, &mut app, vec![]);
+        assert!(!app.pod_buttons.contains_key("pod-duplicate-entry"));
+        app.pod_selected = Some(1);
+        app.refresh_selected_pod_name();
+        assert_eq!(app.pod_selected, Some(1));
+        recording_frame(&context, &mut app, vec![]);
+        assert!(app.pod_buttons.contains_key("pod-duplicate-entry"));
+
+        app.pod_cab_pending = Some((
+            1,
+            pod_preset::PodCabModelChoice::from_model_id(0x0102_0016).unwrap(),
+        ));
+        click_pod(&context, &mut app, "pod-duplicate-entry");
+        let bundle = app.pod_bundle.as_ref().unwrap();
+        assert_eq!(bundle.entry_count(), 3);
+        assert_eq!(app.pod_library.len(), 3);
+        assert_eq!(app.pod_selected, Some(2));
+        assert_eq!(app.pod_library.tone(2).unwrap().as_bytes(), folder_tone);
+        assert!(bundle.is_dirty());
+        assert_ne!(
+            app.pod_cab_pending,
+            Some((
+                2,
+                pod_preset::PodCabModelChoice::from_model_id(0x0102_0016).unwrap()
+            ))
+        );
+        assert!(app.pod_cab_pending.is_none_or(|(index, _)| index != 1));
+        assert_eq!(std::fs::read(&source_path).unwrap(), original);
+        assert!(app.load_pod_bundle_bytes(original.clone()).is_err());
+        assert_eq!(app.pod_bundle.as_ref().unwrap().entry_count(), 3);
+
+        click_pod(&context, &mut app, "save-pod");
+        let saved = std::fs::read(&saved_path).unwrap();
+        let reopened = pod_preset::PodBundleLibrary::parse(saved.clone()).unwrap();
+        assert_eq!(reopened.entry_count(), 3);
+        assert_eq!(reopened.tone(1, 1).unwrap().as_bytes(), folder_tone);
+        assert_eq!(saved, app.pod_bundle.as_ref().unwrap().as_bytes());
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_eq!(std::fs::read(&source_path).unwrap(), original);
+
+        click_pod(&context, &mut app, "pod-move-entry-up");
+        assert_eq!(app.pod_selected, Some(1));
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), saved);
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+
+        click_pod(&context, &mut app, "pod-remove-entry");
+        assert_eq!(app.pod_bundle.as_ref().unwrap().entry_count(), 2);
+        assert_eq!(app.pod_selected, Some(1));
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_ne!(
+            app.pod_cab_pending,
+            Some((
+                1,
+                pod_preset::PodCabModelChoice::from_model_id(0x0102_0016).unwrap()
+            ))
+        );
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "discard");
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), saved);
+        assert_eq!(app.pod_selected, Some(1));
+        assert_eq!(
+            app.pod_name,
+            pod_preset::PodTone::parse(folder_tone.clone())
+                .unwrap()
+                .name()
+        );
+        assert_eq!(std::fs::read(&source_path).unwrap(), original);
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn fixed_bank_reorder_controls_keep_selection_save_and_quit_state_offline() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let first = as_fixed_bank_tone(sample_drive_pod_tone());
+        let second = as_fixed_bank_tone(sample_pod_tone());
+        let original = sample_fixed_pod_bank(&[first.clone(), second.clone()]);
+        let directory = tempfile::tempdir().unwrap();
+        let collision = directory.path().join("occupied.vwb");
+        let saved = directory.path().join("saved.vwb");
+        std::fs::write(&collision, b"retain this destination").unwrap();
+
+        app.pod_open = true;
+        app.load_pod_bundle_bytes(original.clone()).unwrap();
+        recording_frame(&context, &mut app, vec![]);
+        assert!(app.pod_buttons.contains_key("pod-move-entry-up"));
+        assert!(app.pod_buttons.contains_key("pod-move-entry-down"));
+        assert!(!app.pod_buttons.contains_key("pod-duplicate-entry"));
+        assert!(!app.pod_buttons.contains_key("pod-remove-entry"));
+
+        app.pod_selected = Some(1);
+        app.refresh_selected_pod_name();
+        app.pod_cab_pending = Some((
+            1,
+            pod_preset::PodCabModelChoice::from_model_id(0x0102_0016).unwrap(),
+        ));
+        let pending_before_rejected_action = app.pod_cab_pending;
+        let original_bundle_bytes = app.pod_bundle.as_ref().unwrap().as_bytes().to_vec();
+        let original_library_tones: Vec<_> = (0..app.pod_library.len())
+            .map(|index| app.pod_library.tone(index).unwrap().as_bytes().to_vec())
+            .collect();
+        app.apply_pod_membership_action(PodMembershipAction::MoveDown, 99, 1);
+        assert_eq!(
+            app.pod_bundle.as_ref().unwrap().as_bytes(),
+            original_bundle_bytes
+        );
+        assert_eq!(app.pod_selected, Some(1));
+        assert_eq!(app.pod_cab_pending, pending_before_rejected_action);
+        assert_eq!(
+            (0..app.pod_library.len())
+                .map(|index| { app.pod_library.tone(index).unwrap().as_bytes().to_vec() })
+                .collect::<Vec<_>>(),
+            original_library_tones
+        );
+
+        click_pod(&context, &mut app, "pod-move-entry-up");
+        let bundle = app.pod_bundle.as_ref().unwrap();
+        assert_eq!(bundle.tone(0, 0).unwrap().as_bytes(), second);
+        assert_eq!(bundle.tone(0, 1).unwrap().as_bytes(), first);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), second);
+        assert_eq!(app.pod_selected, Some(0));
+        assert_eq!(
+            app.pod_name,
+            pod_preset::PodTone::parse(second.clone()).unwrap().name()
+        );
+        assert!(bundle.is_dirty());
+        assert!(app.pod_cab_pending.is_none());
+        assert!(app.pod_message.contains("fixed bank"));
+        assert!(std::fs::read(&collision).unwrap() == b"retain this destination");
+
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pending.is_none());
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+
+        app.request_close(&context);
+        app.dialogs.queue_pod_save(Some(collision.clone()));
+        click_prompt(&context, &mut app, "save");
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_eq!(
+            std::fs::read(&collision).unwrap(),
+            b"retain this destination"
+        );
+
+        app.dialogs.queue_pod_save(Some(saved.clone()));
+        click_prompt(&context, &mut app, "save");
+        assert!(app.pending.is_none());
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_eq!(
+            pod_preset::PodBundleLibrary::parse(std::fs::read(&saved).unwrap())
+                .unwrap()
+                .as_bytes(),
+            app.pod_bundle.as_ref().unwrap().as_bytes()
+        );
+
+        click_pod(&context, &mut app, "pod-move-entry-down");
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_eq!(app.pod_selected, Some(1));
+        app.permit_close = false;
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "discard");
+        assert!(app.pending.is_none());
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_eq!(
+            app.pod_bundle.as_ref().unwrap().as_bytes(),
+            std::fs::read(&saved).unwrap()
+        );
+        assert_eq!(app.pod_selected, Some(1));
+        assert_eq!(app.pod_library.len(), 2);
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn reverting_pod_membership_before_recording_quit_cancel_keeps_selection_valid() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let fixed_tone = sample_drive_pod_tone();
+        let folder_tone = sample_pod_tone();
+        let original = sample_pod_bundle(&[fixed_tone, folder_tone.clone()]);
+        app.pod_open = true;
+        app.load_pod_bundle_bytes(original).unwrap();
+        app.pod_selected = Some(1);
+        app.refresh_selected_pod_name();
+        recording_frame(&context, &mut app, vec![]);
+
+        click_pod(&context, &mut app, "pod-duplicate-entry");
+        assert_eq!(app.pod_selected, Some(2));
+        assert_eq!(app.pod_bundle.as_ref().unwrap().entry_count(), 3);
+
+        prepare_quit_take(&mut app, ClockSelection::Integer(48_000));
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "discard");
+        assert_eq!(app.pod_bundle.as_ref().unwrap().entry_count(), 2);
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_eq!(app.pod_selected, Some(1));
+        assert_eq!(
+            app.pod_name,
+            pod_preset::PodTone::parse(folder_tone).unwrap().name()
+        );
+        assert!(matches!(app.pending, Some(Pending::QuitRecording)));
+
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pending.is_none());
+        assert!(app.recorder.has_unsaved_take());
+        assert_eq!(app.pod_selected, Some(1));
+        recording_frame(&context, &mut app, vec![]);
+        assert!(app.pod_rows.contains_key(&1));
+        assert!(app.pod_buttons.contains_key("pod-duplicate-entry"));
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn podxt_eq_gui_edits_preserve_maximum_frequency_and_gain_on_render() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("eq-endpoints.l6t");
+        let original = sample_pod_eq_tone_with_words(0x3f80_0000, 0x3f80_0000);
+        std::fs::write(&source, &original).unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(source)].into(),
+            ..Default::default()
+        });
+        app.pod_open = true;
+        app.load_pod_tone();
+        recording_frame(&context, &mut app, vec![]);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert!(!app.pod_library.is_dirty(0));
+        let band = pod_preset::PodxtEqBand::One;
+        drag_pod_eq_gain_slider(&context, &mut app, band);
+        let (frequency, _) = app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .podxt_eq_band_raw_values(band)
+            .unwrap();
+        assert_eq!(frequency.to_bits(), 0x3f80_0000);
+        assert!(app.pod_library.is_dirty(0));
+        app.pod_library.revert_unsaved(0).unwrap();
+        recording_frame(&context, &mut app, vec![]);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert!(!app.pod_library.is_dirty(0));
+        drag_pod_eq_frequency_slider(&context, &mut app, band);
+        let (_, gain) = app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .podxt_eq_band_raw_values(band)
+            .unwrap();
+        assert_eq!(gain.to_bits(), 0x3f80_0000);
+        assert!(app.pod_library.is_dirty(0));
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn podxt_eq_reset_stages_applies_discards_and_resolves_quit_before_dirty_prompt() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let mut original = sample_pod_eq_tone();
+        original[8..12].copy_from_slice(b"L6PA");
+        let index = app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_selected = Some(index);
+        app.pod_open = true;
+
+        recording_frame(&context, &mut app, vec![]);
+        assert!(app.pod_buttons.contains_key("pod-eq-reset-stage"));
+        click_pod_button_tall(&context, &mut app, "pod-eq-reset-stage");
+        assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), original);
+        assert!(!app.pod_library.is_dirty(index));
+        assert!(app.pod_eq_reset_pending.is_some());
+
+        recording_frame(&context, &mut app, vec![]);
+        click_pod_button_tall(&context, &mut app, "pod-eq-reset-discard");
+        assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), original);
+        assert!(!app.pod_library.is_dirty(index));
+        assert!(app.pod_eq_reset_pending.is_none());
+
+        click_pod_button_tall(&context, &mut app, "pod-eq-reset-stage");
+        recording_frame(&context, &mut app, vec![]);
+        click_pod_button_tall(&context, &mut app, "pod-eq-reset-apply");
+        let edited = app.pod_library.tone(index).unwrap().as_bytes();
+        assert!(app.pod_library.is_dirty(index));
+        assert!(app.pod_eq_reset_pending.is_none());
+        let changed: Vec<_> = original
+            .iter()
+            .zip(edited)
+            .enumerate()
+            .filter_map(|(offset, (before, after))| (before != after).then_some(offset))
+            .collect();
+        assert!(!changed.is_empty());
+        assert!(changed.len() <= 8 * 4);
+        assert_eq!(
+            pod_preset::PodxtEqBand::ALL.map(|band| {
+                let (frequency, gain) = app
+                    .pod_library
+                    .tone(index)
+                    .unwrap()
+                    .podxt_eq_band_raw_values(band)
+                    .unwrap();
+                [frequency.to_bits(), gain.to_bits()]
+            }),
+            [
+                [0x3e00_0000, 0x3f01_0204],
+                [0x3eec_0000, 0x3f01_0204],
+                [0x3ef0_0000, 0x3f01_0204],
+                [0x3f5c_0000, 0x3f01_0204],
+            ]
+        );
+        assert!(app.pod_message.contains("Nothing was sent"));
+
+        app.pod_library.revert_unsaved(index).unwrap();
+        recording_frame(&context, &mut app, vec![]);
+        click_pod_button_tall(&context, &mut app, "pod-eq-reset-stage");
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        prompt_frame(&context, &mut app, vec![]);
+        click_prompt(&context, &mut app, "eq-reset-quit-keep");
+        assert!(app.pending.is_none());
+        assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), original);
+        assert!(!app.pod_library.is_dirty(index));
+
+        recording_frame(&context, &mut app, vec![]);
+        click_pod_button_tall(&context, &mut app, "pod-eq-reset-stage");
+        app.request_close(&context);
+        prompt_frame(&context, &mut app, vec![]);
+        click_prompt(&context, &mut app, "eq-reset-quit-apply");
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert!(app.pod_library.is_dirty(index));
+        assert!(app.pod_eq_reset_pending.is_none());
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pending.is_none());
+        assert!(app.pod_library.is_dirty(index));
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn podxt_eq_staged_in_bundle_cannot_cross_cancelled_or_successful_document_replacement() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let directory = tempfile::tempdir().unwrap();
+        let rejected_path = directory.path().join("rejected.l6t");
+        let replacement_path = directory.path().join("replacement.l6t");
+        std::fs::write(&rejected_path, b"not a tone").unwrap();
+
+        let mut original = sample_pod_eq_tone();
+        original[8..12].copy_from_slice(b"L6PA");
+        let mut replacement = original.clone();
+        replacement[28..32].copy_from_slice(b"NEW!");
+        assert_ne!(original, replacement);
+        assert_eq!(
+            &original[32..],
+            &replacement[32..],
+            "EQ bytes are identical"
+        );
+        std::fs::write(&replacement_path, &replacement).unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [None, Some(rejected_path), Some(replacement_path)].into(),
+            ..Default::default()
+        });
+        let bundle_bytes = sample_pod_bundle(std::slice::from_ref(&original));
+        app.load_pod_bundle_bytes(bundle_bytes.clone()).unwrap();
+        app.pod_open = true;
+
+        recording_frame_tall(&context, &mut app, vec![]);
+        click_pod_button_tall(&context, &mut app, "pod-eq-reset-stage");
+        let pending = app.pod_eq_reset_pending.clone().unwrap();
+        assert_eq!(pending.document_generation, app.pod_document_generation);
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), bundle_bytes);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert!(!app.pod_library.is_dirty(0));
+
+        // A cancelled dialog and a rejected file keep both the bundle and staged action.
+        click_pod_button_tall(&context, &mut app, "load-pod");
+        assert_eq!(app.pod_eq_reset_pending.as_ref(), Some(&pending));
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), bundle_bytes);
+        click_pod_button_tall(&context, &mut app, "load-pod");
+        assert_eq!(app.pod_eq_reset_pending.as_ref(), Some(&pending));
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), bundle_bytes);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+
+        // Replacing with a different Library document at the same index and EQ context
+        // must invalidate the old stage. A later Apply/quit cannot touch this tone.
+        click_pod_button_tall(&context, &mut app, "load-pod");
+        assert!(app.pod_bundle.is_none());
+        assert!(app.pod_eq_reset_pending.is_none());
+        assert!(app.pod_document_generation > pending.document_generation);
+        assert_eq!(app.pod_selected, Some(0));
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), replacement);
+        assert!(!app.pod_library.is_dirty(0));
+
+        app.pod_buttons.clear();
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert!(app.pod_buttons.contains_key("pod-eq-reset-stage"));
+        assert!(!app.pod_buttons.contains_key("pod-eq-reset-apply"));
+        app.request_close(&context);
+        app.pending_buttons.clear();
+        prompt_frame(&context, &mut app, vec![]);
+        assert!(!app.pending_buttons.contains_key("eq-reset-quit-apply"));
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), replacement);
+        assert!(!app.pod_library.is_dirty(0));
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn podxt_eq_and_amp_stages_resolve_against_a_loaded_bundle() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("eq-amp.vwb");
+        let mut original = sample_pod_amp_eq_tone();
+        original[8..12].copy_from_slice(b"L6PA");
+        let bundle_bytes = sample_pod_bundle(std::slice::from_ref(&original));
+        std::fs::write(&path, &bundle_bytes).unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(path)].into(),
+            ..Default::default()
+        });
+        app.load_pod_tone();
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert!(app.pod_bundle.is_some(), "{}", app.pod_message);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+
+        click_pod_button_tall(&context, &mut app, "pod-eq-reset-stage");
+        choose_amp_model_popup(&context, &mut app, 0x0002_002e);
+        let amp_stage = app.pod_amp_model_pending;
+        assert!(amp_stage.is_some());
+        assert!(app.pod_eq_reset_pending.is_some());
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), bundle_bytes);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert!(!app.pod_dirty());
+
+        // Keep then discard the EQ stage through the actual quit dialog. Discarding
+        // EQ continues into the independently staged AMP choice.
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "eq-reset-quit-keep");
+        assert!(app.pending.is_none());
+        assert!(app.pod_eq_reset_pending.is_some());
+        assert_eq!(app.pod_amp_model_pending, amp_stage);
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "eq-reset-quit-discard");
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert!(app.pod_eq_reset_pending.is_none());
+        assert_eq!(app.pod_amp_model_pending, amp_stage);
+        click_prompt(&context, &mut app, "amp-keep-editing");
+        assert!(app.pending.is_none());
+        assert_eq!(app.pod_amp_model_pending, amp_stage);
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), bundle_bytes);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert!(!app.pod_dirty());
+
+        // Apply EQ, then exercise the bundle cancel/discard path while the AMP
+        // choice remains independently staged.
+        click_pod_button_tall(&context, &mut app, "pod-eq-reset-stage");
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "eq-reset-quit-apply");
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert!(app.pod_eq_reset_pending.is_none());
+        assert_eq!(app.pod_amp_model_pending, amp_stage);
+        assert_ne!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pending.is_none());
+        assert!(app.pod_amp_model_pending.is_some());
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "discard");
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), bundle_bytes);
+        assert_eq!(app.pod_amp_model_pending, amp_stage);
+        click_prompt(&context, &mut app, "amp-keep-editing");
+        assert!(app.pending.is_none());
+        assert_eq!(app.pod_amp_model_pending, amp_stage);
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "amp-discard");
+        assert!(app.permit_close);
+        assert_eq!(app.pod_amp_model_pending, None);
+
+        // Exercise the Apply rejection path after a real bundle load. Removing
+        // the selected bundle row behind the Library forces atomic publication
+        // failure while the staged edit still has a valid source context.
+        let (context, mut app) = self::app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("eq-amp-failed-publication.vwb");
+        let mut original = sample_pod_amp_eq_tone();
+        original[8..12].copy_from_slice(b"L6PA");
+        let bundle_bytes = sample_pod_bundle(&[original.clone(), original.clone()]);
+        std::fs::write(&path, &bundle_bytes).unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(path)].into(),
+            ..Default::default()
+        });
+        app.load_pod_tone();
+        recording_frame_tall(&context, &mut app, vec![]);
+        app.pod_selected = Some(1);
+        assert_eq!(app.pod_library.tone(1).unwrap().as_bytes(), original);
+        click_pod_button_tall(&context, &mut app, "pod-eq-reset-stage");
+        choose_amp_model_popup(&context, &mut app, 0x0002_002e);
+        let amp_stage = app.pod_amp_model_pending;
+        app.pod_bundle.as_mut().unwrap().remove_entry(1, 0).unwrap();
+        let failed_publication_bundle = app.pod_bundle.as_ref().unwrap().as_bytes().to_vec();
+        let parsed_before = app.pod_library.tone(1).unwrap().models().to_vec();
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "eq-reset-quit-apply");
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert!(app.pod_eq_reset_pending.is_some());
+        assert_eq!(app.pod_amp_model_pending, amp_stage);
+        assert_eq!(app.pod_library.tone(1).unwrap().as_bytes(), original);
+        assert_eq!(app.pod_library.tone(1).unwrap().models(), parsed_before);
+        assert!(!app.pod_library.is_dirty(1));
+        assert_eq!(
+            app.pod_bundle.as_ref().unwrap().as_bytes(),
+            failed_publication_bundle
+        );
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert!(!app.permit_close);
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn podxt_eq_graph_slider_edits_two_words_and_preserves_failed_save_state() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("eq.l6t");
+        let collision = directory.path().join("occupied.l6t");
+        let saved = directory.path().join("saved.l6t");
+        let original = sample_pod_eq_tone();
+        std::fs::write(&source, &original).unwrap();
+        std::fs::write(&collision, b"keep this file").unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(source)].into(),
+            pod_save: [None, Some(collision.clone()), Some(saved.clone())].into(),
+            ..Default::default()
+        });
+        app.pod_open = true;
+        app.load_pod_tone();
+        recording_frame(&context, &mut app, vec![]);
+        assert_eq!(app.pod_eq_frequency_sliders.len(), 4);
+        assert_eq!(app.pod_eq_gain_sliders.len(), 4);
+        let before = app.pod_library.tone(0).unwrap().as_bytes().to_vec();
+        drag_pod_eq_frequency_slider(&context, &mut app, pod_preset::PodxtEqBand::One);
+        assert!(app.pod_library.is_dirty(0));
+        let after = app.pod_library.tone(0).unwrap().as_bytes();
+        let changed: Vec<_> = before
+            .iter()
+            .zip(after)
+            .enumerate()
+            .filter_map(|(i, (a, b))| (a != b).then_some(i))
+            .collect();
+        assert!(!changed.is_empty());
+        assert!(app.pod_message.contains("Nothing was sent"));
+
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        prompt_frame(&context, &mut app, vec![]);
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pending.is_none());
+        assert!(
+            app.pod_library.is_dirty(0),
+            "keep editing retains the applied EQ edit"
+        );
+
+        click_pod(&context, &mut app, "save-pod");
+        assert!(
+            app.pod_library.is_dirty(0),
+            "cancel keeps the applied EQ edit"
+        );
+        click_pod(&context, &mut app, "save-pod");
+        assert_eq!(std::fs::read(&collision).unwrap(), b"keep this file");
+        assert!(
+            app.pod_library.is_dirty(0),
+            "collision keeps the applied EQ edit"
+        );
+        click_pod(&context, &mut app, "save-pod");
+        assert!(!app.pod_library.is_dirty(0));
+        let reopened = pod_preset::PodTone::parse(std::fs::read(saved).unwrap()).unwrap();
+        assert_ne!(reopened.as_bytes(), before);
     }
 
     fn click_pod_window_close(context: &egui::Context, app: &mut Workbench) {
@@ -3106,6 +9122,2112 @@ mod tests {
     }
 
     #[test]
+    fn amp_stomp_mod_delay_and_reverb_sliders_edit_selected_tone_and_quit_guard_keeps_or_saves_it()
+    {
+        let (context, mut app) = app();
+        context.style_mut(|style| {
+            style.animation_time = 0.0;
+            style.spacing.slider_width = 220.0;
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let admitted_path = directory.path().join("admitted-drive.tone");
+        let unavailable_path = directory.path().join("unavailable.tone");
+        let blocked_path = directory.path().join("blocked-copy.tone");
+        let saved_path = directory.path().join("drive-copy.tone");
+        let admitted_bytes = sample_drive_pod_tone();
+        let unavailable_bytes = sample_pod_tone();
+        std::fs::write(&admitted_path, &admitted_bytes).unwrap();
+        std::fs::write(&unavailable_path, &unavailable_bytes).unwrap();
+        std::fs::write(&blocked_path, b"keep existing destination").unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(admitted_path), Some(unavailable_path)].into(),
+            pod_save: [Some(blocked_path.clone()), Some(saved_path.clone())].into(),
+            ..Default::default()
+        });
+
+        click_pod(&context, &mut app, "open-pod");
+        click_pod(&context, &mut app, "load-pod");
+        click_pod(&context, &mut app, "load-pod");
+        assert_eq!(app.pod_library.len(), 2, "{}", app.pod_message);
+        assert_eq!(app.pod_selected, Some(1));
+        recording_frame(&context, &mut app, vec![]);
+        assert!(app.pod_drive_slider.is_none());
+        assert!(app.pod_stomp_sliders.is_empty());
+        assert!(
+            app.pod_library
+                .tone(1)
+                .unwrap()
+                .amp_drive_fraction()
+                .is_err()
+        );
+        assert!(!app.pod_library.is_dirty(0));
+        assert!(!app.pod_library.is_dirty(1));
+
+        let first_row = app.pod_rows[&0].center();
+        click_pod_at(&context, &mut app, first_row);
+        assert_eq!(app.pod_selected, Some(0));
+        recording_frame(&context, &mut app, vec![]);
+        assert!(app.pod_drive_slider.is_some());
+        let stomp_controls = [
+            pod_preset::StompControl::Drive,
+            pod_preset::StompControl::Gain,
+            pod_preset::StompControl::Tone,
+        ];
+        assert_eq!(app.pod_stomp_sliders.len(), stomp_controls.len());
+        assert_eq!(app.pod_mod_sliders.len(), 3);
+        assert_eq!(app.pod_reverb_sliders.len(), 2);
+        assert_eq!(app.pod_delay_sliders.len(), 3);
+        let original_drive = app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .amp_drive_fraction()
+            .unwrap();
+        let original_stomp: Vec<_> = stomp_controls
+            .into_iter()
+            .map(|control| {
+                app.pod_library
+                    .tone(0)
+                    .unwrap()
+                    .stomp_control_fraction(control)
+                    .unwrap()
+            })
+            .collect();
+        drag_pod_drive_slider(&context, &mut app);
+        for control in stomp_controls {
+            drag_pod_stomp_slider(&context, &mut app, control);
+        }
+        drag_pod_mod_slider(&context, &mut app, pod_preset::ModControl::Depth);
+        drag_pod_reverb_slider(&context, &mut app, pod_preset::ReverbControl::Dwell);
+        drag_pod_delay_slider(&context, &mut app, pod_preset::DelayControl::Feedback);
+        let edited_drive = app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .amp_drive_fraction()
+            .unwrap();
+        assert_ne!(edited_drive.to_bits(), original_drive.to_bits());
+        assert!((0.0..=1.0).contains(&edited_drive));
+        let edited_stomp: Vec<_> = stomp_controls
+            .into_iter()
+            .map(|control| {
+                app.pod_library
+                    .tone(0)
+                    .unwrap()
+                    .stomp_control_fraction(control)
+                    .unwrap()
+            })
+            .collect();
+        for (edited, original) in edited_stomp.iter().zip(&original_stomp) {
+            assert_ne!(edited.to_bits(), original.to_bits());
+            assert!((0.0..=1.0).contains(edited));
+        }
+        let edited_mod = app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .mod_control_fraction(pod_preset::ModControl::Depth)
+            .unwrap();
+        assert!((0.0..=1.0).contains(&edited_mod));
+        assert_ne!(edited_mod.to_bits(), 0.2f32.to_bits());
+        let edited_reverb = app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .reverb_control_fraction(pod_preset::ReverbControl::Dwell)
+            .unwrap();
+        assert!((0.0..=1.0).contains(&edited_reverb));
+        assert_ne!(edited_reverb.to_bits(), 0.3f32.to_bits());
+        let edited_delay = app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .delay_control_fraction(pod_preset::DelayControl::Feedback)
+            .unwrap();
+        assert!((0.0..=1.0).contains(&edited_delay));
+        assert_ne!(edited_delay.to_bits(), 0.2f32.to_bits());
+        assert!(app.pod_library.is_dirty(0));
+        assert!(!app.pod_library.is_dirty(1));
+        assert_eq!(
+            app.pod_library.tone(1).unwrap().as_bytes(),
+            unavailable_bytes
+        );
+
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pending.is_none());
+        assert!(app.pod_library.is_dirty(0));
+        assert!(!app.pod_library.is_dirty(1));
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .amp_drive_fraction()
+                .unwrap()
+                .to_bits(),
+            edited_drive.to_bits()
+        );
+        for (control, edited) in stomp_controls.into_iter().zip(&edited_stomp) {
+            assert_eq!(
+                app.pod_library
+                    .tone(0)
+                    .unwrap()
+                    .stomp_control_fraction(control)
+                    .unwrap()
+                    .to_bits(),
+                edited.to_bits()
+            );
+        }
+
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "save");
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert!(!app.permit_close);
+        assert!(app.pod_library.is_dirty(0));
+        assert!(!app.pod_library.is_dirty(1));
+        assert_eq!(
+            std::fs::read(&blocked_path).unwrap(),
+            b"keep existing destination"
+        );
+
+        click_prompt(&context, &mut app, "save");
+        assert!(app.pending.is_none());
+        assert!(app.permit_close);
+        assert!(!app.pod_library.any_dirty());
+        let saved_bytes = std::fs::read(saved_path).unwrap();
+        let reopened = pod_preset::PodTone::parse(saved_bytes).unwrap();
+        assert_eq!(
+            reopened.amp_drive_fraction().unwrap().to_bits(),
+            edited_drive.to_bits()
+        );
+        for (control, edited) in stomp_controls.into_iter().zip(&edited_stomp) {
+            assert_eq!(
+                reopened.stomp_control_fraction(control).unwrap().to_bits(),
+                edited.to_bits()
+            );
+        }
+        assert_eq!(
+            reopened
+                .mod_control_fraction(pod_preset::ModControl::Depth)
+                .unwrap()
+                .to_bits(),
+            edited_mod.to_bits()
+        );
+        assert_eq!(
+            reopened
+                .reverb_control_fraction(pod_preset::ReverbControl::Dwell)
+                .unwrap()
+                .to_bits(),
+            edited_reverb.to_bits()
+        );
+        assert_eq!(
+            reopened
+                .delay_control_fraction(pod_preset::DelayControl::Feedback)
+                .unwrap()
+                .to_bits(),
+            edited_delay.to_bits()
+        );
+        assert_eq!(
+            app.pod_library.tone(1).unwrap().as_bytes(),
+            unavailable_bytes
+        );
+        assert!(!app.document.as_ref().unwrap().as_bytes().is_empty());
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn stomp_harmony_gui_stages_until_apply_and_keeps_the_other_selector_independent() {
+        let (context, mut app) = app();
+        let directory = tempfile::tempdir().unwrap();
+        let blocked = directory.path().join("existing-harmony-copy.l6t");
+        let saved = directory.path().join("harmony-copy.l6t");
+        std::fs::write(&blocked, b"keep existing destination").unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_save: [Some(blocked.clone()), Some(saved.clone())].into(),
+            ..Default::default()
+        });
+        app.pod_open = true;
+        app.pod_selected = Some(
+            app.pod_library
+                .import_bytes(sample_stomp_harmony_pod_tone())
+                .unwrap(),
+        );
+        app.pod_library
+            .import_bytes(sample_stomp_harmony_pod_tone())
+            .unwrap();
+        recording_frame_tall(&context, &mut app, vec![]);
+        let original = app.pod_library.tone(0).unwrap().as_bytes().to_vec();
+        stage_stomp_harmony1_choice(
+            &context,
+            &mut app,
+            pod_preset::StompHarmony1M335Selection::MinusOctave,
+        );
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert_eq!(
+            app.pod_harmony_pending,
+            Some((
+                0,
+                pod_preset::StompHarmonyControl::Harmony1M335,
+                PendingStompHarmony::Harmony1M335(
+                    pod_preset::StompHarmony1M335Selection::MinusOctave
+                )
+            ))
+        );
+        let second_row = app.pod_rows[&1].center();
+        click_pod_at_tall(&context, &mut app, second_row);
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert_eq!(app.pod_selected, Some(1));
+        assert!(app.pod_harmony_pending.is_none());
+        let first_row = app.pod_rows[&0].center();
+        click_pod_at_tall(&context, &mut app, first_row);
+        recording_frame_tall(&context, &mut app, vec![]);
+        stage_stomp_harmony1_choice(
+            &context,
+            &mut app,
+            pod_preset::StompHarmony1M335Selection::MinusOctave,
+        );
+        click_pod(&context, &mut app, "pod-harmony1-apply");
+        let after_first = app.pod_library.tone(0).unwrap().as_bytes().to_vec();
+        assert_ne!(after_first, original);
+        assert!(app.pod_library.is_dirty(0));
+        assert!(app.pod_harmony_pending.is_none());
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .stomp_harmony_1457_selection()
+                .unwrap(),
+            pod_preset::StompHarmonyValue::Known(pod_preset::StompHarmony1457Selection::Fifth)
+        );
+
+        stage_stomp_harmony2_choice(
+            &context,
+            &mut app,
+            pod_preset::StompHarmony1457Selection::Fourth,
+        );
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), after_first);
+        click_pod(&context, &mut app, "pod-harmony2-apply");
+        let final_bytes = app.pod_library.tone(0).unwrap().as_bytes();
+        assert_ne!(final_bytes, after_first);
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .stomp_harmony_1457_selection()
+                .unwrap(),
+            pod_preset::StompHarmonyValue::Known(pod_preset::StompHarmony1457Selection::Fourth)
+        );
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .stomp_harmony_1m335_selection()
+                .unwrap(),
+            pod_preset::StompHarmonyValue::Known(
+                pod_preset::StompHarmony1M335Selection::MinusOctave
+            )
+        );
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "save");
+        assert_eq!(
+            std::fs::read(&blocked).unwrap(),
+            b"keep existing destination"
+        );
+        assert!(app.pod_library.is_dirty(0));
+        assert!(!app.permit_close);
+        click_prompt(&context, &mut app, "save");
+        assert!(app.permit_close);
+        let reopened = pod_preset::PodTone::parse(std::fs::read(saved).unwrap()).unwrap();
+        assert_eq!(
+            reopened.stomp_harmony_1457_selection().unwrap(),
+            pod_preset::StompHarmonyValue::Known(pod_preset::StompHarmony1457Selection::Fourth)
+        );
+        assert_eq!(
+            reopened.stomp_harmony_1m335_selection().unwrap(),
+            pod_preset::StompHarmonyValue::Known(
+                pod_preset::StompHarmony1M335Selection::MinusOctave
+            )
+        );
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn mod_note_gui_stages_per_tone_and_applies_only_on_request() {
+        let (context, mut app) = app();
+        app.pod_open = true;
+        app.pod_selected = Some(
+            app.pod_library
+                .import_bytes(sample_delay_note_tone(0, 0))
+                .unwrap(),
+        );
+        app.pod_library
+            .import_bytes(sample_delay_note_tone(0, 0))
+            .unwrap();
+        recording_frame_tall(&context, &mut app, vec![]);
+        let original = app.pod_library.tone(0).unwrap().as_bytes().to_vec();
+        stage_mod_note_choice(&context, &mut app, pod_preset::ModNoteChoice::Quarter);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert_eq!(
+            app.pod_mod_pending,
+            Some((0, PendingModEdit::Note(pod_preset::ModNoteChoice::Quarter)))
+        );
+
+        let second_row = app.pod_rows[&1].center();
+        click_pod_at_tall(&context, &mut app, second_row);
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert_eq!(app.pod_selected, Some(1));
+        assert!(app.pod_mod_pending.is_none());
+        let second_original = app.pod_library.tone(1).unwrap().as_bytes().to_vec();
+        stage_mod_note_choice(&context, &mut app, pod_preset::ModNoteChoice::Quarter);
+        click_pod(&context, &mut app, "pod-mod-discard");
+        assert!(app.pod_mod_pending.is_none());
+        assert_eq!(app.pod_library.tone(1).unwrap().as_bytes(), second_original);
+
+        let first_row = app.pod_rows[&0].center();
+        click_pod_at_tall(&context, &mut app, first_row);
+        recording_frame_tall(&context, &mut app, vec![]);
+        stage_mod_note_choice(&context, &mut app, pod_preset::ModNoteChoice::Quarter);
+        click_pod(&context, &mut app, "pod-mod-apply");
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().mod_note_value().unwrap(),
+            pod_preset::ModNoteValue::Known(pod_preset::ModNoteChoice::Quarter)
+        );
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .mod_speed_hz()
+                .unwrap()
+                .to_bits(),
+            2.0_f32.to_bits()
+        );
+        assert!(app.pod_library.is_dirty(0));
+        assert!(app.pod_mod_pending.is_none());
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn mod_speed_gui_stages_discards_applies_and_retains_failed_edits() {
+        let (context, mut app) = app();
+        app.pod_open = true;
+        app.pod_selected = Some(
+            app.pod_library
+                .import_bytes(sample_delay_note_tone(0, 6))
+                .unwrap(),
+        );
+        app.pod_library
+            .import_bytes(sample_delay_note_tone(0, 99))
+            .unwrap();
+        recording_frame_tall(&context, &mut app, vec![]);
+        let original = app.pod_library.tone(0).unwrap().as_bytes().to_vec();
+        drag_mod_speed_slider(&context, &mut app, 0.2);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert!(matches!(
+            app.pod_mod_pending,
+            Some((0, PendingModEdit::SpeedHz(_)))
+        ));
+        click_pod(&context, &mut app, "pod-mod-discard");
+        assert!(app.pod_mod_pending.is_none());
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+
+        drag_mod_speed_slider(&context, &mut app, 0.2);
+        click_pod(&context, &mut app, "pod-mod-apply");
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().mod_note_value().unwrap(),
+            pod_preset::ModNoteValue::Known(pod_preset::ModNoteChoice::Off)
+        );
+        assert!(app.pod_library.is_dirty(0));
+        assert!(app.pod_library.tone(0).unwrap().as_bytes() != original);
+        assert!(app.pod_mod_pending.is_none());
+
+        let second_row = app.pod_rows[&1].center();
+        click_pod_at_tall(&context, &mut app, second_row);
+        recording_frame_tall(&context, &mut app, vec![]);
+        let invalid_original = app.pod_library.tone(1).unwrap().as_bytes().to_vec();
+        drag_mod_speed_slider(&context, &mut app, 0.2);
+        assert_eq!(
+            app.pod_library.tone(1).unwrap().as_bytes(),
+            invalid_original
+        );
+        click_pod(&context, &mut app, "pod-mod-apply");
+        assert_eq!(
+            app.pod_library.tone(1).unwrap().as_bytes(),
+            invalid_original
+        );
+        assert!(!app.pod_library.is_dirty(1));
+        assert!(matches!(
+            app.pod_mod_pending,
+            Some((1, PendingModEdit::SpeedHz(_)))
+        ));
+
+        let first_row = app.pod_rows[&0].center();
+        click_pod_at_tall(&context, &mut app, first_row);
+        recording_frame_tall(&context, &mut app, vec![]);
+        drag_mod_speed_slider(&context, &mut app, 0.3);
+        assert!(app.pod_mod_pending.is_some());
+        app.pod_library.revert_unsaved(0).unwrap();
+        app.refresh_selected_pod_name();
+        assert!(app.pod_mod_pending.is_none());
+        assert!(!app.pod_library.is_dirty(0));
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn mod_speed_bundle_gui_saves_without_overwrite_and_reopens() {
+        let (context, mut app) = app();
+        let directory = tempfile::tempdir().unwrap();
+        let collision = directory.path().join("existing-mod-bank.l6c");
+        let saved = directory.path().join("mod-bank-copy.l6c");
+        std::fs::write(&collision, b"preserve existing MOD destination").unwrap();
+        let original_tone = sample_delay_note_tone(0, 6);
+        let original_bundle = sample_pod_bundle(std::slice::from_ref(&original_tone));
+        app.dialogs = Box::new(FakeDialogs {
+            pod_save: [Some(collision.clone()), Some(saved.clone())].into(),
+            pod_open: [Some(saved.clone())].into(),
+            ..Default::default()
+        });
+        app.pod_open = true;
+        app.load_pod_bundle_bytes(original_bundle.clone()).unwrap();
+        recording_frame_tall(&context, &mut app, vec![]);
+        drag_mod_speed_slider(&context, &mut app, 0.2);
+        assert_eq!(
+            app.pod_bundle.as_ref().unwrap().as_bytes(),
+            original_bundle.as_slice()
+        );
+        click_pod(&context, &mut app, "pod-mod-apply");
+        assert!(app.pod_dirty());
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().mod_note_value().unwrap(),
+            pod_preset::ModNoteValue::Known(pod_preset::ModNoteChoice::Off)
+        );
+
+        click_pod(&context, &mut app, "save-pod");
+        assert!(app.pod_dirty());
+        assert_eq!(
+            std::fs::read(&collision).unwrap(),
+            b"preserve existing MOD destination"
+        );
+        click_pod(&context, &mut app, "save-pod");
+        assert!(!app.pod_dirty());
+        let saved_bytes = std::fs::read(&saved).unwrap();
+        assert_ne!(saved_bytes, original_bundle);
+
+        click_pod(&context, &mut app, "load-pod");
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().mod_note_value().unwrap(),
+            pod_preset::ModNoteValue::Known(pod_preset::ModNoteChoice::Off)
+        );
+        assert!(!app.pod_dirty());
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn delay_model_gui_stages_per_tone_applies_only_id_and_can_discard() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let mut original = sample_delay_note_tone(0, 0);
+        original[8..12].copy_from_slice(b"L6PA");
+        let index = app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_selected = Some(index);
+        recording_frame_tall(&context, &mut app, vec![]);
+        stage_delay_note_choice(&context, &mut app, pod_preset::DelayNoteChoice::Quarter);
+        assert!(app.pod_delay_pending.is_some());
+        choose_delay_model_popup(&context, &mut app, 0x0202_0003);
+        assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), original);
+        assert_eq!(
+            app.pod_delay_model_pending.unwrap().1.model_id(),
+            0x0202_0003
+        );
+        click_pod_button_tall(&context, &mut app, "pod-delay-model-apply");
+        let applied = app.pod_library.tone(index).unwrap();
+        assert_eq!(
+            applied
+                .models()
+                .iter()
+                .find(|m| m.slot == pod_preset::DELAY_SLOT)
+                .unwrap()
+                .model_id,
+            0x0202_0003
+        );
+        let changed: Vec<_> = original
+            .iter()
+            .zip(applied.as_bytes())
+            .enumerate()
+            .filter_map(|(i, (a, b))| (a != b).then_some(i))
+            .collect();
+        assert_eq!(changed.len(), 1);
+        assert_eq!(app.pod_delay_model_pending, None);
+        assert_eq!(app.pod_delay_pending, None);
+
+        choose_delay_model_popup(&context, &mut app, 0x0202_0004);
+        click_pod_button_tall(&context, &mut app, "pod-delay-model-discard");
+        assert_eq!(app.pod_delay_model_pending, None);
+        assert_eq!(
+            app.pod_library
+                .tone(index)
+                .unwrap()
+                .models()
+                .iter()
+                .find(|model| model.slot == pod_preset::DELAY_SLOT)
+                .unwrap()
+                .model_id,
+            0x0202_0003
+        );
+
+        // A staged selector is isolated to its tone and discarded on navigation.
+        choose_delay_model_popup(&context, &mut app, 0x0202_0004);
+        assert!(app.pod_delay_model_pending.is_some());
+        let second_row = app.pod_rows[&1];
+        click_pod_at_tall(&context, &mut app, second_row.center());
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert_eq!(app.pod_selected, Some(1));
+        assert_eq!(app.pod_delay_model_pending, None);
+
+        // A failed model Apply preserves prior parameter staging and source bytes.
+        let mut invalid = sample_delay_note_tone(0, 0);
+        let model_id = 0x0202_0002u32.to_be_bytes();
+        let offset = invalid
+            .windows(4)
+            .position(|word| word == model_id)
+            .unwrap();
+        invalid[offset..offset + 4].copy_from_slice(&0x3333_0001u32.to_be_bytes());
+        invalid[8..12].copy_from_slice(b"L6PA");
+        app.pod_library.replace(1, invalid.clone()).unwrap();
+        app.pod_delay_pending = Some((1, PendingDelayEdit::TimeMs(350.0)));
+        app.pod_delay_model_pending = Some((
+            1,
+            pod_preset::PodDelayModelChoice::try_from(0x0202_0003).unwrap(),
+        ));
+        let failed_choice = app.pod_delay_model_pending.unwrap().1;
+        assert!(app.apply_pod_delay_model_choice(1, failed_choice).is_err());
+        assert_eq!(
+            app.pod_delay_pending,
+            Some((1, PendingDelayEdit::TimeMs(350.0)))
+        );
+        assert_eq!(app.pod_library.tone(1).unwrap().as_bytes(), invalid);
+        assert_eq!(app.pod_delay_model_pending, Some((1, failed_choice)));
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn mod_model_gui_directly_replaces_each_gated_current_id_and_invalidates_note_stage() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let gated: [u32; 13] = [
+            0x0203_0015,
+            0x0203_0012,
+            0x0203_001e,
+            0x0203_0014,
+            0x0203_001f,
+            0x0203_0013,
+            0x0203_0011,
+            0x0203_001a,
+            0x0203_001b,
+            0x0203_0017,
+            0x0203_0018,
+            0x0203_0019,
+            0x0203_001c,
+        ];
+        for current_id in gated {
+            let mut original = sample_delay_note_tone(0, 0);
+            original[8..12].copy_from_slice(b"L6PA");
+            let old_id = 0x0203_0004u32.to_be_bytes();
+            let offset = original
+                .windows(4)
+                .position(|word| word == old_id)
+                .expect("fixture has a Mod model id");
+            original[offset..offset + 4].copy_from_slice(&current_id.to_be_bytes());
+            let index = app.pod_library.import_bytes(original.clone()).unwrap();
+            app.pod_selected = Some(index);
+            recording_frame_tall(&context, &mut app, vec![]);
+            stage_delay_note_choice(&context, &mut app, pod_preset::DelayNoteChoice::Quarter);
+            stage_mod_note_choice(&context, &mut app, pod_preset::ModNoteChoice::Quarter);
+            assert!(
+                app.pod_mod_pending.is_some(),
+                "Mod NOTE must be staged before model Apply"
+            );
+            assert!(
+                app.pod_delay_pending.is_some(),
+                "unrelated Delay NOTE must be staged"
+            );
+            choose_mod_model_popup(&context, &mut app, 0x0203_0004);
+            assert_eq!(app.pod_mod_model_pending.unwrap().1.model_id(), 0x0203_0004);
+            click_pod_button_tall(&context, &mut app, "pod-mod-model-apply");
+            let applied = app.pod_library.tone(index).unwrap();
+            let changed: Vec<_> = original
+                .iter()
+                .zip(applied.as_bytes())
+                .enumerate()
+                .filter_map(|(offset, (before, after))| (before != after).then_some(offset))
+                .collect();
+            assert!(!changed.is_empty());
+            assert!(
+                changed
+                    .iter()
+                    .all(|byte| (offset..offset + 4).contains(byte))
+            );
+            assert_eq!(app.pod_mod_pending, None);
+            assert!(
+                app.pod_delay_pending.is_some(),
+                "unrelated Delay NOTE staging must survive"
+            );
+            assert_eq!(app.pod_mod_model_pending, None);
+            app.pod_delay_pending = None;
+        }
+    }
+
+    #[test]
+    fn reverb_model_gui_apply_and_discard_preserve_other_stages_and_bundle_baseline() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let original = sample_reverb_model_tone(0x0204_0002, pod_preset::REVERB_FALLBACK_SLOT);
+        let index = app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_selected = Some(index);
+        recording_frame_tall(&context, &mut app, vec![]);
+        choose_reverb_model_popup(&context, &mut app, 0x0204_0003);
+        assert_eq!(
+            app.pod_reverb_model_pending.unwrap().1.model_id(),
+            0x0204_0003
+        );
+        assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), original);
+        app.pod_delay_pending = Some((index, PendingDelayEdit::TimeMs(350.0)));
+        app.pod_mod_pending = Some((index, PendingModEdit::SpeedHz(2.0)));
+        app.pod_stomp_model_pending = Some((
+            index,
+            pod_preset::PodStompModelChoice::try_from(0x0205_0000).unwrap(),
+        ));
+        choose_reverb_model_popup(&context, &mut app, 0x0204_0002);
+        assert_eq!(
+            app.pod_reverb_model_pending.unwrap().1.model_id(),
+            0x0204_0002
+        );
+        click_pod_button_tall(&context, &mut app, "pod-reverb-model-apply");
+        assert_eq!(
+            app.pod_reverb_model_pending.unwrap().1.model_id(),
+            0x0204_0002
+        );
+        assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), original);
+        assert!(app.pod_delay_pending.is_some() && app.pod_mod_pending.is_some());
+        click_pod_button_tall(&context, &mut app, "pod-reverb-model-discard");
+        assert_eq!(app.pod_reverb_model_pending, None);
+        assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), original);
+
+        choose_reverb_model_popup(&context, &mut app, 0x0204_0003);
+        click_pod_button_tall(&context, &mut app, "pod-reverb-model-apply");
+        assert_eq!(
+            app.pod_library.tone(index).unwrap().reverb_model_id(),
+            Some(0x0204_0003)
+        );
+        assert_eq!(app.pod_reverb_model_pending, None);
+        app.pod_library.revert_unsaved(index).unwrap();
+        app.refresh_selected_pod_name();
+        assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), original);
+
+        app.pod_delay_pending = Some((index, PendingDelayEdit::TimeMs(350.0)));
+        app.pod_mod_pending = Some((index, PendingModEdit::SpeedHz(2.0)));
+        app.pod_stomp_model_pending = Some((
+            index,
+            pod_preset::PodStompModelChoice::try_from(0x0205_0000).unwrap(),
+        ));
+        choose_reverb_model_popup(&context, &mut app, 0x0204_0003);
+        let bundle =
+            pod_preset::PodBundleLibrary::parse(sample_pod_bundle(std::slice::from_ref(&original)))
+                .unwrap();
+        let bundle_baseline = bundle.as_bytes().to_vec();
+        app.pod_bundle = Some(bundle);
+        click_pod_button_tall(&context, &mut app, "pod-reverb-model-apply");
+        let edited = app.pod_library.tone(index).unwrap();
+        assert_eq!(edited.reverb_model_id(), Some(0x0204_0003));
+        assert!(app.pod_library.is_dirty(index));
+        assert_eq!(app.pod_reverb_model_pending, None);
+        assert_eq!(
+            app.pod_delay_pending,
+            Some((index, PendingDelayEdit::TimeMs(350.0)))
+        );
+        assert_eq!(
+            app.pod_mod_pending,
+            Some((index, PendingModEdit::SpeedHz(2.0)))
+        );
+        assert_eq!(
+            app.pod_stomp_model_pending.unwrap().1.model_id(),
+            0x0205_0000
+        );
+        let bundle = app.pod_bundle.as_ref().unwrap();
+        assert_ne!(bundle.as_bytes(), bundle_baseline);
+        let (bank, preset) = bundle.entry_location(index).unwrap();
+        assert_eq!(
+            bundle.tone(bank, preset).unwrap().reverb_model_id(),
+            Some(0x0204_0003)
+        );
+    }
+
+    #[test]
+    fn reverb_model_gui_failed_apply_navigation_load_save_reopen_and_quit_guard() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let original = sample_reverb_model_tone(0x0204_0002, pod_preset::REVERB_FALLBACK_SLOT);
+        let other = sample_reverb_model_tone(0x0204_0003, pod_preset::REVERB_FALLBACK_SLOT);
+        let index = app.pod_library.import_bytes(original.clone()).unwrap();
+        let second = app.pod_library.import_bytes(other.clone()).unwrap();
+        app.pod_selected = Some(index);
+        recording_frame_tall(&context, &mut app, vec![]);
+
+        // Failed Apply retains the staged choice and the pre-existing dirty baseline.
+        choose_reverb_model_popup(&context, &mut app, 0x0204_0003);
+        let short_minf =
+            sample_reverb_model_tone_with_tail(0x0204_0002, pod_preset::REVERB_FALLBACK_SLOT, &[]);
+        app.pod_library.replace(index, short_minf.clone()).unwrap();
+        app.pod_delay_pending = Some((index, PendingDelayEdit::TimeMs(350.0)));
+        app.pod_mod_pending = Some((index, PendingModEdit::SpeedHz(2.0)));
+        app.pod_stomp_model_pending = Some((
+            index,
+            pod_preset::PodStompModelChoice::try_from(0x0205_0000).unwrap(),
+        ));
+        assert!(app.pod_library.is_dirty(index));
+        click_pod_button_tall(&context, &mut app, "pod-reverb-model-apply");
+        assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), short_minf);
+        assert_eq!(
+            app.pod_library.tone(index).unwrap().reverb_model_id(),
+            Some(0x0204_0002)
+        );
+        assert!(app.pod_library.is_dirty(index));
+        assert_eq!(
+            app.pod_reverb_model_pending.unwrap().1.model_id(),
+            0x0204_0003
+        );
+        assert_eq!(
+            app.pod_delay_pending,
+            Some((index, PendingDelayEdit::TimeMs(350.0)))
+        );
+        assert_eq!(
+            app.pod_mod_pending,
+            Some((index, PendingModEdit::SpeedHz(2.0)))
+        );
+        assert_eq!(
+            app.pod_stomp_model_pending.unwrap().1.model_id(),
+            0x0205_0000
+        );
+        app.pod_library.revert_unsaved(index).unwrap();
+        app.refresh_selected_pod_name();
+        assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), original);
+        assert!(!app.pod_library.is_dirty(index));
+        assert_eq!(app.pod_reverb_model_pending, None);
+
+        // Changing the selected row clears staged Reverb state.
+        choose_reverb_model_popup(&context, &mut app, 0x0204_0003);
+        let second_row = app.pod_rows[&second].center();
+        click_pod_at_tall(&context, &mut app, second_row);
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert_eq!(app.pod_selected, Some(second));
+        assert_eq!(app.pod_reverb_model_pending, None);
+        app.pod_selected = Some(index);
+        recording_frame_tall(&context, &mut app, vec![]);
+
+        // Loading through the actual button clears staged Reverb state.
+        let directory = tempfile::tempdir().unwrap();
+        let load_path = directory.path().join("loaded-reverb.tone");
+        std::fs::write(&load_path, &other).unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(load_path.clone())].into(),
+            ..Default::default()
+        });
+        choose_reverb_model_popup(&context, &mut app, 0x0204_0003);
+        click_pod_button_tall(&context, &mut app, "load-pod");
+        assert_eq!(app.pod_reverb_model_pending, None);
+        assert_eq!(
+            app.pod_library
+                .tone(app.pod_selected.unwrap())
+                .unwrap()
+                .as_bytes(),
+            other
+        );
+
+        // Collision, save/reopen, and quit confirmation preserve the edit guards.
+        let collision = directory.path().join("occupied.tone");
+        let saved = directory.path().join("reverb-model-copy.tone");
+        std::fs::write(&collision, b"keep existing destination").unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_save: [Some(collision.clone()), Some(saved.clone())].into(),
+            pod_open: [Some(saved.clone())].into(),
+            ..Default::default()
+        });
+        choose_reverb_model_popup(&context, &mut app, 0x0204_0002);
+        click_pod_button_tall(&context, &mut app, "pod-reverb-model-apply");
+        assert!(app.pod_dirty());
+        click_pod_button_tall(&context, &mut app, "save-pod");
+        assert!(app.pod_dirty());
+        assert_eq!(
+            std::fs::read(&collision).unwrap(),
+            b"keep existing destination"
+        );
+        click_pod_button_tall(&context, &mut app, "save-pod");
+        assert!(!app.pod_dirty());
+        click_pod_button_tall(&context, &mut app, "load-pod");
+        let reopened = app.pod_selected.unwrap();
+        assert_eq!(
+            app.pod_library.tone(reopened).unwrap().reverb_model_id(),
+            Some(0x0204_0002)
+        );
+        choose_reverb_model_popup(&context, &mut app, 0x0204_0003);
+        click_pod_button_tall(&context, &mut app, "pod-reverb-model-apply");
+        assert!(app.pod_dirty());
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pod_dirty());
+        app.pod_library.revert_unsaved(reopened).unwrap();
+        app.refresh_selected_pod_name();
+        assert!(!app.pod_dirty());
+        assert_eq!(
+            app.pod_library.tone(reopened).unwrap().reverb_model_id(),
+            Some(0x0204_0002)
+        );
+        assert_eq!(app.pod_reverb_model_pending, None);
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn stomp_model_gui_directly_replaces_all_gated_current_ids_and_invalidates_only_stomp_stage() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let gated = [
+            0x0205_0006,
+            0x0205_0001,
+            0x0200_0006,
+            0x0205_0007,
+            0x0200_0003,
+            0x020a_000a,
+            0x020a_000b,
+            0x020a_000c,
+            0x020a_0008,
+            0x020a_0005,
+            0x020a_0006,
+            0x020a_0007,
+            0x020a_0003,
+            0x020a_0004,
+            0x020a_0009,
+            0x020a_0001,
+            0x020a_0002,
+        ];
+        for current_id in gated {
+            let original = sample_stomp_model_tone(current_id);
+            let index = app.pod_library.import_bytes(original.clone()).unwrap();
+            app.pod_selected = Some(index);
+            recording_frame_tall(&context, &mut app, vec![]);
+            assert_eq!(
+                app.pod_library.tone(index).unwrap().stomp_model_id(),
+                Some(current_id),
+                "gated current id {current_id:08x} stays raw"
+            );
+            app.pod_harmony_pending = Some((
+                index,
+                pod_preset::StompHarmonyControl::Harmony1M335,
+                PendingStompHarmony::Harmony1M335(pod_preset::StompHarmony1M335Selection::Unison),
+            ));
+            app.pod_delay_pending = Some((index, PendingDelayEdit::TimeMs(350.0)));
+            app.pod_mod_pending = Some((index, PendingModEdit::SpeedHz(2.0)));
+            choose_stomp_model_popup(&context, &mut app, 0x0205_0000);
+            assert_eq!(
+                app.pod_stomp_model_pending.unwrap().1.model_id(),
+                0x0205_0000
+            );
+            assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), original);
+            click_pod_button_tall(&context, &mut app, "pod-stomp-model-apply");
+            let applied = app.pod_library.tone(index).unwrap();
+            assert_eq!(applied.stomp_model_id(), Some(0x0205_0000));
+            assert!(app.pod_library.is_dirty(index));
+            assert_eq!(app.pod_stomp_model_pending, None);
+            assert_eq!(app.pod_harmony_pending, None);
+            assert_eq!(
+                app.pod_delay_pending,
+                Some((index, PendingDelayEdit::TimeMs(350.0)))
+            );
+            assert_eq!(
+                app.pod_mod_pending,
+                Some((index, PendingModEdit::SpeedHz(2.0)))
+            );
+            let changed: Vec<_> = original
+                .iter()
+                .zip(applied.as_bytes())
+                .enumerate()
+                .filter_map(|(offset, (before, after))| (before != after).then_some(offset))
+                .collect();
+            let id_offset = original
+                .windows(4)
+                .position(|window| window == current_id.to_be_bytes())
+                .unwrap();
+            assert!(!changed.is_empty());
+            assert!(
+                changed
+                    .iter()
+                    .all(|offset| (id_offset..id_offset + 4).contains(offset))
+            );
+            app.pod_delay_pending = None;
+            app.pod_mod_pending = None;
+        }
+    }
+
+    #[test]
+    fn stomp_model_gui_discards_and_bundle_apply_reopens_preserving_copy() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let original = sample_stomp_model_tone(0x0205_0006);
+        app.load_pod_bundle_bytes(sample_pod_bundle(std::slice::from_ref(&original)))
+            .unwrap();
+        recording_frame_tall(&context, &mut app, vec![]);
+        choose_stomp_model_popup(&context, &mut app, 0x0205_0000);
+        click_pod_button_tall(&context, &mut app, "pod-stomp-model-discard");
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+
+        app.pod_harmony_pending = Some((
+            0,
+            pod_preset::StompHarmonyControl::Harmony1M335,
+            PendingStompHarmony::Harmony1M335(pod_preset::StompHarmony1M335Selection::Unison),
+        ));
+        app.pod_delay_pending = Some((0, PendingDelayEdit::TimeMs(350.0)));
+        app.pod_mod_pending = Some((0, PendingModEdit::SpeedHz(2.0)));
+        choose_stomp_model_popup(&context, &mut app, 0x0205_0002);
+        assert_eq!(
+            app.pod_harmony_pending.as_ref().map(|stage| stage.0),
+            Some(0)
+        );
+        assert_eq!(
+            app.pod_delay_pending,
+            Some((0, PendingDelayEdit::TimeMs(350.0)))
+        );
+        assert_eq!(app.pod_mod_pending, Some((0, PendingModEdit::SpeedHz(2.0))));
+        click_pod_button_tall(&context, &mut app, "pod-stomp-model-apply");
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_eq!(app.pod_harmony_pending, None);
+        assert_eq!(
+            app.pod_delay_pending,
+            Some((0, PendingDelayEdit::TimeMs(350.0)))
+        );
+        assert_eq!(app.pod_mod_pending, Some((0, PendingModEdit::SpeedHz(2.0))));
+        let bundle_tone = app.pod_bundle.as_ref().unwrap().tone(0, 0).unwrap();
+        assert_eq!(bundle_tone.stomp_model_id(), Some(0x0205_0002));
+        let directory = tempfile::tempdir().unwrap();
+        let copy = directory.path().join("stomp-bundle-copy.l6c");
+        app.pod_bundle.as_ref().unwrap().save_copy(&copy).unwrap();
+        assert!(app.pod_bundle.as_ref().unwrap().save_copy(&copy).is_err());
+        let reopened = pod_preset::PodBundleLibrary::parse(std::fs::read(copy).unwrap()).unwrap();
+        assert_eq!(
+            reopened.tone(0, 0).unwrap().stomp_model_id(),
+            Some(0x0205_0002)
+        );
+    }
+
+    #[test]
+    fn stomp_model_gui_failed_apply_and_same_noop_retain_all_stages() {
+        let (_context, mut app) = app();
+        let original = sample_stomp_model_tone(0x0205_0000);
+        let index = app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_harmony_pending = Some((
+            index,
+            pod_preset::StompHarmonyControl::Harmony1457,
+            PendingStompHarmony::Harmony1457(pod_preset::StompHarmony1457Selection::Unison),
+        ));
+        app.pod_delay_pending = Some((index, PendingDelayEdit::TimeMs(400.0)));
+        let same = pod_preset::PodStompModelChoice::try_from(0x0205_0000).unwrap();
+        assert!(!app.apply_pod_stomp_model_choice(index, same).unwrap());
+        assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), original);
+        assert!(app.pod_harmony_pending.is_some());
+        assert!(app.pod_delay_pending.is_some());
+
+        let mut unknown = original.clone();
+        let id = 0x0205_0000u32.to_be_bytes();
+        let offset = unknown.windows(4).position(|window| window == id).unwrap();
+        unknown[offset..offset + 4].copy_from_slice(&0xdead_beefu32.to_be_bytes());
+        app.pod_library.replace(index, unknown.clone()).unwrap();
+        let requested = pod_preset::PodStompModelChoice::try_from(0x0205_0002).unwrap();
+        assert!(app.apply_pod_stomp_model_choice(index, requested).is_err());
+        assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), unknown);
+        assert!(app.pod_harmony_pending.is_some());
+        assert!(app.pod_delay_pending.is_some());
+    }
+
+    #[test]
+    fn mod_model_gui_applies_and_discards_within_the_selected_bundle_entry() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let mut original = sample_delay_note_tone(0, 0);
+        original[8..12].copy_from_slice(b"L6PA");
+        let old = 0x0203_0004u32.to_be_bytes();
+        let offset = original
+            .windows(4)
+            .position(|word| word == old)
+            .expect("fixture has a Mod model id");
+        original[offset..offset + 4].copy_from_slice(&0x0203_0015u32.to_be_bytes());
+        app.load_pod_bundle_bytes(sample_pod_bundle(&[original.clone()]))
+            .unwrap();
+
+        recording_frame_tall(&context, &mut app, vec![]);
+        stage_mod_note_choice(&context, &mut app, pod_preset::ModNoteChoice::Quarter);
+        assert!(app.pod_mod_pending.is_some());
+        choose_mod_model_popup(&context, &mut app, 0x0203_0005);
+        click_pod_button_tall(&context, &mut app, "pod-mod-model-discard");
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+
+        choose_mod_model_popup(&context, &mut app, 0x0203_0005);
+        click_pod_button_tall(&context, &mut app, "pod-mod-model-apply");
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert_eq!(app.pod_mod_pending, None);
+        assert_eq!(
+            app.pod_bundle
+                .as_ref()
+                .unwrap()
+                .tone(0, 0)
+                .unwrap()
+                .models()
+                .iter()
+                .find(|model| model.slot == pod_preset::MOD_SLOT)
+                .unwrap()
+                .model_id,
+            0x0203_0005
+        );
+    }
+
+    #[test]
+    fn mod_model_same_id_and_rejected_apply_preserve_staged_note() {
+        let (_context, mut app) = app();
+        let mut original = sample_delay_note_tone(0, 0);
+        original[8..12].copy_from_slice(b"L6PA");
+        let index = app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_mod_pending = Some((
+            index,
+            PendingModEdit::Note(pod_preset::ModNoteChoice::Quarter),
+        ));
+        let same = pod_preset::PodModModelChoice::try_from(0x0203_0004).unwrap();
+        app.apply_pod_mod_model_choice(index, same).unwrap();
+        assert_eq!(
+            app.pod_mod_pending,
+            Some((
+                index,
+                PendingModEdit::Note(pod_preset::ModNoteChoice::Quarter)
+            ))
+        );
+        assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), original);
+
+        let mut invalid = original;
+        let current = 0x0203_0004u32.to_be_bytes();
+        let offset = invalid.windows(4).position(|word| word == current).unwrap();
+        invalid[offset..offset + 4].copy_from_slice(&0x3333_0001u32.to_be_bytes());
+        app.pod_library.replace(index, invalid.clone()).unwrap();
+        let pending = Some((
+            index,
+            PendingModEdit::Note(pod_preset::ModNoteChoice::Quarter),
+        ));
+        app.pod_mod_pending = pending;
+        assert!(app.apply_pod_mod_model_choice(index, same).is_err());
+        assert_eq!(app.pod_mod_pending, pending);
+        assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), invalid);
+    }
+
+    #[test]
+    fn mod_model_apply_save_reopen_navigation_load_revert_and_quit_guard() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let directory = tempfile::tempdir().unwrap();
+        let collision = directory.path().join("occupied-mod.tone");
+        let saved = directory.path().join("mod-model-copy.tone");
+        std::fs::write(&collision, b"keep existing destination").unwrap();
+        let mut original = sample_delay_note_tone(0, 0);
+        original[8..12].copy_from_slice(b"L6PA");
+        app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_selected = Some(0);
+        app.dialogs = Box::new(FakeDialogs {
+            pod_save: [Some(collision.clone()), Some(saved.clone())].into(),
+            pod_open: [Some(saved.clone())].into(),
+            ..Default::default()
+        });
+
+        recording_frame_tall(&context, &mut app, vec![]);
+        choose_mod_model_popup(&context, &mut app, 0x0203_0005);
+        click_pod_button_tall(&context, &mut app, "pod-mod-model-apply");
+        assert!(app.pod_dirty());
+        click_pod_button_tall(&context, &mut app, "save-pod");
+        assert!(app.pod_dirty());
+        assert_eq!(
+            std::fs::read(&collision).unwrap(),
+            b"keep existing destination"
+        );
+        click_pod_button_tall(&context, &mut app, "save-pod");
+        assert!(!app.pod_dirty());
+        let saved_tone = pod_preset::PodTone::parse(std::fs::read(&saved).unwrap()).unwrap();
+        assert_eq!(
+            saved_tone
+                .models()
+                .iter()
+                .find(|model| model.slot == pod_preset::MOD_SLOT)
+                .unwrap()
+                .model_id,
+            0x0203_0005
+        );
+
+        choose_mod_model_popup(&context, &mut app, 0x0203_0006);
+        assert!(app.pod_mod_model_pending.is_some());
+        let second = app.pod_rows[&1].center();
+        click_pod_at_tall(&context, &mut app, second);
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert_eq!(app.pod_selected, Some(1));
+        assert_eq!(app.pod_mod_model_pending, None);
+
+        let first = app.pod_rows[&0].center();
+        click_pod_at_tall(&context, &mut app, first);
+        recording_frame_tall(&context, &mut app, vec![]);
+        choose_mod_model_popup(&context, &mut app, 0x0203_0007);
+        assert!(app.pod_mod_model_pending.is_some());
+        click_pod_button_tall(&context, &mut app, "load-pod");
+        assert_eq!(app.pod_mod_model_pending, None);
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .models()
+                .iter()
+                .find(|model| model.slot == pod_preset::MOD_SLOT)
+                .unwrap()
+                .model_id,
+            0x0203_0005
+        );
+
+        choose_mod_model_popup(&context, &mut app, 0x0203_0006);
+        click_pod_button_tall(&context, &mut app, "pod-mod-model-apply");
+        assert!(app.pod_dirty());
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pod_dirty());
+        let selected = app.pod_selected.unwrap();
+        app.pod_library.revert_unsaved(selected).unwrap();
+        app.refresh_selected_pod_name();
+        assert!(!app.pod_dirty());
+        assert_eq!(app.pod_mod_model_pending, None);
+        assert_eq!(
+            app.pod_library
+                .tone(selected)
+                .unwrap()
+                .models()
+                .iter()
+                .find(|model| model.slot == pod_preset::MOD_SLOT)
+                .unwrap()
+                .model_id,
+            0x0203_0005
+        );
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn delay_model_gui_can_directly_replace_each_pack_gated_current_model() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+
+        for (ordinal, current_id) in (0x0202_000bu32..=0x0202_000fu32).enumerate() {
+            let mut original = sample_delay_note_tone(0, 0);
+            original[8..12].copy_from_slice(b"L6PA");
+            let old_id = 0x0202_0002u32.to_be_bytes();
+            let old_id_offset = original
+                .windows(4)
+                .position(|word| word == old_id)
+                .expect("fixture has a Delay model id");
+            original[old_id_offset..old_id_offset + 4].copy_from_slice(&current_id.to_be_bytes());
+            let index = app.pod_library.import_bytes(original.clone()).unwrap();
+            app.pod_selected = Some(index);
+
+            recording_frame_tall(&context, &mut app, vec![]);
+            stage_delay_note_choice(&context, &mut app, pod_preset::DelayNoteChoice::Quarter);
+            assert!(app.pod_delay_pending.is_some());
+            choose_delay_model_popup(&context, &mut app, 0x0202_0002);
+            assert_eq!(
+                app.pod_delay_model_pending.unwrap().1.model_id(),
+                0x0202_0002,
+                "pack-gated current model {current_id:08x} must allow direct first-choice staging"
+            );
+
+            if ordinal == 0 {
+                click_pod_button_tall(&context, &mut app, "pod-delay-model-discard");
+                assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), original);
+                assert!(app.pod_delay_pending.is_some());
+                choose_delay_model_popup(&context, &mut app, 0x0202_0002);
+            }
+
+            click_pod_button_tall(&context, &mut app, "pod-delay-model-apply");
+            let applied = app.pod_library.tone(index).unwrap();
+            let changed: Vec<_> = original
+                .iter()
+                .zip(applied.as_bytes())
+                .enumerate()
+                .filter_map(|(offset, (before, after))| (before != after).then_some(offset))
+                .collect();
+            let id_offset = original
+                .windows(4)
+                .position(|word| word == current_id.to_be_bytes())
+                .unwrap();
+            assert!(!changed.is_empty());
+            assert!(
+                changed
+                    .iter()
+                    .all(|offset| (id_offset..id_offset + 4).contains(offset)),
+                "only the Delay MINF model-id word may change"
+            );
+            assert_eq!(
+                applied
+                    .models()
+                    .iter()
+                    .find(|model| model.slot == pod_preset::DELAY_SLOT)
+                    .unwrap()
+                    .model_id,
+                0x0202_0002
+            );
+            assert_eq!(app.pod_delay_pending, None);
+            assert_eq!(app.pod_delay_model_pending, None);
+        }
+
+        // A same-ID apply leaves a fresh NOTE/TIME stage available.
+        let same_id = app.pod_selected.unwrap();
+        app.pod_delay_pending = Some((same_id, PendingDelayEdit::TimeMs(350.0)));
+        let same_choice = pod_preset::PodDelayModelChoice::try_from(0x0202_0002).unwrap();
+        app.apply_pod_delay_model_choice(same_id, same_choice)
+            .unwrap();
+        assert_eq!(
+            app.pod_delay_pending,
+            Some((same_id, PendingDelayEdit::TimeMs(350.0)))
+        );
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn delay_model_apply_invalidates_stale_parameter_stage_in_bundle() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let mut original = sample_delay_note_tone(0, 0);
+        original[8..12].copy_from_slice(b"L6PA");
+        app.load_pod_bundle_bytes(sample_pod_bundle(&[original.clone()]))
+            .unwrap();
+        recording_frame_tall(&context, &mut app, vec![]);
+        stage_delay_note_choice(&context, &mut app, pod_preset::DelayNoteChoice::Quarter);
+        assert!(app.pod_delay_pending.is_some());
+        choose_delay_model_popup(&context, &mut app, 0x0202_0003);
+        click_pod_button_tall(&context, &mut app, "pod-delay-model-apply");
+        assert_eq!(app.pod_delay_pending, None);
+        let (bank, preset) = app.pod_bundle.as_ref().unwrap().entry_location(0).unwrap();
+        assert_eq!(
+            app.pod_bundle
+                .as_ref()
+                .unwrap()
+                .tone(bank, preset)
+                .unwrap()
+                .models()
+                .iter()
+                .find(|model| model.slot == pod_preset::DELAY_SLOT)
+                .unwrap()
+                .model_id,
+            0x0202_0003
+        );
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn delay_model_apply_save_collision_reopen_revert_and_quit_guard() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        let directory = tempfile::tempdir().unwrap();
+        let collision = directory.path().join("occupied.tone");
+        let saved = directory.path().join("delay-model-copy.tone");
+        std::fs::write(&collision, b"keep existing destination").unwrap();
+        let mut original = sample_delay_note_tone(0, 0);
+        original[8..12].copy_from_slice(b"L6PA");
+        app.pod_library.import_bytes(original).unwrap();
+        app.pod_selected = Some(0);
+        app.dialogs = Box::new(FakeDialogs {
+            pod_save: [Some(collision.clone()), Some(saved.clone())].into(),
+            pod_open: [Some(saved.clone())].into(),
+            ..Default::default()
+        });
+        recording_frame_tall(&context, &mut app, vec![]);
+        choose_delay_model_popup(&context, &mut app, 0x0202_0003);
+        click_pod_button_tall(&context, &mut app, "pod-delay-model-apply");
+        assert!(app.pod_dirty());
+        click_pod_button_tall(&context, &mut app, "save-pod");
+        assert!(app.pod_dirty());
+        assert_eq!(
+            std::fs::read(&collision).unwrap(),
+            b"keep existing destination"
+        );
+        click_pod_button_tall(&context, &mut app, "save-pod");
+        assert!(!app.pod_dirty());
+        let saved_tone = pod_preset::PodTone::parse(std::fs::read(&saved).unwrap()).unwrap();
+        assert_eq!(
+            saved_tone
+                .models()
+                .iter()
+                .find(|m| m.slot == pod_preset::DELAY_SLOT)
+                .unwrap()
+                .model_id,
+            0x0202_0003
+        );
+
+        choose_delay_model_popup(&context, &mut app, 0x0202_0004);
+        click_pod_button_tall(&context, &mut app, "pod-delay-model-apply");
+        assert!(app.pod_dirty());
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pod_dirty());
+        app.pod_library.revert_unsaved(0).unwrap();
+        app.refresh_selected_pod_name();
+        assert!(!app.pod_dirty());
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .models()
+                .iter()
+                .find(|m| m.slot == pod_preset::DELAY_SLOT)
+                .unwrap()
+                .model_id,
+            0x0202_0003
+        );
+        click_pod(&context, &mut app, "load-pod");
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .models()
+                .iter()
+                .find(|m| m.slot == pod_preset::DELAY_SLOT)
+                .unwrap()
+                .model_id,
+            0x0202_0003
+        );
+        assert!(!app.pod_dirty());
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn delay_note_gui_stages_per_tone_applies_offline_and_keeps_unsaved_guards() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        let directory = tempfile::tempdir().unwrap();
+        let saved = directory.path().join("delay-note-copy.l6c");
+        let blocked = directory.path().join("occupied-delay-copy.l6c");
+        let saved_time = directory.path().join("delay-time-copy.l6c");
+        let blocked_time = directory.path().join("occupied-delay-time-copy.l6c");
+        std::fs::write(&blocked, b"preserve existing NOTE destination").unwrap();
+        std::fs::write(&blocked_time, b"preserve existing TIME destination").unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_save: [
+                Some(blocked.clone()),
+                Some(saved.clone()),
+                Some(blocked_time.clone()),
+                Some(saved_time.clone()),
+            ]
+            .into(),
+            ..Default::default()
+        });
+        let original = sample_delay_note_tone(0, 0);
+        app.pod_open = true;
+        app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_selected = Some(0);
+        recording_frame_tall(&context, &mut app, vec![]);
+
+        stage_delay_note_choice(&context, &mut app, pod_preset::DelayNoteChoice::Quarter);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert_eq!(
+            app.pod_delay_pending,
+            Some((
+                0,
+                PendingDelayEdit::Note(pod_preset::DelayNoteChoice::Quarter)
+            ))
+        );
+        let second_row = app.pod_rows[&1].center();
+        click_pod_at_tall(&context, &mut app, second_row);
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert_eq!(app.pod_selected, Some(1));
+        assert!(app.pod_delay_pending.is_none());
+
+        let first_row = app.pod_rows[&0].center();
+        click_pod_at_tall(&context, &mut app, first_row);
+        recording_frame_tall(&context, &mut app, vec![]);
+        stage_delay_note_choice(&context, &mut app, pod_preset::DelayNoteChoice::Quarter);
+        click_pod(&context, &mut app, "pod-delay-apply");
+        let applied = app.pod_library.tone(0).unwrap().as_bytes().to_vec();
+        assert_ne!(applied, original);
+        assert!(app.pod_library.is_dirty(0));
+        assert!(app.pod_delay_pending.is_none());
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().delay_note_value().unwrap(),
+            pod_preset::DelayNoteValue::Known(pod_preset::DelayNoteChoice::Quarter)
+        );
+        click_pod(&context, &mut app, "save-pod");
+        assert_eq!(
+            std::fs::read(&blocked).unwrap(),
+            b"preserve existing NOTE destination"
+        );
+        assert!(app.pod_library.is_dirty(0));
+        click_pod(&context, &mut app, "save-pod");
+        let reopened = pod_preset::PodTone::parse(std::fs::read(&saved).unwrap()).unwrap();
+        assert_eq!(
+            reopened.delay_note_value().unwrap(),
+            pod_preset::DelayNoteValue::Known(pod_preset::DelayNoteChoice::Quarter)
+        );
+        assert!(!app.pod_library.is_dirty(0));
+
+        let saved_note = app.pod_library.tone(0).unwrap().as_bytes().to_vec();
+        drag_delay_time_slider(&context, &mut app, 0.75);
+        let PendingDelayEdit::TimeMs(staged_time) = app.pod_delay_pending.unwrap().1 else {
+            panic!("TIME slider should stage a TIME edit");
+        };
+        assert!(staged_time > app.pod_library.tone(0).unwrap().delay_time_ms().unwrap());
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert_eq!(
+            app.pod_delay_pending,
+            Some((0, PendingDelayEdit::TimeMs(staged_time))),
+            "TIME staging must persist across frames"
+        );
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), saved_note);
+        let second_row = app.pod_rows[&1].center();
+        click_pod_at_tall(&context, &mut app, second_row);
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert!(
+            app.pod_delay_pending.is_none(),
+            "tone switch clears staged TIME"
+        );
+        let first_row = app.pod_rows[&0].center();
+        click_pod_at_tall(&context, &mut app, first_row);
+        recording_frame_tall(&context, &mut app, vec![]);
+
+        drag_delay_time_slider(&context, &mut app, 0.75);
+        click_pod(&context, &mut app, "pod-delay-discard");
+        assert!(app.pod_delay_pending.is_none());
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), saved_note);
+        assert!(!app.pod_library.is_dirty(0));
+
+        drag_delay_time_slider(&context, &mut app, 0.75);
+        click_pod(&context, &mut app, "pod-delay-apply");
+        let time_applied = app.pod_library.tone(0).unwrap().as_bytes().to_vec();
+        assert_ne!(time_applied, saved_note);
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().delay_note_value().unwrap(),
+            pod_preset::DelayNoteValue::Known(pod_preset::DelayNoteChoice::Off),
+            "positive NOTE clears only when TIME Apply succeeds"
+        );
+        assert!(app.pod_library.is_dirty(0));
+        click_pod(&context, &mut app, "save-pod");
+        assert_eq!(
+            std::fs::read(&blocked_time).unwrap(),
+            b"preserve existing TIME destination"
+        );
+        assert!(app.pod_library.is_dirty(0));
+        click_pod(&context, &mut app, "save-pod");
+        let reopened_time =
+            pod_preset::PodTone::parse(std::fs::read(&saved_time).unwrap()).unwrap();
+        assert_eq!(reopened_time.as_bytes(), time_applied);
+        assert!(!app.pod_library.is_dirty(0));
+
+        stage_delay_note_choice(&context, &mut app, pod_preset::DelayNoteChoice::Quarter);
+        click_pod(&context, &mut app, "pod-delay-apply");
+        assert!(app.pod_library.is_dirty(0));
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        assert!(!app.permit_close);
+        click_prompt(&context, &mut app, "discard");
+        assert!(app.permit_close);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), time_applied);
+        assert!(!app.pod_library.is_dirty(0));
+    }
+
+    #[test]
+    fn delay_note_gui_rejects_coupled_mod_state_without_mutating() {
+        let (context, mut app) = app();
+        app.pod_open = true;
+        let original = sample_delay_note_tone(0, 6);
+        app.pod_library.import_bytes(original.clone()).unwrap();
+        app.pod_selected = Some(0);
+        recording_frame_tall(&context, &mut app, vec![]);
+        stage_delay_note_choice(&context, &mut app, pod_preset::DelayNoteChoice::Quarter);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        click_pod(&context, &mut app, "pod-delay-apply");
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert!(!app.pod_library.is_dirty(0));
+        assert!(app.pod_message.contains("Mod NOTE Off"));
+        assert_eq!(
+            app.pod_delay_pending,
+            Some((
+                0,
+                PendingDelayEdit::Note(pod_preset::DelayNoteChoice::Quarter)
+            ))
+        );
+    }
+
+    #[test]
+    fn delay_time_gui_bundle_apply_reverts_through_shared_bundle_path() {
+        let (context, mut app) = app();
+        let original = sample_delay_note_tone(6, 0);
+        let original_bundle = sample_pod_bundle(std::slice::from_ref(&original));
+        app.pod_open = true;
+        app.load_pod_bundle_bytes(original_bundle.clone()).unwrap();
+        recording_frame_tall(&context, &mut app, vec![]);
+
+        drag_delay_time_slider(&context, &mut app, 0.75);
+        let pending = app.pod_delay_pending;
+        assert!(matches!(pending, Some((0, PendingDelayEdit::TimeMs(_)))));
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+        click_pod(&context, &mut app, "pod-delay-apply");
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert!(app.pod_library.is_dirty(0));
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().delay_note_value().unwrap(),
+            pod_preset::DelayNoteValue::Known(pod_preset::DelayNoteChoice::Off)
+        );
+        assert!(app.pod_delay_pending.is_none());
+
+        stage_delay_note_choice(&context, &mut app, pod_preset::DelayNoteChoice::Quarter);
+        assert!(app.pod_delay_pending.is_some());
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "discard");
+        assert!(
+            app.pod_delay_pending.is_none(),
+            "bundle revert clears pending NOTE"
+        );
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert!(!app.pod_library.is_dirty(0));
+        assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), original_bundle);
+        assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn stomp_harmony_gui_hides_a_selector_with_duplicate_parameter_records() {
+        for target in [0x0010_0001u32, 0x0010_0002] {
+            let (context, mut app) = app();
+            app.pod_open = true;
+            let duplicate_tone =
+                sample_stomp_harmony_pod_tone_with_duplicate(Some((target, 0x3f, 0x3f00_0000)));
+            let index = app.pod_library.import_bytes(duplicate_tone).unwrap();
+            app.pod_selected = Some(index);
+            let original = app.pod_library.tone(index).unwrap().as_bytes().to_vec();
+            recording_frame_tall(&context, &mut app, vec![]);
+            if target == 0x0010_0001 {
+                assert!(app.pod_harmony1_choices.is_empty());
+                assert!(!app.pod_buttons.contains_key("pod-harmony1-apply"));
+                assert_eq!(app.pod_harmony2_choices.len(), 9);
+            } else {
+                assert!(app.pod_harmony2_choices.is_empty());
+                assert!(!app.pod_buttons.contains_key("pod-harmony2-apply"));
+                assert_eq!(app.pod_harmony1_choices.len(), 9);
+            }
+            assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), original);
+            assert!(!app.pod_library.is_dirty(index));
+            const {
+                assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+            }
+        }
+    }
+
+    #[test]
+    fn stomp_wave_choices_edit_dirty_save_quit_and_reopen_in_gui() {
+        let (context, mut app) = app();
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("stomp-wave-source.l6t");
+        let blocked = directory.path().join("existing-copy.l6t");
+        let saved = directory.path().join("stomp-wave-copy.l6t");
+        let original = sample_stomp_wave_pod_tone();
+        std::fs::write(&source, &original).unwrap();
+        std::fs::write(&blocked, b"preserve existing destination").unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(source.clone())].into(),
+            pod_save: [Some(blocked.clone()), None, Some(saved.clone())].into(),
+            ..Default::default()
+        });
+        click_pod(&context, &mut app, "open-pod");
+        click_pod(&context, &mut app, "load-pod");
+        assert_eq!(app.pod_library.len(), 1, "{}", app.pod_message);
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert!(!app.pod_library.is_dirty(0));
+        assert!(matches!(
+            app.pod_library.tone(0).unwrap().stomp_wave_selection(),
+            Ok(pod_preset::StompWaveValue::Known(
+                pod_preset::StompWaveSelection::Wave5
+            ))
+        ));
+
+        select_stomp_wave_choice(&context, &mut app, pod_preset::StompWaveSelection::Wave1);
+        assert!(app.pod_library.is_dirty(0));
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .stomp_wave_selection()
+                .unwrap(),
+            pod_preset::StompWaveValue::Known(pod_preset::StompWaveSelection::Wave1)
+        );
+
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "save");
+        assert_eq!(
+            std::fs::read(&blocked).unwrap(),
+            b"preserve existing destination"
+        );
+        assert!(app.pod_library.is_dirty(0));
+        assert!(!app.permit_close);
+
+        // A cancelled save leaves the dirty edit available for another choice/save.
+        click_prompt(&context, &mut app, "save");
+        assert!(app.pod_library.is_dirty(0));
+        assert!(!app.permit_close);
+        click_prompt(&context, &mut app, "cancel");
+        assert!(app.pod_library.is_dirty(0));
+
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "save");
+        assert!(app.permit_close);
+        assert!(app.pending.is_none());
+        assert!(!app.pod_library.any_dirty());
+        let reopened = pod_preset::PodTone::parse(std::fs::read(saved).unwrap()).unwrap();
+        assert_eq!(
+            reopened.stomp_wave_selection().unwrap(),
+            pod_preset::StompWaveValue::Known(pod_preset::StompWaveSelection::Wave1)
+        );
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn stomp_wave_gui_refuses_nonfinite_values_without_dirtying_the_library() {
+        for raw_bits in [
+            0x7fc0_1234,
+            f32::INFINITY.to_bits(),
+            f32::NEG_INFINITY.to_bits(),
+        ] {
+            let (context, mut app) = app();
+            let directory = tempfile::tempdir().unwrap();
+            let source = directory.path().join("nonfinite-stomp-wave.l6t");
+            let original = sample_stomp_wave_pod_tone_with_bits(raw_bits);
+            std::fs::write(&source, &original).unwrap();
+            app.dialogs = Box::new(FakeDialogs {
+                pod_open: [Some(source)].into(),
+                ..Default::default()
+            });
+            click_pod(&context, &mut app, "open-pod");
+            click_pod(&context, &mut app, "load-pod");
+            assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+            assert!(!app.pod_library.is_dirty(0));
+            assert!(matches!(
+                app.pod_library.tone(0).unwrap().stomp_wave_selection(),
+                Ok(pod_preset::StompWaveValue::Unknown { raw_bits: found }) if found == raw_bits
+            ));
+            select_stomp_wave_choice(&context, &mut app, pod_preset::StompWaveSelection::Wave8);
+            assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+            assert!(matches!(
+                app.pod_library.tone(0).unwrap().stomp_wave_selection(),
+                Ok(pod_preset::StompWaveValue::Unknown { raw_bits: found }) if found == raw_bits
+            ));
+            assert!(!app.pod_library.is_dirty(0));
+            assert!(app.pod_message.contains("non-finite"));
+            const {
+                assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+            }
+        }
+    }
+
+    #[test]
+    fn whammy_knob_gui_edit_preserves_other_control_and_guards_save_and_quit() {
+        let (context, mut app) = app();
+        context.style_mut(|style| {
+            style.animation_time = 0.0;
+            style.spacing.slider_width = 220.0;
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("whammy-source.l6t");
+        let blocked = directory.path().join("existing-copy.l6t");
+        let saved = directory.path().join("whammy-copy.l6t");
+        let original = sample_whammy_pod_tone();
+        std::fs::write(&source, &original).unwrap();
+        std::fs::write(&blocked, b"keep existing destination").unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(source)].into(),
+            pod_save: [Some(blocked.clone()), None, Some(saved.clone())].into(),
+            ..Default::default()
+        });
+        click_pod(&context, &mut app, "open-pod");
+        click_pod(&context, &mut app, "load-pod");
+        recording_frame_tall(&context, &mut app, vec![]);
+        assert_eq!(app.pod_whammy_knob_sliders.len(), 2);
+        assert!(
+            !app.pod_library.is_dirty(0),
+            "opening and rendering preserve raw values"
+        );
+        let toe_before = app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .stomp_whammy_knob_position(pod_preset::StompWhammyKnob::Toe)
+            .unwrap()
+            .to_bits();
+        drag_pod_whammy_slider(&context, &mut app, pod_preset::StompWhammyKnob::Heel);
+        assert!(app.pod_library.is_dirty(0));
+        assert_eq!(
+            app.pod_library
+                .tone(0)
+                .unwrap()
+                .stomp_whammy_knob_position(pod_preset::StompWhammyKnob::Toe)
+                .unwrap()
+                .to_bits(),
+            toe_before
+        );
+        let edited_heel = app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .stomp_whammy_knob_position(pod_preset::StompWhammyKnob::Heel)
+            .unwrap()
+            .to_bits();
+        assert_ne!(edited_heel, 0x3e80_0000);
+        click_pod(&context, &mut app, "save-pod");
+        assert_eq!(
+            std::fs::read(&blocked).unwrap(),
+            b"keep existing destination"
+        );
+        assert!(
+            app.pod_library.is_dirty(0),
+            "collision preserves dirty edit"
+        );
+        click_pod(&context, &mut app, "save-pod");
+        assert!(
+            app.pod_library.is_dirty(0),
+            "cancelled save preserves dirty edit"
+        );
+        click_pod(&context, &mut app, "save-pod");
+        assert!(!app.pod_library.is_dirty(0));
+        let reopened = pod_preset::PodTone::parse(std::fs::read(saved).unwrap()).unwrap();
+        assert_eq!(
+            reopened
+                .stomp_whammy_knob_position(pod_preset::StompWhammyKnob::Heel)
+                .unwrap()
+                .to_bits(),
+            edited_heel
+        );
+        assert_eq!(
+            reopened
+                .stomp_whammy_knob_position(pod_preset::StompWhammyKnob::Toe)
+                .unwrap()
+                .to_bits(),
+            toe_before
+        );
+
+        drag_pod_whammy_slider(&context, &mut app, pod_preset::StompWhammyKnob::Toe);
+        assert!(app.pod_library.is_dirty(0));
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "cancel");
+        assert!(!app.permit_close);
+        assert!(app.pod_library.is_dirty(0));
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "discard");
+        assert!(app.permit_close);
+        assert!(app.pending.is_none());
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn stomp_wave_bundle_gui_edit_is_dirty_and_saves_a_preserving_copy() {
+        let (context, mut app) = app();
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("stomp-wave-bank.vwb");
+        let saved = directory.path().join("stomp-wave-bank-copy.vwb");
+        let tone = sample_stomp_wave_pod_tone();
+        let original_bundle = sample_pod_bundle(std::slice::from_ref(&tone));
+        std::fs::write(&source, &original_bundle).unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(source.clone())].into(),
+            pod_save: [Some(saved.clone())].into(),
+            ..Default::default()
+        });
+        click_pod(&context, &mut app, "open-pod");
+        click_pod(&context, &mut app, "load-pod");
+        assert!(app.pod_bundle.is_some());
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+        recording_frame_tall(&context, &mut app, vec![]);
+        select_stomp_wave_choice(&context, &mut app, pod_preset::StompWaveSelection::Wave8);
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert!(app.pod_library.is_dirty(0));
+        assert_eq!(
+            app.pod_bundle
+                .as_ref()
+                .unwrap()
+                .tone(0, 0)
+                .unwrap()
+                .stomp_wave_selection()
+                .unwrap(),
+            pod_preset::StompWaveValue::Known(pod_preset::StompWaveSelection::Wave8)
+        );
+
+        app.request_close(&context);
+        assert!(matches!(app.pending, Some(Pending::QuitPod)));
+        click_prompt(&context, &mut app, "save");
+        assert!(app.permit_close);
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert!(!app.pod_library.any_dirty());
+        assert_eq!(std::fs::read(source).unwrap(), original_bundle);
+        let reopened = pod_preset::PodBundleLibrary::parse(std::fs::read(saved).unwrap()).unwrap();
+        assert_eq!(
+            reopened.tone(0, 0).unwrap().stomp_wave_selection().unwrap(),
+            pod_preset::StompWaveValue::Known(pod_preset::StompWaveSelection::Wave8)
+        );
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn whammy_bundle_gui_routes_typed_knob_edit_through_collection_save() {
+        let (context, mut app) = app();
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("whammy-bank.vwb");
+        let saved = directory.path().join("whammy-bank-copy.vwb");
+        let tone = sample_whammy_pod_tone();
+        let original_bundle = sample_pod_bundle(std::slice::from_ref(&tone));
+        std::fs::write(&source, &original_bundle).unwrap();
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(source.clone())].into(),
+            pod_save: [Some(saved.clone())].into(),
+            ..Default::default()
+        });
+        click_pod(&context, &mut app, "open-pod");
+        click_pod(&context, &mut app, "load-pod");
+        assert!(app.pod_bundle.is_some());
+        recording_frame_tall(&context, &mut app, vec![]);
+        let heel = app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .stomp_whammy_knob_position(pod_preset::StompWhammyKnob::Heel)
+            .unwrap()
+            .to_bits();
+        drag_pod_whammy_slider(&context, &mut app, pod_preset::StompWhammyKnob::Toe);
+        assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert!(app.pod_library.is_dirty(0));
+        let toe = app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .stomp_whammy_knob_position(pod_preset::StompWhammyKnob::Toe)
+            .unwrap()
+            .to_bits();
+        app.request_close(&context);
+        click_prompt(&context, &mut app, "save");
+        assert!(app.permit_close);
+        assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
+        assert!(!app.pod_library.any_dirty());
+        assert_eq!(std::fs::read(source).unwrap(), original_bundle);
+        let reopened = pod_preset::PodBundleLibrary::parse(std::fs::read(saved).unwrap()).unwrap();
+        assert_eq!(
+            reopened
+                .stomp_whammy_knob_position(0, pod_preset::StompWhammyKnob::Heel)
+                .unwrap()
+                .to_bits(),
+            heel
+        );
+        assert_eq!(
+            reopened
+                .stomp_whammy_knob_position(0, pod_preset::StompWhammyKnob::Toe)
+                .unwrap()
+                .to_bits(),
+            toe
+        );
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn delay_association_combos_keep_unknown_values_until_explicit_choice_and_save_reopen() {
+        for model_id in [0x0202_0005, 0x0202_000d] {
+            let (context, mut app) = app();
+            let directory = tempfile::tempdir().unwrap();
+            let source = directory.path().join("association-source.l6t");
+            let saved = directory.path().join("association-copy.l6t");
+            std::fs::write(&source, sample_delay_association_pod_tone(model_id)).unwrap();
+            app.dialogs = Box::new(FakeDialogs {
+                pod_open: [Some(source)].into(),
+                pod_save: [Some(saved.clone())].into(),
+                ..Default::default()
+            });
+            click_pod(&context, &mut app, "open-pod");
+            click_pod(&context, &mut app, "load-pod");
+            assert_eq!(app.pod_library.len(), 1, "{}", app.pod_message);
+            assert_eq!(app.pod_selected, Some(0));
+            recording_frame(&context, &mut app, vec![]);
+            assert!(!app.pod_library.is_dirty(0));
+
+            if model_id == 0x0202_0005 {
+                assert!(matches!(
+                    app.pod_library.tone(0).unwrap().delay_heads_selection(),
+                    Ok(pod_preset::DelayAssociationValue::Unknown { .. })
+                ));
+                select_delay_heads_choice(
+                    &context,
+                    &mut app,
+                    pod_preset::DelayHeadsSelection::OneTwoThreeFour,
+                );
+                assert_eq!(
+                    app.pod_library
+                        .tone(0)
+                        .unwrap()
+                        .delay_heads_selection()
+                        .unwrap(),
+                    pod_preset::DelayAssociationValue::Known(
+                        pod_preset::DelayHeadsSelection::OneTwoThreeFour
+                    )
+                );
+            } else {
+                assert!(matches!(
+                    app.pod_library.tone(0).unwrap().delay_bits_selection(),
+                    Ok(pod_preset::DelayAssociationValue::Unknown { .. })
+                ));
+                select_delay_bits_choice(&context, &mut app, pod_preset::DelayBitsSelection::Four);
+                assert_eq!(
+                    app.pod_library
+                        .tone(0)
+                        .unwrap()
+                        .delay_bits_selection()
+                        .unwrap(),
+                    pod_preset::DelayAssociationValue::Known(pod_preset::DelayBitsSelection::Four)
+                );
+            }
+            assert!(app.pod_library.is_dirty(0));
+            app.request_close(&context);
+            assert!(matches!(app.pending, Some(Pending::QuitPod)));
+            click_prompt(&context, &mut app, "save");
+            assert!(app.permit_close);
+            assert!(app.pending.is_none());
+            let reopened = pod_preset::PodTone::parse(std::fs::read(saved).unwrap()).unwrap();
+            if model_id == 0x0202_0005 {
+                assert_eq!(
+                    reopened.delay_heads_selection().unwrap(),
+                    pod_preset::DelayAssociationValue::Known(
+                        pod_preset::DelayHeadsSelection::OneTwoThreeFour
+                    )
+                );
+            } else {
+                assert_eq!(
+                    reopened.delay_bits_selection().unwrap(),
+                    pod_preset::DelayAssociationValue::Known(pod_preset::DelayBitsSelection::Four)
+                );
+            }
+            const {
+                assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+            }
+        }
+    }
+
+    #[test]
+    fn delay_association_gui_refuses_nonfinite_values_without_dirtying_the_library() {
+        for (model_id, raw_bits) in [
+            (0x0202_0005, 0x7fc0_0001),
+            (0x0202_0005, 0x7f80_0000),
+            (0x0202_0005, 0xff80_0000),
+            (0x0202_000d, 0x7fc0_0001),
+            (0x0202_000d, 0x7f80_0000),
+            (0x0202_000d, 0xff80_0000),
+        ] {
+            let (context, mut app) = app();
+            let directory = tempfile::tempdir().unwrap();
+            let source = directory.path().join("nonfinite-association.l6t");
+            let original = sample_delay_association_pod_tone_with_bits(model_id, raw_bits);
+            std::fs::write(&source, &original).unwrap();
+            app.dialogs = Box::new(FakeDialogs {
+                pod_open: [Some(source)].into(),
+                ..Default::default()
+            });
+            click_pod(&context, &mut app, "open-pod");
+            click_pod(&context, &mut app, "load-pod");
+            assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+            assert!(!app.pod_library.is_dirty(0));
+
+            if model_id == 0x0202_0005 {
+                assert!(matches!(
+                    app.pod_library.tone(0).unwrap().delay_heads_selection(),
+                    Ok(pod_preset::DelayAssociationValue::Unknown { raw_bits: found }) if found == raw_bits
+                ));
+                select_delay_heads_choice(
+                    &context,
+                    &mut app,
+                    pod_preset::DelayHeadsSelection::OneTwoThreeFour,
+                );
+            } else {
+                assert!(matches!(
+                    app.pod_library.tone(0).unwrap().delay_bits_selection(),
+                    Ok(pod_preset::DelayAssociationValue::Unknown { raw_bits: found }) if found == raw_bits
+                ));
+                select_delay_bits_choice(&context, &mut app, pod_preset::DelayBitsSelection::Four);
+            }
+
+            assert!(
+                app.pod_message.contains("non-finite"),
+                "{}",
+                app.pod_message
+            );
+            assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
+            assert!(!app.pod_library.is_dirty(0));
+            const {
+                assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+            }
+        }
+    }
+
+    #[test]
     fn rendering_imported_out_of_range_values_does_not_edit_or_create_history() {
         let (context, mut app) = app();
         let mut bytes = include_bytes!("../tests/fixtures/synthetic-host-preset.vwm").to_vec();
@@ -3126,11 +11248,11 @@ mod tests {
             PresetFile::parse(bytes.clone()).unwrap(),
             "imported.vwm".into(),
         ));
-        for tab in [Tab::Body, Tab::Pickups, Tab::Tuning, Tab::Controls] {
+        for tab in [Tab::Body, Tab::Pickups, Tab::Controls] {
             app.tab = tab;
             for _ in 0..2 {
                 let _ = context.run(egui::RawInput::default(), |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| app.controls(ui));
+                    egui::CentralPanel::default().show(ctx, |ui| app.guitar_workspace(ui));
                 });
             }
             let doc = app.document.as_ref().unwrap();
@@ -3180,39 +11302,68 @@ mod tests {
             root,
         )
         .unwrap();
-        assert_eq!(options.tab, Tab::Controls);
+        assert_eq!(options.tab, Some(Tab::Controls));
         assert_eq!(options.preset.as_deref(), Some(Path::new("model.vwm")));
     }
 
     #[test]
-    fn fresh_install_without_assets_or_default_preset_can_open_a_file() {
+    fn fresh_install_opens_the_example_without_assets_and_can_open_a_file() {
         let directory = tempfile::tempdir().unwrap();
-        let options = parse_options(Vec::new(), directory.path()).unwrap();
+        let options = parse_options(Vec::new(), &directory.path().join("artwork")).unwrap();
         assert!(options.preset.is_none());
         let context = egui::Context::default();
-        let mut app = Workbench::with_context(&context, options.preset, options.artwork);
+        let mut app =
+            Workbench::with_context(&context, options.preset, options.artwork, options.tab);
         app.theme_polled = Instant::now();
         let _ = context.run(egui::RawInput::default(), |ctx| app.render(ctx));
         assert!(app.error.is_none());
-        assert!(app.document.is_none());
+        assert_eq!(app.tab, Tab::Pickups);
+        assert_eq!(
+            app.document.as_ref().unwrap().preset().name(),
+            "Spank example"
+        );
         assert!(app.read_worker.is_none());
         assert!(app.textures.is_empty());
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+        let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/editor-preset.vwm");
         app.dialogs = Box::new(FakeDialogs {
-            open: [Some(
-                Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/editor-preset.vwm"),
-            )]
-            .into(),
+            open: [Some(file.clone())].into(),
             ..Default::default()
         });
         app.open_dialog();
-        assert!(app.document.is_some());
         assert!(app.error.is_none());
-        let before = app.document.as_ref().unwrap().as_bytes().to_vec();
+        let before = fs::read(file).unwrap();
         let _ = context.run(egui::RawInput::default(), |ctx| app.render(ctx));
         assert!(app.error.is_none());
         assert_eq!(app.document.as_ref().unwrap().as_bytes(), before);
         assert!(!app.dirty());
+    }
+
+    #[test]
+    fn startup_honors_the_requested_file_and_tab() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/editor-preset.vwm");
+        let artwork = directory.path().join("artwork");
+        let context = egui::Context::default();
+
+        let example = Workbench::with_context(&context, None, artwork.clone(), Some(Tab::Controls));
+        assert_eq!(example.tab, Tab::Controls);
+        assert_eq!(
+            example.document.as_ref().unwrap().preset().name(),
+            "Spank example"
+        );
+
+        let supplied = Workbench::with_context(&context, Some(file.clone()), artwork.clone(), None);
+        assert_eq!(supplied.tab, Tab::Body);
+        assert_eq!(
+            supplied.document.as_ref().unwrap().as_bytes(),
+            fs::read(file).unwrap()
+        );
+
+        let missing = directory.path().join("missing.vwm");
+        let failed = Workbench::with_context(&context, Some(missing), artwork, None);
+        assert!(failed.document.is_none());
+        assert!(failed.error.as_deref().unwrap().contains("missing.vwm"));
     }
 
     #[test]
@@ -3234,6 +11385,22 @@ mod tests {
     }
 
     #[test]
+    fn artwork_lookup_uses_the_checkout_when_the_installed_folder_is_absent() {
+        let directory = tempfile::tempdir().unwrap();
+        let installed = directory.path().join("user-data/artwork");
+        let checkout = directory.path().join("source checkout");
+        let extracted = checkout.join("assets/original-ui/modules/variax/editor/images");
+        let resolve = || default_artwork_from_checkout(installed.clone(), &checkout);
+
+        assert_eq!(resolve(), installed);
+        assert!(!installed.exists());
+        fs::create_dir_all(&extracted).unwrap();
+        assert_eq!(resolve(), extracted);
+        fs::create_dir_all(&installed).unwrap();
+        assert_eq!(resolve(), installed);
+    }
+
+    #[test]
     fn screenshot_output_creates_a_png_and_never_replaces_existing_data() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("preview.png");
@@ -3245,43 +11412,48 @@ mod tests {
     }
 
     #[test]
-    fn bank_browser_clicks_preserve_edits_and_active_operation_blocks_browsing() {
+    fn bank_dropdown_and_slots_preserve_edits_and_block_browsing_during_an_operation() {
         fn frame(context: &egui::Context, app: &mut Workbench, events: Vec<egui::Event>) {
             let _ = context.run(
                 egui::RawInput {
-                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1120., 900.))),
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1120., 760.))),
                     events,
                     ..Default::default()
                 },
-                |ctx| app.bank_browser(ctx),
+                |ctx| {
+                    egui::CentralPanel::default()
+                        .show(ctx, |ui| app.guitar_workspace(ui))
+                        .inner
+                },
             );
         }
-        fn click(context: &egui::Context, app: &mut Workbench, row: (usize, usize)) {
-            let pos = app.bank_rows[&row].center();
-            frame(
-                context,
-                app,
-                vec![
-                    egui::Event::PointerMoved(pos),
-                    egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed: true,
-                        modifiers: Default::default(),
-                    },
-                ],
-            );
-            frame(
-                context,
-                app,
-                vec![egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed: false,
-                    modifiers: Default::default(),
-                }],
-            );
+
+        fn click(context: &egui::Context, app: &mut Workbench, pos: Pos2) {
+            for pressed in [true, false] {
+                frame(
+                    context,
+                    app,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                );
+            }
+            frame(context, app, vec![]);
         }
+
+        fn bank(context: &egui::Context, app: &mut Workbench, bank: usize) {
+            click(context, app, app.bank_dropdown.unwrap().center());
+            let pos = app.bank_options[&bank].center();
+            click(context, app, pos);
+        }
+
+        use variax_workbench::preset::PresetText;
         for name in ["synthetic-bank.vwb", "synthetic-collection.l6c"] {
             let (context, mut app) = app();
             context.style_mut(|style| style.animation_time = 0.);
@@ -3291,28 +11463,56 @@ mod tests {
                     .join(name),
             );
             frame(&context, &mut app, vec![]);
-            assert_eq!(app.bank_rows.len(), 5);
+            frame(&context, &mut app, vec![]);
             assert_eq!(app.document.as_ref().unwrap().selection(), Some((1, 0)));
-            click(&context, &mut app, (2, 1));
+            bank(&context, &mut app, 0); // The first bank is empty.
+            assert_eq!(app.document.as_ref().unwrap().selection(), Some((1, 0)));
+            click(&context, &mut app, Pos2::new(1050.0, 120.0));
+            bank(&context, &mut app, 2);
+            let slot = app.bank_slots[&1].center();
+            click(&context, &mut app, slot);
             assert_eq!(app.document.as_ref().unwrap().selection(), Some((2, 1)));
-            app.change(|p| p.rename("Edited bank preset"));
-            click(&context, &mut app, (1, 0));
+            app.change(|p| p.set_metadata(PresetText::Author, "Guitarist 🎸"));
+            app.change(|p| p.set_metadata(PresetText::Notes, "Drop D\nStudio take"));
+            bank(&context, &mut app, 1);
+
             let doc = app.document.as_ref().unwrap();
-            assert_eq!(doc.selection(), Some((1, 0)));
-            assert_eq!(
-                doc.banks().unwrap()[2].presets()[1].name(),
-                "Edited bank preset"
-            );
+            assert_eq!(doc.selection(), Some((1, 1)));
+            assert!(doc.slot_is_dirty(2, 1));
+            assert!(!doc.slot_is_dirty(1, 1));
             assert!(doc.is_dirty());
+
             let (sender, receiver) = std::sync::mpsc::channel();
             app.read_receiver = Some(receiver);
-            click(&context, &mut app, (2, 1));
-            assert_eq!(app.document.as_ref().unwrap().selection(), Some((1, 0)));
+            frame(&context, &mut app, vec![]);
+            let slot = app.bank_slots[&0].center();
+            click(&context, &mut app, slot);
+            assert_eq!(app.document.as_ref().unwrap().selection(), Some((1, 1)));
             sender
                 .send(Err("offline simulated failure".into()))
                 .unwrap();
             app.poll_read();
+
+            let directory = tempfile::tempdir().unwrap();
+            let destination = directory.path().join(name);
+            let doc = app.document.as_mut().unwrap();
+            doc.save_copy(&destination).unwrap();
+            assert!(!doc.slot_is_dirty(2, 1));
+            assert!(!doc.is_dirty());
+            let mut reopened = EditorDocument::open(&destination).unwrap();
+            reopened.select(2, 1).unwrap();
+            assert_eq!(
+                reopened.preset().metadata(PresetText::Author).unwrap(),
+                "Guitarist 🎸"
+            );
+            assert_eq!(
+                reopened.preset().metadata(PresetText::Notes).unwrap(),
+                "Drop D\nStudio take"
+            );
+
             app.undo();
+            assert!(app.document.as_ref().unwrap().slot_is_dirty(2, 1));
+            app.redo();
             assert!(!app.document.as_ref().unwrap().is_dirty());
         }
     }

@@ -73,6 +73,159 @@ pub(crate) fn rename_pod_preset(bytes: &[u8], name: &str) -> Result<Vec<u8>, Rej
     Ok(tone.into_bytes())
 }
 
+pub(crate) fn set_pod_model_enabled(
+    bytes: &[u8],
+    control: pod_preset::PodModelEnable,
+    enabled: bool,
+) -> Result<Vec<u8>, Rejection> {
+    let mut tone = pod_preset::PodTone::parse(bytes.to_vec())
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    tone.set_model_enabled(control, enabled)
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    Ok(tone.into_bytes())
+}
+
+pub(crate) fn reset_pod_eq(bytes: &[u8]) -> Result<Vec<u8>, Rejection> {
+    let mut tone = pod_preset::PodTone::parse(bytes.to_vec())
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    tone.reset_podxt_eq()
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    Ok(tone.into_bytes())
+}
+
+pub(crate) fn set_pod_amp_model_choice(
+    bytes: &[u8],
+    choice: pod_preset::PodAmpModelChoice,
+) -> Result<Vec<u8>, Rejection> {
+    let mut tone = pod_preset::PodTone::parse(bytes.to_vec())
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    tone.set_amp_model_choice(choice)
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    Ok(tone.into_bytes())
+}
+
+pub(crate) fn set_pod_delay_model_choice(
+    bytes: &[u8],
+    choice: pod_preset::PodDelayModelChoice,
+) -> Result<Vec<u8>, Rejection> {
+    let mut tone = pod_preset::PodTone::parse(bytes.to_vec())
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    tone.set_delay_model_choice(choice)
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    Ok(tone.into_bytes())
+}
+
+pub(crate) fn set_pod_mod_model_choice(
+    bytes: &[u8],
+    choice: pod_preset::PodModModelChoice,
+) -> Result<Vec<u8>, Rejection> {
+    let mut tone = pod_preset::PodTone::parse(bytes.to_vec())
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    tone.set_mod_model_choice(choice)
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    Ok(tone.into_bytes())
+}
+
+pub(crate) fn set_pod_stomp_model_choice(
+    bytes: &[u8],
+    choice: pod_preset::PodStompModelChoice,
+) -> Result<Vec<u8>, Rejection> {
+    let mut tone = pod_preset::PodTone::parse(bytes.to_vec())
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    tone.set_stomp_model_choice(choice)
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    Ok(tone.into_bytes())
+}
+
+pub(crate) fn set_pod_reverb_model_choice(
+    bytes: &[u8],
+    choice: pod_preset::PodReverbModelChoice,
+) -> Result<Vec<u8>, Rejection> {
+    let mut tone = pod_preset::PodTone::parse(bytes.to_vec())
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    tone.set_reverb_model_choice(choice)
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    Ok(tone.into_bytes())
+}
+
+pub(crate) fn set_pod_cab_model_choice(
+    bytes: &[u8],
+    choice: pod_preset::PodCabModelChoice,
+) -> Result<Vec<u8>, Rejection> {
+    let mut tone = pod_preset::PodTone::parse(bytes.to_vec())
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    tone.set_cab_model_choice(choice)
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    Ok(tone.into_bytes())
+}
+
+pub(crate) fn set_pod_mic_choice(
+    bytes: &[u8],
+    choice: pod_preset::PodMicChoice,
+) -> Result<Vec<u8>, Rejection> {
+    let mut tone = pod_preset::PodTone::parse(bytes.to_vec())
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    tone.set_mic_choice(choice)
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    Ok(tone.into_bytes())
+}
+
+pub(crate) fn set_pod_stomp_harmony_selection(
+    bytes: &[u8],
+    selection: pod_preset::StompHarmonySelection,
+) -> Result<Vec<u8>, Rejection> {
+    let mut tone = pod_preset::PodTone::parse(bytes.to_vec())
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    match selection {
+        pod_preset::StompHarmonySelection::Harmony1M335(choice) => {
+            tone.set_stomp_harmony_1m335_selection(choice)
+        }
+        pod_preset::StompHarmonySelection::Harmony1457(choice) => {
+            tone.set_stomp_harmony_1457_selection(choice)
+        }
+    }
+    .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    Ok(tone.into_bytes())
+}
+
+pub(crate) fn set_pod_delay_note_choice(
+    bytes: &[u8],
+    choice: pod_preset::DelayNoteChoice,
+) -> Result<Vec<u8>, Rejection> {
+    let mut tone = pod_preset::PodTone::parse(bytes.to_vec())
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    tone.set_delay_note_choice(choice)
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    Ok(tone.into_bytes())
+}
+
+pub(crate) fn set_pod_mod_note_choice(
+    bytes: &[u8],
+    choice: pod_preset::ModNoteChoice,
+) -> Result<Vec<u8>, Rejection> {
+    let mut tone = pod_preset::PodTone::parse(bytes.to_vec())
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    tone.set_mod_note_choice(choice)
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    Ok(tone.into_bytes())
+}
+
+pub(crate) fn set_pod_mod_speed_hz(bytes: &[u8], hz: f32) -> Result<Vec<u8>, Rejection> {
+    let mut tone = pod_preset::PodTone::parse(bytes.to_vec())
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    tone.set_mod_speed_hz(hz)
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    Ok(tone.into_bytes())
+}
+
+pub(crate) fn set_pod_delay_time_ms(bytes: &[u8], milliseconds: f32) -> Result<Vec<u8>, Rejection> {
+    let mut tone = pod_preset::PodTone::parse(bytes.to_vec())
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    tone.set_delay_time_ms(milliseconds)
+        .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
+    Ok(tone.into_bytes())
+}
+
 pub(crate) fn save_pod_copy(path: &Path, bytes: &[u8]) -> Result<(), Rejection> {
     let tone = pod_preset::PodTone::parse(bytes.to_vec())
         .map_err(|error| map_tone(error, Operation::EditPodPreset))?;
