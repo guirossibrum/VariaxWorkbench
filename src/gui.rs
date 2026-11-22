@@ -7,6 +7,9 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
+use variax_workbench::device_probe::{
+    self, Consent, ProbeSession, SimulatedRig, Stage, StageStatus,
+};
 use variax_workbench::hardware_gates::{self, Gate};
 use variax_workbench::pod_audio::RecordRoute;
 use variax_workbench::pod_preset::{self, Library};
@@ -270,6 +273,9 @@ struct Workbench {
     frame_count: u32,
     recording_open: bool,
     recorder: recording::Panel,
+    device_check_open: bool,
+    device_check: ProbeSession<SimulatedRig>,
+    device_check_scenario: device_probe::Scenario,
     pod_open: bool,
     pod_library: Library,
     pod_bundle: Option<pod_preset::PodBundleLibrary>,
@@ -306,6 +312,10 @@ struct Workbench {
     recording_buttons: HashMap<&'static str, Rect>,
     #[cfg(test)]
     recording_visible: String,
+    #[cfg(test)]
+    device_check_buttons: HashMap<&'static str, Rect>,
+    #[cfg(test)]
+    device_check_visible: String,
     #[cfg(test)]
     recording_capture_attempts: u32,
     #[cfg(test)]
@@ -425,6 +435,9 @@ impl Workbench {
             screenshot: None,
             frame_count: 0,
             recording_open: false,
+            device_check_open: false,
+            device_check: ProbeSession::new(SimulatedRig::new(device_probe::Scenario::Connected)),
+            device_check_scenario: device_probe::Scenario::Connected,
             recorder: recording::Panel::new(),
             pod_open: false,
             pod_library: Library::default(),
@@ -462,6 +475,10 @@ impl Workbench {
             recording_buttons: HashMap::new(),
             #[cfg(test)]
             recording_visible: String::new(),
+            #[cfg(test)]
+            device_check_buttons: HashMap::new(),
+            #[cfg(test)]
+            device_check_visible: String::new(),
             #[cfg(test)]
             recording_capture_attempts: 0,
             #[cfg(test)]
@@ -1958,6 +1975,12 @@ impl Workbench {
                     if ui.add_enabled(!self.is_reading() && self.pending.is_none(), egui::Button::new("Open…")).clicked() {
                         self.open_dialog();
                     }
+                    let response = ui.button("Device check…");
+                    #[cfg(test)]
+                    self.device_check_buttons.insert("open", response.rect);
+                    if response.clicked() {
+                        self.device_check_open = true;
+                    }
                     let response = ui.button("Test recording…");
                     #[cfg(test)]
                     self.recording_buttons.insert("open-recording", response.rect);
@@ -2023,6 +2046,164 @@ impl Workbench {
         self.pending_dialog(ctx);
         self.recording_window(ctx);
         self.pod_window(ctx);
+        self.device_check_window(ctx);
+    }
+
+    fn device_check_button(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: &'static str,
+        label: &str,
+    ) -> egui::Response {
+        let response = ui.button(label);
+        #[cfg(test)]
+        self.device_check_buttons.insert(id, response.rect);
+        #[cfg(not(test))]
+        let _ = id;
+        response
+    }
+
+    /// Staged device check (#157). Simulation only: the session's backend is a
+    /// synthetic rig, and every hardware gate stays compile-time locked.
+    fn device_check_window(&mut self, ctx: &egui::Context) {
+        if !self.device_check_open {
+            return;
+        }
+        let mut open = true;
+        let mut answer = None;
+        let mut restart = None;
+        egui::Window::new("Device check")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(640.0)
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 56.0))
+            .show(ctx, |ui| {
+                if self.pending.is_some() {
+                    ui.disable();
+                }
+                let mut visible = String::new();
+                ui.colored_label(FRET_MARKER, device_probe::SIMULATION_LABEL);
+                ui.weak(
+                    "Every hardware lock stays closed in this build. Each step asks first, the \
+                     answer is No unless you choose Yes, and a passed step never starts the next one.",
+                );
+                visible.push_str(device_probe::SIMULATION_LABEL);
+                ui.horizontal(|ui| {
+                    ui.label("Pretend setup:");
+                    egui::ComboBox::from_id_salt("device-check-scenario")
+                        .width(300.0)
+                        .selected_text(self.device_check_scenario.label())
+                        .show_ui(ui, |ui| {
+                            for scenario in device_probe::Scenario::ALL {
+                                if ui
+                                    .selectable_label(
+                                        self.device_check_scenario == scenario,
+                                        scenario.label(),
+                                    )
+                                    .clicked()
+                                {
+                                    restart = Some(scenario);
+                                }
+                            }
+                        });
+                    if self.device_check_button(ui, "restart", "Start over").clicked() {
+                        restart = Some(self.device_check_scenario);
+                    }
+                });
+                ui.separator();
+                for stage in Stage::LADDER {
+                    let status = self.device_check.status(stage);
+                    let waiting = self.device_check.awaiting() == Some(stage);
+                    let (mark, colour, state) = match status {
+                        StageStatus::Passed => ("✔", Color32::from_rgb(167, 231, 133), status.label()),
+                        StageStatus::Stopped => ("■", Color32::LIGHT_RED, status.label()),
+                        StageStatus::NotRun if waiting => {
+                            ("▶", FRET_MARKER, "waiting for your answer")
+                        }
+                        StageStatus::NotRun => ("○", Color32::GRAY, status.label()),
+                    };
+                    ui.horizontal(|ui| {
+                        ui.colored_label(colour, mark);
+                        ui.strong(format!(
+                            "Step {} · {} ({})",
+                            stage.number(),
+                            stage.title(),
+                            stage.gate_label()
+                        ));
+                        ui.weak(state);
+                        let lock = if hardware_gates::is_locked(stage.gate()) {
+                            "real device: locked"
+                        } else {
+                            "real device: open"
+                        };
+                        ui.weak(format!("· {lock}"));
+                        visible.push_str(&format!("\nstep {} {state} {lock}", stage.number()));
+                    });
+                    if let Some(detail) = self.device_check.detail(stage) {
+                        ui.indent(("device-check-detail", stage.number()), |ui| {
+                            ui.label(detail);
+                        });
+                        visible.push_str(&format!(": {detail}"));
+                    }
+                }
+                ui.separator();
+                if let Some(stage) = self.device_check.awaiting() {
+                    ui.heading(format!("Step {}: {}", stage.number(), stage.title()));
+                    ui.strong("What it does");
+                    ui.label(stage.action());
+                    ui.strong("Risk");
+                    ui.label(stage.risk());
+                    visible.push_str(&format!("\n{}\n{}", stage.action(), stage.risk()));
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        let no = self.device_check_button(ui, "no", "No, stop");
+                        if ui.memory(|memory| memory.focused().is_none()) {
+                            no.request_focus();
+                        }
+                        if no.clicked() {
+                            answer = Some(Consent::No);
+                        }
+                        if self
+                            .device_check_button(ui, "yes", "Yes, run this step (simulation)")
+                            .clicked()
+                        {
+                            answer = Some(Consent::Yes);
+                        }
+                    });
+                } else {
+                    let outcome = match self.device_check.stopped() {
+                        Some((stage, _)) => format!(
+                            "Stopped at step {}. Nothing further runs; choose Start over to try again.",
+                            stage.number()
+                        ),
+                        None => "All four steps passed in simulation. No real device was used.".into(),
+                    };
+                    ui.label(&outcome);
+                    visible.push_str(&format!("\n{outcome}"));
+                }
+                ui.collapsing("Report", |ui| {
+                    ui.monospace(self.device_check.report());
+                });
+                #[cfg(test)]
+                {
+                    self.device_check_visible = visible;
+                }
+                #[cfg(not(test))]
+                let _ = visible;
+            });
+        if let Some(consent) = answer {
+            self.device_check.answer(consent);
+        }
+        if let Some(scenario) = restart {
+            self.device_check_scenario = scenario;
+            self.device_check = ProbeSession::new(SimulatedRig::new(scenario));
+        }
+        if !open {
+            // Closing the window cancels the waiting step; nothing runs.
+            self.device_check.answer(Consent::Cancel);
+            self.device_check_open = false;
+        }
     }
 
     fn recording_window(&mut self, ctx: &egui::Context) {
@@ -5142,6 +5323,156 @@ mod tests {
             },
             |ctx| app.render(ctx),
         );
+    }
+
+    fn click_device_check(context: &egui::Context, app: &mut Workbench, id: &'static str) {
+        recording_frame(context, app, vec![]);
+        recording_frame(context, app, vec![]);
+        let pos = app.device_check_buttons[id].center();
+        recording_frame(
+            context,
+            app,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        recording_frame(
+            context,
+            app,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+        recording_frame(context, app, vec![]);
+    }
+
+    fn device_check_app() -> (egui::Context, Workbench) {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        click_device_check(&context, &mut app, "open");
+        assert!(app.device_check_open);
+        (context, app)
+    }
+
+    #[test]
+    fn device_check_window_is_simulation_only_and_declines_by_default() {
+        let (context, mut app) = device_check_app();
+        assert!(app.device_check_visible.contains("Simulation"));
+        assert!(
+            app.device_check_visible
+                .contains("step 1 waiting for your answer real device: locked")
+        );
+        assert!(
+            app.device_check_visible
+                .contains(Stage::UsbRecognition.action())
+        );
+        assert!(
+            app.device_check_visible
+                .contains(Stage::UsbRecognition.risk())
+        );
+        const { assert!(!device_probe::LIVE_BACKEND_AVAILABLE) };
+        // Rendering alone never runs a step.
+        for _ in 0..5 {
+            recording_frame(&context, &mut app, vec![]);
+        }
+        assert_eq!(app.device_check.backend().calls(), Default::default());
+        // Enter on the focused default button answers No.
+        recording_frame(
+            &context,
+            &mut app,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+        );
+        recording_frame(&context, &mut app, vec![]);
+        assert_eq!(
+            app.device_check.status(Stage::UsbRecognition),
+            StageStatus::Stopped
+        );
+        assert_eq!(app.device_check.backend().calls(), Default::default());
+        assert!(app.device_check_visible.contains("Stopped at step 1"));
+        assert!(!app.device_check_buttons.is_empty());
+        assert!(app.read_worker.is_none());
+        assert!(!app.is_reading());
+    }
+
+    #[test]
+    fn device_check_decline_button_stops_without_running() {
+        let (context, mut app) = device_check_app();
+        click_device_check(&context, &mut app, "no");
+        assert_eq!(
+            app.device_check.status(Stage::UsbRecognition),
+            StageStatus::Stopped
+        );
+        assert!(app.device_check.finished());
+        assert_eq!(app.device_check.backend().calls(), Default::default());
+        assert!(app.device_check_visible.contains("You chose No"));
+    }
+
+    #[test]
+    fn device_check_passed_step_does_not_advance_by_itself() {
+        let (context, mut app) = device_check_app();
+        click_device_check(&context, &mut app, "yes");
+        assert_eq!(
+            app.device_check.status(Stage::UsbRecognition),
+            StageStatus::Passed
+        );
+        assert_eq!(app.device_check.awaiting(), Some(Stage::Identification));
+        for _ in 0..5 {
+            recording_frame(&context, &mut app, vec![]);
+        }
+        assert_eq!(
+            app.device_check.status(Stage::Identification),
+            StageStatus::NotRun
+        );
+        assert_eq!(app.device_check.backend().calls().identity_requests, 0);
+        assert!(
+            app.device_check_visible
+                .contains("step 2 waiting for your answer real device: locked")
+        );
+        assert!(app.device_check_visible.contains("0e41:4650"));
+        for _ in 0..3 {
+            click_device_check(&context, &mut app, "yes");
+        }
+        for stage in Stage::LADDER {
+            assert_eq!(app.device_check.status(stage), StageStatus::Passed);
+        }
+        assert!(
+            app.device_check_visible
+                .contains("All four steps passed in simulation")
+        );
+    }
+
+    #[test]
+    fn device_check_stops_on_failure_and_start_over_resets() {
+        let (context, mut app) = device_check_app();
+        app.device_check_scenario = device_probe::Scenario::TwoPods;
+        click_device_check(&context, &mut app, "restart");
+        click_device_check(&context, &mut app, "yes");
+        assert_eq!(
+            app.device_check.status(Stage::UsbRecognition),
+            StageStatus::Stopped
+        );
+        assert!(app.device_check.finished());
+        assert!(app.device_check_visible.contains("2 PODxt Live devices"));
+        assert!(!app.device_check_visible.contains("waiting for your answer"));
+        assert_eq!(app.device_check.backend().calls().identity_requests, 0);
+        click_device_check(&context, &mut app, "restart");
+        assert_eq!(app.device_check.awaiting(), Some(Stage::UsbRecognition));
+        assert_eq!(app.device_check.backend().calls(), Default::default());
     }
 
     fn click_recording(context: &egui::Context, app: &mut Workbench, id: &'static str) {
