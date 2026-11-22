@@ -114,6 +114,20 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 
 ### Pending implementation or validation
 
+**Current phase — Phase 2, Stage 1: USB recognition (G1).** Phases follow the
+owner-approved delivery reset of 2026-11-20; see the
+[backlog phase table](docs/github-backlog.md#current-plan-delivery-reset-2026-11-20--read-this-first).
+Phase 1 was signed off by the owner on 2026-11-22 after a hands-on offline test ([#148](https://github.com/guirossibrum/VariaxWorkbench/issues/148)).
+PRs #167–#170 were merged on 2026-11-22 by owner override, after local merge-result checks and without Gatekeeper review.
+No hardware gate is authorized. #5, #6, #33 and #22 below are later-phase sound/write-readiness work and do not block G1–G3.
+
+- [x] Offline Variax editor 0.06 (example banks, slot change markers, metadata editing, tuning controls, repository details in Help), owner hands-on approved; merged in PR #167 (`2204da9`) — [#166](https://github.com/guirossibrum/VariaxWorkbench/issues/166).
+- [ ] GUI build without the forced USB feature and the AGENTS.md / `docs/hardware-gates.md` hardware section, carried into Phase 2 as G1 safety prerequisites — [#122](https://github.com/guirossibrum/VariaxWorkbench/issues/122), [#130](https://github.com/guirossibrum/VariaxWorkbench/issues/130).
+- [x] G1 procedure and authorization form written in the [G1 ledger](docs/hardware-gates/g1.md) — [#131](https://github.com/guirossibrum/VariaxWorkbench/issues/131). **The owner has not signed it**, and no gate is open. Two points remain unverified: whether reading the listed sysfs files causes no USB traffic, and all `snd-usb-pod` startup traffic.
+- [x] Probe stage 1 (OS recognition) with default-No consent, **simulation only**: synthetic sysfs fixture, no real adapter; 8 core tests (recognised, absent, two devices, malformed metadata, decline/cancel, no auto-advance, stage-1 failures, full ladder) pass; merged in PR #168 (`037cdf0`) — [#134](https://github.com/guirossibrum/VariaxWorkbench/issues/134). No real adapter exists yet.
+- [x] Device check window in the main GUI: steps 1–4 against synthetic backends, labelled simulation, per-step lock state shown; 4 headless GUI tests pass; merged in PR #169 (`a534c22`), version 0.07 — [#157](https://github.com/guirossibrum/VariaxWorkbench/issues/157). The separate `preview/device-check-visual` crate is replaced by this window and not brought to master ([#137](https://github.com/guirossibrum/VariaxWorkbench/issues/137)).
+- [ ] G1-only owner test build: the real OS-metadata adapter, the G1 lock change and the owner test card are not written and wait for the owner's signature on the G1 form — [#158](https://github.com/guirossibrum/VariaxWorkbench/issues/158), then [#125](https://github.com/guirossibrum/VariaxWorkbench/issues/125) and [#149](https://github.com/guirossibrum/VariaxWorkbench/issues/149).
+
 - [ ] Historical macOS math parity and full Rust/native validation remain pending. The old uninitialized whole-generator/JNI baseline stays invalidated; use only the versioned candidates described in [native runtime evidence](docs/native-runtime.md).
 
 - [ ] Historical math-runtime parity, cross-target/default-rollout review of the experimental portable profile, and broader complete Rust/native validation — [#5](https://github.com/guirossibrum/VariaxWorkbench/issues/5), [#6](https://github.com/guirossibrum/VariaxWorkbench/issues/6). The synthetic-only core now passes Windows/macOS/Linux CI; other targets and full application integration remain pending.
