@@ -1,9 +1,14 @@
 # Rig 1 hardware gates
 
 This page describes the G1–G8 operation boundaries for the PODxt Live and
-Variax 600. It is planning information, not authorization. **No gate is
-authorized.** Each operation requires the owner's separate, explicit, written
-approval of its exact procedure. Approving one gate does not approve another.
+Variax 600. **G1 is authorized by the owner's direct permission (2026-11-22)**,
+for the procedure recorded in [the G1 ledger](hardware-gates/g1.md) only. That
+permission takes effect only in the [#158](https://github.com/guirossibrum/VariaxWorkbench/issues/158)
+build, which opens only the G1 lock. Until that build exists,
+`hardware_gates::G1_OS_DISCOVERY_LOCKED` stays true. **G2–G8 are not
+authorized.** Each gate needs its own direct permission. Permission for one
+gate does not authorize another. The owner does not authorize a gate by signing
+a GitHub issue.
 
 ## Gate matrix
 
@@ -11,16 +16,17 @@ approval of its exact procedure. Approving one gate does not approve another.
 
 - **Operation:** Read the USB IDs, kernel-cached descriptors, and ALSA card list
   already exposed by Linux, as scoped by [issue #125](https://github.com/guirossibrum/VariaxWorkbench/issues/125).
-- **Application traffic:** None. This stage sends no app-originated request.
-  Kernel startup traffic is separate: the source/object-code trace documented
-  in [Linux Variax interface split](linux-transport.md) verifies a
-  `snd-usb-variax` startup version-request path. This is static kernel evidence,
-  not a live trace or capture. `snd-usb-pod` startup traffic remains
-  unverified.
+- **Application traffic:** None from the app. This stage sends no app-originated
+  request. Kernel startup traffic is recorded in the G1 ledger from the public
+  Linux v7.2.15 source. It was not observed live.
 - **System changes:** None by the app. The stock kernel drivers remain as
   installed; no bind, unbind, detach, module patch, or install is part of G1.
-- **Prerequisites and tracking:** G1 procedure and evidence: issue #125;
-  supporting ledger and driver decision: [issue #112](https://github.com/guirossibrum/VariaxWorkbench/issues/112),
+  The G1 lock stays true until the #158 build.
+- **Prerequisites and tracking:** Authorization record:
+  [G1 ledger](hardware-gates/g1.md) ([issue #131](https://github.com/guirossibrum/VariaxWorkbench/issues/131)).
+  Gate issue: [#125](https://github.com/guirossibrum/VariaxWorkbench/issues/125).
+  The build that opens only this lock: [#158](https://github.com/guirossibrum/VariaxWorkbench/issues/158).
+  Supporting ledger and driver decision: [issue #112](https://github.com/guirossibrum/VariaxWorkbench/issues/112),
   [issue #113](https://github.com/guirossibrum/VariaxWorkbench/issues/113),
   and [issue #24](https://github.com/guirossibrum/VariaxWorkbench/issues/24).
 
@@ -129,6 +135,6 @@ approval of its exact procedure. Approving one gate does not approve another.
 ## Authorization boundary
 
 These rows do not establish physical safety, recovery capability, or audio
-equivalence. Gate-tracking issues #158–#161 cannot be assigned or unlocked
-without the owner's sign-off on the corresponding exact procedure. All source
-locks remain engaged until that authorization is separately recorded.
+equivalence. G1's permission is the record in the G1 ledger. It does not open
+`G1_OS_DISCOVERY_LOCKED` until the #158 build is merged. G2–G8 are not
+authorized, and their source locks stay engaged.
