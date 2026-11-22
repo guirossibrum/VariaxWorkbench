@@ -2855,7 +2855,10 @@ impl Workbench {
                 ui.label(pod_preset::NOT_GUITAR);
                 ui.label(pod_preset::NOT_SENT);
                 ui.label(pod_preset::PAYLOADS_NOT_DECODED);
-                ui.label(&self.pod_message);
+                // One line, with the full text on hover. A wrapping status
+                // line pushes the HD replacement controls below the window.
+                ui.add(egui::Label::new(&self.pod_message).truncate())
+                    .on_hover_text(&self.pod_message);
                 ui.separator();
                 let reverb_model_state = self.pod_selected.and_then(|index| {
                     self.pod_library.tone(index).and_then(|tone| {
@@ -4279,230 +4282,6 @@ impl Workbench {
                 {
                     self.write_hd_copy(self.hd_selected.expect("selected HD file"));
                 }
-                let selected_octave_fuzz = self.hd_selected.and_then(|index| {
-                    self.hd_library.file(index).and_then(|file| match file {
-                        PodPresetFile::H5ep(preset) => {
-                            preset.effect_model_id(self.hd_effect_slot)
-                        }
-                        _ => None,
-                    })
-                }) == Some(
-                    pod_preset::HdType1Control::OctaveFuzz(
-                        pod_preset::OctaveFuzzControl::Drive,
-                    )
-                    .model_id(),
-                );
-                if selected_octave_fuzz {
-                    let _reverb_defaults = egui::CollapsingHeader::new(
-                        "Additional source-derived reverb defaults",
-                    )
-                    .id_salt("hd-octave-fuzz-reverb-defaults")
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        egui::ComboBox::from_id_salt("hd-octave-fuzz-reverb-default-target")
-                            .selected_text(self.hd_reverb_default_target.label())
-                            .show_ui(ui, |ui| {
-                                for target in pod_preset::HdReverbDefault::ALL {
-                                    ui.selectable_value(
-                                        &mut self.hd_reverb_default_target,
-                                        target,
-                                        target.label(),
-                                    );
-                                }
-                            });
-                        if self.pod_button(
-                            ui,
-                            "replace-octave-fuzz-admitted-reverb-default",
-                            "Apply selected reverb defaults",
-                        ) {
-                            let index = self.hd_selected.expect("selected HD file");
-                            match pod_preset::HdFxSlot::new(self.hd_effect_slot) {
-                                Ok(slot) => match Session::initial_rig()
-                                    .replace_hd_octave_fuzz_with_admitted_reverb_defaults(
-                                        &mut self.hd_library,
-                                        index,
-                                        slot,
-                                        self.hd_reverb_default_target,
-                                    )
-                                {
-                                    Ok(()) => {
-                                        self.pod_message = format!(
-                                            "Replaced this offline effect with {} defaults. Nothing was sent; save a new copy to keep the change.",
-                                            self.hd_reverb_default_target.label()
-                                        );
-                                    }
-                                    Err(error) => self.pod_message = rejection_text(&error),
-                                },
-                                Err(error) => self.pod_message = error.detail(),
-                            }
-                        }
-                    });
-                    ui.label("Reset five values to Vintage Pre defaults.");
-                    if self.pod_button(
-                        ui,
-                        "replace-octave-fuzz-vintage-pre",
-                        "Replace Octave Fuzz with Vintage Pre defaults",
-                    ) {
-                        let index = self.hd_selected.expect("selected HD file");
-                        match pod_preset::HdFxSlot::new(self.hd_effect_slot) {
-                            Ok(slot) => match Session::initial_rig()
-                                .replace_hd_octave_fuzz_with_vintage_pre_defaults(
-                                    &mut self.hd_library,
-                                    index,
-                                    slot,
-                                )
-                            {
-                                Ok(()) => {
-                                    self.pod_message = "Replaced this offline effect with Vintage Pre defaults. Nothing was sent; save a new copy to keep the change.".into();
-                                }
-                                Err(error) => self.pod_message = rejection_text(&error),
-                            },
-                            Err(error) => self.pod_message = error.detail(),
-                        }
-                    }
-                    ui.label("Reset five values to Screamer defaults.");
-                    if self.pod_button(
-                        ui,
-                        "replace-octave-fuzz-screamer",
-                        "Replace Octave Fuzz with Screamer defaults",
-                    ) {
-                        let index = self.hd_selected.expect("selected HD file");
-                        match pod_preset::HdFxSlot::new(self.hd_effect_slot) {
-                            Ok(slot) => match Session::initial_rig()
-                                .replace_hd_octave_fuzz_with_screamer_defaults(
-                                    &mut self.hd_library,
-                                    index,
-                                    slot,
-                                )
-                            {
-                                Ok(()) => {
-                                    self.pod_message = "Replaced this offline effect with Screamer defaults. Nothing was sent; save a new copy to keep the change.".into();
-                                }
-                                Err(error) => self.pod_message = rejection_text(&error),
-                            },
-                            Err(error) => self.pod_message = error.detail(),
-                        }
-                    }
-                    ui.label("Reset five values to Sub Octave Fuzz defaults.");
-                    if self.pod_button(
-                        ui,
-                        "replace-octave-fuzz-sub-octave-fuzz",
-                        "Replace Octave Fuzz with Sub Octave Fuzz defaults",
-                    ) {
-                        let index = self.hd_selected.expect("selected HD file");
-                        match pod_preset::HdFxSlot::new(self.hd_effect_slot) {
-                            Ok(slot) => match Session::initial_rig()
-                                .replace_hd_octave_fuzz_with_sub_octave_fuzz_defaults(
-                                    &mut self.hd_library,
-                                    index,
-                                    slot,
-                                )
-                            {
-                                Ok(()) => {
-                                    self.pod_message = "Replaced this offline effect with Sub Octave Fuzz defaults. Nothing was sent; save a new copy to keep the change.".into();
-                                }
-                                Err(error) => self.pod_message = rejection_text(&error),
-                            },
-                            Err(error) => self.pod_message = error.detail(),
-                        }
-                    }
-                    ui.label("Replace with Noise Gate defaults.");
-                    if self.pod_button(ui, "replace-octave-fuzz-noise-gate", "Noise Gate defaults") {
-                        let index = self.hd_selected.expect("selected HD file");
-                        match pod_preset::HdFxSlot::new(self.hd_effect_slot) {
-                            Ok(slot) => match Session::initial_rig()
-                                .replace_hd_octave_fuzz_with_noise_gate_defaults(
-                                    &mut self.hd_library,
-                                    index,
-                                    slot,
-                                )
-                            {
-                                Ok(()) => {
-                                    self.pod_message = "Replaced this offline effect with Noise Gate defaults. Nothing was sent; save a new copy to keep the change.".into();
-                                }
-                                Err(error) => self.pod_message = rejection_text(&error),
-                            },
-                            Err(error) => self.pod_message = error.detail(),
-                        }
-                    }
-                    ui.label("Additional source-derived distortion/fuzz defaults");
-                    egui::ComboBox::from_id_salt("hd-octave-fuzz-default-target")
-                        .selected_text(self.hd_default_target.label())
-                        .show_ui(ui, |ui| {
-                            for target in pod_preset::HdDistortionDefault::ALL {
-                                ui.selectable_value(
-                                    &mut self.hd_default_target,
-                                    target,
-                                    target.label(),
-                                );
-                            }
-                        });
-                    if self.pod_button(
-                        ui,
-                        "replace-octave-fuzz-admitted-default",
-                        "Apply selected source defaults",
-                    ) {
-                        let index = self.hd_selected.expect("selected HD file");
-                        match pod_preset::HdFxSlot::new(self.hd_effect_slot) {
-                            Ok(slot) => match Session::initial_rig()
-                                .replace_hd_octave_fuzz_with_admitted_defaults(
-                                    &mut self.hd_library,
-                                    index,
-                                    slot,
-                                    self.hd_default_target,
-                                )
-                            {
-                                Ok(()) => {
-                                    self.pod_message = format!(
-                                        "Replaced this offline effect with {} defaults. Nothing was sent; save a new copy to keep the change.",
-                                        self.hd_default_target.label()
-                                    );
-                                }
-                                Err(error) => self.pod_message = rejection_text(&error),
-                            },
-                            Err(error) => self.pod_message = error.detail(),
-                        }
-                    }
-                    ui.label("Additional source-derived dynamics / FX defaults");
-                    egui::ComboBox::from_id_salt("hd-octave-fuzz-dynamics-default-target")
-                        .selected_text(self.hd_dynamics_default_target.label())
-                        .show_ui(ui, |ui| {
-                            for target in pod_preset::HdDynamicsDefault::ALL {
-                                ui.selectable_value(
-                                    &mut self.hd_dynamics_default_target,
-                                    target,
-                                    target.label(),
-                                );
-                            }
-                        });
-                    if self.pod_button(
-                        ui,
-                        "replace-octave-fuzz-admitted-dynamics-default",
-                        "Apply selected dynamics / FX defaults",
-                    ) {
-                        let index = self.hd_selected.expect("selected HD file");
-                        match pod_preset::HdFxSlot::new(self.hd_effect_slot) {
-                            Ok(slot) => match Session::initial_rig()
-                                .replace_hd_octave_fuzz_with_admitted_dynamics_defaults(
-                                    &mut self.hd_library,
-                                    index,
-                                    slot,
-                                    self.hd_dynamics_default_target,
-                                )
-                            {
-                                Ok(()) => {
-                                    self.pod_message = format!(
-                                        "Replaced this offline effect with {} defaults. Nothing was sent; save a new copy to keep the change.",
-                                        self.hd_dynamics_default_target.label()
-                                    );
-                                }
-                                Err(error) => self.pod_message = rejection_text(&error),
-                            },
-                            Err(error) => self.pod_message = error.detail(),
-                        }
-                    }
-                    ui.separator();
-                }
 
                 ui.separator();
                 let scroll = egui::ScrollArea::vertical()
@@ -5871,6 +5650,217 @@ impl Workbench {
         ui.label(pod_preset::HD_EDITOR_OFFLINE_NOTICE);
         ui.label("Fixed H5EP/H5ES/H5EB framing and selected source-traced type-1 and numeric controls are supported across nine effect models. Auxiliary widgets and all other rows remain opaque; file association does not prove physical target compatibility.");
         ui.label("No device, audio, firmware or driver operation is available here. Copy saves never replace an existing file.");
+
+        let selected_octave_fuzz = self.hd_selected.and_then(|index| {
+            self.hd_library.file(index).and_then(|file| match file {
+                PodPresetFile::H5ep(preset) => preset.effect_model_id(self.hd_effect_slot),
+                _ => None,
+            })
+        }) == Some(
+            pod_preset::HdType1Control::OctaveFuzz(pod_preset::OctaveFuzzControl::Drive).model_id(),
+        );
+        if selected_octave_fuzz {
+            let _reverb_defaults = egui::CollapsingHeader::new(
+                "Additional source-derived reverb defaults",
+            )
+            .id_salt("hd-octave-fuzz-reverb-defaults")
+            .default_open(true)
+            .show(ui, |ui| {
+                egui::ComboBox::from_id_salt("hd-octave-fuzz-reverb-default-target")
+                    .selected_text(self.hd_reverb_default_target.label())
+                    .show_ui(ui, |ui| {
+                        for target in pod_preset::HdReverbDefault::ALL {
+                            ui.selectable_value(
+                                &mut self.hd_reverb_default_target,
+                                target,
+                                target.label(),
+                            );
+                        }
+                    });
+                if self.pod_button(
+                    ui,
+                    "replace-octave-fuzz-admitted-reverb-default",
+                    "Apply selected reverb defaults",
+                ) {
+                    let index = self.hd_selected.expect("selected HD file");
+                    match pod_preset::HdFxSlot::new(self.hd_effect_slot) {
+                        Ok(slot) => match Session::initial_rig()
+                            .replace_hd_octave_fuzz_with_admitted_reverb_defaults(
+                                &mut self.hd_library,
+                                index,
+                                slot,
+                                self.hd_reverb_default_target,
+                            )
+                        {
+                            Ok(()) => {
+                                self.pod_message = format!(
+                                    "Replaced this offline effect with {} defaults. Nothing was sent; save a new copy to keep the change.",
+                                    self.hd_reverb_default_target.label()
+                                );
+                            }
+                            Err(error) => self.pod_message = rejection_text(&error),
+                        },
+                        Err(error) => self.pod_message = error.detail(),
+                    }
+                }
+            });
+            ui.label("Reset five values to Vintage Pre defaults.");
+            if self.pod_button(
+                ui,
+                "replace-octave-fuzz-vintage-pre",
+                "Replace Octave Fuzz with Vintage Pre defaults",
+            ) {
+                let index = self.hd_selected.expect("selected HD file");
+                match pod_preset::HdFxSlot::new(self.hd_effect_slot) {
+                    Ok(slot) => match Session::initial_rig()
+                        .replace_hd_octave_fuzz_with_vintage_pre_defaults(
+                            &mut self.hd_library,
+                            index,
+                            slot,
+                        ) {
+                        Ok(()) => {
+                            self.pod_message = "Replaced this offline effect with Vintage Pre defaults. Nothing was sent; save a new copy to keep the change.".into();
+                        }
+                        Err(error) => self.pod_message = rejection_text(&error),
+                    },
+                    Err(error) => self.pod_message = error.detail(),
+                }
+            }
+            ui.label("Reset five values to Screamer defaults.");
+            if self.pod_button(
+                ui,
+                "replace-octave-fuzz-screamer",
+                "Replace Octave Fuzz with Screamer defaults",
+            ) {
+                let index = self.hd_selected.expect("selected HD file");
+                match pod_preset::HdFxSlot::new(self.hd_effect_slot) {
+                    Ok(slot) => match Session::initial_rig()
+                        .replace_hd_octave_fuzz_with_screamer_defaults(
+                            &mut self.hd_library,
+                            index,
+                            slot,
+                        ) {
+                        Ok(()) => {
+                            self.pod_message = "Replaced this offline effect with Screamer defaults. Nothing was sent; save a new copy to keep the change.".into();
+                        }
+                        Err(error) => self.pod_message = rejection_text(&error),
+                    },
+                    Err(error) => self.pod_message = error.detail(),
+                }
+            }
+            ui.label("Reset five values to Sub Octave Fuzz defaults.");
+            if self.pod_button(
+                ui,
+                "replace-octave-fuzz-sub-octave-fuzz",
+                "Replace Octave Fuzz with Sub Octave Fuzz defaults",
+            ) {
+                let index = self.hd_selected.expect("selected HD file");
+                match pod_preset::HdFxSlot::new(self.hd_effect_slot) {
+                    Ok(slot) => match Session::initial_rig()
+                        .replace_hd_octave_fuzz_with_sub_octave_fuzz_defaults(
+                            &mut self.hd_library,
+                            index,
+                            slot,
+                        ) {
+                        Ok(()) => {
+                            self.pod_message = "Replaced this offline effect with Sub Octave Fuzz defaults. Nothing was sent; save a new copy to keep the change.".into();
+                        }
+                        Err(error) => self.pod_message = rejection_text(&error),
+                    },
+                    Err(error) => self.pod_message = error.detail(),
+                }
+            }
+            ui.label("Replace with Noise Gate defaults.");
+            if self.pod_button(ui, "replace-octave-fuzz-noise-gate", "Noise Gate defaults") {
+                let index = self.hd_selected.expect("selected HD file");
+                match pod_preset::HdFxSlot::new(self.hd_effect_slot) {
+                    Ok(slot) => match Session::initial_rig()
+                        .replace_hd_octave_fuzz_with_noise_gate_defaults(
+                            &mut self.hd_library,
+                            index,
+                            slot,
+                        ) {
+                        Ok(()) => {
+                            self.pod_message = "Replaced this offline effect with Noise Gate defaults. Nothing was sent; save a new copy to keep the change.".into();
+                        }
+                        Err(error) => self.pod_message = rejection_text(&error),
+                    },
+                    Err(error) => self.pod_message = error.detail(),
+                }
+            }
+            ui.label("Additional source-derived distortion/fuzz defaults");
+            egui::ComboBox::from_id_salt("hd-octave-fuzz-default-target")
+                .selected_text(self.hd_default_target.label())
+                .show_ui(ui, |ui| {
+                    for target in pod_preset::HdDistortionDefault::ALL {
+                        ui.selectable_value(&mut self.hd_default_target, target, target.label());
+                    }
+                });
+            if self.pod_button(
+                ui,
+                "replace-octave-fuzz-admitted-default",
+                "Apply selected source defaults",
+            ) {
+                let index = self.hd_selected.expect("selected HD file");
+                match pod_preset::HdFxSlot::new(self.hd_effect_slot) {
+                    Ok(slot) => match Session::initial_rig()
+                        .replace_hd_octave_fuzz_with_admitted_defaults(
+                            &mut self.hd_library,
+                            index,
+                            slot,
+                            self.hd_default_target,
+                        ) {
+                        Ok(()) => {
+                            self.pod_message = format!(
+                                "Replaced this offline effect with {} defaults. Nothing was sent; save a new copy to keep the change.",
+                                self.hd_default_target.label()
+                            );
+                        }
+                        Err(error) => self.pod_message = rejection_text(&error),
+                    },
+                    Err(error) => self.pod_message = error.detail(),
+                }
+            }
+            ui.label("Additional source-derived dynamics / FX defaults");
+            egui::ComboBox::from_id_salt("hd-octave-fuzz-dynamics-default-target")
+                .selected_text(self.hd_dynamics_default_target.label())
+                .show_ui(ui, |ui| {
+                    for target in pod_preset::HdDynamicsDefault::ALL {
+                        ui.selectable_value(
+                            &mut self.hd_dynamics_default_target,
+                            target,
+                            target.label(),
+                        );
+                    }
+                });
+            if self.pod_button(
+                ui,
+                "replace-octave-fuzz-admitted-dynamics-default",
+                "Apply selected dynamics / FX defaults",
+            ) {
+                let index = self.hd_selected.expect("selected HD file");
+                match pod_preset::HdFxSlot::new(self.hd_effect_slot) {
+                    Ok(slot) => match Session::initial_rig()
+                        .replace_hd_octave_fuzz_with_admitted_dynamics_defaults(
+                            &mut self.hd_library,
+                            index,
+                            slot,
+                            self.hd_dynamics_default_target,
+                        ) {
+                        Ok(()) => {
+                            self.pod_message = format!(
+                                "Replaced this offline effect with {} defaults. Nothing was sent; save a new copy to keep the change.",
+                                self.hd_dynamics_default_target.label()
+                            );
+                        }
+                        Err(error) => self.pod_message = rejection_text(&error),
+                    },
+                    Err(error) => self.pod_message = error.detail(),
+                }
+            }
+            ui.separator();
+        }
+
         let rows: Vec<_> = (0..self.hd_library.len())
             .filter_map(|index| {
                 let file = self.hd_library.file(index)?;
@@ -10726,7 +10716,7 @@ mod tests {
             expected[block + 0x10 + row * 0x14 + 0x10] = 0;
         }
 
-        click_pod(&context, &mut app, button_id);
+        click_hd_editor(&context, &mut app, button_id);
         assert!(
             app.pod_message.contains(message_label),
             "button={button_id:?}, targets={targets:?}, message={:?}, button_rect={:?}, scroll={:?}",
@@ -10746,8 +10736,14 @@ mod tests {
         assert_eq!(app.hd_library.file(index).unwrap().as_bytes(), original);
         assert!(!app.hd_library.is_dirty(index));
 
-        click_pod(&context, &mut app, button_id);
-        assert!(app.hd_library.is_dirty(index));
+        click_hd_editor(&context, &mut app, button_id);
+        assert!(
+            app.hd_library.is_dirty(index),
+            "second apply left the file clean: message={:?}, button_rect={:?}, scroll={:?}",
+            app.pod_message,
+            app.pod_buttons.get(button_id),
+            app.pod_scroll_area
+        );
         let directory = tempfile::tempdir().unwrap();
         let blocked = directory.path().join("blocked-directory");
         std::fs::create_dir(&blocked).unwrap();
