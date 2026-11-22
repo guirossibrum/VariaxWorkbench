@@ -82,8 +82,8 @@ only.
 ## Not done here
 
 - Wiring `LinuxSysfs` into the window and the G1-only lock change belong to
-  [#158](https://github.com/guirossibrum/VariaxWorkbench/issues/158), after the
-  owner signs the G1 form.
+  [#158](https://github.com/guirossibrum/VariaxWorkbench/issues/158), now that the
+  owner has given direct G1 permission (2026-11-22; see the G1 ledger).
 - Replay of the private 2026-11-14 identity captures (#113) is not included;
   committed fixtures stay synthetic.
 - The inventory table (`supported_devices.txt` schema 2, `device_inventory.rs`)

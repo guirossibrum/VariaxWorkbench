@@ -38,7 +38,9 @@ G1 procedure and form, [#134](https://github.com/guirossibrum/VariaxWorkbench/is
 probe stage 1, [#137](https://github.com/guirossibrum/VariaxWorkbench/issues/137)
 prototype decision, [#157](https://github.com/guirossibrum/VariaxWorkbench/issues/157)
 Device check window, [#158](https://github.com/guirossibrum/VariaxWorkbench/issues/158)
-G1-only test build (after the owner signs), then #125 and #149.
+G1-only test build, then #125 and #149. Owner rule (2026-11-22): gate
+authorization is the owner's direct permission to an agent, recorded by the
+agent; nobody signs in GitHub issues. G1 was authorized that way on 2026-11-22.
 
 **#5, #6, #33 and #22 are not prerequisites for G1–G3.** #5's known
 coefficient difference is recorded and no longer blocks reads; #6 and #33 are
