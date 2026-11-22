@@ -8,7 +8,8 @@ use std::{
     time::{Duration, Instant},
 };
 use variax_workbench::device_probe::{
-    self, Consent, ProbeSession, SimulatedRig, Stage, StageStatus,
+    self, Consent, HostRig, LinuxSysfs, ProbeMode, ProbeSession, RigBackend, SimulatedRig, Stage,
+    StageStatus,
 };
 use variax_workbench::hardware_gates::{self, Gate};
 use variax_workbench::pod_audio::RecordRoute;
@@ -274,8 +275,13 @@ struct Workbench {
     recording_open: bool,
     recorder: recording::Panel,
     device_check_open: bool,
-    device_check: ProbeSession<SimulatedRig>,
+    device_check: ProbeSession<RigBackend>,
     device_check_scenario: device_probe::Scenario,
+    /// Root the "This computer" reader uses: `/` in the app; tests inject a
+    /// temporary fake tree (an empty path makes `host_backend` refuse).
+    device_check_root: PathBuf,
+    #[cfg(test)]
+    host_reader_builds: usize,
     pod_open: bool,
     pod_library: Library,
     pod_bundle: Option<pod_preset::PodBundleLibrary>,
@@ -314,6 +320,8 @@ struct Workbench {
     recording_visible: String,
     #[cfg(test)]
     device_check_buttons: HashMap<&'static str, Rect>,
+    #[cfg(test)]
+    device_check_button_ids: HashMap<&'static str, egui::Id>,
     #[cfg(test)]
     device_check_visible: String,
     #[cfg(test)]
@@ -437,8 +445,16 @@ impl Workbench {
             frame_count: 0,
             recording_open: false,
             device_check_open: false,
-            device_check: ProbeSession::new(SimulatedRig::new(device_probe::Scenario::Connected)),
+            device_check: ProbeSession::new(RigBackend::Simulated(SimulatedRig::new(
+                device_probe::Scenario::Connected,
+            ))),
             device_check_scenario: device_probe::Scenario::Connected,
+            #[cfg(not(test))]
+            device_check_root: PathBuf::from(device_probe::DEFAULT_ROOT),
+            #[cfg(test)]
+            device_check_root: PathBuf::new(),
+            #[cfg(test)]
+            host_reader_builds: 0,
             recorder: recording::Panel::new(),
             pod_open: false,
             pod_library: Library::default(),
@@ -478,6 +494,8 @@ impl Workbench {
             recording_visible: String::new(),
             #[cfg(test)]
             device_check_buttons: HashMap::new(),
+            #[cfg(test)]
+            device_check_button_ids: HashMap::new(),
             #[cfg(test)]
             device_check_visible: String::new(),
             #[cfg(test)]
@@ -2065,21 +2083,62 @@ impl Workbench {
     ) -> egui::Response {
         let response = ui.button(label);
         #[cfg(test)]
-        self.device_check_buttons.insert(id, response.rect);
+        {
+            self.device_check_buttons.insert(id, response.rect);
+            self.device_check_button_ids.insert(id, response.id);
+        }
         #[cfg(not(test))]
         let _ = id;
         response
     }
 
-    /// Staged device check (#157). Simulation only: the session's backend is a
-    /// synthetic rig, and every hardware gate stays compile-time locked.
+    /// The "This computer (G1)" backend: the real step-1 reader on
+    /// `device_check_root`. Built only when that mode is chosen.
+    fn host_backend(&mut self) -> RigBackend {
+        #[cfg(test)]
+        {
+            // Tests must inject a temporary fake tree; never the real root.
+            assert!(
+                self.device_check_root.starts_with(std::env::temp_dir())
+                    && self.device_check_root != Path::new(device_probe::DEFAULT_ROOT),
+                "tests must inject a temporary fake tree for This computer mode"
+            );
+            self.host_reader_builds += 1;
+        }
+        RigBackend::ThisComputer(HostRig::new(LinuxSysfs::with_root(
+            self.device_check_root.clone(),
+        )))
+    }
+
+    fn restart_device_check(&mut self, mode: ProbeMode, scenario: device_probe::Scenario) {
+        self.device_check_scenario = scenario;
+        let backend = match mode {
+            ProbeMode::ThisComputer
+                if device_probe::live_stage_available(Stage::UsbRecognition) =>
+            {
+                self.host_backend()
+            }
+            _ => RigBackend::Simulated(SimulatedRig::new(scenario)),
+        };
+        self.device_check = ProbeSession::new(backend);
+    }
+
+    /// Staged device check (#157, #158). "Simulation" is the default. "This
+    /// computer (G1)" is drawn only on Linux, only for step 1, and only while
+    /// G1 is open. When that is not available the option is left out. Steps
+    /// 2–4 show locked and are never offered. Closing the window in the same
+    /// moment as Yes or Start over cancels; nothing is read.
     fn device_check_window(&mut self, ctx: &egui::Context) {
         if !self.device_check_open {
             return;
         }
+        #[cfg(test)]
+        self.device_check_buttons.retain(|id, _| *id == "open");
         let mut open = true;
         let mut answer = None;
         let mut restart = None;
+        let g1_available = device_probe::live_stage_available(Stage::UsbRecognition);
+        let mode = self.device_check.mode();
         egui::Window::new("Device check")
             .open(&mut open)
             .collapsible(false)
@@ -2091,41 +2150,82 @@ impl Workbench {
                     ui.disable();
                 }
                 let mut visible = String::new();
-                ui.colored_label(FRET_MARKER, device_probe::SIMULATION_LABEL);
-                ui.weak(
-                    "Every hardware lock stays closed in this build. Each step asks first, the \
-                     answer is No unless you choose Yes, and a passed step never starts the next one.",
-                );
-                visible.push_str(device_probe::SIMULATION_LABEL);
+                let banner = if g1_available {
+                    device_probe::G1_ONLY_BANNER
+                } else {
+                    "Every hardware lock stays closed in this build."
+                };
+                ui.colored_label(FRET_MARKER, banner);
+                visible.push_str(banner);
                 ui.horizontal(|ui| {
-                    ui.label("Pretend setup:");
-                    egui::ComboBox::from_id_salt("device-check-scenario")
-                        .width(300.0)
-                        .selected_text(self.device_check_scenario.label())
-                        .show_ui(ui, |ui| {
-                            for scenario in device_probe::Scenario::ALL {
-                                if ui
-                                    .selectable_label(
-                                        self.device_check_scenario == scenario,
-                                        scenario.label(),
-                                    )
-                                    .clicked()
-                                {
-                                    restart = Some(scenario);
+                    ui.label("Mode:");
+                    for (id, choice) in [
+                        ("mode-simulation", ProbeMode::Simulation),
+                        ("mode-this-computer", ProbeMode::ThisComputer),
+                    ] {
+                        // Omit the real-device mode entirely when this build
+                        // cannot run it. A disabled radio would still offer it.
+                        if choice == ProbeMode::ThisComputer && !g1_available {
+                            continue;
+                        }
+                        let response = ui.add(egui::RadioButton::new(mode == choice, choice.label()));
+                        #[cfg(test)]
+                        {
+                            self.device_check_buttons.insert(id, response.rect);
+                            self.device_check_button_ids.insert(id, response.id);
+                        }
+                        #[cfg(not(test))]
+                        let _ = id;
+                        if response.clicked() && mode != choice {
+                            restart = Some((choice, self.device_check_scenario));
+                        }
+                    }
+                });
+                let label = match mode {
+                    ProbeMode::Simulation => device_probe::SIMULATION_LABEL,
+                    ProbeMode::ThisComputer => device_probe::THIS_COMPUTER_LABEL,
+                };
+                ui.label(label);
+                visible.push_str(&format!("\n{label}"));
+                ui.weak(
+                    "Each step asks first, the answer is No unless you choose Yes, and a passed \
+                     step never starts the next one.",
+                );
+                ui.horizontal(|ui| {
+                    if mode == ProbeMode::Simulation {
+                        ui.label("Pretend setup:");
+                        egui::ComboBox::from_id_salt("device-check-scenario")
+                            .width(300.0)
+                            .selected_text(self.device_check_scenario.label())
+                            .show_ui(ui, |ui| {
+                                for scenario in device_probe::Scenario::ALL {
+                                    if ui
+                                        .selectable_label(
+                                            self.device_check_scenario == scenario,
+                                            scenario.label(),
+                                        )
+                                        .clicked()
+                                    {
+                                        restart = Some((mode, scenario));
+                                    }
                                 }
-                            }
-                        });
+                            });
+                    }
                     if self.device_check_button(ui, "restart", "Start over").clicked() {
-                        restart = Some(self.device_check_scenario);
+                        restart = Some((mode, self.device_check_scenario));
                     }
                 });
                 ui.separator();
                 for stage in Stage::LADDER {
                     let status = self.device_check.status(stage);
                     let waiting = self.device_check.awaiting() == Some(stage);
+                    let locked = self.device_check.locked(stage);
                     let (mark, colour, state) = match status {
                         StageStatus::Passed => ("✔", Color32::from_rgb(167, 231, 133), status.label()),
                         StageStatus::Stopped => ("■", Color32::LIGHT_RED, status.label()),
+                        StageStatus::NotRun if locked => {
+                            ("○", Color32::GRAY, "locked in this build")
+                        }
                         StageStatus::NotRun if waiting => {
                             ("▶", FRET_MARKER, "waiting for your answer")
                         }
@@ -2140,10 +2240,10 @@ impl Workbench {
                             stage.gate_label()
                         ));
                         ui.weak(state);
-                        let lock = if hardware_gates::is_locked(stage.gate()) {
-                            "real device: locked"
-                        } else {
+                        let lock = if device_probe::live_stage_available(stage) {
                             "real device: open"
+                        } else {
+                            "real device: locked"
                         };
                         ui.weak(format!("· {lock}"));
                         visible.push_str(&format!("\nstep {} {state} {lock}", stage.number()));
@@ -2172,26 +2272,40 @@ impl Workbench {
                         if no.clicked() {
                             answer = Some(Consent::No);
                         }
-                        if self
-                            .device_check_button(ui, "yes", "Yes, run this step (simulation)")
-                            .clicked()
-                        {
+                        let yes = match mode {
+                            ProbeMode::Simulation => "Yes, run this step (simulation)",
+                            ProbeMode::ThisComputer => "Yes, read this computer's USB list",
+                        };
+                        if self.device_check_button(ui, "yes", yes).clicked() {
                             answer = Some(Consent::Yes);
                         }
                     });
                 } else {
-                    let outcome = match self.device_check.stopped() {
-                        Some((stage, _)) => format!(
+                    let outcome = match (self.device_check.stopped(), mode) {
+                        (Some((stage, _)), _) => format!(
                             "Stopped at step {}. Nothing further runs; choose Start over to try again.",
                             stage.number()
                         ),
-                        None => "All four steps passed in simulation. No real device was used.".into(),
+                        (None, ProbeMode::Simulation) => {
+                            "All four steps passed in simulation. No real device was used.".into()
+                        }
+                        (None, ProbeMode::ThisComputer) => {
+                            "Step 1 finished. Steps 2–4 stay locked in this build; nothing else \
+                             will run. Copy the Report into issue #125."
+                                .into()
+                        }
                     };
                     ui.label(&outcome);
                     visible.push_str(&format!("\n{outcome}"));
                 }
+                let report = self.device_check.report();
+                ui.horizontal(|ui| {
+                    if self.device_check_button(ui, "copy", "Copy report").clicked() {
+                        ui.ctx().copy_text(report.clone());
+                    }
+                });
                 ui.collapsing("Report", |ui| {
-                    ui.monospace(self.device_check.report());
+                    ui.monospace(&report);
                 });
                 #[cfg(test)]
                 {
@@ -2200,17 +2314,17 @@ impl Workbench {
                 #[cfg(not(test))]
                 let _ = visible;
             });
-        if let Some(consent) = answer {
-            self.device_check.answer(consent);
-        }
-        if let Some(scenario) = restart {
-            self.device_check_scenario = scenario;
-            self.device_check = ProbeSession::new(SimulatedRig::new(scenario));
-        }
+        // Close wins over Yes and over Start over / mode change in this frame.
         if !open {
-            // Closing the window cancels the waiting step; nothing runs.
             self.device_check.answer(Consent::Cancel);
             self.device_check_open = false;
+        } else {
+            if let Some(consent) = answer {
+                self.device_check.answer(consent);
+            }
+            if let Some((mode, scenario)) = restart {
+                self.restart_device_check(mode, scenario);
+            }
         }
     }
 
@@ -5372,13 +5486,55 @@ mod tests {
     }
 
     #[test]
-    fn device_check_window_is_simulation_only_and_declines_by_default() {
+    fn device_check_window_defaults_to_simulation_and_declines_by_default() {
         let (context, mut app) = device_check_app();
-        assert!(app.device_check_visible.contains("Simulation"));
+        assert_eq!(app.device_check.mode(), ProbeMode::Simulation);
         assert!(
             app.device_check_visible
-                .contains("step 1 waiting for your answer real device: locked")
+                .contains(device_probe::SIMULATION_LABEL)
         );
+        assert!(app.device_check_buttons.contains_key("mode-simulation"));
+        // "This computer (G1)" is drawn only on Linux while step 1 is open.
+        // Elsewhere the radio is omitted, and the window does not say a real
+        // reader is open. The Windows portable-math check does not compile
+        // this GUI, so that branch is covered when this test is built there.
+        if cfg!(target_os = "linux") {
+            assert!(app.device_check_buttons.contains_key("mode-this-computer"));
+            assert!(
+                app.device_check_visible
+                    .contains(device_probe::G1_ONLY_BANNER)
+            );
+            assert!(
+                app.device_check_visible
+                    .contains("step 1 waiting for your answer real device: open")
+            );
+        } else {
+            assert!(!app.device_check_buttons.contains_key("mode-this-computer"));
+            assert!(
+                !app.device_check_visible
+                    .contains(device_probe::G1_ONLY_BANNER)
+            );
+            assert!(
+                !app.device_check_visible
+                    .contains(device_probe::THIS_COMPUTER_LABEL)
+            );
+            assert!(!app.device_check_visible.contains("real device: open"));
+            assert!(
+                app.device_check_visible
+                    .contains("Every hardware lock stays closed in this build.")
+            );
+            assert!(
+                app.device_check_visible
+                    .contains("step 1 waiting for your answer real device: locked")
+            );
+        }
+        for step in 2..=4 {
+            assert!(
+                app.device_check_visible
+                    .contains(&format!("step {step} not run real device: locked")),
+                "step {step}"
+            );
+        }
         assert!(
             app.device_check_visible
                 .contains(Stage::UsbRecognition.action())
@@ -5387,7 +5543,11 @@ mod tests {
             app.device_check_visible
                 .contains(Stage::UsbRecognition.risk())
         );
-        const { assert!(!device_probe::LIVE_BACKEND_AVAILABLE) };
+        assert_eq!(app.host_reader_builds, 0);
+        assert!(matches!(
+            app.device_check.backend(),
+            RigBackend::Simulated(_)
+        ));
         // Rendering alone never runs a step.
         for _ in 0..5 {
             recording_frame(&context, &mut app, vec![]);
@@ -5462,6 +5622,12 @@ mod tests {
             app.device_check_visible
                 .contains("All four steps passed in simulation")
         );
+        // Simulation never builds or calls the real reader.
+        assert_eq!(app.host_reader_builds, 0);
+        assert!(matches!(
+            app.device_check.backend(),
+            RigBackend::Simulated(_)
+        ));
     }
 
     #[test]
@@ -5481,6 +5647,240 @@ mod tests {
         click_device_check(&context, &mut app, "restart");
         assert_eq!(app.device_check.awaiting(), Some(Stage::UsbRecognition));
         assert_eq!(app.device_check.backend().calls(), Default::default());
+        assert_eq!(app.host_reader_builds, 0);
+    }
+
+    /// A temporary fake `/sys` + `/proc` tree with `units` PODxt Live devices.
+    /// Tests never point the reader anywhere else.
+    #[cfg(target_os = "linux")]
+    fn fake_host_tree(units: &[&str]) -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        let write = |path: PathBuf, text: &str| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        let devices = root.path().join("sys/bus/usb/devices");
+        for name in units {
+            let base = devices.join(name);
+            write(base.join("idVendor"), "0e41\n");
+            write(base.join("idProduct"), "4650\n");
+            write(base.join("bcdDevice"), "0001\n");
+            write(base.join("product"), "PODxt Live\n");
+            write(base.join("serial"), "SECRET-SERIAL\n");
+            for (number, driver) in [(0, "snd-usb-pod"), (1, "snd-usb-variax")] {
+                let interface = devices.join(format!("{name}:1.{number}"));
+                write(
+                    interface.join("bInterfaceNumber"),
+                    &format!("{number:02x}\n"),
+                );
+                std::fs::create_dir_all(root.path().join("sys/bus/usb/drivers").join(driver))
+                    .unwrap();
+                std::os::unix::fs::symlink(
+                    format!("../../../bus/usb/drivers/{driver}"),
+                    interface.join("driver"),
+                )
+                .unwrap();
+            }
+        }
+        std::fs::create_dir_all(&devices).unwrap();
+        write(
+            root.path().join("proc/asound/cards"),
+            " 0 [PODxtLive      ]: Line6-POD - PODxt Live\n                      Line 6 PODxt Live at USB 1-2:1.0\n",
+        );
+        root
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn device_check_this_computer_mode_runs_only_step_one_on_an_injected_tree() {
+        assert!(device_probe::live_stage_available(Stage::UsbRecognition));
+        let tree = fake_host_tree(&["1-2"]);
+        let (context, mut app) = device_check_app();
+        app.device_check_root = tree.path().to_owned();
+        click_device_check(&context, &mut app, "mode-this-computer");
+        assert_eq!(app.device_check.mode(), ProbeMode::ThisComputer);
+        assert_eq!(app.host_reader_builds, 1);
+        let RigBackend::ThisComputer(rig) = app.device_check.backend() else {
+            panic!("expected This computer mode");
+        };
+        assert_eq!(rig.reader().root(), tree.path());
+        // Choosing the mode reads nothing; step 1 waits at the default No.
+        assert_eq!(app.device_check.backend().calls(), Default::default());
+        assert_eq!(app.device_check.awaiting(), Some(Stage::UsbRecognition));
+        assert!(
+            app.device_check_visible
+                .contains(device_probe::G1_ONLY_BANNER)
+        );
+        assert!(
+            app.device_check_visible
+                .contains(device_probe::THIS_COMPUTER_LABEL)
+        );
+        for step in 2..=4 {
+            assert!(
+                app.device_check_visible
+                    .contains(&format!("step {step} locked in this build")),
+                "step {step}: {}",
+                app.device_check_visible
+            );
+        }
+        click_device_check(&context, &mut app, "yes");
+        assert_eq!(
+            app.device_check.status(Stage::UsbRecognition),
+            StageStatus::Passed
+        );
+        assert_eq!(app.device_check.awaiting(), None);
+        // Steps 2–4 cannot be answered: no Yes/No buttons remain.
+        assert!(!app.device_check_buttons.contains_key("yes"));
+        assert!(!app.device_check_buttons.contains_key("no"));
+        for stage in [
+            Stage::Identification,
+            Stage::SettingsRead,
+            Stage::ChangeCheck,
+        ] {
+            assert_eq!(app.device_check.status(stage), StageStatus::NotRun);
+            assert!(app.device_check.locked(stage));
+        }
+        let calls = app.device_check.backend().calls();
+        assert_eq!(
+            (
+                calls.os_reads,
+                calls.identity_requests,
+                calls.settings_reads
+            ),
+            (1, 0, 0)
+        );
+        assert!(app.device_check_visible.contains("Step 1 finished"));
+        assert!(app.device_check_visible.contains("0e41:4650"));
+        let report = app.device_check.report();
+        assert!(report.contains("mode=this-computer gates-open=G1"));
+        assert!(report.contains("interface 1 driver snd-usb-variax"));
+        assert!(!report.contains("SECRET"), "serial number leaked");
+        assert!(
+            !report.contains(&*tree.path().to_string_lossy()),
+            "path leaked"
+        );
+        assert!(app.read_worker.is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn device_check_this_computer_mode_decline_and_two_units_stop() {
+        let tree = fake_host_tree(&["1-2"]);
+        let (context, mut app) = device_check_app();
+        app.device_check_root = tree.path().to_owned();
+        click_device_check(&context, &mut app, "mode-this-computer");
+        click_device_check(&context, &mut app, "no");
+        assert_eq!(
+            app.device_check.status(Stage::UsbRecognition),
+            StageStatus::Stopped
+        );
+        assert_eq!(app.device_check.backend().calls(), Default::default());
+        let two = fake_host_tree(&["1-2", "1-3"]);
+        app.device_check_root = two.path().to_owned();
+        click_device_check(&context, &mut app, "restart");
+        assert_eq!(app.device_check.mode(), ProbeMode::ThisComputer);
+        click_device_check(&context, &mut app, "yes");
+        assert_eq!(
+            app.device_check.status(Stage::UsbRecognition),
+            StageStatus::Stopped
+        );
+        assert!(app.device_check_visible.contains("2 PODxt Live devices"));
+        assert_eq!(app.device_check.backend().calls().identity_requests, 0);
+        // Back to simulation: the default backend again.
+        click_device_check(&context, &mut app, "mode-simulation");
+        assert!(matches!(
+            app.device_check.backend(),
+            RigBackend::Simulated(_)
+        ));
+    }
+
+    /// Enter on the focused Yes button is a real Yes. The close regression
+    /// below uses that same key, so a zero-read result means Close won.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn device_check_enter_on_focused_yes_reads_the_injected_tree() {
+        let tree = fake_host_tree(&["1-2"]);
+        let (context, mut app) = device_check_app();
+        app.device_check_root = tree.path().to_owned();
+        click_device_check(&context, &mut app, "mode-this-computer");
+        let yes_id = app.device_check_button_ids["yes"];
+        context.memory_mut(|memory| memory.request_focus(yes_id));
+        recording_frame(
+            &context,
+            &mut app,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+        );
+        assert_eq!(app.device_check.backend().calls().os_reads, 1);
+        assert!(app.device_check.report().contains("decision=yes"));
+    }
+
+    /// Yes and Close in one frame go through `device_check_window`'s dispatch.
+    /// Close is handled first, so the injected reader is never called.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn device_check_close_in_the_same_frame_as_yes_reads_nothing() {
+        let tree = fake_host_tree(&["1-2"]);
+        let (context, mut app) = device_check_app();
+        app.device_check_root = tree.path().to_owned();
+        click_device_check(&context, &mut app, "mode-this-computer");
+        assert_eq!(app.device_check.mode(), ProbeMode::ThisComputer);
+        assert_eq!(app.device_check.awaiting(), Some(Stage::UsbRecognition));
+        assert_eq!(app.device_check.backend().calls(), Default::default());
+        let builds = app.host_reader_builds;
+        let yes_id = app.device_check_button_ids["yes"];
+        context.memory_mut(|memory| memory.request_focus(yes_id));
+        let window = context
+            .memory(|memory| memory.area_rect(egui::Id::new("Device check")))
+            .expect("device check window");
+        let close_at = Pos2::new(window.right() - 20.0, window.top() + 18.0);
+        recording_frame(
+            &context,
+            &mut app,
+            vec![
+                egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerMoved(close_at),
+                egui::Event::PointerButton {
+                    pos: close_at,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: close_at,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        assert!(!app.device_check_open, "closing the window must win");
+        assert_eq!(
+            app.device_check.status(Stage::UsbRecognition),
+            StageStatus::Stopped
+        );
+        assert_eq!(app.device_check.awaiting(), None);
+        let report = app.device_check.report();
+        assert!(report.contains("decision=cancel"), "{report}");
+        assert!(!report.contains("decision=yes"), "{report}");
+        assert_eq!(
+            app.device_check.backend().calls(),
+            Default::default(),
+            "the injected reader must record zero calls"
+        );
+        assert_eq!(app.host_reader_builds, builds, "close must not restart");
+        assert!(app.read_worker.is_none());
     }
 
     fn click_recording(context: &egui::Context, app: &mut Workbench, id: &'static str) {

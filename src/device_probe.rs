@@ -8,11 +8,12 @@
 //! cancel, a failure or an ambiguous result stops the whole sequence. A passed
 //! stage never starts the next one by itself.
 //!
-//! This build has **no live backend** in the Device check. [`SimulatedRig`]
-//! answers every stage from a synthetic sysfs fixture and the in-memory
-//! [`VirtualControl`]. The real stage-1 reader, [`LinuxSysfs`], exists for #158
-//! but is not wired into the window, and it reads only through
-//! `run_if_unlocked(Gate::OsDiscovery, …)`, which refuses while G1 is locked.
+//! Two backends exist. [`SimulatedRig`] (the default) answers every stage from
+//! a synthetic sysfs fixture and the in-memory [`VirtualControl`]. [`HostRig`]
+//! ("This computer") runs **step 1 only**, with the real reader
+//! [`LinuxSysfs`], whose reads go through `run_if_unlocked(Gate::OsDiscovery,
+//! …)`. G1 is open by the owner's direct permission (g1.md section 5); G2–G7
+//! stay locked, so steps 2–4 are never offered in that mode.
 //! See `docs/device-check.md` and `docs/hardware-gates/g1.md`.
 
 use crate::hardware_gates::{self, Gate};
@@ -30,11 +31,13 @@ use std::time::Duration;
 pub const PODXT_LIVE_USB: (u16, u16) = (0x0e41, 0x4650);
 /// The setting stage 4 asks the person to change (Workbench's internal string 1).
 pub const WATCHED_SETTING: &str = "string1_tuning";
-/// No live probe backend exists in this build; every run is a simulation.
-pub const LIVE_BACKEND_AVAILABLE: bool = false;
+/// Stages that have a real ("This computer") backend: step 1 only.
+pub const LIVE_STAGES: [Stage; 1] = [Stage::UsbRecognition];
 /// The answer used whenever the person has not chosen.
 pub const DEFAULT_CONSENT: Consent = Consent::No;
 pub const SIMULATION_LABEL: &str = "Simulation — pretend devices only. Nothing is sent to, or read from, a real PODxt Live or guitar.";
+pub const THIS_COMPUTER_LABEL: &str = "This computer (G1) — step 1 reads what Linux already knows about connected USB devices and sound cards. Nothing is sent to the PODxt Live or the guitar.";
+pub const G1_ONLY_BANNER: &str = "Only gate G1 (USB recognition) is open in this build, by the owner's direct permission. Gates G2–G7 stay locked: steps 2–4 never run on a real device.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
@@ -417,7 +420,7 @@ pub fn parse_sound_cards(text: &str) -> Result<Vec<SoundCard>, MetadataError> {
 }
 
 // ---------------------------------------------------------------------------
-// Real stage-1 reader (#158 preparation; G1 stays locked)
+// Real stage-1 reader (#158). G1 is open in this build; G2–G7 stay locked.
 // ---------------------------------------------------------------------------
 
 /// Device attributes read from `/sys/bus/usb/devices/<dev>/` (g1.md section 1).
@@ -435,17 +438,21 @@ const MAX_USB_ENTRIES: usize = 512;
 /// temporary fake tree. It uses only `read_dir` on the USB device directory,
 /// `read_to_string` on the attributes above and `read_link` on `driver`: no
 /// rusb, libusb, usbfs (`/dev/bus/usb`), ALSA library or device node, and no
-/// writes. Every read goes through `run_if_unlocked(Gate::OsDiscovery, …)`, so
-/// while G1 is locked it returns an error without touching the filesystem.
+/// writes. Every read goes through `run_if_unlocked(Gate::OsDiscovery, …)`.
+/// G1 is open in this build, so the closure runs. If that constant were locked
+/// the closure would not run and nothing would be opened.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinuxSysfs {
     root: PathBuf,
 }
 
+/// The production root. Tests never read it; they inject a temporary tree.
+pub const DEFAULT_ROOT: &str = "/";
+
 impl Default for LinuxSysfs {
     fn default() -> Self {
         Self {
-            root: PathBuf::from("/"),
+            root: PathBuf::from(DEFAULT_ROOT),
         }
     }
 }
@@ -674,8 +681,27 @@ pub enum ReadPass {
     AfterChange,
 }
 
-/// Everything a stage may use. The only implementation is [`SimulatedRig`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProbeMode {
+    Simulation,
+    ThisComputer,
+}
+
+impl ProbeMode {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Simulation => "Simulation",
+            Self::ThisComputer => "This computer (G1)",
+        }
+    }
+}
+
+/// Everything a stage may use: [`SimulatedRig`], [`HostRig`] or [`RigBackend`].
 pub trait ProbeBackend {
+    fn mode(&self) -> ProbeMode;
+    /// Whether this backend may run the stage at all. A stage it cannot run
+    /// is never offered for consent.
+    fn can_run(&self, stage: Stage) -> bool;
     fn os_metadata(&mut self) -> &dyn OsMetadataSource;
     fn identify(&mut self) -> Result<Identity, String>;
     fn read_settings(&mut self, pass: ReadPass) -> Result<PresetMetadata, String>;
@@ -809,6 +835,14 @@ impl SimulatedRig {
 }
 
 impl ProbeBackend for SimulatedRig {
+    fn mode(&self) -> ProbeMode {
+        ProbeMode::Simulation
+    }
+
+    fn can_run(&self, _: Stage) -> bool {
+        true
+    }
+
     fn os_metadata(&mut self) -> &dyn OsMetadataSource {
         self.calls.os_reads += 1;
         &self.sysfs
@@ -840,6 +874,110 @@ impl ProbeBackend for SimulatedRig {
         }
         let cancel = AtomicBool::new(false);
         Ok(read_session::read_current_on(&mut control, &cancel)?.metadata)
+    }
+}
+
+/// "This computer": step 1 with a real OS-metadata reader; nothing else. It
+/// has no USB, MIDI or audio path: steps 2–4 are refused without any I/O.
+pub struct HostRig<S: OsMetadataSource> {
+    reader: S,
+    calls: BackendCalls,
+}
+
+impl<S: OsMetadataSource> HostRig<S> {
+    pub fn new(reader: S) -> Self {
+        Self {
+            reader,
+            calls: BackendCalls::default(),
+        }
+    }
+
+    pub fn reader(&self) -> &S {
+        &self.reader
+    }
+
+    pub const fn calls(&self) -> BackendCalls {
+        self.calls
+    }
+}
+
+const HOST_REFUSAL: &str =
+    "this step is locked in this build: only gate G1 is open, so nothing was sent";
+
+impl<S: OsMetadataSource> ProbeBackend for HostRig<S> {
+    fn mode(&self) -> ProbeMode {
+        ProbeMode::ThisComputer
+    }
+
+    fn can_run(&self, stage: Stage) -> bool {
+        live_stage_available(stage)
+    }
+
+    fn os_metadata(&mut self) -> &dyn OsMetadataSource {
+        self.calls.os_reads += 1;
+        &self.reader
+    }
+
+    fn identify(&mut self) -> Result<Identity, String> {
+        self.calls.identity_requests += 1;
+        Err(HOST_REFUSAL.into())
+    }
+
+    fn read_settings(&mut self, _: ReadPass) -> Result<PresetMetadata, String> {
+        self.calls.settings_reads += 1;
+        Err(HOST_REFUSAL.into())
+    }
+}
+
+/// The window's backend: simulation (default) or this computer.
+pub enum RigBackend {
+    Simulated(SimulatedRig),
+    ThisComputer(HostRig<LinuxSysfs>),
+}
+
+impl RigBackend {
+    pub const fn calls(&self) -> BackendCalls {
+        match self {
+            Self::Simulated(rig) => rig.calls(),
+            Self::ThisComputer(rig) => rig.calls(),
+        }
+    }
+}
+
+impl ProbeBackend for RigBackend {
+    fn mode(&self) -> ProbeMode {
+        match self {
+            Self::Simulated(rig) => rig.mode(),
+            Self::ThisComputer(rig) => rig.mode(),
+        }
+    }
+
+    fn can_run(&self, stage: Stage) -> bool {
+        match self {
+            Self::Simulated(rig) => rig.can_run(stage),
+            Self::ThisComputer(rig) => rig.can_run(stage),
+        }
+    }
+
+    fn os_metadata(&mut self) -> &dyn OsMetadataSource {
+        match self {
+            Self::Simulated(rig) => rig.os_metadata(),
+            Self::ThisComputer(rig) => rig.os_metadata(),
+        }
+    }
+
+    fn identify(&mut self) -> Result<Identity, String> {
+        match self {
+            Self::Simulated(rig) => rig.identify(),
+            Self::ThisComputer(rig) => rig.identify(),
+        }
+    }
+
+    fn read_settings(&mut self, pass: ReadPass) -> Result<PresetMetadata, String> {
+        match self {
+            Self::Simulated(rig) => rig.read_settings(pass),
+            Self::ThisComputer(rig) => rig.read_settings(pass),
+        }
     }
 }
 
@@ -883,15 +1021,26 @@ pub struct ProbeSession<B: ProbeBackend> {
 
 impl<B: ProbeBackend> ProbeSession<B> {
     pub fn new(backend: B) -> Self {
+        let first = Some(Stage::UsbRecognition).filter(|stage| backend.can_run(*stage));
         Self {
             backend,
             statuses: [StageStatus::NotRun; 4],
             details: Default::default(),
             decisions: [None; 4],
-            awaiting: Some(Stage::UsbRecognition),
+            awaiting: first,
             stop: None,
             first_read: None,
         }
+    }
+
+    pub fn mode(&self) -> ProbeMode {
+        self.backend.mode()
+    }
+
+    /// True when this backend can never run the stage (steps 2–4 in
+    /// "This computer" mode): shown as locked and never offered.
+    pub fn locked(&self, stage: Stage) -> bool {
+        !self.backend.can_run(stage)
     }
 
     pub fn backend(&self) -> &B {
@@ -925,6 +1074,9 @@ impl<B: ProbeBackend> ProbeSession<B> {
         let Some(stage) = self.awaiting.take() else {
             return;
         };
+        if !self.backend.can_run(stage) {
+            return;
+        }
         let index = stage.index();
         self.decisions[index] = Some(consent);
         let reason = match consent {
@@ -945,7 +1097,7 @@ impl<B: ProbeBackend> ProbeSession<B> {
         });
         if passed {
             self.statuses[index] = StageStatus::Passed;
-            self.awaiting = stage.next();
+            self.awaiting = stage.next().filter(|next| self.backend.can_run(*next));
         } else {
             self.statuses[index] = StageStatus::Stopped;
             self.stop = Some((stage, StopReason::Failed));
@@ -1020,9 +1172,25 @@ impl<B: ProbeBackend> ProbeSession<B> {
     /// Sanitized plain-text report: allowlisted keys, no serial numbers, no
     /// preset names, no file paths.
     pub fn report(&self) -> String {
-        let mut lines = vec!["device-check schema=1 mode=simulation writes=none".to_owned()];
+        let mut lines = vec![
+            match self.backend.mode() {
+                ProbeMode::Simulation => "device-check schema=1 mode=simulation writes=none",
+                ProbeMode::ThisComputer => {
+                    "device-check schema=1 mode=this-computer gates-open=G1 writes=none"
+                }
+            }
+            .to_owned(),
+        ];
         for stage in Stage::LADDER {
             let index = stage.index();
+            if self.locked(stage) && self.statuses[index] == StageStatus::NotRun {
+                lines.push(format!(
+                    "stage={} gate={} decision=none status=locked detail=-",
+                    stage.number(),
+                    stage.gate_label(),
+                ));
+                continue;
+            }
             let decision = match self.decisions[index] {
                 Some(Consent::Yes) => "yes",
                 Some(Consent::No) => "no",
@@ -1041,10 +1209,15 @@ impl<B: ProbeBackend> ProbeSession<B> {
     }
 }
 
-/// Whether the live form of a stage could run in this build. Always false:
-/// there is no live backend, and every gate is compile-time locked.
+/// Whether the live form of a stage can run in this build.
+///
+/// True only on Linux, only for [`Stage::UsbRecognition`], and only while that
+/// stage's compile-time gate is open (G1). Other platforms do not offer a real
+/// reader, even though the G1 constant is the same source on every target.
 pub fn live_stage_available(stage: Stage) -> bool {
-    LIVE_BACKEND_AVAILABLE && !hardware_gates::is_locked(stage.gate())
+    cfg!(target_os = "linux")
+        && LIVE_STAGES.contains(&stage)
+        && !hardware_gates::is_locked(stage.gate())
 }
 
 #[cfg(test)]
@@ -1062,8 +1235,17 @@ mod tests {
         for stage in Stage::LADDER {
             assert!(stage.action().len() > 40, "{stage:?}");
             assert!(stage.risk().len() > 40, "{stage:?}");
-            assert!(!live_stage_available(stage));
-            assert!(hardware_gates::is_locked(stage.gate()));
+            // Only Linux step 1 (G1) has a live form in this build.
+            assert_eq!(
+                live_stage_available(stage),
+                cfg!(target_os = "linux") && stage == Stage::UsbRecognition,
+                "{stage:?}"
+            );
+            assert_eq!(
+                hardware_gates::is_locked(stage.gate()),
+                stage != Stage::UsbRecognition,
+                "{stage:?}"
+            );
         }
         assert!(Stage::UsbRecognition.action().contains("sends nothing"));
         assert!(Stage::UsbRecognition.risk().starts_with("Low risk"));
@@ -1421,31 +1603,192 @@ mod tests {
         ));
     }
 
+    /// A G1 reader on a temporary fake tree. Tests never build a reader on
+    /// `DEFAULT_ROOT`; this guard fails before any read if one ever does.
+    fn injected_reader(root: &Path) -> LinuxSysfs {
+        assert_ne!(root, Path::new(DEFAULT_ROOT), "tests must not read /");
+        assert!(root.starts_with(std::env::temp_dir()), "{root:?}");
+        LinuxSysfs::with_root(root)
+    }
+
     #[test]
-    fn real_reader_is_gated_by_g1_and_defaults_to_root() {
-        // Checked first: if G1 is ever unlocked, this test must fail before
-        // any call below could read the real `/sys` or `/proc`.
-        assert!(hardware_gates::is_locked(Gate::OsDiscovery));
-        assert_eq!(LinuxSysfs::new().root(), Path::new("/"));
-        // Even a valid fake tree is not read while G1 is locked.
+    fn real_reader_reads_only_its_injected_root_with_g1_open() {
+        // The production default is "/", checked as a constant only: no test
+        // constructs a reader on it, let alone reads from it.
+        assert_eq!(DEFAULT_ROOT, "/");
+        assert!(!hardware_gates::is_locked(Gate::OsDiscovery));
         let root = fake_tree();
         #[cfg(unix)]
         fake_device(root.path(), "1-2", 0x4650, &BOTH_DRIVERS);
-        let gated = LinuxSysfs::with_root(root.path());
-        let recognition = recognise(&gated);
-        assert!(hardware_gates::is_locked(Gate::OsDiscovery));
-        assert!(
-            matches!(&recognition, Recognition::Unreadable(text) if text.contains("locked")),
-            "{recognition:?}"
-        );
+        let reader = injected_reader(root.path());
+        assert_eq!(reader.root(), root.path());
+        let recognition = recognise(&reader);
+        #[cfg(unix)]
+        assert!(recognition.passed(), "{recognition:?}");
+        #[cfg(not(unix))]
+        assert_eq!(recognition, Recognition::Absent);
+        // An empty temporary tree is unreadable, never a fall back to "/".
+        let empty = tempfile::tempdir().unwrap();
         assert!(matches!(
-            gated.sound_cards(),
+            injected_reader(empty.path()).usb_devices(),
             Err(MetadataError::Unreadable(_))
         ));
-        // The default ("/") reader is refused the same way, before any read.
-        assert!(matches!(
-            LinuxSysfs::new().usb_devices(),
-            Err(MetadataError::Unreadable(text)) if text.contains("locked")
-        ));
+    }
+
+    #[cfg(unix)]
+    fn host_session(root: &Path) -> ProbeSession<HostRig<LinuxSysfs>> {
+        ProbeSession::new(HostRig::new(injected_reader(root)))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn this_computer_mode_runs_step_one_only_and_reports_without_serial() {
+        let root = fake_tree();
+        fake_device(root.path(), "1-2", 0x4650, &BOTH_DRIVERS);
+        let mut probe = host_session(root.path());
+        assert_eq!(probe.mode(), ProbeMode::ThisComputer);
+        assert_eq!(probe.awaiting(), Some(Stage::UsbRecognition));
+        for stage in [
+            Stage::Identification,
+            Stage::SettingsRead,
+            Stage::ChangeCheck,
+        ] {
+            assert!(probe.locked(stage), "{stage:?}");
+        }
+        assert_eq!(probe.backend().calls(), BackendCalls::default());
+        probe.answer(Consent::Yes);
+        assert_eq!(probe.status(Stage::UsbRecognition), StageStatus::Passed);
+        // Steps 2–4 are never offered, so a further Yes runs nothing.
+        assert_eq!(probe.awaiting(), None);
+        assert!(probe.finished());
+        probe.answer(Consent::Yes);
+        assert_eq!(
+            probe.backend().calls(),
+            BackendCalls {
+                os_reads: 1,
+                ..Default::default()
+            }
+        );
+        for stage in [
+            Stage::Identification,
+            Stage::SettingsRead,
+            Stage::ChangeCheck,
+        ] {
+            assert_eq!(probe.status(stage), StageStatus::NotRun);
+        }
+        let report = probe.report();
+        let lines: Vec<_> = report.lines().collect();
+        assert_eq!(
+            lines[0],
+            "device-check schema=1 mode=this-computer gates-open=G1 writes=none"
+        );
+        assert!(lines[1].starts_with("stage=1 gate=G1 decision=yes status=passed detail="));
+        for needle in [
+            "0e41:4650",
+            "USB 1-2",
+            "interface 0 driver snd-usb-pod",
+            "interface 1 driver snd-usb-variax",
+            "\"PODxt Live\"",
+        ] {
+            assert!(lines[1].contains(needle), "{needle}: {}", lines[1]);
+        }
+        assert_eq!(
+            lines[2],
+            "stage=2 gate=G2 decision=none status=locked detail=-"
+        );
+        assert_eq!(
+            lines[3],
+            "stage=3 gate=G3 decision=none status=locked detail=-"
+        );
+        assert_eq!(
+            lines[4],
+            "stage=4 gate=G3 decision=none status=locked detail=-"
+        );
+        assert!(!report.contains("SECRET"), "serial number leaked");
+        assert!(
+            !report.contains(&*root.path().to_string_lossy()),
+            "path leaked"
+        );
+        assert!(!report.contains("SIMULATED"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn this_computer_mode_decline_and_cancel_read_nothing() {
+        let root = fake_tree();
+        fake_device(root.path(), "1-2", 0x4650, &BOTH_DRIVERS);
+        for (consent, decision) in [(Consent::No, "no"), (Consent::Cancel, "cancel")] {
+            let mut probe = host_session(root.path());
+            probe.answer(consent);
+            assert_eq!(probe.status(Stage::UsbRecognition), StageStatus::Stopped);
+            assert!(probe.finished());
+            assert_eq!(probe.backend().calls(), BackendCalls::default());
+            assert!(probe.report().contains(&format!(
+                "stage=1 gate=G1 decision={decision} status=stopped"
+            )));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn this_computer_mode_stops_when_no_or_two_pods_are_listed() {
+        let root = fake_tree();
+        let mut probe = host_session(root.path());
+        probe.answer(Consent::Yes);
+        assert_eq!(probe.status(Stage::UsbRecognition), StageStatus::Stopped);
+        assert_eq!(
+            probe.stopped(),
+            Some((Stage::UsbRecognition, StopReason::Failed))
+        );
+        fake_device(root.path(), "1-2", 0x4650, &BOTH_DRIVERS);
+        fake_device(root.path(), "1-3", 0x4650, &BOTH_DRIVERS);
+        let mut probe = host_session(root.path());
+        probe.answer(Consent::Yes);
+        assert!(
+            probe
+                .detail(Stage::UsbRecognition)
+                .unwrap()
+                .contains("2 PODxt Live")
+        );
+        assert!(probe.finished());
+    }
+
+    #[test]
+    fn host_rig_refuses_steps_two_to_four_without_io() {
+        let empty = tempfile::tempdir().unwrap();
+        let mut rig = HostRig::new(injected_reader(empty.path()));
+        for stage in [
+            Stage::Identification,
+            Stage::SettingsRead,
+            Stage::ChangeCheck,
+        ] {
+            assert!(!rig.can_run(stage), "{stage:?}");
+        }
+        assert!(rig.identify().is_err());
+        assert!(rig.read_settings(ReadPass::First).is_err());
+        assert_eq!(rig.calls().os_reads, 0);
+    }
+
+    #[test]
+    fn simulation_mode_holds_no_real_reader() {
+        // `RigBackend::Simulated` wraps a `SimulatedRig`, which has no
+        // `LinuxSysfs` field; a full simulated ladder stays in that variant.
+        let mut probe = ProbeSession::new(RigBackend::Simulated(SimulatedRig::new(
+            Scenario::Connected,
+        )));
+        assert_eq!(probe.mode(), ProbeMode::Simulation);
+        for _ in Stage::LADDER {
+            probe.answer(Consent::Yes);
+        }
+        assert!(matches!(probe.backend(), RigBackend::Simulated(_)));
+        for stage in Stage::LADDER {
+            assert!(!probe.locked(stage));
+            assert_eq!(probe.status(stage), StageStatus::Passed);
+        }
+        assert!(
+            probe
+                .report()
+                .starts_with("device-check schema=1 mode=simulation")
+        );
     }
 }

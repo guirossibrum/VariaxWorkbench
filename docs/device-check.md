@@ -4,8 +4,10 @@ Issues [#134](https://github.com/guirossibrum/VariaxWorkbench/issues/134),
 [#137](https://github.com/guirossibrum/VariaxWorkbench/issues/137) and
 [#157](https://github.com/guirossibrum/VariaxWorkbench/issues/157); parent
 [#113](https://github.com/guirossibrum/VariaxWorkbench/issues/113).
-**Simulation only.** No gate is authorized; see
-[the G1 procedure](hardware-gates/g1.md).
+**G1 is authorized by the owner's direct permission (2026-11-22) and is open in this build only.**
+G2–G8 are not authorized. See [the G1 procedure](hardware-gates/g1.md).
+The window still opens in **Simulation**. **This computer (G1)** is offered only
+when step 1's live form is available, and only step 1 can run in that mode.
 
 ## Stages
 
@@ -32,41 +34,60 @@ in `src/device_probe.rs`; the window shows them verbatim before asking.
 
 ## Backends
 
-`ProbeBackend` has one implementation, `SimulatedRig`:
+`ProbeBackend` has two window backends.
+
+**Simulation** (the default) uses `SimulatedRig`:
 
 - Stage 1 reads `SyntheticSysfs`, an in-memory copy of the sysfs/procfs
-  layout through the `OsMetadataSource` trait. The window never uses a real
-  adapter (`LIVE_BACKEND_AVAILABLE = false`).
-
-The real stage-1 reader, `LinuxSysfs` (#158 preparation), also implements
-`OsMetadataSource`. It reads only the [g1.md section 1](hardware-gates/g1.md#1-what-the-app-reads)
-paths under a configurable root (default `/`) with `read_dir`,
-`read_to_string` and `read_link`, fills the same in-memory map and reuses its
-parser. Both trait methods run their reads inside
-`run_if_unlocked(Gate::OsDiscovery, …)`; G1 is locked, so they return an error
-before touching the filesystem. It is not wired into the window.
+  layout through the `OsMetadataSource` trait. Choosing Simulation never
+  constructs `LinuxSysfs`.
 - Stages 2–4 use the existing in-memory `simulation::VirtualControl` and the
   shared `read_session::read_current_on`. Identities and metadata are
   synthetic (revision `0001`, preset name `SIMULATED`).
+- The **Pretend setup** list picks a scenario: connected, nothing connected,
+  two PODxt Live units, unreadable information, a silent guitar, or tuning
+  left unchanged.
 
-The window's **Pretend setup** list picks a scenario: connected, nothing
-connected, two PODxt Live units, unreadable information, a silent guitar, or
-tuning left unchanged.
+**This computer (G1)** uses `HostRig` around `LinuxSysfs`. It is offered only
+when `live_stage_available(Stage::UsbRecognition)` is true (G1 open, and step 1
+is the only live stage). The reader is built only when that mode is chosen.
+It reads only the [g1.md section 1](hardware-gates/g1.md#1-what-the-app-reads)
+paths under a configurable root (the app uses `/`; tests inject a temporary
+fake tree) with `read_dir`, `read_to_string` and `read_link`, fills the same
+in-memory map and reuses its parser. Both trait methods run their reads inside
+`run_if_unlocked(Gate::OsDiscovery, …)`. In this mode steps 2–4 are locked:
+they have no Yes/No buttons, and the backend refuses them without sending
+anything. A passed step never starts the next one. The answer stays **No**
+until the person chooses Yes.
 
 ## Tests
 
-- Core (`src/device_probe.rs`, 8 tests): recognised, absent, two devices,
+- Core simulation (`src/device_probe.rs`): recognised, absent, two devices,
   malformed metadata (vendor/product, interface number, card list), missing
   card list, decline, cancel, no automatic advance, full ladder, silent guitar.
-- Real reader (`src/device_probe.rs`, 4 tests on temporary fake trees, never
+  Simulation mode never holds a `LinuxSysfs`.
+- Real reader (`src/device_probe.rs`, Unix tests on temporary fake trees, never
   the real `/sys` or `/proc`): PODxt Live with `snd-usb-pod` and
   `snd-usb-variax` bound through relative `driver` symlinks; absent (including
   another Line 6 product), an unbound interface, two units; malformed
   `idProduct`, non-UTF-8 `idVendor`, bad `bInterfaceNumber`, bad card list,
   missing card list, empty tree; `serial`/`descriptors` present but never
-  read; G1 gate refuses both a fake root and the default `/` root.
-- GUI (`src/gui.rs`, 4 headless tests): default-No via Enter, decline button,
-  no automatic advance, stop on failure and start over.
+  read. `real_reader_reads_only_its_injected_root_with_g1_open` checks that
+  the default root constant is `/` and then reads only an injected temporary
+  tree. No test calls `LinuxSysfs::new()` and reads from it. This-computer
+  mode runs step 1 only; decline and cancel run nothing; the report contains
+  no serial number. G2–G7 each stay locked (`src/hardware_gates.rs`).
+- GUI (`src/gui.rs`): default-No via Enter, decline button, no automatic
+  advance, stop on failure and start over, all in Simulation with zero real
+  readers built. The mode test checks that **This computer (G1)** is present
+  only on Linux and that the step-1 indicator does not say the real reader is
+  open on any other platform. On Linux, this-computer mode uses an injected
+  fake tree, runs only step 1, and a decline reads nothing. Enter on the
+  focused Yes button reads that tree
+  (`device_check_enter_on_focused_yes_reads_the_injected_tree`). Closing the
+  window in the same frame as that Yes
+  (`device_check_close_in_the_same_frame_as_yes_reads_nothing`) cancels through
+  the window dispatch and the injected reader records zero calls.
 
 ## Decision on `preview/device-check-visual` (#137)
 
@@ -81,9 +102,8 @@ only.
 
 ## Not done here
 
-- Wiring `LinuxSysfs` into the window and the G1-only lock change belong to
-  [#158](https://github.com/guirossibrum/VariaxWorkbench/issues/158), now that the
-  owner has given direct G1 permission (2026-11-22; see the G1 ledger).
+- The owner has not run the real step 1. The card for that run, after #158 is
+  on `master`, is [phase 2](owner-tests/phase-2.md). Results belong on #125.
 - Replay of the private 2026-11-14 identity captures (#113) is not included;
   committed fixtures stay synthetic.
 - The inventory table (`supported_devices.txt` schema 2, `device_inventory.rs`)

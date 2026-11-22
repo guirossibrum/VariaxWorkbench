@@ -45,10 +45,12 @@ pub(super) fn milestones(ui: &mut egui::Ui) {
     ui.separator();
     ui.heading("Current phase · Stage 1: USB recognition (G1)");
     ui.label(
-        "Device check… shows the four device steps in simulation. Each step asks first and \
-         the answer is No unless you choose Yes. The real step 1 only reads what Linux already \
-         knows about the PODxt Live and sends it nothing. You gave G1 permission directly \
-         (2026-11-22). It stays locked until the separate test build that opens only that lock.",
+        "Device check… opens in Simulation, which shows the four device steps with pretend \
+         devices. Each step asks first and the answer is No unless you choose Yes. G1 is open \
+         in this build only, by your direct permission (2026-11-22): the mode \"This computer \
+         (G1)\" runs the real step 1, which only reads what Linux already knows about the \
+         PODxt Live and sends it nothing. Steps 2–4 stay locked. Follow the Phase 2 test card \
+         and paste the Report into #125.",
     );
     for (label, url) in [
         (
@@ -98,13 +100,16 @@ pub(super) fn milestones(ui: &mut egui::Ui) {
         ui.label(status);
         ui.add_space(4.0);
     }
-    ui.label("Keep the guitar and PODxt Live unplugged. Any hardware test needs your approval.");
+    ui.label(
+        "Leave the guitar and PODxt Live unplugged except when you follow the G1 test card. \
+         Any later hardware test needs your approval.",
+    );
     ui.separator();
     ui.heading("Project status and issue closeout");
     ui.label(
-        "Maintainers can use the GitHub command-line tool (gh) from a signed-in terminal to \
-         push branches and open pull requests. Close issues after all work is merged and \
-         required tests pass. Link the merge and test results on the issue.",
+        "Maintainers can use the GitHub command-line tool (gh) from a terminal that is already \
+         logged in to GitHub to push branches and open pull requests. Close issues after all \
+         work is merged and required tests pass. Link the merge and test results on the issue.",
     );
     ui.label(
         "Which work statuses can be verified from this checkout and its locally saved upstream \
