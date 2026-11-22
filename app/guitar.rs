@@ -47,12 +47,12 @@ pub(super) fn milestones(ui: &mut egui::Ui) {
     ui.label(
         "Device check… shows the four device steps in simulation. Each step asks first and \
          the answer is No unless you choose Yes. The real step 1 only reads what Linux already \
-         knows about the PODxt Live and sends it nothing. It stays locked until you sign the \
-         G1 procedure and a separate test build opens only that lock.",
+         knows about the PODxt Live and sends it nothing. You gave G1 permission directly \
+         (2026-11-22). It stays locked until the separate test build that opens only that lock.",
     );
     for (label, url) in [
         (
-            "G1 procedure and sign-off form (#131)",
+            "G1 procedure and authorization record (#131)",
             "https://github.com/guirossibrum/VariaxWorkbench/issues/131",
         ),
         (

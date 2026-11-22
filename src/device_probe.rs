@@ -8,9 +8,12 @@
 //! cancel, a failure or an ambiguous result stops the whole sequence. A passed
 //! stage never starts the next one by itself.
 //!
-//! This build has **no live backend**. [`SimulatedRig`] answers every stage from
-//! a synthetic sysfs fixture and the in-memory [`VirtualControl`]; nothing here
-//! reads `/sys`, `/proc`, USB, MIDI or audio. See `docs/device-check.md`.
+//! This build has **no live backend** in the Device check. [`SimulatedRig`]
+//! answers every stage from a synthetic sysfs fixture and the in-memory
+//! [`VirtualControl`]. The real stage-1 reader, [`LinuxSysfs`], exists for #158
+//! but is not wired into the window, and it reads only through
+//! `run_if_unlocked(Gate::OsDiscovery, …)`, which refuses while G1 is locked.
+//! See `docs/device-check.md` and `docs/hardware-gates/g1.md`.
 
 use crate::hardware_gates::{self, Gate};
 use crate::midi::Identity;
@@ -18,6 +21,8 @@ use crate::read_session::{self, ControlTransport, IDENTITY_REQUEST};
 use crate::simulation::{ControlFault, VirtualControl};
 use crate::{ParameterValue, PresetMetadata};
 use std::collections::BTreeMap;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
@@ -214,9 +219,10 @@ pub trait OsMetadataSource {
     fn sound_cards(&self) -> Result<Vec<SoundCard>, MetadataError>;
 }
 
-/// In-memory sysfs/procfs fixture. Keys mirror paths relative to `/sys` (USB)
+/// In-memory sysfs/procfs map. Keys mirror paths relative to `/sys` (USB)
 /// and `/proc` (`asound/cards`); a `driver` key holds the link target text.
-/// It is synthetic test data, never a copy of a real machine's tree.
+/// Fixtures built here are synthetic test data. [`LinuxSysfs`] fills the same
+/// map from a directory tree so both share one parser.
 #[derive(Clone, Debug, Default)]
 pub struct SyntheticSysfs {
     files: BTreeMap<String, String>,
@@ -410,6 +416,154 @@ pub fn parse_sound_cards(text: &str) -> Result<Vec<SoundCard>, MetadataError> {
     Ok(cards)
 }
 
+// ---------------------------------------------------------------------------
+// Real stage-1 reader (#158 preparation; G1 stays locked)
+// ---------------------------------------------------------------------------
+
+/// Device attributes read from `/sys/bus/usb/devices/<dev>/` (g1.md section 1).
+pub const DEVICE_ATTRIBUTES: [&str; 4] = ["idVendor", "idProduct", "bcdDevice", "product"];
+/// Interface attribute read from `/sys/bus/usb/devices/<dev>:<cfg>.<n>/`.
+pub const INTERFACE_ATTRIBUTE: &str = "bInterfaceNumber";
+/// Interface link whose target name is the bound driver (read with `read_link`).
+pub const DRIVER_LINK: &str = "driver";
+const SYS_USB_DEVICES: &str = "sys/bus/usb/devices";
+const PROC_CARDS: &str = "proc/asound/cards";
+const MAX_USB_ENTRIES: usize = 512;
+
+/// Reads the G1 paths from a directory tree: `<root>/sys/bus/usb/devices` and
+/// `<root>/proc/asound/cards`. The root is `/` by default; tests use a
+/// temporary fake tree. It uses only `read_dir` on the USB device directory,
+/// `read_to_string` on the attributes above and `read_link` on `driver`: no
+/// rusb, libusb, usbfs (`/dev/bus/usb`), ALSA library or device node, and no
+/// writes. Every read goes through `run_if_unlocked(Gate::OsDiscovery, …)`, so
+/// while G1 is locked it returns an error without touching the filesystem.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinuxSysfs {
+    root: PathBuf,
+}
+
+impl Default for LinuxSysfs {
+    fn default() -> Self {
+        Self {
+            root: PathBuf::from("/"),
+        }
+    }
+}
+
+impl LinuxSysfs {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_root(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+}
+
+fn locked_error(error: String) -> MetadataError {
+    MetadataError::Unreadable(error)
+}
+
+impl OsMetadataSource for LinuxSysfs {
+    fn usb_devices(&self) -> Result<Vec<UsbDevice>, MetadataError> {
+        let mut inner = None;
+        hardware_gates::run_if_unlocked(Gate::OsDiscovery, || {
+            inner = Some(read_usb_tree(&self.root));
+            Ok(())
+        })
+        .map_err(locked_error)?;
+        inner.expect("ran when unlocked")?.usb_devices()
+    }
+
+    fn sound_cards(&self) -> Result<Vec<SoundCard>, MetadataError> {
+        let mut inner = None;
+        hardware_gates::run_if_unlocked(Gate::OsDiscovery, || {
+            inner = Some(read_cards_file(&self.root));
+            Ok(())
+        })
+        .map_err(locked_error)?;
+        parse_sound_cards(&inner.expect("ran when unlocked")?)
+    }
+}
+
+fn io_error(what: &str, error: &std::io::Error) -> MetadataError {
+    if error.kind() == ErrorKind::InvalidData {
+        MetadataError::Malformed {
+            entry: what.to_owned(),
+            field: "text",
+            value: "not UTF-8".into(),
+        }
+    } else {
+        MetadataError::Unreadable(format!("{what} ({})", error.kind()))
+    }
+}
+
+/// Read one attribute; a missing file is `None`.
+fn read_attribute(path: &Path, what: &str) -> Result<Option<String>, MetadataError> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(io_error(what, &error)),
+    }
+}
+
+/// Not gated: callers are the gated trait methods above and this module's tests.
+fn read_usb_tree(root: &Path) -> Result<SyntheticSysfs, MetadataError> {
+    let directory = root.join(SYS_USB_DEVICES);
+    let listing =
+        std::fs::read_dir(&directory).map_err(|error| io_error("the USB device list", &error))?;
+    let mut snapshot = SyntheticSysfs::new();
+    let mut count = 0;
+    for entry in listing {
+        let entry = entry.map_err(|error| io_error("the USB device list", &error))?;
+        count += 1;
+        if count > MAX_USB_ENTRIES {
+            return Err(MetadataError::Unreadable(
+                "the USB device list (too many entries)".into(),
+            ));
+        }
+        let os_name = entry.file_name();
+        let Some(name) = os_name.to_str() else {
+            return Err(MetadataError::Malformed {
+                entry: "USB device list".into(),
+                field: "entry name",
+                value: "not UTF-8".into(),
+            });
+        };
+        let base = directory.join(name);
+        let key = |file: &str| format!("{USB_ROOT}{name}/{file}");
+        if name.contains(':') {
+            if let Some(text) = read_attribute(&base.join(INTERFACE_ATTRIBUTE), name)? {
+                snapshot.insert(&key(INTERFACE_ATTRIBUTE), &text);
+                match std::fs::read_link(base.join(DRIVER_LINK)) {
+                    Ok(target) => {
+                        snapshot.insert(&key(DRIVER_LINK), &target.to_string_lossy());
+                    }
+                    Err(error) if error.kind() == ErrorKind::NotFound => {}
+                    Err(error) => return Err(io_error(name, &error)),
+                }
+            }
+        } else {
+            for attribute in DEVICE_ATTRIBUTES {
+                if let Some(text) = read_attribute(&base.join(attribute), name)? {
+                    snapshot.insert(&key(attribute), &text);
+                }
+            }
+        }
+    }
+    Ok(snapshot)
+}
+
+/// Not gated: callers are the gated trait methods above and this module's tests.
+fn read_cards_file(root: &Path) -> Result<String, MetadataError> {
+    read_attribute(&root.join(PROC_CARDS), "the sound card list")?
+        .ok_or_else(|| MetadataError::Unreadable("the sound card list".into()))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Recognition {
     Recognised {
@@ -588,7 +742,7 @@ pub fn synthetic_podxt_live() -> SyntheticSysfs {
             &[(0, Some("snd-usb-pod")), (1, Some("snd-usb-variax"))],
         )
         .set_cards(
-            " 0 [Synthetic      ]: Synthetic - Synthetic onboard audio\n                      Synthetic onboard audio\n 1 [PODxtLive      ]: PODxtLive - PODxt Live\n                      Synthetic PODxt Live card\n",
+            " 0 [Synthetic      ]: Synthetic - Synthetic onboard audio\n                      Synthetic onboard audio\n 1 [PODxtLive      ]: Line6-POD - PODxt Live\n                      Line 6 PODxt Live at USB 1-2:1.0\n",
         );
     sysfs
 }
@@ -1089,5 +1243,209 @@ mod tests {
         assert_eq!(probe.status(Stage::SettingsRead), StageStatus::Stopped);
         assert_eq!(probe.status(Stage::ChangeCheck), StageStatus::NotRun);
         assert!(probe.finished());
+    }
+
+    /// Test-only source that reads a fake tree without the gate, to exercise
+    /// the same reader the gated `LinuxSysfs` uses. Unix only: sysfs `driver`
+    /// entries are symlinks, which the fake tree recreates.
+    #[cfg(unix)]
+    struct FakeTree(PathBuf);
+
+    #[cfg(unix)]
+    impl OsMetadataSource for FakeTree {
+        fn usb_devices(&self) -> Result<Vec<UsbDevice>, MetadataError> {
+            read_usb_tree(&self.0)?.usb_devices()
+        }
+        fn sound_cards(&self) -> Result<Vec<SoundCard>, MetadataError> {
+            parse_sound_cards(&read_cards_file(&self.0)?)
+        }
+    }
+
+    fn write(path: &Path, text: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+
+    /// Lay out one device the way sysfs does: attribute files, interface
+    /// directories and a relative `driver` symlink.
+    #[cfg(unix)]
+    fn fake_device(root: &Path, name: &str, product: u16, drivers: &[(u8, Option<&str>)]) {
+        let devices = root.join(SYS_USB_DEVICES);
+        let base = devices.join(name);
+        write(&base.join("idVendor"), "0e41\n");
+        write(&base.join("idProduct"), &format!("{product:04x}\n"));
+        write(&base.join("bcdDevice"), "0001\n");
+        write(&base.join("product"), "PODxt Live\n");
+        // Never read: proves the reader keeps to the section 1 allowlist.
+        write(&base.join("serial"), "SECRET-SERIAL\n");
+        write(&base.join("descriptors"), "binary");
+        let bus_drivers = root.join("sys/bus/usb/drivers");
+        for (number, driver) in drivers {
+            let interface = devices.join(format!("{name}:1.{number}"));
+            write(
+                &interface.join("bInterfaceNumber"),
+                &format!("{number:02x}\n"),
+            );
+            if let Some(driver) = driver {
+                std::fs::create_dir_all(bus_drivers.join(driver)).unwrap();
+                std::os::unix::fs::symlink(
+                    format!("../../../bus/usb/drivers/{driver}"),
+                    interface.join("driver"),
+                )
+                .unwrap();
+            }
+        }
+    }
+
+    fn fake_tree() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        write(
+            &root.path().join("sys/bus/usb/devices/usb1/idVendor"),
+            "1d6b\n",
+        );
+        write(
+            &root.path().join("sys/bus/usb/devices/usb1/idProduct"),
+            "0002\n",
+        );
+        write(
+            &root.path().join(PROC_CARDS),
+            " 0 [Fake           ]: Fake - Fake onboard audio\n                      Fake onboard audio\n 1 [PODxtLive      ]: Line6-POD - PODxt Live\n                      Line 6 PODxt Live at USB 1-2:1.0\n",
+        );
+        root
+    }
+
+    #[cfg(unix)]
+    const BOTH_DRIVERS: [(u8, Option<&str>); 2] =
+        [(0, Some("snd-usb-pod")), (1, Some("snd-usb-variax"))];
+
+    #[test]
+    #[cfg(unix)]
+    fn real_reader_recognises_pod_with_both_drivers_in_a_fake_tree() {
+        let root = fake_tree();
+        fake_device(root.path(), "1-2", 0x4650, &BOTH_DRIVERS);
+        let recognition = recognise(&FakeTree(root.path().into()));
+        let Recognition::Recognised {
+            device,
+            sound_cards,
+        } = &recognition
+        else {
+            panic!("expected recognition, got {recognition:?}");
+        };
+        assert_eq!(device.sysfs_name, "1-2");
+        assert_eq!(device.product.as_deref(), Some("PODxt Live"));
+        assert_eq!(device.bcd_device, Some(1));
+        assert_eq!(
+            device
+                .interfaces
+                .iter()
+                .map(|i| (i.number, i.driver.as_deref()))
+                .collect::<Vec<_>>(),
+            vec![(0, Some("snd-usb-pod")), (1, Some("snd-usb-variax"))]
+        );
+        assert_eq!(sound_cards.len(), 2);
+        let summary = recognition.summary();
+        assert!(!summary.contains("SECRET"));
+        let snapshot = read_usb_tree(root.path()).unwrap();
+        assert!(
+            snapshot
+                .files
+                .keys()
+                .all(|key| !key.ends_with("/serial") && !key.ends_with("/descriptors"))
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn real_reader_reports_absent_two_units_and_unbound_interface() {
+        let root = fake_tree();
+        assert_eq!(
+            recognise(&FakeTree(root.path().into())),
+            Recognition::Absent
+        );
+        // Another vendor device and a different Line 6 product are not matches.
+        fake_device(root.path(), "1-4", 0x534d, &[(0, None)]);
+        assert_eq!(
+            recognise(&FakeTree(root.path().into())),
+            Recognition::Absent
+        );
+        fake_device(
+            root.path(),
+            "1-2",
+            0x4650,
+            &[(0, Some("snd-usb-pod")), (1, None)],
+        );
+        let Recognition::Recognised { device, .. } = recognise(&FakeTree(root.path().into()))
+        else {
+            panic!("expected one PODxt Live");
+        };
+        assert_eq!(device.interfaces[1].driver, None);
+        fake_device(root.path(), "1-3", 0x4650, &BOTH_DRIVERS);
+        assert_eq!(
+            recognise(&FakeTree(root.path().into())),
+            Recognition::Several(2)
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn real_reader_stops_on_malformed_or_missing_files() {
+        let cases: [(&str, &[u8]); 4] = [
+            ("sys/bus/usb/devices/1-2/idProduct", b"46?0\n"),
+            ("sys/bus/usb/devices/1-2/idVendor", b"\xff\xfe\n"),
+            ("sys/bus/usb/devices/1-2:1.1/bInterfaceNumber", b"one\n"),
+            ("proc/asound/cards", b"garbage line\n"),
+        ];
+        for (path, bytes) in cases {
+            let root = fake_tree();
+            fake_device(root.path(), "1-2", 0x4650, &BOTH_DRIVERS);
+            std::fs::write(root.path().join(path), bytes).unwrap();
+            assert!(
+                matches!(
+                    recognise(&FakeTree(root.path().into())),
+                    Recognition::Malformed(_)
+                ),
+                "{path}"
+            );
+        }
+        let root = fake_tree();
+        fake_device(root.path(), "1-2", 0x4650, &BOTH_DRIVERS);
+        std::fs::remove_file(root.path().join(PROC_CARDS)).unwrap();
+        assert!(matches!(
+            recognise(&FakeTree(root.path().into())),
+            Recognition::Unreadable(_)
+        ));
+        let empty = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            recognise(&FakeTree(empty.path().into())),
+            Recognition::Unreadable(_)
+        ));
+    }
+
+    #[test]
+    fn real_reader_is_gated_by_g1_and_defaults_to_root() {
+        // Checked first: if G1 is ever unlocked, this test must fail before
+        // any call below could read the real `/sys` or `/proc`.
+        assert!(hardware_gates::is_locked(Gate::OsDiscovery));
+        assert_eq!(LinuxSysfs::new().root(), Path::new("/"));
+        // Even a valid fake tree is not read while G1 is locked.
+        let root = fake_tree();
+        #[cfg(unix)]
+        fake_device(root.path(), "1-2", 0x4650, &BOTH_DRIVERS);
+        let gated = LinuxSysfs::with_root(root.path());
+        let recognition = recognise(&gated);
+        assert!(hardware_gates::is_locked(Gate::OsDiscovery));
+        assert!(
+            matches!(&recognition, Recognition::Unreadable(text) if text.contains("locked")),
+            "{recognition:?}"
+        );
+        assert!(matches!(
+            gated.sound_cards(),
+            Err(MetadataError::Unreadable(_))
+        ));
+        // The default ("/") reader is refused the same way, before any read.
+        assert!(matches!(
+            LinuxSysfs::new().usb_devices(),
+            Err(MetadataError::Unreadable(text)) if text.contains("locked")
+        ));
     }
 }

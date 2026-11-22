@@ -35,8 +35,16 @@ in `src/device_probe.rs`; the window shows them verbatim before asking.
 `ProbeBackend` has one implementation, `SimulatedRig`:
 
 - Stage 1 reads `SyntheticSysfs`, an in-memory copy of the sysfs/procfs
-  layout through the `OsMetadataSource` trait. No real adapter exists
-  (`LIVE_BACKEND_AVAILABLE = false`).
+  layout through the `OsMetadataSource` trait. The window never uses a real
+  adapter (`LIVE_BACKEND_AVAILABLE = false`).
+
+The real stage-1 reader, `LinuxSysfs` (#158 preparation), also implements
+`OsMetadataSource`. It reads only the [g1.md section 1](hardware-gates/g1.md#1-what-the-app-reads)
+paths under a configurable root (default `/`) with `read_dir`,
+`read_to_string` and `read_link`, fills the same in-memory map and reuses its
+parser. Both trait methods run their reads inside
+`run_if_unlocked(Gate::OsDiscovery, …)`; G1 is locked, so they return an error
+before touching the filesystem. It is not wired into the window.
 - Stages 2–4 use the existing in-memory `simulation::VirtualControl` and the
   shared `read_session::read_current_on`. Identities and metadata are
   synthetic (revision `0001`, preset name `SIMULATED`).
@@ -50,6 +58,13 @@ tuning left unchanged.
 - Core (`src/device_probe.rs`, 8 tests): recognised, absent, two devices,
   malformed metadata (vendor/product, interface number, card list), missing
   card list, decline, cancel, no automatic advance, full ladder, silent guitar.
+- Real reader (`src/device_probe.rs`, 4 tests on temporary fake trees, never
+  the real `/sys` or `/proc`): PODxt Live with `snd-usb-pod` and
+  `snd-usb-variax` bound through relative `driver` symlinks; absent (including
+  another Line 6 product), an unbound interface, two units; malformed
+  `idProduct`, non-UTF-8 `idVendor`, bad `bInterfaceNumber`, bad card list,
+  missing card list, empty tree; `serial`/`descriptors` present but never
+  read; G1 gate refuses both a fake root and the default `/` root.
 - GUI (`src/gui.rs`, 4 headless tests): default-No via Enter, decline button,
   no automatic advance, stop on failure and start over.
 
@@ -66,9 +81,9 @@ only.
 
 ## Not done here
 
-- The real `OsMetadataSource` adapter and the G1-only lock change belong to
-  [#158](https://github.com/guirossibrum/VariaxWorkbench/issues/158), after the
-  owner signs the G1 form.
+- Wiring `LinuxSysfs` into the window and the G1-only lock change belong to
+  [#158](https://github.com/guirossibrum/VariaxWorkbench/issues/158), now that the
+  owner has given direct G1 permission (2026-11-22; see the G1 ledger).
 - Replay of the private 2026-11-14 identity captures (#113) is not included;
   committed fixtures stay synthetic.
 - The inventory table (`supported_devices.txt` schema 2, `device_inventory.rs`)
