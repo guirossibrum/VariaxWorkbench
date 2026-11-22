@@ -32,21 +32,34 @@ a GitHub issue.
 
 ### G2 — Device identity request
 
-- **Operation:** Request identity from the PODxt Live bridge and attached
-  Variax 600, as defined by [issue #126](https://github.com/guirossibrum/VariaxWorkbench/issues/126)
-  and the existing ledger in [issue #112](https://github.com/guirossibrum/VariaxWorkbench/issues/112).
-  The offline procedure, reply shapes and authorization form are in
-  [the G2 ledger](hardware-gates/g2.md). That page does not authorize G2.
-- **Application traffic:** Proposed, not observed: the same universal
-  identity request twice, once for the bridge and once for the guitar.
-  The [capture summary](report.md) describes one identity request followed
-  by a settings read, so it does not establish that two-request exchange.
-  The exact request bytes belong to issue #112; this page does not authorize
-  sending them.
-- **System changes:** The proposed procedure temporarily detaches the stock
-  driver from PODxt Live interface 1, claims that interface, performs the
-  bounded operation, releases it, and reattaches the driver. Interface 0 is
-  untouched. This is future procedure detail, not permission to detach now.
+- **Operation:** One identity request for the Variax 600 through the PODxt
+  Live, as proposed for review in [the G2 ledger](hardware-gates/g2.md).
+  [#126](https://github.com/guirossibrum/VariaxWorkbench/issues/126) should be
+  narrowed to that single request. PODxt Live identity stays separate.
+  The ledger does not authorize G2.
+- **Application traffic:** The captured exchange is one universal identity
+  request and one Variax 600 3.10 reply. The following settings read is G3
+  and is not part of this procedure. The published PODxt Live 3.01 reply has
+  no recorded request in the 2026-11-14 files. See
+  [the G2 ledger](hardware-gates/g2.md). This page does not authorize sending
+  the request.
+- **System changes:** The proposed procedure detaches the stock driver from
+  PODxt Live interface 1 before it claims that interface. Release runs only
+  after a successful claim. Reattach runs whenever detach succeeded, including
+  after a failed claim, a failed alternate setting, or a cancel before the
+  send. Interface 0 is untouched. This is future procedure detail, not
+  permission to detach now. The live form is an identity-only path: it needs
+  G2 and does not need G3. Device check lists that path, and still hides it
+  while G2 is locked. The consent screen names the gates the build can
+  run. Step 2's Yes button says it sends one Variax identity request. No
+  stays the default. Step 2 is offered only after a fresh step 1 pass for
+  one PODxt Live with `snd-usb-pod` on interface 0 and `snd-usb-variax` on
+  interface 1. Close wins before that exchange starts. Once Yes has started,
+  the window cannot cancel it. After the driver is given back, Linux's own
+  `snd-usb-variax` startup traffic is not a second request from the app.
+  The step 2 report is saved before Device check starts over for the
+  follow-up step 1. The owner test card is section 10 of the G2 ledger.
+  #114 stays open.
 - **Prerequisites and tracking:** G1 and the owner-approved ledger/procedure
   in issues #112, #114, and #126.
 

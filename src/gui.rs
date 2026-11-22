@@ -646,6 +646,9 @@ struct Workbench {
     recorder: recording::Panel,
     device_check_open: bool,
     device_check_notice: String,
+    /// True only after the step 2 report from this session was saved. A later
+    /// answer of step 2 clears it. Restarting for the G1 check requires it.
+    device_check_step_two_saved: bool,
     device_check: ProbeSession<RigBackend>,
     device_check_scenario: device_probe::Scenario,
     /// Root the "This computer" reader uses: `/` in the app; tests inject a
@@ -847,6 +850,7 @@ impl Workbench {
             recording_open: false,
             device_check_open: false,
             device_check_notice: String::new(),
+            device_check_step_two_saved: false,
             device_check: ProbeSession::new(RigBackend::Simulated(SimulatedRig::new(
                 device_probe::Scenario::Connected,
             ))),
@@ -2541,6 +2545,7 @@ impl Workbench {
                 });
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui| {
+                ui.label(format!("build {}", crate::BUILD_NUMBER));
                 ui.label(crate::APP_VERSION);
                 ui.vertical(|ui| {
                     ui.weak(&self.status);
@@ -2629,18 +2634,26 @@ impl Workbench {
             _ => RigBackend::Simulated(SimulatedRig::new(scenario)),
         };
         self.device_check = ProbeSession::new(backend);
+        self.device_check_step_two_saved = false;
+        self.device_check_notice.clear();
     }
 
     /// Staged device check (#157, #158). "Simulation" is the default. "This
-    /// computer (G1)" is drawn only on Linux, only for step 1, and only while
-    /// G1 is open. When that is not available the option is left out. Steps
-    /// 2–4 show locked and are never offered. Closing the window in the same
-    /// moment as Yes or Start over cancels; nothing is read.
+    /// computer" is drawn only when a live step is open, and its label names
+    /// the gates this build can run. Closing the window in the same moment as
+    /// Yes cancels before the step starts. Once Yes has started, the exchange
+    /// runs on this thread and the window cannot cancel it. A restart after
+    /// step 2 saves that report first.
     /// Saves the sanitized report only. A failure is shown as a fixed phrase
     /// and does not answer or rerun a stage.
     fn note_sanitized_report_save(&mut self, path: &Path) {
         self.device_check_notice = match self.device_check.save_sanitized_report(path) {
-            Ok(()) => "Steps 1–2 report saved.".into(),
+            Ok(()) => {
+                if self.device_check.identification_answered() {
+                    self.device_check_step_two_saved = true;
+                }
+                "Steps 1–2 report saved.".into()
+            }
             Err(error) => error.to_string(),
         };
     }
@@ -2654,6 +2667,7 @@ impl Workbench {
         let mut open = true;
         let mut answer = None;
         let mut restart = None;
+        let mut verify_g1 = false;
         let g1_available = device_probe::live_stage_available(Stage::UsbRecognition);
         let mode = self.device_check.mode();
         egui::Window::new("Device check")
@@ -2667,11 +2681,7 @@ impl Workbench {
                     ui.disable();
                 }
                 let mut visible = String::new();
-                let banner = if g1_available {
-                    device_probe::G1_ONLY_BANNER
-                } else {
-                    "Every hardware lock stays closed in this build."
-                };
+                let banner = device_probe::availability_banner();
                 ui.colored_label(FRET_MARKER, banner);
                 visible.push_str(banner);
                 ui.horizontal(|ui| {
@@ -2700,7 +2710,7 @@ impl Workbench {
                 });
                 let label = match mode {
                     ProbeMode::Simulation => device_probe::SIMULATION_LABEL,
-                    ProbeMode::ThisComputer => device_probe::THIS_COMPUTER_LABEL,
+                    ProbeMode::ThisComputer => device_probe::this_computer_label(),
                 };
                 ui.label(label);
                 visible.push_str(&format!("\n{label}"));
@@ -2708,6 +2718,13 @@ impl Workbench {
                     "Each step asks first, the answer is No unless you choose Yes, and a passed \
                      step never starts the next one.",
                 );
+                ui.label(device_probe::STEP_TWO_PREFLIGHT);
+                ui.label(device_probe::CANCEL_LIMIT);
+                visible.push_str(&format!(
+                    "\n{}\n{}",
+                    device_probe::STEP_TWO_PREFLIGHT,
+                    device_probe::CANCEL_LIMIT
+                ));
                 ui.horizontal(|ui| {
                     if mode == ProbeMode::Simulation {
                         ui.label("Pretend setup:");
@@ -2789,10 +2806,8 @@ impl Workbench {
                         if no.clicked() {
                             answer = Some(Consent::No);
                         }
-                        let yes = match mode {
-                            ProbeMode::Simulation => "Yes, run this step (simulation)",
-                            ProbeMode::ThisComputer => "Yes, read this computer's USB list",
-                        };
+                        let yes = device_probe::consent_yes_label(mode, stage);
+                        visible.push_str(yes);
                         if self.device_check_button(ui, "yes", yes).clicked() {
                             answer = Some(Consent::Yes);
                         }
@@ -2807,9 +2822,7 @@ impl Workbench {
                             "All four steps passed in simulation. No real device was used.".into()
                         }
                         (None, ProbeMode::ThisComputer) => {
-                            "Step 1 finished. Steps 2–4 stay locked in this build; nothing else \
-                             will run. Copy the detailed report into issue #125."
-                                .into()
+                            device_probe::this_computer_finished_message().into()
                         }
                     };
                     ui.label(&outcome);
@@ -2825,21 +2838,33 @@ impl Workbench {
                         ui.ctx().copy_text(report.clone());
                     }
                 });
+                let reports_note = device_probe::reports_panel_note();
                 ui.collapsing("Reports", |ui| {
                     ui.label("Detailed report (schema 1), for issue #125.");
                     ui.monospace(&report);
-                    ui.label(
-                        "Steps 1–2 report (schema 2). Its identities are the ones this check \
-                         decoded. Gate G2 stays locked.",
-                    );
+                    ui.label(reports_note);
                     ui.monospace(&sanitized);
                 });
+                visible.push_str(reports_note);
                 if self
                     .device_check_button(ui, "save-report", "Save steps 1–2 report")
                     .clicked()
                     && let Some(path) = self.dialogs.save("device-check-report.txt", "txt")
                 {
                     self.note_sanitized_report_save(&path);
+                }
+                if self.device_check.identification_answered() {
+                    visible.push_str(device_probe::SAVE_THEN_CHECK_AGAIN);
+                    if self
+                        .device_check_button(
+                            ui,
+                            "verify-g1",
+                            device_probe::SAVE_THEN_CHECK_AGAIN,
+                        )
+                        .clicked()
+                    {
+                        verify_g1 = true;
+                    }
                 }
                 if !self.device_check_notice.is_empty() {
                     ui.label(&self.device_check_notice);
@@ -2853,16 +2878,48 @@ impl Workbench {
                 let _ = visible;
             });
         // Close wins over Yes and over Start over / mode change in this frame.
+        // That only applies before the exchange starts. Once Yes has begun,
+        // `answer` runs the exchange here, on this thread, and nothing in this
+        // window can stop it.
         if !open {
             self.device_check.answer(Consent::Cancel);
             self.device_check_open = false;
         } else {
             if let Some(consent) = answer {
+                let stage = self.device_check.awaiting();
                 self.device_check.answer(consent);
+                if stage == Some(Stage::Identification) {
+                    self.device_check_step_two_saved = false;
+                }
             }
-            if let Some((mode, scenario)) = restart {
+            if verify_g1 {
+                self.save_step_two_report_then_restart();
+            } else if let Some((mode, scenario)) = restart {
+                if self.device_check.identification_answered() && !self.device_check_step_two_saved
+                {
+                    self.device_check_notice = device_probe::SAVE_BEFORE_RESTART.into();
+                } else {
+                    self.restart_device_check(mode, scenario);
+                }
+            }
+        }
+    }
+
+    /// Write the step 2 report, then start a fresh step 1. A failed or
+    /// cancelled save leaves the current check in place.
+    fn save_step_two_report_then_restart(&mut self) {
+        let mode = self.device_check.mode();
+        let scenario = self.device_check_scenario;
+        let Some(path) = self.dialogs.save("device-check-report.txt", "txt") else {
+            return;
+        };
+        match self.device_check.save_sanitized_report(&path) {
+            Ok(()) => {
+                self.device_check_step_two_saved = true;
                 self.restart_device_check(mode, scenario);
+                self.device_check_notice = "Steps 1–2 report saved. Step 1 is ready again.".into();
             }
+            Err(error) => self.device_check_notice = error.to_string(),
         }
     }
 
@@ -13391,6 +13448,15 @@ mod tests {
             (1, 0, 0)
         );
         assert!(app.device_check_visible.contains("Step 1 finished"));
+        assert!(
+            app.device_check_visible
+                .contains(device_probe::this_computer_finished_message())
+        );
+        assert!(
+            app.device_check_visible
+                .contains(device_probe::reports_panel_note())
+        );
+        assert!(device_probe::reports_panel_note().contains("This build can run gate G1."));
         assert!(app.device_check_visible.contains("0e41:4650"));
         let report = app.device_check.report();
         assert!(report.contains("mode=this-computer gates-open=G1"));
@@ -13522,6 +13588,87 @@ mod tests {
         );
         assert_eq!(app.host_reader_builds, builds, "close must not restart");
         assert!(app.read_worker.is_none());
+    }
+
+    #[test]
+    fn consent_preflight_step_two_screen_saves_before_g1() {
+        let (context, mut app) = device_check_app();
+        click_device_check(&context, &mut app, "yes");
+        assert_eq!(app.device_check.awaiting(), Some(Stage::Identification));
+        assert!(app.device_check.g1_expected_binding());
+        assert!(
+            app.device_check_visible
+                .contains(device_probe::STEP_TWO_YES_SIMULATION),
+            "{}",
+            app.device_check_visible
+        );
+        assert!(
+            app.device_check_visible
+                .contains(device_probe::CANCEL_LIMIT)
+        );
+        assert!(
+            app.device_check_visible
+                .contains(device_probe::APP_REQUEST_VERSUS_LINUX)
+        );
+        assert!(
+            app.device_check_visible
+                .contains(device_probe::STEP_TWO_PREFLIGHT)
+        );
+        assert!(app.device_check_buttons.contains_key("no"));
+        assert_eq!(device_probe::DEFAULT_CONSENT, device_probe::Consent::No);
+        click_device_check(&context, &mut app, "yes");
+        assert_eq!(
+            app.device_check.status(Stage::Identification),
+            StageStatus::Passed
+        );
+        assert!(app.device_check.identification_answered());
+        assert!(
+            app.device_check_visible
+                .contains(device_probe::SAVE_THEN_CHECK_AGAIN)
+        );
+        let RigBackend::Simulated(rig) = app.device_check.backend() else {
+            panic!("simulation");
+        };
+        assert_eq!(rig.identity_calls(), 8);
+        click_device_check(&context, &mut app, "restart");
+        assert_eq!(
+            app.device_check.status(Stage::Identification),
+            StageStatus::Passed
+        );
+        assert!(
+            app.device_check_visible
+                .contains(device_probe::SAVE_BEFORE_RESTART),
+            "{}",
+            app.device_check_visible
+        );
+        let RigBackend::Simulated(rig) = app.device_check.backend() else {
+            panic!("simulation");
+        };
+        assert_eq!(rig.identity_calls(), 8);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("step2-report.txt");
+        app.dialogs = Box::new(FakeDialogs {
+            save: [Some(path.clone())].into(),
+            ..FakeDialogs::default()
+        });
+        click_device_check(&context, &mut app, "verify-g1");
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            saved.contains(device_probe::open_gates().token()),
+            "{saved}"
+        );
+        assert!(saved.contains("guitar=variax-600-3.10"), "{saved}");
+        assert!(saved.contains("stage=2"), "{saved}");
+        assert!(!saved.contains("SECRET"));
+        assert_eq!(app.device_check.awaiting(), Some(Stage::UsbRecognition));
+        assert!(!app.device_check.g1_expected_binding());
+        assert!(!app.device_check.identification_answered());
+        assert!(app.device_check_visible.contains("Step 1 is ready again."));
+        assert_eq!(app.device_check.backend().calls(), Default::default());
+        let RigBackend::Simulated(rig) = app.device_check.backend() else {
+            panic!("fresh simulation");
+        };
+        assert_eq!(rig.identity_calls(), 0);
     }
 
     fn click_recording(context: &egui::Context, app: &mut Workbench, id: &'static str) {
