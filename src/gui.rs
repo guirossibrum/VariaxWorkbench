@@ -5844,7 +5844,7 @@ mod tests {
         );
         assert!(app.pod_message.contains("Nothing was sent"));
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
 
         let dir = tempfile::tempdir().unwrap();
@@ -6097,7 +6097,7 @@ mod tests {
         assert_eq!(app.pod_cab_pending.unwrap().1.model_id(), 0x0102_0001);
         assert_eq!(app.pod_library.tone(1).unwrap().as_bytes(), second);
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -6133,7 +6133,7 @@ mod tests {
         click_pod(&context, &mut app, "pod-cab-discard");
         assert!(app.pod_cab_pending.is_none() || app.pod_cab_pending != staged);
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -6184,7 +6184,7 @@ mod tests {
         );
         assert!(app.pod_cab_pending.is_none() || app.pod_cab_pending != staged);
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -6306,7 +6306,7 @@ mod tests {
             2
         );
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -6387,7 +6387,7 @@ mod tests {
         assert!(app.pod_library.is_dirty(0));
         assert!(!app.permit_close);
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -7101,7 +7101,7 @@ mod tests {
             Some(no_amp.model_id())
         );
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -7158,7 +7158,7 @@ mod tests {
         assert_eq!(minf_offset, 0x0002_002e);
         assert_eq!(app.pod_amp_model_pending, None);
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -7286,7 +7286,7 @@ mod tests {
         click_prompt(&context, &mut app, "amp-discard");
         assert_eq!(app.pod_amp_model_pending, None);
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -7432,7 +7432,7 @@ mod tests {
         assert_eq!(app.pod_amp_model_pending, None);
         assert!(app.permit_close);
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -7541,7 +7541,7 @@ mod tests {
         assert!(!app.pod_library.is_dirty(0));
         assert!(!app.pod_bundle.as_ref().unwrap().is_dirty());
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -7636,7 +7636,7 @@ mod tests {
         assert_eq!(app.pod_amp_model_pending, None);
         assert!(app.permit_close);
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -7772,7 +7772,7 @@ mod tests {
         assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), saved);
         assert!(app.read_worker.is_none());
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -7863,7 +7863,7 @@ mod tests {
         );
         assert_eq!(std::fs::read(&source_path).unwrap(), original);
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -7970,7 +7970,7 @@ mod tests {
         assert_eq!(app.pod_selected, Some(1));
         assert_eq!(app.pod_library.len(), 2);
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -8012,7 +8012,7 @@ mod tests {
         assert!(app.pod_rows.contains_key(&1));
         assert!(app.pod_buttons.contains_key("pod-duplicate-entry"));
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -8057,7 +8057,7 @@ mod tests {
         assert_eq!(gain.to_bits(), 0x3f80_0000);
         assert!(app.pod_library.is_dirty(0));
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -8140,7 +8140,7 @@ mod tests {
         assert!(app.pending.is_none());
         assert!(app.pod_library.is_dirty(index));
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -8210,7 +8210,7 @@ mod tests {
         assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), replacement);
         assert!(!app.pod_library.is_dirty(0));
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -8332,7 +8332,7 @@ mod tests {
         assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
         assert!(!app.permit_close);
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -8786,7 +8786,7 @@ mod tests {
         );
         assert!(!app.document.as_ref().unwrap().as_bytes().is_empty());
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -8905,7 +8905,7 @@ mod tests {
             )
         );
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -8962,7 +8962,7 @@ mod tests {
         assert!(app.pod_library.is_dirty(0));
         assert!(app.pod_mod_pending.is_none());
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -9030,7 +9030,7 @@ mod tests {
         assert!(app.pod_mod_pending.is_none());
         assert!(!app.pod_library.is_dirty(0));
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -9082,7 +9082,7 @@ mod tests {
         );
         assert!(!app.pod_dirty());
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -9174,7 +9174,7 @@ mod tests {
         assert_eq!(app.pod_library.tone(1).unwrap().as_bytes(), invalid);
         assert_eq!(app.pod_delay_model_pending, Some((1, failed_choice)));
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -9456,7 +9456,7 @@ mod tests {
         );
         assert_eq!(app.pod_reverb_model_pending, None);
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -9796,7 +9796,7 @@ mod tests {
             0x0203_0005
         );
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -9878,7 +9878,7 @@ mod tests {
             Some((same_id, PendingDelayEdit::TimeMs(350.0)))
         );
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -9913,7 +9913,7 @@ mod tests {
         );
         assert!(app.pod_bundle.as_ref().unwrap().is_dirty());
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -9993,7 +9993,7 @@ mod tests {
         );
         assert!(!app.pod_dirty());
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -10191,7 +10191,7 @@ mod tests {
         assert_eq!(app.pod_bundle.as_ref().unwrap().as_bytes(), original_bundle);
         assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -10218,7 +10218,7 @@ mod tests {
             assert_eq!(app.pod_library.tone(index).unwrap().as_bytes(), original);
             assert!(!app.pod_library.is_dirty(index));
             const {
-                assert!(LIVE_ACCESS_LOCKED);
+                assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
             }
         }
     }
@@ -10289,7 +10289,7 @@ mod tests {
             pod_preset::StompWaveValue::Known(pod_preset::StompWaveSelection::Wave1)
         );
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -10326,7 +10326,7 @@ mod tests {
             assert!(!app.pod_library.is_dirty(0));
             assert!(app.pod_message.contains("non-finite"));
             const {
-                assert!(LIVE_ACCESS_LOCKED);
+                assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
             }
         }
     }
@@ -10428,7 +10428,7 @@ mod tests {
         assert!(app.permit_close);
         assert!(app.pending.is_none());
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -10478,7 +10478,7 @@ mod tests {
             pod_preset::StompWaveValue::Known(pod_preset::StompWaveSelection::Wave8)
         );
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -10539,7 +10539,7 @@ mod tests {
             toe
         );
         const {
-            assert!(LIVE_ACCESS_LOCKED);
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
     }
 
@@ -10619,7 +10619,7 @@ mod tests {
                 );
             }
             const {
-                assert!(LIVE_ACCESS_LOCKED);
+                assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
             }
         }
     }
@@ -10674,7 +10674,7 @@ mod tests {
             assert_eq!(app.pod_library.tone(0).unwrap().as_bytes(), original);
             assert!(!app.pod_library.is_dirty(0));
             const {
-                assert!(LIVE_ACCESS_LOCKED);
+                assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
             }
         }
     }
