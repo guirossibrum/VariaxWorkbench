@@ -6,7 +6,7 @@ extension. L6BA and L6CO roots can contain BANK or FLDR children, as supported b
 the original Java reader. Unknown chunks, header bytes, parameter types and
 padding remain in the retained byte buffer.
 
-The bank browser shows every bank and its presets, including empty-bank labels.
+The editor header lists the banks in a dropdown and the selected bank’s presets as numbered slots. Empty banks are visible and disabled. The current slot is green, and an exclamation mark identifies a slot that differs from the last saved file. The model name, author and notes follow the selected preset.
 Selecting a preset does not dirty the document or clear redo. Edits immediately
 replace that preset in the retained container. Undo/redo and grouped gestures
 snapshot the entire document and its selection; unrelated presets remain intact.
@@ -51,9 +51,7 @@ empty first bank. They check browsing, edits across banks, whole-document
 undo/redo, grouped edits, failed edits/selections, resized replacement, odd
 unknown chunks and their nonzero padding, following-preset preservation,
 unsupported inputs and atomic save refusal. Expected complete containers are
-rebuilt independently from synthetic source data. A headless GUI test clicks
-actual browser rows for both formats, checks edits survive browsing, and verifies
-an active simulated operation prevents selection changes.
+rebuilt independently from synthetic source data. A headless GUI test uses the bank dropdown and numbered slots for both formats. It checks that author and notes survive selection and reopening a saved copy, that the slot difference follows save and undo/redo, and that a simulated active operation prevents selection changes.
 
 `python scripts/verify_bundle_matrix.py` uses the original Java bundle writer
 to create L6BA and L6CO containers with three banks and five synthetic presets.

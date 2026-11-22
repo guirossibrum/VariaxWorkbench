@@ -5,6 +5,24 @@
 /assets/original-ui/
 /backups/
 
+# Craft Anything's local session files and visual references.
+/attachments/
+/build-activity.log
+/capture/
+/craft.json
+/feed.json
+/inbox/
+/investigation.cany/
+/pinned/
+/reference/
+/usage.json
+/agent-session.jsonl
+/questions.json
+/.craft-anything.tmp-*
+
+# Local review checkouts.
+/.git-worktrees/
+
 # Build products, local credentials and caches.
 /target/
 __pycache__/
