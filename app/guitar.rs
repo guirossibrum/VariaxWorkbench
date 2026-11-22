@@ -43,6 +43,15 @@ pub(super) fn milestones(ui: &mut egui::Ui) {
          controls or tuning, then choose Save copy… to keep your original file.",
     );
     ui.separator();
+    ui.heading("Offline PODxt Live tones");
+    ui.label(
+        "Practice, beside Load tone or bank…, offers two built-in examples. Amp and \
+         Effects Tone lets you try Amp Drive and stompbox settings. Stompbox Collection \
+         lets you change the stompbox model inside a collection. Choosing one loads and \
+         selects it immediately. Save copy… writes a new file. Load tone or bank… opens \
+         your own tones and banks. Unsaved edits must be saved or discarded first.",
+    );
+    ui.separator();
     ui.heading("Current phase · Stage 1: USB recognition (G1)");
     ui.label(
         "Device check… opens in Simulation, which shows the four device steps with pretend \

@@ -6916,9 +6916,12 @@ impl PodTone {
         Ok(())
     }
 
-    /// Change only the existing Delay model ID in an individual L6PA tone.
-    /// This application policy requires exactly one primary-or-fallback slot.
-    pub fn set_delay_model_choice(&mut self, choice: PodDelayModelChoice) -> Result<(), ToneError> {
+    /// Return the Delay model ID when the tone supports model selection.
+    pub fn editable_delay_model_id(&self) -> Result<u32, ToneError> {
+        self.delay_model_selection().map(|(_, _, current)| current)
+    }
+
+    fn delay_model_selection(&self) -> Result<(usize, usize, u32), ToneError> {
         if self.container != ContainerKind::L6pa {
             return Err(ToneError::format(
                 "Delay model selection requires a FORM/L6PA tone",
@@ -6968,12 +6971,19 @@ impl PodTone {
                 "Delay model selection requires an existing MINF body of at least 12 bytes",
             ));
         }
+        Ok((model_index, range.start, current))
+    }
+
+    /// Change only the existing Delay model ID in an individual L6PA tone.
+    /// This application policy requires exactly one primary-or-fallback slot.
+    pub fn set_delay_model_choice(&mut self, choice: PodDelayModelChoice) -> Result<(), ToneError> {
+        let (model_index, offset, current) = self.delay_model_selection()?;
         let requested = choice.model_id();
         if current == requested {
             return Ok(());
         }
         let mut candidate = self.bytes.clone();
-        candidate[range.start..range.start + 4].copy_from_slice(&requested.to_be_bytes());
+        candidate[offset..offset + 4].copy_from_slice(&requested.to_be_bytes());
         let parsed = Self::parse(candidate)?;
         if parsed
             .models
@@ -6988,10 +6998,12 @@ impl PodTone {
         Ok(())
     }
 
-    /// Change only the existing Mod MINF model ID in an individual L6PA tone.
-    /// This conservative offline policy admits only source-listed choices
-    /// without a Pack 4 selector predicate and requires one existing slot.
-    pub fn set_mod_model_choice(&mut self, choice: PodModModelChoice) -> Result<(), ToneError> {
+    /// Return the Mod model ID when the tone supports model selection.
+    pub fn editable_mod_model_id(&self) -> Result<u32, ToneError> {
+        self.mod_model_selection().map(|(_, _, current)| current)
+    }
+
+    fn mod_model_selection(&self) -> Result<(usize, usize, u32), ToneError> {
         if self.container != ContainerKind::L6pa {
             return Err(ToneError::format(
                 "Mod model selection requires a FORM/L6PA tone",
@@ -7031,7 +7043,6 @@ impl PodTone {
         let range = self
             .model_minfo_ranges
             .get(model_index)
-            .cloned()
             .ok_or_else(|| ToneError::format("Mod model MINF source range is unavailable"))?;
         if range.end > self.bytes.len()
             || range
@@ -7044,12 +7055,20 @@ impl PodTone {
             ));
         }
 
+        Ok((model_index, range.start, current))
+    }
+
+    /// Change only the existing Mod MINF model ID in an individual L6PA tone.
+    /// This conservative offline policy admits only source-listed choices
+    /// without a Pack 4 selector predicate and requires one existing slot.
+    pub fn set_mod_model_choice(&mut self, choice: PodModModelChoice) -> Result<(), ToneError> {
+        let (model_index, offset, current) = self.mod_model_selection()?;
         let requested = choice.model_id();
         if current == requested {
             return Ok(());
         }
         let mut candidate = self.bytes.clone();
-        candidate[range.start..range.start + 4].copy_from_slice(&requested.to_be_bytes());
+        candidate[offset..offset + 4].copy_from_slice(&requested.to_be_bytes());
         let parsed = Self::parse(candidate)?;
         if parsed
             .models

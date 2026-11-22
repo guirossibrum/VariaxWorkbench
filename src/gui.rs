@@ -446,6 +446,183 @@ fn clock_button_id(clock: ClockSelection) -> &'static str {
     }
 }
 
+/// Built-in offline examples for the Practice menu. Both are the same
+/// synthetic documents the existing GUI tests already build.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum PracticeTone {
+    AmpAndEffects,
+    StompboxCollection,
+}
+
+impl PracticeTone {
+    const ALL: [PracticeTone; 2] = [
+        PracticeTone::AmpAndEffects,
+        PracticeTone::StompboxCollection,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            PracticeTone::AmpAndEffects => "Amp and Effects Tone",
+            PracticeTone::StompboxCollection => "Stompbox Collection",
+        }
+    }
+
+    fn bytes(self) -> Vec<u8> {
+        match self {
+            PracticeTone::AmpAndEffects => sample_amp_effects_tone(b"L6PA"),
+            PracticeTone::StompboxCollection => {
+                let tone = sample_stomp_model_tone(0x0205_0006);
+                sample_pod_bundle(std::slice::from_ref(&tone))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+fn sample_drive_pod_tone() -> Vec<u8> {
+    sample_amp_effects_tone(b"L6AS")
+}
+
+fn sample_amp_effects_tone(container: &[u8; 4]) -> Vec<u8> {
+    fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut output = id.to_vec();
+        output.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        output.extend_from_slice(data);
+        if !data.len().is_multiple_of(2) {
+            output.push(0xa5);
+        }
+        output
+    }
+    fn parameter(id: u32, value: f32) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&((0x3fu32 << 24) | id).to_be_bytes());
+        data.extend_from_slice(&1u32.to_be_bytes());
+        data.extend_from_slice(&value.to_bits().to_be_bytes());
+        chunk(b"PARM", &data)
+    }
+    fn model(slot: u32, model_id: u32, parameters: &[Vec<u8>]) -> Vec<u8> {
+        let mut minf = Vec::new();
+        minf.extend_from_slice(&model_id.to_be_bytes());
+        minf.extend_from_slice(&slot.to_be_bytes());
+        minf.extend_from_slice(&[0, 0, 0, 1]);
+        let mut body = b"MODL".to_vec();
+        body.extend(chunk(b"MINF", &minf));
+        for parameter in parameters {
+            body.extend_from_slice(parameter);
+        }
+        body.extend(chunk(b"XTRA", &[0xde, 0xad, 0xbe]));
+        chunk(b"LIST", &body)
+    }
+
+    let mut info = vec![0; 76];
+    info[..4].copy_from_slice(&1u32.to_be_bytes());
+    info[4..8].copy_from_slice(&pod_preset::PODXT_LIVE_TONE_ID.to_be_bytes());
+    info[8..10].copy_from_slice(&u16::from(b'A').to_be_bytes());
+    info[72..76].copy_from_slice(&pod_preset::PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
+    let mut patch = b"PATC".to_vec();
+    patch.extend(model(
+        pod_preset::AMP_SLOT,
+        pod_preset::PLEXI_45_MODEL,
+        &[parameter(pod_preset::AMP_DRIVE_PARAM, 0.5)],
+    ));
+    patch.extend(model(
+        pod_preset::STOMP_SLOT,
+        pod_preset::STOMP_DRIVE_MODEL_ID,
+        &[
+            parameter(pod_preset::STOMP_DRIVE_PARAM, 0.25),
+            parameter(pod_preset::STOMP_GAIN_PARAM, 0.5),
+            parameter(pod_preset::STOMP_TONE_PARAM, 0.75),
+        ],
+    ));
+    patch.extend(model(
+        pod_preset::MOD_SLOT,
+        pod_preset::MOD_CONTROL_MODEL_IDS[0],
+        &[
+            parameter(0x0010_0001, 0.2),
+            parameter(0x0010_0002, 0.4),
+            parameter(0x0010_0003, 0.6),
+        ],
+    ));
+    patch.extend(model(
+        pod_preset::REVERB_SLOT,
+        pod_preset::REVERB_CONTROL_MODEL_IDS[0],
+        &[parameter(0x0010_0000, 0.3), parameter(0x0010_0002, 0.6)],
+    ));
+    patch.extend(model(
+        pod_preset::DELAY_SLOT,
+        pod_preset::DELAY_CONTROL_MODEL_IDS[0],
+        &[
+            parameter(0x0010_0001, 0.2),
+            parameter(0x0010_0002, 0.4),
+            parameter(0x0010_0003, 0.6),
+        ],
+    ));
+    let mut data = container.to_vec();
+    data.extend(chunk(b"ODD!", &[0x17, 0x28, 0x39]));
+    data.extend(chunk(b"PINF", &info));
+    data.extend(chunk(b"LIST", &patch));
+    chunk(b"FORM", &data)
+}
+
+fn sample_stomp_model_tone(model_id: u32) -> Vec<u8> {
+    fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut bytes = id.to_vec();
+        bytes.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(data);
+        if !data.len().is_multiple_of(2) {
+            bytes.push(0xa5);
+        }
+        bytes
+    }
+    let mut info = vec![0; 80];
+    info[..4].copy_from_slice(&1u32.to_be_bytes());
+    info[4..8].copy_from_slice(&pod_preset::PODXT_LIVE_TONE_ID.to_be_bytes());
+    info[8..10].copy_from_slice(&u16::from(b'S').to_be_bytes());
+    info[72..76].copy_from_slice(&pod_preset::PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
+    let mut minf = Vec::new();
+    minf.extend_from_slice(&model_id.to_be_bytes());
+    minf.extend_from_slice(&pod_preset::STOMP_SLOT.to_be_bytes());
+    minf.extend_from_slice(&[0xfe, 0x12, 0x34, 0x01]);
+    let mut model = b"MODL".to_vec();
+    model.extend(chunk(b"MINF", &minf));
+    model.extend(chunk(b"PARM", &[0xde, 0xad, 0xbe]));
+    model.extend(chunk(b"XTRA", &[0x55, 0x66]));
+    let mut patch = b"PATC".to_vec();
+    patch.extend(chunk(b"LIST", &model));
+    let mut data = b"L6PA".to_vec();
+    data.extend(chunk(b"PINF", &info));
+    data.extend(chunk(b"LIST", &patch));
+    chunk(b"FORM", &data)
+}
+
+fn sample_pod_bundle(tones: &[Vec<u8>]) -> Vec<u8> {
+    fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut output = id.to_vec();
+        output.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        output.extend_from_slice(data);
+        if !data.len().is_multiple_of(2) {
+            output.push(0xa5);
+        }
+        output
+    }
+    let mut root = b"L6CO".to_vec();
+    root.extend(chunk(b"JUNK", &[0x71, 0x72, 0x73]));
+    for (index, tone) in tones.iter().enumerate() {
+        let mut bank = if index == 0 {
+            b"BANK".to_vec()
+        } else {
+            b"FLDR".to_vec()
+        };
+        let mut info = vec![0; 68];
+        info[4..6].copy_from_slice(&u16::from(b'A' + index as u8).to_be_bytes());
+        bank.extend(chunk(b"BINF", &info));
+        bank.extend(chunk(b"NOTE", &[0x91, 0x92, 0x93]));
+        bank.extend_from_slice(tone);
+        root.extend(chunk(b"LIST", &bank));
+    }
+    chunk(b"FORM", &root)
+}
+
 struct Workbench {
     dialogs: Box<dyn FileDialogs>,
     document: Option<EditorDocument>,
@@ -553,6 +730,10 @@ struct Workbench {
     pod_cab_combo: Option<Rect>,
     #[cfg(test)]
     pod_cab_options: HashMap<u32, Rect>,
+    #[cfg(test)]
+    pod_practice_combo: Option<Rect>,
+    #[cfg(test)]
+    pod_practice_options: HashMap<PracticeTone, Rect>,
     #[cfg(test)]
     pod_drive_slider: Option<Rect>,
     #[cfg(test)]
@@ -749,6 +930,10 @@ impl Workbench {
             pod_cab_combo: None,
             #[cfg(test)]
             pod_cab_options: HashMap::new(),
+            #[cfg(test)]
+            pod_practice_combo: None,
+            #[cfg(test)]
+            pod_practice_options: HashMap::new(),
             #[cfg(test)]
             pod_drive_slider: None,
             #[cfg(test)]
@@ -2811,6 +2996,8 @@ impl Workbench {
             self.pod_rows.clear();
             self.pod_cab_combo = None;
             self.pod_cab_options.clear();
+            self.pod_practice_combo = None;
+            self.pod_practice_options.clear();
             self.pod_drive_slider = None;
             self.pod_stomp_sliders.clear();
             self.pod_whammy_knob_sliders.clear();
@@ -2932,6 +3119,9 @@ impl Workbench {
                 ui.horizontal(|ui| {
                     if self.pod_button(ui, "load-pod", "Load tone or bank…") {
                         self.load_pod_tone();
+                    }
+                    if let Some(sample) = self.practice_tone_menu(ui) {
+                        self.import_pod_document(sample.bytes());
                     }
                     if self.pod_button(ui, "apply-pod-name", "Apply name") {
                         self.apply_pod_name();
@@ -3657,9 +3847,11 @@ impl Workbench {
                         (index, tone.delay_note_value(), tone.delay_time_ms())
                     })
                 });
-                let delay_model_state = self.pod_selected.and_then(|index| self.pod_library.tone(index).and_then(|tone| {
-                    (tone.container() == pod_preset::ContainerKind::L6pa).then_some((index, tone.models().iter().find(|m| m.slot == pod_preset::DELAY_SLOT || m.slot == 0x0005_0004).map(|m| m.model_id)))
-                }));
+                let delay_model_state = self.pod_selected.and_then(|index| {
+                    let tone = self.pod_library.tone(index)?;
+                    (tone.container() == pod_preset::ContainerKind::L6pa)
+                        .then(|| (index, tone.editable_delay_model_id()))
+                });
                 let stomp_model_state = self.pod_selected.and_then(|index| {
                     self.pod_library.tone(index).and_then(|tone| {
                         (tone.container() == pod_preset::ContainerKind::L6pa).then(|| {
@@ -3726,17 +3918,16 @@ impl Workbench {
                         ui.small("Stomp model selection requires exactly one existing Stomp slot; no slot will be created.");
                     }
                 }
-                if let Some((index, current)) = delay_model_state {
+                if let Some((index, Ok(current))) = delay_model_state {
                     let mut selected = self.pod_delay_model_pending
                         .filter(|(i, _)| *i == index)
-                        .map(|(_, choice)| Some(choice))
-                        .or_else(|| current.and_then(pod_preset::PodDelayModelChoice::from_model_id).map(Some))
-                        .unwrap_or(None);
+                        .map(|(_, choice)| choice)
+                        .or_else(|| pod_preset::PodDelayModelChoice::from_model_id(current));
                     let selected_text = selected
                         .map(pod_preset::PodDelayModelChoice::numeric_label)
-                        .unwrap_or_else(|| current.map_or_else(|| "Select model".into(), |id| format!("{id:08x} (outside choices)")));
+                        .unwrap_or_else(|| format!("{current:08x} (outside choices)"));
                     ui.separator();
-                    ui.label(format!("Delay model ID (offline; stored parameters are retained, no reset) · current {}", current.map_or_else(|| "unavailable".into(), |id| format!("{id:08x}"))));
+                    ui.label(format!("Delay model ID (offline; stored parameters are retained, no reset) · current {current:08x}"));
                     let mut changed = None;
                     let _combo = egui::ComboBox::from_id_salt("pod-delay-model-choice")
                         .selected_text(selected_text)
@@ -3767,6 +3958,9 @@ impl Workbench {
                             if discard.clicked() { self.pod_delay_model_pending = None; }
                         });
                     }
+                } else if let Some((_, Err(error))) = delay_model_state {
+                    ui.separator();
+                    ui.label(format!("Delay model unavailable. {}", error.detail()));
                 }
                 if let Some((index, note_result, time_result)) = delay_note_state {
                     ui.separator();
@@ -3847,41 +4041,22 @@ impl Workbench {
                     }
                 }
                 let mod_model_state = self.pod_selected.and_then(|index| {
-                    self.pod_library.tone(index).and_then(|tone| {
-                        (tone.container() == pod_preset::ContainerKind::L6pa).then_some((
-                            index,
-                            tone.models()
-                                .iter()
-                                .find(|model| {
-                                    model.slot == pod_preset::MOD_SLOT || model.slot == 0x0005_0003
-                                })
-                                .map(|model| model.model_id),
-                        ))
-                    })
+                    let tone = self.pod_library.tone(index)?;
+                    (tone.container() == pod_preset::ContainerKind::L6pa)
+                        .then(|| (index, tone.editable_mod_model_id()))
                 });
-                if let Some((index, current)) = mod_model_state {
+                if let Some((index, Ok(current))) = mod_model_state {
                     let mut selected = self
                         .pod_mod_model_pending
                         .filter(|(pending_index, _)| *pending_index == index)
-                        .map(|(_, choice)| Some(choice))
-                        .or_else(|| {
-                            current
-                                .and_then(pod_preset::PodModModelChoice::from_model_id)
-                                .map(Some)
-                        })
-                        .unwrap_or(None);
+                        .map(|(_, choice)| choice)
+                        .or_else(|| pod_preset::PodModModelChoice::from_model_id(current));
                     let selected_text = selected
                         .map(pod_preset::PodModModelChoice::numeric_label)
-                        .unwrap_or_else(|| {
-                            current.map_or_else(
-                                || "Select model".into(),
-                                |id| format!("{id:08x} (outside choices)"),
-                            )
-                        });
+                        .unwrap_or_else(|| format!("{current:08x} (outside choices)"));
                     ui.separator();
                     ui.label(format!(
-                        "Mod model ID (offline; parameters retained, no reset) · current {}",
-                        current.map_or_else(|| "unavailable".into(), |id| format!("{id:08x}"))
+                        "Mod model ID (offline; parameters retained, no reset) · current {current:08x}"
                     ));
                     let mut changed = None;
                     let combo = egui::ComboBox::from_id_salt("pod-mod-model-choice")
@@ -3940,6 +4115,9 @@ impl Workbench {
                             }
                         });
                     }
+                } else if let Some((_, Err(error))) = mod_model_state {
+                    ui.separator();
+                    ui.label(format!("Mod model unavailable. {}", error.detail()));
                 }
                 let mod_state = self.pod_selected.and_then(|index| {
                     self.pod_library.tone(index).map(|tone| {
@@ -4307,6 +4485,32 @@ impl Workbench {
         #[cfg(not(test))]
         let _ = id;
         response.clicked()
+    }
+
+    fn practice_tone_menu(&mut self, ui: &mut egui::Ui) -> Option<PracticeTone> {
+        let mut chosen = None;
+        #[cfg(test)]
+        let mut option_rects = Vec::new();
+        let combo = egui::ComboBox::from_id_salt("pod-practice")
+            .selected_text("Practice")
+            .show_ui(ui, |ui| {
+                for sample in PracticeTone::ALL {
+                    let response = ui.selectable_label(false, sample.label());
+                    if response.clicked() {
+                        chosen = Some(sample);
+                    }
+                    #[cfg(test)]
+                    option_rects.push((sample, response.rect));
+                }
+            });
+        #[cfg(test)]
+        {
+            self.pod_practice_combo = Some(combo.response.rect);
+            self.pod_practice_options.extend(option_rects);
+        }
+        #[cfg(not(test))]
+        let _ = combo;
+        chosen
     }
 
     fn pod_button_enabled(
@@ -4698,70 +4902,77 @@ impl Workbench {
                 file,
             ))
         }) {
-            Ok(bytes) if matches!(bytes.get(8..12), Some(b"L6BA" | b"L6CO")) => {
-                match self.load_pod_bundle_bytes(bytes) {
-                    Ok(()) => {
-                        let (banks, tones) = self
-                            .pod_bundle
-                            .as_ref()
-                            .map_or((0, 0), |bundle| (bundle.bank_count(), bundle.entry_count()));
+            Ok(bytes) => self.import_pod_document(bytes),
+            Err(error) => self.pod_message = error.detail(),
+        }
+    }
+
+    fn import_pod_document(&mut self, bytes: Vec<u8>) {
+        if matches!(bytes.get(8..12), Some(b"L6BA" | b"L6CO")) {
+            match self.load_pod_bundle_bytes(bytes) {
+                Ok(()) => {
+                    let (banks, tones) = self
+                        .pod_bundle
+                        .as_ref()
+                        .map_or((0, 0), |bundle| (bundle.bank_count(), bundle.entry_count()));
+                    self.pod_message = format!(
+                        "Loaded PODxt Live collection with {banks} banks and {tones} tones. Offline edits only; nothing was sent."
+                    );
+                }
+                Err(error) => self.pod_message = error.detail(),
+            }
+        } else {
+            self.import_individual_pod_tone(bytes);
+        }
+    }
+
+    fn import_individual_pod_tone(&mut self, bytes: Vec<u8>) {
+        if self.pod_bundle.is_some() && self.pod_dirty() {
+            self.pod_message =
+                "Save or discard bank edits before loading an individual tone.".into();
+            return;
+        }
+        match Session::initial_rig().open_pod_preset(RoleKind::Pod, &bytes) {
+            Ok(summary) => {
+                let replaces_bundle_document = self.pod_bundle.is_some();
+                let mut candidate_library = if replaces_bundle_document {
+                    Library::default()
+                } else {
+                    self.pod_library.clone()
+                };
+                match candidate_library.import_bytes(bytes) {
+                    Ok(index) => {
+                        self.pod_library = candidate_library;
+                        if replaces_bundle_document {
+                            self.pod_bundle = None;
+                            self.pod_document_generation =
+                                self.pod_document_generation.wrapping_add(1);
+                            self.pod_eq_reset_pending = None;
+                            self.pod_cab_pending = None;
+                            self.pod_harmony_pending = None;
+                        }
+                        self.pod_selected = Some(index);
+                        self.pod_cab_pending = None;
+                        self.pod_delay_model_pending = None;
+                        self.pod_mod_model_pending = None;
+                        self.pod_stomp_model_pending = None;
+                        self.pod_reverb_model_pending = None;
+                        self.pod_amp_model_pending = None;
+                        self.pod_delay_pending = None;
+                        self.pod_mod_pending = None;
+                        self.pod_harmony_pending = None;
+                        self.pod_name = summary.name;
                         self.pod_message = format!(
-                            "Loaded PODxt Live collection with {banks} banks and {tones} tones. Offline edits only; nothing was sent."
+                            "Loaded {} for PODxt Live {:08x}. {}",
+                            summary.container,
+                            summary.device_id,
+                            pod_preset::PAYLOADS_NOT_DECODED
                         );
                     }
                     Err(error) => self.pod_message = error.detail(),
                 }
             }
-            Ok(bytes) => {
-                if self.pod_bundle.is_some() && self.pod_dirty() {
-                    self.pod_message =
-                        "Save or discard bank edits before loading an individual tone.".into();
-                    return;
-                }
-                match Session::initial_rig().open_pod_preset(RoleKind::Pod, &bytes) {
-                    Ok(summary) => {
-                        let replaces_bundle_document = self.pod_bundle.is_some();
-                        let mut candidate_library = if replaces_bundle_document {
-                            Library::default()
-                        } else {
-                            self.pod_library.clone()
-                        };
-                        match candidate_library.import_bytes(bytes) {
-                            Ok(index) => {
-                                self.pod_library = candidate_library;
-                                if replaces_bundle_document {
-                                    self.pod_bundle = None;
-                                    self.pod_document_generation =
-                                        self.pod_document_generation.wrapping_add(1);
-                                    self.pod_eq_reset_pending = None;
-                                    self.pod_cab_pending = None;
-                                    self.pod_harmony_pending = None;
-                                }
-                                self.pod_selected = Some(index);
-                                self.pod_cab_pending = None;
-                                self.pod_delay_model_pending = None;
-                                self.pod_mod_model_pending = None;
-                                self.pod_stomp_model_pending = None;
-                                self.pod_reverb_model_pending = None;
-                                self.pod_amp_model_pending = None;
-                                self.pod_delay_pending = None;
-                                self.pod_mod_pending = None;
-                                self.pod_harmony_pending = None;
-                                self.pod_name = summary.name;
-                                self.pod_message = format!(
-                                    "Loaded {} for PODxt Live {:08x}. {}",
-                                    summary.container,
-                                    summary.device_id,
-                                    pod_preset::PAYLOADS_NOT_DECODED
-                                );
-                            }
-                            Err(error) => self.pod_message = error.detail(),
-                        }
-                    }
-                    Err(error) => self.pod_message = rejection_text(&error),
-                }
-            }
-            Err(error) => self.pod_message = error.detail(),
+            Err(error) => self.pod_message = rejection_text(&error),
         }
     }
 
@@ -13832,37 +14043,6 @@ mod tests {
         chunk(b"FORM", &data)
     }
 
-    fn sample_stomp_model_tone(model_id: u32) -> Vec<u8> {
-        fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
-            let mut bytes = id.to_vec();
-            bytes.extend_from_slice(&(data.len() as u32).to_be_bytes());
-            bytes.extend_from_slice(data);
-            if !data.len().is_multiple_of(2) {
-                bytes.push(0xa5);
-            }
-            bytes
-        }
-        let mut info = vec![0; 80];
-        info[..4].copy_from_slice(&1u32.to_be_bytes());
-        info[4..8].copy_from_slice(&pod_preset::PODXT_LIVE_TONE_ID.to_be_bytes());
-        info[8..10].copy_from_slice(&u16::from(b'S').to_be_bytes());
-        info[72..76].copy_from_slice(&pod_preset::PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
-        let mut minf = Vec::new();
-        minf.extend_from_slice(&model_id.to_be_bytes());
-        minf.extend_from_slice(&pod_preset::STOMP_SLOT.to_be_bytes());
-        minf.extend_from_slice(&[0xfe, 0x12, 0x34, 0x01]);
-        let mut model = b"MODL".to_vec();
-        model.extend(chunk(b"MINF", &minf));
-        model.extend(chunk(b"PARM", &[0xde, 0xad, 0xbe]));
-        model.extend(chunk(b"XTRA", &[0x55, 0x66]));
-        let mut patch = b"PATC".to_vec();
-        patch.extend(chunk(b"LIST", &model));
-        let mut data = b"L6PA".to_vec();
-        data.extend(chunk(b"PINF", &info));
-        data.extend(chunk(b"LIST", &patch));
-        chunk(b"FORM", &data)
-    }
-
     fn sample_reverb_model_tone_with_tail(model_id: u32, slot: u32, tail: &[u8]) -> Vec<u8> {
         fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
             let mut bytes = id.to_vec();
@@ -13898,34 +14078,6 @@ mod tests {
         sample_reverb_model_tone_with_tail(model_id, slot, &[0xfe, 0x12, 0x34, 0x01])
     }
 
-    fn sample_pod_bundle(tones: &[Vec<u8>]) -> Vec<u8> {
-        fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
-            let mut output = id.to_vec();
-            output.extend_from_slice(&(data.len() as u32).to_be_bytes());
-            output.extend_from_slice(data);
-            if !data.len().is_multiple_of(2) {
-                output.push(0xa5);
-            }
-            output
-        }
-        let mut root = b"L6CO".to_vec();
-        root.extend(chunk(b"JUNK", &[0x71, 0x72, 0x73]));
-        for (index, tone) in tones.iter().enumerate() {
-            let mut bank = if index == 0 {
-                b"BANK".to_vec()
-            } else {
-                b"FLDR".to_vec()
-            };
-            let mut info = vec![0; 68];
-            info[4..6].copy_from_slice(&u16::from(b'A' + index as u8).to_be_bytes());
-            bank.extend(chunk(b"BINF", &info));
-            bank.extend(chunk(b"NOTE", &[0x91, 0x92, 0x93]));
-            bank.extend_from_slice(tone);
-            root.extend(chunk(b"LIST", &bank));
-        }
-        chunk(b"FORM", &root)
-    }
-
     fn sample_fixed_pod_bank(tones: &[Vec<u8>]) -> Vec<u8> {
         fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
             let mut output = id.to_vec();
@@ -13958,87 +14110,6 @@ mod tests {
     fn as_fixed_bank_tone(mut tone: Vec<u8>) -> Vec<u8> {
         tone[8..12].copy_from_slice(b"L6PA");
         tone
-    }
-
-    fn sample_drive_pod_tone() -> Vec<u8> {
-        fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
-            let mut output = id.to_vec();
-            output.extend_from_slice(&(data.len() as u32).to_be_bytes());
-            output.extend_from_slice(data);
-            if !data.len().is_multiple_of(2) {
-                output.push(0xa5);
-            }
-            output
-        }
-        fn parameter(id: u32, value: f32) -> Vec<u8> {
-            let mut data = Vec::new();
-            data.extend_from_slice(&((0x3fu32 << 24) | id).to_be_bytes());
-            data.extend_from_slice(&1u32.to_be_bytes());
-            data.extend_from_slice(&value.to_bits().to_be_bytes());
-            chunk(b"PARM", &data)
-        }
-        fn model(slot: u32, model_id: u32, parameters: &[Vec<u8>]) -> Vec<u8> {
-            let mut minf = Vec::new();
-            minf.extend_from_slice(&model_id.to_be_bytes());
-            minf.extend_from_slice(&slot.to_be_bytes());
-            minf.extend_from_slice(&[0, 0, 0, 1]);
-            let mut body = b"MODL".to_vec();
-            body.extend(chunk(b"MINF", &minf));
-            for parameter in parameters {
-                body.extend_from_slice(parameter);
-            }
-            body.extend(chunk(b"XTRA", &[0xde, 0xad, 0xbe]));
-            chunk(b"LIST", &body)
-        }
-
-        let mut info = vec![0; 76];
-        info[..4].copy_from_slice(&1u32.to_be_bytes());
-        info[4..8].copy_from_slice(&pod_preset::PODXT_LIVE_TONE_ID.to_be_bytes());
-        info[8..10].copy_from_slice(&u16::from(b'A').to_be_bytes());
-        info[72..76].copy_from_slice(&pod_preset::PODXT_LIVE_HOST_MIN_VERSION.to_be_bytes());
-        let mut patch = b"PATC".to_vec();
-        patch.extend(model(
-            pod_preset::AMP_SLOT,
-            pod_preset::PLEXI_45_MODEL,
-            &[parameter(pod_preset::AMP_DRIVE_PARAM, 0.5)],
-        ));
-        patch.extend(model(
-            pod_preset::STOMP_SLOT,
-            pod_preset::STOMP_DRIVE_MODEL_ID,
-            &[
-                parameter(pod_preset::STOMP_DRIVE_PARAM, 0.25),
-                parameter(pod_preset::STOMP_GAIN_PARAM, 0.5),
-                parameter(pod_preset::STOMP_TONE_PARAM, 0.75),
-            ],
-        ));
-        patch.extend(model(
-            pod_preset::MOD_SLOT,
-            pod_preset::MOD_CONTROL_MODEL_IDS[0],
-            &[
-                parameter(0x0010_0001, 0.2),
-                parameter(0x0010_0002, 0.4),
-                parameter(0x0010_0003, 0.6),
-            ],
-        ));
-        patch.extend(model(
-            pod_preset::REVERB_SLOT,
-            pod_preset::REVERB_CONTROL_MODEL_IDS[0],
-            &[parameter(0x0010_0000, 0.3), parameter(0x0010_0002, 0.6)],
-        ));
-        patch.extend(model(
-            pod_preset::DELAY_SLOT,
-            pod_preset::DELAY_CONTROL_MODEL_IDS[0],
-            &[
-                parameter(0x0010_0001, 0.2),
-                parameter(0x0010_0002, 0.4),
-                parameter(0x0010_0003, 0.6),
-            ],
-        ));
-        let mut data = b"L6AS".to_vec();
-        data.extend(chunk(b"ODD!", &[0x17, 0x28, 0x39]));
-        data.extend(chunk(b"PINF", &info));
-        data.extend(chunk(b"LIST", &patch));
-        chunk(b"FORM", &data)
     }
 
     fn sample_cab_mic_pod_tone(cab_id: u32, mic_value: u32) -> Vec<u8> {
@@ -14461,6 +14532,19 @@ mod tests {
         recording_frame(context, app, vec![]);
     }
 
+    fn choose_practice_tone(context: &egui::Context, app: &mut Workbench, sample: PracticeTone) {
+        recording_frame(context, app, vec![]);
+        let combo = app
+            .pod_practice_combo
+            .expect("Practice tone combo is rendered");
+        click_pod_at(context, app, combo.center());
+        recording_frame(context, app, vec![]);
+        assert_eq!(app.pod_practice_options.len(), PracticeTone::ALL.len());
+        let option = app.pod_practice_options[&sample].center();
+        click_pod_at(context, app, option);
+        recording_frame(context, app, vec![]);
+    }
+
     #[test]
     fn cab_popup_choice_persists_until_apply_and_isolated_per_tone() {
         let (context, mut app) = app();
@@ -14590,6 +14674,154 @@ mod tests {
             Some(0x0102_0002)
         );
         assert!(app.pod_cab_pending.is_none() || app.pod_cab_pending != staged);
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn practice_amp_and_effects_tone_applies_and_reopens_edits() {
+        let (context, mut app) = app();
+        context.style_mut(|style| {
+            style.animation_time = 0.0;
+            style.spacing.slider_width = 220.0;
+        });
+        app.pod_open = true;
+        recording_frame(&context, &mut app, vec![]);
+        assert!(app.pod_buttons.contains_key("load-pod"));
+
+        choose_practice_tone(&context, &mut app, PracticeTone::AmpAndEffects);
+        assert_eq!(app.pod_selected, Some(0));
+        assert!(app.pod_bundle.is_none());
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().as_bytes(),
+            sample_amp_effects_tone(b"L6PA")
+        );
+        let original_drive = app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .amp_drive_fraction()
+            .unwrap();
+        let original_stomp = app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .stomp_control_fraction(pod_preset::StompControl::Drive)
+            .unwrap();
+        drag_pod_drive_slider(&context, &mut app);
+        drag_pod_stomp_slider(&context, &mut app, pod_preset::StompControl::Drive);
+        let edited_drive = app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .amp_drive_fraction()
+            .unwrap();
+        let edited_stomp = app
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .stomp_control_fraction(pod_preset::StompControl::Drive)
+            .unwrap();
+        assert_ne!(edited_drive.to_bits(), original_drive.to_bits());
+        assert_ne!(edited_stomp.to_bits(), original_stomp.to_bits());
+        assert!(app.pod_library.is_dirty(0));
+        let delay = 0x0202_0003;
+        let modulation = 0x0203_0008;
+        choose_delay_model_popup(&context, &mut app, delay);
+        click_pod_button_tall(&context, &mut app, "pod-delay-model-apply");
+        assert_eq!(app.pod_delay_model_pending, None);
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().delay_model_id(),
+            Some(delay)
+        );
+        choose_mod_model_popup(&context, &mut app, modulation);
+        click_pod_button_tall(&context, &mut app, "pod-mod-model-apply");
+        assert_eq!(app.pod_mod_model_pending, None);
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().mod_model_id(),
+            Some(modulation)
+        );
+
+        let directory = tempfile::tempdir().unwrap();
+        let saved = directory.path().join("practice-amp-effects.tone");
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(saved.clone())].into(),
+            pod_save: [Some(saved.clone())].into(),
+            ..Default::default()
+        });
+        click_pod(&context, &mut app, "save-pod");
+        assert!(!app.pod_library.is_dirty(0));
+        click_pod(&context, &mut app, "load-pod");
+        assert_eq!(app.pod_selected, Some(1));
+        let reopened = app.pod_library.tone(1).unwrap();
+        assert_eq!(reopened.delay_model_id(), Some(delay));
+        assert_eq!(reopened.mod_model_id(), Some(modulation));
+        assert_eq!(
+            reopened.amp_drive_fraction().unwrap().to_bits(),
+            edited_drive.to_bits()
+        );
+        assert_eq!(
+            reopened
+                .stomp_control_fraction(pod_preset::StompControl::Drive)
+                .unwrap()
+                .to_bits(),
+            edited_stomp.to_bits()
+        );
+        assert!(app.pod_buttons.contains_key("load-pod"));
+        const {
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        }
+    }
+
+    #[test]
+    fn practice_stompbox_collection_saves_the_changed_model() {
+        let (context, mut app) = app();
+        context.style_mut(|style| style.animation_time = 0.0);
+        app.pod_open = true;
+        recording_frame(&context, &mut app, vec![]);
+        assert!(app.pod_buttons.contains_key("load-pod"));
+
+        choose_practice_tone(&context, &mut app, PracticeTone::StompboxCollection);
+        assert_eq!(app.pod_selected, Some(0));
+        assert!(app.pod_bundle.is_some());
+        assert_eq!(
+            app.pod_library.tone(0).unwrap().stomp_model_id(),
+            Some(0x0205_0006)
+        );
+        assert!(app.pod_delay_model_combo.is_none());
+        assert!(app.pod_mod_model_combo.is_none());
+        assert!(!app.pod_buttons.contains_key("pod-delay-model-apply"));
+        assert!(!app.pod_buttons.contains_key("pod-mod-model-apply"));
+        choose_stomp_model_popup(&context, &mut app, 0x0205_0002);
+        click_pod_button_tall(&context, &mut app, "pod-stomp-model-apply");
+        assert_eq!(
+            app.pod_bundle
+                .as_ref()
+                .unwrap()
+                .tone(0, 0)
+                .unwrap()
+                .stomp_model_id(),
+            Some(0x0205_0002)
+        );
+        assert!(app.pod_dirty());
+
+        let directory = tempfile::tempdir().unwrap();
+        let saved = directory.path().join("practice-stomp-collection.vwb");
+        app.dialogs = Box::new(FakeDialogs {
+            pod_open: [Some(saved.clone())].into(),
+            pod_save: [Some(saved.clone())].into(),
+            ..Default::default()
+        });
+        click_pod(&context, &mut app, "save-pod");
+        assert!(!app.pod_dirty());
+        click_pod(&context, &mut app, "load-pod");
+        let reopened = app.pod_bundle.as_ref().unwrap();
+        assert_eq!(
+            reopened.tone(0, 0).unwrap().stomp_model_id(),
+            Some(0x0205_0002)
+        );
+        assert!(app.pod_buttons.contains_key("load-pod"));
         const {
             assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         }
