@@ -1068,7 +1068,8 @@ impl Workbench {
                     || !self.hd_type11_pending.is_empty()
                     || !self.hd_type12_pending.is_empty()
                     || !self.hd_type13_pending.is_empty()
-                    || !self.hd_type19_pending.is_empty() {
+                    || !self.hd_type19_pending.is_empty()
+                {
                     self.pending = Some(Pending::QuitPod);
                     ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 } else if self.recorder.has_unsaved_take() {
@@ -1741,15 +1742,17 @@ impl Workbench {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.pending = Some(Pending::Quit);
         } else if (self.pod_dirty()
-                    || self.pod_has_staged_edit()
-                    || self.hd_library.any_dirty()
-                    || self.hd_type9_pending.is_some()
-                    || self.hd_type8_pending.is_some()
-                    || self.hd_type10_pending.is_some()
-                    || !self.hd_type11_pending.is_empty()
-                    || !self.hd_type12_pending.is_empty()
-                    || !self.hd_type13_pending.is_empty()
-                    || !self.hd_type19_pending.is_empty()) && !self.permit_close {
+            || self.pod_has_staged_edit()
+            || self.hd_library.any_dirty()
+            || self.hd_type9_pending.is_some()
+            || self.hd_type8_pending.is_some()
+            || self.hd_type10_pending.is_some()
+            || !self.hd_type11_pending.is_empty()
+            || !self.hd_type12_pending.is_empty()
+            || !self.hd_type13_pending.is_empty()
+            || !self.hd_type19_pending.is_empty())
+            && !self.permit_close
+        {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.pending = Some(Pending::QuitPod);
         } else if self.recorder.has_unsaved_take() {
@@ -2125,19 +2128,19 @@ impl Workbench {
         }
         if let Some(index) = self.pod_library.first_dirty() {
             return match self.pod_library.revert_unsaved(index) {
-            Ok(()) => {
-                let staged_amp = self.pod_amp_model_pending;
-                self.refresh_selected_pod_name();
-                self.restore_staged_amp_if_origin_matches(staged_amp);
-                self.pod_message =
-                    "Discarded the unsaved name edit for one tone. Nothing was sent.".into();
-                true
-            }
-            Err(error) => {
-                self.pod_message = error.detail();
-                false
-            }
-        };
+                Ok(()) => {
+                    let staged_amp = self.pod_amp_model_pending;
+                    self.refresh_selected_pod_name();
+                    self.restore_staged_amp_if_origin_matches(staged_amp);
+                    self.pod_message =
+                        "Discarded the unsaved name edit for one tone. Nothing was sent.".into();
+                    true
+                }
+                Err(error) => {
+                    self.pod_message = error.detail();
+                    false
+                }
+            };
         }
         let Some(index) = self.hd_library.first_dirty() else {
             return false;
