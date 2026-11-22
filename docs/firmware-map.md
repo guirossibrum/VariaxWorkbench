@@ -5,6 +5,10 @@ findings come from archived files; no device was contacted and no firmware was e
 disassembly remain private. Image offsets are file offsets, and candidate
 loader destinations are word addresses, not approved flash offsets.
 
+The [schematic reference](rig-schematics.md) records the processor, memory, and
+signal paths shown on the Variax electronics and the standard PODxt SHARCPOD
+board. It includes page and revision identifiers for checking the local PDFs.
+
 ## Variax 300/600 archive 3.10
 
 Source SHA-256:
