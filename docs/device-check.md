@@ -34,8 +34,10 @@ in `src/device_probe.rs`; the window shows them verbatim before asking.
   moment as Yes wins. Once Yes has started, the exchange runs on the window
   thread and the window cannot cancel it.
 - Step 2 is offered only after this session's step 1 has passed for one
-  PODxt Live with `snd-usb-pod` on interface 0 and `snd-usb-variax` on
-  interface 1. A mismatched binding stops step 1 and does not offer step 2.
+  PODxt Live with the POD driver on interface 0 and the Variax driver on
+  interface 1. `snd-usb-pod` and `snd_usb_pod` are the same POD driver.
+  `snd-usb-variax` and `snd_usb_variax` are the same Variax driver. A
+  swapped pair, or any other driver, stops step 1 and does not offer step 2.
   A new Device check starts at step 1 again.
 - After step 2 has been answered, **Start over** does not discard the check
   until the steps 1–2 report is saved. **Save the step 2 report, then run
@@ -71,7 +73,10 @@ in `src/device_probe.rs`; the window shows them verbatim before asking.
 **This computer** uses `HostRig` around `LinuxSysfs`. It is offered only
 when `live_stage_available(Stage::UsbRecognition)` is true. The mode label
 and the banner come from `open_gates()`, which is G1 in this build. The
-reader is built only when that mode is chosen.
+reader is built only when that mode is chosen. When the check finishes,
+the completion sentence and the Reports note name the gates this build
+can run. In this build that is G1, so the window still says step 1
+finished and that gate G2 stays locked.
 It reads only the [g1.md section 1](hardware-gates/g1.md#1-what-the-app-reads)
 paths under a configurable root (the app uses `/`; tests inject a temporary
 fake tree) with `read_dir`, `read_to_string` and `read_link`, fills the same
@@ -89,7 +94,9 @@ until the person chooses Yes.
   Simulation mode never holds a `LinuxSysfs`.
 - Real reader (`src/device_probe.rs`, Unix tests on temporary fake trees, never
   the real `/sys` or `/proc`): PODxt Live with `snd-usb-pod` and
-  `snd-usb-variax` bound through relative `driver` symlinks; absent (including
+  `snd-usb-variax` bound through relative `driver` symlinks, and the same
+  tree with `snd_usb_pod` on interface 0 and `snd_usb_variax` on interface 1.
+  A swapped underscore pair does not pass. Also covered: absent (including
   another Line 6 product), an unbound interface, two units; malformed
   `idProduct`, non-UTF-8 `idVendor`, bad `bInterfaceNumber`, bad card list,
   missing card list, empty tree; `serial`/`descriptors` present but never

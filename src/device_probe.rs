@@ -698,9 +698,19 @@ pub fn recognise(source: &dyn OsMetadataSource) -> Recognition {
     }
 }
 
+/// Linux names these modules with a hyphen (`snd-usb-pod`) and sometimes
+/// shows the sysfs driver link with an underscore (`snd_usb_pod`). Both
+/// spellings are the same driver. The character must still be one or the
+/// other; a different name does not match.
+fn same_driver_spelling(observed: &str, expected: &str) -> bool {
+    let spelling = |name: &str| name.replace('_', "-");
+    spelling(observed) == spelling(expected)
+}
+
 /// The rig step 2 is allowed to follow: one PODxt Live, the POD driver on
-/// interface 0, and `snd-usb-variax` on interface 1. Any other binding is not
-/// a pass for that offer.
+/// interface 0, and the Variax driver on interface 1. Either spelling of
+/// each name counts. The drivers may not be swapped, and any other binding
+/// is not a pass for that offer.
 pub fn expected_driver_binding(device: &UsbDevice) -> bool {
     if (device.vendor_id, device.product_id) != PODXT_LIVE_USB {
         return false;
@@ -712,7 +722,13 @@ pub fn expected_driver_binding(device: &UsbDevice) -> bool {
             .find(|interface| interface.number == number)
             .and_then(|interface| interface.driver.as_deref())
     };
-    driver(0) == Some(EXPECTED_POD_DRIVER) && driver(1) == Some(EXPECTED_VARIAX_DRIVER)
+    match (driver(0), driver(1)) {
+        (Some(pod), Some(variax)) => {
+            same_driver_spelling(pod, EXPECTED_POD_DRIVER)
+                && same_driver_spelling(variax, EXPECTED_VARIAX_DRIVER)
+        }
+        _ => false,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1524,6 +1540,43 @@ pub fn availability_banner() -> &'static str {
     }
 }
 
+/// Shown when This computer has finished the steps this build can run.
+/// A G1-only build still says steps 2–4 stay locked.
+pub fn this_computer_finished_message() -> &'static str {
+    use crate::probe_report::OpenGates;
+    match open_gates() {
+        OpenGates::G1 | OpenGates::None => {
+            "Step 1 finished. Steps 2–4 stay locked in this build; nothing else will run. Copy the detailed report into issue #125."
+        }
+        OpenGates::G1AndG2 => {
+            "Steps 1 and 2 finished for the gates this build can run. Steps 3 and 4 stay locked. Copy the detailed report into issue #125."
+        }
+        OpenGates::G2 => {
+            "The steps this build can run are finished. Gate G2 is open and gate G1 is not. Steps 3 and 4 stay locked. Copy the detailed report into issue #125."
+        }
+    }
+}
+
+/// The Reports panel note for the steps 1–2 report. It names the gates this
+/// build can run, so a later build does not keep a fixed "G2 stays locked" line.
+pub fn reports_panel_note() -> &'static str {
+    use crate::probe_report::OpenGates;
+    match open_gates() {
+        OpenGates::G1 => {
+            "Steps 1–2 report (schema 2). Its identities are the ones this check decoded. This build can run gate G1. Gate G2 stays locked."
+        }
+        OpenGates::G1AndG2 => {
+            "Steps 1–2 report (schema 2). Its identities are the ones this check decoded. This build can run gates G1 and G2. Gates G3–G7 stay locked."
+        }
+        OpenGates::G2 => {
+            "Steps 1–2 report (schema 2). Its identities are the ones this check decoded. This build can run gate G2. Gate G1 is not open in this build."
+        }
+        OpenGates::None => {
+            "Steps 1–2 report (schema 2). Its identities are the ones this check decoded. Every hardware lock stays closed in this build."
+        }
+    }
+}
+
 pub fn this_computer_label() -> &'static str {
     use crate::probe_report::OpenGates;
     match open_gates() {
@@ -1604,6 +1657,17 @@ mod tests {
         }
         assert_eq!(this_computer_label(), THIS_COMPUTER_LABEL);
         assert_eq!(ProbeMode::ThisComputer.label(), "This computer (G1)");
+        let note = reports_panel_note();
+        let finished = this_computer_finished_message();
+        if cfg!(target_os = "linux") {
+            assert!(finished.starts_with("Step 1 finished."));
+            assert!(finished.contains("Steps 2–4 stay locked"));
+            assert!(note.contains("This build can run gate G1."));
+            assert!(note.contains("Gate G2 stays locked."));
+            assert!(!note.contains("gates G1 and G2"));
+        } else {
+            assert!(note.contains("Every hardware lock stays closed in this build."));
+        }
     }
 
     #[test]
@@ -2141,6 +2205,83 @@ mod tests {
             "path leaked"
         );
         assert!(!report.contains("SIMULATED"));
+    }
+
+    /// Sysfs on this kernel can name the bound driver with underscores.
+    /// `snd_usb_pod` still has to be interface 0, and `snd_usb_variax`
+    /// interface 1. The temporary tree is never the real `/sys`.
+    #[test]
+    #[cfg(unix)]
+    fn underscore_driver_names_in_a_fake_sysfs_tree_match_only_the_right_interface() {
+        let matched = fake_tree();
+        fake_device(
+            matched.path(),
+            "1-2",
+            0x4650,
+            &[(0, Some("snd_usb_pod")), (1, Some("snd_usb_variax"))],
+        );
+        let Recognition::Recognised { device, .. } = recognise(&FakeTree(matched.path().into()))
+        else {
+            panic!("expected one PODxt Live");
+        };
+        assert_eq!(device.interfaces[0].driver.as_deref(), Some("snd_usb_pod"));
+        assert_eq!(
+            device.interfaces[1].driver.as_deref(),
+            Some("snd_usb_variax")
+        );
+        assert!(expected_driver_binding(&device));
+
+        let mixed = fake_tree();
+        fake_device(
+            mixed.path(),
+            "1-2",
+            0x4650,
+            &[(0, Some("snd-usb-pod")), (1, Some("snd_usb_variax"))],
+        );
+        let Recognition::Recognised { device, .. } = recognise(&FakeTree(mixed.path().into()))
+        else {
+            panic!("expected one PODxt Live");
+        };
+        assert!(expected_driver_binding(&device));
+
+        let swapped = fake_tree();
+        fake_device(
+            swapped.path(),
+            "1-2",
+            0x4650,
+            &[(0, Some("snd_usb_variax")), (1, Some("snd_usb_pod"))],
+        );
+        let Recognition::Recognised { device, .. } = recognise(&FakeTree(swapped.path().into()))
+        else {
+            panic!("expected one PODxt Live");
+        };
+        assert!(!expected_driver_binding(&device));
+
+        #[cfg(target_os = "linux")]
+        {
+            let mut probe = host_session(matched.path());
+            assert_eq!(probe.mode(), ProbeMode::ThisComputer);
+            probe.answer(Consent::Yes);
+            assert_eq!(probe.status(Stage::UsbRecognition), StageStatus::Passed);
+            assert!(probe.g1_expected_binding());
+            assert_eq!(probe.awaiting(), None);
+            assert_eq!(probe.backend().calls().identity_requests, 0);
+            let report = probe.report();
+            assert!(
+                report.contains("interface 0 driver snd_usb_pod"),
+                "{report}"
+            );
+            assert!(
+                report.contains("interface 1 driver snd_usb_variax"),
+                "{report}"
+            );
+            assert!(report.contains(open_gates().token()), "{report}");
+            assert!(!report.contains("SECRET"), "serial number leaked");
+            assert!(
+                !report.contains(&*matched.path().to_string_lossy()),
+                "path leaked"
+            );
+        }
     }
 
     #[cfg(target_os = "linux")]

@@ -2822,9 +2822,7 @@ impl Workbench {
                             "All four steps passed in simulation. No real device was used.".into()
                         }
                         (None, ProbeMode::ThisComputer) => {
-                            "Step 1 finished. Steps 2–4 stay locked in this build; nothing else \
-                             will run. Copy the detailed report into issue #125."
-                                .into()
+                            device_probe::this_computer_finished_message().into()
                         }
                     };
                     ui.label(&outcome);
@@ -2840,15 +2838,14 @@ impl Workbench {
                         ui.ctx().copy_text(report.clone());
                     }
                 });
+                let reports_note = device_probe::reports_panel_note();
                 ui.collapsing("Reports", |ui| {
                     ui.label("Detailed report (schema 1), for issue #125.");
                     ui.monospace(&report);
-                    ui.label(
-                        "Steps 1–2 report (schema 2). Its identities are the ones this check \
-                         decoded. Gate G2 stays locked.",
-                    );
+                    ui.label(reports_note);
                     ui.monospace(&sanitized);
                 });
+                visible.push_str(reports_note);
                 if self
                     .device_check_button(ui, "save-report", "Save steps 1–2 report")
                     .clicked()
@@ -13451,6 +13448,15 @@ mod tests {
             (1, 0, 0)
         );
         assert!(app.device_check_visible.contains("Step 1 finished"));
+        assert!(
+            app.device_check_visible
+                .contains(device_probe::this_computer_finished_message())
+        );
+        assert!(
+            app.device_check_visible
+                .contains(device_probe::reports_panel_note())
+        );
+        assert!(device_probe::reports_panel_note().contains("This build can run gate G1."));
         assert!(app.device_check_visible.contains("0e41:4650"));
         let report = app.device_check.report();
         assert!(report.contains("mode=this-computer gates-open=G1"));
