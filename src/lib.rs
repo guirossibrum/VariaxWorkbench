@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 
 pub mod body;
 pub mod bundle;
+pub mod device_probe;
 pub mod document;
 pub mod dsp;
 pub mod edit;
