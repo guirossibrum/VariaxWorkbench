@@ -32,6 +32,21 @@ pub struct PresetFile {
     models: Vec<Model>,
 }
 
+#[derive(Clone, Copy)]
+pub enum PresetText {
+    Author,
+    Notes,
+}
+
+impl PresetText {
+    fn tag(self) -> [u8; 4] {
+        match self {
+            Self::Author => *b"IAUT",
+            Self::Notes => *b"ICMT",
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct Chunk {
     pub(crate) id: [u8; 4],
@@ -323,6 +338,92 @@ impl PresetFile {
     pub fn name(&self) -> &str {
         &self.name
     }
+
+    fn metadata_chunks(&self, field: PresetText) -> Result<Option<(Chunk, Option<Chunk>)>, String> {
+        let root = chunks(&self.bytes, 12..self.bytes.len())?;
+        let mut lists = root.into_iter().filter(|chunk| {
+            container(&self.bytes, chunk, b"UNFO") || container(&self.bytes, chunk, b"INFO")
+        });
+        let Some(list) = lists.next() else {
+            return Ok(None);
+        };
+        if lists.next().is_some() {
+            return Err("ambiguous preset metadata containers".into());
+        }
+        let fields = chunks(&self.bytes, list.data.start + 4..list.data.end)?;
+        let mut entries = fields.into_iter().filter(|chunk| chunk.id == field.tag());
+        let entry = entries.next();
+        if entries.next().is_some() {
+            return Err("ambiguous duplicate preset text fields".into());
+        }
+        Ok(Some((list, entry)))
+    }
+
+    pub fn metadata(&self, field: PresetText) -> Result<String, String> {
+        let Some((list, Some(entry))) = self.metadata_chunks(field)? else {
+            return Ok(String::new());
+        };
+        let bytes = &self.bytes[entry.data];
+        if container(&self.bytes, &list, b"UNFO") {
+            let (units, remainder) = bytes.as_chunks::<2>();
+            if !remainder.is_empty() {
+                return Err("truncated UTF-16 preset text".into());
+            }
+            let units: Vec<_> = units.iter().copied().map(u16::from_be_bytes).collect();
+            String::from_utf16(&units).map_err(|_| "invalid UTF-16 preset text".into())
+        } else {
+            String::from_utf8(bytes.to_vec()).map_err(|_| "invalid UTF-8 preset text".into())
+        }
+    }
+
+    pub fn set_metadata(&mut self, field: PresetText, value: &str) -> Result<(), String> {
+        self.require_legacy_electric()?;
+        if value.contains('\0') {
+            return Err("preset text cannot contain NUL".into());
+        }
+        if self.metadata(field)? == value {
+            return Ok(());
+        }
+        let location = self.metadata_chunks(field)?;
+        let encode_chunk = |tag: [u8; 4], payload: &[u8]| -> Result<Vec<u8>, String> {
+            let length = u32::try_from(payload.len()).map_err(|_| "preset text is too large")?;
+            let mut bytes = tag.to_vec();
+            bytes.extend(length.to_be_bytes());
+            bytes.extend(payload);
+            if !length.is_multiple_of(2) {
+                bytes.push(0);
+            }
+            Ok(bytes)
+        };
+        let payload = if location
+            .as_ref()
+            .is_some_and(|(list, _)| container(&self.bytes, list, b"INFO"))
+        {
+            value.as_bytes().to_vec()
+        } else {
+            value.encode_utf16().flat_map(u16::to_be_bytes).collect()
+        };
+        let replacement = encode_chunk(field.tag(), &payload)?;
+        let mut bytes = self.bytes.clone();
+        if let Some((list, entry)) = location {
+            let range = entry.map_or(list.data.end..list.data.end, |entry| {
+                entry.data.start - 8..entry.data.end + (entry.data.len() & 1)
+            });
+            let length = list.data.len() - range.len() + replacement.len();
+            let length = u32::try_from(length).map_err(|_| "preset metadata is too large")?;
+            bytes.splice(range, replacement);
+            bytes[list.data.start - 4..list.data.start].copy_from_slice(&length.to_be_bytes());
+        } else {
+            let mut list = b"UNFO".to_vec();
+            list.extend(replacement);
+            bytes.extend(encode_chunk(*b"LIST", &list)?);
+        }
+        let length = u32::try_from(bytes.len() - 8).map_err(|_| "preset file is too large")?;
+        bytes[4..8].copy_from_slice(&length.to_be_bytes());
+        *self = Self::parse(bytes)?;
+        Ok(())
+    }
+
     pub fn device_id(&self) -> u32 {
         self.device_id
     }
@@ -518,6 +619,62 @@ mod tests {
         data.extend(chunk(b"JUNK", &[9, 8, 7]));
         data.extend(chunk(b"LIST", &patch));
         chunk(b"FORM", &data)
+    }
+
+    #[test]
+    fn preset_text_preserves_other_chunks_and_rejects_ambiguous_fields() {
+        let make = |list: Vec<u8>| {
+            let mut bytes = example();
+            bytes.extend(chunk(b"LIST", &list));
+            let len = (bytes.len() - 8) as u32;
+            bytes[4..8].copy_from_slice(&len.to_be_bytes());
+            PresetFile::parse(bytes).unwrap()
+        };
+        let unknown = chunk(b"JUNK", &[8, 7, 6]);
+        let mut list = b"UNFO".to_vec();
+        list.extend_from_slice(&unknown);
+        let mut preset = make(list.clone());
+        preset.set_metadata(PresetText::Author, "Ana 🎸").unwrap();
+        preset
+            .set_metadata(PresetText::Notes, "First\nSecond")
+            .unwrap();
+        let reopened = PresetFile::parse(preset.as_bytes().to_vec()).unwrap();
+        assert_eq!(reopened.metadata(PresetText::Author).unwrap(), "Ana 🎸");
+        assert_eq!(
+            reopened.metadata(PresetText::Notes).unwrap(),
+            "First\nSecond"
+        );
+        assert!(
+            reopened
+                .as_bytes()
+                .windows(unknown.len())
+                .any(|bytes| bytes == unknown)
+        );
+        assert_eq!(
+            reopened.models(),
+            PresetFile::parse(example()).unwrap().models()
+        );
+
+        let field = chunk(b"IAUT", &[0, b'A']);
+        list.extend_from_slice(&field);
+        list.extend_from_slice(&field);
+        let mut ambiguous = make(list);
+        let original = ambiguous.as_bytes().to_vec();
+        assert!(
+            ambiguous
+                .set_metadata(PresetText::Author, "Someone")
+                .is_err()
+        );
+        assert_eq!(ambiguous.as_bytes(), original);
+
+        let mut info = b"INFO".to_vec();
+        info.extend(chunk(b"IAUT", b"A"));
+        info.extend_from_slice(&unknown);
+        let mut legacy = make(info);
+        assert_eq!(legacy.metadata(PresetText::Author).unwrap(), "A");
+        legacy.set_metadata(PresetText::Author, "New").unwrap();
+        assert_eq!(legacy.metadata(PresetText::Author).unwrap(), "New");
+        assert!(legacy.as_bytes().ends_with(&unknown));
     }
 
     #[test]

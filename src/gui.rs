@@ -14,11 +14,34 @@ use variax_workbench::recording::{self, ClockSelection};
 use variax_workbench::rig::{Rejection, RoleKind, Session};
 use variax_workbench::{document::EditorDocument, preset::PresetFile};
 
+#[path = "../app/guitar.rs"]
+mod guitar_ui;
+
 const PICKUP1: u32 = 0x02010001;
 const PICKUP2: u32 = 0x02010002;
 const BODY: u32 = 0x02010003;
 const WIRING: u32 = 0x02010004;
 const TUNING: u32 = 0x02010005;
+const SYSTEM: u32 = variax_workbench::edit::SYSTEM;
+const GUITAR_SURFACE: Color32 = Color32::from_rgb(31, 31, 34);
+const GUITAR_EDGE: Color32 = Color32::from_rgb(62, 60, 59);
+const FRET_MARKER: Color32 = Color32::from_rgb(247, 189, 108);
+const GUITAR_SELECTION: egui::style::Selection = egui::style::Selection {
+    bg_fill: Color32::from_rgb(85, 59, 39),
+    stroke: egui::Stroke {
+        width: 1.0,
+        color: Color32::from_rgb(255, 221, 173),
+    },
+};
+const GUITAR_ART_SIZE: Vec2 = Vec2::new(426.0, 412.0);
+
+fn guitar_panel() -> egui::Frame {
+    egui::Frame::new()
+        .inner_margin(12)
+        .corner_radius(8)
+        .fill(GUITAR_SURFACE)
+        .stroke(egui::Stroke::new(1.0_f32, GUITAR_EDGE))
+}
 
 #[derive(Clone, Deserialize)]
 struct ModelArt {
@@ -28,11 +51,10 @@ struct ModelArt {
     image: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq)]
 enum Tab {
     Body,
     Pickups,
-    Tuning,
     Controls,
 }
 enum Pending {
@@ -240,7 +262,8 @@ struct Workbench {
     help: bool,
     pending: Option<Pending>,
     permit_close: bool,
-    drag_origin: Option<(u32, f32)>,
+    drag_origin: Option<(u32, f32, f32, f32)>,
+    link_tuning_mix: bool,
     theme_polled: Instant,
     theme_text: String,
     screenshot: Option<PathBuf>,
@@ -266,11 +289,19 @@ struct Workbench {
     pod_name: String,
     pod_message: String,
     #[cfg(test)]
-    bank_rows: HashMap<(usize, usize), Rect>,
+    bank_slots: HashMap<usize, Rect>,
+    #[cfg(test)]
+    bank_options: HashMap<usize, Rect>,
+    #[cfg(test)]
+    bank_dropdown: Option<Rect>,
     #[cfg(test)]
     pending_buttons: HashMap<&'static str, Rect>,
     #[cfg(test)]
     pickup_slider: Option<Rect>,
+    #[cfg(test)]
+    tuning_toggle: Option<Rect>,
+    #[cfg(test)]
+    tuning_widgets: HashMap<&'static str, Rect>,
     #[cfg(test)]
     recording_buttons: HashMap<&'static str, Rect>,
     #[cfg(test)]
@@ -354,11 +385,12 @@ struct Workbench {
 }
 
 impl Workbench {
-    fn new(cc: &eframe::CreationContext<'_>, preset: Option<PathBuf>, artwork: PathBuf) -> Self {
-        Self::with_context(&cc.egui_ctx, preset, artwork)
-    }
-
-    fn with_context(ctx: &egui::Context, preset: Option<PathBuf>, artwork: PathBuf) -> Self {
+    fn with_context(
+        ctx: &egui::Context,
+        preset: Option<PathBuf>,
+        artwork: PathBuf,
+        tab: Option<Tab>,
+    ) -> Self {
         ctx.set_visuals(egui::Visuals::dark());
         let mut style = (*ctx.style()).clone();
         style.spacing.item_spacing = Vec2::new(10.0, 10.0);
@@ -387,6 +419,7 @@ impl Workbench {
             pending: None,
             permit_close: false,
             drag_origin: None,
+            link_tuning_mix: false,
             theme_polled: Instant::now() - Duration::from_secs(2),
             theme_text: String::new(),
             screenshot: None,
@@ -412,11 +445,19 @@ impl Workbench {
             pod_name: String::new(),
             pod_message: String::new(),
             #[cfg(test)]
-            bank_rows: HashMap::new(),
+            bank_slots: HashMap::new(),
+            #[cfg(test)]
+            bank_options: HashMap::new(),
+            #[cfg(test)]
+            bank_dropdown: None,
             #[cfg(test)]
             pending_buttons: HashMap::new(),
             #[cfg(test)]
             pickup_slider: None,
+            #[cfg(test)]
+            tuning_toggle: None,
+            #[cfg(test)]
+            tuning_widgets: HashMap::new(),
             #[cfg(test)]
             recording_buttons: HashMap::new(),
             #[cfg(test)]
@@ -496,6 +537,11 @@ impl Workbench {
         };
         if let Some(preset) = preset {
             app.load(&preset);
+        } else {
+            app.open_example();
+        }
+        if let Some(tab) = tab {
+            app.tab = tab;
         }
         app
     }
@@ -507,6 +553,7 @@ impl Workbench {
         match EditorDocument::open(path) {
             Ok(document) => {
                 self.document = Some(document);
+                self.drag_origin = None;
                 self.error = None;
                 self.status = format!("Opened {}", path.display());
             }
@@ -743,77 +790,6 @@ impl Workbench {
         }
     }
 
-    fn bank_browser(&mut self, ctx: &egui::Context) {
-        #[cfg(test)]
-        self.bank_rows.clear();
-        let Some(document) = &self.document else {
-            return;
-        };
-        let Some(banks) = document.banks() else {
-            return;
-        };
-        let selection = document.selection();
-        let labels: Vec<_> = banks
-            .iter()
-            .map(|b| {
-                (
-                    b.name.clone(),
-                    b.presets()
-                        .iter()
-                        .map(|p| p.name().to_owned())
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .collect();
-        let mut next = None;
-        egui::SidePanel::left("bank-browser")
-            .default_width(210.)
-            .show(ctx, |ui| {
-                ui.heading("Banks and presets");
-                ui.add_enabled_ui(!self.is_reading() && self.pending.is_none(), |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        for (bank, (name, presets)) in labels.iter().enumerate() {
-                            egui::CollapsingHeader::new(format!("{} · {}", bank + 1, name))
-                                .id_salt(("bank", bank))
-                                .default_open(true)
-                                .show(ui, |ui| {
-                                    if presets.is_empty() {
-                                        ui.weak("Empty bank");
-                                    }
-                                    for (preset, name) in presets.iter().enumerate() {
-                                        let response = ui.selectable_label(
-                                            selection == Some((bank, preset)),
-                                            format!("{} · {}", preset + 1, name),
-                                        );
-                                        #[cfg(test)]
-                                        self.bank_rows.insert((bank, preset), response.rect);
-                                        if response.clicked() {
-                                            next = Some((bank, preset));
-                                        }
-                                    }
-                                });
-                        }
-                    });
-                });
-            });
-        if let Some((bank, preset)) = next
-            && let Some(document) = &mut self.document
-        {
-            match document.select(bank, preset) {
-                Ok(()) => {
-                    self.drag_origin = None;
-                    self.error = None;
-                    self.status = format!(
-                        "Bank {}, preset {}. Edits stay in this bank copy.",
-                        bank + 1,
-                        preset + 1
-                    );
-                }
-                Err(error) => self.error = Some(error),
-            }
-        }
-    }
-
     fn change(&mut self, change: impl FnOnce(&mut PresetFile) -> Result<(), String>) {
         if self.is_reading() || self.pending.is_some() {
             return;
@@ -897,34 +873,6 @@ impl Workbench {
             }
         }
     }
-    fn float_drag_control(&mut self, ui: &mut egui::Ui, slot: u32, id: u32) {
-        let Some(mut value) = self.float(slot, id) else {
-            ui.label("—");
-            return;
-        };
-        let Some(variax_workbench::edit::Domain::Float { min, max, .. }) =
-            variax_workbench::edit::domain(slot, id)
-        else {
-            return;
-        };
-        if !value.is_finite() {
-            ui.label(format!("{value} (stored)"));
-            return;
-        }
-        if ui
-            .add_enabled(
-                self.can_edit(slot, Some(id)),
-                egui::DragValue::new(&mut value)
-                    .range(min..=max)
-                    .clamp_existing_to_range(false)
-                    .speed(0.01),
-            )
-            .changed()
-        {
-            self.change(|p| p.set_parameter(slot, id, 1, value.to_bits()));
-        }
-    }
-
     fn boolean_control(&mut self, ui: &mut egui::Ui, slot: u32, id: u32, label: &str) {
         if let Some(value) = self.integer(slot, id) {
             let mut checked = value != 0;
@@ -953,11 +901,12 @@ impl Workbench {
             })
             .map(|(_, text)| (*text).to_owned())
             .unwrap_or_else(|| format!("{value:.6} (stored)"));
-        ui.horizontal(|ui| {
+        ui.vertical(|ui| {
             ui.label(label);
             egui::ComboBox::from_id_salt(("electrical", id))
                 .selected_text(text)
-                .width(150.0)
+                .width(ui.available_width())
+                .truncate()
                 .show_ui(ui, |ui| {
                     for &(candidate, text) in choices {
                         ui.selectable_value(&mut selected, candidate.to_bits(), text);
@@ -974,9 +923,10 @@ impl Workbench {
             return;
         };
         let original = value;
-        ui.horizontal(|ui| {
-            ui.label("Volume taper");
+        ui.vertical(|ui| {
+            ui.label("Taper");
             egui::ComboBox::from_id_salt("volume-taper")
+                .width(ui.available_width())
                 .selected_text(match value {
                     0 => "Linear",
                     1 => "Audio",
@@ -994,13 +944,11 @@ impl Workbench {
     fn enabled_control(&mut self, ui: &mut egui::Ui, slot: u32, label: &str) {
         if let Some(model) = self.document.as_ref().and_then(|d| d.preset().model(slot)) {
             let mut enabled = model.enabled;
-            if ui
-                .add_enabled(
-                    self.can_edit(slot, None),
-                    egui::Checkbox::new(&mut enabled, label),
-                )
-                .changed()
-            {
+            let response = ui.add_enabled(
+                self.can_edit(slot, None),
+                egui::Checkbox::new(&mut enabled, label),
+            );
+            if response.changed() {
                 self.change(|p| p.set_enabled(slot, enabled));
             }
         }
@@ -1012,7 +960,8 @@ impl Workbench {
         let previous = id;
         egui::ComboBox::from_id_salt(("model", slot))
             .selected_text(self.model_name(slot))
-            .width(280.0)
+            .width(ui.available_width())
+            .truncate()
             .show_ui(ui, |ui| {
                 for model in self.catalog.iter().filter(|a| a.kind == kind) {
                     ui.selectable_value(&mut id, model.id, &model.name);
@@ -1047,26 +996,34 @@ impl Workbench {
         }
     }
 
-    fn guitar(&mut self, ui: &mut egui::Ui) {
-        let size = Vec2::new(
-            ui.available_width().min(560.0),
-            ui.available_width().min(560.0) * 412.0 / 450.0,
-        );
-        let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-        let scale = size.x / 450.0;
+    fn guitar(&mut self, ui: &mut egui::Ui, height: f32) {
         let body = self
             .model_id(BODY)
             .and_then(|id| self.catalog.iter().find(|a| a.id == id))
-            .map(|a| a.image.clone());
-        if let Some(body) = body
-            && let Some(texture) = self.texture(ui.ctx(), &body)
-        {
-            let photo = Rect::from_min_size(rect.min, Vec2::new(426.0, 412.0) * scale);
+            .map(|a| a.image.clone())
+            .and_then(|path| self.texture(ui.ctx(), &path));
+        let scale = (ui.available_width() / GUITAR_ART_SIZE.x).min(height / GUITAR_ART_SIZE.y);
+        let (stage, _) = ui.allocate_exact_size(
+            Vec2::new(ui.available_width(), GUITAR_ART_SIZE.y * scale),
+            Sense::hover(),
+        );
+        let rect = Rect::from_center_size(stage.center(), GUITAR_ART_SIZE * scale);
+        ui.painter()
+            .rect_filled(rect, 5, Color32::from_rgb(20, 20, 22));
+        if let Some(texture) = body.as_ref() {
             ui.painter().image(
                 texture.id(),
-                photo,
+                rect,
                 Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
                 Color32::WHITE,
+            );
+        } else {
+            ui.painter().text(
+                stage.center(),
+                egui::Align2::CENTER_CENTER,
+                "Guitar artwork unavailable",
+                egui::FontId::proportional(15.0),
+                ui.visuals().weak_text_color(),
             );
         }
         for slot in [PICKUP2, PICKUP1] {
@@ -1080,18 +1037,64 @@ impl Workbench {
                 .find(|a| a.id == model.id)
                 .map(|a| a.image.clone())
                 .unwrap_or_else(|| "pickups/unknown.png".into());
-            let position = self.float(slot, 0x200000).unwrap_or(2.0);
+            let stored_position = self.float(slot, 0x200000);
+            let position = stored_position.unwrap_or(2.0);
             let angle = self.float(slot, 0x200001).unwrap_or(0.0).to_radians();
             if !position.is_finite() || !angle.is_finite() {
                 continue;
             }
-            let center = rect.min
-                + Vec2::new(
-                    68.0 + 318.0 * ((position.clamp(0.1, 9.5) - 0.1) / 9.4),
-                    215.0,
-                ) * scale;
             if let Some(texture) = self.texture(ui.ctx(), &artwork) {
+                let center_at = |position: f32| {
+                    rect.min
+                        + Vec2::new(
+                            68.0 + 318.0 * ((position.clamp(0.1, 9.5) - 0.1) / 9.4),
+                            215.0,
+                        ) * scale
+                };
                 let dimension = texture.size_vec2() * scale;
+                let can_drag = ui.is_enabled()
+                    && stored_position.is_some()
+                    && self.can_edit(slot, Some(0x200000));
+                let response = ui.interact(
+                    Rect::from_center_size(center_at(position), dimension + Vec2::splat(12.0)),
+                    egui::Id::new(("pickup-drag", slot)),
+                    if can_drag {
+                        Sense::drag()
+                    } else {
+                        Sense::hover()
+                    },
+                );
+                if can_drag {
+                    let response = response
+                        .on_hover_and_drag_cursor(egui::CursorIcon::ResizeHorizontal)
+                        .on_hover_text(
+                            "Drag horizontally to move this pickup. Adjust rotation in Pickups.",
+                        );
+                    if let Some(pointer) = response.interact_pointer_pos() {
+                        if response.drag_started_by(egui::PointerButton::Primary)
+                            && let Some(delta) = response.total_drag_delta()
+                            && let Some(document) = &mut self.document
+                        {
+                            self.drag_origin =
+                                Some((slot, position.clamp(0.1, 9.5), pointer.x - delta.x, scale));
+                            document.begin_gesture();
+                        }
+                        if (response.dragged() || response.drag_stopped())
+                            && let Some((active, original, start_x, start_scale)) = self.drag_origin
+                            && active == slot
+                        {
+                            let value = (original
+                                + (pointer.x - start_x) / start_scale / 318.0 * 9.4)
+                                .clamp(0.1, 9.5);
+                            if value != position.clamp(0.1, 9.5) {
+                                self.change(|p| {
+                                    p.set_parameter(slot, 0x200000, 1, value.to_bits())
+                                });
+                            }
+                        }
+                    }
+                }
+                let center = center_at(self.float(slot, 0x200000).unwrap_or(position));
                 let rotation = egui::emath::Rot2::from_angle(angle);
                 let corners = [
                     Vec2::new(-0.5, -0.5),
@@ -1115,70 +1118,64 @@ impl Workbench {
                 }
                 mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
                 ui.painter().add(egui::Shape::mesh(mesh));
-                let response = ui
-                    .interact(
-                        Rect::from_center_size(center, dimension + Vec2::splat(12.0)),
-                        egui::Id::new(("pickup-drag", slot)),
-                        if self.can_edit(slot, Some(0x200000)) {
-                            Sense::drag()
-                        } else {
-                            Sense::hover()
-                        },
-                    )
-                    .on_hover_text(
-                        "Drag horizontally to move this pickup. Adjust rotation in Pickups.",
-                    );
-                if response.drag_started() {
-                    self.drag_origin = Some((slot, position));
-                    if let Some(document) = &mut self.document {
-                        document.begin_gesture();
-                    }
-                }
-                if response.dragged()
-                    && let Some((active, original)) = self.drag_origin
-                    && active == slot
-                {
-                    let value =
-                        (original + response.drag_delta().x / scale / 318.0 * 9.4).clamp(0.1, 9.5);
-                    self.change(|p| p.set_parameter(slot, 0x200000, 1, value.to_bits()));
-                }
-                if response.drag_stopped() {
-                    self.drag_origin = None;
-                    if let Some(document) = &mut self.document {
-                        document.end_gesture();
-                    }
-                }
             }
         }
-        ui.label(
-            egui::RichText::new(self.model_name(BODY))
-                .size(23.0)
-                .strong(),
-        );
-        if self.textures.is_empty() {
-            ui.weak("Artwork is optional. Choose an extracted editor image folder to show the original graphics. All parameter controls remain available.");
-        } else {
-            ui.weak("Original Workbench artwork · drag pickups to position them");
+        if self.drag_origin.is_some() && !ui.input(|input| input.pointer.primary_down()) {
+            self.drag_origin = None;
+            if let Some(document) = &mut self.document {
+                document.end_gesture();
+            }
+        }
+        if body.is_some() {
+            ui.weak("Drag a pickup to move it");
         }
     }
 
-    fn controls(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            for (tab, title) in [
-                (Tab::Body, "Body"),
-                (Tab::Pickups, "Pickups"),
-                (Tab::Tuning, "Tuning"),
-                (Tab::Controls, "Controls"),
-            ] {
-                ui.selectable_value(&mut self.tab, tab, title);
-            }
-        });
-        ui.separator();
+    fn controls(&mut self, ui: &mut egui::Ui, height: f32) {
+        let slider_width = (ui.available_width() * 0.45).min(190.0);
+        let compact = ui.ctx().content_rect().height() < 720.0;
+        let style = ui.style_mut();
+        style.spacing.item_spacing.y = if compact { 1.0 } else { 3.0 };
+        style.spacing.button_padding.y = if compact { 1.0 } else { 2.0 };
+        style.spacing.interact_size.y = if compact { 15.0 } else { 17.0 };
+        style.spacing.slider_width = slider_width;
+        style.visuals.selection = GUITAR_SELECTION;
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), height),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                if self.can_edit(SYSTEM, Some(0x200000)) {
+                    egui::TopBottomPanel::bottom("output-trim")
+                        .frame(egui::Frame::NONE.inner_margin(egui::Margin {
+                            top: 6,
+                            ..egui::Margin::ZERO
+                        }))
+                        .show_inside(ui, |ui| {
+                            self.float_control(ui, SYSTEM, 0x200000, "Output trim", " dB");
+                        });
+                }
+                ui.horizontal_wrapped(|ui| {
+                    for (tab, title) in [
+                        (Tab::Body, "Body type"),
+                        (Tab::Pickups, "Pickups"),
+                        (Tab::Controls, "Controls"),
+                    ] {
+                        ui.selectable_value(&mut self.tab, tab, title);
+                    }
+                });
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .id_salt(self.tab)
+                    .show(ui, |ui| self.tab_controls(ui));
+            },
+        );
+    }
+
+    fn tab_controls(&mut self, ui: &mut egui::Ui) {
         let slot = match self.tab {
             Tab::Body => BODY,
             Tab::Pickups => PICKUP1,
-            Tab::Tuning => TUNING,
-            Tab::Controls => variax_workbench::edit::SYSTEM,
+            Tab::Controls => WIRING,
         };
         let availability = self
             .document
@@ -1187,111 +1184,151 @@ impl Workbench {
         if let Some(Err(reason)) = &availability {
             ui.label(reason);
         }
-        ui.add_enabled_ui(availability.is_some_and(|a| a.is_ok()), |ui| { match self.tab {
-            Tab::Body => {
-                ui.heading("Guitar body");
-                ui.label("Choose the modeled instrument body.");
-                self.model_control(ui, BODY, "body");
-                ui.add_space(16.0);
-                ui.heading("Pickup combination");
-                ui.label(format!("Pickup 1: {}", self.model_name(PICKUP1)));
-                ui.label(format!("Pickup 2: {}", self.model_name(PICKUP2)));
-                ui.add_space(16.0);
-                ui.label("Edits stay in your preset copy. Sending changes to the guitar is not available yet.");
-            }
-            Tab::Pickups => {
-                for (slot, title) in [(PICKUP1, "Pickup 1"), (PICKUP2, "Pickup 2")] {
-                    ui.heading(title);
-                    self.enabled_control(ui, slot, "Enabled");
-                    self.model_control(ui, slot, "pickup");
-                    self.float_control(ui, slot, 0x200000, "Position", " in");
-                    self.float_control(ui, slot, 0x200001, "Angle", "°");
-                    self.float_control(ui, slot, 0x200003, "Level", " dB");
-                    ui.add_space(12.0);
+        ui.add_enabled_ui(availability.is_some_and(|a| a.is_ok()), |ui| {
+            match self.tab {
+                Tab::Body => {
+                    ui.strong("Guitar body");
+                    self.model_control(ui, BODY, "body");
                 }
-                self.boolean_control(ui, PICKUP2, 0x200002, "Reverse pickup 2 phase");
-                self.boolean_control(ui, PICKUP2, 0x200004, "Wire pickups in series");
-            }
-            Tab::Tuning => {
-                ui.heading("Alternate tuning");
-                self.enabled_control(ui, TUNING, "Enable alternate tuning");
-                ui.label("Strings are shown from low E to high E.");
-                egui::Grid::new("tuning").striped(true).show(ui, |ui| {
-                    ui.strong("String");
-                    ui.strong("Semitones");
-                    ui.strong("Detune (cents)");
-                    ui.strong("Mix");
-                    ui.end_row();
-                    for (i, label) in [
-                        "6 · Low E",
-                        "5 · A",
-                        "4 · D",
-                        "3 · G",
-                        "2 · B",
-                        "1 · High E",
-                    ]
-                    .into_iter()
-                    .enumerate()
-                    {
-                        ui.label(label);
-                        if let Some(mut value) = self.integer(TUNING, 0x200000 + i as u32) {
-                            if ui
-                                .add(egui::DragValue::new(&mut value).range(-12..=12).clamp_existing_to_range(false))
-                                .changed()
-                            {
-                                self.change(|p| {
-                                    p.set_parameter(TUNING, 0x200000 + i as u32, 0, value as u32)
-                                });
-                            }
-                        } else {
-                            ui.label("—");
+                Tab::Pickups => {
+                    for (slot, title) in [(PICKUP1, "Pickup 1"), (PICKUP2, "Pickup 2")] {
+                        if slot == PICKUP2 {
+                            ui.separator();
                         }
-                        self.float_drag_control(ui, TUNING, 0x200006 + i as u32);
-                        self.float_drag_control(ui, TUNING, 0x20000c + i as u32);
-                        ui.end_row();
+                        ui.horizontal(|ui| {
+                            ui.strong(title);
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    self.enabled_control(ui, slot, "Enabled");
+                                },
+                            );
+                        });
+                        self.model_control(ui, slot, "pickup");
+                        self.float_control(ui, slot, 0x200000, "Position", " in");
+                        self.float_control(ui, slot, 0x200001, "Angle", "°");
+                        self.float_control(ui, slot, 0x200003, "Level", " dB");
+                        if slot == PICKUP1 {
+                            ui.horizontal_wrapped(|ui| {
+                                self.boolean_control(
+                                    ui,
+                                    PICKUP2,
+                                    0x200002,
+                                    "Reverse pickup 2 phase",
+                                );
+                                self.boolean_control(
+                                    ui,
+                                    PICKUP2,
+                                    0x200004,
+                                    "Wire pickups in series",
+                                );
+                            });
+                        }
                     }
-                });
-                self.float_control(ui, TUNING, 0x200012, "String spread", "");
+                }
+                Tab::Controls => self.electrical_controls(ui),
             }
-            Tab::Controls => {
-                let availability = self.document.as_ref().unwrap().preset().edit_availability(WIRING, None);
-                if let Err(reason) = &availability { ui.label(reason); }
-                ui.add_enabled_ui(availability.is_ok(), |ui| {
-                ui.heading("Volume and tone");
-                let resistances = [
-                    (25.0, "25 kΩ"),
-                    (50.0, "50 kΩ"),
-                    (100.0, "100 kΩ"),
-                    (250.0, "250 kΩ"),
-                    (470.0, "470 kΩ"),
-                    (500.0, "500 kΩ"),
-                    (1000.0, "1 MΩ"),
-                ];
-                self.float_choices(ui, 0x200000, "Volume resistance", &resistances);
-                self.taper_control(ui);
-                self.float_choices(ui, 0x200002, "Tone resistance", &resistances);
-                self.float_choices(
-                    ui,
-                    0x200003,
-                    "Tone capacitance",
-                    &[
-                        (0.0011, "1.1 nF"),
-                        (0.0022, "2.2 nF"),
-                        (0.0047, "4.7 nF"),
-                        (0.011, "11 nF"),
-                        (0.022, "22 nF"),
-                        (0.047, "47 nF"),
-                        (0.1, "0.1 µF"),
-                        (-0.047, "Filter"),
-                    ],
-                );
-                self.float_control(ui, WIRING, 0x200004, "Tone position", "");
-                self.boolean_control(ui, WIRING, 0x200005, "Save tone-knob position");
+        });
+    }
+
+    fn electrical_controls(&mut self, ui: &mut egui::Ui) {
+        let resistances = [
+            (25.0, "25 kΩ"),
+            (50.0, "50 kΩ"),
+            (100.0, "100 kΩ"),
+            (250.0, "250 kΩ"),
+            (470.0, "470 kΩ"),
+            (500.0, "500 kΩ"),
+            (1000.0, "1 MΩ"),
+        ];
+        ui.strong("Volume knob");
+        ui.columns(2, |columns| {
+            self.float_choices(&mut columns[0], 0x200000, "Resistance", &resistances);
+            self.taper_control(&mut columns[1]);
+        });
+        ui.separator();
+        ui.strong("Tone knob");
+        ui.columns(2, |columns| {
+            self.float_choices(&mut columns[0], 0x200002, "Resistance", &resistances);
+            self.float_choices(
+                &mut columns[1],
+                0x200003,
+                "Capacitance",
+                &[
+                    (0.0011, "1.1 nF"),
+                    (0.0022, "2.2 nF"),
+                    (0.0047, "4.7 nF"),
+                    (0.011, "11 nF"),
+                    (0.022, "22 nF"),
+                    (0.047, "47 nF"),
+                    (0.1, "0.1 µF"),
+                    (-0.047, "Filter"),
+                ],
+            );
+        });
+        self.float_control(ui, WIRING, 0x200004, "Tone position", "");
+        self.boolean_control(ui, WIRING, 0x200005, "Save tone-knob position");
+    }
+
+    fn guitar_workspace(&mut self, ui: &mut egui::Ui) {
+        if self.document.is_none() {
+            guitar_panel().show(ui, |ui| {
+                ui.heading("Open a Variax preset, bank or collection");
+                ui.horizontal_wrapped(|ui| {
+                    ui.add_enabled_ui(!self.is_reading() && self.pending.is_none(), |ui| {
+                        if ui.button("Open file…").clicked() {
+                            self.open_dialog();
+                        }
+                        if ui.button("Try example banks").clicked() && self.document.is_none() {
+                            self.open_example();
+                        }
+                    });
                 });
-                ui.add_space(12.0);
-                self.float_control(ui, 0x02010000, 0x200000, "Output trim", " dB");
-            }
+            });
+            return;
         }
+        let available = !self.is_reading() && self.pending.is_none();
+        self.guitar_header(ui, available);
+        let editable = self
+            .document
+            .as_ref()
+            .is_some_and(|document| matches!(document.preset().device_id(), 0x70000 | 0x70004));
+        let can_edit = editable && available;
+        if !editable {
+            ui.label("Editing supports legacy electric Variax presets.");
+        }
+
+        egui::TopBottomPanel::bottom("guitar-tuning")
+            .default_height(132.0)
+            .show_separator_line(false)
+            .frame(guitar_panel().inner_margin(8).outer_margin(egui::Margin {
+                top: 7,
+                ..egui::Margin::ZERO
+            }))
+            .show_inside(ui, |ui| self.fretboard(ui, can_edit));
+        let panel_height = (ui.available_height() - 26.0).max(62.0);
+        ui.columns(2, |columns| {
+            guitar_panel().show(&mut columns[0], |ui| {
+                ui.set_min_height(panel_height);
+                ui.horizontal(|ui| {
+                    ui.heading(self.model_name(BODY));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add_enabled(available, egui::Button::new("Artwork folder…").small())
+                            .clicked()
+                        {
+                            self.artwork_dialog();
+                        }
+                    });
+                });
+                ui.add_enabled_ui(can_edit, |ui| {
+                    self.guitar(ui, (panel_height - 56.0).max(9.0));
+                });
+            });
+            guitar_panel().show(&mut columns[1], |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.add_enabled_ui(can_edit, |ui| self.controls(ui, panel_height));
+            });
         });
     }
 
@@ -1902,7 +1939,7 @@ impl Workbench {
                 ui.heading("Variax Workbench");
                 ui.weak("Offline validation");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("? Shortcuts").clicked() {
+                    if ui.button("Milestone & Help").clicked() {
                         self.help = true;
                     }
                     if ui.add_enabled(!self.is_reading() && self.pending.is_none(), egui::Button::new("Save copy…")).clicked() {
@@ -1913,7 +1950,7 @@ impl Workbench {
                             false,
                             egui::Button::new("Live access locked"),
                         )
-                        .on_hover_text("Physical device access is disabled while offline validation is in progress.")
+                        .on_disabled_hover_text("Hardware testing is locked during offline validation. Future testing starts with the lowest-risk operation and advances one explicitly approved step at a time.")
                         .clicked()
                     {
                         self.start_read();
@@ -1935,7 +1972,6 @@ impl Workbench {
                     }
                 });
             });
-            ui.add_space(8.0);
         });
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             if self.is_reading() {
@@ -1947,57 +1983,35 @@ impl Workbench {
                     }
                 });
             }
-            ui.vertical(|ui| {
-                ui.weak(&self.status);
-                if let Some(error) = &self.error {
-                    ui.colored_label(Color32::LIGHT_RED, error);
-                }
-            });
-        });
-        self.bank_browser(ctx);
-        egui::CentralPanel::default().show(ctx, |ui| {
-            let Some(document) = &self.document else {
-                ui.heading("Open a Variax preset, bank or collection to begin"); return;
-            };
-            let mut name = document.preset().name().to_owned();
-            let editable = matches!(document.preset().device_id(), 0x70000 | 0x70004);
-            let dirty = document.is_dirty();
-            let can_edit = editable && !self.is_reading() && self.pending.is_none();
-            let can_undo = document.can_undo(); let can_redo = document.can_redo();
-            ui.horizontal(|ui| {
-                ui.label("Preset");
-                if ui.add_enabled(can_edit, egui::TextEdit::singleline(&mut name)).changed() { self.change(|p| p.rename(&name)); }
-                if dirty { ui.label(egui::RichText::new("Unsaved changes").color(Color32::from_rgb(255,200,90))); }
-                if ui.add_enabled(can_undo && can_edit, egui::Button::new("Undo")).clicked() { self.undo(); }
-                if ui.add_enabled(can_redo && can_edit, egui::Button::new("Redo")).clicked() { self.redo(); }
-            });
-            ui.add_space(16.0);
-            if !editable { ui.label("This preset can be inspected. Editing currently supports legacy electric Variax models."); }
-            ui.columns(2, |columns| {
-                egui::Frame::group(columns[0].style()).show(&mut columns[0], |ui| {
-                    ui.add_enabled_ui(can_edit, |ui| self.guitar(ui));
-                    ui.add_space(12.0);
-                    if ui.add_enabled(!self.is_reading() && self.pending.is_none(), egui::Button::new("Artwork folder…").small()).clicked() {
-                        self.artwork_dialog();
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui| {
+                ui.label(crate::APP_VERSION);
+                ui.vertical(|ui| {
+                    ui.weak(&self.status);
+                    if let Some(error) = &self.error {
+                        ui.colored_label(Color32::LIGHT_RED, error);
                     }
                 });
-                egui::Frame::group(columns[1].style()).show(&mut columns[1], |ui| {
-                    ui.add_enabled_ui(can_edit, |ui| { egui::ScrollArea::vertical().show(ui, |ui| self.controls(ui)); });
-                });
             });
         });
+        egui::CentralPanel::default().show(ctx, |ui| self.guitar_workspace(ui));
         if self.help {
-            egui::Window::new("Keyboard shortcuts")
+            egui::Window::new(format!("Workbench Help · {}", crate::APP_VERSION))
                 .open(&mut self.help)
                 .collapsible(false)
+                .default_width(400.0)
+                .default_height(600.0)
+                .vscroll(true)
                 .show(ctx, |ui| {
+                    guitar_ui::milestones(ui);
+                    ui.separator();
+                    ui.heading("Keyboard shortcuts");
                     for (key, action) in [
                         ("Ctrl+O", "Open preset"),
                         ("Ctrl+S", "Save a new copy"),
                         ("Ctrl+Z", "Undo"),
                         ("Ctrl+Shift+Z", "Redo"),
                         ("Q", "Quit"),
-                        ("?", "Show shortcuts"),
+                        ("?", "Toggle Help"),
                     ] {
                         ui.horizontal(|ui| {
                             ui.monospace(key);
@@ -4413,7 +4427,7 @@ impl Drop for Workbench {
     }
 }
 
-const USAGE: &str = "Usage: variax-workbench-gui [FILE | --preset FILE] [--data-dir DIRECTORY] [--artwork EDITOR_IMAGE_FOLDER] [--tab body|pickups|tuning|controls] [--display auto|x11|wayland (Linux)] [--screenshot OUTPUT.png]";
+const USAGE: &str = "Usage: variax-workbench-gui [FILE | --preset FILE] [--data-dir DIRECTORY] [--artwork EDITOR_IMAGE_FOLDER] [--tab body|pickups|controls] [--display auto|x11|wayland (Linux)] [--screenshot OUTPUT.png]\n       variax-workbench-gui --version";
 
 fn save_screenshot(path: &Path, pixels: &[u8], width: u32, height: u32) -> Result<(), String> {
     use image::ImageEncoder;
@@ -4428,22 +4442,22 @@ struct GuiOptions {
     preset: Option<PathBuf>,
     artwork: PathBuf,
     screenshot: Option<PathBuf>,
-    tab: Tab,
+    tab: Option<Tab>,
     display: String,
 }
 
 fn parse_options(
     arguments: impl IntoIterator<Item = String>,
-    data_root: &Path,
+    default_artwork: &Path,
 ) -> Result<GuiOptions, String> {
     let mut options = GuiOptions {
         preset: None,
-        artwork: data_root.join("artwork"),
+        artwork: default_artwork.to_owned(),
         screenshot: None,
-        tab: Tab::Body,
+        tab: None,
         display: "auto".into(),
     };
-    let mut data_root = data_root.to_owned();
+    let mut data_root = None;
     let mut artwork = None;
     let mut args = arguments.into_iter();
     while let Some(arg) = args.next() {
@@ -4469,7 +4483,7 @@ fn parse_options(
                     return Err("Open one file at a time".into());
                 }
             }
-            "--data-dir" => data_root = PathBuf::from(value),
+            "--data-dir" => data_root = Some(PathBuf::from(value)),
             "--artwork" => artwork = Some(PathBuf::from(value)),
             "--display" => {
                 if !matches!(value.as_str(), "auto" | "x11" | "wayland") {
@@ -4488,30 +4502,46 @@ fn parse_options(
                 options.screenshot = Some(path);
             }
             "--tab" => {
-                options.tab = match value.as_str() {
+                options.tab = Some(match value.as_str() {
                     "body" => Tab::Body,
                     "pickups" => Tab::Pickups,
-                    "tuning" => Tab::Tuning,
+                    "tuning" => Tab::Pickups, // Tuning is always visible.
                     "controls" => Tab::Controls,
                     _ => return Err(format!("Unknown editor tab: {value}")),
-                }
+                });
             }
             _ => unreachable!(),
         }
     }
-    options.artwork = artwork.unwrap_or_else(|| data_root.join("artwork"));
+    if let Some(artwork) = artwork.or_else(|| data_root.map(|root| root.join("artwork"))) {
+        options.artwork = artwork;
+    }
     Ok(options)
 }
 
-fn default_data_root() -> PathBuf {
-    let absolute_env = |key| {
+fn default_artwork() -> PathBuf {
+    let absolute_env = |key: &str| {
         std::env::var_os(key)
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())
     };
     if let Some(path) = absolute_env("VARIAX_WORKBENCH_DATA_DIR") {
-        return path;
+        return path.join("artwork");
     }
+    let installed = platform_data_root(absolute_env).join("artwork");
+    default_artwork_from_checkout(installed, Path::new(env!("CARGO_MANIFEST_DIR")))
+}
+
+fn default_artwork_from_checkout(installed: PathBuf, checkout: &Path) -> PathBuf {
+    // A launcher can start the binary from outside the source checkout.
+    let extracted = checkout.join("assets/original-ui/modules/variax/editor/images");
+    if !installed.is_dir() && extracted.is_dir() {
+        return extracted;
+    }
+    installed
+}
+
+fn platform_data_root(absolute_env: impl Fn(&str) -> Option<PathBuf>) -> PathBuf {
     #[cfg(target_os = "windows")]
     if let Some(path) = absolute_env("LOCALAPPDATA") {
         return path.join("VariaxWorkbench");
@@ -4530,13 +4560,17 @@ fn default_data_root() -> PathBuf {
     std::env::temp_dir().join("variax-workbench")
 }
 
-fn main() -> eframe::Result {
+pub(crate) fn run(title: &str) -> eframe::Result {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
+    if arguments == ["--version"] {
+        println!("{title}");
+        return Ok(());
+    }
     if arguments.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!("{USAGE}");
         return Ok(());
     }
-    let arguments = match parse_options(arguments, &default_data_root()) {
+    let arguments = match parse_options(arguments, &default_artwork()) {
         Ok(options) => options,
         Err(error) => {
             eprintln!("{error}\n{USAGE}");
@@ -4569,13 +4603,19 @@ fn main() -> eframe::Result {
     };
     #[cfg(not(target_os = "linux"))]
     let _ = &arguments.display;
+    // Craft Anything saves the launcher's output in its play log.
+    eprintln!("Opening {title}");
     eframe::run_native(
-        "Variax Workbench",
+        title,
         options,
         Box::new(move |cc| {
-            let mut app = Workbench::new(cc, arguments.preset, arguments.artwork);
+            let mut app = Workbench::with_context(
+                &cc.egui_ctx,
+                arguments.preset,
+                arguments.artwork,
+                arguments.tab,
+            );
             app.screenshot = arguments.screenshot;
-            app.tab = arguments.tab;
             Ok(Box::new(app))
         }),
     )
@@ -4592,6 +4632,7 @@ mod tests {
             &context,
             Some(root.join("tests/fixtures/editor-preset.vwm")),
             root.join("assets/original-ui/modules/variax/editor/images"),
+            None,
         );
         // These tests exercise egui directly, without a display or theme polling.
         app.theme_polled = Instant::now();
@@ -4830,6 +4871,174 @@ mod tests {
         assert!(!doc.can_undo());
         app.redo();
         assert_eq!(app.document.as_ref().unwrap().as_bytes(), changed);
+    }
+
+    #[test]
+    fn dragging_either_pickup_follows_the_pointer_and_undoes_in_one_step() {
+        fn frame(context: &egui::Context, app: &mut Workbench, events: Vec<egui::Event>) {
+            let _ = context.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1120., 760.))),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| app.render(ctx),
+            );
+        }
+        fn button(pos: Pos2, pressed: bool) -> egui::Event {
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            }
+        }
+
+        for (slot, other_slot, direction) in [(PICKUP1, PICKUP2, -1.0), (PICKUP2, PICKUP1, 1.0)] {
+            let context = egui::Context::default();
+            let artwork = tempfile::tempdir().unwrap();
+            let mut app = Workbench::with_context(&context, None, artwork.path().to_owned(), None);
+            app.theme_polled = Instant::now();
+            let texture = context.load_texture(
+                "synthetic pickup",
+                egui::ColorImage::filled([26, 92], Color32::WHITE),
+                egui::TextureOptions::LINEAR,
+            );
+            app.textures.insert("pickups/strat.png".into(), texture);
+            let before = app.document.as_ref().unwrap().as_bytes().to_vec();
+            let initial = app.float(slot, 0x200000).unwrap();
+            let other = app.float(other_slot, 0x200000).unwrap();
+            frame(&context, &mut app, vec![]);
+            frame(&context, &mut app, vec![]);
+            let id = egui::Id::new(("pickup-drag", slot));
+            let start = context.read_response(id).unwrap().rect.center();
+            let step = Vec2::new(10.0 * direction, 0.0);
+            frame(
+                &context,
+                &mut app,
+                vec![egui::Event::PointerMoved(start), button(start, true)],
+            );
+            frame(
+                &context,
+                &mut app,
+                vec![egui::Event::PointerMoved(start + step)],
+            );
+            let moved = app.float(slot, 0x200000).unwrap();
+            assert!((moved - initial) * direction > 0.0);
+            frame(&context, &mut app, vec![]);
+            assert_eq!(app.float(slot, 0x200000), Some(moved));
+
+            let second = start + step * 2.0 + Vec2::new(0.0, 10.0);
+            frame(&context, &mut app, vec![egui::Event::PointerMoved(second)]);
+            assert!((app.float(slot, 0x200000).unwrap() - (2.0 * moved - initial)).abs() < 1e-5);
+
+            let end = second + step;
+            frame(&context, &mut app, vec![button(end, false)]);
+            assert!(
+                (app.float(slot, 0x200000).unwrap() - (3.0 * moved - 2.0 * initial)).abs() < 1e-5
+            );
+            assert_eq!(app.float(other_slot, 0x200000), Some(other));
+            let changed = app.document.as_ref().unwrap().as_bytes().to_vec();
+            app.undo();
+            let document = app.document.as_ref().unwrap();
+            assert_eq!(document.as_bytes(), before);
+            assert!(!document.can_undo());
+            app.redo();
+            assert_eq!(app.document.as_ref().unwrap().as_bytes(), changed);
+        }
+    }
+
+    #[test]
+    fn fretboard_enable_button_uses_preset_history_and_respects_pending_actions() {
+        fn frame(context: &egui::Context, app: &mut Workbench, events: Vec<egui::Event>) {
+            let _ = context.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(960.0, 680.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| app.guitar_workspace(ui));
+                },
+            );
+        }
+
+        let (context, mut app) = app();
+        app.load(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/synthetic-host-preset.vwm"),
+        );
+        app.tab = Tab::Pickups;
+        let original = app.document.as_ref().unwrap().as_bytes().to_vec();
+        let tuning_enabled = |app: &Workbench| {
+            app.document
+                .as_ref()
+                .unwrap()
+                .preset()
+                .model(TUNING)
+                .unwrap()
+                .enabled
+        };
+        let was_enabled = tuning_enabled(&app);
+
+        let click_toggle = |app: &mut Workbench| {
+            frame(&context, app, vec![]);
+            frame(&context, app, vec![]);
+            let pos = app.tuning_toggle.unwrap().center();
+            for pressed in [true, false] {
+                frame(
+                    &context,
+                    app,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                );
+            }
+        };
+
+        app.pending = Some(Pending::Quit);
+        click_toggle(&mut app);
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), original);
+
+        app.pending = None;
+        click_toggle(&mut app);
+        assert_ne!(tuning_enabled(&app), was_enabled);
+        assert_eq!(app.tab, Tab::Pickups);
+        app.undo();
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), original);
+        assert!(!app.document.as_ref().unwrap().can_undo());
+        app.redo();
+        assert_ne!(tuning_enabled(&app), was_enabled);
+
+        app.tab = Tab::Controls;
+        click_toggle(&mut app);
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), original);
+        assert_eq!(app.tab, Tab::Controls);
+    }
+
+    #[test]
+    fn offline_example_opens_as_a_clean_editable_preset() {
+        let context = egui::Context::default();
+        let mut app = Workbench::with_context(&context, None, PathBuf::new(), None);
+
+        assert!(app.error.is_none());
+        assert_eq!(app.tab, Tab::Pickups);
+        assert_eq!(app.model_name(BODY), "Spank");
+        assert_eq!(app.float(SYSTEM, 0x200000), Some(0.0));
+        let document = app.document.as_ref().unwrap();
+        assert!(!document.is_dirty());
+        assert!(!document.can_undo());
+        let original = document.as_bytes().to_vec();
+
+        app.change(|preset| preset.rename("My example"));
+        assert!(app.dirty());
+        app.undo();
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), original);
     }
 
     #[test]
@@ -10700,11 +10909,11 @@ mod tests {
             PresetFile::parse(bytes.clone()).unwrap(),
             "imported.vwm".into(),
         ));
-        for tab in [Tab::Body, Tab::Pickups, Tab::Tuning, Tab::Controls] {
+        for tab in [Tab::Body, Tab::Pickups, Tab::Controls] {
             app.tab = tab;
             for _ in 0..2 {
                 let _ = context.run(egui::RawInput::default(), |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| app.controls(ui));
+                    egui::CentralPanel::default().show(ctx, |ui| app.guitar_workspace(ui));
                 });
             }
             let doc = app.document.as_ref().unwrap();
@@ -10754,39 +10963,68 @@ mod tests {
             root,
         )
         .unwrap();
-        assert_eq!(options.tab, Tab::Controls);
+        assert_eq!(options.tab, Some(Tab::Controls));
         assert_eq!(options.preset.as_deref(), Some(Path::new("model.vwm")));
     }
 
     #[test]
-    fn fresh_install_without_assets_or_default_preset_can_open_a_file() {
+    fn fresh_install_opens_the_example_without_assets_and_can_open_a_file() {
         let directory = tempfile::tempdir().unwrap();
-        let options = parse_options(Vec::new(), directory.path()).unwrap();
+        let options = parse_options(Vec::new(), &directory.path().join("artwork")).unwrap();
         assert!(options.preset.is_none());
         let context = egui::Context::default();
-        let mut app = Workbench::with_context(&context, options.preset, options.artwork);
+        let mut app =
+            Workbench::with_context(&context, options.preset, options.artwork, options.tab);
         app.theme_polled = Instant::now();
         let _ = context.run(egui::RawInput::default(), |ctx| app.render(ctx));
         assert!(app.error.is_none());
-        assert!(app.document.is_none());
+        assert_eq!(app.tab, Tab::Pickups);
+        assert_eq!(
+            app.document.as_ref().unwrap().preset().name(),
+            "Spank example"
+        );
         assert!(app.read_worker.is_none());
         assert!(app.textures.is_empty());
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+        let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/editor-preset.vwm");
         app.dialogs = Box::new(FakeDialogs {
-            open: [Some(
-                Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/editor-preset.vwm"),
-            )]
-            .into(),
+            open: [Some(file.clone())].into(),
             ..Default::default()
         });
         app.open_dialog();
-        assert!(app.document.is_some());
         assert!(app.error.is_none());
-        let before = app.document.as_ref().unwrap().as_bytes().to_vec();
+        let before = fs::read(file).unwrap();
         let _ = context.run(egui::RawInput::default(), |ctx| app.render(ctx));
         assert!(app.error.is_none());
         assert_eq!(app.document.as_ref().unwrap().as_bytes(), before);
         assert!(!app.dirty());
+    }
+
+    #[test]
+    fn startup_honors_the_requested_file_and_tab() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/editor-preset.vwm");
+        let artwork = directory.path().join("artwork");
+        let context = egui::Context::default();
+
+        let example = Workbench::with_context(&context, None, artwork.clone(), Some(Tab::Controls));
+        assert_eq!(example.tab, Tab::Controls);
+        assert_eq!(
+            example.document.as_ref().unwrap().preset().name(),
+            "Spank example"
+        );
+
+        let supplied = Workbench::with_context(&context, Some(file.clone()), artwork.clone(), None);
+        assert_eq!(supplied.tab, Tab::Body);
+        assert_eq!(
+            supplied.document.as_ref().unwrap().as_bytes(),
+            fs::read(file).unwrap()
+        );
+
+        let missing = directory.path().join("missing.vwm");
+        let failed = Workbench::with_context(&context, Some(missing), artwork, None);
+        assert!(failed.document.is_none());
+        assert!(failed.error.as_deref().unwrap().contains("missing.vwm"));
     }
 
     #[test]
@@ -10808,6 +11046,22 @@ mod tests {
     }
 
     #[test]
+    fn artwork_lookup_uses_the_checkout_when_the_installed_folder_is_absent() {
+        let directory = tempfile::tempdir().unwrap();
+        let installed = directory.path().join("user-data/artwork");
+        let checkout = directory.path().join("source checkout");
+        let extracted = checkout.join("assets/original-ui/modules/variax/editor/images");
+        let resolve = || default_artwork_from_checkout(installed.clone(), &checkout);
+
+        assert_eq!(resolve(), installed);
+        assert!(!installed.exists());
+        fs::create_dir_all(&extracted).unwrap();
+        assert_eq!(resolve(), extracted);
+        fs::create_dir_all(&installed).unwrap();
+        assert_eq!(resolve(), installed);
+    }
+
+    #[test]
     fn screenshot_output_creates_a_png_and_never_replaces_existing_data() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("preview.png");
@@ -10819,43 +11073,48 @@ mod tests {
     }
 
     #[test]
-    fn bank_browser_clicks_preserve_edits_and_active_operation_blocks_browsing() {
+    fn bank_dropdown_and_slots_preserve_edits_and_block_browsing_during_an_operation() {
         fn frame(context: &egui::Context, app: &mut Workbench, events: Vec<egui::Event>) {
             let _ = context.run(
                 egui::RawInput {
-                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1120., 900.))),
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1120., 760.))),
                     events,
                     ..Default::default()
                 },
-                |ctx| app.bank_browser(ctx),
+                |ctx| {
+                    egui::CentralPanel::default()
+                        .show(ctx, |ui| app.guitar_workspace(ui))
+                        .inner
+                },
             );
         }
-        fn click(context: &egui::Context, app: &mut Workbench, row: (usize, usize)) {
-            let pos = app.bank_rows[&row].center();
-            frame(
-                context,
-                app,
-                vec![
-                    egui::Event::PointerMoved(pos),
-                    egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed: true,
-                        modifiers: Default::default(),
-                    },
-                ],
-            );
-            frame(
-                context,
-                app,
-                vec![egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed: false,
-                    modifiers: Default::default(),
-                }],
-            );
+
+        fn click(context: &egui::Context, app: &mut Workbench, pos: Pos2) {
+            for pressed in [true, false] {
+                frame(
+                    context,
+                    app,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                );
+            }
+            frame(context, app, vec![]);
         }
+
+        fn bank(context: &egui::Context, app: &mut Workbench, bank: usize) {
+            click(context, app, app.bank_dropdown.unwrap().center());
+            let pos = app.bank_options[&bank].center();
+            click(context, app, pos);
+        }
+
+        use variax_workbench::preset::PresetText;
         for name in ["synthetic-bank.vwb", "synthetic-collection.l6c"] {
             let (context, mut app) = app();
             context.style_mut(|style| style.animation_time = 0.);
@@ -10865,28 +11124,56 @@ mod tests {
                     .join(name),
             );
             frame(&context, &mut app, vec![]);
-            assert_eq!(app.bank_rows.len(), 5);
+            frame(&context, &mut app, vec![]);
             assert_eq!(app.document.as_ref().unwrap().selection(), Some((1, 0)));
-            click(&context, &mut app, (2, 1));
+            bank(&context, &mut app, 0); // The first bank is empty.
+            assert_eq!(app.document.as_ref().unwrap().selection(), Some((1, 0)));
+            click(&context, &mut app, Pos2::new(1050.0, 120.0));
+            bank(&context, &mut app, 2);
+            let slot = app.bank_slots[&1].center();
+            click(&context, &mut app, slot);
             assert_eq!(app.document.as_ref().unwrap().selection(), Some((2, 1)));
-            app.change(|p| p.rename("Edited bank preset"));
-            click(&context, &mut app, (1, 0));
+            app.change(|p| p.set_metadata(PresetText::Author, "Guitarist 🎸"));
+            app.change(|p| p.set_metadata(PresetText::Notes, "Drop D\nStudio take"));
+            bank(&context, &mut app, 1);
+
             let doc = app.document.as_ref().unwrap();
-            assert_eq!(doc.selection(), Some((1, 0)));
-            assert_eq!(
-                doc.banks().unwrap()[2].presets()[1].name(),
-                "Edited bank preset"
-            );
+            assert_eq!(doc.selection(), Some((1, 1)));
+            assert!(doc.slot_is_dirty(2, 1));
+            assert!(!doc.slot_is_dirty(1, 1));
             assert!(doc.is_dirty());
+
             let (sender, receiver) = std::sync::mpsc::channel();
             app.read_receiver = Some(receiver);
-            click(&context, &mut app, (2, 1));
-            assert_eq!(app.document.as_ref().unwrap().selection(), Some((1, 0)));
+            frame(&context, &mut app, vec![]);
+            let slot = app.bank_slots[&0].center();
+            click(&context, &mut app, slot);
+            assert_eq!(app.document.as_ref().unwrap().selection(), Some((1, 1)));
             sender
                 .send(Err("offline simulated failure".into()))
                 .unwrap();
             app.poll_read();
+
+            let directory = tempfile::tempdir().unwrap();
+            let destination = directory.path().join(name);
+            let doc = app.document.as_mut().unwrap();
+            doc.save_copy(&destination).unwrap();
+            assert!(!doc.slot_is_dirty(2, 1));
+            assert!(!doc.is_dirty());
+            let mut reopened = EditorDocument::open(&destination).unwrap();
+            reopened.select(2, 1).unwrap();
+            assert_eq!(
+                reopened.preset().metadata(PresetText::Author).unwrap(),
+                "Guitarist 🎸"
+            );
+            assert_eq!(
+                reopened.preset().metadata(PresetText::Notes).unwrap(),
+                "Drop D\nStudio take"
+            );
+
             app.undo();
+            assert!(app.document.as_ref().unwrap().slot_is_dirty(2, 1));
+            app.redo();
             assert!(!app.document.as_ref().unwrap().is_dirty());
         }
     }
