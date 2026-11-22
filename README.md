@@ -122,7 +122,8 @@ PRs #167–#170 were merged on 2026-11-22 by owner override, after local merge-r
 No hardware gate is authorized. #5, #6, #33 and #22 below are later-phase sound/write-readiness work and do not block G1–G3.
 
 - [x] Offline Variax editor 0.06 (example banks, slot change markers, metadata editing, tuning controls, repository details in Help), owner hands-on approved; merged in PR #167 (`2204da9`) — [#166](https://github.com/guirossibrum/VariaxWorkbench/issues/166).
-- [ ] GUI build without the forced USB feature and the AGENTS.md / `docs/hardware-gates.md` hardware section, carried into Phase 2 as G1 safety prerequisites — [#122](https://github.com/guirossibrum/VariaxWorkbench/issues/122), [#130](https://github.com/guirossibrum/VariaxWorkbench/issues/130).
+- [ ] GUI build without the forced USB feature — [#122](https://github.com/guirossibrum/VariaxWorkbench/issues/122): awaiting review/merge. `gui` no longer implies `usb`; the live rusb adapter is only in the separate `usb` feature (off by default); eframe's `__screenshot` hook is a test-only dev-dependency feature. Without `usb`, `cargo build --no-default-features --features gui --bins` succeeds, `cargo tree` lists no `rusb`/`libusb` crate, and `cargo test --no-default-features --features gui` passes 447 tests (332 library, 89 GUI, 26 integration); with all features 448 pass (333 library, 89 GUI, 26 integration). The core profile `cargo test --locked --no-default-features --features portable-math` passes 358 tests (332 library, 26 integration). Clippy with warnings denied passes for all-features, gui-without-usb and core profiles.
+- [ ] AGENTS.md / `docs/hardware-gates.md` hardware section, a G1 safety prerequisite — [#130](https://github.com/guirossibrum/VariaxWorkbench/issues/130).
 - [x] G1 procedure and authorization form written in the [G1 ledger](docs/hardware-gates/g1.md) — [#131](https://github.com/guirossibrum/VariaxWorkbench/issues/131). **The owner has not signed it**, and no gate is open. Two points remain unverified: whether reading the listed sysfs files causes no USB traffic, and all `snd-usb-pod` startup traffic.
 - [x] Probe stage 1 (OS recognition) with default-No consent, **simulation only**: synthetic sysfs fixture, no real adapter; 8 core tests (recognised, absent, two devices, malformed metadata, decline/cancel, no auto-advance, stage-1 failures, full ladder) pass; merged in PR #168 (`037cdf0`) — [#134](https://github.com/guirossibrum/VariaxWorkbench/issues/134). No real adapter exists yet.
 - [x] Device check window in the main GUI: steps 1–4 against synthetic backends, labelled simulation, per-step lock state shown; 4 headless GUI tests pass; merged in PR #169 (`a534c22`), version 0.07 — [#157](https://github.com/guirossibrum/VariaxWorkbench/issues/157). The separate `preview/device-check-visual` crate is replaced by this window and not brought to master ([#137](https://github.com/guirossibrum/VariaxWorkbench/issues/137)).
@@ -183,7 +184,8 @@ No hardware gate is authorized. #5, #6, #33 and #22 below are later-phase sound/
 ## Run the offline editor
 
 The graphical editor is the default run target for Craft Anything's **Play** and `cargo run`.
-On Linux, you can select the X11 backend explicitly.
+On Linux, you can select the X11 backend explicitly. The default build does not
+link libusb: the locked live USB adapter is only in the optional `usb` feature.
 
 For each Craft Anything code iteration, increment the minor package version in
 `Cargo.toml`, update `Cargo.lock`, and include the displayed version in the Git

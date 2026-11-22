@@ -386,8 +386,9 @@ struct Workbench {
     pod_harmony2_choices: HashMap<pod_preset::StompHarmony1457Selection, Rect>,
     #[cfg(test)]
     pod_visible: String,
-    read_receiver:
-        Option<std::sync::mpsc::Receiver<Result<variax_workbench::usb::CurrentPreset, String>>>,
+    read_receiver: Option<
+        std::sync::mpsc::Receiver<Result<variax_workbench::read_session::CurrentPreset, String>>,
+    >,
     read_worker: Option<(
         std::sync::Arc<std::sync::atomic::AtomicBool>,
         std::thread::JoinHandle<()>,
@@ -670,7 +671,14 @@ impl Workbench {
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let worker_cancel = cancel.clone();
         let worker = std::thread::spawn(move || {
-            let _ = sender.send(variax_workbench::usb::read_current(&worker_cancel));
+            #[cfg(feature = "usb")]
+            let result = variax_workbench::usb::read_current(&worker_cancel);
+            #[cfg(not(feature = "usb"))]
+            let result = {
+                let _ = &worker_cancel;
+                Err("this build has no live USB adapter (built without the `usb` feature)".into())
+            };
+            let _ = sender.send(result);
         });
         self.read_worker = Some((cancel, worker));
         self.read_receiver = Some(receiver);
