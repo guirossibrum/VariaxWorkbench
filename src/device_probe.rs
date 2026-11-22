@@ -1246,9 +1246,12 @@ mod tests {
     }
 
     /// Test-only source that reads a fake tree without the gate, to exercise
-    /// the same reader the gated `LinuxSysfs` uses.
+    /// the same reader the gated `LinuxSysfs` uses. Unix only: sysfs `driver`
+    /// entries are symlinks, which the fake tree recreates.
+    #[cfg(unix)]
     struct FakeTree(PathBuf);
 
+    #[cfg(unix)]
     impl OsMetadataSource for FakeTree {
         fn usb_devices(&self) -> Result<Vec<UsbDevice>, MetadataError> {
             read_usb_tree(&self.0)?.usb_devices()
@@ -1265,6 +1268,7 @@ mod tests {
 
     /// Lay out one device the way sysfs does: attribute files, interface
     /// directories and a relative `driver` symlink.
+    #[cfg(unix)]
     fn fake_device(root: &Path, name: &str, product: u16, drivers: &[(u8, Option<&str>)]) {
         let devices = root.join(SYS_USB_DEVICES);
         let base = devices.join(name);
@@ -1310,10 +1314,12 @@ mod tests {
         root
     }
 
+    #[cfg(unix)]
     const BOTH_DRIVERS: [(u8, Option<&str>); 2] =
         [(0, Some("snd-usb-pod")), (1, Some("snd-usb-variax"))];
 
     #[test]
+    #[cfg(unix)]
     fn real_reader_recognises_pod_with_both_drivers_in_a_fake_tree() {
         let root = fake_tree();
         fake_device(root.path(), "1-2", 0x4650, &BOTH_DRIVERS);
@@ -1349,6 +1355,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn real_reader_reports_absent_two_units_and_unbound_interface() {
         let root = fake_tree();
         assert_eq!(
@@ -1380,6 +1387,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn real_reader_stops_on_malformed_or_missing_files() {
         let cases: [(&str, &[u8]); 4] = [
             ("sys/bus/usb/devices/1-2/idProduct", b"46?0\n"),
@@ -1421,6 +1429,7 @@ mod tests {
         assert_eq!(LinuxSysfs::new().root(), Path::new("/"));
         // Even a valid fake tree is not read while G1 is locked.
         let root = fake_tree();
+        #[cfg(unix)]
         fake_device(root.path(), "1-2", 0x4650, &BOTH_DRIVERS);
         let gated = LinuxSysfs::with_root(root.path());
         let recognition = recognise(&gated);
