@@ -118,10 +118,15 @@ unauthenticated HEAD requests for both Edit readeula links returned HTTP 302
 to the account login page. HEAD requests for the CDN directories
 `media/software/9781/` and `media/software/8559/` returned HTTP 404. A
 directory 404 can coexist with a public named object. The login page was not
-requested. No local Edit 2.27 installer was obtained. Wider availability
-remains unknown. The same day's flash probe remains HTTP 302 for
-`readeula.html?rid=6260` and HTTP 403 for `getrelease?rid=6260`. No editor
-installer and no flash image were saved. Two public 2013 manuals are hashed in
+requested. That public-route pass did not obtain an Edit 2.27 installer; an
+owner-supplied private Windows Edit 2.27 installer and extracted PE were later
+admitted for offline static analysis. Their private contents remain local.
+Wider public availability remains unknown. The same day's flash probe remains HTTP 302 for
+`readeula.html?rid=6260` and HTTP 403 for `getrelease?rid=6260`. That public
+route pass saved no flash image. A separately owner-supplied private PHF image
+was later admitted for offline structural/static inspection; its relationship
+to public release 6260, its product applicability, and the separate USB
+Firmware 1.04 remain unresolved. Two public 2013 manuals are hashed in
 [POD HD500X](pod-hd500x.md). Their printed file suffixes disagree, and neither
 manual is a preset container. Independently published H5EP and H5ES files
 were measured later. A directory named HD500X supplied files whose byte 0x0b

@@ -18,7 +18,8 @@ use super::model::{
     DeviceFamily, PODXT_LIVE_FILE_ID, ProductProfile, VARIAX_500_700_FILE_ID, VARIAX_600_FILE_ID,
 };
 use super::session::{
-    FirmwareSummary, GuitarBankSummary, GuitarPresetSummary, PodToneSummary, Rejection,
+    FirmwareStructureSummary, FirmwareSummary, GuitarBankSummary, GuitarPresetSummary,
+    PhysicalTargetApplicability, PodToneSummary, Rejection,
 };
 
 pub(crate) fn open_guitar_preset(bytes: &[u8]) -> Result<GuitarPresetSummary, Rejection> {
@@ -260,6 +261,26 @@ pub(crate) fn inspect_firmware(
         version: inspection.report.version,
         applicability: inspection.report.applicability.tag(),
         integrity_is_not_authentication: inspection.report.integrity_is_not_authentication,
+    })
+}
+
+pub(crate) fn inspect_extension_firmware(
+    bytes: &[u8],
+) -> Result<FirmwareStructureSummary, Rejection> {
+    let inspection = firmware::inspect(bytes).map_err(Rejection::format)?;
+    let report = inspection.report;
+    Ok(FirmwareStructureSummary {
+        source_bytes: report.source_len,
+        source_sha256: report.source_sha256,
+        declared_product_id: report.product_id,
+        declared_version: report.version,
+        catalog_applicability: report.applicability,
+        image_bytes: report.image_len,
+        image_sha256: report.image_sha256,
+        header_md5_matches: report.header_md5_matches,
+        region_count: report.regions.len(),
+        physical_target: PhysicalTargetApplicability::Unknown,
+        integrity_is_not_authentication: report.integrity_is_not_authentication,
     })
 }
 

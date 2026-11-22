@@ -280,7 +280,7 @@ impl BodyVariant {
                 t,
             )
         });
-        for coil in 0..4 {
+        for (coil, output_coil) in out.pickup_position.coils.iter_mut().enumerate() {
             let ai = if a.pickup_position.num_coils != 0
                 && coil >= a.pickup_position.num_coils as usize
             {
@@ -295,7 +295,7 @@ impl BodyVariant {
             } else {
                 coil
             };
-            out.pickup_position.coils[coil].pole_positions = array(
+            output_coil.pole_positions = array(
                 &a.pickup_position.coils[ai].pole_positions,
                 &b.pickup_position.coils[bi].pole_positions,
                 t,
