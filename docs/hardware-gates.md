@@ -64,11 +64,13 @@ authorize a gate by signing a GitHub issue. Agents do not run the live check.
   The step 2 report is saved before Device check starts over for the
   follow-up step 1. The owner test card is section 10 of the G2 ledger.
   The app opened from a normal build includes the identity check. The corner
-  shows build 13. If Device check still says only gate G1 is open, that copy
+  shows build 16. If Device check still says only gate G1 is open, that copy
   is older. The app does not ask for a password. Yes on a step accepts the
   risk for that step. If Linux refuses the open, the question is not sent
   and the guitar driver is not detached. Step 3 reads both families. Step 4
-  stays locked.
+  stays locked. On This computer, Device check also offers a Variax library
+  backup and a PODxt Live library backup. The Variax backup changes presets
+  while it reads, then tries to switch back. Nothing is written back.
   #114 stays open under the one-rig exception in section 7.
 - **Prerequisites and tracking:** G1, the one-rig exception to #114, and the
   owner-approved procedure in the G2 ledger. #112 stays open. Outstanding
@@ -110,8 +112,15 @@ authorize a gate by signing a GitHub issue. Agents do not run the live check.
   No verified full backup is currently available. The earlier broader DSP read
   timed out and produced no DSP backup; the captured current-preset settings
   are partial metadata only (see [report](report.md)).
-- **Application traffic:** No complete, approved capture procedure is defined
-  here. No read is authorized by this gate listing.
+- **Application traffic:** Device check on This computer, in build 16, can
+  read the Variax library (program change through the stored presets, then
+  switch back) and the PODxt Live library (stored tones and setups by memory
+  location, current tone not changed on purpose). If the guitar does not
+  answer the first Variax question, the backup asks again, and if it is still
+  quiet it gives the driver back and tries the connection once more. Nothing
+  is written back.
+  The older full-backup lock stays on for every other path. The editor fetch
+  stays off. Step 4 stays locked.
 - **System changes:** None established for an approved procedure; preservation,
   omissions, and recovery requirements remain for issue #23.
 - **Prerequisites and tracking:** Current native prerequisites are the timeout

@@ -11,12 +11,17 @@
 //!   caller's [`gate::GatePolicy`] does not allow. This crate never decides
 //!   that a gate is open.
 //! * [`midi`], [`identity`] — shared byte-level pieces.
+//! * [`backup`] — recoverable library backups on disk (write, verify, load,
+//!   compare), so every front end produces the same layout.
 //!
-//! Everything here is read-only: no request writes, stores, switches presets
-//! or banks, resets, or touches firmware.
+//! No request writes, stores, resets, or touches firmware. The Variax library
+//! backup is the only procedure that sends program changes: it switches
+//! through the stored presets to read them, then tries to switch back. The
+//! caller's policy decides whether that procedure is allowed.
 
 #![forbid(unsafe_code)]
 
+pub mod backup;
 pub mod family;
 pub mod gate;
 pub mod identity;

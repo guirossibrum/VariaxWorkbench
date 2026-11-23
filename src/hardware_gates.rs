@@ -6,7 +6,12 @@
 //! recorded in `docs/hardware-gates/g2.md`, for any user of the same supported
 //! rig. Device-check step 3 reads the Variax and the PODxt Live. Step 4 stays
 //! off. The legacy settings lock stays closed so the editor fetch stays off.
-//! The user runs those checks. Agents do not. Gates G4–G7 stay locked. There is
+//! Device check can also back up the Variax library and the PODxt Live library,
+//! try a PODxt Live tone change and put it back, and switch to a saved tone.
+//! None of those store anything onto either device. Leaving a tone change on
+//! stays locked. The user runs those checks. Agents do not. Gates G4 and G7
+//! stay locked, and the original G5 and G6 locks stay on for every path except
+//! the Device check backup, tone try, and saved-tone switch. There is
 //! no runtime, command-line, GUI, or test switch that changes these constants.
 //! Test builds do not open a USB device.
 
@@ -18,7 +23,17 @@ pub enum Gate {
     DeviceCheckCurrentSettingsRead,
     AudioCapture,
     FullBackupRead,
+    /// Device-check library backup only. The editor and every other path stay
+    /// behind [`G5_FULL_BACKUP_READ_LOCKED`].
+    DeviceCheckBackup,
     EditBufferWrite,
+    /// Device-check try: change the active PODxt Live tone, read it back, then
+    /// put the original values back. Does not store the tone.
+    DeviceCheckLiveTest,
+    /// Leave a verified edit in the active PODxt Live tone. Separate from the try.
+    KeepLiveEdit,
+    /// Device-check saved-tone selection. Does not store a tone.
+    DeviceCheckChannel,
     StoreRestore,
 }
 
@@ -35,7 +50,25 @@ pub const G3_CURRENT_SETTINGS_READ_LOCKED: bool = true;
 pub const G3_DEVICE_CHECK_READ_LOCKED: bool = false;
 pub const G4_AUDIO_CAPTURE_LOCKED: bool = true;
 pub const G5_FULL_BACKUP_READ_LOCKED: bool = true;
+/// Open for the Device check backup choices only. The owner asked for the
+/// Variax and PODxt Live library backups from `tools/device-controls` to be
+/// in the app. The Variax backup sends program changes so it can read each
+/// stored preset, then tries to switch back. It does not store anything.
+/// The PODxt Live backup reads stored tones and setups by memory location
+/// and does not change the current tone. Step 4 stays off. Agents do not
+/// run it.
+pub const G5_DEVICE_CHECK_BACKUP_LOCKED: bool = false;
 pub const G6_EDIT_BUFFER_WRITE_LOCKED: bool = true;
+/// Open for the Device check tone try only. The try changes a few PODxt Live
+/// controls, reads them back, and puts the original values back. It does not
+/// store the tone. The stomp is not one of those controls. Agents do not run it.
+pub const G6_DEVICE_CHECK_LIVE_TEST_LOCKED: bool = false;
+/// Leaving a verified edit in the active tone. Its own gate. Stays locked.
+pub const G6_KEEP_LIVE_EDIT_LOCKED: bool = true;
+/// Open for the Device check saved-tone switch only. It selects a stored tone
+/// the way the footswitch does, and only when the current tone already matches
+/// one saved tone. It does not store anything. Agents do not run it.
+pub const G6_DEVICE_CHECK_CHANNEL_LOCKED: bool = false;
 pub const G7_STORE_RESTORE_LOCKED: bool = true;
 
 pub const fn is_locked(gate: Gate) -> bool {
@@ -46,7 +79,11 @@ pub const fn is_locked(gate: Gate) -> bool {
         Gate::DeviceCheckCurrentSettingsRead => G3_DEVICE_CHECK_READ_LOCKED,
         Gate::AudioCapture => G4_AUDIO_CAPTURE_LOCKED,
         Gate::FullBackupRead => G5_FULL_BACKUP_READ_LOCKED,
+        Gate::DeviceCheckBackup => G5_DEVICE_CHECK_BACKUP_LOCKED,
         Gate::EditBufferWrite => G6_EDIT_BUFFER_WRITE_LOCKED,
+        Gate::DeviceCheckLiveTest => G6_DEVICE_CHECK_LIVE_TEST_LOCKED,
+        Gate::KeepLiveEdit => G6_KEEP_LIVE_EDIT_LOCKED,
+        Gate::DeviceCheckChannel => G6_DEVICE_CHECK_CHANNEL_LOCKED,
         Gate::StoreRestore => G7_STORE_RESTORE_LOCKED,
     }
 }
@@ -71,11 +108,12 @@ pub fn run_if_unlocked<T>(
 mod tests {
     use super::*;
 
-    const LOCKED_GATES: [Gate; 5] = [
+    const LOCKED_GATES: [Gate; 6] = [
         Gate::CurrentSettingsRead,
         Gate::AudioCapture,
         Gate::FullBackupRead,
         Gate::EditBufferWrite,
+        Gate::KeepLiveEdit,
         Gate::StoreRestore,
     ];
 
@@ -88,7 +126,11 @@ mod tests {
             assert!(!G3_DEVICE_CHECK_READ_LOCKED);
             assert!(G4_AUDIO_CAPTURE_LOCKED);
             assert!(G5_FULL_BACKUP_READ_LOCKED);
+            assert!(!G5_DEVICE_CHECK_BACKUP_LOCKED);
             assert!(G6_EDIT_BUFFER_WRITE_LOCKED);
+            assert!(!G6_DEVICE_CHECK_LIVE_TEST_LOCKED);
+            assert!(G6_KEEP_LIVE_EDIT_LOCKED);
+            assert!(!G6_DEVICE_CHECK_CHANNEL_LOCKED);
             assert!(G7_STORE_RESTORE_LOCKED);
         }
         assert!(!is_locked(Gate::OsDiscovery));
@@ -98,6 +140,9 @@ mod tests {
             Gate::OsDiscovery,
             Gate::IdentityRequest,
             Gate::DeviceCheckCurrentSettingsRead,
+            Gate::DeviceCheckBackup,
+            Gate::DeviceCheckLiveTest,
+            Gate::DeviceCheckChannel,
         ] {
             let mut ran = false;
             let result = run_if_unlocked(gate, || {

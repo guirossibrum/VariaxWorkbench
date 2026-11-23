@@ -305,6 +305,8 @@ trait FileDialogs {
     fn save_aiff(&mut self, suggested: &str) -> Option<PathBuf>;
     fn open_pod_tone(&mut self) -> Option<PathBuf>;
     fn save_pod_tone(&mut self, suggested: &str) -> Option<PathBuf>;
+    #[cfg_attr(test, allow(dead_code))]
+    fn pick_folder(&mut self) -> Option<PathBuf>;
     #[cfg(test)]
     fn queue_pod_save(&mut self, _path: Option<PathBuf>) {
         panic!("POD save queue is available only on fake dialogs");
@@ -355,6 +357,9 @@ impl FileDialogs for NativeDialogs {
     fn save_pod_tone(&mut self, suggested: &str) -> Option<PathBuf> {
         rfd::FileDialog::new().set_file_name(suggested).save_file()
     }
+    fn pick_folder(&mut self) -> Option<PathBuf> {
+        rfd::FileDialog::new().pick_folder()
+    }
 }
 
 #[cfg(test)]
@@ -366,6 +371,8 @@ struct FakeDialogs {
     wav: std::collections::VecDeque<Option<PathBuf>>,
     pod_open: std::collections::VecDeque<Option<PathBuf>>,
     pod_save: std::collections::VecDeque<Option<PathBuf>>,
+    #[cfg_attr(test, allow(dead_code))]
+    folder: std::collections::VecDeque<Option<PathBuf>>,
 }
 #[cfg(test)]
 impl FileDialogs for FakeDialogs {
@@ -396,6 +403,9 @@ impl FileDialogs for FakeDialogs {
         self.pod_save
             .pop_front()
             .expect("unexpected POD save dialog")
+    }
+    fn pick_folder(&mut self) -> Option<PathBuf> {
+        self.folder.pop_front().expect("unexpected folder dialog")
     }
     fn queue_pod_save(&mut self, path: Option<PathBuf>) {
         self.pod_save.push_back(path);
@@ -659,6 +669,82 @@ fn sample_pod_bundle(tones: &[Vec<u8>]) -> Vec<u8> {
     chunk(b"FORM", &root)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BackupChoice {
+    Variax,
+    Podxt,
+}
+
+#[cfg_attr(test, allow(dead_code))]
+enum BackupEvent {
+    Progress(String),
+    Finished(Result<String, String>),
+}
+
+fn backup_offered() -> bool {
+    #[cfg(feature = "usb")]
+    {
+        variax_workbench::library_backup::offered()
+    }
+    #[cfg(not(feature = "usb"))]
+    {
+        false
+    }
+}
+
+fn tone_offered() -> bool {
+    #[cfg(feature = "usb")]
+    {
+        variax_workbench::podxt_live::offered()
+    }
+    #[cfg(not(feature = "usb"))]
+    {
+        false
+    }
+}
+
+fn parse_tone_channel(text: &str) -> Result<String, String> {
+    #[cfg(feature = "usb")]
+    {
+        variax_workbench::podxt_live::parse_channel(text).map(|location| location.label())
+    }
+    #[cfg(not(feature = "usb"))]
+    {
+        let _ = text;
+        Err("this build does not open a device for a tone check; nothing was sent".into())
+    }
+}
+
+fn channel_does(label: &str) -> String {
+    format!(
+        "Switches the PODxt Live to channel {label}, like the footswitch, and leaves it there. \
+         The app reads the saved tones first. If the current tone has unsaved edits, nothing is \
+         switched. Nothing is saved. This can take a few minutes. Leave this window open until \
+         it finishes."
+    )
+}
+
+const BACKUP_INTRO: &str = "Backup is separate from the steps above. Step 4 stays off. Nothing is written back to either device. No is the default. You choose a folder, and a new folder is made inside it.";
+const BACKUP_VARIAX: &str = "Back up the Variax";
+const BACKUP_PODXT: &str = "Back up the PODxt Live";
+const BACKUP_VARIAX_DOES: &str = "Reads all 60 guitar presets. The guitar changes preset while this runs, then the app tries to put the original preset back. Leave this window open until it finishes.";
+const BACKUP_PODXT_DOES: &str = "Reads the stored tones and setups. The current tone is not changed on purpose. It also asks which model packs are installed. Leave this window open until it finishes.";
+const BACKUP_VARIAX_YES: &str = "Yes, back up the Variax";
+const BACKUP_PODXT_YES: &str = "Yes, back up the PODxt Live";
+const TONE_INTRO: &str = "Tone checks are separate from the steps above. Step 4 stays off. No is the default. Nothing is saved onto the PODxt.";
+const TONE_TRY: &str = "Try a change and put it back";
+const TONE_TRY_DOES: &str = "Changes treble, mid, one EQ band, and the modulation, delay and reverb switches, and moves modulation before or after the amp. It reads them back, then puts the original values back. The stomp is not changed. Nothing is saved. Leave this window open until it finishes.";
+const TONE_TRY_YES: &str = "Yes, try it and put it back";
+const TONE_CHANNEL: &str = "Play a saved tone";
+const TONE_CHANNEL_YES: &str = "Yes, play that saved tone";
+const TONE_KEEP: &str = "Leaving a change on the PODxt stays off.";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ToneChoice {
+    Try,
+    Channel,
+}
+
 struct Workbench {
     dialogs: Box<dyn FileDialogs>,
     document: Option<EditorDocument>,
@@ -682,6 +768,13 @@ struct Workbench {
     recorder: recording::Panel,
     device_check_open: bool,
     device_check_notice: String,
+    /// Backup question waiting for Yes or No. Nothing is sent until Yes.
+    backup_choice: Option<BackupChoice>,
+    backup_rx: Option<std::sync::mpsc::Receiver<BackupEvent>>,
+    /// Tone question waiting for Yes or No. Nothing is sent until Yes.
+    tone_choice: Option<ToneChoice>,
+    tone_channel: String,
+    tone_rx: Option<std::sync::mpsc::Receiver<BackupEvent>>,
     /// True only after the step 2 report from this session was saved. A later
     /// answer of step 2 clears it. Restarting for the G1 check requires it.
     device_check_step_two_saved: bool,
@@ -892,6 +985,11 @@ impl Workbench {
             recording_open: false,
             device_check_open: false,
             device_check_notice: String::new(),
+            backup_choice: None,
+            backup_rx: None,
+            tone_choice: None,
+            tone_channel: "1A".into(),
+            tone_rx: None,
             device_check_step_two_saved: false,
             device_check: ProbeSession::new(RigBackend::Simulated(SimulatedRig::new(
                 device_probe::Scenario::Connected,
@@ -2715,7 +2813,136 @@ impl Workbench {
         };
     }
 
+    fn poll_backup(&mut self, ctx: &egui::Context) {
+        let Some(rx) = self.backup_rx.as_ref() else {
+            return;
+        };
+        let mut finished = None;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                BackupEvent::Progress(line) => self.device_check_notice = line,
+                BackupEvent::Finished(result) => finished = Some(result),
+            }
+        }
+        if let Some(result) = finished {
+            self.backup_rx = None;
+            self.device_check_notice = match result {
+                Ok(text) => text,
+                Err(text) => text,
+            };
+            self.status = "Backup finished. See Device check for the result.".into();
+        } else {
+            ctx.request_repaint_after(Duration::from_millis(200));
+        }
+    }
+
+    fn start_backup(&mut self, choice: BackupChoice) {
+        self.backup_choice = None;
+        #[cfg(test)]
+        {
+            let _ = choice;
+            self.device_check_notice =
+                "this build does not open a device for a backup; nothing was sent".into();
+        }
+        #[cfg(all(not(test), feature = "usb"))]
+        {
+            let Some(root) = self.dialogs.pick_folder() else {
+                self.device_check_notice = "No folder chosen. Nothing was sent.".into();
+                return;
+            };
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.backup_rx = Some(rx);
+            self.device_check_notice = "Backup started. Leave this window open.".into();
+            std::thread::spawn(move || {
+                let tx_progress = tx.clone();
+                let result = variax_workbench::library_backup::run(
+                    match choice {
+                        BackupChoice::Variax => variax_workbench::library_backup::Which::Variax,
+                        BackupChoice::Podxt => variax_workbench::library_backup::Which::Podxt,
+                    },
+                    &root,
+                    |line| {
+                        let _ = tx_progress.send(BackupEvent::Progress(line.to_owned()));
+                    },
+                );
+                let _ = tx.send(BackupEvent::Finished(result));
+            });
+        }
+        #[cfg(all(not(test), not(feature = "usb")))]
+        {
+            let _ = choice;
+            self.device_check_notice =
+                "this build does not open a device for a backup; nothing was sent".into();
+        }
+    }
+
+    fn poll_tone(&mut self, ctx: &egui::Context) {
+        let Some(rx) = self.tone_rx.as_ref() else {
+            return;
+        };
+        let mut finished = None;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                BackupEvent::Progress(line) => self.device_check_notice = line,
+                BackupEvent::Finished(result) => finished = Some(result),
+            }
+        }
+        if let Some(result) = finished {
+            self.tone_rx = None;
+            self.device_check_notice = match result {
+                Ok(text) => text,
+                Err(text) => text,
+            };
+            self.status = "Tone check finished. See Device check for the result.".into();
+        } else {
+            ctx.request_repaint_after(Duration::from_millis(200));
+        }
+    }
+
+    fn start_tone(&mut self, choice: ToneChoice) {
+        self.tone_choice = None;
+        if self.backup_rx.is_some() || self.tone_rx.is_some() {
+            self.device_check_notice = "Wait until the current check finishes.".into();
+            return;
+        }
+        #[cfg(test)]
+        {
+            let _ = choice;
+            self.device_check_notice =
+                "this build does not open a device for a tone check; nothing was sent".into();
+        }
+        #[cfg(all(not(test), feature = "usb"))]
+        {
+            let channel = self.tone_channel.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.tone_rx = Some(rx);
+            self.device_check_notice = "Tone check started. Leave this window open.".into();
+            std::thread::spawn(move || {
+                let tx_progress = tx.clone();
+                let result = match choice {
+                    ToneChoice::Try => variax_workbench::podxt_live::run_try(|line| {
+                        let _ = tx_progress.send(BackupEvent::Progress(line.to_owned()));
+                    }),
+                    ToneChoice::Channel => {
+                        variax_workbench::podxt_live::run_channel(&channel, |line| {
+                            let _ = tx_progress.send(BackupEvent::Progress(line.to_owned()));
+                        })
+                    }
+                };
+                let _ = tx.send(BackupEvent::Finished(result));
+            });
+        }
+        #[cfg(all(not(test), not(feature = "usb")))]
+        {
+            let _ = choice;
+            self.device_check_notice =
+                "this build does not open a device for a tone check; nothing was sent".into();
+        }
+    }
+
     fn device_check_window(&mut self, ctx: &egui::Context) {
+        self.poll_backup(ctx);
+        self.poll_tone(ctx);
         if !self.device_check_open {
             return;
         }
@@ -2886,6 +3113,112 @@ impl Workbench {
                     };
                     ui.label(&outcome);
                     visible.push_str(&format!("\n{outcome}"));
+                }
+                if self.device_check.mode() == ProbeMode::ThisComputer && backup_offered() {
+                    ui.separator();
+                    ui.heading("Backup");
+                    ui.label(BACKUP_INTRO);
+                    visible.push_str(BACKUP_INTRO);
+                    if self.backup_rx.is_some() {
+                        ui.label("Backup is running. Leave this window open.");
+                        visible.push_str("\nBackup is running.");
+                    } else if let Some(choice) = self.backup_choice {
+                        let (does, yes) = match choice {
+                            BackupChoice::Variax => (BACKUP_VARIAX_DOES, BACKUP_VARIAX_YES),
+                            BackupChoice::Podxt => (BACKUP_PODXT_DOES, BACKUP_PODXT_YES),
+                        };
+                        ui.label(does);
+                        visible.push_str(does);
+                        ui.horizontal(|ui| {
+                            let no = self.device_check_button(ui, "backup-no", "No, stop");
+                            if no.clicked() {
+                                self.backup_choice = None;
+                                self.device_check_notice = "Nothing was read.".into();
+                            }
+                            if self.device_check_button(ui, "backup-yes", yes).clicked() {
+                                self.start_backup(choice);
+                            }
+                        });
+                        visible.push_str(yes);
+                    } else {
+                        ui.horizontal(|ui| {
+                            if self
+                                .device_check_button(ui, "backup-variax", BACKUP_VARIAX)
+                                .clicked()
+                            {
+                                self.backup_choice = Some(BackupChoice::Variax);
+                            }
+                            if self
+                                .device_check_button(ui, "backup-podxt", BACKUP_PODXT)
+                                .clicked()
+                            {
+                                self.backup_choice = Some(BackupChoice::Podxt);
+                            }
+                        });
+                        visible.push_str(BACKUP_VARIAX);
+                        visible.push_str(BACKUP_PODXT);
+                    }
+                }
+                if self.device_check.mode() == ProbeMode::ThisComputer && tone_offered() {
+                    ui.separator();
+                    ui.heading("PODxt Live tone");
+                    ui.label(TONE_INTRO);
+                    visible.push_str(TONE_INTRO);
+                    ui.label(TONE_KEEP);
+                    visible.push_str(TONE_KEEP);
+                    if self.tone_rx.is_some() {
+                        ui.label("The tone check is running. Leave this window open.");
+                        visible.push_str("\nThe tone check is running.");
+                    } else if let Some(choice) = self.tone_choice {
+                        let (does, yes) = match choice {
+                            ToneChoice::Try => (TONE_TRY_DOES.to_owned(), TONE_TRY_YES),
+                            ToneChoice::Channel => {
+                                (channel_does(self.tone_channel.trim()), TONE_CHANNEL_YES)
+                            }
+                        };
+                        ui.label(&does);
+                        visible.push_str(&does);
+                        ui.horizontal(|ui| {
+                            let no = self.device_check_button(ui, "tone-no", "No, stop");
+                            if no.clicked() {
+                                self.tone_choice = None;
+                                self.device_check_notice = "Nothing was changed.".into();
+                            }
+                            if self.device_check_button(ui, "tone-yes", yes).clicked() {
+                                self.start_tone(choice);
+                            }
+                        });
+                        visible.push_str(yes);
+                    } else {
+                        ui.horizontal(|ui| {
+                            if self.device_check_button(ui, "tone-try", TONE_TRY).clicked() {
+                                self.tone_choice = Some(ToneChoice::Try);
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Channel");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.tone_channel)
+                                    .desired_width(80.0)
+                                    .hint_text("1A"),
+                            );
+                            if self
+                                .device_check_button(ui, "tone-channel", TONE_CHANNEL)
+                                .clicked()
+                            {
+                                match parse_tone_channel(&self.tone_channel) {
+                                    Ok(label) => {
+                                        self.tone_channel = label;
+                                        self.tone_choice = Some(ToneChoice::Channel);
+                                    }
+                                    Err(error) => self.device_check_notice = error,
+                                }
+                            }
+                        });
+                        visible.push_str(TONE_TRY);
+                        visible.push_str(TONE_CHANNEL);
+                        visible.push_str(&self.tone_channel);
+                    }
                 }
                 let report = self.device_check.report();
                 let sanitized = self.device_check.sanitized_report();
@@ -14066,6 +14399,69 @@ mod tests {
             "path leaked"
         );
         assert!(app.read_worker.is_none());
+    }
+
+    #[cfg(all(target_os = "linux", feature = "usb"))]
+    #[test]
+    fn device_check_backup_asks_before_it_reads() {
+        let tree = fake_host_tree(&["1-2"]);
+        let (context, mut app) = device_check_app();
+        app.device_check_root = tree.path().to_owned();
+        click_device_check(&context, &mut app, "mode-this-computer");
+        assert!(app.device_check_visible.contains(BACKUP_VARIAX));
+        assert!(app.device_check_visible.contains(BACKUP_PODXT));
+        assert!(
+            app.device_check_visible
+                .contains("step 4 locked in this build")
+        );
+        click_device_check(&context, &mut app, "backup-variax");
+        assert!(app.device_check_visible.contains(BACKUP_VARIAX_DOES));
+        click_device_check(&context, &mut app, "backup-no");
+        assert!(app.device_check_notice.contains("Nothing was read"));
+        assert!(app.backup_rx.is_none());
+        click_device_check(&context, &mut app, "backup-podxt");
+        assert!(app.device_check_visible.contains(BACKUP_PODXT_DOES));
+        click_device_check(&context, &mut app, "backup-yes");
+        assert!(app.device_check_notice.contains("nothing was sent"));
+        assert!(app.backup_rx.is_none());
+        assert_eq!(app.device_check.backend().calls().identity_requests, 0);
+        assert_eq!(app.device_check.backend().calls().settings_reads, 0);
+    }
+
+    #[cfg(all(target_os = "linux", feature = "usb"))]
+    #[test]
+    fn device_check_tone_actions_ask_before_they_send() {
+        let tree = fake_host_tree(&["1-2"]);
+        let (context, mut app) = device_check_app();
+        app.device_check_root = tree.path().to_owned();
+        click_device_check(&context, &mut app, "mode-this-computer");
+        assert!(app.device_check_visible.contains(TONE_TRY));
+        assert!(app.device_check_visible.contains(TONE_CHANNEL));
+        assert!(app.device_check_visible.contains(TONE_KEEP));
+        assert!(
+            app.device_check_visible
+                .contains("step 4 locked in this build")
+        );
+        click_device_check(&context, &mut app, "tone-try");
+        assert!(app.device_check_visible.contains(TONE_TRY_DOES));
+        click_device_check(&context, &mut app, "tone-no");
+        assert!(app.device_check_notice.contains("Nothing was changed"));
+        assert!(app.tone_rx.is_none());
+        click_device_check(&context, &mut app, "tone-try");
+        click_device_check(&context, &mut app, "tone-yes");
+        assert!(app.device_check_notice.contains("nothing was sent"));
+        assert!(app.tone_rx.is_none());
+        app.tone_channel = "nope".into();
+        click_device_check(&context, &mut app, "tone-channel");
+        assert!(app.device_check_notice.contains("1A"));
+        assert!(app.tone_choice.is_none());
+        app.tone_channel = "2C".into();
+        click_device_check(&context, &mut app, "tone-channel");
+        assert!(app.device_check_visible.contains("2C"));
+        click_device_check(&context, &mut app, "tone-yes");
+        assert!(app.device_check_notice.contains("nothing was sent"));
+        assert_eq!(app.device_check.backend().calls().identity_requests, 0);
+        assert_eq!(app.device_check.backend().calls().settings_reads, 0);
     }
 
     #[cfg(target_os = "linux")]

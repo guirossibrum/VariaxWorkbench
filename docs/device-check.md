@@ -8,13 +8,21 @@ Issues [#134](https://github.com/guirossibrum/VariaxWorkbench/issues/134),
 **G2 is authorized for any user of the same supported rig** as one Variax 600
 identity request through the PODxt Live, recorded in [the G2 ledger](hardware-gates/g2.md).
 Device-check step 3 reads the Variax current settings and the PODxt Live
-current tone. Step 4 stays locked. G4–G8 are not authorized.
+current tone. Step 4 stays locked. Device check on This computer also offers a
+Variax library backup and a PODxt Live library backup. The Variax backup
+changes presets while it reads, then tries to switch back. The PODxt Live
+backup does not change the current tone. Nothing is written back to either
+device. G4 and G6–G8 are not authorized.
 See [the G1 procedure](hardware-gates/g1.md).
 The window still opens in **Simulation**. **This computer** is offered only
 when a live step is available. Its label, banner, and report name the gates
 this build can actually run. Steps 2 and 3 are offered on Linux only in a binary
 built with the `usb` feature, and step 2 only after a fresh step 1 pass. A build
-without `usb` still offers only step 1. The corner shows build 13.
+without `usb` still offers only step 1. The corner shows build 16. On This
+computer, under the steps, Back up the Variax and Back up the PODxt Live each
+ask first. No is the default. If the guitar does not answer the first Variax
+question, that backup asks again on the same connection, and if it is still
+quiet it gives the driver back and tries the connection once more.
 
 ## Stages
 

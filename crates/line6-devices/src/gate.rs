@@ -14,6 +14,16 @@ pub enum Operation {
     PodxtIdentity,
     /// PODxt-family current tone (edit buffer) dump request.
     PodxtRead,
+    /// PODxt-family stored tone/setup dump request by memory location
+    /// (full library read; does not change the active tone).
+    PodxtLibraryRead,
+    /// Program change to the Variax: switches the guitar's active preset.
+    VariaxPresetSwitch,
+    /// PODxt-family installed model-pack query (`03 0E`), read-only.
+    PodxtPackQuery,
+    /// PODxt-family edit-buffer write (G6): a controller change that alters
+    /// the active tone only. Nothing here stores to memory.
+    PodxtEditBufferWrite,
 }
 
 pub trait GatePolicy {

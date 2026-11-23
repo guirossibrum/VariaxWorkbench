@@ -54,7 +54,7 @@ pub(super) fn milestones(ui: &mut egui::Ui) {
          and Send all banks stay off.",
     );
     ui.separator();
-    ui.heading("Current phase · steps 1 to 3 passed on this rig");
+    ui.heading("Current phase · tone checks are in Device check");
     ui.label(
         "Device check… opens in Simulation. No is the default. Step 2 is offered only after \
          a fresh step 1 pass for one PODxt Live with the POD driver on interface 0 and the \
@@ -70,10 +70,16 @@ pub(super) fn milestones(ui: &mut egui::Ui) {
          PODxt Live. Step 4 stays off.",
     );
     ui.label(
-        "Build 12 is the copy that passed on this rig. There is no password. Steps 1, 2, \
-         and 3 passed: the PODxt Live was recognized, the Variax 600 answered firmware 3.10, \
-         and the current guitar preset and the current PODxt Live tone were read. Nothing \
-         was written. Step 4 stays off. Keep this window. Do not run step 4.",
+        "Build 17 is this copy. On This computer, Device check can try a PODxt Live tone \
+         change and put it back, and it can play a saved tone. The try changes treble, mid, \
+         one EQ band, and the modulation, delay and reverb switches, then puts the original \
+         values back. The stomp is not changed. Play a saved tone switches the PODxt the way \
+         the footswitch does, and only when the current tone already matches a saved one. \
+         Leaving a change on stays off. Nothing is saved. Back up the Variax still reads all \
+         60 presets and tries to put the original preset back. Back up the PODxt Live still \
+         reads the stored tones and does not change the current tone on purpose. Backup files \
+         are ordinary files you can move or delete. Step 4 stays off. No is still the default. \
+         Close the old window and open this one so the corner says build 17.",
     );
     for (label, url) in [
         (

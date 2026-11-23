@@ -23,7 +23,18 @@ settings and the PODxt Live current tone. Each family stays in its own module
 under `crates/line6-devices`. The owner then ran build 12. Steps 1–3 passed
 on USB 8-2.1: Variax 600 firmware 3.10, PODxt Live firmware 3.01, the current
 guitar preset, and the current PODxt Live tone. Nothing was written. That
-pass does not open step 4. Step 4 stays locked. G4–G8 are not authorized.
+pass does not open step 4. Step 4 stays locked. The owner then instructed
+the app to include the Variax and PODxt Live library backups from
+`tools/device-controls`. Build 16 offers both in Device check on This
+computer. The Variax backup sends program changes so it can read each stored
+preset, then tries to switch back. If the guitar does not answer the first
+identity question, the backup asks once more on that connection, and if it is
+still quiet it gives the driver back and tries the connection once more. It
+does not store anything. Backup files stay ordinary writable files. The PODxt Live
+backup reads stored tones and setups and does not change the current tone.
+Nothing is written back. G4 and G6–G8 are not authorized. The owner decides
+which of these rules change. Do not drop a requested device option because an
+older gate note did not list it; ask the owner.
 Device check step 3 is governed by `G3_DEVICE_CHECK_READ_LOCKED`.
 `G3_CURRENT_SETTINGS_READ_LOCKED` stays true so the editor fetch stays off. Each later gate needs the owner's own direct permission. Permission for
 one gate never extends to another, and general permission to work on this
@@ -46,8 +57,10 @@ Write gates (G6, G7) additionally require a verified backup (G5), the
 coefficient-parity decision recorded in #6/#22, and a separately approved
 restore procedure. Firmware (G8) is out of scope.
 
-No preset upload, flash write, firmware install, reset, or bank switching has been
-authorized. Firmware downloads, version comparison, static extraction and offline
+No preset upload, flash write, firmware install, or reset has been authorized.
+The only program changes the app may send are inside the Device check Variax
+library backup, which reads each stored preset and then tries to switch back.
+ Firmware downloads, version comparison, static extraction and offline
 reverse engineering are authorized. Latest firmware availability must not cause
 an automatic update. GitHub issues and the linked project contain the work plan.
 
