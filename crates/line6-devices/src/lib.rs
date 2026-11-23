@@ -11,12 +11,15 @@
 //!   caller's [`gate::GatePolicy`] does not allow. This crate never decides
 //!   that a gate is open.
 //! * [`midi`], [`identity`] — shared byte-level pieces.
+//! * [`backup`] — recoverable library backups on disk (write, verify, load,
+//!   compare), so every front end produces the same layout.
 //!
 //! Everything here is read-only: no request writes, stores, switches presets
 //! or banks, resets, or touches firmware.
 
 #![forbid(unsafe_code)]
 
+pub mod backup;
 pub mod family;
 pub mod gate;
 pub mod identity;

@@ -422,6 +422,15 @@ impl EditBuffer {
         self.knob(4)
     }
 
+    /// Controllers whose stored value differs: `(controller, self, other)`.
+    pub fn differences(&self, other: &EditBuffer) -> Vec<(u8, u8, u8)> {
+        (0u8..=127)
+            .filter(|&cc| 39 + usize::from(cc) < EDIT_BUFFER_LEN - 1)
+            .filter(|&cc| self.cc(cc) != other.cc(cc))
+            .map(|cc| (cc, self.cc(cc), other.cc(cc)))
+            .collect()
+    }
+
     /// Human-readable summary.
     pub fn describe(&self) -> Vec<String> {
         let pct = |n| format!("{:.1}%", self.knob(n) * 100.0);

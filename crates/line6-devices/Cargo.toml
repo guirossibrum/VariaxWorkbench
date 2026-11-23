@@ -12,3 +12,5 @@ usb = ["dep:rusb"]
 
 [dependencies]
 rusb = { version = "=0.9.4", optional = true }
+# Backup manifests. Pure Rust, already used by the main crate (same major version).
+sha2 = "0.10"

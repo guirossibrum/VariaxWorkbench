@@ -17,9 +17,7 @@
 
 #![forbid(unsafe_code)]
 
-mod backup;
-
-use backup::Capture;
+use line6_devices::backup::{self, BackupFolder as Capture};
 use line6_devices::family::{Family, podxt, variax};
 use line6_devices::gate::{GatePolicy, Operation};
 use line6_devices::identity::Identity;
@@ -225,7 +223,7 @@ fn run_variax(command: &Command, capture: &mut Capture) -> Result<(), String> {
     let (detached, claimed) = link.state();
     let mut saved: Vec<(String, Vec<u8>)> = Vec::new();
     let mut progress_lines: Vec<String> = Vec::new();
-    let mut restore_note: Option<String> = None;
+    let mut variax_library: Option<variax::Library> = None;
     let mut summary = Vec::new();
     let (result, cleanup) = {
         let mut session = Session::new(&mut link, &OwnerGrants, capture);
@@ -260,7 +258,7 @@ fn run_variax(command: &Command, capture: &mut Capture) -> Result<(), String> {
             Command::VariaxLibrary => {
                 session.log_packets = false;
                 let progress = |stored: &variax::StoredPreset| {
-                    let line = preset_line(stored.preset, &stored.metadata);
+                    let line = backup::variax_index_line(stored.preset, &stored.metadata);
                     let _ = writeln!(std::io::stdout(), "{line}");
                     progress_lines.push(line);
                 };
@@ -287,18 +285,7 @@ fn run_variax(command: &Command, capture: &mut Capture) -> Result<(), String> {
                             "Switch back failed: {error}. Move the pickup selector or model knob to reselect your preset."
                         ),
                     });
-                    let mut index = String::new();
-                    let [first, second] = library.original_replies;
-                    saved.extend([("identity.syx".into(), library.identified.reply), ("original-1.syx".into(), first), ("original-2.syx".into(), second)]);
-                    for stored in library.presets {
-                        let stem = format!("presets/{:02}-{}-{}", stored.preset.bank(), stored.preset.bank_name().replace(' ', "_"), stored.preset.slot() + 1);
-                        index.push_str(&preset_line(stored.preset, &stored.metadata));
-                        index.push('\n');
-                        let [first, second] = stored.replies;
-                        saved.extend([(format!("{stem}-1.syx"), first), (format!("{stem}-2.syx"), second)]);
-                    }
-                    saved.push(("index.txt".into(), index.into_bytes()));
-                    restore_note = Some(VARIAX_RESTORE.to_owned());
+                    variax_library = Some(library);
                 })
             }
             Command::PodxtRead
@@ -317,14 +304,14 @@ fn run_variax(command: &Command, capture: &mut Capture) -> Result<(), String> {
     for line in progress_lines {
         capture.record(line);
     }
-    if let Some(note) = restore_note {
-        capture.set_restore_note(note);
-    }
     for line in summary {
         capture.line(line);
     }
     for (name, bytes) in &saved {
         capture.file(name, bytes)?;
+    }
+    if let Some(library) = &variax_library {
+        backup::save_variax_library(capture, library)?;
     }
     result.and(cleanup)
 }
@@ -345,81 +332,6 @@ fn run_podxt_listen(seconds: u64, capture: &mut Capture) -> Result<(), String> {
     capture.file("identity.syx", &identity_reply)
 }
 
-const VARIAX_RESTORE: &str = "Variax 600 library backup (read-only copy, made by variax-probe).
-
-presets/BB-Bank-S-1.syx and -2.syx are the exact 200-byte SysEx replies the guitar
-sent for metadata blocks 1 (address 851) and 2 (address 883) of bank BB, slot S,
-after a program change to that preset. index.txt lists bank, slot, Workbench
-program number, preset name and body model. original-1/2.syx is the preset that
-was active before the read. Decode with line6_devices::family::variax::
-PresetMetadata::from_replies (or variax-workbench decode FIRST SECOND).
-
-Check integrity:   sha256sum -c MANIFEST.sha256
-Verified backup:   run `variax-probe variax library` again and
-                   `variax-probe compare THIS_FOLDER OTHER_FOLDER`.
-
-These blocks are current-preset metadata as Workbench reads it, not a DSP or
-firmware image. Restoring them to the guitar needs a write gate (G6/G7), the
-owner's direct permission and an approved restore procedure. Nothing in
-variax-probe writes to a device.
-";
-
-const PODXT_RESTORE: &str = "PODxt Live library backup (read-only copy, made by variax-probe).
-
-tones/NNN-LABEL.syx, amp-setups/NNN-N.syx and fx-setups/NNN-N.syx are the exact
-168-byte SysEx dumps (F0 00 01 0C 03 74 .. F7) the PODxt sent when asked for each
-stored location by address (Line 6 Edit 3.06 RequestPatch layout: name at bytes
-7..22, controller n at byte 39+n). index.txt lists location, name and amp.
-current-before.syx and current-after.syx are the active tone before and after.
-Decode with line6_devices::family::podxt::EditBuffer.
-
-Check integrity:   sha256sum -c MANIFEST.sha256
-Verified backup:   run `variax-probe podxt library` again and
-                   `variax-probe compare THIS_FOLDER OTHER_FOLDER`.
-
-Restoring to the PODxt needs a write gate (G6/G7), the owner's direct
-permission and an approved restore procedure. Nothing in variax-probe writes
-to a device.
-";
-
-fn preset_line(preset: variax::Preset, metadata: &variax::PresetMetadata) -> String {
-    let body = match metadata.parameters.get("body_model") {
-        Some(variax::ParameterValue::Integer(id)) => format!("{id:#010x}"),
-        _ => "?".into(),
-    };
-    format!(
-        "{:>8} {} (program {:3}): {:<18} body {body}",
-        preset.bank_name(),
-        preset.slot() + 1,
-        preset.program_number(),
-        metadata.name
-    )
-}
-
-fn tone_line(stored: &podxt::StoredTone) -> String {
-    let tone = &stored.tone;
-    format!(
-        "{:<10} {:>4}: {:<16} amp {}",
-        stored.location.kind().name(),
-        stored.location.label(),
-        tone.name(),
-        tone.amp().name
-    )
-}
-
-/// Controllers whose stored value differs between two edit-buffer reads.
-fn edit_buffer_changes(before: &podxt::EditBuffer, after: &podxt::EditBuffer) -> Vec<String> {
-    (0u8..=127)
-        .filter(|&cc| {
-            39 + usize::from(cc) < podxt::EDIT_BUFFER_LEN - 1 && before.cc(cc) != after.cc(cc)
-        })
-        .map(|cc| {
-            let name = podxt::controls::name(cc).unwrap_or("unnamed");
-            format!("CC {cc} {name}: {} -> {}", before.cc(cc), after.cc(cc))
-        })
-        .collect()
-}
-
 fn run_podxt_library(capture: &mut Capture) -> Result<(), String> {
     let mut link = rawmidi::RawMidiLink::open(rawmidi::PODXT_LIVE_CARD, Path::PodxtMidi)?;
     let device = link.device.display().to_string();
@@ -429,7 +341,7 @@ fn run_podxt_library(capture: &mut Capture) -> Result<(), String> {
         session.note(format!("opened {device}"));
         session.log_packets = false;
         let progress = |stored: &podxt::StoredTone| {
-            let line = tone_line(stored);
+            let line = backup::podxt_index_line(stored);
             let _ = writeln!(std::io::stdout(), "{line}");
             progress_lines.push(line);
         };
@@ -451,35 +363,24 @@ fn run_podxt_library(capture: &mut Capture) -> Result<(), String> {
     capture.line(format!("Current tone before: {}", library.before.name()));
     match &library.after {
         Ok(after) => {
-            let changes = edit_buffer_changes(&library.before, after);
+            let changes = library.before.differences(after);
             if after.name() == library.before.name() && changes.is_empty() {
                 capture.line("Current tone after: unchanged (all 168 bytes identical)".into());
             } else {
-                capture.line(format!("Current tone after: {} — {} stored values differ (knob readings drift on their own):", after.name(), changes.len()));
-                for change in changes {
-                    capture.line(format!("  {change}"));
+                capture.line(format!(
+                    "Current tone after: {} — {} stored values differ (knob readings drift on their own):",
+                    after.name(),
+                    changes.len()
+                ));
+                for (cc, before, now) in changes {
+                    let name = podxt::controls::name(cc).unwrap_or("unnamed");
+                    capture.line(format!("  CC {cc} {name}: {before} -> {now}"));
                 }
             }
-            capture.file("current-after.syx", &after.raw)?;
         }
         Err(error) => capture.line(format!("Current tone after: not read ({error})")),
     }
-    capture.file("identity.syx", &library.identity_reply)?;
-    capture.file("current-before.syx", &library.before.raw)?;
-    let mut index = String::new();
-    for stored in &library.entries {
-        index.push_str(&tone_line(stored));
-        index.push('\n');
-        let name = format!(
-            "{}/{:03}-{}.syx",
-            stored.location.kind().slug(),
-            stored.location.index() + 1,
-            stored.location.label().replace('#', "")
-        );
-        capture.file(&name, &stored.tone.raw)?;
-    }
-    capture.file("index.txt", index.as_bytes())?;
-    capture.set_restore_note(PODXT_RESTORE.to_owned());
+    backup::save_podxt_library(capture, &library)?;
     match &library.stopped {
         Some(why) => Err(format!("library read stopped early at {why}")),
         None => Ok(()),
@@ -537,11 +438,21 @@ fn main() {
     };
     if let Command::Compare(first, second) = &command {
         match backup::compare(first, second) {
-            Ok((lines, verified)) => {
-                for line in lines {
-                    println!("{line}");
+            Ok(comparison) => {
+                println!(
+                    "{} stored entries identical, {} problems: {}",
+                    comparison.identical,
+                    comparison.problems.len(),
+                    if comparison.verified() {
+                        "VERIFIED (two independent reads match)"
+                    } else {
+                        "NOT verified"
+                    }
+                );
+                for problem in &comparison.problems {
+                    println!("  {problem}");
                 }
-                std::process::exit(if verified { 0 } else { 1 });
+                std::process::exit(if comparison.verified() { 0 } else { 1 });
             }
             Err(error) => {
                 eprintln!("{error}");
@@ -564,7 +475,9 @@ fn main() {
         format!("probe-{}-{stamp}", command.slug())
     };
     let mut capture = match Capture::create(&out, &name) {
-        Ok(capture) => capture,
+        Ok(capture) => capture.with_echo(|text| {
+            let _ = writeln!(std::io::stdout(), "{text}");
+        }),
         Err(error) => {
             eprintln!("{error}");
             std::process::exit(1);
@@ -582,7 +495,12 @@ fn main() {
         Command::PodxtPacks => run_podxt_packs(&mut capture),
         _ => run_variax(&command, &mut capture),
     };
-    let saved = capture.finish(&result).map(|_| ());
+    if let Err(error) = &result {
+        capture.line(format!("STOPPED: {error}"));
+    }
+    let saved = capture.finish(result.is_ok()).map(|dir| {
+        let _ = writeln!(std::io::stdout(), "Capture: {}", dir.display());
+    });
     if let Err(error) = result.and(saved) {
         eprintln!("{error}");
         std::process::exit(1);

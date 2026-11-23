@@ -7,8 +7,6 @@ description = "Lean owner-run read-only probe for the Variax 600 (through PODxt 
 
 [dependencies]
 line6-devices = { path = "../../crates/line6-devices", features = ["usb"] }
-# Backup manifests (SHA-256). Same major version as the main crate.
-sha2 = "0.10"
 
 [dev-dependencies]
 # Cross-check only: the library's Variax decoder must match the main crate's
