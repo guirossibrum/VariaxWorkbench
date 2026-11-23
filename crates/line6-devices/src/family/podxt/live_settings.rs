@@ -2,6 +2,8 @@
 
 use super::{Control, EditBuffer, Packs, PodxtRequest, Target, Value, models};
 
+const MIC_MODELS: [&str; 4] = ["57 On Axis", "57 Off Axis", "421 Dynamic", "67 Condenser"];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Setting {
     AmpModel,
@@ -129,7 +131,7 @@ impl Setting {
                 "a whole number from -96 to 0 dB".to_owned(),
             ),
             Self::Mic => (
-                number().filter(|v| *v <= 3),
+                number().filter(|v| self.valid_target(*v)),
                 "a mic index from 0 to 3".into(),
             ),
             Self::ModNote | Self::DelayNote => (
@@ -170,10 +172,10 @@ impl Setting {
         encoded.ok_or_else(|| format!("{}={text}: use {expected}", self.name()))
     }
 
-    fn valid_target(self, value: u16) -> bool {
+    pub(super) fn valid_target(self, value: u16) -> bool {
         match self {
             Self::GateThreshold => value <= 96,
-            Self::Mic => value <= 3,
+            Self::Mic => usize::from(value) < MIC_MODELS.len(),
             Self::ModNote | Self::DelayNote => value <= 13,
             Self::TweakParam => value <= 13,
             Self::PedalAssign => matches!(value, 0 | 64 | 127),
@@ -214,6 +216,10 @@ impl Setting {
             Self::GateThreshold => format!("{} dB", -i32::from(value)),
             Self::Tempo => format!("{}.{} BPM", value / 10, value % 10),
             Self::PedalAssign => format!("{} (raw {value})", pedal_assignment(value)),
+            Self::Mic => match MIC_MODELS.get(usize::from(value)) {
+                Some(name) => format!("{name} (index {value})"),
+                None => format!("unknown mic (index {value})"),
+            },
             _ => match self
                 .model_list()
                 .and_then(|list| list.get(usize::from(value)))

@@ -13,7 +13,8 @@ Available tests:
   vol-pedal-prepost   mod-prepost     delay-prepost   reverb-prepost
   amp-model           cab-model       stomp-model     mod-model
   delay-model         reverb-model    wah-model
-  gate-threshold      mic             tweak-param     pedal-assign
+  mic                 mic-on-axis     mic-off-axis    room
+  gate-threshold      tweak-param      pedal-assign
   mod-note            delay-note      mod-speed       delay-time      tempo
 
 The timing tests with raw values also turn off NOTE sync for that block.
@@ -37,6 +38,7 @@ if (( $# < 1 || $# > 2 )); then
 fi
 
 test_name=$1
+control=$test_name
 extra=()
 case "$test_name" in
     vol-pedal-prepost|mod-prepost|delay-prepost|reverb-prepost) default=toggle ;;
@@ -49,6 +51,15 @@ case "$test_name" in
     wah-model)      default=0x02060003 ;;
     gate-threshold) default=-48 ;;
     mic)            default=2 ;;
+    mic-on-axis|mic-off-axis)
+        if (( $# != 1 )); then
+            printf 'Use mic VALUE to select a different mic.\n' >&2
+            exit 2
+        fi
+        control=mic
+        if [[ $test_name == mic-on-axis ]]; then default=0; else default=1; fi
+        ;;
+    room)           default=+20 ;;
     tweak-param)    default=8 ;;
     pedal-assign)   default=1 ;;
     mod-note)       default=4 ;;
@@ -73,7 +84,7 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 git_dir=$(git -C "$script_dir" rev-parse --path-format=absolute --git-common-dir)
 capture_dir="$(dirname -- "$git_dir")/analysis/captures"
 probe="$script_dir/target/debug/variax-probe"
-command=("$probe" podxt live-test "$test_name=$value" "${extra[@]}" --out "$capture_dir")
+command=("$probe" podxt live-test "$control=$value" "${extra[@]}" --out "$capture_dir")
 
 if "$print_only"; then
     printf '%q ' "${command[@]}"

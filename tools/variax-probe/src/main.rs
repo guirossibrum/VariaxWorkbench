@@ -671,7 +671,8 @@ fn run_podxt_live_test(targets: &[podxt::LiveTarget], capture: &mut Capture) -> 
     let routing_only = targets.iter().all(
         |target| matches!(target, podxt::LiveTarget::Basic(control, _) if control.is_routing()),
     );
-    let strict = additional || routing_only;
+    let room_only = matches!(targets, [podxt::LiveTarget::Basic(podxt::Control::Room, _)]);
+    let strict = additional || routing_only || room_only;
     let undone = if strict {
         test.exact_undo()
     } else {

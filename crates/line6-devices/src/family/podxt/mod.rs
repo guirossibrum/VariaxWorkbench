@@ -699,6 +699,29 @@ pub fn live_settings_test<L: Link>(
         })
         .collect();
 
+    if changes.iter().any(|change| {
+        change.control == LiveControl::Additional(Setting::Mic)
+            && !Setting::Mic.valid_target(change.original)
+    }) {
+        return Err(
+            "The original mic index is outside the supported range for undo. No edits were sent."
+                .into(),
+        );
+    }
+    if let [change] = changes.as_slice()
+        && matches!(
+            change.control,
+            LiveControl::Additional(Setting::Mic) | LiveControl::Basic(Control::Room)
+        )
+        && change.original == change.target
+    {
+        return Err(format!(
+            "{} is already {}. Choose a different value to test a change.",
+            change.control.name(),
+            change.control.describe(change.target)
+        ));
+    }
+
     let has_model = changes.iter().any(
         |change| matches!(change.control, LiveControl::Additional(setting) if setting.model_list().is_some()),
     );
@@ -1835,6 +1858,87 @@ mod tests {
             .nth(byte_index)
             .unwrap()
             .2
+    }
+
+    #[test]
+    fn each_mic_choice_is_written_read_back_and_restored() {
+        for (target, label) in [
+            (0, "57 On Axis (index 0)"),
+            (1, "57 Off Axis (index 1)"),
+            (2, "421 Dynamic (index 2)"),
+            (3, "67 Condenser (index 3)"),
+        ] {
+            let original = u8::from(target == 0);
+            let target = Setting::Mic.parse(&target.to_string()).unwrap();
+            let before = with(&[(70, original), (71, 17), (76, 41)]);
+            let script = vec![
+                (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+                (PodxtRequest::EditBuffer, vec![before.clone()]),
+                (setting_message(Setting::Mic, target, 0), vec![]),
+                (
+                    PodxtRequest::EditBuffer,
+                    vec![with(&[(70, target as u8), (71, 17), (76, 41)])],
+                ),
+                (
+                    setting_message(Setting::Mic, u16::from(original), 0),
+                    vec![],
+                ),
+                (PodxtRequest::EditBuffer, vec![before]),
+            ];
+            let mut log = Quiet;
+            let mut session = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
+            let test = live_settings_test(
+                &mut session,
+                &[LiveTarget::Additional(Setting::Mic, target)],
+            )
+            .unwrap();
+            assert_eq!(test.changes[0].control.describe(target), label);
+            assert_eq!(session.sent[2], [0xb0, 70, target as u8]);
+            assert_eq!(session.sent[4], [0xb0, 70, original]);
+            assert!(test.stuck() && test.unexpected().is_empty() && test.exact_undo());
+        }
+    }
+
+    #[test]
+    fn room_testing_changes_cc_76_and_restores_the_full_tone() {
+        let before = with(&[(70, 3), (71, 17), (76, 41)]);
+        let script = vec![
+            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (PodxtRequest::EditBuffer, vec![before.clone()]),
+            (set(Control::Room, 61), vec![]),
+            (
+                PodxtRequest::EditBuffer,
+                vec![with(&[(70, 3), (71, 17), (76, 61)])],
+            ),
+            (set(Control::Room, 41), vec![]),
+            (PodxtRequest::EditBuffer, vec![before]),
+        ];
+        let mut log = Quiet;
+        let mut session = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
+        let test = live_edit_test(&mut session, &[(Control::Room, Target::Offset(20))]).unwrap();
+        assert_eq!(session.sent[2], [0xb0, 76, 61]);
+        assert_eq!(session.sent[4], [0xb0, 76, 41]);
+        assert!(test.stuck() && test.unexpected().is_empty() && test.exact_undo());
+    }
+
+    #[test]
+    fn a_mic_test_needs_a_known_original_and_a_different_target() {
+        for (original, message) in [
+            (1, "already 57 Off Axis"),
+            (4, "outside the supported range"),
+        ] {
+            let script = vec![
+                (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+                (PodxtRequest::EditBuffer, vec![with(&[(70, original)])]),
+            ];
+            let mut log = Quiet;
+            let mut session = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
+            assert!(matches!(
+                live_settings_test(&mut session, &[LiveTarget::Additional(Setting::Mic, 1)]),
+                Err(error) if error.contains(message)
+            ));
+            assert_eq!(session.sent.len(), 2);
+        }
     }
 
     #[test]
