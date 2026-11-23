@@ -5,7 +5,7 @@ shopt -s nullglob
 if [[ ${1:-} == --help || ${1:-} == -h ]]; then
     printf '%s\n' 'Usage: run-linked-recall' \
         'Start on saved PODxt channel 5B with Variax control enabled and the Variax 600 connected.' \
-        'This owner-run test makes one round trip: 5B → 1B → 5B, with guitar readback.'
+        'This owner-run test makes one round trip: 5B → 1B → 5B, waiting 10 seconds before each guitar read after a switch.'
     exit 0
 fi
 if (( $# != 0 )); then
@@ -70,6 +70,11 @@ if read_preset(sys.argv[1]) != read_preset(sys.argv[2]):
 PY
 }
 
+wait_for_recall() {
+    printf 'Waiting 10 seconds on PODxt channel %s before reading the Variax.\n' "$1"
+    sleep 10
+}
+
 return_needed=false
 return_to_start() {
     return_needed=false
@@ -77,6 +82,7 @@ return_to_start() {
         printf 'The return to 5B could not be confirmed. Check the PODxt display.\n' >&2
         return 1
     fi
+    wait_for_recall 5B || return
     read_guitar 05-variax-restored Telecaster 0x03100000 || return
     compare_guitar "$baseline" "$guitar_capture"
 }
@@ -99,6 +105,7 @@ read_guitar 01-variax-before Telecaster 0x03100000
 baseline=$guitar_capture
 return_needed=true
 "$probe" podxt channel 1B --from 5B --out "$run_dir/02-podxt-target"
+wait_for_recall 1B
 read_guitar 03-variax-target Chime-1 0x0310000c
 return_to_start
 printf 'PASS: PODxt 5B → 1B → 5B; Variax Telecaster → Chime-1 → Telecaster.\n'
