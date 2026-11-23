@@ -5,8 +5,8 @@
 //! (or `<name>-INCOMPLETE`) only when finished. It holds every device reply
 //! as an exact `.syx` file, `index.txt`, `log.txt`, `RESTORE.txt` and
 //! `MANIFEST.sha256` (hashes read back from disk, `sha256sum -c` format).
-//! Files stay ordinary files you can move or delete. Nothing is ever
-//! overwritten. Loading checks the manifest before decoding anything.
+//! Every file is made read-only; nothing is ever overwritten. Loading checks
+//! the manifest before decoding anything.
 //!
 //! Layout (format v1):
 //! * Variax: `identity.syx`, `original-1.syx`/`original-2.syx`, and
@@ -133,8 +133,8 @@ impl BackupFolder {
         Ok(())
     }
 
-    /// Writes log, restore note and manifest, then renames the folder
-    /// (`-INCOMPLETE` unless `complete`). Files stay writable. Returns it.
+    /// Writes log, restore note and manifest, makes every file read-only and
+    /// renames the folder (`-INCOMPLETE` unless `complete`). Returns it.
     pub fn finish(mut self, complete: bool) -> Result<PathBuf, String> {
         let mut log = self.lines.join("\n");
         log.push('\n');
@@ -150,6 +150,14 @@ impl BackupFolder {
             manifest.push_str(&format!("{}  {name}\n", sha256_hex(&bytes)));
         }
         self.file("MANIFEST.sha256", manifest.as_bytes())?;
+        for name in &self.files {
+            let path = self.work.join(name);
+            let mut permissions = fs::metadata(&path)
+                .map_err(|e| format!("{name}: {e}"))?
+                .permissions();
+            permissions.set_readonly(true);
+            fs::set_permissions(&path, permissions).map_err(|e| format!("{name}: {e}"))?;
+        }
         let target = self.root.join(if complete {
             self.name.clone()
         } else {
@@ -566,13 +574,7 @@ mod tests {
         let dir = folder.finish(true).unwrap();
         assert_eq!(dir, root.0.join("lib"));
         assert!(
-            !fs::metadata(dir.join("index.txt"))
-                .unwrap()
-                .permissions()
-                .readonly()
-        );
-        assert!(
-            !fs::metadata(dir.join("log.txt"))
+            fs::metadata(dir.join("index.txt"))
                 .unwrap()
                 .permissions()
                 .readonly()

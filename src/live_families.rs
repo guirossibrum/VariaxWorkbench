@@ -32,7 +32,16 @@ impl GatePolicy for DeviceCheckPolicy {
             Operation::PodxtLibraryRead
             | Operation::VariaxPresetSwitch
             | Operation::PodxtPackQuery
-            | Operation::PodxtEditBufferWrite => false,
+            | Operation::PodxtEditBufferWrite
+            // Operations added to the family crate on tools/device-controls;
+            // not opened in the app by this merge.
+            | Operation::PodxtAdditionalEditBufferWrite
+            | Operation::PodxtKeepEditBufferChanges
+            | Operation::PodxtChannelSwitch
+            | Operation::PodxtVariaxControlRelease
+            | Operation::PodxtLinkedVariaxModelEdit
+            | Operation::PodxtGlobalRead
+            | Operation::PodxtTunerMode => false,
         }
     }
 }

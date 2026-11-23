@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+set -euo pipefail
+shopt -s nullglob
+
+if [[ ${1:-} == --help || ${1:-} == -h ]]; then
+    printf '%s\n' 'Usage: run-linked-recall' \
+        'Start on saved PODxt channel 5B with Variax control enabled and the Variax 600 connected.' \
+        'This owner-run test makes one round trip: 5B → 1B → 5B, waiting 10 seconds before each guitar read after a switch.'
+    exit 0
+fi
+if (( $# != 0 )); then
+    printf 'Usage: run-linked-recall\n' >&2
+    exit 2
+fi
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+git_dir=$(git -C "$script_dir" rev-parse --path-format=absolute --git-common-dir)
+capture_dir="$(dirname -- "$git_dir")/analysis/captures"
+probe="$script_dir/target/debug/variax-probe"
+
+command -v python3 >/dev/null
+command -v sha256sum >/dev/null
+if [[ ! -x $probe ]]; then
+    cargo build --locked --manifest-path "$script_dir/Cargo.toml" --target-dir "$script_dir/target"
+fi
+mkdir -p -- "$capture_dir"
+run_dir=$(mktemp -d -- "$capture_dir/linked-recall-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")
+printf 'Linked recall capture folder: %s\n' "$run_dir"
+
+read_guitar() {
+    local step=$1 expected_name=$2 expected_body=$3
+    "$probe" variax read --out "$run_dir/$step" || return
+    local captures=("$run_dir/$step"/probe-variax-read-*)
+    if (( ${#captures[@]} != 1 )) || [[ ${captures[0]} == *-INCOMPLETE ]]; then
+        printf 'Expected one completed Variax capture for %s.\n' "$step" >&2
+        return 1
+    fi
+    guitar_capture=${captures[0]}
+    if ! (cd -- "$guitar_capture" && sha256sum --check --status MANIFEST.sha256) ||
+       ! grep -Fq 'Identity: Variax 300/600 (family 0x0007, member 0x0004)' "$guitar_capture/log.txt" ||
+       ! grep -Fxq "Preset name : $expected_name" "$guitar_capture/log.txt" ||
+       ! grep -Fxq "  body_model = $expected_body" "$guitar_capture/log.txt"; then
+        printf '%s did not verify Variax 600 preset %s (body %s).\n' \
+            "$step" "$expected_name" "$expected_body" >&2
+        return 1
+    fi
+}
+
+compare_guitar() {
+    python3 - "$1" "$2" <<'PY'
+import sys
+from pathlib import Path
+
+def read_preset(folder):
+    data = bytearray()
+    for block in (1, 2):
+        reply = (Path(folder) / f"metadata-{block}.syx").read_bytes()
+        if (len(reply) != 200 or reply[:5] != bytes.fromhex("f0 00 01 0c 07")
+                or reply[5] not in (0, 4) or reply[6] != 0x3c or reply[-1] != 0xf7
+                or any(byte > 15 for byte in reply[7:-1])):
+            raise SystemExit("Unexpected Variax metadata reply.")
+        for offset in range(7, 199, 6):
+            word = sum(value << (i * 4) for i, value in enumerate(reply[offset:offset + 6]))
+            data.extend(word.to_bytes(3, "big"))
+    # Workbench-compatible comparison excludes the live tone-knob field.
+    return data[:61] + data[65:]
+
+if read_preset(sys.argv[1]) != read_preset(sys.argv[2]):
+    raise SystemExit("The Variax metadata after returning differs from the baseline.")
+PY
+}
+
+wait_for_recall() {
+    printf 'Waiting 10 seconds on PODxt channel %s before reading the Variax.\n' "$1"
+    sleep 10
+}
+
+return_needed=false
+return_to_start() {
+    return_needed=false
+    if ! "$probe" podxt channel 5B --from 1B --out "$run_dir/04-podxt-return"; then
+        printf 'The return to 5B could not be confirmed. Check the PODxt display.\n' >&2
+        return 1
+    fi
+    wait_for_recall 5B || return
+    read_guitar 05-variax-restored T-Model-1 0x03100000 || return
+    compare_guitar "$baseline" "$guitar_capture"
+}
+
+finish() {
+    local status=$?
+    trap - EXIT
+    if "$return_needed"; then
+        printf 'The test stopped early. Checking the return to 5B.\n' >&2
+        return_to_start || status=1
+    fi
+    printf 'Linked recall capture folder: %s\n' "$run_dir"
+    exit "$status"
+}
+trap finish EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+read_guitar 01-variax-before T-Model-1 0x03100000
+baseline=$guitar_capture
+return_needed=true
+"$probe" podxt channel 1B --from 5B --out "$run_dir/02-podxt-target"
+wait_for_recall 1B
+read_guitar 03-variax-target Chime-1 0x0310000c
+return_to_start
+printf 'PASS: PODxt 5B → 1B → 5B; Variax T-Model-1 → Chime-1 → T-Model-1.\n'

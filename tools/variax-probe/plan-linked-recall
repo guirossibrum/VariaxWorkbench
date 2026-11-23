@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if (( $# != 0 )); then
+    printf 'Usage: plan-linked-recall\n' >&2
+    exit 2
+fi
+
+cat <<'PLAN'
+Owner-run linked Variax recall plan (see run-linked-recall)
+
+Start on saved PODxt channel 5B with Variax control enabled.
+The backup identifies 5B as F-T-Model 1 and 1B as F-Chime 1.
+
+1. Read the connected Variax 600. Confirm the baseline matches F-T-Model 1.
+2. Select PODxt channel 1B from 5B and verify the PODxt readback.
+3. Wait 10 seconds, then read the Variax 600 again. Confirm that it recalled F-Chime 1.
+4. Return the PODxt to 5B, including if the target guitar read fails.
+5. Wait 10 seconds, then read the Variax 600 again and compare its metadata with the baseline.
+
+Keep the five captures together. The guitar checks compare preset metadata
+apart from the live tone-knob field. Both channels are already saved.
+PLAN

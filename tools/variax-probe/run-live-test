@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    cat <<'USAGE'
+Usage: run-live-test [--print] TEST [VALUE]
+
+Run one owner-operated PODxt Live edit-buffer test with readback and undo.
+--print shows the command without opening the device.
+VALUE optionally replaces the sample value for the named test.
+
+Available tests:
+  vol-pedal-prepost   mod-prepost     delay-prepost   reverb-prepost
+  amp-model           cab-model       stomp-model     mod-model
+  delay-model         reverb-model    wah-model
+  mic                 mic-on-axis     mic-off-axis    room
+  gate-threshold      tweak-param      pedal-assign
+  mod-note            delay-note      mod-speed       delay-time      tempo
+
+The timing tests with raw values also turn off NOTE sync for that block.
+For the tempo test, start on a tone with an active Mod or Delay NOTE.
+USAGE
+}
+
+if [[ ${1:-} == --help || ${1:-} == -h || ${1:-} == list ]]; then
+    usage
+    exit 0
+fi
+
+print_only=false
+if [[ ${1:-} == --print ]]; then
+    print_only=true
+    shift
+fi
+if (( $# < 1 || $# > 2 )); then
+    usage >&2
+    exit 2
+fi
+
+test_name=$1
+control=$test_name
+extra=()
+case "$test_name" in
+    vol-pedal-prepost|mod-prepost|delay-prepost|reverb-prepost) default=toggle ;;
+    amp-model)      default=0x00020020 ;;
+    cab-model)      default=0x01020001 ;;
+    stomp-model)    default=0x020a000a ;;
+    mod-model)      default=0x02030005 ;;
+    delay-model)    default=0x02020003 ;;
+    reverb-model)   default=0x02040003 ;;
+    wah-model)      default=0x02060003 ;;
+    gate-threshold) default=-48 ;;
+    mic)            default=2 ;;
+    mic-on-axis|mic-off-axis)
+        if (( $# != 1 )); then
+            printf 'Use mic VALUE to select a different mic.\n' >&2
+            exit 2
+        fi
+        control=mic
+        if [[ $test_name == mic-on-axis ]]; then default=0; else default=1; fi
+        ;;
+    room)           default=+20 ;;
+    tweak-param)    default=8 ;;
+    pedal-assign)   default=1 ;;
+    mod-note)       default=4 ;;
+    delay-note)     default=8 ;;
+    mod-speed)      default=4097; extra=(mod-note=0) ;;
+    delay-time)     default=8193; extra=(delay-note=0) ;;
+    tempo)          default=113.5 ;;
+    *)
+        printf 'Unknown test: %s\n' "$test_name" >&2
+        usage >&2
+        exit 2
+        ;;
+esac
+
+value=${2-$default}
+if [[ -z $value ]]; then
+    printf 'Provide a nonempty value or omit it to use the sample value.\n' >&2
+    exit 2
+fi
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+git_dir=$(git -C "$script_dir" rev-parse --path-format=absolute --git-common-dir)
+capture_dir="$(dirname -- "$git_dir")/analysis/captures"
+probe="$script_dir/target/debug/variax-probe"
+command=("$probe" podxt live-test "$control=$value" "${extra[@]}" --out "$capture_dir")
+
+if "$print_only"; then
+    printf '%q ' "${command[@]}"
+    printf '\n'
+    exit 0
+fi
+if [[ ! -x $probe ]]; then
+    cargo build --locked --manifest-path "$script_dir/Cargo.toml" --target-dir "$script_dir/target"
+fi
+exec "${command[@]}"

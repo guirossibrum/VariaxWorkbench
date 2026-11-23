@@ -87,7 +87,16 @@ impl line6_devices::gate::GatePolicy for BackupPolicy {
             | line6_devices::gate::Operation::PodxtRead
             | line6_devices::gate::Operation::PodxtLibraryRead
             | line6_devices::gate::Operation::PodxtPackQuery => true,
-            line6_devices::gate::Operation::PodxtEditBufferWrite => false,
+            // Edits, channel and Variax control, globals and the tuner are not
+            // part of a library backup; they stay closed in the app.
+            line6_devices::gate::Operation::PodxtEditBufferWrite
+            | line6_devices::gate::Operation::PodxtAdditionalEditBufferWrite
+            | line6_devices::gate::Operation::PodxtKeepEditBufferChanges
+            | line6_devices::gate::Operation::PodxtChannelSwitch
+            | line6_devices::gate::Operation::PodxtVariaxControlRelease
+            | line6_devices::gate::Operation::PodxtLinkedVariaxModelEdit
+            | line6_devices::gate::Operation::PodxtGlobalRead
+            | line6_devices::gate::Operation::PodxtTunerMode => false,
         }
     }
 }

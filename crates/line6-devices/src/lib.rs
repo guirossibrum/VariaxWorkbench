@@ -14,10 +14,8 @@
 //! * [`backup`] — recoverable library backups on disk (write, verify, load,
 //!   compare), so every front end produces the same layout.
 //!
-//! No request writes, stores, resets, or touches firmware. The Variax library
-//! backup is the only procedure that sends program changes: it switches
-//! through the stored presets to read them, then tries to switch back. The
-//! caller's policy decides whether that procedure is allowed.
+//! PODxt Live edit-buffer changes and channel selection run through their
+//! product-family APIs. The crate has no preset store or firmware API.
 
 #![forbid(unsafe_code)]
 

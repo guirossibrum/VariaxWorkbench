@@ -30,3 +30,5 @@ __pycache__/
 *.pyc
 .env
 .env.*
+/crates/*/target/
+/tools/*/target/

@@ -57,10 +57,45 @@ Write gates (G6, G7) additionally require a verified backup (G5), the
 coefficient-parity decision recorded in #6/#22, and a separately approved
 restore procedure. Firmware (G8) is out of scope.
 
+The owner directly authorized the item 2 G6 procedure on 2026-11-23 for the
+owner-run `tools/device-controls` worktree probe. It extends `podxt live-test`
+to the seven pack-checked model selectors, gate threshold, mic, Mod/Delay
+NOTE, tweak parameter, pedal assignment, Mod speed, Delay time and tempo.
+The probe snapshots the current tone, reads back the edits, attempts undo
+including changed companion values in the affected blocks, and verifies the
+full tone dump. Amp model selection uses CC 12 with amp defaults disabled.
+This authorization applies only to the probe on this branch; the owner
+runs it. It does not authorize preset storage, an automatic program change,
+GUI writes, or Variax writes. The prior PODxt G6 test's verified backup and
+owner-approved edit-buffer undo are recorded in the README ledger.
+
+The owner directly authorized the owner-run linked recall test on 2026-11-23.
+`tools/variax-probe/run-linked-recall` selects existing saved PODxt channels
+5B → 1B → 5B. The PODxt recalls the linked Variax 600 models. The procedure
+uses the existing PODxt channel-switch and Variax metadata-read permissions,
+with no direct guitar program changes or preset storage. It attempts a
+return to 5B if the target stage fails. This permission is for this worktree
+probe and this test only.
+
+The owner separately authorized one owner-run PODxt Live Variax-control
+release display check. The worktree-only probe may verify the PODxt Live
+identity and send the original Workbench 1.75 XT Live release once
+(`L6VariaxDevice.SetXTLiveVariaxMessagesEnable(false)`). Check the last EDIT
+page manually. This standalone check sends no guitar command, channel change,
+or preset store. This permission does not add the release to linked recall.
+
+The owner separately authorized the owner-run linked model edit test on
+2026-11-23. In the active PODxt tone, verify F-T-Model 1 and Telecaster on
+the Variax 600, temporarily select F-Spank 1 via Line 6 Edit's wrapped
+model command, wait 10 seconds and check both devices. Attempt to restore
+F-T-Model 1, wait 10 seconds and verify the original guitar metadata and
+PODxt tone. This approval is limited to that worktree probe procedure and
+those two models. It includes no PODxt channel change or save.
+
 No preset upload, flash write, firmware install, or reset has been authorized.
 The only program changes the app may send are inside the Device check Variax
 library backup, which reads each stored preset and then tries to switch back.
- Firmware downloads, version comparison, static extraction and offline
+Firmware downloads, version comparison, static extraction and offline
 reverse engineering are authorized. Latest firmware availability must not cause
 an automatic update. GitHub issues and the linked project contain the work plan.
 

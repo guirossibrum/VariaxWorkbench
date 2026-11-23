@@ -106,6 +106,10 @@ impl<'a, L: Link> Session<'a, L> {
         self.log.line(line);
     }
 
+    pub(crate) fn allows(&self, operation: Operation) -> bool {
+        self.policy.allows(operation)
+    }
+
     /// The only way bytes reach a device.
     pub fn send<R: Request>(&mut self, request: R) -> Result<(), String> {
         if request.path() != self.link.path() {

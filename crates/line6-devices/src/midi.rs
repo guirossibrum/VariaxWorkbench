@@ -18,6 +18,8 @@ pub struct Tally {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ControllerTally {
     pub controllers: BTreeMap<(u8, u8), Tally>,
+    /// Program changes in arrival order: (channel 1..=16, program).
+    pub programs: Vec<(u8, u8)>,
     pub other_messages: usize,
 }
 
@@ -42,6 +44,9 @@ impl ControllerTally {
                         min: value,
                         max: value,
                     });
+            }
+            Event::Short(message) if message.len() == 2 && message[0] & 0xf0 == 0xc0 => {
+                self.programs.push(((message[0] & 0x0f) + 1, message[1]));
             }
             _ => self.other_messages += 1,
         }
@@ -194,6 +199,17 @@ mod tests {
             describe_short(&[0xb0, 7, 14]),
             "controller 7 = 14 (channel 1)"
         );
+    }
+
+    #[test]
+    fn program_changes_are_kept_in_order() {
+        let mut tally = ControllerTally::default();
+        let mut assembler = Assembler::default();
+        for event in assembler.feed(&[0xc0, 24, 0xb0, 7, 0, 0xc0, 26]).unwrap() {
+            tally.add(&event);
+        }
+        assert_eq!(tally.programs, vec![(1, 24), (1, 26)]);
+        assert_eq!(tally.other_messages, 0);
     }
 
     #[test]
