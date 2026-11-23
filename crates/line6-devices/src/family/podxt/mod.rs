@@ -48,6 +48,10 @@ pub enum PodxtRequest {
     /// Select a stored tone as the playing channel: `C0 <index>` (Line 6
     /// Edit `ChangeDeviceProgram`, `m_pc_offset` 0 on the PODxt Live).
     Program(Location),
+    /// Global value query, `03 57 <id>` (Line 6 Edit `QueryGlobalValue`).
+    QueryGlobal(Global),
+    /// Tuner on/off: CC 69, 127 or 0 (Line 6 Edit `SetTunerMode`).
+    TunerMode(bool),
 }
 
 impl Request for PodxtRequest {
@@ -58,6 +62,10 @@ impl Request for PodxtRequest {
             PodxtRequest::InstalledPacks => vec![0xf0, 0x00, 0x01, 0x0c, 0x03, 0x0e, 0x00, 0xf7],
             PodxtRequest::Set(control, value) => vec![0xb0, control.cc(), value.get()],
             PodxtRequest::Program(location) => vec![0xc0, location.index() as u8],
+            PodxtRequest::QueryGlobal(global) => {
+                vec![0xf0, 0x00, 0x01, 0x0c, 0x03, 0x57, global.id(), 0xf7]
+            }
+            PodxtRequest::TunerMode(on) => vec![0xb0, TUNER_CC, if on { 127 } else { 0 }],
             PodxtRequest::Stored(location) => {
                 let address = location.address();
                 vec![
@@ -89,6 +97,8 @@ impl Request for PodxtRequest {
             PodxtRequest::InstalledPacks => Operation::PodxtPackQuery,
             PodxtRequest::Set(..) => Operation::PodxtEditBufferWrite,
             PodxtRequest::Program(_) => Operation::PodxtChannelSwitch,
+            PodxtRequest::QueryGlobal(_) => Operation::PodxtGlobalRead,
+            PodxtRequest::TunerMode(_) => Operation::PodxtTunerMode,
         }
     }
 }
@@ -711,6 +721,254 @@ pub fn live_edit_test<L: Link>(
     })
 }
 
+/// Tuner mode controller (Line 6 Edit `SetTunerMode`).
+pub const TUNER_CC: u8 = 69;
+
+/// Global values the PODxt answers to `03 57 <id>` (Line 6 Edit
+/// `L6SharcToneDevice.GLOBAL_*`). Values are raw 16-bit; their meaning is
+/// only decoded where Line 6 Edit decodes it (tuner note and deviation,
+/// current channel).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Global {
+    Version,
+    ClipStatus,
+    UsbMix,
+    UsbMode,
+    MidiChannel,
+    CurrentChannel,
+    UiMode,
+    TunerMode,
+    TunerLevel,
+    TunerReference,
+    TunerNote,
+    TunerDeviation,
+    ProgramChangeScheme,
+    MidiThru,
+    Edited,
+    FavoriteChannel,
+    LcdContrast,
+    OutputMode,
+    FxSetup,
+    PotsMode,
+    InputSelect,
+}
+
+impl Global {
+    pub const STATUS: [Global; 21] = [
+        Global::Version,
+        Global::ClipStatus,
+        Global::UsbMix,
+        Global::UsbMode,
+        Global::MidiChannel,
+        Global::CurrentChannel,
+        Global::UiMode,
+        Global::TunerMode,
+        Global::TunerLevel,
+        Global::TunerReference,
+        Global::TunerNote,
+        Global::TunerDeviation,
+        Global::ProgramChangeScheme,
+        Global::MidiThru,
+        Global::Edited,
+        Global::FavoriteChannel,
+        Global::LcdContrast,
+        Global::OutputMode,
+        Global::FxSetup,
+        Global::PotsMode,
+        Global::InputSelect,
+    ];
+
+    pub fn id(self) -> u8 {
+        match self {
+            Global::Version => 0,
+            Global::ClipStatus => 1,
+            Global::UsbMix => 4,
+            Global::UsbMode => 5,
+            Global::MidiChannel => 16,
+            Global::CurrentChannel => 17,
+            Global::UiMode => 18,
+            Global::TunerMode => 19,
+            Global::TunerLevel => 20,
+            Global::TunerReference => 21,
+            Global::TunerNote => 22,
+            Global::TunerDeviation => 23,
+            Global::ProgramChangeScheme => 26,
+            Global::MidiThru => 27,
+            Global::Edited => 28,
+            Global::FavoriteChannel => 29,
+            Global::LcdContrast => 30,
+            Global::OutputMode => 31,
+            Global::FxSetup => 32,
+            Global::PotsMode => 33,
+            Global::InputSelect => 34,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Global::Version => "version",
+            Global::ClipStatus => "clip status",
+            Global::UsbMix => "USB mix",
+            Global::UsbMode => "USB mode",
+            Global::MidiChannel => "MIDI channel",
+            Global::CurrentChannel => "current channel (patch number)",
+            Global::UiMode => "UI mode",
+            Global::TunerMode => "tuner mode",
+            Global::TunerLevel => "tuner level",
+            Global::TunerReference => "tuner reference",
+            Global::TunerNote => "tuner note",
+            Global::TunerDeviation => "tuner deviation",
+            Global::ProgramChangeScheme => "program change scheme",
+            Global::MidiThru => "MIDI thru",
+            Global::Edited => "edited (unsaved changes)",
+            Global::FavoriteChannel => "favorite channel",
+            Global::LcdContrast => "LCD contrast",
+            Global::OutputMode => "output mode",
+            Global::FxSetup => "FX setup",
+            Global::PotsMode => "pots (knob) mode",
+            Global::InputSelect => "input select",
+        }
+    }
+}
+
+/// A raw global value as Line 6 Edit reads it: signed 16-bit.
+pub fn signed(raw: u16) -> i32 {
+    i32::from(raw as i16)
+}
+
+/// Tuner note name from the raw note value (Line 6 Edit `GetTunerNote` and
+/// `L6TunerDisplay.NOTE_NAMES`); "-" when no note is detected.
+pub fn tuner_note_name(raw: u16) -> &'static str {
+    const NAMES: [&str; 13] = [
+        "-", "A", "Bb", "B", "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab",
+    ];
+    let value = signed(raw);
+    if value <= -3 {
+        NAMES[0]
+    } else {
+        NAMES[((value + 2).rem_euclid(12) + 1) as usize]
+    }
+}
+
+/// Tuner deviation in cents. Line 6 Edit's `GetTunerDeviation` returns
+/// `signed / 100` and its display maps -0.5..+0.5 onto the whole needle
+/// (`20 + 335 * (deviation + 0.5)`), i.e. half a semitone each way, so the
+/// raw value is the deviation in cents.
+pub fn tuner_cents(raw: u16) -> f32 {
+    signed(raw) as f32
+}
+
+fn global_value(message: &[u8], id: u8) -> Option<u16> {
+    (message.len() == 12 && message[..5] == [0xf0, 0x00, 0x01, 0x0c, 0x03] && message[6] == id)
+        .then(|| {
+            (u16::from(message[7]) << 12)
+                | (u16::from(message[8]) << 8)
+                | (u16::from(message[9]) << 4)
+                | u16::from(message[10])
+        })
+}
+
+/// One global value, or `None` when the PODxt does not answer in time.
+pub fn read_global<L: Link>(
+    session: &mut Session<L>,
+    global: Global,
+) -> Result<Option<u16>, String> {
+    session.send(PodxtRequest::QueryGlobal(global))?;
+    let id = global.id();
+    Ok(
+        match session.wait_for(GLOBAL_WINDOW, |m| global_value(m, id).is_some(), false)? {
+            Wait::Found(reply) => global_value(&reply, id),
+            _ => None,
+        },
+    )
+}
+
+/// Line 6 Edit waits 100 ms for a global value; this allows a little more.
+const GLOBAL_WINDOW: Duration = Duration::from_millis(300);
+/// Line 6 Edit polls the tuner every 250 ms.
+pub const TUNER_POLL: Duration = Duration::from_millis(250);
+pub const TUNER_MAX: Duration = Duration::from_secs(60);
+
+/// Global values as read: `None` when the PODxt did not answer.
+pub type GlobalValues = Vec<(Global, Option<u16>)>;
+
+/// Identity, then every [`Global::STATUS`] value. Read-only.
+pub fn read_status<L: Link>(session: &mut Session<L>) -> Result<(Vec<u8>, GlobalValues), String> {
+    let (identity_reply, _) = identify_podxt(session)?;
+    let mut values = Vec::new();
+    for global in Global::STATUS {
+        values.push((global, read_global(session, global)?));
+    }
+    Ok((identity_reply, values))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TunerReading {
+    pub at: Duration,
+    pub note: Option<u16>,
+    pub deviation: Option<u16>,
+}
+
+pub struct TunerRun {
+    pub identity_reply: Vec<u8>,
+    pub readings: Vec<TunerReading>,
+    /// Result of switching the tuner off again (always attempted).
+    pub off_sent: Result<(), String>,
+}
+
+/// Tuner on (CC 69 = 127), poll note and deviation every 250 ms for
+/// `window` (at most [`TUNER_MAX`]), then tuner off, which is sent even when
+/// polling fails.
+pub fn tuner<L: Link>(
+    session: &mut Session<L>,
+    window: Duration,
+    mut on_reading: impl FnMut(&TunerReading),
+) -> Result<TunerRun, String> {
+    let (identity_reply, _) = identify_podxt(session)?;
+    let window = window.min(TUNER_MAX);
+    if let Err(error) = session.send(PodxtRequest::TunerMode(true)) {
+        let _ = session.send(PodxtRequest::TunerMode(false));
+        return Err(error);
+    }
+    let start = session.link.elapsed();
+    let mut readings = Vec::new();
+    let mut poll_error = None;
+    while session.link.elapsed().saturating_sub(start) < window {
+        let reading = (|| -> Result<TunerReading, String> {
+            let note = read_global(session, Global::TunerNote)?;
+            let deviation = read_global(session, Global::TunerDeviation)?;
+            Ok(TunerReading {
+                at: session.link.elapsed().saturating_sub(start),
+                note,
+                deviation,
+            })
+        })();
+        match reading {
+            Ok(reading) => {
+                on_reading(&reading);
+                readings.push(reading);
+            }
+            Err(error) => {
+                poll_error = Some(error);
+                break;
+            }
+        }
+        session.link.pause(TUNER_POLL);
+    }
+    let off_sent = session.send(PodxtRequest::TunerMode(false));
+    if let Some(error) = poll_error {
+        return Err(match off_sent {
+            Ok(()) => format!("{error} (tuner switched off)"),
+            Err(off) => format!("{error}; switching the tuner off also failed: {off}"),
+        });
+    }
+    Ok(TunerRun {
+        identity_reply,
+        readings,
+        off_sent,
+    })
+}
+
 /// Bytes that follow live physical state rather than the stored tone: volume
 /// pedal (CC 7), wah position (CC 4), and the knob/device-driven channel
 /// volume (CC 17), bypass volume (CC 105) and presence (CC 21).
@@ -1210,6 +1468,12 @@ impl EditBuffer {
             .collect()
     }
 
+    /// Tempo in BPM: Line 6 Edit sends BPM x 10 as CC 89 (high 7 bits) and
+    /// CC 90 (low 7 bits).
+    pub fn tempo_bpm(&self) -> f32 {
+        f32::from((u16::from(self.cc(89)) << 7) | u16::from(self.cc(90))) / 10.0
+    }
+
     /// Human-readable summary.
     pub fn describe(&self) -> Vec<String> {
         let pct = |n| format!("{:.1}%", self.knob(n) * 100.0);
@@ -1286,7 +1550,12 @@ impl EditBuffer {
                 self.cc(65),
                 self.cc(47)
             ),
-            format!("Tempo raw : {}/{}", self.cc(89), self.cc(90)),
+            format!(
+                "Tempo     : {:.1} BPM (raw {}/{})",
+                self.tempo_bpm(),
+                self.cc(89),
+                self.cc(90)
+            ),
         ]
     }
 }
@@ -1675,6 +1944,56 @@ mod tests {
         let target = Location::tone_from_label("3C").unwrap();
         assert!(switch_channel(&mut s, target, Some(orig), true).is_err());
         assert!(s.sent.iter().all(|b| b[0] != 0xc0));
+    }
+
+    #[test]
+    fn global_queries_and_tuner_values_follow_line6_edit() {
+        assert_eq!(
+            PodxtRequest::QueryGlobal(Global::CurrentChannel).bytes(),
+            vec![0xf0, 0x00, 0x01, 0x0c, 0x03, 0x57, 17, 0xf7]
+        );
+        assert_eq!(
+            PodxtRequest::QueryGlobal(Global::TunerNote).operation(),
+            Operation::PodxtGlobalRead
+        );
+        assert_eq!(PodxtRequest::TunerMode(true).bytes(), vec![0xb0, 69, 127]);
+        assert_eq!(
+            PodxtRequest::TunerMode(false).operation(),
+            Operation::PodxtTunerMode
+        );
+        let reply = [
+            0xf0, 0x00, 0x01, 0x0c, 0x03, 0x56, 23, 0x0f, 0x0f, 0x0e, 0x0c, 0xf7,
+        ];
+        assert_eq!(global_value(&reply, 23), Some(0xffec));
+        assert_eq!(tuner_cents(0xffec), -20.0);
+        assert_eq!(global_value(&reply, 22), None);
+        assert_eq!(tuner_note_name(0xfffd), "-");
+        assert_eq!(tuner_note_name(0xfffe), "A");
+        assert_eq!(tuner_note_name(5), "E");
+        assert_eq!(tuner_note_name(10), "A");
+        let mut raw = synthetic();
+        raw[39 + 89] = 9;
+        raw[39 + 90] = 48;
+        assert_eq!(EditBuffer::parse(raw).unwrap().tempo_bpm(), 120.0);
+    }
+
+    #[test]
+    fn the_tuner_records_missing_values_and_is_always_switched_off() {
+        let mut log = Quiet;
+        let note = vec![0xf0, 0x00, 0x01, 0x0c, 0x03, 0x56, 22, 0, 0, 0, 5, 0xf7];
+        let script = vec![
+            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (PodxtRequest::TunerMode(true), vec![]),
+            (PodxtRequest::QueryGlobal(Global::TunerNote), vec![note]),
+            (PodxtRequest::QueryGlobal(Global::TunerDeviation), vec![]),
+            (PodxtRequest::TunerMode(false), vec![]),
+        ];
+        let mut s = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
+        let run = tuner(&mut s, Duration::from_millis(400), |_| {}).unwrap();
+        assert_eq!(run.readings[0].note, Some(5));
+        assert_eq!(run.readings[0].deviation, None);
+        assert!(run.off_sent.is_ok());
+        assert_eq!(s.sent.last(), Some(&PodxtRequest::TunerMode(false).bytes()));
     }
 
     #[test]

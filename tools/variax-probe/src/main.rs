@@ -13,6 +13,8 @@
 //!                          (default: stomp/mod/delay/reverb toggled, treble +20, mid -20;
 //!                          `all`: every live control, switches toggled, knobs +20)
 //!   podxt stomp-test       G6: the same with only the stomp toggled
+//!   podxt status           read-only global values (current channel, edited flag, ...)
+//!   podxt tuner [SECS]     tuner on, note and cents every 250 ms, tuner off
 //!   podxt channel 3C [--from 7B]       select a channel (program change)
 //!   podxt channel-test 3C [--from 7B]  select a channel, check, switch back, check
 //!
@@ -60,6 +62,9 @@ impl GatePolicy for OwnerGrants {
             // Owner's request 2026-11-23: select the playing channel by program
             // change (like the footswitch). Refused on unsaved edits; no store.
             Operation::PodxtChannelSwitch => true,
+            // Owner's request 2026-11-23 ("tap/tuner"): tuner on/off (CC 69) and the
+            // read-only global-value query it needs (also used by `podxt status`).
+            Operation::PodxtGlobalRead | Operation::PodxtTunerMode => true,
         }
     }
 }
@@ -67,6 +72,7 @@ impl GatePolicy for OwnerGrants {
 const USAGE: &str = "Usage: variax-probe variax identity|read|listen [SECONDS]|library [--out DIR]
        variax-probe podxt read|listen [SECONDS]|library [--out DIR]
        variax-probe podxt channel|channel-test CHANNEL [--from CHANNEL] [--out DIR]
+       variax-probe podxt status|tuner [SECONDS] [--out DIR]
        variax-probe compare FIRST_BACKUP SECOND_BACKUP
 Read-only. Run it yourself; it contacts the connected PODxt Live and Variax.
 --out is required for device commands (library backups: the repo's backups/,
@@ -84,6 +90,8 @@ enum Command {
     Compare(PathBuf, PathBuf),
     PodxtPacks,
     PodxtLiveTest(Vec<(podxt::Control, podxt::Target)>),
+    PodxtStatus,
+    PodxtTuner(u64),
     PodxtChannel {
         target: podxt::Location,
         from: Option<podxt::Location>,
@@ -104,6 +112,8 @@ impl Command {
             Command::Compare(..) => "compare",
             Command::PodxtPacks => "podxt-packs",
             Command::PodxtLiveTest(_) => "podxt-live-test",
+            Command::PodxtStatus => "podxt-status",
+            Command::PodxtTuner(_) => "podxt-tuner",
             Command::PodxtChannel { back: false, .. } => "podxt-channel",
             Command::PodxtChannel { back: true, .. } => "podxt-channel-test",
         }
@@ -130,6 +140,10 @@ impl Command {
             }
             Command::Compare(..) => "nothing (offline comparison)",
             Command::PodxtPacks => "PODxt identity, then the installed model-pack query",
+            Command::PodxtStatus => "PODxt identity, then read-only global value queries",
+            Command::PodxtTuner(_) => {
+                "PODxt identity, tuner on (CC 69), tuner note/deviation queries every 250 ms, tuner off"
+            }
             Command::PodxtChannel { back: false, .. } => {
                 "PODxt identity, current tone, stored tones (to check for unsaved edits), program change to the channel, current tone"
             }
@@ -176,6 +190,17 @@ fn parse(args: &[String]) -> Result<(Command, Option<PathBuf>), String> {
             Command::PodxtLiveTest(vec![(podxt::Control::StompEnable, podxt::Target::Toggle)])
         }
         ["podxt", "live-test", rest @ ..] => Command::PodxtLiveTest(live_targets(rest)?),
+        ["podxt", "status"] => Command::PodxtStatus,
+        ["podxt", "tuner"] => Command::PodxtTuner(15),
+        ["podxt", "tuner", text] => match text.parse::<u64>() {
+            Ok(n) if (1..=podxt::TUNER_MAX.as_secs()).contains(&n) => Command::PodxtTuner(n),
+            _ => {
+                return Err(format!(
+                    "tuner SECONDS must be 1..={}",
+                    podxt::TUNER_MAX.as_secs()
+                ));
+            }
+        },
         ["podxt", mode @ ("channel" | "channel-test"), rest @ ..] => {
             let tone = |label: &str| {
                 podxt::Location::tone_from_label(label)
@@ -345,7 +370,9 @@ fn run_variax(command: &Command, capture: &mut Capture) -> Result<(), String> {
             | Command::Compare(..)
             | Command::PodxtPacks
             | Command::PodxtLiveTest(_)
-            | Command::PodxtChannel { .. } => unreachable!(),
+            | Command::PodxtChannel { .. }
+            | Command::PodxtStatus
+            | Command::PodxtTuner(_) => unreachable!(),
         };
         let cleanup = session.link.finish();
         session.note(match &cleanup {
@@ -646,6 +673,85 @@ fn run_podxt_live_test(
     }
 }
 
+fn global_text(global: podxt::Global, raw: Option<u16>) -> String {
+    let Some(raw) = raw else {
+        return "no answer".into();
+    };
+    let decoded = match global {
+        podxt::Global::CurrentChannel => podxt::Location::new(podxt::BankKind::Tones, raw)
+            .map(|l| format!("channel {}", l.label())),
+        podxt::Global::TunerNote => Some(format!("note {}", podxt::tuner_note_name(raw))),
+        podxt::Global::TunerDeviation => Some(format!("{:+.0} cents", podxt::tuner_cents(raw))),
+        podxt::Global::Version => Some(format!("{}.{:02}", raw >> 8, raw & 0xff)),
+        podxt::Global::TunerMode => Some((if raw != 0 { "on" } else { "off" }).to_owned()),
+        podxt::Global::Edited => Some((if raw != 0 { "yes" } else { "no" }).to_owned()),
+        podxt::Global::TunerReference => Some(format!("A = {raw} Hz")),
+        podxt::Global::MidiChannel => Some(format!("channel {}", raw + 1)),
+        _ => None,
+    };
+    match decoded {
+        Some(text) => format!("{text} (raw {raw})"),
+        None => format!("raw {raw} ({})", podxt::signed(raw)),
+    }
+}
+
+fn run_podxt_status(capture: &mut Capture) -> Result<(), String> {
+    let mut link = rawmidi::RawMidiLink::open(rawmidi::PODXT_LIVE_CARD, Path::PodxtMidi)?;
+    let device = link.device.display().to_string();
+    let result = {
+        let mut session = Session::new(&mut link, &OwnerGrants, capture);
+        session.note(format!("opened {device}"));
+        podxt::read_status(&mut session)
+    };
+    let (identity_reply, values) = result?;
+    capture.line(describe_identity(&identity_reply, None));
+    for (global, raw) in values {
+        capture.line(format!(
+            "  {:<32} {}",
+            global.name(),
+            global_text(global, raw)
+        ));
+    }
+    capture.file("identity.syx", &identity_reply)
+}
+
+fn run_podxt_tuner(seconds: u64, capture: &mut Capture) -> Result<(), String> {
+    let mut link = rawmidi::RawMidiLink::open(rawmidi::PODXT_LIVE_CARD, Path::PodxtMidi)?;
+    let device = link.device.display().to_string();
+    let mut lines = Vec::new();
+    let result = {
+        let mut session = Session::new(&mut link, &OwnerGrants, capture);
+        session.note(format!("opened {device}"));
+        session.note(format!("tuner for {seconds} s: play single notes"));
+        session.log_packets = false;
+        podxt::tuner(&mut session, Duration::from_secs(seconds), |reading| {
+            let line = format!(
+                "  {:6.2}s  {:<3} {}",
+                reading.at.as_secs_f64(),
+                reading.note.map_or("?", podxt::tuner_note_name),
+                reading.deviation.map_or("?".into(), |d| format!(
+                    "{:+4.0} cents",
+                    podxt::tuner_cents(d)
+                ))
+            );
+            let _ = writeln!(std::io::stdout(), "{line}");
+            lines.push(line);
+        })
+    };
+    for line in lines {
+        capture.record(line);
+    }
+    let run = result?;
+    capture.line(describe_identity(&run.identity_reply, None));
+    capture.line(format!("Tuner readings: {}", run.readings.len()));
+    capture.line(match &run.off_sent {
+        Ok(()) => "Tuner switched off.".to_owned(),
+        Err(error) => format!("TUNER OFF NOT SENT: {error} — press the tuner switch on the PODxt"),
+    });
+    capture.file("identity.syx", &run.identity_reply)?;
+    run.off_sent
+}
+
 fn run_podxt_channel(
     target: podxt::Location,
     from: Option<podxt::Location>,
@@ -823,6 +929,8 @@ fn main() {
         Command::PodxtChannel { target, from, back } => {
             run_podxt_channel(target, from, back, &mut capture)
         }
+        Command::PodxtStatus => run_podxt_status(&mut capture),
+        Command::PodxtTuner(seconds) => run_podxt_tuner(seconds, &mut capture),
         _ => run_variax(&command, &mut capture),
     };
     if let Err(error) = &result {

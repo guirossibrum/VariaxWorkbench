@@ -27,6 +27,11 @@ pub enum Operation {
     /// PODxt-family program change: selects the playing channel (like the
     /// footswitch). Discards unsaved edits; stores nothing.
     PodxtChannelSwitch,
+    /// PODxt-family global value query (`03 57 id`), read-only: tuner note and
+    /// deviation, current channel, edited flag, knob mode and similar.
+    PodxtGlobalRead,
+    /// PODxt-family tuner mode on/off (CC 69), a live state change.
+    PodxtTunerMode,
 }
 
 pub trait GatePolicy {
