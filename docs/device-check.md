@@ -5,23 +5,25 @@ Issues [#134](https://github.com/guirossibrum/VariaxWorkbench/issues/134),
 [#157](https://github.com/guirossibrum/VariaxWorkbench/issues/157); parent
 [#113](https://github.com/guirossibrum/VariaxWorkbench/issues/113).
 **G1 is authorized by the owner's direct permission (2026-11-22) and is open in this build.**
-**G2 is authorized for one owner-run Variax 600 identity request** through the
-PODxt Live, recorded in [the G2 ledger](hardware-gates/g2.md). G3–G8 are not
-authorized. See [the G1 procedure](hardware-gates/g1.md).
+**G2 is authorized for any user of the same supported rig** as one Variax 600
+identity request through the PODxt Live, recorded in [the G2 ledger](hardware-gates/g2.md).
+Device-check step 3 reads the Variax current settings and the PODxt Live
+current tone. Step 4 stays locked. G4–G8 are not authorized.
+See [the G1 procedure](hardware-gates/g1.md).
 The window still opens in **Simulation**. **This computer** is offered only
 when a live step is available. Its label, banner, and report name the gates
-this build can actually run. Step 2 is offered on Linux only in a binary
-built with the `usb` feature, and only after a fresh step 1 pass. A build
-without `usb` still offers only step 1.
+this build can actually run. Steps 2 and 3 are offered on Linux only in a binary
+built with the `usb` feature, and step 2 only after a fresh step 1 pass. A build
+without `usb` still offers only step 1. The corner shows build 13.
 
 ## Stages
 
 | Step | Name | Gate | What the live form would do |
 | --- | --- | --- | --- |
 | 1 | USB recognition | G1 | Read what Linux already holds (USB ids, cached descriptor fields, bound drivers, ALSA card list). Sends nothing. |
-| 2 | Device identification | G2 | One universal identity question for the Variax 600 over interface 1, then release and reattach. Simulation feeds one pretend Variax reply and only proves that input was accepted. The 2026-11-14 captures show that one request and that reply, then a settings read. PODxt Live identity is not requested. |
-| 3 | Settings read | G3 | MIDI enable, two metadata requests, MIDI disable. Partial current settings, not a backup. |
-| 4 | Change check | G3 | The person changes `string1_tuning` on the guitar; the same read runs again. |
+| 2 | Device identification | G2 | One Variax 600 name question over interface 1. An incomplete reply or timeout stops the check. The PODxt Live is not asked in this step. |
+| 3 | Settings read | G3 | Variax current settings (session on, two blocks, session off) and the PODxt Live current tone. Partial current settings, not a backup. Step 4 stays off. |
+| 4 | Change check | G3 | Stays locked. The person would change `string1_tuning` on the guitar and the app would read again. This build does not offer it. |
 
 The exact action and risk text for each step is `Stage::action` / `Stage::risk`
 in `src/device_probe.rs`; the window shows them verbatim before asking.
@@ -77,9 +79,10 @@ in `src/device_probe.rs`; the window shows them verbatim before asking.
 **This computer** uses `HostRig` around `LinuxSysfs`. It is offered only
 when `live_stage_available(Stage::UsbRecognition)` is true. The mode label,
 the banner, the completion sentence, and the Reports note come from
-`open_gates()`. On Linux with the `usb` feature that is G1 and G2. Without
-`usb` it is G1 only, and the window says step 1 finished and that gate G2
-stays unoffered. The reader is built only when that mode is chosen.
+`open_gates()`. On Linux a normal build includes `usb`, so that is G1
+and G2. Without `usb` it is G1 only, and the window says step 1 finished
+and that gate G2 stays unoffered. The `gui` feature alone does not include
+`usb`. The reader is built only when that mode is chosen.
 It reads only the [g1.md section 1](hardware-gates/g1.md#1-what-the-app-reads)
 paths under a configurable root (the app uses `/`; tests inject a temporary
 fake tree) with `read_dir`, `read_to_string` and `read_link`, fills the same
@@ -107,12 +110,13 @@ expected driver binding, and only when G2 is live in that binary. Steps 3 and
   the default root constant is `/` and then reads only an injected temporary
   tree. No test calls `LinuxSysfs::new()` and reads from it. This-computer
   mode runs step 1 only; decline and cancel run nothing; the report contains
-  no serial number. G2–G7 each stay locked (`src/hardware_gates.rs`).
+  no serial number. G3–G7 stay locked (`src/hardware_gates.rs`). These
+  step-1 tests do not call the identity path.
 - GUI (`src/gui.rs`): default-No via Enter, decline button, no automatic
   advance, stop on failure and start over, all in Simulation with zero real
-  readers built. The mode test checks that **This computer (G1)** is present
+  readers built. The mode test checks that **This computer** is present
   only on Linux and that the step-1 indicator does not say the real reader is
-  open on any other platform. On Linux, this-computer mode uses an injected
+  open on any other platform. With `usb`, the label names G1 and G2. On Linux, this-computer mode uses an injected
   fake tree, runs only step 1, and a decline reads nothing. Enter on the
   focused Yes button reads that tree
   (`device_check_enter_on_focused_yes_reads_the_injected_tree`). Closing the
@@ -146,14 +150,19 @@ only.
   3.01 reply is recorded and does not pass. The capture files stay private.
   See [the G2 ledger](hardware-gates/g2.md). The live identity path does not
   use the settings-read entry. On Linux, a binary with the `usb` feature
-  names gates G1 and G2 (`gates-open=G1,G2`) and offers step 2 after the
+  names gates G1 and G2 (`gates-open=G1,G2,G3`) and offers step 2 after the
   expected driver binding. A binary without `usb` stays on `gates-open=G1`
-  and does not offer step 2. The owner runs the live check. Agents do not.
+  and does not offer step 2. The user runs the live check. Agents do not.
+  The app does not ask for a password. Yes on the step is the risk
+  acceptance. If Linux refuses the open, the question is not sent and the
+  driver is not detached. The live read asks for 16 bytes at a time, matching
+  the read that already returned this guitar's identity. It sends that one
+  question and does not ask again.
 - The inventory table (`supported_devices.txt` schema 2, `device_inventory.rs`)
   from `508cd00` is not part of this change.
 - Issue #114 stays open. The owner granted a one-rig exception for this
   identity attempt only. This checkout tracks both `supported_devices.txt`
   (a name list) and `supported-devices.txt` (USB and Line 6 id rows). Neither
   file was edited. `src/usb.rs` returns before USB enumeration in every test
-  build. The owner binary can open USB when the owner chooses Yes on step 2.
-  One versioned inventory is still unmet.
+  build. The normal app can open USB when the user chooses Yes on step 2.
+  One versioned inventory is still unmet. Gates after G2 stay locked.

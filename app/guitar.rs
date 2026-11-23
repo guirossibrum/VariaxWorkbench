@@ -54,7 +54,7 @@ pub(super) fn milestones(ui: &mut egui::Ui) {
          and Send all banks stay off.",
     );
     ui.separator();
-    ui.heading("Current phase · one owner identity check");
+    ui.heading("Current phase · steps 1 to 3 passed on this rig");
     ui.label(
         "Device check… opens in Simulation. No is the default. Step 2 is offered only after \
          a fresh step 1 pass for one PODxt Live with the POD driver on interface 0 and the \
@@ -65,15 +65,15 @@ pub(super) fn milestones(ui: &mut egui::Ui) {
          the app's. After the driver is given back, Linux's own snd-usb-variax startup can \
          send the same kind of question. That later traffic is Linux, not a second request \
          from this app. Close stops a step before it starts. Once Yes has started, this \
-         window cannot cancel the exchange. This computer offers only the steps this build \
-         actually has open. A build without USB still offers only step 1.",
+         window cannot cancel the exchange. This computer offers steps 1, 2, and 3. \
+         A build without USB still offers only step 1. Step 3 reads the Variax and the \
+         PODxt Live. Step 4 stays off.",
     );
     ui.label(
-        "The dedicated owner build includes USB. Its banner and report name gates G1 and G2, \
-         under your permission of November 22, 2026, for one Variax 600 identity request \
-         through the PODxt Live. You run that check. Save the step 2 report, then run step 1 \
-         again and confirm the Variax driver is back on interface 1. Then stop. Steps 3 and 4 \
-         stay locked. Copy detailed report (#125) is for G1 results.",
+        "Build 12 is the copy that passed on this rig. There is no password. Steps 1, 2, \
+         and 3 passed: the PODxt Live was recognized, the Variax 600 answered firmware 3.10, \
+         and the current guitar preset and the current PODxt Live tone were read. Nothing \
+         was written. Step 4 stays off. Keep this window. Do not run step 4.",
     );
     for (label, url) in [
         (

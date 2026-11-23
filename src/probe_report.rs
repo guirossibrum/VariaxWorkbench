@@ -113,6 +113,7 @@ pub enum OpenGates {
     G1,
     G2,
     G1AndG2,
+    G1ThroughG3,
 }
 
 impl OpenGates {
@@ -122,6 +123,7 @@ impl OpenGates {
             Self::G1 => "gates-open=G1",
             Self::G2 => "gates-open=G2",
             Self::G1AndG2 => "gates-open=G1,G2",
+            Self::G1ThroughG3 => "gates-open=G1,G2,G3",
         }
     }
 }
@@ -142,6 +144,7 @@ const TOKENS: &[&str] = &[
     "gates-open=G1",
     "gates-open=G2",
     "gates-open=G1,G2",
+    "gates-open=G1,G2,G3",
     "writes=none",
     "stage=1",
     "stage=2",
@@ -171,6 +174,9 @@ const TOKENS: &[&str] = &[
     "stop=claim-failed",
     "stop=alternate-failed",
     "stop=open-failed",
+    "stop=access-denied",
+    "stop=send-failed",
+    "stop=read-failed",
     "bridge=none",
     "bridge=podxt-live-3.01",
     "guitar=none",
@@ -501,6 +507,7 @@ mod tests {
             OpenGates::G1,
             OpenGates::G2,
             OpenGates::G1AndG2,
+            OpenGates::G1ThroughG3,
         ] {
             let text = render(&SanitizedFacts {
                 mode: ReportMode::ThisComputer,

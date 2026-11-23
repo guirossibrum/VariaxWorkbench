@@ -1189,6 +1189,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "line6-devices"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rusb",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2466,6 +2474,7 @@ dependencies = [
  "flate2",
  "image",
  "libm",
+ "line6-devices",
  "md-5",
  "rfd",
  "rusb",

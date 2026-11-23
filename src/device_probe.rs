@@ -13,14 +13,11 @@
 //! stages 3–4 from the in-memory [`VirtualControl`]. [`HostRig`] ("This
 //! computer") runs step 1 with the real reader [`LinuxSysfs`], whose reads go
 //! through `run_if_unlocked(Gate::OsDiscovery, …)`. Step 2's live form is the
-//! identity-only USB path, which needs gate G2 and does not need gate G3.
-//! G1 is open by the owner's direct permission (g1.md section 5). G2 stays
-//! locked, so this build still offers only step 1 on a real computer. Opening
-//! the G2 constant in a build that includes the `usb` feature is what makes
-//! step 2 available. The banner and the report name those gates, rather than
-//! a fixed sentence. Step 2 is offered only after this session's step 1 has
-//! passed for one PODxt Live with the expected drivers. G3–G7 stay locked.
-//! See `docs/device-check.md` and `docs/hardware-gates/g1.md`.
+//! Variax name question from the family library. Step 3 reads the Variax
+//! settings and the PODxt Live tone. Step 4 stays off. The editor's own fetch
+//! stays off because `G3_CURRENT_SETTINGS_READ_LOCKED` stays true. G1 and G2
+//! are open. Step 2 is offered only after this session's step 1 has passed
+//! for one PODxt Live with the expected drivers. See `docs/device-check.md`.
 
 use crate::hardware_gates::{self, Gate};
 use crate::identity_stage::{
@@ -98,7 +95,8 @@ impl Stage {
         match self {
             Self::UsbRecognition => Gate::OsDiscovery,
             Self::Identification => Gate::IdentityRequest,
-            Self::SettingsRead | Self::ChangeCheck => Gate::CurrentSettingsRead,
+            Self::SettingsRead => Gate::DeviceCheckCurrentSettingsRead,
+            Self::ChangeCheck => Gate::CurrentSettingsRead,
         }
     }
 
@@ -126,12 +124,12 @@ impl Stage {
                 "Look at what Linux already knows about connected USB devices: vendor and product numbers, the description Linux saved when the device was plugged in, which Linux driver owns each part of it, and the list of sound cards. The app sends nothing to the PODxt Live or the guitar."
             }
             Self::Identification => concat!(
-                "Send one identity request and accept only the Variax 600 answer. In Simulation the reply is pretend and nothing is sent to a device. A real run would use the guitar-control connection only, wait up to 3 seconds, and keep listening for that whole window. A second complete answer in that window does not pass. ",
+                "Send one identity request and accept only the Variax 600 answer. In Simulation the reply is pretend and nothing is sent to a device. A real run sends that question, then reads the answer in short pieces and waits up to 3 seconds. Incomplete and missing replies stop the check. ",
                 "The app sends one identity request. After the driver is given back, Linux's own snd-usb-variax startup can send that same kind of question by itself. That later traffic is Linux, not a second request from this app. ",
-                "A PODxt Live identity is not requested. A recording from 14 November 2026 shows one question, then the Variax answer, then a settings read. The settings read is a later step. Nothing is stored on the devices. After a reported success, save the steps 1–2 report, then run step 1 again and confirm snd-usb-pod on interface 0 and snd-usb-variax on interface 1."
+                "A PODxt Live identity is not requested in this step. Step 3 reads the Variax settings and the PODxt Live tone. Nothing is stored on the devices. Choosing Yes accepts the risk for this step. No stays the default. There is no password. If Linux refuses the open, the question is not sent and the guitar driver stays in place. After a reported success, save the steps 1–2 report, then run step 1 again and confirm snd-usb-pod on interface 0 and snd-usb-variax on interface 1."
             ),
             Self::SettingsRead => {
-                "Read the guitar's current model settings: turn the guitar-control session on, send two settings requests, then turn the session off. The result names the guitar model and the first-string tuning."
+                "Read the Variax current settings and the PODxt Live current tone. The guitar read turns the guitar-control session on, reads two settings blocks, then turns the session off. The PODxt Live read asks its name and then reads the current tone. Nothing is written. The result is the current settings, not a backup. Step 4 stays off."
             }
             Self::ChangeCheck => {
                 "You change the first-string tuning on the guitar yourself, then the app reads the settings again the same way and reports whether that value changed. Nothing is written to the guitar."
@@ -149,7 +147,7 @@ impl Stage {
                 "Medium risk on a real run, higher than USB recognition. Yes would send one identity question and briefly take the guitar-control connection away from Linux. It does not change presets or settings. If Linux does not get that connection back, unplug the PODxt Live and plug it in again, and do not continue. In Simulation nothing is sent."
             }
             Self::SettingsRead => {
-                "High risk, higher than identification. Several messages go to the guitar and change its session state while reading. The result is one preset's current settings, not a backup."
+                "High risk, higher than identification. Several messages go to the guitar and change its session state while reading, and the PODxt Live is asked for its name and its current tone. Nothing is stored. The result is the current settings, not a backup."
             }
             Self::ChangeCheck => {
                 "Highest of the read steps. A second read happens while you handle the guitar. An unchanged value is still a finished read. Nothing is written to the guitar."
@@ -753,6 +751,7 @@ impl ProbeMode {
         match self {
             Self::Simulation => "Simulation",
             Self::ThisComputer => match open_gates() {
+                OpenGates::G1ThroughG3 => "This computer (G1–G3)",
                 OpenGates::G1AndG2 => "This computer (G1 and G2)",
                 OpenGates::G2 => "This computer (G2)",
                 OpenGates::G1 | OpenGates::None => "This computer (G1)",
@@ -770,6 +769,10 @@ pub trait ProbeBackend {
     fn os_metadata(&mut self) -> &dyn OsMetadataSource;
     fn identify(&mut self) -> Result<IdentityPair, IdentifyError>;
     fn read_settings(&mut self, pass: ReadPass) -> Result<PresetMetadata, String>;
+    /// Extra words for a live settings read. Simulation leaves this empty.
+    fn settings_note(&self) -> Option<&str> {
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -963,12 +966,14 @@ impl ProbeBackend for SimulatedRig {
 }
 
 /// "This computer": step 1 reads OS metadata. Step 2 calls the identity-only
-/// USB path when this binary includes `usb` and gate G2 is open. A test build
-/// returns from that path before enumeration. Steps 3 and 4 stay refused.
-/// There is no MIDI or audio path here.
+/// USB path when this binary includes `usb` and gate G2 is open. A test
+/// build returns from that path before enumeration. Step 3 reads both
+/// families outside tests. Step 4 stays refused.
 pub struct HostRig<S: OsMetadataSource> {
     reader: S,
     calls: BackendCalls,
+    /// Plain text from the last live settings read, when one finished.
+    settings_note: Option<String>,
 }
 
 impl<S: OsMetadataSource> HostRig<S> {
@@ -976,6 +981,7 @@ impl<S: OsMetadataSource> HostRig<S> {
         Self {
             reader,
             calls: BackendCalls::default(),
+            settings_note: None,
         }
     }
 
@@ -1011,9 +1017,7 @@ impl<S: OsMetadataSource> ProbeBackend for HostRig<S> {
 
     fn identify(&mut self) -> Result<IdentityPair, IdentifyError> {
         self.calls.identity_requests += 1;
-        // The lock is checked inside `read_identity` before any USB open.
-        // A test build returns there before enumeration. Without the `usb`
-        // feature there is no adapter to call.
+        // This path enforces the single-request G2 exchange before any USB open.
         #[cfg(feature = "usb")]
         {
             crate::usb::read_identity(&AtomicBool::new(false))
@@ -1024,9 +1028,26 @@ impl<S: OsMetadataSource> ProbeBackend for HostRig<S> {
         }
     }
 
-    fn read_settings(&mut self, _: ReadPass) -> Result<PresetMetadata, String> {
+    fn read_settings(&mut self, pass: ReadPass) -> Result<PresetMetadata, String> {
         self.calls.settings_reads += 1;
-        Err(host_refusal())
+        self.settings_note = None;
+        if pass == ReadPass::AfterChange || !live_stage_available(Stage::SettingsRead) {
+            return Err(host_refusal());
+        }
+        #[cfg(feature = "usb")]
+        {
+            let both = crate::live_families::read_both()?;
+            self.settings_note = Some(both.summary);
+            Ok(both.metadata)
+        }
+        #[cfg(not(feature = "usb"))]
+        {
+            Err("this build does not open a device for step 3; nothing was sent".into())
+        }
+    }
+
+    fn settings_note(&self) -> Option<&str> {
+        self.settings_note.as_deref()
     }
 }
 
@@ -1078,6 +1099,13 @@ impl ProbeBackend for RigBackend {
         match self {
             Self::Simulated(rig) => rig.read_settings(pass),
             Self::ThisComputer(rig) => rig.read_settings(pass),
+        }
+    }
+
+    fn settings_note(&self) -> Option<&str> {
+        match self {
+            Self::Simulated(rig) => rig.settings_note(),
+            Self::ThisComputer(rig) => rig.settings_note(),
         }
     }
 }
@@ -1320,9 +1348,14 @@ impl<B: ProbeBackend> ProbeSession<B> {
                     .read_settings(ReadPass::First)
                     .map_err(|error| format!("Settings read failed: {error}."))?;
                 let reading = reading_of(&metadata)?;
-                let text = format!(
-                    "Read body model {} and {WATCHED_SETTING} = {}. This is one preset's current settings, not a backup.",
-                    reading.body_model, reading.string1_tuning
+                let text = self.backend.settings_note().map_or_else(
+                    || {
+                        format!(
+                            "Read body model {} and {WATCHED_SETTING} = {}. This is one preset's current settings, not a backup.",
+                            reading.body_model, reading.string1_tuning
+                        )
+                    },
+                    str::to_owned,
                 );
                 self.first_read = Some(reading);
                 Ok(text)
@@ -1498,11 +1531,24 @@ impl<B: ProbeBackend> ProbeSession<B> {
 /// Whether the live form of a stage can run in this build.
 ///
 /// Step 1 is offered on Linux while G1 is open. Step 2 is offered on Linux
-/// only when G2 is open and this binary includes the `usb` feature. While G2
-/// is locked, step 2 stays off even though it is listed in [`LIVE_STAGES`].
-/// Steps 3 and 4 are not offered. Other platforms do not offer a real reader.
+/// only when G2 is open and this binary includes `usb`. The `gui` feature
+/// alone does not offer step 2. While G2 is locked, step 2 stays off even
+/// though it is listed in [`LIVE_STAGES`]. Step 3 reads the Variax and the
+/// PODxt Live when `usb` is on. Step 4 is not offered. Other platforms do
+/// not offer a real reader.
 pub fn live_stage_available(stage: Stage) -> bool {
-    if !cfg!(target_os = "linux") || hardware_gates::is_locked(stage.gate()) {
+    if !cfg!(target_os = "linux") {
+        return false;
+    }
+    // Step 3 and step 4 share the settings-read gate name. Step 4 stays off.
+    // The editor's own fetch still checks that gate and stays off.
+    if stage == Stage::SettingsRead {
+        return cfg!(feature = "usb")
+            && !hardware_gates::is_locked(Gate::DeviceCheckCurrentSettingsRead)
+            && live_stage_available(Stage::Identification)
+            && live_stage_available(Stage::UsbRecognition);
+    }
+    if stage == Stage::ChangeCheck || hardware_gates::is_locked(stage.gate()) {
         return false;
     }
     match stage {
@@ -1516,6 +1562,9 @@ pub fn live_stage_available(stage: Stage) -> bool {
 /// so an owner build that opens only G2 does not keep a G1-only sentence.
 pub fn open_gates() -> crate::probe_report::OpenGates {
     use crate::probe_report::OpenGates;
+    if live_stage_available(Stage::SettingsRead) {
+        return OpenGates::G1ThroughG3;
+    }
     match (
         live_stage_available(Stage::UsbRecognition),
         live_stage_available(Stage::Identification),
@@ -1531,11 +1580,12 @@ pub fn availability_banner() -> &'static str {
     use crate::probe_report::OpenGates;
     match open_gates() {
         OpenGates::G1 => G1_ONLY_BANNER,
-        OpenGates::G1AndG2 => {
-            "Gates G1 and G2 are open in this build. Step 2 sends one Variax identity request, and only after a fresh step 1 pass for one PODxt Live with snd-usb-pod on interface 0 and snd-usb-variax on interface 1. Gates G3–G7 stay locked."
+        OpenGates::G1AndG2 => "Gates G1 and G2 are open in this build. Steps 3 and 4 stay locked.",
+        OpenGates::G1ThroughG3 => {
+            "Gates G1–G3 are open in this build. Step 3 reads the Variax settings and the PODxt Live tone. Step 2 sends one Variax identity request after a fresh step 1 pass for one PODxt Live with snd-usb-pod on interface 0 and snd-usb-variax on interface 1. Step 4 stays locked. Gates G4–G7 stay locked."
         }
         OpenGates::G2 => {
-            "Gate G2 is open in this build and gate G1 is not. Step 1 cannot read this computer, so step 2 is not offered. Gates G3–G7 stay locked."
+            "Gate G2 is open in this build and gate G1 is not. Step 1 cannot read this computer, so later steps are not offered. Step 4 stays locked."
         }
         OpenGates::None => "Every hardware lock stays closed in this build.",
     }
@@ -1549,11 +1599,12 @@ pub fn this_computer_finished_message() -> &'static str {
         OpenGates::G1 | OpenGates::None => {
             "Step 1 finished. Steps 2–4 stay locked in this build; nothing else will run. Copy the detailed report into issue #125."
         }
-        OpenGates::G1AndG2 => {
-            "Steps 1 and 2 finished for the gates this build can run. Steps 3 and 4 stay locked. Copy the detailed report into issue #125."
+        OpenGates::G1AndG2 => "This build can run steps 1 and 2. Steps 3 and 4 stay locked.",
+        OpenGates::G1ThroughG3 => {
+            "Steps 1, 2, and 3 are the ones this build can run. Step 4 stays locked. Copy the detailed report into issue #125."
         }
         OpenGates::G2 => {
-            "The steps this build can run are finished. Gate G2 is open and gate G1 is not. Steps 3 and 4 stay locked. Copy the detailed report into issue #125."
+            "The steps this build can run are finished. Gate G2 is open and gate G1 is not. Step 4 stays locked. Copy the detailed report into issue #125."
         }
     }
 }
@@ -1566,8 +1617,9 @@ pub fn reports_panel_note() -> &'static str {
         OpenGates::G1 => {
             "Steps 1–2 report (schema 2). Its identities are the ones this check decoded. This build can run gate G1. Gate G2 stays locked."
         }
-        OpenGates::G1AndG2 => {
-            "Steps 1–2 report (schema 2). Its identities are the ones this check decoded. This build can run gates G1 and G2. Gates G3–G7 stay locked."
+        OpenGates::G1AndG2 => "Steps 1–2 report (schema 2). This build can run gates G1 and G2.",
+        OpenGates::G1ThroughG3 => {
+            "Steps 1–2 report (schema 2). Its identities are the ones this check decoded. This build can run gates G1–G3. Step 3 reads the Variax and the PODxt Live. Step 4 stays locked. Gates G4–G7 stay locked."
         }
         OpenGates::G2 => {
             "Steps 1–2 report (schema 2). Its identities are the ones this check decoded. This build can run gate G2. Gate G1 is not open in this build."
@@ -1582,7 +1634,10 @@ pub fn this_computer_label() -> &'static str {
     use crate::probe_report::OpenGates;
     match open_gates() {
         OpenGates::G1AndG2 => {
-            "This computer (G1 and G2) — step 1 reads what Linux already knows. Step 2 is offered only after that read shows one PODxt Live with the expected drivers, and Yes on step 2 sends one Variax identity request."
+            "This computer (G1 and G2) — step 1 reads Linux metadata and step 2 asks for Variax identity."
+        }
+        OpenGates::G1ThroughG3 => {
+            "This computer (G1–G3) — step 1 reads what Linux already knows. Step 2 is offered only after that read shows one PODxt Live with the expected drivers. Yes on step 2 asks the Variax its name. Yes on step 3 reads the Variax settings and the PODxt Live tone. Step 4 stays locked."
         }
         OpenGates::G2 => {
             "This computer (G2) — step 1 is not open in this build, so the identity request is not offered."
@@ -1595,8 +1650,11 @@ pub fn consent_yes_label(mode: ProbeMode, stage: Stage) -> &'static str {
     match (mode, stage) {
         (ProbeMode::ThisComputer, Stage::Identification) => STEP_TWO_YES,
         (_, Stage::Identification) => STEP_TWO_YES_SIMULATION,
-        (ProbeMode::ThisComputer, _) => "Yes, read this computer's USB list",
-        (ProbeMode::Simulation, _) => "Yes, run this step (simulation)",
+        (ProbeMode::ThisComputer, Stage::SettingsRead) => "Yes, read the Variax and the PODxt Live",
+        (ProbeMode::ThisComputer, Stage::UsbRecognition) => "Yes, read this computer's USB list",
+        (ProbeMode::ThisComputer, Stage::ChangeCheck) | (ProbeMode::Simulation, _) => {
+            "Yes, run this step (simulation)"
+        }
     }
 }
 
@@ -1617,13 +1675,15 @@ mod tests {
             assert!(stage.risk().len() > 40, "{stage:?}");
             let live = match stage {
                 Stage::UsbRecognition => cfg!(target_os = "linux"),
-                Stage::Identification => cfg!(all(target_os = "linux", feature = "usb")),
-                Stage::SettingsRead | Stage::ChangeCheck => false,
+                Stage::Identification | Stage::SettingsRead => {
+                    cfg!(all(target_os = "linux", feature = "usb"))
+                }
+                Stage::ChangeCheck => false,
             };
             assert_eq!(live_stage_available(stage), live, "{stage:?}");
             assert_eq!(
                 hardware_gates::is_locked(stage.gate()),
-                !matches!(stage, Stage::UsbRecognition | Stage::Identification),
+                stage == Stage::ChangeCheck,
                 "{stage:?}"
             );
         }
@@ -1651,12 +1711,12 @@ mod tests {
         let note = reports_panel_note();
         let finished = this_computer_finished_message();
         if cfg!(all(target_os = "linux", feature = "usb")) {
-            assert!(availability_banner().contains("Gates G1 and G2 are open"));
-            assert!(this_computer_label().contains("G1 and G2"));
-            assert_eq!(ProbeMode::ThisComputer.label(), "This computer (G1 and G2)");
-            assert!(finished.starts_with("Steps 1 and 2 finished"));
-            assert!(note.contains("gates G1 and G2"));
-            assert!(note.contains("Gates G3–G7 stay locked."));
+            assert!(availability_banner().contains("Gates G1–G3 are open"));
+            assert!(this_computer_label().contains("G1–G3"));
+            assert_eq!(ProbeMode::ThisComputer.label(), "This computer (G1–G3)");
+            assert!(finished.starts_with("Steps 1, 2, and 3"));
+            assert!(note.contains("gates G1–G3"));
+            assert!(note.contains("Step 4 stays locked."));
         } else if cfg!(target_os = "linux") {
             assert_eq!(availability_banner(), G1_ONLY_BANNER);
             assert_eq!(this_computer_label(), THIS_COMPUTER_LABEL);
@@ -1687,7 +1747,7 @@ mod tests {
         assert_eq!(
             gates,
             if cfg!(all(target_os = "linux", feature = "usb")) {
-                crate::probe_report::OpenGates::G1AndG2
+                crate::probe_report::OpenGates::G1ThroughG3
             } else if cfg!(target_os = "linux") {
                 crate::probe_report::OpenGates::G1
             } else {
@@ -1698,12 +1758,12 @@ mod tests {
             live_stage_available(Stage::Identification),
             matches!(
                 gates,
-                crate::probe_report::OpenGates::G1AndG2 | crate::probe_report::OpenGates::G2
+                crate::probe_report::OpenGates::G1ThroughG3 | crate::probe_report::OpenGates::G2
             )
         );
         if matches!(
             gates,
-            crate::probe_report::OpenGates::G1AndG2 | crate::probe_report::OpenGates::G2
+            crate::probe_report::OpenGates::G1ThroughG3 | crate::probe_report::OpenGates::G2
         ) {
             assert!(gates.token().contains("G2"));
         } else {
@@ -1715,10 +1775,10 @@ mod tests {
         probe.answer(Consent::No);
         let report = probe.sanitized_report();
         assert!(report.contains(gates.token()), "{report}");
-        if matches!(gates, crate::probe_report::OpenGates::G1AndG2) {
-            assert!(report.contains("gates-open=G1,G2"), "{report}");
+        if matches!(gates, crate::probe_report::OpenGates::G1ThroughG3) {
+            assert!(report.contains("gates-open=G1,G2,G3"), "{report}");
         } else {
-            assert!(!report.contains("gates-open=G1,G2"), "{report}");
+            assert!(!report.contains("gates-open=G1,G2,G3"), "{report}");
         }
         assert!(crate::probe_report::allowlisted(&report), "{report}");
         assert_eq!(probe.backend().identity_calls(), 0);
@@ -2161,7 +2221,10 @@ mod tests {
             probe.locked(Stage::Identification),
             !live_stage_available(Stage::Identification)
         );
-        assert!(probe.locked(Stage::SettingsRead));
+        assert_eq!(
+            probe.locked(Stage::SettingsRead),
+            !live_stage_available(Stage::SettingsRead)
+        );
         assert!(probe.locked(Stage::ChangeCheck));
         assert_eq!(probe.backend().calls(), BackendCalls::default());
         probe.answer(Consent::Yes);
@@ -2185,16 +2248,19 @@ mod tests {
                 ..Default::default()
             }
         );
-        for stage in [Stage::SettingsRead, Stage::ChangeCheck] {
-            assert_eq!(probe.status(stage), StageStatus::NotRun);
-            assert!(probe.locked(stage));
-        }
+        assert_eq!(probe.status(Stage::SettingsRead), StageStatus::NotRun);
+        assert_eq!(
+            probe.locked(Stage::SettingsRead),
+            !live_stage_available(Stage::SettingsRead)
+        );
+        assert_eq!(probe.status(Stage::ChangeCheck), StageStatus::NotRun);
+        assert!(probe.locked(Stage::ChangeCheck));
         let report = probe.report();
         let lines: Vec<_> = report.lines().collect();
         assert_eq!(
             open_gates().token(),
             if live_stage_available(Stage::Identification) {
-                "gates-open=G1,G2"
+                "gates-open=G1,G2,G3"
             } else {
                 "gates-open=G1"
             }
@@ -2230,7 +2296,11 @@ mod tests {
         }
         assert_eq!(
             lines[3],
-            "stage=3 gate=G3 decision=none status=locked detail=-"
+            if live_stage_available(Stage::SettingsRead) {
+                "stage=3 gate=G3 decision=none status=not-run detail=-"
+            } else {
+                "stage=3 gate=G3 decision=none status=locked detail=-"
+            }
         );
         assert_eq!(
             lines[4],
@@ -2376,7 +2446,10 @@ mod tests {
             rig.can_run(Stage::Identification),
             live_stage_available(Stage::Identification)
         );
-        assert!(!rig.can_run(Stage::SettingsRead));
+        assert_eq!(
+            rig.can_run(Stage::SettingsRead),
+            live_stage_available(Stage::SettingsRead)
+        );
         assert!(!rig.can_run(Stage::ChangeCheck));
         // A test build returns before enumeration. This is not a live check.
         assert!(rig.identify().is_err());
@@ -2475,6 +2548,10 @@ mod tests {
             IdentityFailure::Ambiguous,
             IdentityFailure::Inconsistent,
             IdentityFailure::TimedOut,
+            IdentityFailure::OpenFailed,
+            IdentityFailure::AccessDenied,
+            IdentityFailure::SendFailed,
+            IdentityFailure::ReadFailed,
         ] {
             let mut probe = ProbeSession::new(FailIdentify::new(kind));
             probe.answer(Consent::Yes);

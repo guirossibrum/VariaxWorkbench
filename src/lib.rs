@@ -21,6 +21,8 @@ pub mod identity_stage;
 pub mod linux_transport;
 #[cfg(test)]
 pub mod linux_variax_prefix;
+#[cfg(feature = "usb")]
+mod live_families;
 pub mod manual_check;
 pub mod math;
 pub mod midi;

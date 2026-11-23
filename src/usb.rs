@@ -124,15 +124,15 @@ impl Session {
         if bytes == midi_enable() {
             self.enabled = true;
         }
-        for chunk in bytes.chunks(16) {
+        for chunk in bytes.chunks(identity_stage::WRITE_CHUNK) {
             let sent = self
                 .handle
-                .write_interrupt(0x05, chunk, Duration::from_secs(1))
+                .write_interrupt(0x05, chunk, identity_stage::WRITE_TIMEOUT)
                 .map_err(|e| e.to_string())?;
             if sent != chunk.len() {
                 return Err("short USB control write".into());
             }
-            std::thread::sleep(Duration::from_millis(5));
+            std::thread::sleep(identity_stage::CHUNK_GAP);
         }
         if bytes == read_session::MIDI_DISABLE {
             self.enabled = false;
@@ -162,12 +162,20 @@ impl Session {
             if let Some(message) = self.queue.pop_front() {
                 return Ok(Some(message));
             }
-            let mut packet = [0; 16];
+            let mut packet = [0; identity_stage::LISTEN_BYTES];
             match self
                 .handle
-                .read_interrupt(0x86, &mut packet, Duration::from_millis(100))
+                .read_interrupt(0x86, &mut packet, identity_stage::READ_POLL)
             {
-                Ok(length) => self.queue.extend(self.decoder.feed(&packet[..length])?),
+                Ok(length) => {
+                    self.queue.extend(decode_interrupt_packet(
+                        &mut self.decoder,
+                        &packet[..length],
+                    )?);
+                    if let Some(message) = self.queue.pop_front() {
+                        return Ok(Some(message));
+                    }
+                }
                 Err(rusb::Error::Timeout) => {}
                 Err(error) => return Err(error.to_string()),
             }
@@ -258,15 +266,18 @@ impl IdentityTransport for Session {
     }
 
     fn send_identity_request(&mut self) -> Result<(), IdentityFailure> {
+        // One question, sent as soon as interface 1 is ready. The read that
+        // already recognized this guitar did not wait first and did not ask
+        // again. The three-second window starts after this write.
         self.send_read_command(&read_session::IDENTITY_REQUEST)
-            .map_err(|_| IdentityFailure::OpenFailed)?;
+            .map_err(|_| IdentityFailure::SendFailed)?;
         self.reply_deadline = Some(Instant::now() + identity_stage::REPLY_TIMEOUT);
         Ok(())
     }
 
     fn poll_reply(&mut self, cancel: &AtomicBool) -> Result<Option<Vec<u8>>, IdentityFailure> {
         let Some(deadline) = self.reply_deadline else {
-            return Err(IdentityFailure::OpenFailed);
+            return Err(IdentityFailure::SendFailed);
         };
         if Instant::now() >= deadline {
             return Ok(None);
@@ -275,7 +286,7 @@ impl IdentityTransport for Session {
         match self.next_reply_unlocked(cancel, remaining) {
             Ok(message) => Ok(message),
             Err(error) if error.contains("cancelled") => Err(IdentityFailure::Cancelled),
-            Err(_) => Err(IdentityFailure::OpenFailed),
+            Err(_) => Err(IdentityFailure::ReadFailed),
         }
     }
 
@@ -334,17 +345,76 @@ impl IdentityTransport for Session {
     }
 }
 
+/// Classify an `open_handle` error without opening a device.
+///
+/// Access denied means Linux refused the open. The driver is still attached
+/// and the identity question was not sent. Any other open error is the same
+/// outcome with a different cause. A later write or read failure is not an
+/// open failure.
+pub(crate) fn open_failure_kind(error: &str) -> IdentityFailure {
+    if error.contains("Access denied") {
+        IdentityFailure::AccessDenied
+    } else {
+        IdentityFailure::OpenFailed
+    }
+}
+
+/// The kernel receive path rewrites three status bytes whose low nibble is 2
+/// before MIDI decoding. The saved identity capture starts with `0xF0`. This
+/// stays on the USB receive path so other MIDI parsers are unchanged.
+pub(crate) fn normalize_podxt_status(packet: &mut [u8]) {
+    for byte in packet.iter_mut() {
+        *byte = match *byte {
+            0xf2 => 0xf0,
+            0xb2 => 0xb0,
+            0xc2 => 0xc0,
+            other => other,
+        };
+    }
+}
+
+pub(crate) fn decode_interrupt_packet(
+    decoder: &mut SysexDecoder,
+    packet: &[u8],
+) -> Result<Vec<Vec<u8>>, String> {
+    let mut normalized = packet.to_vec();
+    normalize_podxt_status(&mut normalized);
+    decoder.feed(&normalized)
+}
+
+#[cfg(not(test))]
+fn open_stopped(failure: IdentityFailure) -> identity_stage::IdentifyError {
+    identity_stage::IdentifyError::Failed(identity_stage::IdentifyStop {
+        failure,
+        cleanup: None,
+        cleanup_ran: false,
+        release_failed: false,
+        reattach_failed: false,
+        bridge: None,
+        guitar: None,
+    })
+}
+
+/// Open the one PODxt Live. A refusal stops before detach and before the
+/// identity question. There is no second open and no system password prompt.
+#[cfg(not(test))]
+fn open_for_identity() -> Result<Session, identity_stage::IdentifyError> {
+    Session::open_handle().map_err(|error| open_stopped(open_failure_kind(&error)))
+}
+
 /// One Variax identity request. Gate G2 only: this does not require the
 /// settings-read gate. The lock is checked before any USB enumeration.
 pub fn read_identity(
     cancel: &AtomicBool,
 ) -> Result<identity_stage::IdentityPair, identity_stage::IdentifyError> {
     // Gate G2 is the first check. Nothing below runs while it is locked.
-    if hardware_gates::is_locked(Gate::IdentityRequest) {
+    if hardware_gates::is_locked(Gate::IdentityRequest)
+        || hardware_gates::is_locked(Gate::OsDiscovery)
+    {
         return Err(identity_stage::IdentifyError::Locked);
     }
-    // The owner binary is the one that may open USB. A test build stops here,
-    // before enumeration, even though this owner build has G2 open.
+    // A test build stops here, before enumeration, even though G2 is open.
+    // The normal app may open USB only when the user runs step 2.
     #[cfg(test)]
     {
         let _ = cancel;
@@ -365,22 +435,7 @@ pub fn read_identity(
                 },
             ));
         }
-        let mut session = match Session::open_handle() {
-            Ok(session) => session,
-            Err(_) => {
-                return Err(identity_stage::IdentifyError::Failed(
-                    identity_stage::IdentifyStop {
-                        failure: IdentityFailure::OpenFailed,
-                        cleanup: None,
-                        cleanup_ran: false,
-                        release_failed: false,
-                        reattach_failed: false,
-                        bridge: None,
-                        guitar: None,
-                    },
-                ));
-            }
-        };
+        let mut session = open_for_identity()?;
         let exchange = identity_stage::run_identity_exchange(&mut session, cancel);
         identity_stage::exchange_result(exchange)
     }
@@ -419,6 +474,80 @@ mod tests {
             !error.contains("IdentityRequest"),
             "G2 must not be the gate that stops a settings read: {error}"
         );
+    }
+
+    #[test]
+    fn access_denied_is_named_apart_from_a_failed_open_or_send() {
+        let denied = open_failure_kind(
+            "Cannot open PODxt Live USB control: Access denied (insufficient permissions). USB device access permission may be required.",
+        );
+        assert_eq!(denied, IdentityFailure::AccessDenied);
+        let sentence = denied.sentence();
+        assert!(sentence.contains("not sent"), "{sentence}");
+        assert!(sentence.contains("not detached"), "{sentence}");
+        assert_ne!(sentence, IdentityFailure::OpenFailed.sentence());
+        assert_ne!(sentence, IdentityFailure::SendFailed.sentence());
+        assert_ne!(sentence, IdentityFailure::ReadFailed.sentence());
+        assert_eq!(
+            open_failure_kind("expected one PODxt Live, found 0"),
+            IdentityFailure::OpenFailed
+        );
+        assert!(IdentityFailure::OpenFailed.sentence().contains("not sent"));
+        assert!(
+            IdentityFailure::SendFailed
+                .sentence()
+                .contains("not accepted")
+        );
+        assert!(
+            IdentityFailure::ReadFailed
+                .sentence()
+                .contains("could not be read")
+        );
+    }
+
+    #[test]
+    fn captured_split_reply_and_a_leading_status_nibble_both_reassemble() {
+        let whole = identity_stage::guitar_reply();
+        assert_eq!(whole.len(), 17);
+        let (body, end) = whole.split_at(16);
+        let mut decoder = SysexDecoder::default();
+        assert!(
+            decode_interrupt_packet(&mut decoder, body)
+                .unwrap()
+                .is_empty()
+        );
+        let messages = decode_interrupt_packet(&mut decoder, end).unwrap();
+        assert_eq!(messages, vec![whole.clone()]);
+        let parsed = crate::midi::Identity::parse(&messages[0]).unwrap();
+        assert_eq!(parsed.product_id(), identity_stage::GUITAR_PRODUCT);
+        assert_eq!(parsed.version_string(), identity_stage::GUITAR_VERSION);
+
+        let mut wide = [0u8; identity_stage::LISTEN_BYTES];
+        wide[..body.len()].copy_from_slice(body);
+        let mut decoder = SysexDecoder::default();
+        assert!(
+            decode_interrupt_packet(&mut decoder, &wide[..body.len()])
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            decode_interrupt_packet(&mut decoder, end).unwrap(),
+            vec![whole.clone()]
+        );
+
+        let mut led = body.to_vec();
+        led[0] = 0xf2;
+        let mut decoder = SysexDecoder::default();
+        assert!(
+            decode_interrupt_packet(&mut decoder, &led)
+                .unwrap()
+                .is_empty()
+        );
+        let messages = decode_interrupt_packet(&mut decoder, end).unwrap();
+        assert_eq!(messages[0][0], 0xf0);
+        assert_eq!(messages, vec![whole]);
+        assert_eq!(identity_stage::LISTEN_BYTES, 16);
+        assert_eq!(identity_stage::LISTEN_BYTES, identity_stage::WRITE_CHUNK);
     }
 
     #[test]

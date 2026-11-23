@@ -3,16 +3,19 @@
 //! G1 (OS-level recognition) is open by the owner's direct permission of
 //! 2026-11-22, recorded in `docs/hardware-gates/g1.md`. G2 (one Variax 600
 //! identity request) is open by the owner's direct permission of 2026-11-22,
-//! recorded in `docs/hardware-gates/g2.md`, for one owner-run attempt on this
-//! rig. The owner runs that test. Agents do not. Gates G3–G7 stay locked.
-//! There is no runtime, command-line, GUI, or test switch that changes these
-//! constants. Test builds do not open a USB device.
+//! recorded in `docs/hardware-gates/g2.md`, for any user of the same supported
+//! rig. Device-check step 3 reads the Variax and the PODxt Live. Step 4 stays
+//! off. The legacy settings lock stays closed so the editor fetch stays off.
+//! The user runs those checks. Agents do not. Gates G4–G7 stay locked. There is
+//! no runtime, command-line, GUI, or test switch that changes these constants.
+//! Test builds do not open a USB device.
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Gate {
     OsDiscovery,
     IdentityRequest,
     CurrentSettingsRead,
+    DeviceCheckCurrentSettingsRead,
     AudioCapture,
     FullBackupRead,
     EditBufferWrite,
@@ -21,12 +24,15 @@ pub enum Gate {
 
 /// Open: owner's direct permission for G1 (g1.md section 5, #125).
 pub const G1_OS_DISCOVERY_LOCKED: bool = false;
-/// Open: owner's direct permission on 2026-11-22 for one owner-run Variax 600
-/// identity request through the PODxt Live, following `docs/hardware-gates/g2.md`.
-/// The one-rig exception to issue #114 is recorded there. #114 stays open.
-/// G3–G7 stay locked. The owner runs the hardware test. Agents do not.
+/// Open: owner's direct permission on 2026-11-22 for the Variax 600 identity
+/// request through the PODxt Live, for any user, following
+/// `docs/hardware-gates/g2.md`. No later gate opens until this one has worked.
+/// #114 stays open. The user runs the check. Agents do not.
 pub const G2_IDENTITY_REQUEST_LOCKED: bool = false;
+/// The editor fetch and change check retain the original locked setting.
 pub const G3_CURRENT_SETTINGS_READ_LOCKED: bool = true;
+/// The approved Device check step 3 procedure has its own compile-time lock.
+pub const G3_DEVICE_CHECK_READ_LOCKED: bool = false;
 pub const G4_AUDIO_CAPTURE_LOCKED: bool = true;
 pub const G5_FULL_BACKUP_READ_LOCKED: bool = true;
 pub const G6_EDIT_BUFFER_WRITE_LOCKED: bool = true;
@@ -37,6 +43,7 @@ pub const fn is_locked(gate: Gate) -> bool {
         Gate::OsDiscovery => G1_OS_DISCOVERY_LOCKED,
         Gate::IdentityRequest => G2_IDENTITY_REQUEST_LOCKED,
         Gate::CurrentSettingsRead => G3_CURRENT_SETTINGS_READ_LOCKED,
+        Gate::DeviceCheckCurrentSettingsRead => G3_DEVICE_CHECK_READ_LOCKED,
         Gate::AudioCapture => G4_AUDIO_CAPTURE_LOCKED,
         Gate::FullBackupRead => G5_FULL_BACKUP_READ_LOCKED,
         Gate::EditBufferWrite => G6_EDIT_BUFFER_WRITE_LOCKED,
@@ -73,11 +80,12 @@ mod tests {
     ];
 
     #[test]
-    fn g1_and_g2_are_open_and_g3_through_g7_stay_locked() {
+    fn g1_g2_and_device_check_read_are_open() {
         const {
             assert!(!G1_OS_DISCOVERY_LOCKED);
             assert!(!G2_IDENTITY_REQUEST_LOCKED);
             assert!(G3_CURRENT_SETTINGS_READ_LOCKED);
+            assert!(!G3_DEVICE_CHECK_READ_LOCKED);
             assert!(G4_AUDIO_CAPTURE_LOCKED);
             assert!(G5_FULL_BACKUP_READ_LOCKED);
             assert!(G6_EDIT_BUFFER_WRITE_LOCKED);
@@ -86,7 +94,11 @@ mod tests {
         assert!(!is_locked(Gate::OsDiscovery));
         assert!(!is_locked(Gate::IdentityRequest));
         // The closures only flip a flag: no device, file or OS access.
-        for gate in [Gate::OsDiscovery, Gate::IdentityRequest] {
+        for gate in [
+            Gate::OsDiscovery,
+            Gate::IdentityRequest,
+            Gate::DeviceCheckCurrentSettingsRead,
+        ] {
             let mut ran = false;
             let result = run_if_unlocked(gate, || {
                 ran = true;

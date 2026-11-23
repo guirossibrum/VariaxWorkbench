@@ -1,0 +1,17 @@
+[package]
+name = "line6-devices"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Per-product-family Line 6 device protocols, decoders and thin transports (read-only so far)"
+
+[features]
+# Live USB interface links (libusb). Off by default: decoders and the ALSA
+# MIDI link need no native library.
+usb = ["dep:rusb"]
+
+[dependencies]
+rusb = { version = "=0.9.4", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"

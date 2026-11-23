@@ -10,9 +10,8 @@
 //! a settings read. The settings read is not part of this exchange. A PODxt
 //! Live identity reply has no recorded request here, so it does not pass.
 //! This module does not open a device, detach a driver, or send USB or MIDI.
-//! Its tests use a fake connection. The owner binary is the one that can send
-//! the request, and only when the owner runs the card in
-//! `docs/hardware-gates/g2.md`. Agents do not.
+//! Its tests use a fake connection. The normal app can send the request when
+//! a user runs the card in `docs/hardware-gates/g2.md`. Agents do not.
 
 use crate::midi::Identity;
 use crate::read_session::IDENTITY_REQUEST;
@@ -23,6 +22,7 @@ use std::time::Duration;
 /// PODxt Live bridge product, from the published 2026-11-14 identity shape.
 pub const BRIDGE_PRODUCT: u32 = 0x0003_000a;
 /// Variax 300/600 product, from the published 2026-11-14 identity shape.
+/// Workbench treats decimal 458756, this same id, as the 300/600.
 pub const GUITAR_PRODUCT: u32 = 0x0007_0004;
 pub const BRIDGE_VERSION: &str = "3.01";
 pub const GUITAR_VERSION: &str = "3.10";
@@ -34,6 +34,11 @@ pub const WRITE_CHUNK: usize = 16;
 pub const CHUNK_GAP: Duration = Duration::from_millis(5);
 pub const REPLY_TIMEOUT: Duration = Duration::from_secs(3);
 pub const READ_POLL: Duration = Duration::from_millis(100);
+/// Bytes asked for on each interrupt read. The read that already recognized
+/// this guitar asked for 16, and the saved answer arrived as 16 bytes and
+/// then the closing byte. A larger read keeps waiting after that full
+/// packet and can drop those bytes when the wait ends.
+pub const LISTEN_BYTES: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IdentityRole {
@@ -67,8 +72,14 @@ pub enum IdentityFailure {
     ClaimFailed,
     /// Alternate setting failed after a successful claim. Release and reattach both run.
     AlternateFailed,
-    /// The device could not be opened, or the one request could not be sent.
+    /// The PODxt Live could not be opened. Nothing was detached and nothing was sent.
     OpenFailed,
+    /// Linux refused the open. Nothing was detached and nothing was sent.
+    AccessDenied,
+    /// Detach, claim, and the alternate setting finished, and the write did not.
+    SendFailed,
+    /// The one request was handed to the connection, and the reply could not be read.
+    ReadFailed,
 }
 
 impl IdentityFailure {
@@ -89,7 +100,14 @@ impl IdentityFailure {
             Self::AlternateFailed => {
                 "The guitar-control connection could not be prepared. Stopped."
             }
-            Self::OpenFailed => "The identity question could not be sent. Stopped.",
+            Self::OpenFailed => {
+                "The PODxt Live could not be opened, so the identity question was not sent. Stopped."
+            }
+            Self::AccessDenied => {
+                "Linux did not allow this app to open the PODxt Live. The identity question was not sent, and the guitar driver was not detached. Stopped."
+            }
+            Self::SendFailed => "The identity question was not accepted. Stopped.",
+            Self::ReadFailed => "The identity answer could not be read. Stopped.",
         }
     }
 
@@ -105,6 +123,9 @@ impl IdentityFailure {
             Self::ClaimFailed => "stop=claim-failed",
             Self::AlternateFailed => "stop=alternate-failed",
             Self::OpenFailed => "stop=open-failed",
+            Self::AccessDenied => "stop=access-denied",
+            Self::SendFailed => "stop=send-failed",
+            Self::ReadFailed => "stop=read-failed",
         }
     }
 }
@@ -670,6 +691,7 @@ mod tests {
         assert_eq!(CHUNK_GAP, Duration::from_millis(5));
         assert_eq!(REPLY_TIMEOUT, Duration::from_secs(3));
         assert_eq!(READ_POLL, Duration::from_millis(100));
+        assert_eq!(LISTEN_BYTES, WRITE_CHUNK);
     }
 
     #[test]

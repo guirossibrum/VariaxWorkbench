@@ -4,12 +4,15 @@ This page describes the G1–G8 operation boundaries for the PODxt Live and
 Variax 600. **G1 is authorized by the owner's direct permission (2026-11-22)**,
 for the procedure recorded in [the G1 ledger](hardware-gates/g1.md) only. That
 permission is open in this build. **G2 is authorized by the owner's direct
-permission (2026-11-22)** for one owner-run Variax 600 identification through
-the PODxt Live, recorded in [the G2 ledger](hardware-gates/g2.md) only. The
-[#159](https://github.com/guirossibrum/VariaxWorkbench/issues/159) build opens
-only `G2_IDENTITY_REQUEST_LOCKED`. The owner granted a one-rig exception to
-[#114](https://github.com/guirossibrum/VariaxWorkbench/issues/114); #114 stays
-open. **G3–G8 are not authorized.** Each gate needs its own direct permission.
+permission (2026-11-22)** for the bounded Variax 600 identification through
+the PODxt Live, for any user of the same supported rig, recorded in
+[the G2 ledger](hardware-gates/g2.md) only. The build opens `G2_IDENTITY_REQUEST_LOCKED`.
+[#114](https://github.com/guirossibrum/VariaxWorkbench/issues/114) stays open.
+**Device-check step 3 of G3 is authorized** for a read of the Variax current
+settings and the PODxt Live current tone, controlled by
+`G3_DEVICE_CHECK_READ_LOCKED`. Step 4 stays locked. The editor
+fetch stays off because `G3_CURRENT_SETTINGS_READ_LOCKED` stays true.
+**G4–G8 are not authorized.** Each later gate needs its own direct permission.
 Permission for one gate does not authorize another. The owner does not
 authorize a gate by signing a GitHub issue. Agents do not run the live check.
 
@@ -36,15 +39,15 @@ authorize a gate by signing a GitHub issue. Agents do not run the live check.
 ### G2 — Device identity request
 
 - **Operation:** One Variax 600 identity request through the PODxt Live
-  interface 1, authorized on 2026-11-22 for one owner-run attempt. The
-  procedure is [the G2 ledger](hardware-gates/g2.md).
+  interface 1, authorized on 2026-11-22 for any user of the same supported
+  rig. The procedure is [the G2 ledger](hardware-gates/g2.md).
   [#126](https://github.com/guirossibrum/VariaxWorkbench/issues/126) is scoped
   to that single request and stays open. PODxt Live identity stays separate.
 - **Application traffic:** The captured exchange is one universal identity
   request and one Variax 600 3.10 reply. The following settings read is G3
   and is not part of this procedure. The published PODxt Live 3.01 reply has
   no recorded request in the 2026-11-14 files. See
-  [the G2 ledger](hardware-gates/g2.md). The owner sends the request by
+  [the G2 ledger](hardware-gates/g2.md). The user sends the request by
   following section 10. Agents do not.
 - **System changes:** The procedure detaches the stock driver from PODxt Live
   interface 1 before it claims that interface. Release runs only after a
@@ -60,6 +63,12 @@ authorize a gate by signing a GitHub issue. Agents do not run the live check.
   `snd-usb-variax` startup traffic is not a second request from the app.
   The step 2 report is saved before Device check starts over for the
   follow-up step 1. The owner test card is section 10 of the G2 ledger.
+  The app opened from a normal build includes the identity check. The corner
+  shows build 13. If Device check still says only gate G1 is open, that copy
+  is older. The app does not ask for a password. Yes on a step accepts the
+  risk for that step. If Linux refuses the open, the question is not sent
+  and the guitar driver is not detached. Step 3 reads both families. Step 4
+  stays locked.
   #114 stays open under the one-rig exception in section 7.
 - **Prerequisites and tracking:** G1, the one-rig exception to #114, and the
   owner-approved procedure in the G2 ledger. #112 stays open. Outstanding
@@ -70,9 +79,10 @@ authorize a gate by signing a GitHub issue. Agents do not run the live check.
 - **Operation:** Read and display current settings only; the result is not a
   backup. See [issue #127](https://github.com/guirossibrum/VariaxWorkbench/issues/127)
   and [issue #115](https://github.com/guirossibrum/VariaxWorkbench/issues/115).
-- **Application traffic:** The future sequence is MIDI enable, the two
-  current-settings metadata requests, then MIDI disable, as specified by
-  issue #112. No other request is specified here.
+- **Application traffic:** Device check step 3, in build 12, reads the Variax
+  current settings (session on, two metadata blocks, session off) and the
+  PODxt Live current tone. Nothing is written. Step 4 stays locked. The
+  editor's Fetch stays off. Issue #112's broader sequence is not this step.
 - **System changes:** The proposed procedure uses the same temporary
   interface-1 detach/claim/release/reattach boundary as G2. It does not include
   preset switching or persistent writes.
@@ -156,6 +166,7 @@ authorize a gate by signing a GitHub issue. Agents do not run the live check.
 
 These rows do not establish physical safety, recovery capability, or audio
 equivalence. G1's permission is the record in the G1 ledger. G2's permission
-is the record in the G2 ledger, for one owner-run attempt in the #159 build.
-G3–G8 are not authorized, and their source locks stay engaged. Section 11 of
-the G2 ledger is a proposal for a later user release. It is not in effect.
+is the record in the G2 ledger, for any user of the same supported rig.
+Step 4 and G4–G8 are not authorized. The G3 source constant stays engaged
+so the editor fetch stays off. Device-check step 3 is the open read of both
+families. Section 11 of the G2 ledger remains the identity-check rule.

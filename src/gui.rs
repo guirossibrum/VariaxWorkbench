@@ -2757,6 +2757,8 @@ impl Workbench {
                         {
                             self.device_check_buttons.insert(id, response.rect);
                             self.device_check_button_ids.insert(id, response.id);
+                            visible.push_str(choice.label());
+                            visible.push('\n');
                         }
                         #[cfg(not(test))]
                         let _ = id;
@@ -13722,6 +13724,10 @@ mod tests {
             );
             assert!(
                 app.device_check_visible
+                    .contains(device_probe::ProbeMode::ThisComputer.label())
+            );
+            assert!(
+                app.device_check_visible
                     .contains("step 1 waiting for your answer real device: open")
             );
         } else {
@@ -13754,13 +13760,21 @@ mod tests {
             "{}",
             app.device_check_visible
         );
-        for step in 3..=4 {
-            assert!(
-                app.device_check_visible
-                    .contains(&format!("step {step} not run real device: locked")),
-                "step {step}"
-            );
-        }
+        let step_three = if device_probe::live_stage_available(Stage::SettingsRead) {
+            "step 3 not run real device: open"
+        } else {
+            "step 3 not run real device: locked"
+        };
+        assert!(
+            app.device_check_visible.contains(step_three),
+            "step 3\n{}",
+            app.device_check_visible
+        );
+        assert!(
+            app.device_check_visible
+                .contains("step 4 not run real device: locked"),
+            "step 4"
+        );
         assert!(
             app.device_check_visible
                 .contains(Stage::UsbRecognition.action())
@@ -13956,14 +13970,27 @@ mod tests {
                     .contains("step 2 locked in this build")
             );
         }
-        for step in 3..=4 {
+        if device_probe::live_stage_available(Stage::SettingsRead) {
             assert!(
                 app.device_check_visible
-                    .contains(&format!("step {step} locked in this build")),
-                "step {step}: {}",
+                    .contains("step 3 not run real device: open"),
+                "step 3: {}",
+                app.device_check_visible
+            );
+        } else {
+            assert!(
+                app.device_check_visible
+                    .contains("step 3 locked in this build"),
+                "step 3: {}",
                 app.device_check_visible
             );
         }
+        assert!(
+            app.device_check_visible
+                .contains("step 4 locked in this build"),
+            "step 4: {}",
+            app.device_check_visible
+        );
         click_device_check(&context, &mut app, "yes");
         assert_eq!(
             app.device_check.status(Stage::UsbRecognition),
@@ -13983,7 +14010,7 @@ mod tests {
                 StageStatus::Stopped
             );
             assert!(app.device_check_visible.contains("Stopped at step 2"));
-            assert!(device_probe::reports_panel_note().contains("gates G1 and G2"));
+            assert!(device_probe::reports_panel_note().contains("gates G1–G3"));
         } else {
             assert_eq!(app.device_check.awaiting(), None);
             assert!(!app.device_check_buttons.contains_key("yes"));
@@ -14000,10 +14027,19 @@ mod tests {
             );
             assert!(device_probe::reports_panel_note().contains("This build can run gate G1."));
         }
-        for stage in [Stage::SettingsRead, Stage::ChangeCheck] {
-            assert_eq!(app.device_check.status(stage), StageStatus::NotRun);
-            assert!(app.device_check.locked(stage));
-        }
+        assert_eq!(
+            app.device_check.status(Stage::SettingsRead),
+            StageStatus::NotRun
+        );
+        assert_eq!(
+            app.device_check.locked(Stage::SettingsRead),
+            !device_probe::live_stage_available(Stage::SettingsRead)
+        );
+        assert_eq!(
+            app.device_check.status(Stage::ChangeCheck),
+            StageStatus::NotRun
+        );
+        assert!(app.device_check.locked(Stage::ChangeCheck));
         let calls = app.device_check.backend().calls();
         assert_eq!(
             (

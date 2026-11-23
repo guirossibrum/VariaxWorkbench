@@ -6,25 +6,41 @@ PODxt Live and Variax 600 are irreplaceable. Live device operations are divided
 into gates G1–G8 (see docs/hardware-gates.md). **G1 is authorized by the owner's
 direct permission (2026-11-22)**, for the procedure in
 [docs/hardware-gates/g1.md](docs/hardware-gates/g1.md) only. **G2 is authorized
-by the owner's direct permission (2026-11-22)** for one owner-run Variax 600
-identification through the PODxt Live, following
-[docs/hardware-gates/g2.md](docs/hardware-gates/g2.md) only. That permission
-includes a one-rig exception to the #114 inventory prerequisite. #114 stays
-open. The #159 build opens only `G2_IDENTITY_REQUEST_LOCKED`. G1 stays open
-as it is. **G3–G8 are not authorized.** Each gate needs the owner's own direct
-permission. Permission for one gate never extends to another, and general
-permission to work on this project is not gate permission. The owner does not
-authorize a gate by signing a GitHub issue.
+by the owner's direct permission (2026-11-22)** for the bounded Variax 600
+identification through the PODxt Live, for any user of the same supported rig,
+following [docs/hardware-gates/g2.md](docs/hardware-gates/g2.md) only. #114 stays
+open. The build opens `G2_IDENTITY_REQUEST_LOCKED`. A normal build of
+`variax-workbench-gui` includes `usb`, so the app offers steps 2 and 3. `gui`
+alone still does not. Device check names the steps available in the running build. The
+app does not ask for a password. Accepting the risk is the Device check Yes
+for that step, and No stays the default. If step 1 passes, step 2 is offered.
+If step 2 passes, step 3 is offered. If Linux refuses the open, the question
+is not sent and the guitar driver is not detached. G1 stays open as it is.
+**On 2026-11-22 the owner released device-check step 3 of G3** after an
+external read named the Variax 600, the PODxt Live, and the current settings,
+and a later read saw the changed settings. Step 3 reads the Variax current
+settings and the PODxt Live current tone. Each family stays in its own module
+under `crates/line6-devices`. The owner then ran build 12. Steps 1–3 passed
+on USB 8-2.1: Variax 600 firmware 3.10, PODxt Live firmware 3.01, the current
+guitar preset, and the current PODxt Live tone. Nothing was written. That
+pass does not open step 4. Step 4 stays locked. G4–G8 are not authorized.
+Device check step 3 is governed by `G3_DEVICE_CHECK_READ_LOCKED`.
+`G3_CURRENT_SETTINGS_READ_LOCKED` stays true so the editor fetch stays off. Each later gate needs the owner's own direct permission. Permission for
+one gate never extends to another, and general permission to work on this
+project is not gate permission. The owner does not authorize a gate by signing
+a GitHub issue.
 
 Until the gate that covers an operation is both authorized and opened by its
 build: no `amidi` send/receive, direct USB scripts, updaters, resets, driver
 unbinds/detaches, audio streams, or any operation that contacts either device.
 Per-gate compile-time locks stay locked, with no environment, command-line,
 GUI, or test override, except the #158 build opening the G1 lock and the #159
-build opening the G2 lock. An open G2 constant does not let an agent run the
-device. `usb::read_identity` returns before enumeration in every test build.
-Use captured data, fake transports and CPU emulation. Agents do not run the
-real G1 step or the real G2 step; the owner runs those tests.
+build opening the G2 lock, and the device-check step 3 read of both families.
+An open gate does not let an agent run the device. `usb::read_identity` and
+the family reads return before enumeration in every test build. Use captured
+data, fake transports and CPU emulation. Agents do not run the real G1 step,
+the real G2 step, or the real step 3 read; the user runs those checks. Do not
+read real `/proc` or `/sys`.
 
 Write gates (G6, G7) additionally require a verified backup (G5), the
 coefficient-parity decision recorded in #6/#22, and a separately approved

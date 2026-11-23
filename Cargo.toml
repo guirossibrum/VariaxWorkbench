@@ -27,18 +27,22 @@ name = "variax-firmware-inspect"
 path = "src/firmware_inspect.rs"
 
 [features]
-default = ["gui"]
+# The app opened from a normal build includes the identity check for any user.
+# `gui` alone still does not link USB. Turning default features off leaves step 2 off.
+default = ["gui", "usb"]
 # Experimental, versioned software mathematics; normal builds retain host math.
 portable-math = ["dep:libm"]
 gui = ["dep:eframe", "dep:winit", "dep:image", "dep:rfd", "dep:serde", "dep:serde_json"]
-# Live USB adapter (rusb/libusb). Separate from `gui`: offline GUI builds never link libusb.
-# Every live call stays behind the compile-time hardware gates.
-usb = ["dep:rusb"]
+# Live USB adapter (rusb/libusb). Separate from `gui`: the `gui` feature never links libusb.
+# On Linux, this feature offers the identity check and the step 3 read of both
+# families. Step 4 stays off. The editor fetch stays behind the G3 constant.
+usb = ["dep:rusb", "dep:line6-devices", "line6-devices/usb"]
 
 [dependencies]
 libm = { version = "=0.2.16", optional = true, default-features = false, features = ["force-soft-floats"] }
 tempfile = "3"
 rusb = { version = "0.9.4", optional = true }
+line6-devices = { path = "crates/line6-devices", default-features = false, optional = true }
 eframe = { version = "=0.33.3", optional = true, default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 winit = { version = "=0.30.13", optional = true, default-features = false, features = ["wayland", "x11"] }
 image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
