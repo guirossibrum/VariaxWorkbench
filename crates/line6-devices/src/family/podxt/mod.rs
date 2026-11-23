@@ -35,13 +35,36 @@ pub enum PodxtRequest {
     Identity,
     /// Edit-buffer (current tone) dump request, `03 75`.
     EditBuffer,
+    /// Stored tone or setup dump request by memory location, `03 73 hi lo 00 00`
+    /// (Line 6 Edit `RequestPatch(bank, index)`). Does not change the active tone.
+    Stored(Location),
+    /// Installed model-pack query, `03 0E 00` (Line 6 Edit
+    /// `L6PODxtDevice.UpdateInstalledPacks`). Read-only.
+    InstalledPacks,
 }
 
 impl Request for PodxtRequest {
-    fn bytes(self) -> &'static [u8] {
+    fn bytes(self) -> Vec<u8> {
         match self {
-            PodxtRequest::Identity => &identity::REQUEST,
-            PodxtRequest::EditBuffer => &[0xf0, 0x00, 0x01, 0x0c, 0x03, 0x75, 0xf7],
+            PodxtRequest::Identity => identity::REQUEST.to_vec(),
+            PodxtRequest::EditBuffer => vec![0xf0, 0x00, 0x01, 0x0c, 0x03, 0x75, 0xf7],
+            PodxtRequest::InstalledPacks => vec![0xf0, 0x00, 0x01, 0x0c, 0x03, 0x0e, 0x00, 0xf7],
+            PodxtRequest::Stored(location) => {
+                let address = location.address();
+                vec![
+                    0xf0,
+                    0x00,
+                    0x01,
+                    0x0c,
+                    0x03,
+                    0x73,
+                    (address >> 7) as u8,
+                    (address & 0x7f) as u8,
+                    0x00,
+                    0x00,
+                    0xf7,
+                ]
+            }
         }
     }
 
@@ -53,6 +76,130 @@ impl Request for PodxtRequest {
         match self {
             PodxtRequest::Identity => Operation::PodxtIdentity,
             PodxtRequest::EditBuffer => Operation::PodxtRead,
+            PodxtRequest::Stored(_) => Operation::PodxtLibraryRead,
+            PodxtRequest::InstalledPacks => Operation::PodxtPackQuery,
+        }
+    }
+}
+
+/// Installed model packs: a bitmask from the device (`L6PODxtDevice.XTPACKS_*`).
+/// A pack decides which amp/effect models the unit can run; stored tones may
+/// still refer to models from packs that are not installed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Packs(pub u8);
+
+impl Packs {
+    pub const ALL: [(u8, &'static str); 4] = [
+        (1, "Metal Shop"),
+        (2, "Collector Classics"),
+        (4, "FX Junkie"),
+        (8, "Bass Expansion"),
+    ];
+
+    pub fn names(self) -> Vec<&'static str> {
+        Self::ALL
+            .iter()
+            .filter(|(bit, _)| self.0 & bit != 0)
+            .map(|(_, name)| *name)
+            .collect()
+    }
+}
+
+fn is_packs_reply(message: &[u8]) -> bool {
+    message.len() == 9 && message[..6] == [0xf0, 0x00, 0x01, 0x0c, 0x03, 0x0e]
+}
+
+/// Identity, then the installed-pack query (reply: 9 bytes, mask at byte 7).
+pub fn read_packs<L: Link>(session: &mut Session<L>) -> Result<(Vec<u8>, Packs), String> {
+    let (identity_reply, _) = identify_podxt(session)?;
+    session.send(PodxtRequest::InstalledPacks)?;
+    match session.wait_for(WINDOW, is_packs_reply, false)? {
+        Wait::Found(reply) => Ok((identity_reply, Packs(reply[7]))),
+        _ => Err("No installed-pack reply arrived.".into()),
+    }
+}
+
+/// PODxt Live memory banks (Line 6 Edit `L6PODxtDevice` topology).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BankKind {
+    Tones,
+    AmpSetups,
+    FxSetups,
+}
+
+impl BankKind {
+    pub const ALL: [BankKind; 3] = [BankKind::Tones, BankKind::AmpSetups, BankKind::FxSetups];
+
+    pub fn size(self) -> u16 {
+        match self {
+            BankKind::Tones => 128,
+            BankKind::AmpSetups => 107,
+            BankKind::FxSetups => 64,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            BankKind::Tones => "Tones",
+            BankKind::AmpSetups => "Amp Setups",
+            BankKind::FxSetups => "FX Setups",
+        }
+    }
+
+    pub fn slug(self) -> &'static str {
+        match self {
+            BankKind::Tones => "tones",
+            BankKind::AmpSetups => "amp-setups",
+            BankKind::FxSetups => "fx-setups",
+        }
+    }
+}
+
+/// One stored location. Only valid locations can be built.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Location {
+    kind: BankKind,
+    index: u16,
+}
+
+impl Location {
+    pub fn new(kind: BankKind, index: u16) -> Option<Self> {
+        (index < kind.size()).then_some(Self { kind, index })
+    }
+
+    pub fn all(kinds: &[BankKind]) -> impl Iterator<Item = Location> + '_ {
+        kinds
+            .iter()
+            .flat_map(|&kind| (0..kind.size()).map(move |index| Location { kind, index }))
+    }
+
+    pub fn kind(self) -> BankKind {
+        self.kind
+    }
+
+    pub fn index(self) -> u16 {
+        self.index
+    }
+
+    /// Line 6 Edit `L6SharcTonePatchManager.TranslateAddr`.
+    pub fn address(self) -> u16 {
+        let (low_base, high_base) = match self.kind {
+            BankKind::Tones => (0, 128),
+            BankKind::AmpSetups => (64, 192),
+            BankKind::FxSetups => (128, 256),
+        };
+        self.index + if self.index < 64 { low_base } else { high_base }
+    }
+
+    /// Tones as the PODxt shows channels (`1A`..`32D`); setups as `#1`...
+    pub fn label(self) -> String {
+        match self.kind {
+            BankKind::Tones => format!(
+                "{}{}",
+                self.index / 4 + 1,
+                ['A', 'B', 'C', 'D'][usize::from(self.index % 4)]
+            ),
+            _ => format!("#{}", self.index + 1),
         }
     }
 }
@@ -87,15 +234,85 @@ fn identify_podxt<L: Link>(session: &mut Session<L>) -> Result<(Vec<u8>, Identit
 /// Identity, then the edit-buffer request only if the reply is a PODxt.
 pub fn read_current<L: Link>(session: &mut Session<L>) -> Result<CurrentTone, String> {
     let (identity_reply, identity) = identify_podxt(session)?;
+    let tone = read_edit_buffer(session)?;
+    Ok(CurrentTone {
+        identity_reply,
+        identity,
+        tone,
+    })
+}
+
+fn read_edit_buffer<L: Link>(session: &mut Session<L>) -> Result<EditBuffer, String> {
     session.send(PodxtRequest::EditBuffer)?;
     match session.wait_for(WINDOW, is_edit_buffer, false)? {
-        Wait::Found(dump) => Ok(CurrentTone {
-            identity_reply,
-            identity,
-            tone: EditBuffer::parse(dump)?,
-        }),
+        Wait::Found(dump) => EditBuffer::parse(dump),
         _ => Err("No 168-byte edit-buffer dump arrived.".into()),
     }
+}
+
+/// Line 6 Edit waits up to three times 1 s for each stored dump.
+const STORED_WINDOW: Duration = Duration::from_secs(3);
+/// Line 6 Edit pauses 100 ms after each stored dump (and may see a short
+/// `03 72` block-end message in that time).
+const STORED_GAP: Duration = Duration::from_millis(100);
+
+pub struct StoredTone {
+    pub location: Location,
+    pub tone: EditBuffer,
+}
+
+pub struct Library {
+    pub identity_reply: Vec<u8>,
+    /// Current tone before and after the sweep, to show it was not changed.
+    pub before: EditBuffer,
+    pub after: Result<EditBuffer, String>,
+    pub entries: Vec<StoredTone>,
+    /// Why the sweep stopped early, if it did.
+    pub stopped: Option<String>,
+}
+
+/// Identity, current tone, then every stored location in `kinds` by address,
+/// then the current tone again. Stops at the first location that does not
+/// answer; the closing current-tone read still runs.
+pub fn read_library<L: Link>(
+    session: &mut Session<L>,
+    kinds: &[BankKind],
+    mut progress: impl FnMut(&StoredTone),
+) -> Result<Library, String> {
+    let (identity_reply, _) = identify_podxt(session)?;
+    let before = read_edit_buffer(session)?;
+    let mut entries = Vec::new();
+    let mut stopped = None;
+    for location in Location::all(kinds) {
+        session.send(PodxtRequest::Stored(location))?;
+        match session.wait_for(STORED_WINDOW, is_edit_buffer, false)? {
+            Wait::Found(dump) => {
+                let stored = StoredTone {
+                    location,
+                    tone: EditBuffer::parse(dump)?,
+                };
+                progress(&stored);
+                entries.push(stored);
+                session.listen(STORED_GAP)?;
+            }
+            _ => {
+                stopped = Some(format!(
+                    "{} {}: no 168-byte dump",
+                    location.kind().name(),
+                    location.label()
+                ));
+                break;
+            }
+        }
+    }
+    let after = read_edit_buffer(session);
+    Ok(Library {
+        identity_reply,
+        before,
+        after,
+        entries,
+        stopped,
+    })
 }
 
 /// Identity, then listen only (at most [`LISTEN_MAX`]). The PODxt sends a
@@ -366,6 +583,129 @@ mod tests {
         assert_eq!(controls::name(7), Some("vol_pedal_level"));
         assert_eq!(controls::name(4), Some("wah_position"));
         assert_eq!(controls::CONTROLS.len(), 102);
+    }
+
+    #[test]
+    fn pack_query_is_its_own_operation_and_decodes_the_mask() {
+        assert_eq!(
+            PodxtRequest::InstalledPacks.operation(),
+            Operation::PodxtPackQuery
+        );
+        assert_eq!(
+            PodxtRequest::InstalledPacks.bytes(),
+            vec![0xf0, 0x00, 0x01, 0x0c, 0x03, 0x0e, 0x00, 0xf7]
+        );
+        assert_eq!(
+            Packs(0b0011).names(),
+            vec!["Metal Shop", "Collector Classics"]
+        );
+        let mut log = Quiet;
+        let reply = vec![0xf0, 0x00, 0x01, 0x0c, 0x03, 0x0e, 0x00, 0x0f, 0xf7];
+        let script = vec![
+            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (PodxtRequest::InstalledPacks, vec![reply]),
+        ];
+        let mut s = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
+        assert_eq!(read_packs(&mut s).unwrap().1.names().len(), 4);
+    }
+
+    #[test]
+    fn locations_follow_line6_edit_addressing() {
+        let address = |kind, index| Location::new(kind, index).unwrap().address();
+        assert_eq!(
+            (address(BankKind::Tones, 0), address(BankKind::Tones, 63)),
+            (0, 63)
+        );
+        assert_eq!(
+            (address(BankKind::Tones, 64), address(BankKind::Tones, 127)),
+            (192, 255)
+        );
+        assert_eq!(
+            (
+                address(BankKind::AmpSetups, 0),
+                address(BankKind::AmpSetups, 63)
+            ),
+            (64, 127)
+        );
+        assert_eq!(
+            (
+                address(BankKind::AmpSetups, 64),
+                address(BankKind::AmpSetups, 106)
+            ),
+            (256, 298)
+        );
+        assert_eq!(
+            (
+                address(BankKind::FxSetups, 0),
+                address(BankKind::FxSetups, 63)
+            ),
+            (128, 191)
+        );
+        assert!(
+            Location::new(BankKind::Tones, 128).is_none()
+                && Location::new(BankKind::FxSetups, 64).is_none()
+        );
+        let mut all: Vec<u16> = Location::all(&BankKind::ALL)
+            .map(Location::address)
+            .collect();
+        assert_eq!(all.len(), 299);
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), 299);
+        let tone_200 = PodxtRequest::Stored(Location::new(BankKind::Tones, 72).unwrap()).bytes();
+        assert_eq!(
+            tone_200,
+            vec![0xf0, 0x00, 0x01, 0x0c, 0x03, 0x73, 1, 72, 0, 0, 0xf7]
+        ); // address 200
+        assert_eq!(Location::new(BankKind::Tones, 5).unwrap().label(), "2B");
+        assert_eq!(
+            PodxtRequest::Stored(Location::new(BankKind::Tones, 0).unwrap()).operation(),
+            Operation::PodxtLibraryRead
+        );
+    }
+
+    #[test]
+    fn library_reads_each_location_and_checks_the_current_tone_twice() {
+        let mut log = Quiet;
+        let dump = synthetic();
+        let mut script = vec![
+            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (PodxtRequest::EditBuffer, vec![dump.clone()]),
+        ];
+        for location in Location::all(&[BankKind::FxSetups]) {
+            script.push((PodxtRequest::Stored(location), vec![dump.clone()]));
+        }
+        script.push((PodxtRequest::EditBuffer, vec![dump.clone()]));
+        let mut s = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
+        let mut seen = 0;
+        let library = read_library(&mut s, &[BankKind::FxSetups], |_| seen += 1).unwrap();
+        assert_eq!((library.entries.len(), seen), (64, 64));
+        assert!(library.stopped.is_none());
+        assert_eq!(library.after.unwrap(), library.before);
+    }
+
+    #[test]
+    fn library_stops_at_a_silent_location_and_still_reads_the_current_tone() {
+        let mut log = Quiet;
+        let dump = synthetic();
+        let first = Location::new(BankKind::Tones, 0).unwrap();
+        let second = Location::new(BankKind::Tones, 1).unwrap();
+        let script = vec![
+            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (PodxtRequest::EditBuffer, vec![dump.clone()]),
+            (PodxtRequest::Stored(first), vec![dump.clone()]),
+            (PodxtRequest::Stored(second), vec![]),
+            (PodxtRequest::EditBuffer, vec![dump.clone()]),
+        ];
+        let mut s = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
+        let library = read_library(&mut s, &[BankKind::Tones], |_| {}).unwrap();
+        assert_eq!(library.entries.len(), 1);
+        assert_eq!(
+            library.stopped.as_deref(),
+            Some("Tones 1B: no 168-byte dump")
+        );
+        assert!(library.after.is_ok());
+        assert_eq!(s.sent.len(), 5);
     }
 
     #[test]

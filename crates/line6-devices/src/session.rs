@@ -14,10 +14,11 @@ pub enum Path {
     PodxtMidi,
 }
 
-/// A fixed message a family allows. Families define these as enums, so no
-/// caller can hand a session arbitrary bytes.
+/// A message a family allows. Families define these as closed enums whose
+/// parameters are validated types, so no caller can hand a session arbitrary
+/// bytes.
 pub trait Request: Copy + Debug {
-    fn bytes(self) -> &'static [u8];
+    fn bytes(self) -> Vec<u8>;
     fn path(self) -> Path;
     fn operation(self) -> Operation;
 }
@@ -80,7 +81,11 @@ pub struct Session<'a, L: Link> {
     log: &'a mut dyn Log,
     pub assembler: Assembler,
     /// Bytes of every request sent, in order.
-    pub sent: Vec<&'static [u8]>,
+    pub sent: Vec<Vec<u8>>,
+    /// When false, received packets are tallied but not logged line by line
+    /// (long library reads). Sent requests are always logged.
+    pub log_packets: bool,
+    pub packets_in: usize,
 }
 
 impl<'a, L: Link> Session<'a, L> {
@@ -91,6 +96,8 @@ impl<'a, L: Link> Session<'a, L> {
             log,
             assembler: Assembler::default(),
             sent: Vec::new(),
+            log_packets: true,
+            packets_in: 0,
         }
     }
 
@@ -110,9 +117,11 @@ impl<'a, L: Link> Session<'a, L> {
                 request.operation()
             ));
         }
-        self.note(format!("OUT {}", hex(request.bytes())));
-        self.sent.push(request.bytes());
-        self.link.write(request.bytes())
+        let bytes = request.bytes();
+        self.note(format!("OUT {}", hex(&bytes)));
+        self.link.write(&bytes)?;
+        self.sent.push(bytes);
+        Ok(())
     }
 
     /// Reads at most one packet, logs it, and returns the events it completed.
@@ -121,9 +130,10 @@ impl<'a, L: Link> Session<'a, L> {
         let Some(packet) = self.link.read(wait.max(Duration::from_millis(1)))? else {
             return Ok(None);
         };
+        self.packets_in += 1;
         let shown: Vec<u8> = packet.iter().copied().filter(|b| *b < 0xf8).collect();
         let events = self.assembler.feed(&packet)?;
-        if !shown.is_empty() {
+        if self.log_packets && !shown.is_empty() {
             // One line per packet; channel messages are decoded on the same line.
             let decoded: Vec<String> = events
                 .iter()
@@ -223,7 +233,7 @@ pub(crate) mod testing {
     pub struct Fake {
         path: Path,
         clock: Duration,
-        script: VecDeque<(&'static [u8], Vec<Vec<u8>>)>,
+        script: VecDeque<(Vec<u8>, Vec<Vec<u8>>)>,
         inbox: VecDeque<Vec<u8>>,
         pub writes: Vec<Vec<u8>>,
     }

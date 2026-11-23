@@ -269,6 +269,7 @@ name = "variax-probe"
 version = "0.1.0"
 dependencies = [
  "line6-devices",
+ "sha2",
  "variax-workbench",
 ]
 

@@ -39,11 +39,15 @@ pub enum VariaxRequest {
     Metadata1,
     /// Metadata block 2: 32 words at address 883.
     Metadata2,
+    /// Program change to a stored preset: switches the guitar's active preset.
+    Program(Preset),
 }
 
 impl Request for VariaxRequest {
-    fn bytes(self) -> &'static [u8] {
-        match self {
+    fn bytes(self) -> Vec<u8> {
+        let fixed: &[u8] = match self {
+            // Workbench `L6MIDIManager.SendPC`: status C0 on its transmit channel 1.
+            VariaxRequest::Program(preset) => return vec![0xc0, preset.program_number()],
             VariaxRequest::Identity => &identity::REQUEST,
             VariaxRequest::SessionOn => &[0xf0, 0x00, 0x01, 0x0c, 0x07, 0x00, 0x2a, 0x01, 0xf7],
             VariaxRequest::SessionOff => &[0xf0, 0x00, 0x01, 0x0c, 0x07, 0x00, 0x2a, 0x00, 0xf7],
@@ -55,7 +59,8 @@ impl Request for VariaxRequest {
                 0xf0, 0x00, 0x01, 0x0c, 0x07, 0x00, 0x3c, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x03,
                 0x07, 0x03, 0x00, 0x00, 0x00, 0xf7,
             ],
-        }
+        };
+        fixed.to_vec()
     }
 
     fn path(self) -> Path {
@@ -65,7 +70,57 @@ impl Request for VariaxRequest {
     fn operation(self) -> Operation {
         match self {
             VariaxRequest::Identity => Operation::VariaxIdentity,
+            VariaxRequest::Program(_) => Operation::VariaxPresetSwitch,
             _ => Operation::VariaxRead,
+        }
+    }
+}
+
+/// Variax 300/600 banks in Workbench order (`L6VariaxDevice` topology): the
+/// model knob positions, five presets each.
+pub const BANKS: [&str; 12] = [
+    "Custom 1", "T-Model", "Spank", "Lester", "Special", "R-Billy", "Chime", "Semi", "Jazzbox",
+    "Acoustic", "Reso", "Custom 2",
+];
+pub const PRESETS_PER_BANK: u8 = 5;
+
+/// One stored preset location. Only valid locations can be built.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Preset {
+    bank: u8,
+    slot: u8,
+}
+
+impl Preset {
+    pub fn new(bank: u8, slot: u8) -> Option<Self> {
+        (usize::from(bank) < BANKS.len() && slot < PRESETS_PER_BANK).then_some(Self { bank, slot })
+    }
+
+    pub fn all() -> impl Iterator<Item = Preset> {
+        (0..BANKS.len() as u8)
+            .flat_map(|bank| (0..PRESETS_PER_BANK).map(move |slot| Preset { bank, slot }))
+    }
+
+    pub fn bank(self) -> u8 {
+        self.bank
+    }
+
+    pub fn slot(self) -> u8 {
+        self.slot
+    }
+
+    pub fn bank_name(self) -> &'static str {
+        BANKS[usize::from(self.bank)]
+    }
+
+    /// Workbench `L6VariaxPatchManager.LocationToProgramNumber`:
+    /// `bank * 5 + (4 - slot)`, plus 55 for banks 1..=10.
+    pub fn program_number(self) -> u8 {
+        let base = self.bank * PRESETS_PER_BANK + (PRESETS_PER_BANK - 1 - self.slot);
+        if self.bank == 0 || usize::from(self.bank) == BANKS.len() - 1 {
+            base
+        } else {
+            base + 55
         }
     }
 }
@@ -204,6 +259,142 @@ pub fn listen<L: Link>(
         Ok(tally)
     })?;
     Ok((identified, tally))
+}
+
+// ---- full library (G5 + preset switching) ----
+
+/// Time given to the guitar to load a preset after a program change
+/// (Workbench sleeps 200 ms after its program change before a bank-name read).
+const PROGRAM_SETTLE: Duration = Duration::from_millis(200);
+
+pub struct StoredPreset {
+    pub preset: Preset,
+    pub replies: [Vec<u8>; 2],
+    pub metadata: PresetMetadata,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Restore {
+    /// Switched back to the preset matching the original; `verified` when a
+    /// read afterwards matched the original again.
+    Switched {
+        to: Preset,
+        verified: bool,
+    },
+    /// No single stored preset matched the original; nothing was switched.
+    NoUniqueMatch {
+        matches: usize,
+    },
+    Failed(String),
+}
+
+pub struct Library {
+    pub identified: Identified,
+    pub original_replies: [Vec<u8>; 2],
+    pub original: PresetMetadata,
+    pub presets: Vec<StoredPreset>,
+    pub restore: Restore,
+    /// Why the sweep stopped early, if it did.
+    pub stopped: Option<String>,
+}
+
+/// Same stored preset, ignoring the live tone-knob position field (bytes
+/// 61..65: `tone_position`, `save_tone_position`).
+pub fn same_preset(a: &PresetMetadata, b: &PresetMetadata) -> bool {
+    a.raw[..61] == b.raw[..61] && a.raw[65..] == b.raw[65..]
+}
+
+fn read_metadata<L: Link>(
+    session: &mut Session<L>,
+) -> Result<([Vec<u8>; 2], PresetMetadata), String> {
+    let replies = [
+        read_block(session, VariaxRequest::Metadata1)?,
+        read_block(session, VariaxRequest::Metadata2)?,
+    ];
+    let metadata = PresetMetadata::from_replies(&replies[0], &replies[1])?;
+    Ok((replies, metadata))
+}
+
+fn read_stored<L: Link>(session: &mut Session<L>, preset: Preset) -> Result<StoredPreset, String> {
+    session.send(VariaxRequest::Program(preset))?;
+    session.link.pause(PROGRAM_SETTLE);
+    let (replies, metadata) = read_metadata(session)?;
+    Ok(StoredPreset {
+        preset,
+        replies,
+        metadata,
+    })
+}
+
+fn restore<L: Link>(
+    session: &mut Session<L>,
+    original: &PresetMetadata,
+    presets: &[StoredPreset],
+) -> Restore {
+    let matches: Vec<Preset> = presets
+        .iter()
+        .filter(|stored| same_preset(&stored.metadata, original))
+        .map(|stored| stored.preset)
+        .collect();
+    let [to] = matches[..] else {
+        return Restore::NoUniqueMatch {
+            matches: matches.len(),
+        };
+    };
+    if let Err(error) = session.send(VariaxRequest::Program(to)) {
+        return Restore::Failed(error);
+    }
+    session.link.pause(PROGRAM_SETTLE);
+    match read_metadata(session) {
+        Ok((_, now)) => Restore::Switched {
+            to,
+            verified: same_preset(&now, original),
+        },
+        Err(error) => Restore::Failed(format!("switched back, but the check read failed: {error}")),
+    }
+}
+
+/// Identity, session on, read the current preset, then for every stored
+/// preset: program change, wait, read both metadata blocks. Afterwards switch
+/// back to the preset matching the original (when exactly one matches) and
+/// check it. Session off is always sent. Stops at the first preset that does
+/// not answer; the restore still runs.
+pub fn read_library<L: Link>(
+    session: &mut Session<L>,
+    mut progress: impl FnMut(&StoredPreset),
+) -> Result<Library, String> {
+    let identified = identify_variax(session)?;
+    let (original_replies, original, presets, restore, stopped) = in_session(session, |session| {
+        let (original_replies, original) = read_metadata(session)?;
+        let mut presets = Vec::new();
+        let mut stopped = None;
+        for preset in Preset::all() {
+            match read_stored(session, preset) {
+                Ok(stored) => {
+                    progress(&stored);
+                    presets.push(stored);
+                }
+                Err(error) => {
+                    stopped = Some(format!(
+                        "{} {}: {error}",
+                        preset.bank_name(),
+                        preset.slot() + 1
+                    ));
+                    break;
+                }
+            }
+        }
+        let restore = restore(session, &original, &presets);
+        Ok((original_replies, original, presets, restore, stopped))
+    })?;
+    Ok(Library {
+        identified,
+        original_replies,
+        original,
+        presets,
+        restore,
+        stopped,
+    })
 }
 
 // ---- live controls ----
@@ -414,7 +605,7 @@ pub(crate) mod tests {
     fn run<T>(
         script: Vec<(VariaxRequest, Vec<Vec<u8>>)>,
         body: impl FnOnce(&mut Session<Fake>) -> T,
-    ) -> (T, Vec<&'static [u8]>, Duration) {
+    ) -> (T, Vec<Vec<u8>>, Duration) {
         let mut log = Quiet;
         let mut session =
             Session::new(Fake::new(Path::VariaxViaPodxt, script), &AllowAll, &mut log);
@@ -470,7 +661,7 @@ pub(crate) mod tests {
             read_current,
         );
         assert_eq!(result.unwrap().replies, [reply.clone(), reply]);
-        let expected: Vec<&[u8]> = [Identity, SessionOn, Metadata1, Metadata2, SessionOff]
+        let expected: Vec<Vec<u8>> = [Identity, SessionOn, Metadata1, Metadata2, SessionOff]
             .iter()
             .map(|r| r.bytes())
             .collect();
@@ -559,6 +750,133 @@ pub(crate) mod tests {
             ParameterValue::Float(2.0)
         );
         assert_eq!(metadata.parameters.len(), 40);
+    }
+
+    #[test]
+    fn preset_program_numbers_follow_workbench() {
+        let numbers: Vec<u8> = Preset::all().map(Preset::program_number).collect();
+        assert_eq!(numbers.len(), 60);
+        assert_eq!(&numbers[..5], &[4, 3, 2, 1, 0]); // Custom 1
+        assert_eq!(&numbers[5..10], &[64, 63, 62, 61, 60]); // T-Model: 5 + 4 - slot + 55
+        assert_eq!(&numbers[55..], &[59, 58, 57, 56, 55]); // Custom 2
+        let mut unique = numbers.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), 60);
+        assert!(numbers.iter().all(|n| *n < 0x80));
+        assert!(Preset::new(12, 0).is_none() && Preset::new(0, 5).is_none());
+        assert_eq!(Program(Preset::new(6, 4).unwrap()).bytes(), vec![0xc0, 85]);
+        assert_eq!(
+            Program(Preset::new(6, 4).unwrap()).operation(),
+            Operation::VariaxPresetSwitch
+        );
+    }
+
+    fn metadata_reply_named(name: &[u8]) -> Vec<u8> {
+        let mut raw = [0u8; 96];
+        raw[..name.len()].copy_from_slice(name);
+        encode_reply(&raw)
+    }
+
+    fn library_script(
+        original: &[u8],
+        stored: &dyn Fn(Preset) -> Vec<u8>,
+    ) -> Vec<(VariaxRequest, Vec<Vec<u8>>)> {
+        let mut script = vec![
+            (Identity, packets(&VARIAX_600)),
+            (SessionOn, vec![]),
+            (Metadata1, packets(original)),
+            (Metadata2, packets(&zero_reply())),
+        ];
+        for preset in Preset::all() {
+            script.push((Program(preset), vec![]));
+            script.push((Metadata1, packets(&stored(preset))));
+            script.push((Metadata2, packets(&zero_reply())));
+        }
+        script
+    }
+
+    #[test]
+    fn library_reads_every_preset_restores_the_unique_match_and_ends_with_session_off() {
+        let original = metadata_reply_named(b"Chime-5");
+        let chime5 = Preset::new(6, 4).unwrap();
+        let name = |p: Preset| {
+            if p == chime5 {
+                b"Chime-5".to_vec()
+            } else {
+                format!("P{}", p.program_number()).into_bytes()
+            }
+        };
+        let mut script = library_script(&original, &|p| metadata_reply_named(&name(p)));
+        script.push((Program(chime5), vec![]));
+        script.push((Metadata1, packets(&original)));
+        script.push((Metadata2, packets(&zero_reply())));
+        script.push((SessionOff, vec![]));
+        let (result, sent, _) = run(script, |s| read_library(s, |_| {}));
+        let library = result.unwrap();
+        assert_eq!(library.presets.len(), 60);
+        assert!(library.stopped.is_none());
+        assert_eq!(
+            library.restore,
+            Restore::Switched {
+                to: chime5,
+                verified: true
+            }
+        );
+        assert_eq!(library.original.name, "Chime-5");
+        assert_eq!(sent.last(), Some(&SessionOff.bytes()));
+        let program_changes = sent.iter().filter(|b| b[0] == 0xc0).count();
+        assert_eq!(program_changes, 61);
+    }
+
+    #[test]
+    fn library_without_a_unique_match_does_not_switch_back() {
+        let original = metadata_reply_named(b"Edited");
+        let mut script = library_script(&original, &|p| {
+            metadata_reply_named(format!("P{}", p.program_number()).as_bytes())
+        });
+        script.push((SessionOff, vec![]));
+        let (result, sent, _) = run(script, |s| read_library(s, |_| {}));
+        assert_eq!(
+            result.unwrap().restore,
+            Restore::NoUniqueMatch { matches: 0 }
+        );
+        assert_eq!(sent.iter().filter(|b| b[0] == 0xc0).count(), 60);
+        assert_eq!(sent.last(), Some(&SessionOff.bytes()));
+    }
+
+    #[test]
+    fn library_stops_at_a_silent_preset_but_still_restores_and_closes() {
+        let original = metadata_reply_named(b"Custom");
+        let first = Preset::new(0, 0).unwrap();
+        let second = Preset::new(0, 1).unwrap();
+        let script = vec![
+            (Identity, packets(&VARIAX_600)),
+            (SessionOn, vec![]),
+            (Metadata1, packets(&original)),
+            (Metadata2, packets(&zero_reply())),
+            (Program(first), vec![]),
+            (Metadata1, packets(&original)),
+            (Metadata2, packets(&zero_reply())),
+            (Program(second), vec![]),
+            (Metadata1, vec![]),
+            (Program(first), vec![]),
+            (Metadata1, packets(&original)),
+            (Metadata2, packets(&zero_reply())),
+            (SessionOff, vec![]),
+        ];
+        let (result, sent, _) = run(script, |s| read_library(s, |_| {}));
+        let library = result.unwrap();
+        assert_eq!(library.presets.len(), 1);
+        assert!(library.stopped.unwrap().starts_with("Custom 1 2"));
+        assert_eq!(
+            library.restore,
+            Restore::Switched {
+                to: first,
+                verified: true
+            }
+        );
+        assert_eq!(sent.last(), Some(&SessionOff.bytes()));
     }
 
     #[test]
