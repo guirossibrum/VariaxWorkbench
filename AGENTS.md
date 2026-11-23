@@ -37,6 +37,14 @@ runs it. It does not authorize preset storage, an automatic program change,
 GUI writes, or Variax writes. The prior PODxt G6 test's verified backup and
 owner-approved edit-buffer undo are recorded in the README ledger.
 
+The owner directly authorized the owner-run linked recall test on 2026-11-23.
+`tools/variax-probe/run-linked-recall` selects existing saved PODxt channels
+5B → 1B → 5B. The PODxt recalls the linked Variax 600 models. The procedure
+uses the existing PODxt channel-switch and Variax metadata-read permissions,
+with no direct guitar program changes or preset storage. It attempts a
+return to 5B if the target stage fails. This permission is for this worktree
+probe and this test only.
+
 No preset upload, flash write, firmware install, reset, or bank switching has been
 authorized. Firmware downloads, version comparison, static extraction and offline
 reverse engineering are authorized. Latest firmware availability must not cause

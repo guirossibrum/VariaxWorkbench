@@ -7,7 +7,7 @@ if (( $# != 0 )); then
 fi
 
 cat <<'PLAN'
-Linked Variax recall plan (offline until separately authorized)
+Owner-run linked Variax recall plan (see run-linked-recall)
 
 Start on saved PODxt channel 5B with Variax control enabled.
 The backup identifies 5B as F-T-Model 1 and 1B as F-Chime 1.
