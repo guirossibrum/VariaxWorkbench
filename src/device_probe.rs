@@ -2580,9 +2580,10 @@ mod tests {
         let body = std::fs::read_to_string(&path).unwrap();
         assert!(body.contains("guitar=variax-600-3.10"));
         assert!(!body.contains("SECRET"));
-        assert_eq!(
-            probe.save_sanitized_report(&path),
-            Err("report already exists")
+        assert!(
+            probe
+                .save_sanitized_report(&path)
+                .is_err_and(|error| error.contains("report with that name already exists"))
         );
         assert_eq!(probe.backend().calls(), calls);
         // Detach, claim, alternate setting, one identity request, the reply,

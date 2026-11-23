@@ -3246,7 +3246,7 @@ impl Workbench {
                 if self
                     .device_check_button(ui, "save-report", "Save steps 1–2 report")
                     .clicked()
-                    && let Some(path) = self.dialogs.save("device-check-report.txt", "txt")
+                    && let Some(path) = self.dialogs.save(&variax_workbench::probe_report::report_file_name_now(), "txt")
                 {
                     self.note_sanitized_report_save(&path);
                 }
@@ -3307,7 +3307,10 @@ impl Workbench {
     fn save_step_two_report_then_restart(&mut self) {
         let mode = self.device_check.mode();
         let scenario = self.device_check_scenario;
-        let Some(path) = self.dialogs.save("device-check-report.txt", "txt") else {
+        let Some(path) = self.dialogs.save(
+            &variax_workbench::probe_report::report_file_name_now(),
+            "txt",
+        ) else {
             return;
         };
         match self.device_check.save_sanitized_report(&path) {
@@ -14037,7 +14040,10 @@ mod tests {
         app.note_sanitized_report_save(&path);
         app.note_sanitized_report_save(&path);
         recording_frame(&context, &mut app, vec![]);
-        assert!(app.device_check_visible.contains("report already exists"));
+        assert!(
+            app.device_check_visible
+                .contains("report with that name already exists")
+        );
         assert!(!app.device_check_visible.contains("SECRET"));
         assert!(!app.device_check_notice.contains("SECRET"));
         assert_eq!(app.device_check.backend().calls(), calls);

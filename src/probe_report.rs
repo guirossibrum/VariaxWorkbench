@@ -269,6 +269,37 @@ pub fn allowlisted(text: &str) -> bool {
     text.split_whitespace().all(|token| TOKENS.contains(&token))
 }
 
+/// Suggested file name for a saved Device check report:
+/// `device-check-report-YYMMDDHHMM.txt` in UTC. Saves never overwrite, so each
+/// new report gets a new name instead of colliding with the last one.
+pub fn report_file_name(unix_seconds: u64) -> String {
+    let days = (unix_seconds / 86_400) as i64;
+    let rest = unix_seconds % 86_400;
+    let (hour, minute) = (rest / 3600, rest % 3600 / 60);
+    // Civil-from-days (H. Hinnant), proleptic Gregorian.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "device-check-report-{:02}{month:02}{day:02}{hour:02}{minute:02}.txt",
+        year.rem_euclid(100)
+    )
+}
+
+/// [`report_file_name`] for the current time.
+pub fn report_file_name_now() -> String {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
+    report_file_name(seconds)
+}
+
 /// Atomic, non-overwriting save. Failure text is a fixed phrase, so a personal
 /// path cannot leak through it. Saving does not run a device stage.
 pub fn save_sanitized_report(path: &Path, text: &str) -> Result<(), &'static str> {
@@ -290,9 +321,9 @@ pub fn save_sanitized_report(path: &Path, text: &str) -> Result<(), &'static str
         .map_err(|_| "report could not be saved")?;
     match temporary.persist_noclobber(path) {
         Ok(_) => Ok(()),
-        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
-            Err("report already exists")
-        }
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => Err(
+            "a report with that name already exists, so nothing was overwritten; save under another name",
+        ),
         Err(_) => Err("report could not be saved"),
     }
 }
@@ -304,6 +335,22 @@ mod tests {
         BRIDGE_PRODUCT, BRIDGE_VERSION, CanonicalIdentity, GUITAR_PRODUCT, GUITAR_VERSION,
         IdentityFailure, IdentityRole,
     };
+
+    #[test]
+    fn report_file_name_carries_the_utc_minute() {
+        // 2026-11-23 19:42:59 UTC.
+        assert_eq!(
+            report_file_name(1_795_462_979),
+            "device-check-report-2611231942.txt"
+        );
+        assert_eq!(report_file_name(0), "device-check-report-7001010000.txt");
+        // 2000-02-29 23:59 UTC (leap day).
+        assert_eq!(
+            report_file_name(951_868_799),
+            "device-check-report-0002292359.txt"
+        );
+        assert_ne!(report_file_name(60), report_file_name(0));
+    }
 
     fn fact(
         stage: u8,
@@ -425,7 +472,7 @@ mod tests {
         assert_eq!(body, text);
         assert!(!body.contains("SECRET"));
         let error = save_sanitized_report(&path, &text).unwrap_err();
-        assert_eq!(error, "report already exists");
+        assert!(error.contains("report with that name already exists"));
         assert!(!error.contains("SECRET"));
         let missing = dir.path().join("no-such-dir").join("report.txt");
         let error = save_sanitized_report(&missing, &text).unwrap_err();
