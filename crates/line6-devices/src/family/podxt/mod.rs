@@ -21,7 +21,7 @@ use crate::session::{Link, Path, Request, Session, Wait};
 use std::time::Duration;
 
 pub const IDENTITY_FAMILY: u16 = 0x0003;
-const PODXT_LIVE_MEMBER: u16 = 0x000a;
+pub const PODXT_LIVE_MEMBER: u16 = 0x000a;
 /// Line 6 Edit waits 1 s for the edit buffer; this allows a little more.
 const WINDOW: Duration = Duration::from_secs(2);
 pub const EDIT_BUFFER_LEN: usize = 168;
@@ -32,6 +32,15 @@ pub fn member_name(member: u16) -> &'static str {
         PODXT_LIVE_MEMBER => "PODxt Live",
         _ => "PODxt family (unverified member)",
     }
+}
+
+/// The two factory Variax models selected for the readback test, from
+/// Line 6 Edit's `VARIAX_FAMILY_0_MODEL` format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum LinkedVariaxModel {
+    FactoryTModel1 = 10,
+    FactorySpank1 = 15,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,6 +56,8 @@ pub enum PodxtRequest {
     InstalledPacks,
     /// Workbench 1.75 `SetXTLiveVariaxMessagesEnable(false)`.
     ReleaseVariaxControl,
+    /// Line 6 Edit 3.06 `WrapVariaxMessage` for the linked electric model.
+    SetLinkedVariaxModel(LinkedVariaxModel),
     /// One live setting in the active tone: `B0 <cc> <value>`, exactly as
     /// Line 6 Edit `EncodeParamChange` sends a knob or switch change.
     /// Edit-buffer write (G6); never stored.
@@ -70,6 +81,9 @@ impl Request for PodxtRequest {
             PodxtRequest::InstalledPacks => vec![0xf0, 0x00, 0x01, 0x0c, 0x03, 0x0e, 0x00, 0xf7],
             PodxtRequest::ReleaseVariaxControl => {
                 vec![0xf0, 0x00, 0x01, 0x0c, 0x03, 0x23, 0x00, 0xf7]
+            }
+            PodxtRequest::SetLinkedVariaxModel(model) => {
+                vec![0xf0, 0, 1, 0x0c, 3, 0x10, 0, 120, model as u8, 0xf7]
             }
             PodxtRequest::Set(control, value) => vec![0xb0, control.cc(), value.get()],
             PodxtRequest::SetAdditional(message) => message.bytes(),
@@ -111,6 +125,7 @@ impl Request for PodxtRequest {
             PodxtRequest::SetAdditional(_) => Operation::PodxtAdditionalEditBufferWrite,
             PodxtRequest::Program(_) => Operation::PodxtChannelSwitch,
             PodxtRequest::ReleaseVariaxControl => Operation::PodxtVariaxControlRelease,
+            PodxtRequest::SetLinkedVariaxModel(_) => Operation::PodxtLinkedVariaxModelEdit,
             PodxtRequest::QueryGlobal(_) => Operation::PodxtGlobalRead,
             PodxtRequest::TunerMode(_) => Operation::PodxtTunerMode,
         }
@@ -1416,6 +1431,21 @@ pub fn release_variax_control<L: Link>(session: &mut Session<L>) -> Result<Vec<u
     Ok(reply)
 }
 
+/// Select one of the test's factory Variax models through the PODxt Live.
+pub fn set_linked_variax_model<L: Link>(
+    session: &mut Session<L>,
+    model: LinkedVariaxModel,
+) -> Result<(), String> {
+    if !session.allows(Operation::PodxtLinkedVariaxModelEdit) {
+        return Err("PODxt linked Variax model edits are closed in this build.".into());
+    }
+    let (_, identity) = identify_podxt(session)?;
+    if identity.member != PODXT_LIVE_MEMBER {
+        return Err("The reply is not from a PODxt Live. No model change was sent.".into());
+    }
+    session.send(PodxtRequest::SetLinkedVariaxModel(model))
+}
+
 /// Identity, then the edit-buffer request only if the reply is a PODxt.
 pub fn read_current<L: Link>(session: &mut Session<L>) -> Result<CurrentTone, String> {
     let (identity_reply, identity) = identify_podxt(session)?;
@@ -1959,6 +1989,35 @@ mod tests {
             ));
             assert_eq!(session.sent.len(), 2);
         }
+    }
+
+    #[test]
+    fn linked_variax_model_changes_send_only_the_identified_podxt_the_wrapped_model() {
+        for model in [
+            LinkedVariaxModel::FactoryTModel1,
+            LinkedVariaxModel::FactorySpank1,
+        ] {
+            let mut log = Quiet;
+            let request = PodxtRequest::SetLinkedVariaxModel(model);
+            let script = vec![
+                (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+                (request, vec![]),
+            ];
+            let mut session = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
+            set_linked_variax_model(&mut session, model).unwrap();
+            assert_eq!(
+                session.link.writes,
+                [
+                    identity::REQUEST.to_vec(),
+                    vec![0xf0, 0, 1, 0x0c, 3, 0x10, 0, 120, model as u8, 0xf7]
+                ]
+            );
+        }
+        let mut log = Quiet;
+        let link = Fake::new::<PodxtRequest>(Path::PodxtMidi, vec![]);
+        let mut session = Session::new(link, &crate::gate::AllClosed, &mut log);
+        assert!(set_linked_variax_model(&mut session, LinkedVariaxModel::FactorySpank1).is_err());
+        assert!(session.link.writes.is_empty());
     }
 
     #[test]

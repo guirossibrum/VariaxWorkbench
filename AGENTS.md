@@ -52,6 +52,14 @@ identity and send the original Workbench 1.75 XT Live release once
 page manually. This standalone check sends no guitar command, channel change,
 or preset store. This permission does not add the release to linked recall.
 
+The owner separately authorized the owner-run linked model edit test on
+2026-11-23. In the active PODxt tone, verify F-T-Model 1 and Telecaster on
+the Variax 600, temporarily select F-Spank 1 via Line 6 Edit's wrapped
+model command, wait 10 seconds and check both devices. Attempt to restore
+F-T-Model 1, wait 10 seconds and verify the original guitar metadata and
+PODxt tone. This approval is limited to that worktree probe procedure and
+those two models. It includes no PODxt channel change or save.
+
 No preset upload, flash write, firmware install, reset, or bank switching has been
 authorized. Firmware downloads, version comparison, static extraction and offline
 reverse engineering are authorized. Latest firmware availability must not cause

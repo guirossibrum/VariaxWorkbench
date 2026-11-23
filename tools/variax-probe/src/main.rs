@@ -25,6 +25,8 @@
 
 #![forbid(unsafe_code)]
 
+mod linked_variax;
+
 use line6_devices::backup::{self, BackupFolder as Capture};
 use line6_devices::family::{Family, podxt, variax};
 use line6_devices::gate::{GatePolicy, Operation};
@@ -65,6 +67,8 @@ impl GatePolicy for OwnerGrants {
             Operation::PodxtChannelSwitch => true,
             // Owner's direct permission for the standalone display check.
             Operation::PodxtVariaxControlRelease => true,
+            // Owner's direct permission for the F-T-Model 1 → F-Spank 1 → return test.
+            Operation::PodxtLinkedVariaxModelEdit => true,
             // Owner's request 2026-11-23 ("tap/tuner"): tuner on/off (CC 69) and the
             // read-only global-value query it needs (also used by `podxt status`).
             Operation::PodxtGlobalRead | Operation::PodxtTunerMode => true,
@@ -76,7 +80,7 @@ const USAGE: &str = "Usage: variax-probe variax identity|read|listen [SECONDS]|l
        variax-probe podxt read|listen [SECONDS]|library [--out DIR]
        variax-probe podxt channel|channel-test CHANNEL [--from CHANNEL] [--out DIR]
        variax-probe podxt live-test [all|NAME=VALUE ...] --out DIR
-       variax-probe podxt release-variax-control --out DIR
+       variax-probe podxt release-variax-control|linked-variax-model-test --out DIR
        variax-probe podxt status|tuner [SECONDS] [--out DIR]
        variax-probe compare FIRST_BACKUP SECOND_BACKUP
 Device commands are owner-run. Live tests change the edit buffer and attempt undo.
@@ -95,6 +99,7 @@ enum Command {
     Compare(PathBuf, PathBuf),
     PodxtPacks,
     PodxtReleaseVariaxControl,
+    PodxtLinkedVariaxModelTest,
     PodxtLiveTest(Vec<podxt::LiveTarget>),
     PodxtStatus,
     PodxtTuner(u64),
@@ -118,6 +123,7 @@ impl Command {
             Command::Compare(..) => "compare",
             Command::PodxtPacks => "podxt-packs",
             Command::PodxtReleaseVariaxControl => "podxt-release-variax-control",
+            Command::PodxtLinkedVariaxModelTest => "podxt-linked-variax-model-test",
             Command::PodxtLiveTest(_) => "podxt-live-test",
             Command::PodxtStatus => "podxt-status",
             Command::PodxtTuner(_) => "podxt-tuner",
@@ -149,6 +155,9 @@ impl Command {
             Command::PodxtPacks => "PODxt identity, then the installed model-pack query",
             Command::PodxtReleaseVariaxControl => {
                 "PODxt Live identity, then the Workbench Variax-control release once"
+            }
+            Command::PodxtLinkedVariaxModelTest => {
+                "PODxt and Variax readback, F-Spank 1 edit, readback, F-T-Model 1 undo, readback"
             }
             Command::PodxtStatus => "PODxt identity, then read-only global value queries",
             Command::PodxtTuner(_) => {
@@ -197,6 +206,7 @@ fn parse(args: &[String]) -> Result<(Command, Option<PathBuf>), String> {
         ["podxt", "library"] => Command::PodxtLibrary,
         ["podxt", "packs"] => Command::PodxtPacks,
         ["podxt", "release-variax-control"] => Command::PodxtReleaseVariaxControl,
+        ["podxt", "linked-variax-model-test"] => Command::PodxtLinkedVariaxModelTest,
         ["podxt", "stomp-test"] => Command::PodxtLiveTest(vec![podxt::LiveTarget::Basic(
             podxt::Control::StompEnable,
             podxt::Target::Toggle,
@@ -382,6 +392,7 @@ fn run_variax(command: &Command, capture: &mut Capture) -> Result<(), String> {
             | Command::Compare(..)
             | Command::PodxtPacks
             | Command::PodxtReleaseVariaxControl
+            | Command::PodxtLinkedVariaxModelTest
             | Command::PodxtLiveTest(_)
             | Command::PodxtChannel { .. }
             | Command::PodxtStatus
@@ -985,6 +996,7 @@ fn main() {
         Command::PodxtLibrary => run_podxt_library(&mut capture),
         Command::PodxtPacks => run_podxt_packs(&mut capture),
         Command::PodxtReleaseVariaxControl => run_podxt_release_variax_control(&mut capture),
+        Command::PodxtLinkedVariaxModelTest => linked_variax::run(&mut capture),
         Command::PodxtLiveTest(targets) => run_podxt_live_test(&targets, &mut capture),
         Command::PodxtChannel { target, from, back } => {
             run_podxt_channel(target, from, back, &mut capture)

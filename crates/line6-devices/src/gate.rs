@@ -31,6 +31,8 @@ pub enum Operation {
     PodxtChannelSwitch,
     /// Workbench close: release PODxt Live Variax computer control.
     PodxtVariaxControlRelease,
+    /// Temporary Variax model selection through a PODxt Live tone.
+    PodxtLinkedVariaxModelEdit,
     /// PODxt-family global value query (`03 57 id`), read-only: tuner note and
     /// deviation, current channel, edited flag, knob mode and similar.
     PodxtGlobalRead,
