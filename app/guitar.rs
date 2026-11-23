@@ -54,26 +54,26 @@ pub(super) fn milestones(ui: &mut egui::Ui) {
          and Send all banks stay off.",
     );
     ui.separator();
-    ui.heading("Current phase · Stage 2 identification, offline only");
+    ui.heading("Current phase · one owner identity check");
     ui.label(
         "Device check… opens in Simulation. No is the default. Step 2 is offered only after \
-         a fresh step 1 pass for one PODxt Live with snd-usb-pod on interface 0 and \
-         snd-usb-variax on interface 1. The Yes button for that step says it sends one \
+         a fresh step 1 pass for one PODxt Live with the POD driver on interface 0 and the \
+         Variax driver on interface 1. The Yes button for that step says it sends one \
          Variax identity request. In Simulation the button rehearses the request and nothing \
          is sent. The rehearsal accepts only the Variax 600 answer, keeps listening for the \
          rest of the three seconds, and a second answer does not pass. That one request is \
          the app's. After the driver is given back, Linux's own snd-usb-variax startup can \
          send the same kind of question. That later traffic is Linux, not a second request \
          from this app. Close stops a step before it starts. Once Yes has started, this \
-         window cannot cancel the exchange. G2 remains locked, so This computer offers only \
-         the steps this build actually has open.",
+         window cannot cancel the exchange. This computer offers only the steps this build \
+         actually has open. A build without USB still offers only step 1.",
     );
     ui.label(
-        "This computer is offered only for the gates this build can run. The banner and the \
-         report name those gates. On this build that is G1, under your direct permission of \
-         November 22, 2026. Closing Device check cancels a Yes in the same moment, before \
-         the step starts. Save the step 2 report before you run step 1 again to check the \
-         driver. Copy detailed report (#125) is for G1 results.",
+        "The dedicated owner build includes USB. Its banner and report name gates G1 and G2, \
+         under your permission of November 22, 2026, for one Variax 600 identity request \
+         through the PODxt Live. You run that check. Save the step 2 report, then run step 1 \
+         again and confirm the Variax driver is back on interface 1. Then stop. Steps 3 and 4 \
+         stay locked. Copy detailed report (#125) is for G1 results.",
     );
     for (label, url) in [
         (
@@ -128,8 +128,8 @@ pub(super) fn milestones(ui: &mut egui::Ui) {
         ui.add_space(4.0);
     }
     ui.label(
-        "Leave the guitar and PODxt Live unplugged except when you follow the G1 test card. \
-         Any later hardware test needs your approval.",
+        "Leave the guitar and PODxt Live unplugged except when you follow the owner card for \
+         the one identity check. Any later hardware test needs your approval.",
     );
     ui.separator();
     ui.heading("Project status and issue closeout");

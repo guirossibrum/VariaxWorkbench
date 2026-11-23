@@ -407,12 +407,11 @@ fn simulation_never_enables_a_physical_backend() {
         assert!(!PHYSICAL_OPERATIONS_PERMITTED);
     }
     assert!(crate::rig::LIVE_BACKEND_INITIALIZER.is_none());
-    #[cfg(feature = "usb")]
     const {
-        // G1 (OS-level recognition) is open by owner permission; it sends
-        // nothing to a device. Every gate that could reach USB stays locked.
+        // G1 and G2 are open in this owner build. Opening G2 does not enable
+        // settings, audio, backup, or writes. This test does not open a device.
         assert!(!crate::hardware_gates::G1_OS_DISCOVERY_LOCKED);
-        assert!(crate::hardware_gates::G2_IDENTITY_REQUEST_LOCKED);
+        assert!(!crate::hardware_gates::G2_IDENTITY_REQUEST_LOCKED);
         assert!(crate::hardware_gates::G3_CURRENT_SETTINGS_READ_LOCKED);
         assert!(crate::hardware_gates::G4_AUDIO_CAPTURE_LOCKED);
         assert!(crate::hardware_gates::G5_FULL_BACKUP_READ_LOCKED);

@@ -1,11 +1,12 @@
 //! Compile-time safety gates for physical device operations.
 //!
-//! G1 (OS-level recognition) is open in this build by the owner's direct
-//! permission of 2026-11-22, recorded in `docs/hardware-gates/g1.md` section 5
-//! and on issue #125. G1 lets the app read what Linux already holds about
-//! connected USB devices and sound cards; it sends nothing to a device. Every
-//! other gate stays locked. There is no runtime, build, GUI, command-line, or
-//! test mechanism to change these values.
+//! G1 (OS-level recognition) is open by the owner's direct permission of
+//! 2026-11-22, recorded in `docs/hardware-gates/g1.md`. G2 (one Variax 600
+//! identity request) is open by the owner's direct permission of 2026-11-22,
+//! recorded in `docs/hardware-gates/g2.md`, for one owner-run attempt on this
+//! rig. The owner runs that test. Agents do not. Gates G3–G7 stay locked.
+//! There is no runtime, command-line, GUI, or test switch that changes these
+//! constants. Test builds do not open a USB device.
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Gate {
@@ -18,9 +19,13 @@ pub enum Gate {
     StoreRestore,
 }
 
-/// Open: owner's direct permission for G1 only (g1.md section 5, #125).
+/// Open: owner's direct permission for G1 (g1.md section 5, #125).
 pub const G1_OS_DISCOVERY_LOCKED: bool = false;
-pub const G2_IDENTITY_REQUEST_LOCKED: bool = true;
+/// Open: owner's direct permission on 2026-11-22 for one owner-run Variax 600
+/// identity request through the PODxt Live, following `docs/hardware-gates/g2.md`.
+/// The one-rig exception to issue #114 is recorded there. #114 stays open.
+/// G3–G7 stay locked. The owner runs the hardware test. Agents do not.
+pub const G2_IDENTITY_REQUEST_LOCKED: bool = false;
 pub const G3_CURRENT_SETTINGS_READ_LOCKED: bool = true;
 pub const G4_AUDIO_CAPTURE_LOCKED: bool = true;
 pub const G5_FULL_BACKUP_READ_LOCKED: bool = true;
@@ -59,8 +64,7 @@ pub fn run_if_unlocked<T>(
 mod tests {
     use super::*;
 
-    const LOCKED_GATES: [Gate; 6] = [
-        Gate::IdentityRequest,
+    const LOCKED_GATES: [Gate; 5] = [
         Gate::CurrentSettingsRead,
         Gate::AudioCapture,
         Gate::FullBackupRead,
@@ -69,10 +73,10 @@ mod tests {
     ];
 
     #[test]
-    fn only_g1_is_open_by_compile_time_constant() {
+    fn g1_and_g2_are_open_and_g3_through_g7_stay_locked() {
         const {
             assert!(!G1_OS_DISCOVERY_LOCKED);
-            assert!(G2_IDENTITY_REQUEST_LOCKED);
+            assert!(!G2_IDENTITY_REQUEST_LOCKED);
             assert!(G3_CURRENT_SETTINGS_READ_LOCKED);
             assert!(G4_AUDIO_CAPTURE_LOCKED);
             assert!(G5_FULL_BACKUP_READ_LOCKED);
@@ -80,17 +84,20 @@ mod tests {
             assert!(G7_STORE_RESTORE_LOCKED);
         }
         assert!(!is_locked(Gate::OsDiscovery));
-        // The closure only flips a flag: no device, file or OS access.
-        let mut ran = false;
-        let result = run_if_unlocked(Gate::OsDiscovery, || {
-            ran = true;
-            Ok(())
-        });
-        assert!(result.is_ok() && ran, "G1 must run its closure");
+        assert!(!is_locked(Gate::IdentityRequest));
+        // The closures only flip a flag: no device, file or OS access.
+        for gate in [Gate::OsDiscovery, Gate::IdentityRequest] {
+            let mut ran = false;
+            let result = run_if_unlocked(gate, || {
+                ran = true;
+                Ok(())
+            });
+            assert!(result.is_ok() && ran, "{gate:?} must run its closure");
+        }
     }
 
     #[test]
-    fn g2_to_g7_stay_locked_and_block_their_operation_closure() {
+    fn g3_to_g7_stay_locked_and_block_their_operation_closure() {
         for gate in LOCKED_GATES {
             assert!(is_locked(gate), "{gate:?} must remain locked");
             let mut opened_or_enumerated = false;

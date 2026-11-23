@@ -13718,7 +13718,7 @@ mod tests {
             assert!(app.device_check_buttons.contains_key("mode-this-computer"));
             assert!(
                 app.device_check_visible
-                    .contains(device_probe::G1_ONLY_BANNER)
+                    .contains(device_probe::availability_banner())
             );
             assert!(
                 app.device_check_visible
@@ -13744,7 +13744,17 @@ mod tests {
                     .contains("step 1 waiting for your answer real device: locked")
             );
         }
-        for step in 2..=4 {
+        let step_two = if device_probe::live_stage_available(Stage::Identification) {
+            "step 2 not run real device: open"
+        } else {
+            "step 2 not run real device: locked"
+        };
+        assert!(
+            app.device_check_visible.contains(step_two),
+            "{}",
+            app.device_check_visible
+        );
+        for step in 3..=4 {
             assert!(
                 app.device_check_visible
                     .contains(&format!("step {step} not run real device: locked")),
@@ -13823,10 +13833,14 @@ mod tests {
             StageStatus::NotRun
         );
         assert_eq!(app.device_check.backend().calls().identity_requests, 0);
-        assert!(
-            app.device_check_visible
-                .contains("step 2 waiting for your answer real device: locked")
-        );
+        let marker = if device_probe::live_stage_available(Stage::Identification) {
+            "open"
+        } else {
+            "locked"
+        };
+        assert!(app.device_check_visible.contains(&format!(
+            "step 2 waiting for your answer real device: {marker}"
+        )));
         assert!(app.device_check_visible.contains("0e41:4650"));
         for _ in 0..3 {
             click_device_check(&context, &mut app, "yes");
@@ -13925,13 +13939,24 @@ mod tests {
         assert_eq!(app.device_check.awaiting(), Some(Stage::UsbRecognition));
         assert!(
             app.device_check_visible
-                .contains(device_probe::G1_ONLY_BANNER)
+                .contains(device_probe::availability_banner())
         );
         assert!(
             app.device_check_visible
-                .contains(device_probe::THIS_COMPUTER_LABEL)
+                .contains(device_probe::this_computer_label())
         );
-        for step in 2..=4 {
+        if device_probe::live_stage_available(Stage::Identification) {
+            assert!(
+                app.device_check_visible
+                    .contains("step 2 not run real device: open")
+            );
+        } else {
+            assert!(
+                app.device_check_visible
+                    .contains("step 2 locked in this build")
+            );
+        }
+        for step in 3..=4 {
             assert!(
                 app.device_check_visible
                     .contains(&format!("step {step} locked in this build")),
@@ -13944,15 +13969,38 @@ mod tests {
             app.device_check.status(Stage::UsbRecognition),
             StageStatus::Passed
         );
-        assert_eq!(app.device_check.awaiting(), None);
-        // Steps 2–4 cannot be answered: no Yes/No buttons remain.
-        assert!(!app.device_check_buttons.contains_key("yes"));
-        assert!(!app.device_check_buttons.contains_key("no"));
-        for stage in [
-            Stage::Identification,
-            Stage::SettingsRead,
-            Stage::ChangeCheck,
-        ] {
+        // A usb build offers step 2. Answer No. Do not send the identity request.
+        if device_probe::live_stage_available(Stage::Identification) {
+            assert_eq!(app.device_check.awaiting(), Some(Stage::Identification));
+            assert!(app.device_check.g1_expected_binding());
+            assert!(
+                app.device_check_visible
+                    .contains(device_probe::STEP_TWO_YES)
+            );
+            click_device_check(&context, &mut app, "no");
+            assert_eq!(
+                app.device_check.status(Stage::Identification),
+                StageStatus::Stopped
+            );
+            assert!(app.device_check_visible.contains("Stopped at step 2"));
+            assert!(device_probe::reports_panel_note().contains("gates G1 and G2"));
+        } else {
+            assert_eq!(app.device_check.awaiting(), None);
+            assert!(!app.device_check_buttons.contains_key("yes"));
+            assert!(!app.device_check_buttons.contains_key("no"));
+            assert_eq!(
+                app.device_check.status(Stage::Identification),
+                StageStatus::NotRun
+            );
+            assert!(app.device_check.locked(Stage::Identification));
+            assert!(app.device_check_visible.contains("Step 1 finished"));
+            assert!(
+                app.device_check_visible
+                    .contains(device_probe::this_computer_finished_message())
+            );
+            assert!(device_probe::reports_panel_note().contains("This build can run gate G1."));
+        }
+        for stage in [Stage::SettingsRead, Stage::ChangeCheck] {
             assert_eq!(app.device_check.status(stage), StageStatus::NotRun);
             assert!(app.device_check.locked(stage));
         }
@@ -13965,19 +14013,16 @@ mod tests {
             ),
             (1, 0, 0)
         );
-        assert!(app.device_check_visible.contains("Step 1 finished"));
-        assert!(
-            app.device_check_visible
-                .contains(device_probe::this_computer_finished_message())
-        );
         assert!(
             app.device_check_visible
                 .contains(device_probe::reports_panel_note())
         );
-        assert!(device_probe::reports_panel_note().contains("This build can run gate G1."));
         assert!(app.device_check_visible.contains("0e41:4650"));
         let report = app.device_check.report();
-        assert!(report.contains("mode=this-computer gates-open=G1"));
+        assert!(report.contains(&format!(
+            "mode=this-computer {}",
+            device_probe::open_gates().token()
+        )));
         assert!(report.contains("interface 1 driver snd-usb-variax"));
         assert!(!report.contains("SECRET"), "serial number leaked");
         assert!(
@@ -15808,10 +15853,11 @@ mod tests {
             pod_preset::ModelEnableState::Canonical(true)
         );
         const {
+            assert!(!hardware_gates::is_locked(Gate::IdentityRequest));
+            assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
             assert!(hardware_gates::is_locked(Gate::FullBackupRead));
             assert!(hardware_gates::is_locked(Gate::EditBufferWrite));
             assert!(hardware_gates::is_locked(Gate::StoreRestore));
-            assert!(hardware_gates::is_locked(Gate::IdentityRequest));
         }
     }
 

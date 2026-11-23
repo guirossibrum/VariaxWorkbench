@@ -343,25 +343,19 @@ pub fn read_identity(
     if hardware_gates::is_locked(Gate::IdentityRequest) {
         return Err(identity_stage::IdentifyError::Locked);
     }
-    if cancel.load(Ordering::Relaxed) {
-        return Err(identity_stage::IdentifyError::Failed(
-            identity_stage::IdentifyStop {
-                failure: IdentityFailure::Cancelled,
-                cleanup: None,
-                cleanup_ran: false,
-                release_failed: false,
-                reattach_failed: false,
-                bridge: None,
-                guitar: None,
-            },
-        ));
+    // The owner binary is the one that may open USB. A test build stops here,
+    // before enumeration, even though this owner build has G2 open.
+    #[cfg(test)]
+    {
+        let _ = cancel;
+        Err(identity_stage::IdentifyError::Locked)
     }
-    let mut session = match Session::open_handle() {
-        Ok(session) => session,
-        Err(_) => {
+    #[cfg(not(test))]
+    {
+        if cancel.load(Ordering::Relaxed) {
             return Err(identity_stage::IdentifyError::Failed(
                 identity_stage::IdentifyStop {
-                    failure: IdentityFailure::OpenFailed,
+                    failure: IdentityFailure::Cancelled,
                     cleanup: None,
                     cleanup_ran: false,
                     release_failed: false,
@@ -371,9 +365,25 @@ pub fn read_identity(
                 },
             ));
         }
-    };
-    let exchange = identity_stage::run_identity_exchange(&mut session, cancel);
-    identity_stage::exchange_result(exchange)
+        let mut session = match Session::open_handle() {
+            Ok(session) => session,
+            Err(_) => {
+                return Err(identity_stage::IdentifyError::Failed(
+                    identity_stage::IdentifyStop {
+                        failure: IdentityFailure::OpenFailed,
+                        cleanup: None,
+                        cleanup_ran: false,
+                        release_failed: false,
+                        reattach_failed: false,
+                        bridge: None,
+                        guitar: None,
+                    },
+                ));
+            }
+        };
+        let exchange = identity_stage::run_identity_exchange(&mut session, cancel);
+        identity_stage::exchange_result(exchange)
+    }
 }
 
 pub fn read_current(cancel: &AtomicBool) -> Result<CurrentPreset, String> {
@@ -402,14 +412,22 @@ mod tests {
             .expect("live access must be locked");
         assert!(error.contains("hardware gate") && error.contains("is locked"));
         assert!(
-            error.contains("IdentityRequest"),
-            "the settings entry is behind G2 as well as G3: {error}"
+            error.contains("CurrentSettingsRead"),
+            "settings stay behind G3 after G2 is open: {error}"
+        );
+        assert!(
+            !error.contains("IdentityRequest"),
+            "G2 must not be the gate that stops a settings read: {error}"
         );
     }
 
     #[test]
-    fn identity_entry_stops_at_g2_and_does_not_require_g3() {
-        let error = read_identity(&AtomicBool::new(false)).expect_err("G2 stays locked");
+    fn identity_entry_does_not_open_usb_from_a_test_build() {
+        assert!(!hardware_gates::is_locked(Gate::IdentityRequest));
+        assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        // G2 is open, but this is a test build: the call returns before
+        // enumeration. It must not be used as a live check.
+        let error = read_identity(&AtomicBool::new(false)).expect_err("tests do not open USB");
         assert!(matches!(error, identity_stage::IdentifyError::Locked));
     }
 }

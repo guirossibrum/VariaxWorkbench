@@ -80,7 +80,8 @@ program code was established. The Variax sheet shows the DSP56367 and
 SST39LF040; the POD sheets are the standard SHARCPOD board, not a confirmed
 Live board. Interface-1 detach, release, and reattach remain Linux driver
 operations and were not observed in the captures. The offline simulation
-sends one request and is not a device result. G2 stays locked.
+sends one request and is not a device result. The owner build opens G2 for
+one owner-run attempt; this schematic review does not run it.
 [G2 ledger](hardware-gates/g2.md)
 
 For later backup or recovery work, correlate any candidate flash map with

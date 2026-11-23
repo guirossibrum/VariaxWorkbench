@@ -3,12 +3,15 @@
 This page describes the G1–G8 operation boundaries for the PODxt Live and
 Variax 600. **G1 is authorized by the owner's direct permission (2026-11-22)**,
 for the procedure recorded in [the G1 ledger](hardware-gates/g1.md) only. That
-permission takes effect only in the [#158](https://github.com/guirossibrum/VariaxWorkbench/issues/158)
-build, which opens only the G1 lock. Until that build exists,
-`hardware_gates::G1_OS_DISCOVERY_LOCKED` stays true. **G2–G8 are not
-authorized.** Each gate needs its own direct permission. Permission for one
-gate does not authorize another. The owner does not authorize a gate by signing
-a GitHub issue.
+permission is open in this build. **G2 is authorized by the owner's direct
+permission (2026-11-22)** for one owner-run Variax 600 identification through
+the PODxt Live, recorded in [the G2 ledger](hardware-gates/g2.md) only. The
+[#159](https://github.com/guirossibrum/VariaxWorkbench/issues/159) build opens
+only `G2_IDENTITY_REQUEST_LOCKED`. The owner granted a one-rig exception to
+[#114](https://github.com/guirossibrum/VariaxWorkbench/issues/114); #114 stays
+open. **G3–G8 are not authorized.** Each gate needs its own direct permission.
+Permission for one gate does not authorize another. The owner does not
+authorize a gate by signing a GitHub issue. Agents do not run the live check.
 
 ## Gate matrix
 
@@ -32,36 +35,35 @@ a GitHub issue.
 
 ### G2 — Device identity request
 
-- **Operation:** One identity request for the Variax 600 through the PODxt
-  Live, as proposed for review in [the G2 ledger](hardware-gates/g2.md).
-  [#126](https://github.com/guirossibrum/VariaxWorkbench/issues/126) should be
-  narrowed to that single request. PODxt Live identity stays separate.
-  The ledger does not authorize G2.
+- **Operation:** One Variax 600 identity request through the PODxt Live
+  interface 1, authorized on 2026-11-22 for one owner-run attempt. The
+  procedure is [the G2 ledger](hardware-gates/g2.md).
+  [#126](https://github.com/guirossibrum/VariaxWorkbench/issues/126) is scoped
+  to that single request and stays open. PODxt Live identity stays separate.
 - **Application traffic:** The captured exchange is one universal identity
   request and one Variax 600 3.10 reply. The following settings read is G3
   and is not part of this procedure. The published PODxt Live 3.01 reply has
   no recorded request in the 2026-11-14 files. See
-  [the G2 ledger](hardware-gates/g2.md). This page does not authorize sending
-  the request.
-- **System changes:** The proposed procedure detaches the stock driver from
-  PODxt Live interface 1 before it claims that interface. Release runs only
-  after a successful claim. Reattach runs whenever detach succeeded, including
-  after a failed claim, a failed alternate setting, or a cancel before the
-  send. Interface 0 is untouched. This is future procedure detail, not
-  permission to detach now. The live form is an identity-only path: it needs
-  G2 and does not need G3. Device check lists that path, and still hides it
-  while G2 is locked. The consent screen names the gates the build can
-  run. Step 2's Yes button says it sends one Variax identity request. No
-  stays the default. Step 2 is offered only after a fresh step 1 pass for
-  one PODxt Live with `snd-usb-pod` on interface 0 and `snd-usb-variax` on
-  interface 1. Close wins before that exchange starts. Once Yes has started,
-  the window cannot cancel it. After the driver is given back, Linux's own
+  [the G2 ledger](hardware-gates/g2.md). The owner sends the request by
+  following section 10. Agents do not.
+- **System changes:** The procedure detaches the stock driver from PODxt Live
+  interface 1 before it claims that interface. Release runs only after a
+  successful claim. Reattach runs whenever detach succeeded, including after
+  a failed claim, a failed alternate setting, or a cancel before the send.
+  Interface 0 is untouched. The live form needs G2 and does not need G3.
+  The consent screen names the gates the build can run. Step 2's Yes button
+  says it sends one Variax identity request. No stays the default. Step 2 is
+  offered only after a fresh step 1 pass for one PODxt Live with the POD
+  driver on interface 0 and the Variax driver on interface 1, either spelling.
+  Close wins before that exchange starts. Once Yes has started, the window
+  cannot cancel it. After the driver is given back, Linux's own
   `snd-usb-variax` startup traffic is not a second request from the app.
   The step 2 report is saved before Device check starts over for the
   follow-up step 1. The owner test card is section 10 of the G2 ledger.
-  #114 stays open.
-- **Prerequisites and tracking:** G1 and the owner-approved ledger/procedure
-  in issues #112, #114, and #126.
+  #114 stays open under the one-rig exception in section 7.
+- **Prerequisites and tracking:** G1, the one-rig exception to #114, and the
+  owner-approved procedure in the G2 ledger. #112 stays open. Outstanding
+  G2-specific items are listed in section 9 of that ledger.
 
 ### G3 — Current-preset metadata read
 
@@ -153,6 +155,7 @@ a GitHub issue.
 ## Authorization boundary
 
 These rows do not establish physical safety, recovery capability, or audio
-equivalence. G1's permission is the record in the G1 ledger. It does not open
-`G1_OS_DISCOVERY_LOCKED` until the #158 build is merged. G2–G8 are not
-authorized, and their source locks stay engaged.
+equivalence. G1's permission is the record in the G1 ledger. G2's permission
+is the record in the G2 ledger, for one owner-run attempt in the #159 build.
+G3–G8 are not authorized, and their source locks stay engaged. Section 11 of
+the G2 ledger is a proposal for a later user release. It is not in effect.

@@ -10,7 +10,9 @@
 //! a settings read. The settings read is not part of this exchange. A PODxt
 //! Live identity reply has no recorded request here, so it does not pass.
 //! This module does not open a device, detach a driver, or send USB or MIDI.
-//! Gate G2 stays locked.
+//! Its tests use a fake connection. The owner binary is the one that can send
+//! the request, and only when the owner runs the card in
+//! `docs/hardware-gates/g2.md`. Agents do not.
 
 use crate::midi::Identity;
 use crate::read_session::IDENTITY_REQUEST;
@@ -887,16 +889,15 @@ mod tests {
     }
 
     #[test]
-    fn stage_two_is_prepared_and_stays_offline_while_g2_is_locked() {
-        assert!(hardware_gates::is_locked(Gate::IdentityRequest));
+    fn stage_two_uses_the_fake_connection_and_does_not_open_a_device() {
+        assert!(!hardware_gates::is_locked(Gate::IdentityRequest));
         assert!(!hardware_gates::is_locked(Gate::OsDiscovery));
         assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
         assert!(device_probe::LIVE_STAGES.contains(&Stage::Identification));
-        assert!(!device_probe::live_stage_available(Stage::Identification));
+        // Live step 2 needs Linux and the usb feature. These tests never call it.
         assert_eq!(
             device_probe::live_stage_available(Stage::Identification),
             cfg!(all(target_os = "linux", feature = "usb"))
-                && !hardware_gates::is_locked(Gate::IdentityRequest)
         );
     }
 }

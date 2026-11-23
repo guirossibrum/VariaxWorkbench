@@ -962,10 +962,10 @@ impl ProbeBackend for SimulatedRig {
     }
 }
 
-/// "This computer": step 1 with a real OS-metadata reader. Step 2 calls the
-/// identity-only USB path when this binary includes it and gate G2 is open.
-/// While G2 is locked that call returns before any device operation. Steps
-/// 3 and 4 stay refused. There is no MIDI or audio path here.
+/// "This computer": step 1 reads OS metadata. Step 2 calls the identity-only
+/// USB path when this binary includes `usb` and gate G2 is open. A test build
+/// returns from that path before enumeration. Steps 3 and 4 stay refused.
+/// There is no MIDI or audio path here.
 pub struct HostRig<S: OsMetadataSource> {
     reader: S,
     calls: BackendCalls,
@@ -1012,7 +1012,8 @@ impl<S: OsMetadataSource> ProbeBackend for HostRig<S> {
     fn identify(&mut self) -> Result<IdentityPair, IdentifyError> {
         self.calls.identity_requests += 1;
         // The lock is checked inside `read_identity` before any USB open.
-        // Without the `usb` feature there is no adapter to call.
+        // A test build returns there before enumeration. Without the `usb`
+        // feature there is no adapter to call.
         #[cfg(feature = "usb")]
         {
             crate::usb::read_identity(&AtomicBool::new(false))
@@ -1614,15 +1615,15 @@ mod tests {
         for stage in Stage::LADDER {
             assert!(stage.action().len() > 40, "{stage:?}");
             assert!(stage.risk().len() > 40, "{stage:?}");
-            // Only Linux step 1 (G1) has a live form in this build.
-            assert_eq!(
-                live_stage_available(stage),
-                cfg!(target_os = "linux") && stage == Stage::UsbRecognition,
-                "{stage:?}"
-            );
+            let live = match stage {
+                Stage::UsbRecognition => cfg!(target_os = "linux"),
+                Stage::Identification => cfg!(all(target_os = "linux", feature = "usb")),
+                Stage::SettingsRead | Stage::ChangeCheck => false,
+            };
+            assert_eq!(live_stage_available(stage), live, "{stage:?}");
             assert_eq!(
                 hardware_gates::is_locked(stage.gate()),
-                stage != Stage::UsbRecognition,
+                !matches!(stage, Stage::UsbRecognition | Stage::Identification),
                 "{stage:?}"
             );
         }
@@ -1647,32 +1648,36 @@ mod tests {
                 .action()
                 .contains("save the steps 1–2 report")
         );
-        if cfg!(target_os = "linux") {
-            assert_eq!(availability_banner(), G1_ONLY_BANNER);
-        } else {
-            assert_eq!(
-                availability_banner(),
-                "Every hardware lock stays closed in this build."
-            );
-        }
-        assert_eq!(this_computer_label(), THIS_COMPUTER_LABEL);
-        assert_eq!(ProbeMode::ThisComputer.label(), "This computer (G1)");
         let note = reports_panel_note();
         let finished = this_computer_finished_message();
-        if cfg!(target_os = "linux") {
+        if cfg!(all(target_os = "linux", feature = "usb")) {
+            assert!(availability_banner().contains("Gates G1 and G2 are open"));
+            assert!(this_computer_label().contains("G1 and G2"));
+            assert_eq!(ProbeMode::ThisComputer.label(), "This computer (G1 and G2)");
+            assert!(finished.starts_with("Steps 1 and 2 finished"));
+            assert!(note.contains("gates G1 and G2"));
+            assert!(note.contains("Gates G3–G7 stay locked."));
+        } else if cfg!(target_os = "linux") {
+            assert_eq!(availability_banner(), G1_ONLY_BANNER);
+            assert_eq!(this_computer_label(), THIS_COMPUTER_LABEL);
+            assert_eq!(ProbeMode::ThisComputer.label(), "This computer (G1)");
             assert!(finished.starts_with("Step 1 finished."));
             assert!(finished.contains("Steps 2–4 stay locked"));
             assert!(note.contains("This build can run gate G1."));
             assert!(note.contains("Gate G2 stays locked."));
             assert!(!note.contains("gates G1 and G2"));
         } else {
+            assert_eq!(
+                availability_banner(),
+                "Every hardware lock stays closed in this build."
+            );
             assert!(note.contains("Every hardware lock stays closed in this build."));
         }
     }
 
     #[test]
     fn consent_preflight_banner_report_and_yes_label() {
-        assert!(hardware_gates::is_locked(
+        assert!(!hardware_gates::is_locked(
             hardware_gates::Gate::IdentityRequest
         ));
         assert!(!hardware_gates::is_locked(
@@ -1681,7 +1686,9 @@ mod tests {
         let gates = open_gates();
         assert_eq!(
             gates,
-            if cfg!(target_os = "linux") {
+            if cfg!(all(target_os = "linux", feature = "usb")) {
+                crate::probe_report::OpenGates::G1AndG2
+            } else if cfg!(target_os = "linux") {
                 crate::probe_report::OpenGates::G1
             } else {
                 crate::probe_report::OpenGates::None
@@ -1694,14 +1701,25 @@ mod tests {
                 crate::probe_report::OpenGates::G1AndG2 | crate::probe_report::OpenGates::G2
             )
         );
-        assert!(!gates.token().contains("G2"));
+        if matches!(
+            gates,
+            crate::probe_report::OpenGates::G1AndG2 | crate::probe_report::OpenGates::G2
+        ) {
+            assert!(gates.token().contains("G2"));
+        } else {
+            assert!(!gates.token().contains("G2"));
+        }
         let mut probe = session(Scenario::Connected);
         assert!(!probe.g1_expected_binding());
         assert_eq!(probe.awaiting(), Some(Stage::UsbRecognition));
         probe.answer(Consent::No);
         let report = probe.sanitized_report();
         assert!(report.contains(gates.token()), "{report}");
-        assert!(!report.contains("gates-open=G1,G2"), "{report}");
+        if matches!(gates, crate::probe_report::OpenGates::G1AndG2) {
+            assert!(report.contains("gates-open=G1,G2"), "{report}");
+        } else {
+            assert!(!report.contains("gates-open=G1,G2"), "{report}");
+        }
         assert!(crate::probe_report::allowlisted(&report), "{report}");
         assert_eq!(probe.backend().identity_calls(), 0);
     }
@@ -2139,20 +2157,27 @@ mod tests {
         let mut probe = host_session(root.path());
         assert_eq!(probe.mode(), ProbeMode::ThisComputer);
         assert_eq!(probe.awaiting(), Some(Stage::UsbRecognition));
-        for stage in [
-            Stage::Identification,
-            Stage::SettingsRead,
-            Stage::ChangeCheck,
-        ] {
-            assert!(probe.locked(stage), "{stage:?}");
-        }
+        assert_eq!(
+            probe.locked(Stage::Identification),
+            !live_stage_available(Stage::Identification)
+        );
+        assert!(probe.locked(Stage::SettingsRead));
+        assert!(probe.locked(Stage::ChangeCheck));
         assert_eq!(probe.backend().calls(), BackendCalls::default());
         probe.answer(Consent::Yes);
         assert_eq!(probe.status(Stage::UsbRecognition), StageStatus::Passed);
-        // Steps 2–4 are never offered, so a further Yes runs nothing.
-        assert_eq!(probe.awaiting(), None);
+        // A usb build offers step 2. This test answers No and does not send.
+        if live_stage_available(Stage::Identification) {
+            assert_eq!(probe.awaiting(), Some(Stage::Identification));
+            assert!(probe.g1_expected_binding());
+            probe.answer(Consent::No);
+            assert_eq!(probe.status(Stage::Identification), StageStatus::Stopped);
+        } else {
+            assert_eq!(probe.awaiting(), None);
+            probe.answer(Consent::Yes);
+            assert_eq!(probe.status(Stage::Identification), StageStatus::NotRun);
+        }
         assert!(probe.finished());
-        probe.answer(Consent::Yes);
         assert_eq!(
             probe.backend().calls(),
             BackendCalls {
@@ -2160,16 +2185,20 @@ mod tests {
                 ..Default::default()
             }
         );
-        for stage in [
-            Stage::Identification,
-            Stage::SettingsRead,
-            Stage::ChangeCheck,
-        ] {
+        for stage in [Stage::SettingsRead, Stage::ChangeCheck] {
             assert_eq!(probe.status(stage), StageStatus::NotRun);
+            assert!(probe.locked(stage));
         }
         let report = probe.report();
         let lines: Vec<_> = report.lines().collect();
-        assert_eq!(open_gates().token(), "gates-open=G1");
+        assert_eq!(
+            open_gates().token(),
+            if live_stage_available(Stage::Identification) {
+                "gates-open=G1,G2"
+            } else {
+                "gates-open=G1"
+            }
+        );
         assert_eq!(
             lines[0],
             format!(
@@ -2187,10 +2216,18 @@ mod tests {
         ] {
             assert!(lines[1].contains(needle), "{needle}: {}", lines[1]);
         }
-        assert_eq!(
-            lines[2],
-            "stage=2 gate=G2 decision=none status=locked detail=-"
-        );
+        if live_stage_available(Stage::Identification) {
+            assert!(
+                lines[2].starts_with("stage=2 gate=G2 decision=no status=stopped detail="),
+                "{}",
+                lines[2]
+            );
+        } else {
+            assert_eq!(
+                lines[2],
+                "stage=2 gate=G2 decision=none status=locked detail=-"
+            );
+        }
         assert_eq!(
             lines[3],
             "stage=3 gate=G3 decision=none status=locked detail=-"
@@ -2264,7 +2301,13 @@ mod tests {
             probe.answer(Consent::Yes);
             assert_eq!(probe.status(Stage::UsbRecognition), StageStatus::Passed);
             assert!(probe.g1_expected_binding());
-            assert_eq!(probe.awaiting(), None);
+            if live_stage_available(Stage::Identification) {
+                assert_eq!(probe.awaiting(), Some(Stage::Identification));
+                probe.answer(Consent::No);
+                assert_eq!(probe.status(Stage::Identification), StageStatus::Stopped);
+            } else {
+                assert_eq!(probe.awaiting(), None);
+            }
             assert_eq!(probe.backend().calls().identity_requests, 0);
             let report = probe.report();
             assert!(
@@ -2326,19 +2369,20 @@ mod tests {
     }
 
     #[test]
-    fn host_rig_refuses_steps_two_to_four_without_io() {
+    fn host_rig_refuses_settings_and_does_not_open_usb_from_a_test() {
         let empty = tempfile::tempdir().unwrap();
         let mut rig = HostRig::new(injected_reader(empty.path()));
-        for stage in [
-            Stage::Identification,
-            Stage::SettingsRead,
-            Stage::ChangeCheck,
-        ] {
-            assert!(!rig.can_run(stage), "{stage:?}");
-        }
+        assert_eq!(
+            rig.can_run(Stage::Identification),
+            live_stage_available(Stage::Identification)
+        );
+        assert!(!rig.can_run(Stage::SettingsRead));
+        assert!(!rig.can_run(Stage::ChangeCheck));
+        // A test build returns before enumeration. This is not a live check.
         assert!(rig.identify().is_err());
         assert!(rig.read_settings(ReadPass::First).is_err());
         assert_eq!(rig.calls().os_reads, 0);
+        assert_eq!(rig.calls().settings_reads, 1);
     }
 
     #[test]

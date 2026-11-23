@@ -4,11 +4,15 @@ Issues [#134](https://github.com/guirossibrum/VariaxWorkbench/issues/134),
 [#137](https://github.com/guirossibrum/VariaxWorkbench/issues/137) and
 [#157](https://github.com/guirossibrum/VariaxWorkbench/issues/157); parent
 [#113](https://github.com/guirossibrum/VariaxWorkbench/issues/113).
-**G1 is authorized by the owner's direct permission (2026-11-22) and is open in this build only.**
-G2–G8 are not authorized. See [the G1 procedure](hardware-gates/g1.md).
+**G1 is authorized by the owner's direct permission (2026-11-22) and is open in this build.**
+**G2 is authorized for one owner-run Variax 600 identity request** through the
+PODxt Live, recorded in [the G2 ledger](hardware-gates/g2.md). G3–G8 are not
+authorized. See [the G1 procedure](hardware-gates/g1.md).
 The window still opens in **Simulation**. **This computer** is offered only
 when a live step is available. Its label, banner, and report name the gates
-this build can actually run. In this build that is step 1 only.
+this build can actually run. Step 2 is offered on Linux only in a binary
+built with the `usb` feature, and only after a fresh step 1 pass. A build
+without `usb` still offers only step 1.
 
 ## Stages
 
@@ -71,20 +75,19 @@ in `src/device_probe.rs`; the window shows them verbatim before asking.
   left unchanged.
 
 **This computer** uses `HostRig` around `LinuxSysfs`. It is offered only
-when `live_stage_available(Stage::UsbRecognition)` is true. The mode label
-and the banner come from `open_gates()`, which is G1 in this build. The
-reader is built only when that mode is chosen. When the check finishes,
-the completion sentence and the Reports note name the gates this build
-can run. In this build that is G1, so the window still says step 1
-finished and that gate G2 stays locked.
+when `live_stage_available(Stage::UsbRecognition)` is true. The mode label,
+the banner, the completion sentence, and the Reports note come from
+`open_gates()`. On Linux with the `usb` feature that is G1 and G2. Without
+`usb` it is G1 only, and the window says step 1 finished and that gate G2
+stays unoffered. The reader is built only when that mode is chosen.
 It reads only the [g1.md section 1](hardware-gates/g1.md#1-what-the-app-reads)
 paths under a configurable root (the app uses `/`; tests inject a temporary
 fake tree) with `read_dir`, `read_to_string` and `read_link`, fills the same
 in-memory map and reuses its parser. Both trait methods run their reads inside
-`run_if_unlocked(Gate::OsDiscovery, …)`. In this mode steps 2–4 are locked:
-they have no Yes/No buttons, and the backend refuses them without sending
-anything. A passed step never starts the next one. The answer stays **No**
-until the person chooses Yes.
+`run_if_unlocked(Gate::OsDiscovery, …)`. Step 2 is offered only after a fresh
+expected driver binding, and only when G2 is live in that binary. Steps 3 and
+4 stay locked. A passed step never starts the next one. The answer stays
+**No** until the person chooses Yes. Test builds do not open USB.
 
 ## Tests
 
@@ -141,14 +144,16 @@ only.
   simulation's decision. The 2026-11-14 captures show the same request and
   reply, then a settings read that this stage does not send. A PODxt Live
   3.01 reply is recorded and does not pass. The capture files stay private.
-  See [the G2 ledger](hardware-gates/g2.md). Gate G2 stays locked. The live
-  identity path does not use the settings-read entry, and This computer still
-  offers only step 1. The banner and the steps 1–2 report say `gates-open=G1`
-  on Linux because that is the live gate this build can run. Step 2's live
-  Yes label is in the code and is not shown on this computer while G2 is locked.
+  See [the G2 ledger](hardware-gates/g2.md). The live identity path does not
+  use the settings-read entry. On Linux, a binary with the `usb` feature
+  names gates G1 and G2 (`gates-open=G1,G2`) and offers step 2 after the
+  expected driver binding. A binary without `usb` stays on `gates-open=G1`
+  and does not offer step 2. The owner runs the live check. Agents do not.
 - The inventory table (`supported_devices.txt` schema 2, `device_inventory.rs`)
   from `508cd00` is not part of this change.
-- Issue #114 stays open. This checkout tracks both `supported_devices.txt`
+- Issue #114 stays open. The owner granted a one-rig exception for this
+  identity attempt only. This checkout tracks both `supported_devices.txt`
   (a name list) and `supported-devices.txt` (USB and Line 6 id rows). Neither
-  file was edited. `src/usb.rs` has the locked identity-only entry; it returns
-  before any USB open while G2 is locked. One versioned inventory is still unmet.
+  file was edited. `src/usb.rs` returns before USB enumeration in every test
+  build. The owner binary can open USB when the owner chooses Yes on step 2.
+  One versioned inventory is still unmet.
