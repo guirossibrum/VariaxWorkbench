@@ -1,7 +1,7 @@
 //! A gated, logged conversation with one device over one link.
 
 use crate::gate::{GatePolicy, Operation};
-use crate::midi::{Assembler, Event, describe_short, hex};
+use crate::midi::{Assembler, ControllerTally, Event, describe_short, hex};
 use std::fmt::Debug;
 use std::time::Duration;
 
@@ -122,14 +122,22 @@ impl<'a, L: Link> Session<'a, L> {
             return Ok(None);
         };
         let shown: Vec<u8> = packet.iter().copied().filter(|b| *b < 0xf8).collect();
-        if !shown.is_empty() {
-            self.note(format!("IN  {}", hex(&shown)));
-        }
         let events = self.assembler.feed(&packet)?;
-        for event in &events {
-            if let Event::Short(message) = event {
-                self.note(format!("    {}", describe_short(message)));
-            }
+        if !shown.is_empty() {
+            // One line per packet; channel messages are decoded on the same line.
+            let decoded: Vec<String> = events
+                .iter()
+                .filter_map(|event| match event {
+                    Event::Short(message) => Some(describe_short(message)),
+                    Event::Sysex(_) => None,
+                })
+                .collect();
+            let suffix = if decoded.is_empty() {
+                String::new()
+            } else {
+                format!("   [{}]", decoded.join("; "))
+            };
+            self.note(format!("IN  {}{suffix}", hex(&shown)));
         }
         Ok(Some(events))
     }
@@ -175,19 +183,22 @@ impl<'a, L: Link> Session<'a, L> {
     }
 
     /// Logs everything that arrives for `window`. Sends nothing.
-    pub fn listen(&mut self, window: Duration) -> Result<(), String> {
+    /// Returns a tally of every controller message seen.
+    pub fn listen(&mut self, window: Duration) -> Result<ControllerTally, String> {
+        let mut tally = ControllerTally::default();
         let end = self.link.elapsed() + window;
         while self.link.elapsed() < end {
             let left = end.saturating_sub(self.link.elapsed());
             if let Some(events) = self.poll(left.min(POLL))? {
                 for event in events {
-                    if let Event::Sysex(message) = event {
+                    if let Event::Sysex(message) = &event {
                         self.note(format!("    (SysEx message, {} bytes)", message.len()));
                     }
+                    tally.add(&event);
                 }
             }
         }
-        Ok(())
+        Ok(tally)
     }
 }
 

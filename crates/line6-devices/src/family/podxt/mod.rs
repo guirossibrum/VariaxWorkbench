@@ -8,10 +8,12 @@
 //! threshold, compressor, delay time and tempo use other conversions and are
 //! reported raw.
 
+pub mod controls;
 pub mod models;
 
 use crate::gate::Operation;
 use crate::identity::{self, Identity};
+use crate::midi::ControllerTally;
 use crate::session::{Link, Path, Request, Session, Wait};
 use std::time::Duration;
 
@@ -19,6 +21,7 @@ pub const IDENTITY_FAMILY: u16 = 0x0003;
 /// Line 6 Edit waits 1 s for the edit buffer; this allows a little more.
 const WINDOW: Duration = Duration::from_secs(2);
 pub const EDIT_BUFFER_LEN: usize = 168;
+pub const LISTEN_MAX: Duration = Duration::from_secs(30);
 
 pub fn member_name(member: u16) -> &'static str {
     match member {
@@ -64,20 +67,26 @@ pub struct CurrentTone {
     pub tone: EditBuffer,
 }
 
-/// Identity, then the edit-buffer request only if the reply is a PODxt.
-pub fn read_current<L: Link>(session: &mut Session<L>) -> Result<CurrentTone, String> {
+/// Drain, then identity; errors unless the reply is a PODxt.
+fn identify_podxt<L: Link>(session: &mut Session<L>) -> Result<(Vec<u8>, Identity), String> {
     // Drain anything already queued. Sends nothing.
     session.listen(Duration::from_millis(200))?;
     session.send(PodxtRequest::Identity)?;
     let Wait::Found(identity_reply) =
         session.wait_for(WINDOW, |m| Identity::parse(m).is_some(), false)?
     else {
-        return Err("No identity reply from the PODxt. The tone was not requested.".into());
+        return Err("No identity reply from the PODxt. Nothing else was sent.".into());
     };
     let identity = Identity::parse(&identity_reply).expect("checked above");
     if !identity.is_line6() || identity.family != IDENTITY_FAMILY {
-        return Err("The reply is not a PODxt-family identity. The tone was not requested.".into());
+        return Err("The reply is not a PODxt-family identity. Nothing else was sent.".into());
     }
+    Ok((identity_reply, identity))
+}
+
+/// Identity, then the edit-buffer request only if the reply is a PODxt.
+pub fn read_current<L: Link>(session: &mut Session<L>) -> Result<CurrentTone, String> {
+    let (identity_reply, identity) = identify_podxt(session)?;
     session.send(PodxtRequest::EditBuffer)?;
     match session.wait_for(WINDOW, is_edit_buffer, false)? {
         Wait::Found(dump) => Ok(CurrentTone {
@@ -87,6 +96,26 @@ pub fn read_current<L: Link>(session: &mut Session<L>) -> Result<CurrentTone, St
         }),
         _ => Err("No 168-byte edit-buffer dump arrived.".into()),
     }
+}
+
+/// Identity, then listen only (at most [`LISTEN_MAX`]). The PODxt sends a
+/// controller message when a pedal, knob or switch moves. Owner test
+/// 2026-11-22: the pedal streams CC 7 (volume) or, in wah mode, CC 4 (wah
+/// position) over 0..=127; the physical knobs also send their CC now and then
+/// on their own (for example CC 15 mid, CC 17 channel volume).
+pub fn listen<L: Link>(
+    session: &mut Session<L>,
+    window: Duration,
+) -> Result<(Vec<u8>, ControllerTally), String> {
+    let (identity_reply, _) = identify_podxt(session)?;
+    let window = window.min(LISTEN_MAX);
+    session.note(format!(
+        "listening {} s: move the pedal now",
+        window.as_secs()
+    ));
+    let tally = session.listen(window)?;
+    session.note("listening finished");
+    Ok((identity_reply, tally))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -163,6 +192,18 @@ impl EditBuffer {
     pub fn wah(&self) -> Model {
         self.model(91, &models::WAH_MODELS)
     }
+    /// Volume pedal level, CC 7 (`VOL_PEDAL_LEVEL`), 0.0..=1.0. Owner test
+    /// 2026-11-22: this byte follows the physical pedal (toe 127, heel 0,
+    /// about half 54), so each read returns the pedal position at that moment.
+    pub fn volume_pedal_level(&self) -> f32 {
+        self.knob(7)
+    }
+    /// Wah pedal position, CC 4 (`WAH_POSITION`), 0.0..=1.0. Owner test
+    /// 2026-11-22 in wah mode: follows the pedal (heel 3, toe 127). In wah
+    /// mode the pedal streams CC 4 instead of CC 7; CC 43 is the wah switch.
+    pub fn wah_position(&self) -> f32 {
+        self.knob(4)
+    }
 
     /// Human-readable summary.
     pub fn describe(&self) -> Vec<String> {
@@ -233,6 +274,13 @@ impl EditBuffer {
                 on(63),
                 on(107)
             ),
+            format!(
+                "Pedals    : volume pedal level {}  wah position {}  pedal assign raw {}  volume pedal pre/post raw {}",
+                pct(7),
+                pct(4),
+                self.cc(65),
+                self.cc(47)
+            ),
             format!("Tempo raw : {}/{}", self.cc(89), self.cc(90)),
         ]
     }
@@ -300,6 +348,42 @@ mod tests {
         let tone = EditBuffer::parse(raw).unwrap();
         assert_eq!(tone.amp().id, models::AMP_MODELS[0]);
         assert!(!tone.amp_enabled());
+    }
+
+    #[test]
+    fn pedal_bytes_decode_and_controllers_are_named() {
+        let mut raw = synthetic();
+        raw[39 + 7] = 64;
+        raw[39 + 4] = 127;
+        let tone = EditBuffer::parse(raw).unwrap();
+        assert_eq!(tone.volume_pedal_level(), 64.0 / 127.0);
+        assert_eq!(tone.wah_position(), 1.0);
+        assert!(
+            tone.describe()
+                .iter()
+                .any(|l| l.starts_with("Pedals    : volume pedal level 50.4%"))
+        );
+        assert_eq!(controls::name(7), Some("vol_pedal_level"));
+        assert_eq!(controls::name(4), Some("wah_position"));
+        assert_eq!(controls::CONTROLS.len(), 102);
+    }
+
+    #[test]
+    fn listen_sends_only_the_identity() {
+        let mut log = Quiet;
+        let script = vec![(
+            PodxtRequest::Identity,
+            vec![PODXT_LIVE.to_vec(), vec![0xb0, 7, 100], vec![0xb0, 7, 20]],
+        )];
+        let mut s = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
+        let (_, tally) = listen(&mut s, Duration::from_secs(3600)).unwrap();
+        assert_eq!(s.sent, vec![PodxtRequest::Identity.bytes()]);
+        let pedal = &tally.controllers[&(1, 7)];
+        assert_eq!(
+            (pedal.count, pedal.min, pedal.max, pedal.last),
+            (2, 20, 100, 20)
+        );
+        assert!(s.link.elapsed() < LISTEN_MAX + Duration::from_secs(1));
     }
 
     #[test]

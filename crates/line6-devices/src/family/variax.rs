@@ -8,6 +8,7 @@
 
 use crate::gate::Operation;
 use crate::identity::{self, Identity};
+use crate::midi::ControllerTally;
 use crate::session::{Link, Path, Request, Session, Wait};
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -187,19 +188,60 @@ pub fn read_current<L: Link>(session: &mut Session<L>) -> Result<CurrentPreset, 
 }
 
 /// Identity, session on, listen only (at most [`LISTEN_MAX`]), session off.
-pub fn listen<L: Link>(session: &mut Session<L>, window: Duration) -> Result<Identified, String> {
+pub fn listen<L: Link>(
+    session: &mut Session<L>,
+    window: Duration,
+) -> Result<(Identified, ControllerTally), String> {
     let identified = identify_variax(session)?;
     let window = window.min(LISTEN_MAX);
-    in_session(session, |session| {
+    let tally = in_session(session, |session| {
         session.note(format!(
             "listening {} s: move the guitar's knobs now",
             window.as_secs()
         ));
-        session.listen(window)?;
+        let tally = session.listen(window)?;
         session.note("listening finished");
-        Ok(())
+        Ok(tally)
     })?;
-    Ok(identified)
+    Ok((identified, tally))
+}
+
+// ---- live controls ----
+
+/// A controller the guitar sends on channel 1 while its session is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Control {
+    pub name: &'static str,
+    /// Decoded by Variax Workbench 1.75 `L6VariaxMIDITranscoder.DecodeCCParamChange`.
+    pub workbench: bool,
+    /// Seen to follow the physical control in an owner-run test (Variax 600).
+    pub verified_on_device: bool,
+}
+
+/// Controllers the guitar sends while its session is on.
+pub fn control(controller: u8) -> Option<Control> {
+    let (name, workbench, verified_on_device) = match controller {
+        // Workbench: CC 79 sets TONE_KNOB_POSITION to value / 127.
+        // Owner test 2026-11-22: full sweeps gave every value 0..=127.
+        79 => ("tone knob position", true, true),
+        // Not decoded by Workbench. Owner test 2026-11-22: the volume knob
+        // swept 127 -> 0 -> 127 on CC 7, one message per step.
+        7 => ("volume knob position", false, true),
+        // Workbench: CC 84 calls HandleTuningOverride. Not expected from the
+        // Variax 600, whose alternate tunings are stored in each preset.
+        84 => ("tuning override", true, false),
+        _ => return None,
+    };
+    Some(Control {
+        name,
+        workbench,
+        verified_on_device,
+    })
+}
+
+/// Knob position 0.0..=1.0 (value / 127; 127 is fully up).
+pub fn knob_position(value: u8) -> f32 {
+    f32::from(value) / 127.0
 }
 
 // ---- metadata decoder (same layout as the main crate's `PresetMetadata`) ----
@@ -463,17 +505,34 @@ pub(crate) mod tests {
         let (result, sent, elapsed) = run(
             vec![
                 (Identity, packets(&VARIAX_600)),
-                (SessionOn, vec![vec![0xb0, 0x07, 0x0e], vec![0x07, 0x0f]]),
+                (
+                    SessionOn,
+                    vec![vec![0xb0, 0x07, 0x0e], vec![0x07, 0x0f], vec![0xb0, 79, 64]],
+                ),
                 (SessionOff, vec![]),
             ],
             |s| listen(s, Duration::from_secs(3600)),
         );
-        assert!(result.is_ok());
+        let (_, tally) = result.unwrap();
+        let volume = &tally.controllers[&(1, 7)];
+        assert_eq!((volume.count, volume.first, volume.last), (2, 14, 15));
+        assert_eq!(tally.controllers[&(1, 79)].last, 64);
         assert_eq!(
             sent,
             vec![Identity.bytes(), SessionOn.bytes(), SessionOff.bytes()]
         );
         assert!(elapsed < LISTEN_MAX + Duration::from_secs(1));
+    }
+
+    #[test]
+    fn knob_controllers_are_named_with_their_evidence() {
+        let tone = control(79).unwrap();
+        assert!(tone.workbench && tone.verified_on_device);
+        let volume = control(7).unwrap();
+        assert!(!volume.workbench && volume.verified_on_device);
+        assert_eq!(control(84).unwrap().name, "tuning override");
+        assert!(control(1).is_none());
+        assert_eq!(knob_position(127), 1.0);
     }
 
     #[test]

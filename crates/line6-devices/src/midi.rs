@@ -1,6 +1,52 @@
 //! MIDI byte-stream reassembly. Pure code, no device access.
 
+use std::collections::BTreeMap;
+
 const SYSEX_LIMIT: usize = 8192;
+
+/// Values seen for one controller during a listen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Tally {
+    pub count: usize,
+    pub first: u8,
+    pub last: u8,
+    pub min: u8,
+    pub max: u8,
+}
+
+/// Controller messages seen during a listen, keyed by (channel 1..=16, controller).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ControllerTally {
+    pub controllers: BTreeMap<(u8, u8), Tally>,
+    pub other_messages: usize,
+}
+
+impl ControllerTally {
+    pub fn add(&mut self, event: &Event) {
+        match event {
+            Event::Short(message) if message.len() == 3 && message[0] & 0xf0 == 0xb0 => {
+                let key = ((message[0] & 0x0f) + 1, message[1]);
+                let value = message[2];
+                self.controllers
+                    .entry(key)
+                    .and_modify(|t| {
+                        t.count += 1;
+                        t.last = value;
+                        t.min = t.min.min(value);
+                        t.max = t.max.max(value);
+                    })
+                    .or_insert(Tally {
+                        count: 1,
+                        first: value,
+                        last: value,
+                        min: value,
+                        max: value,
+                    });
+            }
+            _ => self.other_messages += 1,
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {

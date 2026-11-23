@@ -4,6 +4,7 @@
 //!   variax read            identity, session on, two metadata reads, session off
 //!   variax listen [SECS]   identity, session on, listen only, session off
 //!   podxt read             PODxt identity and current-tone (edit buffer) read
+//!   podxt listen [SECS]    PODxt identity, then listen only (pedal, knobs)
 //!
 //! Only the requests defined by the `line6-devices` families can be sent, and
 //! only those this file's policy allows. Every packet in and out is printed
@@ -15,6 +16,7 @@
 use line6_devices::family::{Family, podxt, variax};
 use line6_devices::gate::{GatePolicy, Operation};
 use line6_devices::identity::Identity;
+use line6_devices::midi::ControllerTally;
 use line6_devices::session::{Log, Path, Session};
 use line6_devices::transport::{rawmidi, usb};
 use std::fs::{self, OpenOptions};
@@ -39,7 +41,7 @@ impl GatePolicy for OwnerGrants {
 }
 
 const USAGE: &str = "Usage: variax-probe variax identity|read|listen [SECONDS] [--out DIR]
-       variax-probe podxt read [--out DIR]
+       variax-probe podxt read|listen [SECONDS] [--out DIR]
 Read-only. Run it yourself; it contacts the connected PODxt Live and Variax.";
 
 /// Printed lines plus saved files, in one new folder.
@@ -94,6 +96,7 @@ enum Command {
     VariaxRead,
     VariaxListen(u64),
     PodxtRead,
+    PodxtListen(u64),
 }
 
 impl Command {
@@ -103,6 +106,7 @@ impl Command {
             Command::VariaxRead => "variax-read",
             Command::VariaxListen(_) => "variax-listen",
             Command::PodxtRead => "podxt-read",
+            Command::PodxtListen(_) => "podxt-listen",
         }
     }
 
@@ -118,6 +122,7 @@ impl Command {
             Command::PodxtRead => {
                 "PODxt identity, then the PODxt edit-buffer (current tone) request"
             }
+            Command::PodxtListen(_) => "PODxt identity, then listen only",
         }
     }
 }
@@ -133,16 +138,21 @@ fn parse(args: &[String]) -> Result<(Command, PathBuf), String> {
             words.push(arg.as_str());
         }
     }
-    let max = variax::LISTEN_MAX.as_secs();
+    let max = variax::LISTEN_MAX
+        .as_secs()
+        .min(podxt::LISTEN_MAX.as_secs());
+    let seconds = |text: &str| match text.parse::<u64>() {
+        Ok(seconds) if (1..=max).contains(&seconds) => Ok(seconds),
+        _ => Err(format!("listen SECONDS must be a whole number 1..={max}")),
+    };
     let command = match words.as_slice() {
         ["variax", "identity"] => Command::VariaxIdentity,
         ["variax", "read"] => Command::VariaxRead,
         ["variax", "listen"] => Command::VariaxListen(10),
-        ["variax", "listen", seconds] => match seconds.parse::<u64>() {
-            Ok(seconds) if (1..=max).contains(&seconds) => Command::VariaxListen(seconds),
-            _ => return Err(format!("listen SECONDS must be a whole number 1..={max}")),
-        },
+        ["variax", "listen", text] => Command::VariaxListen(seconds(text)?),
         ["podxt", "read"] => Command::PodxtRead,
+        ["podxt", "listen"] => Command::PodxtListen(10),
+        ["podxt", "listen", text] => Command::PodxtListen(seconds(text)?),
         _ => return Err(USAGE.into()),
     };
     Ok((command, out))
@@ -178,6 +188,47 @@ fn variax_lines(metadata: &variax::PresetMetadata) -> Vec<String> {
     lines
 }
 
+/// One line per controller heard: name, count, first/last/min/max and position.
+fn tally_lines(tally: &ControllerTally, name: impl Fn(u8) -> Option<String>) -> Vec<String> {
+    let mut lines = vec![format!(
+        "Controllers heard: {} (other messages: {})",
+        tally.controllers.len(),
+        tally.other_messages
+    )];
+    if tally.controllers.is_empty() {
+        lines.push("  none: nothing was moved, or this device does not send it".into());
+    }
+    for ((channel, controller), t) in &tally.controllers {
+        let label = name(*controller).unwrap_or_else(|| "unnamed".into());
+        lines.push(format!(
+            "  CC {controller:3} ch {channel} {label}: {} messages, first {} last {} (min {} max {}), last = {:.1}%",
+            t.count,
+            t.first,
+            t.last,
+            t.min,
+            t.max,
+            f32::from(t.last) / 127.0 * 100.0
+        ));
+    }
+    lines
+}
+
+fn variax_control_name(controller: u8) -> Option<String> {
+    variax::control(controller).map(|c| {
+        let source = match (c.workbench, c.verified_on_device) {
+            (true, true) => "Workbench, verified on device",
+            (true, false) => "Workbench, not yet seen on device",
+            (false, true) => "verified on device",
+            (false, false) => "unverified",
+        };
+        format!("{} [{source}]", c.name)
+    })
+}
+
+fn podxt_control_name(controller: u8) -> Option<String> {
+    podxt::controls::name(controller).map(|n| format!("{n} [Line 6 Edit]"))
+}
+
 fn run_variax(command: &Command, capture: &mut Capture) -> Result<(), String> {
     let mut link = usb::UsbInterfaceLink::open(usb::VARIAX_VIA_PODXT_LIVE)?;
     let (detached, claimed) = link.state();
@@ -207,12 +258,13 @@ fn run_variax(command: &Command, capture: &mut Capture) -> Result<(), String> {
                 ]);
             }),
             Command::VariaxListen(seconds) => {
-                variax::listen(&mut session, Duration::from_secs(*seconds)).map(|id| {
+                variax::listen(&mut session, Duration::from_secs(*seconds)).map(|(id, tally)| {
                     summary.push(describe_identity(&id.reply, Some(id.requests)));
+                    summary.extend(tally_lines(&tally, variax_control_name));
                     saved.push(("identity.syx", id.reply));
                 })
             }
-            Command::PodxtRead => unreachable!(),
+            Command::PodxtRead | Command::PodxtListen(_) => unreachable!(),
         };
         let cleanup = session.link.finish();
         session.note(match &cleanup {
@@ -228,6 +280,22 @@ fn run_variax(command: &Command, capture: &mut Capture) -> Result<(), String> {
         capture.file(name, bytes)?;
     }
     result.and(cleanup)
+}
+
+fn run_podxt_listen(seconds: u64, capture: &mut Capture) -> Result<(), String> {
+    let mut link = rawmidi::RawMidiLink::open(rawmidi::PODXT_LIVE_CARD, Path::PodxtMidi)?;
+    let device = link.device.display().to_string();
+    let result = {
+        let mut session = Session::new(&mut link, &OwnerGrants, capture);
+        session.note(format!("opened {device}"));
+        podxt::listen(&mut session, Duration::from_secs(seconds))
+    };
+    let (identity_reply, tally) = result?;
+    capture.line(describe_identity(&identity_reply, None));
+    for line in tally_lines(&tally, podxt_control_name) {
+        capture.line(line);
+    }
+    capture.file("identity.syx", &identity_reply)
 }
 
 fn run_podxt(capture: &mut Capture) -> Result<(), String> {
@@ -273,6 +341,7 @@ fn main() {
     ));
     let result = match command {
         Command::PodxtRead => run_podxt(&mut capture),
+        Command::PodxtListen(seconds) => run_podxt_listen(seconds, &mut capture),
         _ => run_variax(&command, &mut capture),
     };
     let saved = capture.finish(&result);
@@ -300,6 +369,14 @@ mod tests {
         assert_eq!(
             parse(&args("podxt read --out /x")).unwrap(),
             (Command::PodxtRead, PathBuf::from("/x"))
+        );
+        assert_eq!(
+            parse(&args("podxt listen 7")).unwrap().0,
+            Command::PodxtListen(7)
+        );
+        assert_eq!(
+            parse(&args("podxt listen")).unwrap().0,
+            Command::PodxtListen(10)
         );
         for bad in [
             "",
