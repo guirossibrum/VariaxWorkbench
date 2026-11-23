@@ -63,6 +63,8 @@ impl GatePolicy for OwnerGrants {
             // Owner's request 2026-11-23: select the playing channel by program
             // change (like the footswitch). Refused on unsaved edits; no store.
             Operation::PodxtChannelSwitch => true,
+            // Owner's direct permission for the standalone display check.
+            Operation::PodxtVariaxControlRelease => true,
             // Owner's request 2026-11-23 ("tap/tuner"): tuner on/off (CC 69) and the
             // read-only global-value query it needs (also used by `podxt status`).
             Operation::PodxtGlobalRead | Operation::PodxtTunerMode => true,
@@ -74,6 +76,7 @@ const USAGE: &str = "Usage: variax-probe variax identity|read|listen [SECONDS]|l
        variax-probe podxt read|listen [SECONDS]|library [--out DIR]
        variax-probe podxt channel|channel-test CHANNEL [--from CHANNEL] [--out DIR]
        variax-probe podxt live-test [all|NAME=VALUE ...] --out DIR
+       variax-probe podxt release-variax-control --out DIR
        variax-probe podxt status|tuner [SECONDS] [--out DIR]
        variax-probe compare FIRST_BACKUP SECOND_BACKUP
 Device commands are owner-run. Live tests change the edit buffer and attempt undo.
@@ -91,6 +94,7 @@ enum Command {
     PodxtLibrary,
     Compare(PathBuf, PathBuf),
     PodxtPacks,
+    PodxtReleaseVariaxControl,
     PodxtLiveTest(Vec<podxt::LiveTarget>),
     PodxtStatus,
     PodxtTuner(u64),
@@ -113,6 +117,7 @@ impl Command {
             Command::PodxtLibrary => "podxt-library",
             Command::Compare(..) => "compare",
             Command::PodxtPacks => "podxt-packs",
+            Command::PodxtReleaseVariaxControl => "podxt-release-variax-control",
             Command::PodxtLiveTest(_) => "podxt-live-test",
             Command::PodxtStatus => "podxt-status",
             Command::PodxtTuner(_) => "podxt-tuner",
@@ -142,6 +147,9 @@ impl Command {
             }
             Command::Compare(..) => "nothing (offline comparison)",
             Command::PodxtPacks => "PODxt identity, then the installed model-pack query",
+            Command::PodxtReleaseVariaxControl => {
+                "PODxt Live identity, then the Workbench Variax-control release once"
+            }
             Command::PodxtStatus => "PODxt identity, then read-only global value queries",
             Command::PodxtTuner(_) => {
                 "PODxt identity, tuner on (CC 69), tuner note/deviation queries every 250 ms, tuner off"
@@ -188,6 +196,7 @@ fn parse(args: &[String]) -> Result<(Command, Option<PathBuf>), String> {
         ["variax", "library"] => Command::VariaxLibrary,
         ["podxt", "library"] => Command::PodxtLibrary,
         ["podxt", "packs"] => Command::PodxtPacks,
+        ["podxt", "release-variax-control"] => Command::PodxtReleaseVariaxControl,
         ["podxt", "stomp-test"] => Command::PodxtLiveTest(vec![podxt::LiveTarget::Basic(
             podxt::Control::StompEnable,
             podxt::Target::Toggle,
@@ -372,6 +381,7 @@ fn run_variax(command: &Command, capture: &mut Capture) -> Result<(), String> {
             | Command::PodxtLibrary
             | Command::Compare(..)
             | Command::PodxtPacks
+            | Command::PodxtReleaseVariaxControl
             | Command::PodxtLiveTest(_)
             | Command::PodxtChannel { .. }
             | Command::PodxtStatus
@@ -854,6 +864,20 @@ fn run_podxt_channel(
     }
 }
 
+fn run_podxt_release_variax_control(capture: &mut Capture) -> Result<(), String> {
+    let mut link = rawmidi::RawMidiLink::open(rawmidi::PODXT_LIVE_CARD, Path::PodxtMidi)?;
+    let device = link.device.display().to_string();
+    let reply = {
+        let mut session = Session::new(&mut link, &OwnerGrants, capture);
+        session.note(format!("opened {device}"));
+        podxt::release_variax_control(&mut session)?
+    };
+    capture.line(describe_identity(&reply, None));
+    capture.file("identity.syx", &reply)?;
+    capture.line("Release sent. Check whether the last EDIT page now shows MODEL.".into());
+    Ok(())
+}
+
 fn run_podxt_packs(capture: &mut Capture) -> Result<(), String> {
     let mut link = rawmidi::RawMidiLink::open(rawmidi::PODXT_LIVE_CARD, Path::PodxtMidi)?;
     let device = link.device.display().to_string();
@@ -960,6 +984,7 @@ fn main() {
         Command::PodxtListen(seconds) => run_podxt_listen(seconds, &mut capture),
         Command::PodxtLibrary => run_podxt_library(&mut capture),
         Command::PodxtPacks => run_podxt_packs(&mut capture),
+        Command::PodxtReleaseVariaxControl => run_podxt_release_variax_control(&mut capture),
         Command::PodxtLiveTest(targets) => run_podxt_live_test(&targets, &mut capture),
         Command::PodxtChannel { target, from, back } => {
             run_podxt_channel(target, from, back, &mut capture)
@@ -990,6 +1015,11 @@ mod tests {
 
     #[test]
     fn commands_parse_and_unknown_ones_do_not() {
+        assert_eq!(
+            parse(&args("podxt release-variax-control")).unwrap().0,
+            Command::PodxtReleaseVariaxControl
+        );
+        assert!(parse(&args("podxt release-variax-control on")).is_err());
         assert_eq!(parse(&args("variax read")).unwrap().0, Command::VariaxRead);
         assert_eq!(
             parse(&args("variax listen 5")).unwrap().0,

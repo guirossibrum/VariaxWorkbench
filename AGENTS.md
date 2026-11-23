@@ -45,6 +45,13 @@ with no direct guitar program changes or preset storage. It attempts a
 return to 5B if the target stage fails. This permission is for this worktree
 probe and this test only.
 
+The owner separately authorized one owner-run PODxt Live Variax-control
+release display check. The worktree-only probe may verify the PODxt Live
+identity and send the original Workbench 1.75 XT Live release once
+(`L6VariaxDevice.SetXTLiveVariaxMessagesEnable(false)`). Check the last EDIT
+page manually. This standalone check sends no guitar command, channel change,
+or preset store. This permission does not add the release to linked recall.
+
 No preset upload, flash write, firmware install, reset, or bank switching has been
 authorized. Firmware downloads, version comparison, static extraction and offline
 reverse engineering are authorized. Latest firmware availability must not cause

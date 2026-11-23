@@ -45,6 +45,8 @@ pub enum PodxtRequest {
     /// Installed model-pack query, `03 0E 00` (Line 6 Edit
     /// `L6PODxtDevice.UpdateInstalledPacks`). Read-only.
     InstalledPacks,
+    /// Workbench 1.75 `SetXTLiveVariaxMessagesEnable(false)`.
+    ReleaseVariaxControl,
     /// One live setting in the active tone: `B0 <cc> <value>`, exactly as
     /// Line 6 Edit `EncodeParamChange` sends a knob or switch change.
     /// Edit-buffer write (G6); never stored.
@@ -66,6 +68,9 @@ impl Request for PodxtRequest {
             PodxtRequest::Identity => identity::REQUEST.to_vec(),
             PodxtRequest::EditBuffer => vec![0xf0, 0x00, 0x01, 0x0c, 0x03, 0x75, 0xf7],
             PodxtRequest::InstalledPacks => vec![0xf0, 0x00, 0x01, 0x0c, 0x03, 0x0e, 0x00, 0xf7],
+            PodxtRequest::ReleaseVariaxControl => {
+                vec![0xf0, 0x00, 0x01, 0x0c, 0x03, 0x23, 0x00, 0xf7]
+            }
             PodxtRequest::Set(control, value) => vec![0xb0, control.cc(), value.get()],
             PodxtRequest::SetAdditional(message) => message.bytes(),
             PodxtRequest::Program(location) => vec![0xc0, location.index() as u8],
@@ -105,6 +110,7 @@ impl Request for PodxtRequest {
             PodxtRequest::Set(..) => Operation::PodxtEditBufferWrite,
             PodxtRequest::SetAdditional(_) => Operation::PodxtAdditionalEditBufferWrite,
             PodxtRequest::Program(_) => Operation::PodxtChannelSwitch,
+            PodxtRequest::ReleaseVariaxControl => Operation::PodxtVariaxControlRelease,
             PodxtRequest::QueryGlobal(_) => Operation::PodxtGlobalRead,
             PodxtRequest::TunerMode(_) => Operation::PodxtTunerMode,
         }
@@ -1396,6 +1402,20 @@ fn identify_podxt<L: Link>(session: &mut Session<L>) -> Result<(Vec<u8>, Identit
     Ok((identity_reply, identity))
 }
 
+/// Send Workbench's standalone release after verifying the PODxt Live
+/// identity. The owner checks the EDIT page for the effect on the display.
+pub fn release_variax_control<L: Link>(session: &mut Session<L>) -> Result<Vec<u8>, String> {
+    if !session.allows(Operation::PodxtVariaxControlRelease) {
+        return Err("PODxt Live Variax control release is closed in this build.".into());
+    }
+    let (reply, identity) = identify_podxt(session)?;
+    if identity.member != PODXT_LIVE_MEMBER {
+        return Err("The reply is not from a PODxt Live. No release was sent.".into());
+    }
+    session.send(PodxtRequest::ReleaseVariaxControl)?;
+    Ok(reply)
+}
+
 /// Identity, then the edit-buffer request only if the reply is a PODxt.
 pub fn read_current<L: Link>(session: &mut Session<L>) -> Result<CurrentTone, String> {
     let (identity_reply, identity) = identify_podxt(session)?;
@@ -1939,6 +1959,40 @@ mod tests {
             ));
             assert_eq!(session.sent.len(), 2);
         }
+    }
+
+    #[test]
+    fn variax_control_release_requires_permission_and_podxt_live_identity() {
+        let mut log = Quiet;
+        let link = Fake::new::<PodxtRequest>(Path::PodxtMidi, vec![]);
+        let mut session = Session::new(link, &crate::gate::AllClosed, &mut log);
+        assert!(release_variax_control(&mut session).is_err());
+        assert!(session.link.writes.is_empty());
+
+        let mut other = PODXT_LIVE.to_vec();
+        other[10] = 0x09;
+        let script = vec![(PodxtRequest::Identity, vec![other])];
+        let mut session = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
+        assert!(release_variax_control(&mut session).is_err());
+        assert_eq!(session.link.writes, [identity::REQUEST.to_vec()]);
+    }
+
+    #[test]
+    fn variax_control_release_sends_only_identity_and_the_original_workbench_message() {
+        let script = vec![
+            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (PodxtRequest::ReleaseVariaxControl, vec![]),
+        ];
+        let mut log = Quiet;
+        let mut session = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
+        assert_eq!(release_variax_control(&mut session).unwrap(), PODXT_LIVE);
+        assert_eq!(
+            session.link.writes,
+            [
+                identity::REQUEST.to_vec(),
+                vec![0xf0, 0, 1, 0x0c, 3, 0x23, 0, 0xf7]
+            ]
+        );
     }
 
     #[test]
