@@ -32,16 +32,20 @@ impl GatePolicy for DeviceCheckPolicy {
             Operation::PodxtLibraryRead
             | Operation::VariaxPresetSwitch
             | Operation::PodxtPackQuery
-            | Operation::PodxtEditBufferWrite
-            // Operations added to the family crate on tools/device-controls;
-            // not opened in the app by this merge.
-            | Operation::PodxtAdditionalEditBufferWrite
-            | Operation::PodxtKeepEditBufferChanges
-            | Operation::PodxtChannelSwitch
-            | Operation::PodxtVariaxControlRelease
-            | Operation::PodxtLinkedVariaxModelEdit
-            | Operation::PodxtGlobalRead
-            | Operation::PodxtTunerMode => false,
+            | Operation::PodxtEditBufferWrite => false,
+            // Opened in the app on the owner's direct permission (2026-11-23,
+            // "open all 7"), each behind the gate for its kind of action.
+            Operation::PodxtGlobalRead | Operation::PodxtTunerMode => {
+                !hardware_gates::is_locked(Gate::DeviceCheckCurrentSettingsRead)
+            }
+            Operation::PodxtAdditionalEditBufferWrite => {
+                !hardware_gates::is_locked(Gate::DeviceCheckLiveTest)
+            }
+            Operation::PodxtKeepEditBufferChanges => !hardware_gates::is_locked(Gate::KeepLiveEdit),
+            Operation::PodxtChannelSwitch => !hardware_gates::is_locked(Gate::DeviceCheckChannel),
+            Operation::PodxtVariaxControlRelease | Operation::PodxtLinkedVariaxModelEdit => {
+                !hardware_gates::is_locked(Gate::EditBufferWrite)
+            }
         }
     }
 }

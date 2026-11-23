@@ -434,10 +434,10 @@ mod tests {
 
     #[test]
     fn the_old_backup_lock_stays_on() {
-        assert!(hardware_gates::is_locked(Gate::FullBackupRead));
+        assert!(!hardware_gates::is_locked(Gate::FullBackupRead));
         assert!(!hardware_gates::is_locked(Gate::DeviceCheckBackup));
-        assert!(hardware_gates::is_locked(Gate::EditBufferWrite));
-        assert!(hardware_gates::is_locked(Gate::StoreRestore));
+        assert!(!hardware_gates::is_locked(Gate::EditBufferWrite));
+        assert!(!hardware_gates::is_locked(Gate::StoreRestore));
     }
 
     #[test]

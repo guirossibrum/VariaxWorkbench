@@ -566,12 +566,22 @@ impl GatePolicy for TonePolicy {
             return false;
         }
         match self.gate {
-            Gate::DeviceCheckLiveTest | Gate::KeepLiveEdit => matches!(
+            Gate::DeviceCheckLiveTest => matches!(
                 operation,
                 Operation::PodxtIdentity
                     | Operation::PodxtRead
                     | Operation::PodxtPackQuery
                     | Operation::PodxtEditBufferWrite
+                    | Operation::PodxtAdditionalEditBufferWrite
+            ),
+            Gate::KeepLiveEdit => matches!(
+                operation,
+                Operation::PodxtIdentity
+                    | Operation::PodxtRead
+                    | Operation::PodxtPackQuery
+                    | Operation::PodxtEditBufferWrite
+                    | Operation::PodxtAdditionalEditBufferWrite
+                    | Operation::PodxtKeepEditBufferChanges
             ),
             Gate::DeviceCheckChannel => matches!(
                 operation,
@@ -579,6 +589,7 @@ impl GatePolicy for TonePolicy {
                     | Operation::PodxtRead
                     | Operation::PodxtLibraryRead
                     | Operation::PodxtEditBufferWrite
+                    | Operation::PodxtChannelSwitch
             ),
             _ => false,
         }
@@ -1383,7 +1394,9 @@ mod tests {
     }
 
     #[test]
-    fn keeping_a_change_sends_nothing() {
+    fn keeping_a_change_without_a_device_reply_sends_no_edit() {
+        // The keep gate is released (2026-11-23); with no reply from the
+        // device the keep stops before any controller change is sent.
         let mut log = Quiet;
         let mut session = Session::new(Fake::new(vec![]), &OpenPolicy, &mut log);
         let error = apply_live_settings(
@@ -1391,8 +1404,12 @@ mod tests {
             &[LiveTarget::Basic(Control::TREBLE, Target::Offset(1))],
         )
         .unwrap_err();
-        assert!(error.contains("stays off"), "{error}");
-        assert!(session.link.writes.is_empty());
+        assert!(!error.contains("stays off"), "{error}");
+        assert!(
+            !session.link.writes.iter().any(|w| w.first() == Some(&0xb0)),
+            "no controller change may be sent: {:?}",
+            session.link.writes
+        );
     }
 
     #[test]
@@ -1481,9 +1498,9 @@ mod tests {
         assert!(error.contains("nothing was sent"), "{error}");
         let error = run_channel("1A", |_| {}).unwrap_err();
         assert!(error.contains("nothing was sent"), "{error}");
-        assert!(hardware_gates::is_locked(Gate::KeepLiveEdit));
+        assert!(!hardware_gates::is_locked(Gate::KeepLiveEdit));
         assert!(!hardware_gates::is_locked(Gate::DeviceCheckLiveTest));
         assert!(!hardware_gates::is_locked(Gate::DeviceCheckChannel));
-        assert!(hardware_gates::is_locked(Gate::EditBufferWrite));
+        assert!(!hardware_gates::is_locked(Gate::EditBufferWrite));
     }
 }

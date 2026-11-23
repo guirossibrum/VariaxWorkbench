@@ -32,22 +32,24 @@ identity question, the backup asks once more on that connection, and if it is
 still quiet it gives the driver back and tries the connection once more. It
 does not store anything. Backup files stay ordinary writable files. The PODxt Live
 backup reads stored tones and setups and does not change the current tone.
-Nothing is written back. G4 and G6–G8 are not authorized. The owner decides
-which of these rules change. Do not drop a requested device option because an
-older gate note did not list it; ask the owner.
-Device check step 3 is governed by `G3_DEVICE_CHECK_READ_LOCKED`.
-`G3_CURRENT_SETTINGS_READ_LOCKED` stays true so the editor fetch stays off. Each later gate needs the owner's own direct permission. Permission for
-one gate never extends to another, and general permission to work on this
-project is not gate permission. The owner does not authorize a gate by signing
-a GitHub issue.
+Nothing is written back by the backups.
 
-Until the gate that covers an operation is both authorized and opened by its
-build: no `amidi` send/receive, direct USB scripts, updaters, resets, driver
-unbinds/detaches, audio streams, or any operation that contacts either device.
-Per-gate compile-time locks stay locked, with no environment, command-line,
-GUI, or test override, except the #158 build opening the G1 lock and the #159
-build opening the G2 lock, and the device-check step 3 read of both families.
-An open gate does not let an agent run the device. `usb::read_identity` and
+**On 2026-11-23 the owner released every gate (G1–G8) by direct permission:**
+all previous owner-run tests passed, and the next test writes to the stored
+banks of the Variax 600 and the PODxt Live. Every compile-time lock in
+`src/hardware_gates.rs` is open, and the app may use all operations of
+`crates/line6-devices`, each behind the gate for its kind of action. The owner
+approved the tests and implementations at that head. Firmware installation
+stays outside the product scope (below) even with G8 released, until the owner
+says otherwise. The owner decides which of these rules change. Do not drop a
+requested device option because an older gate note did not list it; ask the
+owner. General permission to work on this project is not gate permission, and
+the owner does not authorize anything by signing a GitHub issue.
+
+The gate structure stays even though every gate is released: each device path
+names its gate and goes through `run_if_unlocked`, and a gate is closed again
+by setting its constant back to `true`. There is no environment, command-line,
+GUI, or test override. An open gate does not let an agent run the device. `usb::read_identity` and
 the family reads return before enumeration in every test build. Use captured
 data, fake transports and CPU emulation. Agents do not run the real G1 step,
 the real G2 step, or the real step 3 read; the user runs those checks. Do not
@@ -55,7 +57,8 @@ read real `/proc` or `/sys`.
 
 Write gates (G6, G7) additionally require a verified backup (G5), the
 coefficient-parity decision recorded in #6/#22, and a separately approved
-restore procedure. Firmware (G8) is out of scope.
+restore procedure. Verified library backups of both devices exist; the
+restore procedure is part of the bank-write test. Firmware (G8) is out of scope.
 
 The owner directly authorized the item 2 G6 procedure on 2026-11-23 for the
 owner-run `tools/device-controls` worktree probe. It extends `podxt live-test`
@@ -92,9 +95,8 @@ F-T-Model 1, wait 10 seconds and verify the original guitar metadata and
 PODxt tone. This approval is limited to that worktree probe procedure and
 those two models. It includes no PODxt channel change or save.
 
-No preset upload, flash write, firmware install, or reset has been authorized.
-The only program changes the app may send are inside the Device check Variax
-library backup, which reads each stored preset and then tries to switch back.
+Stored-bank writes (G7) are released for the owner-run bank-write tests. No
+firmware install or reset is planned.
 Firmware downloads, version comparison, static extraction and offline
 reverse engineering are authorized. Latest firmware availability must not cause
 an automatic update. GitHub issues and the linked project contain the work plan.

@@ -442,6 +442,10 @@ pub fn read_identity(
 }
 
 pub fn read_current(cancel: &AtomicBool) -> Result<CurrentPreset, String> {
+    // A test build stops before enumeration, even with every gate open.
+    if cfg!(test) {
+        return Err("test builds do not open a USB device".into());
+    }
     hardware_gates::run_if_unlocked(Gate::IdentityRequest, || {
         hardware_gates::run_if_unlocked(Gate::CurrentSettingsRead, || {
             let mut session = Session::open()?;
@@ -461,19 +465,13 @@ pub fn read_current(cancel: &AtomicBool) -> Result<CurrentPreset, String> {
 mod tests {
     use super::*;
     #[test]
-    fn hard_lock_blocks_before_usb_enumeration_or_open() {
+    fn a_test_build_stops_before_usb_enumeration_or_open() {
+        // Every gate is released (2026-11-23); the test-build guard still
+        // returns before any USB enumeration.
         let error = read_current(&AtomicBool::new(false))
             .err()
-            .expect("live access must be locked");
-        assert!(error.contains("hardware gate") && error.contains("is locked"));
-        assert!(
-            error.contains("CurrentSettingsRead"),
-            "settings stay behind G3 after G2 is open: {error}"
-        );
-        assert!(
-            !error.contains("IdentityRequest"),
-            "G2 must not be the gate that stops a settings read: {error}"
-        );
+            .expect("a test build must not read a device");
+        assert!(error.contains("test builds do not open"), "{error}");
     }
 
     #[test]
@@ -553,7 +551,7 @@ mod tests {
     #[test]
     fn identity_entry_does_not_open_usb_from_a_test_build() {
         assert!(!hardware_gates::is_locked(Gate::IdentityRequest));
-        assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        assert!(!hardware_gates::is_locked(Gate::CurrentSettingsRead));
         // G2 is open, but this is a test build: the call returns before
         // enumeration. It must not be used as a live check.
         let error = read_identity(&AtomicBool::new(false)).expect_err("tests do not open USB");

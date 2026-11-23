@@ -1681,11 +1681,8 @@ mod tests {
                 Stage::ChangeCheck => false,
             };
             assert_eq!(live_stage_available(stage), live, "{stage:?}");
-            assert_eq!(
-                hardware_gates::is_locked(stage.gate()),
-                stage == Stage::ChangeCheck,
-                "{stage:?}"
-            );
+            // Every gate was released by the owner on 2026-11-23.
+            assert!(!hardware_gates::is_locked(stage.gate()), "{stage:?}");
         }
         assert!(Stage::UsbRecognition.action().contains("sends nothing"));
         assert!(Stage::UsbRecognition.risk().starts_with("Low risk"));

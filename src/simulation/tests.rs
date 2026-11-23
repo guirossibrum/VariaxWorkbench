@@ -412,11 +412,11 @@ fn simulation_never_enables_a_physical_backend() {
         // settings, audio, backup, or writes. This test does not open a device.
         assert!(!crate::hardware_gates::G1_OS_DISCOVERY_LOCKED);
         assert!(!crate::hardware_gates::G2_IDENTITY_REQUEST_LOCKED);
-        assert!(crate::hardware_gates::G3_CURRENT_SETTINGS_READ_LOCKED);
-        assert!(crate::hardware_gates::G4_AUDIO_CAPTURE_LOCKED);
-        assert!(crate::hardware_gates::G5_FULL_BACKUP_READ_LOCKED);
-        assert!(crate::hardware_gates::G6_EDIT_BUFFER_WRITE_LOCKED);
-        assert!(crate::hardware_gates::G7_STORE_RESTORE_LOCKED);
+        assert!(!crate::hardware_gates::G3_CURRENT_SETTINGS_READ_LOCKED);
+        assert!(!crate::hardware_gates::G4_AUDIO_CAPTURE_LOCKED);
+        assert!(!crate::hardware_gates::G5_FULL_BACKUP_READ_LOCKED);
+        assert!(!crate::hardware_gates::G6_EDIT_BUFFER_WRITE_LOCKED);
+        assert!(!crate::hardware_gates::G7_STORE_RESTORE_LOCKED);
     }
 }
 

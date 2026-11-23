@@ -1,5 +1,14 @@
 # Rig 1 hardware gates
 
+> **2026-11-23: all gates released.** The owner released every gate (G1–G8)
+> by direct permission after all earlier owner-run tests passed, so that the
+> next owner-run test can write to the stored banks of the Variax 600 and the
+> PODxt Live. Every compile-time lock in `src/hardware_gates.rs` is open; each
+> device path still goes through its gate, and a gate closes again by setting
+> its constant back to `true`. Firmware installation stays out of product scope.
+> Agents still do not run the devices; the owner runs every device step. The
+> gate descriptions below remain the record of what each gate covers.
+
 This page describes the G1–G8 operation boundaries for the PODxt Live and
 Variax 600. **G1 is authorized by the owner's direct permission (2026-11-22)**,
 for the procedure recorded in [the G1 ledger](hardware-gates/g1.md) only. That

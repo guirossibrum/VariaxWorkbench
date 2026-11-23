@@ -914,7 +914,7 @@ mod tests {
     fn stage_two_uses_the_fake_connection_and_does_not_open_a_device() {
         assert!(!hardware_gates::is_locked(Gate::IdentityRequest));
         assert!(!hardware_gates::is_locked(Gate::OsDiscovery));
-        assert!(hardware_gates::is_locked(Gate::CurrentSettingsRead));
+        assert!(!hardware_gates::is_locked(Gate::CurrentSettingsRead));
         assert!(device_probe::LIVE_STAGES.contains(&Stage::Identification));
         // Live step 2 needs Linux and the usb feature. These tests never call it.
         assert_eq!(
