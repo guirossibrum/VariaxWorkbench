@@ -11,6 +11,9 @@
 pub mod controls;
 pub mod models;
 
+mod live_settings;
+pub use live_settings::{LiveControl, LiveTarget, Setting, SettingMessage};
+
 use crate::gate::Operation;
 use crate::identity::{self, Identity};
 use crate::midi::ControllerTally;
@@ -18,6 +21,7 @@ use crate::session::{Link, Path, Request, Session, Wait};
 use std::time::Duration;
 
 pub const IDENTITY_FAMILY: u16 = 0x0003;
+const PODXT_LIVE_MEMBER: u16 = 0x000a;
 /// Line 6 Edit waits 1 s for the edit buffer; this allows a little more.
 const WINDOW: Duration = Duration::from_secs(2);
 pub const EDIT_BUFFER_LEN: usize = 168;
@@ -25,7 +29,7 @@ pub const LISTEN_MAX: Duration = Duration::from_secs(30);
 
 pub fn member_name(member: u16) -> &'static str {
     match member {
-        0x000a => "PODxt Live",
+        PODXT_LIVE_MEMBER => "PODxt Live",
         _ => "PODxt family (unverified member)",
     }
 }
@@ -45,6 +49,8 @@ pub enum PodxtRequest {
     /// Line 6 Edit `EncodeParamChange` sends a knob or switch change.
     /// Edit-buffer write (G6); never stored.
     Set(Control, Value),
+    /// One half or the entirety of an additional PODxt Live setting.
+    SetAdditional(SettingMessage),
     /// Select a stored tone as the playing channel: `C0 <index>` (Line 6
     /// Edit `ChangeDeviceProgram`, `m_pc_offset` 0 on the PODxt Live).
     Program(Location),
@@ -61,6 +67,7 @@ impl Request for PodxtRequest {
             PodxtRequest::EditBuffer => vec![0xf0, 0x00, 0x01, 0x0c, 0x03, 0x75, 0xf7],
             PodxtRequest::InstalledPacks => vec![0xf0, 0x00, 0x01, 0x0c, 0x03, 0x0e, 0x00, 0xf7],
             PodxtRequest::Set(control, value) => vec![0xb0, control.cc(), value.get()],
+            PodxtRequest::SetAdditional(message) => message.bytes(),
             PodxtRequest::Program(location) => vec![0xc0, location.index() as u8],
             PodxtRequest::QueryGlobal(global) => {
                 vec![0xf0, 0x00, 0x01, 0x0c, 0x03, 0x57, global.id(), 0xf7]
@@ -96,6 +103,7 @@ impl Request for PodxtRequest {
             PodxtRequest::Stored(_) => Operation::PodxtLibraryRead,
             PodxtRequest::InstalledPacks => Operation::PodxtPackQuery,
             PodxtRequest::Set(..) => Operation::PodxtEditBufferWrite,
+            PodxtRequest::SetAdditional(_) => Operation::PodxtAdditionalEditBufferWrite,
             PodxtRequest::Program(_) => Operation::PodxtChannelSwitch,
             PodxtRequest::QueryGlobal(_) => Operation::PodxtGlobalRead,
             PodxtRequest::TunerMode(_) => Operation::PodxtTunerMode,
@@ -124,11 +132,9 @@ pub enum Kind {
 /// Live settings a front end may change (closed list). Every entry is one
 /// controller message in Line 6 Edit 3.06 `EncodeParamChange` with the value
 /// encoding of its [`Kind`], and is present on the PODxt Live (guitar). Not
-/// here on purpose: bass-PODxt-only controls (crossovers, DI, EQ bands 5-6,
-/// EQ pre/post), gate threshold (dB-encoded), integer selectors (mic, NOTE,
-/// tweak parameter, pedal assign), two-byte speed/time and tempo, model
-/// selections (pack checks, amp defaults), the Variax-wrapped controls, which
-/// are forwarded to the guitar, and the FX loop switch (CC 107): the PODxt
+/// here on purpose: the additional encodings in [`Setting`], bass-PODxt-only
+/// controls, Variax-wrapped controls forwarded to the guitar, and the FX
+/// loop switch (CC 107): the PODxt
 /// Live has no effects loop and ignored it in an owner test (no echo).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Control {
@@ -465,9 +471,18 @@ impl Control {
         }
     }
 
-    /// A stored value as people read it: on/off, or the knob position.
+    pub fn is_routing(self) -> bool {
+        matches!(
+            self,
+            Self::ModPrePost | Self::DelayPrePost | Self::ReverbPrePost | Self::VolumePedalPrePost
+        )
+    }
+
+    /// A stored value as people read it: routing, on/off, or knob position.
     pub fn describe(self, stored: u8) -> String {
-        if self.is_switch() {
+        if self.is_routing() {
+            (if self.is_on(stored) { "post" } else { "pre" }).to_owned()
+        } else if self.is_switch() {
             (if self.is_on(stored) { "on" } else { "off" }).to_owned()
         } else {
             format!("{stored} ({:.1}%)", f32::from(stored) / 127.0 * 100.0)
@@ -508,9 +523,9 @@ pub enum Target {
 /// One requested change, resolved: `original` is what the tone held.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Change {
-    pub control: Control,
-    pub original: u8,
-    pub target: u8,
+    pub control: LiveControl,
+    pub original: u16,
+    pub target: u16,
 }
 
 /// Result of a live-edit test.
@@ -554,14 +569,6 @@ fn device_originated(tally: &ControllerTally, sent: &[(u8, u8)]) -> Vec<(u8, u8)
         .collect()
 }
 
-fn matches_target(control: Control, stored: u8, target: u8) -> bool {
-    if control.is_switch() {
-        control.is_on(stored) == control.is_on(target)
-    } else {
-        stored == target
-    }
-}
-
 impl LiveEditTest {
     /// Each change, and whether the tone read afterwards shows it.
     pub fn applied(&self) -> Vec<(Change, bool)> {
@@ -569,7 +576,9 @@ impl LiveEditTest {
             .iter()
             .map(|change| {
                 let ok = self.after.as_ref().is_ok_and(|after| {
-                    matches_target(change.control, after.cc(change.control.cc()), change.target)
+                    change
+                        .control
+                        .matches(change.control.read(after), change.target)
                 });
                 (*change, ok)
             })
@@ -584,7 +593,11 @@ impl LiveEditTest {
     /// Controllers that changed although they were not asked to (for
     /// example a physical knob drifting): `(cc, before, after)`.
     pub fn unexpected(&self) -> Vec<(u8, u8, u8)> {
-        let asked: Vec<u8> = self.changes.iter().map(|c| c.control.cc()).collect();
+        let asked: Vec<u8> = self
+            .changes
+            .iter()
+            .flat_map(|c| [c.control.cc()].into_iter().chain(c.control.low_cc()))
+            .collect();
         match &self.after {
             Ok(after) => self
                 .before
@@ -606,108 +619,166 @@ impl LiveEditTest {
         }
     }
 
+    /// The full edit-buffer reply matches its snapshot before the test.
+    pub fn exact_undo(&self) -> bool {
+        self.undo_sent.is_ok()
+            && self
+                .restored
+                .as_ref()
+                .is_ok_and(|tone| self.before.raw == tone.raw)
+    }
+
     /// Every changed control holds its original value again.
     pub fn undone(&self) -> bool {
         self.undo_sent.is_ok()
             && self.restored.as_ref().is_ok_and(|restored| {
                 self.changes
                     .iter()
-                    .all(|c| matches_target(c.control, restored.cc(c.control.cc()), c.original))
+                    .all(|c| c.control.matches(c.control.read(restored), c.original))
             })
     }
 }
 
-/// G6 live-edit test: read the active tone, send every change, read again,
-/// send every original value back (reverse order), read again. The undo is
-/// sent for every change that was sent, even when a later step fails.
-/// Nothing is stored to memory. A control may appear only once.
+/// G6 live-edit test for the previously verified single-controller controls.
 pub fn live_edit_test<L: Link>(
     session: &mut Session<L>,
     targets: &[(Control, Target)],
 ) -> Result<LiveEditTest, String> {
+    let targets: Vec<_> = targets
+        .iter()
+        .map(|&(control, target)| LiveTarget::Basic(control, target))
+        .collect();
+    live_settings_test(session, &targets)
+}
+
+/// Apply an explicitly selected group of G6 changes to the edit buffer,
+/// read back, restore the original values, and read back again.
+pub fn live_settings_test<L: Link>(
+    session: &mut Session<L>,
+    targets: &[LiveTarget],
+) -> Result<LiveEditTest, String> {
     if targets.is_empty() {
         return Err("No changes requested.".into());
     }
-    for (i, (control, _)) in targets.iter().enumerate() {
-        if targets[..i].iter().any(|(other, _)| other == control) {
+    let additional = targets
+        .iter()
+        .any(|target| matches!(target, LiveTarget::Additional(..)));
+    if additional && !session.allows(Operation::PodxtAdditionalEditBufferWrite) {
+        return Err("Additional PODxt Live edits are closed in this build.".into());
+    }
+    if targets
+        .iter()
+        .any(|target| matches!(target, LiveTarget::Basic(..)))
+        && !session.allows(Operation::PodxtEditBufferWrite)
+    {
+        return Err("PODxt edit-buffer writes are closed in this build.".into());
+    }
+    for (i, &target) in targets.iter().enumerate() {
+        target.validate()?;
+        let control = target.control();
+        if targets[..i].iter().any(|other| other.control() == control) {
             return Err(format!("{} is listed twice.", control.name()));
         }
     }
-    let (identity_reply, _) = identify_podxt(session)?;
+
+    let (identity_reply, identity) = identify_podxt(session)?;
+    if additional && identity.member != PODXT_LIVE_MEMBER {
+        return Err("Additional edits require the PODxt Live identity. No edits were sent.".into());
+    }
     let before = read_edit_buffer(session)?;
-    let changes: Vec<Change> = targets
+    let mut changes: Vec<Change> = targets
         .iter()
-        .map(|&(control, target)| {
-            let original = before.cc(control.cc());
-            let target = match target {
-                Target::Value(value) => value.get(),
-                Target::On => control.switch_value(true),
-                Target::Off => control.switch_value(false),
-                Target::Toggle if control.is_switch() => {
-                    control.switch_value(!control.is_on(original))
-                }
-                Target::Toggle => 127 - original,
-                Target::Offset(step) => {
-                    let moved = i16::from(original) + i16::from(step);
-                    let bounced = if (0..=127).contains(&moved) {
-                        moved
-                    } else {
-                        i16::from(original) - i16::from(step)
-                    };
-                    bounced.clamp(0, 127) as u8
-                }
-            };
+        .map(|&target| {
+            let control = target.control();
+            let original = control.read(&before);
             Change {
                 control,
                 original,
-                target,
+                target: target.resolve(original),
             }
         })
         .collect();
+
+    let has_model = changes.iter().any(
+        |change| matches!(change.control, LiveControl::Additional(setting) if setting.model_list().is_some()),
+    );
+    if has_model {
+        let packs = query_packs(session)?;
+        for change in &changes {
+            if let LiveControl::Additional(setting) = change.control {
+                setting.check_model(change.target, packs, "requested")?;
+                setting.check_model(change.original, packs, "original (needed for undo)")?;
+            }
+        }
+    }
+    changes.sort_by_key(|change| change.control.order(change.target));
+
     let mut sent = 0;
+    let mut attempted = 0;
+    let mut sent_forward = Vec::new();
     let mut send_error = None;
-    for change in &changes {
-        if let Err(error) = session.send(PodxtRequest::Set(change.control, Value(change.target))) {
-            send_error = Some(error);
-            break;
+    'changes: for change in &changes {
+        attempted += 1;
+        for (cc, value, request) in change.control.messages(change.target) {
+            if let Err(error) = session.send(request) {
+                send_error = Some(error);
+                break 'changes;
+            }
+            sent_forward.push((cc, value));
+            session.link.pause(CC_GAP);
         }
         sent += 1;
-        session.link.pause(CC_GAP);
     }
-    let sent_forward: Vec<(u8, u8)> = changes[..sent]
-        .iter()
-        .map(|c| (c.control.cc(), c.target))
-        .collect();
     let mut device_sent_after_changes = Vec::new();
     let after = match send_error {
         Some(error) => Err(error),
-        None => {
-            session.link.pause(APPLY);
-            let tally = session.listen(Duration::from_millis(50))?;
-            device_sent_after_changes = device_originated(&tally, &sent_forward);
-            read_edit_buffer(session)
-        }
+        None => check_live_settings(session, &sent_forward, &mut device_sent_after_changes),
     };
-    let mut undo_sent = Ok(());
-    for change in changes[..sent].iter().rev() {
-        if let Err(error) = session.send(PodxtRequest::Set(change.control, Value(change.original)))
-        {
-            undo_sent = Err(error);
-        }
-        session.link.pause(CC_GAP);
-    }
-    let sent_back: Vec<(u8, u8)> = changes[..sent]
+
+    // A failed send can have reached the device. Undo even the partially
+    // transmitted setting, with 14-bit values always sent high byte first.
+    let mut undo: Vec<_> = changes[..attempted]
         .iter()
         .rev()
-        .map(|c| (c.control.cc(), c.original))
+        .map(|change| change.control)
         .collect();
+    undo.sort_by_key(|control| control.order(control.read(&before)));
+    let (mut undo_sent, sent_back) = undo_settings(session, &before, &undo);
     let mut device_sent_after_undo = Vec::new();
-    let restored = undo_sent.clone().and_then(|()| {
-        session.link.pause(APPLY);
-        let tally = session.listen(Duration::from_millis(50))?;
-        device_sent_after_undo = device_originated(&tally, &sent_back);
-        read_edit_buffer(session)
-    });
+    let mut restored = check_live_settings(session, &sent_back, &mut device_sent_after_undo);
+
+    if let Ok(readback) = &restored {
+        // A model or timing change can also affect settings in the same
+        // block. Reapply only changed companions whose encoding is known.
+        let mut companions = Vec::new();
+        for control in undo {
+            for &companion in control.undo_companions() {
+                if companion.read(readback) != companion.read(&before)
+                    && !companions.contains(&companion)
+                {
+                    companions.push(companion);
+                }
+            }
+        }
+        for (timing, note) in [
+            (Setting::ModSpeed, Setting::ModNote),
+            (Setting::DelayTime, Setting::DelayNote),
+        ] {
+            let note = LiveControl::Additional(note);
+            if companions.contains(&LiveControl::Additional(timing))
+                && note.read(&before) != 0
+                && !companions.contains(&note)
+            {
+                companions.push(note);
+            }
+        }
+        if !companions.is_empty() {
+            companions.sort_by_key(|control| control.order(control.read(&before)));
+            let (repair_sent, sent_back) = undo_settings(session, &before, &companions);
+            undo_sent = undo_sent.and(repair_sent);
+            restored = check_live_settings(session, &sent_back, &mut device_sent_after_undo);
+        }
+    }
     Ok(LiveEditTest {
         identity_reply,
         before,
@@ -719,6 +790,36 @@ pub fn live_edit_test<L: Link>(
         device_sent_after_changes,
         device_sent_after_undo,
     })
+}
+
+fn undo_settings<L: Link>(
+    session: &mut Session<L>,
+    before: &EditBuffer,
+    controls: &[LiveControl],
+) -> (Result<(), String>, Vec<(u8, u8)>) {
+    let mut status = Ok(());
+    let mut sent = Vec::new();
+    for &control in controls {
+        for (cc, value, request) in control.messages(control.read(before)) {
+            match session.send(request) {
+                Ok(()) => sent.push((cc, value)),
+                Err(error) => status = Err(error),
+            }
+            session.link.pause(CC_GAP);
+        }
+    }
+    (status, sent)
+}
+
+fn check_live_settings<L: Link>(
+    session: &mut Session<L>,
+    sent: &[(u8, u8)],
+    device_sent: &mut Vec<(u8, u8)>,
+) -> Result<EditBuffer, String> {
+    session.link.pause(APPLY);
+    let tally = session.listen(Duration::from_millis(50))?;
+    device_sent.extend(device_originated(&tally, sent));
+    read_edit_buffer(session)
 }
 
 /// Tuner mode controller (Line 6 Edit `SetTunerMode`).
@@ -1138,9 +1239,13 @@ fn is_packs_reply(message: &[u8]) -> bool {
 /// Identity, then the installed-pack query (reply: 9 bytes, mask at byte 7).
 pub fn read_packs<L: Link>(session: &mut Session<L>) -> Result<(Vec<u8>, Packs), String> {
     let (identity_reply, _) = identify_podxt(session)?;
+    Ok((identity_reply, query_packs(session)?))
+}
+
+fn query_packs<L: Link>(session: &mut Session<L>) -> Result<Packs, String> {
     session.send(PodxtRequest::InstalledPacks)?;
     match session.wait_for(WINDOW, is_packs_reply, false)? {
-        Wait::Found(reply) => Ok((identity_reply, Packs(reply[7]))),
+        Wait::Found(reply) => Ok(Packs(reply[7])),
         _ => Err("No installed-pack reply arrived.".into()),
     }
 }
@@ -1717,6 +1822,232 @@ mod tests {
         assert_eq!(Control::from_name("vol-pedal-min").unwrap().cc(), 46);
         for control in Control::ALL {
             assert!(controls::name(control.cc()).is_some(), "{control:?}");
+        }
+    }
+
+    fn packs_reply(mask: u8) -> Vec<u8> {
+        vec![0xf0, 0, 1, 0x0c, 3, 0x0e, 0, mask, 0xf7]
+    }
+
+    fn setting_message(setting: Setting, value: u16, byte_index: usize) -> PodxtRequest {
+        LiveControl::Additional(setting)
+            .messages(value)
+            .nth(byte_index)
+            .unwrap()
+            .2
+    }
+
+    #[test]
+    fn model_selection_checks_both_models_before_any_edit() {
+        let locked = Setting::AmpModel.model_index(0x00020002).unwrap();
+        for (current, wanted, reply, failure) in [
+            (22, locked, Some(packs_reply(4)), "requested model"),
+            (
+                locked,
+                22,
+                Some(packs_reply(4)),
+                "original (needed for undo) model",
+            ),
+            (127, 22, Some(packs_reply(4)), "outside the PODxt Live list"),
+            (22, 3, None, "No installed-pack reply"),
+        ] {
+            let mut log = Quiet;
+            let script = vec![
+                (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+                (PodxtRequest::EditBuffer, vec![with(&[(12, current as u8)])]),
+                (PodxtRequest::InstalledPacks, reply.into_iter().collect()),
+            ];
+            let mut session = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
+            let targets = [
+                LiveTarget::Basic(Control::Drive, Target::Offset(1)),
+                LiveTarget::Additional(Setting::AmpModel, wanted),
+            ];
+            assert!(
+                live_settings_test(&mut session, &targets)
+                    .err()
+                    .unwrap()
+                    .contains(failure)
+            );
+            assert_eq!(session.link.writes.len(), 3);
+        }
+    }
+
+    #[test]
+    fn additional_edits_require_their_own_gate_and_the_live_member() {
+        struct ReadAndBasic;
+        impl crate::gate::GatePolicy for ReadAndBasic {
+            fn allows(&self, operation: Operation) -> bool {
+                operation != Operation::PodxtAdditionalEditBufferWrite
+            }
+        }
+        let targets = [LiveTarget::Additional(Setting::Tempo, 1135)];
+        let mut log = Quiet;
+        let mut session = Session::new(
+            Fake::new::<PodxtRequest>(Path::PodxtMidi, vec![]),
+            &ReadAndBasic,
+            &mut log,
+        );
+        assert!(
+            live_settings_test(&mut session, &targets)
+                .err()
+                .unwrap()
+                .contains("closed")
+        );
+        assert!(session.link.writes.is_empty());
+
+        let mut other = PODXT_LIVE.to_vec();
+        other[10] = 0x09;
+        let script = vec![(PodxtRequest::Identity, vec![other])];
+        let mut session = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
+        let invalid = [LiveTarget::Additional(Setting::Tempo, 2500)];
+        assert!(
+            live_settings_test(&mut session, &invalid)
+                .err()
+                .unwrap()
+                .contains("invalid")
+        );
+        assert!(session.link.writes.is_empty());
+        assert!(
+            live_settings_test(&mut session, &targets)
+                .err()
+                .unwrap()
+                .contains("PODxt Live identity")
+        );
+        assert_eq!(session.link.writes.len(), 1);
+    }
+
+    #[test]
+    fn fx_junkie_model_and_tempo_are_verified_and_block_side_effects_are_undone() {
+        let mut log = Quiet;
+        let before = with(&[(75, 0), (79, 37), (89, 9), (90, 48)]);
+        let after = with(&[(75, 15), (79, 63), (89, 8), (90, 111)]);
+        let intermediate = with(&[(75, 0), (79, 55), (89, 9), (90, 48)]);
+        let tempo = |value, byte| setting_message(Setting::Tempo, value, byte);
+        let stomp = |value| setting_message(Setting::StompModel, value, 0);
+        let script = vec![
+            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (PodxtRequest::EditBuffer, vec![before.clone()]),
+            (PodxtRequest::InstalledPacks, vec![packs_reply(4)]),
+            (stomp(15), vec![]),
+            (tempo(1135, 0), vec![]),
+            (tempo(1135, 1), vec![]),
+            (PodxtRequest::EditBuffer, vec![after]),
+            (stomp(0), vec![]),
+            (tempo(1200, 0), vec![]),
+            (tempo(1200, 1), vec![]),
+            (PodxtRequest::EditBuffer, vec![intermediate]),
+            (set(Control::StompParam2, 37), vec![]),
+            (PodxtRequest::EditBuffer, vec![before]),
+        ];
+        let mut session = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
+        let targets = [
+            LiveTarget::Additional(Setting::Tempo, 1135),
+            LiveTarget::Additional(Setting::StompModel, 15),
+        ];
+        let test = live_settings_test(&mut session, &targets).unwrap();
+        assert_eq!(test.sent, 2);
+        assert_eq!(test.unexpected(), [(79, 37, 63)]);
+        assert!(test.stuck() && test.exact_undo());
+    }
+
+    #[test]
+    fn a_failed_second_byte_still_restores_the_full_original_pair() {
+        struct FailedSend(Fake);
+        impl Link for FailedSend {
+            fn path(&self) -> Path {
+                self.0.path()
+            }
+            fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
+                self.0.write(bytes)?;
+                if bytes == [0xb0, 62, 1] {
+                    return Err("write failed".into());
+                }
+                Ok(())
+            }
+            fn read(&mut self, wait: Duration) -> Result<Option<Vec<u8>>, String> {
+                self.0.read(wait)
+            }
+            fn elapsed(&self) -> Duration {
+                self.0.elapsed()
+            }
+            fn pause(&mut self, duration: Duration) {
+                self.0.pause(duration);
+            }
+        }
+
+        let mut log = Quiet;
+        let before = with(&[(30, 42), (62, 7)]);
+        let delay = |value, byte| setting_message(Setting::DelayTime, value, byte);
+        let script = vec![
+            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (PodxtRequest::EditBuffer, vec![before.clone()]),
+            (delay(8193, 0), vec![]),
+            (delay(8193, 1), vec![]),
+            (delay((42 << 7) | 7, 0), vec![]),
+            (delay((42 << 7) | 7, 1), vec![]),
+            (PodxtRequest::EditBuffer, vec![before]),
+        ];
+        let mut session = Session::new(
+            FailedSend(Fake::new(Path::PodxtMidi, script)),
+            &AllowAll,
+            &mut log,
+        );
+        let test = live_settings_test(
+            &mut session,
+            &[LiveTarget::Additional(Setting::DelayTime, 8193)],
+        )
+        .unwrap();
+        assert_eq!(test.sent, 0);
+        assert!(matches!(&test.after, Err(error) if error == "write failed"));
+        assert!(test.restored.is_ok() && test.undo_sent.is_ok());
+        assert_eq!(session.link.0.writes.len(), 7);
+    }
+
+    #[test]
+    fn manual_timing_goes_after_sync_off_and_before_restoring_sync() {
+        let mut log = Quiet;
+        let before = with(&[(31, 4), (30, 42), (62, 7)]);
+        let after = with(&[(31, 0), (30, 64), (62, 1)]);
+        let note = |value| setting_message(Setting::DelayNote, value, 0);
+        let time = |value, byte| setting_message(Setting::DelayTime, value, byte);
+        let script = vec![
+            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (PodxtRequest::EditBuffer, vec![before.clone()]),
+            (note(0), vec![]),
+            (time(8193, 0), vec![]),
+            (time(8193, 1), vec![]),
+            (PodxtRequest::EditBuffer, vec![after]),
+            (time((42 << 7) | 7, 0), vec![]),
+            (time((42 << 7) | 7, 1), vec![]),
+            (note(4), vec![]),
+            (PodxtRequest::EditBuffer, vec![before]),
+        ];
+        let mut session = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
+        let targets = [
+            LiveTarget::Additional(Setting::DelayTime, 8193),
+            LiveTarget::Additional(Setting::DelayNote, 0),
+        ];
+        let test = live_settings_test(&mut session, &targets).unwrap();
+        assert!(test.stuck() && test.exact_undo());
+    }
+
+    #[test]
+    fn routing_switches_use_pre_zero_and_post_127() {
+        for (control, cc) in [
+            (Control::VolumePedalPrePost, 47),
+            (Control::ModPrePost, 57),
+            (Control::DelayPrePost, 87),
+        ] {
+            assert_eq!(
+                set(control, control.switch_value(false)).bytes(),
+                [0xb0, cc, 0]
+            );
+            assert_eq!(
+                set(control, control.switch_value(true)).bytes(),
+                [0xb0, cc, 127]
+            );
+            assert_eq!(control.describe(0), "pre");
+            assert_eq!(control.describe(127), "post");
         }
     }
 

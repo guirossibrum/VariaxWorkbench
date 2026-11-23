@@ -24,6 +24,8 @@ pub enum Operation {
     /// PODxt-family edit-buffer write (G6): a controller change that alters
     /// the active tone only. Nothing here stores to memory.
     PodxtEditBufferWrite,
+    /// PODxt Live item 2 edit-buffer settings (G6), including model and timing changes.
+    PodxtAdditionalEditBufferWrite,
     /// PODxt-family program change: selects the playing channel (like the
     /// footswitch). Discards unsaved edits; stores nothing.
     PodxtChannelSwitch,

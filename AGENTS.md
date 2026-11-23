@@ -25,6 +25,18 @@ Write gates (G6, G7) additionally require a verified backup (G5), the
 coefficient-parity decision recorded in #6/#22, and a separately approved
 restore procedure. Firmware (G8) is out of scope.
 
+The owner directly authorized the item 2 G6 procedure on 2026-11-23 for the
+owner-run `tools/device-controls` worktree probe. It extends `podxt live-test`
+to the seven pack-checked model selectors, gate threshold, mic, Mod/Delay
+NOTE, tweak parameter, pedal assignment, Mod speed, Delay time and tempo.
+The probe snapshots the current tone, reads back the edits, attempts undo
+including changed companion values in the affected blocks, and verifies the
+full tone dump. Amp model selection uses CC 12 with amp defaults disabled.
+This authorization applies only to the probe on this branch; the owner
+runs it. It does not authorize preset storage, an automatic program change,
+GUI writes, or Variax writes. The prior PODxt G6 test's verified backup and
+owner-approved edit-buffer undo are recorded in the README ledger.
+
 No preset upload, flash write, firmware install, reset, or bank switching has been
 authorized. Firmware downloads, version comparison, static extraction and offline
 reverse engineering are authorized. Latest firmware availability must not cause

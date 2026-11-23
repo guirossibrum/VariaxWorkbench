@@ -36,7 +36,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// The owner's direct permissions for this tool (2026-11-22). Nothing else.
+/// The owner's direct permissions for this worktree-only tool.
 struct OwnerGrants;
 
 impl GatePolicy for OwnerGrants {
@@ -56,9 +56,10 @@ impl GatePolicy for OwnerGrants {
             // Owner's direct permission 2026-11-22: Line 6 Edit's read-only
             // installed model-pack query (`03 0E 00`).
             Operation::PodxtPackQuery => true,
-            // G6, owner's direct approval 2026-11-22, for `podxt stomp-test` only:
-            // CC 25 stomp toggle in the edit buffer with automatic undo. No store.
+            // G6, owner-approved single-controller edit-buffer tests and undo.
             Operation::PodxtEditBufferWrite => true,
+            // G6, direct owner approval for item 2 in this worktree tool only.
+            Operation::PodxtAdditionalEditBufferWrite => true,
             // Owner's request 2026-11-23: select the playing channel by program
             // change (like the footswitch). Refused on unsaved edits; no store.
             Operation::PodxtChannelSwitch => true,
@@ -72,9 +73,10 @@ impl GatePolicy for OwnerGrants {
 const USAGE: &str = "Usage: variax-probe variax identity|read|listen [SECONDS]|library [--out DIR]
        variax-probe podxt read|listen [SECONDS]|library [--out DIR]
        variax-probe podxt channel|channel-test CHANNEL [--from CHANNEL] [--out DIR]
+       variax-probe podxt live-test [all|NAME=VALUE ...] --out DIR
        variax-probe podxt status|tuner [SECONDS] [--out DIR]
        variax-probe compare FIRST_BACKUP SECOND_BACKUP
-Read-only. Run it yourself; it contacts the connected PODxt Live and Variax.
+Device commands are owner-run. Live tests change the edit buffer and attempt undo.
 --out is required for device commands (library backups: the repo's backups/,
 everything else: analysis/captures/), so captures never land in the current folder.";
 
@@ -89,7 +91,7 @@ enum Command {
     PodxtLibrary,
     Compare(PathBuf, PathBuf),
     PodxtPacks,
-    PodxtLiveTest(Vec<(podxt::Control, podxt::Target)>),
+    PodxtLiveTest(Vec<podxt::LiveTarget>),
     PodxtStatus,
     PodxtTuner(u64),
     PodxtChannel {
@@ -151,7 +153,7 @@ impl Command {
                 "PODxt identity, current tone, stored tones, program change to the channel, current tone, program change back, current tone"
             }
             Command::PodxtLiveTest(_) => {
-                "PODxt identity, current tone, live changes (one CC each), current tone, original values back (undo), current tone"
+                "PODxt identity, current tone, pack query for model changes, live edits, read, undo, read"
             }
         }
     }
@@ -186,9 +188,10 @@ fn parse(args: &[String]) -> Result<(Command, Option<PathBuf>), String> {
         ["variax", "library"] => Command::VariaxLibrary,
         ["podxt", "library"] => Command::PodxtLibrary,
         ["podxt", "packs"] => Command::PodxtPacks,
-        ["podxt", "stomp-test"] => {
-            Command::PodxtLiveTest(vec![(podxt::Control::StompEnable, podxt::Target::Toggle)])
-        }
+        ["podxt", "stomp-test"] => Command::PodxtLiveTest(vec![podxt::LiveTarget::Basic(
+            podxt::Control::StompEnable,
+            podxt::Target::Toggle,
+        )]),
         ["podxt", "live-test", rest @ ..] => Command::PodxtLiveTest(live_targets(rest)?),
         ["podxt", "status"] => Command::PodxtStatus,
         ["podxt", "tuner"] => Command::PodxtTuner(15),
@@ -491,9 +494,9 @@ const DEFAULT_LIVE: [&str; 6] = [
     "mid=-20",
 ];
 
-fn live_targets(words: &[&str]) -> Result<Vec<(podxt::Control, podxt::Target)>, String> {
+fn live_targets(words: &[&str]) -> Result<Vec<podxt::LiveTarget>, String> {
     if words == ["all"] {
-        // Every live control: switches toggled, knobs moved 20 steps.
+        // Preserve the existing test set. Models and selectors need explicit values.
         return Ok(podxt::Control::ALL
             .iter()
             .map(|&control| {
@@ -502,7 +505,7 @@ fn live_targets(words: &[&str]) -> Result<Vec<(podxt::Control, podxt::Target)>, 
                 } else {
                     podxt::Target::Offset(20)
                 };
-                (control, target)
+                podxt::LiveTarget::Basic(control, target)
             })
             .collect());
     }
@@ -511,19 +514,30 @@ fn live_targets(words: &[&str]) -> Result<Vec<(podxt::Control, podxt::Target)>, 
     } else {
         words.to_vec()
     };
-    let names: Vec<&str> = podxt::Control::ALL.iter().map(|c| c.name()).collect();
+    let names: Vec<&str> = podxt::Control::ALL
+        .iter()
+        .map(|c| c.name())
+        .chain(podxt::Setting::ALL.iter().map(|s| s.name()))
+        .collect();
     words
         .iter()
         .map(|word| {
             let (name, value) = word
                 .split_once('=')
                 .ok_or(format!("{word}: use NAME=VALUE"))?;
+            if let Some(setting) = podxt::Setting::from_name(name) {
+                return setting
+                    .parse(value)
+                    .map(|value| podxt::LiveTarget::Additional(setting, value));
+            }
             let control = podxt::Control::from_name(name).ok_or(format!(
                 "{name}: not a live control (allowed: {})",
                 names.join(", ")
             ))?;
             let target = match (control.is_switch(), value) {
                 (_, "toggle") => podxt::Target::Toggle,
+                (true, "pre") if control.is_routing() => podxt::Target::Off,
+                (true, "post") if control.is_routing() => podxt::Target::On,
                 (true, "on") => podxt::Target::On,
                 (true, "off") => podxt::Target::Off,
                 (false, v) if v.starts_with('+') || v.starts_with('-') => podxt::Target::Offset(
@@ -538,26 +552,25 @@ fn live_targets(words: &[&str]) -> Result<Vec<(podxt::Control, podxt::Target)>, 
                         .and_then(podxt::Value::new)
                         .ok_or(format!("{word}: value must be 0..=127"))?,
                 ),
+                (true, _) if control.is_routing() => {
+                    return Err(format!("{word}: routing takes pre, post or toggle"));
+                }
                 (true, _) => return Err(format!("{word}: switches take on, off or toggle")),
             };
-            Ok((control, target))
+            Ok(podxt::LiveTarget::Basic(control, target))
         })
         .collect()
 }
 
-fn run_podxt_live_test(
-    targets: &[(podxt::Control, podxt::Target)],
-    capture: &mut Capture,
-) -> Result<(), String> {
+fn run_podxt_live_test(targets: &[podxt::LiveTarget], capture: &mut Capture) -> Result<(), String> {
     let mut link = rawmidi::RawMidiLink::open(rawmidi::PODXT_LIVE_CARD, Path::PodxtMidi)?;
     let device = link.device.display().to_string();
     let result = {
         let mut session = Session::new(&mut link, &OwnerGrants, capture);
         session.note(format!("opened {device}"));
-        podxt::live_edit_test(&mut session, targets)
+        podxt::live_settings_test(&mut session, targets)
     };
     let test = result?;
-    let shown = |control: podxt::Control, value: u8| control.describe(value);
     let cc_list = |items: &[(u8, u8, u8)]| {
         items
             .iter()
@@ -581,14 +594,18 @@ fn run_podxt_live_test(
         let now = test
             .after
             .as_ref()
-            .map(|after| shown(change.control, after.cc(change.control.cc())))
+            .map(|after| change.control.describe(change.control.read(after)))
             .unwrap_or_else(|_| "not read".into());
+        let cc = change.control.cc();
+        let controllers = match change.control.low_cc() {
+            Some(low) => format!("CC {cc}+{low}"),
+            None => format!("CC {cc}"),
+        };
         capture.line(format!(
-            "  {:<8} CC {:3}: {} -> asked {} -> read {}  {}",
+            "  {:<8} {controllers}: {} -> asked {} -> read {}  {}",
             change.control.name(),
-            change.control.cc(),
-            shown(change.control, change.original),
-            shown(change.control, change.target),
+            change.control.describe(change.original),
+            change.control.describe(change.target),
             now,
             match (ok, change.control.device_may_override()) {
                 (true, _) => "OK",
@@ -598,17 +615,17 @@ fn run_podxt_live_test(
         ));
     }
     let unexpected = test.unexpected();
-    capture.line(if unexpected.is_empty() {
-        "Other settings after the changes: none moved".to_owned()
-    } else {
-        format!(
+    capture.line(match &test.after {
+        Err(error) => format!("After edits: {error}"),
+        Ok(_) if unexpected.is_empty() => "Other settings after the changes: none moved".to_owned(),
+        Ok(_) => format!(
             "Other settings that moved without being asked (device side effect or knob drift): {}",
             cc_list(&unexpected)
-        )
+        ),
     });
     capture.line(match &test.undo_sent {
-        Ok(()) => "Undo sent: every original value, in reverse order".to_owned(),
-        Err(error) => format!("UNDO NOT FULLY SENT: {error} — re-select the channel on the PODxt"),
+        Ok(()) => "Undo sent: original values for all attempted changes".to_owned(),
+        Err(error) => format!("UNDO NOT FULLY SENT: {error}"),
     });
     let device_list = |items: &[(u8, u8)]| {
         items
@@ -636,8 +653,11 @@ fn run_podxt_live_test(
     }
     let not_restored = test.not_restored();
     capture.line(match &test.restored {
-        Ok(_) if not_restored.is_empty() => {
+        Ok(restored) if test.before.raw == restored.raw => {
             "After undo: all 168 bytes identical to before".to_owned()
+        }
+        Ok(_) if not_restored.is_empty() => {
+            "After undo: controller bytes match, but other tone bytes changed".to_owned()
         }
         Ok(_) => format!(
             "After undo, still different from before: {}",
@@ -645,6 +665,18 @@ fn run_podxt_live_test(
         ),
         Err(error) => format!("After undo: not read ({error})"),
     });
+    let additional = targets
+        .iter()
+        .any(|target| matches!(target, podxt::LiveTarget::Additional(..)));
+    let routing_only = targets.iter().all(
+        |target| matches!(target, podxt::LiveTarget::Basic(control, _) if control.is_routing()),
+    );
+    let strict = additional || routing_only;
+    let undone = if strict {
+        test.exact_undo()
+    } else {
+        test.undone()
+    };
     capture.line(format!(
         "Result: changes {}; undo {}.",
         if test.stuck() {
@@ -652,10 +684,10 @@ fn run_podxt_live_test(
         } else {
             "NOT all applied"
         },
-        if test.undone() {
-            "restored every changed setting"
+        if undone {
+            "confirmed"
         } else {
-            "NOT confirmed — re-select the channel on the PODxt"
+            "NOT confirmed (re-select the channel on the PODxt if you started from a saved tone)"
         }
     ));
     capture.file("identity.syx", &test.identity_reply)?;
@@ -666,10 +698,12 @@ fn run_podxt_live_test(
     if let Ok(restored) = &test.restored {
         capture.file("after-undo.syx", &restored.raw)?;
     }
-    if test.undone() {
-        Ok(())
-    } else {
+    if !undone {
         Err("undo not confirmed".into())
+    } else if strict && !test.stuck() {
+        Err("one or more requested changes were not confirmed".into())
+    } else {
+        Ok(())
     }
 }
 
@@ -978,7 +1012,10 @@ mod tests {
         );
         assert_eq!(
             parse(&args("podxt stomp-test")).unwrap().0,
-            Command::PodxtLiveTest(vec![(podxt::Control::StompEnable, podxt::Target::Toggle)])
+            Command::PodxtLiveTest(vec![podxt::LiveTarget::Basic(
+                podxt::Control::StompEnable,
+                podxt::Target::Toggle
+            )])
         );
         match parse(&args("podxt live-test all")).unwrap().0 {
             Command::PodxtLiveTest(targets) => assert_eq!(targets.len(), podxt::Control::ALL.len()),
@@ -995,12 +1032,12 @@ mod tests {
             Command::PodxtLiveTest(targets) => assert_eq!(
                 targets,
                 vec![
-                    (
+                    podxt::LiveTarget::Basic(
                         podxt::Control::Drive,
                         podxt::Target::Value(podxt::Value::new(100).unwrap())
                     ),
-                    (podxt::Control::Mid, podxt::Target::Offset(-20)),
-                    (podxt::Control::DelayEnable, podxt::Target::On),
+                    podxt::LiveTarget::Basic(podxt::Control::Mid, podxt::Target::Offset(-20)),
+                    podxt::LiveTarget::Basic(podxt::Control::DelayEnable, podxt::Target::On),
                 ]
             ),
             other => panic!("{other:?}"),
@@ -1043,6 +1080,66 @@ mod tests {
         }
         reply.push(0xf7);
         reply
+    }
+
+    #[test]
+    fn live_test_accepts_item_two_values_and_pre_post_routing() {
+        use podxt::{Control, LiveTarget, Setting, Target};
+
+        assert_eq!(
+            live_targets(&[
+                "amp-model=0x00020020",
+                "stomp-model=15",
+                "gate-threshold=-48",
+                "mic=2",
+                "mod-note=4",
+                "delay-note=8",
+                "tweak-param=9",
+                "pedal-assign=1",
+                "mod-speed=4097",
+                "delay-time=8193",
+                "tempo=113.5",
+                "vol-pedal-prepost=pre",
+                "mod-prepost=post",
+                "delay-prepost=pre",
+            ])
+            .unwrap(),
+            [
+                LiveTarget::Additional(Setting::AmpModel, 22),
+                LiveTarget::Additional(Setting::StompModel, 15),
+                LiveTarget::Additional(Setting::GateThreshold, 48),
+                LiveTarget::Additional(Setting::Mic, 2),
+                LiveTarget::Additional(Setting::ModNote, 4),
+                LiveTarget::Additional(Setting::DelayNote, 8),
+                LiveTarget::Additional(Setting::TweakParam, 9),
+                LiveTarget::Additional(Setting::PedalAssign, 64),
+                LiveTarget::Additional(Setting::ModSpeed, 4097),
+                LiveTarget::Additional(Setting::DelayTime, 8193),
+                LiveTarget::Additional(Setting::Tempo, 1135),
+                LiveTarget::Basic(Control::VolumePedalPrePost, Target::Off),
+                LiveTarget::Basic(Control::ModPrePost, Target::On),
+                LiveTarget::Basic(Control::DelayPrePost, Target::Off),
+            ]
+        );
+        for invalid in [
+            "amp-model=107",
+            "cab-model=0x00020020",
+            "gate-threshold=1",
+            "gate-threshold=-97",
+            "mic=4",
+            "mod-note=14",
+            "delay-note=-1",
+            "tweak-param=21",
+            "pedal-assign=3",
+            "mod-speed=16384",
+            "delay-time=-1",
+            "tempo=29.9",
+            "tempo=240.1",
+            "tempo=120.25",
+            "delay=pre",
+        ] {
+            assert!(live_targets(&[invalid]).is_err(), "{invalid}");
+        }
     }
 
     #[test]
