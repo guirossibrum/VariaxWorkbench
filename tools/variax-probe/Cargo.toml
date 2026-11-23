@@ -1,0 +1,14 @@
+[package]
+name = "variax-probe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Lean owner-run read-only probe for the Variax 600 (through PODxt Live) and the PODxt Live"
+
+[dependencies]
+line6-devices = { path = "../../crates/line6-devices", features = ["usb"] }
+
+[dev-dependencies]
+# Cross-check only: the library's Variax decoder must match the main crate's
+# until the main app switches to `line6-devices`.
+variax-workbench = { path = "../..", default-features = false }
