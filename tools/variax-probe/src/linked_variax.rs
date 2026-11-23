@@ -1,7 +1,7 @@
 use super::{Capture, OwnerGrants, describe_identity};
 use line6_devices::family::podxt::LinkedVariaxModel::{self, FactorySpank1, FactoryTModel1};
 use line6_devices::family::{podxt, variax};
-use line6_devices::session::{Log, Path, Session};
+use line6_devices::session::{Link, Log, Path, Session};
 use line6_devices::transport::{rawmidi, usb};
 use std::time::Duration;
 
@@ -13,11 +13,12 @@ struct Readback {
     guitar: variax::PresetMetadata,
 }
 
-fn observe(capture: &mut Capture, stage: &str) -> Result<Readback, String> {
-    let tone = {
-        let link = rawmidi::RawMidiLink::open(rawmidi::PODXT_LIVE_CARD, Path::PodxtMidi)?;
-        podxt::read_current(&mut Session::new(link, &OwnerGrants, capture))?
-    };
+fn observe(
+    podxt_link: &mut impl Link,
+    capture: &mut Capture,
+    stage: &str,
+) -> Result<Readback, String> {
+    let tone = podxt::read_current(&mut Session::new(podxt_link, &OwnerGrants, capture))?;
     if tone.identity.member != podxt::PODXT_LIVE_MEMBER {
         return Err("The tone read requires a PODxt Live.".into());
     }
@@ -75,17 +76,18 @@ fn confirm(
 }
 
 fn edit_and_read(
+    podxt_link: &mut impl Link,
     capture: &mut Capture,
     stage: &str,
     model: LinkedVariaxModel,
 ) -> Result<Readback, String> {
-    {
-        let link = rawmidi::RawMidiLink::open(rawmidi::PODXT_LIVE_CARD, Path::PodxtMidi)?;
-        podxt::set_linked_variax_model(&mut Session::new(link, &OwnerGrants, capture), model)?;
-    }
+    podxt::set_linked_variax_model(
+        &mut Session::new(&mut *podxt_link, &OwnerGrants, capture),
+        model,
+    )?;
     capture.line(format!("{stage}: waiting 10 seconds before readback."));
     std::thread::sleep(RECALL_SETTLE);
-    let read = observe(capture, stage)?;
+    let read = observe(podxt_link, capture, stage)?;
     confirm(capture, stage, &read, model)?;
     Ok(read)
 }
@@ -100,11 +102,19 @@ fn round_trip<T>(
 }
 
 pub(super) fn run(capture: &mut Capture) -> Result<(), String> {
-    let baseline = observe(capture, "before")?;
+    // The ALSA reader keeps a cloned descriptor open while it waits for
+    // input. Use one PODxt port throughout the test.
+    let mut podxt_link = rawmidi::RawMidiLink::open(rawmidi::PODXT_LIVE_CARD, Path::PodxtMidi)?;
+    capture.line(format!(
+        "Opened PODxt MIDI port {}",
+        podxt_link.device.display()
+    ));
+    let baseline = observe(&mut podxt_link, capture, "before")?;
     confirm(capture, "before", &baseline, FactoryTModel1)
         .map_err(|err| format!("{err} No edits were sent."))?;
 
-    let (changed, restored) = round_trip(|stage, model| edit_and_read(capture, stage, model));
+    let (changed, restored) =
+        round_trip(|stage, model| edit_and_read(&mut podxt_link, capture, stage, model));
     if let Err(error) = &changed {
         capture.line(format!("Target change did not verify: {error}"));
     }
