@@ -2021,6 +2021,32 @@ mod tests {
     }
 
     #[test]
+    fn undoing_a_wah_model_change_restores_the_original_wah_position() {
+        let before = with(&[(4, 63), (91, 0)]);
+        let script = vec![
+            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (PodxtRequest::EditBuffer, vec![before.clone()]),
+            (PodxtRequest::InstalledPacks, vec![packs_reply(4)]),
+            (setting_message(Setting::WahModel, 1, 0), vec![]),
+            (PodxtRequest::EditBuffer, vec![with(&[(4, 16), (91, 1)])]),
+            (setting_message(Setting::WahModel, 0, 0), vec![]),
+            (PodxtRequest::EditBuffer, vec![with(&[(4, 0), (91, 0)])]),
+            (set(Control::WahPosition, 63), vec![]),
+            (PodxtRequest::EditBuffer, vec![before]),
+        ];
+        let mut log = Quiet;
+        let mut session = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
+        let test = live_settings_test(
+            &mut session,
+            &[LiveTarget::Additional(Setting::WahModel, 1)],
+        )
+        .unwrap();
+        assert_eq!(test.unexpected(), [(4, 63, 16)]);
+        assert_eq!(session.sent[7], [0xb0, 4, 63]);
+        assert!(test.stuck() && test.exact_undo());
+    }
+
+    #[test]
     fn fx_junkie_model_and_tempo_are_verified_and_block_side_effects_are_undone() {
         let mut log = Quiet;
         let before = with(&[(75, 0), (79, 37), (89, 9), (90, 48)]);

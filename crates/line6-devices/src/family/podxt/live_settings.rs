@@ -407,7 +407,7 @@ impl LiveControl {
                 B(C::ReverbPredelay),
                 B(C::ReverbTone),
             ],
-            A(S::WahModel) => &[B(C::WahEnable)],
+            A(S::WahModel) => &[B(C::WahEnable), B(C::WahPosition)],
             A(S::ModSpeed) => &[A(S::ModNote)],
             A(S::DelayTime) => &[A(S::DelayNote)],
             A(S::ModNote) => &[A(S::ModSpeed)],
