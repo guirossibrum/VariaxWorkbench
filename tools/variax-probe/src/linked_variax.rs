@@ -55,7 +55,7 @@ fn confirm(
     model: LinkedVariaxModel,
 ) -> Result<(), String> {
     let (label, name, body) = match model {
-        FactoryTModel1 => ("F-T-Model 1", "Telecaster", 0x03100000),
+        FactoryTModel1 => ("F-T-Model 1", "T-Model-1", 0x03100000),
         FactorySpank1 => ("F-Spank 1", "Spank-1", 0x03100003),
     };
     let assignment = read.tone.cc(LINKED_MODEL_CC);
@@ -132,7 +132,7 @@ pub(super) fn run(capture: &mut Capture) -> Result<(), String> {
     capture.line("Original guitar metadata and all 168 PODxt tone bytes restored.".to_owned());
     changed?;
     capture.line(
-        "PASS: linked model changed to Spank-1 and returned to Telecaster without saving."
+        "PASS: linked model changed to Spank-1 and returned to T-Model-1 without saving."
             .to_owned(),
     );
     Ok(())

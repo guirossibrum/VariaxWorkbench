@@ -83,7 +83,7 @@ return_to_start() {
         return 1
     fi
     wait_for_recall 5B || return
-    read_guitar 05-variax-restored Telecaster 0x03100000 || return
+    read_guitar 05-variax-restored T-Model-1 0x03100000 || return
     compare_guitar "$baseline" "$guitar_capture"
 }
 
@@ -101,11 +101,11 @@ trap finish EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-read_guitar 01-variax-before Telecaster 0x03100000
+read_guitar 01-variax-before T-Model-1 0x03100000
 baseline=$guitar_capture
 return_needed=true
 "$probe" podxt channel 1B --from 5B --out "$run_dir/02-podxt-target"
 wait_for_recall 1B
 read_guitar 03-variax-target Chime-1 0x0310000c
 return_to_start
-printf 'PASS: PODxt 5B → 1B → 5B; Variax Telecaster → Chime-1 → Telecaster.\n'
+printf 'PASS: PODxt 5B → 1B → 5B; Variax T-Model-1 → Chime-1 → T-Model-1.\n'
