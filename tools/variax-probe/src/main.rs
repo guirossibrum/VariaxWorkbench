@@ -9,7 +9,9 @@
 //!   variax library         every stored preset via program changes, then restore (G5)
 //!   compare DIR_A DIR_B    offline: are two library backups identical?
 //!   podxt packs            installed model packs (read-only query)
-//!   podxt stomp-test       G6: flip stomp in the active tone, read, undo, read
+//!   podxt live-test [NAME=VALUE ...]  G6: live edits in the active tone, read, undo, read
+//!                          (default: stomp/mod/delay/reverb toggled, treble +20, mid -20)
+//!   podxt stomp-test       G6: the same with only the stomp toggled
 //!
 //! Only the requests defined by the `line6-devices` families can be sent, and
 //! only those this file's policy allows. Every packet in and out is printed
@@ -74,7 +76,7 @@ enum Command {
     PodxtLibrary,
     Compare(PathBuf, PathBuf),
     PodxtPacks,
-    PodxtStompTest,
+    PodxtLiveTest(Vec<(podxt::Control, podxt::Target)>),
 }
 
 impl Command {
@@ -89,7 +91,7 @@ impl Command {
             Command::PodxtLibrary => "podxt-library",
             Command::Compare(..) => "compare",
             Command::PodxtPacks => "podxt-packs",
-            Command::PodxtStompTest => "podxt-stomp-test",
+            Command::PodxtLiveTest(_) => "podxt-live-test",
         }
     }
 
@@ -114,8 +116,8 @@ impl Command {
             }
             Command::Compare(..) => "nothing (offline comparison)",
             Command::PodxtPacks => "PODxt identity, then the installed model-pack query",
-            Command::PodxtStompTest => {
-                "PODxt identity, current tone, stomp flip (CC 25), current tone, original stomp value back (undo), current tone"
+            Command::PodxtLiveTest(_) => {
+                "PODxt identity, current tone, live changes (one CC each), current tone, original values back (undo), current tone"
             }
         }
     }
@@ -150,7 +152,10 @@ fn parse(args: &[String]) -> Result<(Command, Option<PathBuf>), String> {
         ["variax", "library"] => Command::VariaxLibrary,
         ["podxt", "library"] => Command::PodxtLibrary,
         ["podxt", "packs"] => Command::PodxtPacks,
-        ["podxt", "stomp-test"] => Command::PodxtStompTest,
+        ["podxt", "stomp-test"] => {
+            Command::PodxtLiveTest(vec![(podxt::Control::StompEnable, podxt::Target::Toggle)])
+        }
+        ["podxt", "live-test", rest @ ..] => Command::PodxtLiveTest(live_targets(rest)?),
         ["compare", first, second] => Command::Compare(PathBuf::from(first), PathBuf::from(second)),
         _ => return Err(USAGE.into()),
     };
@@ -303,7 +308,7 @@ fn run_variax(command: &Command, capture: &mut Capture) -> Result<(), String> {
             | Command::PodxtLibrary
             | Command::Compare(..)
             | Command::PodxtPacks
-            | Command::PodxtStompTest => unreachable!(),
+            | Command::PodxtLiveTest(_) => unreachable!(),
         };
         let cleanup = session.link.finish();
         session.note(match &cleanup {
@@ -398,59 +403,143 @@ fn run_podxt_library(capture: &mut Capture) -> Result<(), String> {
     }
 }
 
-fn run_podxt_stomp_test(capture: &mut Capture) -> Result<(), String> {
+/// Default live-edit set: four switches toggled and two knobs nudged.
+const DEFAULT_LIVE: [&str; 6] = [
+    "stomp=toggle",
+    "mod=toggle",
+    "delay=toggle",
+    "reverb=toggle",
+    "treble=+20",
+    "mid=-20",
+];
+
+fn live_targets(words: &[&str]) -> Result<Vec<(podxt::Control, podxt::Target)>, String> {
+    let words: Vec<&str> = if words.is_empty() {
+        DEFAULT_LIVE.to_vec()
+    } else {
+        words.to_vec()
+    };
+    let names: Vec<&str> = podxt::Control::ALL.iter().map(|c| c.name()).collect();
+    words
+        .iter()
+        .map(|word| {
+            let (name, value) = word
+                .split_once('=')
+                .ok_or(format!("{word}: use NAME=VALUE"))?;
+            let control = podxt::Control::from_name(name).ok_or(format!(
+                "{name}: not a live control (allowed: {})",
+                names.join(", ")
+            ))?;
+            let target = match (control.is_switch(), value) {
+                (_, "toggle") => podxt::Target::Toggle,
+                (true, "on") => podxt::Target::On,
+                (true, "off") => podxt::Target::Off,
+                (false, v) if v.starts_with('+') || v.starts_with('-') => podxt::Target::Offset(
+                    v.parse::<i8>()
+                        .ok()
+                        .filter(|n| n.unsigned_abs() <= 127)
+                        .ok_or(format!("{word}: offset must be -127..=+127"))?,
+                ),
+                (false, v) => podxt::Target::Value(
+                    v.parse::<u8>()
+                        .ok()
+                        .and_then(podxt::Value::new)
+                        .ok_or(format!("{word}: value must be 0..=127"))?,
+                ),
+                (true, _) => return Err(format!("{word}: switches take on, off or toggle")),
+            };
+            Ok((control, target))
+        })
+        .collect()
+}
+
+fn run_podxt_live_test(
+    targets: &[(podxt::Control, podxt::Target)],
+    capture: &mut Capture,
+) -> Result<(), String> {
     let mut link = rawmidi::RawMidiLink::open(rawmidi::PODXT_LIVE_CARD, Path::PodxtMidi)?;
     let device = link.device.display().to_string();
     let result = {
         let mut session = Session::new(&mut link, &OwnerGrants, capture);
         session.note(format!("opened {device}"));
-        podxt::stomp_test(&mut session)
+        podxt::live_edit_test(&mut session, targets)
     };
     let test = result?;
-    let state = |on: bool| if on { "on" } else { "off" };
-    let describe = |label: &str, tone: &Result<podxt::EditBuffer, String>| match tone {
-        Ok(tone) => {
-            let changes: Vec<String> = test
-                .before
-                .differences(tone)
-                .into_iter()
-                .map(|(cc, a, b)| {
-                    format!(
-                        "CC {cc} {}: {a} -> {b}",
-                        podxt::controls::name(cc).unwrap_or("unnamed")
-                    )
-                })
-                .collect();
-            format!(
-                "{label}: stomp {} — {}",
-                state(tone.switch(podxt::STOMP_ENABLE_CC)),
-                if changes.is_empty() {
-                    "identical to before".to_owned()
-                } else {
-                    changes.join(", ")
-                }
-            )
+    let shown = |control: podxt::Control, value: u8| {
+        if control.is_switch() {
+            (if value > 63 { "on" } else { "off" }).to_owned()
+        } else {
+            format!("{value} ({:.1}%)", f32::from(value) / 127.0 * 100.0)
         }
-        Err(error) => format!("{label}: not read ({error})"),
+    };
+    let cc_list = |items: &[(u8, u8, u8)]| {
+        items
+            .iter()
+            .map(|(cc, a, b)| {
+                format!(
+                    "CC {cc} {}: {a} -> {b}",
+                    podxt::controls::name(*cc).unwrap_or("unnamed")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
     };
     capture.line(describe_identity(&test.identity_reply, None));
     capture.line(format!("Tone: {}", test.before.name()));
-    capture.line(format!("Before: stomp {}", state(test.original)));
-    capture.line(describe("After flip", &test.after));
-    capture.line(match &test.undo_sent {
-        Ok(()) => format!("Undo sent: stomp {}", state(test.original)),
-        Err(error) => format!("UNDO NOT SENT: {error} — re-select the channel on the PODxt"),
-    });
-    capture.line(describe("After undo", &test.restored));
     capture.line(format!(
-        "Result: change {}; undo {}.",
+        "Changes sent: {} of {}",
+        test.sent,
+        test.changes.len()
+    ));
+    for (change, ok) in test.applied() {
+        let now = test
+            .after
+            .as_ref()
+            .map(|after| shown(change.control, after.cc(change.control.cc())))
+            .unwrap_or_else(|_| "not read".into());
+        capture.line(format!(
+            "  {:<8} CC {:3}: {} -> asked {} -> read {}  {}",
+            change.control.name(),
+            change.control.cc(),
+            shown(change.control, change.original),
+            shown(change.control, change.target),
+            now,
+            if ok { "OK" } else { "NOT APPLIED" }
+        ));
+    }
+    let unexpected = test.unexpected();
+    capture.line(if unexpected.is_empty() {
+        "Other settings after the changes: none moved".to_owned()
+    } else {
+        format!(
+            "Other settings that moved without being asked (device side effect or knob drift): {}",
+            cc_list(&unexpected)
+        )
+    });
+    capture.line(match &test.undo_sent {
+        Ok(()) => "Undo sent: every original value, in reverse order".to_owned(),
+        Err(error) => format!("UNDO NOT FULLY SENT: {error} — re-select the channel on the PODxt"),
+    });
+    let not_restored = test.not_restored();
+    capture.line(match &test.restored {
+        Ok(_) if not_restored.is_empty() => {
+            "After undo: all 168 bytes identical to before".to_owned()
+        }
+        Ok(_) => format!(
+            "After undo, still different from before: {}",
+            cc_list(&not_restored)
+        ),
+        Err(error) => format!("After undo: not read ({error})"),
+    });
+    capture.line(format!(
+        "Result: changes {}; undo {}.",
         if test.stuck() {
-            "STUCK (the PODxt applied it)"
+            "ALL APPLIED"
         } else {
-            "did NOT stick"
+            "NOT all applied"
         },
         if test.undone() {
-            "restored the original stomp state"
+            "restored every changed setting"
         } else {
             "NOT confirmed — re-select the channel on the PODxt"
         }
@@ -458,7 +547,7 @@ fn run_podxt_stomp_test(capture: &mut Capture) -> Result<(), String> {
     capture.file("identity.syx", &test.identity_reply)?;
     capture.file("before.syx", &test.before.raw)?;
     if let Ok(after) = &test.after {
-        capture.file("after-flip.syx", &after.raw)?;
+        capture.file("after-changes.syx", &after.raw)?;
     }
     if let Ok(restored) = &test.restored {
         capture.file("after-undo.syx", &restored.raw)?;
@@ -576,7 +665,7 @@ fn main() {
         Command::PodxtListen(seconds) => run_podxt_listen(seconds, &mut capture),
         Command::PodxtLibrary => run_podxt_library(&mut capture),
         Command::PodxtPacks => run_podxt_packs(&mut capture),
-        Command::PodxtStompTest => run_podxt_stomp_test(&mut capture),
+        Command::PodxtLiveTest(targets) => run_podxt_live_test(&targets, &mut capture),
         _ => run_variax(&command, &mut capture),
     };
     if let Err(error) = &result {
@@ -624,8 +713,38 @@ mod tests {
         );
         assert_eq!(
             parse(&args("podxt stomp-test")).unwrap().0,
-            Command::PodxtStompTest
+            Command::PodxtLiveTest(vec![(podxt::Control::StompEnable, podxt::Target::Toggle)])
         );
+        match parse(&args("podxt live-test")).unwrap().0 {
+            Command::PodxtLiveTest(targets) => assert_eq!(targets.len(), 6),
+            other => panic!("{other:?}"),
+        }
+        match parse(&args("podxt live-test drive=100 mid=-20 delay=on"))
+            .unwrap()
+            .0
+        {
+            Command::PodxtLiveTest(targets) => assert_eq!(
+                targets,
+                vec![
+                    (
+                        podxt::Control::Drive,
+                        podxt::Target::Value(podxt::Value::new(100).unwrap())
+                    ),
+                    (podxt::Control::Mid, podxt::Target::Offset(-20)),
+                    (podxt::Control::DelayEnable, podxt::Target::On),
+                ]
+            ),
+            other => panic!("{other:?}"),
+        }
+        for bad in [
+            "podxt live-test amp=1",
+            "podxt live-test drive=200",
+            "podxt live-test delay=64",
+            "podxt live-test mid=on",
+            "podxt live-test drive",
+        ] {
+            assert!(parse(&args(bad)).is_err(), "{bad}");
+        }
         assert_eq!(
             parse(&args("variax library")).unwrap().0,
             Command::VariaxLibrary

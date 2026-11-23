@@ -41,9 +41,10 @@ pub enum PodxtRequest {
     /// Installed model-pack query, `03 0E 00` (Line 6 Edit
     /// `L6PODxtDevice.UpdateInstalledPacks`). Read-only.
     InstalledPacks,
-    /// Stomp on/off in the active tone: controller 25, 127 or 0, exactly as
-    /// Line 6 Edit `EncodeParamChange` sends it. Edit-buffer write (G6).
-    StompEnable(bool),
+    /// One live setting in the active tone: `B0 <cc> <value>`, exactly as
+    /// Line 6 Edit `EncodeParamChange` sends a knob or switch change.
+    /// Edit-buffer write (G6); never stored.
+    Set(Control, Value),
 }
 
 impl Request for PodxtRequest {
@@ -52,7 +53,7 @@ impl Request for PodxtRequest {
             PodxtRequest::Identity => identity::REQUEST.to_vec(),
             PodxtRequest::EditBuffer => vec![0xf0, 0x00, 0x01, 0x0c, 0x03, 0x75, 0xf7],
             PodxtRequest::InstalledPacks => vec![0xf0, 0x00, 0x01, 0x0c, 0x03, 0x0e, 0x00, 0xf7],
-            PodxtRequest::StompEnable(on) => vec![0xb0, STOMP_ENABLE_CC, if on { 127 } else { 0 }],
+            PodxtRequest::Set(control, value) => vec![0xb0, control.cc(), value.get()],
             PodxtRequest::Stored(location) => {
                 let address = location.address();
                 vec![
@@ -82,70 +83,318 @@ impl Request for PodxtRequest {
             PodxtRequest::EditBuffer => Operation::PodxtRead,
             PodxtRequest::Stored(_) => Operation::PodxtLibraryRead,
             PodxtRequest::InstalledPacks => Operation::PodxtPackQuery,
-            PodxtRequest::StompEnable(_) => Operation::PodxtEditBufferWrite,
+            PodxtRequest::Set(..) => Operation::PodxtEditBufferWrite,
         }
     }
 }
 
 /// Stomp enable controller (`CC_STOMP_ENABLE`).
 pub const STOMP_ENABLE_CC: u8 = 25;
-/// Time for the PODxt to apply a controller change before reading back.
+/// Time for the PODxt to apply controller changes before reading back.
 const APPLY: Duration = Duration::from_millis(200);
+/// Gap between consecutive controller messages.
+const CC_GAP: Duration = Duration::from_millis(20);
 
-/// Result of the G6 stomp toggle test. `after` is the tone with the stomp
-/// flipped; `restored` is the tone after sending the original value back.
-pub struct StompTest {
+/// Live settings a front end may change (closed list). Knobs take 0..=127;
+/// switches are on at 127 and off at 0, as Line 6 Edit sends them.
+/// Model selections are deliberately absent: Line 6 Edit pairs them with
+/// default-loading behaviour, so they are more than one setting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Control {
+    Drive,
+    Bass,
+    Mid,
+    Treble,
+    Presence,
+    ChannelVolume,
+    StompEnable,
+    CompEnable,
+    GateEnable,
+    ModEnable,
+    DelayEnable,
+    ReverbEnable,
+    WahEnable,
+    EqEnable,
+}
+
+impl Control {
+    pub const ALL: [Control; 14] = [
+        Control::Drive,
+        Control::Bass,
+        Control::Mid,
+        Control::Treble,
+        Control::Presence,
+        Control::ChannelVolume,
+        Control::StompEnable,
+        Control::CompEnable,
+        Control::GateEnable,
+        Control::ModEnable,
+        Control::DelayEnable,
+        Control::ReverbEnable,
+        Control::WahEnable,
+        Control::EqEnable,
+    ];
+
+    /// Controller number (Line 6 Edit `CC_*` constants).
+    pub fn cc(self) -> u8 {
+        match self {
+            Control::Drive => 13,
+            Control::Bass => 14,
+            Control::Mid => 15,
+            Control::Treble => 16,
+            Control::Presence => 21,
+            Control::ChannelVolume => 17,
+            Control::StompEnable => STOMP_ENABLE_CC,
+            Control::CompEnable => 26,
+            Control::GateEnable => 22,
+            Control::ModEnable => 50,
+            Control::DelayEnable => 28,
+            Control::ReverbEnable => 36,
+            Control::WahEnable => 43,
+            Control::EqEnable => 63,
+        }
+    }
+
+    pub fn is_switch(self) -> bool {
+        !matches!(
+            self,
+            Control::Drive
+                | Control::Bass
+                | Control::Mid
+                | Control::Treble
+                | Control::Presence
+                | Control::ChannelVolume
+        )
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Control::Drive => "drive",
+            Control::Bass => "bass",
+            Control::Mid => "mid",
+            Control::Treble => "treble",
+            Control::Presence => "presence",
+            Control::ChannelVolume => "volume",
+            Control::StompEnable => "stomp",
+            Control::CompEnable => "comp",
+            Control::GateEnable => "gate",
+            Control::ModEnable => "mod",
+            Control::DelayEnable => "delay",
+            Control::ReverbEnable => "reverb",
+            Control::WahEnable => "wah",
+            Control::EqEnable => "eq",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|control| control.name() == name)
+    }
+}
+
+/// A 7-bit controller value. Only 0..=127 can be built.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Value(u8);
+
+impl Value {
+    pub fn new(value: u8) -> Option<Self> {
+        (value <= 127).then_some(Self(value))
+    }
+
+    pub fn switch(on: bool) -> Self {
+        Self(if on { 127 } else { 0 })
+    }
+
+    pub fn get(self) -> u8 {
+        self.0
+    }
+}
+
+/// What to set a control to; resolved against the tone read first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Target {
+    Value(Value),
+    On,
+    Off,
+    Toggle,
+    /// Knob moved by this many steps from where it is (bounced back off the
+    /// end of the range, so it always changes).
+    Offset(i8),
+}
+
+/// One requested change, resolved: `original` is what the tone held.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Change {
+    pub control: Control,
+    pub original: u8,
+    pub target: u8,
+}
+
+/// Result of a live-edit test.
+pub struct LiveEditTest {
     pub identity_reply: Vec<u8>,
     pub before: EditBuffer,
-    pub original: bool,
+    pub changes: Vec<Change>,
+    /// How many changes were actually sent before any send error.
+    pub sent: usize,
     pub after: Result<EditBuffer, String>,
     pub undo_sent: Result<(), String>,
     pub restored: Result<EditBuffer, String>,
 }
 
-impl StompTest {
-    /// The flip reached the active tone.
-    pub fn stuck(&self) -> bool {
-        self.after
-            .as_ref()
-            .is_ok_and(|after| after.switch(STOMP_ENABLE_CC) != self.original)
-    }
-
-    /// The original stomp state is back.
-    pub fn undone(&self) -> bool {
-        self.restored
-            .as_ref()
-            .is_ok_and(|restored| restored.switch(STOMP_ENABLE_CC) == self.original)
+fn matches_target(control: Control, stored: u8, target: u8) -> bool {
+    if control.is_switch() {
+        (stored > 63) == (target > 63)
+    } else {
+        stored == target
     }
 }
 
-/// G6 edit-buffer test: read the active tone, flip the stomp with CC 25,
-/// read again, send the original value back, read again. The undo is sent
-/// even when the read after the flip fails. Nothing is stored to memory.
-pub fn stomp_test<L: Link>(session: &mut Session<L>) -> Result<StompTest, String> {
+impl LiveEditTest {
+    /// Each change, and whether the tone read afterwards shows it.
+    pub fn applied(&self) -> Vec<(Change, bool)> {
+        self.changes
+            .iter()
+            .map(|change| {
+                let ok = self.after.as_ref().is_ok_and(|after| {
+                    matches_target(change.control, after.cc(change.control.cc()), change.target)
+                });
+                (*change, ok)
+            })
+            .collect()
+    }
+
+    /// Every change reached the active tone.
+    pub fn stuck(&self) -> bool {
+        self.sent == self.changes.len() && self.applied().iter().all(|(_, ok)| *ok)
+    }
+
+    /// Controllers that changed although they were not asked to (for
+    /// example a physical knob drifting): `(cc, before, after)`.
+    pub fn unexpected(&self) -> Vec<(u8, u8, u8)> {
+        let asked: Vec<u8> = self.changes.iter().map(|c| c.control.cc()).collect();
+        match &self.after {
+            Ok(after) => self
+                .before
+                .differences(after)
+                .into_iter()
+                .filter(|(cc, ..)| !asked.contains(cc))
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// Every controller that differs between the original tone and the tone
+    /// after the undo, including side effects the device made on its own:
+    /// `(cc, before, after undo)`.
+    pub fn not_restored(&self) -> Vec<(u8, u8, u8)> {
+        match &self.restored {
+            Ok(restored) => self.before.differences(restored),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// Every changed control holds its original value again.
+    pub fn undone(&self) -> bool {
+        self.undo_sent.is_ok()
+            && self.restored.as_ref().is_ok_and(|restored| {
+                self.changes
+                    .iter()
+                    .all(|c| matches_target(c.control, restored.cc(c.control.cc()), c.original))
+            })
+    }
+}
+
+/// G6 live-edit test: read the active tone, send every change, read again,
+/// send every original value back (reverse order), read again. The undo is
+/// sent for every change that was sent, even when a later step fails.
+/// Nothing is stored to memory. A control may appear only once.
+pub fn live_edit_test<L: Link>(
+    session: &mut Session<L>,
+    targets: &[(Control, Target)],
+) -> Result<LiveEditTest, String> {
+    if targets.is_empty() {
+        return Err("No changes requested.".into());
+    }
+    for (i, (control, _)) in targets.iter().enumerate() {
+        if targets[..i].iter().any(|(other, _)| other == control) {
+            return Err(format!("{} is listed twice.", control.name()));
+        }
+    }
     let (identity_reply, _) = identify_podxt(session)?;
     let before = read_edit_buffer(session)?;
-    let original = before.switch(STOMP_ENABLE_CC);
-    let flip = session.send(PodxtRequest::StompEnable(!original));
-    let after = flip.and_then(|()| {
-        session.link.pause(APPLY);
-        session.listen(Duration::from_millis(50))?;
-        read_edit_buffer(session)
-    });
-    let undo_sent = session.send(PodxtRequest::StompEnable(original));
+    let changes: Vec<Change> = targets
+        .iter()
+        .map(|&(control, target)| {
+            let original = before.cc(control.cc());
+            let on = original > 63;
+            let target = match target {
+                Target::Value(value) => value.get(),
+                Target::On => 127,
+                Target::Off => 0,
+                Target::Toggle if control.is_switch() => Value::switch(!on).get(),
+                Target::Toggle => 127 - original,
+                Target::Offset(step) => {
+                    let moved = i16::from(original) + i16::from(step);
+                    let bounced = if (0..=127).contains(&moved) {
+                        moved
+                    } else {
+                        i16::from(original) - i16::from(step)
+                    };
+                    bounced.clamp(0, 127) as u8
+                }
+            };
+            Change {
+                control,
+                original,
+                target,
+            }
+        })
+        .collect();
+    let mut sent = 0;
+    let mut send_error = None;
+    for change in &changes {
+        if let Err(error) = session.send(PodxtRequest::Set(change.control, Value(change.target))) {
+            send_error = Some(error);
+            break;
+        }
+        sent += 1;
+        session.link.pause(CC_GAP);
+    }
+    let after = match send_error {
+        Some(error) => Err(error),
+        None => {
+            session.link.pause(APPLY);
+            session.listen(Duration::from_millis(50))?;
+            read_edit_buffer(session)
+        }
+    };
+    let mut undo_sent = Ok(());
+    for change in changes[..sent].iter().rev() {
+        if let Err(error) = session.send(PodxtRequest::Set(change.control, Value(change.original)))
+        {
+            undo_sent = Err(error);
+        }
+        session.link.pause(CC_GAP);
+    }
     let restored = undo_sent.clone().and_then(|()| {
         session.link.pause(APPLY);
         session.listen(Duration::from_millis(50))?;
         read_edit_buffer(session)
     });
-    Ok(StompTest {
+    Ok(LiveEditTest {
         identity_reply,
         before,
-        original,
+        changes,
+        sent,
         after,
         undo_sent,
         restored,
     })
+}
+
+/// The first G6 test: toggle the stomp, check, undo.
+pub fn stomp_test<L: Link>(session: &mut Session<L>) -> Result<LiveEditTest, String> {
+    live_edit_test(session, &[(Control::StompEnable, Target::Toggle)])
 }
 
 /// Installed model packs: a bitmask from the device (`L6PODxtDevice.XTPACKS_*`).
@@ -684,20 +933,36 @@ mod tests {
         assert_eq!(read_packs(&mut s).unwrap().1.names().len(), 4);
     }
 
-    fn with_stomp(on: bool) -> Vec<u8> {
+    fn with(values: &[(u8, u8)]) -> Vec<u8> {
         let mut raw = synthetic();
-        raw[39 + usize::from(STOMP_ENABLE_CC)] = if on { 127 } else { 0 };
+        for &(cc, value) in values {
+            raw[39 + usize::from(cc)] = value;
+        }
         raw
     }
 
+    fn set(control: Control, value: u8) -> PodxtRequest {
+        PodxtRequest::Set(control, Value::new(value).unwrap())
+    }
+
     #[test]
-    fn stomp_request_is_line6_edits_cc_and_a_g6_operation() {
-        assert_eq!(PodxtRequest::StompEnable(true).bytes(), vec![0xb0, 25, 127]);
-        assert_eq!(PodxtRequest::StompEnable(false).bytes(), vec![0xb0, 25, 0]);
+    fn set_requests_are_line6_edits_ccs_and_g6_operations() {
+        assert_eq!(set(Control::StompEnable, 127).bytes(), vec![0xb0, 25, 127]);
+        assert_eq!(set(Control::Drive, 64).bytes(), vec![0xb0, 13, 64]);
         assert_eq!(
-            PodxtRequest::StompEnable(true).operation(),
+            set(Control::ModEnable, 0).operation(),
             Operation::PodxtEditBufferWrite
         );
+        assert!(Value::new(128).is_none());
+        assert_eq!(Control::from_name("delay"), Some(Control::DelayEnable));
+        assert!(Control::from_name("amp").is_none());
+        let mut ccs: Vec<u8> = Control::ALL.iter().map(|c| c.cc()).collect();
+        ccs.sort_unstable();
+        ccs.dedup();
+        assert_eq!(ccs.len(), 14);
+        for control in Control::ALL {
+            assert!(controls::name(control.cc()).is_some(), "{control:?}");
+        }
     }
 
     #[test]
@@ -705,57 +970,112 @@ mod tests {
         let mut log = Quiet;
         let script = vec![
             (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
-            (PodxtRequest::EditBuffer, vec![with_stomp(false)]),
-            (PodxtRequest::StompEnable(true), vec![]),
-            (PodxtRequest::EditBuffer, vec![with_stomp(true)]),
-            (PodxtRequest::StompEnable(false), vec![]),
-            (PodxtRequest::EditBuffer, vec![with_stomp(false)]),
+            (PodxtRequest::EditBuffer, vec![with(&[(25, 0)])]),
+            (set(Control::StompEnable, 127), vec![]),
+            (PodxtRequest::EditBuffer, vec![with(&[(25, 127)])]),
+            (set(Control::StompEnable, 0), vec![]),
+            (PodxtRequest::EditBuffer, vec![with(&[(25, 0)])]),
         ];
         let mut s = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
         let test = stomp_test(&mut s).unwrap();
-        assert!(!test.original && test.stuck() && test.undone());
-        assert_eq!(
-            test.before.differences(test.after.as_ref().unwrap()),
-            vec![(25, 0, 127)]
-        );
-        assert!(
-            test.before
-                .differences(test.restored.as_ref().unwrap())
-                .is_empty()
-        );
-        assert_eq!(s.sent.iter().filter(|b| b[0] == 0xb0).count(), 2);
+        assert!(test.stuck() && test.undone() && test.unexpected().is_empty());
     }
 
     #[test]
-    fn stomp_test_sends_the_undo_even_when_the_check_read_fails() {
+    fn several_changes_are_sent_checked_and_undone_in_reverse() {
+        let mut log = Quiet;
+        let before = with(&[(13, 40), (50, 0), (28, 127)]);
+        let after = with(&[(13, 100), (50, 127), (28, 0), (17, 81)]); // CC 17 drifted
+        let script = vec![
+            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (PodxtRequest::EditBuffer, vec![before.clone()]),
+            (set(Control::Drive, 100), vec![]),
+            (set(Control::ModEnable, 127), vec![]),
+            (set(Control::DelayEnable, 0), vec![]),
+            (PodxtRequest::EditBuffer, vec![after]),
+            (set(Control::DelayEnable, 127), vec![]),
+            (set(Control::ModEnable, 0), vec![]),
+            (set(Control::Drive, 40), vec![]),
+            (PodxtRequest::EditBuffer, vec![before]),
+        ];
+        let mut s = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
+        let targets = [
+            (Control::Drive, Target::Value(Value::new(100).unwrap())),
+            (Control::ModEnable, Target::Toggle),
+            (Control::DelayEnable, Target::Off),
+        ];
+        let test = live_edit_test(&mut s, &targets).unwrap();
+        assert!(test.stuck() && test.undone());
+        assert_eq!(test.unexpected(), vec![(17, 0, 81)]);
+        assert!(test.not_restored().is_empty());
+    }
+
+    #[test]
+    fn offsets_move_knobs_and_bounce_off_the_ends() {
+        let mut log = Quiet;
+        let before = with(&[(16, 120), (15, 30)]);
+        let script = vec![
+            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (PodxtRequest::EditBuffer, vec![before.clone()]),
+            (set(Control::Treble, 100), vec![]),
+            (set(Control::Mid, 50), vec![]),
+            (PodxtRequest::EditBuffer, vec![with(&[(16, 100), (15, 50)])]),
+            (set(Control::Mid, 30), vec![]),
+            (set(Control::Treble, 120), vec![]),
+            (PodxtRequest::EditBuffer, vec![before]),
+        ];
+        let mut s = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
+        let targets = [
+            (Control::Treble, Target::Offset(20)),
+            (Control::Mid, Target::Offset(20)),
+        ];
+        let test = live_edit_test(&mut s, &targets).unwrap();
+        assert_eq!((test.changes[0].target, test.changes[1].target), (100, 50));
+        assert!(test.stuck() && test.undone());
+    }
+
+    #[test]
+    fn the_undo_is_sent_even_when_the_check_read_fails() {
         let mut log = Quiet;
         let script = vec![
             (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
-            (PodxtRequest::EditBuffer, vec![with_stomp(true)]),
-            (PodxtRequest::StompEnable(false), vec![]),
+            (PodxtRequest::EditBuffer, vec![with(&[(25, 127), (36, 0)])]),
+            (set(Control::StompEnable, 0), vec![]),
+            (set(Control::ReverbEnable, 127), vec![]),
             (PodxtRequest::EditBuffer, vec![]),
-            (PodxtRequest::StompEnable(true), vec![]),
-            (PodxtRequest::EditBuffer, vec![with_stomp(true)]),
+            (set(Control::ReverbEnable, 0), vec![]),
+            (set(Control::StompEnable, 127), vec![]),
+            (PodxtRequest::EditBuffer, vec![with(&[(25, 127), (36, 0)])]),
         ];
         let mut s = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
-        let test = stomp_test(&mut s).unwrap();
-        assert!(test.after.is_err() && !test.stuck());
-        assert!(test.undo_sent.is_ok() && test.undone());
-        assert_eq!(s.sent.last(), Some(&PodxtRequest::EditBuffer.bytes()));
-        assert_eq!(s.sent[s.sent.len() - 2], vec![0xb0, 25, 127]);
+        let targets = [
+            (Control::StompEnable, Target::Toggle),
+            (Control::ReverbEnable, Target::Toggle),
+        ];
+        let test = live_edit_test(&mut s, &targets).unwrap();
+        assert!(test.after.is_err() && !test.stuck() && test.undone());
     }
 
     #[test]
-    fn a_closed_policy_never_sends_the_stomp_change() {
+    fn duplicates_and_empty_requests_send_nothing_and_a_closed_policy_refuses() {
         let mut log = Quiet;
-        let script = vec![(PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()])];
         let mut s = Session::new(
-            Fake::new(Path::PodxtMidi, script),
+            Fake::new::<PodxtRequest>(Path::PodxtMidi, vec![]),
+            &AllowAll,
+            &mut log,
+        );
+        assert!(live_edit_test(&mut s, &[]).is_err());
+        let twice = [(Control::Mid, Target::On), (Control::Mid, Target::Off)];
+        assert!(live_edit_test(&mut s, &twice).is_err());
+        assert!(s.link.writes.is_empty());
+        let mut log = Quiet;
+        let mut closed = Session::new(
+            Fake::new::<PodxtRequest>(Path::PodxtMidi, vec![]),
             &crate::gate::AllClosed,
             &mut log,
         );
-        assert!(s.send(PodxtRequest::StompEnable(true)).is_err());
-        assert!(s.link.writes.is_empty());
+        assert!(closed.send(set(Control::StompEnable, 127)).is_err());
+        assert!(closed.link.writes.is_empty());
     }
 
     #[test]
