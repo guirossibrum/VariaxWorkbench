@@ -423,11 +423,15 @@ impl Control {
     }
 
     /// The PODxt can overwrite this setting from its own controls. Owner
-    /// tests 2026-11-22: the Channel Volume knob re-sends its position (the
-    /// playing value follows the knob, not the stored tone), and the PODxt
-    /// sent Presence = 0 by itself while Treble/Mid were being changed.
+    /// tests 2026-11-22/23: the Channel Volume knob re-sends its position to
+    /// whichever volume is active (channel volume with the amp on, bypass
+    /// volume with the amp off), and the PODxt sent Presence = 0 by itself
+    /// during large change sequences (cause not identified).
     pub fn device_may_override(self) -> bool {
-        matches!(self, Control::ChannelVolume | Control::Presence)
+        matches!(
+            self,
+            Control::ChannelVolume | Control::BypassVolume | Control::Presence
+        )
     }
 
     /// Whether a stored value means "on" (switches only).
@@ -515,12 +519,23 @@ fn device_originated(tally: &ControllerTally, sent: &[(u8, u8)]) -> Vec<(u8, u8)
     tally
         .controllers
         .iter()
-        .filter(|((_, cc), t)| {
+        .flat_map(|((_, cc), t)| {
             let echoes = sent.iter().filter(|(s, _)| s == cc).count();
             let expected = sent.iter().rev().find(|(s, _)| s == cc).map(|(_, v)| *v);
-            echoes == 0 || t.count > echoes || expected != Some(t.last)
+            // Every distinct value seen (first/last/min/max) that is not what
+            // was sent; for a controller that was not sent at all, its last.
+            let mut values: Vec<u8> = match expected {
+                None => vec![t.last],
+                Some(_) if t.count <= echoes && expected == Some(t.last) => Vec::new(),
+                Some(sent) => [t.first, t.last, t.min, t.max]
+                    .into_iter()
+                    .filter(|v| *v != sent)
+                    .collect(),
+            };
+            values.sort_unstable();
+            values.dedup();
+            values.into_iter().map(move |v| (*cc, v))
         })
-        .map(|((_, cc), t)| (*cc, t.last))
         .collect()
 }
 
@@ -1329,6 +1344,21 @@ mod tests {
         assert!(test.stuck() && test.undone());
         assert_eq!(test.unexpected(), vec![(17, 0, 81)]);
         assert!(test.not_restored().is_empty());
+    }
+
+    #[test]
+    fn a_device_value_hidden_behind_a_later_echo_is_still_reported() {
+        // Seen live: the PODxt sent Presence 0, then our Presence 50 echoed.
+        let mut tally = ControllerTally::default();
+        for value in [0, 50] {
+            tally.add(&crate::midi::Event::Short(vec![0xb0, 21, value]));
+        }
+        tally.add(&crate::midi::Event::Short(vec![0xb0, 16, 40]));
+        assert_eq!(
+            device_originated(&tally, &[(21, 50), (16, 40)]),
+            vec![(21, 0)]
+        );
+        assert!(Control::BypassVolume.device_may_override());
     }
 
     #[test]
