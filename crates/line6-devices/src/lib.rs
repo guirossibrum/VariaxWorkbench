@@ -14,8 +14,8 @@
 //! * [`backup`] — recoverable library backups on disk (write, verify, load,
 //!   compare), so every front end produces the same layout.
 //!
-//! Everything here is read-only: no request writes, stores, switches presets
-//! or banks, resets, or touches firmware.
+//! PODxt Live edit-buffer changes and channel selection run through their
+//! product-family APIs. The crate has no preset store or firmware API.
 
 #![forbid(unsafe_code)]
 

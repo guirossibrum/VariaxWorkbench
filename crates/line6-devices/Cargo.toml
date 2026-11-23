@@ -3,7 +3,7 @@ name = "line6-devices"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "Per-product-family Line 6 device protocols, decoders and thin transports (read-only so far)"
+description = "Per-product-family Line 6 device protocols, decoders and gated transports"
 
 [features]
 # Live USB interface links (libusb). Off by default: decoders and the ALSA

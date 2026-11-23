@@ -62,6 +62,8 @@ impl GatePolicy for OwnerGrants {
             Operation::PodxtEditBufferWrite => true,
             // G6, direct owner approval for item 2 in this worktree tool only.
             Operation::PodxtAdditionalEditBufferWrite => true,
+            // The owner's probe permission covers edits with automatic undo.
+            Operation::PodxtKeepEditBufferChanges => false,
             // Owner's request 2026-11-23: select the playing channel by program
             // change (like the footswitch). Refused on unsaved edits; no store.
             Operation::PodxtChannelSwitch => true,

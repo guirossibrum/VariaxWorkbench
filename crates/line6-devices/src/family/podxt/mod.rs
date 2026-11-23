@@ -549,6 +549,40 @@ pub struct Change {
     pub target: u16,
 }
 
+/// A group of verified live edits left active in the PODxt Live edit buffer.
+pub struct VerifiedLiveEdits {
+    pub identity_reply: Vec<u8>,
+    pub before: EditBuffer,
+    pub after: EditBuffer,
+    pub changes: Vec<Change>,
+    /// Values received from the device besides the requested controller echoes.
+    pub device_sent: Vec<(u8, u8)>,
+}
+
+/// Outcome of applying a group of live edits without storing the tone.
+pub enum LiveApply {
+    Applied(VerifiedLiveEdits),
+    /// The forward change could not be confirmed. Inspect the readback and
+    /// exact undo result before showing the active tone as restored.
+    UndoAttempted(LiveEditTest),
+}
+
+struct EditAttempt {
+    identity_reply: Vec<u8>,
+    before: EditBuffer,
+    changes: Vec<Change>,
+    sent: usize,
+    attempted: usize,
+    after: Result<EditBuffer, String>,
+    device_sent_after_changes: Vec<(u8, u8)>,
+}
+
+fn change_applied(change: &Change, after: &EditBuffer) -> bool {
+    change
+        .control
+        .matches(change.control.read(after), change.target)
+}
+
 /// Result of a live-edit test.
 pub struct LiveEditTest {
     pub identity_reply: Vec<u8>,
@@ -596,11 +630,10 @@ impl LiveEditTest {
         self.changes
             .iter()
             .map(|change| {
-                let ok = self.after.as_ref().is_ok_and(|after| {
-                    change
-                        .control
-                        .matches(change.control.read(after), change.target)
-                });
+                let ok = self
+                    .after
+                    .as_ref()
+                    .is_ok_and(|after| change_applied(change, after));
                 (*change, ok)
             })
             .collect()
@@ -678,6 +711,53 @@ pub fn live_settings_test<L: Link>(
     session: &mut Session<L>,
     targets: &[LiveTarget],
 ) -> Result<LiveEditTest, String> {
+    let attempt = edit_settings(session, targets, false)?;
+    Ok(undo_edit_attempt(session, attempt))
+}
+
+/// Set active PODxt Live controls and retain the edit after readback confirms
+/// every requested value. A failed or partial application attempts automatic
+/// undo and returns the undo report. All hardware access remains subject to
+/// the session policy. Keep permission is separate from permission to test
+/// with undo. This operation never stores the tone in a channel.
+pub fn apply_live_settings<L: Link>(
+    session: &mut Session<L>,
+    targets: &[LiveTarget],
+) -> Result<LiveApply, String> {
+    if !session.allows(Operation::PodxtKeepEditBufferChanges) {
+        return Err("Keeping PODxt Live edit-buffer changes is closed in this build.".into());
+    }
+    match edit_settings(session, targets, true)? {
+        EditAttempt {
+            identity_reply,
+            before,
+            changes,
+            sent,
+            after: Ok(after),
+            device_sent_after_changes,
+            ..
+        } if sent == changes.len()
+            && changes.iter().all(|change| change_applied(change, &after)) =>
+        {
+            Ok(LiveApply::Applied(VerifiedLiveEdits {
+                identity_reply,
+                before,
+                after,
+                changes,
+                device_sent: device_sent_after_changes,
+            }))
+        }
+        attempt => Ok(LiveApply::UndoAttempted(undo_edit_attempt(
+            session, attempt,
+        ))),
+    }
+}
+
+fn edit_settings<L: Link>(
+    session: &mut Session<L>,
+    targets: &[LiveTarget],
+    requires_live_member: bool,
+) -> Result<EditAttempt, String> {
     if targets.is_empty() {
         return Err("No changes requested.".into());
     }
@@ -703,8 +783,8 @@ pub fn live_settings_test<L: Link>(
     }
 
     let (identity_reply, identity) = identify_podxt(session)?;
-    if additional && identity.member != PODXT_LIVE_MEMBER {
-        return Err("Additional edits require the PODxt Live identity. No edits were sent.".into());
+    if (additional || requires_live_member) && identity.member != PODXT_LIVE_MEMBER {
+        return Err("These edits require the PODxt Live identity. No edits were sent.".into());
     }
     let before = read_edit_buffer(session)?;
     let mut changes: Vec<Change> = targets
@@ -779,6 +859,27 @@ pub fn live_settings_test<L: Link>(
         None => check_live_settings(session, &sent_forward, &mut device_sent_after_changes),
     };
 
+    Ok(EditAttempt {
+        identity_reply,
+        before,
+        changes,
+        sent,
+        attempted,
+        after,
+        device_sent_after_changes,
+    })
+}
+
+fn undo_edit_attempt<L: Link>(session: &mut Session<L>, attempt: EditAttempt) -> LiveEditTest {
+    let EditAttempt {
+        identity_reply,
+        before,
+        changes,
+        sent,
+        attempted,
+        after,
+        device_sent_after_changes,
+    } = attempt;
     // A failed send can have reached the device. Undo even the partially
     // transmitted setting, with 14-bit values always sent high byte first.
     let mut undo: Vec<_> = changes[..attempted]
@@ -823,7 +924,7 @@ pub fn live_settings_test<L: Link>(
             restored = check_live_settings(session, &sent_back, &mut device_sent_after_undo);
         }
     }
-    Ok(LiveEditTest {
+    LiveEditTest {
         identity_reply,
         before,
         changes,
@@ -833,7 +934,7 @@ pub fn live_settings_test<L: Link>(
         restored,
         device_sent_after_changes,
         device_sent_after_undo,
-    })
+    }
 }
 
 fn undo_settings<L: Link>(
@@ -2052,6 +2153,62 @@ mod tests {
                 vec![0xf0, 0, 1, 0x0c, 3, 0x23, 0, 0xf7]
             ]
         );
+    }
+
+    #[test]
+    fn applying_live_settings_leaves_a_verified_edit_active() {
+        let before = with(&[(42, 33)]);
+        let after = with(&[(42, 53)]);
+        let script = vec![
+            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (PodxtRequest::EditBuffer, vec![before.clone()]),
+            (set(Control::EqFreq2, 53), vec![]),
+            (PodxtRequest::EditBuffer, vec![after.clone()]),
+        ];
+        let target = LiveTarget::Basic(Control::EqFreq2, Target::Offset(20));
+        let mut log = Quiet;
+        let mut session = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
+        let LiveApply::Applied(edit) = apply_live_settings(&mut session, &[target]).unwrap() else {
+            panic!("expected requested EQ edit to remain active");
+        };
+        assert_eq!(edit.before.raw, before);
+        assert_eq!(edit.after.raw, after);
+        assert_eq!(edit.changes[0].target, 53);
+        assert_eq!(session.link.writes.len(), 4);
+    }
+
+    #[test]
+    fn retaining_edits_requires_a_separate_gate_and_unconfirmed_edits_are_undone() {
+        struct UndoOnly;
+        impl crate::gate::GatePolicy for UndoOnly {
+            fn allows(&self, operation: Operation) -> bool {
+                operation != Operation::PodxtKeepEditBufferChanges
+            }
+        }
+        let targets = [LiveTarget::Additional(Setting::Tempo, 1135)];
+        let mut log = Quiet;
+        let link = Fake::new::<PodxtRequest>(Path::PodxtMidi, vec![]);
+        let mut session = Session::new(link, &UndoOnly, &mut log);
+        assert!(apply_live_settings(&mut session, &targets).is_err());
+        assert!(session.link.writes.is_empty());
+
+        let before = with(&[(89, 7), (90, 41)]);
+        let script = vec![
+            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (PodxtRequest::EditBuffer, vec![before.clone()]),
+            (setting_message(Setting::Tempo, 1135, 0), vec![]),
+            (setting_message(Setting::Tempo, 1135, 1), vec![]),
+            (PodxtRequest::EditBuffer, vec![before.clone()]),
+            (setting_message(Setting::Tempo, 937, 0), vec![]),
+            (setting_message(Setting::Tempo, 937, 1), vec![]),
+            (PodxtRequest::EditBuffer, vec![before]),
+        ];
+        let mut session = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
+        let LiveApply::UndoAttempted(test) = apply_live_settings(&mut session, &targets).unwrap()
+        else {
+            panic!("expected automatic undo after failed confirmation");
+        };
+        assert!(!test.stuck() && test.exact_undo());
     }
 
     #[test]
