@@ -21,6 +21,9 @@ pub enum Operation {
     VariaxPresetSwitch,
     /// PODxt-family installed model-pack query (`03 0E`), read-only.
     PodxtPackQuery,
+    /// PODxt-family edit-buffer write (G6): a controller change that alters
+    /// the active tone only. Nothing here stores to memory.
+    PodxtEditBufferWrite,
 }
 
 pub trait GatePolicy {

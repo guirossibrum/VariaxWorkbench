@@ -41,6 +41,9 @@ pub enum PodxtRequest {
     /// Installed model-pack query, `03 0E 00` (Line 6 Edit
     /// `L6PODxtDevice.UpdateInstalledPacks`). Read-only.
     InstalledPacks,
+    /// Stomp on/off in the active tone: controller 25, 127 or 0, exactly as
+    /// Line 6 Edit `EncodeParamChange` sends it. Edit-buffer write (G6).
+    StompEnable(bool),
 }
 
 impl Request for PodxtRequest {
@@ -49,6 +52,7 @@ impl Request for PodxtRequest {
             PodxtRequest::Identity => identity::REQUEST.to_vec(),
             PodxtRequest::EditBuffer => vec![0xf0, 0x00, 0x01, 0x0c, 0x03, 0x75, 0xf7],
             PodxtRequest::InstalledPacks => vec![0xf0, 0x00, 0x01, 0x0c, 0x03, 0x0e, 0x00, 0xf7],
+            PodxtRequest::StompEnable(on) => vec![0xb0, STOMP_ENABLE_CC, if on { 127 } else { 0 }],
             PodxtRequest::Stored(location) => {
                 let address = location.address();
                 vec![
@@ -78,8 +82,70 @@ impl Request for PodxtRequest {
             PodxtRequest::EditBuffer => Operation::PodxtRead,
             PodxtRequest::Stored(_) => Operation::PodxtLibraryRead,
             PodxtRequest::InstalledPacks => Operation::PodxtPackQuery,
+            PodxtRequest::StompEnable(_) => Operation::PodxtEditBufferWrite,
         }
     }
+}
+
+/// Stomp enable controller (`CC_STOMP_ENABLE`).
+pub const STOMP_ENABLE_CC: u8 = 25;
+/// Time for the PODxt to apply a controller change before reading back.
+const APPLY: Duration = Duration::from_millis(200);
+
+/// Result of the G6 stomp toggle test. `after` is the tone with the stomp
+/// flipped; `restored` is the tone after sending the original value back.
+pub struct StompTest {
+    pub identity_reply: Vec<u8>,
+    pub before: EditBuffer,
+    pub original: bool,
+    pub after: Result<EditBuffer, String>,
+    pub undo_sent: Result<(), String>,
+    pub restored: Result<EditBuffer, String>,
+}
+
+impl StompTest {
+    /// The flip reached the active tone.
+    pub fn stuck(&self) -> bool {
+        self.after
+            .as_ref()
+            .is_ok_and(|after| after.switch(STOMP_ENABLE_CC) != self.original)
+    }
+
+    /// The original stomp state is back.
+    pub fn undone(&self) -> bool {
+        self.restored
+            .as_ref()
+            .is_ok_and(|restored| restored.switch(STOMP_ENABLE_CC) == self.original)
+    }
+}
+
+/// G6 edit-buffer test: read the active tone, flip the stomp with CC 25,
+/// read again, send the original value back, read again. The undo is sent
+/// even when the read after the flip fails. Nothing is stored to memory.
+pub fn stomp_test<L: Link>(session: &mut Session<L>) -> Result<StompTest, String> {
+    let (identity_reply, _) = identify_podxt(session)?;
+    let before = read_edit_buffer(session)?;
+    let original = before.switch(STOMP_ENABLE_CC);
+    let flip = session.send(PodxtRequest::StompEnable(!original));
+    let after = flip.and_then(|()| {
+        session.link.pause(APPLY);
+        session.listen(Duration::from_millis(50))?;
+        read_edit_buffer(session)
+    });
+    let undo_sent = session.send(PodxtRequest::StompEnable(original));
+    let restored = undo_sent.clone().and_then(|()| {
+        session.link.pause(APPLY);
+        session.listen(Duration::from_millis(50))?;
+        read_edit_buffer(session)
+    });
+    Ok(StompTest {
+        identity_reply,
+        before,
+        original,
+        after,
+        undo_sent,
+        restored,
+    })
 }
 
 /// Installed model packs: a bitmask from the device (`L6PODxtDevice.XTPACKS_*`).
@@ -616,6 +682,80 @@ mod tests {
         ];
         let mut s = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
         assert_eq!(read_packs(&mut s).unwrap().1.names().len(), 4);
+    }
+
+    fn with_stomp(on: bool) -> Vec<u8> {
+        let mut raw = synthetic();
+        raw[39 + usize::from(STOMP_ENABLE_CC)] = if on { 127 } else { 0 };
+        raw
+    }
+
+    #[test]
+    fn stomp_request_is_line6_edits_cc_and_a_g6_operation() {
+        assert_eq!(PodxtRequest::StompEnable(true).bytes(), vec![0xb0, 25, 127]);
+        assert_eq!(PodxtRequest::StompEnable(false).bytes(), vec![0xb0, 25, 0]);
+        assert_eq!(
+            PodxtRequest::StompEnable(true).operation(),
+            Operation::PodxtEditBufferWrite
+        );
+    }
+
+    #[test]
+    fn stomp_test_flips_reads_and_undoes() {
+        let mut log = Quiet;
+        let script = vec![
+            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (PodxtRequest::EditBuffer, vec![with_stomp(false)]),
+            (PodxtRequest::StompEnable(true), vec![]),
+            (PodxtRequest::EditBuffer, vec![with_stomp(true)]),
+            (PodxtRequest::StompEnable(false), vec![]),
+            (PodxtRequest::EditBuffer, vec![with_stomp(false)]),
+        ];
+        let mut s = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
+        let test = stomp_test(&mut s).unwrap();
+        assert!(!test.original && test.stuck() && test.undone());
+        assert_eq!(
+            test.before.differences(test.after.as_ref().unwrap()),
+            vec![(25, 0, 127)]
+        );
+        assert!(
+            test.before
+                .differences(test.restored.as_ref().unwrap())
+                .is_empty()
+        );
+        assert_eq!(s.sent.iter().filter(|b| b[0] == 0xb0).count(), 2);
+    }
+
+    #[test]
+    fn stomp_test_sends_the_undo_even_when_the_check_read_fails() {
+        let mut log = Quiet;
+        let script = vec![
+            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (PodxtRequest::EditBuffer, vec![with_stomp(true)]),
+            (PodxtRequest::StompEnable(false), vec![]),
+            (PodxtRequest::EditBuffer, vec![]),
+            (PodxtRequest::StompEnable(true), vec![]),
+            (PodxtRequest::EditBuffer, vec![with_stomp(true)]),
+        ];
+        let mut s = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
+        let test = stomp_test(&mut s).unwrap();
+        assert!(test.after.is_err() && !test.stuck());
+        assert!(test.undo_sent.is_ok() && test.undone());
+        assert_eq!(s.sent.last(), Some(&PodxtRequest::EditBuffer.bytes()));
+        assert_eq!(s.sent[s.sent.len() - 2], vec![0xb0, 25, 127]);
+    }
+
+    #[test]
+    fn a_closed_policy_never_sends_the_stomp_change() {
+        let mut log = Quiet;
+        let script = vec![(PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()])];
+        let mut s = Session::new(
+            Fake::new(Path::PodxtMidi, script),
+            &crate::gate::AllClosed,
+            &mut log,
+        );
+        assert!(s.send(PodxtRequest::StompEnable(true)).is_err());
+        assert!(s.link.writes.is_empty());
     }
 
     #[test]
