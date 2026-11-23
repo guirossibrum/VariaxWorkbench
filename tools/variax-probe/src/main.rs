@@ -10,7 +10,8 @@
 //!   compare DIR_A DIR_B    offline: are two library backups identical?
 //!   podxt packs            installed model packs (read-only query)
 //!   podxt live-test [NAME=VALUE ...]  G6: live edits in the active tone, read, undo, read
-//!                          (default: stomp/mod/delay/reverb toggled, treble +20, mid -20)
+//!                          (default: stomp/mod/delay/reverb toggled, treble +20, mid -20;
+//!                          `all`: every live control, switches toggled, knobs +20)
 //!   podxt stomp-test       G6: the same with only the stomp toggled
 //!
 //! Only the requests defined by the `line6-devices` families can be sent, and
@@ -414,6 +415,20 @@ const DEFAULT_LIVE: [&str; 6] = [
 ];
 
 fn live_targets(words: &[&str]) -> Result<Vec<(podxt::Control, podxt::Target)>, String> {
+    if words == ["all"] {
+        // Every live control: switches toggled, knobs moved 20 steps.
+        return Ok(podxt::Control::ALL
+            .iter()
+            .map(|&control| {
+                let target = if control.is_switch() {
+                    podxt::Target::Toggle
+                } else {
+                    podxt::Target::Offset(20)
+                };
+                (control, target)
+            })
+            .collect());
+    }
     let words: Vec<&str> = if words.is_empty() {
         DEFAULT_LIVE.to_vec()
     } else {
@@ -465,13 +480,7 @@ fn run_podxt_live_test(
         podxt::live_edit_test(&mut session, targets)
     };
     let test = result?;
-    let shown = |control: podxt::Control, value: u8| {
-        if control.is_switch() {
-            (if value > 63 { "on" } else { "off" }).to_owned()
-        } else {
-            format!("{value} ({:.1}%)", f32::from(value) / 127.0 * 100.0)
-        }
-    };
+    let shown = |control: podxt::Control, value: u8| control.describe(value);
     let cc_list = |items: &[(u8, u8, u8)]| {
         items
             .iter()
@@ -504,7 +513,11 @@ fn run_podxt_live_test(
             shown(change.control, change.original),
             shown(change.control, change.target),
             now,
-            if ok { "OK" } else { "NOT APPLIED" }
+            match (ok, change.control.device_may_override()) {
+                (true, _) => "OK",
+                (false, true) => "NOT APPLIED (the PODxt can override this from its own controls)",
+                (false, false) => "NOT APPLIED",
+            }
         ));
     }
     let unexpected = test.unexpected();
@@ -520,6 +533,30 @@ fn run_podxt_live_test(
         Ok(()) => "Undo sent: every original value, in reverse order".to_owned(),
         Err(error) => format!("UNDO NOT FULLY SENT: {error} — re-select the channel on the PODxt"),
     });
+    let device_list = |items: &[(u8, u8)]| {
+        items
+            .iter()
+            .map(|(cc, v)| {
+                format!(
+                    "CC {cc} {} = {v}",
+                    podxt::controls::name(*cc).unwrap_or("unnamed")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    if !test.device_sent_after_changes.is_empty() {
+        capture.line(format!(
+            "Sent by the PODxt on its own after the changes: {}",
+            device_list(&test.device_sent_after_changes)
+        ));
+    }
+    if !test.device_sent_after_undo.is_empty() {
+        capture.line(format!(
+            "Sent by the PODxt on its own after the undo: {}",
+            device_list(&test.device_sent_after_undo)
+        ));
+    }
     let not_restored = test.not_restored();
     capture.line(match &test.restored {
         Ok(_) if not_restored.is_empty() => {
@@ -715,6 +752,10 @@ mod tests {
             parse(&args("podxt stomp-test")).unwrap().0,
             Command::PodxtLiveTest(vec![(podxt::Control::StompEnable, podxt::Target::Toggle)])
         );
+        match parse(&args("podxt live-test all")).unwrap().0 {
+            Command::PodxtLiveTest(targets) => assert_eq!(targets.len(), podxt::Control::ALL.len()),
+            other => panic!("{other:?}"),
+        }
         match parse(&args("podxt live-test")).unwrap().0 {
             Command::PodxtLiveTest(targets) => assert_eq!(targets.len(), 6),
             other => panic!("{other:?}"),

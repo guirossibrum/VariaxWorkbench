@@ -3,7 +3,7 @@
 //! Some numbers carry two names because the bass and guitar models reuse them.
 //! In the 168-byte edit buffer, controller `n` is stored at byte `39 + n`.
 
-pub const CONTROLS: [(u8, &str); 102] = [
+pub const CONTROLS: [(u8, &str); 103] = [
     (1, "tweak"),
     (2, "delay_tweak"),
     (3, "mod_tweak"),
@@ -45,6 +45,8 @@ pub const CONTROLS: [(u8, &str); 102] = [
     (43, "wah_enable"),
     (44, "mod_xover"),
     (45, "delay_xover"),
+    // DYNCC_VOL_PEDAL_MIN, set at runtime for the guitar PODxt (91 on bass).
+    (46, "vol_pedal_min"),
     (47, "vol_pedal_prepost"),
     (48, "di_model"),
     (49, "di_delay"),

@@ -95,10 +95,26 @@ const APPLY: Duration = Duration::from_millis(200);
 /// Gap between consecutive controller messages.
 const CC_GAP: Duration = Duration::from_millis(20);
 
-/// Live settings a front end may change (closed list). Knobs take 0..=127;
-/// switches are on at 127 and off at 0, as Line 6 Edit sends them.
-/// Model selections are deliberately absent: Line 6 Edit pairs them with
-/// default-loading behaviour, so they are more than one setting.
+/// How Line 6 Edit encodes a live control's value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// Knob: the 0..1 value scaled to 0..=127 (`Float2CC`).
+    Knob,
+    /// Switch: on = 127, off = 0.
+    Switch,
+    /// Switch sent as `127 - value` (amp enable: on = 0, off = 127).
+    InvertedSwitch,
+}
+
+/// Live settings a front end may change (closed list). Every entry is one
+/// controller message in Line 6 Edit 3.06 `EncodeParamChange` with the value
+/// encoding of its [`Kind`], and is present on the PODxt Live (guitar). Not
+/// here on purpose: bass-PODxt-only controls (crossovers, DI, EQ bands 5-6,
+/// EQ pre/post), gate threshold (dB-encoded), integer selectors (mic, NOTE,
+/// tweak parameter, pedal assign), two-byte speed/time and tempo, model
+/// selections (pack checks, amp defaults), the Variax-wrapped controls, which
+/// are forwarded to the guitar, and the FX loop switch (CC 107): the PODxt
+/// Live has no effects loop and ignored it in an owner test (no echo).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Control {
     Drive,
@@ -107,6 +123,42 @@ pub enum Control {
     Treble,
     Presence,
     ChannelVolume,
+    StompParam2,
+    StompParam3,
+    StompParam4,
+    StompParam5,
+    StompParam6,
+    ModParam2,
+    ModParam3,
+    ModParam4,
+    ModParam5,
+    ModMix,
+    DelayParam2,
+    DelayParam3,
+    DelayParam4,
+    DelayParam5,
+    DelayMix,
+    CompThreshold,
+    CompGain,
+    GateDecay,
+    ReverbDecay,
+    ReverbPredelay,
+    ReverbTone,
+    ReverbMix,
+    EqFreq1,
+    EqGain1,
+    EqFreq2,
+    EqGain2,
+    EqFreq3,
+    EqGain3,
+    EqFreq4,
+    EqGain4,
+    Room,
+    BypassVolume,
+    VolumePedal,
+    VolumePedalMin,
+    WahPosition,
+    AmpEnable,
     StompEnable,
     CompEnable,
     GateEnable,
@@ -115,16 +167,57 @@ pub enum Control {
     ReverbEnable,
     WahEnable,
     EqEnable,
+    AmpSwitchMode,
+    ModPrePost,
+    DelayPrePost,
+    ReverbPrePost,
+    VolumePedalPrePost,
 }
 
 impl Control {
-    pub const ALL: [Control; 14] = [
+    pub const ALL: [Control; 55] = [
         Control::Drive,
         Control::Bass,
         Control::Mid,
         Control::Treble,
         Control::Presence,
         Control::ChannelVolume,
+        Control::StompParam2,
+        Control::StompParam3,
+        Control::StompParam4,
+        Control::StompParam5,
+        Control::StompParam6,
+        Control::ModParam2,
+        Control::ModParam3,
+        Control::ModParam4,
+        Control::ModParam5,
+        Control::ModMix,
+        Control::DelayParam2,
+        Control::DelayParam3,
+        Control::DelayParam4,
+        Control::DelayParam5,
+        Control::DelayMix,
+        Control::CompThreshold,
+        Control::CompGain,
+        Control::GateDecay,
+        Control::ReverbDecay,
+        Control::ReverbPredelay,
+        Control::ReverbTone,
+        Control::ReverbMix,
+        Control::EqFreq1,
+        Control::EqGain1,
+        Control::EqFreq2,
+        Control::EqGain2,
+        Control::EqFreq3,
+        Control::EqGain3,
+        Control::EqFreq4,
+        Control::EqGain4,
+        Control::Room,
+        Control::BypassVolume,
+        Control::VolumePedal,
+        Control::VolumePedalMin,
+        Control::WahPosition,
+        Control::AmpEnable,
         Control::StompEnable,
         Control::CompEnable,
         Control::GateEnable,
@@ -133,9 +226,14 @@ impl Control {
         Control::ReverbEnable,
         Control::WahEnable,
         Control::EqEnable,
+        Control::AmpSwitchMode,
+        Control::ModPrePost,
+        Control::DelayPrePost,
+        Control::ReverbPrePost,
+        Control::VolumePedalPrePost,
     ];
 
-    /// Controller number (Line 6 Edit `CC_*` constants).
+    /// Controller number (Line 6 Edit `CC_*` constants, PODxt Live mapping).
     pub fn cc(self) -> u8 {
         match self {
             Control::Drive => 13,
@@ -144,7 +242,43 @@ impl Control {
             Control::Treble => 16,
             Control::Presence => 21,
             Control::ChannelVolume => 17,
-            Control::StompEnable => STOMP_ENABLE_CC,
+            Control::StompParam2 => 79,
+            Control::StompParam3 => 80,
+            Control::StompParam4 => 81,
+            Control::StompParam5 => 82,
+            Control::StompParam6 => 83,
+            Control::ModParam2 => 52,
+            Control::ModParam3 => 53,
+            Control::ModParam4 => 54,
+            Control::ModParam5 => 55,
+            Control::ModMix => 56,
+            Control::DelayParam2 => 33,
+            Control::DelayParam3 => 35,
+            Control::DelayParam4 => 85,
+            Control::DelayParam5 => 86,
+            Control::DelayMix => 34,
+            Control::CompThreshold => 9,
+            Control::CompGain => 5,
+            Control::GateDecay => 24,
+            Control::ReverbDecay => 38,
+            Control::ReverbPredelay => 40,
+            Control::ReverbTone => 39,
+            Control::ReverbMix => 18,
+            Control::EqFreq1 => 20,
+            Control::EqGain1 => 114,
+            Control::EqFreq2 => 42,
+            Control::EqGain2 => 116,
+            Control::EqFreq3 => 60,
+            Control::EqGain3 => 117,
+            Control::EqFreq4 => 77,
+            Control::EqGain4 => 119,
+            Control::Room => 76,
+            Control::BypassVolume => 105,
+            Control::VolumePedal => 7,
+            Control::VolumePedalMin => 46,
+            Control::WahPosition => 4,
+            Control::AmpEnable => 111,
+            Control::StompEnable => 25,
             Control::CompEnable => 26,
             Control::GateEnable => 22,
             Control::ModEnable => 50,
@@ -152,19 +286,76 @@ impl Control {
             Control::ReverbEnable => 36,
             Control::WahEnable => 43,
             Control::EqEnable => 63,
+            Control::AmpSwitchMode => 84,
+            Control::ModPrePost => 57,
+            Control::DelayPrePost => 87,
+            Control::ReverbPrePost => 41,
+            Control::VolumePedalPrePost => 47,
+        }
+    }
+
+    pub fn kind(self) -> Kind {
+        match self {
+            Control::Drive => Kind::Knob,
+            Control::Bass => Kind::Knob,
+            Control::Mid => Kind::Knob,
+            Control::Treble => Kind::Knob,
+            Control::Presence => Kind::Knob,
+            Control::ChannelVolume => Kind::Knob,
+            Control::StompParam2 => Kind::Knob,
+            Control::StompParam3 => Kind::Knob,
+            Control::StompParam4 => Kind::Knob,
+            Control::StompParam5 => Kind::Knob,
+            Control::StompParam6 => Kind::Knob,
+            Control::ModParam2 => Kind::Knob,
+            Control::ModParam3 => Kind::Knob,
+            Control::ModParam4 => Kind::Knob,
+            Control::ModParam5 => Kind::Knob,
+            Control::ModMix => Kind::Knob,
+            Control::DelayParam2 => Kind::Knob,
+            Control::DelayParam3 => Kind::Knob,
+            Control::DelayParam4 => Kind::Knob,
+            Control::DelayParam5 => Kind::Knob,
+            Control::DelayMix => Kind::Knob,
+            Control::CompThreshold => Kind::Knob,
+            Control::CompGain => Kind::Knob,
+            Control::GateDecay => Kind::Knob,
+            Control::ReverbDecay => Kind::Knob,
+            Control::ReverbPredelay => Kind::Knob,
+            Control::ReverbTone => Kind::Knob,
+            Control::ReverbMix => Kind::Knob,
+            Control::EqFreq1 => Kind::Knob,
+            Control::EqGain1 => Kind::Knob,
+            Control::EqFreq2 => Kind::Knob,
+            Control::EqGain2 => Kind::Knob,
+            Control::EqFreq3 => Kind::Knob,
+            Control::EqGain3 => Kind::Knob,
+            Control::EqFreq4 => Kind::Knob,
+            Control::EqGain4 => Kind::Knob,
+            Control::Room => Kind::Knob,
+            Control::BypassVolume => Kind::Knob,
+            Control::VolumePedal => Kind::Knob,
+            Control::VolumePedalMin => Kind::Knob,
+            Control::WahPosition => Kind::Knob,
+            Control::AmpEnable => Kind::InvertedSwitch,
+            Control::StompEnable => Kind::Switch,
+            Control::CompEnable => Kind::Switch,
+            Control::GateEnable => Kind::Switch,
+            Control::ModEnable => Kind::Switch,
+            Control::DelayEnable => Kind::Switch,
+            Control::ReverbEnable => Kind::Switch,
+            Control::WahEnable => Kind::Switch,
+            Control::EqEnable => Kind::Switch,
+            Control::AmpSwitchMode => Kind::Switch,
+            Control::ModPrePost => Kind::Switch,
+            Control::DelayPrePost => Kind::Switch,
+            Control::ReverbPrePost => Kind::Switch,
+            Control::VolumePedalPrePost => Kind::Switch,
         }
     }
 
     pub fn is_switch(self) -> bool {
-        !matches!(
-            self,
-            Control::Drive
-                | Control::Bass
-                | Control::Mid
-                | Control::Treble
-                | Control::Presence
-                | Control::ChannelVolume
-        )
+        self.kind() != Kind::Knob
     }
 
     pub fn name(self) -> &'static str {
@@ -175,6 +366,42 @@ impl Control {
             Control::Treble => "treble",
             Control::Presence => "presence",
             Control::ChannelVolume => "volume",
+            Control::StompParam2 => "stomp-p2",
+            Control::StompParam3 => "stomp-p3",
+            Control::StompParam4 => "stomp-p4",
+            Control::StompParam5 => "stomp-p5",
+            Control::StompParam6 => "stomp-p6",
+            Control::ModParam2 => "mod-p2",
+            Control::ModParam3 => "mod-p3",
+            Control::ModParam4 => "mod-p4",
+            Control::ModParam5 => "mod-p5",
+            Control::ModMix => "mod-mix",
+            Control::DelayParam2 => "delay-p2",
+            Control::DelayParam3 => "delay-p3",
+            Control::DelayParam4 => "delay-p4",
+            Control::DelayParam5 => "delay-p5",
+            Control::DelayMix => "delay-mix",
+            Control::CompThreshold => "comp-threshold",
+            Control::CompGain => "comp-gain",
+            Control::GateDecay => "gate-decay",
+            Control::ReverbDecay => "reverb-decay",
+            Control::ReverbPredelay => "reverb-predelay",
+            Control::ReverbTone => "reverb-tone",
+            Control::ReverbMix => "reverb-mix",
+            Control::EqFreq1 => "eq-freq1",
+            Control::EqGain1 => "eq-gain1",
+            Control::EqFreq2 => "eq-freq2",
+            Control::EqGain2 => "eq-gain2",
+            Control::EqFreq3 => "eq-freq3",
+            Control::EqGain3 => "eq-gain3",
+            Control::EqFreq4 => "eq-freq4",
+            Control::EqGain4 => "eq-gain4",
+            Control::Room => "room",
+            Control::BypassVolume => "bypass-volume",
+            Control::VolumePedal => "vol-pedal",
+            Control::VolumePedalMin => "vol-pedal-min",
+            Control::WahPosition => "wah-position",
+            Control::AmpEnable => "amp",
             Control::StompEnable => "stomp",
             Control::CompEnable => "comp",
             Control::GateEnable => "gate",
@@ -183,11 +410,49 @@ impl Control {
             Control::ReverbEnable => "reverb",
             Control::WahEnable => "wah",
             Control::EqEnable => "eq",
+            Control::AmpSwitchMode => "amp-switch-mode",
+            Control::ModPrePost => "mod-prepost",
+            Control::DelayPrePost => "delay-prepost",
+            Control::ReverbPrePost => "reverb-prepost",
+            Control::VolumePedalPrePost => "vol-pedal-prepost",
         }
     }
 
     pub fn from_name(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|control| control.name() == name)
+    }
+
+    /// The PODxt can overwrite this setting from its own controls. Owner
+    /// tests 2026-11-22: the Channel Volume knob re-sends its position (the
+    /// playing value follows the knob, not the stored tone), and the PODxt
+    /// sent Presence = 0 by itself while Treble/Mid were being changed.
+    pub fn device_may_override(self) -> bool {
+        matches!(self, Control::ChannelVolume | Control::Presence)
+    }
+
+    /// Whether a stored value means "on" (switches only).
+    pub fn is_on(self, stored: u8) -> bool {
+        match self.kind() {
+            Kind::InvertedSwitch => stored <= 63,
+            _ => stored > 63,
+        }
+    }
+
+    /// Raw value for "on" / "off".
+    pub fn switch_value(self, on: bool) -> u8 {
+        match (self.kind(), on) {
+            (Kind::InvertedSwitch, true) | (Kind::Switch | Kind::Knob, false) => 0,
+            _ => 127,
+        }
+    }
+
+    /// A stored value as people read it: on/off, or the knob position.
+    pub fn describe(self, stored: u8) -> String {
+        if self.is_switch() {
+            (if self.is_on(stored) { "on" } else { "off" }).to_owned()
+        } else {
+            format!("{stored} ({:.1}%)", f32::from(stored) / 127.0 * 100.0)
+        }
     }
 }
 
@@ -239,11 +504,29 @@ pub struct LiveEditTest {
     pub after: Result<EditBuffer, String>,
     pub undo_sent: Result<(), String>,
     pub restored: Result<EditBuffer, String>,
+    /// Controller messages the PODxt sent that were not echoes of what was
+    /// just sent, as `(cc, value)`: after the changes and after the undo.
+    pub device_sent_after_changes: Vec<(u8, u8)>,
+    pub device_sent_after_undo: Vec<(u8, u8)>,
+}
+
+/// Controllers in `tally` that are not a plain echo of `sent` (cc, value).
+fn device_originated(tally: &ControllerTally, sent: &[(u8, u8)]) -> Vec<(u8, u8)> {
+    tally
+        .controllers
+        .iter()
+        .filter(|((_, cc), t)| {
+            let echoes = sent.iter().filter(|(s, _)| s == cc).count();
+            let expected = sent.iter().rev().find(|(s, _)| s == cc).map(|(_, v)| *v);
+            echoes == 0 || t.count > echoes || expected != Some(t.last)
+        })
+        .map(|((_, cc), t)| (*cc, t.last))
+        .collect()
 }
 
 fn matches_target(control: Control, stored: u8, target: u8) -> bool {
     if control.is_switch() {
-        (stored > 63) == (target > 63)
+        control.is_on(stored) == control.is_on(target)
     } else {
         stored == target
     }
@@ -326,12 +609,13 @@ pub fn live_edit_test<L: Link>(
         .iter()
         .map(|&(control, target)| {
             let original = before.cc(control.cc());
-            let on = original > 63;
             let target = match target {
                 Target::Value(value) => value.get(),
-                Target::On => 127,
-                Target::Off => 0,
-                Target::Toggle if control.is_switch() => Value::switch(!on).get(),
+                Target::On => control.switch_value(true),
+                Target::Off => control.switch_value(false),
+                Target::Toggle if control.is_switch() => {
+                    control.switch_value(!control.is_on(original))
+                }
                 Target::Toggle => 127 - original,
                 Target::Offset(step) => {
                     let moved = i16::from(original) + i16::from(step);
@@ -360,11 +644,17 @@ pub fn live_edit_test<L: Link>(
         sent += 1;
         session.link.pause(CC_GAP);
     }
+    let sent_forward: Vec<(u8, u8)> = changes[..sent]
+        .iter()
+        .map(|c| (c.control.cc(), c.target))
+        .collect();
+    let mut device_sent_after_changes = Vec::new();
     let after = match send_error {
         Some(error) => Err(error),
         None => {
             session.link.pause(APPLY);
-            session.listen(Duration::from_millis(50))?;
+            let tally = session.listen(Duration::from_millis(50))?;
+            device_sent_after_changes = device_originated(&tally, &sent_forward);
             read_edit_buffer(session)
         }
     };
@@ -376,9 +666,16 @@ pub fn live_edit_test<L: Link>(
         }
         session.link.pause(CC_GAP);
     }
+    let sent_back: Vec<(u8, u8)> = changes[..sent]
+        .iter()
+        .rev()
+        .map(|c| (c.control.cc(), c.original))
+        .collect();
+    let mut device_sent_after_undo = Vec::new();
     let restored = undo_sent.clone().and_then(|()| {
         session.link.pause(APPLY);
-        session.listen(Duration::from_millis(50))?;
+        let tally = session.listen(Duration::from_millis(50))?;
+        device_sent_after_undo = device_originated(&tally, &sent_back);
         read_edit_buffer(session)
     });
     Ok(LiveEditTest {
@@ -389,6 +686,8 @@ pub fn live_edit_test<L: Link>(
         after,
         undo_sent,
         restored,
+        device_sent_after_changes,
+        device_sent_after_undo,
     })
 }
 
@@ -906,7 +1205,7 @@ mod tests {
         );
         assert_eq!(controls::name(7), Some("vol_pedal_level"));
         assert_eq!(controls::name(4), Some("wah_position"));
-        assert_eq!(controls::CONTROLS.len(), 102);
+        assert_eq!(controls::CONTROLS.len(), 103);
     }
 
     #[test]
@@ -955,11 +1254,33 @@ mod tests {
         );
         assert!(Value::new(128).is_none());
         assert_eq!(Control::from_name("delay"), Some(Control::DelayEnable));
-        assert!(Control::from_name("amp").is_none());
+        assert!(Control::from_name("amp-model").is_none());
+        assert_eq!(Control::from_name("amp"), Some(Control::AmpEnable));
         let mut ccs: Vec<u8> = Control::ALL.iter().map(|c| c.cc()).collect();
         ccs.sort_unstable();
         ccs.dedup();
-        assert_eq!(ccs.len(), 14);
+        assert_eq!(ccs.len(), Control::ALL.len());
+        let mut names: Vec<&str> = Control::ALL.iter().map(|c| c.name()).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), Control::ALL.len());
+        // Bass-only and specially encoded controls stay out of the list.
+        for cc in [
+            107, 44, 45, 48, 49, 23, 70, 51, 31, 108, 65, 29, 61, 30, 62, 89, 90, 11, 12, 71, 75,
+            58, 88, 37, 91, 96, 101, 120, 127,
+        ] {
+            assert!(Control::ALL.iter().all(|c| c.cc() != cc), "CC {cc}");
+        }
+        assert_eq!(
+            (
+                Control::AmpEnable.switch_value(true),
+                Control::AmpEnable.switch_value(false)
+            ),
+            (0, 127)
+        );
+        assert!(Control::AmpEnable.is_on(0) && !Control::AmpEnable.is_on(127));
+        assert_eq!(Control::EqGain2.cc(), 116);
+        assert_eq!(Control::from_name("vol-pedal-min").unwrap().cc(), 46);
         for control in Control::ALL {
             assert!(controls::name(control.cc()).is_some(), "{control:?}");
         }
@@ -1008,6 +1329,36 @@ mod tests {
         assert!(test.stuck() && test.undone());
         assert_eq!(test.unexpected(), vec![(17, 0, 81)]);
         assert!(test.not_restored().is_empty());
+    }
+
+    #[test]
+    fn echoes_are_not_reported_but_the_devices_own_messages_are() {
+        let mut log = Quiet;
+        let before = with(&[(17, 85), (21, 50)]);
+        let script = vec![
+            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (PodxtRequest::EditBuffer, vec![before.clone()]),
+            (
+                set(Control::ChannelVolume, 105),
+                vec![vec![0xb0, 17, 105], vec![0xb0, 17, 86]],
+            ),
+            (PodxtRequest::EditBuffer, vec![with(&[(17, 86), (21, 50)])]),
+            (
+                set(Control::ChannelVolume, 85),
+                vec![vec![0xb0, 17, 85], vec![0xb0, 21, 0]],
+            ),
+            (PodxtRequest::EditBuffer, vec![with(&[(17, 85), (21, 0)])]),
+        ];
+        let mut s = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
+        let test = live_edit_test(&mut s, &[(Control::ChannelVolume, Target::Offset(20))]).unwrap();
+        assert_eq!(test.device_sent_after_changes, vec![(17, 86)]);
+        assert_eq!(test.device_sent_after_undo, vec![(21, 0)]);
+        assert!(!test.stuck());
+        assert_eq!(test.not_restored(), vec![(21, 50, 0)]);
+        assert!(
+            Control::ChannelVolume.device_may_override() && !Control::Drive.device_may_override()
+        );
+        assert!(Control::from_name("fx-loop").is_none());
     }
 
     #[test]
