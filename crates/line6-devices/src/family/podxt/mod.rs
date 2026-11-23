@@ -45,6 +45,9 @@ pub enum PodxtRequest {
     /// Line 6 Edit `EncodeParamChange` sends a knob or switch change.
     /// Edit-buffer write (G6); never stored.
     Set(Control, Value),
+    /// Select a stored tone as the playing channel: `C0 <index>` (Line 6
+    /// Edit `ChangeDeviceProgram`, `m_pc_offset` 0 on the PODxt Live).
+    Program(Location),
 }
 
 impl Request for PodxtRequest {
@@ -54,6 +57,7 @@ impl Request for PodxtRequest {
             PodxtRequest::EditBuffer => vec![0xf0, 0x00, 0x01, 0x0c, 0x03, 0x75, 0xf7],
             PodxtRequest::InstalledPacks => vec![0xf0, 0x00, 0x01, 0x0c, 0x03, 0x0e, 0x00, 0xf7],
             PodxtRequest::Set(control, value) => vec![0xb0, control.cc(), value.get()],
+            PodxtRequest::Program(location) => vec![0xc0, location.index() as u8],
             PodxtRequest::Stored(location) => {
                 let address = location.address();
                 vec![
@@ -84,6 +88,7 @@ impl Request for PodxtRequest {
             PodxtRequest::Stored(_) => Operation::PodxtLibraryRead,
             PodxtRequest::InstalledPacks => Operation::PodxtPackQuery,
             PodxtRequest::Set(..) => Operation::PodxtEditBufferWrite,
+            PodxtRequest::Program(_) => Operation::PodxtChannelSwitch,
         }
     }
 }
@@ -706,6 +711,140 @@ pub fn live_edit_test<L: Link>(
     })
 }
 
+/// Bytes that follow live physical state rather than the stored tone: volume
+/// pedal (CC 7), wah position (CC 4), and the knob/device-driven channel
+/// volume (CC 17), bypass volume (CC 105) and presence (CC 21).
+pub const LIVE_STATE_CCS: [u8; 5] = [7, 4, 17, 105, 21];
+
+impl EditBuffer {
+    /// Same stored tone, ignoring [`LIVE_STATE_CCS`].
+    pub fn same_tone(&self, other: &EditBuffer) -> bool {
+        self.name() == other.name()
+            && self
+                .differences(other)
+                .iter()
+                .all(|(cc, ..)| LIVE_STATE_CCS.contains(cc))
+    }
+}
+
+fn read_stored<L: Link>(
+    session: &mut Session<L>,
+    location: Location,
+) -> Result<EditBuffer, String> {
+    session.send(PodxtRequest::Stored(location))?;
+    let result = match session.wait_for(STORED_WINDOW, is_edit_buffer, false)? {
+        Wait::Found(dump) => EditBuffer::parse(dump),
+        _ => Err(format!("No dump for stored tone {}.", location.label())),
+    };
+    session.listen(STORED_GAP)?;
+    result
+}
+
+/// Which stored tone channel the playing tone is (exactly one match among
+/// the 128 tones, read by location), or `None`.
+pub fn find_channel<L: Link>(
+    session: &mut Session<L>,
+    playing: &EditBuffer,
+) -> Result<Option<Location>, String> {
+    let mut found = Vec::new();
+    for location in Location::all(&[BankKind::Tones]) {
+        if read_stored(session, location)?.same_tone(playing) {
+            found.push(location);
+        }
+    }
+    Ok(if found.len() == 1 {
+        Some(found[0])
+    } else {
+        None
+    })
+}
+
+/// Time for the PODxt to load a channel after a program change.
+const CHANNEL_LOAD: Duration = Duration::from_millis(400);
+
+pub struct ChannelSwitch {
+    pub identity_reply: Vec<u8>,
+    pub before: EditBuffer,
+    /// The channel the playing tone was on (when `back` was requested).
+    pub original: Option<Location>,
+    pub target: Location,
+    pub target_stored: EditBuffer,
+    pub after: Result<EditBuffer, String>,
+    /// Present when switching back was requested.
+    pub back: Option<Result<EditBuffer, String>>,
+}
+
+impl ChannelSwitch {
+    pub fn switched(&self) -> bool {
+        self.after
+            .as_ref()
+            .is_ok_and(|after| after.same_tone(&self.target_stored))
+    }
+
+    pub fn returned(&self) -> bool {
+        matches!(&self.back, Some(Ok(back)) if back.same_tone(&self.before))
+    }
+}
+
+/// Program change to `target` (a stored tone), with checks. Refuses when
+/// the playing tone has unsaved edits (switching would discard them): it
+/// must match the stored tone of its channel, found by reading all 128 tones
+/// or given as `original`. With `back`, switches back to the original
+/// channel afterwards and checks the playing tone is the one from before.
+pub fn switch_channel<L: Link>(
+    session: &mut Session<L>,
+    target: Location,
+    original: Option<Location>,
+    back: bool,
+) -> Result<ChannelSwitch, String> {
+    if target.kind() != BankKind::Tones || original.is_some_and(|o| o.kind() != BankKind::Tones) {
+        return Err("Only tone channels can be selected.".into());
+    }
+    let (identity_reply, _) = identify_podxt(session)?;
+    let before = read_edit_buffer(session)?;
+    let original = match original {
+        Some(location) => {
+            if !read_stored(session, location)?.same_tone(&before) {
+                return Err(format!(
+                    "The playing tone does not match stored tone {}: it has unsaved edits or is another channel. Nothing was switched.",
+                    location.label()
+                ));
+            }
+            Some(location)
+        }
+        None => match find_channel(session, &before)? {
+            Some(location) => Some(location),
+            None => {
+                return Err("The playing tone matches no single stored tone (unsaved edits?). Switching would discard them. Nothing was switched.".into());
+            }
+        },
+    };
+    let target_stored = read_stored(session, target)?;
+    session.send(PodxtRequest::Program(target))?;
+    session.link.pause(CHANNEL_LOAD);
+    session.listen(Duration::from_millis(50))?;
+    let after = read_edit_buffer(session);
+    let back = if back {
+        let to = original.expect("set above");
+        Some(session.send(PodxtRequest::Program(to)).and_then(|()| {
+            session.link.pause(CHANNEL_LOAD);
+            session.listen(Duration::from_millis(50))?;
+            read_edit_buffer(session)
+        }))
+    } else {
+        None
+    };
+    Ok(ChannelSwitch {
+        identity_reply,
+        before,
+        original,
+        target,
+        target_stored,
+        after,
+        back,
+    })
+}
+
 /// The first G6 test: toggle the stomp, check, undo.
 pub fn stomp_test<L: Link>(session: &mut Session<L>) -> Result<LiveEditTest, String> {
     live_edit_test(session, &[(Control::StompEnable, Target::Toggle)])
@@ -821,6 +960,17 @@ impl Location {
     }
 
     /// Tones as the PODxt shows channels (`1A`..`32D`); setups as `#1`...
+    /// A tone channel from its label, `1A`..`32D`.
+    pub fn tone_from_label(label: &str) -> Option<Self> {
+        let (bank, letter) = label.split_at(label.len().checked_sub(1)?);
+        let bank: u16 = bank.parse().ok()?;
+        let slot = "ABCD".find(letter.to_ascii_uppercase().as_str())? as u16;
+        (1..=32).contains(&bank).then(|| Location {
+            kind: BankKind::Tones,
+            index: (bank - 1) * 4 + slot,
+        })
+    }
+
     pub fn label(self) -> String {
         match self.kind {
             BankKind::Tones => format!(
@@ -1457,6 +1607,74 @@ mod tests {
         );
         assert!(closed.send(set(Control::StompEnable, 127)).is_err());
         assert!(closed.link.writes.is_empty());
+    }
+
+    fn tone(name: &[u8], cc17: u8) -> Vec<u8> {
+        let mut raw = vec![0xf0, 0x00, 0x01, 0x0c, 0x03, 0x74, 0x0a];
+        let mut padded = name.to_vec();
+        padded.resize(16, b' ');
+        raw.extend(padded);
+        raw.resize(EDIT_BUFFER_LEN - 1, 0);
+        raw.push(0xf7);
+        raw[39 + 17] = cc17;
+        raw
+    }
+
+    #[test]
+    fn channel_labels_and_program_changes_follow_line6_edit() {
+        let loc = |l: &str| Location::tone_from_label(l).unwrap();
+        assert_eq!(
+            (loc("1A").index(), loc("7B").index(), loc("32D").index()),
+            (0, 25, 127)
+        );
+        assert!(
+            Location::tone_from_label("33A").is_none() && Location::tone_from_label("1E").is_none()
+        );
+        assert_eq!(PodxtRequest::Program(loc("7B")).bytes(), vec![0xc0, 25]);
+        assert_eq!(
+            PodxtRequest::Program(loc("1A")).operation(),
+            Operation::PodxtChannelSwitch
+        );
+        assert_eq!(loc("7B").label(), "7B");
+    }
+
+    #[test]
+    fn switch_and_back_with_a_known_original_channel() {
+        let mut log = Quiet;
+        let (orig, target) = (
+            Location::tone_from_label("7B").unwrap(),
+            Location::tone_from_label("3C").unwrap(),
+        );
+        let script = vec![
+            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (PodxtRequest::EditBuffer, vec![tone(b"Boutique", 86)]),
+            (PodxtRequest::Stored(orig), vec![tone(b"Boutique", 114)]),
+            (PodxtRequest::Stored(target), vec![tone(b"Brit J-800", 90)]),
+            (PodxtRequest::Program(target), vec![]),
+            (PodxtRequest::EditBuffer, vec![tone(b"Brit J-800", 87)]),
+            (PodxtRequest::Program(orig), vec![]),
+            (PodxtRequest::EditBuffer, vec![tone(b"Boutique", 87)]),
+        ];
+        let mut s = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
+        let result = switch_channel(&mut s, target, Some(orig), true).unwrap();
+        assert!(result.switched() && result.returned());
+    }
+
+    #[test]
+    fn unsaved_edits_refuse_the_switch_before_any_program_change() {
+        let mut log = Quiet;
+        let orig = Location::tone_from_label("7B").unwrap();
+        let mut edited = tone(b"Boutique", 86);
+        edited[39 + 13] = 99; // drive changed live, not saved
+        let script = vec![
+            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (PodxtRequest::EditBuffer, vec![edited]),
+            (PodxtRequest::Stored(orig), vec![tone(b"Boutique", 114)]),
+        ];
+        let mut s = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
+        let target = Location::tone_from_label("3C").unwrap();
+        assert!(switch_channel(&mut s, target, Some(orig), true).is_err());
+        assert!(s.sent.iter().all(|b| b[0] != 0xc0));
     }
 
     #[test]

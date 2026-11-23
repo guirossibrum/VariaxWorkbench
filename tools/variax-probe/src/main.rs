@@ -13,6 +13,8 @@
 //!                          (default: stomp/mod/delay/reverb toggled, treble +20, mid -20;
 //!                          `all`: every live control, switches toggled, knobs +20)
 //!   podxt stomp-test       G6: the same with only the stomp toggled
+//!   podxt channel 3C [--from 7B]       select a channel (program change)
+//!   podxt channel-test 3C [--from 7B]  select a channel, check, switch back, check
 //!
 //! Only the requests defined by the `line6-devices` families can be sent, and
 //! only those this file's policy allows. Every packet in and out is printed
@@ -55,12 +57,16 @@ impl GatePolicy for OwnerGrants {
             // G6, owner's direct approval 2026-11-22, for `podxt stomp-test` only:
             // CC 25 stomp toggle in the edit buffer with automatic undo. No store.
             Operation::PodxtEditBufferWrite => true,
+            // Owner's request 2026-11-23: select the playing channel by program
+            // change (like the footswitch). Refused on unsaved edits; no store.
+            Operation::PodxtChannelSwitch => true,
         }
     }
 }
 
 const USAGE: &str = "Usage: variax-probe variax identity|read|listen [SECONDS]|library [--out DIR]
        variax-probe podxt read|listen [SECONDS]|library [--out DIR]
+       variax-probe podxt channel|channel-test CHANNEL [--from CHANNEL] [--out DIR]
        variax-probe compare FIRST_BACKUP SECOND_BACKUP
 Read-only. Run it yourself; it contacts the connected PODxt Live and Variax.
 --out is required for device commands (library backups: the repo's backups/,
@@ -78,6 +84,11 @@ enum Command {
     Compare(PathBuf, PathBuf),
     PodxtPacks,
     PodxtLiveTest(Vec<(podxt::Control, podxt::Target)>),
+    PodxtChannel {
+        target: podxt::Location,
+        from: Option<podxt::Location>,
+        back: bool,
+    },
 }
 
 impl Command {
@@ -93,6 +104,8 @@ impl Command {
             Command::Compare(..) => "compare",
             Command::PodxtPacks => "podxt-packs",
             Command::PodxtLiveTest(_) => "podxt-live-test",
+            Command::PodxtChannel { back: false, .. } => "podxt-channel",
+            Command::PodxtChannel { back: true, .. } => "podxt-channel-test",
         }
     }
 
@@ -117,6 +130,12 @@ impl Command {
             }
             Command::Compare(..) => "nothing (offline comparison)",
             Command::PodxtPacks => "PODxt identity, then the installed model-pack query",
+            Command::PodxtChannel { back: false, .. } => {
+                "PODxt identity, current tone, stored tones (to check for unsaved edits), program change to the channel, current tone"
+            }
+            Command::PodxtChannel { back: true, .. } => {
+                "PODxt identity, current tone, stored tones, program change to the channel, current tone, program change back, current tone"
+            }
             Command::PodxtLiveTest(_) => {
                 "PODxt identity, current tone, live changes (one CC each), current tone, original values back (undo), current tone"
             }
@@ -157,6 +176,22 @@ fn parse(args: &[String]) -> Result<(Command, Option<PathBuf>), String> {
             Command::PodxtLiveTest(vec![(podxt::Control::StompEnable, podxt::Target::Toggle)])
         }
         ["podxt", "live-test", rest @ ..] => Command::PodxtLiveTest(live_targets(rest)?),
+        ["podxt", mode @ ("channel" | "channel-test"), rest @ ..] => {
+            let tone = |label: &str| {
+                podxt::Location::tone_from_label(label)
+                    .ok_or(format!("{label}: not a channel (1A..32D)"))
+            };
+            let (target, from) = match rest {
+                [target] => (tone(target)?, None),
+                [target, "--from", from] => (tone(target)?, Some(tone(from)?)),
+                _ => return Err(USAGE.into()),
+            };
+            Command::PodxtChannel {
+                target,
+                from,
+                back: *mode == "channel-test",
+            }
+        }
         ["compare", first, second] => Command::Compare(PathBuf::from(first), PathBuf::from(second)),
         _ => return Err(USAGE.into()),
     };
@@ -309,7 +344,8 @@ fn run_variax(command: &Command, capture: &mut Capture) -> Result<(), String> {
             | Command::PodxtLibrary
             | Command::Compare(..)
             | Command::PodxtPacks
-            | Command::PodxtLiveTest(_) => unreachable!(),
+            | Command::PodxtLiveTest(_)
+            | Command::PodxtChannel { .. } => unreachable!(),
         };
         let cleanup = session.link.finish();
         session.note(match &cleanup {
@@ -596,6 +632,73 @@ fn run_podxt_live_test(
     }
 }
 
+fn run_podxt_channel(
+    target: podxt::Location,
+    from: Option<podxt::Location>,
+    back: bool,
+    capture: &mut Capture,
+) -> Result<(), String> {
+    let mut link = rawmidi::RawMidiLink::open(rawmidi::PODXT_LIVE_CARD, Path::PodxtMidi)?;
+    let device = link.device.display().to_string();
+    let result = {
+        let mut session = Session::new(&mut link, &OwnerGrants, capture);
+        session.note(format!("opened {device}"));
+        if from.is_none() {
+            session.note("finding the current channel: reading the 128 stored tones (about 20 s)");
+            session.log_packets = false;
+        }
+        podxt::switch_channel(&mut session, target, from, back)
+    };
+    let test = result?;
+    let check = |ok: bool| if ok { "OK" } else { "DOES NOT MATCH" };
+    capture.line(describe_identity(&test.identity_reply, None));
+    capture.line(format!(
+        "Playing before: {} (channel {})",
+        test.before.name(),
+        test.original.map_or("?".into(), |l| l.label())
+    ));
+    capture.line(format!(
+        "Target: channel {} = stored \"{}\"",
+        test.target.label(),
+        test.target_stored.name()
+    ));
+    capture.line(match &test.after {
+        Ok(after) => format!(
+            "After the switch: playing \"{}\" — {}",
+            after.name(),
+            check(test.switched())
+        ),
+        Err(error) => format!("After the switch: not read ({error})"),
+    });
+    if let Some(back) = &test.back {
+        capture.line(match back {
+            Ok(tone) => format!(
+                "After switching back: playing \"{}\" — {}",
+                tone.name(),
+                check(test.returned())
+            ),
+            Err(error) => format!(
+                "After switching back: not read ({error}) — select your channel on the PODxt"
+            ),
+        });
+    }
+    capture.file("identity.syx", &test.identity_reply)?;
+    capture.file("before.syx", &test.before.raw)?;
+    capture.file("target-stored.syx", &test.target_stored.raw)?;
+    if let Ok(after) = &test.after {
+        capture.file("after-switch.syx", &after.raw)?;
+    }
+    if let Some(Ok(tone)) = &test.back {
+        capture.file("after-back.syx", &tone.raw)?;
+    }
+    let ok = test.switched() && (!back || test.returned());
+    if ok {
+        Ok(())
+    } else {
+        Err("channel switch not confirmed".into())
+    }
+}
+
 fn run_podxt_packs(capture: &mut Capture) -> Result<(), String> {
     let mut link = rawmidi::RawMidiLink::open(rawmidi::PODXT_LIVE_CARD, Path::PodxtMidi)?;
     let device = link.device.display().to_string();
@@ -703,6 +806,9 @@ fn main() {
         Command::PodxtLibrary => run_podxt_library(&mut capture),
         Command::PodxtPacks => run_podxt_packs(&mut capture),
         Command::PodxtLiveTest(targets) => run_podxt_live_test(&targets, &mut capture),
+        Command::PodxtChannel { target, from, back } => {
+            run_podxt_channel(target, from, back, &mut capture)
+        }
         _ => run_variax(&command, &mut capture),
     };
     if let Err(error) = &result {
