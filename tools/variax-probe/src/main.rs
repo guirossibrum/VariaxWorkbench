@@ -382,6 +382,20 @@ fn run_podxt_listen(seconds: u64, capture: &mut Capture) -> Result<(), String> {
     for line in tally_lines(&tally, podxt_control_name) {
         capture.line(line);
     }
+    if !tally.programs.is_empty() {
+        let channels: Vec<String> = tally
+            .programs
+            .iter()
+            .map(|(_, program)| {
+                podxt::Location::new(podxt::BankKind::Tones, u16::from(*program))
+                    .map_or(format!("program {program}"), |l| l.label())
+            })
+            .collect();
+        capture.line(format!(
+            "Channel changes reported by the PODxt: {}",
+            channels.join(", ")
+        ));
+    }
     capture.file("identity.syx", &identity_reply)
 }
 
