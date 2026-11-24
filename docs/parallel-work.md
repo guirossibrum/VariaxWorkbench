@@ -20,7 +20,7 @@ directly.
 | **5. Variax device tests** | `crates/line6-devices/src/family/variax/` (read and write messages), `tools/reso5-test/` except its device lock (lane 1) | #225 (read-only `0x44` slot read) → #177 store-stage additions (issue/177-store-checks) → #229 → #234 (stepped full-buffer 0x3C read, owner approval before any run) → #202 device side (done) → #234 finalisation → #203 device side (60-preset and bank-name read API for the editor). Run by the former #177 agent since 2026-11-24. |
 | Research | `docs/firmware-*.md`, `research/`, `scripts/` (own files only) | Grok: #231 (handbook Custom comparator, scripts/research only). PODxt research agent: #232 remainder (bounded owner-check design for Variax control ownership and linked audition) |
 
-Shared files: `README.md` (one ledger line per delivered item, in your lane's
+Shared files: `docs/status.md` (one line per delivered item, in your lane's
 section), `Cargo.toml`/`src/lib.rs` (only the wiring your change needs). The
 reviewer reconciles conflicts in shared files during integration.
 

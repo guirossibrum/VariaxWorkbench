@@ -137,19 +137,22 @@ open USB/MIDI devices or require the guitar to be connected.
 
 ## README status ledger
 
-Keep README.md's checked offline passes, pending implementation, and currently
-unavailable/not-working checklist current whenever work changes those states.
-Attach precise test scope and counts where supported. Distinguish disabled
-hardware features, unimplemented features, observed failures, original-library
-oracle results and completed Rust behavior. Do not mark simulation success as
-physical safety, audio equivalence, recovery capability or permission to unlock
-hardware. Keep issue links and status consistent with actual completion.
+Keep the detailed ledger in [docs/status.md](docs/status.md) for verified work
+and in [docs/roadmap.md](docs/roadmap.md) for pending or unavailable work.
+Update the ledger whenever those states change. Attach precise test scope and
+counts where supported. Distinguish disabled hardware features, unimplemented
+features, observed failures, original-library oracle results and completed Rust
+behavior. Do not mark simulation success as physical safety, audio equivalence,
+recovery capability or permission to unlock hardware. Keep issue links and
+status consistent with actual completion. README.md keeps short capability lists.
+Update it only when user-visible capability changes.
 
 ## Work tracking
 
 GitHub issues and the VariaxWorkbench project are the work-tracking source of
-truth. Do not recreate or use TODO.md. README.md contains the requested concise
-validation/implementation/failure summary; it is not a second task queue. Respect native dependencies and keep at most one implementation issue In Progress
+truth. Do not recreate or use TODO.md. The README summarizes user-visible
+capabilities. The linked documentation records verification and pending work.
+Respect native dependencies and keep at most one implementation issue In Progress
 per agent. The user explicitly authorized parallel agents on separate issues:
 use a disposable implementation worktree/branch per issue, preserve the main
 checkout, and merge each completed issue only after review and offline checks.

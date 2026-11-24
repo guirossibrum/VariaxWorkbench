@@ -78,8 +78,9 @@ GitHub issues and the linked project remain the work-tracking source of truth.
 New scope is recorded as distinct issues with native dependencies and project
 ordering. Existing implementation continues sequentially; adding these targets
 does not start multiple implementation issues or authorize any device operation.
-The README checklist summarizes verified passes, pending features and unavailable
-behavior; it must not present these product objectives as working features.
+The README summarizes current capabilities. The [status ledger](status.md)
+records verified work, and the [roadmap](roadmap.md) records pending features
+and unavailable behavior.
 
 All current tests remain offline, with equipment disconnected. Recording, playback,
 POD edits and firmware updates share the same risk boundary as guitar control.
