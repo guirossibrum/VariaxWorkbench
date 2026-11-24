@@ -134,3 +134,10 @@ pub fn model_allowed(slot: u32, id: u32) -> bool {
         _ => false,
     }
 }
+
+/// Original `L6VariaxParamMap.IsHumbucker`: `(id & 0xFFF000) == 0x118000`.
+/// Decompiled from Workbench 1.75 `modules/variax/device/L6VariaxParamMap.java`.
+/// The `0x03118xxx` pickup models match. The `0x03110xxx` single-coils do not.
+pub fn is_humbucker_model(id: u32) -> bool {
+    id & 0xFFF000 == 0x118000
+}

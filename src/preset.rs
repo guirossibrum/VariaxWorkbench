@@ -493,6 +493,28 @@ impl PresetFile {
         Ok(())
     }
 
+    /// Original `L6VariaxEditor.UpdateControlValuesFromPickupModels`.
+    /// Either humbucker pickup selects 500 kΩ, 500 kΩ and 0.047 µF.
+    /// Otherwise the values are 250 kΩ, 250 kΩ and 0.022 µF.
+    /// Volume taper and the saved tone-knob position stay as they are.
+    pub fn apply_pickup_control_values(&mut self) -> Result<(), String> {
+        let humbucker = [crate::edit::PICKUP1, crate::edit::PICKUP2]
+            .into_iter()
+            .any(|slot| {
+                self.model(slot)
+                    .is_some_and(|model| crate::edit::is_humbucker_model(model.id))
+            });
+        let (volume, tone, capacitance): (f32, f32, f32) = if humbucker {
+            (500.0, 500.0, 0.047)
+        } else {
+            (250.0, 250.0, 0.022)
+        };
+        self.set_parameter(crate::edit::WIRING, 0x200000, 1, volume.to_bits())?;
+        self.set_parameter(crate::edit::WIRING, 0x200002, 1, tone.to_bits())?;
+        self.set_parameter(crate::edit::WIRING, 0x200003, 1, capacitance.to_bits())?;
+        Ok(())
+    }
+
     /// Turn a pickup or the alternate tuning on or off.
     ///
     /// The original `OnParamChange` for pickup enables `0x2020001` and
@@ -1034,6 +1056,92 @@ mod tests {
         forced.set_enabled(PICKUP2, false).unwrap();
         assert!(forced.model(PICKUP1).unwrap().enabled);
         assert!(!forced.model(PICKUP2).unwrap().enabled);
+    }
+
+    #[test]
+    fn pickup_models_select_humbucker_or_single_coil_control_values() {
+        use crate::edit::{PICKUP1, PICKUP2, WIRING, is_humbucker_model};
+
+        assert!(is_humbucker_model(0x03118000));
+        assert!(is_humbucker_model(0x03118009));
+        assert!(is_humbucker_model(0x00118000));
+        assert!(!is_humbucker_model(0x03110000));
+        assert!(!is_humbucker_model(0x03110015));
+        assert!(!is_humbucker_model(0x03117000));
+
+        let mut preset = host_preset();
+        preset.select_model(PICKUP1, 0x03110004).unwrap();
+        preset.select_model(PICKUP2, 0x03110003).unwrap();
+        preset
+            .set_parameter(WIRING, 0x200000, 1, 500.0_f32.to_bits())
+            .unwrap();
+        preset
+            .set_parameter(WIRING, 0x200002, 1, 470.0_f32.to_bits())
+            .unwrap();
+        preset
+            .set_parameter(WIRING, 0x200003, 1, 0.011_f32.to_bits())
+            .unwrap();
+        let taper = preset.parameter(WIRING, 0x200001).unwrap().bits;
+        let position = preset.parameter(WIRING, 0x200004).unwrap().bits;
+        preset.apply_pickup_control_values().unwrap();
+        assert_eq!(
+            preset.parameter(WIRING, 0x200000).unwrap().bits,
+            250.0_f32.to_bits()
+        );
+        assert_eq!(
+            preset.parameter(WIRING, 0x200002).unwrap().bits,
+            250.0_f32.to_bits()
+        );
+        assert_eq!(
+            preset.parameter(WIRING, 0x200003).unwrap().bits,
+            0.022_f32.to_bits()
+        );
+        assert_eq!(preset.parameter(WIRING, 0x200001).unwrap().bits, taper);
+        assert_eq!(preset.parameter(WIRING, 0x200004).unwrap().bits, position);
+
+        preset.select_model(PICKUP1, 0x03118000).unwrap();
+        preset.apply_pickup_control_values().unwrap();
+        assert_eq!(
+            preset.parameter(WIRING, 0x200000).unwrap().bits,
+            500.0_f32.to_bits()
+        );
+        assert_eq!(
+            preset.parameter(WIRING, 0x200003).unwrap().bits,
+            0.047_f32.to_bits()
+        );
+
+        preset.select_model(PICKUP1, 0x03110015).unwrap();
+        preset.select_model(PICKUP2, 0x03118009).unwrap();
+        preset.apply_pickup_control_values().unwrap();
+        assert_eq!(
+            preset.parameter(WIRING, 0x200000).unwrap().bits,
+            500.0_f32.to_bits()
+        );
+        assert_eq!(
+            preset.parameter(WIRING, 0x200002).unwrap().bits,
+            500.0_f32.to_bits()
+        );
+
+        let before = preset.as_bytes().to_vec();
+        let mut document = crate::document::EditorDocument::from_preset(
+            preset,
+            std::path::PathBuf::from("controls.vwm"),
+        );
+        document
+            .apply(|preset| {
+                preset.select_model(PICKUP2, 0x03110003)?;
+                preset.apply_pickup_control_values()
+            })
+            .unwrap();
+        assert_eq!(document.preset().model(PICKUP2).unwrap().id, 0x03110003);
+        assert_eq!(
+            document.preset().parameter(WIRING, 0x200000).unwrap().bits,
+            250.0_f32.to_bits()
+        );
+        assert!(document.can_undo());
+        document.undo();
+        assert_eq!(document.as_bytes(), before);
+        assert!(!document.can_undo());
     }
 
     #[test]

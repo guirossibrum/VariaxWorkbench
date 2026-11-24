@@ -70,7 +70,10 @@ pub(super) fn milestones(ui: &mut egui::Ui) {
          PODxt Live. Step 4 stays off.",
     );
     ui.label(
-        "Build 19 is this copy. A model name or author uses at most 18 letters, numbers, \
+        "Build 20 is this copy. Auto-select control values is on: choosing a humbucker \
+         sets the volume and tone to 500 kΩ and 47 nF, and other pickups set 250 kΩ and \
+         22 nF. Turning it off leaves those knobs alone, and the choice is remembered. \
+         A model name or author uses at most 18 letters, numbers, \
          spaces, and keyboard symbols. A saved name that is longer or uses other characters \
          stays as it is and is marked. Turning a pickup off keeps the other pickup on, and Front \
          draws that pickup on top of the other. On This computer, Device check can try a PODxt Live tone \
@@ -82,7 +85,7 @@ pub(super) fn milestones(ui: &mut egui::Ui) {
          60 presets and tries to put the original preset back. Back up the PODxt Live still \
          reads the stored tones and does not change the current tone on purpose. Backup files \
          are ordinary files you can move or delete. Step 4 stays off. No is still the default. \
-         Close the old window and open this one so the corner says build 19.",
+         Close the old window and open this one so the corner says build 20.",
     );
     for (label, url) in [
         (

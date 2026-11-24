@@ -4,6 +4,7 @@ use serde::Deserialize;
 use std::{
     collections::{HashMap, HashSet},
     fs,
+    io::Write,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -766,6 +767,11 @@ struct Workbench {
     name_draft: Option<String>,
     /// Unsaved author typing. It is not a file field and not an undo step.
     author_draft: Option<String>,
+    /// Original `variax_editor.auto_select_control_values`. Default on.
+    /// This is an editor preference, not a field in the preset file.
+    auto_select_controls: bool,
+    /// Where the preference is remembered. Tests leave this empty.
+    preferences_path: Option<PathBuf>,
     link_tuning_mix: bool,
     theme_polled: Instant,
     theme_text: String,
@@ -856,6 +862,8 @@ struct Workbench {
     pickup_controls: HashMap<(u32, &'static str), Rect>,
     #[cfg(test)]
     name_notice: String,
+    #[cfg(test)]
+    auto_select_checkbox: Option<Rect>,
     #[cfg(test)]
     tuning_widgets: HashMap<&'static str, Rect>,
     #[cfg(test)]
@@ -991,6 +999,8 @@ impl Workbench {
             pickup_front: PICKUP1,
             name_draft: None,
             author_draft: None,
+            auto_select_controls: true,
+            preferences_path: None,
             link_tuning_mix: false,
             theme_polled: Instant::now() - Duration::from_secs(2),
             theme_text: String::new(),
@@ -1073,6 +1083,8 @@ impl Workbench {
             pickup_controls: HashMap::new(),
             #[cfg(test)]
             name_notice: String::new(),
+            #[cfg(test)]
+            auto_select_checkbox: None,
             #[cfg(test)]
             tuning_widgets: HashMap::new(),
             #[cfg(test)]
@@ -1672,7 +1684,36 @@ impl Workbench {
                 }
             });
         if id != previous {
-            self.change(|p| p.select_model(slot, id));
+            if matches!(slot, PICKUP1 | PICKUP2) {
+                self.select_pickup_model(slot, id);
+            } else {
+                self.change(|p| p.select_model(slot, id));
+            }
+        }
+    }
+
+    /// A pickup model change and the matching knob values are one undo step.
+    /// The original does this from `OnParamChange` only while the preference is on.
+    fn select_pickup_model(&mut self, slot: u32, id: u32) {
+        let auto = self.auto_select_controls;
+        self.change(|preset| {
+            preset.select_model(slot, id)?;
+            if auto {
+                preset.apply_pickup_control_values()?;
+            }
+            Ok(())
+        });
+    }
+
+    fn set_auto_select_controls(&mut self, enabled: bool) {
+        self.auto_select_controls = enabled;
+        if let Some(path) = self.preferences_path.clone()
+            && let Err(error) = save_auto_select(&path, enabled)
+        {
+            self.error = Some(error);
+        }
+        if enabled {
+            self.change(|preset| preset.apply_pickup_control_values());
         }
     }
 
@@ -1894,7 +1935,10 @@ impl Workbench {
             ui.label(reason);
         }
         #[cfg(test)]
-        self.pickup_controls.clear();
+        {
+            self.pickup_controls.clear();
+            self.auto_select_checkbox = None;
+        }
         ui.add_enabled_ui(availability.is_some_and(|a| a.is_ok()), |ui| {
             match self.tab {
                 Tab::Body => {
@@ -1982,6 +2026,22 @@ impl Workbench {
         });
         self.float_control(ui, WIRING, 0x200004, "Tone position", "");
         self.boolean_control(ui, WIRING, 0x200005, "Save tone-knob position");
+        let mut auto = self.auto_select_controls;
+        let response = ui
+            .checkbox(
+                &mut auto,
+                "Auto-select Tone/Volume defaults when selecting pickup types",
+            )
+            .on_hover_text(
+                "If this is checked, the control component values will be selected based on the pickup types.",
+            );
+        #[cfg(test)]
+        {
+            self.auto_select_checkbox = Some(response.rect);
+        }
+        if response.changed() {
+            self.set_auto_select_controls(auto);
+        }
     }
 
     fn guitar_workspace(&mut self, ui: &mut egui::Ui) {
@@ -8764,9 +8824,52 @@ fn save_screenshot(path: &Path, pixels: &[u8], width: u32, height: u32) -> Resul
 struct GuiOptions {
     preset: Option<PathBuf>,
     artwork: PathBuf,
+    preferences: PathBuf,
     screenshot: Option<PathBuf>,
     tab: Option<Tab>,
     display: String,
+}
+
+/// Original preference key `variax_editor.auto_select_control_values`.
+/// A missing file stays on. `1` is on and `0` is off.
+fn load_auto_select(path: &Path) -> bool {
+    !matches!(std::fs::read_to_string(path), Ok(text) if text.trim() == "0")
+}
+
+fn save_auto_select(path: &Path, enabled: bool) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let mut temporary =
+        tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
+    temporary
+        .write_all(if enabled { b"1\n" } else { b"0\n" })
+        .map_err(|error| error.to_string())?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|error| error.to_string())?;
+    temporary
+        .persist(path)
+        .map_err(|error| error.error.to_string())?;
+    Ok(())
+}
+
+fn editor_preferences_path(data_root: Option<&Path>) -> PathBuf {
+    let absolute_env = |key: &str| {
+        std::env::var_os(key)
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+    };
+    let root = data_root.map(Path::to_path_buf).unwrap_or_else(|| {
+        if let Some(path) = absolute_env("VARIAX_WORKBENCH_DATA_DIR") {
+            return path;
+        }
+        platform_data_root(absolute_env)
+    });
+    root.join("editor-preferences.txt")
 }
 
 fn parse_options(
@@ -8776,6 +8879,7 @@ fn parse_options(
     let mut options = GuiOptions {
         preset: None,
         artwork: default_artwork.to_owned(),
+        preferences: editor_preferences_path(None),
         screenshot: None,
         tab: None,
         display: "auto".into(),
@@ -8836,6 +8940,7 @@ fn parse_options(
             _ => unreachable!(),
         }
     }
+    options.preferences = editor_preferences_path(data_root.as_deref());
     if let Some(artwork) = artwork.or_else(|| data_root.map(|root| root.join("artwork"))) {
         options.artwork = artwork;
     }
@@ -8938,6 +9043,8 @@ pub(crate) fn run(title: &str) -> eframe::Result {
                 arguments.artwork,
                 arguments.tab,
             );
+            app.auto_select_controls = load_auto_select(&arguments.preferences);
+            app.preferences_path = Some(arguments.preferences);
             app.screenshot = arguments.screenshot;
             Ok(Box::new(app))
         }),
@@ -14050,6 +14157,66 @@ mod tests {
             cursor = cursor + 8 + length + (length & 1);
         }
         panic!("missing PINF");
+    }
+
+    #[test]
+    fn auto_select_follows_pickup_models_and_is_remembered() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing.txt");
+        assert!(load_auto_select(&missing));
+        let garbage = directory.path().join("garbage.txt");
+        std::fs::write(&garbage, "maybe\n").unwrap();
+        assert!(load_auto_select(&garbage));
+        let path = directory.path().join("editor-preferences.txt");
+        save_auto_select(&path, false).unwrap();
+        assert!(!load_auto_select(&path));
+
+        let context = egui::Context::default();
+        let mut app = Workbench::with_context(&context, None, PathBuf::new(), Some(Tab::Controls));
+        assert!(app.auto_select_controls);
+        assert!(app.error.is_none());
+        app.preferences_path = Some(path.clone());
+        recording_frame(&context, &mut app, vec![]);
+        assert!(app.auto_select_checkbox.is_some());
+
+        let before = app.document.as_ref().unwrap().as_bytes().to_vec();
+        let taper = app.integer(WIRING, 0x200001);
+        app.select_pickup_model(PICKUP1, 0x03118000);
+        assert!(app.error.is_none());
+        assert_eq!(app.model_id(PICKUP1), Some(0x03118000));
+        assert_eq!(app.float(WIRING, 0x200000), Some(500.0));
+        assert_eq!(app.float(WIRING, 0x200002), Some(500.0));
+        assert_eq!(app.float(WIRING, 0x200003), Some(0.047));
+        assert_eq!(app.integer(WIRING, 0x200001), taper);
+        assert!(app.document.as_ref().unwrap().can_undo());
+        app.undo();
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), before);
+        assert!(!app.document.as_ref().unwrap().can_undo());
+
+        app.select_pickup_model(PICKUP2, 0x03110002);
+        assert_eq!(app.float(WIRING, 0x200000), Some(250.0));
+        assert_eq!(app.float(WIRING, 0x200002), Some(250.0));
+        assert_eq!(app.float(WIRING, 0x200003), Some(0.022));
+        app.undo();
+
+        app.set_auto_select_controls(false);
+        assert!(app.error.is_none());
+        assert_eq!(std::fs::read_to_string(&path).unwrap().trim(), "0");
+        app.select_pickup_model(PICKUP1, 0x03118007);
+        assert_eq!(app.model_id(PICKUP1), Some(0x03118007));
+        assert_eq!(app.float(WIRING, 0x200002), Some(470.0));
+        assert_eq!(app.float(WIRING, 0x200003), Some(0.011));
+
+        app.set_auto_select_controls(true);
+        assert_eq!(std::fs::read_to_string(&path).unwrap().trim(), "1");
+        assert_eq!(app.model_id(PICKUP1), Some(0x03118007));
+        assert_eq!(app.float(WIRING, 0x200000), Some(500.0));
+        assert_eq!(app.float(WIRING, 0x200002), Some(500.0));
+        assert_eq!(app.float(WIRING, 0x200003), Some(0.047));
+        app.undo();
+        assert_eq!(app.model_id(PICKUP1), Some(0x03118007));
+        assert_eq!(app.float(WIRING, 0x200002), Some(470.0));
+        assert_eq!(app.float(WIRING, 0x200003), Some(0.011));
     }
 
     #[test]
