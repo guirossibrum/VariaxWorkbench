@@ -46,6 +46,8 @@ pub mod read_session;
 pub mod recording;
 pub mod rig;
 mod shared;
+#[cfg(feature = "gui")]
+pub use shared::ui;
 pub mod simulation;
 #[cfg(feature = "usb")]
 pub mod usb;
