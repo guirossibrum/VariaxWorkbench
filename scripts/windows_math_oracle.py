@@ -21,12 +21,13 @@ class WindowsMathOracle:
     TRAPS=0x23000000
     # Intrinsic wrappers identified from instruction/call-site evidence.
     ADDRESSES={'exp':0x10015d3c,'pow':0x10015dd0,'log':0x100163c0,'log10':0x10016800,'sin':0x10016950,'cos':0x10016a80,'tan':0x10016060,'sqrt':0x10016b70}
-    def __init__(self,control=0x27f,dispatch="initialized-sse2"):
-        if control not in (0x27f,0x37f):raise ValueError("only the two audited nearest-rounding precision modes are supported")
+    def __init__(self,control=0x27f,dispatch="initialized-sse2",*,artifact_root=ROOT):
+        if control not in (0x07f,0x27f,0x37f):raise ValueError("only the three nearest-rounding precision modes are supported")
         if dispatch not in ("initialized-sse2","image-default-x87"):raise ValueError("unknown private math dispatch mode")
         self.initial_control=control;self.dispatch=dispatch
-        binary=(ROOT/'analysis/extracted/windows-app/modules/variax/device/coefeng/L6VariaxCoefEngine.jnilib.win').read_bytes()
-        assert hashlib.sha256(binary).hexdigest()==self.SHA256
+        binary=(artifact_root/'analysis/extracted/windows-app/modules/variax/device/coefeng/L6VariaxCoefEngine.jnilib.win').read_bytes()
+        if hashlib.sha256(binary).hexdigest()!=self.SHA256:
+            raise ValueError('unexpected Windows coefficient PE SHA-256')
         pe=struct.unpack_from('<I',binary,0x3c)[0];assert binary[pe:pe+4]==b'PE\0\0'
         machine,sections=struct.unpack_from('<HH',binary,pe+4);assert machine==0x14c
         optional=pe+24;assert struct.unpack_from('<H',binary,optional)[0]==0x10b

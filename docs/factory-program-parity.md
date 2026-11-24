@@ -6,6 +6,9 @@ Standard Rust and the original Java/native host reference agree byte for byte
 on all 60 presets. All 60 archived programs differ from both Rust profiles and
 the original host reference. The comparisons used local files and CPU emulation.
 
+The [Windows precision follow-up](factory-program-windows-precision.md) reproduces
+part of the gap with the original PE32 engine and an isolated Q23 rounding test.
+
 ## Exact results
 
 Each comparison covers 196,560 bytes across 60 slots. Words are 24-bit and the

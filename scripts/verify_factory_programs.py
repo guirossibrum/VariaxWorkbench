@@ -103,11 +103,11 @@ def load_models(oracle, directory):
     return initial, manifest, digest(json.dumps(model_hashes, sort_keys=True).encode())
 
 
-def original_programs(oracle, initial, directory, presets):
-    app = oracle.artifact_root / 'analysis/extracted/windows-app'
+def original_programs(artifact_root, directory, presets, generate):
+    app = artifact_root / 'analysis/extracted/windows-app'
     scripts = ROOT / 'scripts'
     subprocess.run([
-        str(oracle.artifact_root / '.tools/jdk/bin/javac'), '-cp', str(app), '-d', str(directory),
+        str(artifact_root / '.tools/jdk/bin/javac'), '-cp', str(app), '-d', str(directory),
         str(scripts / 'java-host-stubs/cmn/l6java/utils/L6StaticUtils.java'),
         str(scripts / 'VerifyHostPipeline.java'),
     ], check=True)
@@ -117,16 +117,21 @@ def original_programs(oracle, initial, directory, presets):
     cases = directory / 'cases.txt'
     # File mode reads the actual .vwm, so only flags, mask and case order matter.
     preserve(cases, b'00 0 ffffffff 00000000\n' * SLOTS)
-    mapped = run_java(directory, cases, layout, '-', presets, artifact_root=oracle.artifact_root)
+    mapped = run_java(directory, cases, layout, '-', presets, artifact_root=artifact_root)
     if len(mapped) != SLOTS:
         raise ValueError('original Java mapping output count mismatch')
     native = bytearray()
-    for settings, _mask, _placeholder in mapped:
-        oracle.write(oracle.OBJECT, initial)
-        native.extend(oracle.generate(bytes.fromhex(settings)))
+    for slot, (settings, mask, _placeholder) in enumerate(mapped):
+        try:
+            program = generate(bytes.fromhex(settings), int(mask, 16))
+        except (AssertionError, RuntimeError, ValueError) as error:
+            raise RuntimeError(f'native generation failed at slot {slot}: {error}') from error
+        if len(program) != PROGRAM_BYTES:
+            raise ValueError(f'native program length mismatch at slot {slot}')
+        native.extend(program)
     packed = directory / 'native.bin'
     preserve(packed, native)
-    final = run_java(directory, cases, layout, packed, presets, artifact_root=oracle.artifact_root)
+    final = run_java(directory, cases, layout, packed, presets, artifact_root=artifact_root)
     if [row[:2] for row in final] != [row[:2] for row in mapped]:
         raise ValueError('original Java mapping changed between passes')
     classes = [
@@ -176,7 +181,11 @@ def verify(args, directory):
 
     oracle = make_oracle(args)
     initial, manifest, models_hash = load_models(oracle, directory)
-    original, class_hashes = original_programs(oracle, initial, directory, presets)
+    def generate(settings, _mask):
+        oracle.write(oracle.OBJECT, initial)
+        return oracle.generate(settings)
+
+    original, class_hashes = original_programs(args.artifact_root, directory, presets, generate)
     pairs = {
         'std_vs_firmware': ('host_std', 'firmware'),
         'wide_vs_firmware': ('software_wide', 'firmware'),
