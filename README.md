@@ -73,6 +73,7 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 [pickup response](docs/pickup-response.md), [generator results](docs/offline-generator-results.md), and [backlog](docs/github-backlog.md).
 
 ### Verified and passing
+- [x] #124 static macOS audio pass traced the XT isochronous setup and host format declarations. USB clock, wire sample layout and live audio remain unverified.
 - [x] #124 static macOS MIDI pass traced CoreMIDI to the kext interrupt transport and distinguished the Linux interface-1 guitar path. Wire timing remains unverified.
 - [x] #124 static Windows startup pass traced interface-1 registration, descriptor setup and two control writes. Polling and conditional transitions remain unverified.
 - [x] #124 static Windows MIDI pass checked WDM/KS registration, ASIO properties, editor JNI and the Variax bridge evidence. Runtime port names and private routing remain unverified.
