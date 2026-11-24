@@ -10,11 +10,12 @@ wrapped row of buttons, a repeated start screen, a hex form for the PODxt,
 and a plain two-column guitar page sit in the same dark egui theme. The
 replacement is one shell, with two historical instrument layouts inside it.
 
-- The PODxt Live page uses POD Farm 2's dark stage and hardware materials,
-  and Line 6 Edit 3.06's block grid (`bg_xtlive.png`, 734×583, cited below
-  and not committed).
+- The PODxt Live page uses POD Farm 2's dark stage. The signal path is one
+  row of block images in Line 6 Edit 3.06's order. The selected block's
+  editor is one panel under that row. The amp is that panel's main view.
 - The Variax page keeps Variax Workbench 1.75's regions: wood header, guitar
-  body, pickup and control inspector, fretboard.
+  body, pickup and control inspector, and a bottom row with alternate tuning
+  and the neck.
 - POD HD500X stays a file editor in the same shell. It does not borrow either
   chassis.
 
@@ -46,7 +47,7 @@ The shell is three fixed bands plus the page:
 | Tab strip | 40 |
 | Status bar | 32 |
 
-Page padding is 16. The PODxt grid and the Variax middle row fill the rest.
+Page padding is 16. The PODxt chain and editor, and the Variax middle row, fill the rest.
 
 ## Typography
 
@@ -67,9 +68,9 @@ provides it. There is no second UI font and no new font dependency.
 
 ## Colour
 
-Tokens are the screen colours. Block fills are separate, because Line 6 Edit
-paints each effect a different hardware colour and the label ink has to
-follow that fill.
+Tokens are the screen colours. The PODxt page uses these dark surfaces.
+Labels are `text` on `panel`, which is the same cream already checked on
+`raised` (13.47:1). The earlier pastel block fills are not the layout.
 
 | Token | Hex | Use |
 | --- | --- | --- |
@@ -87,37 +88,26 @@ follow that fill.
 | Variax accent | `#e0b15a` | Family mark and active Variax tab |
 | PODxt accent | `#e4572e` | Family mark and active PODxt tab |
 | HD accent | `#8aa0b4` | Family mark and active HD tab |
-| Ink | `#1c140c` | Text on light block fills |
+| Ink | `#1c140c` | Text on the light Variax inspector |
+| `panel` | `#1a1d22` | PODxt chain tiles and the editor panel |
 
-Block fills, with the ink that meets 4.5:1:
+Cream on the window, bar, and raised surfaces is 16.74, 15.46, and 13.47.
+Muted on the bar is 9.52. Dim on the bar is 5.79. Focus amber on the bar is
+10.79. Danger on raised is 8.94. OK on raised is 10.49. Amber as text on the
+bar is 8.20, so it may label a state, and it is not used for paragraphs.
 
-| Block | Fill | Ink | Contrast |
-| --- | --- | --- | ---: |
-| Amp | `#c5c8cc` | `#1c140c` | 10.83 |
-| Mic | `#e4d7b0` | `#1c140c` | 12.68 |
-| Stomp | `#d06a1c` | `#1c140c` | 4.99 |
-| Reverb | `#c6a04a` | `#1c140c` | 7.39 |
-| Comp | `#2f646e` | `#f4f1ea` | 5.87 |
-| Mod | `#2a558f` | `#f4f1ea` | 6.66 |
-| Delay | `#2f6b3c` | `#f4f1ea` | 5.66 |
-| EQ | `#14697a` | `#f4f1ea` | 5.59 |
-| Pedal | `#4a4f55` | `#f4f1ea` | 7.33 |
-| Gate | `#8fd0da` | `#1c140c` | 10.57 |
-
-Gate is not `#1c7f90`. Cream on that cyan is 4.15:1 and fails. Cream on the
-window, bar, and raised surfaces is 16.74, 15.46, and 13.47. Muted on the bar
-is 9.52. Dim on the bar is 5.79. Focus amber on the bar is 10.79. Danger on
-raised is 8.94. OK on raised is 10.49. Amber as text on the bar is 8.20, so
-it may label a state, and it is not used for paragraphs.
-
-A bypassed block keeps its fill at about 45% opacity and draws its LED off.
-The name stays readable.
+A bypassed block keeps its image dim and draws its LED off. The name stays
+readable. One LED per block is the on/off indicator. There is no second row
+of toggles.
 
 ## Spacing and targets
 
 The space scale is 4, 8, 12, 16, 24. Corner radius is 6 on controls and 8 on
-panels and dialogs. Every click target is at least 32×32, including tab close,
-knob hit area, and the five pickup-position buttons. The focus ring sits
+panels and dialogs. Card grids use one 16-point gap on both axes. A note
+that would sit flush under a row is either a card in that grid or the
+tooltip of the control it describes. Every click target is at least 32×32,
+including tab close, knob hit area, the pickup sliders, and the tuning
+♯ / ♭ buttons. The focus ring sits
 outside the target and is not the same colour as selection.
 
 ## High DPI
@@ -136,9 +126,9 @@ error, dirty, and pressed.
 | Component | Drawn as | States that matter |
 | --- | --- | --- |
 | Knob | CSS hardware dial, value under it, unit in the value | Hover brightens the tick. Focus rings the dial. Disabled dial is flat and the value stays visible. Drag is vertical. Double-click or Enter edits the value as text. |
-| Switch | LED plus the block name | On draws the LED. Off draws an empty lamp. Disabled does not toggle. |
+| Switch | LED on the block image | On draws the LED. Off draws an empty lamp. Disabled does not toggle. |
 | Selector | Raised menu, current name, 32px row | Empty selection says what is missing (`No amp model`). Disabled keeps the name. |
-| Block panel | Coloured plate, name, bypass LED, knobs | Bypassed plate dims. The panel does not collapse. |
+| Block | Chain image, name, one LED | The selected block's editor is the single panel under the chain. |
 | LED | 8px lamp, amber or the block's on-colour | Off is a dark well. On is not the only sign of state: the switch also says On or Off. |
 | Display | One-line readout (tempo, channel, trim) | Read-only. No fake meter. |
 | Tab | Family accent on the active tab, close control, dirty word | Hover lightens. Focus rings. The active tab is a fill, not colour alone. |
@@ -151,7 +141,7 @@ error, dirty, and pressed.
 Tab order is top bar, tab strip, page controls, status bar. A modal dialog
 cycles only its own buttons. Escape cancels. Enter activates the focused
 button. Arrow keys move inside one group: a bank's slots, one block's knobs,
-or the five position buttons.
+or one string's ♯ / ♭ buttons.
 
 These shortcuts already exist in Help and stay:
 
@@ -196,7 +186,8 @@ Firmware installation is not a button.
 
 ## Start
 
-No devices are connected. The page is three cards and two commands.
+No devices are connected. The page is the title and three cards. The toolbar
+already has Open file and Detect devices, so the page does not repeat them.
 
 | Card | Opens | Icon |
 | --- | --- | --- |
@@ -204,10 +195,10 @@ No devices are connected. The page is three cards and two commands.
 | PODxt Live | An empty offline tone, labeled as an example until a file is open | `assets/ui/shell/podxt-live.png` |
 | POD HD500X | The HD file editor, with no file open | Text mark `HD`. There is no HD500X icon in the 64px set, and this design does not invent one. |
 
-`Open file…` and `Detect devices` sit above the cards. On a normal Linux
-build with USB detection, Detect devices is enabled and opens the disclaimer.
-On a build without detection the button is disabled, and its hover is the
-current sentence: `USB presence detection is unavailable in this build.`
+On a normal Linux build with USB detection, Detect devices is enabled and
+opens the disclaimer. On a build without detection the toolbar button is
+disabled, and its tooltip is the current sentence: `USB presence detection
+is unavailable in this build.` That sentence is not a card under the grid.
 
 ## Variax
 
@@ -216,13 +207,28 @@ of this app.
 
 | Region | Size | Contents |
 | --- | --- | --- |
-| Header | about 92, taller when the metadata row needs it | Bank, slots, model, author, notes, Undo, Redo, Unsaved |
-| Middle | remaining | Guitar body, about 1.15fr, and the inspector, about 1fr |
-| Fretboard | about 90 | The committed fretboard image and the six stored pitch offsets |
+| Header | about 80, taller when the metadata row needs it | Bank, preset slots 1–5, model, author, notes, Undo, Redo, Unsaved |
+| Middle | remaining | Guitar body, large, and the inspector |
+| Bottom | 248 | Alternate tuning on the left, vector neck on the right |
 
-The wood header, the body well, and the brushed-metal inspector are CSS, not
-bitmaps. The photos that are committed are the Spank body, the Spank pickup
-sprite, the fretboard, and the Workbench mark. See `assets/ui/SOURCES.md`.
+The wood header, the body well, the brushed-metal inspector, and the neck are
+CSS. The photos on this page are the Spank body and the Spank pickup sprite.
+See `assets/ui/SOURCES.md`. The low-resolution `fretboard.png` is not stretched
+across the neck. The neck is drawn in the page: nut, frets, six strings, and
+inlays. No image generator was used for it.
+
+Pickup sprites are `spank-pickup.png`, placed with the editor's painter.
+Horizontal center is `68 + 318 * ((position clamped to 0.1…9.5) - 0.1) / 9.4`
+and vertical center is `215`, both in the body image's pixel space, then
+scaled with the image. Pickup 1 sits at 1.80" and is rotated 8.7°. Pickup 2
+sits at 3.88" and is rotated 0.0°. The selected pickup is drawn last. On the
+Pickups section, pickup 1 is selected and drawn with an amber highlight.
+Body type and Controls draw both sprites without that highlight. The body
+photo stays large on every section.
+
+Position, angle, and level are a slider plus the formatted field. The slider
+uses the edit domain: position 0.1–9.5 inches, angle −45–45 degrees, level
+−18–6 dB. The field keeps the #192 string (`1.80"`, `8.7°`, `+1.3dB`).
 
 The example the page shows is the built-in Spank example (Custom 1, slot 2).
 `example_document` sets these values, and the labels are the Workbench formats
@@ -251,9 +257,15 @@ The inspector has Body type, Pickups, and Controls. The body photo stays
 visible on all three. The example currently opens on Pickups; the new page
 does the same, and Body type remains one click away.
 
-Workbench's positions 1–5 are the pickup selector. The Rust editor has no
-five-position control yet. The five buttons are drawn, they do not pretend to
-edit, and the caption is `Not in this editor yet`. No detent inches are invented.
+The only 1–5 controls are the bank's preset slots in the wood header. The
+second 1–5 row under the body is not on the page. Workbench's five-position
+pickup selector is not in this editor, and the mockup does not draw it.
+`Artwork folder…` is not on the page.
+
+The bottom-left pane is alternate tuning, off for the Spank example. Enable
+is the on/off control. Each string, high E at the top, shows its note, a
+flatten ♭ button, a sharpen ♯ button, and the offset `0 semitones`. Presets
+stays as the named-tuning menu from the current editor.
 
 `Get from guitar` and `Send to guitar` leave the header. They are disabled
 dead ends (`locked during offline editing`). Reading and writing a guitar
@@ -267,60 +279,77 @@ sets 500 kΩ, 500 kΩ and 0.047 µF, and other pickups set 250 kΩ, 250 kΩ and
 
 ## PODxt Live
 
-The page is a stage, not a form. The only committed POD Farm bitmap is
-`assets/ui/pod-farm/stage-frame.png` (App.imb image `0x00010003`, 826×497).
-Amp and FX images are model art and stay ignored. The wooden venue image in
-the same container is not used. POD Farm's single large amp view is not the
-layout.
+The page is a dark stage. The frame is `assets/ui/pod-farm/stage-frame.png`
+(App.imb image `0x00010003`). The wooden venue image in that container is
+not used. `bg_xtlive.png` (734×583, under the Line 6 Edit 3.06 extraction,
+not committed) names the blocks. It is not drawn as a grid of open tiles.
 
-Line 6 Edit's plate is the grid, not a committed image:
+The chain is one row, in the order Line 6 Edit's `UpdateBlockToggles` uses
+when it lays out the chain buttons. A true pre/post value places that block
+before the amp. Guitar EQ is forced post there, and the compressor is always
+the block immediately after the amp. Stomp and Wah do not move. The FX loop
+is absent on PODxt Live (`FXLOOP_ENABLE` is marked absent on Live), so the
+row does not include it. Cab and mic are not chain tiles. They sit with the amp.
 
-`analysis/extracted/rea-full/line6-edit-3.06.0-win/embedded-zip/modules/sharctone/editor/images/backgrounds/bg_xtlive.png`
+All-post, which is wire 127 on the live pre/post controls:
 
-The grid sits inside the stage frame, inset about 22 points at the top and
-14 on the sides. Twelve columns:
+Gate → Wah → Stomp → Amp → Comp → EQ → Vol → Mod → Delay → Reverb
 
-| Row | Columns |
-| --- | --- |
-| Signal switches | Gate, Wah, Stomp, Comp, EQ, Vol, Mod, Delay, Verb |
-| 1 | Amp 1–6, Mic 7–9, Comp 10–12 |
-| 2 | Stomp 1–5, Mod 6–9, Gate 10–12 |
-| 3 | Delay 1–5, Reverb 6–8, EQ 9–12 |
-| 4 | Pedal strip, all 12 columns |
+Delay moved pre, wire 0 on `DELAY_PREPOST`:
 
-Every block is visible. Each has its own on/off. Knobs show the parameter
-table's display format (`docs/podxt-live-parameter-table.md`): percent,
-decibels, milliseconds, hertz, BPM. Host-scale `0–1` labels leave the page.
-Raw parameter ids leave the page and sit in a closed Details disclosure.
+Gate → Wah → Stomp → Delay → Amp → Comp → EQ → Vol → Mod → Reverb
 
-The mockup's tone is synthetic. It is named Example tone, and its numbers are
-the ones visible on the Line 6 Edit default-tone screen, relabeled so they
-are not a user capture:
+`MOD_PREPOST`, `DELAY_PREPOST`, `REVERB_PREPOST`, and `VOL_PREPOST` are the
+movable guitar controls (`research/podxt-live-parameters.json`). `EQ_PREPOST`
+is bass-only and has no Live CC. The offline mockup is the Post → Pre change
+for Delay. The other PODxt mockups keep the all-post row so the connection
+chip is the difference, except the presence-unknown frame, which selects EQ
+so the four bands are visible.
 
-| Block | Shown |
-| --- | --- |
-| Amp | Volume `78%`. Amp, cab, and mic selectors empty: `No amp model`, `No cab`, `No mic` |
-| Comp | Threshold `0 dB`, Gain `0 dB`. LED off |
-| Stomp | Drive `100%`, Gain `50%`, Tone `50%`, Axial Fuzz |
-| Mod | Speed `0.00 Hz`, Depth `50%`, Bass `50%`, Treble `50%`, Mix `50%`, Sine Chorus |
-| Delay | Time `500 ms`, Feedback `10%`, Bass `50%`, Treble `50%`, Mix `50%`, Analog Delay |
-| Reverb | Dwell `50%`, Tone `50%`, Mix `20%`, Lux Spring |
-| Gate | Threshold `-50 dB`, Decay. LED off |
-| EQ | A four-band graph, frequency `100 Hz`, gain `0.0 dB` |
-| Wah | Vetta Wah. LED off |
-| Pedal | `1-Wah 2-Vol`, Compressor Threshold, Vol min `0%`, Wah position `50%` |
-| Tempo | `120.0 BPM`. No tap that sends anything |
-| Variax link | `(no Variax)` and `No linked model`. Display only. It does not send a guitar command |
+Each block has one LED. There is no second toggle row. Stomp, Mod, Delay, and
+Wah show the POD Farm 2 skin for the selected model. Reverb shows Lux Spring.
+Vol shows POD Farm's volume pedal. Gate, Comp, EQ, and the chain's amp mark
+are drawn in the page. Amp.imb faceplates name other models, including
+`64 Lux`, so the amp editor uses one shared dark panel and sets the name in
+the page. No generated pedal art was added. The models on this page all have
+a POD Farm skin; there is no missing-pedal list for them.
 
-Wah, Gate, and Comp show their LEDs off so bypass is visible. The other
-blocks are on. There is no input meter and no output meter. The readout says
-`No live audio`. The metadata strip is one row: tone name, and
-`No channel · file only` when the document has no program address.
-`Submit This Tone To Online Library` is removed.
+The selected block's editor is the one panel under the chain. When Amp is
+selected, that panel is the main section: model name Blackface Lux, cab
+`1x12 Blackface`, mic `57 On Axis`, and large Drive, Bass, Mid, Treble,
+Presence, and Volume knobs. Those six knobs are percent (`AMP_DRIVE` and the
+matching amp definitions). The example shows the 50% midpoint. It is not a
+captured performance. When EQ is selected, the same panel shows the four
+PODxt Live bands (`EQ_FREQ1`–`EQ_GAIN4`). Bands 5 and 6 stay off this page
+because they are bass-only. The pictured frequencies and gains are the source
+reset words in `PODXT_EQ_RESET_WORDS`, displayed through the editor's
+conversion: 130 Hz, 1000 Hz, 4500 Hz, 7400 Hz, each at 0.0 dB.
+
+The example tone uses catalog names that exist in
+`research/podxt-live-parameters.json`:
+
+| Block | Model | LED |
+| --- | --- | --- |
+| Amp | Blackface Lux, id 131092, cab 1x12 Blackface, mic 57 On Axis | On |
+| Stomp | Facial Fuzz, id 33882112 | On |
+| Mod | Sine Chorus, id 33751044 | On |
+| Delay | Analog Delay, id 33685506 | On |
+| Reverb | Lux Spring, id 33816578 | On |
+| Wah | Vetta Wah, id 33947648 | Off |
+| Gate, Comp | — | Off |
+| EQ, Vol | EQ post, volume pedal | On |
+
+Tempo is `120.0 BPM`. There is no tap that sends anything. The link readout
+is `(no Variax)` and `No linked model`. It does not send a guitar command.
+There is no input meter and no output meter. The readout says `No live audio`.
+The metadata strip is the tone name and `No channel · file only` when the
+document has no program address. `Submit This Tone To Online Library` is
+removed. Host-scale `0–1` labels and raw parameter ids leave the page. Raw
+ids sit in a closed Details disclosure.
 
 The status chip for this example is `Example tone · file · nothing is sent`.
-A present USB device adds `USB present · identity pending`. The page does not
-say synced.
+A present USB device uses `USB detected · identity pending`. The page does
+not say synced.
 
 Three findings stay available from Parameter notes, which is closed on the
 mockup: the compressor alias, mod and delay 14-bit rounding versus truncation,
@@ -345,12 +374,12 @@ The window keeps every safety sentence. It drops gate codes and
 `real device: locked` from the primary row. Those move into Details, which
 is closed in the mockup.
 
-The mockup shows the This computer consent for step 1, because that is the
-sentence a normal Linux USB build asks. `No, stop` is focused. Nothing in
-the picture has run. Steps 2, 3, and 4 are `not run`. The mode radios remain
-`Simulation` and `This computer`. Simulation stays the app's default; the
-frame selects This computer so the owner can read the real consent. The Yes
-label on that frame is `Yes, read this computer's USB list`.
+The window opens on This computer. There is no Simulation mode and no mode
+selector. #228 is the lane 1 change that removes Simulation and makes long
+content scroll. This proposal matches that window: the consent, the steps,
+and a result that is taller than the window scroll inside it. `No, stop` is
+focused. Nothing in the picture has run. Steps 2, 3, and 4 are `not run`.
+The Yes label is `Yes, read this computer's USB list`.
 
 Step 1's primary text is the current action and risk, without a gate letter
 in the heading:
@@ -422,12 +451,13 @@ firmware installer, or a five-position edit.
 
 | Item | How it appears |
 | --- | --- |
-| Pickup positions 1–5 | Visible, caption `Not in this editor yet` |
+| Five-position pickup selector | Not drawn. The header 1–5 are preset slots |
 | HD live connection | `Live connection not supported yet` |
 | Identity before a real read | `identity pending`, never synced |
-| Empty amp, cab, and mic on the example tone | `No amp model`, `No cab`, `No mic` |
-| Detection missing from a build | Disabled Detect devices, current hover sentence |
+| Amp knob percents on the example | 50% midpoint, not a captured tone |
+| Detection missing from a build | Disabled Detect devices, tooltip sentence |
 | Step 4 and any later write | Not offered by this picture. Device check lists step 4 as `not run` |
+| Simulation mode | Removed. The window is This computer. #228 implements that |
 
 ## Art
 
@@ -435,8 +465,10 @@ Committed images and their origins are `assets/ui/SOURCES.md`. The extractor
 is `scripts/extract_xgim.py`. It records numeric XGIM ids. Those ids are not
 file names. Extracted containers stay in the ignored `analysis/` tree.
 
-Knobs, wood, metal, and the Edit grid are drawn in the prototype. They are
-not crops of the Workbench chrome sheet or of `background.png`.
+Knobs, wood, metal, the shared amp panel, and the neck are drawn in the
+prototype. They are not crops of the Workbench chrome sheet or of
+`background.png`. POD Farm skins used on the chain are listed in
+`assets/ui/SOURCES.md`.
 
 ## After approval
 
