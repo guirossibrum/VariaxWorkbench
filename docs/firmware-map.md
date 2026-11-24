@@ -122,10 +122,10 @@ in the manufacturer's [loader manual](https://www.analog.com/media/en/dsp-docume
 (Table 4-2 and reset-vector discussion). It is an inference about compatibility,
 not identification of the installed IC or proof that the entire image executes
 correctly. No separate 8051 or USB-controller executable is identified here. The
-[PODxt Live 3.01 entry, command, and store map](firmware-podxt-dispatch.md)
-follows the region-4 byte pipe, the handlers reached from it, and the two
-`0x8000`-word halves used by opcode `0x71` and `0x936A`. Region 5's encoding
-stays unidentified.
+[PODxt Live 3.01 entry, command, store, and boot map](firmware-podxt-dispatch.md)
+follows the region-4 byte pipe, the handlers reached from it, the two
+`0x8000`-word halves used by opcode `0x71` and `0x936A`, and the reset
+checksum. Region 5's encoding stays unidentified.
 
 Independent static decoding used Ville Linde's BSD-3-Clause MAME SHARC
 disassembler at tag `mame0285`, commit
@@ -188,9 +188,11 @@ python scripts/test_podxt_commands.py
 python scripts/inspect_firmware.py --self-test /ABS/VARIAX.vxf /ABS/POD.xtf
 python scripts/map_firmware.py /ABS/VARIAX.vxf /ABS/POD.xtf
 python scripts/test_podxt_store.py
+python scripts/test_podxt_boot.py
 python scripts/map_podxt_entry.py /ABS/POD.xtf --check research/podxt-301-entry.json
 python scripts/map_podxt_commands.py /ABS/POD.xtf --check research/podxt-301-commands.json
 python scripts/map_podxt_store.py /ABS/POD.xtf --check research/podxt-301-store.json
+python scripts/map_podxt_boot.py /ABS/POD.xtf --check research/podxt-301-boot.json
 ```
 
 Ten synthetic layout tests cover every truncated prefix of a two-space loader,

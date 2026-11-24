@@ -13,8 +13,7 @@ not an application dependency.
 
 Labels mean: **confirmed** (bytes or disassembly at the address given),
 **likely** (a reading that fits those bytes and is not proven), **unknown**
-(not established). The remaining boot checks and the trap list are later
-sections of this file.
+(not established). The trap list is a later section of this file.
 
 ## Which program sees the bytes
 
@@ -65,7 +64,8 @@ with length `0x100`, and calls `0x9380`, `0x8080`, and `0x9609` before enabling
 the main loop. `0x8080` writes `0x100000` zero words starting at `DM(0x02000000)`.
 **Confirmed** as instructions. What that address is on the board is **unknown**.
 `0x9380` selects which stored half is active. The store section records
-the four paths.
+the four paths. The boot section records the checksum and the two spins
+on the reset path.
 
 The transmit loop at `0x80D9` has no counted timeout. **Confirmed.** Elapsed
 time is **unknown**.
@@ -573,6 +573,92 @@ multiply. That address is outside this 384-slot map.
 resource regions. No decoded call or jump targets `0x940A`. Reachability
 is **unknown**. The body is a confirmed erase sequence if it is entered.
 
+## Boot and validation
+
+The [boot record](../research/podxt-301-boot.json) locks 40 instruction lines.
+`python scripts/map_podxt_boot.py` checks them against the container.
+Nothing in this work was sent to a device.
+
+### Reset order
+
+**Confirmed.** `0x825E` calls `0x9380`, `0x825F` calls `0x8080`, and `0x8260`
+calls `0x9609`. The checksum at `0x8266` runs after those three return. The
+main loop is `0x8271` (the parser), `0x8272` (`0x93AA`), `0x8273`
+(`0x95C5`), and `0x8274` back to `0x8271`. No instruction jumps or calls
+`0x8266`. The sum runs once per entry to reset, not on every pass of the
+loop.
+
+### The sum
+
+**Confirmed.** `I0` starts at `0x01000000`. The loop count is `0x00080001`
+(524,289). Each pass reads `DM(I0)` and post-increments. The reads are
+`0x01000000` through `0x01080000` inclusive. That window includes both
+stored halves. The last address is one word past `0x0107FFFF`. What
+`0x01080000` is on the board is **unknown**.
+
+The body is `R2 = FDEP R5 BY 0:8`, `R1 = FEXT R5 BY 8:8`, and
+`R2 = R2 + R1`. The disassembler takes the two numbers from the low 6 bits
+and the next 6 bits of the immediate. **Likely** each pass adds those two
+8-bit fields of the word just read. `0x826E` stores `R0` at `DM(0x1B9AB)`.
+`0x8270` stores `R0` shifted right by 16 at `DM(0x1B9AA)`.
+
+No instruction from `0x823C` through `0x8267` contains `R2`. The sum starts
+with `R0 = -R2`. The value of `R2` at that point is **unknown**.
+**Likely** the first parallel add, `R0 = R0 + R2`, cancels it, and the
+field sum of the last word stays in `R2` and is not stored. This program
+was not executed, so no numeric total is claimed.
+
+The only instructions whose text names `0x1B9AA` or `0x1B9AB` are those
+two stores. **Confirmed.** Nothing between the stores and `CALL (0x000080B2)`
+branches. A sum that would not match an expected value does not divert
+this path, because this path does not compare it.
+
+Opcode `0x56` sets `M1` from the raw argument byte and writes
+`DM(0x1B9A8 + M1)`. Opcode `0x57` reads the same address. Neither masks the
+byte. **Confirmed.** Indexes 2 and 3 are `0x1B9AA` and `0x1B9AB`. That is
+the global access, not a boot check. An indirect read of the same words
+through some other pointer is **unknown**.
+
+### What reset does test
+
+**Confirmed** for the reset line `0x823C` through `0x8274`. That line calls
+`0x9380` and does not itself read the stored halves. The three-word test
+inside `0x9380` is the startup check recorded in the store section. A tone
+that leaves those three words unchanged does not change that choice. This
+boot record does not add a per-slot checksum. Callees of `0x9609` beyond
+the call instruction are not expanded here. A partial `0x71` that changes
+one of the three words can make the next reset erase a half, as the store
+section records.
+
+`0x8080` does not call `0x930F`, `0x931C`, `0x9324`, or `0x936A`.
+**Confirmed.** Before the zero fill it polls bit 30 of `DM(0xE1)`:
+`0x808B` jumps to `0x8089` while the tested bit is clear. There is no
+other exit. What that bit is on the board is **unknown**. If it stays
+clear, reset does not reach the checksum or the parser. The following
+fill writes `0x100000` zeros at `DM(0x02000000)`. That is not the unlock
+sequence.
+
+### Main-loop counter
+
+**Confirmed.** The width-2 load record has `DM(0xC2E5) = 0`. Each main-loop
+pass adds one and tests bit 19. `0x95C9` jumps to itself when that bit is
+set. The first value with bit 19 set is `0x80000`. The only other writer
+is `0x910E`, which stores zero. The only instruction that names `0x9105`,
+the start of that interrupt body, is `0x8028`. If that interrupt does not
+clear the counter, the parser loop stops after `0x80000` increments. The
+spin does not call a program or erase routine. How long one main-loop pass
+takes is **unknown**.
+
+### What this does not show
+
+A bad sum, a torn tone that leaves the three `0x9380` words in a path-A or
+path-B state, and the `0x95C9` spin do not by themselves erase the program
+block. The address `0x9380` passes to `0x9324` is one of the two half
+bases. The sector length is still **unknown**, so whether that erase can
+extend into the program block is **unknown**. The hangs at `0x808B` and
+`0x95C9` stop the instructions that follow them. They are availability
+failures on this path. They are not a claim about the current device.
+
 ## Device-facing notes from this slice
 
 Nothing in this work was sent to a device.
@@ -594,3 +680,7 @@ Nothing in this work was sent to a device.
 | Reset while both half-base words fail the `0xFFFF` test. | `0x9380` then uses the lower sentinel and jumps to `0x9324`. | Erases one of the two halves. The choice follows the lower sentinel. Sector length is **unknown**, so the erase may cover more than that half. This is the instruction path, not the current device. |
 | Store index 409. | `409 × 0x50 + 0x2F = 0x7FFF`. `0x81A8` does not compare the index. | The 80-word program includes the sentinel and continues `0x20` words past the half. Host addresses stop at 298. |
 | Globals `0x56`/`0x57`, and opcodes `0x10`, `0x11`, `0x23`. | The only lines naming `0x1B9A8` or `0x1B9A9` are `0x812A`, `0x8133`, and `0x8C73`. The three opcode words are 0. | No flash routine on the straight-line paths checked. No separate Variax-link slot was identified on this store path. |
+| Reset reaches `0x808B` while bit 30 of `DM(0xE1)` stays clear. | `0x808B` jumps to `0x8089`. `0x8080` does not call `0x930F` or `0x9324`. | Reset does not reach the parser. What the bit is on the board is **unknown**. |
+| The `0x8266` sum. | The result is stored at `0x1B9AB` and `0x1B9AA`. No other instruction names those addresses, and the next call is the main loop. | Reset does not branch on the sum. |
+| A tone that leaves the three `0x9380` words unchanged. | The reset line calls `0x9380` and does not itself read the halves. | The boot choice is unchanged. This boot record has no per-slot checksum. |
+| `0x80000` main-loop passes without the `0x8028` interrupt. | `DM(0xC2E5)` starts at 0, `0x95C5` adds one, and `0x95C9` jumps to itself once bit 19 is set. `0x910E` stores 0 and is reached from `0x8028`. | The parser loop does not resume. The spin does not program or erase. |
