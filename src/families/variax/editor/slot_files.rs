@@ -18,6 +18,7 @@ impl VariaxEditor {
             return;
         };
         if document.selection().is_none() {
+            self.html_export_button(ui, services, available);
             return;
         }
         let enabled = available && document.selected_slot_model().is_ok();
@@ -40,6 +41,7 @@ impl VariaxEditor {
             }
             self.slot_transfer_menu(ui, enabled);
             self.rename_bank_button(ui, available);
+            self.html_export_button(ui, services, available);
         });
     }
 

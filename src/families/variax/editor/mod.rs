@@ -2,6 +2,7 @@ use super::*;
 use serde::Deserialize;
 
 mod guitar;
+mod html_export;
 mod new_files;
 use new_files::{BankRename, NewFile};
 mod slot_files;
@@ -157,6 +158,8 @@ pub(super) struct VariaxEditor {
     #[cfg(test)]
     new_file_buttons: HashMap<&'static str, Rect>,
     #[cfg(test)]
+    html_export_button: Option<Rect>,
+    #[cfg(test)]
     tuning_preset_rows: HashMap<String, Rect>,
     read_receiver: Option<
         std::sync::mpsc::Receiver<Result<variax_workbench::read_session::CurrentPreset, String>>,
@@ -218,6 +221,8 @@ impl VariaxEditor {
             slot_transfer_buttons: HashMap::new(),
             #[cfg(test)]
             new_file_buttons: HashMap::new(),
+            #[cfg(test)]
+            html_export_button: None,
             #[cfg(test)]
             tuning_preset_rows: HashMap::new(),
             read_receiver: None,
@@ -1077,7 +1082,7 @@ impl VariaxEditor {
             .and_then(EditorDocument::selected_preset)
             .is_none()
         {
-            guitar_panel().show(ui, |ui| self.empty_collection(ui, available));
+            guitar_panel().show(ui, |ui| self.empty_collection(ui, available, services));
             return;
         }
         self.guitar_header(ui, available);
