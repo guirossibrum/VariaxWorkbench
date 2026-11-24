@@ -6,8 +6,9 @@ table entries. The [handler records](../research/variax-310-read-handlers.json)
 cover the session flag and preset-buffer read. The
 [store trace](../research/variax-310-store-handlers.json) covers opcode `0x61`.
 The [buffer trace](../research/variax-310-buffer-handlers.json) covers `0x43`
-and `0x3B`. Findings are static. Firmware execution and live device checks
-remain outside this work.
+and `0x3B`. The [session trace](../research/variax-310-session-handlers.json)
+covers `0x4C` and the writers of the session flag. Findings are static.
+Firmware execution and live device checks remain outside this work.
 
 ## Coverage
 
@@ -15,7 +16,7 @@ remain outside this work.
 | --- | --- | --- |
 | Line 6 SysEx table | `P:0x14316` indexes 110 words at `P:0x14326–0x14393`, for opcodes `0x10–0x7D`. All targets are present in the main-region P load records. | The shared header parser and receive state machine still need end-to-end analysis. |
 | Direct exits | 64 entries target the common stack-unwind return at `P:0x1483E` without calling a command-specific handler. | Follow the outer parser after this return to establish what happens to remaining input. |
-| Command-specific targets | 46 distinct entries. Traced here: `0x2A`, `0x3C`, `0x3B`, `0x43` and `0x61`. | The other 41 remain. Track each group through its callees. Historical traces for string levels and updater paths are in [factory extraction](factory-extraction.md) and [update research](update-recovery.md). |
+| Command-specific targets | 46 distinct entries. Traced here: `0x2A`, `0x3C`, `0x3B`, `0x43`, `0x4C` and `0x61`. | The other 40 remain. Track each group through its callees. Historical traces for string levels and updater paths are in [factory extraction](factory-extraction.md) and [update research](update-recovery.md). |
 | Image bytes | The 110 pointer words classify 330 bytes as dispatch data in the 442,402-byte decompressed Variax image (0.075%). | Whole-image classification, MIDI CC and program-change handling, universal SysEx, and PODxt Live coverage remain open. |
 
 The dispatcher subtracts `0x10` at `P:0x1431A`. It branches on underflow
@@ -28,7 +29,7 @@ on the physical processor are unknown.
 
 | Opcode | Confirmed input and action | Confirmed reply path |
 | --- | --- | --- |
-| `0x2A` | `P:0x144DD` takes bit 0 of one byte, stores it to `X:0x17F4` and reads one more byte before returning. The store precedes the trailing read, which does not check for `F7`. The flag controls outgoing program-change and CC helpers at `P:0x14A0B` and `P:0x14A1D`. | No immediate acknowledgment in the handler. |
+| `0x2A` | `P:0x144DD` takes bit 0 of one byte, stores it to `X:0x17F4` and reads one more byte before returning. The store precedes the trailing read, which does not check for `F7`. The flag controls outgoing program-change and CC helpers at `P:0x14A0B` and `P:0x14A1D`, and `P:0x135E` sends `0x28` only when the flag equals 1. Reset startup at `P:0x14282` stores 0. Queued words `0x070001` and `0x070002` also store 0, through `P:0x179C`. None of those writers touches the DSP-bypass flag. | No immediate acknowledgment in the handler. |
 | `0x3C` | `P:0x144A9` decodes two 24-bit words, count first and start word second. `P:0x1268` masks each encoded byte to four bits and assembles six low-first nibbles. The read starts at `Y:0xA47 + start_word` after the `F7` check at `P:0x144B4–0x144B9`. Each iteration emits one 24-bit word and advances the pointer. There is no explicit address, count or combined range check in the handler. | The normal path queues the family header, `0x3C`, six low-first nibbles per word, and `F7` at `P:0x1472B`. A 32-word reply totals 200 bytes with framing. No address or count is echoed. An unexpected trailing byte at the terminator check branches to the `0x72` reply at `P:0x147ED`. |
 
 **Confirmed, static:** Receive helpers at `P:0x1257` and `P:0x1261` poll
@@ -352,6 +353,171 @@ includes word 1,090, including `previous: None`. `store()` does not send
 | A `0x3B` run includes word 1,090. | `P:0x14433` | The firmware reads start as the count and count as the start. The single-word case stores that word at word 1 and then waits. The all-words case uses a zero count, writes nothing for that header, and parses the data as a new run. `F7` still replies `0x71` and reloads whatever was written. | Yes, through `Edit::Difference` when word 1,090 changed or the baseline is unknown. `store()` does not send it. | Send a full `0x43` for a program whose changed run includes word 1,090. Do not send that `0x3B` shape. | No reversed run. The editor uses count/start through word 1,090. The unknown-baseline path uses a full upload. |
 | A `0x3B` reply is still unread when a store wait begins. | `P:0x14466`, then the store wait | `0x3B` transmits `0x71`. The store wait accepts the first eight-byte `0x71` and the reply carries no slot id. | Not from `store()` itself. A caller can leave the reply on a shared stream. | Finish or discard the difference reply before waiting for a store. | A completed difference wait consumes its reply. A session that allows edits refuses storage if a reply is queued at either check. A failed or ambiguous exchange requires a fresh link. |
 
+## DSP bypass (`0x4C`) and what clears the two flags
+
+`P:0x14561` reads one byte, stores that whole byte at `X:0x17A0`, and falls
+into `P:0x14565`. The shared tail reads one more byte and does not compare
+it with `F7`. The handler sends no reply. **Confirmed.** Host
+`Message::DspEnabled` sends byte 1 for DSP off and byte 0 for DSP on. Any
+nonzero stored value selects the bypass branch. A later `0x4C` clears the
+flag only when its byte is 0.
+
+The only instructions whose address extension is `0x17A0` are four reads
+and two stores. The stores are `P:0x14563` (the `0x4C` byte, with no mask)
+and `P:0x14023` (the value 0). The only long `jsr` of that clear is
+`P:0x1A25`, inside startup `P:0x1A13`. The reset vector reaches startup
+through `P:0x0000`, `P:0x0DBC` and `P:0x14004`. No scanned instruction
+writes the flag from a counter. **Confirmed.**
+
+`0x2A` stores only bit 0 of its byte at `X:0x17F4`. It does not write
+`X:0x17A0`. **Confirmed.** Session off therefore leaves DSP bypass as it
+was. The other session stores are `P:0x14282` (0, from reset startup; the
+only long `jsr` is `P:0x1A21`) and `P:0x179C` (0). `P:0x179C` runs for
+queued words `0x070001` and `0x070002` after `P:0x174D` subtracts one and
+takes table entries 0 and 1. The only long `jsr` of that table is
+`P:0x10D6`, which is the high-byte-7 arm of the queued-word decoder. A
+repeat of the same low 16 bits is skipped when it matches `X:0x17A6`.
+Those two words are enqueued at `P:0x1DF0` and `P:0x1DFA` when `X:0x1810`
+is below `0x3B` or below `0x86`. What `X:0x1810` represents is **unknown**.
+The arm does not write `X:0x17A0`.
+
+Readers of `X:0x17F4` are `P:0x135E` (`0x28` only when the flag equals 1,
+called from the timer at `P:0x0DDE`), `P:0x14A0D` (outgoing program change)
+and `P:0x14A20` (outgoing CC). The SysEx header, `0x43` and `0x61` do not
+read it. **Confirmed.** Neither command requires the session flag.
+
+Program-change status `0xC0` reaches `P:0x14285`, which marks a class-5
+word. Class 5 at `P:0x111B` calls `P:0x1FA7` and `P:0x1E9C`. That action
+does not write either flag. **Confirmed.** `P:0x1E9C` calls `P:0x2001`,
+which reads the bypass flag and skips its wait when the flag is nonzero.
+The reload still does not store 0 to `X:0x17A0`.
+
+The peripheral `reset` at `P:0x1ABA` clears the stack and jumps to
+`P:0xFF0000`. Inside this image it does not write `X:0x17A0` and it does
+not re-enter `P:0x0000`. "Reset entry" below means the vector path that
+does write the flag. A measured power cycle is a separate question and is
+**unknown**.
+
+### What a set bypass flag does in the audio interrupt
+
+`P:0x0DE4` calls `P:0x03F2` twice, and `P:0x03F2` calls `P:0x0593`.
+**Confirmed.** `P:0x0593` keeps bit 20 of `Y:0xD0`, then ORs in `X:0x17FC`,
+`X:0x17ED` and `X:0x17A0`. Any one of those four sends the interrupt to
+`P:0x062B` and skips the model dispatch. At `P:0x062B` the test is bit 20,
+`X:0x17FC` and `X:0x17A0`. Any one of those three jumps to `P:0x03DD`.
+`X:0x17ED` is read after that jump, so it does not select `P:0x03DD`.
+**Confirmed.** A nonzero bypass flag is sufficient for the short mix.
+Clearing it leaves the short mix in place while bit 20 or `X:0x17FC` is
+still set, and it leaves the model dispatch skipped while `X:0x17ED` is
+still set.
+
+`P:0x03DD` runs 16 groups. Each group clears the accumulator, multiplies
+six input words by the immediate `0x055555`, and stores that accumulator
+four times. The stores are not zeros. Listening level was not measured.
+**Confirmed** for the instruction sequence. The audible result is
+**unknown**.
+
+`0x4C` and `P:0x0FA6` do not write the other three terms. **Confirmed**
+for those windows. Startup `P:0x1A1F` calls `P:0x14BFC`, which writes 0
+to `Y:0xD0`, and later `P:0x1A30` calls `P:0x14A64`, which writes `0x881`
+(bit 20 clear). The same constant is written at `P:0x14B30`, `P:0x14B61`
+and `P:0x14BA8`. `P:0x14BFD` writes 0. `P:0x201D` writes 0 at the end of
+the reload wait, unless `X:0x17A5` is 1, in which case `P:0x2001` returns
+before that store. Startup's following call at `P:0x1A32` stores 0 to
+`X:0x17A5`. One queued word, high byte 8 and low 16 bits `0xFF`, stores 1
+there at `P:0x112D`. Whether that word occurs during an editor session is
+**unknown**.
+
+The audio interrupt can set bit 20 after the mix returns. It divides a
+saved value at `P:0x001A` and, when the quotient is at least `0x7F`,
+executes `bset #20` at `P:0x0E6D` and writes 1 to `X:0x179F`. What the
+dividend represents is **unknown**. That bit can become set while bypass
+is already on, because the test runs after `P:0x03F2` returns.
+
+`X:0x17FC` is outside the reset flag clear. `P:0x14A64` stores 1 and calls
+`P:0x20AB` only when `X:0x1812` is above `0x80`. `P:0x20BC` then stores 0
+when the value is 1. The other branch leaves `X:0x17FC` unchanged. Reset
+entry therefore does not unconditionally clear it. `X:0x17ED` is not
+written by `0x4C` or the store window.
+
+### An interrupted store leaves the flag set
+
+`store()` opens the transaction with DSP bypass, so the host sends
+`0x4C 01` before `0x43` and `0x61`. Cleanup always attempts `0x4C 00`,
+then session off, then bridge off, including when the body fails. That
+attempt is a host send. `P:0x0FA6` does not write `X:0x17A0`.
+
+The flash polls do not call the MIDI parser and do not mask interrupts
+for the whole poll. **Confirmed.** The receive interrupt still queues
+bytes at `X:0x131B`. The main thread does not parse that queue until the
+poll returns, so a cleanup `0x4C 00` stays queued. The audio interrupt
+still reaches the short mix. Sound returning requires the poll to return
+and the bypass term to be clear, and the other terms above to be clear
+as well. This image does not show that a stuck poll clears the flag.
+
+While the trailing read of `0x4C` or `0x2A` is waiting, an empty queue
+returns `0xFF` from `P:0x1234` and `P:0x1257` calls `P:0x1A97` before
+trying again. `P:0x1A97` can transmit `0x74` and `0x4D`. The next byte
+other than `0xFF` is consumed and is not compared with `F7`. A missing
+trailer does not stick the way a flash poll does. One later byte unblocks
+the reader, and that byte is not parsed as the start of a new message.
+The flag is already stored before this wait.
+
+### Trap list (bypass and session)
+
+| Trigger | Address | Consequence | Our editor can send it | How the editor avoids it |
+| --- | --- | --- | --- | --- |
+| `0x4C` with a nonzero byte, then the link stops before a later byte 0, while the parser is still running. | `P:0x14563` | `X:0x17A0` stays nonzero until a later `0x4C` byte 0 or the reset entry. Session off and program change leave it unchanged, and no counter stores 0. Model dispatch is skipped and `P:0x03DD` keeps running its scaled sums. There is no reply. | Yes. `store()` sends `0x4C 01`. Cleanup sends byte 0 only when the host can still transmit. | Cleanup already sends DSP on before session off. A failed cleanup needs a later parsed `0x4C` byte 0, or the reset entry. A missing reply is the normal handler result. Bit 20 or `X:0x17FC` can keep the short mix after the flag is 0. |
+| `0x4C 01` was accepted and a flash poll has not returned. | `P:0x0F17`, `P:0x0F45`, `P:0x0F63` | Cleanup bytes sit in the receive queue. The poll does not parse them, so the bypass flag stays set. The audio interrupt still runs the short mix. | Yes, when the part does not finish the poll. | The store rule already forbids another `0x61` in that group of 20. A queued `0x4C 00` applies only after the poll returns. Reset entry writes the bypass flag to 0. It does not unconditionally clear `X:0x17FC`. |
+| The transfer stops after the `0x4C` or `0x2A` argument and before the trailing byte. | `P:0x14565`, `P:0x144E2` | The flag is already stored. The reader waits, calls `P:0x1A97` on each empty read, and consumes the next non-`FF` byte without an `F7` test. | Yes, if the transfer stops after the argument. | Send the closing `F7`. If it was lost, the next byte unblocks the reader and is not itself dispatched. |
+
+## Answers for #177
+
+[#177](https://github.com/guirossibrum/VariaxWorkbench/issues/177) will store
+the Reso-5 factory program at flash index 50. That index shares spare
+sector 62 with flash indices 40–59. Each answer below cites the static
+evidence and a confidence of confirmed, likely, or unknown. Questions this
+slice does not reach stay open for the later handler slices.
+
+### 1. What clears DSP bypass, and can an interrupted store leave the guitar silent?
+
+`0x4C` byte 0 stores 0 at `X:0x17A0` (`P:0x14563`). **Confirmed.** The
+handler does not mask the byte, so any other byte leaves the flag nonzero.
+`0x2A 00` writes bit 0 of `X:0x17F4` only. **Confirmed.** It does not clear
+bypass. No counter in the handler or elsewhere in the `0x17A0` extension
+list writes the flag, so this image has no timeout for it. **Confirmed.**
+Program change reaches class 5 and does not write `X:0x17A0`. **Confirmed.**
+The reload it calls can clear `Y:0xD0` when `X:0x17A5` is 0, which is the
+value startup stores at `P:0x1A32`. That still leaves the bypass flag set,
+so the short mix stays selected. Reset entry stores 0 at `P:0x14023`.
+**Confirmed** for that path. The peripheral `reset` at `P:0x1ABA` does not
+write the flag inside this image. A measured power cycle is **unknown**.
+
+An interrupted store does not itself write `X:0x17A0`. If the host has
+already sent `0x4C 01` and a flash poll has not returned, the flag stays
+set and a queued `0x4C 00` is not parsed. **Confirmed.** The audio
+interrupt still runs `P:0x03DD`, which stores scaled accumulator values,
+not zeros. Whether that is silence was not measured. **Unknown.** Sound
+through the model path returns when the bypass flag is 0 and bit 20 of
+`Y:0xD0`, `X:0x17FC` and `X:0x17ED` are clear. `0x4C` byte 0 clears only
+the bypass term. The audio interrupt can set bit 20 on its own.
+
+### 9. Does `0x61` require the session flag? Does `0x43`?
+
+No. The SysEx header, `P:0x14668`–`P:0x14690` and
+`P:0x14731`–`P:0x1474A` plus `P:0x0FA6`–`P:0x0FD2` do not read `X:0x17F4`.
+**Confirmed.** The flag gates the three outgoing helpers listed above.
+The editor's transaction turns the session on before either command anyway.
+
+### 11. `0x3B`: when is `0x71` sent, and what does a count of 0 do?
+
+From the buffer trace already checked against this archive. `F7` at the
+run loop branches to `P:0x14466`, which transmits `0x71` and continues to
+the reload at `P:0x1483A`. **Confirmed.** A count of 0 writes nothing on
+the typed emulator used for that trace. The following bytes are parsed as
+another run. **Confirmed** for that emulator. `store()` does not send
+`0x3B`.
+
 ## Reproduction
 
 Use the original local archive with SHA-256
@@ -364,6 +530,8 @@ python3 scripts/map_variax_store.py /path/to/Variax300_3.10.vxf \
   --check research/variax-310-store-handlers.json
 python3 scripts/map_variax_buffer.py /path/to/Variax300_3.10.vxf \
   --check research/variax-310-buffer-handlers.json
+python3 scripts/map_variax_session.py /path/to/Variax300_3.10.vxf \
+  --check research/variax-310-session-handlers.json
 python3 -m unittest discover -s scripts -p 'test_variax_*trace.py'
 ```
 
@@ -373,6 +541,8 @@ compares call order, branch targets and the address words with
 [the store trace](../research/variax-310-store-handlers.json). The buffer
 checker does the same for
 [the edit-buffer trace](../research/variax-310-buffer-handlers.json). The
+session checker compares the bypass and session flag references with
+[the session trace](../research/variax-310-session-handlers.json). The
 formula tests do not read the archive and do not launch an emulator. The group
 quotients recorded in those tests were measured on a typed divide-by-20
 program whose words at `P:0x001A`–`P:0x0034` match this archive. The
