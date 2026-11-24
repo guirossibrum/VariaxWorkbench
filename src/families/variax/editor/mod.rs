@@ -2,6 +2,8 @@ use super::*;
 use serde::Deserialize;
 
 mod guitar;
+mod value_format;
+use value_format::ValueFormat;
 
 #[cfg(test)]
 mod tests;
@@ -425,15 +427,16 @@ impl VariaxEditor {
         (p.value_type == 0).then_some(p.bits as i32)
     }
 
-    pub(super) fn float_control(
+    fn float_control(
         &mut self,
         ui: &mut egui::Ui,
         slot: u32,
         id: u32,
         label: &str,
-        suffix: &str,
+        format: ValueFormat,
     ) {
-        if let Some(mut value) = self.float(slot, id) {
+        if let Some(stored) = self.float(slot, id) {
+            let mut value = stored;
             let Some(variax_workbench::edit::Domain::Float { min, max, .. }) =
                 variax_workbench::edit::domain(slot, id)
             else {
@@ -459,7 +462,9 @@ impl VariaxEditor {
                 egui::Slider::new(&mut value, min..=max)
                     .clamping(egui::SliderClamping::Edits)
                     .text(label)
-                    .suffix(suffix),
+                    .custom_formatter(move |value, _| format.display(value))
+                    .custom_parser(move |text| format.parse_edit(text, f64::from(stored)))
+                    .update_while_editing(false),
             );
             #[cfg(test)]
             if slot == PICKUP1 && id == 0x200000 {
@@ -470,7 +475,7 @@ impl VariaxEditor {
             {
                 document.begin_gesture();
             }
-            if response.changed() {
+            if value.to_bits() != stored.to_bits() {
                 self.change(|p| p.set_parameter(slot, id, 1, value.to_bits()));
             }
             if response.drag_stopped()
@@ -835,7 +840,13 @@ impl VariaxEditor {
                             ..egui::Margin::ZERO
                         }))
                         .show_inside(ui, |ui| {
-                            self.float_control(ui, SYSTEM, 0x200000, "Output trim", " dB");
+                            self.float_control(
+                                ui,
+                                SYSTEM,
+                                0x200000,
+                                "Output trim",
+                                ValueFormat::TRIM,
+                            );
                         });
                 }
                 ui.horizontal_wrapped(|ui| {
@@ -897,9 +908,9 @@ impl VariaxEditor {
                             );
                         });
                         self.model_control(ui, slot, "pickup");
-                        self.float_control(ui, slot, 0x200000, "Position", " in");
-                        self.float_control(ui, slot, 0x200001, "Angle", "°");
-                        self.float_control(ui, slot, 0x200003, "Level", " dB");
+                        self.float_control(ui, slot, 0x200000, "Position", ValueFormat::POSITION);
+                        self.float_control(ui, slot, 0x200001, "Angle", ValueFormat::ANGLE);
+                        self.float_control(ui, slot, 0x200003, "Level", ValueFormat::LEVEL);
                         if slot == PICKUP1 {
                             ui.horizontal_wrapped(|ui| {
                                 self.boolean_control(
@@ -925,13 +936,13 @@ impl VariaxEditor {
 
     fn electrical_controls(&mut self, ui: &mut egui::Ui) {
         let resistances = [
-            (25.0, "25 kΩ"),
-            (50.0, "50 kΩ"),
-            (100.0, "100 kΩ"),
-            (250.0, "250 kΩ"),
-            (470.0, "470 kΩ"),
-            (500.0, "500 kΩ"),
-            (1000.0, "1 MΩ"),
+            (25.0, "25k Ω"),
+            (50.0, "50k Ω"),
+            (100.0, "100k Ω"),
+            (250.0, "250k Ω"),
+            (470.0, "470k Ω"),
+            (500.0, "500k Ω"),
+            (1000.0, "1M Ω"),
         ];
         ui.strong("Volume knob");
         ui.columns(2, |columns| {
@@ -958,7 +969,13 @@ impl VariaxEditor {
                 ],
             );
         });
-        self.float_control(ui, WIRING, 0x200004, "Tone position", "");
+        self.float_control(
+            ui,
+            WIRING,
+            0x200004,
+            "Tone position",
+            ValueFormat::Percent(1.0),
+        );
         self.boolean_control(ui, WIRING, 0x200005, "Save tone-knob position");
         let mut auto = self.auto_select_controls;
         let response = ui

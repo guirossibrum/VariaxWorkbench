@@ -1,7 +1,7 @@
 use super::{
     BODY, Color32, EditorDocument, FRET_MARKER, GUITAR_SELECTION, GUITAR_SURFACE, PICKUP1, PICKUP2,
-    Pos2, PresetFile, Rect, SYSTEM, Sense, TUNING, Tab, TextureHandle, VariaxEditor, WIRING, egui,
-    guitar_panel,
+    Pos2, PresetFile, Rect, SYSTEM, Sense, TUNING, Tab, TextureHandle, ValueFormat, VariaxEditor,
+    WIRING, egui, guitar_panel,
 };
 use std::{collections::HashSet, path::Path, process::Command};
 use variax_workbench::{bundle::BundleFile, edit::Domain, preset::PresetText};
@@ -731,7 +731,8 @@ impl VariaxEditor {
                     self.change(|preset| set_tuning_values(preset, DETUNE, 1, [0; 6]));
                 }
                 ui.add_enabled_ui(can_edit, |ui| {
-                    self.float_control(ui, TUNING, SPREAD, "Spread", "")
+                    self.float_control(ui, TUNING, SPREAD, "Spread", ValueFormat::Percent(25.0));
+                    ui.weak("Workbench 1.75 had no Spread control.");
                 });
             }
         });
@@ -799,17 +800,21 @@ impl VariaxEditor {
                         self.twelve_string_value(ui, MIX + index_id, can_edit);
                         self.twelve_string_value(ui, DETUNE + index_id, can_edit);
                     }
-                    if let Some(mut value) = pitch {
-                        if ui
-                            .add_enabled(
-                                can_edit && self.tuning_parameter(id, 0),
-                                egui::DragValue::new(&mut value)
-                                    .range(-12..=12)
-                                    .clamp_existing_to_range(false),
-                            )
-                            .on_hover_text("Drag or click to set semitones")
-                            .changed()
-                        {
+                    if let Some(stored) = pitch {
+                        let mut value = stored;
+                        ui.add_enabled(
+                            can_edit && self.tuning_parameter(id, 0),
+                            egui::DragValue::new(&mut value)
+                                .range(-12..=12)
+                                .clamp_existing_to_range(false)
+                                .custom_formatter(|value, _| ValueFormat::SEMITONES.display(value))
+                                .custom_parser(move |text| {
+                                    ValueFormat::SEMITONES.parse_edit(text, f64::from(stored))
+                                })
+                                .update_while_editing(false),
+                        )
+                        .on_hover_text("Drag or click to set semitones");
+                        if value != stored {
                             self.change(|preset| preset.set_parameter(TUNING, id, 0, value as u32));
                         }
                     } else {
@@ -828,7 +833,7 @@ impl VariaxEditor {
     }
 
     fn twelve_string_value(&mut self, ui: &mut egui::Ui, id: u32, can_edit: bool) {
-        let Some(mut value) = self.float(TUNING, id).filter(|v| v.is_finite()) else {
+        let Some(stored) = self.float(TUNING, id).filter(|v| v.is_finite()) else {
             ui.label("—");
             return;
         };
@@ -841,19 +846,29 @@ impl VariaxEditor {
         let can_edit = can_edit
             && self.tuning_parameter(id, 1)
             && (!linked || (MIX..MIX + 6).all(|id| self.tuning_parameter(id, 1)));
-        let speed = if is_mix { 0.01 } else { 1.0 };
+        let (speed, format) = if is_mix {
+            (0.01, ValueFormat::Percent(1.0))
+        } else {
+            (1.0, ValueFormat::CENTS)
+        };
+        let mut value = stored;
         let response = ui.add_enabled(
             can_edit,
             egui::DragValue::new(&mut value)
                 .range(min..=max)
                 .clamp_existing_to_range(false)
-                .speed(speed),
+                .speed(speed)
+                .custom_formatter(move |value, _| format.display(value))
+                .custom_parser(move |text| format.parse_edit(text, f64::from(stored)))
+                .update_while_editing(false),
         );
         #[cfg(test)]
         if id == MIX {
             self.tuning_widgets.insert("Low E mix", response.rect);
         }
-        if response.changed() {
+        #[cfg(not(test))]
+        let _ = response;
+        if value.to_bits() != stored.to_bits() {
             self.change(|preset| {
                 if linked {
                     set_tuning_values(preset, MIX, 1, [value.to_bits(); 6])
@@ -1460,6 +1475,29 @@ mod tests {
         let changed = app.variax().float(TUNING, MIX).unwrap();
         assert_ne!(changed, 0.5);
         assert!((MIX..MIX + 6).all(|id| app.variax().float(TUNING, id) == Some(changed)));
+        let precise_mix = 0.627_f32;
+        app.variax_mut()
+            .change(|preset| preset.set_parameter(TUNING, MIX, 1, precise_mix.to_bits()));
+        let before = app.variax().document.as_ref().unwrap().as_bytes().to_vec();
+        frame(&ctx, &mut app, vec![]);
+        let enter = || egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        };
+        click(&ctx, &mut app, "Low E mix");
+        frame(&ctx, &mut app, vec![enter()]);
+        assert_eq!(app.variax().document.as_ref().unwrap().as_bytes(), before);
+
+        click(&ctx, &mut app, "Low E mix");
+        frame(&ctx, &mut app, vec![egui::Event::Text("75%".into())]);
+        assert_eq!(app.variax().document.as_ref().unwrap().as_bytes(), before);
+        frame(&ctx, &mut app, vec![enter()]);
+        assert!((MIX..MIX + 6).all(|id| app.variax().float(TUNING, id) == Some(0.75)));
+        app.variax_mut().undo();
+        assert_eq!(app.variax().document.as_ref().unwrap().as_bytes(), before);
         assert_eq!(app.variax().tab, Tab::Controls);
     }
 }

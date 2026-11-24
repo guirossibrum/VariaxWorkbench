@@ -152,8 +152,13 @@ fn actual_pickup_slider_drag_is_one_undo_group() {
             },
             |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    app.variax_mut()
-                        .float_control(ui, PICKUP1, 0x200000, "Position", " in")
+                    app.variax_mut().float_control(
+                        ui,
+                        PICKUP1,
+                        0x200000,
+                        "Position",
+                        ValueFormat::POSITION,
+                    )
                 });
             },
         );
