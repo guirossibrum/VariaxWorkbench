@@ -35,7 +35,12 @@ Phase A of #181 maps all 110 SysEx dispatch entries in the main region and
 traces the session flag, DSP bypass, the current-preset buffer read and its
 reply limits, the full-buffer and difference handlers, the preset-store
 flash sequence, the slot read, the wide erases, the bank-name and
-string-level sectors, and the other program and code-load handlers.
+string-level sectors, the other program and code-load handlers, and the
+remaining 24 command handlers. Those 24 have no direct call to the erase
+or program helpers in the scanned windows. `0x3E` ends in an indirect
+call whose target was not found. The guitar can send `0x28`, `0x74` and
+`0x4D` on its own, and, when the session flag is on, a program-change-shaped
+status plus one data byte and a three-byte status plus two data bytes.
 See the [Variax 3.10 dispatcher inventory](firmware-variax-dispatch.md).
 
 Independent static decoding used the MIT-licensed Rust DSP56300 toolkit v1.0.0,

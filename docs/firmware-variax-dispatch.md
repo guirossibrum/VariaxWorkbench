@@ -12,17 +12,20 @@ covers `0x4C` and the writers of the session flag. The
 `0x3C` reply length, the transmit queue, and the two editor spans. The
 [flash trace](../research/variax-310-flash-handlers.json) covers the erase
 step, the slot read, the other program and erase handlers, and the two
-code-load opcodes as a list. Findings are static.
+code-load opcodes as a list. The
+[remaining-handler trace](../research/variax-310-rest-handlers.json) covers
+the last 24 command entries, the `0x7E` header branch, and the unsolicited
+send sites. Findings are static.
 Firmware execution and live device checks remain outside this work.
 
 ## Coverage
 
 | Scope | Confirmed static result | Remaining work |
 | --- | --- | --- |
-| Line 6 SysEx table | `P:0x14316` indexes 110 words at `P:0x14326–0x14393`, for opcodes `0x10–0x7D`. All targets are present in the main-region P load records. | The shared header parser and receive state machine still need end-to-end analysis. |
+| Line 6 SysEx table | `P:0x14316` indexes 110 words at `P:0x14326–0x14393`, for opcodes `0x10–0x7D`. All targets are present in the main-region P load records. The `0x7E` header branch is traced below. | The rest of the receive state machine remains. |
 | Direct exits | 64 entries target the common stack-unwind return at `P:0x1483E` without calling a command-specific handler. | Follow the outer parser after this return to establish what happens to remaining input. |
-| Command-specific targets | 46 distinct entries. Traced here: `0x2A`, `0x3B`, `0x3C`, `0x43`, `0x44`, `0x45`, `0x4C`, `0x54`, `0x56`, `0x57`, `0x58`, `0x59`, `0x60`, `0x61`, `0x62`, `0x63`, `0x67`, `0x68`, `0x6C`, `0x6D`, `0x6F` and `0x7D`. | The other 24 remain. Historical receive order for the updater opcodes is in [update research](update-recovery.md). |
-| Image bytes | The 110 pointer words classify 330 bytes as dispatch data in the 442,402-byte decompressed Variax image (0.075%). | Whole-image classification, MIDI CC and program-change handling, universal SysEx, and PODxt Live coverage remain open. |
+| Command-specific targets | All 46 distinct entries are traced. The last 24 do not call the erase or program helpers directly. `0x3E` ends in an indirect call whose target was not found. | None of the 46 command handlers remain. PODxt Live is a separate pass. |
+| Image bytes | The 110 pointer words classify 330 bytes as dispatch data in the 442,402-byte decompressed Variax image (0.075%). Program change, CC and the `0x7E` header branch are traced below. | Whole-image classification and PODxt Live coverage remain open. |
 
 The dispatcher subtracts `0x10` at `P:0x1431A`. It branches on underflow
 before the table access, then fetches the P-space word at `P:0x14322` before
@@ -810,8 +813,9 @@ store `0x100000` at `Y:0xA48` on purpose. Those stores are not the loader
 failure.
 
 `P:0x11A0` forms a value from `X:0x17A8` and `X:0x17A4` with `asl`,
-`maci #5` and `asr`. When that value is greater than 4 and less than 55
-it adds 55, then calls `P:0x1FA7` and `P:0x1E9C`. A formed value of 50
+`maci #5` and `asr`. It adds 55 when that value is 5 through 54. It then
+always calls `P:0x1FA7`, `P:0x1E9C`, the outgoing program-change helper
+and the three-byte MIDI helper. A formed value of 50
 becomes loader argument 105, which is above 59, subtracts 55, and
 checksums sector 50. Bare `maci` was not measured. The integer reading
 `5 × X:0x17A8 + X:0x17A4` is **likely**. A different scale is
@@ -824,11 +828,14 @@ does not add 55, so an argument of 50 there is the compact path.
 `P:0x1186` is fall-through in the queued-word decoder, not a SysEx
 opcode. For one low-16-bit case it writes `0x100000` to `Y:0xD0`,
 checksums, and calls `P:0x0FA6` when the formed index is below 5 or is
-55–59. Indices 5–54 skip that store. Whether an editor program change or
-CC produces that queued word was not established. **Unknown.** The family
-write API does not build the word. `P:0x14197` would store indices 5–54
-and has no call, branch or literal reference in this image. It is not a
-dispatch entry.
+55–59. Indices 5–54 skip that store. That arm is high byte 8 with the
+low 16 bits equal to 1, and it runs only when `X:0x17A5` is already 1.
+Program-change status `0xC0` is queued as high byte 5 and enters
+`P:0x1114`. Controller `0x4F` and controller 7 go to `P:0x1428E`.
+**Confirmed.** Neither path enters `P:0x1186`. The family write API sends
+program change and controller 79, and it does not build the high-byte-8
+word. `P:0x14197` would store indices 5–54 and has no call, branch or
+literal reference in this image. It is not a dispatch entry.
 
 ### MIDI that arrives during a flash poll
 
@@ -852,19 +859,85 @@ code-load receives consume arriving bytes as payload while they program.
 | `0x62` while bytes are still arriving. | `P:0x1474A` | Programs sectors 0–59 without an erase. Bytes already received have been programmed. Later sectors are not addressed. | No. | Do not send `0x62`. |
 | `0x60` or the commit branch of `0x6F`, after a trailer and a matching sum. | `P:0x14687`, `P:0x1468B` | Erases sectors 16–31 or 0–3, programs them, and then takes the peripheral reset. A sum mismatch sends `0x73` and does not erase. | No. | Do not send either opcode. Both ranges miss sectors 60–62. |
 | `0x7D`, including a transfer that never reaches `F7`. | `P:0x1469B` | Calls the peripheral reset before the trailer. This image does not erase 60–62 on that path. Boot-ROM flash behavior is unknown. | No. | Do not send `0x7D`. |
-| The queued word that falls through `P:0x1186` for a formed index of 0–4 or 55–59. | `P:0x1186` | Writes bit 20 to `Y:0xD0`, checksums, and stores that index. | Unknown. The family write API does not build the word. | Finish the queued-word decoder before treating a program change or CC as safe from this store. |
+| The queued word that falls through `P:0x1186` for a formed index of 0–4 or 55–59. | `P:0x1186` | Writes bit 20 to `Y:0xD0`, checksums, and stores that index. | No. Program change is high byte 5. The editor's tone CC is controller 79 and goes to `P:0x1428E`. | Do not build a high-byte-8 word whose low 16 bits are 1. |
+
+## Remaining command handlers
+
+The [remaining-handler trace](../research/variax-310-rest-handlers.json)
+pins the last 24 command entries against the same archive. The checker
+scans fixed windows for a direct `jsr` to `P:0x0F17`, `P:0x0F45`,
+`P:0x0F63`, `P:0x0FA6`, `P:0x0F8C`, `P:0x0F9A` or `P:0x1ABA`. Those windows
+contain none. A branch that leaves a window is not followed. **Confirmed**
+for the scanned windows.
+
+`0x3E` is inside its window and still unresolved. On `F7`, `P:0x14430`
+is `jsr (r6)`. The pointer comes from `X:0x1A88`. That table was not
+recovered, so whether the call stores is **unknown**. When the call
+returns, `P:0x14431` jumps to `P:0x14805`, which sends `0x71`.
+
+| Opcode | Handler | Confirmed action in this image |
+| --- | --- | --- |
+| `0x69` | `P:0x14394` | The first byte must be 1 and the next byte must be `F7`. Otherwise the handler returns at `P:0x1483E` and sends nothing. A match jumps to `P:0x1483D`, which calls the reply at `P:0x1493A`. The reply opcode is `0x69`. |
+| `0x6A` | `P:0x143A4` | The same two-byte gate, then `P:0x14997` replies with opcode `0x6A`. |
+| `0x4E` | `P:0x143B5` | The same two-byte gate, then `P:0x149CE` calls the three-byte MIDI helper with immediate `0x4F`. There is no SysEx reply. The helper transmits only when the session flag is 1. |
+| `0x6B` | `P:0x143C6` | The same two-byte gate, then `P:0x149D5` replies with opcode `0x6B`. |
+| `0x3E` | `P:0x143D7` | Words are stored through a pointer from `X:0x39E` before `F7`. On `F7` the indirect call runs. When it returns, `0x71` is sent. Outside the compared ranges the handler drains more words and loops. The indirect target is unknown. |
+| `0x3F` | `P:0x1446C` | Three words are read and range-checked. Out of range sends `0x72`. In range the reply opcode is `0x3F`, followed by nibbles from the `X:0x39E` pointer. The reply does not wait for `F7`. |
+| `0x1C` | `P:0x144F6` | `P:0x1378` receives six word pairs and one byte into RAM, then the shared trailer. A trailer other than `F7` sends `0x66`. |
+| `0x16` | `P:0x144FA` | `P:0x170E` receives 60 words into `X:0x185A`, then the shared trailer. |
+| `0x5E` | `P:0x144FE` | `P:0x16F6` receives 240 words into `X:0x1896`, then the shared trailer. |
+| `0x5F` | `P:0x14502` | `P:0x1702` receives 240 words into `X:0x1986`, then the shared trailer. |
+| `0x17` | `P:0x14506` | `P:0x1AC6` receives 12 words into `Y:0xCEF` before the trailer. After `F7`, `P:0x1AEC` runs. A missing `F7` sends `0x66` and skips that call. |
+| `0x10` | `P:0x1451D` | `P:0x14A34` receives one byte, 24 words and one more byte before the trailer. After `F7`, `P:0x13B0` runs. |
+| `0x49` | `P:0x1452A` | Two words update `Y:0xA48` before `F7`, and the update clears bit 20. After `F7`, `P:0x2090` copies the flag to `Y:0xD0`. |
+| `0x40` | `P:0x14545` | One word replaces `Y:0xA48` before `F7`. After `F7`, the same copy runs. A replacement with bit 20 selects the short mix only after that copy. |
+| `0x41` | `P:0x14554` | `F7` is required first. The reply opcode is `0x41`, followed by six nibbles of `Y:0xD1`. |
+| `0x36` | `P:0x14513` | One word is stored at `X:0x1827`, then the handler joins the `0x35` trailer. |
+| `0x37` | `P:0x14518` | One word is stored at `Y:0xA6B`, then the same trailer. |
+| `0x35` | `P:0x14569` | Nine words are stored from `Y:0xC69`. After `F7`, `P:0x14B0` runs. |
+| `0x1D` | `P:0x145FE` | Six groups of three raw bytes are stored at `Y:0xD9A`, then the shared trailer. |
+| `0x1E` | `P:0x14618` | `F7` is required. A missing trailer returns at `P:0x1483E` and sends nothing. The reply opcode is `0x1E`, followed by the six words at `Y:0xD9A`. |
+| `0x23` | `P:0x1465B` | `P:0x14A58` receives 52 words into `Y:0xCBB` before the trailer. After `F7`, `P:0x17CE` runs. |
+| `0x29` | `P:0x1469D` | `F7` is required. The reply opcode is `0x29`. This handler is the next instruction after `0x7D`'s reset call. The reset leaves this image, so that fall-through is not shown to run. |
+| `0x75` | `P:0x146CF` | The first byte is masked to four bits. `F7` is required. The reply opcode is `0x75`, followed by nibbles from X memory. |
+| `0x47` | `P:0x147FE` | A count of 8,195 raw bytes is read through `P:0x1257`. There is no `F7` test. The loop ends at `P:0x14804` and execution falls into the shared `0x71` at `P:0x14805`. |
+
+The family write API does not send any of these 24 opcodes. The editor
+header is `F0 00 01 0C 07`, so its first data byte is `0x00`.
+
+### The `0x7E` header branch
+
+At `P:0x142B7` the first byte after `F0` is compared with `0x7F` and then
+with `0x7E`. A byte of `0x7F` returns at `P:0x1483E`. Any byte other than
+`0x7E` takes the ordinary family path at `P:0x142F5`. **Confirmed.** On
+the `0x7E` path, a later byte that is `F7` continues. The saved value
+`0x6E` calls `P:0x14869`, whose reply opcode is `0x6E`. Any other saved
+value calls `P:0x14840`, which starts `F0 7E`. Both are replies to that
+header. A byte other than `F7` at `P:0x142E3` takes `P:0x142E6`, and that
+instruction branches to itself. **Confirmed.**
+
+### Trap list (remaining handlers)
+
+| Trigger | Address | Consequence | Our editor can send it | How the editor avoids it |
+| --- | --- | --- | --- | --- |
+| `0x47`. | `P:0x147FE` | Reads 8,195 raw bytes with no trailer check, then sends `0x71`. A shorter transfer leaves the reader taking the following MIDI. A store wait treats an 8-byte `0x71` as success. | No. | Do not send `0x47`. |
+| `0x3E` that reaches `F7`. | `P:0x14430` | Indirect call whose target was not found, then `0x71` when that call returns. | No. | Do not send `0x3E`. |
+| `0x40` or `0x49` with a matching `F7`. | `P:0x14547`, `P:0x1452A` | Copies the updated flag to `Y:0xD0`. `0x40` can set bit 20. `0x49` clears bit 20 before the copy. The RAM update precedes `F7`. The copy follows `F7`. | No. | Do not send either opcode. |
+| A first header data byte of `0x7E`, then a byte other than `F7` at `P:0x142E3`. | `P:0x142E6` | The instruction branches to itself. | No. The editor header's first data byte is `0x00`, so `P:0x142BF` takes the ordinary family path. | Do not send a first data byte of `0x7E`. |
 
 ## Answers for #177
 
 [#177](https://github.com/guirossibrum/VariaxWorkbench/issues/177) will store
 the Reso-5 factory program at flash index 50. That index shares spare
 sector 62 with flash indices 40–59. Each answer below cites the static
-evidence and a confidence of confirmed, likely, or unknown. Questions this
-slice does not reach stay open for the later handler slices. The
+evidence and a confidence of confirmed, likely, or unknown. The
 preset-read limit pass does not close another question. `0x3C` reads the
-current Y buffer. The flash pass answers questions 2, 3, 4, 5, 6, 7, 8, 12
-and 13. Question 10 stays open for the remaining handlers. Audible results
-that were looked for and not measured stay unknown.
+current Y buffer. The session pass answers questions 1, 9 and 11. The
+flash pass answers questions 2, 3, 4, 5, 6, 7, 8, 12 and 13. Question 10
+is answered with the remaining handlers. Audible boot, the short-mix
+listening level, the bare `maci` scale, receive-queue overflow and the
+`0x3E` indirect target were looked for and stay unknown. No question was
+left unread.
 
 ### 1. What clears DSP bypass, and can an interrupted store leave the guitar silent?
 
@@ -972,7 +1045,9 @@ not "the previous model keeps playing": model dispatch is skipped once
 the flag is copied. It is also not a measured silence.
 
 Program change enters `P:0x1114` and `P:0x11A0`, not `P:0x111B`. The
-helper adds 55 when its formed value is 5–54. Flash index 50 is editor
+helper adds 55 when its formed value is 5–54. It then always calls the
+loader, the reload, the outgoing program-change helper and the three-byte
+MIDI helper. Flash index 50 is editor
 program 105. **Confirmed** from `Preset::program_number`. A formed value
 of 50 would checksum sector 50. The `maci #5` scale was not measured, so
 that mapping is **likely** for the integer idiom while `X:0x17A8` is 0,
@@ -995,7 +1070,9 @@ at `X:0x131B` and are parsed as the next MIDI message after the poll
 returns. **Confirmed.** They are not consumed as program data. Whether
 a full receive queue drops a byte was not measured. **Unknown.** `0x62`
 and `0x67` call the byte reader while they program, so bytes that arrive
-there are the payload. The editor does not send those opcodes.
+there are the payload. The editor does not send those opcodes. `0x47`
+also consumes a fixed run of 8,195 raw bytes and then sends `0x71`. That
+`0x71` is a reply to `0x47`. The editor does not send `0x47`.
 
 ### 12. Where is a bank name stored, and does that write use the spare?
 
@@ -1021,6 +1098,67 @@ does not. **Likely** for that manual reset value. Whether `P:0x04CF`
 writes `m0` before the compare was not followed. **Unknown.** This
 trace does not show boot erasing a programmed preset 4.
 
+### 10. Which other messages can the guitar send on its own?
+
+Besides the three notices already named, two session-gated channel
+messages can leave the guitar without a host request for that message.
+
+`0x28` is sent at `P:0x1363` only when `X:0x17F4` equals 1. The only call
+of that sender in this scan is inside `P:0x0DCE`, and the only `jsr` to
+`P:0x0DCE` is `P:0x119C`, one arm of the queued-word decoder.
+`P:0x0DCE` counts in `X:0x1798`. On the fifth call, when `X:0x179D` is
+nonzero, it sends `0x28` and clears `X:0x179D`. **Confirmed** for that
+counter. What writes `X:0x179D` was not found. **Unknown.** This scan
+does not show a separate hardware-timer entry for the notice.
+
+`0x74` is sent at `P:0x1AA6` when `P:0x1A97` runs and `X:0x17EF` is
+nonzero. `0x4D` is sent at `P:0x1AB2` from the same function when
+`X:0x179F` is nonzero. `P:0x1A97` is called from the byte reader when the
+queue is empty (`jsr` at `P:0x1258`) and from the main loop (`bsr` at
+`P:0x1A45`). **Confirmed.**
+
+`P:0x14A0B` sends the byte at `X:0x17F0` with bits 6 and 7 set, then one
+data byte. It returns without sending when the session flag is not 1.
+The only `jsr` is `P:0x11B9`, after the loader and the reload in the
+selection helper. **Confirmed.** Bits 6 and 7 are the program-change
+status class. The other bits of `X:0x17F0` were not traced, so the
+channel nibble is **unknown**.
+
+`P:0x14A1D` sends `X:0x17F0` with bits 4, 5 and 7 set, then two data
+bytes, and only when the session flag is 1. Bit 6 is not set in this
+helper. The callers are `P:0x10EE` with immediate `0x07`, `P:0x1106`
+with immediate `0x4F`, `P:0x11C1` with immediate `0x4F`, and `P:0x149D3`
+on the `0x4E` reply path, also with immediate `0x4F`. **Confirmed** for
+those call sites. The channel nibble is **unknown**.
+
+None of these send sites is called from the flash poll inside `P:0x0FA6`.
+None is called between that poll's return and the `0x71` at `P:0x14805`.
+**Confirmed** for the `0x61` path. The same sites can run while a byte
+read is waiting, including the `F7` test that precedes the store, because
+an empty read calls `P:0x1A97` and that function calls the queued-word
+decoder. They can also run from the main loop. The editor turns the
+session on, so the two channel helpers transmit when their callers run.
+
+The store wait skips SysEx opcodes `0x28`, `0x4D` and `0x74`. Any other
+event, including a program-change-shaped byte or a three-byte message,
+fails a store. **Confirmed** from `wait_for_confirmation`.
+
+Replies that follow a request are separate from those sends. The reply
+opcodes seen in this pass are `0x71`, `0x72`, `0x66`, `0x70`, `0x73`,
+`0x45`, `0x57`, `0x3C`, `0x3F`, `0x29`, `0x75`, `0x1E`, `0x6D`, `0x69`,
+`0x6A`, `0x6B` and `0x41`. Opcode `0x6E` is the reply at `P:0x14869`.
+`P:0x14840` starts `F0 7E`. Both of those run only after the first header
+data byte was `0x7E` and a later byte was `F7`. The editor header's first
+data byte is `0x00`. **Confirmed.** A `0x71` after `0x47`, or after a
+completed `0x3E`, is a reply to that request. The editor sends neither
+request.
+
+No question in this list was left unread. Audible boot output, a measured
+power cycle, the short-mix listening level, the bare `maci` scale,
+receive-queue overflow, the six bank-name RAM words, whether `P:0x04CF`
+writes `m0`, the message that falls through to `P:0x14BC9`, the `0x3E`
+indirect target, and the writer of `X:0x179D` stay **unknown**.
+
 ## Reproduction
 
 Use the original local archive with SHA-256
@@ -1039,6 +1177,8 @@ python3 scripts/map_variax_read_limits.py /path/to/Variax300_3.10.vxf \
   --check research/variax-310-read-limits.json
 python3 scripts/map_variax_flash.py /path/to/Variax300_3.10.vxf \
   --check research/variax-310-flash-handlers.json
+python3 scripts/map_variax_rest.py /path/to/Variax300_3.10.vxf \
+  --check research/variax-310-rest-handlers.json
 python3 -m unittest discover -s scripts -p 'test_variax_*.py'
 ```
 
@@ -1055,6 +1195,9 @@ editor spans with
 [the read-limit trace](../research/variax-310-read-limits.json). The
 flash checker compares sector ranges, call targets and reply opcodes with
 [the flash trace](../research/variax-310-flash-handlers.json). The
+remaining-handler checker compares the last 24 entries, the `0x47` count,
+the unsolicited send sites and the `0x7E` header branch with
+[the remaining-handler trace](../research/variax-310-rest-handlers.json). The
 formula tests do not read the archive and do not launch an emulator. The group
 quotients recorded in those tests were measured on a typed divide-by-20
 program whose words at `P:0x001A`–`P:0x0034` match this archive. The

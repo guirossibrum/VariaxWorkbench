@@ -1,0 +1,53 @@
+{
+  "archive_sha256": "e9f471e987b04cf31321e8a0da068f44abcdff2edbb32368385c08f92b999c1a",
+  "product_id": "00070004",
+  "version_hex": "03100000",
+  "handlers_without_direct_flash": [
+    "0x10",
+    "0x16",
+    "0x17",
+    "0x1C",
+    "0x1D",
+    "0x1E",
+    "0x23",
+    "0x29",
+    "0x35",
+    "0x36",
+    "0x37",
+    "0x3E",
+    "0x3F",
+    "0x40",
+    "0x41",
+    "0x47",
+    "0x49",
+    "0x4E",
+    "0x5E",
+    "0x5F",
+    "0x69",
+    "0x6A",
+    "0x6B",
+    "0x75"
+  ],
+  "discard_then_71": {
+    "opcode": "0x47",
+    "count": 8195
+  },
+  "indirect_store_unknown": "0x3E",
+  "header_spin_on_non_f7": "P:0x142E6",
+  "header_spin_entered_from_byte": "0x7E",
+  "unsolicited": [
+    {
+      "opcode": "0x28",
+      "send": "P:0x1363",
+      "only_counter_caller": "P:0x119C"
+    },
+    {
+      "opcode": "0x74",
+      "send": "P:0x1AA6"
+    },
+    {
+      "opcode": "0x4D",
+      "send": "P:0x1AB2"
+    }
+  ]
+}
