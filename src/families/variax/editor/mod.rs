@@ -4,6 +4,8 @@ use serde::Deserialize;
 mod guitar;
 mod html_export;
 mod new_files;
+#[cfg(feature = "usb")]
+mod refresh;
 use new_files::{BankRename, NewFile};
 mod slot_files;
 mod slot_transfers;
@@ -105,6 +107,8 @@ fn save_auto_select(path: &Path, enabled: bool) -> Result<(), String> {
 pub(super) struct VariaxEditor {
     pub(super) document: Option<EditorDocument>,
     source_path: Option<PathBuf>,
+    #[cfg(feature = "usb")]
+    refresh: refresh::Refresh,
     catalog: Vec<ModelArt>,
     artwork: PathBuf,
     pub(super) textures: HashMap<String, TextureHandle>,
@@ -176,6 +180,8 @@ impl VariaxEditor {
         Self {
             document: None,
             source_path: None,
+            #[cfg(feature = "usb")]
+            refresh: refresh::Refresh::default(),
             catalog: load_catalog(),
             artwork: defaults.artwork.clone(),
             textures: HashMap::new(),
@@ -237,16 +243,16 @@ impl VariaxEditor {
         }
         match EditorDocument::open(path) {
             Ok(document) => {
-                self.adopt_document(document, path);
+                self.adopt_document(document, Some(path));
                 self.status = format!("Opened {}", path.display());
             }
             Err(error) => self.error = Some(error),
         }
     }
 
-    fn adopt_document(&mut self, document: EditorDocument, path: &Path) {
+    fn adopt_document(&mut self, document: EditorDocument, path: Option<&Path>) {
         self.document = Some(document);
-        self.source_path = Some(path.to_owned());
+        self.source_path = path.map(Path::to_owned);
         self.drag_origin = None;
         self.clear_text_drafts();
         self.error = None;
@@ -258,10 +264,16 @@ impl VariaxEditor {
     }
 
     pub(super) fn is_reading(&self) -> bool {
+        #[cfg(feature = "usb")]
+        if self.refresh.busy() {
+            return true;
+        }
         self.read_receiver.is_some()
     }
 
     pub(super) fn cancel_read(&mut self) {
+        #[cfg(feature = "usb")]
+        self.refresh.cancel();
         if let Some((cancel, _)) = &self.read_worker {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
             self.status = "Cancelling guitar read…".into();
@@ -1264,7 +1276,13 @@ impl FamilyTab for VariaxEditor {
     fn redo(&mut self) {
         VariaxEditor::redo(self);
     }
+    #[cfg(feature = "usb")]
+    fn observe_device(&mut self, device: Option<&crate::editor::tabs::DeviceTab>) {
+        self.refresh.observe(device);
+    }
     fn poll(&mut self, ctx: &egui::Context) {
+        #[cfg(feature = "usb")]
+        self.poll_refresh(ctx);
         self.poll_read();
         if self.is_reading() {
             ctx.request_repaint_after(Duration::from_millis(50));
@@ -1276,6 +1294,8 @@ impl FamilyTab for VariaxEditor {
         self.slot_replacement_dialog(services, ctx);
         self.slot_transfer_dialog(services, ctx);
         self.rename_bank_dialog(services, ctx);
+        #[cfg(feature = "usb")]
+        self.refresh_confirmation(ctx);
     }
     fn busy(&self) -> bool {
         self.is_reading()
@@ -1284,6 +1304,10 @@ impl FamilyTab for VariaxEditor {
         self.cancel_read();
     }
     fn blocking_prompt(&self) -> bool {
+        #[cfg(feature = "usb")]
+        if self.refresh.confirming() {
+            return true;
+        }
         self.pending.is_some()
             || self.tuning_dialog.is_some()
             || self.slot_replacement.is_some()
@@ -1293,6 +1317,8 @@ impl FamilyTab for VariaxEditor {
     }
     fn actions(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
         self.new_file_menu(ui, services);
+        #[cfg(feature = "usb")]
+        self.refresh_button(ui);
         if ui.button("Replace file in this tab…").clicked() {
             self.open_dialog(ui.ctx(), services);
         }
@@ -1348,7 +1374,7 @@ impl ProductFamily for Family {
         match source {
             TabSource::New => editor.open_example(),
             TabSource::File(path, bytes) => {
-                editor.adopt_document(EditorDocument::from_file_bytes(bytes, &path)?, &path);
+                editor.adopt_document(EditorDocument::from_file_bytes(bytes, &path)?, Some(&path));
                 editor.status = format!("Opened {}", path.display());
             }
         }

@@ -53,6 +53,7 @@ pub struct EditorDocument {
     undo: Vec<DocumentState>,
     redo: Vec<DocumentState>,
     saved: DocumentState,
+    needs_first_save: bool,
     group_base: Option<DocumentState>,
     pub source: PathBuf,
 }
@@ -130,9 +131,18 @@ impl EditorDocument {
         ))
     }
 
+    /// A fresh guitar read needs a first save even before any slot is edited.
+    #[cfg(feature = "usb")]
+    pub fn from_unsaved_bundle(file: BundleFile) -> Result<Self, String> {
+        let mut document = Self::from_bundle(file, PathBuf::from("Variax guitar library"))?;
+        document.needs_first_save = true;
+        Ok(document)
+    }
+
     fn from_state(state: DocumentState, source: PathBuf) -> Self {
         Self {
             saved: state.clone(),
+            needs_first_save: false,
             state,
             undo: vec![],
             redo: vec![],
@@ -260,10 +270,10 @@ impl EditorDocument {
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.as_bytes() != self.saved.bytes()
+        self.needs_first_save || self.as_bytes() != self.saved.bytes()
     }
 
-    /// Compare one bundle slot with the last opened or successfully saved file.
+    /// Compare one bundle slot with the last opened, read or saved state.
     pub fn slot_is_dirty(&self, bank: usize, preset: usize) -> bool {
         self.state.slot_bytes(bank, preset) != self.saved.slot_bytes(bank, preset)
     }
@@ -318,6 +328,7 @@ impl EditorDocument {
         self.end_gesture();
         save_new(path, self.as_bytes())?;
         self.saved = self.state.clone();
+        self.needs_first_save = false;
         Ok(())
     }
     pub fn begin_gesture(&mut self) {
