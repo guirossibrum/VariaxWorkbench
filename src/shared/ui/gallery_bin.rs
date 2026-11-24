@@ -19,13 +19,18 @@ fn main() -> eframe::Result {
         Box::new(|cc| {
             ui::theme::apply(&cc.egui_ctx);
             let mut state = GalleryState::default();
-            let loaded = ui::assets::load(
-                &cc.egui_ctx,
-                &ui::assets::workspace_root(),
-                "pod-farm/sine-chorus.png",
-            );
+            let root = ui::assets::workspace_root();
+            let loaded = ui::assets::load(&cc.egui_ctx, &root, "pod-farm/sine-chorus.png");
             if !loaded.missing {
                 state.wide = loaded;
+            }
+            let body = ui::assets::load(&cc.egui_ctx, &root, "variax/spank-body.png");
+            if !body.missing {
+                state.body = body;
+            }
+            let pickup = ui::assets::load(&cc.egui_ctx, &root, "variax/spank-pickup.png");
+            if !pickup.missing {
+                state.pickup = pickup;
             }
             Ok(Box::new(GalleryApp { state }))
         }),
