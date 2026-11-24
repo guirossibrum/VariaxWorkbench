@@ -53,9 +53,6 @@ use shell::{CloseRequest, DetectConfirmation};
 trait FileDialogs {
     fn start_picker(&mut self, request: PickRequest) -> PickFuture;
 
-    fn open(&mut self) -> Option<PathBuf>;
-    fn save(&mut self, suggested: &str, extension: &str) -> Option<PathBuf>;
-    fn artwork(&mut self) -> Option<PathBuf>;
     #[cfg(test)]
     fn open_wav(&mut self) -> Option<PathBuf>;
     #[cfg(test)]
@@ -64,7 +61,7 @@ trait FileDialogs {
     fn save_aiff(&mut self, suggested: &str) -> Option<PathBuf>;
     fn open_pod_tone(&mut self) -> Option<PathBuf>;
     fn save_pod_tone(&mut self, suggested: &str) -> Option<PathBuf>;
-    #[cfg_attr(test, allow(dead_code))]
+    #[cfg(test)]
     fn pick_folder(&mut self) -> Option<PathBuf>;
     #[cfg(test)]
     fn queue_pod_save(&mut self, _path: Option<PathBuf>) {
@@ -80,31 +77,11 @@ impl FileDialogs for NativeDialogs {
         request.native()
     }
 
-    fn open(&mut self) -> Option<PathBuf> {
-        rfd::FileDialog::new()
-            .add_filter(
-                "Workbench model, bank or collection",
-                &["vwm", "vwb", "l6c"],
-            )
-            .pick_file()
-    }
-    fn save(&mut self, suggested: &str, extension: &str) -> Option<PathBuf> {
-        rfd::FileDialog::new()
-            .add_filter("Workbench document", &[extension])
-            .set_file_name(suggested)
-            .save_file()
-    }
-    fn artwork(&mut self) -> Option<PathBuf> {
-        rfd::FileDialog::new().pick_folder()
-    }
     fn open_pod_tone(&mut self) -> Option<PathBuf> {
         rfd::FileDialog::new().pick_file()
     }
     fn save_pod_tone(&mut self, suggested: &str) -> Option<PathBuf> {
         rfd::FileDialog::new().set_file_name(suggested).save_file()
-    }
-    fn pick_folder(&mut self) -> Option<PathBuf> {
-        rfd::FileDialog::new().pick_folder()
     }
 }
 
@@ -134,11 +111,16 @@ impl FileDialogs for FakeDialogs {
                         .iter()
                         .all(|filter| !filter.name.is_empty() && !filter.extensions.is_empty())
                 );
-                self.open()
+                self.open.pop_front().expect("unexpected open picker")
             }
-            PickRequest::OpenWorkbenchFile => self.open(),
-            PickRequest::SaveWorkbenchFile { name, extension } => self.save(&name, &extension),
-            PickRequest::Artwork => self.artwork(),
+            PickRequest::OpenWorkbenchFile => {
+                self.open.pop_front().expect("unexpected open picker")
+            }
+            PickRequest::SaveWorkbenchFile { name, extension } => {
+                debug_assert!(!name.is_empty() && !extension.is_empty());
+                self.save.pop_front().expect("unexpected save picker")
+            }
+            PickRequest::Artwork => self.artwork.pop_front().expect("unexpected artwork picker"),
             PickRequest::OpenWav => self.open_wav(),
             PickRequest::SaveAudio { name, aiff: true } => self.save_aiff(&name),
             PickRequest::SaveAudio { name, aiff: false } => self.save_wav(&name),
@@ -149,15 +131,6 @@ impl FileDialogs for FakeDialogs {
         Box::pin(std::future::ready(path))
     }
 
-    fn open(&mut self) -> Option<PathBuf> {
-        self.open.pop_front().expect("unexpected open dialog")
-    }
-    fn save(&mut self, _: &str, _: &str) -> Option<PathBuf> {
-        self.save.pop_front().expect("unexpected save dialog")
-    }
-    fn artwork(&mut self) -> Option<PathBuf> {
-        self.artwork.pop_front().expect("unexpected artwork dialog")
-    }
     fn open_wav(&mut self) -> Option<PathBuf> {
         self.wav.pop_front().expect("unexpected wav dialog")
     }
@@ -1321,13 +1294,21 @@ impl Workbench {
     }
 
     fn open_dialog(&mut self) {
-        self.test_action(VariaxEditor::open_dialog);
+        let ctx = egui::Context::default();
+        self.test_action(|editor: &mut VariaxEditor, services| editor.open_dialog(&ctx, services));
+        self.poll_picker(&ctx);
     }
-    fn save_dialog(&mut self) -> bool {
-        self.test_action(VariaxEditor::save_dialog)
+    fn save_dialog(&mut self) {
+        let ctx = egui::Context::default();
+        self.test_action(|editor: &mut VariaxEditor, services| editor.save_copy(&ctx, services));
+        self.poll_picker(&ctx);
     }
     fn artwork_dialog(&mut self) {
-        self.test_action(VariaxEditor::artwork_dialog);
+        let ctx = egui::Context::default();
+        self.test_action(|editor: &mut VariaxEditor, services| {
+            editor.artwork_dialog(&ctx, services)
+        });
+        self.poll_picker(&ctx);
     }
     fn guitar_workspace(&mut self, ui: &mut egui::Ui) {
         self.test_action(|editor: &mut VariaxEditor, services| {
@@ -1410,6 +1391,7 @@ mod tests {
                 modifiers: Default::default(),
             }],
         );
+        app.poll_picker(context);
     }
 
     pub(super) fn recording_frame(

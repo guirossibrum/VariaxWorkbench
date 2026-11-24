@@ -92,7 +92,7 @@ pub(super) trait FamilyTab: std::any::Any {
     fn source_path(&self) -> Option<&Path> {
         None
     }
-    fn save_copy(&mut self, services: &mut EditorServices<'_>);
+    fn save_copy(&mut self, ctx: &egui::Context, services: &mut EditorServices<'_>);
     fn undo(&mut self) {}
     fn redo(&mut self) {}
     /// Called before polling the editor, with the tab's current device.

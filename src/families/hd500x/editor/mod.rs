@@ -2669,7 +2669,7 @@ impl FamilyTab for HdEditor {
     fn status(&self) -> (&str, Option<&str>) {
         (&self.hd_message, None)
     }
-    fn save_copy(&mut self, services: &mut EditorServices<'_>) {
+    fn save_copy(&mut self, _ctx: &egui::Context, services: &mut EditorServices<'_>) {
         if let Some(index) = self.hd_selected {
             self.write_hd_copy(services, index);
         }

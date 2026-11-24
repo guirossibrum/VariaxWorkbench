@@ -1227,7 +1227,7 @@ impl FamilyTab for VariaxEditor {
     fn source_path(&self) -> Option<&Path> {
         self.source_path.as_deref()
     }
-    fn save_copy(&mut self, services: &mut EditorServices<'_>) {
+    fn save_copy(&mut self, _ctx: &egui::Context, services: &mut EditorServices<'_>) {
         self.save_dialog(services);
     }
     fn undo(&mut self) {
