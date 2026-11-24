@@ -10,6 +10,8 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] [#202](https://github.com/guirossibrum/VariaxWorkbench/issues/202) adds Follow to the verified Variax device tab, with live preset, volume and tone displays, clip and device notices, and Workbench slot settling. Live values leave the saved preset and its tone flag intact. Use Refresh guitar with Follow off to detect a VDI unplug. [Owner test card](src/families/variax/editor/follow-test-card.md).
+
 - [x] Shared non-blocking picker for shell Open File, Device check reports and backup folders, and recording load and save. Four headless tests cover results, cancellation, duplicate requests, and continued updates while a picker is pending. The family-editor callers and the Hyprland owner check remain pending. [Picker handoff and owner check](non-blocking-pickers.md) · [#233](https://github.com/guirossibrum/VariaxWorkbench/issues/233).
 
 - [x] Full Variax program backup mode reads all 60 slots in 35 chunks each and saves checksum-verified program bytes alongside the existing settings and bank names. Missing programs are listed in incomplete backups. Fake transports cover ordering, packing, checksum failure, incomplete replies, and switch-back after cancellation. The first library-wide hardware pass is pending. [Owner backup test card](variax-backup-test-card.md) · [#236](https://github.com/guirossibrum/VariaxWorkbench/issues/236).

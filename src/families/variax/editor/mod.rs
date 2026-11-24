@@ -1,8 +1,12 @@
 use super::*;
 use serde::Deserialize;
 
+#[cfg(feature = "usb")]
+mod follow;
 mod guitar;
 mod html_export;
+#[cfg(feature = "usb")]
+mod live_attachment;
 mod new_files;
 #[cfg(feature = "usb")]
 mod refresh;
@@ -110,6 +114,8 @@ pub(super) struct VariaxEditor {
     source_path: Option<PathBuf>,
     #[cfg(feature = "usb")]
     refresh: refresh::Refresh,
+    #[cfg(feature = "usb")]
+    follow: follow::Follow,
     catalog: Vec<ModelArt>,
     artwork: PathBuf,
     pub(super) textures: HashMap<String, TextureHandle>,
@@ -186,6 +192,8 @@ impl VariaxEditor {
             source_path: None,
             #[cfg(feature = "usb")]
             refresh: refresh::Refresh::default(),
+            #[cfg(feature = "usb")]
+            follow: follow::Follow::default(),
             catalog: load_catalog(),
             artwork,
             textures: HashMap::new(),
@@ -1098,6 +1106,8 @@ impl VariaxEditor {
         services: &mut EditorServices<'_>,
         ui: &mut egui::Ui,
     ) {
+        #[cfg(feature = "usb")]
+        self.follow_panel(ui);
         if self.document.is_none() {
             guitar_panel().show(ui, |ui| {
                 ui.heading("Open a Variax preset, bank or collection");
@@ -1264,6 +1274,8 @@ impl FamilyTab for VariaxEditor {
         VariaxEditor::dirty(self)
     }
     fn close_prompt(&mut self, ctx: &egui::Context, services: &mut EditorServices<'_>) {
+        #[cfg(feature = "usb")]
+        self.follow.stop();
         if self.pending.is_none() {
             self.pending = Some(GuitarPending::Quit);
         }
@@ -1287,10 +1299,14 @@ impl FamilyTab for VariaxEditor {
     #[cfg(feature = "usb")]
     fn observe_device(&mut self, device: Option<&crate::editor::tabs::DeviceTab>) {
         self.refresh.observe(device);
+        self.follow.observe(device);
     }
     fn poll(&mut self, ctx: &egui::Context) {
         #[cfg(feature = "usb")]
-        self.poll_refresh(ctx);
+        {
+            self.poll_refresh(ctx);
+            self.poll_follow(ctx);
+        }
         self.poll_read();
         if self.is_reading() {
             ctx.request_repaint_after(Duration::from_millis(50));
