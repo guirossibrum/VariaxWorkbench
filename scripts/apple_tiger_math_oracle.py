@@ -183,7 +183,7 @@ class AppleTigerHostX87Math(AppleTigerMath):
         return super().evaluate(name, *values)
 
 
-from coefficient_oracle import CoefficientOracle
+from coefficient_oracle import CoefficientOracle, ROOT
 
 
 class AppleTigerCoefficientOracle(CoefficientOracle):
@@ -194,11 +194,12 @@ class AppleTigerCoefficientOracle(CoefficientOracle):
     # the ordinary reference constants. Never derive/accept arbitrary startup.
     EXPECTED_KNOB_CONSTANTS = (0.0010000000000000002, 0.010000000000000002)
 
-    def __init__(self, library):
+    def __init__(self, library, *, artifact_root=ROOT):
         backend = self.MATH_BACKEND(library)
         if (backend.pow(10., -3.), backend.pow(10., -2.)) != self.EXPECTED_KNOB_CONSTANTS:
             raise RuntimeError('pinned historical runtime constant contract changed')
-        super().__init__(math_backend=backend, runtime_version=self.CANDIDATE_RUNTIME_VERSION)
+        super().__init__(math_backend=backend, runtime_version=self.CANDIDATE_RUNTIME_VERSION,
+                         artifact_root=artifact_root)
 
     def _dispatch(self, cpu, address, size, context):
         name = self.adapters.get(address, '').lstrip('_')

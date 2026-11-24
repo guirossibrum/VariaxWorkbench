@@ -22,9 +22,10 @@ class NativeOracle:
     STACK = 0x1100000
     RETURN = 0x1200000
 
-    def __init__(self):
-        binary = (ROOT / "analysis/extracted/macho-slices/L6VariaxCoefEngine.jnilib.i386.macho").read_bytes()
-        self.index = json.loads((ROOT / "analysis/decompiled/native-coef/decompile-index.json").read_text())
+    def __init__(self, *, artifact_root=ROOT):
+        self.artifact_root = artifact_root
+        binary = (self.artifact_root / "analysis/extracted/macho-slices/L6VariaxCoefEngine.jnilib.i386.macho").read_bytes()
+        self.index = json.loads((self.artifact_root / "analysis/decompiled/native-coef/decompile-index.json").read_text())
         self.sha256 = hashlib.sha256(binary).hexdigest()
         assert self.sha256 == self.index["target_sha256"]
         assert binary[:4] == bytes.fromhex("cefaedfe")

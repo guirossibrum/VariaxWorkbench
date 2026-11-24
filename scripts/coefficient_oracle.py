@@ -24,14 +24,14 @@ class CoefficientOracle(NativeOracle):
     HEAP_SIZE = 0x1000000
     SHIMS = 0x1300000
 
-    def __init__(self, *, math_backend=None, runtime_version=None):
+    def __init__(self, *, math_backend=None, runtime_version=None, artifact_root=ROOT):
         if math_backend is None and runtime_version is not None:
             raise ValueError('a distinct runtime version requires an explicit math backend')
         if math_backend is not None:
             if not runtime_version or runtime_version == self.RUNTIME_VERSION:
                 raise ValueError('alternate math requires a distinct reference namespace')
             self.RUNTIME_VERSION = runtime_version
-        super().__init__()
+        super().__init__(artifact_root=artifact_root)
         self.cpu.mem_map(self.HEAP, self.HEAP_SIZE)
         self.cpu.mem_map(self.SHIMS, 0x10000)
         self.heap_cursor = self.HEAP
@@ -97,7 +97,7 @@ class CoefficientOracle(NativeOracle):
         raise ValueError('unterminated private string')
 
     def _resolve_imports(self):
-        data = (ROOT / 'analysis/extracted/macho-slices/L6VariaxCoefEngine.jnilib.i386.macho').read_bytes()
+        data = (self.artifact_root / 'analysis/extracted/macho-slices/L6VariaxCoefEngine.jnilib.i386.macho').read_bytes()
         cursor, sections, sym, indirect = 28, [], None, None
         for _ in range(struct.unpack_from('<I', data, 16)[0]):
             command, size = struct.unpack_from('<II', data, cursor)
@@ -236,8 +236,8 @@ class CoefficientOracle(NativeOracle):
         import hashlib
         import json
         if records is None:
-            records = json.loads((ROOT / 'analysis/reports/model-catalog.json').read_text())
-        schema = json.loads((ROOT / 'analysis/reports/native-body-schema.json').read_text())
+            records = json.loads((self.artifact_root / 'analysis/reports/model-catalog.json').read_text())
+        schema = json.loads((self.artifact_root / 'analysis/reports/native-body-schema.json').read_text())
         self.model_objects = {}
         self.call('0x6770', self.OBJECT)
         for field in (0x1120, 0x1128):
@@ -246,7 +246,7 @@ class CoefficientOracle(NativeOracle):
                 begin = self.allocate(8 * 128)
                 self.write(table + i * 12, struct.pack('<3I', begin, begin, begin + 8 * 128))
         for record in records:
-            payload = (ROOT / record['path']).read_bytes()
+            payload = (self.artifact_root / record['path']).read_bytes()
             assert hashlib.sha256(payload).hexdigest() == record['sha256']
             if record['kind'] == 'body':
                 obj = self.allocate(0x4bb4)

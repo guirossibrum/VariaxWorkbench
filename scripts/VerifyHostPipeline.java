@@ -52,7 +52,7 @@ public class VerifyHostPipeline {
         Field engine=L6VariaxMIDITranscoder.class.getDeclaredField("m_coefeng");engine.setAccessible(true);engine.set(transcoder,new FakeEngine());
         Method generate=L6VariaxMIDITranscoder.class.getDeclaredMethod("GeneratePatch",L6Patch.class,L6ParamMap.class,boolean.class);generate.setAccessible(true);
         HexFormat hex=HexFormat.of();
-        if(args.length>2) engineOutputs=Files.readAllBytes(Path.of(args[2]));
+        if(args.length>2 && !args[2].equals("-")) engineOutputs=Files.readAllBytes(Path.of(args[2]));
         for(String line:Files.readAllLines(Path.of(args[0]))) {
             String[] f=line.split(" ");String name=new String(hex.parseHex(f[0]),StandardCharsets.UTF_8);
             int flags=Integer.parseInt(f[1]);L6VariaxDevice.ENABLE_ALL_12STR=(flags&1)!=0;
@@ -61,7 +61,7 @@ public class VerifyHostPipeline {
             for(int i=4;i<f.length;i++) {String[] pair=f[i].split(":");values.values.put((int)Long.parseLong(pair[0],16),(int)Long.parseLong(pair[1],16));}
             L6Patch patch=args.length>3?L6PatchUtils.LoadPatch(Path.of(args[3],caseIndex+".vwm").toFile()):new L6Patch(name,0x70004,0x310);
             L6ParamMap map=args.length>3?new L6VariaxParamMap():values;
-            if(patch==null) throw new AssertionError("original reader rejected synthetic preset");
+            if(patch==null) throw new AssertionError("original reader rejected preset");
             byte[] result=(byte[])generate.invoke(transcoder,patch,map,(flags&2)!=0);
             System.out.println(line+" => "+hex.formatHex(mapped)+" "+Integer.toUnsignedString(mask,16)+" "+hex.formatHex(result));
             caseIndex++;

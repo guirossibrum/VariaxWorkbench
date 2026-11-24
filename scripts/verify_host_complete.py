@@ -31,9 +31,9 @@ def make_preset(line):
     return chunk(b'FORM',b'L6PA'+chunk(b'PINF',struct.pack('>II',1,0x70004)+encoded.ljust(64,b'\0')+struct.pack('>I',0x3100000))+chunk(b'LIST',body))
 
 
-def run_java(temp,casefile,layout,native=None,presets=None):
-    cp=f'{temp}:{ROOT/"analysis/extracted/windows-app"}'
-    args=[str(ROOT/'.tools/jdk/bin/java'),'-Djava.awt.headless=true','-cp',cp,'VerifyHostPipeline',str(casefile),str(layout)]
+def run_java(temp,casefile,layout,native=None,presets=None,*,artifact_root=ROOT):
+    cp=f'{temp}:{artifact_root/"analysis/extracted/windows-app"}'
+    args=[str(artifact_root/'.tools/jdk/bin/java'),'-Djava.awt.headless=true','-cp',cp,'VerifyHostPipeline',str(casefile),str(layout)]
     if native is not None:args.extend([str(native),str(presets)])
     output=subprocess.check_output(args,text=True)
     return [line.split(' => ')[1].split() for line in output.splitlines()]
