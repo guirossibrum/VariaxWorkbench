@@ -300,6 +300,11 @@ impl<L: Link> Reader<'_, '_, L> {
             }
             Some(Notice::Controller(number, value)) if number != 69 => {
                 (self.publish)(ReadUpdate::Controller { number, value });
+                if matches!(number, 11 | 12 | 37 | 58 | 71 | 75 | 88 | 91) {
+                    // Model selection can change companion controls without
+                    // sending separate controller feedback for every value.
+                    self.current_due = Some(now + CURRENT_SETTLE);
+                }
             }
             Some(Notice::Channel(location)) => {
                 (self.publish)(ReadUpdate::Channel(location));
@@ -591,80 +596,52 @@ mod tests {
 
     #[test]
     fn tuner_stays_within_its_commands_and_sends_off_on_cancel_or_read_failure() {
-        for disconnected in [false, true] {
+        for (disconnected, off_fails) in [(false, false), (true, false), (true, true)] {
+            let mut script = vec![
+                (PodxtRequest::Identity, packets(&identity())),
+                (PodxtRequest::TunerMode(true), vec![]),
+                (PodxtRequest::QueryGlobal(Global::TunerNote), vec![]),
+            ];
+            if !disconnected {
+                script[2].1.push(global_reply(Global::TunerNote, 1));
+                script.push((
+                    PodxtRequest::QueryGlobal(Global::TunerDeviation),
+                    vec![global_reply(Global::TunerDeviation, 0xfffc)],
+                ));
+            }
+            script.push((PodxtRequest::TunerMode(false), vec![]));
+            let off_index = script.len() - 1;
             let mut fake = Disconnect {
-                fake: Fake::new(
-                    Path::PodxtMidi,
-                    vec![
-                        (PodxtRequest::Identity, packets(&identity())),
-                        (PodxtRequest::TunerMode(true), vec![]),
-                        (
-                            PodxtRequest::QueryGlobal(Global::TunerNote),
-                            if disconnected {
-                                vec![]
-                            } else {
-                                vec![global_reply(Global::TunerNote, 1)]
-                            },
-                        ),
-                        (
-                            if disconnected {
-                                PodxtRequest::TunerMode(false)
-                            } else {
-                                PodxtRequest::QueryGlobal(Global::TunerDeviation)
-                            },
-                            if disconnected {
-                                vec![]
-                            } else {
-                                vec![global_reply(Global::TunerDeviation, 0xfffc)]
-                            },
-                        ),
-                    ],
-                ),
+                fake: Fake::new(Path::PodxtMidi, script),
                 on_write_count: if disconnected { 3 } else { usize::MAX },
             };
-            let mut success = Fake::new(
-                Path::PodxtMidi,
-                vec![
-                    (PodxtRequest::Identity, packets(&identity())),
-                    (PodxtRequest::TunerMode(true), vec![]),
-                    (
-                        PodxtRequest::QueryGlobal(Global::TunerNote),
-                        vec![global_reply(Global::TunerNote, 1)],
-                    ),
-                    (
-                        PodxtRequest::QueryGlobal(Global::TunerDeviation),
-                        vec![global_reply(Global::TunerDeviation, 0xfffc)],
-                    ),
-                    (PodxtRequest::TunerMode(false), vec![]),
-                ],
-            );
+            if off_fails {
+                fake.fake.fail_at.push(off_index);
+            }
             let stop = Cell::new(false);
-            let update = |event| {
-                let ReadUpdate::Tuner(reading) = event else {
-                    panic!("unexpected update");
-                };
-                assert_eq!(reading.note, Some(1));
-                assert_eq!(reading.deviation.map(tuner_cents), Some(-4.0));
-                stop.set(true);
-            };
-            let error = if disconnected {
-                run(&mut fake, ReadCommand::Tuner, || stop.get(), update).unwrap_err()
-            } else {
-                run(&mut success, ReadCommand::Tuner, || stop.get(), update).unwrap_err()
-            };
-            let writes = if disconnected {
-                fake.fake.assert_finished();
-                &fake.fake.writes
-            } else {
-                success.assert_finished();
-                &success.writes
-            };
+            let error = run(
+                &mut fake,
+                ReadCommand::Tuner,
+                || stop.get(),
+                |event| {
+                    let ReadUpdate::Tuner(reading) = event else {
+                        panic!("unexpected update");
+                    };
+                    assert_eq!(reading.note, Some(1));
+                    assert_eq!(reading.deviation.map(tuner_cents), Some(-4.0));
+                    stop.set(true);
+                },
+            )
+            .unwrap_err();
+            assert_eq!(stop.get(), !disconnected);
             assert!(error.contains(if disconnected {
                 "disconnected"
             } else {
                 "cancelled"
             }));
-            assert_eq!(writes.last().unwrap(), &[0xb0, 69, 0]);
+            assert_eq!(error.contains("Tuner off also failed"), off_fails);
+            assert_eq!(fake.fake.writes.last().unwrap(), &[0xb0, 69, 0]);
+            fake.fake.assert_finished();
         }
     }
 
@@ -672,7 +649,7 @@ mod tests {
     fn follow_delivers_controller_clip_tap_and_rereads_saved_slot_without_writing_tones() {
         let slot = Location::new(BankKind::Tones, 80).unwrap();
         let mut current = tone(b"Current");
-        current.extend([0xb4, 13, 37, 0xb4, 64, 127]);
+        current.extend([0xb4, 13, 37, 0xb4, 11, 20, 0xb4, 64, 127]);
         current.extend([0xf0, 0, 1, 0x0c, 3, 0x0f, 0xf7]);
         current.extend([0xf0, 0, 1, 0x0c, 3, 0x24, 1, 80, 0xf7]);
         current.extend([0xc2, 80]);
@@ -702,6 +679,7 @@ mod tests {
         assert!(error.contains("cancelled"));
         assert!(matches!(events.as_slice(), [
             ReadUpdate::Current(first), ReadUpdate::Controller { number: 13, value: 37 },
+            ReadUpdate::Controller { number: 11, value: 20 },
             ReadUpdate::Tap, ReadUpdate::Clip, ReadUpdate::Channel(channel),
             ReadUpdate::Current(next), ReadUpdate::Stored(stored)
         ] if first.name() == "Current" && *channel == slot && next.name() == "New current"
