@@ -122,8 +122,9 @@ in the manufacturer's [loader manual](https://www.analog.com/media/en/dsp-docume
 (Table 4-2 and reset-vector discussion). It is an inference about compatibility,
 not identification of the installed IC or proof that the entire image executes
 correctly. No separate 8051 or USB-controller executable is identified here. The
-[PODxt Live 3.01 entry map](firmware-podxt-dispatch.md) follows the region-4
-byte pipe and leaves region 5's encoding unidentified.
+[PODxt Live 3.01 entry and command map](firmware-podxt-dispatch.md) follows the
+region-4 byte pipe and the handlers reached from it. Region 5's encoding stays
+unidentified.
 
 Independent static decoding used Ville Linde's BSD-3-Clause MAME SHARC
 disassembler at tag `mame0285`, commit
@@ -182,9 +183,11 @@ The source firmware and derived tone files remain local and ignored.
 ```sh
 python scripts/test_firmware_map.py
 python scripts/test_podxt_entry.py
+python scripts/test_podxt_commands.py
 python scripts/inspect_firmware.py --self-test /ABS/VARIAX.vxf /ABS/POD.xtf
 python scripts/map_firmware.py /ABS/VARIAX.vxf /ABS/POD.xtf
 python scripts/map_podxt_entry.py /ABS/POD.xtf --check research/podxt-301-entry.json
+python scripts/map_podxt_commands.py /ABS/POD.xtf --check research/podxt-301-commands.json
 ```
 
 Ten synthetic layout tests cover every truncated prefix of a two-space loader,

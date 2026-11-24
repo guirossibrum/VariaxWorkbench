@@ -13,8 +13,8 @@ not an application dependency.
 
 Labels mean: **confirmed** (bytes or disassembly at the address given),
 **likely** (a reading that fits those bytes and is not proven), **unknown**
-(not established). Handler arguments, the store, boot checks, and the trap
-list are later sections of this file.
+(not established). The store, boot checks, and the trap list are later
+sections of this file.
 
 ## Which program sees the bytes
 
@@ -71,10 +71,14 @@ The transmit loop at `0x80D9` has no counted timeout. **Confirmed.** Elapsed
 time is **unknown**.
 
 CC status and program-change status are in the group this parser consumes
-without a table jump. The decoded program contains no immediate `0x45`. That
-does not search every data table for the tuner. **Confirmed** for the parser
-and the immediate; the rest of the tuner question stays open for the handler
-pass.
+without a table jump. The decoded program contains no immediate `0x45` and
+no register load of `0x13`. The only store to `DM(0x00200000)` is `0x80DA`.
+Every call or jump to the transmit helpers `0x80D6`, `0x80D8`, and `0x80D9`
+is inside `0x80D6–0x81A5`. The opcode byte placed between `F0` and the
+payload is one of `0x50`, `0x51`, `0x54`, `0x56`, `0x58`, `0x5C`, `0x5E`,
+`0x6D`, `0x71`, `0x72`, or `0x74`. **Confirmed.** This program does not
+write CC 69, CC 64, CC 19, program change, or SysEx opcodes `0x0F` and
+`0x24` to that address. Whether another component emits them is **unknown**.
 
 ## Dispatch table
 
@@ -228,6 +232,150 @@ encryption. High entropy is not evidence of encryption. No 8051, Thumb, or
 XOR sweep was run. No separate USB-controller executable was identified in
 this image.
 
+## Command handlers
+
+CC status and program change still have no handler. Every byte from
+`DM(0x00200000)` enters the ring, and the parser returns without a table jump
+for every status other than `F0` and `F7`. **Confirmed.** A front end that
+turned a CC or a program change into a SysEx opcode before the pipe is
+**unknown**; nothing in this image does that conversion.
+
+Ring reads in the handlers below do not compare the read pointer with the
+write pointer and do not test for `F7`. A short or truncated message therefore
+supplies whatever bytes are already in the ring. **Confirmed** from the
+addressing. Every transmit waits on `FLAG1_IN` at `0x80D9` with no counted
+timeout. The flash poll loops below also have no counted timeout.
+
+The state word `DM(0x1B910)` selects a preamble at `0x93DF` through the six
+words at `0x1B917`. The archived initial word at `0x1B910` is 0, and slots 0,
+1, 2, 4, and 5 of that table are `RTS` at `0x81FA`. Slot 3 is `0x93E3`, which
+writes `0xB0` to `DM(0x01000000)` and waits until `DM(0xC2D7)` changes.
+**Confirmed.** The live value of the state word after boot is **unknown**.
+
+### Editor opcodes
+
+| Opcode | Entry | Confirmed action | Reply | Flash |
+| --- | --- | --- | --- | --- |
+| `0x75` | `0x8187` | Sends 160 bytes from `DM(0x1B9D8)`. Reads no argument. | `F0 74` + 160 bytes + `F7` | no |
+| `0x74` | `0x818F` | Stores 160 ring bytes into `DM(0x1B9D8)`, clears `DM(0xC2D7)`, jumps to `0x94BA`. | none in the entry | no |
+| `0x73` | `0x8166` | Calls the `0x76` body, then sends `F0 72 F7`. | `0x72` after the body | no |
+| `0x76` | `0x816B` | Reads two 14-bit pairs. `0x81A8` turns the first into an address (`I0` = pair × `0x50` + `DM(0xC2DF)`) and returns that pair in `R1` (likely; see below). The second pair is the count. Count 0 sends one `F0 74` frame of 160 bytes from that address. A non-zero count sends that many `F0 71` frames, each with the returned pair's high and low 7 bits, then 160 bytes, then adds one to the pair. | `0x74` or repeated `0x71` | no |
+| `0x71` | `0x9420` | Runs the state preamble, takes the same 14-bit origin, toggles bit 15, and programs 80 sixteen-bit words from the next 160 ring bytes. | none | program |
+| `0x57` | `0x812D` | Echoes the current ring byte and sends the word at `DM(0x1B9A8 + index)` as four nibbles. The index is not masked. | `F0 56` + index + 4 nibbles + `F7` | no |
+| `0x56` | `0x8124` | Stores four following nibbles at `DM(0x1B9A8 + index)`. A non-zero high nibble clears `DM(0xC2D7)`. Then jumps through the word at `0x1B978 + index`. | none in the entry | no |
+| `0x0E`, `0x0F`, `0x10`, `0x11`, `0x23`, `0x24` | table word 0 | No in-program handler. | none | no |
+
+`0x81A8` does not compare the 14-bit value with a maximum. **Confirmed.**
+The `0x76` loop count is a second 14-bit pair and is likewise not compared.
+A count of 16383 would transmit 16383 frames. **Confirmed** as the
+instruction; the elapsed time is **unknown**.
+
+At `0x81AC` the multiply and the stack store are one instruction:
+`R0 = R0 * R1, DM(I7, 0) = R0`. The next instruction reloads that slot into
+`R1`. **Likely** the store keeps the 14-bit pair from before the multiply,
+because `0x8175` then shifts the returned `R1` by −7 and masks `0x7F`. The
+address left in `I0` is the product plus `DM(0xC2DF)`. **Confirmed** as
+those instructions.
+
+`0x0F` at `0x8E88` is an argument to `CALL 0x8638`, the same shape as the
+`0x0E` arguments at `0x9048` and `0x9087`. `R3 = 0x24` at `0x8803` is
+multiplied by the following word. `0x24` at `0x9578` and `0x9583` is passed
+to `0x81DF`, and `0x81FB` adds that value to `0x1AA38` and loads the word
+there. `R0 = 0x40` at `0x8886` is followed by `RTS`. `R0 = 0xC0` at
+`0x93BF` is stored to `DM(0xC2E1)`. None of these is a write to
+`DM(0x00200000)`. **Confirmed.**
+
+`0x74` does not call `0x930F` or `0x9324`. Its tail `0x94BA` calls `0x95DE`,
+`0x943E`, and `0x95E7`. `0x943E` walks external memory from `0x01018000`.
+Whether that walk changes stored sound is **unknown**. It is not the program
+or erase sequence below.
+
+The four-nibble reader at `0x80E6` shifts and adds each byte. It does not
+mask a byte to four bits, so a value above 15 is still accumulated.
+**Confirmed.**
+
+The jump at `0x95A0` indexes `0x1B978` with the raw byte. Of those 256 words,
+49 are inside the loaded program, 158 are zero, and 49 are outside it. Indexes
+`0x30`, `0x3B`, `0x3C`, and `0x3D` hold `0x0301`, `0x1000`, `0x1000`, and
+`0x7FFF`. The other outside words are small integers, including a run of
+`0x0020`. **Confirmed.** A jump to any of them leaves the loaded program. The
+effect is **unknown**.
+
+### Program and erase sequence
+
+**Confirmed** stores. **Likely** an AMD-style flash command sequence, because
+the addresses and the data bytes are the familiar unlock pair. The chip and
+the sector size are **unknown**.
+
+| Routine | Stores | What follows |
+| --- | --- | --- |
+| `0x932E` | `0xAA` at `DM(0x01000555)`, `0x55` at `DM(0x010002AA)` | returns |
+| `0x930F` | unlock, then `0xA0` at `DM(0x01000555)`, then one 16-bit word at `DM(0xC2D6)`, then advances that pointer | polls the same word until the read matches; no timeout |
+| `0x931C` | unlock, `0x80` at `DM(0x01000555)`, unlock, `0x30` at the word addressed by `DM(0xC2D6)` | returns |
+| `0x9324` | calls `0x931C` | polls that word until it reads `0xFFFF`; no timeout |
+| `0x9333` | unlock, `0x20` at `DM(0x01000555)`, `0xA0` at `DM(0x01000000)`, one word copied, then `IMASK` bit `0x10` | the `0x8010` vector continues the copy and later writes `0x90` / `0x00` |
+
+`0x71` reaches `0x930F` eighty times and does not call `0x9324`. It also
+does not transmit `0x50` or `0x51`. Those two replies exist: `0x80DC` sends
+`F0 50 F7`, and `0x80E0` sends `F0 51` plus one data byte plus `F7`. The
+jumps to `0x80DC` are at `0x9369` (`0x60`), `0x943D` (`0x67`), `0x81A7`
+(`0x6C`), `0x941F` (`0x72`), and `0x941C` (the body at `0x940A`). The jump
+to `0x80E0` is at `0x8165` (`0x68`). **Confirmed.**
+
+| Opcode | Entry | Confirmed path | Reply |
+| --- | --- | --- | --- |
+| `0x60` | `0x9365` | Address from the ring through `0x81A8`; programs 80 words from `DM(0x1B9D8)` through `0x9428`, then `0x936A`. | `F0 50 F7` |
+| `0x67` | `0x9431` | Two `0x81A8` results and a third 14-bit pair multiplied by `0x50`. That product is the length passed to `0x9333`, then `0x936A`. | `F0 50 F7` |
+| `0x6C` | `0x81A6` | `0x9324` at the current `DM(0xC2D6)`. No argument read. | `F0 50 F7` |
+| `0x6D` | `0x80FB` | First byte is a loop count. Each pass assembles three bytes into one word and calls `0x930F`. No maximum check. | none |
+| `0x6E` | `0x80F9` | Assembles eight nibbles, adds `0x01000000`, and stores the sum at `DM(0xC2D6)`. | none |
+| `0x72` | `0x941D` | `0x936A` only. | `F0 50 F7` |
+| `0x68` | `0x8161` | `0x93F2` writes `0x100000` words at `DM(0x02000000)`, reads them back, then the handler sends `0x51` with data byte 0 when the mismatch count stayed 1 and 3 otherwise. | `F0 51` + byte + `F7` |
+
+`0x936A` scans `0x180` addresses and calls `0x9333` when a shifted read equals
+`0xFFFF0000`. It then writes `0x1969` through `0x930F` and jumps to the erase
+poll `0x9324`. **Confirmed.** `0x60`, `0x67`, and `0x72` therefore both program
+and erase. `0x6C` erases and does not program. `0x6D` programs and does not
+erase. `0x68` does not use the unlock sequence. What `DM(0x02000000)` is on
+the board is **unknown**.
+
+`0x940A` calls `0x9324` at `0x01018000`, `0x01020000`, `0x01028000`,
+`0x01030000`, `0x01038000`, and `0x01040000`, then jumps to `0x80DC`. No
+decoded call or jump targets `0x940A`, and the 16-bit load record has no word
+equal to `0x940A`. Whether some other computation enters it is **unknown**.
+
+The main-loop table at `0x1B911` can also reach the erase command. Slot 2 is
+`0x93B4`, which stores an address to `DM(0xC2D6)` and jumps to `0x931C`.
+**Confirmed.** When that slot runs is **unknown**.
+
+### Other loaded entries
+
+These do not call `0x930F`, `0x9324`, or `0x93F2` on the instructions listed.
+Callees beyond the ones named here are not fully expanded. **Confirmed** for
+the entry instructions; further effects of an unnamed callee stay open.
+
+| Opcode | Entry | Entry behavior |
+| --- | --- | --- |
+| `0x52` | `0x961A` | Calls `0x95DE`, `0x9628`, `0x9610`, and `0x95E7`, then jumps to `0x9495`. |
+| `0x53` | `0x9630` | Calls `0x95DE`, `0x9628`, `0x9609`, and `0x94BA`, then jumps to `0x95E7`. |
+| `0x54` | `0x8104` | Stores two argument bytes through `DM(0x1B9F8 + index)` and jumps through the word at `DM(0x1BB78 + index)`. No range check. Words 0 through 127 at `0x1BB78` are inside the loaded program. From 128 on, the words include 0 and addresses outside that program. |
+| `0x55` | `0x811A` | Replies `F0 54`, the current ring byte, the byte at `DM(0x1B9F8 + index)`, `F7`. |
+| `0x59` | `0x814C` | Replies `F0 58` and 32 bytes from an address taken through `DM(0x1BA78)`. |
+| `0x5C` | `0x8137` | Copies 32 ring bytes to `DM(0x1B9D8)` and returns. |
+| `0x5D` | `0x813C` | Replies `F0 5C`. Bit 6 of the current ring byte selects one of two 32-byte sends. |
+| `0x5E` | `0x9600` | Two argument bytes. Clears or sets one bit of `DM(0x2F)`. The bit number is the first byte minus 4. No range check. |
+| `0x5F` | `0x8159` | Replies `F0 5E`, the current ring byte, and 0 or 1 from `0x95F4`. |
+| `0x61` | `0x9499` | Copies 80 source words into `DM(0x1B9D8)` as 160 masked bytes and jumps to `0x94BA`. |
+| `0x63` | `0x9650` | Reads one byte, stores 0 to `DM(0x1B910)`, and either jumps to `0x960B` or calls `0x9609` and jumps to `0x9394`. |
+| `0x65` | `0x94A6` | Joins `0x66` with a count of `0x17` and a pointer of `0x1B932`. |
+| `0x66` | `0x94A9` | Count `0x2F`, pointer `0x1B949`. Both scatter masked bytes into `DM(0x1B9D8)` and jump to `0x94BA`. |
+| `0x69` | `0x9638` | One argument byte. Calls `0x95E7` and either `0x90CC` or `0x90C0`, then calls `0x954A` twice. |
+| `0x6F` | `0x8195` | Replies `F0 6D`, the count byte, then three bit fields per word for that count. The count is not checked. |
+
+Opcodes `0x40–0x51`, `0x58`, `0x5A`, `0x5B`, `0x62`, `0x64`, `0x6A`, `0x6B`,
+and `0x70` are the `RTS` at `0x80CE`. They read no argument and send no reply.
+**Confirmed.**
+
 ## Device-facing notes from this slice
 
 Nothing in this work was sent to a device.
@@ -238,4 +386,8 @@ Nothing in this work was sent to a device.
 | A SysEx opcode whose table word is outside `0x8000–0x96B7` (86 opcodes, including `0x77–0x7F`). | The inventory lists the words. | Where execution would continue is **unknown**. |
 | Opcodes `0xBF`, `0xCE`, `0xDD`, and `0xFB`. | The word is `0x8020`, and `0x8020` jumps to the receive routine that ends in `RTI`. | Entering that routine from the SysEx jump is **unknown** in effect. |
 | Transmit with `FLAG1_IN` held clear. | `0x80D9` jumps to itself. | The loop has no timeout in the instruction. |
-| Opcode `0x74` with fewer than 160 bytes after the opcode. | `0x818F` reads 160 ring words and does not test `F7`. | The read can take bytes already in the ring. Whether those bytes are a previous message is **unknown** until the handler pass. |
+| Opcode `0x74` with fewer than 160 bytes after the opcode. | `0x818F` reads 160 ring words and does not test `F7`. | The read can take bytes already in the ring. |
+| Opcode `0x71`, `0x60`, `0x67`, `0x6C`, `0x6D`, or `0x72`. | Those entries reach `0x930F` or `0x9324`. `0x930F` writes the unlock pair and `0xA0`. `0x9324` writes the unlock pair, `0x80`, and `0x30`, then polls for `0xFFFF`. | **Likely** flash program or erase. No timeout on the poll. `0x71` sends no `0x50` or `0x51`. |
+| Opcode `0x68`. | `0x93F2` writes `0x100000` words at `DM(0x02000000)` and the handler replies `0x51`. | The address is **unknown**. The reply byte is the same opcode the host uses for a failed store. |
+| Opcode `0x56` with index `0x30`, `0x3B`, `0x3C`, `0x3D`, or another outside slot of `0x1B978`. | `0x95A0` jumps through that word. | The target is outside the loaded program. Effect **unknown**. |
+| Opcode `0x54` with an index of `0x80` or above. | `0x8111` jumps through `DM(0x1BB78 + index)` with no range check. | Words in that upper half include 0 and addresses outside the loaded program. Effect **unknown**. |
