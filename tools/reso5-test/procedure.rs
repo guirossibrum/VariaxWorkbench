@@ -22,6 +22,10 @@ const NAME: &str = "Reso-5";
 const SETTINGS_HASH: &str = "13f8a99828851153eebff71b2fa644bf390cf144f9da6b73b9ee6c66f502aaf7";
 const OWN_HASH: &str = "7a245957b3263a9dc225633cdabdd2e94ce65d1ad3a6c0eb2cab23ef4e01e6a1";
 const STORE_HASH: &str = "f8694ec3353c4d112bef4b171c7c91110f5a23f53082a1560addfd7e7b2983c5";
+/// Expected firmware-stamped image for a future direct-interface readback.
+const STORED_HASH: &str = "90d79131f7909639aa2d0793cb3f617fbd95a95a1ada7a54f90ec84de4e28164";
+const AFTER_TIMEOUT: Duration = Duration::from_secs(120);
+const SPARE_STORE_WARNING: &str = "Do not store any slot in 40–59 until spare 62 reads blank.";
 pub const STORE_CONFIRMATION: &str = "STORE RESO-5 FACTORY PROGRAM TO SLOT 50";
 const TRIM_HASH: &str = "ad38b28c0390afced301367ea1cc9b2c0a5242cd1a4fb9a3250843c31f82175d";
 const METADATA: std::ops::Range<usize> = 2553..2745;
@@ -253,6 +257,9 @@ pub fn prepare_store(backup: &Path, today: &str, archive: &Path) -> Result<Prepa
     let factory = FactoryReference::parse(&read(archive)?)?;
     let slot = &factory.slots()[50];
     let program = canonical_store_program(slot.raw_program(), STORE_HASH)?;
+    if !matches_hash(&expected_stored_image(&program), STORED_HASH) {
+        return Err("The expected stamped slot 50 image has an incorrect SHA-256.".into());
+    }
     let settings = program[METADATA].try_into().expect("fixed metadata range");
     check_backup(backup, today, &settings)?;
     Ok(PreparedStore { settings, program })
@@ -272,6 +279,22 @@ fn canonical_store_program(raw: &[u8], hash: &str) -> Result<[u8; PROGRAM_BYTES]
     Ok(program)
 }
 
+fn expected_stored_image(program: &[u8; PROGRAM_BYTES]) -> [u8; PROGRAM_BYTES] {
+    let mut image = *program;
+    let (words, _) = image.as_chunks_mut::<3>();
+    // #181: each stamp character is a complete 24-bit word. The firmware
+    // checksum covers all preceding words, including words 1,089 and 1,090.
+    for (word, &byte) in words[767..771].iter_mut().zip(b"0310") {
+        *word = [0, 0, byte];
+    }
+    let (checksum, data) = words.split_last_mut().expect("program words");
+    let sum = data.iter().fold(0u32, |sum, &[a, b, c]| {
+        sum.wrapping_add(u32::from_be_bytes([0, a, b, c]))
+    });
+    checksum.copy_from_slice(&sum.to_be_bytes()[1..]);
+    image
+}
+
 pub fn confirm_store(answer: &str) -> Result<(), String> {
     if answer.trim_end_matches(['\r', '\n']) != STORE_CONFIRMATION {
         return Err("Slot 50 store confirmation was not given.".into());
@@ -283,6 +306,7 @@ pub fn attempt_store<L: Link>(
     session: &mut Session<L>,
     prepared: &PreparedStore,
     confirm: impl FnOnce() -> Result<(), String>,
+    announce_timeout: impl FnOnce(&str),
     mut cancelled: impl FnMut() -> bool,
 ) -> Result<(), String> {
     session.require_expected_sysex();
@@ -300,7 +324,21 @@ pub fn attempt_store<L: Link>(
     session.note("Verified Variax firmware 3.10 and all 192 Reso-5 settings bytes.");
     confirm()?;
     session.note("Slot 50 confirmed. Sending the approved factory program.");
-    write::store(session, location(), &program, &mut cancelled)?;
+    match write::store_checked(session, location(), &program, &mut cancelled) {
+        Ok(()) => {}
+        Err(write::StoreError::NoConfirmation) => {
+            let notice = format!(
+                "No 0x71. Keep the rig powered and untouched for 2 minutes. {SPARE_STORE_WARNING}"
+            );
+            session.note(&notice);
+            announce_timeout(&notice);
+            session.link.pause(AFTER_TIMEOUT);
+            return Err(format!(
+                "Timed out waiting for the Variax store reply. Slot state is unknown. Check whether the guitar responds to a preset change. If it responds, take a Device check Variax backup and compare it with the first. Report the result and keep the store log. If it does not respond, report before powering off. {SPARE_STORE_WARNING}"
+            ));
+        }
+        Err(error) => return Err(error.to_string()),
+    }
     session.note("Received the slot store confirmation (0x71). Reading back settings.");
     // A Ctrl+C after the store opcode must not prevent the verification read.
     let readback = variax::read_current_checked(session, variax_identity)?;

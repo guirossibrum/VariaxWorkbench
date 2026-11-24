@@ -302,6 +302,7 @@ fn run_device(task: DeviceTask<'_>, trace: &Trace) -> Result<(), String> {
                     &mut session,
                     prepared,
                     || prompt_store(today, stopping),
+                    |notice| eprintln!("{notice}"),
                     stopping,
                 )
             }
