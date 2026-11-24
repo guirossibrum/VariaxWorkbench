@@ -1,0 +1,21 @@
+{
+  "archive_sha256": "738f72e95f72e0bf4e52c4973ca86f098fae54a5d68e1c7b46112ad261ff07f5",
+  "evidence_count": 40,
+  "checksum_start": "0x01000000",
+  "checksum_count": "0x00080001",
+  "checksum_instructions": [
+    "0x826E",
+    "0x8270"
+  ],
+  "r2_text_before_checksum": 0,
+  "loaded_c2e5": "0x00000000",
+  "c2e5_writers": [
+    "0x910E",
+    "0x95C7"
+  ],
+  "counter_clear_entry": "0x8028",
+  "global_base": "0x0001B9A8",
+  "target_confidence": "confirmed",
+  "host_to_sharc": "contradicted by owner hardware runs; host-to-SHARC translation unknown",
+  "sharc_scope": "SHARC internal command set; no host message is shown to reach these routines"
+}

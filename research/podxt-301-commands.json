@@ -1,0 +1,88 @@
+{
+  "archive_sha256": "738f72e95f72e0bf4e52c4973ca86f098fae54a5d68e1c7b46112ad261ff07f5",
+  "evidence_count": 74,
+  "flash": {
+    "none": [
+      "0x52",
+      "0x53",
+      "0x54",
+      "0x55",
+      "0x56",
+      "0x57",
+      "0x59",
+      "0x5C",
+      "0x5D",
+      "0x5E",
+      "0x5F",
+      "0x61",
+      "0x63",
+      "0x65",
+      "0x66",
+      "0x69",
+      "0x6E",
+      "0x6F",
+      "0x73",
+      "0x74",
+      "0x75",
+      "0x76"
+    ],
+    "program": [
+      "0x6D",
+      "0x71"
+    ],
+    "erase": [
+      "0x6C"
+    ],
+    "program_and_erase": [
+      "0x60",
+      "0x67",
+      "0x72"
+    ],
+    "external_fill": [
+      "0x68"
+    ]
+  },
+  "state_preamble_0x1B917": [
+    "0x81FA",
+    "0x81FA",
+    "0x81FA",
+    "0x93E3",
+    "0x81FA",
+    "0x81FA"
+  ],
+  "main_loop_state_0x1B911": [
+    "0x81FA",
+    "0x93AE",
+    "0x93B4",
+    "0x93BB",
+    "0x93C6",
+    "0x93CB"
+  ],
+  "table_0x1B978": {
+    "zero": 158,
+    "program": 49,
+    "outside": 49
+  },
+  "table_0x1BB78_low128_all_program": true,
+  "routine_0x940A_in_width1_words": false,
+  "transmit_opcode_immediates": [
+    "0x50",
+    "0x51",
+    "0x54",
+    "0x56",
+    "0x58",
+    "0x5C",
+    "0x5E",
+    "0x6D",
+    "0x71",
+    "0x72",
+    "0x74"
+  ],
+  "transmit_sites_outside_0x80D6_0x81A5": 0,
+  "immediate_0x45": false,
+  "register_immediate_0x13": false,
+  "target_confidence": "confirmed",
+  "flash_identity": "likely",
+  "host_to_sharc": "contradicted by owner hardware runs; host-to-SHARC translation unknown",
+  "sharc_scope": "SHARC internal command set; no host message is shown to reach these routines"
+}
