@@ -184,6 +184,14 @@ impl<'a, L: Link> Session<'a, L> {
     /// Reads at most one packet, logs it, and returns the events it completed.
     /// `None` means nothing arrived within `wait`.
     pub fn poll(&mut self, wait: Duration) -> Result<Option<Vec<Event>>, String> {
+        self.poll_with(wait, |_| Ok(()))
+    }
+
+    pub(crate) fn poll_with(
+        &mut self,
+        wait: Duration,
+        validate_packet: impl FnOnce(&[u8]) -> Result<(), String>,
+    ) -> Result<Option<Vec<Event>>, String> {
         let Some(packet) = self.link.read(wait.max(Duration::from_millis(1)))? else {
             return Ok(None);
         };
@@ -206,6 +214,7 @@ impl<'a, L: Link> Session<'a, L> {
             };
             self.note(format!("IN  {}{suffix}", hex(&shown)));
         }
+        validate_packet(&packet)?;
         Ok(Some(events))
     }
 

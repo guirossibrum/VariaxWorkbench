@@ -2,7 +2,7 @@ use super::*;
 use crate::gate::{AllClosed, GatePolicy};
 use crate::session::Quiet;
 use crate::session::testing::AllowAll;
-use std::path::Path as FilePath;
+use std::{collections::VecDeque, path::Path as FilePath};
 
 const ACK: &[u8] = &[0xf0, 0, 1, 0x0c, 7, 0, 0x71, 0xf7];
 const DSP_ON: &[u8] = &[0xf0, 0, 1, 0x0c, 7, 0, 0x4c, 0, 0xf7];
@@ -15,6 +15,7 @@ struct Recording {
     transcript: Vec<String>,
     elapsed: Duration,
     reply: Option<Vec<u8>>,
+    notices: VecDeque<(Duration, Vec<u8>)>,
     fail_at: Vec<usize>,
 }
 
@@ -34,6 +35,11 @@ impl Link for Recording {
     }
 
     fn read(&mut self, timeout: Duration) -> Result<Option<Vec<u8>>, String> {
+        if let Some((delay, notice)) = self.notices.pop_front() {
+            assert!(delay <= timeout);
+            self.elapsed += delay;
+            return Ok(Some(notice));
+        }
         if let Some(reply) = self.reply.take() {
             return Ok(Some(reply));
         }
@@ -110,6 +116,118 @@ fn store_confirmation_success_timeout_and_unexpected_reply() {
         );
         assert_eq!(session.link.elapsed.as_millis(), elapsed_ms);
         assert_cleanup(writes);
+    }
+}
+
+#[derive(Default)]
+struct Notes(Vec<String>);
+
+impl crate::session::Log for Notes {
+    fn line(&mut self, text: String) {
+        self.0.push(text);
+    }
+}
+
+#[test]
+fn each_store_notice_is_logged_and_skipped_even_with_strict_replies() {
+    let bytes = packed("A model");
+    let program = Program::new("A model", &bytes).unwrap();
+    for (command, label) in [
+        (0x28, "clip"),
+        (0x4d, "DSP overload"),
+        (0x74, "MIDI queue overflow"),
+    ] {
+        let mut log = Notes::default();
+        let mut notice = sysex(command, []);
+        notice[5] = 4;
+        let mut session = Session::new(
+            Recording {
+                notices: [(Duration::ZERO, notice)].into(),
+                reply: Some(ACK.to_vec()),
+                ..Default::default()
+            },
+            &AllowAll,
+            &mut log,
+        );
+        session.require_expected_sysex();
+        store(&mut session, Preset::new(10, 4).unwrap(), &program, || {
+            false
+        })
+        .unwrap();
+        assert_eq!(
+            session
+                .link
+                .writes
+                .iter()
+                .filter(|chunk| chunk.as_slice() == [0x61, 50])
+                .count(),
+            1
+        );
+        assert_cleanup(&session.link.writes);
+        assert!(
+            log.0
+                .iter()
+                .any(|line| line.contains(&format!("Skipped Variax {label}")))
+        );
+    }
+}
+
+#[test]
+fn store_notices_do_not_restart_the_fifteen_second_deadline() {
+    let bytes = packed("A model");
+    let program = Program::new("A model", &bytes).unwrap();
+    let mut log = Quiet;
+    let mut session = Session::new(
+        Recording {
+            notices: (0..149).map(|_| (POLL, sysex(0x28, []))).collect(),
+            ..Default::default()
+        },
+        &AllowAll,
+        &mut log,
+    );
+    assert!(
+        store(&mut session, Preset::new(10, 4).unwrap(), &program, || {
+            false
+        })
+        .unwrap_err()
+        .starts_with("Timed out")
+    );
+    assert_eq!(session.link.elapsed, Duration::from_millis(15200));
+    assert_cleanup(&session.link.writes);
+}
+
+#[test]
+fn store_rejects_other_messages_even_when_confirmation_shares_the_packet() {
+    let bytes = packed("A model");
+    let program = Program::new("A model", &bytes).unwrap();
+    let mut foreign_notice = sysex(0x28, []);
+    foreign_notice[3] = 0x0d;
+    for unexpected in [
+        vec![0xb0, 79, 0],
+        vec![0xc0, 1],
+        vec![0xf8],
+        vec![0xf6],
+        foreign_notice,
+        sysex(0x71, [0]),
+        vec![0xf7],
+    ] {
+        let mut log = Quiet;
+        let mut session = Session::new(
+            Recording {
+                reply: Some([ACK, &unexpected].concat()),
+                ..Default::default()
+            },
+            &AllowAll,
+            &mut log,
+        );
+        assert_eq!(
+            store(&mut session, Preset::new(10, 4).unwrap(), &program, || {
+                false
+            })
+            .unwrap_err(),
+            "Unexpected Variax store reply. Slot state is unknown."
+        );
+        assert_cleanup(&session.link.writes);
     }
 }
 

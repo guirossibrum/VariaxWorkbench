@@ -9,7 +9,8 @@ use super::{
     bridge_message, is_reply, read_current_bank_name,
 };
 use crate::gate::Operation;
-use crate::session::{Link, Path, Request, Session, Wait};
+use crate::midi::Event;
+use crate::session::{Link, POLL, Path, Request, Session, Wait};
 use std::time::Duration;
 
 const WORDS: usize = 1092;
@@ -294,16 +295,65 @@ pub fn store<L: Link>(
         WriteRequest(G7, Message::Store(preset))
             .send(session)
             .map_err(unknown)?;
-        match session
-            .wait_for(STORE_ACK, |_| true, false)
-            .map_err(unknown)?
-        {
-            Wait::Found(reply) if reply.len() == 8 && is_reply(&reply, 0x71) => Ok(()),
-            Wait::Found(_) => Err("Unexpected Variax store reply. Slot state is unknown.".into()),
-            _ => Err("Timed out waiting for the Variax store reply. Slot state is unknown.".into()),
-        }
+        wait_for_store_confirmation(session)
     })
 }
+
+fn wait_for_store_confirmation<L: Link>(session: &mut Session<L>) -> Result<(), String> {
+    const UNEXPECTED: &str = "Unexpected Variax store reply.";
+    let unknown = |error| format!("{error} Slot state is unknown.");
+    let start = session.link.elapsed();
+    let orphans = session.assembler.orphans;
+    loop {
+        let remaining = STORE_ACK.saturating_sub(session.link.elapsed().saturating_sub(start));
+        if remaining.is_zero() {
+            return Err(
+                "Timed out waiting for the Variax store reply. Slot state is unknown.".into(),
+            );
+        }
+        let Some(events) = session
+            .poll_with(remaining.min(POLL), |packet| {
+                if packet
+                    .iter()
+                    .any(|byte| matches!(byte, 0xf1..=0xf6 | 0xf8..=0xff))
+                {
+                    return Err(UNEXPECTED.into());
+                }
+                Ok(())
+            })
+            .map_err(unknown)?
+        else {
+            continue;
+        };
+        if session.assembler.orphans != orphans {
+            return Err(unknown(UNEXPECTED.into()));
+        }
+        let mut acknowledged = false;
+        for event in events {
+            match event {
+                Event::Sysex(reply)
+                    if !acknowledged && reply.len() == 8 && is_reply(&reply, 0x71) =>
+                {
+                    acknowledged = true;
+                }
+                Event::Sysex(reply) if is_reply(&reply, 0x28) => {
+                    session.note("Skipped Variax clip notice (0x28) during store.");
+                }
+                Event::Sysex(reply) if is_reply(&reply, 0x4d) => {
+                    session.note("Skipped Variax DSP overload notice (0x4D) during store.");
+                }
+                Event::Sysex(reply) if is_reply(&reply, 0x74) => {
+                    session.note("Skipped Variax MIDI queue overflow notice (0x74) during store.");
+                }
+                _ => return Err(unknown(UNEXPECTED.into())),
+            }
+        }
+        if acknowledged {
+            return Ok(());
+        }
+    }
+}
+
 
 /// Update the selected bank's name and read it back. Selecting a bank sends
 /// Workbench's program change to switch position zero and changes the preset.
