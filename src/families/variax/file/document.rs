@@ -24,15 +24,16 @@ struct SelectedBundle {
 
 #[derive(Clone)]
 struct DocumentState {
-    preset: PresetFile,
+    preset: Option<PresetFile>,
     bundle: Option<SelectedBundle>,
     buffers: SlotBuffers,
 }
 impl DocumentState {
     fn bytes(&self) -> &[u8] {
-        self.bundle
-            .as_ref()
-            .map_or_else(|| self.preset.as_bytes(), |b| b.file.as_bytes())
+        self.bundle.as_ref().map_or_else(
+            || self.preset.as_ref().expect("standalone model").as_bytes(),
+            |b| b.file.as_bytes(),
+        )
     }
 
     fn slot_bytes(&self, bank: usize, preset: usize) -> Option<&[u8]> {
@@ -92,7 +93,7 @@ impl EditorDocument {
     pub fn from_preset(preset: PresetFile, source: PathBuf) -> Self {
         Self::from_state(
             DocumentState {
-                preset,
+                preset: Some(preset),
                 bundle: None,
                 buffers: SlotBuffers::default(),
             },
@@ -101,12 +102,20 @@ impl EditorDocument {
     }
 
     pub fn from_bundle(file: BundleFile, source: PathBuf) -> Result<Self, String> {
-        let (bank, preset) = file
+        let (bank, preset) = if let Some((bank, preset)) = file
             .banks()
             .iter()
             .enumerate()
-            .find_map(|(i, b)| b.presets().first().map(|p| (i, p.clone())))
-            .ok_or("bank/collection contains no presets to edit; file is retained unchanged")?;
+            .find_map(|(i, bank)| bank.presets().first().map(|preset| (i, preset.clone())))
+        {
+            (bank, Some(preset))
+        } else if file.is_empty_collection() {
+            (0, None)
+        } else {
+            return Err(
+                "bank/collection contains no presets to edit; file is retained unchanged".into(),
+            );
+        };
         Ok(Self::from_state(
             DocumentState {
                 preset,
@@ -132,8 +141,14 @@ impl EditorDocument {
         }
     }
 
+    /// The active model of a populated document. Use `selected_preset` when
+    /// working with collections that may be empty.
     pub fn preset(&self) -> &PresetFile {
-        &self.state.preset
+        self.selected_preset().expect("no model selected")
+    }
+
+    pub fn selected_preset(&self) -> Option<&PresetFile> {
+        self.state.preset.as_ref()
     }
     pub fn as_bytes(&self) -> &[u8] {
         self.state.bytes()
@@ -142,7 +157,13 @@ impl EditorDocument {
         self.state.bundle.as_ref().map(|b| b.file.banks())
     }
     pub fn selection(&self) -> Option<(usize, usize)> {
+        self.selected_preset()?;
         self.state.bundle.as_ref().map(|b| (b.bank, b.preset))
+    }
+
+    pub fn selected_bank(&self) -> Option<(usize, &Bank)> {
+        let bundle = self.state.bundle.as_ref()?;
+        Some((bundle.bank, &bundle.file.banks()[bundle.bank]))
     }
     pub fn extension(&self) -> &'static str {
         match &self.state.bundle {
@@ -171,7 +192,7 @@ impl EditorDocument {
         let bundle = self.state.bundle.as_mut().unwrap();
         bundle.bank = bank;
         bundle.preset = preset;
-        self.state.preset = next;
+        self.state.preset = Some(next);
         Ok(())
     }
 
@@ -198,6 +219,46 @@ impl EditorDocument {
         })
     }
 
+    pub fn rename_selected_bank(&mut self, name: &str) -> Result<(), String> {
+        let bundle = self
+            .state
+            .bundle
+            .as_ref()
+            .ok_or("Select a bank or folder first.")?;
+        let existing = &bundle.file.banks()[bundle.bank].name;
+        if existing == name {
+            return Ok(());
+        }
+        let file = bundle.file.with_renamed_bank(bundle.bank, name)?;
+        if file.as_bytes() == bundle.file.as_bytes() {
+            return Ok(());
+        }
+        self.end_gesture();
+        let mut next = self.state.clone();
+        next.bundle.as_mut().expect("selected bank").file = Arc::new(file);
+        self.commit_state(next);
+        Ok(())
+    }
+
+    pub fn append_collection_model(&mut self, model: PresetFile) -> Result<(), String> {
+        validate_slot_model(&model)?;
+        let bundle = self
+            .state
+            .bundle
+            .as_ref()
+            .ok_or("Select a collection folder first.")?;
+        let file = bundle.file.with_appended_model(bundle.bank, &model)?;
+        let slot = file.banks()[bundle.bank].presets().len() - 1;
+        self.end_gesture();
+        let mut next = self.state.clone();
+        let bundle = next.bundle.as_mut().expect("selected folder");
+        bundle.file = Arc::new(file);
+        bundle.preset = slot;
+        next.preset = Some(model);
+        self.commit_state(next);
+        Ok(())
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.as_bytes() != self.saved.bytes()
     }
@@ -218,13 +279,14 @@ impl EditorDocument {
         change: impl FnOnce(&mut PresetFile) -> Result<(), String>,
     ) -> Result<(), String> {
         let mut next = self.state.clone();
-        change(&mut next.preset)?;
-        if next.preset.as_bytes() != self.state.preset.as_bytes() {
+        let preset = next.preset.as_mut().ok_or("No model is selected.")?;
+        change(preset)?;
+        if preset.as_bytes() != self.preset().as_bytes() {
             if let Some(bundle) = &mut next.bundle {
                 bundle.file = Arc::new(
                     bundle
                         .file
-                        .with_replaced_models(bundle.bank, [(bundle.preset, &next.preset)])?,
+                        .with_replaced_models(bundle.bank, [(bundle.preset, &*preset)])?,
                 );
             }
             self.commit_state(next);
@@ -291,6 +353,87 @@ fn validate_slot_model(model: &PresetFile) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixed_template_uses_workbench_topology_and_default_model_settings() {
+        let default = PresetFile::default_legacy_model().unwrap();
+        assert_eq!(default.name(), "Default Patch");
+        assert_eq!(default.device_id(), 0x0007_0000);
+        let parameters = default.models();
+        assert_eq!(parameters.len(), 6);
+        let pickup = default.model(crate::edit::PICKUP1).unwrap();
+        assert!(pickup.enabled);
+        assert_eq!(pickup.id, 0x0311_0004);
+        assert_eq!(
+            default
+                .parameter(crate::edit::PICKUP1, 0x200000)
+                .unwrap()
+                .bits,
+            0x3fe6_cc00
+        );
+        assert!(!default.model(crate::edit::PICKUP2).unwrap().enabled);
+        assert!(!default.model(crate::edit::TUNING).unwrap().enabled);
+
+        let bundle = BundleFile::new_default_bundle().unwrap();
+        assert!(bundle.fixed);
+        let banks = bundle.banks();
+        assert_eq!(
+            banks
+                .iter()
+                .map(|bank| bank.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Custom 1", "T-Model", "Spank", "Lester", "Special", "R-Billy", "Chime", "Semi",
+                "Jazzbox", "Acoustic", "Reso", "Custom 2"
+            ]
+        );
+        for bank in banks {
+            assert!(bank.fixed);
+            assert_eq!(bank.presets().len(), 5);
+            assert!(
+                bank.presets()
+                    .iter()
+                    .all(|model| model.as_bytes() == default.as_bytes())
+            );
+        }
+    }
+
+    #[test]
+    fn empty_collection_can_be_renamed_and_populated_with_undo_and_redo() {
+        let file = BundleFile::new_collection().unwrap();
+        assert!(file.is_empty_collection());
+        let original = file.as_bytes().to_vec();
+        let mut document =
+            EditorDocument::from_file_bytes(original.clone(), Path::new("empty.l6c")).unwrap();
+        assert!(document.selected_preset().is_none());
+        assert_eq!(document.selected_bank().unwrap().1.name, "New Folder");
+        assert!(!document.is_dirty());
+        assert!(
+            document
+                .apply(|_| panic!("no model should be editable"))
+                .is_err()
+        );
+
+        document.rename_selected_bank("My Folder").unwrap();
+        assert_eq!(document.selected_bank().unwrap().1.name, "My Folder");
+        let renamed = document.as_bytes().to_vec();
+        document
+            .append_collection_model(PresetFile::default_legacy_model().unwrap())
+            .unwrap();
+        let populated = document.as_bytes().to_vec();
+        assert_eq!(document.selection(), Some((0, 0)));
+        assert_eq!(document.preset().name(), "Default Patch");
+        assert!(document.slot_is_dirty(0, 0));
+        document.undo();
+        assert_eq!(document.as_bytes(), renamed);
+        assert!(document.selected_preset().is_none());
+        document.undo();
+        assert_eq!(document.as_bytes(), original);
+        assert!(!document.can_undo());
+        document.redo();
+        document.redo();
+        assert_eq!(document.as_bytes(), populated);
+    }
 
     fn model_bytes(device: u32, form: &[u8; 4]) -> Vec<u8> {
         let mut bytes = include_bytes!("../../../../tests/fixtures/editor-preset.vwm").to_vec();
