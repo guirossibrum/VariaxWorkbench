@@ -155,8 +155,12 @@ mod tests {
         assert_eq!(lock_path(Some("relative".into())), lock_path(None));
         assert_eq!(lock_path(Some("".into())), lock_path(None));
     }
+}
 
-    #[cfg(unix)]
+#[cfg(all(test, target_os = "linux"))]
+mod linux {
+    use super::*;
+
     #[test]
     fn exclusive_until_the_last_inherited_handle_closes() {
         const CHILD_PATH: &str = "VARIAX_DEVICE_LOCK_TEST_PATH";
@@ -181,7 +185,7 @@ mod tests {
         let output = std::process::Command::new(std::env::args_os().next().unwrap())
             .args([
                 "--exact",
-                "device_lock::tests::exclusive_until_the_last_inherited_handle_closes",
+                "device_lock::linux::exclusive_until_the_last_inherited_handle_closes",
             ])
             .env(CHILD_PATH, &path)
             .stdin(first.child_stdin().unwrap())

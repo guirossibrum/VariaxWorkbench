@@ -6,12 +6,21 @@ use std::fmt::Debug;
 use std::time::Duration;
 
 /// The path a link reaches. A request is only ever sent on its own path.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Path {
-    /// A Variax behind PODxt Live USB interface 1 (VDI bridge).
-    VariaxViaPodxt,
-    /// A PODxt-family device's own MIDI port.
-    PodxtMidi,
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Path(&'static str);
+
+impl Path {
+    /// Create a path identifier. Families define these in their descriptors
+    /// and use a distinct name for each incompatible link.
+    pub const fn new(name: &'static str) -> Self {
+        Self(name)
+    }
+}
+
+impl Debug for Path {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
 }
 
 /// A message a family allows. Families define these as closed enums whose

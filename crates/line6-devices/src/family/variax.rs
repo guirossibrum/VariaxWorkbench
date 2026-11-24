@@ -6,6 +6,8 @@
 //! 2026-11-14 and 2026-11-22. Metadata is current-preset settings, not a
 //! backup.
 
+pub mod backup;
+pub mod transport;
 pub mod write;
 
 use crate::gate::Operation;

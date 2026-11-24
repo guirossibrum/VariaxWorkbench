@@ -400,25 +400,29 @@ is unverified.
      confirmations intact. Test gate and busy refusal, the single allowed
      resend, and cleanup with fake transports. All test constructors use
      injected sources.
-4. **Device crate tidy after [#207] and [#177] merge.** Keep typed requests
-   under `crates/line6-devices/src/family/{variax,podxt}`. Split
-   `backup.rs` into family format/load/verify/compare code and shared
-   atomic I/O and manifest primitives, preserving the public backup
-   API where used and existing on-disk layouts. The Variax
-   `write.rs` and tests, PODxt `controls.rs`, `models.rs` and
-   `live_settings.rs` already belong to their families. Keep
-   `transport/{mod,rawmidi,usb}.rs`, `identity.rs` and `midi.rs` as thin
-   shared adapters and framing. Family transport descriptors own the
-   endpoint constants. Keep `session.rs` and `gate.rs` shared, but put
-   messages such as “Variax transfer stopped.” into the family context
-   that supplies the wording, preserving visible messages and failure
-   semantics. Where practical, replace central `Operation` and `Path`
-   enum additions with family-owned typed identifiers checked by the
-   shared policy and link validation. Preserve default denial, rejection
-   of a request on the wrong path, gate meanings and the compile-time
-   lock authority. `family/mod.rs` composes identity classification and
-   `lib.rs` keeps the crate entry point. HD500X has no protocol module
-   until a separately verified implementation exists.
+4. **Device crate tidy ([#214]).** The Variax and PODxt modules each own
+   `backup.rs` for their v1 format, validation, and the directories included
+   in comparison. The shared backup module keeps atomic I/O, manifests and
+   the comparison algorithm. It re-exports the public backup API used by
+   the app and owner probes. Existing files and restore text keep the v1
+   format. HD500X remains file-only.
+
+   Each family owns its endpoints under `family/<name>/transport.rs`.
+   The shared transports select and open those endpoints. Requests carry
+   a `session::Path` identifier, which the session compares with the link's
+   identifier. A new link can define its own unique path in its family.
+   A family may also supply an error when cancelling a chunked transfer.
+   The session still handles chunking, the partial-send check and EOX recovery.
+
+   `gate::Operation` stays the single operation registry. To add a family,
+   define its requests and transport descriptors in the family module.
+   Add the operations to `Operation` and have each request name its operation.
+   Update each caller's `GatePolicy` to deny the new operation or explicitly
+   map it to an authorized compile-time gate. Test wrong-path and closed-gate
+   refusal with a fake link. Add identity classification in `family/mod.rs`
+   and register any stored-file directories with the shared backup comparer.
+
+[#214]: https://github.com/guirossibrum/VariaxWorkbench/issues/214
 
 Run `cargo fmt --all -- --check`,
 `cargo clippy --offline --all-features --all-targets -- -D warnings`,

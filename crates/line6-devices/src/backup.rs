@@ -8,13 +8,8 @@
 //! Every file is made read-only; nothing is ever overwritten. Loading checks
 //! the manifest before decoding anything.
 //!
-//! Layout (format v1):
-//! * Variax: `identity.syx`, `original-1.syx`/`original-2.syx`, and
-//!   `presets/BB-Bank_Name-S-1.syx`/`-2.syx` (the two 200-byte metadata
-//!   replies of bank BB, slot S).
-//! * PODxt: `identity.syx`, `current-before.syx`, `current-after.syx`, and
-//!   `tones/NNN-LABEL.syx`, `amp-setups/NNN-N.syx`, `fx-setups/NNN-N.syx`
-//!   (168-byte dumps).
+//! Each family defines its v1 layout. This module coordinates comparisons
+//! and keeps the public backup API used by the app and owner probes.
 
 use crate::family::{podxt, variax};
 use crate::session::Log;
@@ -24,47 +19,17 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+// Compatibility exports for callers of the original backup API (#214).
+pub use podxt::backup::{
+    LoadedPodxt, PODXT_RESTORE, load_podxt_library, podxt_entry_name, podxt_index_line,
+    save_podxt_library,
+};
+pub use variax::backup::{
+    LoadedVariax, VARIAX_RESTORE, load_variax_library, save_variax_library, variax_index_line,
+    variax_preset_stem,
+};
+
 pub const FORMAT: &str = "line6-devices backup v1";
-
-pub const VARIAX_RESTORE: &str =
-    "Variax 600 library backup (read-only copy, line6-devices backup v1).
-
-presets/BB-Bank-S-1.syx and -2.syx are the exact 200-byte SysEx replies the guitar
-sent for metadata blocks 1 (address 851) and 2 (address 883) of bank BB, slot S,
-after a program change to that preset. index.txt lists bank, slot, Workbench
-program number, preset name, body model and any bank names read from the guitar.
-bank-names/BB.syx contains the exact 0x6D reply for bank BB when available.
-Older backups omit these replies. original-1/2.syx is the preset that was
-active before the read. Load with line6_devices::backup::load_variax_library,
-or decode one preset with variax::PresetMetadata::from_replies.
-
-Check integrity:   sha256sum -c MANIFEST.sha256
-Verified backup:   read the library again and compare the two folders
-                   (line6_devices::backup::compare, `variax-probe compare`).
-
-These blocks are current-preset metadata as Workbench reads it, not a DSP or
-firmware image. Restoring them to the guitar needs a write gate (G6/G7), the
-owner's direct permission and an approved restore procedure.
-";
-
-pub const PODXT_RESTORE: &str =
-    "PODxt Live library backup (read-only copy, line6-devices backup v1).
-
-tones/NNN-LABEL.syx, amp-setups/NNN-N.syx and fx-setups/NNN-N.syx are the exact
-168-byte SysEx dumps (F0 00 01 0C 03 74 .. F7) the PODxt sent when asked for each
-stored location by address (Line 6 Edit 3.06 RequestPatch layout: name at bytes
-7..22, controller n at byte 39+n). index.txt lists location, name and amp.
-current-before.syx and current-after.syx are the active tone before and after.
-Load with line6_devices::backup::load_podxt_library, or decode one dump with
-podxt::EditBuffer::parse.
-
-Check integrity:   sha256sum -c MANIFEST.sha256
-Verified backup:   read the library again and compare the two folders
-                   (line6_devices::backup::compare, `variax-probe compare`).
-
-Restoring to the PODxt needs a write gate (G6/G7), the owner's direct
-permission and an approved restore procedure.
-";
 
 type Echo = Box<dyn FnMut(&str)>;
 
@@ -214,105 +179,6 @@ pub fn utc(seconds: u64) -> (String, String) {
     )
 }
 
-// ---- layout and index lines ----
-
-pub fn variax_preset_stem(preset: variax::Preset) -> String {
-    format!(
-        "presets/{:02}-{}-{}",
-        preset.bank(),
-        preset.bank_name().replace(' ', "_"),
-        preset.slot() + 1
-    )
-}
-
-fn variax_bank_name_file(bank: u8) -> String {
-    format!("bank-names/{bank:02}.syx")
-}
-
-pub fn podxt_entry_name(location: podxt::Location) -> String {
-    format!(
-        "{}/{:03}-{}.syx",
-        location.kind().slug(),
-        location.index() + 1,
-        location.label().replace('#', "")
-    )
-}
-
-pub fn variax_index_line(preset: variax::Preset, metadata: &variax::PresetMetadata) -> String {
-    let body = match metadata.parameters.get("body_model") {
-        Some(variax::ParameterValue::Integer(id)) => format!("{id:#010x}"),
-        _ => "?".into(),
-    };
-    format!(
-        "{:>8} {} (program {:3}): {:<18} body {body}",
-        preset.bank_name(),
-        preset.slot() + 1,
-        preset.program_number(),
-        metadata.name
-    )
-}
-
-pub fn podxt_index_line(stored: &podxt::StoredTone) -> String {
-    format!(
-        "{:<10} {:>4}: {:<16} amp {}",
-        stored.location.kind().name(),
-        stored.location.label(),
-        stored.tone.name(),
-        stored.tone.amp().name
-    )
-}
-
-// ---- save ----
-
-/// Writes a Variax library read in the v1 layout, plus index and restore note.
-pub fn save_variax_library(
-    folder: &mut BackupFolder,
-    library: &variax::Library,
-) -> Result<(), String> {
-    folder.file("identity.syx", &library.identified.reply)?;
-    folder.file("original-1.syx", &library.original_replies[0])?;
-    folder.file("original-2.syx", &library.original_replies[1])?;
-    let mut index = String::new();
-    for stored in &library.presets {
-        let stem = variax_preset_stem(stored.preset);
-        folder.file(&format!("{stem}-1.syx"), &stored.replies[0])?;
-        folder.file(&format!("{stem}-2.syx"), &stored.replies[1])?;
-        index.push_str(&variax_index_line(stored.preset, &stored.metadata));
-        index.push('\n');
-    }
-    for (bank, name) in &library.bank_names {
-        folder.file(&variax_bank_name_file(*bank), &name.reply)?;
-        use std::fmt::Write as _;
-        writeln!(index, "Bank {bank:02} name: {:?}", name.name).expect("write to String");
-    }
-    folder.file("index.txt", index.as_bytes())?;
-    folder.set_restore_note(VARIAX_RESTORE);
-    Ok(())
-}
-
-/// Writes a PODxt library read in the v1 layout, plus index and restore note.
-pub fn save_podxt_library(
-    folder: &mut BackupFolder,
-    library: &podxt::Library,
-) -> Result<(), String> {
-    folder.file("identity.syx", &library.identity_reply)?;
-    folder.file("current-before.syx", &library.before.raw)?;
-    if let Ok(after) = &library.after {
-        folder.file("current-after.syx", &after.raw)?;
-    }
-    let mut index = String::new();
-    for stored in &library.entries {
-        folder.file(&podxt_entry_name(stored.location), &stored.tone.raw)?;
-        index.push_str(&podxt_index_line(stored));
-        index.push('\n');
-    }
-    folder.file("index.txt", index.as_bytes())?;
-    folder.set_restore_note(PODXT_RESTORE);
-    Ok(())
-}
-
-// ---- load ----
-
 /// Checks every line of `MANIFEST.sha256`; returns how many files matched.
 pub fn verify_manifest(dir: &Path) -> Result<usize, String> {
     let path = dir.join("MANIFEST.sha256");
@@ -337,7 +203,7 @@ pub fn verify_manifest(dir: &Path) -> Result<usize, String> {
     Ok(checked)
 }
 
-fn read_optional(dir: &Path, name: &str) -> Result<Option<Vec<u8>>, String> {
+pub(crate) fn read_optional(dir: &Path, name: &str) -> Result<Option<Vec<u8>>, String> {
     let path = dir.join(name);
     if path.exists() {
         fs::read(&path)
@@ -348,81 +214,12 @@ fn read_optional(dir: &Path, name: &str) -> Result<Option<Vec<u8>>, String> {
     }
 }
 
-pub struct LoadedVariax {
-    pub original: Option<variax::PresetMetadata>,
-    pub presets: Vec<(variax::Preset, variax::PresetMetadata)>,
-    pub bank_names: Vec<(u8, variax::BankName)>,
-}
-
-/// Verifies the manifest, then decodes the presets and optional bank names.
-pub fn load_variax_library(dir: &Path) -> Result<LoadedVariax, String> {
-    verify_manifest(dir)?;
-    let pair = |first: &str, second: &str| -> Result<Option<variax::PresetMetadata>, String> {
-        match (read_optional(dir, first)?, read_optional(dir, second)?) {
-            (Some(a), Some(b)) => variax::PresetMetadata::from_replies(&a, &b)
-                .map(Some)
-                .map_err(|e| format!("{first}: {e}")),
-            (None, None) => Ok(None),
-            _ => Err(format!("{first} and {second} must both be present")),
-        }
-    };
-    let original = pair("original-1.syx", "original-2.syx")?;
-    let mut presets = Vec::new();
-    for preset in variax::Preset::all() {
-        let stem = variax_preset_stem(preset);
-        if let Some(metadata) = pair(&format!("{stem}-1.syx"), &format!("{stem}-2.syx"))? {
-            presets.push((preset, metadata));
-        }
-    }
-    let mut bank_names = Vec::new();
-    for bank in 0..variax::BANKS.len() as u8 {
-        let path = variax_bank_name_file(bank);
-        if let Some(reply) = read_optional(dir, &path)? {
-            let name = variax::BankName::from_reply(reply).map_err(|e| format!("{path}: {e}"))?;
-            bank_names.push((bank, name));
-        }
-    }
-    Ok(LoadedVariax {
-        original,
-        presets,
-        bank_names,
-    })
-}
-
-pub struct LoadedPodxt {
-    pub before: Option<podxt::EditBuffer>,
-    pub after: Option<podxt::EditBuffer>,
-    pub entries: Vec<podxt::StoredTone>,
-}
-
-/// Verifies the manifest, then decodes every stored entry present.
-pub fn load_podxt_library(dir: &Path) -> Result<LoadedPodxt, String> {
-    verify_manifest(dir)?;
-    let dump = |name: &str| -> Result<Option<podxt::EditBuffer>, String> {
-        read_optional(dir, name)?
-            .map(|bytes| podxt::EditBuffer::parse(bytes).map_err(|e| format!("{name}: {e}")))
-            .transpose()
-    };
-    let mut entries = Vec::new();
-    for location in podxt::Location::all(&podxt::BankKind::ALL) {
-        if let Some(tone) = dump(&podxt_entry_name(location))? {
-            entries.push(podxt::StoredTone { location, tone });
-        }
-    }
-    Ok(LoadedPodxt {
-        before: dump("current-before.syx")?,
-        after: dump("current-after.syx")?,
-        entries,
-    })
-}
-
-// ---- compare ----
-
-const LIBRARY_FOLDERS: [&str; 4] = ["presets", "tones", "amp-setups", "fx-setups"];
-
 fn library_files(dir: &Path) -> Result<BTreeMap<String, Vec<u8>>, String> {
     let mut files = BTreeMap::new();
-    for folder in LIBRARY_FOLDERS {
+    for folder in variax::backup::STORED_FOLDERS
+        .iter()
+        .chain(podxt::backup::STORED_FOLDERS)
+    {
         let path = dir.join(folder);
         if !path.is_dir() {
             continue;
@@ -451,7 +248,7 @@ impl Comparison {
     }
 }
 
-/// Compares the stored entries of two library backups byte for byte
+/// Compares the stored entries of two library backups byte for byte.
 /// Optional Variax bank-name replies and current/original tones are excluded.
 pub fn compare(a: &Path, b: &Path) -> Result<Comparison, String> {
     let (left, right) = (library_files(a)?, library_files(b)?);
@@ -476,6 +273,7 @@ pub fn compare(a: &Path, b: &Path) -> Result<Comparison, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::family::variax::backup::variax_bank_name_file;
     use crate::family::variax::tests::{bank_reply, encode_reply};
     use crate::identity::{
         Identity,

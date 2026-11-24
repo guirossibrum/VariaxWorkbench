@@ -3,6 +3,11 @@
 //! The crate names operations; the application decides which are allowed.
 //! The main app maps them onto its compile-time hardware gates; the probe
 //! tool uses the owner's grants recorded in its own source.
+//!
+//! Register a new family capability in [`Operation`] and have the family's
+//! request return that operation. Map it to an existing authorized gate
+//! in each caller's policy, or explicitly deny it. Keep the request and its
+//! link descriptor in the family and test both policy and path refusal.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Operation {

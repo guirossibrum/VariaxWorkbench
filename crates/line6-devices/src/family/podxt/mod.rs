@@ -8,8 +8,10 @@
 //! threshold, compressor, delay time and tempo use other conversions and are
 //! reported raw.
 
+pub mod backup;
 pub mod controls;
 pub mod models;
+pub mod transport;
 
 mod live_settings;
 pub use live_settings::{LiveControl, LiveTarget, Setting, SettingMessage};

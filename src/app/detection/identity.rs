@@ -101,8 +101,9 @@ pub(super) fn platform() -> Option<Identify> {
 mod live {
     use super::*;
     use line6_devices::device_lock::{DeviceLock, LockError};
-    use line6_devices::session::Path;
-    use line6_devices::transport::rawmidi::{PODXT_LIVE_CARD, RawMidiLink};
+    use line6_devices::{
+        family::podxt::transport::PODXT_LIVE_MIDI, transport::rawmidi::RawMidiLink,
+    };
     use variax_workbench::device_probe::{
         LinuxSysfs, Recognition, expected_driver_binding, recognise,
     };
@@ -141,15 +142,17 @@ mod live {
             return Outcome::Deferred;
         }
         let pod_firmware = if job.kind == JobKind::Initial {
-            let mut cards = sound_cards.iter().filter(|card| card.id == PODXT_LIVE_CARD);
+            let mut cards = sound_cards
+                .iter()
+                .filter(|card| card.id == PODXT_LIVE_MIDI.card_id);
             let (Some(card), None) = (cards.next(), cards.next()) else {
                 // Cached USB presence can arrive before ALSA publishes the card.
                 return Outcome::Deferred;
             };
             let result = run_if_unlocked(Gate::DeviceCheckCurrentSettingsRead, || {
                 let mut link = RawMidiLink::open_device(
-                    format!("/dev/snd/midiC{}D0", card.index).into(),
-                    Path::PodxtMidi,
+                    PODXT_LIVE_MIDI.device_node(card.index),
+                    PODXT_LIVE_MIDI.path,
                 )?;
                 super::pod::identify(&mut link, cancel)
             });

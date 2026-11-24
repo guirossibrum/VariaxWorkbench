@@ -133,7 +133,8 @@ fn close_folder(
 #[cfg(all(not(test), target_os = "linux"))]
 fn backup_variax(root: &Path, mut progress: impl FnMut(&str)) -> Result<String, String> {
     use line6_devices::backup::{self, BackupFolder};
-    use line6_devices::transport::usb::{self, UsbInterfaceLink};
+    use line6_devices::family::variax::transport::VARIAX_VIA_PODXT_LIVE;
+    use line6_devices::transport::usb::UsbInterfaceLink;
 
     let (stamp, when) = stamp();
     let mut folder = BackupFolder::create(root, &format!("variax-library-{stamp}"))?;
@@ -141,7 +142,7 @@ fn backup_variax(root: &Path, mut progress: impl FnMut(&str)) -> Result<String, 
         "Variax library backup at {when}. The guitar changes preset while this runs, then this tries to switch back. Nothing is stored."
     ));
     progress("Starting the Variax backup. The guitar will change preset.");
-    let mut link = match UsbInterfaceLink::open(usb::VARIAX_VIA_PODXT_LIVE) {
+    let mut link = match UsbInterfaceLink::open(VARIAX_VIA_PODXT_LIVE) {
         Ok(link) => link,
         Err(error) => {
             folder.line(format!("STOPPED: {error}"));
@@ -166,7 +167,7 @@ fn backup_variax(root: &Path, mut progress: impl FnMut(&str)) -> Result<String, 
         ));
         progress("The guitar did not answer. Trying the backup once more.");
         std::thread::sleep(std::time::Duration::from_secs(1));
-        match UsbInterfaceLink::open(usb::VARIAX_VIA_PODXT_LIVE) {
+        match UsbInterfaceLink::open(VARIAX_VIA_PODXT_LIVE) {
             Ok(mut again) => {
                 let (library_again, cleanup_again) =
                     read_variax_on(&mut again, &policy, &mut folder, &mut lines, &mut progress);
@@ -318,8 +319,10 @@ fn read_variax_on(
 fn backup_podxt(root: &Path, mut progress: impl FnMut(&str)) -> Result<String, String> {
     use line6_devices::backup::{self, BackupFolder};
     use line6_devices::family::podxt;
-    use line6_devices::session::{Path as DevicePath, Session};
-    use line6_devices::transport::rawmidi::{self, RawMidiLink};
+    use line6_devices::session::Session;
+    use line6_devices::{
+        family::podxt::transport::PODXT_LIVE_MIDI, transport::rawmidi::RawMidiLink,
+    };
 
     let (stamp, when) = stamp();
     let mut folder = BackupFolder::create(root, &format!("podxt-library-{stamp}"))?;
@@ -327,7 +330,7 @@ fn backup_podxt(root: &Path, mut progress: impl FnMut(&str)) -> Result<String, S
         "PODxt Live library backup at {when}. Stored tones and setups are read by location. The current tone is not changed on purpose. Nothing is stored."
     ));
     progress("Starting the PODxt Live backup. The current tone stays put.");
-    let mut link = match RawMidiLink::open(rawmidi::PODXT_LIVE_CARD, DevicePath::PodxtMidi) {
+    let mut link = match RawMidiLink::open_spec(PODXT_LIVE_MIDI) {
         Ok(link) => link,
         Err(error) => {
             folder.line(format!("STOPPED: {error}"));

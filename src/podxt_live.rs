@@ -1191,9 +1191,10 @@ fn channel_summary(result: &ChannelSwitch) -> String {
 
 #[cfg(all(not(test), target_os = "linux"))]
 fn open_podxt() -> Result<line6_devices::transport::rawmidi::RawMidiLink, String> {
-    use line6_devices::session::Path;
-    use line6_devices::transport::rawmidi::{self, RawMidiLink};
-    RawMidiLink::open(rawmidi::PODXT_LIVE_CARD, Path::PodxtMidi)
+    use line6_devices::{
+        family::podxt::transport::PODXT_LIVE_MIDI, transport::rawmidi::RawMidiLink,
+    };
+    RawMidiLink::open_spec(PODXT_LIVE_MIDI)
 }
 
 #[cfg(all(not(test), target_os = "linux"))]

@@ -9,6 +9,7 @@ use crate::{
     midi_enable,
     read_session::{self, ControlTransport},
 };
+use line6_devices::family::variax::transport::VARIAX_VIA_PODXT_LIVE as USB;
 use std::{
     collections::VecDeque,
     sync::atomic::{AtomicBool, Ordering},
@@ -44,7 +45,7 @@ impl Session {
             .iter()
             .filter(|d| {
                 d.device_descriptor()
-                    .is_ok_and(|d| d.vendor_id() == 0x0e41 && d.product_id() == 0x4650)
+                    .is_ok_and(|d| d.vendor_id() == USB.vendor && d.product_id() == USB.product)
             })
             .collect();
         if matches.len() != 1 {
@@ -94,19 +95,22 @@ impl Session {
     fn prepare_interface(&mut self) -> Result<(), String> {
         if self
             .handle
-            .kernel_driver_active(1)
+            .kernel_driver_active(USB.interface)
             .map_err(|e| e.to_string())?
         {
             self.handle
-                .detach_kernel_driver(1)
+                .detach_kernel_driver(USB.interface)
                 .map_err(|e| e.to_string())?;
             self.detached = true;
         }
-        if let Err(error) = self.handle.claim_interface(1) {
+        if let Err(error) = self.handle.claim_interface(USB.interface) {
             return Err(error.to_string());
         }
         self.claimed = true;
-        if let Err(error) = self.handle.set_alternate_setting(1, 1) {
+        if let Err(error) = self
+            .handle
+            .set_alternate_setting(USB.interface, USB.altsetting)
+        {
             return Err(error.to_string());
         }
         Ok(())
@@ -142,7 +146,7 @@ impl Session {
         for chunk in bytes.chunks(identity_stage::WRITE_CHUNK) {
             let sent = self
                 .handle
-                .write_interrupt(0x05, chunk, identity_stage::WRITE_TIMEOUT)
+                .write_interrupt(USB.endpoint_out, chunk, identity_stage::WRITE_TIMEOUT)
                 .map_err(|e| e.to_string())?;
             if sent != chunk.len() {
                 return Err("short USB control write".into());
@@ -178,10 +182,11 @@ impl Session {
                 return Ok(Some(message));
             }
             let mut packet = [0; identity_stage::LISTEN_BYTES];
-            match self
-                .handle
-                .read_interrupt(0x86, &mut packet, identity_stage::READ_POLL)
-            {
+            match self.handle.read_interrupt(
+                USB.endpoint_in,
+                &mut packet,
+                identity_stage::READ_POLL,
+            ) {
                 Ok(length) => {
                     if self.response_gate == Gate::IdentityRequest
                         && packet[..length] == [0xf7]
@@ -212,14 +217,14 @@ impl Session {
             self.enabled = false;
         }
         if self.claimed {
-            if let Err(e) = self.handle.release_interface(1) {
+            if let Err(e) = self.handle.release_interface(USB.interface) {
                 errors.push(e.to_string());
             } else {
                 self.claimed = false;
             }
         }
         if self.detached {
-            if let Err(e) = self.handle.attach_kernel_driver(1) {
+            if let Err(e) = self.handle.attach_kernel_driver(USB.interface) {
                 errors.push(e.to_string());
             } else {
                 self.detached = false;
@@ -254,11 +259,11 @@ impl ControlTransport for Session {
 
 impl IdentityTransport for Session {
     fn detach_if_active(&mut self) -> Result<(), IdentityFailure> {
-        match self.handle.kernel_driver_active(1) {
+        match self.handle.kernel_driver_active(USB.interface) {
             Ok(false) => Ok(()),
             Ok(true) => self
                 .handle
-                .detach_kernel_driver(1)
+                .detach_kernel_driver(USB.interface)
                 .map_err(|_| IdentityFailure::DetachFailed)
                 .inspect(|_| self.detached = true),
             Err(_) => Err(IdentityFailure::DetachFailed),
@@ -267,14 +272,14 @@ impl IdentityTransport for Session {
 
     fn claim_interface(&mut self) -> Result<(), IdentityFailure> {
         self.handle
-            .claim_interface(1)
+            .claim_interface(USB.interface)
             .map_err(|_| IdentityFailure::ClaimFailed)
             .inspect(|_| self.claimed = true)
     }
 
     fn set_alternate(&mut self) -> Result<(), IdentityFailure> {
         self.handle
-            .set_alternate_setting(1, 1)
+            .set_alternate_setting(USB.interface, USB.altsetting)
             .map_err(|_| IdentityFailure::AlternateFailed)
     }
 
@@ -324,7 +329,7 @@ impl IdentityTransport for Session {
         if !self.claimed {
             return Ok(());
         }
-        match self.handle.release_interface(1) {
+        match self.handle.release_interface(USB.interface) {
             Ok(()) => {
                 self.claimed = false;
                 Ok(())
@@ -341,7 +346,7 @@ impl IdentityTransport for Session {
         if !self.detached {
             return Ok(());
         }
-        match self.handle.attach_kernel_driver(1) {
+        match self.handle.attach_kernel_driver(USB.interface) {
             Ok(()) => {
                 self.detached = false;
                 Ok(())

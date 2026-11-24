@@ -1,6 +1,7 @@
 //! Linux ALSA rawmidi link: a device's own MIDI port as its kernel driver
 //! exposes it. No driver is detached.
 
+use super::RawMidiSpec;
 use crate::session::{Link, Path};
 use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
@@ -9,8 +10,8 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-/// ALSA card id of the PODxt Live (`snd_usb_pod`).
-pub const PODXT_LIVE_CARD: &str = "PODxtLive";
+// Compatibility export for callers of the original raw MIDI adapter API (#214).
+pub use crate::family::podxt::transport::PODXT_LIVE_CARD;
 
 pub struct RawMidiLink {
     port: File,
@@ -21,6 +22,10 @@ pub struct RawMidiLink {
 
 /// `/dev/snd/midiC<n>D0` for the ALSA card whose id is `card_id`.
 pub fn find_card(card_id: &str) -> Result<PathBuf, String> {
+    find_device(card_id, |card| format!("/dev/snd/midiC{card}D0").into())
+}
+
+fn find_device(card_id: &str, device_node: impl FnOnce(u32) -> PathBuf) -> Result<PathBuf, String> {
     let cards = std::fs::read_to_string("/proc/asound/cards")
         .map_err(|e| format!("/proc/asound/cards: {e}"))?;
     let marker = format!("[{card_id}");
@@ -29,7 +34,7 @@ pub fn find_card(card_id: &str) -> Result<PathBuf, String> {
         .filter(|line| line.contains(&marker))
         .find_map(|line| line.split_whitespace().next()?.parse::<u32>().ok())
         .ok_or_else(|| format!("ALSA card {card_id} not found in /proc/asound/cards."))?;
-    let device = PathBuf::from(format!("/dev/snd/midiC{card}D0"));
+    let device = device_node(card);
     if device.exists() {
         Ok(device)
     } else {
@@ -40,6 +45,13 @@ pub fn find_card(card_id: &str) -> Result<PathBuf, String> {
 impl RawMidiLink {
     pub fn open(card_id: &str, path: Path) -> Result<Self, String> {
         Self::open_device(find_card(card_id)?, path)
+    }
+
+    pub fn open_spec(spec: RawMidiSpec) -> Result<Self, String> {
+        Self::open_device(
+            find_device(spec.card_id, |card| spec.device_node(card))?,
+            spec.path,
+        )
     }
 
     pub fn open_device(device: PathBuf, path: Path) -> Result<Self, String> {

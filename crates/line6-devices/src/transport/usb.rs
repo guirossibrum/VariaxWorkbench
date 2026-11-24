@@ -7,32 +7,9 @@
 use crate::session::{Link, Path};
 use std::time::{Duration, Instant};
 
-/// Where one control interface lives and how it frames writes.
-#[derive(Clone, Copy, Debug)]
-pub struct InterfaceSpec {
-    pub vendor: u16,
-    pub product: u16,
-    pub interface: u8,
-    pub altsetting: u8,
-    pub endpoint_out: u8,
-    pub endpoint_in: u8,
-    pub packet: usize,
-    pub chunk_gap: Duration,
-    pub path: Path,
-}
-
-/// Variax control through PODxt Live USB interface 1 (kernel `snd_usb_variax`).
-pub const VARIAX_VIA_PODXT_LIVE: InterfaceSpec = InterfaceSpec {
-    vendor: 0x0e41,
-    product: 0x4650,
-    interface: 1,
-    altsetting: 1,
-    endpoint_out: 0x05,
-    endpoint_in: 0x86,
-    packet: 16,
-    chunk_gap: Duration::from_millis(5),
-    path: Path::VariaxViaPodxt,
-};
+// Compatibility exports for callers of the original USB adapter API (#214).
+pub use super::InterfaceSpec;
+pub use crate::family::variax::transport::VARIAX_VIA_PODXT_LIVE;
 
 const WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 

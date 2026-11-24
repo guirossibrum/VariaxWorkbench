@@ -9,13 +9,15 @@ use crate::PresetMetadata;
 use crate::hardware_gates::{self, Gate};
 
 #[cfg(all(not(test), target_os = "linux"))]
+use line6_devices::family::variax::transport::VARIAX_VIA_PODXT_LIVE;
+#[cfg(all(not(test), target_os = "linux"))]
 use line6_devices::family::{self, podxt, variax};
 #[cfg(all(not(test), target_os = "linux"))]
 use line6_devices::gate::{GatePolicy, Operation};
 #[cfg(all(not(test), target_os = "linux"))]
 use line6_devices::session::{Quiet, Session};
 #[cfg(all(not(test), target_os = "linux"))]
-use line6_devices::transport::usb::{self, UsbInterfaceLink};
+use line6_devices::transport::usb::UsbInterfaceLink;
 
 #[cfg(all(not(test), target_os = "linux"))]
 struct DeviceCheckPolicy;
@@ -85,7 +87,7 @@ fn read_both_supported() -> Result<BothReads, String> {
 
 #[cfg(all(not(test), target_os = "linux"))]
 fn read_variax() -> Result<(PresetMetadata, String), String> {
-    let mut link = UsbInterfaceLink::open(usb::VARIAX_VIA_PODXT_LIVE)?;
+    let mut link = UsbInterfaceLink::open(VARIAX_VIA_PODXT_LIVE)?;
     let preset = {
         let mut log = Quiet;
         let policy = DeviceCheckPolicy;
@@ -123,9 +125,10 @@ fn integer(metadata: &PresetMetadata, key: &str) -> Result<i32, String> {
 
 #[cfg(all(not(test), target_os = "linux"))]
 fn read_podxt() -> Result<String, String> {
-    use line6_devices::session::Path;
-    use line6_devices::transport::rawmidi::{self, RawMidiLink};
-    let mut link = RawMidiLink::open(rawmidi::PODXT_LIVE_CARD, Path::PodxtMidi)?;
+    use line6_devices::{
+        family::podxt::transport::PODXT_LIVE_MIDI, transport::rawmidi::RawMidiLink,
+    };
+    let mut link = RawMidiLink::open_spec(PODXT_LIVE_MIDI)?;
     let mut log = Quiet;
     let policy = DeviceCheckPolicy;
     let mut session = Session::new(&mut link, &policy, &mut log);
