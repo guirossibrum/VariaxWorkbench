@@ -87,7 +87,8 @@ fn app_open_routes_files_by_content_and_ignores_misleading_suffixes() {
             open: [Some(path)].into(),
             ..Default::default()
         });
-        app.open_file_dialog();
+        app.request_open_file(&ctx);
+        app.poll_picker(&ctx);
         assert!(app.shell_error.is_none());
         let active = app.tabs.active.unwrap();
         let index = app.tabs.index(active).unwrap();
@@ -102,10 +103,73 @@ fn app_open_routes_files_by_content_and_ignores_misleading_suffixes() {
         open: [Some(bad)].into(),
         ..Default::default()
     });
-    app.open_file_dialog();
+    app.request_open_file(&ctx);
+    app.poll_picker(&ctx);
     assert!(app.shell_error.is_some());
     assert_eq!(app.tabs.active, previous);
     assert_eq!(app.tabs.entries.len(), 3);
+}
+
+#[test]
+fn pending_picker_keeps_rendering_and_routes_an_editor_result_to_its_origin() {
+    let ctx = egui::Context::default();
+    let mut app = empty_shell(&ctx);
+    app.new_tab(registry::LEGACY_STARTUP);
+    let origin = app.tabs.active.unwrap();
+    let result = std::rc::Rc::new(std::cell::Cell::new(false));
+    let finish = result.clone();
+    app.dialogs = Box::new(FakeDialogs {
+        next_picker: Some(Box::pin(std::future::poll_fn(move |_| {
+            if finish.get() {
+                std::task::Poll::Ready(Some(PathBuf::from("selected.vwm")))
+            } else {
+                std::task::Poll::Pending
+            }
+        }))),
+        ..Default::default()
+    });
+    let routed = std::rc::Rc::new(std::cell::Cell::new(false));
+    let completed = routed.clone();
+    app.with_tab(origin, |_, services| {
+        assert!(services.request_picker::<VariaxEditor>(
+            &ctx,
+            PickRequest::SaveWorkbenchFile {
+                name: "suggested.vwm".into(),
+                extension: "vwm".into()
+            },
+            move |editor, path, _| {
+                assert_eq!(path, Some(PathBuf::from("selected.vwm")));
+                editor.change(|preset| preset.rename("Picker result"));
+                completed.set(true);
+            }
+        ));
+    });
+    app.new_tab(registry::LEGACY_STARTUP);
+    let other = app.tabs.active;
+    app.request_open_file(&ctx); // No fake result was supplied for a second picker.
+    let before = app.frame_count;
+    for _ in 0..3 {
+        let _ = ctx.run(egui::RawInput::default(), |ctx| app.render(ctx));
+    }
+    assert!(app.frame_count >= before + 3);
+    assert!(app.picker.is_open());
+    assert!(!routed.get());
+
+    result.set(true);
+    let _ = ctx.run(egui::RawInput::default(), |ctx| app.render(ctx));
+    assert!(!app.picker.is_open());
+    assert!(routed.get());
+    assert_eq!(app.tabs.active, other);
+    assert!(
+        app.tabs.entries[app.tabs.index(origin).unwrap()]
+            .editor
+            .dirty()
+    );
+    assert!(
+        !app.tabs.entries[app.tabs.index(other.unwrap()).unwrap()]
+            .editor
+            .dirty()
+    );
 }
 
 #[test]

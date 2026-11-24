@@ -74,6 +74,8 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 
 ### Verified and passing
 
+- [x] Shared non-blocking picker for shell Open File, Device check reports and backup folders, and recording load and save. Four headless tests cover results, cancellation, duplicate requests, and continued updates while a picker is pending. The family-editor callers and the Hyprland owner check remain pending. [Picker handoff and owner check](docs/non-blocking-pickers.md) · [#233](https://github.com/guirossibrum/VariaxWorkbench/issues/233).
+
 - [x] Device reconnect reattaches the most recently disconnected tab of that family after admission. It keeps the open document, history and unsaved edits, and sends no editor data. Headless checks cover PODxt and Variax reconnect, disconnect order and the unsaved-edits notice. The owner reproduced duplicate tabs in the earlier run. Step 5 is pending a rerun with this change. The four-commit update passed **826** app tests (2 ignored), **144** device-library tests (2 ignored), and **4** owner-probe tests. [Owner test card](docs/automatic-identity-owner-test-card.md) · [#235](https://github.com/guirossibrum/VariaxWorkbench/issues/235).
 
 - [x] Variax live-link follow-up. Code-derived PODxt Live connect and disconnect notices can queue the existing read-only identity check. A Variax 300/600 reply below firmware 3.07 shows an informational warning on the PODxt tab. Offline validation passed **802** app tests (1 ignored), **116** device-library tests (2 ignored), and **4** owner-probe tests. Physical notice delivery and the first owner run remain pending. [Owner test card](docs/automatic-identity-owner-test-card.md) · [#201](https://github.com/guirossibrum/VariaxWorkbench/issues/201).

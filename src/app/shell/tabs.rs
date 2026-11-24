@@ -1,5 +1,5 @@
 use super::detection::{DetectedDevice, DeviceKey, DeviceSupport};
-use super::{FileDialogs, egui};
+use super::{FileDialogs, PickRequest, Picker, PickerAction, egui};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -42,12 +42,41 @@ pub(super) enum CloseResult {
 
 pub(super) struct EditorServices<'a> {
     pub dialogs: &'a mut dyn FileDialogs,
+    pub picker: &'a mut Picker<PickerAction>,
+    #[allow(dead_code)] // Editor-lane migration, see docs/non-blocking-pickers.md.
+    pub tab: TabId,
     pub close: CloseResult,
     #[cfg(test)]
     pub prompt_buttons: &'a mut std::collections::HashMap<&'static str, egui::Rect>,
 }
 
 impl EditorServices<'_> {
+    /// Complete on the originating tab, even if the user has switched tabs.
+    #[allow(dead_code)] // Editor-lane migration, see docs/non-blocking-pickers.md.
+    pub fn request_picker<E: FamilyTab>(
+        &mut self,
+        ctx: &egui::Context,
+        request: PickRequest,
+        complete: impl FnOnce(&mut E, Option<PathBuf>, &mut EditorServices<'_>) + 'static,
+    ) -> bool {
+        let action = PickerAction::Tab {
+            id: self.tab,
+            complete: Box::new(move |editor, path, services| {
+                let editor = (editor as &mut dyn std::any::Any)
+                    .downcast_mut::<E>()
+                    .expect("the picker completion belongs to its editor");
+                complete(editor, path, services);
+            }),
+        };
+        let started = self
+            .picker
+            .start(action, || self.dialogs.start_picker(request));
+        if started {
+            ctx.request_repaint();
+        }
+        started
+    }
+
     pub fn finish_close_if(&mut self, ready: bool) {
         if ready {
             self.close = CloseResult::Ready;
