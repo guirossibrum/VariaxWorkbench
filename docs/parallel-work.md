@@ -17,7 +17,7 @@ directly.
 | **2. Design and layout** | `docs/design/`, `src/shared/ui/` (theme and components), `assets/ui/` (committed art); after #213, the visuals of `src/app/shell/` | #215 (specification and mockups, **owner approval before code**) → #216 (theme and component library) → #217 (shell restyle) |
 | **3. Variax editor** | `src/families/variax/` (editor and file) | #192, #193, #194, #195, #196, #197, #198, #199, #200 → after #216: #188, #189, #190, #191, #224 (restyle) → after #213: #203, #204, #206 → #205 (Sync, after the store tests #177/#178); #230, #231 (from #227) after #200 |
 | **4. PODxt editor** | `src/families/podxt/`, `crates/line6-devices/src/family/podxt/` | #210 (parameter table) → #218 → #219 (after #216) → #220 (after #213) → #221 → #222 (after #211 items 3–4) → #223 |
-| **5. Variax device tests** | `crates/line6-devices/src/family/variax/` (read and write messages), `tools/reso5-test/` except its device lock (lane 1) | #225 (read-only `0x44` slot read) → #229 (saved-tone flag in restore matching, before #178). The #177 store-stage additions belong to the #177 agent (issue/177-store-checks). |
+| **5. Variax device tests** | `crates/line6-devices/src/family/variax/` (read and write messages), `tools/reso5-test/` except its device lock (lane 1) | #225 (read-only `0x44` slot read) → #177 store-stage additions (issue/177-store-checks) → #229 (saved-tone flag in restore matching, before #178). Run by the former #177 agent since 2026-11-24. |
 | Research | `docs/firmware-*.md`, `research/`, `scripts/` (own files only) | #226 (Variax opcode history, Grok), #211 (PODxt Live 3.01 firmware), #232 (PODxt Live Variax control ownership, after #211) |
 
 Shared files: `README.md` (one ledger line per delivered item, in your lane's
