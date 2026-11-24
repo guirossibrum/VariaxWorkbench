@@ -1,5 +1,5 @@
-use super::{EditorDocument, FamilyTab, VariaxEditor, egui};
-use crate::editor::{detection::DeviceKey, tabs::DeviceTab};
+use super::{EditorDocument, FamilyTab, VariaxEditor, egui, live_attachment::Attachment};
+use crate::editor::tabs::DeviceTab;
 use line6_devices::family::variax::{self, Restore};
 use std::{
     sync::{
@@ -10,13 +10,6 @@ use std::{
     time::Duration,
 };
 use variax_workbench::bundle::BundleFile;
-
-#[derive(Clone, PartialEq, Eq)]
-struct Attachment {
-    key: DeviceKey,
-    path: String,
-    address: u8,
-}
 
 struct Capture {
     bundle: BundleFile,
@@ -41,14 +34,7 @@ pub(super) struct Refresh {
 
 impl Refresh {
     pub(super) fn observe(&mut self, device: Option<&DeviceTab>) {
-        let attachment = device.and_then(|device| {
-            let (path, address) = device.verified_attachment()?;
-            Some(Attachment {
-                key: device.device.key.clone(),
-                path: path.into(),
-                address,
-            })
-        });
+        let attachment = device.and_then(Attachment::verified);
         if self.attachment != attachment {
             self.cancel();
             self.confirming = false;
@@ -107,7 +93,7 @@ impl VariaxEditor {
             return;
         }
         let button = ui.add_enabled(
-            cfg!(target_os = "linux") && !self.refresh.busy(),
+            cfg!(target_os = "linux") && !self.refresh.busy() && !self.follow.busy(),
             egui::Button::new("Refresh from guitar…"),
         );
         if button.clicked() {
@@ -116,7 +102,11 @@ impl VariaxEditor {
     }
 
     fn request_refresh(&mut self, read: ReadLibrary) {
-        if self.is_reading() || self.blocking_prompt() || self.refresh.attachment.is_none() {
+        if self.is_reading()
+            || self.follow.busy()
+            || self.blocking_prompt()
+            || self.refresh.attachment.is_none()
+        {
             return;
         }
         if self.dirty() {
@@ -323,7 +313,7 @@ fn read_library(_: &Attachment, _: &AtomicBool, _: &AtomicUsize) -> Result<Captu
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::editor::{Scan, detection, tests::app};
     use variax_workbench::device_probe::{OsMetadataSource, PODXT_LIVE_USB, SyntheticSysfs};
@@ -350,7 +340,7 @@ mod tests {
         }
     }
 
-    fn attach(editor: &mut VariaxEditor) {
+    pub(crate) fn attach(editor: &mut VariaxEditor) {
         let mut metadata = SyntheticSysfs::new();
         metadata.add_device(
             "8-2.1",
