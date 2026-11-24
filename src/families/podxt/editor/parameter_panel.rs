@@ -1,21 +1,19 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
-use variax_workbench::pod_preset::{
-    PodControl, PodMetadata, PodModelChange, PodTone, UnknownPodDefaults, pod_parameter_table,
-};
+use variax_workbench::pod_preset::{PodControl, PodMetadata, PodModelChange, PodTone};
 
 #[derive(Default)]
 pub(super) struct ParameterPanel {
-    packs: u8,
-    keep_amp_settings: bool,
-    undo: Vec<Revision>,
-    redo: Vec<Revision>,
-    unknown: BTreeMap<usize, BTreeSet<u32>>,
+    pub(super) packs: u8,
+    pub(super) keep_amp_settings: bool,
+    pub(super) undo: Vec<Revision>,
+    pub(super) redo: Vec<Revision>,
+    pub(super) unknown: BTreeMap<usize, BTreeSet<u32>>,
     metadata: Option<MetadataDraft>,
-    slider: Option<(usize, u32, f64)>,
+    pub(super) slider: Option<(usize, u32, f64)>,
 }
 
-struct Revision {
+pub(super) struct Revision {
     index: usize,
     bytes: Vec<u8>,
     unknown: BTreeSet<u32>,
@@ -172,227 +170,7 @@ impl PodxtEditor {
         }
     }
 
-    pub(super) fn parameter_panel(&mut self, ui: &mut egui::Ui) {
-        let Some(index) = self.pod_selected else {
-            return;
-        };
-        let Some(tone) = self.pod_library.tone(index) else {
-            return;
-        };
-        let can_reset_eq = tone.podxt_eq_reset_context().is_ok();
-        let controls = tone.table_controls(self.parameter_panel.packs);
-        let variax_family = controls
-            .iter()
-            .find(|row| row.parameter.key == "VARIAX_FAMILY")
-            .and_then(|row| row.bits);
-        ui.horizontal_wrapped(|ui| {
-            if self.pod_button_enabled(
-                ui,
-                "pod-undo",
-                "Undo",
-                !self.parameter_panel.undo.is_empty(),
-            ) {
-                self.table_history(false);
-            }
-            if self.pod_button_enabled(
-                ui,
-                "pod-redo",
-                "Redo",
-                !self.parameter_panel.redo.is_empty(),
-            ) {
-                self.table_history(true);
-            }
-            let mut amp_defaults = !self.parameter_panel.keep_amp_settings;
-            if ui.checkbox(&mut amp_defaults, "Load amp defaults")
-                .on_hover_text("Until default values are available, shared amp controls keep their settings and new controls use neutral values.")
-                .changed()
-            {
-                self.parameter_panel.keep_amp_settings = !amp_defaults;
-            }
-            ui.menu_button("Model packs", |ui| {
-                for (bit, label) in [
-                    (1, "Metal Shop"),
-                    (2, "Collector Classics"),
-                    (4, "FX Junkie"),
-                    (8, "Bass Expansion"),
-                ] {
-                    let mut selected = self.parameter_panel.packs & bit != 0;
-                    if ui.checkbox(&mut selected, label).changed() {
-                        self.parameter_panel.packs ^= bit;
-                    }
-                }
-            })
-            .response
-            .on_hover_text(
-                "Select the packs installed on your PODxt to make those models available offline.",
-            );
-        });
-
-        // Navigation above can select a different tone during Undo or Redo.
-        if self.pod_selected != Some(index) {
-            return;
-        }
-        let table = pod_parameter_table();
-        let mut change = None;
-        let active = match self.pod_block {
-            PodBlock::Amp => "amp",
-            PodBlock::Stomp => "stomp",
-            PodBlock::Mod => "mod",
-            PodBlock::Delay => "delay",
-        };
-        let mut reset_eq = false;
-        for (group, heading) in GROUPS {
-            if matches!(group, "amp" | "drive" | "stomp" | "mod" | "delay")
-                && group != active
-                && !(group == "drive" && active == "amp")
-            {
-                continue;
-            }
-            let mut render = |ui: &mut egui::Ui| {
-                for control in controls.iter().filter(|control| {
-                    control.parameter.block == group
-                        && control
-                            .parameter
-                            .variax_family
-                            .is_none_or(|family| Some(family) == variax_family)
-                }) {
-                    let selector = control.parameter.selector.expect("editable selector");
-                    let key = control.parameter.key.as_str();
-                    let unknown = self
-                        .parameter_panel
-                        .unknown
-                        .get(&index)
-                        .is_some_and(|markers| markers.contains(&selector));
-                    ui.push_id((index, selector), |ui| {
-                        if let Some(bits) = self.parameter_widget(ui, index, control, unknown) {
-                            change = Some((key, bits, control.parameter.catalog.is_some()));
-                        }
-                    });
-                }
-                if group == "eq" && can_reset_eq {
-                    reset_eq = ui.button("Reset EQ").clicked();
-                }
-            };
-            if group == active || group == "drive" {
-                render(ui);
-            } else {
-                ui.collapsing(heading, render);
-            }
-        }
-        if reset_eq
-            && let Err(error) = self.table_edit(index, |tone| {
-                tone.reset_podxt_eq()?;
-                Ok(PodModelChange::default())
-            })
-        {
-            self.pod_message = error.detail();
-        }
-        if let Some((key, bits, is_model)) = change {
-            let packs = self.parameter_panel.packs;
-            let amp_defaults = !self.parameter_panel.keep_amp_settings;
-            let result = self.table_edit(index, |candidate| {
-                if is_model {
-                    candidate.set_table_model(key, bits, packs, amp_defaults, &UnknownPodDefaults)
-                } else {
-                    candidate.set_table_parameter(key, bits)?;
-                    Ok(PodModelChange {
-                        affected: table
-                            .parameter(key)
-                            .and_then(|row| row.selector)
-                            .into_iter()
-                            .collect(),
-                        ..Default::default()
-                    })
-                }
-            });
-            if let Err(error) = result {
-                self.pod_message = error.detail();
-            }
-        }
-        self.metadata_panel(ui, index);
-    }
-
-    fn parameter_widget(
-        &mut self,
-        ui: &mut egui::Ui,
-        index: usize,
-        control: &PodControl<'_>,
-        unknown: bool,
-    ) -> Option<u32> {
-        let mut changed = None;
-        ui.horizontal(|ui| {
-            ui.label(control.label());
-            if !control.choices.is_empty() {
-                let current = control
-                    .bits
-                    .and_then(|bits| {
-                        control
-                            .choices
-                            .iter()
-                            .find(|(raw, _)| *raw == bits)
-                            .map(|(_, label)| label.as_ref())
-                            .or_else(|| {
-                                control.parameter.catalog.as_ref()?;
-                                pod_parameter_table().model_name(bits)
-                            })
-                    })
-                    .unwrap_or(if control.bits.is_some() {
-                        "Unknown selection"
-                    } else {
-                        "Select…"
-                    });
-                let mut next = control.bits;
-                egui::ComboBox::from_id_salt("choice")
-                    .selected_text(current)
-                    .show_ui(ui, |ui| {
-                        for (value, label) in &control.choices {
-                            if ui
-                                .selectable_value(&mut next, Some(*value), label.as_ref())
-                                .clicked()
-                            {
-                                changed = Some(*value);
-                            }
-                        }
-                    });
-            } else if let (Some([min, max]), Some(format)) =
-                (control.display_range(), control.format)
-                && max > min
-            {
-                let selector = control.parameter.selector.unwrap();
-                let draft = self
-                    .parameter_panel
-                    .slider
-                    .filter(|&(tone, key, _)| tone == index && key == selector);
-                let mut value = draft
-                    .map(|(_, _, value)| value)
-                    .or_else(|| {
-                        control
-                            .bits
-                            .or_else(|| control.neutral_bits())
-                            .and_then(|bits| control.displayed(bits))
-                    })
-                    .unwrap_or(min);
-                let slider = egui::Slider::new(&mut value, min..=max)
-                    .fixed_decimals(format.decimals.unwrap_or(0).max(0) as usize)
-                    .suffix(format.unit.as_deref().unwrap_or(""));
-                let response = ui.add(slider);
-                if response.dragged() || response.drag_started() {
-                    self.parameter_panel.slider = Some((index, selector, value));
-                } else if response.drag_stopped() || response.changed() {
-                    self.parameter_panel.slider = None;
-                    changed = control.bits_from_display(value);
-                }
-            }
-            if unknown {
-                ui.small("default unknown");
-            } else if control.bits.is_none() && control.parameter.catalog.is_none() {
-                ui.small("Not stored");
-            }
-        });
-        changed
-    }
-
-    fn metadata_panel(&mut self, ui: &mut egui::Ui, index: usize) {
+    pub(super) fn metadata_panel(&mut self, ui: &mut egui::Ui, index: usize) {
         ui.collapsing("Tone metadata", |ui| {
             let Some(tone) = self.pod_library.tone(index) else {
                 return;
