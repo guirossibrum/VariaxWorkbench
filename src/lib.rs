@@ -14,6 +14,7 @@ pub mod dsp;
 pub mod edit;
 pub mod factory_comparison;
 pub mod factory_reference;
+mod families;
 pub mod firmware;
 pub mod hardware_gates;
 pub mod host;
@@ -45,6 +46,7 @@ pub mod provenance;
 pub mod read_session;
 pub mod recording;
 pub mod rig;
+mod shared;
 pub mod simulation;
 #[cfg(feature = "usb")]
 pub mod usb;
