@@ -1,4 +1,5 @@
 //! Presence updates and the consent prompt for a manual scan.
+use super::super::detection::AttachmentKey;
 use super::*;
 
 const PRESENCE_INTERVAL: Duration = Duration::from_secs(1);
@@ -46,6 +47,24 @@ impl Workbench {
                 self.tabs.mark_presence_uncertain();
                 self.detection_status = Some(format!("Device detection: {error}."));
             }
+        }
+    }
+
+    pub(super) fn refresh_guitar_button(&mut self, ui: &mut egui::Ui, enabled: bool) -> bool {
+        let response = ui.add_enabled(enabled, egui::Button::new("Refresh guitar"));
+        #[cfg(test)]
+        self.detection_buttons
+            .insert("refresh-guitar", response.rect);
+        response.clicked()
+    }
+
+    pub(super) fn refresh_guitar(&mut self, attachment: &AttachmentKey) {
+        if self
+            .detection
+            .as_mut()
+            .is_some_and(|service| service.queue_guitar_refresh(attachment))
+        {
+            self.refresh_detection(Scan::Automatic);
         }
     }
 

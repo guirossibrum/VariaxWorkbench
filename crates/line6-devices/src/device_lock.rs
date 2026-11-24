@@ -123,6 +123,13 @@ mod linux {
     #[cfg(test)]
     #[test]
     fn exclusive_until_the_last_inherited_handle_closes() {
+        const CHILD_PATH: &str = "VARIAX_DEVICE_LOCK_TEST_PATH";
+        if let Some(path) = std::env::var_os(CHILD_PATH) {
+            let path = std::path::PathBuf::from(path);
+            verify(std::io::stdin(), &path).unwrap();
+            assert!(matches!(acquire(&path), Err(LockError::Busy)));
+            return;
+        }
         let folder =
             std::env::temp_dir().join(format!("variax-device-lock-test-{}", std::process::id()));
         std::fs::create_dir(&folder).unwrap();
@@ -135,6 +142,20 @@ mod linux {
         ));
         let inherited = first.file.try_clone().unwrap();
         verify(&inherited, &path).unwrap();
+        let output = std::process::Command::new(std::env::args_os().next().unwrap())
+            .args([
+                "--exact",
+                "device_lock::linux::exclusive_until_the_last_inherited_handle_closes",
+            ])
+            .env(CHILD_PATH, &path)
+            .stdin(first.child_stdin().unwrap())
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}"
+        );
         drop(first);
         assert!(matches!(acquire(&path), Err(LockError::Busy)));
         drop(inherited);

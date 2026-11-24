@@ -16,10 +16,7 @@ pub(super) const DEVICE_PROFILES: &[DiscoveryProfile] = &[
     },
     DiscoveryProfile {
         family: &variax_panel::FAMILY,
-        discovery: DeviceDiscovery::ViaBridge {
-            bridge: variax_workbench::device_probe::PODXT_LIVE_USB,
-            candidate: variax_workbench::device_probe::expected_driver_binding,
-        },
+        discovery: DeviceDiscovery::ViaBridge(variax_workbench::device_probe::PODXT_LIVE_USB),
     },
     DiscoveryProfile {
         family: &hd500x_panel::FAMILY,

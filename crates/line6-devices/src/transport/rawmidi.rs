@@ -68,6 +68,9 @@ impl Link for RawMidiLink {
         let deadline = Instant::now() + Duration::from_secs(1);
         let mut remaining = bytes;
         while !remaining.is_empty() {
+            if Instant::now() >= deadline {
+                return Err("MIDI write timed out.".into());
+            }
             match self.port.write(remaining) {
                 Ok(0) => return Err("MIDI port closed during write.".into()),
                 Ok(length) => remaining = &remaining[length..],
@@ -119,4 +122,39 @@ fn pause_until(deadline: Instant) -> bool {
     }
     std::thread::sleep(remaining.min(Duration::from_millis(4)));
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::fd::OwnedFd;
+
+    fn fixture(port: impl Into<OwnedFd>) -> RawMidiLink {
+        let port = File::from(port.into());
+        rustix::fs::fcntl_setfl(&port, OFlags::NONBLOCK).unwrap();
+        RawMidiLink {
+            port,
+            opened: Instant::now(),
+            path: Path::PodxtMidi,
+            device: PathBuf::new(),
+        }
+    }
+
+    #[test]
+    fn nonblocking_link_reads_writes_and_closes_the_only_descriptor() {
+        let (reader, writer) = std::io::pipe().unwrap();
+        let mut reader = fixture(reader);
+        let mut writer = fixture(writer);
+        assert_eq!(reader.read(Duration::from_millis(2)).unwrap(), None);
+        writer.write(&[0xf0, 0xf7]).unwrap();
+        assert_eq!(
+            reader.read(Duration::from_secs(1)).unwrap(),
+            Some(vec![0xf0, 0xf7])
+        );
+        drop(writer);
+        assert_eq!(
+            reader.read(Duration::from_millis(2)),
+            Err("MIDI port closed.".into())
+        );
+    }
 }

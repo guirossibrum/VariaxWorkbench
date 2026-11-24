@@ -26,8 +26,6 @@ fn run() -> Result<(), String> {
     }
     #[cfg(all(not(test), target_os = "linux"))]
     {
-        let _rig =
-            line6_devices::device_lock::DeviceLock::acquire().map_err(|error| error.to_string())?;
         live::run(&args)
     }
     #[cfg(any(test, not(target_os = "linux")))]

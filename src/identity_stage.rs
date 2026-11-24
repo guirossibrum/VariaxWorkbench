@@ -117,8 +117,8 @@ impl IdentityFailure {
 
     pub const fn stop_token(self) -> &'static str {
         match self {
-            Self::RigBusy => "rig_busy",
-            Self::LockUnavailable => "lock_unavailable",
+            Self::RigBusy => "stop=rig-busy",
+            Self::LockUnavailable => "stop=lock-unavailable",
             Self::Unknown => "stop=unknown",
             Self::Ambiguous => "stop=ambiguous",
             Self::Inconsistent => "stop=inconsistent",
@@ -198,6 +198,8 @@ pub struct ScriptedIdentity {
     queue: VecDeque<Vec<u8>>,
     /// Not visible until the first reply is taken.
     late: Option<Vec<u8>>,
+    retry_reply: Option<Vec<u8>>,
+    orphan_end: bool,
     queued_at_start: usize,
     delivered: usize,
     sent: Vec<Vec<u8>>,
@@ -228,6 +230,8 @@ impl ScriptedIdentity {
         Self {
             queue,
             late: None,
+            retry_reply: None,
+            orphan_end: false,
             queued_at_start,
             delivered: 0,
             sent: Vec::new(),
@@ -351,6 +355,7 @@ pub(crate) trait IdentityTransport {
     /// report how many replies remain.
     fn poll_reply(&mut self, cancel: &AtomicBool) -> Result<Option<Vec<u8>>, IdentityFailure>;
     fn take_scripted_cancel(&mut self) -> bool;
+    fn take_orphan_end(&mut self) -> bool;
     fn release_interface(&mut self) -> Result<(), IdentityFailure>;
     fn reattach_driver(&mut self) -> Result<(), IdentityFailure>;
     fn release_attempted(&self) -> bool;
@@ -402,6 +407,11 @@ impl IdentityTransport for ScriptedIdentity {
     fn send_identity_request(&mut self) -> Result<(), IdentityFailure> {
         self.bump();
         self.sent.push(IDENTITY_REQUEST.to_vec());
+        if self.sent.len() == 2
+            && let Some(frame) = self.retry_reply.take()
+        {
+            self.queue.push_back(frame);
+        }
         Ok(())
     }
 
@@ -417,6 +427,10 @@ impl IdentityTransport for ScriptedIdentity {
             self.queue.push_back(late);
         }
         Ok(Some(frame))
+    }
+
+    fn take_orphan_end(&mut self) -> bool {
+        std::mem::take(&mut self.orphan_end)
     }
 
     fn take_scripted_cancel(&mut self) -> bool {
@@ -565,6 +579,7 @@ fn open_and_exchange(
     transport: &mut impl IdentityTransport,
     cancel: &AtomicBool,
     exchange: &mut IdentityExchange,
+    retry_lost_packet: bool,
 ) -> Result<(), IdentityFailure> {
     if cancelled(transport, cancel) {
         return Err(IdentityFailure::Cancelled);
@@ -583,7 +598,17 @@ fn open_and_exchange(
     }
     transport.send_identity_request()?;
     exchange.requests_sent = 1;
-    read_window(transport, cancel, exchange)
+    match read_window(transport, cancel, exchange) {
+        Err(IdentityFailure::TimedOut) if retry_lost_packet && transport.take_orphan_end() => {
+            if cancelled(transport, cancel) {
+                return Err(IdentityFailure::Cancelled);
+            }
+            transport.send_identity_request()?;
+            exchange.requests_sent += 1;
+            read_window(transport, cancel, exchange)
+        }
+        result => result,
+    }
 }
 
 fn finish_cleanup(transport: &mut impl IdentityTransport, exchange: &mut IdentityExchange) {
@@ -617,6 +642,22 @@ pub(crate) fn run_identity_exchange(
     transport: &mut impl IdentityTransport,
     cancel: &AtomicBool,
 ) -> IdentityExchange {
+    run_exchange(transport, cancel, false)
+}
+
+#[cfg(any(test, all(target_os = "linux", feature = "usb")))]
+pub(crate) fn run_discovery_exchange(
+    transport: &mut impl IdentityTransport,
+    cancel: &AtomicBool,
+) -> IdentityExchange {
+    run_exchange(transport, cancel, true)
+}
+
+fn run_exchange(
+    transport: &mut impl IdentityTransport,
+    cancel: &AtomicBool,
+    retry_lost_packet: bool,
+) -> IdentityExchange {
     let mut exchange = IdentityExchange {
         pair: None,
         bridge: None,
@@ -629,7 +670,7 @@ pub(crate) fn run_identity_exchange(
         failure: None,
         cleanup_failure: None,
     };
-    if let Err(failure) = open_and_exchange(transport, cancel, &mut exchange) {
+    if let Err(failure) = open_and_exchange(transport, cancel, &mut exchange, retry_lost_packet) {
         exchange.failure = Some(failure);
         exchange.pair = None;
     }
@@ -665,6 +706,50 @@ mod tests {
         let mut script = script;
         let exchange = run_identity_exchange(&mut script, &AtomicBool::new(false));
         (exchange, script)
+    }
+
+    #[test]
+    fn discovery_resends_only_for_a_lost_first_packet_and_never_a_third_time() {
+        for (orphan, reply, expected_requests, verified) in [
+            (false, None, 1, false),
+            (true, None, 2, false),
+            (true, Some(guitar_reply()), 2, true),
+            (true, Some(bridge_reply()), 2, false),
+            (
+                true,
+                Some({
+                    let mut wrong_firmware = guitar_reply();
+                    wrong_firmware[15] = b'1';
+                    wrong_firmware
+                }),
+                2,
+                false,
+            ),
+        ] {
+            let mut script = ScriptedIdentity::new([]);
+            script.orphan_end = orphan;
+            script.retry_reply = reply;
+            let exchange = run_discovery_exchange(&mut script, &AtomicBool::new(false));
+            assert_eq!(exchange.requests_sent, expected_requests);
+            assert_eq!(script.sent().len(), expected_requests);
+            assert_full_cleanup(&exchange, &script);
+            assert_eq!(exchange_result(exchange).is_ok(), verified);
+        }
+    }
+
+    #[test]
+    fn discovery_discards_identity_if_cleanup_fails() {
+        let mut script = happy_script().fail_reattach();
+        let exchange = run_discovery_exchange(&mut script, &AtomicBool::new(false));
+        assert!(exchange.release_attempted && exchange.reattach_attempted);
+        assert_eq!(exchange.requests_sent, 1);
+        assert!(matches!(
+            exchange_result(exchange),
+            Err(IdentifyError::Failed(IdentifyStop {
+                cleanup: Some(IdentityFailure::CleanupFailed),
+                ..
+            }))
+        ));
     }
 
     fn assert_full_cleanup(exchange: &IdentityExchange, script: &ScriptedIdentity) {

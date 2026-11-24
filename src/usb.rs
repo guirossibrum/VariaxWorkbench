@@ -23,6 +23,7 @@ struct Session {
     response_gate: Gate,
     decoder: SysexDecoder,
     queue: VecDeque<Vec<u8>>,
+    orphan_end: bool,
     /// Set when the one identity request is sent. Later polls use this same
     /// deadline, so a second reply still counts inside the original 3 seconds.
     reply_deadline: Option<Instant>,
@@ -37,7 +38,7 @@ impl Session {
         hardware_gates::run_if_unlocked(Gate::OsDiscovery, Self::open_unlocked)
     }
 
-    fn open_handle() -> Result<Self, String> {
+    fn open_handle(expected_path: Option<&str>) -> Result<Self, String> {
         let devices = rusb::devices().map_err(|e| e.to_string())?;
         let matches: Vec<_> = devices
             .iter()
@@ -49,7 +50,20 @@ impl Session {
         if matches.len() != 1 {
             return Err(format!("expected one PODxt Live, found {}", matches.len()));
         }
-        let handle = matches[0].open().map_err(|e| format!("Cannot open PODxt Live USB control: {e}. USB device access permission may be required."))?;
+        let device = &matches[0];
+        if let Some(expected_path) = expected_path {
+            let port_path = device
+                .port_numbers()
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .map(|port| port.to_string())
+                .collect::<Vec<_>>()
+                .join(".");
+            if format!("{}-{port_path}", device.bus_number()) != expected_path {
+                return Err("the PODxt Live USB attachment changed".into());
+            }
+        }
+        let handle = device.open().map_err(|e| format!("Cannot open PODxt Live USB control: {e}. USB device access permission may be required."))?;
         Ok(Self {
             handle,
             detached: false,
@@ -58,6 +72,7 @@ impl Session {
             response_gate: Gate::IdentityRequest,
             decoder: SysexDecoder::default(),
             queue: VecDeque::new(),
+            orphan_end: false,
             reply_deadline: None,
             release_was_attempted: false,
             reattach_was_attempted: false,
@@ -69,7 +84,7 @@ impl Session {
     /// Detach, then claim, then the alternate setting. A failure after detach
     /// still runs cleanup, and a cleanup error is kept beside the original error.
     fn open_unlocked() -> Result<Self, String> {
-        let mut session = Self::open_handle()?;
+        let mut session = Self::open_handle(None)?;
         if let Err(error) = session.prepare_interface() {
             return Err(session.finish_open_error(error));
         }
@@ -168,6 +183,12 @@ impl Session {
                 .read_interrupt(0x86, &mut packet, identity_stage::READ_POLL)
             {
                 Ok(length) => {
+                    if self.response_gate == Gate::IdentityRequest
+                        && packet[..length] == [0xf7]
+                        && self.decoder.is_idle()
+                    {
+                        self.orphan_end = true;
+                    }
                     self.queue.extend(decode_interrupt_packet(
                         &mut self.decoder,
                         &packet[..length],
@@ -290,6 +311,10 @@ impl IdentityTransport for Session {
         }
     }
 
+    fn take_orphan_end(&mut self) -> bool {
+        std::mem::take(&mut self.orphan_end)
+    }
+
     fn take_scripted_cancel(&mut self) -> bool {
         false
     }
@@ -382,7 +407,6 @@ pub(crate) fn decode_interrupt_packet(
     decoder.feed(&normalized)
 }
 
-#[cfg(not(test))]
 fn open_stopped(failure: IdentityFailure) -> identity_stage::IdentifyError {
     identity_stage::IdentifyError::Failed(identity_stage::IdentifyStop {
         failure,
@@ -395,11 +419,17 @@ fn open_stopped(failure: IdentityFailure) -> identity_stage::IdentifyError {
     })
 }
 
-/// Open the one PODxt Live. A refusal stops before detach and before the
-/// identity question. There is no second open and no system password prompt.
-#[cfg(not(test))]
-fn open_for_identity() -> Result<Session, identity_stage::IdentifyError> {
-    Session::open_handle().map_err(|error| open_stopped(open_failure_kind(&error)))
+/// An open refusal stops before detach or send, with no second open.
+fn identity_on<T: IdentityTransport>(
+    open: impl FnOnce() -> Result<T, String>,
+    cancel: &AtomicBool,
+    exchange: impl FnOnce(&mut T, &AtomicBool) -> identity_stage::IdentityExchange,
+) -> Result<identity_stage::IdentityPair, identity_stage::IdentifyError> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err(open_stopped(IdentityFailure::Cancelled));
+    }
+    let mut session = open().map_err(|error| open_stopped(open_failure_kind(&error)))?;
+    identity_stage::exchange_result(exchange(&mut session, cancel))
 }
 
 /// One Variax identity request. Gate G2 only: this does not require the
@@ -423,17 +453,7 @@ pub fn read_identity(
     #[cfg(not(test))]
     {
         if cancel.load(Ordering::Relaxed) {
-            return Err(identity_stage::IdentifyError::Failed(
-                identity_stage::IdentifyStop {
-                    failure: IdentityFailure::Cancelled,
-                    cleanup: None,
-                    cleanup_ran: false,
-                    release_failed: false,
-                    reattach_failed: false,
-                    bridge: None,
-                    guitar: None,
-                },
-            ));
+            return Err(open_stopped(IdentityFailure::Cancelled));
         }
         let _rig = line6_devices::device_lock::DeviceLock::acquire().map_err(|error| {
             open_stopped(match error {
@@ -443,10 +463,33 @@ pub fn read_identity(
                 }
             })
         })?;
-        let mut session = open_for_identity()?;
-        let exchange = identity_stage::run_identity_exchange(&mut session, cancel);
-        identity_stage::exchange_result(exchange)
+        identity_on(
+            || Session::open_handle(None),
+            cancel,
+            identity_stage::run_identity_exchange,
+        )
     }
+}
+
+/// Use the Device check exchange against the expected attachment while the
+/// caller holds the rig lock. Only an observed orphan tail permits one resend.
+#[cfg(all(not(test), target_os = "linux"))]
+pub fn read_discovery_identity(
+    _rig: &line6_devices::device_lock::DeviceLock,
+    expected_path: &str,
+    cancel: &AtomicBool,
+) -> Result<identity_stage::IdentityPair, identity_stage::IdentifyError> {
+    use identity_stage::IdentifyError;
+    hardware_gates::run_if_unlocked(Gate::OsDiscovery, || {
+        hardware_gates::run_if_unlocked(Gate::IdentityRequest, || {
+            Ok(identity_on(
+                || Session::open_handle(Some(expected_path)),
+                cancel,
+                identity_stage::run_discovery_exchange,
+            ))
+        })
+    })
+    .unwrap_or(Err(IdentifyError::Locked))
 }
 
 pub fn read_current(cancel: &AtomicBool) -> Result<CurrentPreset, String> {
@@ -482,6 +525,24 @@ mod tests {
             .err()
             .expect("a test build must not read a device");
         assert!(error.contains("test builds do not open"), "{error}");
+    }
+
+    #[test]
+    fn automatic_identity_refused_open_never_runs_the_exchange() {
+        let error = identity_on::<identity_stage::ScriptedIdentity>(
+            || Err("Access denied".into()),
+            &AtomicBool::new(false),
+            |_, _| panic!("refused open must not detach or send"),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            identity_stage::IdentifyError::Failed(identity_stage::IdentifyStop {
+                failure: IdentityFailure::AccessDenied,
+                cleanup_ran: false,
+                ..
+            })
+        ));
     }
 
     #[test]

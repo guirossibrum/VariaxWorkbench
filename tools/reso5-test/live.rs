@@ -250,6 +250,8 @@ fn run_device(task: DeviceTask<'_>, trace: &Trace) -> Result<(), String> {
     if stopping() {
         return Err("Cancelled or unable to write the log before device preflight.".into());
     }
+    let _rig =
+        line6_devices::device_lock::DeviceLock::acquire().map_err(|error| error.to_string())?;
     {
         let podxt = RawMidiLink::open(PODXT_LIVE_CARD, DevicePath::PodxtMidi)?;
         let mut log = trace;
