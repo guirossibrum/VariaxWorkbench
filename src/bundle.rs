@@ -191,10 +191,10 @@ mod tests {
         let mut bundle = BundleFile::parse(bytes.clone()).unwrap();
         assert_eq!(bundle.as_bytes(), bytes);
         let mut replacement = bundle.banks()[0].presets()[0].clone();
-        replacement.rename("Changed 🎸").unwrap();
+        replacement.rename("Changed").unwrap();
         bundle.replace(0, 0, &replacement).unwrap();
         let again = BundleFile::parse(bundle.as_bytes().to_vec()).unwrap();
-        assert_eq!(again.banks()[0].presets()[0].name(), "Changed 🎸");
+        assert_eq!(again.banks()[0].presets()[0].name(), "Changed");
         assert_eq!(again.banks()[0].name, "B");
         assert!(bundle.replace(0, 4, &replacement).is_err());
     }

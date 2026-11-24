@@ -63,7 +63,7 @@ fn bank_browsing_edits_history_and_save_copy_preserve_the_complete_container() {
         assert!(!doc.can_undo());
         assert!(doc.select(0, 0).is_err());
         assert_eq!(doc.selection(), Some((2, 1)));
-        doc.apply(|p| p.rename("Replacement 🎸")).unwrap();
+        doc.apply(|p| p.rename("Replacement")).unwrap();
         let renamed = doc.preset().clone();
         assert_eq!(doc.as_bytes(), bundle(fixed, Some(renamed.as_bytes())));
         doc.select(1, 1).unwrap();
@@ -73,7 +73,7 @@ fn bank_browsing_edits_history_and_save_copy_preserve_the_complete_container() {
         doc.redo();
         assert_eq!(doc.preset().name(), "Other edit");
         doc.select(2, 1).unwrap();
-        assert_eq!(doc.preset().name(), "Replacement 🎸");
+        assert_eq!(doc.preset().name(), "Replacement");
         doc.begin_gesture();
         for value in [3f32, 4., 5.] {
             doc.apply(|p| p.set_parameter(0x02010001, 0x200000, 1, value.to_bits()))

@@ -32,7 +32,7 @@ pub struct PresetFile {
     models: Vec<Model>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PresetText {
     Author,
     Notes,
@@ -51,6 +51,27 @@ impl PresetText {
 pub(crate) struct Chunk {
     pub(crate) id: [u8; 4],
     pub(crate) data: Range<usize>,
+}
+
+/// Why a stored model name or author cannot be sent to a legacy Variax.
+/// A new edit uses [`reject_new_legacy_text`] instead of keeping this text.
+pub fn legacy_text_issue(value: &str, already_stored: bool) -> Option<&'static str> {
+    if value.len() <= 18 && value.bytes().all(|byte| matches!(byte, 0x20..=0x7e)) {
+        return None;
+    }
+    Some(if already_stored {
+        "Kept as saved. The guitar only stores 18 letters, numbers, spaces, and keyboard symbols."
+    } else {
+        "Not saved. Use at most 18 letters, numbers, spaces, and keyboard symbols."
+    })
+}
+
+fn reject_new_legacy_text(value: &str) -> Result<(), String> {
+    if legacy_text_issue(value, false).is_some() {
+        Err("Use at most 18 letters, numbers, spaces, and keyboard symbols.".into())
+    } else {
+        Ok(())
+    }
 }
 
 pub(crate) fn word(bytes: &[u8], at: usize) -> u32 {
@@ -339,6 +360,12 @@ impl PresetFile {
         &self.name
     }
 
+    /// Variax 300/500/600/700 store a model or author as 18 printable ASCII
+    /// bytes. Other devices keep the older 32 UTF-16 edit rule.
+    pub fn limits_legacy_name(&self) -> bool {
+        matches!(self.device_id, 0x70000 | 0x70001 | 0x70004)
+    }
+
     fn metadata_chunks(&self, field: PresetText) -> Result<Option<(Chunk, Option<Chunk>)>, String> {
         let root = chunks(&self.bytes, 12..self.bytes.len())?;
         let mut lists = root.into_iter().filter(|chunk| {
@@ -383,6 +410,9 @@ impl PresetFile {
         }
         if self.metadata(field)? == value {
             return Ok(());
+        }
+        if field == PresetText::Author && self.limits_legacy_name() {
+            reject_new_legacy_text(value)?;
         }
         let location = self.metadata_chunks(field)?;
         let encode_chunk = |tag: [u8; 4], payload: &[u8]| -> Result<Vec<u8>, String> {
@@ -537,6 +567,23 @@ impl PresetFile {
                     .into(),
             );
         }
+        if name == self.name {
+            return Ok(());
+        }
+        if self.limits_legacy_name() {
+            reject_new_legacy_text(name)?;
+        } else {
+            let units: Vec<u16> = name.encode_utf16().collect();
+            if units.len() > 32 || units.contains(&0) {
+                return Err("name must contain at most 32 UTF-16 code units and no NUL".into());
+            }
+        }
+        self.set_stored_name(name)
+    }
+
+    /// Write a name the way a file can already contain it, including text the
+    /// guitar would refuse. A person editing the name uses [`rename`].
+    pub fn set_stored_name(&mut self, name: &str) -> Result<(), String> {
         let units: Vec<u16> = name.encode_utf16().collect();
         if units.len() > 32 || units.contains(&0) {
             return Err("name must contain at most 32 UTF-16 code units and no NUL".into());
@@ -662,15 +709,15 @@ mod tests {
         let mut list = b"UNFO".to_vec();
         list.extend_from_slice(&unknown);
         let mut preset = make(list.clone());
-        preset.set_metadata(PresetText::Author, "Ana 🎸").unwrap();
+        preset.set_metadata(PresetText::Author, "Ana").unwrap();
         preset
-            .set_metadata(PresetText::Notes, "First\nSecond")
+            .set_metadata(PresetText::Notes, "First\nSecond 🎸")
             .unwrap();
         let reopened = PresetFile::parse(preset.as_bytes().to_vec()).unwrap();
-        assert_eq!(reopened.metadata(PresetText::Author).unwrap(), "Ana 🎸");
+        assert_eq!(reopened.metadata(PresetText::Author).unwrap(), "Ana");
         assert_eq!(
             reopened.metadata(PresetText::Notes).unwrap(),
-            "First\nSecond"
+            "First\nSecond 🎸"
         );
         assert!(
             reopened
@@ -725,16 +772,119 @@ mod tests {
         assert!(patch.set_parameter(0x02010001, 0xffffff, 1, 0).is_err());
     }
 
+    fn stored_name(bytes: Vec<u8>, name: &str) -> PresetFile {
+        let preset = PresetFile::parse(bytes).unwrap();
+        let mut bytes = preset.as_bytes().to_vec();
+        let encoded: Vec<u8> = name.encode_utf16().flat_map(u16::to_be_bytes).collect();
+        assert!(encoded.len() <= 64);
+        bytes[preset.name_offset..preset.name_offset + 64].fill(0);
+        bytes[preset.name_offset..preset.name_offset + encoded.len()].copy_from_slice(&encoded);
+        PresetFile::parse(bytes).unwrap()
+    }
+
     #[test]
-    fn unicode_names_are_lossless_and_overlong_names_are_rejected() {
+    fn legacy_names_and_authors_stop_at_18_printable_ascii_and_keep_older_text() {
         let mut patch = PresetFile::parse(example()).unwrap();
-        patch.rename("Guitare 🎸").unwrap();
-        assert_eq!(
-            PresetFile::parse(patch.as_bytes().to_vec()).unwrap().name,
-            "Guitare 🎸"
+        assert!(patch.limits_legacy_name());
+        let before = patch.as_bytes().to_vec();
+        patch.rename("123456789012345678").unwrap();
+        assert_eq!(patch.name(), "123456789012345678");
+        let accepted = patch.as_bytes().to_vec();
+        assert!(patch.rename("1234567890123456789").is_err());
+        assert!(patch.rename("cafe\u{e9}").is_err());
+        assert!(patch.rename("bad\u{7f}").is_err());
+        assert!(patch.rename("has\nline").is_err());
+        assert_eq!(patch.as_bytes(), accepted);
+        patch.rename("space and ~ ok").unwrap();
+        assert_eq!(patch.name(), "space and ~ ok");
+        let mut document = crate::document::EditorDocument::from_preset(
+            PresetFile::parse(example()).unwrap(),
+            std::path::PathBuf::from("name.vwm"),
         );
-        assert!(patch.rename(&"🎸".repeat(17)).is_err());
-        assert!(patch.rename("bad\0name").is_err());
+        document
+            .apply(|preset| preset.rename("123456789012345678"))
+            .unwrap();
+        assert!(
+            document
+                .apply(|preset| preset.rename("1234567890123456789"))
+                .is_err()
+        );
+        assert_eq!(document.preset().name(), "123456789012345678");
+        document.undo();
+        assert_eq!(document.preset().name(), "A");
+        assert!(!document.can_undo());
+
+        let kept = stored_name(before.clone(), "Guitare \u{1f3b8}");
+        assert_eq!(kept.name(), "Guitare \u{1f3b8}");
+        assert!(
+            legacy_text_issue(kept.name(), true)
+                .unwrap()
+                .contains("Kept as saved")
+        );
+        let kept_bytes = kept.as_bytes().to_vec();
+        let mut same = kept.clone();
+        let same_name = same.name().to_owned();
+        same.rename(&same_name).unwrap();
+        assert_eq!(same.as_bytes(), kept_bytes);
+        let mut other = kept.clone();
+        other
+            .set_parameter(0x02010001, 0x200000, 1, 1.5f32.to_bits())
+            .unwrap();
+        assert_eq!(other.name(), "Guitare \u{1f3b8}");
+        other.rename("Short").unwrap();
+        assert_eq!(other.name(), "Short");
+
+        let mut author = PresetFile::parse(example()).unwrap();
+        let author_before = author.as_bytes().to_vec();
+        assert!(
+            author
+                .set_metadata(PresetText::Author, "1234567890123456789")
+                .is_err()
+        );
+        assert!(
+            author
+                .set_metadata(PresetText::Author, "Ana \u{1f3b8}")
+                .is_err()
+        );
+        assert_eq!(author.as_bytes(), author_before);
+        author
+            .set_metadata(PresetText::Author, "123456789012345678")
+            .unwrap();
+        assert_eq!(
+            author.metadata(PresetText::Author).unwrap(),
+            "123456789012345678"
+        );
+
+        let mut list = b"UNFO".to_vec();
+        let emoji = "Ana \u{1f3b8}"
+            .encode_utf16()
+            .flat_map(u16::to_be_bytes)
+            .collect::<Vec<_>>();
+        list.extend(chunk(b"IAUT", &emoji));
+        let mut wrapped = example();
+        wrapped.extend(chunk(b"LIST", &list));
+        let len = (wrapped.len() - 8) as u32;
+        wrapped[4..8].copy_from_slice(&len.to_be_bytes());
+        let opened = PresetFile::parse(wrapped.clone()).unwrap();
+        assert_eq!(
+            opened.metadata(PresetText::Author).unwrap(),
+            "Ana \u{1f3b8}"
+        );
+        assert_eq!(opened.as_bytes(), wrapped);
+        assert!(legacy_text_issue(&opened.metadata(PresetText::Author).unwrap(), true).is_some());
+        let mut notes = opened.clone();
+        notes
+            .set_metadata(PresetText::Notes, "Still free \u{1f3b8}")
+            .unwrap();
+        assert_eq!(notes.metadata(PresetText::Author).unwrap(), "Ana \u{1f3b8}");
+
+        let mut other_device = PresetFile::parse(example()).unwrap();
+        let at = other_device.name_offset - 4;
+        other_device.bytes[at..at + 4].copy_from_slice(&0x0001_0001u32.to_be_bytes());
+        let mut other_device = PresetFile::parse(other_device.bytes).unwrap();
+        assert!(!other_device.limits_legacy_name());
+        other_device.rename("Guitare \u{1f3b8}").unwrap();
+        assert_eq!(other_device.name(), "Guitare \u{1f3b8}");
     }
 
     #[test]

@@ -70,7 +70,9 @@ pub(super) fn milestones(ui: &mut egui::Ui) {
          PODxt Live. Step 4 stays off.",
     );
     ui.label(
-        "Build 18 is this copy. Turning a pickup off keeps the other pickup on, and Front \
+        "Build 19 is this copy. A model name or author uses at most 18 letters, numbers, \
+         spaces, and keyboard symbols. A saved name that is longer or uses other characters \
+         stays as it is and is marked. Turning a pickup off keeps the other pickup on, and Front \
          draws that pickup on top of the other. On This computer, Device check can try a PODxt Live tone \
          change and put it back, and it can play a saved tone. The try changes treble, mid, \
          one EQ band, and the modulation, delay and reverb switches, then puts the original \
@@ -80,7 +82,7 @@ pub(super) fn milestones(ui: &mut egui::Ui) {
          60 presets and tries to put the original preset back. Back up the PODxt Live still \
          reads the stored tones and does not change the current tone on purpose. Backup files \
          are ordinary files you can move or delete. Step 4 stays off. No is still the default. \
-         Close the old window and open this one so the corner says build 18.",
+         Close the old window and open this one so the corner says build 19.",
     );
     for (label, url) in [
         (
@@ -294,6 +296,7 @@ impl Workbench {
             Ok(document) => {
                 self.document = Some(document);
                 self.drag_origin = None;
+                self.clear_text_drafts();
                 self.tab = Tab::Pickups;
                 self.status = "Opened the built-in example banks.".into();
                 self.error = None;
@@ -421,19 +424,32 @@ impl Workbench {
             }
         });
 
-        if next != document.selection()
+        let switched = if next != document.selection()
             && let Some((bank, slot)) = next
             && let Some(document) = &mut self.document
         {
             match document.select(bank, slot) {
                 Ok(()) => {
-                    self.drag_origin = None;
-                    self.error = None;
-                    let name = &document.banks().expect("selected bank")[bank].name;
-                    self.status = format!("Editing {name}{suffix}, slot {} offline.", slot + 1);
+                    let name = document.banks().expect("selected bank")[bank].name.clone();
+                    Some(Ok(format!(
+                        "Editing {name}{suffix}, slot {} offline.",
+                        slot + 1
+                    )))
                 }
-                Err(error) => self.error = Some(error),
+                Err(error) => Some(Err(error)),
             }
+        } else {
+            None
+        };
+        match switched {
+            Some(Ok(status)) => {
+                self.drag_origin = None;
+                self.clear_text_drafts();
+                self.error = None;
+                self.status = status;
+            }
+            Some(Err(error)) => self.error = Some(error),
+            None => {}
         }
     }
 
@@ -445,28 +461,41 @@ impl Workbench {
         let editable = available && matches!(document.preset().device_id(), 0x70000 | 0x70004);
         let can_undo = editable && document.can_undo();
         let can_redo = editable && document.can_redo();
-        let mut name = document.preset().name().to_owned();
+        let stored_name = document.preset().name().to_owned();
+        let mut name = self
+            .name_draft
+            .clone()
+            .unwrap_or_else(|| stored_name.clone());
+        #[cfg(test)]
+        self.name_notice.clear();
 
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
                     ui.add_sized([42.0, 17.0], egui::Label::new("Model"));
-                    if ui
-                        .add_enabled(
-                            editable,
-                            egui::TextEdit::singleline(&mut name)
-                                .desired_width(168.0)
-                                .hint_text("Model name"),
-                        )
-                        .changed()
-                    {
-                        self.change(|preset| preset.rename(&name));
-                    }
+                    let response = ui.add_enabled(
+                        editable,
+                        egui::TextEdit::singleline(&mut name)
+                            .desired_width(168.0)
+                            .hint_text("Model name"),
+                    );
+                    self.limited_text(response, &stored_name, name.clone(), true);
                 });
+                self.name_flag(ui, "Model", &name, name == stored_name);
                 ui.horizontal(|ui| {
                     ui.add_sized([42.0, 17.0], egui::Label::new("Author"));
                     self.metadata_field(ui, editable, PresetText::Author, 168.0);
                 });
+                let stored_author = self
+                    .document
+                    .as_ref()
+                    .and_then(|document| document.preset().metadata(PresetText::Author).ok())
+                    .unwrap_or_default();
+                let author = self
+                    .author_draft
+                    .clone()
+                    .unwrap_or_else(|| stored_author.clone());
+                self.name_flag(ui, "Author", &author, author == stored_author);
             });
             ui.label("Notes");
             let notes_width = (ui.available_width() - 135.0).clamp(80.0, 400.0);
@@ -489,26 +518,107 @@ impl Workbench {
     }
 
     fn metadata_field(&mut self, ui: &mut egui::Ui, editable: bool, field: PresetText, width: f32) {
-        let document = self
+        let stored = match self
             .document
             .as_ref()
-            .expect("metadata fields require a document");
-        match document.preset().metadata(field) {
-            Ok(mut value) => {
-                let widget = match field {
-                    PresetText::Author => egui::TextEdit::singleline(&mut value),
-                    PresetText::Notes => egui::TextEdit::multiline(&mut value).desired_rows(2),
-                };
-                if ui
-                    .add_enabled(editable, widget.desired_width(width))
-                    .changed()
-                {
-                    self.change(|preset| preset.set_metadata(field, &value));
-                }
-            }
+            .expect("metadata fields require a document")
+            .preset()
+            .metadata(field)
+        {
+            Ok(stored) => stored,
             Err(error) => {
                 ui.weak("Unavailable").on_hover_text(error);
+                return;
             }
+        };
+        let mut value = if field == PresetText::Author {
+            self.author_draft.clone().unwrap_or_else(|| stored.clone())
+        } else {
+            stored.clone()
+        };
+        let widget = match field {
+            PresetText::Author => egui::TextEdit::singleline(&mut value),
+            PresetText::Notes => egui::TextEdit::multiline(&mut value).desired_rows(2),
+        };
+        let response = ui.add_enabled(editable, widget.desired_width(width));
+        if field == PresetText::Author {
+            self.limited_text(response, &stored, value, false);
+        } else if response.changed() {
+            self.change(|preset| preset.set_metadata(field, &value));
+        }
+    }
+
+    fn name_flag(&mut self, ui: &mut egui::Ui, label: &str, value: &str, already_stored: bool) {
+        let limits = self
+            .document
+            .as_ref()
+            .is_some_and(|document| document.preset().limits_legacy_name());
+        if !limits {
+            return;
+        }
+        let Some(issue) = variax_workbench::preset::legacy_text_issue(value, already_stored) else {
+            return;
+        };
+        let line = format!("{label}: {issue}");
+        ui.label(
+            egui::RichText::new(&line)
+                .small()
+                .color(Color32::from_rgb(214, 168, 72)),
+        );
+        #[cfg(test)]
+        self.name_notice.push_str(&line);
+    }
+
+    /// Keep an unfinished name or author on screen without writing the file.
+    /// A finished 18-character keyboard name is one undo step.
+    fn limited_text(&mut self, response: egui::Response, stored: &str, edited: String, name: bool) {
+        let limits = self
+            .document
+            .as_ref()
+            .is_some_and(|document| document.preset().limits_legacy_name());
+        if !limits {
+            if response.changed() && edited != stored {
+                if name {
+                    self.change(|preset| preset.rename(&edited));
+                } else {
+                    self.change(|preset| preset.set_metadata(PresetText::Author, &edited));
+                }
+            }
+            return;
+        }
+        let invalid = variax_workbench::preset::legacy_text_issue(&edited, false).is_some();
+        if !response.changed() {
+            if response.lost_focus() {
+                self.clear_one_draft(name);
+            }
+            return;
+        }
+        if self.is_reading() || self.pending.is_some() {
+            return;
+        }
+        if !invalid {
+            self.clear_one_draft(name);
+            if edited != stored {
+                if name {
+                    self.change(|preset| preset.rename(&edited));
+                } else {
+                    self.change(|preset| preset.set_metadata(PresetText::Author, &edited));
+                }
+            }
+        } else if response.lost_focus() {
+            self.clear_one_draft(name);
+        } else if name {
+            self.name_draft = Some(edited);
+        } else {
+            self.author_draft = Some(edited);
+        }
+    }
+
+    fn clear_one_draft(&mut self, name: bool) {
+        if name {
+            self.name_draft = None;
+        } else {
+            self.author_draft = None;
         }
     }
 
@@ -1148,7 +1258,7 @@ fn example_document() -> Result<EditorDocument, String> {
         chunk(&mut bank, b"BINF", &info);
         for (model, body) in models {
             let mut preset = base.clone();
-            preset.rename(model)?;
+            preset.set_stored_name(model)?;
             preset.select_model(BODY, 0x03100000 + body)?;
             if body == 13 {
                 set_tuning_values(&mut preset, DETUNE, 1, [0; 6])?;

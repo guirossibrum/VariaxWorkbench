@@ -762,6 +762,10 @@ struct Workbench {
     /// Which pickup is painted last. Pickup 1 starts in front, matching the
     /// original panel's first child. This is view state, not a file field.
     pickup_front: u32,
+    /// Unsaved model-name typing. It is not a file field and not an undo step.
+    name_draft: Option<String>,
+    /// Unsaved author typing. It is not a file field and not an undo step.
+    author_draft: Option<String>,
     link_tuning_mix: bool,
     theme_polled: Instant,
     theme_text: String,
@@ -850,6 +854,8 @@ struct Workbench {
     tuning_toggle: Option<Rect>,
     #[cfg(test)]
     pickup_controls: HashMap<(u32, &'static str), Rect>,
+    #[cfg(test)]
+    name_notice: String,
     #[cfg(test)]
     tuning_widgets: HashMap<&'static str, Rect>,
     #[cfg(test)]
@@ -983,6 +989,8 @@ impl Workbench {
             permit_close: false,
             drag_origin: None,
             pickup_front: PICKUP1,
+            name_draft: None,
+            author_draft: None,
             link_tuning_mix: false,
             theme_polled: Instant::now() - Duration::from_secs(2),
             theme_text: String::new(),
@@ -1063,6 +1071,8 @@ impl Workbench {
             tuning_toggle: None,
             #[cfg(test)]
             pickup_controls: HashMap::new(),
+            #[cfg(test)]
+            name_notice: String::new(),
             #[cfg(test)]
             tuning_widgets: HashMap::new(),
             #[cfg(test)]
@@ -1173,6 +1183,7 @@ impl Workbench {
             Ok(document) => {
                 self.document = Some(document);
                 self.drag_origin = None;
+                self.clear_text_drafts();
                 self.error = None;
                 self.status = format!("Opened {}", path.display());
             }
@@ -1229,22 +1240,33 @@ impl Workbench {
         }
     }
 
+    fn clear_text_drafts(&mut self) {
+        self.name_draft = None;
+        self.author_draft = None;
+    }
+
     fn undo(&mut self) {
-        if !self.is_reading()
-            && self.pending.is_none()
-            && let Some(document) = &mut self.document
-        {
-            document.undo();
+        if self.is_reading() || self.pending.is_some() {
+            return;
         }
+        if let Some(document) = &mut self.document {
+            document.undo();
+        } else {
+            return;
+        }
+        self.clear_text_drafts();
     }
 
     fn redo(&mut self) {
-        if !self.is_reading()
-            && self.pending.is_none()
-            && let Some(document) = &mut self.document
-        {
-            document.redo();
+        if self.is_reading() || self.pending.is_some() {
+            return;
         }
+        if let Some(document) = &mut self.document {
+            document.redo();
+        } else {
+            return;
+        }
+        self.clear_text_drafts();
     }
 
     fn start_read(&mut self) {
@@ -14017,6 +14039,74 @@ mod tests {
         assert!(!app.document.as_ref().unwrap().can_undo());
     }
 
+    fn pinf_name_offset(bytes: &[u8]) -> usize {
+        let mut cursor = 12;
+        while cursor + 8 <= bytes.len() {
+            let length =
+                u32::from_be_bytes(bytes[cursor + 4..cursor + 8].try_into().unwrap()) as usize;
+            if &bytes[cursor..cursor + 4] == b"PINF" {
+                return cursor + 16;
+            }
+            cursor = cursor + 8 + length + (length & 1);
+        }
+        panic!("missing PINF");
+    }
+
+    #[test]
+    fn legacy_name_limit_keeps_a_saved_name_and_marks_it() {
+        let (context, mut app) = app();
+        let stored = app.document.as_ref().unwrap().preset().name().to_owned();
+        assert!(app.document.as_ref().unwrap().preset().limits_legacy_name());
+        assert!(variax_workbench::preset::legacy_text_issue(&stored, true).is_none());
+        recording_frame(&context, &mut app, vec![]);
+        assert!(app.name_notice.is_empty());
+
+        let original = app.document.as_ref().unwrap().as_bytes().to_vec();
+        let at = pinf_name_offset(&original);
+        let needle: Vec<u8> = stored.encode_utf16().flat_map(u16::to_be_bytes).collect();
+        assert_eq!(&original[at..at + needle.len()], needle.as_slice());
+        let long = "Too long for guitar!";
+        assert_eq!(long.len(), 20);
+        let encoded: Vec<u8> = long.encode_utf16().flat_map(u16::to_be_bytes).collect();
+        assert!(at + 64 <= original.len());
+        let mut bytes = original.clone();
+        bytes[at..at + 64].fill(0);
+        bytes[at..at + encoded.len()].copy_from_slice(&encoded);
+        assert_eq!(&bytes[..at], &original[..at]);
+        assert_eq!(&bytes[at + 64..], &original[at + 64..]);
+        let preset = PresetFile::parse(bytes.clone()).unwrap();
+        assert_eq!(preset.name(), long);
+        assert!(preset.limits_legacy_name());
+        app.document = Some(EditorDocument::from_preset(
+            preset,
+            PathBuf::from("kept.vwm"),
+        ));
+        recording_frame(&context, &mut app, vec![]);
+        assert!(app.name_notice.contains("Model: Kept as saved"));
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), bytes);
+        assert!(!app.document.as_ref().unwrap().is_dirty());
+        assert!(!app.document.as_ref().unwrap().can_undo());
+
+        app.name_draft = Some("caf\u{e9}".into());
+        recording_frame(&context, &mut app, vec![]);
+        assert!(app.name_notice.contains("Model: Not saved"));
+        assert_eq!(app.document.as_ref().unwrap().preset().name(), long);
+        assert!(!app.document.as_ref().unwrap().can_undo());
+
+        app.name_draft = None;
+        app.change(|preset| preset.rename("1234567890123456789"));
+        assert!(app.error.as_ref().unwrap().contains("18"));
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), bytes);
+        app.error = None;
+        app.change(|preset| preset.rename("Short name"));
+        assert!(app.error.is_none());
+        assert_eq!(app.document.as_ref().unwrap().preset().name(), "Short name");
+        app.undo();
+        assert_eq!(app.document.as_ref().unwrap().preset().name(), long);
+        assert!(app.name_draft.is_none());
+        assert!(!app.document.as_ref().unwrap().can_undo());
+    }
+
     #[test]
     fn offline_example_opens_as_a_clean_editable_preset() {
         let context = egui::Context::default();
@@ -17705,7 +17795,7 @@ mod tests {
         assert_eq!(app.pod_amp_model_pending, pending);
         assert!(!app.permit_close);
 
-        app.change(|preset| preset.rename("Continue to staged POD choice"));
+        app.change(|preset| preset.rename("Staged choice"));
         app.request_close(&context);
         assert!(matches!(app.pending, Some(Pending::Quit)));
         click_prompt(&context, &mut app, "discard");
@@ -21230,8 +21320,8 @@ mod tests {
             let slot = app.bank_slots[&1].center();
             click(&context, &mut app, slot);
             assert_eq!(app.document.as_ref().unwrap().selection(), Some((2, 1)));
-            app.change(|p| p.set_metadata(PresetText::Author, "Guitarist 🎸"));
-            app.change(|p| p.set_metadata(PresetText::Notes, "Drop D\nStudio take"));
+            app.change(|p| p.set_metadata(PresetText::Author, "Guitarist"));
+            app.change(|p| p.set_metadata(PresetText::Notes, "Drop D\nStudio take 🎸"));
             bank(&context, &mut app, 1);
 
             let doc = app.document.as_ref().unwrap();
@@ -21261,11 +21351,11 @@ mod tests {
             reopened.select(2, 1).unwrap();
             assert_eq!(
                 reopened.preset().metadata(PresetText::Author).unwrap(),
-                "Guitarist 🎸"
+                "Guitarist"
             );
             assert_eq!(
                 reopened.preset().metadata(PresetText::Notes).unwrap(),
-                "Drop D\nStudio take"
+                "Drop D\nStudio take 🎸"
             );
 
             app.undo();
