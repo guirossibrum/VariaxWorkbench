@@ -2,6 +2,59 @@
   "archive_sha256": "e9f471e987b04cf31321e8a0da068f44abcdff2edbb32368385c08f92b999c1a",
   "product_id": "00070004",
   "version_hex": "03100000",
+  "bus": {
+    "aar0": {
+      "value": "0x000539",
+      "written_at": "P:0x0DBC",
+      "spaces": [
+        "X",
+        "Y",
+        "P"
+      ],
+      "window": "0x000000-0x07FFFF",
+      "pin": "AA0",
+      "active_low": true,
+      "access": "SRAM"
+    },
+    "aar1": {
+      "value": "0xD00431",
+      "written_at": "P:0x0DBE",
+      "spaces": [
+        "X",
+        "Y"
+      ],
+      "window": "0xD00000-0xDFFFFF",
+      "pin": "AA1",
+      "active_low": true,
+      "access": "SRAM",
+      "packing": false
+    },
+    "aar2": {
+      "value": "0x000001",
+      "spaces_enabled": false
+    },
+    "aar3": {
+      "value": "0x000001",
+      "spaces_enabled": false
+    },
+    "bcr": {
+      "value": "0x1F27C2",
+      "written_at": "P:0x14004",
+      "selects_between_these_paths": false
+    },
+    "address_helpers_add_offset": false,
+    "pdre_bit4": {
+      "register": "Y:0xFFFF9D",
+      "pin": "PE4",
+      "manual_name": "ESAI_1 FST",
+      "gpio_output_programmed_at": "P:0x141CD",
+      "called_from": "P:0x1A13",
+      "board_net": "unknown"
+    },
+    "external_address_pins": "A0-A17",
+    "index_plus_64_same_a0_a17": true,
+    "physical_overlap_opposite_bit4": "unresolved; contradicted by owner backup (program 63 loads a distinct valid program)"
+  },
   "erase": {
     "helper": "P:0x0F63",
     "base": "0xD00000",
@@ -18,7 +71,9 @@
         "last": 127
       },
       "includes_60_through_62": false,
-      "before_trailer": true
+      "before_trailer": true,
+      "pdre_bit4": "set",
+      "same_a0_a17_as_index_minus_64": true
     },
     "0x68": {
       "handler": "P:0x146C0",
@@ -27,7 +82,9 @@
         "last": 63
       },
       "includes_60_through_62": true,
-      "before_trailer": true
+      "before_trailer": true,
+      "pdre_bit4": "clear",
+      "physical_overlap_with_store": "unresolved; contradicted by owner backup (program 63 loads a distinct valid program)"
     }
   },
   "code_load": {
@@ -38,6 +95,8 @@
         "last": 31
       },
       "includes_60_through_62": false,
+      "pdre_bit4": "clear",
+      "physical_overlap_with_presets": "unresolved; contradicted by owner backup (program 63 loads a distinct valid program)",
       "commits_only_after_trailer_and_sum": true,
       "reject_reply": "0x73",
       "then_resets": true
@@ -50,6 +109,8 @@
         "last": 3
       },
       "includes_60_through_62": false,
+      "pdre_bit4": "clear",
+      "physical_overlap_with_presets": "unresolved; contradicted by owner backup (program 63 loads a distinct valid program)",
       "other_values_return": true,
       "commit_then_resets": true
     }
@@ -65,7 +126,16 @@
     "flash_bytes": 3276,
     "flash_nibble_bytes": 6552,
     "sector_bytes_not_sent": 820,
-    "programs_or_erases": false
+    "programs_or_erases": false,
+    "pdre_bit4_during_flash_walk": "set",
+    "index_7f_sets_bit4": false,
+    "index_50_address": "0xD32000",
+    "index_62_address": "0xD3E000",
+    "same_external_pins_as_store": true,
+    "host_image_byte_compare": false,
+    "peripheral_register_writes_in_walk": [
+      "Y:0xFFFF9D bit 4"
+    ]
   },
   "conditional_store": {
     "opcode": "0x45",
@@ -94,7 +164,9 @@
         "last": 59
       },
       "erases": false,
-      "consumes_input_as_data": true
+      "consumes_input_as_data": true,
+      "pdre_bit4": "set",
+      "same_external_pins_as_store": true
     },
     "0x67": {
       "handler": "P:0x14798",
@@ -120,6 +192,10 @@
     "words": 6,
     "sector": 4,
     "destination": "0xD04000",
+    "memory_space": "X",
+    "pdre_bit4": "clear",
+    "address_offset_added": false,
+    "physical_overlap_with_preset_index": "unresolved; contradicted by owner backup (program 63 loads a distinct valid program)",
     "commit_after_trailer": true,
     "uses_spare": false
   },
@@ -128,6 +204,10 @@
     "read_opcode": "0x6D",
     "sector": 8,
     "destination": "0xD08000",
+    "memory_space": "X",
+    "pdre_bit4": "clear",
+    "address_offset_added": false,
+    "physical_overlap_with_preset_index": "unresolved; contradicted by owner backup (program 63 loads a distinct valid program)",
     "words": 132,
     "marker": "0xD081FE",
     "commit_before_trailer": true,

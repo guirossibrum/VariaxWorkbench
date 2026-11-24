@@ -36,6 +36,12 @@ RESET = 0x1ABA
 JSR = 0x0BF080
 MOVE_IMM_A = 0x56F400
 MOVE_M7_M0 = 0x0460A7
+BSET_PDRE4 = 0x011D64
+BCLR_PDRE4 = 0x011D44
+OVERLAP = (
+    "unresolved; contradicted by owner backup "
+    "(program 63 loads a distinct valid program)"
+)
 
 
 def handler(program, opcode):
@@ -125,6 +131,136 @@ def walk_end(program, move_pc, do_pc, repeats=1):
     if count is None:
         count = program[do_pc - 1]
     return start + loop_advances(program, do_pc) * count * repeats
+
+
+def opcode_sites(program, opcode):
+    return sorted(pc for pc, word in program.items() if word == opcode)
+
+
+def require_opcode_sites(program, opcode, expected, label):
+    found = opcode_sites(program, opcode)
+    if found != expected:
+        rendered = ", ".join(pc_text(pc) for pc in found)
+        raise ValueError(f"{label}: {rendered}")
+
+
+def require_absent(program, start, end, opcode, label):
+    if any(program.get(pc) == opcode for pc in range(start, end)):
+        raise ValueError(label)
+
+
+def bus_map(program):
+    """Address attributes and the Port E bit in force for the flash paths."""
+    require_word(program, 0xDBC, 0x08F4B9, "AAR0 lost its movep")
+    require_word(program, 0xDBD, 0x000539, "AAR0 lost its value")
+    require_word(program, 0xDBE, 0x08F4B8, "AAR1 lost its movep")
+    require_word(program, 0xDBF, 0xD00431, "AAR1 lost its value")
+    require_word(program, 0xDC0, 0x08F4B7, "AAR2 lost its movep")
+    require_word(program, 0xDC1, 0x000001, "AAR2 lost its value")
+    require_word(program, 0xDC2, 0x08F4B6, "AAR3 lost its movep")
+    require_word(program, 0xDC3, 0x000001, "AAR3 lost its value")
+    require_opcode_sites(
+        program,
+        0x08F4B9,
+        [0xDBC],
+        "AAR0 is written more than once",
+    )
+    require_opcode_sites(program, 0x08F4B8, [0xDBE], "AAR1 is written more than once")
+    require_opcode_sites(program, 0x08F4B7, [0xDC0], "AAR2 is written more than once")
+    require_opcode_sites(program, 0x08F4B6, [0xDC2], "AAR3 is written more than once")
+    require_word(program, 0x14004, 0x08F4BB, "BCR lost its movep")
+    require_word(program, 0x14005, 0x1F27C2, "BCR lost its value")
+    require_opcode_sites(program, 0x08F4BB, [0x14004], "BCR is written more than once")
+    require_word(program, 0x20A6, 0x51F400, "the loader address helper lost its base move")
+    require_word(program, 0x20A7, SLOT_BASE, "the loader address helper lost its base")
+    require_word(program, 0x20A8, 0x010CEA, "the loader address helper lost its 4 KB step")
+    require_word(program, 0x20A9, 0x213000, "the loader address helper lost its pointer move")
+    require_opcode_sites(
+        program,
+        BSET_PDRE4,
+        [0xF8D, 0xFA7, 0xFD4, 0xFF7, 0x1FE1, 0x141B7, 0x14750, 0x148BC],
+        "PDRE bit 4 gained or lost a set",
+    )
+    require_opcode_sites(
+        program,
+        BCLR_PDRE4,
+        [
+            0xF97,
+            0xFCF,
+            0xFEC,
+            0x100F,
+            0x101B,
+            0x105B,
+            0x1FF9,
+            0x140E8,
+            0x141BB,
+            0x141D6,
+            0x14796,
+            0x148D2,
+        ],
+        "PDRE bit 4 gained or lost a clear",
+    )
+    require_absent(program, 0x14623, 0x14647, BSET_PDRE4, "0x6C sets PDRE bit 4")
+    require_absent(program, 0x1416B, 0x1417E, BSET_PDRE4, "the name commit sets PDRE bit 4")
+    require_absent(program, 0x14583, 0x1458C, BSET_PDRE4, "0x56 sets PDRE bit 4")
+    require_absent(program, 0x14142, 0x14150, BSET_PDRE4, "the string commit sets PDRE bit 4")
+    require_absent(program, 0x0F9A, 0x0FA6, BSET_PDRE4, "the 32-start erase sets PDRE bit 4")
+    require_absent(program, 0x101B, 0x1059, BSET_PDRE4, "the high code erase sets PDRE bit 4")
+    require_absent(program, 0x105B, 0x1066, BSET_PDRE4, "the low code erase sets PDRE bit 4")
+    require_word(program, 0x141D2, 0x07B49E, "Port E direction lost its movep")
+    require_word(program, 0x141D3, 0x000010, "Port E direction lost bit 4")
+    require_word(program, 0x141D4, 0x07B49F, "Port E control lost its movep")
+    require_word(program, 0x141D5, 0x000000, "Port E control is no longer GPIO")
+    require_sites(program, 0x141CD, ("jsr",), [0x1A13], "Port E init gained or lost a caller")
+    require_branch(program, 0x1489B, 0x148B9, "bcc")
+    require_branch(program, 0x148B8, 0x148D3, "bra")
+    reply_pcs = list(range(0x1241, 0x1257))
+    reply_pcs += list(range(0x1367, 0x1378))
+    reply_pcs += list(range(0x1488C, 0x148D9))
+    for pc in reply_pcs:
+        word = program.get(pc, 0)
+        if (word & 0xFFFF00) in {0x08F400, 0x07B400}:
+            raise ValueError("the slot-read reply writes a peripheral register")
+    return {
+        "aar0": {
+            "value": "0x000539",
+            "written_at": pc_text(0xDBC),
+            "spaces": ["X", "Y", "P"],
+            "window": "0x000000-0x07FFFF",
+            "pin": "AA0",
+            "active_low": True,
+            "access": "SRAM",
+        },
+        "aar1": {
+            "value": "0xD00431",
+            "written_at": pc_text(0xDBE),
+            "spaces": ["X", "Y"],
+            "window": "0xD00000-0xDFFFFF",
+            "pin": "AA1",
+            "active_low": True,
+            "access": "SRAM",
+            "packing": False,
+        },
+        "aar2": {"value": "0x000001", "spaces_enabled": False},
+        "aar3": {"value": "0x000001", "spaces_enabled": False},
+        "bcr": {
+            "value": "0x1F27C2",
+            "written_at": pc_text(0x14004),
+            "selects_between_these_paths": False,
+        },
+        "address_helpers_add_offset": False,
+        "pdre_bit4": {
+            "register": "Y:0xFFFF9D",
+            "pin": "PE4",
+            "manual_name": "ESAI_1 FST",
+            "gpio_output_programmed_at": pc_text(0x141CD),
+            "called_from": pc_text(0x1A13),
+            "board_net": "unknown",
+        },
+        "external_address_pins": "A0-A17",
+        "index_plus_64_same_a0_a17": True,
+        "physical_overlap_opposite_bit4": OVERLAP,
+    }
 
 
 def inventory(archive):
@@ -332,10 +468,12 @@ def inventory(archive):
     def span(start, count):
         return {"first": start, "last": start + count - 1}
 
+    bus = bus_map(program)
     return {
         "archive_sha256": ARCHIVE_SHA256,
         "product_id": header["product_id"],
         "version_hex": header["version_hex"],
+        "bus": bus,
         "erase": {
             "helper": pc_text(ERASE),
             "base": "0xD00000",
@@ -350,12 +488,16 @@ def inventory(archive):
                 "sectors": span(user_start, user_count),
                 "includes_60_through_62": False,
                 "before_trailer": True,
+                "pdre_bit4": "set",
+                "same_a0_a17_as_index_minus_64": True,
             },
             "0x68": {
                 "handler": pc_text(handler(program, 0x68)),
                 "sectors": span(spare_start, spare_count),
                 "includes_60_through_62": True,
                 "before_trailer": True,
+                "pdre_bit4": "clear",
+                "physical_overlap_with_store": OVERLAP,
             },
         },
         "code_load": {
@@ -363,6 +505,8 @@ def inventory(archive):
                 "handler": pc_text(0x14687),
                 "sectors": span(code_start, code_count),
                 "includes_60_through_62": False,
+                "pdre_bit4": "clear",
+                "physical_overlap_with_presets": OVERLAP,
                 "commits_only_after_trailer_and_sum": True,
                 "reject_reply": "0x73",
                 "then_resets": True,
@@ -372,6 +516,8 @@ def inventory(archive):
                 "read_branch_erases": False,
                 "commit_sectors": span(0, 4),
                 "includes_60_through_62": False,
+                "pdre_bit4": "clear",
+                "physical_overlap_with_presets": OVERLAP,
                 "other_values_return": True,
                 "commit_then_resets": True,
             },
@@ -388,6 +534,13 @@ def inventory(archive):
             "flash_nibble_bytes": FLASH_BYTES * 2,
             "sector_bytes_not_sent": SECTOR - FLASH_BYTES,
             "programs_or_erases": False,
+            "pdre_bit4_during_flash_walk": "set",
+            "index_7f_sets_bit4": False,
+            "index_50_address": "0xD32000",
+            "index_62_address": "0xD3E000",
+            "same_external_pins_as_store": True,
+            "host_image_byte_compare": False,
+            "peripheral_register_writes_in_walk": ["Y:0xFFFF9D bit 4"],
         },
         "conditional_store": {
             "opcode": "0x45",
@@ -411,6 +564,8 @@ def inventory(archive):
                 "sectors": span(0, 0x3C),
                 "erases": False,
                 "consumes_input_as_data": True,
+                "pdre_bit4": "set",
+                "same_external_pins_as_store": True,
             },
             "0x67": {
                 "handler": pc_text(0x14798),
@@ -433,6 +588,10 @@ def inventory(archive):
             "words": 6,
             "sector": level_sector,
             "destination": "0xD04000",
+            "memory_space": "X",
+            "pdre_bit4": "clear",
+            "address_offset_added": False,
+            "physical_overlap_with_preset_index": OVERLAP,
             "commit_after_trailer": True,
             "uses_spare": False,
         },
@@ -441,6 +600,10 @@ def inventory(archive):
             "read_opcode": "0x6D",
             "sector": name_sector,
             "destination": "0xD08000",
+            "memory_space": "X",
+            "pdre_bit4": "clear",
+            "address_offset_added": False,
+            "physical_overlap_with_preset_index": OVERLAP,
             "words": name_count,
             "marker": "0xD081FE",
             "commit_before_trailer": True,

@@ -93,9 +93,9 @@ library's bank-name read alone emits no Program Change.
   successful readback verifies the name in the current bank conversation.
   The bounded transaction does not reselect the prior preset or reconcile
   unsaved edits. The caller of a future live rename must account for the
-  selection and edit state. A bank-name write erases flash sector 8, which
-  is also preset index 8, before the trailer is checked. The rename does
-  not use the spare sector.
+  selection and edit state. A bank-name write commits its name table
+  before the trailer is checked and does not use the spare. The dispatch
+  findings record that window's pin state.
 - Metadata readback can confirm name and settings, and a listening check
   can test the result on the rig. Neither verifies the full DSP program
   byte for byte. A store acknowledgement alone cannot verify the result

@@ -206,7 +206,8 @@ and by the address words that sit between the calls.
 | 5 | `P:0x0F63` | Erases the spare sector. |
 
 The normal return clears bit 4. A hang inside any helper leaves the bit set
-and never reaches `0x71`. The meaning of the bit is **unknown**.
+and never reaches `0x71`. The bit is PE4, programmed as a GPIO output.
+What that pin selects on the board is **unknown**.
 
 Addresses, with the index in A:
 
@@ -241,11 +242,14 @@ tail of every factory slot, bytes 3,276–4,095, is `0xFF` (0 slots differ).
 The owner's tails are **unknown** and are outside the settings backup.
 
 The store programs the slot image through X and the loader reads flash
-through Y at the same numeric address. The schematic names one SST39LF040.
-The two spaces aliasing onto that chip is **likely**. The zero byte is
-written through Y immediately before the erase of that same address, so a
-completed erase removes it when the spaces alias. It is not a flag the
-loader tests.
+through Y at the same numeric address. While bit 4 of `Y:0xFFFF9D` stays
+set, both accesses match AAR1 and drive the same AA1 and the same A0–A17.
+The DSP56367 has no separate X/Y pin, so those two steps are the same
+external cycle. **Confirmed** for the pin list and the register words in
+[which pins a sector address drives](#which-pins-a-sector-address-drives).
+The zero byte is written through Y immediately before the erase of that
+same address, so a completed erase removes it. It is not a flag the loader
+tests. The schematic names one SST39LF040.
 
 ### Polls have no overall timeout
 
@@ -264,9 +268,10 @@ The elapsed time of 488 ticks is **unknown**. A poll that never matches
 does not return, so `0x71` is not sent. On a NOR part, programming cannot
 turn a 0 bit back to 1. That hang is **likely** for the SST39LF040 named on
 the schematic and **unknown** for the chip fitted on the owner's board.
-Sectors 60–62 are outside the 60-slot preset region of the archive, so
-whether a spare arrives erased is **unknown**. The first store into a group
-programs that spare with no preceding erase.
+Spare indices 60–62, read with bit 4 of `Y:0xFFFF9D` set, are outside the
+60-slot preset region of the archive, so whether a spare arrives erased is
+**unknown**. The first store into a group programs that spare with no
+preceding erase.
 
 ### The spare is not a recovery copy
 
@@ -304,7 +309,7 @@ fitted part. `0x71` is absent in every row except the last.
 | --- | --- | --- | --- |
 | After the RAM stamp and checksum, before step 1 | Unchanged | Unchanged | Loads the old image. The RAM buffer already holds the stamp. |
 | During or after step 1, before step 2 | Unchanged | Partial or complete new image | Loads the old image. The spare is dirty. |
-| After step 2, before step 3 finishes | Zero at the first byte if X and Y alias, or an erase already in progress | New image if step 1 finished | Checksum fails, so the copy is skipped and `Y:0xA48` becomes `0x100000`. The spare is not copied in. |
+| After step 2, before step 3 finishes | Zero at the first byte, or an erase already in progress. The zero and the erase drive the same pins while bit 4 stays set. | New image if step 1 finished | Checksum fails, so the copy is skipped and `Y:0xA48` becomes `0x100000`. The spare is not copied in. |
 | During step 3 or step 4 | Erased, or a partial new image | New image | Same checksum failure. Nothing reloads the spare. |
 | After step 4, during step 5, before the reply | New 1,092 words, with the stamp and the firmware checksum | Erase in progress, or already erased if the helper returned and only the reply was lost | Loads the new image. A missing `0x71` does not mean the slot is unchanged. |
 | After `0x71` | New image | Erased | Loads the new image. Bytes 3,276–4,095 of the sector are the erased state. |
@@ -580,30 +585,110 @@ The erase poll restarts the command when `X:0x179C` exceeds 488. The
 byte-program helper restarts its command when its counter reaches 10,000.
 Neither helper returns a failure code. **Confirmed.**
 
+### Which pins a sector address drives
+
+`P:0x0DBC` writes AAR0 `0x000539`, AAR1 `0xD00431`, AAR2 `0x000001` and
+AAR3 `0x000001`. Nothing later in this image writes those four registers.
+**Confirmed.** `P:0x14004` writes the bus control register `0x1F27C2` once.
+That register sets wait states. It does not pick a different pin for one
+of the paths below than for another.
+
+The DSP56367 manual puts the address to compare in bits 23–12 and the
+number of high bits to compare in bits 11–8. Bit 5 enables Y, bit 4
+enables X, and bit 3 enables P. Bit 2 clear makes the pin active low.
+Access type 01 is SRAM, and the AA pin is then a chip select rather than
+an extra address bit. A compare count of 0 matches every address in the
+enabled spaces.
+
+AAR1 therefore matches X and Y, not P, for `0xD00000`–`0xDFFFFF`, and
+asserts AA1 active low. AAR0 matches X, Y and P for `0x000000`–`0x07FFFF`
+and asserts AA0. AAR2 and AAR3 enable no space, so they assert nothing. The external pin
+list brings out AA0–AA2. **Confirmed** from the register words, those bit
+fields, and the DSP56367 pin list. Every flash address below is in the
+AAR1 window.
+
+`P:0x0F63` and `P:0x20A5` form `0xD00000 + index × 0x1000`. Neither adds
+an offset or a bank bit. **Confirmed.** The store sets bit 4 of
+`Y:0xFFFF9D` at `P:0x0FA7` before it calls the helper, and clears it at
+`P:0x0FCF`. The bit is not part of the address word.
+
+`Y:0xFFFF9D` is the Port E data register. Bit 4 is pin PE4. The DSP56367
+manual names that pin ESAI_1 FST when the port is a peripheral.
+`P:0x1A13` calls `P:0x141CD`, which writes direction `0x000010` to
+`Y:0xFFFF9E` and control `0x000000` to `Y:0xFFFF9F`, then clears the data
+bit. The pin is a GPIO output. **Confirmed.** The Variax schematic notes
+do not name the net, so what the pin selects on the board is **unknown**.
+
+Port A brings out A0–A17, AA0–AA2, RD and WR. It has no X/Y pin. An X
+access and a Y access that match AAR1 assert the same AA1 and the same
+A0–A17. **Confirmed** for that pin list. Address bit 18 is not on A0–A17,
+and AA1 is a chip select, so index and index + 64 present the same A0–A17
+and the same AA1. When bit 4 is also the same, the pins this firmware
+drives match.
+
+| Path | Space | Bit 4 | Address |
+| --- | --- | --- | --- |
+| Names `P:0x1416B`, and boot's copy of that table | X for the erase and the 132-word program. Y for the marker byte and for boot's marker read. | Clear. `0x6C` does not set it. Boot clears it at `P:0x140E8` before the call. | Index 8, `0xD08000` |
+| String levels `P:0x14142` | X for the erase and the program. Y for boot's three-byte compare. | Clear. `0x56` does not set it. | Index 4, `0xD04000` |
+| Store `P:0x0FA6` and the loader copy at `P:0x1FE1` | X for the erase and the word program. Y for the zero byte and for the loader read. | Set for the whole store, and set around the loader copy. | `0xD00000 + index × 0x1000`, and the spare at index + `0x3C` |
+| `0x44` flash walk | Y | Set around the walk. Index `0x7F` does not set it. | The same formula. Index `0x7F` reads `Y:0xA47`. |
+| `0x62` | Y byte program | Set | Indices 0–59 |
+| `0x63` | X erase | Set | Indices 64–127 |
+| `0x68` and both code-load erases | X erase | Clear. The code-load windows clear it and do not set it. `0x68` does not write it. | Indices 32–63, 16–31, and 0–3 |
+
+The name path and the loader's index 8 drive the same AA1 and the same
+A0–A17, and a different level on PE4. Whether that level reaches a
+different device is **unknown**. Calling them one physical sector is
+unresolved; contradicted by owner backup (program 63 loads a distinct
+valid program). The editor's program number for flash index 8 is 63.
+**Confirmed** from `Preset::program_number`. Under the integer reading
+already recorded for `P:0x11A0`, that request reaches the loader as
+argument 63, subtracts 55, and reads index 8 with the bit set.
+**Likely** for that idiom. The owner's 2026-11-24 backup, 60 of 60
+programs, read program 64 as T-Model 1 and then program 63 as Telecaster
+Thin, body `0x03100002`. A checksum miss would have kept the previous
+buffer.
+
+The same label covers the other clear-versus-set pairs: string-level
+index 4 against preset index 4, the code-load ranges against preset
+indices 0–3 and 16–31, and `0x68`'s indices 32–63 against the store's
+indices 32–63 and spares 60–62. `0x62` sets the bit, so indices 0–59
+drive the same pins as the store. `0x63` sets the bit, and index `64 + n`
+drives the same A0–A17 as index `n`. The editor sends none of `0x62`,
+`0x63`, `0x68`, or the code-load opcodes.
+
 ### What erases sectors 60–62
 
 A completed `0x61` still erases one spare at the end of `P:0x0FA6`, after
-`add #$3C`. **Confirmed** from the store trace.
+`add #$3C`, while bit 4 is set. **Confirmed** from the store trace. For
+slot 50 that spare is index 62 at `0xD3E000`.
 
-`0x68` at `P:0x146C0` is the first action of that handler. It erases
-sectors 32–63 before the trailer byte is read. The range includes spares
-60–62, sector 63, and presets 32–59. **Confirmed.** No opcode erases spare
-62 alone. `0x68` erases that spare, and it erases the rest of 32–63 with
-it, and it does so without storing a preset.
+`0x68` at `P:0x146C0` erases numeric indices 32–63 before the trailer,
+and it does not set bit 4. The numeric range includes 60–62.
+**Confirmed** for that DSP loop. It does not drive the pins the store
+uses for those indices. The physical overlap is unresolved; contradicted
+by owner backup (program 63 loads a distinct valid program). No opcode
+erases spare 62 alone while the bit is set.
 
-`0x63` at `P:0x146BD` erases sectors 64–127 before the trailer. That range
-leaves 60–62 alone. **Confirmed.** A matching trailer then sends `0x70`.
+`0x63` at `P:0x146BD` erases numeric indices 64–127 before the trailer,
+with the bit set. The numeric range leaves 60–62 alone. **Confirmed.**
+Index `64 + n` drives the same A0–A17 as index `n`, with the same bit
+level as a store. A matching trailer then sends `0x70`. The editor does
+not send `0x63`.
 
 The erase-helper callers in this image are the restart branch inside
 `P:0x0F63`, the 64–127 walk, the 32–63 walk, the slot erase and the spare
-erase inside `P:0x0FA6`, the two code-load ranges, sector 4, and sector 8.
-**Confirmed.**
+erase inside `P:0x0FA6`, the two code-load ranges, numeric index 4, and
+numeric index 8. **Confirmed.**
 
-`0x62` walks sectors 0–59 and calls the byte-program helper only. It does
-not erase, and it does not address 60–62. **Confirmed.** `0x67` does not
-erase. Its program addresses stay below `0x21000`. **Confirmed.** `0x59`
-requires `F7` first, reads sectors 5–54, and byte-programs below
-`0x21000`. It does not erase. **Confirmed.**
+`0x62` walks numeric indices 0–59, with the bit set, and calls the
+byte-program helper only. It does not erase, and it does not address
+60–62. Those indices drive the same pins as the store. **Confirmed.**
+`0x67` does not erase. Its program addresses stay below `0x21000`.
+**Confirmed.** `0x59` requires `F7` first, reads sectors 5–54, and
+byte-programs below `0x21000`. It does not erase. **Confirmed.** The
+`0x59` read sets the bit only around each Y load and clears it before
+the byte program.
 
 Startup `P:0x1A13` calls `P:0x140E8` and does not call either wide erase.
 Inside that boot function, a `0xFF` byte near the end of sector 31 selects
@@ -629,20 +714,36 @@ low nibble and the high nibble of the same byte, then advances. Those
 1,092-word stored program. The last 820 bytes of the 4,096-byte sector
 are not sent. **Confirmed.**
 
-The only special case is index `0x7F`. Index 50 and index 62 both take
-the flash walk. Indices 0–127 stay inside a 512 KB map and inside one
-4 KB sector. Past index 127 the same walk still runs. What the part
-returns is **unknown**.
+The only special case is index `0x7F`. That arm reads `Y:0xA47` and does
+not set bit 4. Index 50 and index 62 both take the flash walk. Index 50
+is `0xD32000`. Index 62 is `0xD3E000`. Both reads set the bit, so they
+drive the same pins as the store of slot 50 and as that slot's spare.
+**Confirmed** for the pins. Past index 127 the same walk still runs. What
+the part returns is **unknown**.
+
+Index 62 is a read of the 1,092 words the next store programs into the
+spare. The walk does not erase or program, and it does not require the
+sector to be blank. A host can compare those bytes with the erased state
+before storing. The firmware does not make that comparison. The last 820
+bytes of the sector are not returned, and the store does not program
+them. Index 50 returns the 1,092 words now stored in the slot, including
+the stamp and the firmware checksum written by `0x61`. It is not a
+byte-for-byte check of the host image. The editor does not send `0x44`.
 
 The `0x44` body and `P:0x1488C` do not call `P:0x0F17`, `P:0x0F45`,
-`P:0x0F63` or `P:0x0FA6`. **Confirmed.** Bit 4 of `Y:0xFFFF9D` is set for
-the flash walk and cleared afterwards. That is the only other write in
-the reply. The meaning of the bit is **unknown**, the same open point as
-the store poll. The walk is not free of side effects.
+`P:0x0F63` or `P:0x0FA6`. **Confirmed.** In the flash walk the only
+peripheral-register write is bit 4 of `Y:0xFFFF9D`, set at `P:0x148BC`
+and cleared at `P:0x148D2`. Reply bytes are queued at `X:0x141B` by
+`P:0x1241`. That helper and the header helper `P:0x1367` do not write a
+peripheral register. The trailer wait before the walk can call
+`P:0x1A97`. That is the idle sender already listed, and it runs before
+the flash read.
 
 The family write API does not send `0x44`. One branch of `0x6F` transmits
 a bulk read that starts at `0xD00000` and does not erase. Its length and
-its selector stay in the older update note.
+its selector stay in the older update note. The code-load erases hold
+bit 4 clear, so they do not drive the pins of the preset indices with
+the same numbers.
 
 ### Conditional store `0x45`
 
@@ -702,32 +803,36 @@ not send `0x59`.
 that scale was not measured. The handler assembles six Y words, calls
 `P:0x1416B`, and only then reads the trailer. **Confirmed.**
 
-`P:0x1416B` erases sector 8, programs 132 words from `Y:0x6D5` to
-`0xD08000`, and programs one marker byte `0x45` at `0xD081FE`. The flash
-destination does not depend on the unmeasured RAM offset. The whole table
-is written. 132 words are 396 bytes. The marker sits past that program,
-and the rest of the 4 KB sector, including the preset body, stays erased.
-**Confirmed.**
+`P:0x1416B` erases numeric index 8 through X, programs 132 words from
+`Y:0x6D5` to `0xD08000` through X, and programs one marker byte `0x45` at
+`0xD081FE` through Y. Bit 4 stays clear. The flash destination does not
+depend on the unmeasured RAM offset. The whole table is written. 132
+words are 396 bytes, and the marker sits past that program.
+**Confirmed.** The loader reads preset index 8 through Y with the bit
+set. That overlap is unresolved;
+contradicted by owner backup (program 63 loads a distinct valid program).
 
-Sector 8 is `0xD00000 + 8 × 0x1000`, the same formula as preset index 8.
-That is **likely** the same physical sector. The rename does not use a
-spare and does not call `P:0x0FA6`. The sector immediate is 8 for every
-call, including a rename while bank 0 is current. A raw loader argument
-of 8 is inside 5–54, so the compact path treats this sector as a normal
-preset. Editor index 8 is bank 1, slot 1.
+The rename does not use a spare and does not call `P:0x0FA6`. The sector
+immediate is 8 for every call, including a rename while bank 0 is
+current. Editor index 8 is bank 1, slot 1, and its program number is 63.
+A raw loader argument of 8, with the bit set, is the compact path. The
+name commit does not take that path.
 
 `0x6D` at `P:0x14650` checks `F7` and replies opcode `0x6D` from the RAM
 table. That window has no flash call. **Confirmed.** When the marker byte
-is `0x45`, boot copies `0xD08000` back into `Y:0x6D5` and does not erase.
-When the marker is some other value, startup erases sector 8 and writes
-default names. A completed rename leaves the marker, so a later boot
-copies. **Confirmed.** Not every boot erases sector 8.
+is `0x45`, boot copies `0xD08000` back into `Y:0x6D5` through X and does
+not erase. When the marker is some other value, startup erases numeric
+index 8 with the bit clear and writes default names. A completed rename
+leaves the marker, so a later boot copies. **Confirmed.** Not every boot
+erases that window. The marker read is a Y read with the bit clear. It
+is not the loader's bit-set read of index 8.
 
 `rename_bank` sends `0x6C` after a program change to that bank's slot 0.
 A transfer that delivers the 18 name bytes and then stops still erases
-sector 8, because the erase is before the trailer. Stopping before those
-18 bytes leaves the handler in the byte reader and does not erase.
-**Confirmed.** The current editor does not avoid this.
+the name window, because the erase is before the trailer. Stopping
+before those 18 bytes leaves the handler in the byte reader and does not
+erase. **Confirmed.** The current editor does not avoid the name-window
+erase. It does not, on this evidence, erase preset index 8.
 
 ### String levels `0x54`, `0x56` and `0x57`
 
@@ -737,23 +842,26 @@ shared trailer used by `0x6C`. That window has no flash call.
 six words. It does not touch flash. **Confirmed.**
 
 `0x56` at `P:0x14583` checks `F7` before `P:0x14142`. A missing trailer
-sends `0x66` and does not erase. The commit erases sector 4 and programs
-six words from `Y:0x2D8` to `0xD04000`. **Confirmed.** Sector 4 is the
-same formula as preset index 4, editor bank 0 slot 0. The erase clears
-the whole sector. Only those six words are programmed back. There is no
-spare.
+sends `0x66` and does not erase. The commit erases numeric index 4
+through X, with bit 4 clear, and programs six words from `Y:0x2D8` to
+`0xD04000`. **Confirmed.** Preset index 4 is the same formula with the
+bit set. That overlap is unresolved; contradicted by owner backup
+(program 63 loads a distinct valid program). The erase clears the window
+this access drives. Only those six words are programmed back. There is
+no spare.
 
-Boot at `P:0x140E8` assembles three bytes from `0xD04000` and compares
-them with `m0`. An equal compare copies six defaults and calls the same
-erase. The image's `movec m7,m0` sites are `P:0x0E00`, `P:0x1EF0` and
-`P:0x14148`. None of those is before the compare inside `P:0x140E8`.
-Startup calls `P:0x04CF` before `P:0x140E8`. Whether that call writes
-`m0` was not followed. **Unknown.** A family manual gives reset `m0` as
-`$FFFFFF`. That value is not stored in this image. If `m0` is `$FFFFFF`,
-the compare matches three `0xFF` bytes and does not match a programmed
-preset. **Likely** for that reset value, and **unknown** if a board boots
-with a different `m0`. This trace does not show boot erasing a programmed
-preset 4. `P:0x14150` copies sector 4 into `Y:0x2D8` and does not erase.
+Boot at `P:0x140E8` clears bit 4, then assembles three Y bytes from
+`0xD04000` and compares them with `m0`. An equal compare copies six
+defaults and calls the same erase. The image's `movec m7,m0` sites are
+`P:0x0E00`, `P:0x1EF0` and `P:0x14148`. None of those is before the
+compare inside `P:0x140E8`. Startup calls `P:0x04CF` before `P:0x140E8`.
+Whether that call writes `m0` was not followed. **Unknown.** A family
+manual gives reset `m0` as `$FFFFFF`. That value is not stored in this
+image. If `m0` is `$FFFFFF`, the compare matches three `0xFF` bytes of
+this bit-clear read. **Likely** for that reset value, and **unknown** if
+a board boots with a different `m0`. This read is not the loader's
+bit-set read of preset index 4. `P:0x14150` copies the bit-clear window
+into `Y:0x2D8` through X and does not erase.
 
 `P:0x14BC9` also calls the sector-4 commit. Nothing in this image calls
 or jumps to that address. The word before it is a short conditional
@@ -763,17 +871,21 @@ write API does not send `0x54` or `0x56`.
 
 ### Code load, listed only
 
-`0x60` at `P:0x14687` erases and programs sectors 16–31 only after the
-trailer and a matching sum. A mismatch sends `0x73` and does not erase.
-After the reply it calls the peripheral reset at `P:0x1ABA`. The range
-does not include 60–62. The editor must not send `0x60`.
+`0x60` at `P:0x14687` erases and programs numeric indices 16–31 only after
+the trailer and a matching sum, with bit 4 clear. A mismatch sends `0x73`
+and does not erase. After the reply it calls the peripheral reset at
+`P:0x1ABA`. The range does not include 60–62. Those indices do not drive
+the pins of preset indices 16–31. The overlap is unresolved; contradicted
+by owner backup (program 63 loads a distinct valid program). The editor
+must not send `0x60`.
 
 `0x6F` at `P:0x1468B` has a read branch that does not erase and does not
-reset, and a commit branch that erases and programs sectors 0–3 only
-after the trailer and a matching sum, then resets. Any other value
-returns without either branch. Neither range includes 60–62. The editor
-must not send `0x6F`. The selector byte and the payload layout stay out
-of this note. The older update note already records the historical order.
+reset, and a commit branch that erases and programs numeric indices 0–3
+only after the trailer and a matching sum, with bit 4 clear, then resets.
+Any other value returns without either branch. Neither range includes
+60–62. The same overlap label applies to indices 0–3. The editor must
+not send `0x6F`. The selector byte and the payload layout stay out of
+this note. The older update note already records the historical order.
 
 ### Reset `0x7D`
 
@@ -850,13 +962,13 @@ code-load receives consume arriving bytes as payload while they program.
 
 | Trigger | Address | Consequence | Our editor can send it | How the editor avoids it |
 | --- | --- | --- | --- | --- |
-| `0x6C` with its 18 name bytes, including a transfer that stops before `F7`. | `P:0x14645`, `P:0x1416B` | Erases sector 8 and programs 132 words plus the marker. Sector 8 is also preset index 8. The spare is not used. The erase is before the trailer. | Yes. `rename_bank` sends `Message::BankName`. | The current code does not avoid it. Stopping before the 18 data bytes does not erase. A completed write leaves the marker, so the next boot copies the table instead of erasing again. |
-| `0x56` after `F7`. | `P:0x1458A`, `P:0x14142` | Erases sector 4, which is also preset index 4, and programs six words. | No. The family write API does not send `0x54` or `0x56`. | Do not send it. A missing `F7` sends `0x66` and does not erase. |
+| `0x6C` with its 18 name bytes, including a transfer that stops before `F7`. | `P:0x14645`, `P:0x1416B` | Erases numeric index 8 with bit 4 clear and programs 132 words plus the marker. The spare is not used. The erase is before the trailer. Preset index 8 is the bit-set read. That overlap is unresolved; contradicted by owner backup (program 63 loads a distinct valid program). | Yes. `rename_bank` sends `Message::BankName`. The preset-index consequence is not established. | The current code does not avoid the name-window erase. Stopping before the 18 data bytes does not erase. A completed write leaves the marker, so the next boot copies the table instead of erasing again. |
+| `0x56` after `F7`. | `P:0x1458A`, `P:0x14142` | Erases numeric index 4 with bit 4 clear and programs six words. The overlap with preset index 4 carries the same unresolved label. | No. The family write API does not send `0x54` or `0x56`. | Do not send it. A missing `F7` sends `0x66` and does not erase. |
 | Fall-through into `P:0x14BC9`. | `P:0x14BC9` | Calls the same sector-4 erase. The message that reaches the fall-through was not identified. | Unknown. | Do not claim the editor avoids a path that was not identified. |
 | `0x45` whose 1,092-word checksum matches. | `P:0x1481E` | Runs the full `0x61` store before `F7`, with no index clamp. A later bad trailer sends `0x66` after the store. | No. | Do not send `0x45`. |
 | `0x58` with argument `0x7F`, or with an argument below 50. | `P:0x145BD` | `0x7F` stores sectors 5–54. An argument below 50 stores argument + 5. The flag is set before the store. | No. | Do not send `0x58`. |
-| `0x68` or `0x63`, including a transfer that stops before `F7`. | `P:0x146C0`, `P:0x146BD` | `0x68` erases sectors 32–63, including spares 60–62 and presets 32–59. `0x63` erases 64–127. Both erases precede the trailer. | No. | Do not send either opcode. Neither is a single-sector repair. |
-| `0x62` while bytes are still arriving. | `P:0x1474A` | Programs sectors 0–59 without an erase. Bytes already received have been programmed. Later sectors are not addressed. | No. | Do not send `0x62`. |
+| `0x68` or `0x63`, including a transfer that stops before `F7`. | `P:0x146C0`, `P:0x146BD` | `0x68` erases numeric indices 32–63 with bit 4 clear. The overlap with the store's indices 32–63 and spares 60–62 is unresolved; contradicted by owner backup (program 63 loads a distinct valid program). `0x63` erases numeric indices 64–127 with the bit set, and index `64 + n` drives the same A0–A17 as index `n`. Both erases precede the trailer. | No. | Do not send either opcode. Neither is a single-sector repair. |
+| `0x62` while bytes are still arriving. | `P:0x1474A` | Programs numeric indices 0–59 with bit 4 set, the same pins as the store, and without an erase. Bytes already received have been programmed. Later sectors are not addressed. | No. | Do not send `0x62`. |
 | `0x60` or the commit branch of `0x6F`, after a trailer and a matching sum. | `P:0x14687`, `P:0x1468B` | Erases sectors 16–31 or 0–3, programs them, and then takes the peripheral reset. A sum mismatch sends `0x73` and does not erase. | No. | Do not send either opcode. Both ranges miss sectors 60–62. |
 | `0x7D`, including a transfer that never reaches `F7`. | `P:0x1469B` | Calls the peripheral reset before the trailer. This image does not erase 60–62 on that path. Boot-ROM flash behavior is unknown. | No. | Do not send `0x7D`. |
 | The queued word that falls through `P:0x1186` for a formed index of 0–4 or 55–59. | `P:0x1186` | Writes bit 20 to `Y:0xD0`, checksums, and stores that index. | No. Program change is high byte 5. The editor's tone CC is controller 79 and goes to `P:0x1428E`. | Do not build a high-byte-8 word whose low 16 bits are 1. |
@@ -984,29 +1096,43 @@ another run. **Confirmed** for that emulator. `store()` does not send
 
 Request opcode `0x44` at `P:0x147F2` produces reply opcode `0x45`.
 **Confirmed.** A trailer other than `F7` returns before any read. Index
-`0x7F` sends 1,092 words from `Y:0xA47` as six nibbles. Every other index,
-including 50 and spare sector 62, walks the first 3,276 bytes of
-`0xD00000 + index × 0x1000`. That is the complete 1,092-word program.
-The last 820 bytes of the sector are not sent. **Confirmed.** There is
-no further clamp. Past index 127 the walk still runs, and what the part
-returns is **unknown**.
+`0x7F` sends 1,092 words from `Y:0xA47` as six nibbles and does not set
+bit 4. Every other index, including 50 and 62, walks the first 3,276
+bytes of `0xD00000 + index × 0x1000` through Y while bit 4 is set. That
+is the complete 1,092-word program. The last 820 bytes of the sector are
+not sent. **Confirmed.** Index 50 is `0xD32000`, the slot the store
+writes for editor slot 50. Index 62 is `0xD3E000`, the spare that store
+erases. Both drive the same pins as that store. Index 62 is a read-only
+check of the 1,092 words the next store programs into the spare. It does
+not test blankness itself. Index 50 returns the stored words, including
+the stamp and the firmware checksum, so it is not a byte-for-byte check
+of the host image. There is no further clamp. Past index 127 the walk
+still runs, and what the part returns is **unknown**.
 
 The handler and `P:0x1488C` do not call the program or erase helpers.
-**Confirmed.** Bit 4 of `Y:0xFFFF9D` is set for the walk and cleared
-after it. That write's meaning is **unknown**. Nothing in this note is
-a request to send `0x44`. The family write API does not send it.
+**Confirmed.** The flash walk's only peripheral-register write is bit 4
+of `Y:0xFFFF9D`. Reply bytes are queued in X RAM by `P:0x1241`, which
+does not write a peripheral register. The pin is PE4, a GPIO output, and
+its board net is **unknown**. Nothing in this note is a request to send
+`0x44`. The family write API does not send it.
 
 ### 3. Does anything other than a completed store erase sectors 60–62?
 
-A completed `0x61` erases one spare at the end of `P:0x0FA6`.
-**Confirmed.** `0x68` at `P:0x146C0` erases sectors 32–63 before `F7`,
-which includes 60–62, and it does that without storing a preset.
-**Confirmed.** `0x63` erases 64–127 and leaves 60–62 alone.
-**Confirmed.** The two code-load ranges are sectors 16–31 and 0–3.
-Startup `P:0x140E8` does not call either wide erase. The four-byte
-version program near the end of sector 31 does not erase. The peripheral
-reset leaves this image and was not shown to erase 60–62 here.
-**Confirmed** for those windows. No opcode erases spare 62 by itself.
+A completed `0x61` erases one spare at the end of `P:0x0FA6`, with bit 4
+set. For slot 50 that is index 62 at `0xD3E000`. **Confirmed.** `0x68`
+erases numeric indices 32–63 before `F7` with the bit clear. The numeric
+range includes 60–62. It does not drive the pins of the store's spare.
+That overlap is unresolved; contradicted by owner backup (program 63
+loads a distinct valid program). `0x63` erases numeric indices 64–127
+with the bit set. The numeric range leaves 60–62 alone, and index
+`64 + n` drives the same A0–A17 as index `n`. **Confirmed** for the
+loops and the pins. The two code-load ranges are numeric indices 16–31
+and 0–3, with the bit clear, so they do not drive the preset indices of
+those numbers. Startup `P:0x140E8` does not call either wide erase. The
+four-byte version program near the end of sector 31 does not erase. The
+peripheral reset leaves this image and was not shown to erase 60–62
+here. **Confirmed** for those windows. No opcode erases spare 62 by
+itself while the bit is set.
 
 ### 4. Where does a store stop when the spare is not blank?
 
@@ -1027,12 +1153,13 @@ after the slot is written. Read the slot before deciding.
 ### 5. Does an erase assume 4 KB, and can it touch the next slot?
 
 `P:0x0F63` addresses `0xD00000 + index × 0x1000` and issues one erase.
-The command does not loop across a neighbour. **Confirmed.** Neighbour
-safety for a fitted part other than the schematic's 4 KB SST39LF040 is
-**unknown**. `0x6C` and `0x56` erase a whole preset sector, index 8 or
-index 4, because the name table and the string levels share those
-sectors. That destroys the preset in the same sector. It does not step
-into the next index.
+The command does not loop across a neighbour, and the address helper
+adds no bank bit. **Confirmed.** Neighbour safety for a fitted part
+other than the schematic's 4 KB SST39LF040 is **unknown**. `0x6C` erases
+numeric index 8 with bit 4 clear. `0x56` erases numeric index 4 with the
+bit clear. Preset indices 8 and 4 are the same formula with the bit set.
+That overlap is unresolved; contradicted by owner backup (program 63
+loads a distinct valid program). Neither erase steps into the next index.
 
 ### 6. What does a corrupted slot play?
 
@@ -1076,27 +1203,32 @@ also consumes a fixed run of 8,195 raw bytes and then sends `0x71`. That
 
 ### 12. Where is a bank name stored, and does that write use the spare?
 
-`0x6C` commits at `P:0x1416B` before `F7`. The commit erases sector 8,
-programs 132 words to `0xD08000`, and writes marker `0x45` at
-`0xD081FE`. **Confirmed.** Sector 8 is preset index 8. The spare is not
-used. Which six RAM words receive one bank's name is **unknown**,
-because the bare `maci` after the divide by 5 was not measured. The
-flash write does not depend on that offset: the whole table is
-programmed. `rename_bank` sends this opcode. The current editor can
-still erase sector 8.
+`0x6C` commits at `P:0x1416B` before `F7`. The commit erases numeric
+index 8 through X with bit 4 clear, programs 132 words to `0xD08000`,
+and writes marker `0x45` at `0xD081FE`. **Confirmed.** The spare is not
+used. Preset index 8 is the loader's Y read of the same numeric address
+with the bit set. That overlap is unresolved; contradicted by owner
+backup (program 63 loads a distinct valid program). Which six RAM words
+receive one bank's name is **unknown**, because the bare `maci` after
+the divide by 5 was not measured. The flash write does not depend on
+that offset: the whole table is programmed. `rename_bank` sends this
+opcode. The current editor can still erase the name window. It is not
+shown to erase preset index 8.
 
 ### 13. Where are the string levels stored, and what else is in that sector?
 
 `0x54` only fills six words at `Y:0x2D8`. `0x56`, after `F7`, erases
-sector 4 and programs those six words at `0xD04000`. **Confirmed.**
-Sector 4 is preset index 4. The erase clears the rest of that preset.
-There is no spare. `0x57` replies with the six RAM words and does not
-touch flash. The family write API does not send `0x54` or `0x56`. Boot
-erases sector 4 only when the first three bytes match `m0`. If reset
-`m0` is `$FFFFFF`, an erased sector matches and a programmed preset
-does not. **Likely** for that manual reset value. Whether `P:0x04CF`
-writes `m0` before the compare was not followed. **Unknown.** This
-trace does not show boot erasing a programmed preset 4.
+numeric index 4 with bit 4 clear and programs those six words at
+`0xD04000`. **Confirmed.** Preset index 4 is that formula with the bit
+set. That overlap is unresolved; contradicted by owner backup (program
+63 loads a distinct valid program). There is no spare. `0x57` replies
+with the six RAM words and does not touch flash. The family write API
+does not send `0x54` or `0x56`. Boot compares three Y bytes at
+`0xD04000` with the bit clear, and erases only when they match `m0`.
+If reset `m0` is `$FFFFFF`, three `0xFF` bytes match. **Likely** for
+that manual reset value. Whether `P:0x04CF` writes `m0` before the
+compare was not followed. **Unknown.** This trace does not show that
+compare reading preset index 4.
 
 ### 10. Which other messages can the guitar send on its own?
 

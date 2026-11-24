@@ -1,5 +1,6 @@
 """Formula checks for the Variax 3.10 flash trace. No device and no image."""
 
+import json
 import unittest
 from pathlib import Path
 
@@ -54,7 +55,39 @@ class FlashFormulaTests(unittest.TestCase):
         self.assertEqual(program_number(10, 4), 105)
         self.assertEqual(program_number(0, 0), 4)
         self.assertEqual(program_number(1, 0), 64)
+        self.assertEqual(program_number(1, 1), 63)
+        self.assertEqual(editor_index(1, 1), 8)
         self.assertEqual(program_number(11, 0), 59)
+
+    def test_name_window_is_not_recorded_as_preset_8(self):
+        label = (
+            "unresolved; contradicted by owner backup "
+            "(program 63 loads a distinct valid program)"
+        )
+        payload = json.loads(FLASH_JSON.read_text())
+        self.assertEqual(payload["bus"]["physical_overlap_opposite_bit4"], label)
+        self.assertEqual(payload["bus"]["aar1"]["spaces"], ["X", "Y"])
+        self.assertFalse(payload["bus"]["address_helpers_add_offset"])
+        self.assertEqual(payload["bank_names"]["pdre_bit4"], "clear")
+        self.assertEqual(payload["string_levels"]["pdre_bit4"], "clear")
+        self.assertEqual(payload["bank_names"]["physical_overlap_with_preset_index"], label)
+        self.assertEqual(payload["slot_read"]["index_50_address"], "0xD32000")
+        self.assertEqual(payload["slot_read"]["index_62_address"], "0xD3E000")
+        self.assertFalse(payload["slot_read"]["host_image_byte_compare"])
+        self.assertFalse(payload["slot_read"]["index_7f_sets_bit4"])
+        self.assertEqual(
+            payload["slot_read"]["peripheral_register_writes_in_walk"],
+            ["Y:0xFFFF9D bit 4"],
+        )
+        self.assertTrue(payload["received_program"]["0x62"]["same_external_pins_as_store"])
+        self.assertEqual(payload["wide_erase"]["0x68"]["pdre_bit4"], "clear")
+        self.assertEqual(payload["wide_erase"]["0x63"]["pdre_bit4"], "set")
+        readme = (ROOT / "README.md").read_text()
+        transactions = (ROOT / "docs/variax-write-transactions.md").read_text()
+        dispatch = (ROOT / "docs/firmware-variax-dispatch.md").read_text()
+        self.assertNotIn("also preset index", readme)
+        self.assertNotIn("also preset index", transactions)
+        self.assertIn(label, dispatch)
 
     def test_wide_erase_and_code_load_ranges(self):
         def covers(first, last, sector):
