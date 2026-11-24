@@ -124,8 +124,9 @@ not identification of the installed IC or proof that the entire image executes
 correctly. A later pass still finds no second instruction set in the 19
 regions. Region 5 stays an unidentified high-entropy payload. Regions 6–11
 are the named resource directory. The host-facing processor and its firmware
-are unknown. Owner runs contradict reading a host opcode as a SHARC table
-index. The phrase for that reading is: contradicted by owner hardware runs;
+are unknown. The relay opcode filter, reply-size cap, and pass-through
+questions are recorded in [the Variax relay note](podxt-variax-relay.md).
+Owner runs contradict reading a host opcode as a SHARC table index. The phrase for that reading is: contradicted by owner hardware runs;
 host-to-SHARC translation unknown. The
 [PODxt Live 3.01 entry, command, store, boot, and coverage map](firmware-podxt-dispatch.md)
 follows the region-4 byte pipe, the SHARC-internal handlers, the two

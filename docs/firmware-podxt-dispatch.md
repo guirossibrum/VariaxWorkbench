@@ -5,7 +5,8 @@ tracked as [#211](https://github.com/guirossibrum/VariaxWorkbench/issues/211).
 The [entry inventory](../research/podxt-301-entry.json) is the 256-word table
 and the region-5 measurements. Findings are static. The archived image and the
 disassembly listing stay private. Firmware was not executed, and no device was
-opened.
+opened. The Variax relay questions moved from this issue are in
+[the PODxt Live Variax relay note](podxt-variax-relay.md).
 
 Instruction text comes from the pinned MAME SHARC disassembler recorded in the
 [firmware map](firmware-map.md). The tool is a private research build. It is
