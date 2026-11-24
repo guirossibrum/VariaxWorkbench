@@ -20,7 +20,7 @@ fn reads(words: usize) -> usize {
     8 + 6 * words
 }
 
-fn guitar_sequence(requests: usize) -> Vec<Vec<u8>> {
+pub(super) fn guitar_sequence(requests: usize) -> Vec<Vec<u8>> {
     let mut expected = vec![
         line6_devices::identity::REQUEST.to_vec(),
         BRIDGE_ON.into(),
@@ -48,7 +48,7 @@ fn guitar_sequence(requests: usize) -> Vec<Vec<u8>> {
     expected
 }
 
-fn settled_replies(data: &[u8; PROGRAM_BYTES], requests: usize) -> Vec<Vec<u8>> {
+pub(super) fn settled_replies(data: &[u8; PROGRAM_BYTES], requests: usize) -> Vec<Vec<u8>> {
     chunks()
         .take(requests)
         .map(|(start, count)| reply(&data[start * 3..(start + count) * 3]))

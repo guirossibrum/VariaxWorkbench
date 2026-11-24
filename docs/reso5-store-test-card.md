@@ -1,79 +1,91 @@
-# Reso-5 factory store test card
+# Reso-5 slot 50 store ladder test card
 
-Owner run only. Review the #181 flash-interruption findings and wait for the
-separate go for #177. The target is Reso, lever position 5, flash slot 50 on a
-Variax 300/600 with firmware 3.10 through a PODxt Live with firmware 3.01.
-The two guitar models share a MIDI identity. The tool checks the active name
-and settings, and the owner verifies the physical selector position.
+Owner run only. Each step needs its own owner approval after the reviewer
+explains the procedure. Complete and review each step before asking for the next.
 
-## Prepare and run
+| Step | Mode | Program to send | Approval |
+| --- | --- | --- | --- |
+| 1a | `rename` | The captured Reso-5 program with name `Reso-5 T`, space padding and a recomputed checksum | **Not approved** |
+| 1b | `restore` | The original captured Reso-5 program | **Not approved** |
+| 2 | `factory` | The Variax 3.10 archive's slot 50 factory program | **Not approved** |
 
-1. In Device check, choose **Back up the Variax**. Keep the completed folder
-   from the same UTC day and close the app and any other editor.
-2. Use stable power for the PODxt, which powers the guitar. Keep volume low.
-   Leave cables connected and keep the PODxt on the same channel throughout.
-3. Select **Reso, position 5** on the guitar.
-4. In the issue worktree, run the offline check with the private firmware archive
-   and the completed backup.
+## Prepare each step
+
+1. Use stable power, leave cables connected, and keep the amp volume low.
+   The rig is Variax 300/600 firmware 3.10 through PODxt Live 3.01.
+2. Take a complete **Device check Variax backup** on the same UTC day.
+   The tool requires the backup to match the settings expected before this
+   step. For restore, the backup must show `Reso-5 T`. Keep the original
+   pre-rename backup as well. Close the app and any other editors.
+3. Select **Reso, position 5** by hand. Keep the PODxt channel and the guitar
+   controls steady. The tool sends no program change.
+4. Supply the fingerprinted 3.10 archive and the original 35-file #234
+   capture from the owner run. The capture is the same input for all three
+   modes. Run the offline check with the mode from the table.
 
    ```sh
    cargo run --offline --locked --no-default-features --features owner-reso5-test \
-     --bin variax-reso5-test -- --check store BEFORE_BACKUP ARCHIVE.vxf LOG_ROOT
+     --bin variax-reso5-test -- --check store MODE BEFORE_BACKUP ARCHIVE.vxf CAPTURE_DIR LOG_ROOT
    ```
 
-5. After the owner's go, run the same command with `store` in place of
-   `--check store`. The tool checks both identities and reads the guitar's
-   settings before asking for `STORE RESO-5 FACTORY PROGRAM TO SLOT 50`.
-   Enter that exact phrase only when ready. Each invocation creates its own
-   log folder. To print this card separately, pass `--store-card`.
-6. Expect the eight-byte `0x71` confirmation within seconds, all 192 settings
-   bytes equal on read-back, and no audible change. Select another preset
-   and return to **Reso 5**. Expect normal sound.
-7. Run **Back up the Variax** again in Device check. Run `--check store` with
-   the new folder too. Compare the backups with the file-only command below.
-   Expect 120 identical stored reply files and zero differences.
+The offline check verifies the archive, same-day backup, capture and
+checksums, then prints and logs the expected stored-image SHA-256. The
+captured program is pinned to `3d8bae813991fa5996fb649ad80d116de8ef358c03724770183b89cdef5ad249`.
+The firmware writes the four characters of `0310` to words 767–770 and puts
+the low 24 bits of the sum of words 0–1,090 in word 1,091.
 
-   ```sh
-   cargo run --offline --locked --manifest-path tools/variax-probe/Cargo.toml -- \
-     compare BEFORE_BACKUP AFTER_BACKUP
-   ```
+| Mode | Expected stored-image SHA-256 |
+| --- | --- |
+| Rename | `75bcaaf5f775bcd2f5ba22289aa4b8e9cac0c6115b4ac32b75144b4ccb5c716b` |
+| Restore | `3d8bae813991fa5996fb649ad80d116de8ef358c03724770183b89cdef5ad249` |
+| Factory | `90d79131f7909639aa2d0793cb3f617fbd95a95a1ada7a54f90ec84de4e28164` |
 
-The 3,276-byte payload is the firmware archive's slot 50 factory program. The
-owner's #225 run on 2026-11-24 at 15:08 UTC received no `0x44` reply through the
-PODxt Live, and the guitar worked normally afterward. The store procedure uses
-the established identity and 192-byte settings reads. The original slot's DSP
-words and the spare sector remain unverified on this route.
+## Run after separate approval
 
-For future direct-interface readback only, the expected 3,276-byte stored
-image has SHA-256
-`90d79131f7909639aa2d0793cb3f617fbd95a95a1ada7a54f90ec84de4e28164`.
-The firmware writes `0310` to words 767–770, then sets word 1,091 to the low 24
-bits of the sum of words 0–1,090 (`A3219C`). The offline check verifies this
-reference against the private archive.
+1. Use the reviewed owner build. Remove `--check` from the command. The tool
+   checks both identities and the 192 settings bytes, then reads the active
+   buffer in 35 chunks. It requires an exact match to the original capture
+   before rename or factory and to the renamed stored image before restore.
+   It saves each completed reply in the new log folder.
+2. Enter the displayed mode-specific phrase only when ready.
+
+   - `STORE RESO-5 RENAME PROGRAM TO SLOT 50`
+   - `STORE RESO-5 RESTORE PROGRAM TO SLOT 50`
+   - `STORE RESO-5 FACTORY PROGRAM TO SLOT 50`
+
+3. The tool uploads the program (`0x43`), waits 100 ms, sends `61 32` once and
+   waits up to 15 seconds for `0x71`. Ctrl+C can cancel before `0x61`.
+4. After the confirmed store and cleanup sends, follow the prompt. Select
+   another preset and then return to **Reso, position 5** by hand. Enter
+   `RESO 5 RESELECTED` after doing this. The tool checks all 1,092 reselected
+   words against the expected stored image and checks all 192 settings bytes.
+   The checks include words 871–872.
+5. Confirm normal sound, take another Device check backup and compare it with
+   the before backup. Reports should show the intended slot 50 settings for
+   this mode and no changes to the other 59 presets. Keep both backups and
+   the full log. Stop and report any other difference. Review the result
+   before the next step.
 
 ## Stop rules
 
-Stop and report any refusal, transport error, absent confirmation, unexpected
-reply, differing settings on read-back, audible change, abnormal sound after
-reselecting, or difference between the backups. The store wait logs and skips
-only the three known Variax notices for clip, DSP overload and MIDI queue overflow.
-Ctrl+C can cancel up to the store command. Once it is sent, wait for reply
-handling, verification on success and USB cleanup. Keep the log folder and
-never repeat the store before the log has been reviewed.
+Stop and report any refusal, incomplete read, transport error, missing or
+unexpected confirmation, full-image or settings mismatch, audible change,
+or unexpected backup difference. Keep all completed chunk captures. After
+`0x61`, wait for reply handling, verification and USB cleanup. The tool
+never retries a store.
 
 ## If 0x71 does not arrive
 
-**Keep the rig powered and untouched.** After a silent 15-second confirmation
-wait and successful cleanup sends, the tool announces and waits another
-**2 minutes**, then releases the interface and tells you to check the guitar.
-It sends no more MIDI messages during this phase.
+**Keep the rig powered and untouched.** After a silent 15-second wait and
+successful cleanup sends, the tool waits another **2 minutes** before releasing
+USB. It sends no more MIDI during this phase.
 
 Try selecting another preset. If the guitar responds, take a **Device check
-Variax backup**, compare it with the first one, and report the result. If the
-guitar does not respond, report before powering off. Keep the store log.
+Variax backup**, compare it with the before backup, and report the result.
+If the guitar does not respond, report before powering off. Keep the store log.
 
-**Do not store any slot in 40–59 until spare 62 reads blank.** The current
-PODxt Live route cannot verify that condition. The [#181 static trace](firmware-variax-dispatch.md#preset-store-0x61)
-shows that the firmware has no timeout on the flash polls or spare-sector
-recovery at startup. A loss of power between slot erase and confirmed
-programming can leave slot 50 unusable until a later successful store.
+**Do not store any slot in 40–59 until spare 62 is known blank.** The PODxt
+Live route cannot read spare 62. The firmware flash polls have no timeout and
+there is no spare-sector recovery at startup. Power loss between slot erase
+and confirmed programming can leave slot 50 unusable until a later successful
+store. [Flash trace](firmware-variax-dispatch.md#preset-store-0x61)

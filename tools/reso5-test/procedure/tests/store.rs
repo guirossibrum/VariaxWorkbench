@@ -1,188 +1,85 @@
 use super::*;
+use crate::procedure::store::{self as ladder, Mode, Prompt};
 use variax_workbench::firmware::synthetic::synthetic_container;
 
-fn sample() -> PreparedStore {
-    let prepared = prepared(Stage::Own);
-    PreparedStore {
-        settings: prepared.start,
-        program: prepared.program,
-    }
+const MODES: [Mode; 3] = [Mode::Rename, Mode::Restore, Mode::Factory];
+const CHUNKS: usize = 35;
+const ACK: &[u8] = &[0xf0, 0, 1, 0x0c, 7, 0, 0x71, 0xf7];
+
+fn program() -> [u8; PROGRAM_BYTES] {
+    let mut capture = prepared(Stage::Own).program;
+    capture[0] = 1;
+    expected_stored_image(&capture)
 }
 
-fn store_fake(prepared: &PreparedStore, replies: &[Vec<u8>], readback: bool) -> Fake {
-    let mut inbox: VecDeque<_> = current_replies(&prepared.settings).into();
+fn sample(mode: Mode) -> ladder::Prepared {
+    ladder::make_images(mode, program(), prepared(Stage::Own).program).unwrap()
+}
+
+fn settings_replies(image: &[u8; PROGRAM_BYTES]) -> [Vec<u8>; 3] {
+    current_replies(image[METADATA].try_into().unwrap())
+}
+
+fn fake(
+    before: &[u8; PROGRAM_BYTES],
+    current: &[u8; PROGRAM_BYTES],
+    replies: &[Vec<u8>],
+    readback: Option<(&[u8; PROGRAM_BYTES], &[u8; PROGRAM_BYTES])>,
+) -> Fake {
+    let mut inbox: VecDeque<_> = settings_replies(before).into();
+    inbox.extend(full_read::settled_replies(current, CHUNKS));
     inbox.extend(replies.iter().cloned());
-    if readback {
-        inbox.extend(current_replies(&prepared.settings));
+    if let Some((image, settings)) = readback {
+        inbox.extend(full_read::settled_replies(image, CHUNKS));
+        inbox.extend(settings_replies(settings));
     }
     Fake::new(DevicePath::VariaxViaPodxt, inbox)
 }
 
-fn run_store(
+fn successful(prepared: &ladder::Prepared) -> Fake {
+    fake(
+        &prepared.before,
+        &prepared.before,
+        &[ACK.into()],
+        Some((&prepared.after, &prepared.after)),
+    )
+}
+
+fn confirm(prompt: Prompt) -> Result<(), String> {
+    let phrase = match prompt {
+        Prompt::Confirm(mode) => mode.confirmation(),
+        Prompt::Reselect => ladder::RESELECT_CONFIRMATION,
+    };
+    ladder::require_confirmation(prompt, phrase)
+}
+
+fn run(
     fake: &mut Fake,
-    prepared: &PreparedStore,
+    prepared: &ladder::Prepared,
+    dir: &Path,
+    prompt: impl FnMut(Prompt) -> Result<(), String>,
     cancelled: impl FnMut() -> bool,
 ) -> Result<(), String> {
-    let mut quiet = Quiet;
-    let mut session = Session::new(fake, &StorePolicy, &mut quiet);
-    attempt_store(
-        &mut session,
+    ladder::attempt(
+        &mut Session::new(fake, &StorePolicy, &mut Quiet),
         prepared,
-        || confirm_store(STORE_CONFIRMATION),
+        dir,
+        prompt,
         |_| {},
         cancelled,
     )
 }
 
-#[test]
-fn archive_with_correct_product_and_version_but_wrong_fingerprint_is_refused() {
-    let dir = tempfile::tempdir().unwrap();
-    let archive = dir.path().join("other.vxf");
-    fs::write(
-        &archive,
-        synthetic_container(
-            VARIAX_300_600_PRODUCT_ID,
-            VARIAX_300_600_VERSION,
-            b"synthetic image",
-        ),
-    )
-    .unwrap();
-    assert!(
-        prepare_store(dir.path(), "2026-11-23", &archive)
-            .err()
-            .unwrap()
-            .contains("exact archived source SHA-256")
-    );
+fn preflight_writes() -> Vec<Vec<u8>> {
+    [
+        metadata_requests(),
+        full_read::guitar_sequence(CHUNKS)[1..].to_vec(),
+    ]
+    .concat()
 }
 
-#[test]
-fn slot_conversion_refuses_wrong_length_hash_checksum_and_model_name() {
-    let program = sample().program;
-    let raw = |bytes: &[u8]| {
-        bytes
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .flat_map(|&[a, b, c]| [c, b, a])
-            .collect::<Vec<_>>()
-    };
-    let hash = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
-    assert_eq!(
-        canonical_store_program(&raw(&program), &hash(&program)).unwrap(),
-        program
-    );
-    assert!(
-        canonical_store_program(&raw(&program[..3273]), &hash(&program))
-            .unwrap_err()
-            .contains("3,276")
-    );
-    assert!(
-        canonical_store_program(&raw(&program), STORE_HASH)
-            .unwrap_err()
-            .contains("SHA-256")
-    );
-
-    let mut corrupt = program;
-    corrupt[3275] ^= 1;
-    assert!(
-        canonical_store_program(&raw(&corrupt), &hash(&corrupt))
-            .unwrap_err()
-            .contains("checksum")
-    );
-    let mut wrong_name = program;
-    wrong_name[METADATA.start] = b'X';
-    checksum(&mut wrong_name);
-    assert!(
-        canonical_store_program(&raw(&wrong_name), &hash(&wrong_name))
-            .unwrap_err()
-            .contains("model name")
-    );
-}
-
-#[test]
-fn store_policy_restricts_each_operation_to_its_gate() {
-    for allowed in [
-        Operation::VariaxIdentity,
-        Operation::VariaxRead,
-        Operation::VariaxStoreRestore,
-    ] {
-        assert!(StorePolicy.allows(allowed));
-    }
-    for forbidden in [
-        Operation::VariaxEditBufferWrite,
-        Operation::VariaxPresetSwitch,
-        Operation::VariaxSlotRead,
-        Operation::VariaxBankNameRead,
-        Operation::PodxtIdentity,
-        Operation::PodxtRead,
-        Operation::PodxtLibraryRead,
-        Operation::PodxtPackQuery,
-        Operation::PodxtEditBufferWrite,
-        Operation::PodxtAdditionalEditBufferWrite,
-        Operation::PodxtKeepEditBufferChanges,
-        Operation::PodxtChannelSwitch,
-        Operation::PodxtVariaxControlRelease,
-        Operation::PodxtLinkedVariaxModelEdit,
-        Operation::PodxtGlobalRead,
-        Operation::PodxtTunerMode,
-    ] {
-        assert!(!StorePolicy.allows(forbidden));
-    }
-    assert!(!VariaxPolicy.allows(Operation::VariaxStoreRestore));
-}
-
-#[test]
-fn store_refuses_wrong_guitar_identity_wrong_name_settings_and_confirmation() {
-    let prepared = sample();
-    let mut fake = store_fake(&prepared, &[], false);
-    fake.inbox[0][10] = 5;
-    assert!(
-        run_store(&mut fake, &prepared, || false)
-            .unwrap_err()
-            .contains("Variax 300/600")
-    );
-    assert_eq!(fake.writes, [line6_devices::identity::REQUEST]);
-
-    for index in [0, 191] {
-        let mut fake = store_fake(&prepared, &[], false);
-        let mut wrong = prepared.settings;
-        wrong[index] ^= 1;
-        fake.inbox = current_replies(&wrong).into();
-        assert!(
-            run_store(&mut fake, &prepared, || false)
-                .unwrap_err()
-                .contains("active Variax settings differ")
-        );
-        assert_eq!(fake.writes, metadata_requests());
-    }
-
-    let mut fake = store_fake(&prepared, &[], false);
-    let mut quiet = Quiet;
-    let mut session = Session::new(&mut fake, &StorePolicy, &mut quiet);
-    assert!(
-        attempt_store(
-            &mut session,
-            &prepared,
-            || confirm_store("STORE RESO-5"),
-            |_| panic!("unexpected timeout"),
-            || false
-        )
-        .unwrap_err()
-        .contains("confirmation was not given")
-    );
-    assert_eq!(fake.writes, metadata_requests());
-    assert!(confirm_store(&format!("{STORE_CONFIRMATION}\r\n")).is_ok());
-    assert!(confirm_store(&format!(" {STORE_CONFIRMATION}")).is_err());
-}
-
-fn store_requests(prepared: &PreparedStore) -> Vec<Vec<u8>> {
-    let full = guitar(
-        &[
-            &[0x43, 4, 4, 4, 0, 0, 0][..],
-            &sysex_words(&prepared.program),
-        ]
-        .concat(),
-    );
+fn store_writes(program: &[u8; PROGRAM_BYTES]) -> Vec<Vec<u8>> {
+    let full = guitar(&[&[0x43, 4, 4, 4, 0, 0, 0][..], &sysex_words(program)].concat());
     assert_eq!(full.len(), 6566);
     let mut writes = vec![
         BRIDGE_ON.into(),
@@ -200,183 +97,504 @@ fn store_requests(prepared: &PreparedStore) -> Vec<Vec<u8>> {
 }
 
 #[test]
-fn store_success_checks_both_identities_and_reads_back_only_settings() {
-    let prepared = sample();
-    let ack = guitar(&[0x71]);
-    let expected = [
-        metadata_requests(),
-        store_requests(&prepared),
-        metadata_requests(),
-    ]
-    .concat();
-    for notices in [vec![], vec![guitar(&[0x28])]] {
-        let replies = [notices, vec![ack.clone()]].concat();
-        let mut fake = store_fake(&prepared, &replies, true);
-        let mut podxt = Fake::new(DevicePath::PodxtMidi, [PODXT_IDENTITY.into()].into());
-        check_podxt(&mut podxt, &mut Quiet).unwrap();
-        assert_eq!(podxt.writes, [line6_devices::identity::REQUEST]);
-        run_store(&mut fake, &prepared, || false).unwrap();
-        assert_eq!(fake.writes, expected);
-        assert_eq!(fake.pauses, [Duration::from_millis(100); 4]);
+fn all_modes_use_the_exact_complete_sequence_and_compare_reselected_bytes() {
+    let mut podxt = Fake::new(DevicePath::PodxtMidi, [PODXT_IDENTITY.into()].into());
+    check_podxt(&mut podxt, &mut Quiet).unwrap();
+    assert_eq!(podxt.writes, [line6_devices::identity::REQUEST]);
+    for mode in MODES {
+        let prepared = sample(mode);
+        let dir = tempfile::tempdir().unwrap();
+        let mut fake = fake(
+            &prepared.before,
+            &prepared.before,
+            &[guitar(&[0x28]), ACK.into()],
+            Some((&prepared.after, &prepared.after)),
+        );
+        let mut prompts = Vec::new();
+        run(
+            &mut fake,
+            &prepared,
+            dir.path(),
+            |prompt| {
+                prompts.push(prompt);
+                confirm(prompt)
+            },
+            || false,
+        )
+        .unwrap();
+        assert_eq!(prompts, [Prompt::Confirm(mode), Prompt::Reselect]);
+        assert_eq!(
+            fake.writes,
+            [
+                preflight_writes(),
+                store_writes(&prepared.program),
+                full_read::guitar_sequence(CHUNKS)[1..].to_vec(),
+                metadata_requests(),
+            ]
+            .concat()
+        );
+        assert_eq!(
+            fake.pauses
+                .iter()
+                .map(Duration::as_millis)
+                .collect::<Vec<_>>(),
+            [100, 1000, 100, 100, 100, 1000, 100, 100]
+        );
+        for (subdir, expected) in [("preflight", prepared.before), ("readback", prepared.after)] {
+            let folder = dir.path().join(subdir);
+            assert_eq!(fs::read_dir(&folder).unwrap().count(), CHUNKS);
+            let last = fs::read(folder.join("start-1088-count-4.syx")).unwrap();
+            assert_eq!(last, reply(&expected[1088 * 3..]));
+        }
         assert!(fake.inbox.is_empty());
     }
 }
 
 #[test]
-fn silent_timeout_waits_two_minutes_and_reports_without_more_sends() {
-    let prepared = sample();
-    let mut fake = store_fake(&prepared, &[], false);
-    let mut quiet = Quiet;
-    let mut session = Session::new(&mut fake, &StorePolicy, &mut quiet);
-    let mut announced = false;
-    let error = attempt_store(
-        &mut session,
-        &prepared,
-        || confirm_store(STORE_CONFIRMATION),
-        |notice| {
-            announced = true;
-            assert!(notice.contains("Keep the rig powered and untouched for 2 minutes."));
-            assert!(notice.contains(SPARE_STORE_WARNING));
-        },
-        || false,
-    )
-    .unwrap_err();
-    assert!(announced);
-    assert!(error.contains("Slot state is unknown"));
-    assert!(error.contains("Device check Variax backup"));
-    assert!(error.contains("report before powering off"));
-    assert!(error.contains(SPARE_STORE_WARNING));
+fn local_images_change_only_name_and_checksum_for_rename_and_reverse_it_for_restore() {
+    for mode in MODES {
+        assert_eq!(Mode::parse(mode.label()), Some(mode));
+    }
+    assert_eq!(Mode::parse("unknown"), None);
+    let rename = sample(Mode::Rename);
+    assert_eq!(rename.before, program());
+    assert_eq!(&rename.program[2553..2571], b"Reso-5 T          ");
+    assert_eq!(rename.program[..2553], rename.before[..2553]);
+    assert_eq!(rename.program[2571..3273], rename.before[2571..3273]);
+    assert_ne!(rename.program[3273..], rename.before[3273..]);
+    assert_eq!(rename.program, rename.after);
+    let restore = sample(Mode::Restore);
+    assert_eq!(restore.before, rename.after);
+    assert_eq!(restore.program, rename.before);
+    assert_eq!(restore.after, rename.before);
+    let factory = sample(Mode::Factory);
+    assert_eq!(factory.before, program());
+    assert_eq!(factory.program, prepared(Stage::Own).program);
     assert_eq!(
-        fake.writes,
-        [metadata_requests(), store_requests(&prepared)].concat()
-    );
-    assert_eq!(
-        fake.pauses,
-        [
-            Duration::from_millis(100),
-            Duration::from_millis(100),
-            Duration::from_millis(100),
-            Duration::from_secs(120),
-        ]
+        &factory.after[767 * 3..771 * 3],
+        b"\0\x000\0\x003\0\x001\0\x000"
     );
 }
 
 #[test]
-fn unexpected_reply_stops_after_cleanup_without_timeout_wait_or_retry() {
-    let prepared = sample();
-    let mut fake = store_fake(&prepared, &[guitar(&[0x70])], false);
-    let error = run_store(&mut fake, &prepared, || false).unwrap_err();
-    assert!(error.contains("Unexpected Variax store reply"));
-    assert!(error.contains("Slot state is unknown."));
-    assert_eq!(
-        fake.writes,
-        [metadata_requests(), store_requests(&prepared)].concat()
-    );
-    assert_eq!(fake.pauses, [Duration::from_millis(100); 3]);
+fn stamped_checksum_sums_through_word_1090() {
+    let mut program = [0; PROGRAM_BYTES];
+    program[1089 * 3..1090 * 3].copy_from_slice(&[0xff, 0xff, 0xfe]);
+    program[1090 * 3..1091 * 3].copy_from_slice(&[0, 0, 5]);
+    let after = expected_stored_image(&program);
+    assert_eq!(&after[1091 * 3..], &[0, 0, 0xc7]);
 }
 
 #[test]
-fn store_readback_checks_the_last_settings_byte() {
-    let prepared = sample();
-    let mut fake = store_fake(&prepared, &[guitar(&[0x71])], true);
-    let mut wrong = prepared.settings;
-    wrong[191] ^= 1;
-    fake.inbox[6] = reply(&wrong[96..]);
+fn rejects_wrong_archive_capture_checksum_hash_and_missing_chunks_before_io() {
+    let dir = tempfile::tempdir().unwrap();
+    let archive = dir.path().join("other.vxf");
+    document_fixture(
+        &archive,
+        &synthetic_container(
+            VARIAX_300_600_PRODUCT_ID,
+            VARIAX_300_600_VERSION,
+            b"synthetic image",
+        ),
+    );
     assert!(
-        run_store(&mut fake, &prepared, || false)
-            .unwrap_err()
-            .contains("Settings read-back differs")
+        ladder::reference_images(Mode::Rename, &archive, dir.path())
+            .err()
+            .unwrap()
+            .contains("exact archived source SHA-256")
     );
-    assert!(fake.writes.ends_with(&metadata_requests()));
+    assert!(
+        ladder::load_capture(dir.path())
+            .unwrap_err()
+            .contains("start-0-count-32.syx")
+    );
+    fs::create_dir(dir.path().join("start-0-count-32.syx")).unwrap();
+    assert!(
+        ladder::load_capture(dir.path())
+            .unwrap_err()
+            .contains("regular file")
+    );
+    let capture = program();
+    assert!(
+        ladder::validate_capture(&capture, "wrong")
+            .unwrap_err()
+            .contains("pinned Reso-5 SHA-256")
+    );
+    let mut invalid = capture;
+    invalid[3275] ^= 1;
+    let hash = format!("{:x}", Sha256::digest(invalid));
+    assert!(
+        ladder::validate_capture(&invalid, &hash)
+            .unwrap_err()
+            .contains("checksum")
+    );
+    let mut invalid = capture;
+    invalid[2553] = b'X';
+    let hash = format!("{:x}", Sha256::digest(invalid));
+    assert!(
+        ladder::validate_capture(&invalid, &hash)
+            .unwrap_err()
+            .contains("model name")
+    );
+}
+
+fn document_fixture(path: &Path, bytes: &[u8]) {
+    variax_workbench::document::save_new(path, bytes).unwrap();
 }
 
 #[test]
-fn cancellation_before_opcode_prevents_store_and_cancellation_after_still_verifies() {
-    let prepared = sample();
-    for after in [false, true] {
-        let cancelled = Rc::new(Cell::new(false));
-        let mut fake = store_fake(&prepared, &[guitar(&[0x71])], true);
-        // Start with the successful final upload fragment as the pre-0x61 trigger.
-        let mut direct = Fake::new(DevicePath::VariaxViaPodxt, [guitar(&[0x71])].into());
-        write::store(
-            &mut Session::new(&mut direct, &StorePolicy, &mut Quiet),
-            location(),
-            &write::Program::new(NAME, &prepared.program).unwrap(),
+fn rejects_an_illegal_reply_or_a_complete_capture_with_wrong_words() {
+    for malformed in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        for (index, raw) in full_read::settled_replies(&program(), CHUNKS)
+            .into_iter()
+            .enumerate()
+        {
+            let count = if index == 34 { 4 } else { 32 };
+            let mut raw = raw;
+            if malformed && index == 2 {
+                raw.pop();
+            }
+            document_fixture(
+                &dir.path()
+                    .join(format!("start-{}-count-{count}.syx", index * 32)),
+                &raw,
+            );
+        }
+        let error = ladder::load_capture(dir.path()).unwrap_err();
+        assert!(error.contains(if malformed {
+            "missing F7"
+        } else {
+            "pinned Reso-5 SHA-256"
+        }));
+    }
+}
+
+#[test]
+fn each_mode_requires_the_same_day_backup_of_its_pre_store_settings() {
+    for mode in MODES {
+        let prepared = sample(mode);
+        let today = "2026-11-24";
+        let good = tempfile::tempdir().unwrap();
+        let bad = tempfile::tempdir().unwrap();
+        let expected: &[u8; 192] = prepared.before[METADATA].try_into().unwrap();
+        let mut wrong = *expected;
+        wrong[0] = b'X';
+        backup_at(good.path(), expected, today, false);
+        backup_at(bad.path(), &wrong, today, false);
+        check_backup(good.path(), today, expected).unwrap();
+        assert!(
+            check_backup(good.path(), "2026-11-25", expected)
+                .unwrap_err()
+                .contains("today")
+        );
+        assert!(
+            check_backup(bad.path(), today, expected)
+                .unwrap_err()
+                .contains("differs")
+        );
+    }
+}
+
+#[test]
+fn refuses_wrong_identity_settings_and_complete_preflight_mismatch() {
+    for mode in MODES {
+        let prepared = sample(mode);
+        let no_prompt = |_| panic!("refused run reached user confirmation");
+        let dir = tempfile::tempdir().unwrap();
+        let mut rig = successful(&prepared);
+        rig.inbox[0][10] = 5;
+        assert!(
+            run(&mut rig, &prepared, dir.path(), no_prompt, || false)
+                .unwrap_err()
+                .contains("Variax 300/600")
+        );
+        assert_eq!(rig.writes, [line6_devices::identity::REQUEST]);
+
+        let mut wrong = prepared.before;
+        wrong[METADATA.end - 1] ^= 1;
+        let mut rig = fake(&wrong, &prepared.before, &[], None);
+        assert!(
+            run(&mut rig, &prepared, dir.path(), no_prompt, || false)
+                .unwrap_err()
+                .contains("settings differ")
+        );
+        assert_eq!(rig.writes, metadata_requests());
+
+        let mut wrong = prepared.before;
+        wrong[0] ^= 1;
+        let mut rig = fake(&prepared.before, &wrong, &[], None);
+        assert!(
+            run(&mut rig, &prepared, dir.path(), no_prompt, || false)
+                .unwrap_err()
+                .contains("preflight differs at word 0")
+        );
+        assert_eq!(rig.writes, preflight_writes());
+    }
+}
+
+#[test]
+fn refuses_incomplete_preflight_after_saving_completed_chunks() {
+    let prepared = sample(Mode::Factory);
+    let mut rig = successful(&prepared);
+    rig.inbox.truncate(3 + 6);
+    let dir = tempfile::tempdir().unwrap();
+    let error = run(&mut rig, &prepared, dir.path(), |_| panic!(), || false).unwrap_err();
+    assert!(error.contains("Start 192, count 32"));
+    assert_eq!(
+        rig.writes,
+        [
+            metadata_requests(),
+            full_read::guitar_sequence(7)[1..].to_vec()
+        ]
+        .concat()
+    );
+    assert_eq!(
+        fs::read_dir(dir.path().join("preflight")).unwrap().count(),
+        6
+    );
+}
+
+#[test]
+fn wrong_mode_phrase_refuses_and_missing_reselection_prevents_post_store_reads() {
+    for mode in MODES {
+        let prepared = sample(mode);
+        let dir = tempfile::tempdir().unwrap();
+        let wrong_mode = if mode == Mode::Factory {
+            Mode::Rename
+        } else {
+            Mode::Factory
+        };
+        let mut rig = successful(&prepared);
+        let error = run(
+            &mut rig,
+            &prepared,
+            dir.path(),
+            |prompt| ladder::require_confirmation(prompt, wrong_mode.confirmation()),
             || false,
         )
-        .unwrap();
-        let trigger = if after {
-            vec![HEADER.into(), vec![0x61, 50], vec![0xf7]]
+        .unwrap_err();
+        assert!(error.contains("confirmation was not given"));
+        assert_eq!(rig.writes, preflight_writes());
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut rig = successful(&prepared);
+        let error = run(
+            &mut rig,
+            &prepared,
+            dir.path(),
+            |prompt| {
+                if prompt == Prompt::Reselect {
+                    ladder::require_confirmation(prompt, "")
+                } else {
+                    confirm(prompt)
+                }
+            },
+            || false,
+        )
+        .unwrap_err();
+        assert!(error.contains("reselection and read-back were not verified"));
+        assert_eq!(
+            rig.writes,
+            [preflight_writes(), store_writes(&prepared.program)].concat()
+        );
+    }
+}
+
+#[test]
+fn post_store_refuses_a_single_image_word_or_settings_byte_difference() {
+    for mode in MODES {
+        let prepared = sample(mode);
+        for image_differs in [false, true] {
+            let mut wrong = prepared.after;
+            wrong[871 * 3] ^= 1;
+            let dir = tempfile::tempdir().unwrap();
+            let (image, settings) = if image_differs {
+                (&wrong, &prepared.after)
+            } else {
+                (&prepared.after, &wrong)
+            };
+            let mut rig = fake(
+                &prepared.before,
+                &prepared.before,
+                &[ACK.into()],
+                Some((image, settings)),
+            );
+            let error = run(&mut rig, &prepared, dir.path(), confirm, || false).unwrap_err();
+            assert!(error.contains(if image_differs {
+                "read-back differs at word 871"
+            } else {
+                "Settings read-back differs"
+            }));
+            let mut expected = [
+                preflight_writes(),
+                store_writes(&prepared.program),
+                full_read::guitar_sequence(CHUNKS)[1..].to_vec(),
+            ]
+            .concat();
+            if !image_differs {
+                expected.extend(metadata_requests());
+            }
+            assert_eq!(rig.writes, expected);
+        }
+    }
+}
+
+#[test]
+fn silent_timeout_waits_without_further_sends_and_wrong_reply_stops() {
+    let prepared = sample(Mode::Rename);
+    for silent in [true, false] {
+        let replies = if silent {
+            vec![]
         } else {
-            vec![direct.writes[32].clone()]
+            vec![guitar(&[0x70])]
         };
-        fake.cancel_on_write = Some(CancelOnWrite {
-            chunks: trigger,
-            cancelled: Rc::clone(&cancelled),
+        let mut rig = fake(&prepared.before, &prepared.before, &replies, None);
+        let dir = tempfile::tempdir().unwrap();
+        let noticed = Cell::new(false);
+        let error = ladder::attempt(
+            &mut Session::new(&mut rig, &StorePolicy, &mut Quiet),
+            &prepared,
+            dir.path(),
+            |prompt| {
+                assert!(matches!(prompt, Prompt::Confirm(_)));
+                confirm(prompt)
+            },
+            |notice| {
+                assert!(notice.contains(ladder::SPARE_WARNING));
+                noticed.set(true);
+            },
+            || false,
+        )
+        .unwrap_err();
+        assert_eq!(noticed.get(), silent);
+        if silent {
+            assert!(
+                error.contains("Device check Variax backup")
+                    && error.contains(ladder::SPARE_WARNING)
+            );
+            assert_eq!(rig.pauses.last(), Some(&Duration::from_secs(120)));
+        } else {
+            assert!(error.contains("Unexpected Variax store reply"));
+        }
+        assert_eq!(
+            rig.writes,
+            [preflight_writes(), store_writes(&prepared.program)].concat()
+        );
+    }
+}
+
+#[test]
+fn cancellation_before_61_stops_and_after_61_finishes_both_verifications() {
+    let prepared = sample(Mode::Restore);
+    for after in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let stopped = Rc::new(Cell::new(false));
+        let writes = store_writes(&prepared.program);
+        let mut rig = successful(&prepared);
+        rig.cancel_on_write = Some(CancelOnWrite {
+            chunks: if after {
+                vec![HEADER.into(), vec![0x61, 50], vec![0xf7]]
+            } else {
+                vec![writes[32].clone()]
+            },
+            cancelled: Rc::clone(&stopped),
         });
-        let result = run_store(&mut fake, &prepared, || cancelled.get());
-        assert!(cancelled.get());
+        let result = run(&mut rig, &prepared, dir.path(), confirm, || stopped.get());
+        assert!(stopped.get());
         if after {
             result.unwrap();
-            assert!(fake.writes.ends_with(&metadata_requests()));
-            assert!(fake.inbox.is_empty());
+            assert!(rig.writes.ends_with(&metadata_requests()));
         } else {
             assert!(
                 result
                     .unwrap_err()
                     .contains("stopped before the slot store")
             );
-            assert!(fake.writes.ends_with(&cleanup()));
-            assert!(
-                !fake
-                    .writes
-                    .iter()
-                    .any(|chunk| chunk.as_slice() == [0x61, 50])
-            );
+            assert!(!rig.writes.iter().any(|bytes| bytes == &[0x61, 50]));
+            assert!(rig.writes.ends_with(&cleanup()));
         }
     }
 }
 
 #[test]
-fn partial_program_write_error_terminates_and_cleans_up_without_storing() {
-    let prepared = sample();
-    let mut fake = store_fake(&prepared, &[], false);
-    fake.fail_at = Some(13);
-    assert!(
-        run_store(&mut fake, &prepared, || false)
-            .unwrap_err()
-            .contains("transport write failure")
-    );
-    assert!(fake.writes.ends_with(&cleanup()));
-    assert_eq!(fake.writes[fake.writes.len() - 8], [0xf7]);
-    assert!(
-        !fake
-            .writes
-            .iter()
-            .any(|chunk| chunk.as_slice() == [0x61, 50])
-    );
+fn partial_upload_transport_error_closes_without_storing() {
+    let prepared = sample(Mode::Factory);
+    let dir = tempfile::tempdir().unwrap();
+    let mut rig = successful(&prepared);
+    rig.fail_at = Some(preflight_writes().len() + 8);
+    let error = run(&mut rig, &prepared, dir.path(), confirm, || false).unwrap_err();
+    assert!(error.contains("transport write failure"));
+    assert!(rig.writes.ends_with(&cleanup()));
+    assert_eq!(rig.writes[rig.writes.len() - 8], [0xf7]);
+    assert!(!rig.writes.iter().any(|bytes| bytes == &[0x61, 50]));
 }
 
 #[test]
-fn expected_image_stamps_four_words_and_sums_through_word_1090() {
-    let mut program = [0; PROGRAM_BYTES];
-    program[767 * 3..771 * 3].fill(0xff);
-    program[1089 * 3..1090 * 3].copy_from_slice(&[0xff, 0xff, 0xfe]);
-    program[1090 * 3..1091 * 3].copy_from_slice(&[0, 0, 5]);
-    let expected = expected_stored_image(&program);
-    assert_eq!(&expected[767 * 3..771 * 3], b"\0\x000\0\x003\0\x001\0\x000");
-    assert_eq!(expected[..767 * 3], program[..767 * 3]);
-    assert_eq!(expected[771 * 3..1091 * 3], program[771 * 3..1091 * 3]);
-    assert_eq!(&expected[1091 * 3..], &[0, 0, 0xc7]);
+fn store_policy_admits_only_identity_g3_reads_and_g7_store() {
+    for op in [
+        Operation::VariaxIdentity,
+        Operation::VariaxRead,
+        Operation::VariaxStoreRestore,
+    ] {
+        assert!(StorePolicy.allows(op));
+    }
+    for op in [
+        Operation::VariaxSlotRead,
+        Operation::VariaxEditBufferWrite,
+        Operation::VariaxPresetSwitch,
+        Operation::VariaxBankNameRead,
+        Operation::VariaxLibraryBridge,
+        Operation::PodxtIdentity,
+        Operation::PodxtEditBufferWrite,
+        Operation::PodxtChannelSwitch,
+    ] {
+        assert!(!StorePolicy.allows(op));
+    }
+    assert!(!VariaxPolicy.allows(Operation::VariaxStoreRestore));
 }
 
 #[test]
-#[ignore = "requires a private copy of the fingerprinted 3.10 archive"]
-fn stamped_slot_50_hash_matches_factory_archive() {
+#[ignore = "requires local fingerprinted archive and #234 capture"]
+fn private_inputs_verify_all_three_expected_image_hashes() {
     let archive = std::env::var_os("VARIAX_310_ARCHIVE").expect("set VARIAX_310_ARCHIVE");
-    let factory = FactoryReference::parse(&read(Path::new(&archive)).unwrap()).unwrap();
-    let program = canonical_store_program(factory.slots()[50].raw_program(), STORE_HASH).unwrap();
-    let stamped = expected_stored_image(&program);
-    assert_eq!(&stamped[1091 * 3..], &[0xa3, 0x21, 0x9c]);
-    assert!(matches_hash(&stamped, STORED_HASH));
+    let capture = std::env::var_os("VARIAX_RESO5_CAPTURE").expect("set VARIAX_RESO5_CAPTURE");
+    for (mode, hash) in [
+        (
+            Mode::Rename,
+            "75bcaaf5f775bcd2f5ba22289aa4b8e9cac0c6115b4ac32b75144b4ccb5c716b",
+        ),
+        (
+            Mode::Restore,
+            "3d8bae813991fa5996fb649ad80d116de8ef358c03724770183b89cdef5ad249",
+        ),
+        (
+            Mode::Factory,
+            "90d79131f7909639aa2d0793cb3f617fbd95a95a1ada7a54f90ec84de4e28164",
+        ),
+    ] {
+        let prepared =
+            ladder::reference_images(mode, Path::new(&archive), Path::new(&capture)).unwrap();
+        assert_eq!(prepared.expected_sha256(), hash);
+        let backup = tempfile::tempdir().unwrap();
+        let today = "2026-11-24";
+        backup_at(
+            backup.path(),
+            prepared.before[METADATA].try_into().unwrap(),
+            today,
+            false,
+        );
+        assert_eq!(
+            ladder::prepare(
+                mode,
+                backup.path(),
+                today,
+                Path::new(&archive),
+                Path::new(&capture)
+            )
+            .unwrap()
+            .expected_sha256(),
+            hash,
+        );
+    }
 }

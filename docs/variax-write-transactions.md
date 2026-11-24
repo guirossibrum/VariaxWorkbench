@@ -8,13 +8,13 @@ It accepts a caller-provided link and gate policy. The separate
 [Reso-5 owner test](reso5-test-card.md) uses only the full edit-buffer
 transaction, with its own identity checks, backup verification and G6 policy.
 
-The separate [Reso-5 slot 50 owner test](reso5-store-test-card.md) uses
-G7 and its own write policy. It sends only the archived factory program pinned
-to slot 50. It verifies the same-day backup and compares the current settings
-before and after the store. The #225 owner run received no stored-slot reply
-through the PODxt Live. The test card documents the stamped image for future
-direct-interface verification and the two-minute wait and manual checks after
-a silent timeout. The file-only check requires no host model manifest.
+The [Reso-5 slot 50 ladder](reso5-store-test-card.md) uses the same G7
+transaction for rename, restore and factory modes. It checks a same-day backup
+and the full current buffer before each store and verifies the reselected
+buffer against the firmware-stamped image after confirmation. The read-back
+uses #234's chunked `0x3C` reads. Spare 62 remains unavailable on the PODxt
+Live route. The card covers the two-minute wait and manual checks after a
+silent timeout.
 
 ## Byte and timing contract
 

@@ -52,19 +52,29 @@ pub fn capture<L: Link>(
     variax_identity(&identified.identity)?;
     session.note("Verified Variax 300/600 firmware 3.10.");
 
-    let spans: [PresetSpan; CHUNK_COUNT] = std::array::from_fn(|index| {
+    read_chunks(&mut session, dir, stopping)
+}
+
+pub(super) fn chunks() -> [PresetSpan; CHUNK_COUNT] {
+    std::array::from_fn(|index| {
         let start = index as u16 * CHUNK_WORDS;
         let count = (BUFFER_WORDS - start).min(CHUNK_WORDS);
         PresetSpan::new(start, count).expect("chunk is in bounds")
-    });
+    })
+}
+
+pub(super) fn chunk_path(dir: &Path, span: PresetSpan) -> std::path::PathBuf {
+    dir.join(format!("start-{}-count-{}.syx", span.start(), span.count()))
+}
+
+pub(super) fn read_chunks<L: Link>(
+    session: &mut Session<L>,
+    dir: &Path,
+    stopping: impl FnMut() -> bool,
+) -> Result<FullBuffer, String> {
     let mut full = Vec::with_capacity(usize::from(BUFFER_WORDS));
-    read_spans(&mut session, &spans, stopping, |reply| {
-        let start = reply.span.start();
-        let count = reply.span.count();
-        save_new(
-            &dir.join(format!("start-{start}-count-{count}.syx")),
-            &reply.raw,
-        )?;
+    read_spans(session, &chunks(), stopping, |reply| {
+        save_new(&chunk_path(dir, reply.span), &reply.raw)?;
         full.extend(reply.words);
         Ok(())
     })?;

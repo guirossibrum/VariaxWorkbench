@@ -1,7 +1,10 @@
 mod full_read;
 mod slot_read;
 
-use super::procedure::{self, Stage, StorePolicy, VariaxPolicy};
+use super::procedure::{
+    self, Stage, StorePolicy, VariaxPolicy,
+    store::{self, Mode, Prompt},
+};
 use line6_devices::{
     backup,
     midi::hex,
@@ -25,7 +28,7 @@ use variax_workbench::hardware_gates::{Gate, run_if_unlocked};
 const USAGE: &str =
     "Usage: variax-reso5-test --card | --store-card | --slot-read-card | --full-read-card
        variax-reso5-test [--check] stage-1|stage-2 BACKUP_DIR ARCHIVE.vxf MODELS.tsv LOG_ROOT
-       variax-reso5-test [--check] store BACKUP_DIR ARCHIVE.vxf LOG_ROOT
+       variax-reso5-test [--check] store rename|restore|factory BACKUP_DIR ARCHIVE.vxf CAPTURE_DIR LOG_ROOT
        variax-reso5-test [--check] slot-read VARIAX_BACKUP PODXT_BACKUP ARCHIVE.vxf LOG_ROOT
        variax-reso5-test [--check] full-read ARCHIVE.vxf LOG_ROOT";
 
@@ -75,13 +78,16 @@ pub fn run(args: &[OsString]) -> Result<(), String> {
             Path::new(log_root),
         );
     }
-    if let [stage, backup_dir, archive, log_root] = args
+    if let [stage, mode, backup_dir, archive, capture, log_root] = args
         && stage == "store"
     {
+        let mode = mode.to_str().and_then(Mode::parse).ok_or(USAGE)?;
         return run_store(
             offline,
+            mode,
             Path::new(backup_dir),
             Path::new(archive),
+            Path::new(capture),
             Path::new(log_root),
         );
     }
@@ -161,25 +167,49 @@ pub fn run(args: &[OsString]) -> Result<(), String> {
     Ok(())
 }
 
+// Each ladder step needs its own direct owner approval on the reviewed build.
+const APPROVED_RENAME: bool = false;
+const APPROVED_RESTORE: bool = false;
+const APPROVED_FACTORY: bool = false;
+
 fn run_store(
     offline: bool,
+    mode: Mode,
     backup_dir: &Path,
     archive: &Path,
+    capture: &Path,
     log_root: &Path,
 ) -> Result<(), String> {
-    let trace = Trace::create(log_root, "store")?;
+    let approved = match mode {
+        Mode::Rename => APPROVED_RENAME,
+        Mode::Restore => APPROVED_RESTORE,
+        Mode::Factory => APPROVED_FACTORY,
+    };
+    if !offline && !approved {
+        return Err(format!(
+            "The #177 {} step has no owner approval for a live run.",
+            mode.label()
+        ));
+    }
+    let trace = Trace::create(log_root, &format!("store-{}", mode.label()))?;
     let result = (|| {
         let (_, started) = now()?;
         let today = &started[..10];
         trace.record(format!(
-            "Reso-5 slot 50 store at {started}. Backup: {}",
-            backup_dir.display()
+            "Reso-5 slot 50 {} at {started}. Backup: {}. Capture: {}",
+            mode.label(),
+            backup_dir.display(),
+            capture.display()
         ));
-        let prepared = procedure::prepare_store(backup_dir, today, archive)?;
-        let verified = "Verified the archived slot 50 program fingerprint, name and checksum, and the same-day complete backup.";
-        trace.record(verified.into());
+        let prepared = store::prepare(mode, backup_dir, today, archive, capture)?;
+        let verified = format!(
+            "Verified the archive, pinned capture and same-day backup. Expected stored-image SHA-256 ({}): {}",
+            mode.label(),
+            prepared.expected_sha256()
+        );
+        trace.record(verified.clone());
+        println!("{verified}");
         if offline {
-            println!("{verified} Offline check passed.");
             return Ok(());
         }
 
@@ -198,15 +228,13 @@ fn run_store(
     trace.record(match &result {
         Err(error) => format!("STOPPED: {error}"),
         Ok(()) if offline => "PASS: offline preflight. No device was opened.".into(),
-        Ok(()) => {
-            "PASS: store confirmation and settings read-back. Continue with the test card.".into()
-        }
+        Ok(()) => "PASS: store confirmation, full reselected image and settings read-back.".into(),
     });
     println!("Log folder: {}", trace.path.display());
     combine(result, trace.finish())?;
     if !offline {
         println!(
-            "Received 0x71 and verified all 192 Reso-5 settings bytes. Continue with the test card."
+            "Received 0x71 and verified the full reselected image and all 192 settings bytes."
         );
     }
     Ok(())
@@ -215,11 +243,20 @@ fn run_store(
 enum DeviceTask<'a> {
     FullRead(&'a [u8; variax_workbench::factory_reference::PROGRAM_BYTES]),
     Edit(&'a procedure::Prepared),
-    Store(&'a procedure::PreparedStore, &'a str),
+    Store(&'a store::Prepared, &'a str),
 }
 
-fn prompt_store(today: &str, stopping: impl Fn() -> bool) -> Result<(), String> {
-    print!("Type {} and press Enter: ", procedure::STORE_CONFIRMATION);
+fn prompt_store(prompt: Prompt, today: &str, stopping: impl Fn() -> bool) -> Result<(), String> {
+    let phrase = match prompt {
+        Prompt::Confirm(mode) => mode.confirmation(),
+        Prompt::Reselect => {
+            println!(
+                "0x71 received. Select another preset, then return to Reso, position 5 by hand."
+            );
+            store::RESELECT_CONFIRMATION
+        }
+    };
+    print!("Type {phrase} and press Enter: ");
     io::stdout().flush().map_err(|e| e.to_string())?;
     let mut answer = Vec::new();
     let mut stdin = libc::pollfd {
@@ -250,14 +287,14 @@ fn prompt_store(today: &str, stopping: impl Fn() -> bool) -> Result<(), String> 
             }
             return Err(format!("Cannot read slot confirmation: {error}"));
         }
-        if count == 0 || answer.len() > procedure::STORE_CONFIRMATION.len() + 1 {
+        if count == 0 || answer.len() > phrase.len() + 1 {
             break;
         }
         answer.push(byte);
         if byte == b'\n' {
             let answer = std::str::from_utf8(&answer).map_err(|error| error.to_string())?;
-            procedure::confirm_store(answer)?;
-            if &now()?.1[..10] != today {
+            store::require_confirmation(prompt, answer)?;
+            if matches!(prompt, Prompt::Confirm(_)) && &now()?.1[..10] != today {
                 return Err(
                     "The UTC day changed during preflight. Select a current backup.".into(),
                 );
@@ -265,7 +302,7 @@ fn prompt_store(today: &str, stopping: impl Fn() -> bool) -> Result<(), String> 
             return Ok(());
         }
     }
-    Err("Slot 50 store confirmation was not given.".into())
+    store::require_confirmation(prompt, "")
 }
 
 fn run_device(task: DeviceTask<'_>, trace: &Trace) -> Result<(), String> {
@@ -317,10 +354,15 @@ fn run_device(task: DeviceTask<'_>, trace: &Trace) -> Result<(), String> {
             }
             DeviceTask::Store(prepared, today) => {
                 let mut session = Session::new(link, &StorePolicy, &mut log);
-                procedure::attempt_store(
+                store::attempt(
                     &mut session,
                     prepared,
-                    || prompt_store(today, stopping),
+                    &trace.path,
+                    |prompt| {
+                        prompt_store(prompt, today, || {
+                            matches!(prompt, Prompt::Confirm(_)) && stopping()
+                        })
+                    },
                     |notice| eprintln!("{notice}"),
                     stopping,
                 )
