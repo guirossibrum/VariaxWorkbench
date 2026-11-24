@@ -77,9 +77,11 @@ flock -n "${XDG_RUNTIME_DIR:-/tmp}/variax-workbench-podxt-live.lock" sleep 15
 ```
 
 While that command holds the lock, launch the app with the rig connected.
-Expect **Guitar: checking… (waiting for the rig)** when the PODxt is visible,
-with no Variax device tab. When the command exits, the queued check should
-run once and show the guitar only after verification. This uses an idle lock
+Expect **Guitar: checking… (waiting for the rig)** when the PODxt is visible.
+The Variax tab should appear only after the queued check runs and verifies
+the guitar. When the command exits, the label returns to ordinary checking
+while the app runs identity. An OS preflight delay or an operation inside the
+same app uses ordinary checking. This uses an idle lock
 holder. The owner probes can be exercised separately under their own
 approved procedures and confirmations using binaries rebuilt at the review
 commit.

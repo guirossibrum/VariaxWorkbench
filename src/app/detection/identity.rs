@@ -50,6 +50,11 @@ pub(in crate::editor) enum Outcome {
         not(any(test, all(feature = "usb", target_os = "linux"))),
         allow(dead_code)
     )]
+    OtherProcessBusy,
+    #[cfg_attr(
+        not(any(test, all(feature = "usb", target_os = "linux"))),
+        allow(dead_code)
+    )]
     Notices(Vec<Notice>),
     Finished {
         pod_firmware: Option<&'static str>,
@@ -142,7 +147,8 @@ mod live {
         }
         let rig = match DeviceLock::acquire() {
             Ok(rig) => rig,
-            Err(LockError::Busy) => return Outcome::Deferred,
+            Err(LockError::Busy) => return Outcome::OtherProcessBusy,
+            Err(LockError::BusyHere) => return Outcome::Deferred,
             Err(error) => return unavailable(error.to_string()),
         };
         run_if_unlocked(Gate::OsDiscovery, || Ok(identify_on(&rig, job, cancel)))

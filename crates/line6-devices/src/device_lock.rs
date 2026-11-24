@@ -2,34 +2,57 @@
 use std::fmt;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum LockError {
     Busy,
+    BusyHere,
     Unavailable(String),
 }
 
 impl fmt::Display for LockError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Busy => f.write_str("PODxt Live is busy with another operation."),
+            Self::Busy | Self::BusyHere => {
+                f.write_str("PODxt Live is busy with another operation.")
+            }
             Self::Unavailable(error) => write!(f, "Cannot lock the PODxt Live: {error}."),
         }
     }
 }
 
 const LOCK_NAME: &str = "variax-workbench-podxt-live.lock";
+static ACTIVE_HERE: AtomicBool = AtomicBool::new(false);
+static PASSIVE_HERE: AtomicBool = AtomicBool::new(false);
+
+struct LocalLease(&'static AtomicBool);
+
+impl LocalLease {
+    fn acquire(held: &'static AtomicBool) -> Result<Self, LockError> {
+        held.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| Self(held))
+            .map_err(|_| LockError::BusyHere)
+    }
+}
+
+impl Drop for LocalLease {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
 
 pub struct DeviceLock {
     // The OS releases the lock when the last clone of this handle closes.
     _file: File,
     _active: File,
+    _local: Option<LocalLease>,
 }
 
 impl DeviceLock {
     pub fn acquire() -> Result<Self, LockError> {
-        acquire_at(&lock_path(std::env::var_os("XDG_RUNTIME_DIR")))
+        acquire_tracked(&lock_path(std::env::var_os("XDG_RUNTIME_DIR")))
     }
 
     /// Pass the same locked file description to a multi-stage owner procedure.
@@ -118,6 +141,19 @@ fn active_file(path: &Path) -> Result<File, LockError> {
     open_lock_file(&path.with_extension("active.lock"))
 }
 
+fn acquire_tracked(path: &Path) -> Result<DeviceLock, LockError> {
+    let local = LocalLease::acquire(&ACTIVE_HERE)?;
+    let passive_was_local = PASSIVE_HERE.load(Ordering::Acquire);
+    let mut guard = acquire_at(path).map_err(|error| match error {
+        LockError::Busy if passive_was_local || PASSIVE_HERE.load(Ordering::Acquire) => {
+            LockError::BusyHere
+        }
+        other => other,
+    })?;
+    guard._local = Some(local);
+    Ok(guard)
+}
+
 fn acquire_at(path: &Path) -> Result<DeviceLock, LockError> {
     let active = active_file(path)?;
     // The monitor may be in its brief try/unlock check when active work arrives.
@@ -136,6 +172,7 @@ fn acquire_at(path: &Path) -> Result<DeviceLock, LockError> {
                 return Ok(DeviceLock {
                     _file: file,
                     _active: active,
+                    _local: None,
                 });
             }
             Err(LockError::Busy) if Instant::now() < deadline => {
@@ -150,11 +187,15 @@ fn acquire_at(path: &Path) -> Result<DeviceLock, LockError> {
 pub struct PassiveDeviceLock {
     _file: File,
     active: File,
+    _local: Option<LocalLease>,
 }
 
 impl PassiveDeviceLock {
     pub fn acquire() -> Result<Self, LockError> {
-        Self::acquire_at(&lock_path(std::env::var_os("XDG_RUNTIME_DIR")))
+        let local = LocalLease::acquire(&PASSIVE_HERE)?;
+        let mut guard = Self::acquire_at(&lock_path(std::env::var_os("XDG_RUNTIME_DIR")))?;
+        guard._local = Some(local);
+        Ok(guard)
     }
 
     fn acquire_at(path: &Path) -> Result<Self, LockError> {
@@ -166,6 +207,7 @@ impl PassiveDeviceLock {
         Ok(Self {
             _file: file,
             active,
+            _local: None,
         })
     }
 
@@ -221,6 +263,23 @@ mod linux {
     use super::*;
 
     #[test]
+    fn tracked_lock_distinguishes_this_process_from_untracked_contenders() {
+        let folder =
+            std::env::temp_dir().join(format!("variax-lock-origin-test-{}", std::process::id()));
+        std::fs::create_dir(&folder).unwrap();
+        let path = folder.join("lock");
+        let held = acquire_tracked(&path).unwrap();
+        assert!(matches!(acquire_tracked(&path), Err(LockError::BusyHere)));
+        drop(held);
+        let external = open_lock_file(&path).unwrap();
+        lock(&external).unwrap();
+        assert!(matches!(acquire_tracked(&path), Err(LockError::Busy)));
+        drop(external);
+        assert!(acquire_tracked(&path).is_ok());
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
     fn passive_listener_yields_to_active_work_and_cannot_reenter() {
         let folder =
             std::env::temp_dir().join(format!("variax-passive-lock-test-{}", std::process::id()));
@@ -253,7 +312,7 @@ mod linux {
         if let Some(path) = std::env::var_os(CHILD_PATH) {
             let path = std::path::PathBuf::from(path);
             verify(std::io::stdin(), &path).unwrap();
-            assert!(matches!(acquire_at(&path), Err(LockError::Busy)));
+            assert!(matches!(acquire_tracked(&path), Err(LockError::Busy)));
             return;
         }
         let folder =

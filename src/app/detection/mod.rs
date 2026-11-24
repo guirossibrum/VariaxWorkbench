@@ -100,7 +100,7 @@ struct Attachment {
 struct Bridge {
     queued: Option<JobKind>,
     running: Option<JobKind>,
-    deferred: bool,
+    waiting_for_other_process: bool,
     pod: Option<&'static str>,
     guitar: Option<(u64, &'static str)>,
     last_guitar: Option<&'static str>,
@@ -115,7 +115,7 @@ impl Bridge {
         Self {
             queued: enabled.then_some(JobKind::Initial),
             running: None,
-            deferred: false,
+            waiting_for_other_process: false,
             pod: None,
             guitar: None,
             last_guitar: None,
@@ -146,16 +146,17 @@ impl Bridge {
                     self.observe_notice(notice);
                 }
             }
-            Outcome::Deferred => {
+            Outcome::Deferred | Outcome::OtherProcessBusy => {
                 self.running = None;
                 self.queued = Some(kind);
-                self.deferred = true;
+                self.waiting_for_other_process = matches!(outcome, Outcome::OtherProcessBusy);
             }
             Outcome::Finished {
                 pod_firmware,
                 guitar,
             } => {
                 self.running = None;
+                self.waiting_for_other_process = false;
                 self.firmware_warning = None;
                 if kind == JobKind::Initial {
                     self.pod = pod_firmware;
@@ -204,7 +205,7 @@ impl Bridge {
 
     fn label(&self) -> String {
         let status = if self.pending() {
-            if self.deferred {
+            if self.waiting_for_other_process {
                 "checking… (waiting for the rig)"
             } else {
                 "checking…"
@@ -275,7 +276,7 @@ impl DetectionService {
             self.cancel_listener();
             return Err(error);
         }
-        self.finish_worker();
+        let waiting_for_other_process = self.finish_worker();
         if matches!(scan, Scan::Automatic) {
             #[cfg(test)]
             for attachment in self.attachments.values_mut() {
@@ -289,7 +290,9 @@ impl DetectionService {
                     }
                 }
             }
-            self.start_queued();
+            if !waiting_for_other_process {
+                self.start_queued();
+            }
         }
         self.rebuild_devices(scan, profiles);
         Ok(self.known.values().cloned().collect())
@@ -390,11 +393,14 @@ impl DetectionService {
         }
     }
 
-    fn finish_worker(&mut self) {
-        if self.worker.as_ref().is_some_and(Worker::finished) {
-            let (job, outcome) = self.worker.take().expect("finished worker").finish();
-            self.apply_outcome(job, outcome);
+    fn finish_worker(&mut self) -> bool {
+        if !self.worker.as_ref().is_some_and(Worker::finished) {
+            return false;
         }
+        let (job, outcome) = self.worker.take().expect("finished worker").finish();
+        let waiting_for_other_process = matches!(outcome, Outcome::OtherProcessBusy);
+        self.apply_outcome(job, outcome);
+        waiting_for_other_process
     }
 
     /// Delay quit until the endpoint and the shared lock have been released.
@@ -450,6 +456,7 @@ impl DetectionService {
         if job.kind != JobKind::Listen {
             let bridge = self.bridge_mut(&job.attachment).expect("queued bridge");
             bridge.queued = None;
+            bridge.waiting_for_other_process = false;
             bridge.running = Some(job.kind);
         }
         match Worker::start(job.clone(), identify) {

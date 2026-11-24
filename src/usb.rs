@@ -462,7 +462,8 @@ pub fn read_identity(
         }
         let _rig = line6_devices::device_lock::DeviceLock::acquire().map_err(|error| {
             open_stopped(match error {
-                line6_devices::device_lock::LockError::Busy => IdentityFailure::RigBusy,
+                line6_devices::device_lock::LockError::Busy
+                | line6_devices::device_lock::LockError::BusyHere => IdentityFailure::RigBusy,
                 line6_devices::device_lock::LockError::Unavailable(_) => {
                     IdentityFailure::LockUnavailable
                 }

@@ -507,6 +507,24 @@ fn expected_cached_bridge_binding_only_shows_the_pod_while_checking() {
 }
 
 #[test]
+fn preflight_or_local_contention_stays_in_checking_status() {
+    let (ctx, mut app, source) = fixture();
+    source.usb(true, false);
+    tick(&ctx, &mut app);
+    let key = entries(&app)[0].2.device.key.attachment.clone();
+    source
+        .0
+        .borrow_mut()
+        .results
+        .insert(key, SimulatedOutcome::Deferred);
+    tick(&ctx, &mut app);
+    assert_eq!(
+        entries(&app)[0].2.device.guitar_status.as_deref(),
+        Some("Guitar: checking…")
+    );
+}
+
+#[test]
 fn refresh_button_waits_while_the_rig_is_busy_and_opens_only_after_verification() {
     let (ctx, mut app, source) = fixture();
     source.usb(true, false);
@@ -518,7 +536,7 @@ fn refresh_button_waits_while_the_rig_is_busy_and_opens_only_after_verification(
         .0
         .borrow_mut()
         .results
-        .insert(attachment.clone(), SimulatedOutcome::Deferred);
+        .insert(attachment.clone(), SimulatedOutcome::OtherProcessBusy);
     detection_button(&ctx, &mut app, "refresh-guitar");
     assert_eq!(entries(&app).len(), 1);
     let pod = entries(&app)[0].2;
