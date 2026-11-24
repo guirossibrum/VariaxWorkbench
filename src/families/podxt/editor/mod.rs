@@ -15,18 +15,21 @@ enum PodMembershipAction {
     MoveDown,
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PendingStompHarmony {
     Harmony1M335(pod_preset::StompHarmony1M335Selection),
     Harmony1457(pod_preset::StompHarmony1457Selection),
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum PendingDelayEdit {
     Note(pod_preset::DelayNoteChoice),
     TimeMs(f32),
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum PendingModEdit {
     Note(pod_preset::ModNoteChoice),
@@ -293,15 +296,22 @@ pub(super) struct PodxtEditor {
     pod_revert_confirm: bool,
     pod_cab_pending: Option<(usize, pod_preset::PodCabModelChoice)>,
     pod_cab_pending_origin: Option<(u64, usize, Vec<u8>)>,
+    #[cfg(test)]
     pod_delay_model_pending: Option<(usize, pod_preset::PodDelayModelChoice)>,
+    #[cfg(test)]
     pod_mod_model_pending: Option<(usize, pod_preset::PodModModelChoice)>,
+    #[cfg(test)]
     pod_stomp_model_pending: Option<(usize, pod_preset::PodStompModelChoice)>,
+    #[cfg(test)]
     pod_reverb_model_pending: Option<(usize, pod_preset::PodReverbModelChoice)>,
     pod_amp_model_pending: Option<(usize, u32, pod_preset::PodAmpModelChoice)>,
     pod_eq_reset_pending: Option<PendingPodEqReset>,
     pod_document_generation: u64,
+    #[cfg(test)]
     pod_harmony_pending: Option<(usize, pod_preset::StompHarmonyControl, PendingStompHarmony)>,
+    #[cfg(test)]
     pod_delay_pending: Option<(usize, PendingDelayEdit)>,
+    #[cfg(test)]
     pod_mod_pending: Option<(usize, PendingModEdit)>,
     pub(super) pod_name: String,
     pod_message: String,
@@ -393,15 +403,22 @@ impl PodxtEditor {
             pod_revert_confirm: false,
             pod_cab_pending: None,
             pod_cab_pending_origin: None,
+            #[cfg(test)]
             pod_delay_model_pending: None,
+            #[cfg(test)]
             pod_mod_model_pending: None,
+            #[cfg(test)]
             pod_stomp_model_pending: None,
+            #[cfg(test)]
             pod_reverb_model_pending: None,
             pod_amp_model_pending: None,
             pod_eq_reset_pending: None,
             pod_document_generation: 0,
+            #[cfg(test)]
             pod_harmony_pending: None,
+            #[cfg(test)]
             pod_delay_pending: None,
+            #[cfg(test)]
             pod_mod_pending: None,
             pod_name: String::new(),
             pod_message: String::new(),
@@ -563,7 +580,7 @@ impl PodxtEditor {
             .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
             .show(ctx, |ui| {
                 ui.label(format!(
-                    "\"{name}\" has an applied name edit that has not been saved. {still}"
+                    "\"{name}\" has applied edits that have not been saved. {still}"
                 ));
                 ui.horizontal(|ui| {
                     let response = ui.button("Save copy and continue…");
@@ -809,7 +826,7 @@ impl PodxtEditor {
                     self.refresh_selected_pod_name();
                     self.restore_staged_amp_if_origin_matches(staged_amp);
                     self.pod_message =
-                        "Discarded the unsaved name edit for one tone. Nothing was sent.".into();
+                        "Discarded the unsaved edits for one tone. Nothing was sent.".into();
                     true
                 }
                 Err(error) => {
@@ -841,14 +858,35 @@ impl PodxtEditor {
     fn refresh_selected_pod_name(&mut self) {
         self.pod_cab_pending = None;
         self.pod_cab_pending_origin = None;
-        self.pod_delay_model_pending = None;
-        self.pod_mod_model_pending = None;
-        self.pod_stomp_model_pending = None;
-        self.pod_reverb_model_pending = None;
+        #[cfg(test)]
+        {
+            self.pod_delay_model_pending = None;
+        }
+        #[cfg(test)]
+        {
+            self.pod_mod_model_pending = None;
+        }
+        #[cfg(test)]
+        {
+            self.pod_stomp_model_pending = None;
+        }
+        #[cfg(test)]
+        {
+            self.pod_reverb_model_pending = None;
+        }
         self.pod_amp_model_pending = None;
-        self.pod_harmony_pending = None;
-        self.pod_delay_pending = None;
-        self.pod_mod_pending = None;
+        #[cfg(test)]
+        {
+            self.pod_harmony_pending = None;
+        }
+        #[cfg(test)]
+        {
+            self.pod_delay_pending = None;
+        }
+        #[cfg(test)]
+        {
+            self.pod_mod_pending = None;
+        }
         match (self.pod_selected, self.pod_library.len()) {
             (Some(_), 0) => {
                 self.pod_selected = None;
@@ -936,62 +974,9 @@ impl PodxtEditor {
                     self.pod_pedalboard(ui);
                 });
                 ui.separator();
+                #[cfg(test)]
                 if self.legacy_control_widgets() {
-                let reverb_model_state = self.pod_selected.and_then(|index| {
-                    self.pod_library.tone(index).and_then(|tone| {
-                        (tone.container() == pod_preset::ContainerKind::L6pa).then(|| {
-                            let ids: Vec<_> = tone.models().iter()
-                                .filter(|model| matches!(model.slot, pod_preset::REVERB_SLOT | pod_preset::REVERB_FALLBACK_SLOT))
-                                .map(|model| model.model_id).collect();
-                            (!ids.is_empty()).then_some((index, ids.first().copied(), ids.len()))
-                        }).flatten()
-                    })
-                });
-                if let Some((index, current, slot_count)) = reverb_model_state {
-                    if slot_count == 1 && current.and_then(pod_preset::PodReverbModelChoice::from_model_id).is_some() {
-                        let mut selected = self.pod_reverb_model_pending.filter(|(i, _)| *i == index).map(|(_, choice)| Some(choice))
-                            .or_else(|| current.and_then(pod_preset::PodReverbModelChoice::from_model_id).map(Some)).unwrap_or(None);
-                        let selected_text = selected.map(pod_preset::PodReverbModelChoice::numeric_label)
-                            .unwrap_or_else(|| "Select model".into());
-                        let mut changed = None;
-                        let combo = ui.horizontal(|ui| {
-                            ui.label(format!("Reverb ID · current {:08x}", current.unwrap()));
-                            let combo = egui::ComboBox::from_id_salt("pod-reverb-model-choice").selected_text(selected_text).show_ui(ui, |ui| {
-                                for id in pod_preset::PodReverbModelChoice::MODEL_IDS {
-                                    let choice = pod_preset::PodReverbModelChoice::from_model_id(id).expect("listed Reverb model id is admitted");
-                                    let response = ui.selectable_value(&mut selected, Some(choice), format!("{id:08x}"));
-                                    #[cfg(test)] self.pod_reverb_model_options.insert(id, response.rect);
-                                    if response.changed() { changed = Some(choice); }
-                                }
-                            });
-                            combo.response.rect
-                        });
-                        #[cfg(test)] { self.pod_reverb_model_combo = Some(combo.inner); }
-                        #[cfg(not(test))] let _ = combo;
-                        if let Some(choice) = changed { self.pod_reverb_model_pending = Some((index, choice)); }
-                        if let Some((pending_index, choice)) = self.pod_reverb_model_pending.filter(|(i, _)| *i == index) {
-                            ui.horizontal(|ui| {
-                                ui.label(format!("Pending {} (not applied)", choice.numeric_label()));
-                                let apply = ui.button("Apply Reverb model");
-                                #[cfg(test)] self.pod_buttons.insert("pod-reverb-model-apply", apply.rect);
-                                if apply.clicked() {
-                                    match self.apply_pod_reverb_model_choice(pending_index, choice) {
-                                        Ok(changed) => {
-                                            if changed { self.pod_reverb_model_pending = None; }
-                                            self.pod_message = if changed { "Applied the Reverb model ID offline; stored parameters were retained. Nothing was sent.".into() } else { "The Reverb model ID already matched; no bytes or staging changed.".into() };
-                                        }
-                                        Err(error) => self.pod_message = error.detail(),
-                                    }
-                                }
-                                let discard = ui.button("Discard");
-                                #[cfg(test)] self.pod_buttons.insert("pod-reverb-model-discard", discard.rect);
-                                if discard.clicked() { self.pod_reverb_model_pending = None; }
-                            });
-                        }
-                    } else {
-                        ui.label(format!("Reverb ID · current {} (uneditable: requires one recognized primary or fallback model)", current.map_or_else(|| "unavailable".into(), |id| format!("{id:08x}"))));
-                    }
-                }
+                    self.legacy_reverb_widgets(ui);
                 }
                 let membership_selection = self.pod_selected.and_then(|index| {
                     self.pod_bundle.as_ref().and_then(|bundle| {
@@ -1095,13 +1080,21 @@ impl PodxtEditor {
                         ))
                     })
                     .collect();
-                for (index, label, _) in rows {
-                    let response = ui.selectable_label(self.pod_selected == Some(index), label);
-                    #[cfg(test)]
-                    self.pod_rows.insert(index, response.rect);
-                    if response.clicked() {
-                        self.select_pod_index(index);
+                let legacy = self.legacy_control_widgets();
+                let mut render_rows = |ui: &mut egui::Ui| {
+                    for (index, label, _) in rows.iter() {
+                        let response = ui.selectable_label(self.pod_selected == Some(*index), label);
+                        #[cfg(test)]
+                        self.pod_rows.insert(*index, response.rect);
+                        if response.clicked() {
+                            self.select_pod_index(*index);
+                        }
                     }
+                };
+                if legacy {
+                    render_rows(ui);
+                } else if rows.len() > 1 {
+                    ui.collapsing("Tones", render_rows);
                 }
                 if !self.legacy_control_widgets() {
                     ui.horizontal(|ui| {
@@ -1109,7 +1102,112 @@ impl PodxtEditor {
                         ui.text_edit_singleline(&mut self.pod_name);
                     });
                     self.parameter_panel(ui);
-                } else {
+                }
+                #[cfg(test)]
+                if self.legacy_control_widgets() {
+                    self.legacy_parameter_widgets(ui);
+                }
+                #[cfg(test)]
+                {
+                    let selected = self.pod_selected.and_then(|index| {
+                        self.pod_library.tone(index).map(|tone| {
+                            format!(
+                                "\n{} {} amp {} cab {} undecoded {}\n{}",
+                                tone.container().tag(),
+                                tone.name(),
+                                pod_preset::PodTone::model_label(tone.amp_model_id()),
+                                pod_preset::PodTone::model_label(tone.cab_model_id()),
+                                tone.undecoded_slots(),
+                                tone.control_lines().join("\n"),
+                            )
+                        })
+                    });
+                    self.pod_visible = format!(
+                        "{}\n{}\n{}\n{}\n{}",
+                        pod_preset::OFFLINE_BANNER,
+                        pod_preset::NOT_GUITAR,
+                        pod_preset::NOT_SENT,
+                        pod_preset::PAYLOADS_NOT_DECODED,
+                        self.pod_message,
+                    );
+                    if let Some(selected) = selected {
+                        self.pod_visible.push_str(&selected);
+                    }
+                    let scope = self.pod_revert_scope();
+                    self.pod_visible.push('\n');
+                    self.pod_visible.push_str(&scope);
+                    self.pod_visible.push_str(
+                        "\nFetch needs gate G5. Sending a bank needs the reviewed write and store workflow.",
+                    );
+                }
+
+            });
+    }
+
+    #[cfg(test)]
+    fn legacy_reverb_widgets(&mut self, ui: &mut egui::Ui) {
+        ui.scope(|ui| {
+                let reverb_model_state = self.pod_selected.and_then(|index| {
+                    self.pod_library.tone(index).and_then(|tone| {
+                        (tone.container() == pod_preset::ContainerKind::L6pa).then(|| {
+                            let ids: Vec<_> = tone.models().iter()
+                                .filter(|model| matches!(model.slot, pod_preset::REVERB_SLOT | pod_preset::REVERB_FALLBACK_SLOT))
+                                .map(|model| model.model_id).collect();
+                            (!ids.is_empty()).then_some((index, ids.first().copied(), ids.len()))
+                        }).flatten()
+                    })
+                });
+                if let Some((index, current, slot_count)) = reverb_model_state {
+                    if slot_count == 1 && current.and_then(pod_preset::PodReverbModelChoice::from_model_id).is_some() {
+                        let mut selected = self.pod_reverb_model_pending.filter(|(i, _)| *i == index).map(|(_, choice)| Some(choice))
+                            .or_else(|| current.and_then(pod_preset::PodReverbModelChoice::from_model_id).map(Some)).unwrap_or(None);
+                        let selected_text = selected.map(pod_preset::PodReverbModelChoice::numeric_label)
+                            .unwrap_or_else(|| "Select model".into());
+                        let mut changed = None;
+                        let combo = ui.horizontal(|ui| {
+                            ui.label(format!("Reverb ID · current {:08x}", current.unwrap()));
+                            let combo = egui::ComboBox::from_id_salt("pod-reverb-model-choice").selected_text(selected_text).show_ui(ui, |ui| {
+                                for id in pod_preset::PodReverbModelChoice::MODEL_IDS {
+                                    let choice = pod_preset::PodReverbModelChoice::from_model_id(id).expect("listed Reverb model id is admitted");
+                                    let response = ui.selectable_value(&mut selected, Some(choice), format!("{id:08x}"));
+                                    #[cfg(test)] self.pod_reverb_model_options.insert(id, response.rect);
+                                    if response.changed() { changed = Some(choice); }
+                                }
+                            });
+                            combo.response.rect
+                        });
+                        #[cfg(test)] { self.pod_reverb_model_combo = Some(combo.inner); }
+                        #[cfg(not(test))] let _ = combo;
+                        if let Some(choice) = changed { self.pod_reverb_model_pending = Some((index, choice)); }
+                        if let Some((pending_index, choice)) = self.pod_reverb_model_pending.filter(|(i, _)| *i == index) {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("Pending {} (not applied)", choice.numeric_label()));
+                                let apply = ui.button("Apply Reverb model");
+                                #[cfg(test)] self.pod_buttons.insert("pod-reverb-model-apply", apply.rect);
+                                if apply.clicked() {
+                                    match self.apply_pod_reverb_model_choice(pending_index, choice) {
+                                        Ok(changed) => {
+                                            if changed { self.pod_reverb_model_pending = None; }
+                                            self.pod_message = if changed { "Applied the Reverb model ID offline; stored parameters were retained. Nothing was sent.".into() } else { "The Reverb model ID already matched; no bytes or staging changed.".into() };
+                                        }
+                                        Err(error) => self.pod_message = error.detail(),
+                                    }
+                                }
+                                let discard = ui.button("Discard");
+                                #[cfg(test)] self.pod_buttons.insert("pod-reverb-model-discard", discard.rect);
+                                if discard.clicked() { self.pod_reverb_model_pending = None; }
+                            });
+                        }
+                    } else {
+                        ui.label(format!("Reverb ID · current {} (uneditable: requires one recognized primary or fallback model)", current.map_or_else(|| "unavailable".into(), |id| format!("{id:08x}"))));
+                    }
+                }
+        });
+    }
+
+    #[cfg(test)]
+    fn legacy_parameter_widgets(&mut self, ui: &mut egui::Ui) {
+        ui.scope(|ui| {
                 let amp_choice_state = self.pod_selected.and_then(|index| {
                     self.pod_library.tone(index).and_then(|tone| {
                         if tone.container() != pod_preset::ContainerKind::L6pa {
@@ -1915,7 +2013,10 @@ impl PodxtEditor {
                             if response.clicked() {
                                 match self.apply_pod_delay_edit(pending_index, edit) {
                                     Ok(()) => {
-                                        self.pod_delay_pending = None;
+                                        #[cfg(test)]
+                                        {
+                                            self.pod_delay_pending = None;
+                                        }
                                         self.pod_message = "Applied the staged Delay NOTE/TIME edit offline. Nothing was sent.".into();
                                     }
                                     Err(error) => self.pod_message = error.detail(),
@@ -1990,7 +2091,10 @@ impl PodxtEditor {
                             if apply.clicked() {
                                 match self.apply_pod_mod_model_choice(pending_index, choice) {
                                     Ok(()) => {
-                                        self.pod_mod_model_pending = None;
+                                        #[cfg(test)]
+                                        {
+                                            self.pod_mod_model_pending = None;
+                                        }
                                         self.pod_message = "Applied the Mod model ID offline; stored parameters were retained. Nothing was sent.".into();
                                     }
                                     Err(error) => self.pod_message = error.detail(),
@@ -2000,7 +2104,10 @@ impl PodxtEditor {
                             #[cfg(test)]
                             self.pod_buttons.insert("pod-mod-model-discard", discard.rect);
                             if discard.clicked() {
-                                self.pod_mod_model_pending = None;
+                                #[cfg(test)]
+                                {
+                                    self.pod_mod_model_pending = None;
+                                }
                             }
                         });
                     }
@@ -2078,7 +2185,10 @@ impl PodxtEditor {
                             if apply.clicked() {
                                 match self.apply_pod_mod_edit(pending_index, edit) {
                                     Ok(()) => {
-                                        self.pod_mod_pending = None;
+                                        #[cfg(test)]
+                                        {
+                                            self.pod_mod_pending = None;
+                                        }
                                         self.pod_message = "Applied the staged Mod NOTE/SPEED edit offline. Nothing was sent.".into();
                                     }
                                     Err(error) => self.pod_message = error.detail(),
@@ -2200,42 +2310,7 @@ impl PodxtEditor {
                 if let Some(detail) = detail {
                     ui.label(detail);
                 }
-                }
-                #[cfg(test)]
-                {
-                    let selected = self.pod_selected.and_then(|index| {
-                        self.pod_library.tone(index).map(|tone| {
-                            format!(
-                                "\n{} {} amp {} cab {} undecoded {}\n{}",
-                                tone.container().tag(),
-                                tone.name(),
-                                pod_preset::PodTone::model_label(tone.amp_model_id()),
-                                pod_preset::PodTone::model_label(tone.cab_model_id()),
-                                tone.undecoded_slots(),
-                                tone.control_lines().join("\n"),
-                            )
-                        })
-                    });
-                    self.pod_visible = format!(
-                        "{}\n{}\n{}\n{}\n{}",
-                        pod_preset::OFFLINE_BANNER,
-                        pod_preset::NOT_GUITAR,
-                        pod_preset::NOT_SENT,
-                        pod_preset::PAYLOADS_NOT_DECODED,
-                        self.pod_message,
-                    );
-                    if let Some(selected) = selected {
-                        self.pod_visible.push_str(&selected);
-                    }
-                    let scope = self.pod_revert_scope();
-                    self.pod_visible.push('\n');
-                    self.pod_visible.push_str(&scope);
-                    self.pod_visible.push_str(
-                        "\nFetch needs gate G5. Sending a bank needs the reviewed write and store workflow.",
-                    );
-                }
-
-            });
+        });
     }
 
     fn pod_bank_count(&self) -> usize {
@@ -2287,14 +2362,35 @@ impl PodxtEditor {
     fn select_pod_index(&mut self, index: usize) {
         if self.pod_selected != Some(index) {
             self.pod_cab_pending = None;
-            self.pod_delay_model_pending = None;
-            self.pod_mod_model_pending = None;
-            self.pod_stomp_model_pending = None;
-            self.pod_reverb_model_pending = None;
+            #[cfg(test)]
+            {
+                self.pod_delay_model_pending = None;
+            }
+            #[cfg(test)]
+            {
+                self.pod_mod_model_pending = None;
+            }
+            #[cfg(test)]
+            {
+                self.pod_stomp_model_pending = None;
+            }
+            #[cfg(test)]
+            {
+                self.pod_reverb_model_pending = None;
+            }
             self.pod_amp_model_pending = None;
-            self.pod_harmony_pending = None;
-            self.pod_delay_pending = None;
-            self.pod_mod_pending = None;
+            #[cfg(test)]
+            {
+                self.pod_harmony_pending = None;
+            }
+            #[cfg(test)]
+            {
+                self.pod_delay_pending = None;
+            }
+            #[cfg(test)]
+            {
+                self.pod_mod_pending = None;
+            }
         }
         self.pod_selected = Some(index);
         if let Some(tone) = self.pod_library.tone(index) {
@@ -2319,15 +2415,24 @@ impl PodxtEditor {
     }
 
     fn pod_has_staged_choice(&self) -> bool {
-        self.pod_has_staged_edit()
-            || self.pod_cab_pending.is_some()
-            || self.pod_delay_model_pending.is_some()
-            || self.pod_mod_model_pending.is_some()
-            || self.pod_stomp_model_pending.is_some()
-            || self.pod_reverb_model_pending.is_some()
-            || self.pod_harmony_pending.is_some()
-            || self.pod_delay_pending.is_some()
-            || self.pod_mod_pending.is_some()
+        let staged = self.pod_cab_pending.is_some()
+            || self.pod_amp_model_pending.is_some()
+            || self.pod_eq_reset_pending.is_some();
+        #[cfg(not(test))]
+        {
+            staged
+        }
+        #[cfg(test)]
+        {
+            staged
+                || self.pod_delay_model_pending.is_some()
+                || self.pod_mod_model_pending.is_some()
+                || self.pod_stomp_model_pending.is_some()
+                || self.pod_reverb_model_pending.is_some()
+                || self.pod_harmony_pending.is_some()
+                || self.pod_delay_pending.is_some()
+                || self.pod_mod_pending.is_some()
+        }
     }
 
     fn pod_can_revert(&self) -> bool {
@@ -2365,15 +2470,36 @@ impl PodxtEditor {
     fn clear_pod_stages(&mut self) {
         self.pod_cab_pending = None;
         self.pod_cab_pending_origin = None;
-        self.pod_delay_model_pending = None;
-        self.pod_mod_model_pending = None;
-        self.pod_stomp_model_pending = None;
-        self.pod_reverb_model_pending = None;
+        #[cfg(test)]
+        {
+            self.pod_delay_model_pending = None;
+        }
+        #[cfg(test)]
+        {
+            self.pod_mod_model_pending = None;
+        }
+        #[cfg(test)]
+        {
+            self.pod_stomp_model_pending = None;
+        }
+        #[cfg(test)]
+        {
+            self.pod_reverb_model_pending = None;
+        }
         self.pod_amp_model_pending = None;
         self.pod_eq_reset_pending = None;
-        self.pod_harmony_pending = None;
-        self.pod_delay_pending = None;
-        self.pod_mod_pending = None;
+        #[cfg(test)]
+        {
+            self.pod_harmony_pending = None;
+        }
+        #[cfg(test)]
+        {
+            self.pod_delay_pending = None;
+        }
+        #[cfg(test)]
+        {
+            self.pod_mod_pending = None;
+        }
     }
 
     fn revert_pod_edits(&mut self) {
@@ -2433,6 +2559,7 @@ impl PodxtEditor {
         }
     }
 
+    #[cfg(test)]
     fn pod_block_model_line(&self, block: PodBlock) -> String {
         let Some(index) = self.pod_selected else {
             return "Load a tone to see this block.".to_owned();
@@ -2476,6 +2603,7 @@ impl PodxtEditor {
         format!("Model {model_id:08x}.{staged}")
     }
 
+    #[cfg(test)]
     fn pod_block_controls_line(&self, block: PodBlock) -> String {
         let Some(tone) = self
             .pod_selected
@@ -2528,11 +2656,7 @@ impl PodxtEditor {
             .ok_or_else(|| pod_preset::ToneError::format("POD selection is out of range"))
             .and_then(|tone| tone.model_enable_state(control));
         let Ok(pod_preset::ModelEnableState::Canonical(enabled)) = state else {
-            self.pod_message = format!(
-                "{} On/Bypass stays unchanged. {}",
-                block.label(),
-                self.pod_block_model_line(block)
-            );
+            self.pod_message = format!("{} On/Bypass is unavailable for this tone.", block.label());
             return;
         };
         let result = if self.legacy_control_widgets() {
@@ -2679,6 +2803,7 @@ impl PodxtEditor {
                 self.toggle_pod_block_bypass();
             }
         });
+        #[cfg(test)]
         if self.legacy_control_widgets() {
             ui.small(self.pod_block_model_line(self.pod_block));
             ui.small(self.pod_block_controls_line(self.pod_block));
@@ -2949,6 +3074,7 @@ impl PodxtEditor {
         }
     }
 
+    #[cfg(test)]
     fn apply_pod_stomp_harmony(
         &mut self,
         index: usize,
@@ -2966,6 +3092,7 @@ impl PodxtEditor {
         self.replace_pod_tone(index, replacement)
     }
 
+    #[cfg(test)]
     fn apply_pod_delay_edit(
         &mut self,
         index: usize,
@@ -2990,6 +3117,7 @@ impl PodxtEditor {
         self.replace_pod_tone(index, replacement)
     }
 
+    #[cfg(test)]
     fn apply_pod_mod_edit(
         &mut self,
         index: usize,
@@ -3035,7 +3163,10 @@ impl PodxtEditor {
         self.pod_selected = Some(0);
         self.pod_eq_reset_pending = None;
         self.pod_cab_pending = None;
-        self.pod_harmony_pending = None;
+        #[cfg(test)]
+        {
+            self.pod_harmony_pending = None;
+        }
         self.refresh_selected_pod_name();
         Ok(())
     }
@@ -3053,7 +3184,10 @@ impl PodxtEditor {
         self.pod_library = library;
         self.parameter_panel.clear_history();
         self.pod_cab_pending = None;
-        self.pod_harmony_pending = None;
+        #[cfg(test)]
+        {
+            self.pod_harmony_pending = None;
+        }
         Ok(())
     }
 
@@ -3190,25 +3324,53 @@ impl PodxtEditor {
                                 self.pod_document_generation.wrapping_add(1);
                             self.pod_eq_reset_pending = None;
                             self.pod_cab_pending = None;
-                            self.pod_harmony_pending = None;
+                            #[cfg(test)]
+                            {
+                                self.pod_harmony_pending = None;
+                            }
                         }
                         self.pod_selected = Some(index);
                         self.pod_cab_pending = None;
-                        self.pod_delay_model_pending = None;
-                        self.pod_mod_model_pending = None;
-                        self.pod_stomp_model_pending = None;
-                        self.pod_reverb_model_pending = None;
+                        #[cfg(test)]
+                        {
+                            self.pod_delay_model_pending = None;
+                        }
+                        #[cfg(test)]
+                        {
+                            self.pod_mod_model_pending = None;
+                        }
+                        #[cfg(test)]
+                        {
+                            self.pod_stomp_model_pending = None;
+                        }
+                        #[cfg(test)]
+                        {
+                            self.pod_reverb_model_pending = None;
+                        }
                         self.pod_amp_model_pending = None;
-                        self.pod_delay_pending = None;
-                        self.pod_mod_pending = None;
-                        self.pod_harmony_pending = None;
-                        self.pod_name = summary.name;
-                        self.pod_message = format!(
-                            "Loaded {} for PODxt Live {:08x}. {}",
-                            summary.container,
-                            summary.device_id,
-                            pod_preset::PAYLOADS_NOT_DECODED
-                        );
+                        #[cfg(test)]
+                        {
+                            self.pod_delay_pending = None;
+                        }
+                        #[cfg(test)]
+                        {
+                            self.pod_mod_pending = None;
+                        }
+                        #[cfg(test)]
+                        {
+                            self.pod_harmony_pending = None;
+                        }
+                        self.pod_name = summary.name.clone();
+                        self.pod_message = if self.legacy_control_widgets() {
+                            format!(
+                                "Loaded {} for PODxt Live {:08x}. {}",
+                                summary.container,
+                                summary.device_id,
+                                pod_preset::PAYLOADS_NOT_DECODED
+                            )
+                        } else {
+                            format!("Loaded {} for PODxt Live.", summary.name)
+                        };
                     }
                     Err(error) => self.pod_message = error.detail(),
                 }
@@ -3303,6 +3465,7 @@ impl PodxtEditor {
         }
     }
 
+    #[cfg(test)]
     fn apply_pod_delay_model_choice(
         &mut self,
         index: usize,
@@ -3329,11 +3492,15 @@ impl PodxtEditor {
             })
             .map(|model| model.model_id);
         if before != after {
-            self.pod_delay_pending = None;
+            #[cfg(test)]
+            {
+                self.pod_delay_pending = None;
+            }
         }
         Ok(())
     }
 
+    #[cfg(test)]
     fn apply_pod_mod_model_choice(
         &mut self,
         index: usize,
@@ -3369,11 +3536,15 @@ impl PodxtEditor {
             })
             .map(|model| model.model_id);
         if before != after {
-            self.pod_mod_pending = None;
+            #[cfg(test)]
+            {
+                self.pod_mod_pending = None;
+            }
         }
         Ok(())
     }
 
+    #[cfg(test)]
     fn apply_pod_stomp_model_choice(
         &mut self,
         index: usize,
@@ -3396,11 +3567,15 @@ impl PodxtEditor {
             .pod_harmony_pending
             .is_some_and(|(pending_index, _, _)| pending_index == index)
         {
-            self.pod_harmony_pending = None;
+            #[cfg(test)]
+            {
+                self.pod_harmony_pending = None;
+            }
         }
         Ok(true)
     }
 
+    #[cfg(test)]
     fn apply_pod_reverb_model_choice(
         &mut self,
         index: usize,
@@ -3422,6 +3597,7 @@ impl PodxtEditor {
         Ok(true)
     }
 
+    #[cfg(test)]
     fn apply_pod_cab_model_choice(&mut self, choice: pod_preset::PodCabModelChoice) {
         let Some(index) = self.pod_selected else {
             return;
@@ -3462,6 +3638,7 @@ impl PodxtEditor {
         }
     }
 
+    #[cfg(test)]
     fn apply_pod_mic_choice(&mut self, choice: pod_preset::PodMicChoice) {
         let Some(index) = self.pod_selected else {
             return;
@@ -3565,7 +3742,17 @@ impl PodxtEditor {
 
 impl FamilyTab for PodxtEditor {
     fn show(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
-        self.pod_window(services, ui);
+        if self.legacy_control_widgets() {
+            self.pod_window(services, ui);
+        } else {
+            egui::ScrollArea::vertical().show(ui, |ui| self.pod_window(services, ui));
+        }
+    }
+    fn undo(&mut self) {
+        self.table_history(false);
+    }
+    fn redo(&mut self) {
+        self.table_history(true);
     }
     fn dirty(&self) -> bool {
         self.needs_close()

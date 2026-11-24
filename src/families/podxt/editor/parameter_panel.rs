@@ -23,7 +23,7 @@ struct Revision {
 
 struct MetadataDraft {
     index: usize,
-    starting_bytes: Vec<u8>,
+    original: BTreeMap<PodMetadata, String>,
     values: BTreeMap<PodMetadata, String>,
 }
 
@@ -101,6 +101,12 @@ impl PodxtEditor {
                 && bits_for(&old_controls, *selector) == bits_for(&new_controls, *selector)
         });
         unknown.extend(change.default_unknown);
+        unknown.extend(
+            change
+                .preserved
+                .into_iter()
+                .filter_map(|(before, after)| prior_unknown.contains(&before).then_some(after)),
+        );
         if candidate.as_bytes() == tone.as_bytes() && unknown == prior_unknown {
             return Ok(());
         }
@@ -173,6 +179,7 @@ impl PodxtEditor {
         let Some(tone) = self.pod_library.tone(index) else {
             return;
         };
+        let can_reset_eq = tone.podxt_eq_reset_context().is_ok();
         let controls = tone.table_controls(self.parameter_panel.packs);
         let variax_family = controls
             .iter()
@@ -195,13 +202,13 @@ impl PodxtEditor {
             ) {
                 self.table_history(true);
             }
-            ui.checkbox(
-                &mut self.parameter_panel.keep_amp_settings,
-                "Keep current amp settings",
-            )
-            .on_hover_text(
-                "With amp defaults disabled, changing the Amp model keeps its stored settings.",
-            );
+            let mut amp_defaults = !self.parameter_panel.keep_amp_settings;
+            if ui.checkbox(&mut amp_defaults, "Load amp defaults")
+                .on_hover_text("Until default values are available, shared amp controls keep their settings and new controls use neutral values.")
+                .changed()
+            {
+                self.parameter_panel.keep_amp_settings = !amp_defaults;
+            }
             ui.menu_button("Model packs", |ui| {
                 for (bit, label) in [
                     (1, "Metal Shop"),
@@ -227,31 +234,58 @@ impl PodxtEditor {
         }
         let table = pod_parameter_table();
         let mut change = None;
+        let active = match self.pod_block {
+            PodBlock::Amp => "amp",
+            PodBlock::Stomp => "stomp",
+            PodBlock::Mod => "mod",
+            PodBlock::Delay => "delay",
+        };
+        let mut reset_eq = false;
         for (group, heading) in GROUPS {
-            egui::CollapsingHeader::new(heading)
-                .default_open(group == "amp")
-                .show(ui, |ui| {
-                    for control in controls.iter().filter(|control| {
-                        control.parameter.block == group
-                            && control
-                                .parameter
-                                .variax_family
-                                .is_none_or(|family| Some(family) == variax_family)
-                    }) {
-                        let selector = control.parameter.selector.expect("editable selector");
-                        let key = control.parameter.key.as_str();
-                        let unknown = self
-                            .parameter_panel
-                            .unknown
-                            .get(&index)
-                            .is_some_and(|markers| markers.contains(&selector));
-                        ui.push_id((index, selector), |ui| {
-                            if let Some(bits) = self.parameter_widget(ui, index, control, unknown) {
-                                change = Some((key, bits, control.parameter.catalog.is_some()));
-                            }
-                        });
-                    }
-                });
+            if matches!(group, "amp" | "drive" | "stomp" | "mod" | "delay")
+                && group != active
+                && !(group == "drive" && active == "amp")
+            {
+                continue;
+            }
+            let mut render = |ui: &mut egui::Ui| {
+                for control in controls.iter().filter(|control| {
+                    control.parameter.block == group
+                        && control
+                            .parameter
+                            .variax_family
+                            .is_none_or(|family| Some(family) == variax_family)
+                }) {
+                    let selector = control.parameter.selector.expect("editable selector");
+                    let key = control.parameter.key.as_str();
+                    let unknown = self
+                        .parameter_panel
+                        .unknown
+                        .get(&index)
+                        .is_some_and(|markers| markers.contains(&selector));
+                    ui.push_id((index, selector), |ui| {
+                        if let Some(bits) = self.parameter_widget(ui, index, control, unknown) {
+                            change = Some((key, bits, control.parameter.catalog.is_some()));
+                        }
+                    });
+                }
+                if group == "eq" && can_reset_eq {
+                    reset_eq = ui.button("Reset EQ").clicked();
+                }
+            };
+            if group == active || group == "drive" {
+                render(ui);
+            } else {
+                ui.collapsing(heading, render);
+            }
+        }
+        if reset_eq
+            && let Err(error) = self.table_edit(index, |tone| {
+                tone.reset_podxt_eq()?;
+                Ok(PodModelChange::default())
+            })
+        {
+            self.pod_message = error.detail();
         }
         if let Some((key, bits, is_model)) = change {
             let packs = self.parameter_panel.packs;
@@ -296,7 +330,7 @@ impl PodxtEditor {
                             .choices
                             .iter()
                             .find(|(raw, _)| *raw == bits)
-                            .map(|(_, label)| *label)
+                            .map(|(_, label)| label.as_ref())
                             .or_else(|| {
                                 control.parameter.catalog.as_ref()?;
                                 pod_parameter_table().model_name(bits)
@@ -311,9 +345,12 @@ impl PodxtEditor {
                 egui::ComboBox::from_id_salt("choice")
                     .selected_text(current)
                     .show_ui(ui, |ui| {
-                        for &(value, label) in &control.choices {
-                            if ui.selectable_value(&mut next, Some(value), label).clicked() {
-                                changed = Some(value);
+                        for (value, label) in &control.choices {
+                            if ui
+                                .selectable_value(&mut next, Some(*value), label.as_ref())
+                                .clicked()
+                            {
+                                changed = Some(*value);
                             }
                         }
                     });
@@ -360,25 +397,27 @@ impl PodxtEditor {
             let Some(tone) = self.pod_library.tone(index) else {
                 return;
             };
-            let draft = self
+            let original = PodMetadata::ALL
+                .into_iter()
+                .filter_map(|key| {
+                    tone.metadata(key)
+                        .ok()
+                        .map(|stored| (key, stored.unwrap_or_default()))
+                })
+                .collect::<BTreeMap<_, _>>();
+            if self
                 .parameter_panel
                 .metadata
-                .get_or_insert_with(|| MetadataDraft {
+                .as_ref()
+                .is_none_or(|draft| draft.index != index || draft.original != original)
+            {
+                self.parameter_panel.metadata = Some(MetadataDraft {
                     index,
-                    starting_bytes: tone.as_bytes().to_vec(),
-                    values: PodMetadata::ALL
-                        .into_iter()
-                        .filter_map(|key| {
-                            tone.metadata(key)
-                                .ok()
-                                .map(|stored| (key, stored.unwrap_or_default()))
-                        })
-                        .collect(),
+                    values: original.clone(),
+                    original,
                 });
-            if draft.index != index || draft.starting_bytes != tone.as_bytes() {
-                self.parameter_panel.metadata = None;
-                return;
             }
+            let draft = self.parameter_panel.metadata.as_mut().unwrap();
             for key in PodMetadata::ALL {
                 ui.horizontal(|ui| {
                     ui.label(key.label());

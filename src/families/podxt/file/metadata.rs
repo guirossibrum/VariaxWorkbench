@@ -1,4 +1,4 @@
-use super::{parameters::*, *};
+use super::{iff_edit::*, *};
 
 // L6PatchMetaTagWrapper stores these fields in L6MetaTagSet (LIST/UNFO
 // or legacy LIST/INFO). The tone's display name lives in PINF.

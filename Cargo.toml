@@ -37,7 +37,8 @@ required-features = ["owner-reso5-test"]
 default = ["gui", "usb"]
 # Experimental, versioned software mathematics; normal builds retain host math.
 portable-math = ["dep:libm"]
-gui = ["dep:eframe", "dep:winit", "dep:image", "dep:rfd"]
+gui = ["dep:eframe", "dep:winit", "dep:image", "dep:rfd", "podxt-table"]
+podxt-table = ["dep:serde", "dep:serde_json"]
 # Live USB adapter (rusb/libusb). Separate from `gui`: the `gui` feature never links libusb.
 # On Linux, this feature offers the identity check and the step 3 read of both
 # families. Step 4 stays off. The editor fetch stays behind the G3 constant.
@@ -58,13 +59,15 @@ eframe = { version = "=0.33.3", optional = true, default-features = false, featu
 winit = { version = "=0.30.13", optional = true, default-features = false, features = ["wayland", "x11"] }
 image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
 rfd = { version = "0.18", optional = true }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { version = "1", optional = true, features = ["derive"] }
+serde_json = { version = "1", optional = true }
 flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
 md-5 = "0.10"
 sha2 = "0.10"
 
 [dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 # eframe's private screenshot hook (EFRAME_SCREENSHOT_TO) is for test builds only.
 # `x11` only gives winit a Linux backend in core-only test builds (X11 is loaded
 # at run time, so no system library is needed to build); it is a no-op elsewhere.

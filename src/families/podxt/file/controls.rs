@@ -1012,13 +1012,14 @@ pub enum StompControl {
     Decay,
     Mix,
     Attack,
+    Wave,
     S1Ogt,
     S2Ogt,
     Position,
 }
 
 impl StompControl {
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 24] = [
         Self::Drive,
         Self::Gain,
         Self::Tone,
@@ -1039,6 +1040,7 @@ impl StompControl {
         Self::Decay,
         Self::Mix,
         Self::Attack,
+        Self::Wave,
         Self::S1Ogt,
         Self::S2Ogt,
         Self::Position,
@@ -1140,9 +1142,14 @@ impl StompControl {
                 Self::Mix => Some(4),
                 _ => None,
             },
-            0x020a_0002 | 0x020a_0009 => match self {
+            0x020a_0002 => match self {
                 Self::Filter => Some(2),
                 Self::Attack => Some(3),
+                Self::Mix => Some(4),
+                _ => None,
+            },
+            0x020a_0009 => match self {
+                Self::Wave => Some(3),
                 Self::Mix => Some(4),
                 _ => None,
             },
@@ -1198,6 +1205,7 @@ impl StompControl {
             Self::Decay => "Decay",
             Self::Mix => "Mix",
             Self::Attack => "Attack",
+            Self::Wave => "Wave",
             Self::S1Ogt => "-1OCTG",
             Self::S2Ogt => "-2OCTG",
             Self::Position => "Position",

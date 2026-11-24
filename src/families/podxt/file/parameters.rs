@@ -1,6 +1,6 @@
-use super::*;
+use super::{iff_edit::*, *};
 use serde::Deserialize;
-use std::{collections::BTreeMap, sync::OnceLock};
+use std::{borrow::Cow, collections::BTreeMap, sync::OnceLock};
 
 const TABLE: &str = include_str!("../../../../research/podxt-live-parameters.json");
 
@@ -160,15 +160,19 @@ pub struct PodControl<'a> {
     pub definition: Option<&'a Definition>,
     pub format: Option<&'a DisplayFormat>,
     pub bits: Option<u32>,
-    pub choices: Vec<(u32, &'a str)>,
+    pub choices: Vec<(u32, Cow<'a, str>)>,
 }
 
 impl PodControl<'_> {
     pub fn label(&self) -> &str {
         if self.parameter.catalog.is_some() {
-            "Model"
-        } else {
-            self.definition.map_or(&self.parameter.key, |d| &d.label)
+            return "Model";
+        }
+        match self.definition {
+            Some(definition) if definition.format == "HARMONY_1457" => "Harmony 1457",
+            Some(definition) if definition.format == "HARMONY_1M335" => "Harmony 1m335",
+            Some(definition) => &definition.label,
+            None => &self.parameter.key,
         }
     }
 
@@ -201,7 +205,7 @@ impl PodControl<'_> {
             return Some(points[i] + (points[i + 1] - points[i]) * (step & 15) as f64 / 16.0);
         }
         if let Some([a, b]) = format.normalized_mapping_endpoints {
-            let unit = (f64::from(raw - a) / f64::from(b - a)).clamp(0.0, 1.0);
+            let unit = ((f64::from(raw) - f64::from(a)) / f64::from(b - a)).clamp(0.0, 1.0);
             return Some(-24.0 + unit * 48.0);
         }
         match format.display_range {
@@ -246,7 +250,7 @@ impl PodControl<'_> {
                 ((i as f64 + (shown - points[i]) / (points[i + 1] - points[i])) / 8.0) as f32
             }
         } else if let Some([a, b]) = fmt.normalized_mapping_endpoints {
-            let raw = a + unit * (b - a);
+            let raw = (f64::from(a) + ((shown - min) / (max - min)) * f64::from(b - a)) as f32;
             (raw * 63.75).trunc() * f32::from_bits(0x3c80_8081)
         } else if let Some([a, b]) = fmt.display_range
             && def.host_range == [0.0, 1.0]
@@ -274,9 +278,9 @@ impl PodControl<'_> {
 }
 
 impl Definition {
-    fn accepts(&self, bits: u32, choices: &[(u32, &str)]) -> bool {
+    fn accepts(&self, bits: u32, choices: &[(u32, Cow<'_, str>)]) -> bool {
         if !choices.is_empty() {
-            return choices.iter().any(|&(raw, _)| raw == bits);
+            return choices.iter().any(|(raw, _)| *raw == bits);
         }
         let [min, max] = self.host_range;
         let value = if self.host_type == HostType::Float32 {
@@ -305,38 +309,7 @@ impl PodModelDefaults for UnknownPodDefaults {
 pub struct PodModelChange {
     pub default_unknown: Vec<u32>,
     pub affected: Vec<u32>,
-}
-
-pub(super) fn iff_chunk(tag: &[u8; 4], data: &[u8]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(8 + data.len() + (data.len() & 1));
-    bytes.extend_from_slice(tag);
-    bytes.extend_from_slice(&(data.len() as u32).to_be_bytes());
-    bytes.extend_from_slice(data);
-    if data.len() & 1 != 0 {
-        bytes.push(0);
-    }
-    bytes
-}
-
-pub(super) fn splice_iff(
-    bytes: &mut Vec<u8>,
-    range: Range<usize>,
-    replacement: Vec<u8>,
-    enclosing_sizes: &[usize],
-) -> Result<(), ToneError> {
-    let increase = replacement.len() as i64 - range.len() as i64;
-    let length = bytes.len() as i64 + increase;
-    if !(0..=TONE_BYTES_CEILING as i64).contains(&length) {
-        return Err(ToneError::format(
-            "tone would exceed the offline size limit",
-        ));
-    }
-    for &offset in enclosing_sizes {
-        let new_len = (i64::from(preset::word(bytes, offset)) + increase) as u32;
-        bytes[offset..offset + 4].copy_from_slice(&new_len.to_be_bytes());
-    }
-    bytes.splice(range, replacement);
-    Ok(())
+    pub preserved: Vec<(u32, u32)>,
 }
 
 impl PodTone {
@@ -420,7 +393,7 @@ impl PodTone {
                 .map(|choice| {
                     (
                         choice.id,
-                        table.model_name(choice.id).expect("catalog label"),
+                        Cow::Borrowed(table.model_name(choice.id).expect("catalog label")),
                     )
                 })
                 .collect()
@@ -432,7 +405,7 @@ impl PodTone {
                 .flat_map(|format| &format.choices)
                 .map(|choice| match choice {
                     Choice::Integer((raw, label)) | Choice::Association((_, label, raw)) => {
-                        (*raw, label.as_str())
+                        (*raw, Cow::Borrowed(label.as_str()))
                     }
                 })
                 .collect()
@@ -446,7 +419,7 @@ impl PodTone {
         })
     }
 
-    fn tweak_choices(&self) -> Vec<(u32, &'static str)> {
+    fn tweak_choices(&self) -> Vec<(u32, Cow<'static, str>)> {
         let table = pod_parameter_table();
         table
             .tweak_targets
@@ -466,10 +439,16 @@ impl PodTone {
                     .parameters
                     .iter()
                     .find(|row| row.selector == Some(selector))?;
-                Some((
-                    ordinal as u32,
-                    self.table_control(row, 0)?.definition?.label.as_str(),
-                ))
+                let control = self.table_control(row, 0)?;
+                let name = control.label();
+                let label = match row.block.as_str() {
+                    "stomp" => format!("Stomp {name}"),
+                    "mod" => format!("Mod {name}"),
+                    "delay" => format!("Delay {name}"),
+                    "reverb" => format!("Reverb {name}"),
+                    _ => name.to_owned(),
+                };
+                Some((ordinal as u32, Cow::Owned(label)))
             })
             .collect()
     }
@@ -547,6 +526,8 @@ impl PodTone {
     fn create_table_model(&mut self, row: &PodParameter) -> Result<usize, ToneError> {
         let slot = row.slots[0];
         let (id, enabled) = match slot {
+            0x0003_0000 => (0x0002_0000, true),  // GetAmpModel
+            0x0003_0001 => (0x0102_0000, true),  // GetCabModel
             0x0001_0000 => (0x3e70_0000, true),  // GetSystemModel
             0x0002_0000 => (0x020b_0000, false), // GetGateModel
             0x0002_0001 => (0x0207_0000, true),  // GetVolPedalModel
@@ -695,15 +676,15 @@ impl PodTone {
         let tempo = self
             .read_table_bits(table.parameter("TEMPO").unwrap())?
             .map_or(120.0, f32::from_bits);
-        if !tempo.is_finite() || !(30.0..=240.0).contains(&tempo) {
-            return Err(ToneError::format("Stored tempo is outside 30–240 BPM"));
-        }
         for (note, scalar) in [("MOD_NOTE", "MOD_SPEED"), ("DELAY_NOTE", "DELAY_TIME")] {
             let raw = self
                 .read_table_bits(table.parameter(note).unwrap())?
                 .unwrap_or(0);
             if raw == 0 {
                 continue;
+            }
+            if !tempo.is_finite() || !(30.0..=240.0).contains(&tempo) {
+                return Err(ToneError::format("Stored tempo is outside 30–240 BPM"));
             }
             let multiplier = table
                 .note_sync
@@ -747,7 +728,7 @@ impl PodTone {
         let control = self
             .table_control(row, packs)
             .ok_or_else(|| ToneError::format("Model selector is unavailable"))?;
-        if !control.choices.iter().any(|&(choice, _)| id == choice) {
+        if !control.choices.iter().any(|(choice, _)| id == *choice) {
             return Err(ToneError::format(
                 "Model is outside the catalog or requires an installed pack",
             ));
@@ -763,6 +744,25 @@ impl PodTone {
         candidate.write_table_bits(row, None, id)?;
         let use_defaults = key != "AMP_MODEL" || amp_defaults;
         if use_defaults {
+            // Companion model IDs are installed before interpreting any companion
+            // parameter, for example the microphone definition of a new cab.
+            for param in table.parameters.iter().filter(|param| {
+                param.file_field == Some(FileField::Model) && param.selector != Some(selector)
+            }) {
+                let Some(companion) = source.parameter_bits(selector, id, param.selector.unwrap())
+                else {
+                    continue;
+                };
+                let choices = candidate
+                    .table_control(param, packs)
+                    .ok_or_else(|| ToneError::format("Companion model selector is unavailable"))?;
+                if !choices.choices.iter().any(|(model, _)| *model == companion) {
+                    return Err(ToneError::format(
+                        "Companion model is unknown or requires an installed pack",
+                    ));
+                }
+                candidate.write_table_bits(param, None, companion)?;
+            }
             // Preflight fields through the original tone before changing offsets.
             let mut edits = Vec::new();
             for param in &table.parameters {
@@ -779,7 +779,23 @@ impl PodTone {
                 let new_knob = new_layout.and_then(|layout| layout.knobs.get(&param.key));
                 let old_knob = old_layout.and_then(|layout| layout.knobs.get(&param.key));
                 let same_slot = param.slots == row.slots;
-                if supplied.is_none() && !same_slot {
+                let newly_applicable = key == "AMP_MODEL"
+                    && param.applicable_amp_ids.contains(&id)
+                    && !control
+                        .bits
+                        .is_some_and(|old| param.applicable_amp_ids.contains(&old));
+                let companion_model_changed = table.parameters.iter().any(|model| {
+                    model.file_field == Some(FileField::Model)
+                        && model.slots == param.slots
+                        && model.selector != Some(selector)
+                        && source
+                            .parameter_bits(selector, id, model.selector.unwrap())
+                            .is_some_and(|companion| {
+                                self.read_table_bits(model).ok().flatten() != Some(companion)
+                            })
+                });
+                if supplied.is_none() && !same_slot && !newly_applicable && !companion_model_changed
+                {
                     continue;
                 }
                 if new_knob.is_none() && old_knob.is_some() {
@@ -812,7 +828,13 @@ impl PodTone {
                     continue;
                 }
                 if new_knob.is_none() {
-                    if param.file_field == Some(FileField::Parameter) && after.bits.is_none() {
+                    let definition_changed = self
+                        .table_control(param, packs)
+                        .and_then(|old| old.definition)
+                        .is_some_and(|old| !std::ptr::eq(old, definition));
+                    if param.file_field == Some(FileField::Parameter)
+                        && (after.bits.is_none() || definition_changed || newly_applicable)
+                    {
                         edits.push((param, Some(definition), after.neutral_bits().unwrap()));
                         result.affected.push(parm_selector);
                         result.default_unknown.push(parm_selector);
@@ -834,7 +856,13 @@ impl PodTone {
                     return Err(ToneError::format("Shared parameter is opaque or ambiguous"));
                 }
                 result.affected.push(parm_selector);
-                let value = old_control.and_then(|control| control.bits);
+                let value = old_control.and_then(|control| {
+                    let bits = control.bits?;
+                    result
+                        .preserved
+                        .push((control.parameter.selector.unwrap(), parm_selector));
+                    Some(bits)
+                });
                 if value.is_none() {
                     result.default_unknown.push(parm_selector);
                 }

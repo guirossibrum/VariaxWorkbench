@@ -3842,8 +3842,8 @@ fn source_mapped_stomp_controls_patch_only_their_existing_value_words() {
             0x020a_0009,
             [
                 None,
-                Some(StompControl::Filter),
-                Some(StompControl::Attack),
+                None,
+                Some(StompControl::Wave),
                 Some(StompControl::Mix),
                 None,
             ],
@@ -3999,7 +3999,7 @@ fn source_mapped_stomp_controls_patch_only_their_existing_value_words() {
             .iter()
             .map(|(_, expected_layout)| expected_layout.iter().flatten().count())
             .sum::<usize>(),
-        86
+        85
     );
     let mut profile_ids: Vec<_> = profiles.iter().map(|(model_id, _)| *model_id).collect();
     profile_ids.sort_unstable();
@@ -10618,4 +10618,279 @@ fn tone_name_offset(bytes: &[u8]) -> usize {
 fn find_chunk_data(bytes: &[u8], id: &[u8; 4]) -> usize {
     let children = preset::chunks(bytes, 12..bytes.len()).unwrap();
     preset::unique(&children, id).unwrap().data.start
+}
+
+fn table_test_tone() -> PodTone {
+    PodTone::parse(custom_tone(ContainerKind::L6pa, &[])).unwrap()
+}
+
+fn table_test_control(tone: &PodTone, key: &str) -> PodControl<'static> {
+    tone.table_controls(15)
+        .into_iter()
+        .find(|control| control.parameter.key == key)
+        .unwrap_or_else(|| panic!("no table control {key}"))
+}
+
+#[test]
+fn table_edits_match_original_java_tone_fields() {
+    // Captured through #210's VerifyPodxtParameters recording boundary. Each
+    // vector uses a synthetic patch with the listed model context. Expected
+    // bytes are the original output at the edited field's payload offsets.
+    #[derive(serde::Deserialize)]
+    struct Vector {
+        key: String,
+        bits: u32,
+        context: Option<(String, u32)>,
+        bytes: Vec<(usize, u8)>,
+    }
+    let vectors: Vec<Vector> =
+        serde_json::from_str(include_str!("fixtures/table-writer.json")).unwrap();
+    let mut covered = std::collections::BTreeSet::new();
+    for vector in &vectors {
+        let mut tone = table_test_tone();
+        if let Some((key, id)) = &vector.context {
+            tone.set_table_model(key, *id, 15, true, &UnknownPodDefaults)
+                .unwrap();
+        }
+        if vector.key == "TWEAK_PARAM" {
+            for (key, id) in [
+                ("STOMP_MODEL", 0x0205_0006),
+                ("MOD_MODEL", 0x0203_0004),
+                ("DELAY_MODEL", 0x0202_0002),
+                ("REVERB_MODEL", 0x0204_0005),
+            ] {
+                tone.set_table_model(key, id, 15, true, &UnknownPodDefaults)
+                    .unwrap();
+            }
+        }
+        let control = table_test_control(&tone, &vector.key);
+        let result = if control.parameter.catalog.is_some() {
+            tone.set_table_model(&vector.key, vector.bits, 15, true, &UnknownPodDefaults)
+                .map(|_| ())
+        } else {
+            tone.set_table_parameter(&vector.key, vector.bits)
+        };
+        result.unwrap_or_else(|error| {
+            panic!(
+                "{} {:08x} {:?}: {}",
+                vector.key,
+                vector.bits,
+                vector.context,
+                error.detail()
+            )
+        });
+        assert_eq!(
+            tone.table_tone_field(&vector.key).as_ref(),
+            Some(&vector.bytes),
+            "{} {:08x} {:?}",
+            vector.key,
+            vector.bits,
+            vector.context
+        );
+        assert_eq!(PodTone::parse(tone.bytes.clone()).unwrap(), tone);
+        covered.insert(vector.key.as_str());
+    }
+    assert_eq!(vectors.len(), 2539);
+    assert_eq!(covered.len(), 86);
+    for (key, value) in [
+        ("COMP_AMOUNT", 0.5f32.to_bits()),
+        ("FXLOOP_ENABLE", 1),
+        ("MOD_PARAM5", 0.5f32.to_bits()),
+        ("DELAY_PARAM5", 0.5f32.to_bits()),
+    ] {
+        assert!(
+            table_test_tone().set_table_parameter(key, value).is_err(),
+            "{key}"
+        );
+    }
+}
+
+#[test]
+fn table_model_change_moves_shared_knobs_and_neutralizes_unshared_controls() {
+    let mut tone = table_test_tone();
+    tone.set_table_model("STOMP_MODEL", 0x0205_0000, 0, true, &UnknownPodDefaults)
+        .unwrap();
+    tone.set_table_parameter("STOMP_PARAM2", 0.25f32.to_bits())
+        .unwrap();
+    tone.set_table_parameter("STOMP_PARAM3", 0.75f32.to_bits())
+        .unwrap();
+    tone.set_table_parameter("STOMP_PARAM4", 0.5f32.to_bits())
+        .unwrap();
+    let before = tone.clone();
+    assert!(
+        tone.set_table_model("STOMP_MODEL", 0x0205_0001, 0, true, &UnknownPodDefaults)
+            .is_err()
+    );
+    assert_eq!(tone, before);
+    let change = tone
+        .set_table_model("STOMP_MODEL", 0x0205_0001, 4, true, &UnknownPodDefaults)
+        .unwrap();
+    for (key, name, value, uncertain) in [
+        ("STOMP_PARAM2", "Drive", 0.25f32, false),
+        ("STOMP_PARAM3", "Treble", 0.0, true),
+        ("STOMP_PARAM4", "Gain", 0.75, false),
+        ("STOMP_PARAM5", "Bass", 0.0, true),
+    ] {
+        let control = table_test_control(&tone, key);
+        assert_eq!(control.label(), name);
+        assert_eq!(control.bits, Some(value.to_bits()));
+        assert_eq!(
+            change
+                .default_unknown
+                .contains(&control.parameter.selector.unwrap()),
+            uncertain
+        );
+    }
+
+    let change = tone
+        .set_table_model("STOMP_MODEL", 0x020a_0009, 4, true, &UnknownPodDefaults)
+        .unwrap();
+    let harmony = table_test_control(&tone, "STOMP_PARAM3");
+    assert_eq!(harmony.label(), "Harmony 1457");
+    assert_eq!(harmony.choices.len(), 9);
+    assert!(
+        change
+            .default_unknown
+            .contains(&harmony.parameter.selector.unwrap())
+    );
+    assert_eq!(table_test_control(&tone, "STOMP_PARAM4").label(), "Wave");
+    tone.set_table_model("DELAY_MODEL", 0x0202_000c, 4, true, &UnknownPodDefaults)
+        .unwrap();
+    assert_eq!(table_test_control(&tone, "DELAY_PARAM3").label(), "Heads");
+    tone.set_delay_heads_selection(DelayHeadsSelection::OneTwoThreeFour)
+        .unwrap();
+    assert_eq!(
+        tone.delay_heads_selection().unwrap(),
+        DelayAssociationValue::Known(DelayHeadsSelection::OneTwoThreeFour)
+    );
+}
+
+#[test]
+fn table_default_provider_obeys_amp_toggle_and_rejects_invalid_values_atomically() {
+    struct Defaults(u32);
+    impl PodModelDefaults for Defaults {
+        fn parameter_bits(&self, _: u32, _: u32, selector: u32) -> Option<u32> {
+            (selector == 65538).then_some(self.0)
+        }
+    }
+
+    let mut tone = table_test_tone();
+    tone.set_table_model("AMP_MODEL", 0x0002_0001, 0, true, &UnknownPodDefaults)
+        .unwrap();
+    tone.set_table_parameter("DRIVE", 0.25f32.to_bits())
+        .unwrap();
+    let source = Defaults(0.75f32.to_bits());
+    tone.set_table_model("AMP_MODEL", 0x0002_0005, 0, false, &source)
+        .unwrap();
+    assert_eq!(
+        table_test_control(&tone, "DRIVE").bits,
+        Some(0.25f32.to_bits())
+    );
+    tone.set_table_model("AMP_MODEL", 0x0002_0001, 0, true, &source)
+        .unwrap();
+    assert_eq!(
+        table_test_control(&tone, "DRIVE").bits,
+        Some(0.75f32.to_bits())
+    );
+    let before = tone.clone();
+    assert!(
+        tone.set_table_model(
+            "AMP_MODEL",
+            0x0002_0005,
+            0,
+            true,
+            &Defaults(f32::NAN.to_bits())
+        )
+        .is_err()
+    );
+    assert_eq!(tone, before);
+}
+
+#[test]
+fn table_tempo_and_notes_apply_both_dependencies_and_manual_clear() {
+    let mut tone = table_test_tone();
+    tone.set_table_parameter("TEMPO", 120.0f32.to_bits())
+        .unwrap();
+    tone.set_table_parameter("MOD_NOTE", 6).unwrap();
+    tone.set_table_parameter("DELAY_NOTE", 6).unwrap();
+    assert_eq!(
+        table_test_control(&tone, "MOD_SPEED").bits,
+        Some(0x3e0293c2)
+    );
+    assert_eq!(
+        table_test_control(&tone, "DELAY_TIME").bits,
+        Some(0x3e783e11)
+    );
+    tone.set_table_parameter("TEMPO", 60.0f32.to_bits())
+        .unwrap();
+    let speed = table_test_control(&tone, "MOD_SPEED");
+    let delay = table_test_control(&tone, "DELAY_TIME");
+    assert_eq!(speed.bits, speed.bits_from_display(1.0));
+    assert_eq!(
+        delay.bits,
+        delay.bits_from_display(f64::from(1000.00006f32))
+    );
+    tone.set_table_parameter("DELAY_TIME", 0.5f32.to_bits())
+        .unwrap();
+    assert_eq!(table_test_control(&tone, "DELAY_NOTE").bits, Some(0));
+    assert_eq!(table_test_control(&tone, "MOD_NOTE").bits, Some(6));
+}
+
+#[test]
+fn table_metadata_has_original_tag_bytes_and_preserves_unknown_chunks() {
+    let mut tone = table_test_tone();
+    let original = tone.as_bytes().to_vec();
+    for field in PodMetadata::ALL {
+        assert_eq!(tone.metadata(field).unwrap(), None);
+        tone.set_metadata(field, "Aé𝄞").unwrap();
+        assert_eq!(tone.metadata(field).unwrap().as_deref(), Some("Aé𝄞"));
+    }
+    assert_eq!(&tone.as_bytes()[8..original.len()], &original[8..]);
+    let mut expected = b"LIST\0\0\0\x84UNFO".to_vec();
+    for tag in [
+        b"ISNG", b"IGTR", b"IBND", b"IAUT", b"IPUS", b"IPUP", b"ISTL", b"ICMT",
+    ] {
+        expected.extend_from_slice(tag);
+        expected.extend_from_slice(b"\0\0\0\x08\0A\0\xe9\xd84\xdd\x1e");
+    }
+    assert_eq!(&tone.as_bytes()[original.len()..], expected);
+    let before = tone.clone();
+    assert!(tone.set_metadata(PodMetadata::Notes, "Invalid\0").is_err());
+    assert_eq!(tone, before);
+}
+
+#[test]
+fn table_writes_preserve_opaque_records_and_refuse_ambiguous_targets() {
+    let drive = [0x3f, 0x10, 0x00, 0x03, 0, 0, 0, 1, 0x3e, 0x80, 0, 0];
+    let opaque = [0x12, 0x34, 0x56, 0x78, 0xd0];
+    let model = BuiltModel {
+        slot: AMP_SLOT,
+        model_id: 0x0002_0001,
+        tail: &[0, 0, 0, 1],
+        parameters: &[&drive, &opaque],
+    };
+    let mut tone = PodTone::parse(custom_tone(ContainerKind::L6pa, &[model])).unwrap();
+    let position = tone
+        .as_bytes()
+        .windows(drive.len())
+        .position(|v| v == drive)
+        .unwrap()
+        + 8;
+    let mut expected = tone.as_bytes().to_vec();
+    expected[position..position + 4].copy_from_slice(&0.75f32.to_be_bytes());
+    tone.set_table_parameter("DRIVE", 0.75f32.to_bits())
+        .unwrap();
+    assert_eq!(tone.as_bytes(), expected);
+
+    let duplicate = BuiltModel {
+        parameters: &[&drive, &drive, &opaque],
+        ..model
+    };
+    let mut tone = PodTone::parse(custom_tone(ContainerKind::L6pa, &[duplicate])).unwrap();
+    let before = tone.clone();
+    assert!(
+        tone.set_table_parameter("DRIVE", 0.75f32.to_bits())
+            .is_err()
+    );
+    assert_eq!(tone, before);
 }
