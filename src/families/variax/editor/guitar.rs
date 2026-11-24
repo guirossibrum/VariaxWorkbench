@@ -1,13 +1,18 @@
 use super::tuning_presets::{DETUNE, MIX, PITCH, TUNINGS, TuningDialog, set_tuning_values};
 use super::{
-    BODY, Color32, EditorDocument, FRET_MARKER, GUITAR_SELECTION, GUITAR_SURFACE, PICKUP1, PICKUP2,
-    Pos2, PresetFile, Rect, SYSTEM, Sense, TUNING, Tab, TextureHandle, ValueFormat, VariaxEditor,
-    WIRING, egui, guitar_panel,
+    BODY, Color32, EditorDocument, FRET_MARKER, GUITAR_SURFACE, PICKUP1, PICKUP2, Pos2, PresetFile,
+    Rect, SYSTEM, Sense, TUNING, Tab, TextureHandle, ValueFormat, VariaxEditor, WIRING, egui,
 };
 use std::{collections::HashSet, path::Path, process::Command};
-use variax_workbench::{bundle::BundleFile, edit::Domain, preset::PresetText};
+use variax_workbench::{
+    bundle::BundleFile,
+    preset::PresetText,
+    ui::{
+        theme,
+        tuning_panel::{TuningEvent, TuningPanel, TuningRow, TwelveStringRow, semitone_at},
+    },
+};
 
-const GREEN: Color32 = Color32::from_rgb(167, 231, 133);
 const SPREAD: u32 = 0x200012;
 
 const STRINGS: [(&str, i32); 6] = [
@@ -303,11 +308,17 @@ impl VariaxEditor {
     }
 
     pub(super) fn guitar_header(&mut self, ui: &mut egui::Ui, available: bool) {
-        guitar_panel().inner_margin(9).show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 3.0;
-            self.bank_strip(ui, available);
-            self.model_details(ui, available);
-        });
+        egui::Frame::new()
+            .inner_margin(9)
+            .corner_radius(theme::RADIUS_PANEL)
+            .fill(Color32::from_rgb(69, 43, 29))
+            .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(116, 78, 48)))
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.spacing_mut().item_spacing.y = 3.0;
+                self.bank_strip(ui, available);
+                self.model_details(ui, available);
+            });
     }
 
     fn bank_strip(&mut self, ui: &mut egui::Ui, available: bool) {
@@ -412,12 +423,8 @@ impl VariaxEditor {
             } else {
                 ui.strong("Individual preset");
             }
-            ui.add_enabled(false, egui::Button::new("Get from guitar").small())
-                .on_disabled_hover_text("Reading the guitar is locked during offline editing");
-            ui.add_enabled(false, egui::Button::new("Send to guitar").small())
-                .on_disabled_hover_text("Writing to the guitar is locked during offline editing");
             if document.is_dirty() {
-                ui.colored_label(FRET_MARKER, "Unsaved changes");
+                ui.colored_label(FRET_MARKER, "Unsaved");
             }
         });
 
@@ -466,7 +473,7 @@ impl VariaxEditor {
         #[cfg(test)]
         self.name_notice.clear();
 
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
                     ui.add_sized([42.0, 17.0], egui::Label::new("Model"));
@@ -479,9 +486,11 @@ impl VariaxEditor {
                     self.limited_text(response, &stored_name, name.clone(), true);
                 });
                 self.name_flag(ui, "Model", &name, name == stored_name);
+            });
+            ui.vertical(|ui| {
                 ui.horizontal(|ui| {
-                    ui.add_sized([42.0, 17.0], egui::Label::new("Author"));
-                    self.metadata_field(ui, editable, PresetText::Author, 168.0);
+                    ui.label("Author");
+                    self.metadata_field(ui, editable, PresetText::Author, 120.0);
                 });
                 let stored_author = self
                     .document
@@ -495,22 +504,26 @@ impl VariaxEditor {
                 self.name_flag(ui, "Author", &author, author == stored_author);
             });
             ui.label("Notes");
-            let notes_width = (ui.available_width() - 135.0).clamp(80.0, 400.0);
+            let notes_width = (ui.available_width() - 300.0).clamp(96.0, 240.0);
             self.metadata_field(ui, editable, PresetText::Notes, notes_width);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add_enabled(can_redo, egui::Button::new("Redo"))
-                    .clicked()
-                {
-                    self.redo();
-                }
-                if ui
-                    .add_enabled(can_undo, egui::Button::new("Undo"))
-                    .clicked()
-                {
-                    self.undo();
-                }
-            });
+            if ui
+                .add_enabled(can_undo, egui::Button::new("Undo"))
+                .clicked()
+            {
+                self.undo();
+            }
+            if ui
+                .add_enabled(can_redo, egui::Button::new("Redo"))
+                .clicked()
+            {
+                self.redo();
+            }
+            if self.can_edit(SYSTEM, Some(0x200000)) {
+                ui.add_enabled_ui(editable, |ui| {
+                    ui.spacing_mut().slider_width = 70.0;
+                    self.float_control(ui, SYSTEM, 0x200000, "Output trim", ValueFormat::TRIM);
+                });
+            }
         });
     }
 
@@ -628,103 +641,140 @@ impl VariaxEditor {
         let can_edit = can_edit && tuning.is_some() && self.can_edit(TUNING, None);
         let complete_pitch = can_edit && (PITCH..PITCH + 6).all(|id| self.tuning_parameter(id, 0));
         let twelve_string = self.can_edit(TUNING, Some(MIX));
+        // Settle the panel's measured height and clipping on the first frame
+        // and when a model adds or removes the secondary-string controls.
+        let layout_id = ui.id().with("tuning-panel-layout");
+        let remeasure = ui.data_mut(|cache| {
+            if cache.get_temp::<bool>(layout_id) == Some(twelve_string) {
+                return false;
+            }
+            cache.insert_temp(layout_id, twelve_string);
+            true
+        });
+        if remeasure {
+            ui.ctx().request_discard("measure Variax tuning panel");
+        }
         let complete_mix = can_edit && (MIX..MIX + 6).all(|id| self.tuning_parameter(id, 1));
-        ui.visuals_mut().selection = GUITAR_SELECTION;
-        let spacing = ui.spacing_mut();
-        spacing.item_spacing.y = 2.0;
-        spacing.button_padding.y = 1.0;
-        spacing.button_padding.x = 5.0;
-        spacing.interact_size.y = 14.0;
-        let toolbar = ui.horizontal(|ui| {
-            ui.set_min_height(24.0);
-            let toggle = ui
-                .add_enabled(
-                    can_edit,
-                    egui::Button::new("Enable").small().selected(enabled),
-                )
-                .on_hover_text(if enabled {
-                    "Turn off alternate tuning"
-                } else {
-                    "Turn on alternate tuning"
-                });
-            #[cfg(test)]
-            {
-                self.tuning_toggle = Some(toggle.rect);
-            }
-            if toggle.clicked() {
-                self.change(|preset| preset.set_enabled(TUNING, !enabled));
-            }
-            ui.add_enabled_ui(complete_pitch, |ui| {
-                let menu = ui.menu_button("Presets", |ui| {
-                    let manage = ui.button("Manage tuning presets…");
-                    #[cfg(test)]
-                    self.tuning_widgets
-                        .insert("Manage tuning presets…", manage.rect);
-                    if manage.clicked() {
-                        self.tuning_dialog =
-                            Some(TuningDialog::open(self.preferences_path.as_deref()));
-                        ui.close();
-                    }
-                    ui.separator();
-                    for (name, offsets) in TUNINGS {
-                        let option = ui.button(name);
-                        #[cfg(test)]
-                        self.tuning_widgets.insert(name, option.rect);
-                        if option.clicked() {
-                            self.set_tuning(offsets, true);
-                            ui.close();
-                        }
-                    }
-                });
-                #[cfg(test)]
-                self.tuning_widgets.insert("Presets", menu.response.rect);
-                #[cfg(not(test))]
-                let _ = menu;
-            });
-            if !can_edit
-                && self
-                    .document
-                    .as_ref()
-                    .is_some_and(|d| d.preset().edit_availability(TUNING, None).is_err())
-            {
-                ui.weak("Alternate tuning unavailable for this body");
+        let offsets =
+            std::array::from_fn::<_, 6, _>(|index| self.integer(TUNING, PITCH + index as u32));
+        let labels = offsets.map(|offset| {
+            offset.map_or("—".into(), |shift| {
+                ValueFormat::SEMITONES.display(f64::from(shift))
+            })
+        });
+        let rows = std::array::from_fn::<_, 6, _>(|row| {
+            let id = 5 - row;
+            TuningRow {
+                id,
+                name: STRINGS[id].0,
+                shift: offsets[id].unwrap_or(0),
+                shift_label: &labels[id],
+                note: offsets[id]
+                    .and_then(|offset| tuning_note(id, offset))
+                    .unwrap_or("—"),
             }
         });
-
-        ui.horizontal_top(|ui| {
-            let rows = self.tuning_strings(ui, can_edit, twelve_string);
-            self.draw_fretboard(
-                ui,
-                rows,
-                can_edit,
-                toolbar.response.rect.center().y,
-                complete_pitch,
-            );
+        let secondary = std::array::from_fn::<_, 6, _>(|id| TwelveStringRow {
+            id,
+            mix: self.float(TUNING, MIX + id as u32),
+            detune: self.float(TUNING, DETUNE + id as u32),
         });
-        ui.horizontal(|ui| {
-            let lock = ui
-                .add_enabled(
-                    complete_mix,
-                    egui::Checkbox::new(&mut self.link_tuning_mix, "Lock"),
-                )
-                .on_hover_text("Link all twelve-string mix controls")
-                .on_disabled_hover_text(
-                    "Mix lock requires a twelve-string body and six mix controls",
-                );
-            let reset = ui
-                .add_enabled(complete_pitch, egui::Button::new("Reset").small())
-                .on_hover_text("Return all six strings to standard tuning");
-            #[cfg(test)]
-            {
-                self.tuning_widgets.insert("Lock", lock.rect);
-                self.tuning_widgets.insert("Reset", reset.rect);
+        let mut panel = TuningPanel::new(&rows)
+            .enabled(enabled)
+            .interactive(can_edit)
+            .lock(complete_mix, self.link_tuning_mix)
+            .presets_enabled(complete_pitch)
+            .transpose_enabled(complete_pitch)
+            .reset_enabled(complete_pitch);
+        if twelve_string {
+            panel = panel.twelve_string(&secondary);
+        }
+        let output = panel.show(ui);
+        paint_missing_tuning_symbols(ui, output.flat, output.sharp, complete_pitch);
+        #[cfg(test)]
+        {
+            self.tuning_toggle = Some(output.enable);
+            for (label, rect) in [
+                ("Presets", output.presets),
+                ("Flat", output.flat),
+                ("Sharp", output.sharp),
+                ("Lock", output.lock),
+                ("Reset", output.reset),
+            ] {
+                self.tuning_widgets.insert(label, rect);
             }
-            #[cfg(not(test))]
-            let _ = lock;
-            if reset.clicked() {
-                self.set_tuning([0; 6], false);
+            if let Some(low) = output.rows.iter().find(|row| row.id == 0) {
+                self.tuning_widgets.insert("Low E shift", low.shift_cell);
+                if let Some(rect) = low.mix_cell {
+                    self.tuning_widgets.insert("Low E mix", rect);
+                }
+                if let Some(rect) = low.detune_cell {
+                    self.tuning_widgets.insert("Low E detune", rect);
+                }
             }
-            if twelve_string {
+        }
+        let presets_clicked = output.events.contains(&TuningEvent::Presets);
+        self.tuning_preset_menu(ui, output.presets, complete_pitch, presets_clicked);
+        for event in output.events {
+            match event {
+                TuningEvent::Enable => self.change(|preset| preset.set_enabled(TUNING, !enabled)),
+                TuningEvent::Lock(value) => self.link_tuning_mix = value,
+                TuningEvent::Reset => self.set_tuning([0; 6], false),
+                TuningEvent::FlattenAll => self.transpose_tuning(-1),
+                TuningEvent::SharpenAll => self.transpose_tuning(1),
+                TuningEvent::Shift { id, semitones } => self.set_string_shift(id, semitones),
+                TuningEvent::Mix { id, fraction } => {
+                    let parameter = MIX + id as u32;
+                    if self.tuning_parameter(parameter, 1)
+                        && (!self.link_tuning_mix || complete_mix)
+                    {
+                        let value = fraction.to_bits();
+                        let linked = self.link_tuning_mix;
+                        self.change(|preset| {
+                            if linked {
+                                set_tuning_values(preset, MIX, 1, [value; 6])
+                            } else {
+                                preset.set_parameter(TUNING, parameter, 1, value)
+                            }
+                        });
+                    }
+                }
+                TuningEvent::Detune { id, cents } => {
+                    let parameter = DETUNE + id as u32;
+                    if self.tuning_parameter(parameter, 1) {
+                        self.change(|preset| {
+                            preset.set_parameter(TUNING, parameter, 1, cents.to_bits())
+                        });
+                    }
+                }
+                TuningEvent::DragStarted { id } => {
+                    if self.tuning_parameter(PITCH + id as u32, 0)
+                        && let Some(document) = &mut self.document
+                    {
+                        document.begin_gesture();
+                    }
+                }
+                TuningEvent::DragFinished { id } => {
+                    if can_edit
+                        && let Some(pointer) = ui.input(|input| {
+                            input
+                                .pointer
+                                .button_released(egui::PointerButton::Primary)
+                                .then(|| input.pointer.interact_pos())
+                                .flatten()
+                        })
+                    {
+                        self.set_string_shift(id, semitone_at(output.neck, pointer.x));
+                    }
+                    if let Some(document) = &mut self.document {
+                        document.end_gesture();
+                    }
+                }
+                TuningEvent::Presets => {}
+            }
+        }
+        if twelve_string {
+            ui.horizontal_wrapped(|ui| {
                 let detune =
                     can_edit && (DETUNE..DETUNE + 6).all(|id| self.tuning_parameter(id, 1));
                 if ui
@@ -736,8 +786,57 @@ impl VariaxEditor {
                 }
                 ui.add_enabled_ui(can_edit, |ui| {
                     self.float_control(ui, TUNING, SPREAD, "Spread", ValueFormat::Percent(25.0));
-                    ui.weak("Workbench 1.75 had no Spread control.");
                 });
+            });
+        }
+    }
+
+    fn set_string_shift(&mut self, string: usize, semitones: i32) {
+        let id = PITCH + string as u32;
+        if self.tuning_parameter(id, 0) && self.integer(TUNING, id) != Some(semitones) {
+            self.change(|preset| preset.set_parameter(TUNING, id, 0, semitones as u32));
+        }
+    }
+
+    fn tuning_preset_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        anchor: Rect,
+        enabled: bool,
+        clicked: bool,
+    ) {
+        use egui::containers::SetOpenCommand;
+        let command = if !enabled {
+            Some(SetOpenCommand::Bool(false))
+        } else {
+            clicked.then_some(SetOpenCommand::Toggle)
+        };
+        egui::Popup::new(
+            ui.id().with("tuning-presets"),
+            ui.ctx().clone(),
+            anchor,
+            ui.layer_id(),
+        )
+        .kind(egui::PopupKind::Menu)
+        .open_memory(command)
+        .show(|ui| {
+            let manage = ui.button("Manage tuning presets…");
+            #[cfg(test)]
+            self.tuning_widgets
+                .insert("Manage tuning presets…", manage.rect);
+            if manage.clicked() {
+                self.tuning_dialog = Some(TuningDialog::open(self.preferences_path.as_deref()));
+                ui.close();
+            }
+            ui.separator();
+            for (name, offsets) in TUNINGS {
+                let option = ui.button(name);
+                #[cfg(test)]
+                self.tuning_widgets.insert(name, option.rect);
+                if option.clicked() {
+                    self.set_tuning(offsets, true);
+                    ui.close();
+                }
             }
         });
     }
@@ -775,296 +874,44 @@ impl VariaxEditor {
             Ok(())
         });
     }
+}
 
-    fn tuning_strings(
-        &mut self,
-        ui: &mut egui::Ui,
-        can_edit: bool,
-        twelve_string: bool,
-    ) -> [f32; 6] {
-        let mut rows = [0.0; 6];
-        egui::Grid::new("tuning-strings")
-            .spacing([8.0, 1.0])
-            .striped(true)
-            .show(ui, |ui| {
-                ui.weak("String");
-                if twelve_string {
-                    ui.weak("Mix");
-                    ui.weak("Detune");
-                }
-                ui.weak("Shift");
-                ui.weak("Note");
-                ui.end_row();
-                for (index, (label, _)) in STRINGS.into_iter().enumerate().rev() {
-                    let index_id = index as u32;
-                    let id = PITCH + index_id;
-                    let pitch = self.integer(TUNING, id);
-                    ui.label(label);
-                    if twelve_string {
-                        self.twelve_string_value(ui, MIX + index_id, can_edit);
-                        self.twelve_string_value(ui, DETUNE + index_id, can_edit);
-                    }
-                    if let Some(stored) = pitch {
-                        let mut value = stored;
-                        ui.add_enabled(
-                            can_edit && self.tuning_parameter(id, 0),
-                            egui::DragValue::new(&mut value)
-                                .range(-12..=12)
-                                .clamp_existing_to_range(false)
-                                .custom_formatter(|value, _| ValueFormat::SEMITONES.display(value))
-                                .custom_parser(move |text| {
-                                    ValueFormat::SEMITONES.parse_edit(text, f64::from(stored))
-                                })
-                                .update_while_editing(false),
-                        )
-                        .on_hover_text("Drag or click to set semitones");
-                        if value != stored {
-                            self.change(|preset| preset.set_parameter(TUNING, id, 0, value as u32));
-                        }
-                    } else {
-                        ui.label("—");
-                    }
-                    let note = pitch.and_then(|offset| tuning_note(index, offset));
-                    rows[index] = ui.label(note.unwrap_or("—")).rect.center().y;
-                    ui.end_row();
-                }
-            });
-        rows
-    }
-
-    fn twelve_string_value(&mut self, ui: &mut egui::Ui, id: u32, can_edit: bool) {
-        let Some(stored) = self.float(TUNING, id).filter(|v| v.is_finite()) else {
-            ui.label("—");
-            return;
-        };
-        let Some(Domain::Float { min, max, .. }) = variax_workbench::edit::domain(TUNING, id)
-        else {
-            return;
-        };
-        let is_mix = id >= MIX;
-        let linked = is_mix && self.link_tuning_mix;
-        let can_edit = can_edit
-            && self.tuning_parameter(id, 1)
-            && (!linked || (MIX..MIX + 6).all(|id| self.tuning_parameter(id, 1)));
-        let (speed, format) = if is_mix {
-            (0.01, ValueFormat::Percent(1.0))
+// Egui's default fonts may omit the two accidental glyphs. Preserve the
+// shared buttons and their keyboard targets, and draw the symbols in that case.
+fn paint_missing_tuning_symbols(ui: &egui::Ui, flat: Rect, sharp: Rect, enabled: bool) {
+    let font = egui::FontId::proportional(18.0);
+    for (rect, glyph) in [(flat, '♭'), (sharp, '♯')] {
+        if ui.fonts_mut(|fonts| fonts.has_glyph(&font, glyph)) {
+            continue;
+        }
+        let widgets = &ui.visuals().widgets;
+        let fill = if enabled && ui.rect_contains_pointer(rect) {
+            widgets.hovered.weak_bg_fill
         } else {
-            (1.0, ValueFormat::CENTS)
+            widgets.inactive.weak_bg_fill
         };
-        // DragValue uses the same automatic ID for its compact button and focused text field.
-        let editing =
-            can_edit && ui.is_enabled() && ui.memory(|memory| memory.has_focus(ui.next_auto_id()));
-        let display_format = if !is_mix && !editing {
-            ValueFormat::CENTS_COMPACT
-        } else {
-            format
-        };
-        let mut value = stored;
-        let response = ui.add_enabled(
-            can_edit,
-            egui::DragValue::new(&mut value)
-                .range(min..=max)
-                .clamp_existing_to_range(false)
-                .speed(speed)
-                .custom_formatter(move |value, _| display_format.display(value))
-                .custom_parser(move |text| format.parse_edit(text, f64::from(stored)))
-                .update_while_editing(false),
-        );
-        #[cfg(test)]
-        if id == MIX {
-            self.tuning_widgets.insert("Low E mix", response.rect);
-        }
-        #[cfg(not(test))]
-        let _ = response;
-        if value.to_bits() != stored.to_bits() {
-            self.change(|preset| {
-                if linked {
-                    set_tuning_values(preset, MIX, 1, [value.to_bits(); 6])
-                } else {
-                    preset.set_parameter(TUNING, id, 1, value.to_bits())
-                }
-            });
-        }
-    }
-
-    fn draw_fretboard(
-        &mut self,
-        ui: &mut egui::Ui,
-        rows: [f32; 6],
-        can_edit: bool,
-        toolbar_y: f32,
-        complete_pitch: bool,
-    ) {
-        let width = ui.available_width();
-        if width < 50.0 {
-            return;
-        }
-        let (area, _) = ui.allocate_exact_size(
-            egui::vec2(width, rows[0] - ui.cursor().top() + 22.0),
-            Sense::hover(),
-        );
-        let neck = Rect::from_min_max(
-            Pos2::new(area.left() + 11.0, rows[5] - 9.0),
-            Pos2::new(area.right() - 11.0, rows[0] + 9.0),
-        );
-        let painter = ui.painter().clone();
+        let center = rect.center();
+        let painter = ui.painter();
         painter.rect_filled(
-            neck.expand2(egui::vec2(7.0, 0.0)),
-            4,
-            Color32::from_rgb(68, 44, 32),
+            Rect::from_center_size(center, egui::vec2(14.0, 17.0)),
+            0,
+            fill,
         );
-        let fret_x = |offset: i32| neck.center().x + neck.width() * offset as f32 / 24.0;
-        for offset in -12..=12 {
-            let (weight, color) = if offset == 0 {
-                (2.0_f32, FRET_MARKER)
-            } else {
-                (1.0, Color32::from_rgb(133, 106, 86))
-            };
-            painter.vline(
-                fret_x(offset),
-                neck.y_range(),
-                egui::Stroke::new(weight, color),
-            );
-            if matches!(offset, -12 | -7 | -5 | 0 | 5 | 7 | 12) {
-                painter.text(
-                    Pos2::new(fret_x(offset), neck.bottom() + 4.0),
-                    egui::Align2::CENTER_TOP,
-                    if offset == 0 {
-                        "0".into()
-                    } else {
-                        format!("{offset:+}")
-                    },
-                    egui::FontId::monospace(10.0),
-                    ui.visuals().weak_text_color(),
-                );
-            }
-        }
-        for fret in [-11_i32, -9, -7, -5, -3, 3, 5, 7, 9, 11] {
-            let x = (fret_x(fret - fret.signum()) + fret_x(fret)) * 0.5;
-            painter.circle_filled(
-                Pos2::new(x, neck.center().y),
-                2.5,
-                Color32::from_rgb(184, 166, 143),
-            );
-        }
-
-        let enabled = self
-            .document
-            .as_ref()
-            .and_then(|d| d.preset().model(TUNING))
-            .is_some_and(|model| model.enabled);
-        for (index, y) in rows.into_iter().enumerate() {
-            let id = PITCH + index as u32;
-            painter.hline(
-                neck.x_range().expand(5.0),
-                y,
-                egui::Stroke::new(1.2 - index as f32 * 0.1, Color32::from_rgb(204, 184, 160)),
-            );
-            if can_edit && self.tuning_parameter(id, 0) {
-                let response = ui
-                    .interact(
-                        Rect::from_center_size(
-                            Pos2::new(neck.center().x, y),
-                            egui::vec2(neck.width() + 12.0, 16.0),
-                        ),
-                        ui.id().with(("fretboard", index)),
-                        Sense::click(),
-                    )
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .on_hover_text(format!("Click a fret to tune {}", STRINGS[index].0));
-                if response.clicked()
-                    && let Some(pointer) = response.interact_pointer_pos()
-                {
-                    let offset =
-                        ((pointer.x - neck.center().x) * 24.0 / neck.width()).round() as i32;
-                    self.change(|preset| {
-                        preset.set_parameter(TUNING, id, 0, offset.clamp(-12, 12) as u32)
-                    });
-                }
-            }
-            if let Some(offset) = self
-                .integer(TUNING, id)
-                .filter(|offset| (-12..=12).contains(offset))
-            {
-                let color = if enabled {
-                    FRET_MARKER
-                } else {
-                    Color32::from_rgb(190, 160, 132)
-                };
-                painter.circle(
-                    Pos2::new(fret_x(offset), y),
-                    4.0,
-                    color,
-                    egui::Stroke::new(1.0_f32, GUITAR_SURFACE),
-                );
-            }
-        }
-        self.transpose_buttons(ui, Pos2::new(fret_x(0), toolbar_y), complete_pitch);
-    }
-
-    fn transpose_buttons(&mut self, ui: &mut egui::Ui, center: Pos2, enabled: bool) {
-        for (name, shift, path, description) in [
-            (
-                "Flat",
-                -1,
-                "buttons/flat.png",
-                "Lower every string by one semitone",
-            ),
-            (
-                "Sharp",
-                1,
-                "buttons/sharp.png",
-                "Raise every string by one semitone",
-            ),
-        ] {
-            let texture = self.texture(ui.ctx(), path);
-            let button_center = center + egui::vec2(14.0 * shift as f32, 0.0);
-            let rect = Rect::from_center_size(button_center, egui::Vec2::splat(24.0));
-            let response = ui
-                .place(rect, |ui: &mut egui::Ui| {
-                    if !enabled {
-                        ui.disable();
-                    }
-                    let (rect, response) = ui.allocate_exact_size(rect.size(), Sense::click());
-                    response.widget_info(|| {
-                        egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
-                            response.enabled(),
-                            name,
-                        )
-                    });
-                    let visuals = ui.style().interact(&response);
-                    if let Some(texture) = &texture {
-                        let [width, height] = texture.size();
-                        let frame_width = 22.0 * width as f32 / (height / 2) as f32;
-                        let icon =
-                            Rect::from_center_size(rect.center(), egui::vec2(frame_width, 22.0));
-                        // The original button sheet stacks the released and pressed frames vertically.
-                        let frame = if response.is_pointer_button_down_on() {
-                            0.5
-                        } else {
-                            0.0
-                        };
-                        let uv =
-                            Rect::from_min_max(Pos2::new(0.0, frame), Pos2::new(1.0, frame + 0.5));
-                        ui.painter().image(texture.id(), icon, uv, Color32::WHITE);
-                        if response.highlighted() || response.has_focus() || response.hovered() {
-                            ui.painter()
-                                .circle_stroke(rect.center(), 11.5, visuals.fg_stroke);
-                        }
-                    } else {
-                        let painter = ui.painter();
-                        painter.circle(rect.center(), 10.5, visuals.bg_fill, visuals.bg_stroke);
-                        paint_accidental(painter, rect.center(), shift, visuals.text_color());
-                    }
-                    response
-                })
-                .on_hover_text(description);
-            #[cfg(test)]
-            self.tuning_widgets.insert(name, response.rect);
-            if response.clicked() {
-                self.transpose_tuning(shift);
-            }
+        let stroke = egui::Stroke::new(1.35_f32, if enabled { theme::TEXT } else { theme::DIM });
+        let at = |x, y| center + egui::vec2(x, y);
+        if glyph == '♭' {
+            painter.line_segment([at(-2.0, -6.5), at(-2.0, 5.5)], stroke);
+            painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
+                [at(-2.0, 0.0), at(4.0, -5.0), at(5.5, 0.5), at(-2.0, 5.5)],
+                false,
+                Color32::TRANSPARENT,
+                stroke,
+            ));
+        } else {
+            painter.line_segment([at(-2.0, -5.2), at(-2.0, 6.3)], stroke);
+            painter.line_segment([at(2.0, -6.3), at(2.0, 5.2)], stroke);
+            painter.line_segment([at(-4.7, -0.8), at(4.7, -3.0)], stroke);
+            painter.line_segment([at(-4.7, 3.0), at(4.7, 0.8)], stroke);
         }
     }
 }
@@ -1115,7 +962,7 @@ fn bank_slot(
     active: bool,
     changed: bool,
 ) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(43.0, 36.0), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(43.0, theme::TARGET), Sense::click());
     let description = if changed {
         format!("Slot {position} · {name} · differs from the last saved file")
     } else {
@@ -1132,14 +979,14 @@ fn bank_slot(
     let visuals = ui.style().interact(&response);
     let painter = ui.painter();
     let fill = if active {
-        Color32::from_rgb(47, 68, 46)
+        Color32::from_rgb(60, 39, 18)
     } else {
-        Color32::from_rgb(44, 36, 30)
+        Color32::from_rgb(34, 23, 14)
     };
     let stroke = if response.has_focus() || response.hovered() {
         visuals.fg_stroke
     } else if active {
-        egui::Stroke::new(1.0_f32, GREEN)
+        egui::Stroke::new(1.0_f32, theme::VARIAX)
     } else {
         visuals.bg_stroke
     };
@@ -1162,7 +1009,7 @@ fn bank_slot(
             badge,
             3,
             if active {
-                GREEN
+                theme::VARIAX
             } else {
                 Color32::from_rgb(220, 212, 198)
             },
@@ -1180,7 +1027,11 @@ fn bank_slot(
             egui::Align2::CENTER_CENTER,
             position,
             egui::FontId::proportional(15.0),
-            if active { GREEN } else { visuals.text_color() },
+            if active {
+                theme::VARIAX
+            } else {
+                visuals.text_color()
+            },
         );
     }
     if changed {
@@ -1193,26 +1044,6 @@ fn bank_slot(
         );
     }
     response.on_hover_text(description)
-}
-
-fn paint_accidental(painter: &egui::Painter, center: Pos2, shift: i32, color: Color32) {
-    let at = |x, y| center + egui::vec2(x, y);
-    let stroke = egui::Stroke::new(1.35_f32, color);
-    if shift < 0 {
-        painter.line_segment([at(-2.0, -6.5), at(-2.0, 5.5)], stroke);
-        painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
-            [at(-2.0, 0.0), at(4.0, -5.0), at(5.5, 0.5), at(-2.0, 5.5)],
-            false,
-            Color32::TRANSPARENT,
-            stroke,
-        ));
-    } else {
-        painter.line_segment([at(-2.0, -5.2), at(-2.0, 6.3)], stroke);
-        painter.line_segment([at(2.0, -6.3), at(2.0, 5.2)], stroke);
-        let bars = egui::Stroke::new(1.8_f32, color);
-        painter.line_segment([at(-4.7, -0.8), at(4.7, -3.0)], bars);
-        painter.line_segment([at(-4.7, 3.0), at(4.7, 0.8)], bars);
-    }
 }
 
 fn example_document() -> Result<EditorDocument, String> {
@@ -1397,21 +1228,20 @@ mod tests {
             .change(|preset| preset.set_parameter(TUNING, DETUNE, 1, stored.to_bits()));
         let before = app.variax().document.as_ref().unwrap().as_bytes().to_vec();
 
-        let mut render = |editing| {
-            let output = ctx.run(Default::default(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    let id = ui.next_auto_id();
-                    ui.memory_mut(|memory| {
-                        if editing {
-                            memory.request_focus(id);
-                        } else {
-                            memory.surrender_focus(id);
-                        }
-                    });
-                    app.variax_mut().twelve_string_value(ui, DETUNE, true);
-                });
-            });
-            let expected = if editing { "+12.35 cents" } else { "+12 cents" };
+        let frame = |app: &mut Workbench, events| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(960.0, 680.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default()
+                        .show(ctx, |ui| app.variax_mut().fretboard(ui, true));
+                },
+            )
+        };
+        let contains = |output: egui::FullOutput, expected| {
             assert!(
                 output
                     .shapes
@@ -1419,9 +1249,28 @@ mod tests {
                     .any(|shape| contains_title(&shape.shape, expected))
             );
         };
-        render(false);
-        render(true);
-        render(false);
+        contains(frame(&mut app, vec![]), "+12 cents");
+        let pos = app.variax().tuning_widgets["Low E detune"].center();
+        let button = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let _ = frame(&mut app, vec![egui::Event::PointerMoved(pos), button(true)]);
+        let _ = frame(&mut app, vec![button(false)]);
+        contains(frame(&mut app, vec![]), "+12.35 cents");
+        let _ = frame(
+            &mut app,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        contains(frame(&mut app, vec![]), "+12 cents");
         assert_eq!(app.variax().document.as_ref().unwrap().as_bytes(), before);
     }
 
@@ -1493,6 +1342,27 @@ mod tests {
         assert_eq!(offsets(&app), [-2, 0, 0, 0, 0, 0]);
         click(&ctx, &mut app, "Lock");
         assert!(!app.variax().link_tuning_mix);
+        click(&ctx, &mut app, "Low E shift");
+        frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::Text("-4 semitones".into())],
+        );
+        assert_eq!(offsets(&app), [-2, 0, 0, 0, 0, 0]);
+        frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert_eq!(offsets(&app), [-4, 0, 0, 0, 0, 0]);
+        app.variax_mut().undo();
+        assert_eq!(offsets(&app), [-2, 0, 0, 0, 0, 0]);
 
         let document = app.variax_mut().document.as_mut().unwrap();
         document.select(0, 4).unwrap();

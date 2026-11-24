@@ -1,6 +1,7 @@
 use super::*;
 use serde::Deserialize;
 
+mod body_scene;
 mod connection;
 #[cfg(feature = "usb")]
 mod follow;
@@ -34,14 +35,6 @@ const SYSTEM: u32 = variax_workbench::edit::SYSTEM;
 const GUITAR_SURFACE: Color32 = Color32::from_rgb(31, 31, 34);
 const GUITAR_EDGE: Color32 = Color32::from_rgb(62, 60, 59);
 pub(super) const FRET_MARKER: Color32 = Color32::from_rgb(247, 189, 108);
-const GUITAR_SELECTION: egui::style::Selection = egui::style::Selection {
-    bg_fill: Color32::from_rgb(85, 59, 39),
-    stroke: egui::Stroke {
-        width: 1.0,
-        color: Color32::from_rgb(255, 221, 173),
-    },
-};
-const GUITAR_ART_SIZE: Vec2 = Vec2::new(426.0, 412.0);
 
 fn guitar_panel() -> egui::Frame {
     egui::Frame::new()
@@ -49,6 +42,42 @@ fn guitar_panel() -> egui::Frame {
         .corner_radius(8)
         .fill(GUITAR_SURFACE)
         .stroke(egui::Stroke::new(1.0_f32, GUITAR_EDGE))
+}
+
+fn style_inspector(ui: &mut egui::Ui) {
+    use variax_workbench::ui::theme;
+    let visuals = ui.visuals_mut();
+    visuals.dark_mode = false;
+    visuals.override_text_color = Some(theme::INK);
+    visuals.extreme_bg_color = Color32::from_rgb(245, 242, 234);
+    visuals.faint_bg_color = Color32::from_rgb(214, 209, 197);
+    let edge = Color32::from_rgb(115, 107, 95);
+    for (widget, fill) in [
+        (
+            &mut visuals.widgets.inactive,
+            Color32::from_rgb(242, 238, 228),
+        ),
+        (
+            &mut visuals.widgets.hovered,
+            Color32::from_rgb(250, 245, 231),
+        ),
+        (
+            &mut visuals.widgets.active,
+            Color32::from_rgb(235, 207, 154),
+        ),
+        (&mut visuals.widgets.open, Color32::from_rgb(241, 225, 192)),
+        (
+            &mut visuals.widgets.noninteractive,
+            Color32::from_rgb(202, 197, 186),
+        ),
+    ] {
+        widget.bg_fill = fill;
+        widget.weak_bg_fill = fill;
+        widget.bg_stroke.color = edge;
+        widget.fg_stroke.color = theme::INK;
+    }
+    visuals.selection.bg_fill = Color32::from_rgb(235, 207, 154);
+    visuals.selection.stroke.color = Color32::from_rgb(112, 76, 40);
 }
 
 #[derive(Clone, Deserialize)]
@@ -121,11 +150,12 @@ pub(super) struct VariaxEditor {
     catalog: Vec<ModelArt>,
     artwork: PathBuf,
     pub(super) textures: HashMap<String, TextureHandle>,
+    bundled_artwork: body_scene::BundledArtwork,
     missing_textures: HashSet<String>,
     pub(super) error: Option<String>,
     pub(super) status: String,
     pub(super) tab: Tab,
-    drag_origin: Option<(u32, f32, f32, f32)>,
+    drag_origin: Option<body_scene::BodyDrag>,
     /// Which pickup is painted last. Pickup 1 starts in front, matching the
     /// original panel's first child. This is view state, not a file field.
     pickup_front: u32,
@@ -155,7 +185,7 @@ pub(super) struct VariaxEditor {
     #[cfg(test)]
     pickup_slider: Option<Rect>,
     #[cfg(test)]
-    pickup_drag_ids: HashMap<u32, egui::Id>,
+    pickup_centers: HashMap<u32, Pos2>,
     #[cfg(test)]
     tuning_toggle: Option<Rect>,
     #[cfg(test)]
@@ -202,6 +232,7 @@ impl VariaxEditor {
             catalog: load_catalog(),
             artwork,
             textures: HashMap::new(),
+            bundled_artwork: body_scene::BundledArtwork::default(),
             missing_textures: HashSet::new(),
             error,
             status: "Edit preset files offline. Your guitar is unchanged.".into(),
@@ -229,7 +260,7 @@ impl VariaxEditor {
             #[cfg(test)]
             pickup_slider: None,
             #[cfg(test)]
-            pickup_drag_ids: HashMap::new(),
+            pickup_centers: HashMap::new(),
             #[cfg(test)]
             tuning_toggle: None,
             #[cfg(test)]
@@ -777,148 +808,6 @@ impl VariaxEditor {
         }
     }
 
-    pub(super) fn guitar(&mut self, ui: &mut egui::Ui, height: f32) {
-        let body = self
-            .model_id(BODY)
-            .and_then(|id| self.catalog.iter().find(|a| a.id == id))
-            .map(|a| a.image.clone())
-            .and_then(|path| self.texture(ui.ctx(), &path));
-        let scale = (ui.available_width() / GUITAR_ART_SIZE.x).min(height / GUITAR_ART_SIZE.y);
-        let (stage, _) = ui.allocate_exact_size(
-            Vec2::new(ui.available_width(), GUITAR_ART_SIZE.y * scale),
-            Sense::hover(),
-        );
-        let rect = Rect::from_center_size(stage.center(), GUITAR_ART_SIZE * scale);
-        ui.painter()
-            .rect_filled(rect, 5, Color32::from_rgb(20, 20, 22));
-        if let Some(texture) = body.as_ref() {
-            ui.painter().image(
-                texture.id(),
-                rect,
-                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                Color32::WHITE,
-            );
-        } else {
-            ui.painter().text(
-                stage.center(),
-                egui::Align2::CENTER_CENTER,
-                "Guitar artwork unavailable",
-                egui::FontId::proportional(15.0),
-                ui.visuals().weak_text_color(),
-            );
-        }
-        let back_to_front = if self.pickup_front == PICKUP2 {
-            [PICKUP1, PICKUP2]
-        } else {
-            [PICKUP2, PICKUP1]
-        };
-        for slot in back_to_front {
-            let Some(model) = self.document.as_ref().and_then(|d| d.preset().model(slot)) else {
-                continue;
-            };
-            let enabled = model.enabled;
-            let artwork = self
-                .catalog
-                .iter()
-                .find(|a| a.id == model.id)
-                .map(|a| a.image.clone())
-                .unwrap_or_else(|| "pickups/unknown.png".into());
-            let stored_position = self.float(slot, 0x200000);
-            let position = stored_position.unwrap_or(2.0);
-            let angle = self.float(slot, 0x200001).unwrap_or(0.0).to_radians();
-            if !position.is_finite() || !angle.is_finite() {
-                continue;
-            }
-            if let Some(texture) = self.texture(ui.ctx(), &artwork) {
-                let center_at = |position: f32| {
-                    rect.min
-                        + Vec2::new(
-                            68.0 + 318.0 * ((position.clamp(0.1, 9.5) - 0.1) / 9.4),
-                            215.0,
-                        ) * scale
-                };
-                let dimension = texture.size_vec2() * scale;
-                let can_drag = ui.is_enabled()
-                    && stored_position.is_some()
-                    && self.can_edit(slot, Some(0x200000));
-                let response = ui.interact(
-                    Rect::from_center_size(center_at(position), dimension + Vec2::splat(12.0)),
-                    ui.make_persistent_id(("pickup-drag", slot)),
-                    if can_drag {
-                        Sense::drag()
-                    } else {
-                        Sense::hover()
-                    },
-                );
-                #[cfg(test)]
-                self.pickup_drag_ids.insert(slot, response.id);
-                if can_drag {
-                    let response = response
-                        .on_hover_and_drag_cursor(egui::CursorIcon::ResizeHorizontal)
-                        .on_hover_text(
-                            "Drag horizontally to move this pickup. Adjust rotation in Pickups.",
-                        );
-                    if let Some(pointer) = response.interact_pointer_pos() {
-                        if response.drag_started_by(egui::PointerButton::Primary)
-                            && let Some(delta) = response.total_drag_delta()
-                            && let Some(document) = &mut self.document
-                        {
-                            self.drag_origin =
-                                Some((slot, position.clamp(0.1, 9.5), pointer.x - delta.x, scale));
-                            document.begin_gesture();
-                        }
-                        if (response.dragged() || response.drag_stopped())
-                            && let Some((active, original, start_x, start_scale)) = self.drag_origin
-                            && active == slot
-                        {
-                            let value = (original
-                                + (pointer.x - start_x) / start_scale / 318.0 * 9.4)
-                                .clamp(0.1, 9.5);
-                            if value != position.clamp(0.1, 9.5) {
-                                self.change(|p| {
-                                    p.set_parameter(slot, 0x200000, 1, value.to_bits())
-                                });
-                            }
-                        }
-                    }
-                }
-                let center = center_at(self.float(slot, 0x200000).unwrap_or(position));
-                let rotation = egui::emath::Rot2::from_angle(angle);
-                let corners = [
-                    Vec2::new(-0.5, -0.5),
-                    Vec2::new(0.5, -0.5),
-                    Vec2::new(0.5, 0.5),
-                    Vec2::new(-0.5, 0.5),
-                ];
-                let uvs = [
-                    Pos2::new(0.0, 0.0),
-                    Pos2::new(1.0, 0.0),
-                    Pos2::new(1.0, 1.0),
-                    Pos2::new(0.0, 1.0),
-                ];
-                let mut mesh = egui::Mesh::with_texture(texture.id());
-                for (corner, uv) in corners.into_iter().zip(uvs) {
-                    mesh.vertices.push(egui::epaint::Vertex {
-                        pos: center + rotation * (corner * dimension),
-                        uv,
-                        color: Color32::from_white_alpha(if enabled { 255 } else { 102 }),
-                    });
-                }
-                mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
-                ui.painter().add(egui::Shape::mesh(mesh));
-            }
-        }
-        if self.drag_origin.is_some() && !ui.input(|input| input.pointer.primary_down()) {
-            self.drag_origin = None;
-            if let Some(document) = &mut self.document {
-                document.end_gesture();
-            }
-        }
-        if body.is_some() {
-            ui.weak("Drag a pickup to move it");
-        }
-    }
-
     pub(super) fn controls(&mut self, ui: &mut egui::Ui, height: f32) {
         let slider_width = (ui.available_width() * 0.45).min(190.0);
         let compact = ui.ctx().content_rect().height() < 720.0;
@@ -927,34 +816,21 @@ impl VariaxEditor {
         style.spacing.button_padding.y = if compact { 1.0 } else { 2.0 };
         style.spacing.interact_size.y = if compact { 15.0 } else { 17.0 };
         style.spacing.slider_width = slider_width;
-        style.visuals.selection = GUITAR_SELECTION;
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), height),
             egui::Layout::top_down(egui::Align::Min),
             |ui| {
-                if self.can_edit(SYSTEM, Some(0x200000)) {
-                    egui::TopBottomPanel::bottom("output-trim")
-                        .frame(egui::Frame::NONE.inner_margin(egui::Margin {
-                            top: 6,
-                            ..egui::Margin::ZERO
-                        }))
-                        .show_inside(ui, |ui| {
-                            self.float_control(
-                                ui,
-                                SYSTEM,
-                                0x200000,
-                                "Output trim",
-                                ValueFormat::TRIM,
-                            );
-                        });
-                }
                 ui.horizontal_wrapped(|ui| {
                     for (tab, title) in [
                         (Tab::Body, "Body type"),
                         (Tab::Pickups, "Pickups"),
                         (Tab::Controls, "Controls"),
                     ] {
-                        ui.selectable_value(&mut self.tab, tab, title);
+                        let button = egui::Button::selectable(self.tab == tab, title)
+                            .min_size(egui::vec2(0.0, variax_workbench::ui::theme::TARGET));
+                        if ui.add(button).clicked() {
+                            self.tab = tab;
+                        }
                     }
                 });
                 ui.separator();
@@ -976,7 +852,8 @@ impl VariaxEditor {
             .as_ref()
             .map(|d| d.preset().edit_availability(slot, None));
         if let Some(Err(reason)) = &availability {
-            ui.label(reason);
+            ui.label("These controls are unavailable for this model.")
+                .on_hover_text(reason);
         }
         #[cfg(test)]
         {
@@ -990,47 +867,42 @@ impl VariaxEditor {
                     self.model_control(ui, BODY, "body");
                 }
                 Tab::Pickups => {
-                    for (slot, title) in [(PICKUP1, "Pickup 1"), (PICKUP2, "Pickup 2")] {
-                        if slot == PICKUP2 {
-                            ui.separator();
-                        }
-                        ui.horizontal(|ui| {
-                            ui.strong(title);
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    self.enabled_control(ui, slot, "Enabled");
-                                    if self.front_control(ui, slot).clicked() {
-                                        self.pickup_front = slot;
-                                    }
-                                },
-                            );
-                        });
-                        self.model_control(ui, slot, "pickup");
-                        self.float_control(ui, slot, 0x200000, "Position", ValueFormat::POSITION);
-                        self.float_control(ui, slot, 0x200001, "Angle", ValueFormat::ANGLE);
-                        self.float_control(ui, slot, 0x200003, "Level", ValueFormat::LEVEL);
-                        if slot == PICKUP1 {
-                            ui.horizontal_wrapped(|ui| {
-                                self.boolean_control(
-                                    ui,
-                                    PICKUP2,
-                                    0x200002,
-                                    "Reverse pickup 2 phase",
-                                );
-                                self.boolean_control(
-                                    ui,
-                                    PICKUP2,
-                                    0x200004,
-                                    "Wire pickups in series",
-                                );
-                            });
-                        }
-                    }
+                    ui.columns(2, |columns| {
+                        self.pickup_column(&mut columns[0], PICKUP1, "Pickup 1");
+                        self.pickup_column(&mut columns[1], PICKUP2, "Pickup 2");
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        self.boolean_control(ui, PICKUP2, 0x200002, "Reverse pickup 2 phase");
+                        self.boolean_control(ui, PICKUP2, 0x200004, "Wire pickups in series");
+                    });
                 }
                 Tab::Controls => self.electrical_controls(ui),
             }
         });
+    }
+
+    fn pickup_column(&mut self, ui: &mut egui::Ui, slot: u32, title: &str) {
+        ui.horizontal_wrapped(|ui| {
+            ui.strong(title);
+            self.enabled_control(ui, slot, "Enabled");
+            if self.front_control(ui, slot).clicked() {
+                self.pickup_front = slot;
+            }
+        });
+        self.model_control(ui, slot, "pickup");
+        if ui.available_width() >= 130.0 {
+            ui.spacing_mut().slider_width = (ui.available_width() - 100.0).clamp(30.0, 190.0);
+        } else {
+            ui.spacing_mut().slider_width = 40.0;
+        }
+        for (parameter, label, format) in [
+            (0x200000, "Position", ValueFormat::POSITION),
+            (0x200001, "Angle", ValueFormat::ANGLE),
+            (0x200003, "Level", ValueFormat::LEVEL),
+        ] {
+            ui.label(label);
+            self.float_control(ui, slot, parameter, "", format);
+        }
     }
 
     fn electrical_controls(&mut self, ui: &mut egui::Ui) {
@@ -1143,37 +1015,34 @@ impl VariaxEditor {
         }
 
         egui::TopBottomPanel::bottom("guitar-tuning")
-            .default_height(132.0)
+            .default_height(285.0)
+            .resizable(false)
             .show_separator_line(false)
-            .frame(guitar_panel().inner_margin(8).outer_margin(egui::Margin {
-                top: 7,
+            .frame(egui::Frame::NONE.outer_margin(egui::Margin {
+                top: 8,
                 ..egui::Margin::ZERO
             }))
             .show_inside(ui, |ui| self.fretboard(ui, can_edit));
-        let panel_height = (ui.available_height() - 26.0).max(62.0);
+        let panel_height = (ui.available_height() - 22.0).max(64.0);
         ui.columns(2, |columns| {
-            guitar_panel().show(&mut columns[0], |ui| {
-                ui.set_min_height(panel_height);
-                ui.horizontal(|ui| {
-                    ui.heading(self.model_name(BODY));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .add_enabled(available, egui::Button::new("Artwork folder…").small())
-                            .clicked()
-                        {
-                            self.artwork_dialog(ui.ctx(), services);
-                        }
+            self.guitar(&mut columns[0], panel_height, can_edit);
+            egui::Frame::new()
+                .inner_margin(10)
+                .corner_radius(variax_workbench::ui::theme::RADIUS_PANEL)
+                .fill(Color32::from_rgb(202, 197, 186))
+                .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(156, 150, 139)))
+                .show(&mut columns[1], |ui| {
+                    style_inspector(ui);
+                    ui.set_min_height((panel_height - 20.0).max(0.0));
+                    ui.set_min_width(ui.available_width());
+                    ui.horizontal_wrapped(|ui| {
+                        ui.strong(self.model_name(BODY));
                         ui.add_enabled_ui(available, |ui| self.preference_button(ui));
                     });
+                    ui.add_enabled_ui(can_edit, |ui| {
+                        self.controls(ui, (panel_height - 40.0).max(32.0))
+                    });
                 });
-                ui.add_enabled_ui(can_edit, |ui| {
-                    self.guitar(ui, (panel_height - 56.0).max(9.0));
-                });
-            });
-            guitar_panel().show(&mut columns[1], |ui| {
-                ui.set_min_width(ui.available_width());
-                ui.add_enabled_ui(can_edit, |ui| self.controls(ui, panel_height));
-            });
         });
     }
 
@@ -1318,7 +1187,7 @@ impl FamilyTab for VariaxEditor {
     }
     fn local_prompt(&mut self, ctx: &egui::Context, services: &mut EditorServices<'_>) {
         self.variax_pending_dialog(services, ctx);
-        self.preference_dialog(ctx);
+        self.preference_dialog(ctx, services);
         self.tuning_presets_dialog(ctx);
         self.slot_replacement_dialog(services, ctx);
         self.slot_transfer_dialog(services, ctx);

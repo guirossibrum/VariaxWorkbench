@@ -248,8 +248,7 @@ fn dragging_either_pickup_follows_the_pointer_and_undoes_in_one_step() {
         let other = app.variax().float(other_slot, 0x200000).unwrap();
         frame(&context, &mut app, vec![]);
         frame(&context, &mut app, vec![]);
-        let id = app.variax().pickup_drag_ids[&slot];
-        let start = context.read_response(id).unwrap().rect.center();
+        let start = app.variax().pickup_centers[&slot];
         let step = Vec2::new(8.0 * direction, 0.0);
         frame(
             &context,
@@ -276,7 +275,7 @@ fn dragging_either_pickup_follows_the_pointer_and_undoes_in_one_step() {
         frame(&context, &mut app, vec![button(end, false)]);
         let released = app.variax().float(slot, 0x200000).unwrap();
         assert!(
-            (released - (3.0 * moved - 2.0 * initial)).abs() < 1e-5,
+            (released - (3.0 * moved - 2.0 * initial).clamp(0.1, 9.5)).abs() < 1e-5,
             "slot {slot:#x}: initial {initial}, first movement {moved}, released {released}"
         );
         assert_eq!(app.variax().float(other_slot, 0x200000), Some(other));

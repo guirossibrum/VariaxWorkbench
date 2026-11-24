@@ -1,4 +1,4 @@
-use super::{EditorDefaults, Path, PathBuf, VariaxEditor, egui};
+use super::{EditorDefaults, EditorServices, Path, PathBuf, VariaxEditor, egui};
 use serde::{Deserialize, Serialize};
 use std::{ffi::OsString, fs, io::Write};
 use variax_workbench::preset::legacy_text_issue;
@@ -145,12 +145,19 @@ impl VariaxEditor {
         }
     }
 
-    pub(super) fn preference_dialog(&mut self, ctx: &egui::Context) {
+    pub(super) fn preference_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        services: &mut EditorServices<'_>,
+    ) {
         let Some(mut draft) = self.author_preference.take() else {
             return;
         };
         let response = egui::Modal::new(egui::Id::new("variax-preferences")).show(ctx, |ui| {
             ui.heading("Variax preferences");
+            if ui.button("Artwork folder…").clicked() {
+                self.artwork_dialog(ctx, services);
+            }
             ui.label("Default author for new models");
             let field = ui.text_edit_singleline(&mut draft.value);
             if std::mem::take(&mut draft.focus) {
