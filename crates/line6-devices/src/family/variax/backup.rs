@@ -65,6 +65,14 @@ pub fn save_variax_library(
     folder: &mut BackupFolder,
     library: &variax::Library,
 ) -> Result<(), String> {
+    save_library(folder, library, None)
+}
+
+fn save_library(
+    folder: &mut BackupFolder,
+    library: &variax::Library,
+    programs: Option<&ProgramCaptures>,
+) -> Result<(), String> {
     folder.file("identity.syx", &library.identified.reply)?;
     folder.file("original-1.syx", &library.original_replies[0])?;
     folder.file("original-2.syx", &library.original_replies[1])?;
@@ -81,9 +89,169 @@ pub fn save_variax_library(
         use std::fmt::Write as _;
         writeln!(index, "Bank {bank:02} name: {:?}", name.name).expect("write to String");
     }
+    if let Some(programs) = programs {
+        programs.save(folder, &mut index)?;
+    }
     folder.file("index.txt", index.as_bytes())?;
-    folder.set_restore_note(VARIAX_RESTORE);
+    if programs.is_some() {
+        folder.set_restore_note(&format!("{VARIAX_RESTORE}\n{FULL_PROGRAM_NOTE}"));
+    } else {
+        folder.set_restore_note(VARIAX_RESTORE);
+    }
     Ok(())
+}
+
+const CHUNK_WORDS: u16 = 32;
+const PROGRAM_WORDS: u16 = variax::span_read::BUFFER_WORDS;
+const CHUNK_COUNT: usize = PROGRAM_WORDS.div_ceil(CHUNK_WORDS) as usize;
+const PROGRAM_BYTES: usize = PROGRAM_WORDS as usize * 3;
+
+const FULL_PROGRAM_NOTE: &str =
+    "Full program mode adds programs/NN-Bank-S.bin. NN is the zero-based stored slot.
+The compare command checks the settings. Compare the .bin files separately.
+Each saved file contains the 1,092 program words packed as 24-bit big-endian
+bytes, including the verified firmware checksum. index.txt lists missing
+or failed programs. This capture does not authorize a restore.";
+
+#[derive(Default)]
+pub(super) struct ProgramCaptures {
+    programs: Vec<(variax::Preset, Result<[u8; PROGRAM_BYTES], String>)>,
+}
+
+impl ProgramCaptures {
+    pub(super) fn capture<L: Link>(
+        &mut self,
+        session: &mut Session<L>,
+        preset: variax::Preset,
+        cancelled: impl FnMut() -> bool,
+    ) -> Result<(), String> {
+        let result = read_program(session, cancelled);
+        let status = result.as_ref().map(|_| ()).map_err(Clone::clone);
+        self.programs.push((preset, result));
+        status
+    }
+
+    fn save(&self, folder: &mut BackupFolder, index: &mut String) -> Result<(), String> {
+        use fmt::Write as _;
+        for preset in variax::Preset::all() {
+            let name = format!(
+                "programs/{:02}-{}-{}.bin",
+                (preset.bank() + 1) * variax::PRESETS_PER_BANK - 1 - preset.slot(),
+                preset.bank_name().replace(' ', "_"),
+                preset.slot() + 1
+            );
+            match self.programs.iter().find(|(slot, _)| *slot == preset) {
+                Some((_, Ok(program))) => {
+                    folder.file(&name, program)?;
+                    writeln!(index, "{name}: verified (3276 bytes)").expect("write to String");
+                }
+                Some((_, Err(error))) => {
+                    writeln!(index, "{name}: MISSING ({error})").expect("write to String");
+                }
+                None => writeln!(index, "{name}: MISSING (not read)").expect("write to String"),
+            }
+        }
+        Ok(())
+    }
+}
+
+fn read_program<L: Link>(
+    session: &mut Session<L>,
+    cancelled: impl FnMut() -> bool,
+) -> Result<[u8; PROGRAM_BYTES], String> {
+    use variax::span_read::{PresetSpan, read_active_spans};
+    let spans: [PresetSpan; CHUNK_COUNT] = std::array::from_fn(|index| {
+        let start = index as u16 * CHUNK_WORDS;
+        PresetSpan::new(start, (PROGRAM_WORDS - start).min(CHUNK_WORDS)).expect("in bounds")
+    });
+    let mut program = [0; PROGRAM_BYTES];
+    read_active_spans(session, &spans, cancelled, |reply| {
+        let start = usize::from(reply.span.start()) * 3;
+        for (packed, word) in program[start..]
+            .as_chunks_mut::<3>()
+            .0
+            .iter_mut()
+            .zip(reply.words)
+        {
+            *packed = word.to_be_bytes()[1..].try_into().expect("24-bit word");
+        }
+        Ok(())
+    })?;
+    let word = |&[a, b, c]: &[u8; 3]| u32::from_be_bytes([0, a, b, c]);
+    let (checksum, words) = program
+        .as_chunks::<3>()
+        .0
+        .split_last()
+        .expect("program words");
+    let expected = words.iter().map(word).fold(0u32, u32::wrapping_add) & 0xff_ffff;
+    let stored = word(checksum);
+    if stored != expected {
+        return Err(format!(
+            "Firmware checksum mismatch (stored {stored:06X}, computed {expected:06X})."
+        ));
+    }
+    Ok(program)
+}
+
+pub struct FullLibrary {
+    pub settings: variax::Library,
+    programs: ProgramCaptures,
+}
+
+impl FullLibrary {
+    pub fn programs_read(&self) -> usize {
+        self.programs
+            .programs
+            .iter()
+            .filter(|(_, result)| result.is_ok())
+            .count()
+    }
+
+    pub fn complete(&self) -> bool {
+        self.programs_read() == 60
+            && self.settings.stopped.is_none()
+            && self.settings.release_error.is_none()
+    }
+
+    pub fn save(&self, folder: &mut BackupFolder) -> Result<(), String> {
+        save_library(folder, &self.settings, Some(&self.programs))
+    }
+}
+
+/// Visit all stored presets in one locked library sweep, reading and checking the full
+/// program after each metadata pair. Retain completed captures when a read fails.
+pub fn read_full_library<L: Link>(
+    _rig: &DeviceLock,
+    session: &mut Session<L>,
+    cancelled: impl FnMut() -> bool,
+    progress: impl FnMut(&variax::StoredPreset),
+) -> Result<FullLibrary, String> {
+    if session.link.path() != crate::session::Path::VariaxViaPodxt {
+        return Err("Full program backup requires the PODxt Live bridge.".into());
+    }
+    for operation in [
+        Operation::VariaxIdentity,
+        Operation::VariaxLibraryBridge,
+        Operation::VariaxRead,
+        Operation::VariaxPresetSwitch,
+        Operation::VariaxBankNameRead,
+    ] {
+        if !session.allows(operation) {
+            return Err(format!("Full program backup requires {operation:?}."));
+        }
+    }
+    read_full_on(session, cancelled, progress)
+}
+
+fn read_full_on<L: Link>(
+    session: &mut Session<L>,
+    cancelled: impl FnMut() -> bool,
+    progress: impl FnMut(&variax::StoredPreset),
+) -> Result<FullLibrary, String> {
+    let mut programs = ProgramCaptures::default();
+    let settings =
+        variax::sweep_library_with_programs(session, cancelled, progress, Some(&mut programs))?;
+    Ok(FullLibrary { settings, programs })
 }
 
 pub struct LoadedVariax {

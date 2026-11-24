@@ -10,7 +10,7 @@ use std::time::Duration;
 
 pub const BUFFER_WORDS: u16 = 1092;
 // Monkey enables the same PODxt Live large-buffer relay, then waits 1 s (#232).
-const BRIDGE_SETTLE: Duration = Duration::from_secs(1);
+pub(super) const BRIDGE_SETTLE: Duration = Duration::from_secs(1);
 const REPLY_WINDOW: Duration = Duration::from_secs(10);
 
 /// An in-bounds, nonempty range in the active preset buffer, in words.
@@ -98,7 +98,7 @@ pub fn read_spans<L: Link>(
     session: &mut Session<L>,
     spans: &[PresetSpan],
     mut stopping: impl FnMut() -> bool,
-    mut received: impl FnMut(SpanReply) -> Result<(), String>,
+    received: impl FnMut(SpanReply) -> Result<(), String>,
 ) -> Result<(), String> {
     if session.link.path() != Path::VariaxViaPodxt || !session.allows(Operation::VariaxRead) {
         return Err("Buffer read requires the PODxt Live bridge and VariaxRead.".into());
@@ -110,17 +110,26 @@ pub fn read_spans<L: Link>(
         return Err("Variax buffer read cancelled or log unavailable.".into());
     }
     with_bridged_read_session(session, BRIDGE_SETTLE, |session| {
-        for &span in spans {
-            if stopping() {
-                return Err("Variax buffer read cancelled or log unavailable.".into());
-            }
-            let reply = read_span(session, span).map_err(|error| {
-                format!("Start {}, count {}: {error}", span.start(), span.count())
-            })?;
-            received(reply)?;
-        }
-        Ok(())
+        read_active_spans(session, spans, stopping, received)
     })
+}
+
+/// Read on an already enabled bridge and MIDI session, as in a library sweep.
+pub(super) fn read_active_spans<L: Link>(
+    session: &mut Session<L>,
+    spans: &[PresetSpan],
+    mut stopping: impl FnMut() -> bool,
+    mut received: impl FnMut(SpanReply) -> Result<(), String>,
+) -> Result<(), String> {
+    for &span in spans {
+        if stopping() {
+            return Err("Variax buffer read cancelled or log unavailable.".into());
+        }
+        let reply = read_span(session, span)
+            .map_err(|error| format!("Start {}, count {}: {error}", span.start(), span.count()))?;
+        received(reply)?;
+    }
+    Ok(())
 }
 
 fn read_span<L: Link>(session: &mut Session<L>, span: PresetSpan) -> Result<SpanReply, String> {

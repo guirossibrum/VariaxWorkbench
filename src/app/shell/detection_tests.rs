@@ -761,3 +761,33 @@ fn same_port_replug_hands_the_verified_new_address_to_the_existing_editor() {
     assert_eq!(entries(&app)[1].1, guitar_id);
     assert_eq!(seen.borrow().last(), Some(&Some(("8-2.1".into(), 11))));
 }
+
+#[test]
+fn full_backup_refuses_a_guitar_replaced_while_the_folder_picker_is_open() {
+    let (ctx, mut app, source) = fixture();
+    source.usb(true, false);
+    tick(&ctx, &mut app);
+    let attachment = app.detection.as_ref().unwrap().attachment_key("8-2.1");
+    source.guitar(attachment);
+    tick(&ctx, &mut app);
+    let target = app.verified_backup_guitar().unwrap().clone();
+
+    source.usb(false, false);
+    tick(&ctx, &mut app);
+    source.usb(true, false);
+    tick(&ctx, &mut app);
+    let attachment = app.detection.as_ref().unwrap().attachment_key("8-2.1");
+    source.guitar(attachment);
+    tick(&ctx, &mut app);
+    assert_ne!(app.verified_backup_guitar(), Some(&target));
+    app.start_backup_in(
+        BackupChoice::VariaxFull,
+        Some(target),
+        Some("unused".into()),
+    );
+    assert_eq!(
+        app.device_check_notice,
+        "The verified Variax connection changed. Nothing was sent."
+    );
+    assert!(app.backup_rx.is_none());
+}

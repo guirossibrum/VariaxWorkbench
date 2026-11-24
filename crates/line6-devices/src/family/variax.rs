@@ -553,18 +553,38 @@ pub fn read_library<L: Link>(
 
 fn sweep_library<L: Link>(
     session: &mut Session<L>,
+    cancelled: impl FnMut() -> bool,
+    progress: impl FnMut(&StoredPreset),
+) -> Result<Library, String> {
+    sweep_library_with_programs(session, cancelled, progress, None)
+}
+
+fn sweep_library_with_programs<L: Link>(
+    session: &mut Session<L>,
     mut cancelled: impl FnMut() -> bool,
     mut progress: impl FnMut(&StoredPreset),
+    mut programs: Option<&mut backup::ProgramCaptures>,
 ) -> Result<Library, String> {
     const CANCELLED: &str = "Variax library read cancelled.";
     if cancelled() {
         return Err(CANCELLED.into());
     }
     let identified = identify_variax(session)?;
+    if programs.is_some()
+        && (identified.identity.member != 4 || identified.identity.version != *b"0310")
+    {
+        return Err("Full program backup requires Variax 300/600 firmware 3.10.".into());
+    }
     if cancelled() {
         return Err(CANCELLED.into());
     }
     let (result, release_error) = with_library_bridge(session, |session| {
+        if programs.is_some() {
+            session.link.pause(span_read::BRIDGE_SETTLE);
+            if cancelled() {
+                return Err(CANCELLED.into());
+            }
+        }
         in_session(session, |session| {
             let (original_replies, original) = read_metadata(session)?;
             let mut presets = Vec::new();
@@ -586,8 +606,18 @@ fn sweep_library<L: Link>(
                         break;
                     }
                 };
-                progress(&stored);
                 presets.push(stored);
+                if let Some(programs) = &mut programs
+                    && let Err(error) = programs.capture(session, preset, &mut cancelled)
+                {
+                    stopped = Some(format!(
+                        "{} {} full program: {error}",
+                        preset.bank_name(),
+                        preset.slot() + 1
+                    ));
+                    break;
+                }
+                progress(presets.last().expect("the preset just read"));
                 if preset.slot() + 1 == PRESETS_PER_BANK {
                     if cancelled() {
                         stopped = Some(CANCELLED.into());

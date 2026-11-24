@@ -35,6 +35,108 @@ pub fn run(which: Which, root: &Path, progress: impl FnMut(&str)) -> Result<Stri
     })
 }
 
+/// Full byte-level Variax backup for an attachment verified by automatic identity.
+/// Cancellation is checked between requests and still allows switch-back and cleanup.
+pub fn run_full_variax(
+    root: &Path,
+    attachment: (&str, u8),
+    cancelled: &std::sync::atomic::AtomicBool,
+    progress: impl FnMut(&str),
+) -> Result<String, String> {
+    hardware_gates::run_if_unlocked(Gate::DeviceCheckBackup, || {
+        hardware_gates::run_if_unlocked(Gate::CurrentSettingsRead, || {
+            #[cfg(all(not(test), target_os = "linux"))]
+            {
+                backup_full_variax(root, attachment, cancelled, progress)
+            }
+            #[cfg(any(test, not(target_os = "linux")))]
+            {
+                let _ = (root, attachment, cancelled, progress);
+                Err("this build does not open a device for a backup; nothing was sent".into())
+            }
+        })
+    })
+}
+
+#[cfg(all(not(test), target_os = "linux"))]
+fn backup_full_variax(
+    root: &Path,
+    attachment: (&str, u8),
+    cancelled: &std::sync::atomic::AtomicBool,
+    mut progress: impl FnMut(&str),
+) -> Result<String, String> {
+    use line6_devices::backup::BackupFolder;
+    use line6_devices::device_lock::DeviceLock;
+    use line6_devices::family::variax::backup::read_full_library;
+    use line6_devices::session::Session;
+    use std::sync::atomic::Ordering;
+
+    let stopping = || cancelled.load(Ordering::Relaxed);
+    if stopping() {
+        return Err("Full backup cancelled before opening the guitar.".into());
+    }
+    let rig = DeviceLock::acquire().map_err(|error| error.to_string())?;
+    let (stamp, when) = stamp();
+    let mut folder = BackupFolder::create(root, &format!("variax-full-library-{stamp}"))?;
+    folder.line(format!("Variax full program backup at {when}. The guitar changes presets. Nothing is stored on the guitar."));
+    let mut link = match crate::usb::open_variax_bridge_borrowed(&rig, attachment) {
+        Ok(link) => link,
+        Err(error) => {
+            folder.line(format!("STOPPED: {error}"));
+            return close_folder(folder, false, Err(error));
+        }
+    };
+    progress("Reading 60 programs in 2,100 chunks. The guitar will change presets.");
+    let mut count = 0;
+    let (read, cleanup) = {
+        let mut session = Session::new(&mut link, &BackupPolicy, &mut folder);
+        session.log_packets = false;
+        let read = read_full_library(&rig, &mut session, stopping, |stored| {
+            count += 1;
+            progress(&format!(
+                "Full program {count} of 60 verified. {} {}.",
+                stored.preset.bank_name(),
+                stored.preset.slot() + 1
+            ));
+        });
+        let cleanup = session.link.finish();
+        session.note(match &cleanup {
+            Ok(()) => "interface 1 released and given back to the kernel driver".to_owned(),
+            Err(error) => format!("CLEANUP FAILED: {error}"),
+        });
+        (read, cleanup)
+    };
+    drop(link);
+    drop(rig);
+    let mut complete = false;
+    let mut result = read.and_then(|library| {
+        let text = format!(
+            "Full programs verified: {} of 60. {}",
+            library.programs_read(),
+            variax_summary(&library.settings)
+        );
+        library
+            .save(&mut folder)
+            .map_err(|error| format!("{text} Saving the backup failed: {error}"))?;
+        complete = library.complete();
+        Ok(text)
+    });
+    if let Err(error) = cleanup {
+        complete = false;
+        let text = match result {
+            Ok(text) | Err(text) => text,
+        };
+        result = Err(format!(
+            "{text} The guitar driver was not given back: {error}"
+        ));
+    }
+    match &result {
+        Ok(text) if complete => folder.line(text.clone()),
+        Ok(text) | Err(text) => folder.line(format!("PARTIAL FULL BACKUP: {text}")),
+    }
+    close_folder(folder, complete, result).map_err(|text| format!("Partial full backup. {text}"))
+}
+
 fn run_if_supported(
     which: Which,
     root: &Path,

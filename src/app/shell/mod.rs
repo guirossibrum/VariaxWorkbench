@@ -40,6 +40,7 @@ impl Workbench {
             device_check_notice: String::new(),
             backup_choice: None,
             backup_rx: None,
+            backup_cancel: None,
             tone_choice: None,
             tone_channel: "1A".into(),
             tone_rx: None,
@@ -172,7 +173,7 @@ impl Workbench {
                     self.shell_error = self.open_file(path).err();
                 }
             }
-            PickerAction::Backup(choice) => self.start_backup_in(choice, path),
+            PickerAction::Backup(choice, target) => self.start_backup_in(choice, target, path),
             PickerAction::SaveReport { restart } => {
                 if let Some(path) = path {
                     if restart {
@@ -289,6 +290,7 @@ impl Workbench {
             return;
         };
         if matches!(request, CloseRequest::Quit { .. }) {
+            self.cancel_full_backup();
             let identity_busy = self
                 .detection
                 .as_mut()

@@ -163,7 +163,7 @@ type TabPickerResult =
 
 enum PickerAction {
     OpenFile,
-    Backup(BackupChoice),
+    Backup(BackupChoice, Option<detection::DeviceKey>),
     SaveReport {
         restart: bool,
     },
@@ -182,6 +182,7 @@ enum PickerAction {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BackupChoice {
     Variax,
+    VariaxFull,
     Podxt,
 }
 
@@ -239,6 +240,9 @@ const BACKUP_VARIAX: &str = "Back up the Variax";
 const BACKUP_PODXT: &str = "Back up the PODxt Live";
 const BACKUP_VARIAX_DOES: &str = "Reads all 60 guitar presets. The guitar changes preset while this runs, then the app tries to put the original preset back. Leave this window open until it finishes.";
 const BACKUP_PODXT_DOES: &str = "Reads the stored tones and setups. The current tone is not changed on purpose. It also asks which model packs are installed. Leave this window open until it finishes.";
+const BACKUP_VARIAX_FULL: &str = "Back up all Variax program bytes";
+const BACKUP_VARIAX_FULL_DOES: &str = "Reads 60 presets and 35 data chunks per preset (2,100 reads). Allow several minutes. The guitar changes presets while the backup runs. The app then tries to reselect the original. Leave the guitar controls alone.";
+const BACKUP_VARIAX_FULL_YES: &str = "Yes, back up all program bytes";
 const BACKUP_VARIAX_YES: &str = "Yes, back up the Variax";
 const BACKUP_PODXT_YES: &str = "Yes, back up the PODxt Live";
 const TONE_INTRO: &str = "Tone checks are separate from the steps above. Step 4 stays off. No is the default. Nothing is saved onto the PODxt.";
@@ -271,6 +275,7 @@ struct Workbench {
     /// Backup question waiting for Yes or No. Nothing is sent until Yes.
     backup_choice: Option<BackupChoice>,
     backup_rx: Option<std::sync::mpsc::Receiver<BackupEvent>>,
+    backup_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Tone question waiting for Yes or No. Nothing is sent until Yes.
     tone_choice: Option<ToneChoice>,
     tone_channel: String,
@@ -451,6 +456,7 @@ impl Workbench {
         }
         if let Some(result) = finished {
             self.backup_rx = None;
+            self.backup_cancel = None;
             self.device_check_notice = match result {
                 Ok(text) => text,
                 Err(text) => text,
@@ -461,48 +467,99 @@ impl Workbench {
         }
     }
 
+    fn verified_backup_guitar(&self) -> Option<&detection::DeviceKey> {
+        let mut guitars = self.tabs.entries.iter().filter_map(|entry| {
+            let tab = entry.device.as_ref()?;
+            (tab.device.key.family_id == "variax" && tab.verified_attachment().is_some())
+                .then_some(&tab.device.key)
+        });
+        match (guitars.next(), guitars.next()) {
+            (Some(key), None) => Some(key),
+            _ => None,
+        }
+    }
+
     fn start_backup(&mut self, ctx: &egui::Context, choice: BackupChoice) {
-        if self.request_picker(ctx, PickRequest::Folder, PickerAction::Backup(choice)) {
+        let target = if choice == BackupChoice::VariaxFull {
+            let Some(guitar) = self.verified_backup_guitar() else {
+                self.device_check_notice = "Wait for a verified Variax connection.".into();
+                return;
+            };
+            Some(guitar.clone())
+        } else {
+            None
+        };
+        if self.request_picker(
+            ctx,
+            PickRequest::Folder,
+            PickerAction::Backup(choice, target),
+        ) {
             self.backup_choice = None;
         }
     }
 
-    fn start_backup_in(&mut self, choice: BackupChoice, root: Option<PathBuf>) {
+    fn start_backup_in(
+        &mut self,
+        choice: BackupChoice,
+        target: Option<detection::DeviceKey>,
+        root: Option<PathBuf>,
+    ) {
         let Some(root) = root else {
             self.device_check_notice = "No folder chosen. Nothing was sent.".into();
             return;
         };
-        #[cfg(test)]
+        if choice == BackupChoice::VariaxFull
+            && (target.is_none() || self.verified_backup_guitar() != target.as_ref())
         {
-            let _ = (choice, root);
             self.device_check_notice =
-                "this build does not open a device for a backup; nothing was sent".into();
+                "The verified Variax connection changed. Nothing was sent.".into();
+            return;
         }
         #[cfg(all(not(test), feature = "usb"))]
         {
+            use variax_workbench::library_backup::{self, Which};
+
             let (tx, rx) = std::sync::mpsc::channel();
             self.backup_rx = Some(rx);
+            let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            if choice == BackupChoice::VariaxFull {
+                self.backup_cancel = Some(cancelled.clone());
+            }
             self.device_check_notice = "Backup started. Leave this window open.".into();
             std::thread::spawn(move || {
-                let tx_progress = tx.clone();
-                let result = variax_workbench::library_backup::run(
-                    match choice {
-                        BackupChoice::Variax => variax_workbench::library_backup::Which::Variax,
-                        BackupChoice::Podxt => variax_workbench::library_backup::Which::Podxt,
-                    },
-                    &root,
-                    |line| {
-                        let _ = tx_progress.send(BackupEvent::Progress(line.to_owned()));
-                    },
-                );
+                let progress = |line: &str| {
+                    let _ = tx.send(BackupEvent::Progress(line.to_owned()));
+                };
+                let result = match choice {
+                    BackupChoice::Variax => library_backup::run(Which::Variax, &root, progress),
+                    BackupChoice::Podxt => library_backup::run(Which::Podxt, &root, progress),
+                    BackupChoice::VariaxFull => {
+                        let observed = target
+                            .as_ref()
+                            .and_then(|key| key.attachment.usb_location());
+                        observed
+                            .ok_or_else(|| "No verified Variax attachment.".to_owned())
+                            .and_then(|location| {
+                                library_backup::run_full_variax(
+                                    &root, location, &cancelled, progress,
+                                )
+                            })
+                    }
+                };
                 let _ = tx.send(BackupEvent::Finished(result));
             });
         }
-        #[cfg(all(not(test), not(feature = "usb")))]
+        #[cfg(any(test, not(feature = "usb")))]
         {
-            let _ = (choice, root);
+            let _ = root;
             self.device_check_notice =
                 "this build does not open a device for a backup; nothing was sent".into();
+        }
+    }
+
+    fn cancel_full_backup(&self) {
+        if let Some(cancel) = &self.backup_cancel {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -722,9 +779,24 @@ impl Workbench {
                 if self.backup_rx.is_some() {
                     ui.label("Backup is running. Leave this window open.");
                     visible.push_str("\nBackup is running.");
+                    if let Some(cancel) = &self.backup_cancel {
+                        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                            ui.label(
+                                "Stopping after the current request and returning the driver.",
+                            );
+                        } else if self
+                            .device_check_button(ui, "backup-stop", "Stop full backup")
+                            .clicked()
+                        {
+                            self.cancel_full_backup();
+                        }
+                    }
                 } else if let Some(choice) = self.backup_choice {
                     let (does, yes) = match choice {
                         BackupChoice::Variax => (BACKUP_VARIAX_DOES, BACKUP_VARIAX_YES),
+                        BackupChoice::VariaxFull => {
+                            (BACKUP_VARIAX_FULL_DOES, BACKUP_VARIAX_FULL_YES)
+                        }
                         BackupChoice::Podxt => (BACKUP_PODXT_DOES, BACKUP_PODXT_YES),
                     };
                     ui.label(does);
@@ -757,6 +829,15 @@ impl Workbench {
                     });
                     visible.push_str(BACKUP_VARIAX);
                     visible.push_str(BACKUP_PODXT);
+                    if self.verified_backup_guitar().is_some() {
+                        if self
+                            .device_check_button(ui, "backup-variax-full", BACKUP_VARIAX_FULL)
+                            .clicked()
+                        {
+                            self.backup_choice = Some(BackupChoice::VariaxFull);
+                        }
+                        visible.push_str(BACKUP_VARIAX_FULL);
+                    }
                 }
             }
             if tone_offered() {
@@ -894,7 +975,7 @@ impl Workbench {
             self.picker.discard_if(|action| {
                 matches!(
                     action,
-                    PickerAction::SaveReport { .. } | PickerAction::Backup(_)
+                    PickerAction::SaveReport { .. } | PickerAction::Backup(..)
                 )
             });
         } else {

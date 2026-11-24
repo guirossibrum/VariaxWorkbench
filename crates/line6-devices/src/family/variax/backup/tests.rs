@@ -269,3 +269,190 @@ fn missing_permission_refuses_before_the_identity_request() {
         assert!(session.link.writes.is_empty());
     }
 }
+
+fn full_start(original: u8) -> Script {
+    let mut script = start(original);
+    let mut id = VARIAX_600;
+    id[12..16].copy_from_slice(b"0310");
+    script[0].1 = packets(&id);
+    script
+}
+
+fn full_word(program: u8, index: u16) -> u32 {
+    0xf0_0000 | (u32::from(program) << 12) | u32::from(index)
+}
+
+fn program_chunk(program: u8, start: u16, corrupt: bool) -> (Vec<u8>, Vec<Vec<u8>>) {
+    let count = (1092 - start).min(32);
+    let append = |bytes: &mut Vec<u8>, word: u32| {
+        bytes.extend((0..6).map(|i| ((word >> (4 * i)) & 15) as u8));
+    };
+    let mut request = [HEADER, &[0x3c]].concat();
+    append(&mut request, u32::from(count));
+    append(&mut request, u32::from(start));
+    request.push(0xf7);
+    let mut reply = [HEADER, &[0x3c]].concat();
+    for i in start..start + count {
+        let word = if i == 1091 {
+            let sum: u64 = (0..1091).map(|n| u64::from(full_word(program, n))).sum();
+            (sum as u32 & 0xff_ffff) ^ u32::from(corrupt)
+        } else {
+            full_word(program, i)
+        };
+        append(&mut reply, word);
+    }
+    reply.push(0xf7);
+    (request, packets(&reply))
+}
+
+fn add_program(script: &mut Script, program: u8, corrupt: bool) {
+    script.extend(
+        (0..1092)
+            .step_by(32)
+            .map(|start| program_chunk(program, start, corrupt)),
+    );
+}
+
+fn run_full(
+    script: Script,
+    cancelled: impl FnMut() -> bool,
+    progress: impl FnMut(&variax::StoredPreset),
+) -> FullLibrary {
+    let mut quiet = Quiet;
+    let fake = Fake::from_bytes(DevicePath::VariaxViaPodxt, script);
+    let mut session = Session::new(fake, &Policy(None), &mut quiet);
+    let backup = read_full_on(&mut session, cancelled, progress).unwrap();
+    session.link.assert_finished();
+    backup
+}
+
+fn saved_backup(backup: &FullLibrary, label: &str) -> std::path::PathBuf {
+    let root =
+        std::env::temp_dir().join(format!("variax-full-backup-{label}-{}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    let mut folder = BackupFolder::create(&root, "backup").unwrap();
+    backup.save(&mut folder).unwrap();
+    let saved = folder.finish(backup.complete()).unwrap();
+    assert!(BackupFolder::create(&root, "backup").is_err());
+    verify_manifest(&saved).unwrap();
+    saved
+}
+
+#[test]
+fn full_library_reads_exact_order_and_saves_big_endian_programs_with_settings() {
+    let mut script = full_start(105);
+    for (index, highest) in [4, 64, 69, 74, 79, 84, 89, 94, 99, 104, 109, 59]
+        .into_iter()
+        .enumerate()
+    {
+        for program in (highest - 4..=highest).rev() {
+            select(&mut script, program, program);
+            add_program(&mut script, program, false);
+        }
+        bank(
+            &mut script,
+            packets(&bank_reply(format!("Bank {index}").as_bytes())),
+        );
+    }
+    select(&mut script, 105, 105);
+    end(&mut script);
+
+    let mut progress = 0;
+    let backup = run_full(script, || false, |_| progress += 1);
+    assert_eq!(progress, 60);
+    assert!(backup.complete());
+    assert_eq!(backup.settings.bank_names.len(), 12);
+    assert_eq!(
+        backup.settings.restore,
+        Restore::Switched {
+            to: Preset::new(10, 4).unwrap(),
+            verified: true
+        }
+    );
+    let path = saved_backup(&backup, "complete");
+    let name = "programs/50-Reso-5.bin";
+    let reso = std::fs::read(path.join(name)).unwrap();
+    assert_eq!(reso.len(), 3276);
+    assert_eq!(
+        std::fs::read_dir(path.join("programs")).unwrap().count(),
+        60
+    );
+    for (i, bytes) in reso.as_chunks::<3>().0[..1091].iter().enumerate() {
+        assert_eq!(*bytes, full_word(105, i as u16).to_be_bytes()[1..]);
+    }
+    let index = std::fs::read_to_string(path.join("index.txt")).unwrap();
+    assert!(index.contains("programs/50-Reso-5.bin: verified"));
+    let manifest = std::fs::read_to_string(path.join("MANIFEST.sha256")).unwrap();
+    assert!(manifest.contains(name));
+    assert_eq!(load_variax_library(&path).unwrap().presets.len(), 60);
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn bad_checksum_or_truncated_reply_keeps_settings_and_marks_the_program_missing() {
+    for (label, expected) in [
+        ("checksum", "Firmware checksum mismatch"),
+        ("truncated", "Start 32, count 32"),
+    ] {
+        let mut script = full_start(4);
+        select(&mut script, 4, 4);
+        if label == "checksum" {
+            add_program(&mut script, 4, true);
+        } else {
+            script.push(program_chunk(4, 0, false));
+            let (request, mut reply) = program_chunk(4, 32, false);
+            reply.pop(); // Missing the end of this span.
+            script.push((request, reply));
+        }
+        select(&mut script, 4, 4);
+        end(&mut script);
+
+        let backup = run_full(script, || false, |_| panic!("no verified program"));
+        assert!(!backup.complete());
+        assert_eq!(backup.programs_read(), 0);
+        assert_eq!(backup.settings.presets.len(), 1);
+        assert!(backup.settings.stopped.as_ref().unwrap().contains(expected));
+        let path = saved_backup(&backup, label);
+        assert_eq!(path.file_name().unwrap(), "backup-INCOMPLETE");
+        assert!(path.join("presets/00-Custom_1-1-1.syx").is_file());
+        assert!(!path.join("programs/04-Custom_1-1.bin").exists());
+        let index = std::fs::read_to_string(path.join("index.txt")).unwrap();
+        assert!(index.contains(&format!("programs/04-Custom_1-1.bin: MISSING ({expected}")));
+        assert!(index.contains("programs/03-Custom_1-2.bin: MISSING (not read)"));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+}
+
+#[test]
+fn cancellation_between_chunks_reselects_the_original_and_keeps_only_completed_programs() {
+    let mut script = full_start(3);
+    select(&mut script, 4, 4);
+    add_program(&mut script, 4, false);
+    select(&mut script, 3, 3);
+    script.push(program_chunk(3, 0, false));
+    select(&mut script, 3, 3);
+    end(&mut script);
+
+    let first_complete = Cell::new(false);
+    let checks = Cell::new(0);
+    let backup = run_full(
+        script,
+        || {
+            if first_complete.get() {
+                checks.set(checks.get() + 1);
+            }
+            checks.get() >= 3
+        },
+        |_| first_complete.set(true),
+    );
+    assert!(backup.settings.stopped.unwrap().contains("cancelled"));
+    assert_eq!(
+        backup.settings.restore,
+        Restore::Switched {
+            to: Preset::new(0, 1).unwrap(),
+            verified: true
+        }
+    );
+    assert!(backup.programs.programs[0].1.is_ok());
+    assert!(backup.programs.programs[1].1.is_err());
+}
