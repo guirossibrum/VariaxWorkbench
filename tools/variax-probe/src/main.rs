@@ -50,6 +50,7 @@ impl GatePolicy for OwnerGrants {
             Operation::VariaxRead => true,
             Operation::VariaxEditBufferWrite
             | Operation::VariaxStoreRestore
+            | Operation::PodxtStoreRestore
             | Operation::VariaxSlotRead => false,
             // "test my podxtlive same way": PODxt identity and current-tone read.
             Operation::PodxtIdentity | Operation::PodxtRead => true,

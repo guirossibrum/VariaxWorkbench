@@ -1,6 +1,7 @@
 use super::*;
 
 mod edit;
+mod store;
 use line6_devices::family::podxt::{
     self, BankKind, Control, EditBuffer, GlobalValues, LiveControl, Location, Packs, ReadCommand,
     ReadUpdate, Setting, TunerReading,
@@ -23,6 +24,7 @@ pub(super) struct LivePanel {
     device_tab: bool,
     worker: Option<Worker>,
     editor: edit::LiveEditor,
+    store: store::StorePanel,
     snapshot: Snapshot,
     selected: Option<Location>,
     bank: usize,
@@ -135,7 +137,7 @@ fn requires_library(command: ReadCommand) -> bool {
 /// The guard outlives the link, including cleanup on errors.
 #[cfg(any(test, target_os = "linux"))]
 fn with_session<G, L: Link, T>(
-    stop: &AtomicBool,
+    cancelled: impl Fn() -> bool,
     lock: impl FnOnce() -> Result<G, String>,
     open: impl FnOnce(&G) -> Result<L, String>,
     policy: &dyn GatePolicy,
@@ -144,7 +146,7 @@ fn with_session<G, L: Link, T>(
     hardware_gates::run_if_unlocked(Gate::OsDiscovery, || {
         hardware_gates::run_if_unlocked(Gate::CurrentSettingsRead, || {
             let check_stop = || {
-                if stop.load(Ordering::Acquire) {
+                if cancelled() {
                     Err("PODxt Live operation cancelled.".into())
                 } else {
                     Ok::<(), String>(())
@@ -171,8 +173,9 @@ fn transaction<G, L: Link>(
     publish: impl FnMut(ReadUpdate),
 ) -> Result<(), String> {
     let operation = || {
-        with_session(stop, lock, open, &ReadPolicy(command), |session| {
-            podxt::read_live(session, command, || stop.load(Ordering::Acquire), publish)
+        let cancelled = || stop.load(Ordering::Acquire);
+        with_session(cancelled, lock, open, &ReadPolicy(command), |session| {
+            podxt::read_live(session, command, cancelled, publish)
         })
     };
     if requires_library(command)
@@ -267,6 +270,7 @@ impl LivePanel {
         }
         self.cancel();
         self.editor.detach();
+        self.store.detach();
         self.device = verified.cloned();
         self.snapshot = Snapshot::default();
         self.selected = None;
@@ -278,11 +282,12 @@ impl LivePanel {
     }
 
     pub(super) fn busy(&self) -> bool {
-        self.worker.is_some() || self.editor.busy()
+        self.worker.is_some() || self.editor.busy() || self.store.busy()
     }
 
     pub(super) fn cancel(&mut self) {
         self.editor.cancel();
+        self.store.cancel();
         if let Some(worker) = &self.worker {
             worker.stop.store(true, Ordering::Release);
         }
@@ -345,10 +350,12 @@ impl LivePanel {
     }
 
     pub(super) fn poll(&mut self, ctx: &egui::Context) {
-        if let Some(buffer) = self
-            .editor
-            .poll(self.device.as_ref(), self.worker.is_none(), ctx)
-        {
+        self.store.poll(ctx);
+        if let Some(buffer) = self.editor.poll(
+            self.device.as_ref(),
+            self.worker.is_none() && !self.store.busy(),
+            ctx,
+        ) {
             self.snapshot.tone = Some(buffer.tone.clone());
             self.snapshot.packs = Some(buffer.packs);
             self.snapshot.channel = Some(buffer.channel);
@@ -398,7 +405,7 @@ impl LivePanel {
         });
     }
 
-    pub(super) fn show(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn show(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
         ui.heading("PODxt Live reads");
         ui.horizontal_wrapped(|ui| {
             for command in [
@@ -514,9 +521,18 @@ impl LivePanel {
         if let Some(tone) = &self.snapshot.tone {
             tone_panel(ui, "Current tone", tone, &mut self.show_values);
         }
-        self.editor
-            .show(ui, self.device.as_ref(), self.worker.is_none());
+        self.editor.show(
+            ui,
+            self.device.as_ref(),
+            self.worker.is_none() && !self.store.busy(),
+        );
         self.show_library(ui);
+        self.store.show(
+            ui,
+            services,
+            self.device.as_ref(),
+            self.worker.is_none() && !self.editor.busy(),
+        );
     }
 
     fn show_library(&mut self, ui: &mut egui::Ui) {

@@ -121,8 +121,8 @@ fn edit_transaction<G, L: Link>(
     open: impl FnOnce(&G) -> Result<L, String>,
 ) -> Result<EditorBuffer, String> {
     let run = || {
-        with_session(stop, lock, open, &EditPolicy(job.action), |session| {
-            let stopped = || stop.load(Ordering::Acquire);
+        let stopped = || stop.load(Ordering::Acquire);
+        with_session(stopped, lock, open, &EditPolicy(job.action), |session| {
             let edit = match job.action {
                 Action::Get => return podxt::get_editor_buffer(session, stopped),
                 Action::ResendWholeTone => {
