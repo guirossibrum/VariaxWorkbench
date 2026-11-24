@@ -17,6 +17,8 @@ pub enum Operation {
     VariaxRead,
     /// Variax selected-bank name query (G5).
     VariaxBankNameRead,
+    /// Read a Variax program by index (G5).
+    VariaxSlotRead,
     /// Enable and release PODxt Live Variax messages for a library read (G5).
     VariaxLibraryBridge,
     /// Universal identity request to a PODxt-family device.
