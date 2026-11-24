@@ -8,7 +8,6 @@ description = "Lean owner-run read-only probe for the Variax 600 (through PODxt 
 [dependencies]
 line6-devices = { path = "../../crates/line6-devices", features = ["usb"] }
 
-[dev-dependencies]
-# Cross-check only: the library's Variax decoder must match the main crate's
-# until the main app switches to `line6-devices`.
+libc = "0.2"
+# Reuse the app's compile-time gates. The tests also cross-check its decoder.
 variax-workbench = { path = "../..", default-features = false }

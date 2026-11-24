@@ -157,6 +157,16 @@ fn is_identity_reply(message: &[u8]) -> bool {
 /// arrives without its start, the same request is sent exactly once more.
 /// Silence is not retried.
 pub fn identify<L: Link>(session: &mut Session<L>) -> Result<Identified, String> {
+    identify_if_present(session)?
+        .ok_or_else(|| "No reply to the identity request: nothing arrived from the guitar.".into())
+}
+
+/// The same bounded identity exchange as [`identify`]. A timeout without
+/// evidence of a lost packet returns `None`. A failed resend or a transport
+/// error still stops the caller.
+pub fn identify_if_present<L: Link>(
+    session: &mut Session<L>,
+) -> Result<Option<Identified>, String> {
     let orphans_before = session.assembler.orphans;
     session.send(VariaxRequest::Identity)?;
     let mut requests = 1;
@@ -175,18 +185,14 @@ pub fn identify<L: Link>(session: &mut Session<L>) -> Result<Identified, String>
                 _ => return Err("No complete identity reply after the second request.".into()),
             }
         }
-        _ => {
-            return Err(
-                "No reply to the identity request: nothing arrived from the guitar.".into(),
-            );
-        }
+        _ => return Ok(None),
     };
     let identity = Identity::parse(&reply).expect("checked by is_identity_reply");
-    Ok(Identified {
+    Ok(Some(Identified {
         reply,
         identity,
         requests,
-    })
+    }))
 }
 
 fn identify_variax<L: Link>(session: &mut Session<L>) -> Result<Identified, String> {
@@ -310,6 +316,12 @@ impl Request for ReadBridge {
     fn operation(self) -> Operation {
         Operation::VariaxRead
     }
+}
+
+/// Toggle the PODxt Live's Variax messages on interface 1, under the Variax
+/// read gate. The caller must attempt release after enabling.
+pub fn set_bridge_for_read<L: Link>(session: &mut Session<L>, enabled: bool) -> Result<(), String> {
+    session.send(ReadBridge(enabled))
 }
 
 fn with_bridged_read_session<L: Link, T>(

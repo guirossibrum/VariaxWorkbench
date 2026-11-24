@@ -23,9 +23,10 @@
 //! and saved, with each reply, to a new folder under `--out` (default
 //! `analysis/captures`). Nothing is overwritten.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 mod linked_variax;
+mod notice_probe;
 
 use line6_devices::backup::{self, BackupFolder as Capture};
 use line6_devices::family::{Family, podxt, variax};
@@ -90,6 +91,7 @@ const USAGE: &str = "Usage: variax-probe variax identity|read|listen [SECONDS]|l
        variax-probe podxt live-test [all|NAME=VALUE ...] --out DIR
        variax-probe podxt release-variax-control|linked-variax-model-test --out DIR
        variax-probe podxt status|tuner [SECONDS] [--out DIR]
+       variax-probe podxt variax-notices [SECONDS] --out DIR
        variax-probe compare FIRST_BACKUP SECOND_BACKUP
 Device commands are owner-run. Live tests change the edit buffer and attempt undo.
 --out is required for device commands (library backups: the repo's backups/,
@@ -111,6 +113,7 @@ enum Command {
     PodxtLiveTest(Vec<podxt::LiveTarget>),
     PodxtStatus,
     PodxtTuner(u64),
+    VariaxNotices(u64),
     PodxtChannel {
         target: podxt::Location,
         from: Option<podxt::Location>,
@@ -135,6 +138,7 @@ impl Command {
             Command::PodxtLiveTest(_) => "podxt-live-test",
             Command::PodxtStatus => "podxt-status",
             Command::PodxtTuner(_) => "podxt-tuner",
+            Command::VariaxNotices(_) => "variax-notices",
             Command::PodxtChannel { back: false, .. } => "podxt-channel",
             Command::PodxtChannel { back: true, .. } => "podxt-channel-test",
         }
@@ -168,6 +172,9 @@ impl Command {
                 "PODxt and Variax readback, F-Spank 1 edit, readback, F-T-Model 1 undo, readback"
             }
             Command::PodxtStatus => "PODxt identity, then read-only global value queries",
+            Command::VariaxNotices(_) => {
+                "identities, bridge on, wait, MIDI on, listen, MIDI off, bridge off"
+            }
             Command::PodxtTuner(_) => {
                 "PODxt identity, tuner on (CC 69), tuner note/deviation queries every 250 ms, tuner off"
             }
@@ -207,6 +214,10 @@ fn parse(args: &[String]) -> Result<(Command, Option<PathBuf>), String> {
         ["variax", "read"] => Command::VariaxRead,
         ["variax", "listen"] => Command::VariaxListen(10),
         ["variax", "listen", text] => Command::VariaxListen(seconds(text)?),
+        ["podxt", "variax-notices"] => Command::VariaxNotices(notice_probe::DEFAULT_SECONDS),
+        ["podxt", "variax-notices", text] => {
+            Command::VariaxNotices(notice_probe::parse_seconds(text)?)
+        }
         ["podxt", "read"] => Command::PodxtRead,
         ["podxt", "listen"] => Command::PodxtListen(10),
         ["podxt", "listen", text] => Command::PodxtListen(seconds(text)?),
@@ -408,7 +419,8 @@ fn run_variax(command: &Command, capture: &mut Capture) -> Result<(), String> {
             | Command::PodxtLiveTest(_)
             | Command::PodxtChannel { .. }
             | Command::PodxtStatus
-            | Command::PodxtTuner(_) => unreachable!(),
+            | Command::PodxtTuner(_)
+            | Command::VariaxNotices(_) => unreachable!(),
         };
         let cleanup = session.link.finish();
         session.note(match &cleanup {
@@ -1035,6 +1047,13 @@ fn main() {
         eprintln!("--out DIR is required for device commands.\n{USAGE}");
         std::process::exit(2);
     };
+    if let Command::VariaxNotices(seconds) = command {
+        if let Err(error) = notice_probe::run(seconds, &out) {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let _rig = match acquire_rig() {
         Ok(rig) => rig,
         Err(error) => {
@@ -1102,6 +1121,16 @@ mod tests {
 
     #[test]
     fn commands_parse_and_unknown_ones_do_not() {
+        assert_eq!(
+            parse(&args("podxt variax-notices")).unwrap().0,
+            Command::VariaxNotices(60)
+        );
+        assert_eq!(
+            parse(&args("podxt variax-notices 120 --out /x")).unwrap(),
+            (Command::VariaxNotices(120), Some(PathBuf::from("/x")))
+        );
+        assert!(parse(&args("podxt variax-notices 0")).is_err());
+        assert!(parse(&args("podxt variax-notices 121")).is_err());
         assert_eq!(
             parse(&args("podxt release-variax-control")).unwrap().0,
             Command::PodxtReleaseVariaxControl
