@@ -32,7 +32,8 @@ contains a DSP56300-compatible absolute jump to that entry. The entry initialize
 registers and jumps to a separately mapped block at `0x14004`.
 
 Phase A of #181 maps all 110 SysEx dispatch entries in the main region and
-traces the session flag, DSP bypass, the current-preset buffer read, the
+traces the session flag, DSP bypass, the current-preset buffer read and its
+reply limits, the
 full-buffer and difference handlers, and the preset-store flash sequence.
 See the [Variax 3.10 dispatcher inventory](firmware-variax-dispatch.md).
 

@@ -7,7 +7,10 @@ cover the session flag and preset-buffer read. The
 [store trace](../research/variax-310-store-handlers.json) covers opcode `0x61`.
 The [buffer trace](../research/variax-310-buffer-handlers.json) covers `0x43`
 and `0x3B`. The [session trace](../research/variax-310-session-handlers.json)
-covers `0x4C` and the writers of the session flag. Findings are static.
+covers `0x4C` and the writers of the session flag. The
+[read-limit trace](../research/variax-310-read-limits.json) covers the
+`0x3C` reply length, the transmit queue, and the two editor spans.
+Findings are static.
 Firmware execution and live device checks remain outside this work.
 
 ## Coverage
@@ -62,23 +65,100 @@ the preceding 1,091 words. To inspect an inactive preset via this handler,
 the preset would first have to be loaded into the current buffer.
 
 **Unknown:** Whether readback outside the two observed metadata blocks works
-over the physical link, whether every selection path yields an exact
-stored-image match for all 1,092 words, and what the processor does for
-exceptional count values. The compact copy alone leaves the tail's provenance
-unresolved. There is no surviving full-DSP request or reply from the
-2026-11-14 timeout described in [#119](https://github.com/guirossibrum/VariaxWorkbench/issues/119),
-so its cause remains unknown.
+over the physical link, and whether every selection path yields an exact
+stored-image match for all 1,092 words. A count of 0 is not tested in this
+image, and what the instrument does with it is unknown. The static reply
+length and the missing span check are in the limits section below. The
+compact copy alone leaves the tail's provenance unresolved. There is no
+surviving full-DSP request or reply from the 2026-11-14 timeout described
+in [#119](https://github.com/guirossibrum/VariaxWorkbench/issues/119), so
+its cause remains unknown.
 
 ## Host risks from this slice
 
 | Trigger | Static evidence and possible consequence | Existing app boundary |
 | --- | --- | --- |
-| A variable read span extends beyond the preset buffer or queues an excessively long reply. | `P:0x144AE–0x144DA` uses the supplied address and count without a span guard. Possible unrelated Y-memory reads or a stalled response. Exact behavior outside the traced buffer is unknown. | The request enum exposes only the two fixed 32-word metadata spans. |
+| A `0x3C` span reads past word 1,091, or the host stops taking the reply. | `P:0x144B1` applies the start with no span check. `Y:0xE8B`, the first address past the buffer, is initialized through `Y:0xEA6`. `P:0x1241` waits while the 63-byte transmit queue is full. The limits section records the reply length and the zero-count gap. | The request enum exposes only the two fixed 32-word metadata spans, and the reader requires 200 bytes. |
 | A session command is interrupted after its argument, or cleanup fails. | `P:0x144E0` changes the flag before `P:0x14565` reads the trailing byte. Session state may persist, affecting outgoing MIDI reports. | The Rust session wrapper attempts session off even when the body or initial send fails and reports an off-send failure after a successful initial send. |
 
 `0x2A` and `0x3C` identify no direct persistent write. The store path below
 is the first flash trace in this series. A wider `0x3C` probe needs the
 owner's separate procedure approval.
+
+## Preset-buffer read limits (`0x3C`)
+
+`P:0x144A9` reads the count, then the start. It loads `0xA47` into `r6`,
+puts the start in `n6`, and applies `(r6)+n6`. **Confirmed.** The handler
+does not write `m6`. The same image does write `m6` in other handlers,
+including an immediate `5` at `P:0x14154` and a copy from `m7` at
+`P:0x144F2`, both outside this opcode. A plain sum is what `(r6)+n6` does
+when `m6` is the linear mask. This handler never writes that mask, so the
+modulus in force at entry is **unknown**. The two editor starts are the
+spans the host decodes, and the owner has completed those metadata reads.
+That those starts land on words 851–882 and 883–914 is **likely**.
+
+Nothing in `P:0x144A9`–`P:0x144DC` compares the count or the end with
+1,092, and nothing there calls `P:0x0F17`, `P:0x0F45`, `P:0x0F63` or
+`P:0x0FA6`. **Confirmed.** This opcode reads Y memory. It is not a flash
+read.
+
+The byte after the two words must be `F7`. Any other value jumps to
+`P:0x147ED` and sends `0x72` without entering the data loop.
+**Confirmed.**
+
+On `F7`, `P:0x1367` queues `F0` and then five bytes from `Y:0xA42`. Those
+bytes are `00 01 0C 07 04`. **Confirmed.** The fifth byte is the device id.
+The host accepts either `00` or `04` in that position. The handler then
+queues `0x3C`. For each counted word it queues six low nibbles. The inner
+loop's pointer update is discarded. `P:0x144D8` advances the saved pointer
+by one word. The save at `P:0x144D9` is the last instruction of the count
+loop. The next instruction, `P:0x144DB`, jumps to `P:0x1472B`, which queues
+`F7`.
+**Confirmed.** The reply length is `8 + 6 × count` bytes. A count of 32 is
+200 bytes. A count of 1,092 from start 0 is 6,560 bytes.
+
+Under a plain sum, a nonzero count stays inside words 0–1,091 when the
+start is at least 0 and `start + count` is at most 1,092. The largest such
+count from start 0 is 1,092. Start 1,092 reads `Y:0xE8B`. That address sits
+in an initialized Y record that continues through `Y:0xEA6`. **Confirmed**
+that the word is initialized image data. What the words after `Y:0xE8A`
+mean is **unknown**. The load is still a Y read.
+
+The transmit queue at `X:0x141B` holds 63 bytes. The sender at `P:0x1245`
+and the drain at `P:0x19D3` both mask the index with `0x3F`. `P:0x1241`
+stores its byte only when `(write + 1) & 63` differs from the read index.
+Otherwise it branches back to the test. That loop has no deadline, does not
+drop the byte, and does not call the receive parser. **Confirmed.** The
+only program word equal to `0x19B7` is the extension of the `jsr` at
+`P:0x0058`, the vector slot after `jsr $20D2` at `P:0x0056`. No short
+branch targets the drain. Which peripheral uses that vector is unknown.
+The drain takes a queued byte only when `X:0x1801` equals 9 and the queue
+is not empty. Other entries shift the byte already in `X:0x17FF` toward
+`x:$FFFFC9`. **Confirmed.**
+
+A 9-word reply is 62 bytes and fits in one fill. A 10-word reply is 68
+bytes and does not. The editor's 200-byte replies already take more than
+one fill. The owner has completed that read, so the normal path does drain.
+If the host stops accepting MIDI, `P:0x1241` keeps waiting. Bytes that
+arrive on the receive queue stay queued until that wait returns. This wait
+loop does not mask interrupts. **Confirmed** for the loop itself.
+
+A count of 0 is not tested in this image. The count word is passed to
+`do y1` with no mask in the handler. **Confirmed.** The local toolkit skips
+a DO body when the loop count is 0. That was not measured on a guitar, and
+it is a different instruction from the family manual's REP count of 0.
+**Unknown** on the instrument. If the body is skipped, `P:0x144DB` still
+runs, so the frame already started is closed with `F7` and no preset word
+is read. The request enum sends no zero count. **Confirmed** for that
+source.
+
+### Trap list (preset read)
+
+| Trigger | Address | Consequence | Our editor can send it | How the editor avoids it |
+| --- | --- | --- | --- | --- |
+| A start and a nonzero count whose last word is above 1,091, under a plain sum. | `P:0x144B1` | The handler reads Y past `Y:0xE8A` and still sends the normal `0x3C` frame. The first such address is initialized image data through `Y:0xEA6`. This case does not send `0x72`. | No. `Metadata1` and `Metadata2` are the only `0x3C` requests, and they end at words 882 and 914. | Keep those two shapes. Do not add a start or count the firmware does not bound. |
+| A count of 0. | `P:0x144C2` | The image does not test it. A skipped body would send an eight-byte frame and read no Y word. A count that instead runs the body would walk far past the buffer and hold `P:0x1241`. The instrument's choice is unknown. | No. The request bytes contain no `0x3C` count of 0. | Do not send a zero count. |
+| The host stops reading a reply longer than 63 bytes. | `P:0x1241` | The sender waits with no deadline. Queued input is not parsed until the wait returns. This loop does not mask interrupts. A count of 32 already produces 200 bytes. | Yes, if the host stops reading. The normal metadata read waits for all 200 bytes. | Keep reading the reply through `F7`. Do not add an unbounded `0x3C`. |
 
 ## Preset store (`0x61`)
 
@@ -477,7 +557,10 @@ The flag is already stored before this wait.
 the Reso-5 factory program at flash index 50. That index shares spare
 sector 62 with flash indices 40–59. Each answer below cites the static
 evidence and a confidence of confirmed, likely, or unknown. Questions this
-slice does not reach stay open for the later handler slices.
+slice does not reach stay open for the later handler slices. The
+preset-read limit pass does not close another question. Question 2 asks
+which opcode returns a flash slot. `0x3C` reads the current Y buffer and is
+not that opcode.
 
 ### 1. What clears DSP bypass, and can an interrupted store leave the guitar silent?
 
@@ -532,7 +615,9 @@ python3 scripts/map_variax_buffer.py /path/to/Variax300_3.10.vxf \
   --check research/variax-310-buffer-handlers.json
 python3 scripts/map_variax_session.py /path/to/Variax300_3.10.vxf \
   --check research/variax-310-session-handlers.json
-python3 -m unittest discover -s scripts -p 'test_variax_*trace.py'
+python3 scripts/map_variax_read_limits.py /path/to/Variax300_3.10.vxf \
+  --check research/variax-310-read-limits.json
+python3 -m unittest discover -s scripts -p 'test_variax_*.py'
 ```
 
 The scripts reconstruct raw tag-0 program loads from region 1 using the
@@ -543,6 +628,9 @@ checker does the same for
 [the edit-buffer trace](../research/variax-310-buffer-handlers.json). The
 session checker compares the bypass and session flag references with
 [the session trace](../research/variax-310-session-handlers.json). The
+read-limit checker compares the `0x3C` reply shape, the queue mask and the
+editor spans with
+[the read-limit trace](../research/variax-310-read-limits.json). The
 formula tests do not read the archive and do not launch an emulator. The group
 quotients recorded in those tests were measured on a typed divide-by-20
 program whose words at `P:0x001A`–`P:0x0034` match this archive. The
