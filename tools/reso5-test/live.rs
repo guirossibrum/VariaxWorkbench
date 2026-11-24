@@ -1,4 +1,4 @@
-use super::procedure::{self, Stage, VariaxPolicy};
+use super::procedure::{self, Stage, StorePolicy, VariaxPolicy};
 use line6_devices::{
     backup,
     midi::hex,
@@ -19,7 +19,9 @@ use std::{
 };
 use variax_workbench::hardware_gates::{Gate, run_if_unlocked};
 
-const USAGE: &str = "Usage: variax-reso5-test --card | [--check] stage-1|stage-2 BACKUP_DIR ARCHIVE.vxf MODELS.tsv LOG_ROOT";
+const USAGE: &str = "Usage: variax-reso5-test --card | --store-card
+       variax-reso5-test [--check] stage-1|stage-2 BACKUP_DIR ARCHIVE.vxf MODELS.tsv LOG_ROOT
+       variax-reso5-test [--check] store BACKUP_DIR ARCHIVE.vxf LOG_ROOT";
 
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 
@@ -51,6 +53,16 @@ pub fn run(args: &[OsString]) -> Result<(), String> {
         [option, remaining @ ..] if option == "--check" => (true, remaining),
         _ => (false, args),
     };
+    if let [stage, backup_dir, archive, log_root] = args
+        && stage == "store"
+    {
+        return run_store(
+            offline,
+            Path::new(backup_dir),
+            Path::new(archive),
+            Path::new(log_root),
+        );
+    }
     let [stage, backup_dir, archive, models, log_root] = args else {
         return Err(USAGE.into());
     };
@@ -61,7 +73,7 @@ pub fn run(args: &[OsString]) -> Result<(), String> {
     };
     let backup_dir = Path::new(backup_dir);
     let log_root = Path::new(log_root);
-    let trace = Trace::create(log_root, stage)?;
+    let trace = Trace::create(log_root, &format!("stage-{}", stage.number()))?;
     let result = (|| {
         let (_, started) = now()?;
         trace.record(format!(
@@ -103,7 +115,9 @@ pub fn run(args: &[OsString]) -> Result<(), String> {
         run_if_unlocked(Gate::EditBufferWrite, || {
             run_if_unlocked(Gate::CurrentSettingsRead, || {
                 run_if_unlocked(Gate::IdentityRequest, || {
-                    run_if_unlocked(Gate::OsDiscovery, || run_device(&prepared, &trace))
+                    run_if_unlocked(Gate::OsDiscovery, || {
+                        run_device(DeviceTask::Edit(&prepared), &trace)
+                    })
                 })
             })
         })
@@ -125,7 +139,113 @@ pub fn run(args: &[OsString]) -> Result<(), String> {
     Ok(())
 }
 
-fn run_device(prepared: &procedure::Prepared, trace: &Trace) -> Result<(), String> {
+fn run_store(
+    offline: bool,
+    backup_dir: &Path,
+    archive: &Path,
+    log_root: &Path,
+) -> Result<(), String> {
+    let trace = Trace::create(log_root, "store")?;
+    let result = (|| {
+        let (_, started) = now()?;
+        let today = &started[..10];
+        trace.record(format!(
+            "Reso-5 slot 50 store at {started}. Backup: {}",
+            backup_dir.display()
+        ));
+        let prepared = procedure::prepare_store(backup_dir, today, archive)?;
+        let verified = "Verified the archived slot 50 program fingerprint, name and checksum, and the same-day complete backup.";
+        trace.record(verified.into());
+        if offline {
+            println!("{verified} Offline check passed.");
+            return Ok(());
+        }
+
+        print!("{}", super::STORE_CARD);
+        install_cancellation()?;
+        run_if_unlocked(Gate::StoreRestore, || {
+            run_if_unlocked(Gate::CurrentSettingsRead, || {
+                run_if_unlocked(Gate::IdentityRequest, || {
+                    run_if_unlocked(Gate::OsDiscovery, || {
+                        run_device(DeviceTask::Store(&prepared, today), &trace)
+                    })
+                })
+            })
+        })
+    })();
+    trace.record(match &result {
+        Err(error) => format!("STOPPED: {error}"),
+        Ok(()) if offline => "PASS: offline preflight. No device was opened.".into(),
+        Ok(()) => {
+            "PASS: store confirmation and settings read-back. Continue with the test card.".into()
+        }
+    });
+    println!("Log folder: {}", trace.path.display());
+    combine(result, trace.finish())?;
+    if !offline {
+        println!(
+            "Received 0x71 and verified all 192 Reso-5 settings bytes. Continue with the test card."
+        );
+    }
+    Ok(())
+}
+
+enum DeviceTask<'a> {
+    Edit(&'a procedure::Prepared),
+    Store(&'a procedure::PreparedStore, &'a str),
+}
+
+fn prompt_store(today: &str, stopping: impl Fn() -> bool) -> Result<(), String> {
+    print!("Type {} and press Enter: ", procedure::STORE_CONFIRMATION);
+    io::stdout().flush().map_err(|e| e.to_string())?;
+    let mut answer = Vec::new();
+    let mut stdin = libc::pollfd {
+        fd: libc::STDIN_FILENO,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // Poll stdin so Ctrl+C can release the already-open interface even when
+    // no confirmation line has been entered.
+    while !stopping() {
+        let ready = unsafe { libc::poll(&mut stdin, 1, 100) };
+        if ready == 0 {
+            continue;
+        }
+        if ready < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(format!("Cannot read slot confirmation: {error}"));
+        }
+        let mut byte = 0u8;
+        let count = unsafe { libc::read(stdin.fd, (&mut byte as *mut u8).cast(), 1) };
+        if count < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(format!("Cannot read slot confirmation: {error}"));
+        }
+        if count == 0 || answer.len() > procedure::STORE_CONFIRMATION.len() + 1 {
+            break;
+        }
+        answer.push(byte);
+        if byte == b'\n' {
+            let answer = std::str::from_utf8(&answer).map_err(|error| error.to_string())?;
+            procedure::confirm_store(answer)?;
+            if &now()?.1[..10] != today {
+                return Err(
+                    "The UTC day changed during preflight. Select a current backup.".into(),
+                );
+            }
+            return Ok(());
+        }
+    }
+    Err("Slot 50 store confirmation was not given.".into())
+}
+
+fn run_device(task: DeviceTask<'_>, trace: &Trace) -> Result<(), String> {
     let stopping = || CANCELLED.load(Ordering::Relaxed) || trace.failed();
     if stopping() {
         return Err("Cancelled or unable to write the log before device preflight.".into());
@@ -155,8 +275,21 @@ fn run_device(prepared: &procedure::Prepared, trace: &Trace) -> Result<(), Strin
             trace,
             label: "Variax",
         };
-        let mut session = Session::new(link, &VariaxPolicy, &mut log);
-        procedure::attempt(&mut session, prepared, stopping)
+        match task {
+            DeviceTask::Edit(prepared) => {
+                let mut session = Session::new(link, &VariaxPolicy, &mut log);
+                procedure::attempt(&mut session, prepared, stopping)
+            }
+            DeviceTask::Store(prepared, today) => {
+                let mut session = Session::new(link, &StorePolicy, &mut log);
+                procedure::attempt_store(
+                    &mut session,
+                    prepared,
+                    || prompt_store(today, stopping),
+                    stopping,
+                )
+            }
+        }
     };
     let cleanup = variax.finish();
     trace.record(match &cleanup {
@@ -186,11 +319,11 @@ struct Trace {
 }
 
 impl Trace {
-    fn create(root: &Path, stage: Stage) -> Result<Self, String> {
+    fn create(root: &Path, label: &str) -> Result<Self, String> {
         let (stamp, _) = now()?;
         fs::create_dir_all(root).map_err(|error| format!("{}: {error}", root.display()))?;
         let path = tempfile::Builder::new()
-            .prefix(&format!("reso5-stage-{}-{stamp}-", stage.number()))
+            .prefix(&format!("reso5-{label}-{stamp}-"))
             .tempdir_in(root)
             .map_err(|error| format!("{}: {error}", root.display()))?
             .keep();

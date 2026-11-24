@@ -4,6 +4,7 @@ mod procedure;
 #[cfg(all(not(test), target_os = "linux"))]
 mod live;
 
+const STORE_CARD: &str = include_str!("../../docs/reso5-store-test-card.md");
 const CARD: &str = include_str!("../../docs/reso5-test-card.md");
 
 fn main() {
@@ -15,6 +16,10 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args == ["--store-card"] {
+        print!("{STORE_CARD}");
+        return Ok(());
+    }
     if args == ["--card"] {
         print!("{CARD}");
         return Ok(());

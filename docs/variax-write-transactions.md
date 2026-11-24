@@ -8,6 +8,11 @@ It accepts a caller-provided link and gate policy. The separate
 [Reso-5 owner test](reso5-test-card.md) uses only the full edit-buffer
 transaction, with its own identity checks, backup verification and G6 policy.
 
+The separate [Reso-5 slot 50 owner test](reso5-store-test-card.md) uses
+G7 and its own write policy. It sends only the archived factory program pinned
+to slot 50. It verifies the same-day backup and compares the current settings
+before and after the store. Its file-only check requires no host model manifest.
+
 ## Byte and timing contract
 
 All guitar SysEx commands use the header `F0 00 01 0C 07 00` and end with

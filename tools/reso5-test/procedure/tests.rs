@@ -1,6 +1,6 @@
 use super::*;
 use line6_devices::session::{Path as DevicePath, Quiet};
-use std::{cell::Cell, collections::VecDeque};
+use std::{cell::Cell, collections::VecDeque, rc::Rc};
 
 const VARIAX_IDENTITY: [u8; 17] = [
     0xf0, 0x7e, 0x7f, 6, 2, 0, 1, 0xc, 7, 0, 4, 0, b'0', b'3', b'1', b'0', 0xf7,
@@ -12,6 +12,11 @@ const BRIDGE_ON: &[u8] = &[0xf0, 0, 1, 0xc, 3, 0x23, 1, 0xf7];
 const BRIDGE_OFF: &[u8] = &[0xf0, 0, 1, 0xc, 3, 0x23, 0, 0xf7];
 const HEADER: &[u8] = &[0xf0, 0, 1, 0xc, 7, 0];
 
+struct CancelOnWrite {
+    chunks: Vec<Vec<u8>>,
+    cancelled: Rc<Cell<bool>>,
+}
+
 struct Fake {
     path: DevicePath,
     clock: Duration,
@@ -20,6 +25,7 @@ struct Fake {
     writes: Vec<Vec<u8>>,
     chunks: Cell<usize>,
     fail_at: Option<usize>,
+    cancel_on_write: Option<CancelOnWrite>,
 }
 
 impl Fake {
@@ -42,6 +48,7 @@ impl Fake {
             writes: vec![],
             chunks: Cell::new(0),
             fail_at: None,
+            cancel_on_write: None,
         }
     }
 }
@@ -54,6 +61,11 @@ impl Link for Fake {
     fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
         let index = self.writes.len();
         self.writes.push(bytes.into());
+        if let Some(trigger) = &self.cancel_on_write
+            && self.writes.ends_with(&trigger.chunks)
+        {
+            trigger.cancelled.set(true);
+        }
         if bytes.len() == 256 {
             self.chunks.set(self.chunks.get() + 1);
         }
@@ -430,3 +442,5 @@ fn stage_numbers_and_hashes_are_distinct() {
     assert_eq!(Stage::Trim.hash(), TRIM_HASH);
     assert_ne!(OWN_HASH, TRIM_HASH);
 }
+
+mod store;

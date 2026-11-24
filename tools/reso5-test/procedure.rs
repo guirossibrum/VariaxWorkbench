@@ -19,6 +19,8 @@ use variax_workbench::{
 const NAME: &str = "Reso-5";
 const SETTINGS_HASH: &str = "13f8a99828851153eebff71b2fa644bf390cf144f9da6b73b9ee6c66f502aaf7";
 const OWN_HASH: &str = "7a245957b3263a9dc225633cdabdd2e94ce65d1ad3a6c0eb2cab23ef4e01e6a1";
+const STORE_HASH: &str = "f8694ec3353c4d112bef4b171c7c91110f5a23f53082a1560addfd7e7b2983c5";
+pub const STORE_CONFIRMATION: &str = "STORE RESO-5 FACTORY PROGRAM TO SLOT 50";
 const TRIM_HASH: &str = "ad38b28c0390afced301367ea1cc9b2c0a5242cd1a4fb9a3250843c31f82175d";
 const METADATA: std::ops::Range<usize> = 2553..2745;
 const SYSTEM_SLOT: u32 = 0x02010000;
@@ -55,6 +57,19 @@ impl GatePolicy for VariaxPolicy {
             Operation::VariaxIdentity => !is_locked(Gate::IdentityRequest),
             Operation::VariaxRead => !is_locked(Gate::CurrentSettingsRead),
             Operation::VariaxEditBufferWrite => !is_locked(Gate::EditBufferWrite),
+            _ => false,
+        }
+    }
+}
+
+pub struct StorePolicy;
+
+impl GatePolicy for StorePolicy {
+    fn allows(&self, operation: Operation) -> bool {
+        match operation {
+            Operation::VariaxIdentity => !is_locked(Gate::IdentityRequest),
+            Operation::VariaxRead => !is_locked(Gate::CurrentSettingsRead),
+            Operation::VariaxStoreRestore => !is_locked(Gate::StoreRestore),
             _ => false,
         }
     }
@@ -220,6 +235,73 @@ pub fn prepare(
         end,
         program,
     })
+}
+
+pub struct PreparedStore {
+    settings: [u8; 192],
+    program: [u8; PROGRAM_BYTES],
+}
+
+pub fn prepare_store(backup: &Path, today: &str, archive: &Path) -> Result<PreparedStore, String> {
+    let factory = FactoryReference::parse(&read(archive)?)?;
+    let slot = &factory.slots()[50];
+    let program = canonical_store_program(slot.raw_program(), STORE_HASH)?;
+    let settings = program[METADATA].try_into().expect("fixed metadata range");
+    check_backup(backup, today, &settings)?;
+    Ok(PreparedStore { settings, program })
+}
+
+fn canonical_store_program(raw: &[u8], hash: &str) -> Result<[u8; PROGRAM_BYTES], String> {
+    let mut program: [u8; PROGRAM_BYTES] = raw
+        .try_into()
+        .map_err(|_| "The archived slot program must contain 3,276 bytes.")?;
+    for word in program.as_chunks_mut::<3>().0 {
+        word.reverse();
+    }
+    if !matches_hash(&program, hash) {
+        return Err("The archived slot 50 program differs from the approved SHA-256.".into());
+    }
+    write::Program::new(NAME, &program)?;
+    Ok(program)
+}
+
+pub fn confirm_store(answer: &str) -> Result<(), String> {
+    if answer.trim_end_matches(['\r', '\n']) != STORE_CONFIRMATION {
+        return Err("Slot 50 store confirmation was not given.".into());
+    }
+    Ok(())
+}
+
+pub fn attempt_store<L: Link>(
+    session: &mut Session<L>,
+    prepared: &PreparedStore,
+    confirm: impl FnOnce() -> Result<(), String>,
+    mut cancelled: impl FnMut() -> bool,
+) -> Result<(), String> {
+    session.require_expected_sysex();
+    if cancelled() {
+        return Err("Cancelled before reading the guitar.".into());
+    }
+    let current = variax::read_current_checked(session, variax_identity)?;
+    if current.metadata.name != NAME || current.metadata.raw != prepared.settings {
+        return Err("The active Variax settings differ from the approved Reso-5 baseline.".into());
+    }
+    let program = write::Program::new(NAME, &prepared.program)?;
+    if cancelled() {
+        return Err("Cancelled before confirming the store.".into());
+    }
+    session.note("Verified Variax firmware 3.10 and all 192 Reso-5 settings bytes.");
+    confirm()?;
+    session.note("Slot 50 confirmed. Sending the approved factory program.");
+    write::store(session, location(), &program, &mut cancelled)?;
+    session.note("Received the slot store confirmation (0x71). Reading back settings.");
+    // A Ctrl+C after the store opcode must not prevent the verification read.
+    let readback = variax::read_current_checked(session, variax_identity)?;
+    if readback.metadata.name != NAME || readback.metadata.raw != prepared.settings {
+        return Err("Settings read-back differs from the factory slot 50 settings.".into());
+    }
+    session.note("All 192 metadata bytes match the factory slot 50 settings.");
+    Ok(())
 }
 
 fn check_rendered_settings(preset: &PresetFile, raw: [u8; 192]) -> Result<(), String> {
