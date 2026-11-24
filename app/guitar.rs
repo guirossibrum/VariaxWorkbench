@@ -70,7 +70,8 @@ pub(super) fn milestones(ui: &mut egui::Ui) {
          PODxt Live. Step 4 stays off.",
     );
     ui.label(
-        "Build 17 is this copy. On This computer, Device check can try a PODxt Live tone \
+        "Build 18 is this copy. Turning a pickup off keeps the other pickup on, and Front \
+         draws that pickup on top of the other. On This computer, Device check can try a PODxt Live tone \
          change and put it back, and it can play a saved tone. The try changes treble, mid, \
          one EQ band, and the modulation, delay and reverb switches, then puts the original \
          values back. The stomp is not changed. Play a saved tone switches the PODxt the way \
@@ -79,7 +80,7 @@ pub(super) fn milestones(ui: &mut egui::Ui) {
          60 presets and tries to put the original preset back. Back up the PODxt Live still \
          reads the stored tones and does not change the current tone on purpose. Backup files \
          are ordinary files you can move or delete. Step 4 stays off. No is still the default. \
-         Close the old window and open this one so the corner says build 17.",
+         Close the old window and open this one so the corner says build 18.",
     );
     for (label, url) in [
         (

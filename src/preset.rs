@@ -463,6 +463,13 @@ impl PresetFile {
         Ok(())
     }
 
+    /// Turn a pickup or the alternate tuning on or off.
+    ///
+    /// The original `OnParamChange` for pickup enables `0x2020001` and
+    /// `0x2030001` never leaves both pickups off: turning one off while the
+    /// other is already off turns the other on in the same edit. A file that
+    /// already has both off is left alone until an enable is edited. Alternate
+    /// tuning has no interlock.
     pub fn set_enabled(&mut self, slot: u32, enabled: bool) -> Result<(), String> {
         self.require_legacy_electric()?;
         if !matches!(
@@ -472,10 +479,31 @@ impl PresetFile {
             return Err("only pickup and alternate-tuning enables are editable".into());
         }
         self.edit_availability(slot, None)?;
+        if self.model(slot).is_none() {
+            return Err("model slot does not exist".into());
+        }
+        let other = match slot {
+            crate::edit::PICKUP1 => Some(crate::edit::PICKUP2),
+            crate::edit::PICKUP2 => Some(crate::edit::PICKUP1),
+            _ => None,
+        };
+        let force_other = if enabled {
+            None
+        } else {
+            other.filter(|other| self.model(*other).is_some_and(|model| !model.enabled))
+        };
+        self.write_enabled(slot, enabled)?;
+        if let Some(other) = force_other {
+            self.write_enabled(other, true)?;
+        }
+        Ok(())
+    }
+
+    fn write_enabled(&mut self, slot: u32, enabled: bool) -> Result<(), String> {
         let model = self
             .models
             .iter_mut()
-            .find(|m| m.slot == slot)
+            .find(|model| model.slot == slot)
             .ok_or("model slot does not exist")?;
         self.bytes[model.info_offset + 11] = u8::from(enabled);
         model.enabled = enabled;
@@ -735,6 +763,127 @@ mod tests {
             &unknown.as_bytes()[offset - 8..offset + 4],
             &before[offset - 8..offset + 4]
         );
+    }
+
+    fn enable_offset(bytes: &[u8], slot: u32) -> usize {
+        let pattern = slot.to_be_bytes();
+        bytes
+            .windows(4)
+            .enumerate()
+            .find_map(|(index, window)| {
+                (window == pattern && index >= 4 && bytes[index - 4] == 0x03).then_some(index + 7)
+            })
+            .unwrap()
+    }
+
+    fn host_preset() -> PresetFile {
+        PresetFile::parse(include_bytes!("../tests/fixtures/synthetic-host-preset.vwm").to_vec())
+            .unwrap()
+    }
+
+    #[test]
+    fn turning_the_last_pickup_off_turns_the_other_on_in_the_same_edit() {
+        use crate::edit::{BODY, PICKUP1, PICKUP2, TUNING};
+
+        let mut preset = host_preset();
+        assert!(preset.model(PICKUP1).unwrap().enabled);
+        assert!(preset.model(PICKUP2).unwrap().enabled);
+        let before = preset.as_bytes().to_vec();
+        preset.set_enabled(PICKUP2, false).unwrap();
+        assert!(!preset.model(PICKUP2).unwrap().enabled);
+        assert!(preset.model(PICKUP1).unwrap().enabled);
+        let pickup2 = enable_offset(&before, PICKUP2);
+        assert_eq!(preset.as_bytes()[pickup2], 0);
+        assert!(
+            before
+                .iter()
+                .zip(preset.as_bytes())
+                .enumerate()
+                .all(|(index, (left, right))| index == pickup2 || left == right)
+        );
+
+        let mut document = crate::document::EditorDocument::from_preset(
+            preset,
+            std::path::PathBuf::from("memory.vwm"),
+        );
+        document
+            .apply(|preset| preset.set_enabled(PICKUP1, false))
+            .unwrap();
+        assert!(!document.preset().model(PICKUP1).unwrap().enabled);
+        assert!(document.preset().model(PICKUP2).unwrap().enabled);
+        assert!(document.can_undo());
+        assert!(!document.can_redo());
+        document.undo();
+        assert!(document.preset().model(PICKUP1).unwrap().enabled);
+        assert!(!document.preset().model(PICKUP2).unwrap().enabled);
+        assert!(!document.can_undo());
+        document.redo();
+        assert!(!document.preset().model(PICKUP1).unwrap().enabled);
+        assert!(document.preset().model(PICKUP2).unwrap().enabled);
+
+        let mut tuning = host_preset();
+        let tuning_was = tuning.model(TUNING).unwrap().enabled;
+        let tuning_before = tuning.as_bytes().to_vec();
+        tuning.set_enabled(TUNING, !tuning_was).unwrap();
+        assert_eq!(tuning.model(TUNING).unwrap().enabled, !tuning_was);
+        assert!(tuning.model(PICKUP1).unwrap().enabled);
+        assert!(tuning.model(PICKUP2).unwrap().enabled);
+        assert_eq!(
+            tuning_before
+                .iter()
+                .zip(tuning.as_bytes())
+                .filter(|(left, right)| left != right)
+                .count(),
+            1
+        );
+
+        let mut acoustic = host_preset();
+        acoustic.select_model(BODY, 0x03100012).unwrap();
+        let acoustic_before = acoustic.as_bytes().to_vec();
+        assert!(acoustic.set_enabled(PICKUP1, false).is_err());
+        assert_eq!(acoustic.as_bytes(), acoustic_before);
+
+        let mut only_one = PresetFile::parse(example()).unwrap();
+        let single_before = only_one.as_bytes().to_vec();
+        only_one.set_enabled(PICKUP1, false).unwrap();
+        assert!(!only_one.model(PICKUP1).unwrap().enabled);
+        assert_eq!(
+            only_one.as_bytes()[enable_offset(only_one.as_bytes(), PICKUP1)],
+            0
+        );
+        assert_eq!(
+            single_before
+                .iter()
+                .zip(only_one.as_bytes())
+                .filter(|(left, right)| left != right)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_file_with_both_pickups_off_stays_off_until_an_enable_is_edited() {
+        use crate::edit::{PICKUP1, PICKUP2};
+
+        let mut bytes = include_bytes!("../tests/fixtures/synthetic-host-preset.vwm").to_vec();
+        for slot in [PICKUP1, PICKUP2] {
+            let at = enable_offset(&bytes, slot);
+            bytes[at] = 0;
+        }
+        let opened = PresetFile::parse(bytes.clone()).unwrap();
+        assert!(!opened.model(PICKUP1).unwrap().enabled);
+        assert!(!opened.model(PICKUP2).unwrap().enabled);
+        assert_eq!(opened.as_bytes(), bytes);
+
+        let mut turned_on = opened.clone();
+        turned_on.set_enabled(PICKUP1, true).unwrap();
+        assert!(turned_on.model(PICKUP1).unwrap().enabled);
+        assert!(!turned_on.model(PICKUP2).unwrap().enabled);
+
+        let mut forced = PresetFile::parse(bytes).unwrap();
+        forced.set_enabled(PICKUP2, false).unwrap();
+        assert!(forced.model(PICKUP1).unwrap().enabled);
+        assert!(!forced.model(PICKUP2).unwrap().enabled);
     }
 
     #[test]

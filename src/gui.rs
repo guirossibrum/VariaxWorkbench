@@ -759,6 +759,9 @@ struct Workbench {
     pending: Option<Pending>,
     permit_close: bool,
     drag_origin: Option<(u32, f32, f32, f32)>,
+    /// Which pickup is painted last. Pickup 1 starts in front, matching the
+    /// original panel's first child. This is view state, not a file field.
+    pickup_front: u32,
     link_tuning_mix: bool,
     theme_polled: Instant,
     theme_text: String,
@@ -845,6 +848,8 @@ struct Workbench {
     pickup_slider: Option<Rect>,
     #[cfg(test)]
     tuning_toggle: Option<Rect>,
+    #[cfg(test)]
+    pickup_controls: HashMap<(u32, &'static str), Rect>,
     #[cfg(test)]
     tuning_widgets: HashMap<&'static str, Rect>,
     #[cfg(test)]
@@ -977,6 +982,7 @@ impl Workbench {
             pending: None,
             permit_close: false,
             drag_origin: None,
+            pickup_front: PICKUP1,
             link_tuning_mix: false,
             theme_polled: Instant::now() - Duration::from_secs(2),
             theme_text: String::new(),
@@ -1055,6 +1061,8 @@ impl Workbench {
             pickup_slider: None,
             #[cfg(test)]
             tuning_toggle: None,
+            #[cfg(test)]
+            pickup_controls: HashMap::new(),
             #[cfg(test)]
             tuning_widgets: HashMap::new(),
             #[cfg(test)]
@@ -1582,9 +1590,50 @@ impl Workbench {
                 egui::Checkbox::new(&mut enabled, label),
             );
             if response.changed() {
-                self.change(|p| p.set_enabled(slot, enabled));
+                if matches!(slot, PICKUP1 | PICKUP2) {
+                    self.set_pickup_enabled(slot, enabled);
+                } else {
+                    self.change(|p| p.set_enabled(slot, enabled));
+                }
+            }
+            #[cfg(test)]
+            if matches!(slot, PICKUP1 | PICKUP2) {
+                self.pickup_controls
+                    .insert((slot, "enabled"), response.rect);
             }
         }
+    }
+
+    /// Original rule: turning a pickup on brings that pickup forward, and
+    /// turning one off brings the other forward. The forced enable, if any,
+    /// is inside `set_enabled`, so it shares this edit's one undo step.
+    fn set_pickup_enabled(&mut self, slot: u32, enabled: bool) {
+        if self.is_reading() || self.pending.is_some() {
+            return;
+        }
+        let Some(document) = &mut self.document else {
+            return;
+        };
+        if let Err(error) = document.apply(|preset| preset.set_enabled(slot, enabled)) {
+            self.error = Some(error);
+            return;
+        }
+        let other = if slot == PICKUP1 { PICKUP2 } else { PICKUP1 };
+        self.pickup_front = if enabled { slot } else { other };
+    }
+
+    fn front_control(&mut self, ui: &mut egui::Ui, slot: u32) -> egui::Response {
+        let which = if slot == PICKUP1 { "1" } else { "2" };
+        let response = ui
+            .add(
+                egui::Button::new("Front")
+                    .small()
+                    .selected(self.pickup_front == slot),
+            )
+            .on_hover_text(format!("Move pickup {which} to the front"));
+        #[cfg(test)]
+        self.pickup_controls.insert((slot, "front"), response.rect);
+        response
     }
     fn model_control(&mut self, ui: &mut egui::Ui, slot: u32, kind: &str) {
         let Some(mut id) = self.model_id(slot) else {
@@ -1659,7 +1708,12 @@ impl Workbench {
                 ui.visuals().weak_text_color(),
             );
         }
-        for slot in [PICKUP2, PICKUP1] {
+        let back_to_front = if self.pickup_front == PICKUP2 {
+            [PICKUP1, PICKUP2]
+        } else {
+            [PICKUP2, PICKUP1]
+        };
+        for slot in back_to_front {
             let Some(model) = self.document.as_ref().and_then(|d| d.preset().model(slot)) else {
                 continue;
             };
@@ -1817,6 +1871,8 @@ impl Workbench {
         if let Some(Err(reason)) = &availability {
             ui.label(reason);
         }
+        #[cfg(test)]
+        self.pickup_controls.clear();
         ui.add_enabled_ui(availability.is_some_and(|a| a.is_ok()), |ui| {
             match self.tab {
                 Tab::Body => {
@@ -1834,6 +1890,9 @@ impl Workbench {
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     self.enabled_control(ui, slot, "Enabled");
+                                    if self.front_control(ui, slot).clicked() {
+                                        self.pickup_front = slot;
+                                    }
                                 },
                             );
                         });
@@ -13863,6 +13922,99 @@ mod tests {
         click_toggle(&mut app);
         assert_eq!(app.document.as_ref().unwrap().as_bytes(), original);
         assert_eq!(app.tab, Tab::Controls);
+    }
+
+    #[test]
+    fn pickup_enable_keeps_one_on_and_front_follows_the_original() {
+        let (context, mut app) = app();
+        app.load(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/synthetic-host-preset.vwm"),
+        );
+        app.tab = Tab::Pickups;
+        let enabled = |app: &Workbench, slot: u32| {
+            app.document
+                .as_ref()
+                .unwrap()
+                .preset()
+                .model(slot)
+                .unwrap()
+                .enabled
+        };
+        assert!(enabled(&app, PICKUP1));
+        assert!(enabled(&app, PICKUP2));
+        assert_eq!(app.pickup_front, PICKUP1);
+        let original = app.document.as_ref().unwrap().as_bytes().to_vec();
+
+        let click =
+            |context: &egui::Context, app: &mut Workbench, slot: u32, kind: &'static str| {
+                recording_frame(context, app, vec![]);
+                let pos = app.pickup_controls[&(slot, kind)].center();
+                for pressed in [true, false] {
+                    recording_frame(
+                        context,
+                        app,
+                        vec![
+                            egui::Event::PointerMoved(pos),
+                            egui::Event::PointerButton {
+                                pos,
+                                button: egui::PointerButton::Primary,
+                                pressed,
+                                modifiers: Default::default(),
+                            },
+                        ],
+                    );
+                }
+            };
+
+        click(&context, &mut app, PICKUP1, "enabled");
+        assert!(!enabled(&app, PICKUP1));
+        assert!(enabled(&app, PICKUP2));
+        assert_eq!(app.pickup_front, PICKUP2);
+        app.undo();
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), original);
+        assert!(!app.document.as_ref().unwrap().can_undo());
+
+        click(&context, &mut app, PICKUP2, "front");
+        assert_eq!(app.pickup_front, PICKUP2);
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), original);
+        assert!(!app.document.as_ref().unwrap().can_undo());
+
+        click(&context, &mut app, PICKUP2, "enabled");
+        assert!(enabled(&app, PICKUP1));
+        assert!(!enabled(&app, PICKUP2));
+        assert_eq!(app.pickup_front, PICKUP1);
+        click(&context, &mut app, PICKUP1, "enabled");
+        assert!(!enabled(&app, PICKUP1));
+        assert!(enabled(&app, PICKUP2));
+        assert_eq!(app.pickup_front, PICKUP2);
+        app.undo();
+        assert!(enabled(&app, PICKUP1));
+        assert!(!enabled(&app, PICKUP2));
+        assert!(app.document.as_ref().unwrap().can_undo());
+
+        let mut both_off = original.clone();
+        for slot in [PICKUP1, PICKUP2] {
+            let pattern = slot.to_be_bytes();
+            let at = both_off
+                .windows(4)
+                .enumerate()
+                .find_map(|(index, window)| {
+                    (window == pattern && index >= 4 && both_off[index - 4] == 0x03)
+                        .then_some(index + 7)
+                })
+                .unwrap();
+            both_off[at] = 0;
+        }
+        let preset = PresetFile::parse(both_off.clone()).unwrap();
+        app.document = Some(EditorDocument::from_preset(
+            preset,
+            PathBuf::from("both-off.vwm"),
+        ));
+        recording_frame(&context, &mut app, vec![]);
+        assert_eq!(app.document.as_ref().unwrap().as_bytes(), both_off);
+        assert!(!enabled(&app, PICKUP1));
+        assert!(!enabled(&app, PICKUP2));
+        assert!(!app.document.as_ref().unwrap().can_undo());
     }
 
     #[test]
