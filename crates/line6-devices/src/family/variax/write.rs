@@ -179,16 +179,17 @@ impl WriteRequest<'_> {
 const G6: Operation = Operation::VariaxEditBufferWrite;
 const G7: Operation = Operation::VariaxStoreRestore;
 
-fn transaction<L: Link, T>(
+fn transaction<L: Link, T, E: From<String> + std::fmt::Display>(
     session: &mut Session<L>,
     operation: Operation,
     bypass_dsp: bool,
-    body: impl FnOnce(&mut Session<L>) -> Result<T, String>,
-) -> Result<T, String> {
+    body: impl FnOnce(&mut Session<L>) -> Result<T, E>,
+) -> Result<T, E> {
     if session.link.path() != Path::VariaxViaPodxt || !session.allows(operation) {
         return Err(format!(
             "Variax transaction requires the PODxt Live bridge and {operation:?}."
-        ));
+        )
+        .into());
     }
     let send = |session: &mut Session<L>, message| WriteRequest(operation, message).send(session);
     let result = (|| {
@@ -218,8 +219,8 @@ fn transaction<L: Link, T>(
     }
     let cleanup = format!("Variax cleanup failed ({})", cleanup.join(", "));
     match result {
-        Ok(_) => Err(cleanup),
-        Err(error) => Err(format!("{error} {cleanup}")),
+        Ok(_) => Err(cleanup.into()),
+        Err(error) => Err(format!("{error} {cleanup}").into()),
     }
 }
 
@@ -306,7 +307,15 @@ fn send_difference<L: Link>(
     if !attempted {
         return sent;
     }
-    let reply = wait_for_confirmation(session, DIFFERENCE_ACK, "difference");
+    let reply =
+        wait_for_confirmation(session, DIFFERENCE_ACK, "difference").and_then(
+            |reply| match reply {
+                Confirmation::Received => Ok(()),
+                Confirmation::TimedOut => {
+                    Err("Timed out waiting for the Variax difference reply.".into())
+                }
+            },
+        );
     match (sent, reply) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) => Err(error),
@@ -330,10 +339,45 @@ pub fn store<L: Link>(
     session: &mut Session<L>,
     preset: Preset,
     program: &Program<'_>,
-    mut stopping: impl FnMut() -> bool,
+    stopping: impl FnMut() -> bool,
 ) -> Result<(), String> {
+    store_checked(session, preset, program, stopping).map_err(|error| error.to_string())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum StoreError {
+    /// The store was sent, the reply window expired, and cleanup sends succeeded.
+    NoConfirmation,
+    Other(String),
+}
+
+impl From<String> for StoreError {
+    fn from(error: String) -> Self {
+        Self::Other(error)
+    }
+}
+
+impl std::fmt::Display for StoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoConfirmation => {
+                f.write_str("Timed out waiting for the Variax store reply. Slot state is unknown.")
+            }
+            Self::Other(error) => f.write_str(error),
+        }
+    }
+}
+
+/// Store with a distinct error for a silent reply timeout after successful
+/// cleanup sends. Unexpected traffic and transport failures remain errors.
+pub fn store_checked<L: Link>(
+    session: &mut Session<L>,
+    preset: Preset,
+    program: &Program<'_>,
+    mut stopping: impl FnMut() -> bool,
+) -> Result<(), StoreError> {
     if stopping() {
-        return Err("Variax transfer stopped.".into());
+        return Err(StoreError::Other("Variax transfer stopped.".into()));
     }
     // A G6-enabled session can have edit acknowledgements on this stream.
     // Dedicated G7 procedures supply an exclusive, known reply stream.
@@ -345,7 +389,9 @@ pub fn store<L: Link>(
         WriteRequest(G7, Message::Full(&full(program))).send_until(session, &mut stopping)?;
         session.link.pause(STORE_SETTLE);
         if stopping() {
-            return Err("Variax transfer stopped before the slot store.".into());
+            return Err("Variax transfer stopped before the slot store."
+                .to_owned()
+                .into());
         }
         if shared_with_editing {
             require_quiet_reply_stream(session)?;
@@ -354,15 +400,23 @@ pub fn store<L: Link>(
         WriteRequest(G7, Message::Store(preset))
             .send(session)
             .map_err(unknown)?;
-        wait_for_confirmation(session, STORE_ACK, "store").map_err(unknown)
+        match wait_for_confirmation(session, STORE_ACK, "store").map_err(unknown)? {
+            Confirmation::Received => Ok(()),
+            Confirmation::TimedOut => Err(StoreError::NoConfirmation),
+        }
     })
+}
+
+enum Confirmation {
+    Received,
+    TimedOut,
 }
 
 fn wait_for_confirmation<L: Link>(
     session: &mut Session<L>,
     timeout: Duration,
     command: &str,
-) -> Result<(), String> {
+) -> Result<Confirmation, String> {
     let unexpected = || format!("Unexpected Variax {command} reply.");
     let start = session.link.elapsed();
     let orphans = session.assembler.orphans;
@@ -373,7 +427,7 @@ fn wait_for_confirmation<L: Link>(
             return if unexpected_data {
                 Err(unexpected())
             } else {
-                Err(format!("Timed out waiting for the Variax {command} reply."))
+                Ok(Confirmation::TimedOut)
             };
         }
         let Some(events) = session.poll_with(remaining.min(POLL), |packet| {
@@ -419,7 +473,7 @@ fn wait_for_confirmation<L: Link>(
             return Err(unexpected());
         }
         if acknowledged {
-            return Ok(());
+            return Ok(Confirmation::Received);
         }
     }
 }
