@@ -624,12 +624,11 @@ impl PodxtEditor {
     ) {
         let bands = ["EQ_FREQ1", "EQ_FREQ2", "EQ_FREQ3", "EQ_FREQ4"]
             .into_iter()
-            .zip(["EQ_GAIN1", "EQ_GAIN2", "EQ_GAIN3", "EQ_GAIN4"])
-            .collect::<Vec<_>>();
+            .zip(["EQ_GAIN1", "EQ_GAIN2", "EQ_GAIN3", "EQ_GAIN4"]);
         eq_graph(
             ui,
             &bands
-                .iter()
+                .clone()
                 .filter_map(|(frequency, gain)| {
                     Some((value(get(rows, frequency)?)?, value(get(rows, gain)?)?))
                 })
@@ -639,7 +638,12 @@ impl PodxtEditor {
         ui.columns(4, |columns| {
             for (band, (ui, (frequency, gain))) in columns.iter_mut().zip(bands).enumerate() {
                 ui.strong(format!("Band {}", band + 1));
-                ui.horizontal_wrapped(|ui| {
+                let layout = if ui.available_width() >= 156.0 {
+                    egui::Layout::left_to_right(egui::Align::Min)
+                } else {
+                    egui::Layout::top_down(egui::Align::Min)
+                };
+                ui.with_layout(layout, |ui| {
                     for key in [frequency, gain] {
                         if let Some(row) = get(rows, key) {
                             self.stage_control(ui, index, row);
@@ -701,6 +705,8 @@ impl PodxtEditor {
             "CHANVOL" => "Volume",
             "VARIAX_FAMILY" => "Guitar family",
             "TWEAK_PARAM" => "Tweak",
+            "EQ_FREQ1" | "EQ_FREQ2" | "EQ_FREQ3" | "EQ_FREQ4" => "Frequency",
+            "EQ_GAIN1" | "EQ_GAIN2" | "EQ_GAIN3" | "EQ_GAIN4" => "Gain",
             _ => row.label(),
         };
         let unknown = self

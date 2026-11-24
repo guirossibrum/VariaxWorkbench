@@ -99,11 +99,11 @@ fn selected_editor_draws_amp_or_four_eq_bands() {
     let mut editor = PodxtEditor::new();
     let tone = PodTone::new_podxt_tone("Four Band test").unwrap();
     let rows = tone.table_controls(0);
-    let mut render = |block| {
+    let mut render = |block, width| {
         editor.stage.block = block;
         let output = context.run(
             egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1024.0, 768.0))),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(width, 768.0))),
                 ..Default::default()
             },
             |ctx| {
@@ -118,16 +118,18 @@ fn selected_editor_draws_amp_or_four_eq_bands() {
             .for_each(|shape| text_from(&shape.shape, &mut text));
         text
     };
-    let amp = render(Block::Amp);
+    let amp = render(Block::Amp, 1024.0);
     assert!(
         amp.contains("Amp ·") && amp.contains("Cab") && amp.contains('%'),
         "{amp}"
     );
     assert!(!amp.contains("Band 1"));
-    let eq = render(Block::Eq);
+    let eq = render(Block::Eq, 628.0);
     for band in 1..=4 {
         assert!(eq.contains(&format!("Band {band}")), "{eq}");
     }
     assert!(eq.contains("Hz") && eq.contains("dB"));
+    assert_eq!(eq.lines().filter(|&label| label == "Frequency").count(), 4);
+    assert_eq!(eq.lines().filter(|&label| label == "Gain").count(), 4);
     assert!(!eq.contains("Band 5") && !eq.contains("Amp model"));
 }
