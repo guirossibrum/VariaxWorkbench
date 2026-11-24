@@ -48,7 +48,7 @@ pub fn capture<L: Link>(
     }
     let mut session = Session::new(link, &FullReadPolicy, log);
     session.require_expected_sysex();
-    let identified = variax::identify(&mut session)?;
+    let identified = variax::identify_retrying_silence(&mut session, super::IDENTITY_RETRY_DELAY)?;
     variax_identity(&identified.identity)?;
     session.note("Verified Variax 300/600 firmware 3.10.");
 
