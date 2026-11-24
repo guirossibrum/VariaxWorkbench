@@ -1852,7 +1852,9 @@ impl PodTone {
             0x0202_000d => 0x0010_0003,
             _ => 0,
         };
-        if model_id != expected_model_id
+        let compatible_model = model_id == expected_model_id
+            || (expected_model_id, model_id) == (0x0202_0005, 0x0202_000c);
+        if !compatible_model
             || selector_id != expected_selector
             || parameter_id != expected_parameter
         {
@@ -1860,7 +1862,7 @@ impl PodTone {
                 "{label} source mapping does not apply to model 0x{model_id:08x}"
             )));
         }
-        self.control_location(DELAY_SLOT, &[expected_model_id], parameter_id, label)
+        self.control_location(DELAY_SLOT, &[model_id], parameter_id, label)
     }
 
     fn stomp_wave_location(&self) -> Result<(usize, usize), ToneError> {

@@ -6600,3 +6600,90 @@ fn delay_association_gui_refuses_nonfinite_values_without_dirtying_the_library()
         }
     }
 }
+
+#[test]
+fn table_panel_shows_named_models_and_undoes_model_and_metadata_edits_in_a_bank() {
+    fn collect_text(shape: &egui::epaint::Shape, text: &mut String) {
+        match shape {
+            egui::epaint::Shape::Text(shape) => {
+                text.push_str(&shape.galley.job.text);
+                text.push('\n');
+            }
+            egui::epaint::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    collect_text(shape, text);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let (context, mut app) = app();
+    context.style_mut(|style| style.animation_time = 0.0);
+    let first = named_amp_effects_tone(b'A');
+    let second = named_amp_effects_tone(b'B');
+    let original = fixed_pod_banks(&[vec![first, second.clone()]]);
+    let editor = app.podxt_mut();
+    editor.table_view_in_test = true;
+    editor.load_pod_bundle_bytes(original.clone()).unwrap();
+    app.select_test_editor::<PodxtEditor>();
+    click_pod(&context, &mut app, "pod-block-stomp");
+    app.podxt_mut()
+        .table_edit(0, |tone| {
+            tone.set_table_model(
+                "STOMP_MODEL",
+                0x020a_0009,
+                4,
+                true,
+                &pod_preset::UnknownPodDefaults,
+            )
+        })
+        .unwrap();
+
+    let frame = context.run(
+        egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 1800.0))),
+            ..Default::default()
+        },
+        |ctx| app.render(ctx),
+    );
+    let mut text = String::new();
+    for shape in frame.shapes {
+        collect_text(&shape.shape, &mut text);
+    }
+    assert!(text.contains("Harmony 1457"), "{text}");
+    assert!(text.contains("Wave"), "{text}");
+    assert!(text.contains("default unknown"), "{text}");
+    assert!(!text.contains("020a0009"), "{text}");
+    assert!(!text.contains("normalized"), "{text}");
+
+    app.podxt_mut()
+        .table_edit(0, |tone| {
+            tone.set_metadata(pod_preset::PodMetadata::Song, "Offline song")?;
+            Ok(Default::default())
+        })
+        .unwrap();
+    let changed = app.podxt().pod_bundle.as_ref().unwrap().as_bytes().to_vec();
+    assert_ne!(changed, original);
+    assert_eq!(app.podxt().pod_library.tone(1).unwrap().as_bytes(), second);
+    click_pod(&context, &mut app, "pod-undo");
+    assert_eq!(
+        app.podxt()
+            .pod_library
+            .tone(0)
+            .unwrap()
+            .metadata(pod_preset::PodMetadata::Song)
+            .unwrap(),
+        None
+    );
+    click_pod(&context, &mut app, "pod-undo");
+    assert_eq!(
+        app.podxt().pod_bundle.as_ref().unwrap().as_bytes(),
+        original
+    );
+    assert!(!app.podxt().pod_dirty());
+    click_pod(&context, &mut app, "pod-redo");
+    click_pod(&context, &mut app, "pod-redo");
+    assert_eq!(app.podxt().pod_bundle.as_ref().unwrap().as_bytes(), changed);
+    assert!(app.podxt().pod_dirty());
+}
