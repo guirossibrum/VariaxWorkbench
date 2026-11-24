@@ -160,12 +160,7 @@ fn changed_payload(
 }
 
 fn write_file_name(slot: Location) -> String {
-    let ext = match slot.kind() {
-        BankKind::Tones => "l6t",
-        BankKind::AmpSetups => "l6a",
-        BankKind::FxSetups => "l6f",
-    };
-    format!("{}.{}", slot.slot_name().replace(' ', "-"), ext)
+    format!("{}.l6t", slot.slot_name().replace(' ', "-"))
 }
 
 fn link_warning(snapshot: &Snapshot, slot: Location) -> Option<String> {
@@ -559,8 +554,8 @@ impl Locker {
             {
                 let name = match tone.container() {
                     ContainerKind::L6pa => "Tone copy.l6t",
-                    ContainerKind::L6as => "Amp Setup copy.l6a",
-                    ContainerKind::L6fs => "FX Setup copy.l6f",
+                    ContainerKind::L6as => "Amp Setup copy.l6t",
+                    ContainerKind::L6fs => "FX Setup copy.l6t",
                 };
                 let tone = tone.clone();
                 services.request_picker::<PodxtEditor>(

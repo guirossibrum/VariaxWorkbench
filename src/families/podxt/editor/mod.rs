@@ -3702,12 +3702,14 @@ impl PodxtEditor {
     }
 
     fn write_pod_copy(&mut self, services: &mut EditorServices<'_>, index: usize) -> bool {
-        if self.pod_bundle.is_some() {
-            let Some(path) = services.dialogs.save_pod_tone("podxt-live-bank.vwb") else {
-                self.pod_message = "Save cancelled. No file was written.".into();
-                return false;
+        if let Some(bundle) = &self.pod_bundle {
+            let name = if bundle.as_bytes().get(8..12) == Some(b"L6CO") {
+                "PODxt Live Collection.l6c"
+            } else {
+                "PODxt Live Bundle.l6b"
             };
-            let Some(bundle) = self.pod_bundle.as_ref() else {
+            let Some(path) = services.dialogs.save_pod_tone(name) else {
+                self.pod_message = "Save cancelled. No file was written.".into();
                 return false;
             };
             match bundle.save_copy(&path) {
