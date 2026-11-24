@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Variax Workbench layout proposal</title>
+<script>
+document.documentElement.classList.toggle("shot", /(?:\?|&)shot=1(?:&|$)/.test(location.search));
+</script>
+<style>
+:root {
+  --bg: #101114;
+  --bar: #171a1f;
+  --raised: #22262c;
+  --line: #3a4048;
+  --text: #f4f1ea;
+  --muted: #c4bfb4;
+  --dim: #9a9488;
+  --amber: #f0a202;
+  --focus: #ffc14d;
+  --danger: #ffb4a8;
+  --ok: #b6e3a2;
+  --ink: #1c140c;
+  --variax: #e0b15a;
+  --podxt: #e4572e;
+  --hd: #8aa0b4;
+  --amp: #c5c8cc;
+  --mic: #e4d7b0;
+  --stomp: #d06a1c;
+  --reverb: #c6a04a;
+  --comp: #2f646e;
+  --mod: #2a558f;
+  --delay: #2f6b3c;
+  --eq: #14697a;
+  --pedal: #4a4f55;
+  --gate: #8fd0da;
+  font: 14px/20px sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #07080a; }
+html.shot, html.shot body { width: 1440px; height: 900px; overflow: hidden; background: var(--bg); }
+button, input, a { font: inherit; color: inherit; }
+button { min-height: 32px; padding: 4px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--raised); cursor: default; }
+button.focused { outline: 2px solid var(--focus); outline-offset: 2px; }
+button.primary { background: #3a2a12; border-color: var(--amber); }
+.app { width: 1440px; height: 900px; margin: 0 auto; display: flex; flex-direction: column; background: var(--bg); position: relative; overflow: hidden; }
+.top { height: 56px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 16px; background: var(--bar); border-bottom: 1px solid var(--line); }
+.top img.mark { width: 28px; height: 28px; }
+.top .name { font-size: 15px; font-weight: 600; margin-right: 8px; }
+.top .spacer { flex: 1; }
+.tabs { height: 40px; flex: none; display: flex; align-items: flex-end; gap: 4px; padding: 0 12px; background: var(--bar); }
+.tab { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px 0 12px; border-radius: 6px 6px 0 0; background: #12141a; color: var(--muted); border: 1px solid transparent; }
+.tab.active { background: var(--bg); color: var(--text); border-color: var(--line); border-bottom-color: var(--bg); }
+.tab .accent { width: 8px; height: 8px; border-radius: 50%; }
+.tab .x { width: 32px; height: 24px; border: 0; background: transparent; color: var(--muted); }
+.tab .unsaved { color: var(--amber); font-size: 13px; }
+.page { flex: 1; min-height: 0; position: relative; }
+.status { height: 32px; flex: none; display: flex; align-items: center; gap: 16px; padding: 0 16px; background: var(--bar); border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+.chip { color: var(--text); }
+.chip.warn { color: var(--danger); }
+.proto-nav { width: 1440px; margin: 8px auto 24px; display: flex; flex-wrap: wrap; gap: 6px; padding: 0 8px; }
+.proto-nav a { color: var(--muted); font-size: 13px; }
+html.shot .proto-nav { display: none; }
+
+.start { padding: 24px; }
+.start h1 { font-size: 20px; line-height: 28px; font-weight: 600; margin: 8px 0 16px; }
+.cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.card { display: flex; flex-direction: column; gap: 8px; min-height: 220px; padding: 16px; border-radius: 8px; background: var(--raised); border: 1px solid var(--line); text-decoration: none; }
+.card img { width: 64px; height: 64px; }
+.card .hdmark { width: 64px; height: 64px; border-radius: 8px; display: grid; place-items: center; background: #2a3138; color: var(--hd); font-weight: 600; }
+.card b { font-size: 15px; }
+.card span { color: var(--muted); }
+
+.vx { height: 100%; display: flex; flex-direction: column; padding: 12px 16px 8px; gap: 8px; }
+.vx-head { height: 92px; flex: none; border-radius: 8px; padding: 8px 12px; display: flex; flex-direction: column; justify-content: center; gap: 6px; color: var(--text);
+  background:
+    repeating-linear-gradient(90deg, rgba(0,0,0,.15) 0 1px, transparent 1px 6px),
+    linear-gradient(180deg, #7a4b2a, #3a2416); }
+.row { display: flex; align-items: center; gap: 8px; }
+.bank { background: #1c140c; color: var(--text); border-color: #5a3a22; }
+.slot { width: 32px; height: 32px; padding: 0; background: #1c140c; color: var(--text); border-color: #5a3a22; }
+.slot.on { outline: 2px solid var(--variax); outline-offset: 1px; }
+.grow { flex: 1; }
+.field { height: 32px; min-width: 120px; padding: 4px 8px; border-radius: 6px; border: 1px solid #5a3a22; background: #1c140c; }
+.vx-mid { flex: 1; min-height: 0; display: grid; grid-template-columns: 1.15fr 1fr; gap: 12px; }
+.well { border-radius: 8px; background: #16130f; border: 1px solid #3a3028; display: flex; flex-direction: column; align-items: center; justify-content: center; position: relative; overflow: hidden; }
+.well img.body { max-height: 78%; max-width: 70%; object-fit: contain; }
+.positions { display: flex; gap: 8px; align-items: center; }
+.positions button:disabled { opacity: 1; background: #2a241c; color: var(--dim); }
+.cap { color: var(--dim); font-size: 13px; }
+.insp { border-radius: 8px; padding: 12px; overflow: auto; color: var(--ink);
+  background:
+    repeating-linear-gradient(180deg, rgba(255,255,255,.05) 0 1px, transparent 1px 3px),
+    linear-gradient(180deg, #d5cfc6, #9a948c); }
+.insp h2 { margin: 0 0 8px; font-size: 15px; }
+.seg { display: flex; gap: 4px; margin-bottom: 12px; }
+.seg button { background: #f4f1ea; color: var(--ink); border-color: #6d675f; }
+.seg button.on { background: var(--ink); color: var(--text); }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; margin-bottom: 8px; }
+.pair label, .stack label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.pair select, .stack select, .insp input[type="text"] { min-height: 32px; border-radius: 6px; border: 1px solid #6d675f; background: #f4f1ea; color: var(--ink); padding: 4px 8px; }
+.check { display: flex; gap: 8px; align-items: flex-start; margin: 8px 0; font-size: 13px; }
+.fret { height: 118px; flex: none; border-radius: 8px; position: relative; overflow: hidden; background: #1a120c center/cover no-repeat; }
+.strings { position: absolute; inset: 28px 16px 16px; display: grid; grid-template-columns: repeat(6, 1fr); }
+.strings div { text-align: center; font-size: 13px; color: #f4f1ea; text-shadow: 0 1px 2px #000; }
+.strings b { display: block; font-size: 15px; }
+
+.stage { height: calc(100% - 16px); margin: 8px 12px; display: flex; flex-direction: column; gap: 6px; padding: 22px 14px 10px;
+  background: #000 url("../../assets/ui/pod-farm/stage-frame.png") center/100% 100% no-repeat; }
+.meta { display: flex; gap: 8px; align-items: center; color: var(--text); font-size: 13px; }
+.meta input { min-height: 32px; width: 220px; border-radius: 6px; border: 1px solid var(--line); background: var(--raised); color: var(--text); padding: 4px 8px; }
+.switches { display: flex; gap: 6px; }
+.sw { display: flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 8px; border-radius: 6px; background: #1a1d22; border: 1px solid #2c3138; font-size: 13px; }
+.sw .led, .block header .led { width: 8px; height: 8px; border-radius: 50%; background: #2a241c; box-shadow: inset 0 0 0 1px #000; }
+.sw.on .led, .block:not(.off) header .led { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
+.grid { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(12, 1fr); grid-template-rows: 1.15fr 1fr 1fr .78fr; gap: 6px; }
+.block { border-radius: 8px; padding: 6px 8px; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.block.off { filter: saturate(.7); }
+.block.off .knobs, .block.off .selects { opacity: .55; }
+.block header { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
+.block header span { margin-left: auto; font-weight: 400; font-size: 11px; }
+.knobs { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: flex-start; }
+.knob { width: 56px; text-align: center; }
+.knob i { width: 32px; height: 32px; border-radius: 50%; display: block; margin: 2px auto; position: relative;
+  background: radial-gradient(circle at 35% 30%, #6a6156, #16130f 68%); box-shadow: inset 0 0 0 2px #3a342c; }
+.knob i::after { content: ""; position: absolute; left: 15px; top: 4px; width: 2px; height: 11px; background: var(--amber); transform-origin: 1px 12px; transform: rotate(calc((var(--p) - 50) * 2.5deg)); }
+.knob b, .knob em { display: block; font-style: normal; font-size: 11px; line-height: 14px; font-weight: 600; }
+.amp { grid-column: 1 / 7; grid-row: 1; background: var(--amp); color: var(--ink); }
+.mic { grid-column: 7 / 10; grid-row: 1; background: var(--mic); color: var(--ink); }
+.comp { grid-column: 10 / 13; grid-row: 1; background: var(--comp); color: var(--text); }
+.stomp { grid-column: 1 / 6; grid-row: 2; background: var(--stomp); color: var(--ink); }
+.mod { grid-column: 6 / 10; grid-row: 2; background: var(--mod); color: var(--text); }
+.gate { grid-column: 10 / 13; grid-row: 2; background: var(--gate); color: var(--ink); }
+.delay { grid-column: 1 / 6; grid-row: 3; background: var(--delay); color: var(--text); }
+.reverb { grid-column: 6 / 9; grid-row: 3; background: var(--reverb); color: var(--ink); }
+.eq { grid-column: 9 / 13; grid-row: 3; background: var(--eq); color: var(--text); }
+.pedal { grid-column: 1 / 13; grid-row: 4; background: var(--pedal); color: var(--text); flex-direction: row; align-items: center; gap: 12px; }
+.pedal header { width: 72px; }
+.selects { display: flex; flex-direction: column; gap: 4px; justify-content: center; }
+.selects b { font-size: 13px; font-weight: 400; }
+.model { font-size: 13px; margin-top: 4px; }
+.eq svg { width: 140px; height: 56px; }
+.scrim { position: absolute; inset: 0; background: rgba(0,0,0,.55); display: grid; place-items: center; padding: 24px; }
+.dialog { width: 720px; max-height: 100%; overflow: auto; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 16px 16px 12px; }
+.dialog h2 { margin: 0 0 8px; font-size: 20px; line-height: 28px; }
+.dialog p { margin: 0 0 8px; }
+.dialog .actions { display: flex; gap: 8px; margin-top: 12px; }
+.dialog .weak { color: var(--muted); font-size: 13px; }
+.steps { list-style: none; padding: 0; margin: 8px 0; }
+.steps li { display: flex; gap: 8px; min-height: 28px; align-items: center; }
+.steps .wait { color: var(--amber); }
+.hdpage, .states { padding: 24px; }
+.hdpage h1, .states h1 { font-size: 20px; margin: 0 0 12px; }
+.notice { max-width: 720px; padding: 12px 16px; border-radius: 8px; background: var(--raised); border: 1px solid var(--line); margin: 0 0 12px; }
+.state-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.state-grid article { padding: 12px 16px; border-radius: 8px; background: var(--raised); border: 1px solid var(--line); }
+.state-grid h2 { margin: 0 0 8px; font-size: 15px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<nav class="proto-nav" id="nav"></nav>
+<script>
+const MARK = "../../assets/ui/shell/workbench-mark.png";
+const VARIAX_ICON = "../../assets/ui/shell/variax.png";
+const POD_ICON = "../../assets/ui/shell/podxt-live.png";
+const BODY = "../../assets/ui/variax/spank-body.png";
+const FRET = "../../assets/ui/variax/fretboard.png";
+
+const LINKS = [
+  ["start", "Start"],
+  ["variax-body", "Tabs and body"],
+  ["variax", "Pickups"],
+  ["variax-controls", "Controls"],
+  ["podxt", "PODxt present"],
+  ["podxt-offline", "PODxt offline"],
+  ["podxt-disconnected", "Disconnected"],
+  ["podxt-unknown", "Presence unknown"],
+  ["hd", "HD500X"],
+  ["device-check", "Device check"],
+  ["detect", "Detect devices"],
+  ["save", "Save prompt"],
+  ["states", "Connection states"]
+];
+
+function btn(label, extra) {
+  return `<button type="button"${extra || ""}>${label}</button>`;
+}
+
+function topbar() {
+  return `<header class="top">
+    <img class="mark" alt="" src="${MARK}">
+    <div class="name">Variax Workbench</div>
+    ${btn("Open file…")}
+    ${btn("New offline tab")}
+    ${btn("Detect devices")}
+    ${btn("Save copy…")}
+    ${btn("Device check…")}
+    ${btn("Test recording…")}
+    <div class="spacer"></div>
+    ${btn("Help")}
+  </header>`;
+}
+
+function tab(label, accent, active, dirty) {
+  return `<div class="tab${active ? " active" : ""}">
+    <i class="accent" style="background:${accent}"></i>
+    <span>${label}</span>
+    ${dirty ? `<span class="unsaved">Unsaved</span>` : ""}
+    <button class="x" type="button" aria-label="Close">×</button>
+  </div>`;
+}
+
+function strip(which, dirty) {
+  const tabs = [
+    tab(which === "variax" && dirty ? "Variax · Spank example" : "Variax · Spank example", "var(--variax)", which === "variax", dirty),
+    tab(which === "disconnected" ? "PODxt Live · disconnected" : which === "unknown" ? "PODxt Live · presence unknown" : which === "podxt" ? "PODxt Live · identity pending" : "PODxt Live · Example tone", "var(--podxt)", which === "podxt" || which === "disconnected" || which === "unknown" || which === "offline", false),
+    tab("POD HD500X", "var(--hd)", which === "hd", false)
+  ];
+  if (which === "none") return `<nav class="tabs"></nav>`;
+  return `<nav class="tabs">${tabs.join("")}</nav>`;
+}
+
+function status(left, chip, warn) {
+  return `<footer class="status"><span>${left}</span><span class="chip${warn ? " warn" : ""}">${chip}</span></footer>`;
+}
+
+function shell(tabMode, dirty, left, chip, page, warn) {
+  return `<div class="app">${topbar()}${strip(tabMode, dirty)}<main class="page">${page}</main>${status(left, chip, warn)}</div>`;
+}
+
+function knob(label, value, p) {
+  return `<div class="knob" style="--p:${p}"><i></i><b>${value}</b><em>${label}</em></div>`;
+}
+
+function sw(name, on) {
+  return `<div class="sw${on ? " on" : ""}"><i class="led"></i>${name}<span>${on ? "On" : "Off"}</span></div>`;
+}
+
+function podxtPage() {
+  const switches = ["Gate", "Wah", "Stomp", "Comp", "EQ", "Vol", "Mod", "Delay", "Verb"]
+    .map((name) => sw(name, !["Gate", "Wah", "Comp"].includes(name))).join("");
+  return `<div class="stage">
+    <div class="meta">
+      <span>Tone</span><input value="Example tone" readonly>
+      <span>No channel · file only</span>
+      <span class="grow"></span>
+      <span>No live audio</span>
+    </div>
+    <div class="switches">${switches}</div>
+    <div class="grid">
+      <section class="block amp">
+        <header><i class="led"></i>AMP<span>On</span></header>
+        <div class="knobs">${knob("VOLUME", "78%", 78)}</div>
+        <div class="selects"><b>No amp model</b><b>No cab</b></div>
+      </section>
+      <section class="block mic">
+        <header><i class="led"></i>MIC<span>On</span></header>
+        <div class="selects"><b>No mic</b></div>
+      </section>
+      <section class="block comp off">
+        <header><i class="led"></i>COMP<span>Off</span></header>
+        <div class="knobs">${knob("THRESH", "0 dB", 50)}${knob("GAIN", "0 dB", 50)}</div>
+      </section>
+      <section class="block stomp">
+        <header><i class="led"></i>STOMP<span>On</span></header>
+        <div class="knobs">${knob("DRIVE", "100%", 100)}${knob("GAIN", "50%", 50)}${knob("TONE", "50%", 50)}</div>
+        <div class="model">Axial Fuzz</div>
+      </section>
+      <section class="block mod">
+        <header><i class="led"></i>MOD<span>On</span></header>
+        <div class="knobs">${knob("SPEED", "0.00 Hz", 8)}${knob("DEPTH", "50%", 50)}${knob("BASS", "50%", 50)}${knob("TREB", "50%", 50)}${knob("MIX", "50%", 50)}</div>
+        <div class="model">Sine Chorus</div>
+      </section>
+      <section class="block gate off">
+        <header><i class="led"></i>GATE<span>Off</span></header>
+        <div class="knobs">${knob("THRESH", "−50 dB", 18)}${knob("DECAY", "—", 40)}</div>
+      </section>
+      <section class="block delay">
+        <header><i class="led"></i>DELAY<span>On</span></header>
+        <div class="knobs">${knob("TIME", "500 ms", 42)}${knob("FEEDBACK", "10%", 10)}${knob("BASS", "50%", 50)}${knob("TREB", "50%", 50)}${knob("MIX", "50%", 50)}</div>
+        <div class="model">Analog Delay</div>
+      </section>
+      <section class="block reverb">
+        <header><i class="led"></i>REVERB<span>On</span></header>
+        <div class="knobs">${knob("DWELL", "50%", 50)}${knob("TONE", "50%", 50)}${knob("MIX", "20%", 20)}</div>
+        <div class="model">Lux Spring</div>
+      </section>
+      <section class="block eq">
+        <header><i class="led"></i>EQ<span>On</span></header>
+        <div class="knobs">
+          <svg viewBox="0 0 140 56" aria-hidden="true">
+            <polyline fill="none" stroke="#f4f1ea" stroke-width="2" points="4,28 36,28 70,28 104,28 136,28"/>
+            <circle cx="36" cy="28" r="3" fill="#ffc14d"/>
+            <circle cx="70" cy="28" r="3" fill="#f4f1ea"/>
+            <circle cx="104" cy="28" r="3" fill="#f4f1ea"/>
+          </svg>
+          ${knob("FREQ", "100 Hz", 22)}${knob("GAIN", "0.0 dB", 50)}
+        </div>
+      </section>
+      <section class="block pedal">
+        <header><i class="led"></i>PEDAL</header>
+        <div>
+          <div>Vetta Wah · Off</div>
+          <div>1-Wah 2-Vol</div>
+          <div>Compressor Threshold</div>
+        </div>
+        ${knob("VOL MIN", "0%", 0)}
+        ${knob("WAH POS", "50%", 50)}
+        <div><b>120.0 BPM</b><div>No linked model</div><div>(no Variax)</div></div>
+      </section>
+    </div>
+  </div>`;
+}
+
+function vxHead(activeSlot) {
+  const names = ["T-Model", "Spank", "Lester", "R-Billy", "12-string"];
+  const slots = names.map((name, i) => {
+    const n = i + 1;
+    return `<button class="slot${n === activeSlot ? " on" : ""}" type="button" title="${name} example">${n}</button>`;
+  }).join("");
+  return `<header class="vx-head">
+    <div class="row">
+      <button class="bank" type="button">Editing bank: Custom 1 (example)</button>
+      ${slots}
+      <span class="cap">Spank example</span>
+      <span class="grow"></span>
+      ${btn("Undo")}
+      ${btn("Redo")}
+    </div>
+    <div class="row">
+      <label>Model <input class="field" value="Spank example" readonly></label>
+      <label>Author <input class="field" value="" readonly></label>
+      <label class="grow">Notes <input class="field" style="width:100%" value="" readonly></label>
+      <span>Output trim 0.00dB</span>
+    </div>
+  </header>`;
+}
+
+function bodyWell() {
+  return `<div class="well">
+    <img class="body" alt="Spank body" src="${BODY}">
+    <div class="positions">
+      ${[1, 2, 3, 4, 5].map((n) => `<button type="button" disabled>${n}</button>`).join("")}
+      <span class="cap">Not in this editor yet</span>
+    </div>
+  </div>`;
+}
+
+function seg(which) {
+  const items = [["variax-body", "Body type"], ["variax", "Pickups"], ["variax-controls", "Controls"]];
+  return `<div class="seg">${items.map(([id, label]) => `<button type="button" class="${which === id ? "on" : ""}">${label}</button>`).join("")}</div>`;
+}
+
+function fret() {
+  const strings = [["E", "0"], ["A", "0"], ["D", "0"], ["G", "0"], ["B", "0"], ["E", "0"]];
+  return `<footer class="fret" style="background-image:url('${FRET}')">
+    <div class="strings">${strings.map(([n, v]) => `<div><b>${n}</b>${v} semitones</div>`).join("")}</div>
+  </footer>`;
+}
+
+function variax(section) {
+  let inspector = "";
+  if (section === "variax-body") {
+    inspector = `<h2>Guitar body</h2><div class="stack"><label>Body<select><option>Spank</option></select></label></div><p class="cap">Artwork folder stays on this section.</p>`;
+  } else if (section === "variax-controls") {
+    inspector = `<h2>Volume knob</h2>
+      <div class="pair"><label>Resistance<select><option>500k Ω</option></select></label><label>Taper<select><option>Audio</option></select></label></div>
+      <h2>Tone knob</h2>
+      <div class="pair"><label>Resistance<select><option>470k Ω</option></select></label><label>Capacitance<select><option>11 nF</option></select></label></div>
+      <div class="pair"><label>Tone position<input type="text" value="100%" readonly></label><label class="check"><input type="checkbox" disabled> Save tone-knob position</label></div>
+      <label class="check"><input type="checkbox" checked disabled> Auto-select Tone/Volume defaults when selecting pickup types</label>`;
+  } else {
+    inspector = `<h2>Pickup 1</h2>
+      <div class="stack"><label>Model<select><option>Spank Single Coil Bridge</option></select></label></div>
+      <div class="pair"><label>Position<input type="text" value='1.80"' readonly></label><label>Angle<input type="text" value="8.7°" readonly></label><label>Level<input type="text" value="+1.3dB" readonly></label></div>
+      <h2>Pickup 2</h2>
+      <div class="stack"><label>Model<select><option>Spank Single Coil Middle</option></select></label></div>
+      <div class="pair"><label>Position<input type="text" value='3.88"' readonly></label><label>Angle<input type="text" value="0.0°" readonly></label><label>Level<input type="text" value="+1.4dB" readonly></label></div>
+      <label class="check"><input type="checkbox" disabled> Reverse pickup 2 phase</label>
+      <label class="check"><input type="checkbox" disabled> Wire pickups in series</label>`;
+  }
+  return `<div class="vx">${vxHead(2)}<div class="vx-mid">${bodyWell()}<aside class="insp">${seg(section)}${inspector}</aside></div>${fret()}</div>`;
+}
+
+function startPage() {
+  return `<div class="start">
+    <div class="row">${btn("Open file…")}${btn("Detect devices")}</div>
+    <h1>Open a file or start an offline tab</h1>
+    <div class="cards">
+      <a class="card" href="#variax"><img alt="" src="${VARIAX_ICON}"><b>Variax (example banks)</b><span>Custom 1 and Custom 2, with the Spank example open on Pickups.</span></a>
+      <a class="card" href="#podxt-offline"><img alt="" src="${POD_ICON}"><b>PODxt Live</b><span>Example tone. Nothing is sent, and no preset is switched.</span></a>
+      <div class="card"><div class="hdmark">HD</div><b>POD HD500X</b><span>File editor. Live connection not supported yet.</span></div>
+    </div>
+  </div>`;
+}
+
+function hdPage() {
+  return `<div class="hdpage">
+    <h1>POD HD500X</h1>
+    <p class="notice">No HD Edit file open.</p>
+    <p class="notice">HD Edit files are handled offline. Internal target and physical compatibility remain unverified.</p>
+    <p class="notice">No device, audio, firmware or driver operation is available here. Copy saves never replace an existing file.</p>
+  </div>`;
+}
+
+function deviceCheck() {
+  return `<div class="scrim"><div class="dialog" role="dialog" aria-label="Device check">
+    <h2>Device check</h2>
+    <div class="row"><span>Mode</span>
+      ${btn("Simulation")}
+      ${btn("This computer", ` class="primary"`)}
+    </div>
+    <p>This computer — step 1 reads what Linux already knows. Later steps ask again, and only after you choose Yes for that step. Step 4 is not running.</p>
+    <p class="weak">Each step asks first, the answer is No unless you choose Yes, and a passed step never starts the next one.</p>
+    <p class="weak">Close stops the step before it starts. Once Yes has started, this window runs the exchange through to the end and cannot cancel it.</p>
+    <ul class="steps">
+      <li><span class="wait">▶</span><b>Step 1 · USB recognition</b><span class="wait">waiting for your answer</span></li>
+      <li><span>○</span><b>Step 2 · Device identification</b><span>not run</span></li>
+      <li><span>○</span><b>Step 3 · Settings read</b><span>not run</span></li>
+      <li><span>○</span><b>Step 4 · Change check</b><span>not run</span></li>
+    </ul>
+    <h2>Step 1: USB recognition</h2>
+    <p><b>What it does</b></p>
+    <p>Look at what Linux already knows about connected USB devices: vendor and product numbers, the description Linux saved when the device was plugged in, which Linux driver owns each part of it, and the list of sound cards. The app sends nothing to the PODxt Live or the guitar.</p>
+    <p><b>Risk</b></p>
+    <p>Low risk. The app only reads information Linux keeps. When the PODxt Live was plugged in, Linux's own drivers already talked to it (for example the Variax driver asks for a version); that happens without this app. If no device, several devices or unreadable information is found, the check stops instead of guessing.</p>
+    <div class="actions">
+      ${btn("No, stop", ` class="focused"`)}
+      ${btn("Yes, read this computer's USB list")}
+    </div>
+    <p class="weak">Nothing in this picture has run. Gate letters and the build lock sit in Details, which is closed.</p>
+    ${btn("Details")}
+  </div></div>`;
+}
+
+function detectDialog() {
+  return `<div class="scrim"><div class="dialog" role="dialog" aria-label="Detect devices" style="width:560px">
+    <h2>Detect devices</h2>
+    <p>Tested on Linux: PODxt Live 3.01 and Variax 600 3.10.</p>
+    <p>Scan cached USB information for supported devices? This scan sends no device requests.</p>
+    <div class="actions">${btn("Yes, scan")}${btn("No", ` class="focused"`)}</div>
+  </div></div>`;
+}
+
+function saveDialog() {
+  return `<div class="scrim"><div class="dialog" role="dialog" aria-label="Unsaved changes" style="width:560px">
+    <h2>Unsaved changes</h2>
+    <p>Save a copy to keep your changes before continuing.</p>
+    <div class="actions">
+      ${btn("Save copy and continue…")}
+      ${btn("Keep editing", ` class="focused"`)}
+      ${btn("Discard changes")}
+    </div>
+  </div></div>`;
+}
+
+function statesPage() {
+  const rows = [
+    ["No device", "Variax · Spank example", "No device", "An offline tab. No identity has been read."],
+    ["USB present", "PODxt Live · identity pending", "USB detected · identity pending", "The cable is present. The page does not say synced."],
+    ["Presence unknown", "PODxt Live · presence unknown", "USB presence could not be verified", "The scan could not confirm the device."],
+    ["Disconnected", "PODxt Live · disconnected", "Disconnected · editing the open file", "The open file stays. Nothing is written back."]
+  ];
+  return `<div class="states"><h1>Connection</h1><div class="state-grid">${rows.map(([title, tabTitle, chip, note]) =>
+    `<article><h2>${title}</h2><div class="tab active" style="display:inline-flex">${tabTitle}</div><p class="chip">${chip}</p><p class="weak">${note}</p></article>`).join("")}</div>
+    <p class="notice">POD HD500X uses a fifth chip: Live connection not supported yet.</p></div>`;
+}
+
+const VIEWS = {
+  start: () => shell("none", false, "No file open", "No device", startPage()),
+  "variax-body": () => shell("variax", false, "Opened the built-in example banks.", "No device", variax("variax-body")),
+  variax: () => shell("variax", false, "Opened the built-in example banks.", "No device", variax("variax")),
+  "variax-controls": () => shell("variax", false, "Opened the built-in example banks.", "No device", variax("variax-controls")),
+  podxt: () => shell("podxt", false, "Example tone · file · nothing is sent", "USB detected · identity pending", podxtPage()),
+  "podxt-offline": () => shell("offline", false, "Example tone · file · nothing is sent", "No device", podxtPage()),
+  "podxt-disconnected": () => shell("disconnected", false, "Example tone · file · nothing is sent", "Disconnected · editing the open file", podxtPage()),
+  "podxt-unknown": () => shell("unknown", false, "Example tone · file · nothing is sent", "USB presence could not be verified", podxtPage(), true),
+  hd: () => shell("hd", false, "No HD Edit file open", "Live connection not supported yet", hdPage()),
+  "device-check": () => shell("none", false, "No file open", "No device", startPage() + deviceCheck()),
+  detect: () => shell("none", false, "No file open", "No device", startPage() + detectDialog()),
+  save: () => shell("variax", true, "Opened the built-in example banks.", "No device", variax("variax") + saveDialog()),
+  states: () => shell("none", false, "Connection phrases", "No device", statesPage())
+};
+
+function render() {
+  const name = (location.hash || "#start").slice(1);
+  document.getElementById("root").innerHTML = (VIEWS[name] || VIEWS.start)();
+  document.getElementById("nav").innerHTML = LINKS.map(([id, label]) => `<a href="#${id}">${label}</a>`).join("");
+}
+window.addEventListener("hashchange", render);
+render();
+</script>
+</body>
+</html>
