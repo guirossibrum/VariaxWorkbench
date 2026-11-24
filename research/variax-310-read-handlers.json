@@ -1,0 +1,49 @@
+{
+  "archive_sha256": "e9f471e987b04cf31321e8a0da068f44abcdff2edbb32368385c08f92b999c1a",
+  "method": "static",
+  "dispatch_inventory": "variax-310-dispatch.json",
+  "commands": {
+    "0x2A": {
+      "table_word": "P:0x14340",
+      "handler": "P:0x144DD",
+      "confidence": "confirmed",
+      "arguments": [{"name": "session flag", "bytes": 1, "host_values": [0, 1]}],
+      "validation": "Stores bit 0 before consuming one trailing byte. The exit path does not compare that byte with the SysEx terminator.",
+      "effects": "Writes volatile X:0x17F4. Outgoing program-change and control-change helpers at P:0x14A0B and P:0x14A1D check this flag.",
+      "replies": "No immediate reply in the handler.",
+      "timing": "Reads through P:0x1257, which polls when no input byte is available. No receive deadline is visible in that helper.",
+      "unknowns": ["All readers of the session flag", "Timing and state under transport loss"]
+    },
+    "0x3C": {
+      "table_word": "P:0x14352",
+      "handler": "P:0x144A9",
+      "confidence": "confirmed",
+      "arguments": [
+        {"name": "word count", "bits": 24, "encoding": "six low-nibble-first bytes"},
+        {"name": "start word", "bits": 24, "encoding": "six low-nibble-first bytes"}
+      ],
+      "validation": "P:0x1268 masks each byte to its low nibble. P:0x144B4 checks the following byte for F7. No explicit count, address or end-of-span guard appears in this handler.",
+      "effects": "Reads Y:0xA47 plus start word and advances the pointer after each word. No direct flash write, preset switch or DSP bypass in the traced path.",
+      "replies": {
+        "success_opcode": "0x3C",
+        "success_data": "Six low-nibble-first bytes per word; no count or address echoed.",
+        "success_bytes_for_host_count_32": 200,
+        "unexpected_terminator_opcode": "0x72"
+      },
+      "timing": "Input helpers poll for bytes. The transmit helper at P:0x1241 waits for queue space. No elapsed-time bound is established.",
+      "host_shapes": [
+        {"count_words": 32, "start_word": 851},
+        {"count_words": 32, "start_word": 883}
+      ],
+      "buffer_evidence": [
+        {"entry": "P:0x1FB8", "words_copied": 873, "confidence": "confirmed"},
+        {"entry": "P:0x1FE5", "words_copied": 1092, "confidence": "confirmed"}
+      ],
+      "unknowns": [
+        "Effective loop limits for zero or exceptional counts on the installed processor",
+        "Full-span data provenance for every preset-selection path",
+        "Physical response and throughput for non-metadata addresses"
+      ]
+    }
+  }
+}
