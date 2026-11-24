@@ -10,6 +10,8 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] The shell footer keeps a bounded height when status text wraps. A headless regression checks 24 frames and retains space for the editor. The existing New Collection workflow passes with short and deeply nested file paths. [#237](https://github.com/guirossibrum/VariaxWorkbench/issues/237).
+
 - [x] [#202](https://github.com/guirossibrum/VariaxWorkbench/issues/202) adds Follow to the verified Variax device tab, with live preset, volume and tone displays, clip and device notices, and Workbench slot settling. Live values leave the saved preset and its tone flag intact. Use Refresh guitar with Follow off to detect a VDI unplug. [Owner test card](src/families/variax/editor/follow-test-card.md).
 
 - [x] Shared non-blocking picker for shell Open File, Device check reports and backup folders, and recording load and save. Four headless tests cover results, cancellation, duplicate requests, and continued updates while a picker is pending. The family-editor callers and the Hyprland owner check remain pending. [Picker handoff and owner check](non-blocking-pickers.md) · [#233](https://github.com/guirossibrum/VariaxWorkbench/issues/233).

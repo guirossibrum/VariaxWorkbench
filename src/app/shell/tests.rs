@@ -312,3 +312,41 @@ fn control_q_uses_the_existing_quit_prompt_and_plain_q_does_nothing() {
     assert!(!app.permit_close);
     assert!(app.tabs.entries[0].editor.dirty());
 }
+
+#[test]
+fn wrapped_status_does_not_grow_over_successive_frames() {
+    let ctx = egui::Context::default();
+    let mut app = empty_shell(&ctx);
+    app.new_tab(registry::LEGACY_STARTUP);
+    app.shell_status = format!(
+        "Saved in /{}New Collection.l6c.",
+        "project-directory/".repeat(9)
+    );
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1120.0, 760.0));
+    let mut heights = Vec::new();
+    let mut editor_heights = Vec::new();
+
+    for _ in 0..24 {
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            },
+            |ctx| app.render(ctx),
+        );
+        let footer = egui::containers::panel::PanelState::load(&ctx, egui::Id::new("status"))
+            .expect("shell footer");
+        heights.push(footer.rect.height());
+        editor_heights.push(ctx.available_rect().height());
+    }
+
+    assert!(heights[0] > 29.0, "the status should wrap: {heights:?}");
+    assert!(
+        heights.iter().all(|height| *height <= 47.0),
+        "footer heights: {heights:?}"
+    );
+    assert!(
+        editor_heights.iter().all(|height| *height >= 560.0),
+        "editor heights: {editor_heights:?}"
+    );
+}
