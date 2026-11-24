@@ -593,8 +593,8 @@ impl Workbench {
             }
             let mut visible = String::new();
             let banner = device_probe::availability_banner();
-            ui.colored_label(FRET_MARKER, banner);
-            visible.push_str(banner);
+            ui.colored_label(FRET_MARKER, &banner);
+            visible.push_str(&banner);
             let label = device_probe::this_computer_label();
             ui.label(label);
             visible.push_str(&format!("\n{label}"));
@@ -616,11 +616,17 @@ impl Workbench {
             for stage in Stage::LADDER {
                 let status = self.device_check.status(stage);
                 let waiting = self.device_check.awaiting() == Some(stage);
-                let locked = self.device_check.locked(stage);
+                let unavailable = self.device_check.locked(stage);
+                let gate_locked = hardware_gates::is_locked(stage.gate());
                 let (mark, colour, state) = match status {
                     StageStatus::Passed => ("✔", Color32::from_rgb(167, 231, 133), status.label()),
                     StageStatus::Stopped => ("■", Color32::LIGHT_RED, status.label()),
-                    StageStatus::NotRun if locked => ("○", Color32::GRAY, "locked in this build"),
+                    StageStatus::NotRun if unavailable && gate_locked => {
+                        ("○", Color32::GRAY, "locked in this build")
+                    }
+                    StageStatus::NotRun if unavailable => {
+                        ("○", Color32::GRAY, "unavailable in this build")
+                    }
                     StageStatus::NotRun if waiting => ("▶", FRET_MARKER, "waiting for your answer"),
                     StageStatus::NotRun => ("○", Color32::GRAY, status.label()),
                 };
@@ -635,8 +641,10 @@ impl Workbench {
                     ui.weak(state);
                     let lock = if device_probe::live_stage_available(stage) {
                         "real device: open"
-                    } else {
+                    } else if gate_locked {
                         "real device: locked"
+                    } else {
+                        "real device: unavailable"
                     };
                     ui.weak(format!("· {lock}"));
                     visible.push_str(&format!("\nstep {} {state} {lock}", stage.number()));
@@ -1459,7 +1467,7 @@ mod tests {
         assert!(!app.device_check_visible.contains("Simulation"));
         assert!(
             app.device_check_visible
-                .contains(device_probe::availability_banner())
+                .contains(&device_probe::availability_banner())
         );
 
         // Rendering alone never runs a step.
@@ -1616,7 +1624,7 @@ mod tests {
         let marker = if device_probe::live_stage_available(Stage::Identification) {
             "open"
         } else {
-            "locked"
+            "unavailable"
         };
         assert!(app.device_check_visible.contains(&format!(
             "step 2 waiting for your answer real device: {marker}"
@@ -1710,7 +1718,7 @@ mod tests {
         assert_eq!(app.device_check.awaiting(), Some(Stage::UsbRecognition));
         assert!(
             app.device_check_visible
-                .contains(device_probe::availability_banner())
+                .contains(&device_probe::availability_banner())
         );
         assert!(
             app.device_check_visible
@@ -1724,7 +1732,7 @@ mod tests {
         } else {
             assert!(
                 app.device_check_visible
-                    .contains("step 2 locked in this build")
+                    .contains("step 2 unavailable in this build")
             );
         }
         if device_probe::live_stage_available(Stage::SettingsRead) {
@@ -1737,14 +1745,14 @@ mod tests {
         } else {
             assert!(
                 app.device_check_visible
-                    .contains("step 3 locked in this build"),
+                    .contains("step 3 unavailable in this build"),
                 "step 3: {}",
                 app.device_check_visible
             );
         }
         assert!(
             app.device_check_visible
-                .contains("step 4 locked in this build"),
+                .contains("step 4 unavailable in this build"),
             "step 4: {}",
             app.device_check_visible
         );
@@ -1767,7 +1775,7 @@ mod tests {
                 StageStatus::Stopped
             );
             assert!(app.device_check_visible.contains("Stopped at step 2"));
-            assert!(device_probe::reports_panel_note().contains("gates G1–G3"));
+            assert!(device_probe::reports_panel_note().contains("steps 1–3"));
         } else {
             assert_eq!(app.device_check.awaiting(), None);
             assert!(!app.device_check_buttons.contains_key("yes"));
@@ -1782,7 +1790,7 @@ mod tests {
                 app.device_check_visible
                     .contains(device_probe::this_computer_finished_message())
             );
-            assert!(device_probe::reports_panel_note().contains("This build can run gate G1."));
+            assert!(device_probe::reports_panel_note().contains("This build offers step 1."));
         }
         assert_eq!(
             app.device_check.status(Stage::SettingsRead),
@@ -1836,7 +1844,7 @@ mod tests {
         assert!(app.device_check_visible.contains(BACKUP_PODXT));
         assert!(
             app.device_check_visible
-                .contains("step 4 locked in this build")
+                .contains("step 4 unavailable in this build")
         );
         click_device_check(&context, &mut app, "backup-variax");
         assert!(app.device_check_visible.contains(BACKUP_VARIAX_DOES));
@@ -1864,7 +1872,7 @@ mod tests {
         assert!(app.device_check_visible.contains(TONE_KEEP));
         assert!(
             app.device_check_visible
-                .contains("step 4 locked in this build")
+                .contains("step 4 unavailable in this build")
         );
         click_device_check(&context, &mut app, "tone-try");
         assert!(app.device_check_visible.contains(TONE_TRY_DOES));

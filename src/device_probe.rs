@@ -8,16 +8,11 @@
 //! cancel, a failure or an ambiguous result stops the whole sequence. A passed
 //! stage never starts the next one by itself.
 //!
-//! Two backends exist. [`SimulatedRig`] (the default) answers stage 1 from a
-//! synthetic sysfs fixture, stage 2 from the offline identity exchange, and
-//! stages 3–4 from the in-memory [`VirtualControl`]. [`HostRig`] ("This
-//! computer") runs step 1 with the real reader [`LinuxSysfs`], whose reads go
-//! through `run_if_unlocked(Gate::OsDiscovery, …)`. Step 2's live form is the
-//! Variax name question from the family library. Step 3 reads the Variax
-//! settings and the PODxt Live tone. Step 4 stays off. The editor's own fetch
-//! stays off because `G3_CURRENT_SETTINGS_READ_LOCKED` stays true. G1 and G2
-//! are open. Step 2 is offered only after this session's step 1 has passed
-//! for one PODxt Live with the expected drivers. See `docs/device-check.md`.
+//! The host backend reads the OS metadata through the G1 gate. Step 2
+//! needs this session's successful step 1 with the expected driver binding.
+//! Step 3 reads the Variax settings and PODxt Live tone. The host backend
+//! leaves step 4 unavailable. The simulated backend uses injected sources
+//! for all four steps. See `docs/device-check.md`.
 
 use crate::hardware_gates::{self, Gate};
 use crate::identity_stage::{
@@ -43,7 +38,6 @@ pub const LIVE_STAGES: [Stage; 2] = [Stage::UsbRecognition, Stage::Identificatio
 /// The answer used whenever the person has not chosen.
 pub const DEFAULT_CONSENT: Consent = Consent::No;
 pub const THIS_COMPUTER_LABEL: &str = "This computer (G1) — step 1 reads what Linux already knows about connected USB devices and sound cards. Nothing is sent to the PODxt Live or the guitar.";
-pub const G1_ONLY_BANNER: &str = "Only gate G1 (USB recognition) is open in this build, by the owner's direct permission. Gates G2–G7 stay locked: steps 2–4 never run on a real device.";
 /// Driver on PODxt Live interface 0 when the rig is ready for step 2.
 pub const EXPECTED_POD_DRIVER: &str = "snd-usb-pod";
 /// Driver on PODxt Live interface 1 when the rig is ready for step 2.
@@ -1539,8 +1533,7 @@ pub fn live_stage_available(stage: Stage) -> bool {
     if !cfg!(target_os = "linux") {
         return false;
     }
-    // Step 3 and step 4 share the settings-read gate name. Step 4 stays off.
-    // The editor's own fetch still checks that gate and stays off.
+    // Step 3 has its own Device check gate. Step 4 has no host procedure.
     if stage == Stage::SettingsRead {
         return cfg!(feature = "usb")
             && !hardware_gates::is_locked(Gate::DeviceCheckCurrentSettingsRead)
@@ -1575,56 +1568,83 @@ pub fn open_gates() -> crate::probe_report::OpenGates {
     }
 }
 
-pub fn availability_banner() -> &'static str {
-    use crate::probe_report::OpenGates;
-    match open_gates() {
-        OpenGates::G1 => G1_ONLY_BANNER,
-        OpenGates::G1AndG2 => "Gates G1 and G2 are open in this build. Steps 3 and 4 stay locked.",
-        OpenGates::G1ThroughG3 => {
-            "Gates G1–G3 are open in this build. Step 3 reads the Variax settings and the PODxt Live tone. Step 2 sends one Variax identity request after a fresh step 1 pass for one PODxt Live with snd-usb-pod on interface 0 and snd-usb-variax on interface 1. Step 4 stays locked. Gates G4–G7 stay locked."
-        }
-        OpenGates::G2 => {
-            "Gate G2 is open in this build and gate G1 is not. Step 1 cannot read this computer, so later steps are not offered. Step 4 stays locked."
-        }
-        OpenGates::None => "Every hardware lock stays closed in this build.",
-    }
+const GATE_GROUPS: &[(&str, &[Gate])] = &[
+    ("G1", &[Gate::OsDiscovery]),
+    ("G2", &[Gate::IdentityRequest]),
+    (
+        "G3",
+        &[
+            Gate::CurrentSettingsRead,
+            Gate::DeviceCheckCurrentSettingsRead,
+        ],
+    ),
+    ("G4", &[Gate::AudioCapture]),
+    ("G5", &[Gate::FullBackupRead, Gate::DeviceCheckBackup]),
+    (
+        "G6",
+        &[
+            Gate::EditBufferWrite,
+            Gate::DeviceCheckLiveTest,
+            Gate::KeepLiveEdit,
+            Gate::DeviceCheckChannel,
+        ],
+    ),
+    ("G7", &[Gate::StoreRestore]),
+];
+
+fn gate_summary(is_locked: impl Fn(Gate) -> bool) -> String {
+    GATE_GROUPS
+        .iter()
+        .map(|(name, gates)| {
+            let locked = gates.iter().filter(|&&gate| is_locked(gate)).count();
+            let status = if locked == 0 {
+                "open"
+            } else if locked == gates.len() {
+                "locked"
+            } else {
+                "partly open"
+            };
+            format!("{name} {status}")
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
-/// Shown when This computer has finished the steps this build can run.
-/// A G1-only build still says steps 2–4 stay locked.
+pub fn availability_banner() -> String {
+    format!(
+        "Compiled hardware gates · {}. Firmware installation is outside the app.",
+        gate_summary(hardware_gates::is_locked)
+    )
+}
+
+/// Describes the numbered procedures this build offers.
 pub fn this_computer_finished_message() -> &'static str {
     use crate::probe_report::OpenGates;
     match open_gates() {
-        OpenGates::G1 | OpenGates::None => {
-            "Step 1 finished. Steps 2–4 stay locked in this build; nothing else will run. Copy the detailed report into issue #125."
+        OpenGates::G1 => {
+            "Step 1 finished. Steps 2–4 are unavailable in this build. Copy the detailed report into issue #125."
         }
-        OpenGates::G1AndG2 => "This build can run steps 1 and 2. Steps 3 and 4 stay locked.",
+        OpenGates::G1AndG2 => "This build offers steps 1 and 2. Steps 3 and 4 are unavailable.",
         OpenGates::G1ThroughG3 => {
-            "Steps 1, 2, and 3 are the ones this build can run. Step 4 stays locked. Copy the detailed report into issue #125."
+            "Steps 1, 2, and 3 are the ones this build can run. Step 4 is not offered. Copy the detailed report into issue #125."
         }
-        OpenGates::G2 => {
-            "The steps this build can run are finished. Gate G2 is open and gate G1 is not. Step 4 stays locked. Copy the detailed report into issue #125."
-        }
+        OpenGates::G2 | OpenGates::None => "This build cannot run the step 1 preflight.",
     }
 }
 
-/// The Reports panel note for the steps 1–2 report. It names the gates this
-/// build can run, so a later build does not keep a fixed "G2 stays locked" line.
+/// Names the numbered steps in the report, independently of other gates.
 pub fn reports_panel_note() -> &'static str {
     use crate::probe_report::OpenGates;
     match open_gates() {
         OpenGates::G1 => {
-            "Steps 1–2 report (schema 2). Its identities are the ones this check decoded. This build can run gate G1. Gate G2 stays locked."
+            "Steps 1–2 report (schema 2). Its identities are the ones this check decoded. This build offers step 1."
         }
-        OpenGates::G1AndG2 => "Steps 1–2 report (schema 2). This build can run gates G1 and G2.",
+        OpenGates::G1AndG2 => "Steps 1–2 report (schema 2). This build offers steps 1 and 2.",
         OpenGates::G1ThroughG3 => {
-            "Steps 1–2 report (schema 2). Its identities are the ones this check decoded. This build can run gates G1–G3. Step 3 reads the Variax and the PODxt Live. Step 4 stays locked. Gates G4–G7 stay locked."
+            "Steps 1–2 report (schema 2). Its identities are the ones this check decoded. This build offers steps 1–3. Step 3 reads the Variax and the PODxt Live. Step 4 is not offered."
         }
-        OpenGates::G2 => {
-            "Steps 1–2 report (schema 2). Its identities are the ones this check decoded. This build can run gate G2. Gate G1 is not open in this build."
-        }
-        OpenGates::None => {
-            "Steps 1–2 report (schema 2). Its identities are the ones this check decoded. Every hardware lock stays closed in this build."
+        OpenGates::G2 | OpenGates::None => {
+            "Steps 1–2 report (schema 2). This build cannot run the step 1 preflight."
         }
     }
 }
@@ -1636,12 +1656,13 @@ pub fn this_computer_label() -> &'static str {
             "This computer (G1 and G2) — step 1 reads Linux metadata and step 2 asks for Variax identity."
         }
         OpenGates::G1ThroughG3 => {
-            "This computer (G1–G3) — step 1 reads what Linux already knows. Step 2 is offered only after that read shows one PODxt Live with the expected drivers. Yes on step 2 asks the Variax its name. Yes on step 3 reads the Variax settings and the PODxt Live tone. Step 4 stays locked."
+            "This computer (G1–G3) — step 1 reads what Linux already knows. Step 2 is offered only after that read shows one PODxt Live with the expected drivers. Yes on step 2 asks the Variax its name. Yes on step 3 reads the Variax settings and the PODxt Live tone. Step 4 is not offered."
         }
         OpenGates::G2 => {
             "This computer (G2) — step 1 is not open in this build, so the identity request is not offered."
         }
-        OpenGates::G1 | OpenGates::None => THIS_COMPUTER_LABEL,
+        OpenGates::G1 => THIS_COMPUTER_LABEL,
+        OpenGates::None => "This computer — Device check is unavailable in this build.",
     }
 }
 
@@ -1706,29 +1727,36 @@ mod tests {
         );
         let note = reports_panel_note();
         let finished = this_computer_finished_message();
+        let banner = availability_banner();
+        for (name, _) in GATE_GROUPS {
+            assert!(banner.contains(&format!("{name} open")), "{banner}");
+        }
+        assert!(banner.contains("Firmware installation is outside the app."));
         if cfg!(all(target_os = "linux", feature = "usb")) {
-            assert!(availability_banner().contains("Gates G1–G3 are open"));
             assert!(this_computer_label().contains("G1–G3"));
             assert_eq!(ProbeMode::ThisComputer.label(), "This computer (G1–G3)");
             assert!(finished.starts_with("Steps 1, 2, and 3"));
-            assert!(note.contains("gates G1–G3"));
-            assert!(note.contains("Step 4 stays locked."));
+            assert!(note.contains("steps 1–3"));
+            assert!(note.contains("Step 4 is not offered."));
         } else if cfg!(target_os = "linux") {
-            assert_eq!(availability_banner(), G1_ONLY_BANNER);
             assert_eq!(this_computer_label(), THIS_COMPUTER_LABEL);
             assert_eq!(ProbeMode::ThisComputer.label(), "This computer (G1)");
             assert!(finished.starts_with("Step 1 finished."));
-            assert!(finished.contains("Steps 2–4 stay locked"));
-            assert!(note.contains("This build can run gate G1."));
-            assert!(note.contains("Gate G2 stays locked."));
-            assert!(!note.contains("gates G1 and G2"));
+            assert!(finished.contains("Steps 2–4 are unavailable"));
+            assert!(note.contains("This build offers step 1."));
         } else {
-            assert_eq!(
-                availability_banner(),
-                "Every hardware lock stays closed in this build."
-            );
-            assert!(note.contains("Every hardware lock stays closed in this build."));
+            assert!(note.contains("cannot run the step 1 preflight"));
         }
+    }
+
+    #[test]
+    fn gate_summary_tracks_closed_and_partly_open_groups() {
+        let summary =
+            gate_summary(|gate| matches!(gate, Gate::AudioCapture | Gate::DeviceCheckBackup));
+        assert_eq!(
+            summary,
+            "G1 open · G2 open · G3 open · G4 locked · G5 partly open · G6 open · G7 open"
+        );
     }
 
     #[test]

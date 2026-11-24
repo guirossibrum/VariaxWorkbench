@@ -8,14 +8,14 @@ Issues [#134](https://github.com/guirossibrum/VariaxWorkbench/issues/134),
 **G2 is authorized for any user of the same supported rig** as one Variax 600
 identity request through the PODxt Live, recorded in [the G2 ledger](hardware-gates/g2.md).
 Device-check step 3 reads the Variax current settings and the PODxt Live
-current tone. Step 4 stays locked. Device check on This computer also offers a
+current tone. Step 4 is unavailable in Device check. Device check on This computer also offers a
 Variax library backup and a PODxt Live library backup. The Variax backup
 changes presets while it reads, then tries to switch back. The PODxt Live
 backup reads stored tones and setups by memory location while the current tone
 remains selected. Both backups leave device storage untouched.
 See [the G1 procedure](hardware-gates/g1.md).
-The window opens on **This computer**. The banner and report name the gates
-available in the build. The window scrolls if its contents exceed the
+The window opens on **This computer**. The header shows the state of the compiled gate constants. The numbered
+steps and report show which Device check procedures the build offers. The window scrolls if its contents exceed the
 available height. Steps 2 and 3 require Linux and the `usb` feature. Step 2
 also needs a fresh step 1 pass. A Linux build without `usb` offers step 1.
 Each step asks first, with **No** as the default. The two backup actions
@@ -75,7 +75,7 @@ covers the physical rig.
 | 1 | USB recognition | G1 | Read what Linux already holds (USB ids, cached descriptor fields, bound drivers, ALSA card list). Sends nothing. |
 | 2 | Device identification | G2 | One Variax 600 name question over interface 1. An incomplete reply or timeout stops the check. The PODxt Live is not asked in this step. |
 | 3 | Settings read | G3 | Variax current settings (session on, two blocks, session off) and the PODxt Live current tone. Partial current settings, not a backup. Step 4 stays off. |
-| 4 | Change check | G3 | Stays locked. The person would change `string1_tuning` on the guitar and the app would read again. This build does not offer it. |
+| 4 | Change check | G3 | Unavailable in Device check. The simulated test backend exercises the change check. |
 
 The exact action and risk text for each step is `Stage::action` / `Stage::risk`
 in `src/device_probe.rs`; the window shows them verbatim before asking.
