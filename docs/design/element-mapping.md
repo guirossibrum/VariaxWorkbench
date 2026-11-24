@@ -44,7 +44,7 @@ This map does not change code.
 | Tone knob resistance, capacitance, Tone position, Save tone-knob position | Controls section. Example shows `470k Ω`, `11 nF`, `100%`, unchecked |
 | Auto-select checkbox and its hover sentence | Keep |
 | Output trim | Header readout `0.00dB` |
-| Fretboard and alternate tuning | Bottom row. Tuning pane on the left (Enable, per-string note, ♭, ♯, `0 semitones`). Vector neck on the right. `fretboard.png` is not stretched there |
+| Fretboard and alternate tuning | One bottom panel, same arrangement as the current editor. Left: Enable, Presets, then String / Shift / Note (High E at the top, shift field `0 semitones`, resulting note), then Lock and Reset. One ♭ / ♯ pair above the neck changes every string. The neck is a −12…+12 semitone scale, labels −12, −7, −5, 0, +5, +7, +12, a highlighted 0 line, and one marker per string at its shift. Dragging a marker sets that string. No per-string ♭ / ♯, and no inlay dots. `fretboard.png` is not used |
 | Positions 1–5 under the body | Not drawn. Header slots 1–5 stay the bank presets. The five-position selector is not in this editor |
 | Spread, and `Workbench 1.75 had no Spread control.` | Stays off the standard-guitar page |
 | Milestone essay (`guitar::milestones`) | Already in Help via `Family::help`. It does not return to the guitar page |

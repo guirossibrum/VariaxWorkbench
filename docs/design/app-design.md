@@ -14,8 +14,8 @@ replacement is one shell, with two historical instrument layouts inside it.
   row of block images in Line 6 Edit 3.06's order. The selected block's
   editor is one panel under that row. The amp is that panel's main view.
 - The Variax page keeps Variax Workbench 1.75's regions: wood header, guitar
-  body, pickup and control inspector, and a bottom row with alternate tuning
-  and the neck.
+  body, pickup and control inspector, and one bottom panel for alternate
+  tuning. The neck in that panel is the current semitone scale.
 - POD HD500X stays a file editor in the same shell. It does not borrow either
   chassis.
 
@@ -106,8 +106,8 @@ The space scale is 4, 8, 12, 16, 24. Corner radius is 6 on controls and 8 on
 panels and dialogs. Card grids use one 16-point gap on both axes. A note
 that would sit flush under a row is either a card in that grid or the
 tooltip of the control it describes. Every click target is at least 32×32,
-including tab close, knob hit area, the pickup sliders, and the tuning
-♯ / ♭ buttons. The focus ring sits
+including tab close, knob hit area, the pickup sliders, each shift field,
+and the ♭ / ♯ pair above the neck. The focus ring sits
 outside the target and is not the same colour as selection.
 
 ## High DPI
@@ -141,7 +141,7 @@ error, dirty, and pressed.
 Tab order is top bar, tab strip, page controls, status bar. A modal dialog
 cycles only its own buttons. Escape cancels. Enter activates the focused
 button. Arrow keys move inside one group: a bank's slots, one block's knobs,
-or one string's ♯ / ♭ buttons.
+or the ♭ / ♯ pair above the neck.
 
 These shortcuts already exist in Help and stay:
 
@@ -209,13 +209,13 @@ of this app.
 | --- | --- | --- |
 | Header | about 80, taller when the metadata row needs it | Bank, preset slots 1–5, model, author, notes, Undo, Redo, Unsaved |
 | Middle | remaining | Guitar body, large, and the inspector |
-| Bottom | 248 | Alternate tuning on the left, vector neck on the right |
+| Bottom | 300 | One alternate-tuning panel: table on the left, semitone neck on the right |
 
-The wood header, the body well, the brushed-metal inspector, and the neck are
-CSS. The photos on this page are the Spank body and the Spank pickup sprite.
-See `assets/ui/SOURCES.md`. The low-resolution `fretboard.png` is not stretched
-across the neck. The neck is drawn in the page: nut, frets, six strings, and
-inlays. No image generator was used for it.
+The wood header, the body well, the brushed-metal inspector, and the tuning
+panel are CSS. The photos on this page are the Spank body and the Spank
+pickup sprite. See `assets/ui/SOURCES.md`. `fretboard.png` is not used. The
+neck is drawn in the page as a semitone scale. It is not a fretboard, and it
+has no nut and no inlay dots. No image generator was used for it.
 
 Pickup sprites are `spank-pickup.png`, placed with the editor's painter.
 Horizontal center is `68 + 318 * ((position clamped to 0.1…9.5) - 0.1) / 9.4`
@@ -262,10 +262,27 @@ second 1–5 row under the body is not on the page. Workbench's five-position
 pickup selector is not in this editor, and the mockup does not draw it.
 `Artwork folder…` is not on the page.
 
-The bottom-left pane is alternate tuning, off for the Spank example. Enable
-is the on/off control. Each string, high E at the top, shows its note, a
-flatten ♭ button, a sharpen ♯ button, and the offset `0 semitones`. Presets
-stays as the named-tuning menu from the current editor.
+The bottom of the page is one panel, and it keeps the current editor's
+alternate-tuning layout. Tuning is off for the Spank example. Enable and
+Presets sit at the top left. The table under them is String, Shift, and Note,
+high E at the top through low E. Each shift field shows `0 semitones`, and
+the note beside it is the resulting pitch (E, B, G, D, A, E). Lock and Reset
+sit under the table. Lock is disabled here: the current editor enables it
+only for a twelve-string body. Reset returns all six strings to standard
+tuning. Spread and the twelve-string mix and detune columns stay off the
+Spank page.
+
+One ♭ / ♯ pair sits above the neck, centered on 0. ♭ lowers every string by
+one semitone. ♯ raises every string by one semitone. There is no per-string
+pair.
+
+The neck is the same semitone scale the editor draws, from −12 to +12. Every
+semitone is a line. The labelled positions are −12, −7, −5, 0, +5, +7, and
++12. The 0 line is highlighted. Each string is a horizontal line with one
+marker at its current shift. On this example every marker is on 0. Dragging
+a marker left or right sets that string, which is the neck's per-string
+control. The shift field shows the same value. The drawing uses the theme
+colours. It does not copy the wood fretboard or its inlay dots.
 
 `Get from guitar` and `Send to guitar` leave the header. They are disabled
 dead ends (`locked during offline editing`). Reading and writing a guitar
@@ -355,6 +372,12 @@ Three findings stay available from Parameter notes, which is closed on the
 mockup: the compressor alias, mod and delay 14-bit rounding versus truncation,
 and the volume pedal's 128 versus 127. They are not presented as a finished
 live match. #219 binds the knobs to the table. This issue only places them.
+
+Owner review of mockup 05: the structure is approved. #219 modernizes the
+page when it is built. It is not a pixel copy of this mockup. That build
+removes the empty band above the amp heading, and it draws the Mod and Reverb
+rack skins larger in the chain. Mockup 06, the Delay Post → Pre reorder, is
+approved as drawn.
 
 ## POD HD500X
 
