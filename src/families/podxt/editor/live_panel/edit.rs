@@ -1,7 +1,9 @@
 use super::*;
-use podxt::{EditorBuffer, EditorEdit, LiveTarget, Target, Value};
+use podxt::{EditorBuffer, EditorEdit, LiveTarget, Target, Value, WholeToneSource};
 
 const EDIT_INTERVAL: Duration = Duration::from_millis(150);
+// #222's full-payload transfer has a separate first-run decision.
+const WHOLE_TONE_SEND_APPROVED: bool = false;
 
 #[derive(Default)]
 pub(super) struct LiveEditor {
@@ -52,6 +54,7 @@ enum Action {
     Get,
     Controls,
     Send,
+    ResendWholeTone,
     Undo,
 }
 
@@ -61,6 +64,7 @@ impl Action {
             Self::Get => "Get edit buffer",
             Self::Controls => "Apply live controls",
             Self::Send => "Send edit buffer",
+            Self::ResendWholeTone => "Resend whole current tone",
             Self::Undo => "Undo to snapshot",
         }
     }
@@ -121,6 +125,14 @@ fn edit_transaction<G, L: Link>(
             let stopped = || stop.load(Ordering::Acquire);
             let edit = match job.action {
                 Action::Get => return podxt::get_editor_buffer(session, stopped),
+                Action::ResendWholeTone => {
+                    return podxt::send_whole_tone(
+                        session,
+                        job.current.as_ref().expect("whole-tone send has snapshot"),
+                        WholeToneSource::Current,
+                        stopped,
+                    );
+                }
                 Action::Controls => EditorEdit::Controls(&job.targets),
                 Action::Send => EditorEdit::Send(&job.targets),
                 Action::Undo => EditorEdit::Undo(job.original.as_ref().expect("undo has snapshot")),
@@ -148,6 +160,9 @@ fn platform_edit(
     job: &Job,
     stop: &AtomicBool,
 ) -> Result<EditorBuffer, String> {
+    if job.action == Action::ResendWholeTone && !WHOLE_TONE_SEND_APPROVED {
+        return Err("Whole-tone resend awaits owner approval.".into());
+    }
     edit_transaction(
         job,
         stop,
@@ -194,6 +209,7 @@ impl LiveEditor {
 
     fn admitted(action: Action) -> bool {
         cfg!(all(target_os = "linux", not(test)))
+            && (action != Action::ResendWholeTone || WHOLE_TONE_SEND_APPROVED)
             && !hardware_gates::is_locked(Gate::OsDiscovery)
             && !hardware_gates::is_locked(Gate::CurrentSettingsRead)
             && (action == Action::Get
@@ -210,7 +226,7 @@ impl LiveEditor {
         }
         let targets = match action {
             Action::Send | Action::Controls => std::mem::take(&mut self.pending.0),
-            Action::Get | Action::Undo => {
+            Action::Get | Action::Undo | Action::ResendWholeTone => {
                 self.pending.0.clear();
                 Vec::new()
             }
@@ -275,6 +291,7 @@ impl LiveEditor {
                     }
                     Action::Undo => "Original snapshot verified byte for byte.".into(),
                     Action::Send => "Edit buffer sent and read back.".into(),
+                    Action::ResendWholeTone => "Whole tone sent and read back.".into(),
                     Action::Controls => "Live edit read back.".into(),
                 }));
                 Some(&active.current)
@@ -363,6 +380,18 @@ impl LiveEditor {
                 self.detach();
             }
         });
+        let resend = ui
+            .add_enabled(
+                idle && snapshot
+                    && !self.needs_get
+                    && self.pending.0.is_empty()
+                    && Self::admitted(Action::ResendWholeTone),
+                egui::Button::new(Action::ResendWholeTone.label()),
+            )
+            .on_disabled_hover_text("The separate #222 owner run is awaiting approval.");
+        if resend.clicked() {
+            action = Some(Action::ResendWholeTone);
+        }
         if let (Some(action), Some(device)) = (action, device) {
             self.start(action, device, ui.ctx());
         }

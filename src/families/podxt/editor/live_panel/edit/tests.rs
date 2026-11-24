@@ -168,3 +168,11 @@ fn model_specific_controls_only_appear_with_their_line6_layout() {
             .any(|setting| LiveControl::Additional(setting).cc() == 96)
     );
 }
+
+#[test]
+fn the_whole_tone_resend_has_its_own_closed_owner_gate() {
+    const {
+        assert!(!WHOLE_TONE_SEND_APPROVED);
+    }
+    assert!(!LiveEditor::admitted(Action::ResendWholeTone));
+}

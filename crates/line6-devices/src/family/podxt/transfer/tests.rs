@@ -65,21 +65,22 @@ fn whole_tone_send_is_byte_identical_to_the_original_encoder() {
         reply(PodxtRequest::EditBuffer, dump.raw.clone()),
         channel_reply(),
     ];
-    let mut quiet = Quiet;
-    let mut session = Session::new(
-        Fake::from_bytes(Path::PodxtMidi, script),
-        &AllowAll,
-        &mut quiet,
-    );
-    let result = send_whole_tone(
-        &mut session,
-        &original,
-        WholeToneSource::Payload(&source),
-        || false,
-    )
-    .unwrap();
-    assert_eq!(result.tone.raw, dump.raw);
-    session.link.assert_finished();
+    let mut cached = original.clone();
+    cached.tone.raw[39 + 7] = 50; // Get preceded a physical pedal movement.
+    for (expected, candidate) in [
+        (&original, WholeToneSource::Payload(&source)),
+        (&cached, WholeToneSource::Current),
+    ] {
+        let mut quiet = Quiet;
+        let mut session = Session::new(
+            Fake::from_bytes(Path::PodxtMidi, script.clone()),
+            &AllowAll,
+            &mut quiet,
+        );
+        let result = send_whole_tone(&mut session, expected, candidate, || false).unwrap();
+        assert_eq!(result.tone.raw, dump.raw);
+        session.link.assert_finished();
+    }
 }
 
 #[test]

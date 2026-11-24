@@ -98,11 +98,11 @@ pub fn send_whole_tone<L: Link>(
             return Err("Whole-tone send is closed. No edit was sent.".into());
         }
     }
-    let original = TonePayload::from_dump(&expected.tone)?.edit_dump();
+    TonePayload::from_dump(&expected.tone)?;
     open_editor(session, &cancelled)?;
     check_channel(session, expected.channel)?;
     let before = editor_tone(session)?;
-    if !still_current(&original, &before) {
+    if !still_current(&expected.tone, &before) {
         return Err("The playing tone changed. Get edit buffer again before sending.".into());
     }
     let current;
@@ -130,7 +130,7 @@ pub fn send_whole_tone<L: Link>(
         .map_err(|error| format!("{error} Edit-buffer state unknown."))?;
     let tone = read_after_write(session, expected.channel)
         .map_err(|error| format!("{error} Edit-buffer state unknown."))?;
-    if !still_current(&candidate, &tone) {
+    if candidate.raw != tone.raw {
         return Err("Whole-tone readback differs from the sent tone. Get edit buffer to inspect the result.".into());
     }
     Ok(EditorBuffer {
