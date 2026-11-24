@@ -19,6 +19,11 @@ path = "app/main.rs"
 required-features = ["gui"]
 
 [[bin]]
+name = "variax-workbench-ui-gallery"
+path = "src/shared/ui/gallery_bin.rs"
+required-features = ["gui"]
+
+[[bin]]
 name = "variax-check"
 path = "src/check_app.rs"
 
