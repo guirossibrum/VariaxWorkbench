@@ -29,7 +29,9 @@ impl GatePolicy for DeviceCheckPolicy {
                 !hardware_gates::is_locked(Gate::DeviceCheckCurrentSettingsRead)
             }
             // Library backup and preset switching stay on the backup policy.
-            Operation::PodxtLibraryRead
+            Operation::VariaxBankNameRead
+            | Operation::VariaxLibraryBridge
+            | Operation::PodxtLibraryRead
             | Operation::VariaxPresetSwitch
             | Operation::VariaxEditBufferWrite
             | Operation::VariaxStoreRestore

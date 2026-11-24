@@ -11,8 +11,8 @@ Device-check step 3 reads the Variax current settings and the PODxt Live
 current tone. Step 4 stays locked. Device check on This computer also offers a
 Variax library backup and a PODxt Live library backup. The Variax backup
 changes presets while it reads, then tries to switch back. The PODxt Live
-backup does not change the current tone. Nothing is written back to either
-device. G4 and G6–G8 are not authorized.
+backup reads stored tones and setups by memory location while the current tone
+remains selected. Both backups leave device storage untouched.
 See [the G1 procedure](hardware-gates/g1.md).
 The window still opens in **Simulation**. **This computer** is offered only
 when a live step is available. Its label, banner, and report name the gates
@@ -23,6 +23,51 @@ computer, under the steps, Back up the Variax and Back up the PODxt Live each
 ask first. No is the default. If the guitar does not answer the first Variax
 question, that backup asks again on the same connection, and if it is still
 quiet it gives the driver back and tries the connection once more.
+
+## Variax library backup
+
+The sweep follows Workbench 1.75 Save Backup Bundle
+([#207](https://github.com/guirossibrum/VariaxWorkbench/issues/207)).
+After identifying the guitar, the app enables PODxt Live Variax messages
+and starts the guitar MIDI session. It reads the current preset, then visits
+positions 1–5 in each of the 12 banks. Each program change is followed
+immediately by the two `0x3C` metadata reads (32 words at 851 and 883,
+up to 2,500 ms per reply). After position 5, it requests the selected
+bank name with `0x6D` (up to 1,000 ms), without another program change.
+
+The first failed read ends the sweep. If exactly one captured preset matches
+the original, the app reselects it and checks the settings. The app closes
+the MIDI session and attempts the PODxt Live release even after an error.
+Release failures are reported separately from the sweep. DSP processing
+stays on throughout.
+
+`index.txt` lists the names read from the guitar. `bank-names/00.syx`
+through `bank-names/11.syx` hold their raw replies and are covered by
+`MANIFEST.sha256`. The 120 preset replies retain their existing filenames.
+Older backups load with no bank names. `variax-probe compare` compares the
+preset replies across both formats.
+
+The offline Java recorder exercised Workbench's `RequestBundle` with 120
+synthetic metadata replies and 12 synthetic name replies. Its MIDI transcript
+matched the Rust fake transport for the 192 sweep messages, session-on
+message and two bridge messages. The recorder checks the timeouts and
+session pause. Run it with the local original Workbench classes, then pass
+the resulting transcript to the ignored Rust comparison test:
+
+```sh
+oracle_dir=$(mktemp -d)
+"$jdk/bin/javac" -cp "$original" -d "$oracle_dir" \
+  scripts/java-host-stubs/cmn/l6java/utils/L6StaticUtils.java \
+  scripts/VerifyVariaxWrite.java scripts/VerifyVariaxBackup.java
+"$jdk/bin/java" -cp "$oracle_dir:$original" VerifyVariaxBackup > "$oracle_dir/transcript.txt"
+VARIAX_BACKUP_REFERENCE="$oracle_dir/transcript.txt" \
+  cargo test --offline --manifest-path crates/line6-devices/Cargo.toml \
+  --all-features original_backup_transcript -- --ignored
+```
+
+Here `jdk` is the local JDK directory and `original` is the directory of
+extracted original classes. The [owner test card](variax-backup-test-card.md)
+covers the physical rig.
 
 ## Stages
 

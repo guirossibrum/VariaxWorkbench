@@ -306,8 +306,11 @@ fn pinned_hash_and_both_reverb_tables_are_checked() {
     );
 }
 
-fn backup_at(dir: &Path, reso: &[u8; 192], date: &str) {
+fn backup_at(dir: &Path, reso: &[u8; 192], date: &str, include_bank_names: bool) {
     fs::create_dir(dir.join("presets")).unwrap();
+    if include_bank_names {
+        fs::create_dir(dir.join("bank-names")).unwrap();
+    }
     let mut manifest = String::new();
     let mut add = |name: &str, bytes: &[u8]| {
         fs::write(dir.join(name), bytes).unwrap();
@@ -323,6 +326,15 @@ fn backup_at(dir: &Path, reso: &[u8; 192], date: &str) {
         add(&format!("{stem}-1.syx"), &reply(&raw[..96]));
         add(&format!("{stem}-2.syx"), &reply(&raw[96..]));
     }
+    if include_bank_names {
+        for bank in 0..12 {
+            let mut reply = vec![0xf0, 0, 1, 0x0c, 7, 4, 0x6d];
+            reply.extend(format!("Bank {bank}").bytes());
+            reply.resize(25, 0);
+            reply.push(0xf7);
+            add(&format!("bank-names/{bank:02}.syx"), &reply);
+        }
+    }
     add("identity.syx", &VARIAX_IDENTITY);
     add(
         "log.txt",
@@ -336,7 +348,7 @@ fn mismatched_old_and_incomplete_backups_are_refused() {
     let dir = tempfile::tempdir().unwrap();
     let baseline = settings();
     let date = "2026-11-23";
-    backup_at(dir.path(), &baseline, date);
+    backup_at(dir.path(), &baseline, date, false);
     check_backup(dir.path(), date, &baseline).unwrap();
     assert!(
         check_backup(dir.path(), "2026-11-24", &baseline)
@@ -352,6 +364,15 @@ fn mismatched_old_and_incomplete_backups_are_refused() {
     );
     fs::remove_file(dir.path().join("presets/10-Reso-5-2.syx")).unwrap();
     assert!(check_backup(dir.path(), date, &baseline).is_err());
+}
+
+#[test]
+fn backup_check_accepts_bank_name_replies() {
+    let dir = tempfile::tempdir().unwrap();
+    let baseline = settings();
+    let date = "2026-11-23";
+    backup_at(dir.path(), &baseline, date, true);
+    check_backup(dir.path(), date, &baseline).unwrap();
 }
 
 #[test]

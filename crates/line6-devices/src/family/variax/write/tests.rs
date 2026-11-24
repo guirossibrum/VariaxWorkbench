@@ -163,6 +163,12 @@ fn invalid_names_and_closed_or_incorrect_gates_send_nothing() {
             op == G6
         }
     }
+    struct G7Only;
+    impl GatePolicy for G7Only {
+        fn allows(&self, op: Operation) -> bool {
+            op == G7
+        }
+    }
     let name = "A model";
     let bytes = packed(name);
     let program = Program::new(name, &bytes).unwrap();
@@ -176,6 +182,10 @@ fn invalid_names_and_closed_or_incorrect_gates_send_nothing() {
     let mut session = Session::new(Recording::default(), &G6Only, &mut log);
     assert!(store(&mut session, Preset::new(0, 0).unwrap(), &program, || false).is_err());
     assert!(rename_bank(&mut session, 0, "Custom").is_err());
+    assert!(session.link.writes.is_empty());
+    let mut session = Session::new(Recording::default(), &G7Only, &mut log);
+    let error = rename_bank(&mut session, 0, "Custom").unwrap_err();
+    assert!(error.contains("VariaxBankNameRead"));
     assert!(session.link.writes.is_empty());
 }
 

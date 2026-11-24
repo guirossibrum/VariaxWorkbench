@@ -26,7 +26,7 @@ The lower-level Linux USB packet size and pacing are separate.
 | Tone position (G6) | Channel-1 `B0 4F vv`, with `vv` calculated by truncating `127 × position` in single precision. | Owner-run reads observed spontaneous tone-knob CC 79. Echo or application of an incoming CC 79 remains unknown. |
 | DSP bypass | `4C 01` at start of the stored patch block, `4C 00` when it ends. The normal real-time edit path leaves DSP processing active and sends DSP on when closing. | Original waits for no reply. Whether audio has resumed after an interrupted transfer is unknown. |
 | Store a slot (G7) | Send `43`, wait 100 ms, send `61` and flash index `bank × 5 + (4 − slot)`. Banks and slots are zero-based. | Original checks the first SysEx within its 15 s wait for an eight-byte `0x71` reply. Rust also validates the envelope. The reply provides no slot identifier or DSP data. Timeout, wrong reply, or transport error after the store may leave the slot changed. |
-| Write and read bank name (G7) | Program change to the bank's switch position zero using the existing preset mapping, wait 200 ms, send `6C` and 18 zero-padded ASCII bytes, wait 700 ms. Send `6D` to read the selected bank. | Original uses a 1 s reply wait for `6D` and reads the 18 name bytes from offset 7 of a reply at least 26 bytes long. It waits for no `6C` acknowledgement. Rust compares the name and bounds the read to one second total. The bank-select Program Change's echo and a name's persistence after power loss remain unknown. |
+| Rename bank (G7) with readback (G5) | Program change to the bank's switch position zero using the existing preset mapping, wait 200 ms, send `6C` and 18 zero-padded ASCII bytes, wait 700 ms. Send `6D` to read the selected bank. | Original uses a 1 s reply wait for `6D` and reads the 18 name bytes from offset 7 of a reply at least 26 bytes long. It waits for no `6C` acknowledgement. Rust compares the name and bounds the read to one second total. The bank-select Program Change's echo and a name's persistence after power loss remain unknown. |
 | Close | DSP on, guitar `2A 00`, then PODxt Live `F0 00 01 0C 03 23 00 F7`. | Original close sends DSP on and bridge release. Rust additionally closes its bounded guitar MIDI session using the existing read-path command. The standalone owner release check observed no display change or acknowledgement on its tested route. |
 
 The original also recognizes asynchronous clip (`0x28`), DSP overload
@@ -50,8 +50,9 @@ library's bank-name read alone emits no Program Change.
 - The application call site must put discovery and the complete transaction
   behind `run_if_unlocked` and the appropriate gate. A G6 transaction owns
   the bridge, session, edit commands and cleanup. G7 owns those steps when
-  they are part of store or bank-name operations. Neither transaction
-  enumerates devices. Use one exclusive conversation with a known reply
+  they are part of a store or bank rename. The rename also requires the
+  G5 bank-name read for verification. Both transactions use a caller-opened
+  link. Use one exclusive conversation with a known reply
   stream. The store reply cannot distinguish a delayed acknowledgement
   from the current transaction.
 - Before G7, verify the G5 backup and confirm the target and approved

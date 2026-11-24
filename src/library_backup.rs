@@ -82,6 +82,8 @@ impl line6_devices::gate::GatePolicy for BackupPolicy {
                 !hardware_gates::is_locked(Gate::IdentityRequest)
             }
             line6_devices::gate::Operation::VariaxRead
+            | line6_devices::gate::Operation::VariaxBankNameRead
+            | line6_devices::gate::Operation::VariaxLibraryBridge
             | line6_devices::gate::Operation::VariaxPresetSwitch
             | line6_devices::gate::Operation::PodxtIdentity
             | line6_devices::gate::Operation::PodxtRead
@@ -178,22 +180,24 @@ fn backup_variax(root: &Path, mut progress: impl FnMut(&str)) -> Result<String, 
     for line in &lines {
         folder.record(line.clone());
     }
+    let sweep_complete = library
+        .as_ref()
+        .is_ok_and(|library| library.stopped.is_none() && library.release_error.is_none());
     let summary = match library {
         Ok(library) => {
-            if let Err(error) = backup::save_variax_library(&mut folder, &library) {
-                Err(error)
-            } else {
-                Ok(variax_summary(&library))
+            let text = variax_summary(&library);
+            match backup::save_variax_library(&mut folder, &library) {
+                Ok(()) => Ok(text),
+                Err(error) => Err(format!("{text} Saving the backup failed: {error}")),
             }
         }
         Err(error) => Err(format!("Variax backup stopped: {error}")),
     };
-    if let Err(error) = &summary {
-        folder.line(format!("STOPPED: {error}"));
+    let sweep_complete = sweep_complete && summary.is_ok();
+    match &summary {
+        Ok(text) => folder.line(text.clone()),
+        Err(error) => folder.line(format!("STOPPED: {error}")),
     }
-    let sweep_complete = summary
-        .as_ref()
-        .is_ok_and(|text| !text.contains("Stopped early"));
     let cleanup_ok = cleanup.is_ok();
     let summary = match cleanup {
         Ok(()) => summary,
@@ -208,9 +212,10 @@ fn backup_variax(root: &Path, mut progress: impl FnMut(&str)) -> Result<String, 
 fn variax_summary(library: &line6_devices::family::variax::Library) -> String {
     use line6_devices::family::variax;
     let mut text = format!(
-        "Variax backup. Original preset {}. Presets read: {} of 60.",
+        "Variax backup. Original preset {}. Presets read: {} of 60. Bank names read: {} of 12.",
         library.original.name,
-        library.presets.len()
+        library.presets.len(),
+        library.bank_names.len()
     );
     if let Some(why) = &library.stopped {
         text.push_str(&format!(" Stopped early at {why}."));
@@ -234,6 +239,9 @@ fn variax_summary(library: &line6_devices::family::variax::Library) -> String {
             "Switch back failed: {error}. Move the pickup selector or model knob to reselect your preset."
         ),
     });
+    if let Some(error) = &library.release_error {
+        text.push_str(&format!(" Cleanup failed: {error}."));
+    }
     text.push_str(" Nothing was stored.");
     text
 }

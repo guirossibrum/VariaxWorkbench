@@ -18,6 +18,10 @@ use std::time::Duration;
 pub const IDENTITY_FAMILY: u16 = 0x0007;
 const HEADER: [u8; 5] = [0xf0, 0x00, 0x01, 0x0c, 0x07];
 const WINDOW: Duration = Duration::from_secs(3);
+const BACKUP_BLOCK_WINDOW: Duration = Duration::from_millis(2500);
+const BANK_REPLY_WINDOW: Duration = Duration::from_secs(1);
+const BANK_NAME_SIZE: usize = 18;
+const BRIDGE_CHUNK: usize = 256;
 /// Workbench waits 100 ms after session on.
 const SESSION_SETTLE: Duration = Duration::from_millis(100);
 pub const LISTEN_MAX: Duration = Duration::from_secs(30);
@@ -41,6 +45,8 @@ pub enum VariaxRequest {
     Metadata1,
     /// Metadata block 2: 32 words at address 883.
     Metadata2,
+    /// Name of the currently selected bank.
+    BankName,
     /// Program change to a stored preset: switches the guitar's active preset.
     Program(Preset),
 }
@@ -57,6 +63,7 @@ impl Request for VariaxRequest {
                 0xf0, 0x00, 0x01, 0x0c, 0x07, 0x00, 0x3c, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x03,
                 0x05, 0x03, 0x00, 0x00, 0x00, 0xf7,
             ],
+            VariaxRequest::BankName => &[0xf0, 0, 1, 0x0c, 7, 0, 0x6d, 0xf7],
             VariaxRequest::Metadata2 => &[
                 0xf0, 0x00, 0x01, 0x0c, 0x07, 0x00, 0x3c, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x03,
                 0x07, 0x03, 0x00, 0x00, 0x00, 0xf7,
@@ -73,6 +80,7 @@ impl Request for VariaxRequest {
         match self {
             VariaxRequest::Identity => Operation::VariaxIdentity,
             VariaxRequest::Program(_) => Operation::VariaxPresetSwitch,
+            VariaxRequest::BankName => Operation::VariaxBankNameRead,
             _ => Operation::VariaxRead,
         }
     }
@@ -189,8 +197,10 @@ fn in_session<L: Link, T>(
     body: impl FnOnce(&mut Session<L>) -> Result<T, String>,
 ) -> Result<T, String> {
     if let Err(error) = session.send(VariaxRequest::SessionOn) {
-        let _ = session.send(VariaxRequest::SessionOff);
-        return Err(error);
+        return match session.send(VariaxRequest::SessionOff) {
+            Ok(()) => Err(error),
+            Err(off) => Err(format!("{error} Session off also failed: {off}")),
+        };
     }
     session.link.pause(SESSION_SETTLE);
     let result = body(session);
@@ -213,9 +223,10 @@ fn is_metadata_reply(message: &[u8]) -> bool {
 fn read_block<L: Link>(
     session: &mut Session<L>,
     request: VariaxRequest,
+    window: Duration,
 ) -> Result<Vec<u8>, String> {
     session.send(request)?;
-    match session.wait_for(WINDOW, is_metadata_reply, false)? {
+    match session.wait_for(window, is_metadata_reply, false)? {
         Wait::Found(reply) => Ok(reply),
         _ => Err(format!("No 200-byte metadata reply to {request:?}.")),
     }
@@ -241,8 +252,8 @@ pub fn read_current_checked<L: Link>(
     check_identity(&identified.identity)?;
     let replies = in_session(session, |session| {
         Ok([
-            read_block(session, VariaxRequest::Metadata1)?,
-            read_block(session, VariaxRequest::Metadata2)?,
+            read_block(session, VariaxRequest::Metadata1, WINDOW)?,
+            read_block(session, VariaxRequest::Metadata2, WINDOW)?,
         ])
     })?;
     let metadata = PresetMetadata::from_replies(&replies[0], &replies[1])?;
@@ -274,9 +285,111 @@ pub fn listen<L: Link>(
 
 // ---- full library (G5 + preset switching) ----
 
-/// Time given to the guitar to load a preset after a program change
-/// (Workbench sleeps 200 ms after its program change before a bank-name read).
-const PROGRAM_SETTLE: Duration = Duration::from_millis(200);
+fn bridge_message(enabled: bool) -> Vec<u8> {
+    vec![0xf0, 0, 1, 0x0c, 3, 0x23, u8::from(enabled), 0xf7]
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LibraryBridge(bool);
+
+impl Request for LibraryBridge {
+    fn bytes(self) -> Vec<u8> {
+        bridge_message(self.0)
+    }
+
+    fn path(self) -> Path {
+        Path::VariaxViaPodxt
+    }
+
+    fn operation(self) -> Operation {
+        Operation::VariaxLibraryBridge
+    }
+}
+
+fn with_library_bridge<L: Link, T>(
+    session: &mut Session<L>,
+    body: impl FnOnce(&mut Session<L>) -> Result<T, String>,
+) -> (Result<T, String>, Option<String>) {
+    let result = session
+        .send(LibraryBridge(true))
+        .and_then(|()| body(session));
+    // A failed enable can still have reached the bridge.
+    let release_error = session
+        .send(LibraryBridge(false))
+        .err()
+        .map(|error| format!("PODxt Variax-messages release failed: {error}"));
+    (result, release_error)
+}
+
+fn with_release_error(error: String, release_error: Option<String>) -> String {
+    match release_error {
+        Some(release) => format!("{error} {release}"),
+        None => error,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct BankName {
+    pub name: String,
+    pub reply: Vec<u8>,
+}
+
+fn is_reply(message: &[u8], command: u8) -> bool {
+    message.starts_with(&HEADER)
+        && message
+            .get(5)
+            .is_some_and(|channel| matches!(channel, 0 | 4))
+        && message.get(6) == Some(&command)
+        && message.ends_with(&[0xf7])
+}
+
+fn is_bank_name_reply(reply: &[u8]) -> bool {
+    reply.len() >= 26 && is_reply(reply, 0x6d)
+}
+
+impl BankName {
+    pub(crate) fn from_reply(reply: Vec<u8>) -> Result<Self, String> {
+        if !is_bank_name_reply(&reply) {
+            return Err("Unexpected Variax bank-name reply framing.".into());
+        }
+        let field = &reply[7..7 + BANK_NAME_SIZE];
+        if field.iter().any(|byte| !matches!(byte, 0 | 0x20..=0x7e)) {
+            return Err("Invalid ASCII in the Variax bank-name reply.".into());
+        }
+        let name = String::from_utf8_lossy(field)
+            .trim_end_matches(['\0', ' '])
+            .to_owned();
+        Ok(Self { name, reply })
+    }
+}
+
+fn read_current_bank_name<L: Link>(session: &mut Session<L>) -> Result<BankName, String> {
+    session.send_chunked_sysex(
+        VariaxRequest::BankName,
+        BRIDGE_CHUNK,
+        Some(HEADER.len() + 1),
+        || false,
+    )?;
+    match session.wait_for(BANK_REPLY_WINDOW, is_bank_name_reply, false)? {
+        Wait::Found(reply) => BankName::from_reply(reply),
+        _ => Err("Timed out waiting for the Variax bank-name reply.".into()),
+    }
+}
+
+/// Read the selected bank name without a program change.
+pub fn read_bank_name<L: Link>(session: &mut Session<L>) -> Result<String, String> {
+    if !session.allows(Operation::VariaxBankNameRead) {
+        return Err("Reading the Variax bank name requires VariaxBankNameRead.".into());
+    }
+    let (result, release_error) = with_library_bridge(session, |session| {
+        in_session(session, read_current_bank_name)
+    });
+    match (result, release_error) {
+        (Ok(bank), None) => Ok(bank.name),
+        (Ok(_), Some(error)) => Err(error),
+        (Err(error), release_error) => Err(with_release_error(error, release_error)),
+    }
+}
 
 pub struct StoredPreset {
     pub preset: Preset,
@@ -304,7 +417,11 @@ pub struct Library {
     pub original_replies: [Vec<u8>; 2],
     pub original: PresetMetadata,
     pub presets: Vec<StoredPreset>,
+    /// Names read after all five presets of each completed bank.
+    pub bank_names: Vec<(u8, BankName)>,
     pub restore: Restore,
+    /// Separate from the sweep result so captured presets can still be saved.
+    pub release_error: Option<String>,
     /// Why the sweep stopped early, if it did.
     pub stopped: Option<String>,
 }
@@ -319,8 +436,8 @@ fn read_metadata<L: Link>(
     session: &mut Session<L>,
 ) -> Result<([Vec<u8>; 2], PresetMetadata), String> {
     let replies = [
-        read_block(session, VariaxRequest::Metadata1)?,
-        read_block(session, VariaxRequest::Metadata2)?,
+        read_block(session, VariaxRequest::Metadata1, BACKUP_BLOCK_WINDOW)?,
+        read_block(session, VariaxRequest::Metadata2, BACKUP_BLOCK_WINDOW)?,
     ];
     let metadata = PresetMetadata::from_replies(&replies[0], &replies[1])?;
     Ok((replies, metadata))
@@ -328,7 +445,6 @@ fn read_metadata<L: Link>(
 
 fn read_stored<L: Link>(session: &mut Session<L>, preset: Preset) -> Result<StoredPreset, String> {
     session.send(VariaxRequest::Program(preset))?;
-    session.link.pause(PROGRAM_SETTLE);
     let (replies, metadata) = read_metadata(session)?;
     Ok(StoredPreset {
         preset,
@@ -355,7 +471,6 @@ fn restore<L: Link>(
     if let Err(error) = session.send(VariaxRequest::Program(to)) {
         return Restore::Failed(error);
     }
-    session.link.pause(PROGRAM_SETTLE);
     match read_metadata(session) {
         Ok((_, now)) => Restore::Switched {
             to,
@@ -365,47 +480,65 @@ fn restore<L: Link>(
     }
 }
 
-/// Identity, session on, read the current preset, then for every stored
-/// preset: program change, wait, read both metadata blocks. Afterwards switch
-/// back to the preset matching the original (when exactly one matches) and
-/// check it. Session off is always sent. Stops at the first preset that does
-/// not answer; the restore still runs.
+/// Identify, enable the bridge and open the MIDI session, then read the
+/// current preset. Visit all stored presets and read each bank name after its
+/// fifth preset. Stop at the first failed read and try to reselect and verify
+/// the original preset. Close the session and release the bridge afterwards.
 pub fn read_library<L: Link>(
     session: &mut Session<L>,
     mut progress: impl FnMut(&StoredPreset),
 ) -> Result<Library, String> {
     let identified = identify_variax(session)?;
-    let (original_replies, original, presets, restore, stopped) = in_session(session, |session| {
-        let (original_replies, original) = read_metadata(session)?;
-        let mut presets = Vec::new();
-        let mut stopped = None;
-        for preset in Preset::all() {
-            match read_stored(session, preset) {
-                Ok(stored) => {
-                    progress(&stored);
-                    presets.push(stored);
-                }
-                Err(error) => {
-                    stopped = Some(format!(
-                        "{} {}: {error}",
-                        preset.bank_name(),
-                        preset.slot() + 1
-                    ));
-                    break;
+    let (result, release_error) = with_library_bridge(session, |session| {
+        in_session(session, |session| {
+            let (original_replies, original) = read_metadata(session)?;
+            let mut presets = Vec::new();
+            let mut bank_names = Vec::new();
+            let mut stopped = None;
+            for preset in Preset::all() {
+                let stored = match read_stored(session, preset) {
+                    Ok(stored) => stored,
+                    Err(error) => {
+                        stopped = Some(format!(
+                            "{} {}: {error}",
+                            preset.bank_name(),
+                            preset.slot() + 1
+                        ));
+                        break;
+                    }
+                };
+                progress(&stored);
+                presets.push(stored);
+                if preset.slot() + 1 == PRESETS_PER_BANK {
+                    match read_current_bank_name(session) {
+                        Ok(name) => bank_names.push((preset.bank(), name)),
+                        Err(error) => {
+                            stopped = Some(format!("{} bank name: {error}", preset.bank_name()));
+                            break;
+                        }
+                    }
                 }
             }
+            let restore = restore(session, &original, &presets);
+            Ok(Library {
+                identified,
+                original_replies,
+                original,
+                presets,
+                bank_names,
+                restore,
+                stopped,
+                release_error: None,
+            })
+        })
+    });
+    match result {
+        Ok(mut library) => {
+            library.release_error = release_error;
+            Ok(library)
         }
-        let restore = restore(session, &original, &presets);
-        Ok((original_replies, original, presets, restore, stopped))
-    })?;
-    Ok(Library {
-        identified,
-        original_replies,
-        original,
-        presets,
-        restore,
-        stopped,
-    })
+        Err(error) => Err(with_release_error(error, release_error)),
+    }
 }
 
 // ---- live controls ----
@@ -789,105 +922,277 @@ pub(crate) mod tests {
         encode_reply(&raw)
     }
 
-    fn library_script(
-        original: &[u8],
-        stored: &dyn Fn(Preset) -> Vec<u8>,
-    ) -> Vec<(VariaxRequest, Vec<Vec<u8>>)> {
+    type Script = Vec<(Vec<u8>, Vec<Vec<u8>>)>;
+
+    const BRIDGE_ON: &[u8] = &[0xf0, 0, 1, 0x0c, 3, 0x23, 1, 0xf7];
+    const BRIDGE_OFF: &[u8] = &[0xf0, 0, 1, 0x0c, 3, 0x23, 0, 0xf7];
+    const BLOCK_1: &[u8] = &[
+        0xf0, 0, 1, 0x0c, 7, 0, 0x3c, 0, 2, 0, 0, 0, 0, 3, 5, 3, 0, 0, 0, 0xf7,
+    ];
+    const BLOCK_2: &[u8] = &[
+        0xf0, 0, 1, 0x0c, 7, 0, 0x3c, 0, 2, 0, 0, 0, 0, 3, 7, 3, 0, 0, 0, 0xf7,
+    ];
+    const BANK_HEADER: &[u8] = &[0xf0, 0, 1, 0x0c, 7, 0];
+
+    fn expect_block_pair(script: &mut Script, reply: &[u8]) {
+        script.push((BLOCK_1.to_vec(), packets(reply)));
+        script.push((BLOCK_2.to_vec(), packets(&zero_reply())));
+    }
+
+    fn expect_bank_request(script: &mut Script, replies: Vec<Vec<u8>>) {
+        script.extend([
+            (BANK_HEADER.to_vec(), vec![]),
+            (vec![0x6d], vec![]),
+            (vec![0xf7], replies),
+        ]);
+    }
+
+    pub(crate) fn bank_reply(name: &[u8]) -> Vec<u8> {
+        let mut reply = vec![0xf0, 0, 1, 0x0c, 7, 4, 0x6d];
+        reply.extend(name);
+        reply.resize(25, 0);
+        reply.push(0xf7);
+        reply
+    }
+
+    fn library_start(original: &[u8]) -> Script {
         let mut script = vec![
-            (Identity, packets(&VARIAX_600)),
-            (SessionOn, vec![]),
-            (Metadata1, packets(original)),
-            (Metadata2, packets(&zero_reply())),
+            (Identity.bytes(), packets(&VARIAX_600)),
+            (BRIDGE_ON.to_vec(), vec![]),
+            (SessionOn.bytes(), vec![]),
         ];
-        for preset in Preset::all() {
-            script.push((Program(preset), vec![]));
-            script.push((Metadata1, packets(&stored(preset))));
-            script.push((Metadata2, packets(&zero_reply())));
-        }
+        expect_block_pair(&mut script, original);
         script
     }
 
+    fn library_end(script: &mut Script) {
+        script.extend([(SessionOff.bytes(), vec![]), (BRIDGE_OFF.to_vec(), vec![])]);
+    }
+
+    fn expect_bank_presets(script: &mut Script, bank: u8, stored: impl Fn(u8) -> Vec<u8>) {
+        // Independent Workbench bank mapping, in model-knob order.
+        let last = [4, 64, 69, 74, 79, 84, 89, 94, 99, 104, 109, 59][bank as usize];
+        for program in (last - 4..=last).rev() {
+            script.push((vec![0xc0, program], vec![]));
+            expect_block_pair(script, &stored(program));
+        }
+    }
+
+    struct BackupOnly;
+    impl crate::gate::GatePolicy for BackupOnly {
+        fn allows(&self, operation: Operation) -> bool {
+            matches!(
+                operation,
+                Operation::VariaxIdentity
+                    | Operation::VariaxRead
+                    | Operation::VariaxPresetSwitch
+                    | Operation::VariaxBankNameRead
+                    | Operation::VariaxLibraryBridge
+            )
+        }
+    }
+
+    fn run_backup(
+        script: Script,
+        fail_at: Vec<usize>,
+    ) -> (Result<Library, String>, Vec<Vec<u8>>, Duration) {
+        let mut log = Quiet;
+        let mut fake = Fake::from_bytes(Path::VariaxViaPodxt, script);
+        fake.fail_at = fail_at;
+        let mut session = Session::new(fake, &BackupOnly, &mut log);
+        let result = read_library(&mut session, |_| {});
+        session.link.assert_finished();
+        (result, session.sent, session.link.elapsed())
+    }
+
+    fn named_program(program: u8) -> Vec<u8> {
+        metadata_reply_named(format!("P{program}").as_bytes())
+    }
+
+    fn complete_sweep() -> (Result<Library, String>, Vec<Vec<u8>>, Duration) {
+        let original = named_program(85);
+        let mut script = library_start(&original);
+        for bank in 0..12 {
+            expect_bank_presets(&mut script, bank, named_program);
+            expect_bank_request(
+                &mut script,
+                packets(&bank_reply(format!("Bank {bank} ").as_bytes())),
+            );
+        }
+        script.push((vec![0xc0, 85], vec![]));
+        expect_block_pair(&mut script, &original);
+        library_end(&mut script);
+        run_backup(script, vec![])
+    }
+
     #[test]
-    fn library_reads_every_preset_restores_the_unique_match_and_ends_with_session_off() {
-        let original = metadata_reply_named(b"Chime-5");
-        let chime5 = Preset::new(6, 4).unwrap();
-        let name = |p: Preset| {
-            if p == chime5 {
-                b"Chime-5".to_vec()
-            } else {
-                format!("P{}", p.program_number()).into_bytes()
-            }
-        };
-        let mut script = library_script(&original, &|p| metadata_reply_named(&name(p)));
-        script.push((Program(chime5), vec![]));
-        script.push((Metadata1, packets(&original)));
-        script.push((Metadata2, packets(&zero_reply())));
-        script.push((SessionOff, vec![]));
-        let (result, sent, _) = run(script, |s| read_library(s, |_| {}));
+    fn library_reads_all_presets_and_names_in_order_then_restores_and_releases() {
+        let (result, sent, elapsed) = complete_sweep();
         let library = result.unwrap();
         assert_eq!(library.presets.len(), 60);
-        assert!(library.stopped.is_none());
+        assert_eq!(library.bank_names.len(), 12);
+        for (bank, name) in &library.bank_names {
+            assert_eq!(name.name, format!("Bank {bank}"));
+            assert_eq!(name.reply, bank_reply(format!("Bank {bank} ").as_bytes()));
+        }
+        assert!(library.stopped.is_none() && library.release_error.is_none());
         assert_eq!(
             library.restore,
             Restore::Switched {
-                to: chime5,
+                to: Preset::new(6, 4).unwrap(),
                 verified: true
             }
         );
-        assert_eq!(library.original.name, "Chime-5");
-        assert_eq!(sent.last(), Some(&SessionOff.bytes()));
-        let program_changes = sent.iter().filter(|b| b[0] == 0xc0).count();
-        assert_eq!(program_changes, 61);
+        assert_eq!(library.original.name, "P85");
+        assert_eq!(sent.len(), 202);
+        // Only the session pause plus 4 ms per scripted input packet.
+        assert_eq!(
+            elapsed,
+            SESSION_SETTLE + Duration::from_millis(4 * (2 + 124 * 13 + 12 * 2))
+        );
+    }
+
+    #[test]
+    #[ignore = "requires the local original Workbench classes and Java backup recorder"]
+    fn original_backup_transcript() {
+        let path = std::env::var_os("VARIAX_BACKUP_REFERENCE").expect("Java recorder transcript");
+        let reference = std::fs::read_to_string(path).unwrap();
+        let (result, sent, _) = complete_sweep();
+        result.unwrap();
+        let sweep_end = 5 + 12 * (5 * 3 + 1);
+        // Exclude the app's identity, baseline read, restore/check and
+        // session off. Compare the original session on, sweep and bridge pair.
+        let actual = sent[1..3]
+            .iter()
+            .chain(&sent[5..sweep_end])
+            .chain(sent.last())
+            .map(|message| {
+                message
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual, reference.lines().collect::<Vec<_>>());
     }
 
     #[test]
     fn library_without_a_unique_match_does_not_switch_back() {
-        let original = metadata_reply_named(b"Edited");
-        let mut script = library_script(&original, &|p| {
-            metadata_reply_named(format!("P{}", p.program_number()).as_bytes())
-        });
-        script.push((SessionOff, vec![]));
-        let (result, sent, _) = run(script, |s| read_library(s, |_| {}));
+        let mut script = library_start(&metadata_reply_named(b"Edited"));
+        for bank in 0..12 {
+            expect_bank_presets(&mut script, bank, named_program);
+            expect_bank_request(&mut script, packets(&bank_reply(b"Bank")));
+        }
+        library_end(&mut script);
+        let (result, _, _) = run_backup(script, vec![]);
         assert_eq!(
             result.unwrap().restore,
             Restore::NoUniqueMatch { matches: 0 }
         );
-        assert_eq!(sent.iter().filter(|b| b[0] == 0xc0).count(), 60);
-        assert_eq!(sent.last(), Some(&SessionOff.bytes()));
     }
 
     #[test]
-    fn library_stops_at_a_silent_preset_but_still_restores_and_closes() {
-        let original = metadata_reply_named(b"Custom");
-        let first = Preset::new(0, 0).unwrap();
-        let second = Preset::new(0, 1).unwrap();
-        let script = vec![
-            (Identity, packets(&VARIAX_600)),
-            (SessionOn, vec![]),
-            (Metadata1, packets(&original)),
-            (Metadata2, packets(&zero_reply())),
-            (Program(first), vec![]),
-            (Metadata1, packets(&original)),
-            (Metadata2, packets(&zero_reply())),
-            (Program(second), vec![]),
-            (Metadata1, vec![]),
-            (Program(first), vec![]),
-            (Metadata1, packets(&original)),
-            (Metadata2, packets(&zero_reply())),
-            (SessionOff, vec![]),
-        ];
-        let (result, sent, _) = run(script, |s| read_library(s, |_| {}));
+    fn library_stops_at_a_silent_preset_but_still_restores_and_releases() {
+        let original = named_program(4);
+        let mut script = library_start(&original);
+        script.push((vec![0xc0, 4], vec![]));
+        expect_block_pair(&mut script, &original);
+        script.extend([(vec![0xc0, 3], vec![]), (BLOCK_1.to_vec(), vec![])]);
+        script.push((vec![0xc0, 4], vec![]));
+        expect_block_pair(&mut script, &original);
+        library_end(&mut script);
+        let (result, _, elapsed) = run_backup(script, vec![]);
         let library = result.unwrap();
         assert_eq!(library.presets.len(), 1);
+        assert!(library.bank_names.is_empty());
         assert!(library.stopped.unwrap().starts_with("Custom 1 2"));
         assert_eq!(
             library.restore,
             Restore::Switched {
-                to: first,
+                to: Preset::new(0, 0).unwrap(),
                 verified: true
             }
         );
-        assert_eq!(sent.last(), Some(&SessionOff.bytes()));
+        assert_eq!(
+            elapsed,
+            Duration::from_millis(2500 + 100 + 4 * (2 + 6 * 13))
+        );
+    }
+
+    #[test]
+    fn bank_name_read_skips_unrelated_and_short_replies() {
+        let short = [0xf0, 0, 1, 0x0c, 7, 4, 0x6d, 0xf7];
+        let mut script = vec![(BRIDGE_ON.to_vec(), vec![]), (SessionOn.bytes(), vec![])];
+        let mut valid = bank_reply(b"Actual name  ");
+        valid.insert(25, 0);
+        let replies = [packets(&zero_reply()), packets(&short), packets(&valid)].concat();
+        expect_bank_request(&mut script, replies);
+        library_end(&mut script);
+        let mut log = Quiet;
+        let mut session = Session::new(
+            Fake::from_bytes(Path::VariaxViaPodxt, script),
+            &BackupOnly,
+            &mut log,
+        );
+        assert_eq!(read_bank_name(&mut session).unwrap(), "Actual name");
+        session.link.assert_finished();
+    }
+
+    #[test]
+    fn library_stops_at_failed_bank_name_and_reports_release_separately() {
+        let short = vec![0xf0, 0, 1, 0x0c, 7, 4, 0x6d, 0xf7];
+        for (replies, expected, wait_ms) in [
+            (vec![], "Timed out", 1000),
+            (vec![short], "Timed out", 1000),
+            (packets(&bank_reply(b"Bad\x1f")), "Invalid ASCII", 8),
+        ] {
+            let original = named_program(4);
+            let mut script = library_start(&original);
+            expect_bank_presets(&mut script, 0, named_program);
+            expect_bank_request(&mut script, replies);
+            script.push((vec![0xc0, 4], vec![]));
+            expect_block_pair(&mut script, &original);
+            library_end(&mut script);
+            let failure = script.len() - 1;
+            let (result, _, elapsed) = run_backup(script, vec![failure]);
+            let library = result.unwrap();
+            assert_eq!(library.presets.len(), 5);
+            assert!(library.bank_names.is_empty());
+            let stopped = library.stopped.unwrap();
+            assert!(stopped.starts_with("Custom 1 bank name:") && stopped.contains(expected));
+            assert!(library.release_error.unwrap().contains("release failed"));
+            assert!(matches!(
+                library.restore,
+                Restore::Switched { verified: true, .. }
+            ));
+            assert_eq!(
+                elapsed,
+                Duration::from_millis(wait_ms + 100 + 4 * (2 + 14 * 13))
+            );
+        }
+    }
+
+    #[test]
+    fn library_releases_after_failed_enable_or_current_read() {
+        let (result, _, _) = run_backup(
+            vec![
+                (Identity.bytes(), packets(&VARIAX_600)),
+                (BRIDGE_ON.to_vec(), vec![]),
+                (BRIDGE_OFF.to_vec(), vec![]),
+            ],
+            vec![1],
+        );
+        assert_eq!(result.err().unwrap(), "simulated write failure");
+
+        let mut script = library_start(&named_program(4));
+        script.truncate(3);
+        script.push((BLOCK_1.to_vec(), vec![]));
+        library_end(&mut script);
+        let (result, _, elapsed) = run_backup(script, vec![4, 5]);
+        let error = result.err().unwrap();
+        assert!(error.contains("No 200-byte metadata reply"));
+        assert!(error.contains("Session off also failed") && error.contains("release failed"));
+        assert_eq!(elapsed, Duration::from_millis(2608));
     }
 
     #[test]

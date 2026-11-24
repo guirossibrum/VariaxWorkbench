@@ -318,21 +318,34 @@ pub(crate) mod testing {
         script: VecDeque<(Vec<u8>, Vec<Vec<u8>>)>,
         inbox: VecDeque<Vec<u8>>,
         pub writes: Vec<Vec<u8>>,
+        pub fail_at: Vec<usize>,
     }
 
     impl Fake {
         pub fn new<R: Request>(path: Path, script: Vec<(R, Vec<Vec<u8>>)>) -> Self {
-            let script = script
-                .into_iter()
-                .map(|(r, replies)| (r.bytes(), replies))
-                .collect();
+            Self::from_bytes(
+                path,
+                script
+                    .into_iter()
+                    .map(|(r, replies)| (r.bytes(), replies))
+                    .collect(),
+            )
+        }
+
+        pub fn from_bytes(path: Path, script: Vec<(Vec<u8>, Vec<Vec<u8>>)>) -> Self {
             Self {
                 path,
                 clock: Duration::ZERO,
-                script,
+                script: script.into(),
                 inbox: VecDeque::new(),
                 writes: Vec::new(),
+                fail_at: Vec::new(),
             }
+        }
+
+        pub fn assert_finished(&self) {
+            assert!(self.script.is_empty(), "expected more writes");
+            assert!(self.inbox.is_empty(), "expected more reads");
         }
     }
 
@@ -344,6 +357,9 @@ pub(crate) mod testing {
             self.writes.push(bytes.to_vec());
             let (expected, replies) = self.script.pop_front().expect("unexpected write");
             assert_eq!(bytes, expected, "write out of script order");
+            if self.fail_at.contains(&(self.writes.len() - 1)) {
+                return Err("simulated write failure".into());
+            }
             self.inbox.extend(replies);
             Ok(())
         }

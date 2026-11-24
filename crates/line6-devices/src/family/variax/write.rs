@@ -3,20 +3,21 @@
 //! The caller supplies an already-open link and the G6/G7 policy. This module
 //! has no device discovery, USB open, or application entry point.
 
-use super::{HEADER, Preset, SESSION_SETTLE, VariaxRequest};
+pub use super::read_bank_name;
+use super::{
+    BANK_NAME_SIZE as NAME_SIZE, BRIDGE_CHUNK, HEADER, Preset, SESSION_SETTLE, VariaxRequest,
+    bridge_message, is_reply, read_current_bank_name,
+};
 use crate::gate::Operation;
 use crate::session::{Link, Path, Request, Session, Wait};
 use std::time::Duration;
 
 const WORDS: usize = 1092;
-const NAME_SIZE: usize = 18;
 const NAME_OFFSET: usize = 2553;
-const BRIDGE_CHUNK: usize = 256;
 const STORE_SETTLE: Duration = Duration::from_millis(100);
 const STORE_ACK: Duration = Duration::from_secs(15);
 const BANK_SELECT_SETTLE: Duration = Duration::from_millis(200);
 const BANK_WRITE_SETTLE: Duration = Duration::from_millis(700);
-const BANK_REPLY: Duration = Duration::from_secs(1);
 
 /// A compiled program in original Workbench byte order, with its source name.
 /// The source name is required because the compiler can truncate it.
@@ -114,7 +115,6 @@ enum Message<'a> {
     Store(Preset),
     SelectBank(Preset),
     BankName(&'a [u8; NAME_SIZE]),
-    ReadBankName,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -123,7 +123,7 @@ struct WriteRequest<'a>(Operation, Message<'a>);
 impl Request for WriteRequest<'_> {
     fn bytes(self) -> Vec<u8> {
         match self.1 {
-            Message::Bridge(on) => vec![0xf0, 0, 1, 0x0c, 3, 0x23, u8::from(on), 0xf7],
+            Message::Bridge(on) => bridge_message(on),
             Message::Session(true) => VariaxRequest::SessionOn.bytes(),
             Message::Session(false) => VariaxRequest::SessionOff.bytes(),
             Message::DspEnabled(on) => sysex(0x4c, [u8::from(!on)]),
@@ -132,7 +132,6 @@ impl Request for WriteRequest<'_> {
             Message::Store(preset) => sysex(0x61, [preset.bank() * 5 + (4 - preset.slot())]),
             Message::SelectBank(preset) => vec![0xc0, preset.program_number()],
             Message::BankName(name) => sysex(0x6c, *name),
-            Message::ReadBankName => sysex(0x6d, []),
         }
     }
 
@@ -306,15 +305,6 @@ pub fn store<L: Link>(
     })
 }
 
-fn is_reply(message: &[u8], command: u8) -> bool {
-    message.starts_with(&HEADER)
-        && message
-            .get(5)
-            .is_some_and(|channel| matches!(channel, 0 | 4))
-        && message.get(6) == Some(&command)
-        && message.ends_with(&[0xf7])
-}
-
 /// Update the selected bank's name and read it back. Selecting a bank sends
 /// Workbench's program change to switch position zero and changes the preset.
 pub fn rename_bank<L: Link>(
@@ -324,41 +314,20 @@ pub fn rename_bank<L: Link>(
 ) -> Result<String, String> {
     let location = Preset::new(bank, 0).ok_or("Invalid Variax bank.")?;
     let name_bytes = name_field(name, 0)?;
+    if !session.allows(Operation::VariaxBankNameRead) {
+        return Err("Variax rename requires VariaxBankNameRead for verification.".into());
+    }
     transaction(session, G7, true, |session| {
         WriteRequest(G7, Message::SelectBank(location)).send(session)?;
         session.link.pause(BANK_SELECT_SETTLE);
         WriteRequest(G7, Message::BankName(&name_bytes)).send(session)?;
         session.link.pause(BANK_WRITE_SETTLE);
-        let read_back = read_current_bank_name(session)?;
+        let read_back = read_current_bank_name(session)?.name;
         if read_back != name.trim_end_matches(' ') {
             return Err("Variax bank-name readback differs from the requested name.".into());
         }
         Ok(read_back)
     })
-}
-
-/// Read the bank name without a program change.
-pub fn read_bank_name<L: Link>(session: &mut Session<L>) -> Result<String, String> {
-    transaction(session, G7, false, read_current_bank_name)
-}
-
-fn read_current_bank_name<L: Link>(session: &mut Session<L>) -> Result<String, String> {
-    WriteRequest(G7, Message::ReadBankName).send(session)?;
-    let Wait::Found(reply) = session.wait_for(
-        BANK_REPLY,
-        |reply| reply.len() >= 26 && is_reply(reply, 0x6d),
-        false,
-    )?
-    else {
-        return Err("Timed out waiting for the Variax bank-name reply.".into());
-    };
-    let name = &reply[7..7 + NAME_SIZE];
-    if name.iter().any(|byte| !matches!(byte, 0 | 0x20..=0x7e)) {
-        return Err("Invalid ASCII in the Variax bank-name reply.".into());
-    }
-    Ok(String::from_utf8_lossy(name)
-        .trim_end_matches(['\0', ' '])
-        .to_owned())
 }
 
 #[cfg(test)]

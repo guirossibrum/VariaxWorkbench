@@ -55,7 +55,9 @@ impl GatePolicy for OwnerGrants {
             Operation::PodxtLibraryRead => true,
             // G5 + preset switching for the Variax 600: program change through
             // each preset for the library read, then back to the original.
-            Operation::VariaxPresetSwitch => true,
+            Operation::VariaxPresetSwitch
+            | Operation::VariaxBankNameRead
+            | Operation::VariaxLibraryBridge => true,
             // Owner's direct permission 2026-11-22: Line 6 Edit's read-only
             // installed model-pack query (`03 0E 00`).
             Operation::PodxtPackQuery => true,
@@ -367,6 +369,7 @@ fn run_variax(command: &Command, capture: &mut Capture) -> Result<(), String> {
                     summary.push(describe_identity(&library.identified.reply, Some(library.identified.requests)));
                     summary.push(format!("Original preset: {}", library.original.name));
                     summary.push(format!("Presets read: {} of 60", library.presets.len()));
+                    summary.push(format!("Bank names read: {} of 12", library.bank_names.len()));
                     if let Some(why) = &library.stopped {
                         summary.push(format!("Stopped early at {why}"));
                     }
@@ -386,6 +389,9 @@ fn run_variax(command: &Command, capture: &mut Capture) -> Result<(), String> {
                             "Switch back failed: {error}. Move the pickup selector or model knob to reselect your preset."
                         ),
                     });
+                    if let Some(error) = &library.release_error {
+                        summary.push(format!("CLEANUP FAILED: {error}"));
+                    }
                     variax_library = Some(library);
                 })
             }
@@ -417,10 +423,25 @@ fn run_variax(command: &Command, capture: &mut Capture) -> Result<(), String> {
     for (name, bytes) in &saved {
         capture.file(name, bytes)?;
     }
-    if let Some(library) = &variax_library {
+    let sweep = if let Some(library) = &variax_library {
         backup::save_variax_library(capture, library)?;
-    }
-    result.and(cleanup)
+        let problems: Vec<_> = [
+            library.stopped.as_deref(),
+            library.release_error.as_deref(),
+            cleanup.as_ref().err().map(String::as_str),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if problems.is_empty() {
+            Ok(())
+        } else {
+            Err(problems.join("\n"))
+        }
+    } else {
+        cleanup
+    };
+    result.and(sweep)
 }
 
 fn run_podxt_listen(seconds: u64, capture: &mut Capture) -> Result<(), String> {

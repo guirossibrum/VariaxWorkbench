@@ -118,20 +118,26 @@ authorize a gate by signing a GitHub issue. Agents do not run the live check.
 
 - **Operation:** Acquire and independently verify a comprehensive backup under
   [issue #23](https://github.com/guirossibrum/VariaxWorkbench/issues/23).
-  No verified full backup is currently available. The earlier broader DSP read
-  timed out and produced no DSP backup; the captured current-preset settings
-  are partial metadata only (see [report](report.md)).
-- **Application traffic:** Device check on This computer, in build 16, can
-  read the Variax library (program change through the stored presets, then
-  switch back) and the PODxt Live library (stored tones and setups by memory
-  location, current tone not changed on purpose). If the guitar does not
-  answer the first Variax question, the backup asks again, and if it is still
-  quiet it gives the driver back and tries the connection once more. Nothing
-  is written back.
-  The older full-backup lock stays on for every other path. The editor fetch
-  stays off. Step 4 stays locked.
-- **System changes:** None established for an approved procedure; preservation,
-  omissions, and recovery requirements remain for issue #23.
+  Owner-run checks verified the preset and tone library backups. The earlier
+  broader DSP read timed out, so a verified full device backup remains pending.
+  See the [capture report](report.md).
+- **Application traffic:** Device check on This computer reads the Variax
+  library and the PODxt Live library. The Variax backup identifies the guitar
+  with the existing retry behavior, enables PODxt Live Variax messages,
+  opens the guitar MIDI session, and reads the current settings. It follows
+  each program change immediately with two `0x3C` reads (2,500 ms each),
+  then reads the bank name with `0x6D` (1,000 ms) after each bank's fifth
+  preset. It stops at the first failed read, attempts a read-verified switch
+  back, closes the session and attempts the PODxt Live release. DSP stays
+  on. The `0x6D` query is a G5 read, while `0x6C` bank rename requires G7.
+  See the [backup layout and offline checks](device-check.md#variax-library-backup).
+  The PODxt Live backup reads stored tones and setups by memory location
+  while the current tone remains selected. Both backups leave device
+  storage untouched. The editor fetch and step 4 stay off.
+- **System changes:** The Variax sweep temporarily selects stored presets
+  and opens bridge and guitar MIDI sessions. The device library backups
+  cover preset settings and stored PODxt tones and setups. Issue #23 tracks
+  the broader backup and recovery requirements.
 - **Prerequisites and tracking:** Current native prerequisites are the timeout
   diagnosis in [issue #119](https://github.com/guirossibrum/VariaxWorkbench/issues/119),
   the full-backup specification in [issue #120](https://github.com/guirossibrum/VariaxWorkbench/issues/120),

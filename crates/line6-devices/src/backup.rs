@@ -32,8 +32,10 @@ pub const VARIAX_RESTORE: &str =
 presets/BB-Bank-S-1.syx and -2.syx are the exact 200-byte SysEx replies the guitar
 sent for metadata blocks 1 (address 851) and 2 (address 883) of bank BB, slot S,
 after a program change to that preset. index.txt lists bank, slot, Workbench
-program number, preset name and body model. original-1/2.syx is the preset that
-was active before the read. Load with line6_devices::backup::load_variax_library,
+program number, preset name, body model and any bank names read from the guitar.
+bank-names/BB.syx contains the exact 0x6D reply for bank BB when available.
+Older backups omit these replies. original-1/2.syx is the preset that was
+active before the read. Load with line6_devices::backup::load_variax_library,
 or decode one preset with variax::PresetMetadata::from_replies.
 
 Check integrity:   sha256sum -c MANIFEST.sha256
@@ -223,6 +225,10 @@ pub fn variax_preset_stem(preset: variax::Preset) -> String {
     )
 }
 
+fn variax_bank_name_file(bank: u8) -> String {
+    format!("bank-names/{bank:02}.syx")
+}
+
 pub fn podxt_entry_name(location: podxt::Location) -> String {
     format!(
         "{}/{:03}-{}.syx",
@@ -273,6 +279,11 @@ pub fn save_variax_library(
         folder.file(&format!("{stem}-2.syx"), &stored.replies[1])?;
         index.push_str(&variax_index_line(stored.preset, &stored.metadata));
         index.push('\n');
+    }
+    for (bank, name) in &library.bank_names {
+        folder.file(&variax_bank_name_file(*bank), &name.reply)?;
+        use std::fmt::Write as _;
+        writeln!(index, "Bank {bank:02} name: {:?}", name.name).expect("write to String");
     }
     folder.file("index.txt", index.as_bytes())?;
     folder.set_restore_note(VARIAX_RESTORE);
@@ -340,9 +351,10 @@ fn read_optional(dir: &Path, name: &str) -> Result<Option<Vec<u8>>, String> {
 pub struct LoadedVariax {
     pub original: Option<variax::PresetMetadata>,
     pub presets: Vec<(variax::Preset, variax::PresetMetadata)>,
+    pub bank_names: Vec<(u8, variax::BankName)>,
 }
 
-/// Verifies the manifest, then decodes every preset present in the folder.
+/// Verifies the manifest, then decodes the presets and optional bank names.
 pub fn load_variax_library(dir: &Path) -> Result<LoadedVariax, String> {
     verify_manifest(dir)?;
     let pair = |first: &str, second: &str| -> Result<Option<variax::PresetMetadata>, String> {
@@ -362,7 +374,19 @@ pub fn load_variax_library(dir: &Path) -> Result<LoadedVariax, String> {
             presets.push((preset, metadata));
         }
     }
-    Ok(LoadedVariax { original, presets })
+    let mut bank_names = Vec::new();
+    for bank in 0..variax::BANKS.len() as u8 {
+        let path = variax_bank_name_file(bank);
+        if let Some(reply) = read_optional(dir, &path)? {
+            let name = variax::BankName::from_reply(reply).map_err(|e| format!("{path}: {e}"))?;
+            bank_names.push((bank, name));
+        }
+    }
+    Ok(LoadedVariax {
+        original,
+        presets,
+        bank_names,
+    })
 }
 
 pub struct LoadedPodxt {
@@ -428,7 +452,7 @@ impl Comparison {
 }
 
 /// Compares the stored entries of two library backups byte for byte
-/// (current/original tones are excluded: they are live state, not storage).
+/// Optional Variax bank-name replies and current/original tones are excluded.
 pub fn compare(a: &Path, b: &Path) -> Result<Comparison, String> {
     let (left, right) = (library_files(a)?, library_files(b)?);
     let mut identical = 0;
@@ -452,7 +476,7 @@ pub fn compare(a: &Path, b: &Path) -> Result<Comparison, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::family::variax::tests::encode_reply;
+    use crate::family::variax::tests::{bank_reply, encode_reply};
     use crate::identity::{
         Identity,
         tests::{PODXT_LIVE, VARIAX_600},
@@ -505,7 +529,6 @@ mod tests {
         };
         let zero = encode_reply(&[0; 96]);
         let presets = variax::Preset::all()
-            .take(3)
             .map(|preset| {
                 let first = reply(format!("P{}", preset.program_number()).as_bytes());
                 let metadata = variax::PresetMetadata::from_replies(&first, &zero).unwrap();
@@ -526,6 +549,8 @@ mod tests {
             original: variax::PresetMetadata::from_replies(&original_first, &zero).unwrap(),
             original_replies: [original_first, zero.clone()],
             presets,
+            bank_names: Vec::new(),
+            release_error: None,
             restore: variax::Restore::NoUniqueMatch { matches: 0 },
             stopped: None,
         }
@@ -580,7 +605,8 @@ mod tests {
                 .readonly()
         );
         let loaded = load_variax_library(&dir).unwrap();
-        assert_eq!(loaded.presets.len(), 3);
+        assert_eq!(loaded.presets.len(), 60);
+        assert!(loaded.bank_names.is_empty());
         assert_eq!(loaded.original.unwrap().name, "P4");
         for ((preset, metadata), stored) in loaded.presets.iter().zip(&library.presets) {
             assert_eq!(*preset, stored.preset);
@@ -588,6 +614,56 @@ mod tests {
         }
         assert!(compare(&dir, &dir).unwrap().verified());
         assert!(BackupFolder::create(&root.0, "lib").is_err());
+    }
+
+    #[test]
+    fn old_and_new_variax_backups_load_and_compare_all_120_preset_files() {
+        let root = TempRoot::new("variax-formats");
+        let mut library = variax_library();
+        let mut old = BackupFolder::create(&root.0, "old").unwrap();
+        save_variax_library(&mut old, &library).unwrap();
+        let old = old.finish(true).unwrap();
+
+        library.bank_names = (0..12)
+            .map(|bank| {
+                let raw = bank_reply(format!("Actual bank {bank} ").as_bytes());
+                (bank, variax::BankName::from_reply(raw).unwrap())
+            })
+            .collect();
+        let mut new = BackupFolder::create(&root.0, "new").unwrap();
+        save_variax_library(&mut new, &library).unwrap();
+        let new = new.finish(true).unwrap();
+
+        let loaded_old = load_variax_library(&old).unwrap();
+        let loaded_new = load_variax_library(&new).unwrap();
+        assert_eq!(loaded_old.presets.len(), 60);
+        assert_eq!(loaded_new.presets, loaded_old.presets);
+        assert!(loaded_old.bank_names.is_empty());
+        assert_eq!(loaded_new.bank_names, library.bank_names);
+        assert_eq!(
+            verify_manifest(&new).unwrap(),
+            verify_manifest(&old).unwrap() + 12
+        );
+
+        let index = fs::read_to_string(new.join("index.txt")).unwrap();
+        let manifest = fs::read_to_string(new.join("MANIFEST.sha256")).unwrap();
+        for (bank, name) in &library.bank_names {
+            assert!(
+                index
+                    .lines()
+                    .any(|line| line == format!("Bank {bank:02} name: {:?}", name.name))
+            );
+            let file = variax_bank_name_file(*bank);
+            assert_eq!(fs::read(new.join(&file)).unwrap(), name.reply);
+            assert!(
+                manifest
+                    .lines()
+                    .any(|line| line.ends_with(&format!("  {file}")))
+            );
+        }
+        let comparison = compare(&old, &new).unwrap();
+        assert!(comparison.verified());
+        assert_eq!(comparison.identical, 120);
     }
 
     #[test]

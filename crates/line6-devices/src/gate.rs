@@ -10,6 +10,10 @@ pub enum Operation {
     VariaxIdentity,
     /// Variax current-preset metadata read: session on, two blocks, session off.
     VariaxRead,
+    /// Variax selected-bank name query (G5).
+    VariaxBankNameRead,
+    /// Enable and release PODxt Live Variax messages for a library read (G5).
+    VariaxLibraryBridge,
     /// Universal identity request to a PODxt-family device.
     PodxtIdentity,
     /// PODxt-family current tone (edit buffer) dump request.
@@ -21,7 +25,7 @@ pub enum Operation {
     VariaxPresetSwitch,
     /// Variax edit-buffer transfer and live edits (G6).
     VariaxEditBufferWrite,
-    /// Variax slot store and bank-name transactions (G7).
+    /// Variax slot store and bank rename (G7).
     VariaxStoreRestore,
     /// PODxt-family installed model-pack query (`03 0E`), read-only.
     PodxtPackQuery,
