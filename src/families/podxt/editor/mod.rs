@@ -3763,6 +3763,8 @@ impl FamilyTab for PodxtEditor {
                 if self.live.visible() {
                     self.live.show(ui);
                     ui.separator();
+                    ui.heading("File editor");
+                    ui.weak("Changes here affect the open file only. Linked Variax settings and tone metadata are file-only.");
                 }
                 self.pod_window(services, ui);
             });
