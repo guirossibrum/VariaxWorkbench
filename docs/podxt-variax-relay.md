@@ -20,12 +20,14 @@ was not executed, and no device was opened.
 | Question | Label | What the searched sources show |
 | --- | --- | --- |
 | The PODxt relays only a set of Variax opcodes | **unknown** | No allow-list was found in the 3.01 image, the driver trees, Workbench 1.75, Line 6 Edit 3.06, or the MIDI libraries. Those libraries forward a family-`07` message once it is in the host buffer. |
-| The PODxt caps guitar-to-host reply size | **unknown** | No 200-byte or 256-byte device cap was found. The 256-byte value is a host send splitter. Monkey's updater text names a PODxt Live "large buffers" command, and the bytes of that command were not recovered. |
-| Another `03 23` value, or a firmware-update pass-through, relays `0x44` | **unknown** as a device mode. **Confirmed** that the host templates write only `0` and `1` into `03 23`. | Workbench, the Rust bridge, and the Monkey binaries contain `F0 00 01 0C 03 23 01 F7` and `F0 00 01 0C 03 23 00 F7`. No third value of that opcode was found. |
+| The PODxt caps guitar-to-host reply size | **unknown** | No 200-byte or 256-byte device cap was found. The 256-byte value is a host send splitter. The Monkey large-buffer command is the existing `03 23` pair, recovered below. Its sender retries the outbound transfer and then sleeps. |
+| Another `03 23` value, or a firmware-update pass-through, relays `0x44` | **unknown** as a device mode. **Confirmed** that the host templates write only `0` and `1` into `03 23`, and that those two values are the large-buffer enable and disable. | Workbench, the Rust bridge, and the Monkey binaries contain `F0 00 01 0C 03 23 01 F7` and `F0 00 01 0C 03 23 00 F7`. No third value of that opcode was found. |
 
 One silent `0x44` is compatible with an opcode filter and with a reply-size
 cap. The run does not separate them. The guitar still working afterwards makes
 a stuck guitar less likely. It leaves open whether the guitar saw the request.
+The large-buffer enable is the `03 23 01` frame that run already sent, so a
+missing large-buffer command does not account for the silence.
 
 ## The #225 owner run
 
@@ -186,25 +188,114 @@ The complete `03 23` frames are only the two values above.
 | GearBox 3.72 Windows `GearBox.exe`, SHA-256 `e643d4c497dd7030b55649b644550a4394ff78440bc06cef4513e3731f297d7d` | 0 | 0 | The Vetta pair |
 | GearBox 3.72 Mac `GearBox`, `L6TWXG`, and `Line6AudioMIDI` | 0 | 0 | `03 0F 01` was present. `03 23 01` was absent |
 
-The Windows Monkey executable also contains the error strings "Failed to
-send command to disable large buffers in PODxtLive" and "Failed to send
-command to enable large buffers in PODxtLive". The same two strings are in
-both Mac Monkey binaries. The same Windows file says a Variax update failure
-can come from PODxt Live flash older than 2.11, in the sentence "Check to
-make sure your PODxt Live is at version 2.11 or higher." Those strings are
-**confirmed**. The SysEx bytes of the large-buffer command are **unknown**.
-In the Windows file the strings sit near the `03 23` templates and near
-short family-`07` templates (`07 00 61`, `07 00 63`, `07 00 68`, and
-`07 00 1D` plus spaces). Neighbourhood in the file is not a cross-reference,
-so none of those templates is identified as the large-buffer command.
+### Large-buffer command
 
-That text is the updater's own evidence of a size-related PODxt Live command
-on the Variax firmware-update path. It fits the #225 silence beside a working
-200-byte reply and a working 6,566-byte host-to-guitar send. It does not
-identify the command, and it does not show that firmware 3.01 still honors
-it. The owner unit is 3.01, which is a later version number than 2.11. The
-2.11 image is not in the local trees, so the relay code of that older flash
-was not compared.
+**Confirmed.** The error strings "Failed to send command to enable large
+buffers in PODxtLive" and "Failed to send command to disable large buffers in
+PODxtLive" sit on the failure paths of the calls below. The bytes those calls
+pass are the two `03 23` frames already counted in the table. Each of the
+three builds contains that enable frame three times and that disable frame
+three times. The file bytes at every call operand are:
+
+| Action | Eight bytes |
+| --- | --- |
+| Enable | `F0 00 01 0C 03 23 01 F7` |
+| Disable | `F0 00 01 0C 03 23 00 F7` |
+
+| Build | Enable address | Disable address | Call |
+| --- | --- | --- | --- |
+| Windows Monkey 1.77, `Line 6 Monkey.exe`, 4,178,432 bytes, SHA-256 `eb06a7ffaed9cd13119ca8fd4783fddfd03d4e22e23f2fbb3aa9524e272b2cde` | `0x005CF868`, `0x005CFB50`, `0x005CFF3C` | `0x005CF870`, `0x005CFB58`, `0x005CFF44` | Object at `this+0x30`, virtual slot `+0x40`, which is `FUN_004a3380` |
+| Windows Monkey 1.33, the GearBox 3.72 bundle in the table above | `0x0052954C`, `0x005296F8`, `0x00529868` | `0x00529554`, `0x00529700`, `0x00529870` | Same object, slot `+0x3C`, which is `FUN_0041f4a0` |
+| Mac Monkey 1.78, `Line 6 Monkey`, 2,378,528 bytes, SHA-256 `47417308c9697456eeed59720ec97281ec226139c707347e4cad3ce787491a37` | `0x160B00`, `0x160B48`, `0x160C38` | `0x160B08`, `0x160B50`, `0x160C48` | Same object, slot `+0x44`, which is `L6MIDIDeviceIO::SendSysexMessage` |
+
+The Windows 1.77 enable at `0x454543` pushes `0x1388` (5,000), `8`, and
+`0x005CF868`, then calls slot `+0x40`. The Windows 1.33 enable at `0x449DDD`
+pushes the same timeout and length with `0x0052954C`, then calls slot
+`+0x3C`. The Mac 1.78 enable at `0x63164` stores timeout `0x1388`, length
+`8`, and address `0x160B00`, then calls slot `+0x44`. The disable sites use
+the next address in each pair, the same length, and the same timeout.
+
+Order, **confirmed** from those three writers. The enable is `03 23 01`.
+These functions have no earlier `03 23` and no second `03 23` between the
+two calls. After a successful enable the writer sleeps 1,000 ms, then writes
+code and patch segments. The disable, `03 23 00`, follows those writes. The
+long writer's other 8-byte send, Windows 1.77 `0x005CFF54` and Mac 1.78
+`0x160C40`, is `F0 00 01 0C 07 05 64 F7`. Its failure text is "Update
+alt-tone presets failed!". That frame is a different command.
+
+The send is gated, **confirmed** as control flow. The writer reads a device
+record from the MIDI object, searches the wide string `PODxt`, and continues
+into the enable only when that search hits and bit 1 of the flag method's
+return value is set (`test al, 2` at Windows 1.77 `0x454486`; the Mac writer
+masks that value with 2). The failure text names PODxt Live. What bit 1 selects
+beyond that test is **unknown**.
+
+Reply wait, **confirmed** for the host. Mac `SendSysexMessage` at `0xCC20`,
+Windows 1.77 `FUN_004a3380`, and Windows 1.33 `FUN_0041f4a0` are the same
+sender. When its trace flag is set it logs "MIDIDevIO Syx Tx:" with the
+buffer and the length. It then calls the out port. A return of `0x9000`
+sleeps 10 ms and tries again until the 5,000 ms argument is spent, and then
+returns `-0x7FFF6FF4`. Any other out-port return is passed back. A negative
+result on enable is logged and thrown, which stops the update. A negative
+result on disable is logged, and the writer continues. The 1,000 ms pause
+after a successful enable is `Sleep` on Windows (`FUN_00475b70` in 1.77,
+`FUN_00407790` in 1.33) and `L6ThreadManager::Sleep` on Mac. The disable has
+no following sleep. These call sites do not register the SysEx callback that
+other Monkey sends use when they expect an ack. The sender's inbound wait,
+and any device byte that answers `03 23`, stay **unknown**.
+
+### The 2.11 dialog
+
+**Confirmed.** The sentence "Check to make sure your PODxt Live is at
+version 2.11 or higher." is dialog text on the Variax-update failure path.
+The characters `2.11` are in that string. The branch does not compare a
+firmware version with `2.11`, `0x211`, or a packed version word.
+
+The dialog is reached when the update has failed, the target Line 6 product
+id masked with `0x7F0000` equals `0x70000`, a nested device pointer is
+present, and one unsigned 16-bit field equals 18,000. 18,000 is `0x4650`,
+the PODxt Live USB product id recorded in the driver notes. The same short
+is later passed with vendor `0x0E41`. Windows 1.77 `FUN_00434810` stores
+that vendor at offset `0x28` and the short at offset `0x2A`.
+
+| Build | Function | USB product-id load |
+| --- | --- | --- |
+| Windows 1.77 | `FUN_0041edf0` | `*(short *)(record[3] + 6) == 18000` |
+| Mac 1.78 | `FUN_0001e710` | `*(short *)(record[3] + 6) == 18000` |
+| Windows 1.33 | `FUN_004914c0` | `*(short *)(record[2] + 0x106) == 18000` |
+
+The field this check reads is that USB product id, together with the Line 6
+product-id family in the first word of the update record. It does not read
+the MIDI identity version. The owner unit is 3.01. The 2.11 image is still
+absent from the local trees, so this dialog supplies no relay listing for
+that older flash. What firmware 3.01 does with `03 23` on the device stays
+**unknown**.
+
+### #225 and the #234 stepped read
+
+**Confirmed** against the #225 record above: that run sent `03 23 01` before
+`F0 00 01 0C 07 00 44 7F F7`, and it sent `03 23 00` during cleanup. Those
+are the large-buffer enable and disable. **Likely:** a missing large-buffer
+command does not explain the silent `0x44`. The host function retries an
+outbound transfer, and the Monkey writers place the pair around outbound
+code and patch writes. The #176 run already carried a 6,566-byte `0x43`
+from host to guitar on firmware 3.01 after the same enable. **Unknown:**
+whether the device changes guitar-to-host capacity when it sees the frame,
+and whether the updater's 1,000 ms sleep changes that. The #225 request was
+at 0.181 s, so the run did not copy that pause. One silent request still
+leaves the opcode filter and a reply-size cap unseparated.
+
+[#234](https://github.com/guirossibrum/VariaxWorkbench/issues/234)'s draft
+stepped `0x3C` read, in `docs/reso5-full-read-test-card.md`, already sends
+`03 23 01`, waits 100 ms, requests 64, 128, 256, 512, and 1,092 words
+(expected replies 392, 776, 1,544, 3,080, and 6,560 bytes), and sends
+`03 23 00` afterwards. Those two frames are the large-buffer pair, so the
+stepped read needs no further command and no SysEx reply to `03 23 01`.
+The updater behavior the draft does not copy is the 1,000 ms sleep after a
+successful enable. That sleep is a thread delay. The 200-byte `0x3C` reply
+already returns on this route without it. Whether the longer steps need the
+longer pause is **unknown**. This note leaves the draft's stop at the first
+timeout in place. It adds no sleep, changes no tool, and approves no live run.
 
 ### Controller image
 
@@ -254,8 +345,9 @@ comment is the handoff. It does not add a separate measurement.
 ## What this note leaves in place
 
 The merged slot-read code stays available for a possible direct Variax USB
-interface, Workbench mode 0. This note does not add a retry of `0x44` over
-the PODxt, a new `03 23` value, or a send of the unidentified large-buffer
-command. A bounded owner check for #221 and #222 still needs its own
-approval. Keep-current, F-, U-, and Custom stay distinct, as #218 recorded.
-The two F- models above are the ones with standalone recall evidence.
+interface, Workbench mode 0. This note adds no retry of `0x44` over the
+PODxt and no new `03 23` value. The large-buffer frames are the `03 23`
+pair already recorded here. Nothing in this note is sent to the rig. A
+bounded owner check for #221 and #222 still needs its own approval.
+Keep-current, F-, U-, and Custom stay distinct, as #218 recorded. The two
+F- models above are the ones with standalone recall evidence.
