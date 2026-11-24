@@ -4,6 +4,7 @@
 //! claims it and selects the altsetting; [`UsbInterfaceLink::finish`] releases
 //! it and gives it back to the kernel driver. Other interfaces are untouched.
 
+use crate::device_lock::DeviceLock;
 use crate::session::{Link, Path};
 use std::time::{Duration, Instant};
 
@@ -20,6 +21,7 @@ pub struct UsbInterfaceLink {
     detached: bool,
     claimed: bool,
     finished: bool,
+    _rig: Option<DeviceLock>,
 }
 
 impl UsbInterfaceLink {
@@ -40,7 +42,27 @@ impl UsbInterfaceLink {
                 found.len()
             ));
         }
-        let handle = found[0]
+        Self::open_device(spec, &found[0], None)
+    }
+
+    /// Select the verified attachment before opening or detaching anything.
+    /// The link owns the rig lock until it is dropped, including during cleanup.
+    pub fn open_attachment(
+        spec: InterfaceSpec,
+        path: &str,
+        address: u8,
+        rig: DeviceLock,
+    ) -> Result<Self, String> {
+        let device = with_attachment(&rig, spec, path, address, Ok)?;
+        Self::open_device(spec, &device, Some(rig))
+    }
+
+    fn open_device(
+        spec: InterfaceSpec,
+        device: &rusb::Device<rusb::GlobalContext>,
+        rig: Option<DeviceLock>,
+    ) -> Result<Self, String> {
+        let handle = device
             .open()
             .map_err(|e| format!("Cannot open the USB device: {e}"))?;
         let mut link = Self {
@@ -50,6 +72,7 @@ impl UsbInterfaceLink {
             detached: false,
             claimed: false,
             finished: false,
+            _rig: rig,
         };
         if let Err(error) = link.prepare() {
             return Err(match link.finish() {
@@ -116,6 +139,57 @@ impl UsbInterfaceLink {
     }
 }
 
+/// Apply an operation to the single USB device at the verified physical
+/// port and enumeration address. Other devices of the same model are ignored.
+pub fn with_attachment<T>(
+    _rig: &DeviceLock,
+    spec: InterfaceSpec,
+    path: &str,
+    address: u8,
+    open: impl FnOnce(rusb::Device<rusb::GlobalContext>) -> Result<T, String>,
+) -> Result<T, String> {
+    let devices = rusb::devices().map_err(|e| format!("USB list: {e}"))?;
+    with_matching_device(
+        devices.iter(),
+        |device| {
+            device.device_descriptor().is_ok_and(|descriptor| {
+                descriptor.vendor_id() == spec.vendor && descriptor.product_id() == spec.product
+            }) && device.port_numbers().is_ok_and(|ports| {
+                matches_attachment(
+                    (path, address),
+                    device.bus_number(),
+                    &ports,
+                    device.address(),
+                )
+            })
+        },
+        open,
+    )
+}
+
+fn matches_attachment(expected: (&str, u8), bus: u8, ports: &[u8], address: u8) -> bool {
+    address == expected.1 && {
+        let ports = ports
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(".");
+        format!("{bus}-{ports}") == expected.0
+    }
+}
+
+fn with_matching_device<D, T>(
+    devices: impl IntoIterator<Item = D>,
+    matches: impl Fn(&D) -> bool,
+    open: impl FnOnce(D) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut matches = devices.into_iter().filter(matches);
+    match (matches.next(), matches.next()) {
+        (Some(device), None) => open(device),
+        _ => Err("The PODxt Live USB attachment changed. Wait for automatic identity.".into()),
+    }
+}
+
 impl Drop for UsbInterfaceLink {
     fn drop(&mut self) {
         if !self.finished {
@@ -166,5 +240,30 @@ impl Link for UsbInterfaceLink {
 
     fn pause(&mut self, duration: Duration) {
         std::thread::sleep(duration);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selects_verified_port_and_address_even_with_another_podxt_present() {
+        let opened = with_matching_device(
+            [(8, &[3][..], 10), (8, &[2, 1][..], 11)],
+            |&(bus, ports, address)| matches_attachment(("8-2.1", 11), bus, ports, address),
+            |(_, _, address)| Ok(address),
+        );
+        assert_eq!(opened, Ok(11));
+    }
+
+    #[test]
+    fn changed_port_or_same_port_replug_leaves_the_driver_and_transport_untouched() {
+        let result = with_matching_device(
+            [(8, &[3][..], 11), (8, &[2, 1][..], 12)],
+            |&(bus, ports, address)| matches_attachment(("8-2.1", 11), bus, ports, address),
+            |_| -> Result<(), String> { panic!("mismatch must not open, detach, or send") },
+        );
+        assert!(result.unwrap_err().contains("USB attachment changed"));
     }
 }

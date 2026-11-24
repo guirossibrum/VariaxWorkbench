@@ -484,6 +484,28 @@ impl LinuxSysfs {
         Self { root: root.into() }
     }
 
+    /// Cached Linux USB enumeration address at a detected bus and port path.
+    /// A new address on the same port means the previous attachment is stale.
+    pub fn usb_device_address(&self, path: &str) -> Option<u8> {
+        if !path.split_once('-').is_some_and(|(bus, ports)| {
+            let number = |part: &str| part.parse::<u8>().is_ok_and(|n| n != 0);
+            number(bus) && ports.split('.').all(number)
+        }) {
+            return None;
+        }
+        hardware_gates::run_if_unlocked(Gate::OsDiscovery, || {
+            read_attribute(
+                &self.root.join(SYS_USB_DEVICES).join(path).join("devnum"),
+                path,
+            )
+            .map_err(|error| error.to_string())
+        })
+        .ok()
+        .flatten()
+        .and_then(|text| text.trim().parse::<u8>().ok())
+        .filter(|address| (1..=127).contains(address))
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -2336,6 +2358,21 @@ mod tests {
             "path leaked"
         );
         assert!(!report.contains("SIMULATED"));
+    }
+
+    #[test]
+    fn attachment_address_reads_only_the_selected_cached_sysfs_entry() {
+        let root = fake_tree();
+        let dir = root.path().join(SYS_USB_DEVICES).join("8-2.1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let metadata = LinuxSysfs::with_root(root.path());
+        assert_eq!(metadata.usb_device_address("8-2.1"), None);
+        std::fs::write(dir.join("devnum"), "24\n").unwrap();
+        assert_eq!(metadata.usb_device_address("8-2.1"), Some(24));
+        assert_eq!(metadata.usb_device_address("8-3"), None);
+        assert_eq!(metadata.usb_device_address("../8-2.1"), None);
+        std::fs::write(dir.join("devnum"), "128\n").unwrap();
+        assert_eq!(metadata.usb_device_address("8-2.1"), None);
     }
 
     /// Sysfs on this kernel can name the bound driver with underscores.

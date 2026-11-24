@@ -32,7 +32,14 @@ pub(super) struct DiscoveryProfile {
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) struct AttachmentKey {
     pub path: String,
+    address: Option<u8>,
     generation: u64,
+}
+
+impl AttachmentKey {
+    pub fn usb_location(&self) -> Option<(&str, u8)> {
+        Some((&self.path, self.address?))
+    }
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -63,6 +70,13 @@ pub(super) struct DetectedDevice {
 
 pub(super) trait PresenceSource {
     fn metadata(&self) -> &dyn OsMetadataSource;
+    #[cfg(not(test))]
+    fn usb_address(&self, path: &str) -> Option<u8>;
+
+    #[cfg(test)]
+    fn usb_address(&self, _path: &str) -> Option<u8> {
+        None
+    }
 
     #[cfg(test)]
     fn simulated_identity(&self, _job: &Job) -> Option<Outcome> {
@@ -82,6 +96,10 @@ struct CachedUsbPresence(variax_workbench::device_probe::LinuxSysfs);
 impl PresenceSource for CachedUsbPresence {
     fn metadata(&self) -> &dyn OsMetadataSource {
         &self.0
+    }
+
+    fn usb_address(&self, path: &str) -> Option<u8> {
+        self.0.usb_device_address(path)
     }
 }
 
@@ -308,24 +326,34 @@ impl DetectionService {
             }
         }
 
-        // Only a successful absence or changed USB product starts a new
+        // An absence, changed USB product or changed address starts a new
         // generation. Detaching and restoring the driver leaves it in place.
         let mut previous = std::mem::take(&mut self.attachments);
         for (path, usb) in listed {
             let id = Self::usb_id(&usb);
+            let automatic = profiles.iter().any(
+                |p| matches!(p.discovery, DeviceDiscovery::Automatic(automatic) if automatic == id),
+            );
+            let address = if automatic {
+                self.source.usb_address(&path)
+            } else {
+                None
+            };
             let attachment = match previous.remove(&path) {
-                Some(existing) if Self::usb_id(&existing.usb) == id => {
+                Some(existing)
+                    if Self::usb_id(&existing.usb) == id && existing.key.address == address =>
+                {
                     Attachment { usb, ..existing }
                 }
                 _ => {
                     self.generation += 1;
                     let key = AttachmentKey {
                         path: path.clone(),
+                        address,
                         generation: self.generation,
                     };
-                    let bridge = profiles.iter()
-                        .any(|p| matches!(p.discovery, DeviceDiscovery::Automatic(automatic) if automatic == id))
-                        .then(|| Bridge::new(self.identify.is_some() || cfg!(test)));
+                    let bridge =
+                        automatic.then(|| Bridge::new(self.identify.is_some() || cfg!(test)));
                     Attachment { key, usb, bridge }
                 }
             };

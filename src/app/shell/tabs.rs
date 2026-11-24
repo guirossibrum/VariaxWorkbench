@@ -95,6 +95,8 @@ pub(super) trait FamilyTab: std::any::Any {
     fn save_copy(&mut self, services: &mut EditorServices<'_>);
     fn undo(&mut self) {}
     fn redo(&mut self) {}
+    /// Called before polling the editor, with the tab's current device.
+    /// Use `DeviceTab::verified_attachment` for attachment-scoped USB work.
     fn observe_device(&mut self, _device: Option<&DeviceTab>) {}
     fn poll(&mut self, _ctx: &egui::Context) {}
     fn local_prompt(&mut self, _ctx: &egui::Context, _services: &mut EditorServices<'_>) {}
@@ -135,6 +137,18 @@ impl DeviceTab {
             disconnected_at: None,
             reconnected_with_edits,
         }
+    }
+
+    /// Linux bus/port path and current USB address for a verified live tab.
+    /// Disconnected, uncertain and refreshing tabs have no openable attachment.
+    #[allow(dead_code)] // Used by the Follow and Refresh editor integration.
+    pub fn verified_attachment(&self) -> Option<(&str, u8)> {
+        if self.connection == Connection::Present
+            && matches!(self.device.support, DeviceSupport::Verified(_))
+        {
+            return self.device.key.attachment.usb_location();
+        }
+        None
     }
 
     pub fn status(&self) -> String {

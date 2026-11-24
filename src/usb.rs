@@ -9,6 +9,7 @@ use crate::{
     midi_enable,
     read_session::{self, ControlTransport},
 };
+use line6_devices::device_lock::DeviceLock;
 use line6_devices::family::variax::transport::VARIAX_VIA_PODXT_LIVE as USB;
 use std::{
     collections::VecDeque,
@@ -39,32 +40,26 @@ impl Session {
         hardware_gates::run_if_unlocked(Gate::OsDiscovery, Self::open_unlocked)
     }
 
-    fn open_handle(expected_path: Option<&str>) -> Result<Self, String> {
-        let devices = rusb::devices().map_err(|e| e.to_string())?;
-        let matches: Vec<_> = devices
-            .iter()
-            .filter(|d| {
-                d.device_descriptor()
-                    .is_ok_and(|d| d.vendor_id() == USB.vendor && d.product_id() == USB.product)
-            })
-            .collect();
-        if matches.len() != 1 {
-            return Err(format!("expected one PODxt Live, found {}", matches.len()));
-        }
-        let device = &matches[0];
-        if let Some(expected_path) = expected_path {
-            let port_path = device
-                .port_numbers()
-                .map_err(|error| error.to_string())?
-                .into_iter()
-                .map(|port| port.to_string())
-                .collect::<Vec<_>>()
-                .join(".");
-            if format!("{}-{port_path}", device.bus_number()) != expected_path {
-                return Err("the PODxt Live USB attachment changed".into());
+    fn open_handle(expected: Option<(&DeviceLock, &str, u8)>) -> Result<Self, String> {
+        let open = |device: rusb::Device<rusb::GlobalContext>| {
+            device.open().map_err(|e| format!("Cannot open PODxt Live USB control: {e}. USB device access permission may be required."))
+        };
+        let handle = if let Some((rig, path, address)) = expected {
+            line6_devices::transport::usb::with_attachment(rig, USB, path, address, open)?
+        } else {
+            let devices = rusb::devices().map_err(|e| e.to_string())?;
+            let matches: Vec<_> = devices
+                .iter()
+                .filter(|d| {
+                    d.device_descriptor()
+                        .is_ok_and(|d| d.vendor_id() == USB.vendor && d.product_id() == USB.product)
+                })
+                .collect();
+            if matches.len() != 1 {
+                return Err(format!("expected one PODxt Live, found {}", matches.len()));
             }
-        }
-        let handle = device.open().map_err(|e| format!("Cannot open PODxt Live USB control: {e}. USB device access permission may be required."))?;
+            open(matches.into_iter().next().expect("one PODxt Live"))?
+        };
         Ok(Self {
             handle,
             detached: false,
@@ -482,15 +477,15 @@ pub fn read_identity(
 /// caller holds the rig lock. Only an observed orphan tail permits one resend.
 #[cfg(all(not(test), target_os = "linux"))]
 pub fn read_discovery_identity(
-    _rig: &line6_devices::device_lock::DeviceLock,
-    expected_path: &str,
+    rig: &DeviceLock,
+    (path, address): (&str, u8),
     cancel: &AtomicBool,
 ) -> Result<identity_stage::DiscoveryIdentity, identity_stage::IdentifyError> {
     use identity_stage::IdentifyError;
     hardware_gates::run_if_unlocked(Gate::OsDiscovery, || {
         hardware_gates::run_if_unlocked(Gate::IdentityRequest, || {
             Ok(identity_on(
-                || Session::open_handle(Some(expected_path)),
+                || Session::open_handle(Some((rig, path, address))),
                 cancel,
                 identity_stage::run_discovery_exchange,
             )
@@ -498,6 +493,25 @@ pub fn read_discovery_identity(
         })
     })
     .unwrap_or(Err(IdentifyError::Locked))
+}
+
+/// Open interface 1 for the attachment supplied by a verified editor tab.
+/// The caller checks its operation's gate before acquiring the rig lock.
+/// Dropping the returned link releases the interface and then the lock.
+pub fn open_variax_bridge(
+    rig: DeviceLock,
+    (path, address): (&str, u8),
+) -> Result<line6_devices::transport::usb::UsbInterfaceLink, String> {
+    if cfg!(test) {
+        return Err("test builds do not open a USB device".into());
+    }
+    hardware_gates::run_if_unlocked(Gate::OsDiscovery, || {
+        hardware_gates::run_if_unlocked(Gate::IdentityRequest, || {
+            line6_devices::transport::usb::UsbInterfaceLink::open_attachment(
+                USB, path, address, rig,
+            )
+        })
+    })
 }
 
 pub fn read_current(cancel: &AtomicBool) -> Result<CurrentPreset, String> {

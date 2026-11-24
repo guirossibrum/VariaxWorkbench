@@ -20,6 +20,7 @@ struct FakeSnapshot {
     notices: std::collections::BTreeMap<AttachmentKey, Vec<SimulatedNotice>>,
     fail: bool,
     reads: usize,
+    address: Option<u8>,
 }
 
 #[derive(Clone, Default)]
@@ -44,6 +45,10 @@ impl OsMetadataSource for FakePresence {
 impl PresenceSource for FakePresence {
     fn metadata(&self) -> &dyn OsMetadataSource {
         self
+    }
+
+    fn usb_address(&self, _: &str) -> Option<u8> {
+        self.0.borrow().address.or(Some(10))
     }
 
     fn simulated_identity(&self, job: &SimulatedJob) -> Option<SimulatedOutcome> {
@@ -706,4 +711,53 @@ fn older_guitar_firmware_warns_on_the_pod_without_admitting_a_guitar_tab() {
     tick(&ctx, &mut app);
     assert_eq!(entries(&app).len(), 2);
     assert!(entries(&app)[0].2.device.guitar_warning.is_none());
+}
+
+#[test]
+fn same_port_replug_hands_the_verified_new_address_to_the_existing_editor() {
+    type Attachments = Rc<RefCell<Vec<Option<(String, u8)>>>>;
+    struct EditorSpy(Attachments);
+
+    impl FamilyTab for EditorSpy {
+        fn show(&mut self, _: &mut egui::Ui, _: &mut EditorServices<'_>) {}
+        fn dirty(&self) -> bool {
+            false
+        }
+        fn close_prompt(&mut self, _: &egui::Context, _: &mut EditorServices<'_>) {}
+        fn status(&self) -> (&str, Option<&str>) {
+            ("", None)
+        }
+        fn save_copy(&mut self, _: &mut EditorServices<'_>) {}
+        fn observe_device(&mut self, device: Option<&DeviceTab>) {
+            self.0.borrow_mut().push(
+                device
+                    .and_then(DeviceTab::verified_attachment)
+                    .map(|(path, address)| (path.to_owned(), address)),
+            );
+        }
+    }
+
+    let (ctx, mut app, source) = fixture();
+    source.usb(true, false);
+    tick(&ctx, &mut app);
+    let first = app.detection.as_ref().unwrap().attachment_key("8-2.1");
+    source.guitar(first.clone());
+    tick(&ctx, &mut app);
+    let guitar_id = entries(&app)[1].1;
+    let seen = Attachments::default();
+    let index = app.tabs.index(guitar_id).unwrap();
+    app.tabs.entries[index].editor = Box::new(EditorSpy(seen.clone()));
+    tick(&ctx, &mut app);
+    assert_eq!(seen.borrow().last(), Some(&Some(("8-2.1".into(), 10))));
+
+    // No absence was observed between the two enumerations.
+    source.0.borrow_mut().address = Some(11);
+    tick(&ctx, &mut app);
+    assert_eq!(seen.borrow().last(), Some(&None));
+    let second = app.detection.as_ref().unwrap().attachment_key("8-2.1");
+    assert_ne!(first, second);
+    source.guitar(second);
+    tick(&ctx, &mut app);
+    assert_eq!(entries(&app)[1].1, guitar_id);
+    assert_eq!(seen.borrow().last(), Some(&Some(("8-2.1".into(), 11))));
 }

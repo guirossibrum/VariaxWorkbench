@@ -185,7 +185,11 @@ mod live {
             return None;
         };
         let rig = PassiveDeviceLock::acquire().ok()?;
-        if cancel.load(Ordering::Relaxed) || rig.yield_requested() {
+        let (path, address) = job.attachment.usb_location()?;
+        if cancel.load(Ordering::Relaxed)
+            || rig.yield_requested()
+            || LinuxSysfs::new().usb_device_address(path) != Some(address)
+        {
             return None;
         }
         // Opening a read-only descriptor sends no request and never detaches a driver.
@@ -210,7 +214,10 @@ mod live {
         else {
             return Outcome::Deferred;
         };
-        if device.sysfs_name != job.attachment.path {
+        let Some((path, address)) = job.attachment.usb_location() else {
+            return Outcome::Deferred;
+        };
+        if device.sysfs_name != path || metadata.usb_device_address(path) != Some(address) {
             return Outcome::Deferred;
         }
         let pod_firmware = if job.kind == JobKind::Initial {
@@ -235,12 +242,16 @@ mod live {
         } else {
             None
         };
+        if metadata.usb_device_address(path) != Some(address) {
+            return Outcome::Deferred;
+        }
         let guitar_ready = matches!(recognise(&metadata), Recognition::Recognised { device, .. }
-            if device.sysfs_name == job.attachment.path && expected_driver_binding(&device));
+            if device.sysfs_name == path && expected_driver_binding(&device)
+                && metadata.usb_device_address(path) == Some(address));
         let guitar = if !guitar_ready {
             Guitar::Unavailable("The expected guitar interface driver is unavailable.".into())
         } else {
-            match usb::read_discovery_identity(rig, &job.attachment.path, cancel) {
+            match usb::read_discovery_identity(rig, (path, address), cancel) {
                 Ok(DiscoveryIdentity::Verified) => Guitar::Verified(GUITAR_VERSION),
                 Ok(DiscoveryIdentity::OlderFirmware(firmware)) => Guitar::OlderFirmware(firmware),
                 Err(IdentifyError::Locked) => {
