@@ -1,6 +1,7 @@
 use super::*;
 use serde::Deserialize;
 
+mod connection;
 #[cfg(feature = "usb")]
 mod follow;
 mod guitar;
@@ -112,6 +113,7 @@ fn save_auto_select(path: &Path, enabled: bool) -> Result<(), String> {
 pub(super) struct VariaxEditor {
     pub(super) document: Option<EditorDocument>,
     source_path: Option<PathBuf>,
+    connection_status: Option<String>,
     #[cfg(feature = "usb")]
     refresh: refresh::Refresh,
     #[cfg(feature = "usb")]
@@ -174,9 +176,11 @@ pub(super) struct VariaxEditor {
     html_export_button: Option<Rect>,
     #[cfg(test)]
     tuning_preset_rows: HashMap<String, Rect>,
+    #[cfg(test)]
     read_receiver: Option<
         std::sync::mpsc::Receiver<Result<variax_workbench::read_session::CurrentPreset, String>>,
     >,
+    #[cfg(test)]
     pub(super) read_worker: Option<(
         std::sync::Arc<std::sync::atomic::AtomicBool>,
         std::thread::JoinHandle<()>,
@@ -190,6 +194,7 @@ impl VariaxEditor {
         Self {
             document: None,
             source_path: None,
+            connection_status: None,
             #[cfg(feature = "usb")]
             refresh: refresh::Refresh::default(),
             #[cfg(feature = "usb")]
@@ -245,7 +250,9 @@ impl VariaxEditor {
             html_export_button: None,
             #[cfg(test)]
             tuning_preset_rows: HashMap::new(),
+            #[cfg(test)]
             read_receiver: None,
+            #[cfg(test)]
             read_worker: None,
             pending: None,
         }
@@ -278,16 +285,24 @@ impl VariaxEditor {
     }
 
     pub(super) fn is_reading(&self) -> bool {
-        #[cfg(feature = "usb")]
-        if self.refresh.busy() {
+        #[cfg(test)]
+        if self.read_receiver.is_some() {
             return true;
         }
-        self.read_receiver.is_some()
+        #[cfg(feature = "usb")]
+        {
+            self.refresh.busy()
+        }
+        #[cfg(not(feature = "usb"))]
+        {
+            false
+        }
     }
 
     pub(super) fn cancel_read(&mut self) {
         #[cfg(feature = "usb")]
         self.refresh.cancel();
+        #[cfg(test)]
         if let Some((cancel, _)) = &self.read_worker {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
             self.status = "Cancelling guitar read…".into();
@@ -323,6 +338,7 @@ impl VariaxEditor {
         self.clear_text_drafts();
     }
 
+    #[cfg(test)]
     pub(super) fn start_read(&mut self) {
         // The user has locked all physical-device access during offline validation.
         if hardware_gates::is_locked(Gate::CurrentSettingsRead) {
@@ -339,35 +355,12 @@ impl VariaxEditor {
         self.launch_read();
     }
 
+    #[cfg(test)]
     pub(super) fn launch_read(&mut self) {
-        if hardware_gates::is_locked(Gate::CurrentSettingsRead) {
-            self.status = "Live access is locked while offline validation is in progress.".into();
-            return;
-        }
-        // A test build never starts a device read, even with the gate open.
-        if cfg!(test) {
-            self.status = "Test builds do not open a USB device.".into();
-            return;
-        }
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let worker_cancel = cancel.clone();
-        let worker = std::thread::spawn(move || {
-            #[cfg(feature = "usb")]
-            let result = variax_workbench::usb::read_current(&worker_cancel);
-            #[cfg(not(feature = "usb"))]
-            let result = {
-                let _ = &worker_cancel;
-                Err("this build has no live USB adapter (built without the `usb` feature)".into())
-            };
-            let _ = sender.send(result);
-        });
-        self.read_worker = Some((cancel, worker));
-        self.read_receiver = Some(receiver);
-        self.error = None;
-        self.status = "Reading current model settings from the guitar…".into();
+        self.status = "Test builds do not open a USB device.".into();
     }
 
+    #[cfg(test)]
     pub(super) fn poll_read(&mut self) {
         let result = self
             .read_receiver
@@ -1243,6 +1236,7 @@ impl VariaxEditor {
         }
         match self.pending.take() {
             Some(GuitarPending::Open(path)) => self.load(&path),
+            #[cfg(test)]
             Some(GuitarPending::ReadCurrent) => self.launch_read(),
             Some(GuitarPending::Quit) => services.finish_close_if(true),
             None => {}
@@ -1250,6 +1244,7 @@ impl VariaxEditor {
     }
 }
 
+#[cfg(test)]
 impl Drop for VariaxEditor {
     fn drop(&mut self) {
         if let Some((cancel, worker)) = self.read_worker.take() {
@@ -1262,6 +1257,7 @@ impl Drop for VariaxEditor {
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum GuitarPending {
     Open(PathBuf),
+    #[cfg(test)]
     ReadCurrent,
     Quit,
 }
@@ -1296,10 +1292,13 @@ impl FamilyTab for VariaxEditor {
     fn redo(&mut self) {
         VariaxEditor::redo(self);
     }
-    #[cfg(feature = "usb")]
     fn observe_device(&mut self, device: Option<&crate::editor::tabs::DeviceTab>) {
-        self.refresh.observe(device);
-        self.follow.observe(device);
+        self.connection_status = device.map(connection::status);
+        #[cfg(feature = "usb")]
+        {
+            self.refresh.observe(device);
+            self.follow.observe(device);
+        }
     }
     fn poll(&mut self, ctx: &egui::Context) {
         #[cfg(feature = "usb")]
@@ -1307,6 +1306,7 @@ impl FamilyTab for VariaxEditor {
             self.poll_refresh(ctx);
             self.poll_follow(ctx);
         }
+        #[cfg(test)]
         self.poll_read();
         if self.is_reading() {
             ctx.request_repaint_after(Duration::from_millis(50));
@@ -1348,12 +1348,7 @@ impl FamilyTab for VariaxEditor {
         if ui.button("Replace file in this tab…").clicked() {
             self.open_dialog(ui.ctx(), services);
         }
-        if ui
-            .add_enabled(false, egui::Button::new("Live access locked"))
-            .clicked()
-        {
-            self.start_read();
-        }
+        self.connection_controls(ui, services);
     }
 }
 

@@ -344,7 +344,7 @@ pub(super) mod tests {
         }
     }
 
-    pub(crate) fn attach(editor: &mut VariaxEditor) {
+    pub(crate) fn verified_tab() -> DeviceTab {
         let mut metadata = SyntheticSysfs::new();
         metadata.add_device(
             "8-2.1",
@@ -368,16 +368,17 @@ pub(super) mod tests {
             },
         )
         .unwrap();
-        let attachment = tabs
-            .entries
-            .iter()
+        tabs.entries
+            .into_iter()
             .find_map(|tab| {
                 tab.device
-                    .as_ref()
                     .filter(|device| device.device.key.family_id == "variax")
             })
-            .unwrap();
-        editor.observe_device(Some(attachment));
+            .unwrap()
+    }
+
+    pub(crate) fn attach(editor: &mut VariaxEditor) {
+        editor.observe_device(Some(&verified_tab()));
     }
 
     fn complete_capture(
