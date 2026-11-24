@@ -1,0 +1,774 @@
+//! PODxt Live editor reads. The caller owns the rig lock and establishes
+//! automatic identity before opening the port. Each operation also confirms
+//! the identity of the open port before sending a domain request.
+
+use super::*;
+use crate::midi::Event;
+use crate::session::POLL;
+use std::collections::VecDeque;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadCommand {
+    Current,
+    Library,
+    Packs,
+    Globals,
+    Tuner,
+    Follow,
+}
+
+pub enum ReadUpdate {
+    Current(EditBuffer),
+    LibraryStarted,
+    Stored(StoredTone),
+    Packs(Packs),
+    Globals(GlobalValues),
+    Tuner(TunerReading),
+    Controller { number: u8, value: u8 },
+    Clip,
+    Tap,
+    Channel(Location),
+    FollowWarning(String),
+}
+
+enum Notice {
+    Controller(u8, u8),
+    Save(Location),
+    Clip,
+    Channel(Location),
+}
+
+fn notice(event: &Event) -> Option<Notice> {
+    match event {
+        Event::Short(message) => match message.as_slice() {
+            [status, number, value] if status & 0xf0 == 0xb0 => {
+                Some(Notice::Controller(*number, *value))
+            }
+            [status, program] if status & 0xf0 == 0xc0 => {
+                Location::new(BankKind::Tones, u16::from(*program)).map(Notice::Channel)
+            }
+            _ => None,
+        },
+        Event::Sysex(frame) => match frame.as_slice() {
+            [0xf0, 0x00, 0x01, 0x0c, 0x03, 0x0f, 0xf7] => Some(Notice::Clip),
+            [0xf0, 0x00, 0x01, 0x0c, 0x03, 0x24, bank, slot, 0xf7] => {
+                let bank = BankKind::ALL.get(usize::from(bank.checked_sub(1)?))?;
+                Location::new(*bank, u16::from(*slot)).map(Notice::Save)
+            }
+            _ => None,
+        },
+    }
+}
+
+const SAVED_SETUP_SETTLE: Duration = Duration::from_millis(2500);
+const CURRENT_SETTLE: Duration = Duration::from_millis(100);
+const IDENTITY_WINDOW: Duration = Duration::from_secs(3);
+
+/// Run a read through a session with the caller's gate policy. Stop checks
+/// occur before writes and between MIDI polls. A tuner run always attempts
+/// its off command after entering tuner mode, including on cancellation.
+pub fn read_live<L: Link>(
+    session: &mut Session<L>,
+    command: ReadCommand,
+    cancelled: impl Fn() -> bool,
+    mut publish: impl FnMut(ReadUpdate),
+) -> Result<(), String> {
+    let mut reader = Reader {
+        session,
+        cancelled: &cancelled,
+        publish: &mut publish,
+        follow: command == ReadCommand::Follow,
+        saves: VecDeque::new(),
+        current_due: None,
+        after_reply: Vec::new(),
+    };
+    reader.identify()?;
+    match command {
+        ReadCommand::Current => reader.current(),
+        ReadCommand::Library => reader.library(),
+        ReadCommand::Packs => reader.packs(),
+        ReadCommand::Globals => reader.globals(),
+        ReadCommand::Tuner => reader.tuner(),
+        ReadCommand::Follow => reader.follow(),
+    }
+}
+
+struct Reader<'a, 's, L: Link> {
+    session: &'a mut Session<'s, L>,
+    cancelled: &'a dyn Fn() -> bool,
+    publish: &'a mut dyn FnMut(ReadUpdate),
+    follow: bool,
+    saves: VecDeque<(Location, Duration)>,
+    current_due: Option<Duration>,
+    after_reply: Vec<Event>,
+}
+
+impl<L: Link> Reader<'_, '_, L> {
+    fn check_cancel(&self) -> Result<(), String> {
+        if (self.cancelled)() {
+            Err("PODxt read cancelled.".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn identify(&mut self) -> Result<(), String> {
+        // This short drain discards events queued before the port was verified.
+        let before = self.session.link.elapsed() + Duration::from_millis(200);
+        while self.session.link.elapsed() < before {
+            self.check_cancel()?;
+            self.session.poll(POLL)?;
+        }
+        self.check_cancel()?;
+        self.session.send(PodxtRequest::Identity)?;
+        let end = self.session.link.elapsed() + IDENTITY_WINDOW;
+        let mut identity = None;
+        while let Some(left) = self.remaining(end) {
+            self.check_cancel()?;
+            for event in self.session.poll(left.min(POLL))?.into_iter().flatten() {
+                if let Event::Sysex(frame) = event
+                    && let Some(reply) = Identity::parse(&frame)
+                    && identity.replace(reply).is_some()
+                {
+                    return Err("More than one MIDI identity answered.".into());
+                }
+            }
+        }
+        self.check_cancel()?;
+        if identity.is_some_and(|reply| {
+            reply.is_line6()
+                && reply.family == IDENTITY_FAMILY
+                && reply.member == PODXT_LIVE_MEMBER
+                && reply.version == [0, 3, 0, 1]
+        }) {
+            Ok(())
+        } else {
+            Err("The open MIDI port did not verify as PODxt Live 3.01.".into())
+        }
+    }
+
+    fn remaining(&self, end: Duration) -> Option<Duration> {
+        end.checked_sub(self.session.link.elapsed())
+            .filter(|duration| !duration.is_zero())
+    }
+
+    fn request(
+        &mut self,
+        request: PodxtRequest,
+        window: Duration,
+        matches: impl Fn(&[u8]) -> bool,
+    ) -> Result<Option<Vec<u8>>, String> {
+        self.check_cancel()?;
+        self.session.send(request)?;
+        let end = self.session.link.elapsed() + window;
+        while let Some(left) = self.remaining(end) {
+            self.check_cancel()?;
+            let mut answer = None;
+            for event in self.session.poll(left.min(POLL))?.into_iter().flatten() {
+                match event {
+                    Event::Sysex(frame) if answer.is_none() && matches(&frame) => {
+                        answer = Some(frame);
+                    }
+                    other if answer.is_some() && self.follow => self.after_reply.push(other),
+                    other => self.incoming(&other),
+                }
+            }
+            self.check_cancel()?;
+            if answer.is_some() {
+                return Ok(answer);
+            }
+        }
+        Ok(None)
+    }
+
+    fn current(&mut self) -> Result<(), String> {
+        let frame = self
+            .request(PodxtRequest::EditBuffer, WINDOW, is_edit_buffer)?
+            .ok_or("No 168-byte edit-buffer dump arrived.")?;
+        (self.publish)(ReadUpdate::Current(EditBuffer::parse(frame)?));
+        self.replay_after_reply();
+        Ok(())
+    }
+
+    fn stored(&mut self, location: Location) -> Result<(), String> {
+        let frame = self
+            .request(
+                PodxtRequest::Stored(location),
+                STORED_WINDOW,
+                is_edit_buffer,
+            )?
+            .ok_or_else(|| {
+                format!(
+                    "{} {}: no stored dump.",
+                    location.kind().name(),
+                    location.label()
+                )
+            })?;
+        (self.publish)(ReadUpdate::Stored(StoredTone {
+            location,
+            tone: EditBuffer::parse(frame)?,
+        }));
+        self.replay_after_reply();
+        self.wait(STORED_GAP)
+    }
+
+    fn replay_after_reply(&mut self) {
+        for event in std::mem::take(&mut self.after_reply) {
+            self.incoming(&event);
+        }
+    }
+
+    fn wait(&mut self, duration: Duration) -> Result<(), String> {
+        let end = self.session.link.elapsed() + duration;
+        while let Some(left) = self.remaining(end) {
+            self.check_cancel()?;
+            for event in self.session.poll(left.min(POLL))?.into_iter().flatten() {
+                self.incoming(&event);
+            }
+        }
+        self.check_cancel()
+    }
+
+    fn library(&mut self) -> Result<(), String> {
+        self.check_cancel()?;
+        (self.publish)(ReadUpdate::LibraryStarted);
+        for location in Location::all(&BankKind::ALL) {
+            self.stored(location)?;
+        }
+        Ok(())
+    }
+
+    fn packs(&mut self) -> Result<(), String> {
+        let frame = self
+            .request(PodxtRequest::InstalledPacks, WINDOW, is_packs_reply)?
+            .ok_or("No installed-pack reply arrived.")?;
+        (self.publish)(ReadUpdate::Packs(Packs(frame[7])));
+        Ok(())
+    }
+
+    fn global(&mut self, field: Global) -> Result<Option<u16>, String> {
+        let id = field.id();
+        Ok(self
+            .request(PodxtRequest::QueryGlobal(field), GLOBAL_WINDOW, |msg| {
+                global_value(msg, id).is_some()
+            })?
+            .and_then(|reply| global_value(&reply, id)))
+    }
+
+    fn globals(&mut self) -> Result<(), String> {
+        let values = Global::STATUS
+            .into_iter()
+            .map(|field| self.global(field).map(|value| (field, value)))
+            .collect::<Result<Vec<_>, _>>()?;
+        (self.publish)(ReadUpdate::Globals(values));
+        Ok(())
+    }
+
+    fn tuner(&mut self) -> Result<(), String> {
+        self.check_cancel()?;
+        let on = self.session.send(PodxtRequest::TunerMode(true));
+        let start = self.session.link.elapsed();
+        let result = on.and_then(|()| {
+            while self.remaining(start + TUNER_MAX).is_some() {
+                let note = self.global(Global::TunerNote)?;
+                let deviation = self.global(Global::TunerDeviation)?;
+                (self.publish)(ReadUpdate::Tuner(TunerReading {
+                    at: self.session.link.elapsed().saturating_sub(start),
+                    note,
+                    deviation,
+                }));
+                self.wait(TUNER_POLL)?;
+            }
+            Ok(())
+        });
+        match (result, self.session.send(PodxtRequest::TunerMode(false))) {
+            (result, Ok(())) => result,
+            (Ok(()), Err(off)) => Err(format!("Tuner off failed: {off}")),
+            (Err(error), Err(off)) => Err(format!("{error} Tuner off also failed: {off}")),
+        }
+    }
+
+    fn incoming(&mut self, event: &Event) {
+        if !self.follow {
+            return;
+        }
+        let now = self.session.link.elapsed();
+        match notice(event) {
+            Some(Notice::Controller(64, _)) => {
+                (self.publish)(ReadUpdate::Tap);
+                self.current_due = Some(now + CURRENT_SETTLE);
+            }
+            Some(Notice::Controller(number, value)) if number != 69 => {
+                (self.publish)(ReadUpdate::Controller { number, value });
+            }
+            Some(Notice::Channel(location)) => {
+                (self.publish)(ReadUpdate::Channel(location));
+                self.current_due = Some(now + CURRENT_SETTLE);
+            }
+            Some(Notice::Clip) => (self.publish)(ReadUpdate::Clip),
+            Some(Notice::Save(location)) => {
+                // Repeated saves to one slot refresh its latest value once.
+                self.saves.retain(|(pending, _)| *pending != location);
+                let wait = if location.kind() == BankKind::Tones {
+                    STORED_GAP
+                } else {
+                    SAVED_SETUP_SETTLE
+                };
+                self.saves.push_back((location, now + wait));
+            }
+            _ => {}
+        }
+    }
+
+    fn follow(&mut self) -> Result<(), String> {
+        self.current()?;
+        loop {
+            self.check_cancel()?;
+            let now = self.session.link.elapsed();
+            if self.current_due.is_some_and(|due| due <= now) {
+                self.current_due = None;
+                self.current()?;
+            }
+            if let Some(index) = self.saves.iter().position(|&(_, due)| due <= now) {
+                let (location, _) = self.saves.remove(index).expect("position exists");
+                if self.session.allows(Operation::PodxtLibraryRead) {
+                    self.stored(location)?;
+                } else {
+                    (self.publish)(ReadUpdate::FollowWarning(
+                        "A PODxt save was detected. The library read gate is closed.".into(),
+                    ));
+                }
+            }
+            for event in self.session.poll(POLL)?.into_iter().flatten() {
+                self.incoming(&event);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gate::GatePolicy;
+    use crate::identity::tests::PODXT_LIVE;
+    use crate::session::{
+        Quiet,
+        testing::{Fake, packets},
+    };
+    use std::cell::Cell;
+
+    struct ReadsOnly {
+        stored: bool,
+    }
+
+    impl GatePolicy for ReadsOnly {
+        fn allows(&self, operation: Operation) -> bool {
+            match operation {
+                Operation::PodxtIdentity
+                | Operation::PodxtRead
+                | Operation::PodxtPackQuery
+                | Operation::PodxtGlobalRead
+                | Operation::PodxtTunerMode => true,
+                Operation::PodxtLibraryRead => self.stored,
+                _ => false,
+            }
+        }
+    }
+
+    fn identity() -> Vec<u8> {
+        let mut reply = PODXT_LIVE.to_vec();
+        reply[12..16].copy_from_slice(&[0, 3, 0, 1]);
+        reply
+    }
+
+    fn tone(name: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0; EDIT_BUFFER_LEN];
+        bytes[..7].copy_from_slice(&[0xf0, 0, 1, 0x0c, 3, 0x74, 0x0a]);
+        bytes[7..7 + name.len()].copy_from_slice(name);
+        bytes[167] = 0xf7;
+        bytes
+    }
+
+    fn global_reply(field: Global, raw: u16) -> Vec<u8> {
+        let [high, low] = raw.to_be_bytes();
+        vec![
+            0xf0,
+            0,
+            1,
+            0x0c,
+            3,
+            0x57,
+            field.id(),
+            high >> 4,
+            high & 15,
+            low >> 4,
+            low & 15,
+            0xf7,
+        ]
+    }
+
+    fn run(
+        fake: &mut impl Link,
+        command: ReadCommand,
+        cancelled: impl Fn() -> bool,
+        update: impl FnMut(ReadUpdate),
+    ) -> Result<(), String> {
+        let mut log = Quiet;
+        let mut session = Session::new(fake, &ReadsOnly { stored: true }, &mut log);
+        read_live(&mut session, command, cancelled, update)
+    }
+
+    #[test]
+    fn current_tone_and_packs_use_the_verified_requests() {
+        let mut fake = Fake::new(
+            Path::PodxtMidi,
+            vec![
+                (PodxtRequest::Identity, packets(&identity())),
+                (PodxtRequest::EditBuffer, packets(&tone(b"Current"))),
+            ],
+        );
+        let mut updates = Vec::new();
+        run(
+            &mut fake,
+            ReadCommand::Current,
+            || false,
+            |event| updates.push(event),
+        )
+        .unwrap();
+        assert!(
+            matches!(updates.as_slice(), [ReadUpdate::Current(tone)] if tone.name() == "Current")
+        );
+        fake.assert_finished();
+
+        let mut fake = Fake::new(
+            Path::PodxtMidi,
+            vec![
+                (PodxtRequest::Identity, packets(&identity())),
+                (
+                    PodxtRequest::InstalledPacks,
+                    vec![vec![0xf0, 0, 1, 0x0c, 3, 0x0e, 0, 4, 0xf7]],
+                ),
+            ],
+        );
+        let mut updates = Vec::new();
+        run(
+            &mut fake,
+            ReadCommand::Packs,
+            || false,
+            |event| updates.push(event),
+        )
+        .unwrap();
+        assert!(matches!(updates.as_slice(), [ReadUpdate::Packs(Packs(4))]));
+        fake.assert_finished();
+    }
+
+    #[test]
+    fn all_twenty_one_globals_are_polled_and_timeouts_stay_unknown() {
+        let mut script = vec![(PodxtRequest::Identity, packets(&identity()))];
+        for field in Global::STATUS {
+            let replies = if field == Global::ClipStatus {
+                vec![]
+            } else {
+                vec![global_reply(field, 0xff00 | u16::from(field.id()))]
+            };
+            script.push((PodxtRequest::QueryGlobal(field), replies));
+        }
+        let mut fake = Fake::new(Path::PodxtMidi, script);
+        run(
+            &mut fake,
+            ReadCommand::Globals,
+            || false,
+            |update| {
+                let ReadUpdate::Globals(values) = update else {
+                    panic!("unexpected update");
+                };
+                assert_eq!(values.len(), 21);
+                assert_eq!(values[1], (Global::ClipStatus, None));
+                assert_eq!(values[6], (Global::UiMode, Some(0xff12)));
+            },
+        )
+        .unwrap();
+        fake.assert_finished();
+    }
+
+    #[test]
+    fn library_reads_all_299_locations_and_cancels_after_the_last_published_entry() {
+        for count in [7, 299] {
+            let expected: Vec<_> = Location::all(&BankKind::ALL).take(count).collect();
+            let mut script = vec![(PodxtRequest::Identity, packets(&identity()))];
+            script.extend(
+                expected
+                    .iter()
+                    .map(|&location| (PodxtRequest::Stored(location), packets(&tone(b"Saved")))),
+            );
+            let mut fake = Fake::new(Path::PodxtMidi, script);
+            let stop = Cell::new(false);
+            let mut locations = Vec::new();
+            let mut starts = 0;
+            let result = run(
+                &mut fake,
+                ReadCommand::Library,
+                || stop.get(),
+                |update| match update {
+                    ReadUpdate::LibraryStarted => starts += 1,
+                    ReadUpdate::Stored(stored) => {
+                        locations.push(stored.location);
+                        if count == 7 && locations.len() == count {
+                            stop.set(true);
+                        }
+                    }
+                    _ => panic!("unexpected update"),
+                },
+            );
+            assert_eq!(result.is_ok(), count == 299);
+            assert_eq!(starts, 1);
+            assert_eq!(locations, expected);
+            assert_eq!(fake.writes.len(), count + 1);
+            fake.assert_finished();
+        }
+    }
+
+    struct Disconnect {
+        fake: Fake,
+        on_write_count: usize,
+    }
+
+    impl Link for Disconnect {
+        fn path(&self) -> Path {
+            self.fake.path()
+        }
+        fn elapsed(&self) -> Duration {
+            self.fake.elapsed()
+        }
+        fn pause(&mut self, duration: Duration) {
+            self.fake.pause(duration);
+        }
+        fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
+            self.fake.write(bytes)
+        }
+        fn read(&mut self, wait: Duration) -> Result<Option<Vec<u8>>, String> {
+            if self.fake.writes.len() == self.on_write_count {
+                Err("MIDI port disconnected".into())
+            } else {
+                self.fake.read(wait)
+            }
+        }
+    }
+
+    #[test]
+    fn disconnect_stops_the_library_without_requesting_another_slot() {
+        let addresses: Vec<_> = Location::all(&BankKind::ALL).take(2).collect();
+        let mut fake = Disconnect {
+            fake: Fake::new(
+                Path::PodxtMidi,
+                vec![
+                    (PodxtRequest::Identity, packets(&identity())),
+                    (
+                        PodxtRequest::Stored(addresses[0]),
+                        packets(&tone(b"First slot")),
+                    ),
+                    (PodxtRequest::Stored(addresses[1]), vec![]),
+                ],
+            ),
+            on_write_count: 3,
+        };
+        let mut received = Vec::new();
+        let error = run(
+            &mut fake,
+            ReadCommand::Library,
+            || false,
+            |event| {
+                if let ReadUpdate::Stored(stored) = event {
+                    received.push(stored.location);
+                }
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error, "MIDI port disconnected");
+        assert_eq!(received, addresses[..1]);
+        fake.fake.assert_finished();
+    }
+
+    #[test]
+    fn tuner_stays_within_its_commands_and_sends_off_on_cancel_or_read_failure() {
+        for disconnected in [false, true] {
+            let mut fake = Disconnect {
+                fake: Fake::new(
+                    Path::PodxtMidi,
+                    vec![
+                        (PodxtRequest::Identity, packets(&identity())),
+                        (PodxtRequest::TunerMode(true), vec![]),
+                        (
+                            PodxtRequest::QueryGlobal(Global::TunerNote),
+                            if disconnected {
+                                vec![]
+                            } else {
+                                vec![global_reply(Global::TunerNote, 1)]
+                            },
+                        ),
+                        (
+                            if disconnected {
+                                PodxtRequest::TunerMode(false)
+                            } else {
+                                PodxtRequest::QueryGlobal(Global::TunerDeviation)
+                            },
+                            if disconnected {
+                                vec![]
+                            } else {
+                                vec![global_reply(Global::TunerDeviation, 0xfffc)]
+                            },
+                        ),
+                    ],
+                ),
+                on_write_count: if disconnected { 3 } else { usize::MAX },
+            };
+            let mut success = Fake::new(
+                Path::PodxtMidi,
+                vec![
+                    (PodxtRequest::Identity, packets(&identity())),
+                    (PodxtRequest::TunerMode(true), vec![]),
+                    (
+                        PodxtRequest::QueryGlobal(Global::TunerNote),
+                        vec![global_reply(Global::TunerNote, 1)],
+                    ),
+                    (
+                        PodxtRequest::QueryGlobal(Global::TunerDeviation),
+                        vec![global_reply(Global::TunerDeviation, 0xfffc)],
+                    ),
+                    (PodxtRequest::TunerMode(false), vec![]),
+                ],
+            );
+            let stop = Cell::new(false);
+            let update = |event| {
+                let ReadUpdate::Tuner(reading) = event else {
+                    panic!("unexpected update");
+                };
+                assert_eq!(reading.note, Some(1));
+                assert_eq!(reading.deviation.map(tuner_cents), Some(-4.0));
+                stop.set(true);
+            };
+            let error = if disconnected {
+                run(&mut fake, ReadCommand::Tuner, || stop.get(), update).unwrap_err()
+            } else {
+                run(&mut success, ReadCommand::Tuner, || stop.get(), update).unwrap_err()
+            };
+            let writes = if disconnected {
+                fake.fake.assert_finished();
+                &fake.fake.writes
+            } else {
+                success.assert_finished();
+                &success.writes
+            };
+            assert!(error.contains(if disconnected {
+                "disconnected"
+            } else {
+                "cancelled"
+            }));
+            assert_eq!(writes.last().unwrap(), &[0xb0, 69, 0]);
+        }
+    }
+
+    #[test]
+    fn follow_delivers_controller_clip_tap_and_rereads_saved_slot_without_writing_tones() {
+        let slot = Location::new(BankKind::Tones, 80).unwrap();
+        let mut current = tone(b"Current");
+        current.extend([0xb4, 13, 37, 0xb4, 64, 127]);
+        current.extend([0xf0, 0, 1, 0x0c, 3, 0x0f, 0xf7]);
+        current.extend([0xf0, 0, 1, 0x0c, 3, 0x24, 1, 80, 0xf7]);
+        current.extend([0xc2, 80]);
+        let mut fake = Fake::new(
+            Path::PodxtMidi,
+            vec![
+                (PodxtRequest::Identity, packets(&identity())),
+                (PodxtRequest::EditBuffer, vec![current]),
+                (PodxtRequest::EditBuffer, packets(&tone(b"New current"))),
+                (PodxtRequest::Stored(slot), packets(&tone(b"Stored 80"))),
+            ],
+        );
+        let stop = Cell::new(false);
+        let mut events = Vec::new();
+        let error = run(
+            &mut fake,
+            ReadCommand::Follow,
+            || stop.get(),
+            |event| {
+                if matches!(event, ReadUpdate::Stored(_)) {
+                    stop.set(true);
+                }
+                events.push(event);
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("cancelled"));
+        assert!(matches!(events.as_slice(), [
+            ReadUpdate::Current(first), ReadUpdate::Controller { number: 13, value: 37 },
+            ReadUpdate::Tap, ReadUpdate::Clip, ReadUpdate::Channel(channel),
+            ReadUpdate::Current(next), ReadUpdate::Stored(stored)
+        ] if first.name() == "Current" && *channel == slot && next.name() == "New current"
+            && stored.location == slot && stored.tone.name() == "Stored 80"));
+        fake.assert_finished();
+    }
+
+    #[test]
+    fn an_unverified_or_ambiguous_port_sends_identity_only_and_cancel_can_stop_before_identity() {
+        for replies in [
+            vec![],
+            vec![PODXT_LIVE.to_vec()],
+            vec![identity(), identity()],
+        ] {
+            let mut fake = Fake::new(Path::PodxtMidi, vec![(PodxtRequest::Identity, replies)]);
+            assert!(
+                run(
+                    &mut fake,
+                    ReadCommand::Current,
+                    || false,
+                    |_| panic!("unexpected update")
+                )
+                .is_err()
+            );
+            assert_eq!(fake.writes, [identity::REQUEST]);
+            fake.assert_finished();
+        }
+        let mut fake = Fake::new::<PodxtRequest>(Path::PodxtMidi, vec![]);
+        assert!(
+            run(
+                &mut fake,
+                ReadCommand::Current,
+                || true,
+                |_| panic!("unexpected update")
+            )
+            .is_err()
+        );
+        assert!(fake.writes.is_empty());
+    }
+
+    #[test]
+    fn a_save_notification_obeys_the_library_read_gate_even_while_following() {
+        let mut current = tone(b"Current");
+        current.extend([0xf0, 0, 1, 0x0c, 3, 0x24, 1, 80, 0xf7]);
+        let mut fake = Fake::new(
+            Path::PodxtMidi,
+            vec![
+                (PodxtRequest::Identity, packets(&identity())),
+                (PodxtRequest::EditBuffer, vec![current]),
+            ],
+        );
+        let stop = Cell::new(false);
+        let mut quiet = Quiet;
+        let mut session = Session::new(&mut fake, &ReadsOnly { stored: false }, &mut quiet);
+        assert!(
+            read_live(
+                &mut session,
+                ReadCommand::Follow,
+                || stop.get(),
+                |update| {
+                    if matches!(update, ReadUpdate::FollowWarning(_)) {
+                        stop.set(true);
+                    }
+                }
+            )
+            .is_err()
+        );
+        fake.assert_finished();
+    }
+}
