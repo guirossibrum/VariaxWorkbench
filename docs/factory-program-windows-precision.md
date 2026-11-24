@@ -76,7 +76,9 @@ The 53-bit Windows comparison still has **1,344 unexplained program-word
 differences**. Both host families ran from the settings decoded out of the
 archive, which preserve only the upper 24 bits of the stored binary32 fields.
 Factory authoring inputs remain an independent source of uncertainty.
-Issue #174 remains open and its stop rule still blocks #175 and #176.
+Issue #174 remains open. The later owner decision permits offline encoder
+work in #175. The [#179 measurements](factory-program-parity.md#device-output-reference-and-firmware-bounds-179)
+govern the offline prerequisite for #176.
 
 ## Reproduction
 

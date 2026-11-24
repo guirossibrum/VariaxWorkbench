@@ -105,14 +105,228 @@ new report path for each run. Only counts, word indices and hashes are retained
 in the report. The extracted settings, raw slots, model resources and packed
 programs stay private.
 
-## Decision
+## Decision after #174
 
-The owner subsequently approved the [step 2 encoder](variax-write-transactions.md)
-using byte-for-byte agreement with an original Workbench host. The remaining
-factory-firmware difference measurements and the accepted bound are tracked
-in [#179](https://github.com/guirossibrum/VariaxWorkbench/issues/179).
+The initial exact-firmware comparison held back the encoder and edit-buffer
+test. The owner subsequently allowed offline encoder work in
+[#175](https://github.com/guirossibrum/VariaxWorkbench/issues/175) using the
+original Java transcript as its reference. The owner set a separate
+device-output criterion for #176 in
+[#179](https://github.com/guirossibrum/VariaxWorkbench/issues/179).
 
-**Step 3 first edit-buffer test ([#176](https://github.com/guirossibrum/VariaxWorkbench/issues/176))
-waits for #175 and #179.** Steps 4 and 5 follow the owner-run edit-buffer test.
-The factory generator, its exact inputs and the runtime that produced those
-words remain unknown.
+## Device-output reference and firmware bounds (#179)
+
+The owner selected original Workbench parity as the device-output reference on
+2026-11-23. **`host-std-v1` is the default profile for that reference.** On
+this Linux x86-64 replay it matches all 60 initialized Mac Workbench 1.75
+host-reference renders byte for byte. The original Windows PE32 engine runs
+with 53-bit x87 precision as an independent comparator. A Windows Rust profile
+is optional. Historical Mac libm authentication and wider input coverage
+remain separate work. [Math-profile decision](https://github.com/guirossibrum/VariaxWorkbench/issues/5)
+
+**Under the proposed limits below, the offline prerequisite for [#176](https://github.com/guirossibrum/VariaxWorkbench/issues/176)
+fails.** The [owner decision](#owner-decision-2026-11-23) replaces that gate. Slot 52 exceeds the proposed word and response limits. In nine
+reverb-enabled slots, at least one Rust feedback coefficient moves one count
+toward unity. Windows also moves individual feedback coefficients toward
+unity. The owner decides whether and how to proceed.
+
+[Per-slot results, observed-range distributions, and reverb positions](factory-program-response.json)
+contain derived measurements only. Slot and word indices start at zero.
+The replay validates the firmware archive, both previous reports' program
+hashes, the Mac and Windows library and model fingerprints, and the Java class
+hashes. It renders every Rust output using the offline CLI and checks it against
+the corresponding original Mac output before measuring differences.
+
+### Packed-word comparison
+
+Distances are the shortest absolute distance modulo 2²⁴. A distance of 1
+across a signed zero boundary remains 1. VX exponent and mantissa words are
+counted individually. A distance in a mantissa word alone does not measure
+a change in the decoded coefficient. The report provides per-slot frequency
+counts for nonzero distances by DSP block and by exact range from
+[`dsp-word-map.json`](dsp-word-map.json). Missing per-slot histograms represent
+zero changes. Aggregate histograms include the distribution of the number of
+changed words per slot, including zero. The ranges preserve overlapping writer
+ownership through the original map. The checksum is reported independently.
+
+Each cell gives changed words across all 60 slots / maximum count distance.
+
+| DSP block | Rust vs firmware | Mac vs Windows 53-bit | Windows 53-bit vs firmware |
+| --- | ---: | ---: | ---: |
+| Pickup geometry / microphone | 106 / 1 | 106 / 1 | 0 / 0 |
+| Pickup response / pick filter / compressor | 522 / 3,177,429 | 491 / 3,177,429 | 405 / 11 |
+| Body | 34 / 1 | 39 / 1 | 43 / 1 |
+| Low-cut | 41 / 1 | 52 / 1 | 25 / 1 |
+| String tone / resonance | 755 / 1 | 747 / 1 | 28 / 1 |
+| Global decay | 40 / 1 | 38 / 1 | 2 / 1 |
+| String EQ | 826 / 2 | 519 / 2 | 554 / 2 |
+| Sum to mono | 68 / 1 | 65 / 1 | 5 / 1 |
+| Volume curve | 60 / 1 | 60 / 1 | 0 / 0 |
+| Sitar and auxiliary word | 12 / 1 | 7 / 1 | 5 / 1 |
+| Drone and unobserved | 10 / 1 | 7 / 1 | 9 / 1 |
+| Reverb | 111 / 1 | 115 / 1 | 60 / 1 |
+| 12-string EQ and gains | 360 / 18 | 288 / 2 | 199 / 18 |
+| Coil gain and unobserved | 9 / 76,223 | 0 / 0 | 9 / 76,223 |
+| Checksum | 59 / 6,102,381 | 59 / 6,102,421 | 59 / 76,228 |
+
+Slot 52 accounts for the largest packed-word differences. Seven Tone2 Q
+mantissa words differ by more than 100,000 counts, and five of those words
+have a changed companion exponent. Both original editors generated these
+outputs from the same decoded preset. The largest coil-gain gap is 76,223
+counts (0.0090865 on a Q23 unity scale) at word 772 in slots 30 and 31,
+shared by both editors. Those changes warrant checks beyond counting
+last-bit rounding differences.
+
+### Frequency-response comparison
+
+The harness evaluates coefficient-only transfer functions on a linear and
+logarithmic grid of 20,481 frequencies from 20 Hz through 20 kHz, including both endpoints and
+Nyquist. The coefficient engine rate is 39,062.5 Hz. Frequencies above
+19,531.25 Hz are the mirrored part of the discrete-time response.
+The reported metric is the largest sampled absolute difference in magnitude
+dB with both magnitudes floored at −120 dB. The report also gives the maximum
+absolute linear magnitude difference to expose the scale of the change near a
+response minimum. The data include each slot and path counts. The table
+reports peaks for enabled paths. Stored coefficients also get measured for
+bypassed blocks where they can be decoded as the requested filter.
+
+The peak slot is in parentheses. The slot count follows the block name.
+
+| DSP block | Rust vs firmware | Mac vs Windows 53-bit | Windows 53-bit vs firmware |
+| --- | ---: | ---: | ---: |
+| String EQ (51) | 0.021912 dB (49) | 0.021912 dB (49) | 0.017883 dB (4) |
+| String tone / resonance (49) | 0.273874 dB (30) | 0.273874 dB (30) | 0.007151 dB (49) |
+| 12-string EQ (9) | 0.000430 dB (57) | 0.000430 dB (57) | 0.000155 dB (59) |
+| Pickup response (50) | 5.798641 dB (52) | 5.798645 dB (52) | 0.000022 dB (52) |
+| Low-cut (18) | 0.029958 dB (20) | 0.037720 dB (48) | 0.037720 dB (48) |
+| Body (57) | 0.002609 dB (20) | 0.000323 dB (12) | 0.002609 dB (20) |
+
+The analysis uses the packed Q23 scaling and coefficient order in
+[`src/dsp/coefficients.rs`](../src/dsp/coefficients.rs) and the VX format in
+[`src/dsp/patch.rs`](../src/dsp/patch.rs). With `z = exp(−j·2πf/fs)`, each
+ordinary section uses `(b0+b1·z+b2·z²)/(1+a1·z+a2·z²)`.
+
+- **String EQ.** Cascade the indicated number of packed bands per string and
+  apply its string gain.
+- **String tone and body.** Sum the reconstructed bandpass resonator responses
+  per string or body bank. For the body, also evaluate the two mix gains,
+  the treble shape and rolloff individually. String hold and decay are
+  time-dependent and are covered by word counts.
+- **12-string EQ.** Cascade each string's two sections. Evaluate the same
+  cascade with the wet gain and the independent dry gain. Pitch-shift timing
+  is outside the transfer model.
+- **Pickup response.** Evaluate the volume lowpass and primary bandpass, and
+  the tone primary gain and secondary bandpass at the nine stored points.
+  Use the decoded VX frequency inverse, Q and gain with the host
+  [bandpass equations](../src/pickup/biquad.rs).
+  The ten slots with pick-filter and compressor overlays have no active
+  pickup-response table to decode. Their overlapping words are included in
+  the word comparison.
+- **Low-cut.** Use the packed denominator and the high-pass numerator
+  `1−2z+z²` with one or two sections from the order flag.
+
+The host writers establish the packed layouts. The path equations above
+infer the filter response from those layouts and do not reconstruct the
+firmware's signal routing, control interpolation, fixed-point execution or
+time-varying behavior. The numbers characterize this archive and sampled
+grid. Physical behavior and audio equivalence remain unverified.
+
+### Reverb and the proposed bound
+
+The ten enabled reverb slots are 2, 45–51, 54 and 55. Per slot the replay
+checks all 36 tank feedback words, nine allpass density words, four allpass
+delay words and the reverb control and pre-delay words. Tank and allpass
+tables are signed Q23 with a unity magnitude of 8,388,608 counts. For each
+word, the study compares absolute distance from unity with firmware.
+
+| Candidate vs firmware | Changed tank words | Tank words toward unity | Changed allpass density words | Density words toward unity |
+| --- | ---: | ---: | ---: | ---: |
+| Rust / Mac reference | 73 | 32 in 9 slots | 38 | 38 in 10 slots |
+| Windows 53-bit | 60 | 5 in 4 slots | 0 | 0 |
+
+Every movement toward unity is one count. The smallest tank margin over all
+three sources is 3,572,457 counts (0.42587 below unity). The smallest
+allpass density margin is 1,082,131 counts. All four delay words and the
+control and pre-delay words match in all ten slots. The Reso-5 candidate in
+#176 (slot 50) has four Rust tank words one count closer to unity at
+indices 643, 646, 651 and 676.
+
+**Proposed comparison limits.** Use at most 32 modular counts per packed
+program word except checksums and coil-gain words 771–774. Cap the coil-gain
+distance at 83,886 counts (about 0.01 on the Q23 unity scale). Require at most
+0.10 dB in every enabled modeled filter path on the grid. These screening
+values round above the Windows comparator's observed ordinary word and
+response peaks and account for the shared coil-gain offset separately.
+The reverb criterion independently requires every tank value to stay below
+unity and none to move toward it.
+
+| Firmware comparison | 32-count word limit | 83,886-count coil limit | 0.10 dB enabled response limit | Strict tank criterion |
+| --- | --- | --- | --- | --- |
+| Rust / Mac reference | Exceeds, 3,177,429 | Pass, 76,223 | Exceeds, 5.798641 dB | Fails in 9 slots |
+| Windows 53-bit | Pass, 18 | Pass, 76,223 | Pass, 0.037720 dB | Fails in 4 slots |
+
+The Rust/Mac secondary pickup path at slot 52, tone point 7 (zero-based),
+changes from about −45.93 dB in firmware to −51.73 dB in Rust/Mac near
+Nyquist. The largest absolute linear difference across modeled pickup
+paths in slot 52 is 0.15742. Thirteen slots also exceed 0.10 dB in enabled
+string tone. The peak is 0.273874 dB at 84.15 Hz in the sixth string’s
+resonator bank in slots 30, 32 and 34. The proposed limits are
+an archive regression screen. The observed Windows fit and the remaining
+margin to unity do not override the stop rule.
+
+### Owner decision (2026-11-23)
+
+After reviewing these measurements, the owner decided:
+
+1. **Editor compatibility.** Exact agreement with the original Mac Workbench
+   output satisfies the device-output reference. `host-std-v1` meets it on all
+   60 slots here and on the 2,329-preset corpus ([#180](host-wide-corpus.md)).
+   The Windows-derived screening limits above flag outliers. They do not veto
+   the Mac-compatible profile.
+2. **Firmware comparison.** This remains a separate check, applied to the
+   preset actually sent.
+3. **Reverb, provisional and offline.** For the preset sent, each tank feedback
+   and allpass density coefficient may differ from firmware by at most 2
+   counts and must stay at least 10 % below unity (838,861 counts). This checks
+   individual coefficients. It does not establish stability of the full reverb
+   network. All 60 slots meet it; the smallest tank margin is 42.6 %.
+4. **#176 prerequisite cleared for Reso-5 (slot 50) only.**
+   - Every differing word is one count.
+   - The largest modeled enabled-path change is 0.067 dB (string 5 resonators, 115 Hz).
+   - Reverb changes are one count, with a tank margin of 45.7 %.
+   - The clearance holds only if a same-day backup shows identical settings and
+     the generated program equals the Mac reference byte for byte.
+   - The owner's explicit go for stage 1 is still required separately.
+5. **Slot 52 is excluded** from this decision. Besides the 5.80 dB peak at tone
+   point 7 near Nyquist (−51.73 vs −45.93 dB), the secondary pickup bandpass at
+   tone point 4 is **2.113 dB lower at 18,730.52 Hz**: Rust/Mac 0.57172
+   (−4.856 dB) vs firmware 0.72914 (−2.744 dB). These are modeled gains of the
+   isolated bandpass, and the original Mac Workbench produces the same values.
+   The original Windows engine matches the firmware there. An optional
+   Windows-precision Rust profile would address it.
+
+### Reproduction
+
+Use the local artifact root described above and a dedicated build directory
+for the standard-math binaries. Building another feature set in that same
+directory can replace the CLI while the comparison is running. Use a fresh
+report path.
+
+```sh
+CARGO_TARGET_DIR=target/issue-179/std cargo build --offline --locked \
+  --no-default-features --bin variax-workbench --bin variax-firmware-inspect
+
+"$artifact_root/.tools/python/bin/python" scripts/verify_factory_response.py \
+  --artifact-root "$artifact_root" \
+  --archive "$artifact_root/vendor/installers/Variax300_3.10.vxf" \
+  --extractor target/issue-179/std/debug/variax-firmware-inspect \
+  --host-std target/issue-179/std/debug/variax-workbench \
+  --report target/issue-179/response.json
+
+"$artifact_root/.tools/python/bin/python" scripts/test_factory_response.py
+```
+
+Rust validation passed 708 all-feature tests, Clippy with warnings denied,
+and formatting. The five synthetic tests cover coefficient order and scaling,
+VX and bandpass reconstruction, count distance, the reverb stop rule and the
+frequency grid. The replay used local files and CPU emulation.
