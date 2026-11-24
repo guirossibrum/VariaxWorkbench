@@ -1,5 +1,7 @@
 //! Reconcile cached USB presence and attachment-scoped identity results.
 mod identity;
+mod notice;
+use notice::Notice;
 
 use super::ProductFamily;
 use identity::{Guitar, Identify, Job, JobKind, Outcome, Worker};
@@ -10,6 +12,8 @@ use variax_workbench::device_probe::{MetadataError, OsMetadataSource, UsbDevice}
 pub(super) use identity::{
     Guitar as SimulatedGuitar, Job as SimulatedJob, Outcome as SimulatedOutcome,
 };
+#[cfg(test)]
+pub(super) use notice::Notice as SimulatedNotice;
 
 type UsbId = (u16, u16);
 
@@ -53,6 +57,7 @@ pub(super) struct DetectedDevice {
     pub model: &'static str,
     pub support: DeviceSupport,
     pub guitar_status: Option<String>,
+    pub guitar_warning: Option<String>,
     pub refresh_guitar: bool,
 }
 
@@ -62,6 +67,11 @@ pub(super) trait PresenceSource {
     #[cfg(test)]
     fn simulated_identity(&self, _job: &Job) -> Option<Outcome> {
         None
+    }
+
+    #[cfg(test)]
+    fn simulated_notices(&self, _attachment: &AttachmentKey) -> Vec<Notice> {
+        Vec::new()
     }
 }
 
@@ -95,6 +105,8 @@ struct Bridge {
     guitar: Option<(u64, &'static str)>,
     last_guitar: Option<&'static str>,
     status: String,
+    firmware_warning: Option<String>,
+    last_notice: Option<Notice>,
     suspended: bool,
 }
 
@@ -113,6 +125,8 @@ impl Bridge {
                 "identity unavailable in this build"
             }
             .into(),
+            firmware_warning: None,
+            last_notice: None,
             suspended: false,
         }
     }
@@ -126,9 +140,14 @@ impl Bridge {
     }
 
     fn complete(&mut self, kind: JobKind, outcome: Outcome, generation: &mut u64) {
-        self.running = None;
         match outcome {
+            Outcome::Notices(notices) => {
+                for notice in notices {
+                    self.observe_notice(notice);
+                }
+            }
             Outcome::Deferred => {
+                self.running = None;
                 self.queued = Some(kind);
                 self.deferred = true;
             }
@@ -136,6 +155,8 @@ impl Bridge {
                 pod_firmware,
                 guitar,
             } => {
+                self.running = None;
+                self.firmware_warning = None;
                 if kind == JobKind::Initial {
                     self.pod = pod_firmware;
                 }
@@ -156,6 +177,12 @@ impl Bridge {
                         self.guitar = None;
                         self.status = match other {
                             Guitar::Silent => "no guitar answered".into(),
+                            Guitar::OlderFirmware(version) => {
+                                self.firmware_warning = Some(format!(
+                                    "Update Firmware · Variax 300/600 firmware {version} is below Workbench’s minimum of 3.07."
+                                ));
+                                format!("Variax 300/600 {version}")
+                            }
                             Guitar::Unavailable(reason) => reason,
                             Guitar::CleanupFailed => {
                                 self.suspended = true;
@@ -166,6 +193,12 @@ impl Bridge {
                     }
                 }
             }
+        }
+    }
+
+    fn observe_notice(&mut self, notice: Notice) {
+        if self.last_notice.replace(notice) != Some(notice) && self.can_refresh() {
+            self.queued = Some(JobKind::RefreshGuitar);
         }
     }
 
@@ -238,9 +271,24 @@ impl DetectionService {
         scan: Scan,
         profiles: &[DiscoveryProfile],
     ) -> Result<Vec<DetectedDevice>, MetadataError> {
-        self.refresh_attachments(profiles)?;
+        if let Err(error) = self.refresh_attachments(profiles) {
+            self.cancel_listener();
+            return Err(error);
+        }
         self.finish_worker();
         if matches!(scan, Scan::Automatic) {
+            #[cfg(test)]
+            for attachment in self.attachments.values_mut() {
+                if let Some(bridge) = attachment
+                    .bridge
+                    .as_mut()
+                    .filter(|bridge| bridge.pod.is_some())
+                {
+                    for notice in self.source.simulated_notices(&attachment.key) {
+                        bridge.observe_notice(notice);
+                    }
+                }
+            }
             self.start_queued();
         }
         self.rebuild_devices(scan, profiles);
@@ -280,13 +328,21 @@ impl DetectionService {
             };
             self.attachments.insert(path, attachment);
         }
-        if let Some(worker) = &self.worker
-            && !self
+        if let Some(worker) = &self.worker {
+            let same_attachment = self
                 .attachments
                 .get(&worker.job.attachment.path)
-                .is_some_and(|attachment| attachment.key == worker.job.attachment)
-        {
-            worker.cancel();
+                .is_some_and(|attachment| attachment.key == worker.job.attachment);
+            let ambiguous_bridge = worker.job.kind == JobKind::Listen
+                && self
+                    .attachments
+                    .values()
+                    .filter(|attachment| attachment.bridge.is_some())
+                    .count()
+                    != 1;
+            if !same_attachment || ambiguous_bridge {
+                worker.cancel();
+            }
         }
         Ok(())
     }
@@ -304,7 +360,16 @@ impl DetectionService {
             return false;
         };
         bridge.queued = Some(JobKind::RefreshGuitar);
+        self.cancel_listener();
         true
+    }
+
+    fn cancel_listener(&self) {
+        if let Some(worker) = &self.worker
+            && worker.job.kind == JobKind::Listen
+        {
+            worker.cancel();
+        }
     }
 
     fn apply_outcome(&mut self, job: Job, outcome: Outcome) {
@@ -341,30 +406,52 @@ impl DetectionService {
         if self.worker.is_some() {
             return;
         }
-        let Some(job) = self.attachments.values().find_map(|attachment| {
+        let queued = self.attachments.values().find_map(|attachment| {
             let kind = attachment.bridge.as_ref()?.queued?;
             Some(Job {
                 attachment: attachment.key.clone(),
                 kind,
             })
-        }) else {
-            return;
-        };
+        });
         let Some(identify) = self.identify else {
             #[cfg(test)]
-            if let Some(outcome) = self.source.simulated_identity(&job) {
+            if let Some(job) = queued
+                && let Some(outcome) = self.source.simulated_identity(&job)
+            {
                 self.bridge_mut(&job.attachment)
                     .expect("queued bridge")
                     .queued = None;
                 self.apply_outcome(job, outcome);
             }
+            #[cfg(not(test))]
+            let _ = queued;
             return;
         };
-        let bridge = self.bridge_mut(&job.attachment).expect("queued bridge");
-        bridge.queued = None;
-        bridge.running = Some(job.kind);
+        let job = queued.or_else(|| {
+            let mut bridges = self
+                .attachments
+                .values()
+                .filter(|attachment| attachment.bridge.is_some());
+            let (Some(attachment), None) = (bridges.next(), bridges.next()) else {
+                return None;
+            };
+            let bridge = attachment.bridge.as_ref()?;
+            bridge.can_refresh().then(|| Job {
+                attachment: attachment.key.clone(),
+                kind: JobKind::Listen,
+            })
+        });
+        let Some(job) = job else { return };
+        if job.kind != JobKind::Listen {
+            let bridge = self.bridge_mut(&job.attachment).expect("queued bridge");
+            bridge.queued = None;
+            bridge.running = Some(job.kind);
+        }
         match Worker::start(job.clone(), identify) {
             Ok(worker) => self.worker = Some(worker),
+            Err(error) if job.kind == JobKind::Listen => {
+                eprintln!("PODxt Variax presence: could not start listener: {error}.");
+            }
             Err(error) => self.apply_outcome(
                 job,
                 Outcome::Finished {
@@ -387,7 +474,7 @@ impl DetectionService {
                     family_id: info.id,
                     linked_generation: None,
                 };
-                let (support, status, refresh) = match profile.discovery {
+                let (support, status, warning, refresh) = match profile.discovery {
                     DeviceDiscovery::Automatic(id) if id == attached_id => {
                         let bridge = bridge.expect("automatic attachment");
                         let support = match bridge.pod {
@@ -395,13 +482,18 @@ impl DetectionService {
                             None if bridge.pending() => DeviceSupport::IdentityPending,
                             None => DeviceSupport::UsbOnly,
                         };
-                        (support, Some(bridge.label()), bridge.can_refresh())
+                        (
+                            support,
+                            Some(bridge.label()),
+                            bridge.firmware_warning.clone(),
+                            bridge.can_refresh(),
+                        )
                     }
                     DeviceDiscovery::Manual(id)
                         if (matches!(scan, Scan::Confirmed) || self.known.contains_key(&key))
                             && id == attached_id =>
                     {
-                        (DeviceSupport::FileEditingOnly, None, false)
+                        (DeviceSupport::FileEditingOnly, None, None, false)
                     }
                     DeviceDiscovery::ViaBridge(id) if id == attached_id => {
                         let Some(bridge) = bridge else { continue };
@@ -414,7 +506,7 @@ impl DetectionService {
                         } else {
                             DeviceSupport::Verified(firmware)
                         };
-                        (support, Some(bridge.label()), bridge.can_refresh())
+                        (support, Some(bridge.label()), None, bridge.can_refresh())
                     }
                     _ => continue,
                 };
@@ -425,6 +517,7 @@ impl DetectionService {
                         model: info.title,
                         support,
                         guitar_status: status,
+                        guitar_warning: warning,
                         refresh_guitar: refresh,
                     },
                 );

@@ -97,20 +97,7 @@ impl Link for RawMidiLink {
     }
 
     fn read(&mut self, wait: Duration) -> Result<Option<Vec<u8>>, String> {
-        let deadline = Instant::now() + wait;
-        let mut buffer = [0; 512];
-        loop {
-            match self.port.read(&mut buffer) {
-                Ok(0) => return Err("MIDI port closed.".into()),
-                Ok(length) => return Ok(Some(buffer[..length].to_vec())),
-                Err(error) if retryable(&error) => {
-                    if !pause_until(deadline) {
-                        return Ok(None);
-                    }
-                }
-                Err(error) => return Err(format!("MIDI read: {error}")),
-            }
-        }
+        read_port(&mut self.port, wait)
     }
 
     fn elapsed(&self) -> Duration {
@@ -119,6 +106,41 @@ impl Link for RawMidiLink {
 
     fn pause(&mut self, duration: Duration) {
         std::thread::sleep(duration);
+    }
+}
+
+/// A raw MIDI input descriptor with no write endpoint.
+pub struct RawMidiInput(File);
+
+impl RawMidiInput {
+    pub fn open(device: PathBuf) -> Result<Self, String> {
+        OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&device)
+            .map(Self)
+            .map_err(|error| format!("{}: {error}", device.display()))
+    }
+
+    pub fn read(&mut self, wait: Duration) -> Result<Option<Vec<u8>>, String> {
+        read_port(&mut self.0, wait)
+    }
+}
+
+fn read_port(port: &mut File, wait: Duration) -> Result<Option<Vec<u8>>, String> {
+    let deadline = Instant::now() + wait;
+    let mut buffer = [0; 512];
+    loop {
+        match port.read(&mut buffer) {
+            Ok(0) => return Err("MIDI port closed.".into()),
+            Ok(length) => return Ok(Some(buffer[..length].to_vec())),
+            Err(error) if retryable(&error) => {
+                if !pause_until(deadline) {
+                    return Ok(None);
+                }
+            }
+            Err(error) => return Err(format!("MIDI read: {error}")),
+        }
     }
 }
 

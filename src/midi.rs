@@ -56,12 +56,26 @@ pub struct SysexDecoder {
     pending: Vec<u8>,
 }
 impl SysexDecoder {
+    /// Bytes of a frame still waiting for its SysEx terminator.
+    pub fn unfinished(&self) -> &[u8] {
+        &self.pending
+    }
+
     #[cfg(feature = "usb")]
     pub(crate) fn is_idle(&self) -> bool {
         self.pending.is_empty()
     }
 
     pub fn feed(&mut self, bytes: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+        self.feed_with_discard(bytes, |_| {})
+    }
+
+    /// Report a frame interrupted by a new MIDI status before its terminator.
+    pub fn feed_with_discard(
+        &mut self,
+        bytes: &[u8],
+        mut discarded: impl FnMut(&[u8]),
+    ) -> Result<Vec<Vec<u8>>, String> {
         let mut messages = Vec::new();
         for &byte in bytes {
             if byte >= 0xf8 {
@@ -69,6 +83,7 @@ impl SysexDecoder {
             }
             match byte {
                 0xf0 => {
+                    discarded(&self.pending);
                     self.pending.clear();
                     self.pending.push(byte);
                 }
@@ -76,7 +91,10 @@ impl SysexDecoder {
                     self.pending.push(byte);
                     messages.push(std::mem::take(&mut self.pending));
                 }
-                0x80..=0xf7 => self.pending.clear(),
+                0x80..=0xf7 => {
+                    discarded(&self.pending);
+                    self.pending.clear();
+                }
                 _ if !self.pending.is_empty() => self.pending.push(byte),
                 _ => {}
             }
