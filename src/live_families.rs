@@ -37,6 +37,7 @@ impl GatePolicy for DeviceCheckPolicy {
             | Operation::VariaxPresetSwitch
             | Operation::VariaxEditBufferWrite
             | Operation::VariaxStoreRestore
+            | Operation::PodxtStoreRestore
             | Operation::VariaxSlotRead
             | Operation::PodxtPackQuery
             | Operation::PodxtEditBufferWrite => false,
