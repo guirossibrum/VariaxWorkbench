@@ -541,6 +541,25 @@ impl PodxtEditor {
         services: &mut EditorServices<'_>,
         ctx: &egui::Context,
     ) {
+        #[cfg(feature = "usb")]
+        if self.live.locker_dirty() {
+            egui::Window::new("Staged PODxt device changes")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label("Closing discards the staged Tone Locker changes.");
+                    ui.horizontal(|ui| {
+                        if ui.button("Keep working").clicked() {
+                            services.close = CloseResult::Cancelled;
+                        }
+                        if ui.button("Discard staged changes").clicked() {
+                            self.live.discard_locker();
+                            services.finish_close_if(!self.needs_close());
+                        }
+                    });
+                });
+            return;
+        }
         if self.pod_eq_reset_pending.is_some() {
             self.pod_eq_reset_quit_dialog(services, ctx);
             return;
@@ -3683,12 +3702,14 @@ impl PodxtEditor {
     }
 
     fn write_pod_copy(&mut self, services: &mut EditorServices<'_>, index: usize) -> bool {
-        if self.pod_bundle.is_some() {
-            let Some(path) = services.dialogs.save_pod_tone("podxt-live-bank.vwb") else {
-                self.pod_message = "Save cancelled. No file was written.".into();
-                return false;
+        if let Some(bundle) = &self.pod_bundle {
+            let name = if bundle.as_bytes().get(8..12) == Some(b"L6CO") {
+                "PODxt Live Collection.l6c"
+            } else {
+                "PODxt Live Bundle.l6b"
             };
-            let Some(bundle) = self.pod_bundle.as_ref() else {
+            let Some(path) = services.dialogs.save_pod_tone(name) else {
+                self.pod_message = "Save cancelled. No file was written.".into();
                 return false;
             };
             match bundle.save_copy(&path) {
@@ -3748,7 +3769,80 @@ impl PodxtEditor {
 }
 
 impl PodxtEditor {
+    fn show_new_documents(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("New tone").clicked() {
+                match pod_preset::PodTone::new_podxt_tone("New Tone") {
+                    Ok(tone) => self.import_individual_pod_tone(tone.into_bytes()),
+                    Err(error) => self.pod_message = error.detail(),
+                }
+            }
+            for (label, fixed) in [("New bundle", true), ("New collection", false)] {
+                if ui
+                    .add_enabled(
+                        !self.pod_dirty() && !self.pod_has_staged_edit(),
+                        egui::Button::new(label),
+                    )
+                    .clicked()
+                {
+                    let result = pod_preset::new_podxt_bundle(fixed)
+                        .and_then(|bundle| self.load_pod_bundle_bytes(bundle.as_bytes().to_vec()));
+                    self.pod_message = match result {
+                        Ok(()) => format!("{label} opened. Use Save copy to keep it."),
+                        Err(error) => error.detail(),
+                    };
+                }
+            }
+            if ui
+                .add_enabled(
+                    !self.pod_library.is_empty(),
+                    egui::Button::new("Export file tone list"),
+                )
+                .clicked()
+            {
+                let entries: Vec<_> = (0..self.pod_library.len())
+                    .filter_map(|index| {
+                        let tone = self.pod_library.tone(index)?;
+                        let location = self
+                            .pod_bundle
+                            .as_ref()
+                            .and_then(|bundle| {
+                                let (bank, slot) = bundle.entry_location(index)?;
+                                Some(format!("{} {}", bundle.bank_name(bank)?, slot + 1))
+                            })
+                            .unwrap_or_else(|| (index + 1).to_string());
+                        Some((location, tone.name().to_owned()))
+                    })
+                    .collect();
+                services.request_picker::<Self>(
+                    ui.ctx(),
+                    PickRequest::SaveTone {
+                        name: "PODxt Tones.html".into(),
+                    },
+                    move |editor, path, _| {
+                        if let Some(path) = path {
+                            let result = pod_preset::save_podxt_html(
+                                &path,
+                                entries
+                                    .iter()
+                                    .map(|(location, name)| (location.as_str(), name.as_str())),
+                            );
+                            editor.pod_message = match result {
+                                Ok(()) => "Exported tone list.".into(),
+                                Err(error) => error.detail(),
+                            };
+                        }
+                    },
+                );
+            }
+        });
+    }
+
     fn needs_close(&self) -> bool {
+        #[cfg(feature = "usb")]
+        if self.live.locker_dirty() {
+            return true;
+        }
         self.pod_dirty() || self.pod_has_staged_edit()
     }
 }
@@ -3761,11 +3855,15 @@ impl FamilyTab for PodxtEditor {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 #[cfg(feature = "usb")]
                 if self.live.visible() {
-                    self.live.show(ui, services);
+                    let file_tone = self.pod_selected.and_then(|index| self.pod_library.tone(index));
+                    if let Some(bytes) = self.live.show(ui, services, file_tone) {
+                        self.import_pod_document(bytes);
+                    }
                     ui.separator();
                     ui.heading("File editor");
                     ui.weak("Changes here affect the open file only. Linked Variax settings and tone metadata are file-only.");
                 }
+                self.show_new_documents(ui, services);
                 self.pod_window(services, ui);
             });
         }

@@ -1,6 +1,8 @@
 use super::{iff_edit::*, *};
 use serde::Deserialize;
+mod wire;
 use std::{borrow::Cow, collections::BTreeMap, sync::OnceLock};
+pub use wire::*;
 
 const TABLE: &str = include_str!("../../../../research/podxt-live-parameters.json");
 

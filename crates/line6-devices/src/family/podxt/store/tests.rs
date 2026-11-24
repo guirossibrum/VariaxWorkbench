@@ -264,3 +264,51 @@ fn stale_destination_and_unavailable_readback_gate_prevent_dispatch() {
     );
     session.link.assert_finished();
 }
+
+#[test]
+fn setup_slots_use_their_own_addresses_and_the_same_store_transaction() {
+    for (kind, index, address, label) in [
+        (BankKind::AmpSetups, 0, [0, 64], "AMP 1"),
+        (BankKind::AmpSetups, 64, [2, 0], "AMP 65"),
+        (BankKind::AmpSetups, 106, [2, 42], "AMP 107"),
+        (BankKind::FxSetups, 63, [1, 63], "FX 64"),
+    ] {
+        let slot = Location::new(kind, index).unwrap();
+        let original = tone();
+        let mut bytes = *original.as_bytes();
+        bytes[32 + 13] = 27;
+        let candidate = TonePayload::from_bytes(bytes).unwrap();
+        let prepared = PreparedStore {
+            slot,
+            day: DAY,
+            original,
+            candidate: candidate.clone(),
+        };
+        assert_eq!(prepared.confirmation(), format!("STORE PODXT {label}"));
+        let confirm = prepared.confirm(&format!("STORE PODXT {label}")).unwrap();
+        let mut script = preflight(slot);
+        let mut payload = vec![0xf0, 0, 1, 0x0c, 3, 0x71, 0x0a, address[0], address[1]];
+        payload.extend(bytes);
+        payload.push(0xf7);
+        script.extend([
+            (payload, vec![]),
+            (
+                vec![0xf0, 0, 1, 0x0c, 3, 0x72, 0xf7],
+                vec![vec![0xf0, 0, 1, 0x0c, 3, 0x50, 0xf7]],
+            ),
+            (
+                PodxtRequest::Stored(slot).bytes(),
+                vec![candidate.edit_dump().raw],
+            ),
+        ]);
+        let mut quiet = Quiet;
+        let mut session = Session::new(
+            Fake::from_bytes(Path::PodxtMidi, script),
+            &AllowAll,
+            &mut quiet,
+        );
+        let result = store_at(&mut session, confirm, &StoreControl::default(), || Ok(DAY)).unwrap();
+        assert!(matches!(result, StoreResult::Verified { slot: stored, .. } if stored == slot));
+        session.link.assert_finished();
+    }
+}

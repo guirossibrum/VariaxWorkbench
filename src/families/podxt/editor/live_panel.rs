@@ -1,6 +1,7 @@
 use super::*;
 
 mod edit;
+mod locker;
 mod store;
 use line6_devices::family::podxt::{
     self, BankKind, Control, EditBuffer, GlobalValues, LiveControl, Location, Packs, ReadCommand,
@@ -25,9 +26,8 @@ pub(super) struct LivePanel {
     worker: Option<Worker>,
     editor: edit::LiveEditor,
     store: store::StorePanel,
+    locker: locker::Locker,
     snapshot: Snapshot,
-    selected: Option<Location>,
-    bank: usize,
     show_values: bool,
     message: Option<String>,
 }
@@ -271,9 +271,9 @@ impl LivePanel {
         self.cancel();
         self.editor.detach();
         self.store.detach();
+        self.locker.detach(&mut self.store);
         self.device = verified.cloned();
         self.snapshot = Snapshot::default();
-        self.selected = None;
         self.message = None;
     }
 
@@ -350,7 +350,15 @@ impl LivePanel {
     }
 
     pub(super) fn poll(&mut self, ctx: &egui::Context) {
-        self.store.poll(ctx);
+        if let Some((device, result)) = self.store.poll(ctx) {
+            let result = if self.device.as_ref() == Some(&device) {
+                result
+            } else {
+                Err(())
+            };
+            self.locker
+                .result(result, &mut self.snapshot, &mut self.store);
+        }
         if let Some(buffer) = self.editor.poll(
             self.device.as_ref(),
             self.worker.is_none() && !self.store.busy(),
@@ -405,7 +413,20 @@ impl LivePanel {
         });
     }
 
-    pub(super) fn show(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
+    pub(super) fn locker_dirty(&self) -> bool {
+        self.locker.dirty()
+    }
+
+    pub(super) fn discard_locker(&mut self) {
+        self.locker.discard(&mut self.store);
+    }
+
+    pub(super) fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        services: &mut EditorServices<'_>,
+        file_tone: Option<&pod_preset::PodTone>,
+    ) -> Option<Vec<u8>> {
         ui.heading("PODxt Live reads");
         ui.horizontal_wrapped(|ui| {
             for command in [
@@ -526,57 +547,29 @@ impl LivePanel {
             self.device.as_ref(),
             self.worker.is_none() && !self.store.busy(),
         );
-        self.show_library(ui);
+        let idle = !self.busy();
+        let actions = self.locker.show(
+            ui,
+            services,
+            locker::View {
+                snapshot: &self.snapshot,
+                idle,
+                can_get: idle && self.device.is_some() && Self::admitted(ReadCommand::Library),
+                editor_tone: file_tone,
+            },
+            &mut self.store,
+        );
+        if actions.get {
+            self.start(ReadCommand::Library, ui.ctx());
+        }
         self.store.show(
             ui,
             services,
             self.device.as_ref(),
             self.worker.is_none() && !self.editor.busy(),
+            self.locker.syncing(),
         );
-    }
-
-    fn show_library(&mut self, ui: &mut egui::Ui) {
-        if self.snapshot.library.is_empty() {
-            return;
-        }
-        ui.collapsing("Device library", |ui| {
-            ui.horizontal_wrapped(|ui| {
-                for (index, bank) in BankKind::ALL.into_iter().enumerate() {
-                    ui.selectable_value(&mut self.bank, index, bank.name());
-                }
-            });
-            let bank = BankKind::ALL[self.bank];
-            let entries: Vec<_> = Location::all(&[bank])
-                .filter_map(|location| {
-                    self.snapshot
-                        .library
-                        .get(&location.address())
-                        .map(|tone| (location, tone))
-                })
-                .collect();
-            egui::ScrollArea::vertical()
-                .id_salt("podxt-device-library")
-                .max_height(175.0)
-                .show_rows(
-                    ui,
-                    ui.text_style_height(&egui::TextStyle::Body),
-                    entries.len(),
-                    |ui, range| {
-                        for &(location, tone) in &entries[range] {
-                            ui.selectable_value(
-                                &mut self.selected,
-                                Some(location),
-                                format!("{} · {}", location.label(), tone.name()),
-                            );
-                        }
-                    },
-                );
-            if let Some(location) = self.selected.filter(|location| location.kind() == bank)
-                && let Some(tone) = self.snapshot.library.get(&location.address())
-            {
-                tone_panel(ui, "Stored tone preview", tone, &mut self.show_values);
-            }
-        });
+        actions.open
     }
 }
 

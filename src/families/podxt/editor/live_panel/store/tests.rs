@@ -136,7 +136,12 @@ fn offline_build_denies_native_store_and_store_policy_denies_other_writes() {
     const {
         assert!(!STORE_OWNER_APPROVED);
     }
-    assert!(!admitted());
+    const {
+        assert!(!SETUP_STORE_OWNER_APPROVED && !SYNC_OWNER_APPROVED);
+    }
+    for stage in [StoreStage::Tone, StoreStage::Setup, StoreStage::Sync] {
+        assert!(!admitted(stage));
+    }
     for denied in [
         Operation::PodxtEditBufferWrite,
         Operation::PodxtAdditionalEditBufferWrite,
