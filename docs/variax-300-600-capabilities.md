@@ -12,8 +12,8 @@ Mechanical details are specific to the instrument described.
 - **Device evidence** labels prior owner checks and captures explicitly. Static or offline results carry no device verification. All checks for this audit used files.
 - Status measures the listed app workflow at the baseline. **Done** includes completed offline workflows. **Partial** means a subset or a backend/probe exists. **Missing** includes intentionally excluded firmware functions. **Does not match** denotes a demonstrated discrepancy in the listed workflow. Physical-only rows are outside the software tally. Scope exclusions and unattributed opcodes call for no new implementation issue.
 
-The tally covers 91 software capabilities: **10 done, 31 partial, 47 missing
-and 3 mismatched**. Seven physical-only rows are outside the tally. The
+The tally covers 91 software capabilities: **11 done, 31 partial, 47 missing
+and 2 mismatched**. Seven physical-only rows are outside the tally. The
 firmware rows include unsupported maintenance and unclassified commands, so
 the missing count is larger than the product backlog.
 
@@ -27,7 +27,7 @@ the missing count is larger than the product backlog.
 | Pickup selector numbering and bank addressing | VH p. 10, WB `LocationToProgramNumber` | Guitar / computer | **Done** for program and position mapping, `crates/line6-devices/src/family/variax.rs:128`, `crates/line6-devices/src/backup.rs:241` | Backup index has Custom 1 position 1 = program 4 | #203 |
 | Recall the saved tone position until first knob movement | VH p. 8, WB `L6VariaxEditor` | Guitar / computer | **Partial**. Saved flag and position are editable offline, `src/families/variax/editor/mod.rs:976`, `src/families/variax/file/preset.rs:514` | Both flag states occur in owner captures. Recall transition unverified | #202, #204 |
 | Move the tone knob during Custom save to opt into physical tone on recall | VH p. 8, WB `L6VariaxEditor` | Guitar / computer | **Partial**. File supports the opt-out flag. Its off state disables editing the stored position, `src/families/variax/file/preset.rs:514` | Gesture and recall response unverified | #178, #202, #204 |
-| Compare saved tone mode in semantic backup/restore checks | VH p. 8, FW metadata | Computer | **Does not match**. `same_preset` ignores the mode flag as well as position, `crates/line6-devices/src/family/variax.rs:431`. Raw folder compare includes both, `crates/line6-devices/src/backup.rs:456` | Acoustic 4 differs from the archive only in the position bytes; three complete backups contain both flag states | Proposed gap A |
+| Compare saved tone mode in backup and restore checks | VH p. 8, FW metadata | Computer | **Done offline**. Restore matching includes the saved-tone flag. Raw backup comparisons include both flag and position. | Both flag states occur in owner captures. Synthetic tests cover reselection and ambiguity. | #229 |
 | Electric volume taper and effect on tone, level differences across models | VH pp. 5, 10 | Guitar / computer | **Partial**. Wiring controls, trim and coefficient inputs exist, `src/families/variax/editor/mod.rs:533`, `src/host/engine.rs:112` | Knob positions captured. Audio response unverified | #204, #33 |
 | Acoustic volume acts as a level control | VH pp. 5, 10 | Guitar / computer | **Partial**. Acoustic body and wiring are preserved. The editor presents shared wiring controls, `assets/model-ui.json:113`, `src/families/variax/editor/mod.rs:950` | Handbook. Level-only response unverified | Proposed gap B |
 | Acoustic and applicable Reso tone control shapes modeled mic position | VH pp. 5, 10, 20 | Guitar / computer | **Partial**. Body and tone fields survive. The GUI labels the field generically, `src/families/variax/editor/mod.rs:976` | Handbook. Reso 5 owner test changed trim, so mic behavior remains unverified | Proposed gap B, #204 |
@@ -245,25 +245,31 @@ reviewer. These are deduplicated issue and comment drafts for that handoff.
 Gap D tracks hardware verification and routing for the existing PODxt editor
 work in #221 and #222.
 
-### A. Gap: preserve saved-tone semantics in Variax backup restore checks
+### A. Saved-tone semantics in backup and restore checks
 
-Source: VH p. 8 and audit #227, mismatch 3.
+The Variax 300 Pilot's Handbook (p. 8) describes two recall modes. With saved
+tone enabled, recall initially uses the stored position. The first movement of
+the physical knob takes over. With saved tone disabled, recall uses the
+physical knob immediately. The owner captures show both flag values. The
+transition timing still awaits a separately approved physical check.
 
-**Original behavior.** Recall may start from the stored tone position or the
-physical knob, based on the saved mode. The first knob movement can override
-a saved setting.
+A firmware archive slot or a preset file can supply the programmed position.
+The two-block `0x3C` read captures the active buffer, including after the
+backup sweep selects a stored preset. Its position can reflect the live knob
+in either mode. Retain those bytes as captured and use the saved-tone flag
+to distinguish the recall modes.
 
-**Rust today.** `same_preset` skips the mode byte during semantic restore
-matching. Raw file comparison already retains it.
+The backup sweep uses `same_preset` to decide whether it can reselect the
+preset that was active before the sweep and to check it after reselection.
+This comparison ignores only position bytes 61–63. It uses byte 64 (the
+saved-tone flag) and the rest of the metadata. A single mode match may be
+reselected. Multiple otherwise matching presets with the same mode remain
+ambiguous, including when only their position bytes differ. Raw backup
+comparison checks every byte in each stored reply, including position and
+flag. A mode-only difference is reported as a changed reply file.
 
-- [ ] Distinguish toggle-only changes in restoration and backup comparison.
-- [ ] Document when a captured position reflects a live knob and when a source
-  supplies a stored position.
-- [ ] Cover both flag states and ambiguity between otherwise equal slots with
-  synthetic data. Preserve original capture bytes.
-
-Hardware boundary: offline comparison and fake transports. Physical recall
-requires a separately approved owner check.
+[#229](https://github.com/guirossibrum/VariaxWorkbench/issues/229) verifies
+these comparisons with synthetic metadata and fake transports.
 
 ### B. Gap: preserve and explain model-specific Variax knob behavior
 

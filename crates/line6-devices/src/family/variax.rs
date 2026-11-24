@@ -429,10 +429,13 @@ pub struct Library {
     pub stopped: Option<String>,
 }
 
-/// Same stored preset, ignoring the live tone-knob position field (bytes
-/// 61..65: `tone_position`, `save_tone_position`).
+/// Match two active-preset captures for reselection or read-back verification.
+/// The three tone-position bytes can reflect knob movement even when saved
+/// tone is enabled. The saved-tone flag at byte 64 is part of the match.
 pub fn same_preset(a: &PresetMetadata, b: &PresetMetadata) -> bool {
-    a.raw[..61] == b.raw[..61] && a.raw[65..] == b.raw[65..]
+    const TONE_POSITION: std::ops::Range<usize> = 61..64;
+    a.raw[..TONE_POSITION.start] == b.raw[..TONE_POSITION.start]
+        && a.raw[TONE_POSITION.end..] == b.raw[TONE_POSITION.end..]
 }
 
 fn read_metadata<L: Link>(
@@ -1092,6 +1095,103 @@ pub(crate) mod tests {
             result.unwrap().restore,
             Restore::NoUniqueMatch { matches: 0 }
         );
+    }
+
+    fn tone_metadata(saved: bool, position: f32) -> PresetMetadata {
+        let mut raw = [0; 192];
+        raw[..6].copy_from_slice(b"Sample");
+        raw[61..64].copy_from_slice(&position.to_be_bytes()[..3]);
+        raw[64] = u8::from(saved);
+        PresetMetadata::from_bytes(raw).unwrap()
+    }
+
+    fn with_preset(slot: u8, metadata: PresetMetadata) -> StoredPreset {
+        StoredPreset {
+            preset: Preset::new(0, slot).unwrap(),
+            replies: [
+                encode_reply(metadata.raw[..96].try_into().unwrap()),
+                encode_reply(metadata.raw[96..].try_into().unwrap()),
+            ],
+            metadata,
+        }
+    }
+
+    #[test]
+    fn preset_matching_ignores_only_the_captured_tone_position() {
+        for saved in [false, true] {
+            let original = tone_metadata(saved, 0.25);
+            assert_eq!(
+                original.parameters["save_tone_position"],
+                ParameterValue::Boolean(saved)
+            );
+            assert!(same_preset(&original, &tone_metadata(saved, 0.75)));
+            assert!(!same_preset(&original, &tone_metadata(!saved, 0.25)));
+
+            for offset in [60, 65] {
+                let mut raw = original.raw;
+                raw[offset] ^= 1;
+                assert!(!same_preset(
+                    &original,
+                    &PresetMetadata::from_bytes(raw).unwrap()
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn restore_selects_the_matching_mode_and_checks_it_again_after_recall() {
+        for saved in [false, true] {
+            let original = tone_metadata(saved, 0.25);
+            let candidates = [
+                with_preset(0, tone_metadata(!saved, 0.25)),
+                with_preset(1, tone_metadata(saved, 0.5)),
+            ];
+            let target = candidates[1].preset;
+            for recalled_mode in [saved, !saved] {
+                let recalled = with_preset(1, tone_metadata(recalled_mode, 0.75));
+                let (result, sent, _) = run(
+                    vec![
+                        (Program(target), vec![]),
+                        (Metadata1, packets(&recalled.replies[0])),
+                        (Metadata2, packets(&recalled.replies[1])),
+                    ],
+                    |session| restore(session, &original, &candidates),
+                );
+                assert_eq!(
+                    result,
+                    Restore::Switched {
+                        to: target,
+                        verified: recalled_mode == saved
+                    }
+                );
+                assert_eq!(
+                    sent,
+                    [
+                        Program(target).bytes(),
+                        Metadata1.bytes(),
+                        Metadata2.bytes()
+                    ]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn restore_needs_one_mode_match_before_sending_a_program_change() {
+        for saved in [false, true] {
+            let original = tone_metadata(saved, 0.25);
+            let opposite = [with_preset(0, tone_metadata(!saved, 0.25))];
+            let ambiguous = [
+                with_preset(0, tone_metadata(saved, 0.25)),
+                with_preset(1, tone_metadata(saved, 0.75)),
+            ];
+            for (candidates, matches) in [(&opposite[..], 0), (&ambiguous[..], 2)] {
+                let (result, sent, _) =
+                    run(vec![], |session| restore(session, &original, candidates));
+                assert_eq!(result, Restore::NoUniqueMatch { matches });
+                assert!(sent.is_empty());
+            }
+        }
     }
 
     #[test]
