@@ -1,13 +1,12 @@
 use super::*;
 use crate::procedure::full_read as procedure;
 
-const STEPS: [(usize, [u8; 3]); 5] = [
-    (64, [0, 4, 0]),
-    (128, [0, 8, 0]),
-    (256, [0, 0, 1]),
-    (512, [0, 0, 2]),
-    (1092, [4, 4, 4]),
-];
+const REQUESTS: usize = 35;
+const USB_PACKET_BYTES: usize = 16;
+
+fn chunks() -> impl Iterator<Item = (usize, usize)> {
+    (0..34).map(|index| (index * 32, 32)).chain([(1088, 4)])
+}
 
 fn fixture() -> [u8; PROGRAM_BYTES] {
     let mut bytes = [0; PROGRAM_BYTES];
@@ -21,47 +20,60 @@ fn reads(words: usize) -> usize {
     8 + 6 * words
 }
 
-fn guitar_sequence(steps: usize) -> Vec<Vec<u8>> {
+fn guitar_sequence(requests: usize) -> Vec<Vec<u8>> {
     let mut expected = vec![
         line6_devices::identity::REQUEST.to_vec(),
         BRIDGE_ON.into(),
         guitar(&[0x2a, 1]),
     ];
-    for (_, [a, b, c]) in &STEPS[..steps] {
-        expected.push(guitar(&[0x3c, *a, *b, *c, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
+    for (start, count) in chunks().take(requests) {
+        let count_nibbles = if count == 32 {
+            [0, 2, 0, 0, 0, 0]
+        } else {
+            [4, 0, 0, 0, 0, 0]
+        };
+        let start_nibbles = [
+            (start & 15) as u8,
+            ((start >> 4) & 15) as u8,
+            (start >> 8) as u8,
+            0,
+            0,
+            0,
+        ];
+        expected.push(guitar(
+            &[&[0x3c][..], &count_nibbles, &start_nibbles].concat(),
+        ));
     }
     expected.extend([guitar(&[0x2a, 0]), BRIDGE_OFF.into()]);
     expected
 }
 
-fn settled_replies(data: &[u8; PROGRAM_BYTES], steps: usize) -> Vec<Vec<u8>> {
-    STEPS[..steps]
-        .iter()
-        .map(|(count, _)| reply(&data[..count * 3]))
+fn settled_replies(data: &[u8; PROGRAM_BYTES], requests: usize) -> Vec<Vec<u8>> {
+    chunks()
+        .take(requests)
+        .map(|(start, count)| reply(&data[start * 3..(start + count) * 3]))
         .collect()
 }
 
 fn fragmented_inbox(replies: &[Vec<u8>]) -> VecDeque<Vec<u8>> {
-    // The fixture advances a full polling interval per read. Fragment at 160
-    // bytes to exercise reassembly without exhausting the virtual deadline.
     std::iter::once(VARIAX_IDENTITY.to_vec())
         .chain(
             replies
                 .iter()
-                .flat_map(|reply| reply.chunks(160).map(<[u8]>::to_vec)),
+                .flat_map(|reply| reply.chunks(USB_PACKET_BYTES).map(<[u8]>::to_vec)),
         )
         .collect()
 }
 
-fn reply_path(dir: &Path, count: usize) -> std::path::PathBuf {
-    dir.join(format!("start-0-count-{count}.syx"))
+fn reply_path(dir: &Path, start: usize, count: usize) -> std::path::PathBuf {
+    dir.join(format!("start-{start}-count-{count}.syx"))
 }
 
 #[test]
-fn exact_identity_and_stepped_read_sequence_saves_each_reply_and_compares_every_word() {
+fn exact_35_chunk_sequence_saves_and_assembles_all_words() {
     let dir = tempfile::tempdir().unwrap();
     let data = fixture();
-    let replies = settled_replies(&data, STEPS.len());
+    let replies = settled_replies(&data, REQUESTS);
     let mut podxt = Fake::new(DevicePath::PodxtMidi, [PODXT_IDENTITY.into()].into());
     let mut variax = Fake::new(DevicePath::VariaxViaPodxt, fragmented_inbox(&replies));
     let captured =
@@ -70,7 +82,9 @@ fn exact_identity_and_stepped_read_sequence_saves_each_reply_and_compares_every_
         })
         .unwrap();
     assert_eq!(podxt.writes, [line6_devices::identity::REQUEST]);
-    assert_eq!(variax.writes, guitar_sequence(STEPS.len()));
+    assert_eq!(variax.writes, guitar_sequence(REQUESTS));
+    assert_eq!(variax.writes.len(), REQUESTS + 5);
+    assert_eq!(replies.len(), REQUESTS);
     assert_eq!(
         variax.pauses,
         [Duration::from_secs(1), Duration::from_millis(100)]
@@ -84,9 +98,16 @@ fn exact_identity_and_stepped_read_sequence_saves_each_reply_and_compares_every_
         Duration::from_millis(100)
     );
     assert!(variax.inbox.is_empty());
-    for ((count, _), raw) in STEPS.iter().zip(&replies) {
-        assert_eq!(raw.len(), reads(*count));
-        assert_eq!(fs::read(reply_path(dir.path(), *count)).unwrap(), *raw);
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), REQUESTS);
+    for ((start, count), raw) in chunks().zip(&replies) {
+        assert_eq!(raw.len(), reads(count));
+        assert_eq!(
+            fs::read(reply_path(dir.path(), start, count)).unwrap(),
+            *raw
+        );
+    }
+    for (index, word) in captured.into_iter().enumerate() {
+        assert_eq!(word, 0x12_3400 + index as u32, "word {index}");
     }
     let mut factory = data;
     factory[0] = 0xff;
@@ -103,28 +124,34 @@ fn exact_identity_and_stepped_read_sequence_saves_each_reply_and_compares_every_
 }
 
 #[test]
-fn a_stall_at_any_step_keeps_prior_replies_and_only_sends_cleanup() {
+fn silence_or_an_incomplete_chunk_stops_and_keeps_completed_captures() {
     let data = fixture();
-    for (failed, (count, _)) in STEPS.iter().enumerate() {
+    for (failed, silent) in [(0, true), (17, false), (34, false)] {
         let dir = tempfile::tempdir().unwrap();
+        let (start, count) = chunks().nth(failed).unwrap();
         let prior = settled_replies(&data, failed);
         let mut inbox = fragmented_inbox(&prior);
-        let mut incomplete = reply(&data[..count * 3]);
-        incomplete.pop(); // All the words arrived. The final F7 never did.
-        inbox.extend(incomplete.chunks(160).map(<[u8]>::to_vec));
+        if !silent {
+            let mut incomplete = reply(&data[start * 3..(start + count) * 3]);
+            incomplete.pop(); // All the words arrived. The final F7 never did.
+            inbox.extend(incomplete.chunks(USB_PACKET_BYTES).map(<[u8]>::to_vec));
+        }
         let mut fake = Fake::new(DevicePath::VariaxViaPodxt, inbox);
         let error = procedure::capture(&mut fake, &mut Quiet, dir.path(), || false).unwrap_err();
-        assert!(error.contains(&format!("Start 0, count {count}: Timed out")));
+        assert!(error.contains(&format!("Start {start}, count {count}: Timed out")));
         assert_eq!(fake.writes, guitar_sequence(failed + 1));
-        let earlier_polls: usize = prior.iter().map(|raw| raw.len().div_ceil(160)).sum();
+        let earlier_polls: usize = prior
+            .iter()
+            .map(|raw| raw.len().div_ceil(USB_PACKET_BYTES))
+            .sum();
         assert_eq!(
             fake.clock,
             Duration::from_millis(1200 + 100 * earlier_polls as u64) + Duration::from_secs(10)
         );
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), failed);
-        for ((earlier_count, _), raw) in STEPS[..failed].iter().zip(prior) {
+        for ((earlier_start, earlier_count), raw) in chunks().zip(prior) {
             assert_eq!(
-                fs::read(reply_path(dir.path(), *earlier_count)).unwrap(),
+                fs::read(reply_path(dir.path(), earlier_start, earlier_count)).unwrap(),
                 raw
             );
         }
@@ -132,15 +159,15 @@ fn a_stall_at_any_step_keeps_prior_replies_and_only_sends_cleanup() {
 }
 
 #[test]
-fn malformed_reply_stops_before_the_next_step_even_with_more_input_available() {
+fn malformed_reply_stops_before_the_next_chunk_even_with_more_input_available() {
     let dir = tempfile::tempdir().unwrap();
     let data = fixture();
     let mut fake = Fake::new(
         DevicePath::VariaxViaPodxt,
-        fragmented_inbox(&[reply(&data[..63 * 3]), reply(&data[..64 * 3])]),
+        fragmented_inbox(&[reply(&data[..31 * 3]), reply(&data[..32 * 3])]),
     );
     let error = procedure::capture(&mut fake, &mut Quiet, dir.path(), || false).unwrap_err();
-    assert!(error.contains("Start 0, count 64: Variax 0x3C reply has 386 bytes, expected 392."));
+    assert!(error.contains("Start 0, count 32: Variax 0x3C reply has 194 bytes, expected 200."));
     assert_eq!(fake.writes, guitar_sequence(1));
     assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
     assert!(!fake.inbox.is_empty());
@@ -188,7 +215,7 @@ fn wrong_podxt_identity_prevents_the_variax_transport_from_opening() {
 #[test]
 fn a_capture_collision_preserves_the_existing_file_and_stops() {
     let dir = tempfile::tempdir().unwrap();
-    let filename = reply_path(dir.path(), 64);
+    let filename = reply_path(dir.path(), 0, 32);
     fs::File::create_new(&filename).unwrap();
     let replies = settled_replies(&fixture(), 1);
     let mut fake = Fake::new(DevicePath::VariaxViaPodxt, fragmented_inbox(&replies));

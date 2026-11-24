@@ -14,7 +14,8 @@ use variax_workbench::{
     hardware_gates::{Gate, is_locked},
 };
 
-const COUNTS: [u16; 5] = [64, 128, 256, 512, BUFFER_WORDS];
+const CHUNK_WORDS: u16 = 32;
+pub const CHUNK_COUNT: usize = BUFFER_WORDS.div_ceil(CHUNK_WORDS) as usize;
 pub type FullBuffer = [u32; BUFFER_WORDS as usize];
 
 struct FullReadPolicy;
@@ -51,14 +52,20 @@ pub fn capture<L: Link>(
     variax_identity(&identified.identity)?;
     session.note("Verified Variax 300/600 firmware 3.10.");
 
-    let spans = COUNTS.map(|count| PresetSpan::new(0, count).expect("step count is in bounds"));
-    let mut full = Vec::new();
+    let spans: [PresetSpan; CHUNK_COUNT] = std::array::from_fn(|index| {
+        let start = index as u16 * CHUNK_WORDS;
+        let count = (BUFFER_WORDS - start).min(CHUNK_WORDS);
+        PresetSpan::new(start, count).expect("chunk is in bounds")
+    });
+    let mut full = Vec::with_capacity(usize::from(BUFFER_WORDS));
     read_spans(&mut session, &spans, stopping, |reply| {
+        let start = reply.span.start();
         let count = reply.span.count();
-        save_new(&dir.join(format!("start-0-count-{count}.syx")), &reply.raw)?;
-        if count == BUFFER_WORDS {
-            full = reply.words;
-        }
+        save_new(
+            &dir.join(format!("start-{start}-count-{count}.syx")),
+            &reply.raw,
+        )?;
+        full.extend(reply.words);
         Ok(())
     })?;
     full.try_into()
