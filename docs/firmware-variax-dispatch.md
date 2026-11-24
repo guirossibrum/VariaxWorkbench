@@ -10,6 +10,8 @@ and `0x3B`. The [session trace](../research/variax-310-session-handlers.json)
 covers `0x4C` and the writers of the session flag. The
 [read-limit trace](../research/variax-310-read-limits.json) covers the
 `0x3C` reply length, the transmit queue, and the two editor spans. The
+full-buffer section below records an in-bounds read of all 1,092 words
+after a preset load. The
 [flash trace](../research/variax-310-flash-handlers.json) covers the erase
 step, the slot read, the other program and erase handlers, and the two
 code-load opcodes as a list. The
@@ -164,6 +166,89 @@ source.
 | A start and a nonzero count whose last word is above 1,091, under a plain sum. | `P:0x144B1` | The handler reads Y past `Y:0xE8A` and still sends the normal `0x3C` frame. The first such address is initialized image data through `Y:0xEA6`. This case does not send `0x72`. | No. `Metadata1` and `Metadata2` are the only `0x3C` requests, and they end at words 882 and 914. | Keep those two shapes. Do not add a start or count the firmware does not bound. |
 | A count of 0. | `P:0x144C2` | The image does not test it. A skipped body would send an eight-byte frame and read no Y word. A count that instead runs the body would walk far past the buffer and hold `P:0x1241`. The instrument's choice is unknown. | No. The request bytes contain no `0x3C` count of 0. | Do not send a zero count. |
 | The host stops reading a reply longer than 63 bytes. | `P:0x1241` | The sender waits with no deadline. Queued input is not parsed until the wait returns. This loop does not mask interrupts. A count of 32 already produces 200 bytes. | Yes, if the host stops reading. The normal metadata read waits for all 200 bytes. | Keep reading the reply through `F7`. Do not add an unbounded `0x3C`. |
+
+## Full-buffer 0x3C read
+
+This section is the firmware side of an in-bounds `0x3C` that starts at word 0 and counts up to 1,092, sent after a preset has been selected. It is the same handler as the two metadata reads. It does not add a host sender. A run on the guitar stays with the device-test lane and needs owner approval. Opcode `0x44` is a different command.
+
+### What the load leaves in the buffer
+
+On a checksum match, `P:0x1FE1` sets PE4, copies 1,092 words (`0x444`), and clears PE4 before returning. Each iteration assembles one 24-bit word from three stored bytes and writes it once through `Y:(r5)+`, starting at `Y:0xA47`. The loop does not write that word again. **Confirmed.** The other arm of `P:0x1FA7` copies 873 words and does not checksum. A program change whose formed index is 5–54 adds 55 first, so it takes the checksum arm. **Confirmed** for that branch, as already recorded at `P:0x11A0`.
+
+`P:0x11A0` then calls the reload at `P:0x1E9C`. The reload saves word 1 (`Y:0xA48`), clears bit 1, stores the cleared word, copies the flag to `Y:0xD0` through `P:0x2090`, restores the saved word, and copies the flag again. **Confirmed.** `Y:0xD0` is outside the 1,092-word image. After the reload returns, word 1 matches the copied word. The cleared bit exists only inside that window. The program-change message is still the message being parsed, so a later `0x3C` cannot start until the reload has returned. **Confirmed** for that order. The helpers that follow, `P:0x14A0B` and `P:0x14A1D`, queue MIDI bytes and do not write the image. **Confirmed.**
+
+The reload reads bits of word 1 and calls helpers that copy preset words out. Immediate Y destinations in those helpers are outside the image, including `Y:0x5E5`, `Y:0x525`, `Y:0x306`, `Y:0x7AF`, `Y:0x79C`, `Y:0x68D`, `Y:0x699`, `Y:0x300`, `Y:0x2F0`, `Y:0x342`, `Y:0x2EC`, `Y:0x4B3`, and `Y:4` through `Y:0x93`. **Confirmed** for those destinations. `P:0x1AD2` writes `Y:0x18000` and `Y:0x19800`. **Confirmed** outside. Shared math routines those helpers call were not searched for a store into the image. **Unknown** for a store inside those routines.
+
+`P:0x13B0` is the exception on this path. The reload calls it when bit 5 of word 1 is set, and again when bit 23 is set. Its first loop clears `Y:4` through `Y:0x93`. **Confirmed** outside. It then tests a field of word 36. When that field equals 3, the following stores start at `Y:4` and `Y:7` and the counted loop is 6, so they stay below the image. The source pointer on that branch is `Y:0xE9B`, past the image. **Confirmed.** When the field is not 3, the destination is 4 plus an offset taken from word 4, and the loop count is word 4. Whether that walk enters the image was not bounded. **Unknown.** The tone-apply routine `P:0x14B0` calls `P:0x13B0` only when the same field equals 3, so that call takes the bounded branch. **Confirmed.**
+
+Live controls after the load:
+
+- Controller 79 is stored at `X:0x1826` by `P:0x2025`. Controller 7 is stored at `X:0x1827` by `P:0x2020`. Both call `P:0x14B0`. **Confirmed.**
+- `P:0x14B0` reads curves through `P:0x202A` and stores results at `Y:0x038D`, `Y:0x038E` and `Y:0x038F`. `P:0x202A` returns a Y value and does not store. **Confirmed.** One base it reads, `Y:0xE8E`, is four words past the image.
+- `P:0x1E23` slews `X:0x180A` toward `X:0x181C` and enqueues. `P:0x1E4E` slews `X:0x1818` toward `X:0x180D` and enqueues. Neither writes the image. **Confirmed.**
+- `P:0x1A97` calls the scan `P:0x1BFB`, which updates `X:0x1811`, `X:0x1812`, `X:0x1824` and nearby X words and enqueues. **Confirmed.** A store from that scan into the image was not found.
+- The reload and `P:0x14B0` read word 36. They do not write it. The writers are opcode `0x37` and the high-byte-8 arm, which program change does not enter. **Confirmed.**
+
+The host preset match ignores metadata bytes 61, 62 and 63, because those bytes can reflect tone-knob movement, and it still compares the saved-tone flag at byte 64. Each metadata word is three big-endian bytes, and the first block is buffer word 851. Bytes 61 and 62 are the middle and low bytes of word 871 (`Y:0xDAE`). Byte 63 is the high byte of word 872 (`Y:0xDAF`). **Confirmed** for that packing. No instruction names `Y:0xDAE` or `Y:0xDAF`. A firmware store of the live tone into those two words was not found. **Unknown.**
+
+Other commands write buffer words. Parsing a program change does not run them. **Confirmed** for the program-change path. The writes are:
+
+| Words | Address | Command |
+| --- | --- | --- |
+| 1 | `Y:0xA48` | Several opcodes replace the flag. A checksum miss replaces it and skips the copy. The reload's own clear of bit 1 is restored before return. |
+| 4 | `Y:0xA4B` | `0x10` |
+| 5–28 | `Y:0xA4C` for 24 words | `0x10` |
+| 36 | `Y:0xA6B` | `0x37` and the high-byte-8 arm |
+| 546–554 | `Y:0xC69` for nine words | `0x35` |
+| 628–679 | `Y:0xCBB` for 52 words | `0x23` |
+| 680–691 | `Y:0xCEF` for 12 words | `0x17` |
+| 767–770 | `Y:0xD46` for four words | `0x61` |
+| 851–856 | `Y:0xD9A` for six words | `0x1D` |
+| 1,091 | `Y:0xE8A` | Checksum writers, including `0x61`. The successful copy writes the stored checksum and does not recompute it. |
+
+`0x43` receives a full buffer. It is not part of program change.
+
+One audio loop loads `0xE80` and uses it as an X pointer, then stores Y through the address held in `Y:0x11A1`. That address is not an immediate, and it was not bounded. **Unknown** which words, if any, that store hits. Immediate loads inside the image that were followed to a Y store are the copy and the command writes in the table, not this loop. **Confirmed** for that search.
+
+With a valid checksum, the copy places all 1,092 stored words in the buffer unchanged. After the reload returns, word 1 matches the copied word. No other buffer word was shown to differ because of the flag copy, the tone knob, the volume knob, or the scanned control. The unidentified case is `P:0x13B0` when bit 5 or bit 23 of word 1 is set and the word-36 field is not 3, plus the audio pointer in `Y:0x11A1` and the two metadata words above.
+
+### Request bytes, reply length, and the queue
+
+The request is the ordinary family frame: `F0 00 01 0C 07 00`, opcode `3C`, the count as six low-nibble-first bytes, the start as six low-nibble-first bytes, and `F7`. Start 0 is six `00` bytes. **Confirmed** from the handler and from the two metadata requests the host already sends. A 24-bit value `N` is the six bytes `(N >> (4 × i)) & 15` for `i` from 0 through 5.
+
+| Count | Request | Reply bytes |
+| --- | --- | --- |
+| 64 | `F0 00 01 0C 07 00 3C 00 04 00 00 00 00 00 00 00 00 00 00 F7` | 392 |
+| 128 | `F0 00 01 0C 07 00 3C 00 08 00 00 00 00 00 00 00 00 00 00 F7` | 776 |
+| 256 | `F0 00 01 0C 07 00 3C 00 00 01 00 00 00 00 00 00 00 00 00 F7` | 1,544 |
+| 512 | `F0 00 01 0C 07 00 3C 00 00 02 00 00 00 00 00 00 00 00 00 F7` | 3,080 |
+| 1,092 | `F0 00 01 0C 07 00 3C 04 04 04 00 00 00 00 00 00 00 00 00 F7` | 6,560 |
+
+The reply length is `8 + 6 × count`. **Confirmed.**
+
+The queue at `X:0x141B` holds 63 bytes. `P:0x1241` stores a byte only when `(write + 1) & 63` differs from the read index. A 9-word reply is 62 bytes and fits in one fill. A 10-word reply is 68 bytes and does not. Every count in the table is longer than 63 bytes, so the sender waits until the drain advances the read index, and it waits more than once. The drain takes a queued byte only when `X:0x1801` equals 9. **Confirmed.** How many bytes one such wake removes, beyond that condition, is **unknown**.
+
+### A reply that stops partway
+
+`P:0x1241` has no counter, does not drop the byte, does not call `P:0x1A97`, and does not change the interrupt mask. **Confirmed.** The receive-empty wait at `P:0x1257` does call `P:0x1A97`. The transmit-full wait does not.
+
+The parser and the main loop are one thread. The forever loop at `P:0x1A3B` calls `P:0x11EF`, and `0x3C` runs inside that call. While the reply is stalled, the next `P:0x1A97` does not run, so the queued-word decoder, the knob slew and the scan do not run. Incoming MIDI stays queued. **Confirmed.**
+
+Startup clears the interrupt mask at `P:0x1A29` before that loop. The transmit wait does not set it again, so the audio interrupt can still run. **Confirmed** for the mask. The wait does not itself write a peripheral.
+
+The handler and the wait do not write the DSP-bypass flag at `X:0x17A0`, do not write PE4, and do not call a flash helper. **Confirmed.** A flag this path never writes is left as it was. The stored slot is flash, and this path does not touch it. **Confirmed.**
+
+The wait does not time out. **Confirmed.** No other exit from that loop was found.
+
+A power cycle of this stall was not measured. **Unknown** as an instrument result. The stuck state is the program counter and the transmit queue in RAM. The image's reset path is what runs when power returns. This note does not claim that every RAM flag was compared with a cold start.
+
+### What else 0x3C touches
+
+From `P:0x144A9` through the jump that queues the closing `F7`, the handler reads Y, starting at `Y:0xA47 + start`, and queues bytes through `P:0x1241` into `X:0x141B`. The five header bytes come from `Y:0xA42`, outside the preset image. That window has no `movep`, no PE4 update, and no flash call. **Confirmed.** The drain still shifts a byte toward `x:$FFFFC9`, which is the same path a metadata reply already uses. No other peripheral write was found in the handler.
+
+### Selecting the same preset again
+
+A program change to the same number still reloads the slot, when the parser accepts the message. **Confirmed.** `P:0x121E` reads the data byte and calls `P:0x14285` with no saved-program compare. `P:0x14285` enqueues a program number below `0x6E`. Program 5 is below that limit. High byte 5 at `P:0x1114` stores the low 16 bits at `X:0x17A4` and calls `P:0x11A0` with no compare. `P:0x11A0` always calls the loader and the reload. The compare against `X:0x17A6` is only the high-byte-7 arm. Selecting a different preset and coming back is not required.
 
 ## Preset store (`0x61`)
 
