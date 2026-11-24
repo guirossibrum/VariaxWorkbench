@@ -4,6 +4,7 @@ use variax_workbench::pod_preset::Library;
 #[cfg(feature = "usb")]
 mod live_panel;
 mod parameter_panel;
+mod stage;
 use parameter_panel::ParameterPanel;
 
 #[cfg(test)]
@@ -287,6 +288,7 @@ pub(super) struct PodxtEditor {
     #[cfg(feature = "usb")]
     live: live_panel::LivePanel,
     parameter_panel: ParameterPanel,
+    stage: stage::Stage,
     #[cfg(test)]
     table_view_in_test: bool,
     pub(super) pod_library: Library,
@@ -399,6 +401,7 @@ impl PodxtEditor {
             #[cfg(feature = "usb")]
             live: live_panel::LivePanel::default(),
             parameter_panel: ParameterPanel::default(),
+            stage: stage::Stage::default(),
             #[cfg(test)]
             table_view_in_test: false,
             pod_library: Library::default(),
@@ -1120,13 +1123,6 @@ impl PodxtEditor {
                     render_rows(ui);
                 } else if rows.len() > 1 {
                     ui.collapsing("Tones", render_rows);
-                }
-                if !self.legacy_control_widgets() {
-                    ui.horizontal(|ui| {
-                        ui.label("Tone");
-                        ui.text_edit_singleline(&mut self.pod_name);
-                    });
-                    self.parameter_panel(ui);
                 }
                 #[cfg(test)]
                 if self.legacy_control_widgets() {
@@ -3297,8 +3293,12 @@ impl PodxtEditor {
             self.pod_message = "Load cancelled. No file was read.".into();
             return;
         };
-        match pod_preset::read_regular_bundle(pod_preset::path_facts(&path), || {
-            let file = fs::File::open(&path)?;
+        self.open_stage_file(&path);
+    }
+
+    fn open_stage_file(&mut self, path: &Path) {
+        match pod_preset::read_regular_bundle(pod_preset::path_facts(path), || {
+            let file = fs::File::open(path)?;
             let metadata = file.metadata()?;
             Ok((
                 pod_preset::PathFacts {
@@ -3852,20 +3852,23 @@ impl FamilyTab for PodxtEditor {
         if self.legacy_control_widgets() {
             self.pod_window(services, ui);
         } else {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                #[cfg(feature = "usb")]
-                if self.live.visible() {
-                    let file_tone = self.pod_selected.and_then(|index| self.pod_library.tone(index));
-                    if let Some(bytes) = self.live.show(ui, services, file_tone) {
-                        self.import_pod_document(bytes);
+            egui::ScrollArea::vertical()
+                .id_salt("podxt-stage")
+                .show(ui, |ui| {
+                    self.show_stage(ui, services);
+                    #[cfg(feature = "usb")]
+                    if self.live.visible() {
+                        ui.add_space(8.0);
+                        ui.collapsing("Device and Tone Locker", |ui| {
+                            let file_tone = self
+                                .pod_selected
+                                .and_then(|index| self.pod_library.tone(index));
+                            if let Some(bytes) = self.live.show(ui, services, file_tone) {
+                                self.import_pod_document(bytes);
+                            }
+                        });
                     }
-                    ui.separator();
-                    ui.heading("File editor");
-                    ui.weak("Changes here affect the open file only. Linked Variax settings and tone metadata are file-only.");
-                }
-                self.show_new_documents(ui, services);
-                self.pod_window(services, ui);
-            });
+                });
         }
     }
     fn undo(&mut self) {
@@ -3886,8 +3889,9 @@ impl FamilyTab for PodxtEditor {
     fn save_copy(&mut self, services: &mut EditorServices<'_>) {
         self.save_pod_tone(services);
     }
-    #[cfg(feature = "usb")]
     fn observe_device(&mut self, device: Option<&tabs::DeviceTab>) {
+        self.stage.observe(device);
+        #[cfg(feature = "usb")]
         self.live.set_device(device);
     }
     #[cfg(feature = "usb")]

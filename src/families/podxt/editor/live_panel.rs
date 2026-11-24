@@ -277,6 +277,10 @@ impl LivePanel {
         self.message = None;
     }
 
+    pub(super) fn playing_channel(&self) -> Option<Location> {
+        self.snapshot.channel
+    }
+
     pub(super) fn visible(&self) -> bool {
         self.device_tab
     }
