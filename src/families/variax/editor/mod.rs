@@ -423,6 +423,17 @@ impl VariaxEditor {
         let extension = document.extension();
         let name = format!("{name} - edited.{extension}");
         if let Some(path) = services.dialogs.save(&name, extension) {
+            let path = if let Some(pending) = &self.new_file {
+                match pending.destination(&path) {
+                    Ok(path) => path,
+                    Err(error) => {
+                        self.error = Some(error);
+                        return false;
+                    }
+                }
+            } else {
+                path
+            };
             match document.save_copy(&path) {
                 Ok(()) => {
                     self.error = None;

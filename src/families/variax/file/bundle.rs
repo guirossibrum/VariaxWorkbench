@@ -2,6 +2,11 @@
 use crate::preset::{PresetFile, chunks, container, legacy_text_issue, unique, word};
 use std::ops::Range;
 
+#[cfg(feature = "usb")]
+mod backup_import;
+#[cfg(feature = "usb")]
+pub use backup_import::BackupBundle;
+
 #[derive(Clone, Debug)]
 pub struct Bank {
     pub name: String,
@@ -54,17 +59,17 @@ impl BundleFile {
     pub fn new_default_bundle() -> Result<Self, String> {
         let model = PresetFile::default_legacy_model()?;
         let models = [&model; 5];
-        Self::create(true, DEFAULT_BANKS.map(|name| (name, models.as_slice())))
+        Self::create(true, DEFAULT_BANKS.map(|name| (name, models)))
     }
 
     /// An editable collection begins with Workbench's empty "New Folder".
     pub fn new_collection() -> Result<Self, String> {
-        Self::create(false, [("New Folder", [].as_slice())])
+        Self::create(false, [("New Folder", [])])
     }
 
-    fn create<'a>(
+    fn create<'a, Models: IntoIterator<Item = &'a PresetFile>>(
         fixed: bool,
-        banks: impl IntoIterator<Item = (&'a str, &'a [&'a PresetFile])>,
+        banks: impl IntoIterator<Item = (&'a str, Models)>,
     ) -> Result<Self, String> {
         let mut payload = if fixed { b"L6BA" } else { b"L6CO" }.to_vec();
         write_chunk(&mut payload, b"HEAD", &1u32.to_be_bytes())?;
