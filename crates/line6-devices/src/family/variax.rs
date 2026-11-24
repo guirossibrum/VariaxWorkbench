@@ -8,6 +8,7 @@
 
 pub mod backup;
 pub mod slot_read;
+pub mod span_read;
 pub mod transport;
 pub mod write;
 

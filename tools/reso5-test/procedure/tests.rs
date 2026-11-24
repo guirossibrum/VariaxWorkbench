@@ -480,3 +480,5 @@ fn stage_numbers_and_hashes_are_distinct() {
 mod store;
 
 mod slot_read;
+
+mod full_read;

@@ -1,3 +1,4 @@
+pub mod full_read;
 pub mod slot_read;
 
 use line6_devices::{

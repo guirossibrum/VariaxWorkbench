@@ -1,3 +1,4 @@
+mod full_read;
 mod slot_read;
 
 use super::procedure::{self, Stage, StorePolicy, VariaxPolicy};
@@ -21,10 +22,12 @@ use std::{
 };
 use variax_workbench::hardware_gates::{Gate, run_if_unlocked};
 
-const USAGE: &str = "Usage: variax-reso5-test --card | --store-card | --slot-read-card
+const USAGE: &str =
+    "Usage: variax-reso5-test --card | --store-card | --slot-read-card | --full-read-card
        variax-reso5-test [--check] stage-1|stage-2 BACKUP_DIR ARCHIVE.vxf MODELS.tsv LOG_ROOT
        variax-reso5-test [--check] store BACKUP_DIR ARCHIVE.vxf LOG_ROOT
-       variax-reso5-test [--check] slot-read VARIAX_BACKUP PODXT_BACKUP ARCHIVE.vxf LOG_ROOT";
+       variax-reso5-test [--check] slot-read VARIAX_BACKUP PODXT_BACKUP ARCHIVE.vxf LOG_ROOT
+       variax-reso5-test [--check] full-read ARCHIVE.vxf LOG_ROOT";
 
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 
@@ -56,6 +59,11 @@ pub fn run(args: &[OsString]) -> Result<(), String> {
         [option, remaining @ ..] if option == "--check" => (true, remaining),
         _ => (false, args),
     };
+    if let [stage, archive, log_root] = args
+        && stage == "full-read"
+    {
+        return full_read::run(offline, Path::new(archive), Path::new(log_root));
+    }
     if let [stage, variax_backup, podxt_backup, archive, log_root] = args
         && stage == "slot-read"
     {
@@ -205,6 +213,7 @@ fn run_store(
 }
 
 enum DeviceTask<'a> {
+    FullRead(&'a [u8; variax_workbench::factory_reference::PROGRAM_BYTES]),
     Edit(&'a procedure::Prepared),
     Store(&'a procedure::PreparedStore, &'a str),
 }
@@ -292,6 +301,16 @@ fn run_device(task: DeviceTask<'_>, trace: &Trace) -> Result<(), String> {
             label: "Variax",
         };
         match task {
+            DeviceTask::FullRead(factory) => {
+                procedure::full_read::capture(link, &mut log, &trace.path, stopping).map(
+                    |captured| {
+                        for line in procedure::full_read::summarize(factory, &captured) {
+                            println!("{line}");
+                            trace.record(line);
+                        }
+                    },
+                )
+            }
             DeviceTask::Edit(prepared) => {
                 let mut session = Session::new(link, &VariaxPolicy, &mut log);
                 procedure::attempt(&mut session, prepared, stopping)
