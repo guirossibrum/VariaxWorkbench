@@ -6,6 +6,7 @@ mod procedure;
 #[cfg(all(not(test), target_os = "linux"))]
 mod live;
 
+const FULL_READ_CARD: &str = include_str!("../../docs/reso5-full-read-test-card.md");
 const SLOT_READ_CARD: &str = include_str!("../../docs/reso5-slot-read-test-card.md");
 const STORE_CARD: &str = include_str!("../../docs/reso5-store-test-card.md");
 const CARD: &str = include_str!("../../docs/reso5-test-card.md");
@@ -19,6 +20,10 @@ fn main() {
 }
 
 fn run(args: &[OsString]) -> Result<(), String> {
+    if args == ["--full-read-card"] {
+        print!("{FULL_READ_CARD}");
+        return Ok(());
+    }
     if args == ["--slot-read-card"] {
         print!("{SLOT_READ_CARD}");
         return Ok(());
@@ -44,6 +49,15 @@ fn run(args: &[OsString]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_build_cannot_open_a_device_for_full_read() {
+        let args = ["full-read", "archive", "logs"].map(OsString::from);
+        assert_eq!(
+            run(&args).unwrap_err(),
+            "This build prints the test card only. No device was opened."
+        );
+    }
 
     #[test]
     fn test_build_cannot_open_a_device_for_slot_read() {
