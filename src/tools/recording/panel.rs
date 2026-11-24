@@ -77,9 +77,7 @@ impl Workbench {
                 self.recorder.note(error.to_string());
                 return;
             }
-            if self.save_recording() {
-                self.continue_recording_close(ctx);
-            }
+            self.save_recording(ctx, true);
         } else if discard {
             match self.recorder.cancel() {
                 Ok(()) => self.continue_recording_close(ctx),
@@ -99,7 +97,7 @@ impl Workbench {
             .resizable(false)
             .anchor(egui::Align2::LEFT_TOP, egui::vec2(24.0, 64.0))
             .show(ctx, |ui| {
-                if self.has_prompt() {
+                if self.has_prompt() || self.picker.is_open() {
                     ui.disable();
                 }
                 ui.label(recording::OFFLINE_BANNER);
@@ -193,7 +191,7 @@ impl Workbench {
                     self.recorder.note(error.to_string());
                 }
                 if self.record_button(ui, "load-wav", "Load test WAV…") {
-                    self.load_recording_wav();
+                    self.load_recording_wav(ctx);
                 }
                 ui.separator();
                 ui.horizontal(|ui| {
@@ -222,7 +220,7 @@ impl Workbench {
                     "Save WAV copy…"
                 };
                 if self.record_button(ui, "save", label) {
-                    self.save_recording();
+                    self.save_recording(ctx, false);
                 }
                 #[cfg(test)]
                 {
@@ -239,6 +237,14 @@ impl Workbench {
                 }
             });
         self.recording_open = open;
+        if !open {
+            self.picker.discard_if(|action| {
+                matches!(
+                    action,
+                    PickerAction::LoadRecording | PickerAction::SaveRecording { quit: false, .. }
+                )
+            });
+        }
     }
 
     fn record_choice(
@@ -308,13 +314,17 @@ impl Workbench {
         }
     }
 
-    fn load_recording_wav(&mut self) {
+    fn load_recording_wav(&mut self, ctx: &egui::Context) {
         if self.recorder.phase() != recording::Phase::Idle {
             self.recorder
                 .note("Cancel the current take before loading a file.");
             return;
         }
-        let Some(path) = self.dialogs.open_wav() else {
+        self.request_picker(ctx, PickRequest::OpenWav, PickerAction::LoadRecording);
+    }
+
+    pub(super) fn load_recording_from(&mut self, path: Option<PathBuf>) {
+        let Some(path) = path else {
             self.recorder.note("Load cancelled. No file was read.");
             return;
         };
@@ -340,17 +350,28 @@ impl Workbench {
         }
     }
 
-    fn save_recording(&mut self) -> bool {
+    fn save_recording(&mut self, ctx: &egui::Context, quit: bool) {
         if self.recorder.phase() != recording::Phase::Stopped {
             self.recorder.note("Stop the take before saving.");
-            return false;
+            return;
         }
-        let native = self.recorder.take_can_save_aiff();
-        let destination = if native {
-            self.dialogs.save_aiff("exact-clock-test-take.aiff")
+        let aiff = self.recorder.take_can_save_aiff();
+        let name = if aiff {
+            "exact-clock-test-take.aiff"
         } else {
-            self.dialogs.save_wav("offline-test-take.wav")
+            "offline-test-take.wav"
         };
+        self.request_picker(
+            ctx,
+            PickRequest::SaveAudio {
+                name: name.into(),
+                aiff,
+            },
+            PickerAction::SaveRecording { aiff, quit },
+        );
+    }
+
+    pub(super) fn save_recording_to(&mut self, destination: Option<PathBuf>, native: bool) -> bool {
         let Some(path) = destination else {
             self.recorder.note("Save cancelled. No file was written.");
             return false;

@@ -104,6 +104,7 @@ fn offline_test_recording_window_does_not_start_a_device_or_a_worker() {
     assert!(app.recording_visible.contains("Right peak 2000"));
     click_recording(&context, &mut app, "stop");
     click_recording(&context, &mut app, "save");
+    app.poll_picker(&context);
     let wav = std::fs::read(&path).unwrap();
     assert_eq!(&wav[0..4], b"RIFF");
     assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 44_100);
@@ -147,6 +148,7 @@ fn rendered_simulated_callback_workflow_is_synthetic_and_offline() {
     click_recording(&context, &mut app, "feed");
     click_recording(&context, &mut app, "stop");
     click_recording(&context, &mut app, "save");
+    app.poll_picker(&context);
     let wav = std::fs::read(&path).unwrap();
     assert_eq!(&wav[0..4], b"RIFF");
     assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 48_000);
@@ -203,18 +205,21 @@ fn recording_quit_cancel_and_failed_save_retain_audio_until_success() {
     assert!(!app.permit_close);
     app.request_close(&context);
     click_prompt(&context, &mut app, "save"); // explicit stop, cancelled dialog
+    app.poll_picker(&context);
     assert_eq!(app.recorder.phase(), recording::Phase::Stopped);
     assert!(matches!(app.test_pending(), Some(Pending::QuitRecording)));
     assert!(app.recorder.has_unsaved_take());
     assert_eq!(app.recorder.levels(), levels);
     assert!(!app.permit_close);
     click_prompt(&context, &mut app, "save"); // refused overwrite
+    app.poll_picker(&context);
     assert!(matches!(app.test_pending(), Some(Pending::QuitRecording)));
     assert!(app.recorder.has_unsaved_take());
     assert_eq!(std::fs::read(&blocked).unwrap(), b"keep");
     assert_eq!(app.recorder.levels(), levels);
     assert!(!app.permit_close);
     click_prompt(&context, &mut app, "save");
+    app.poll_picker(&context);
     assert!(!app.recorder.has_unsaved_take());
     assert!(app.test_pending().is_none());
     assert!(app.permit_close);
@@ -244,6 +249,7 @@ fn native_clock_quit_cancelled_save_retains_the_take_until_explicit_discard() {
     app.recorder.stop().unwrap();
     app.request_close(&context);
     click_prompt(&context, &mut app, "save"); // cancelled AIFF picker
+    app.poll_picker(&context);
     assert!(matches!(app.test_pending(), Some(Pending::QuitRecording)));
     assert!(app.recorder.has_unsaved_take());
     assert!(!app.permit_close);
@@ -272,6 +278,7 @@ fn native_recording_quit_saves_an_exact_clock_file_and_retains_its_source() {
     prepare_quit_take(&mut app, ClockSelection::NativePodxt);
     app.request_close(&context);
     click_prompt(&context, &mut app, "save");
+    app.poll_picker(&context);
     assert!(app.test_pending().is_none());
     assert!(app.permit_close);
     assert!(!app.recorder.has_unsaved_take());
@@ -326,6 +333,7 @@ fn guitar_and_pod_quit_continuations_cannot_skip_an_unsaved_take() {
     app.request_close(&context);
     assert!(matches!(app.test_pending(), Some(Pending::Quit)));
     click_prompt(&context, &mut app, "save");
+    app.poll_picker(&context);
     assert!(saved.exists());
     assert!(!app.variax().dirty());
     assert!(matches!(app.test_pending(), Some(Pending::QuitPod)));
@@ -355,7 +363,7 @@ fn guitar_and_pod_quit_continuations_cannot_skip_an_unsaved_take() {
 
 #[test]
 fn load_recording_wav_refuses_a_nonregular_path_without_opening_it() {
-    let (_context, mut app) = app();
+    let (context, mut app) = app();
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("not-a-regular-wav");
     std::fs::create_dir(&path).unwrap();
@@ -363,7 +371,8 @@ fn load_recording_wav_refuses_a_nonregular_path_without_opening_it() {
         wav: [Some(path)].into(),
         ..Default::default()
     });
-    app.load_recording_wav();
+    app.load_recording_wav(&context);
+    app.poll_picker(&context);
     assert!(app.recorder.message().contains("regular file"));
     assert!(app.recorder.message().contains("not opened"));
     assert!(app.variax().read_worker.is_none());

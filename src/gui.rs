@@ -28,6 +28,10 @@ mod podxt_panel;
 #[path = "tools/recording/panel.rs"]
 mod recording_panel;
 
+#[path = "shared/picker.rs"]
+mod picker;
+use picker::{FileFilter, PickFuture, PickRequest, Picker};
+
 #[path = "app/detection/mod.rs"]
 mod detection;
 use detection::{DetectionService, Scan};
@@ -47,19 +51,16 @@ use tabs::{
 use shell::{CloseRequest, DetectConfirmation};
 
 trait FileDialogs {
+    fn start_picker(&mut self, request: PickRequest) -> PickFuture;
+
     fn open(&mut self) -> Option<PathBuf>;
-    fn open_family_file(&mut self, families: &[&dyn ProductFamily]) -> Option<PathBuf> {
-        debug_assert!(
-            families
-                .iter()
-                .all(|family| !family.info().extensions.is_empty())
-        );
-        self.open()
-    }
     fn save(&mut self, suggested: &str, extension: &str) -> Option<PathBuf>;
     fn artwork(&mut self) -> Option<PathBuf>;
+    #[cfg(test)]
     fn open_wav(&mut self) -> Option<PathBuf>;
+    #[cfg(test)]
     fn save_wav(&mut self, suggested: &str) -> Option<PathBuf>;
+    #[cfg(test)]
     fn save_aiff(&mut self, suggested: &str) -> Option<PathBuf>;
     fn open_pod_tone(&mut self) -> Option<PathBuf>;
     fn save_pod_tone(&mut self, suggested: &str) -> Option<PathBuf>;
@@ -75,6 +76,10 @@ trait FileDialogs {
 struct NativeDialogs;
 #[cfg(not(test))]
 impl FileDialogs for NativeDialogs {
+    fn start_picker(&mut self, request: PickRequest) -> PickFuture {
+        request.native()
+    }
+
     fn open(&mut self) -> Option<PathBuf> {
         rfd::FileDialog::new()
             .add_filter(
@@ -83,18 +88,6 @@ impl FileDialogs for NativeDialogs {
             )
             .pick_file()
     }
-    fn open_family_file(&mut self, families: &[&dyn ProductFamily]) -> Option<PathBuf> {
-        let all: Vec<_> = families
-            .iter()
-            .flat_map(|family| family.info().extensions.iter().copied())
-            .collect();
-        let mut dialog = rfd::FileDialog::new().add_filter("Editor files", &all);
-        for family in families {
-            dialog = dialog.add_filter(family.info().title, family.info().extensions);
-        }
-        dialog.add_filter("All files", &["*"]).pick_file()
-    }
-
     fn save(&mut self, suggested: &str, extension: &str) -> Option<PathBuf> {
         rfd::FileDialog::new()
             .add_filter("Workbench document", &[extension])
@@ -103,23 +96,6 @@ impl FileDialogs for NativeDialogs {
     }
     fn artwork(&mut self) -> Option<PathBuf> {
         rfd::FileDialog::new().pick_folder()
-    }
-    fn open_wav(&mut self) -> Option<PathBuf> {
-        rfd::FileDialog::new()
-            .add_filter("PCM WAV", &["wav"])
-            .pick_file()
-    }
-    fn save_wav(&mut self, suggested: &str) -> Option<PathBuf> {
-        rfd::FileDialog::new()
-            .add_filter("PCM WAV", &["wav"])
-            .set_file_name(suggested)
-            .save_file()
-    }
-    fn save_aiff(&mut self, suggested: &str) -> Option<PathBuf> {
-        rfd::FileDialog::new()
-            .add_filter("Exact-clock AIFF", &["aiff", "aif"])
-            .set_file_name(suggested)
-            .save_file()
     }
     fn open_pod_tone(&mut self) -> Option<PathBuf> {
         rfd::FileDialog::new().pick_file()
@@ -135,6 +111,7 @@ impl FileDialogs for NativeDialogs {
 #[cfg(test)]
 #[derive(Default)]
 struct FakeDialogs {
+    next_picker: Option<PickFuture>,
     open: std::collections::VecDeque<Option<PathBuf>>,
     save: std::collections::VecDeque<Option<PathBuf>>,
     artwork: std::collections::VecDeque<Option<PathBuf>>,
@@ -146,6 +123,32 @@ struct FakeDialogs {
 }
 #[cfg(test)]
 impl FileDialogs for FakeDialogs {
+    fn start_picker(&mut self, request: PickRequest) -> PickFuture {
+        if let Some(future) = self.next_picker.take() {
+            return future;
+        }
+        let path = match request {
+            PickRequest::OpenEditorFile(filters) => {
+                debug_assert!(
+                    filters
+                        .iter()
+                        .all(|filter| !filter.name.is_empty() && !filter.extensions.is_empty())
+                );
+                self.open()
+            }
+            PickRequest::OpenWorkbenchFile => self.open(),
+            PickRequest::SaveWorkbenchFile { name, extension } => self.save(&name, &extension),
+            PickRequest::Artwork => self.artwork(),
+            PickRequest::OpenWav => self.open_wav(),
+            PickRequest::SaveAudio { name, aiff: true } => self.save_aiff(&name),
+            PickRequest::SaveAudio { name, aiff: false } => self.save_wav(&name),
+            PickRequest::OpenTone => self.open_pod_tone(),
+            PickRequest::SaveTone { name } => self.save_pod_tone(&name),
+            PickRequest::Folder => self.pick_folder(),
+        };
+        Box::pin(std::future::ready(path))
+    }
+
     fn open(&mut self) -> Option<PathBuf> {
         self.open.pop_front().expect("unexpected open dialog")
     }
@@ -180,6 +183,27 @@ impl FileDialogs for FakeDialogs {
     fn queue_pod_save(&mut self, path: Option<PathBuf>) {
         self.pod_save.push_back(path);
     }
+}
+
+type TabPickerResult =
+    Box<dyn FnOnce(&mut dyn FamilyTab, Option<PathBuf>, &mut EditorServices<'_>)>;
+
+enum PickerAction {
+    OpenFile,
+    Backup(BackupChoice),
+    SaveReport {
+        restart: bool,
+    },
+    LoadRecording,
+    SaveRecording {
+        aiff: bool,
+        quit: bool,
+    },
+    #[allow(dead_code)] // Editor-lane migration, see docs/non-blocking-pickers.md.
+    Tab {
+        id: TabId,
+        complete: TabPickerResult,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -260,6 +284,7 @@ enum ToneChoice {
 
 struct Workbench {
     dialogs: Box<dyn FileDialogs>,
+    picker: Picker<PickerAction>,
     help: bool,
     permit_close: bool,
     theme_polled: Instant,
@@ -460,20 +485,25 @@ impl Workbench {
         }
     }
 
-    fn start_backup(&mut self, choice: BackupChoice) {
-        self.backup_choice = None;
+    fn start_backup(&mut self, ctx: &egui::Context, choice: BackupChoice) {
+        if self.request_picker(ctx, PickRequest::Folder, PickerAction::Backup(choice)) {
+            self.backup_choice = None;
+        }
+    }
+
+    fn start_backup_in(&mut self, choice: BackupChoice, root: Option<PathBuf>) {
+        let Some(root) = root else {
+            self.device_check_notice = "No folder chosen. Nothing was sent.".into();
+            return;
+        };
         #[cfg(test)]
         {
-            let _ = choice;
+            let _ = (choice, root);
             self.device_check_notice =
                 "this build does not open a device for a backup; nothing was sent".into();
         }
         #[cfg(all(not(test), feature = "usb"))]
         {
-            let Some(root) = self.dialogs.pick_folder() else {
-                self.device_check_notice = "No folder chosen. Nothing was sent.".into();
-                return;
-            };
             let (tx, rx) = std::sync::mpsc::channel();
             self.backup_rx = Some(rx);
             self.device_check_notice = "Backup started. Leave this window open.".into();
@@ -494,7 +524,7 @@ impl Workbench {
         }
         #[cfg(all(not(test), not(feature = "usb")))]
         {
-            let _ = choice;
+            let _ = (choice, root);
             self.device_check_notice =
                 "this build does not open a device for a backup; nothing was sent".into();
         }
@@ -587,8 +617,10 @@ impl Workbench {
         let mut answer = None;
         let mut restart = false;
         let mut verify_g1 = false;
+        let mut save_report = false;
+        let mut backup = None;
         let draw = |ui: &mut egui::Ui| {
-            if self.has_prompt() {
+            if self.has_prompt() || self.picker.is_open() {
                 ui.disable();
             }
             let mut visible = String::new();
@@ -716,7 +748,7 @@ impl Workbench {
                             self.device_check_notice = "Nothing was read.".into();
                         }
                         if self.device_check_button(ui, "backup-yes", yes).clicked() {
-                            self.start_backup(choice);
+                            backup = Some(choice);
                         }
                     });
                     visible.push_str(yes);
@@ -818,16 +850,9 @@ impl Workbench {
                 ui.monospace(&sanitized);
             });
             visible.push_str(reports_note);
-            if self
+            save_report = self
                 .device_check_button(ui, "save-report", "Save steps 1–2 report")
-                .clicked()
-                && let Some(path) = self.dialogs.save(
-                    &variax_workbench::probe_report::report_file_name_now(),
-                    "txt",
-                )
-            {
-                self.note_sanitized_report_save(&path);
-            }
+                .clicked();
             if self.device_check.identification_answered() {
                 visible.push_str(device_probe::SAVE_THEN_CHECK_AGAIN);
                 if self
@@ -869,6 +894,12 @@ impl Workbench {
             self.device_check.answer(Consent::Cancel);
             self.device_check_open = false;
             self.device_check_focus = None;
+            self.picker.discard_if(|action| {
+                matches!(
+                    action,
+                    PickerAction::SaveReport { .. } | PickerAction::Backup(_)
+                )
+            });
         } else {
             if let Some(consent) = answer {
                 let stage = self.device_check.awaiting();
@@ -877,8 +908,18 @@ impl Workbench {
                     self.device_check_step_two_saved = false;
                 }
             }
-            if verify_g1 {
-                self.save_step_two_report_then_restart();
+            if let Some(choice) = backup {
+                self.start_backup(ctx, choice);
+            }
+            if verify_g1 || save_report {
+                self.request_picker(
+                    ctx,
+                    PickRequest::SaveWorkbenchFile {
+                        name: variax_workbench::probe_report::report_file_name_now(),
+                        extension: "txt".into(),
+                    },
+                    PickerAction::SaveReport { restart: verify_g1 },
+                );
             } else if restart {
                 if self.device_check.identification_answered() && !self.device_check_step_two_saved
                 {
@@ -892,14 +933,8 @@ impl Workbench {
 
     /// Write the step 2 report, then start a fresh step 1. A failed or
     /// cancelled save leaves the current check in place.
-    fn save_step_two_report_then_restart(&mut self) {
-        let Some(path) = self.dialogs.save(
-            &variax_workbench::probe_report::report_file_name_now(),
-            "txt",
-        ) else {
-            return;
-        };
-        match self.device_check.save_sanitized_report(&path) {
+    fn save_step_two_report_then_restart(&mut self, path: &Path) {
+        match self.device_check.save_sanitized_report(path) {
             Ok(()) => {
                 self.device_check_step_two_saved = true;
                 self.restart_device_check();
@@ -1316,7 +1351,10 @@ mod tests {
                 events,
                 ..Default::default()
             },
-            |ctx| app.pending_dialog(ctx),
+            |ctx| {
+                app.poll_picker(ctx);
+                app.pending_dialog(ctx);
+            },
         );
     }
 
@@ -1853,11 +1891,56 @@ mod tests {
         assert!(app.backup_rx.is_none());
         click_device_check(&context, &mut app, "backup-podxt");
         assert!(app.device_check_visible.contains(BACKUP_PODXT_DOES));
+        app.dialogs = Box::new(FakeDialogs {
+            folder: [Some(tree.path().to_owned())].into(),
+            ..Default::default()
+        });
         click_device_check(&context, &mut app, "backup-yes");
         assert!(app.device_check_notice.contains("nothing was sent"));
         assert!(app.backup_rx.is_none());
         assert_eq!(app.device_check.backend().calls().identity_requests, 0);
         assert_eq!(app.device_check.backend().calls().settings_reads, 0);
+    }
+
+    #[test]
+    fn device_check_cancelled_or_discarded_picker_never_starts_backup() {
+        let (context, mut app) = device_check_app();
+        app.dialogs = Box::new(FakeDialogs {
+            folder: [None, Some(PathBuf::from("ignored-root"))].into(),
+            ..FakeDialogs::default()
+        });
+        app.start_backup(&context, BackupChoice::Variax);
+        assert!(app.picker.is_open());
+        app.poll_picker(&context);
+        assert_eq!(
+            app.device_check_notice,
+            "No folder chosen. Nothing was sent."
+        );
+        assert!(app.backup_rx.is_none());
+
+        app.start_backup(&context, BackupChoice::Variax);
+        let window = context
+            .memory(|memory| memory.area_rect(egui::Id::new("Device check")))
+            .unwrap();
+        let close = Pos2::new(window.right() - 20.0, window.top() + 18.0);
+        let click = |pressed| egui::Event::PointerButton {
+            pos: close,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        recording_frame(
+            &context,
+            &mut app,
+            vec![egui::Event::PointerMoved(close), click(true), click(false)],
+        );
+        assert!(!app.device_check_open);
+        assert_eq!(
+            app.device_check_notice,
+            "No folder chosen. Nothing was sent."
+        );
+        assert!(app.backup_rx.is_none());
+        assert!(!app.picker.is_open());
     }
 
     #[cfg(all(target_os = "linux", feature = "usb"))]

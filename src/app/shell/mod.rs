@@ -27,6 +27,7 @@ impl Workbench {
             dialogs: Box::new(NativeDialogs),
             #[cfg(test)]
             dialogs: Box::new(FakeDialogs::default()),
+            picker: Picker::default(),
             help: false,
             permit_close: false,
             theme_polled: Instant::now() - Duration::from_secs(2),
@@ -119,11 +120,82 @@ impl Workbench {
             .open(family, &self.defaults, TabSource::File(path, bytes))
     }
 
+    pub(super) fn request_open_file(&mut self, ctx: &egui::Context) {
+        let filters = registry::FAMILIES
+            .iter()
+            .map(|family| {
+                let info = family.info();
+                FileFilter {
+                    name: info.title,
+                    extensions: info.extensions,
+                }
+            })
+            .collect();
+        self.request_picker(
+            ctx,
+            PickRequest::OpenEditorFile(filters),
+            PickerAction::OpenFile,
+        );
+    }
+
+    // Existing editor-lane tests still use their immediate fake dialogs.
+    #[cfg(test)]
     pub(super) fn open_file_dialog(&mut self) {
-        let Some(path) = self.dialogs.open_family_file(registry::FAMILIES) else {
+        let context = egui::Context::default();
+        self.request_open_file(&context);
+        self.poll_picker(&context);
+    }
+
+    pub(super) fn request_picker(
+        &mut self,
+        ctx: &egui::Context,
+        request: PickRequest,
+        action: PickerAction,
+    ) -> bool {
+        let started = self
+            .picker
+            .start(action, || self.dialogs.start_picker(request));
+        if started {
+            ctx.request_repaint();
+        }
+        started
+    }
+
+    pub(super) fn poll_picker(&mut self, ctx: &egui::Context) {
+        let Some((action, path)) = self.picker.poll(ctx) else {
             return;
         };
-        self.shell_error = self.open_file(path).err();
+        match action {
+            PickerAction::OpenFile => {
+                if let Some(path) = path {
+                    self.shell_error = self.open_file(path).err();
+                }
+            }
+            PickerAction::Backup(choice) => self.start_backup_in(choice, path),
+            PickerAction::SaveReport { restart } => {
+                if let Some(path) = path {
+                    if restart {
+                        self.save_step_two_report_then_restart(&path);
+                    } else {
+                        self.note_sanitized_report_save(&path);
+                    }
+                }
+            }
+            PickerAction::LoadRecording => self.load_recording_from(path),
+            PickerAction::SaveRecording { aiff, quit } => {
+                if self.save_recording_to(path, aiff) && quit {
+                    self.continue_recording_close(ctx);
+                }
+            }
+            PickerAction::Tab { id, complete } => {
+                let result = self.with_tab(id, |entry, services| {
+                    complete(entry.editor.as_mut(), path, services);
+                });
+                if self.closing_tab == Some(id) {
+                    self.apply_tab_close_result(id, result, ctx);
+                }
+            }
+        }
     }
 
     pub(super) fn new_tab(&mut self, family: &'static dyn ProductFamily) {
@@ -138,6 +210,8 @@ impl Workbench {
         let index = self.tabs.index(id)?;
         let mut services = EditorServices {
             dialogs: self.dialogs.as_mut(),
+            picker: &mut self.picker,
+            tab: id,
             close: CloseResult::Pending,
             #[cfg(test)]
             prompt_buttons: &mut self.pending_buttons,
@@ -165,28 +239,40 @@ impl Workbench {
     pub(super) fn pending_dialog(&mut self, ctx: &egui::Context) {
         #[cfg(test)]
         self.pending_buttons.clear();
+        if self.picker.is_open() {
+            return;
+        }
         if self.recording_close_pending {
             self.recording_quit_dialog(ctx);
         } else if let Some(id) = self.closing_tab {
             let result = self.with_tab(id, |entry, services| {
                 entry.editor.close_prompt(ctx, services)
             });
-            match result {
-                Some(CloseResult::Pending) => {}
-                Some(CloseResult::Cancelled) => self.cancel_close(),
-                Some(CloseResult::Ready) | None => {
-                    self.closing_tab = None;
-                    if let Some(CloseRequest::Quit { approved }) = &mut self.close_request {
-                        approved.push(id);
-                    } else {
-                        self.tabs.close(id);
-                        self.close_request = None;
-                    }
-                    self.advance_close(ctx);
-                }
-            }
+            self.apply_tab_close_result(id, result, ctx);
         } else {
             self.with_active(|entry, services| entry.editor.local_prompt(ctx, services));
+        }
+    }
+
+    fn apply_tab_close_result(
+        &mut self,
+        id: TabId,
+        result: Option<CloseResult>,
+        ctx: &egui::Context,
+    ) {
+        match result {
+            Some(CloseResult::Pending) => {}
+            Some(CloseResult::Cancelled) => self.cancel_close(),
+            Some(CloseResult::Ready) | None => {
+                self.closing_tab = None;
+                if let Some(CloseRequest::Quit { approved }) = &mut self.close_request {
+                    approved.push(id);
+                } else {
+                    self.tabs.close(id);
+                    self.close_request = None;
+                }
+                self.advance_close(ctx);
+            }
         }
     }
 
@@ -263,7 +349,7 @@ impl Workbench {
             return;
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        if self.close_request.is_none() {
+        if self.close_request.is_none() && !self.picker.is_open() {
             self.close_request = Some(CloseRequest::Quit {
                 approved: Vec::new(),
             });
@@ -272,6 +358,9 @@ impl Workbench {
     }
 
     pub(super) fn close_tab(&mut self, id: TabId, ctx: &egui::Context) {
+        if self.picker.is_open() {
+            return;
+        }
         self.close_request = Some(CloseRequest::Tab(id));
         self.advance_close(ctx);
     }
@@ -337,10 +426,13 @@ impl Workbench {
         });
         if !self.has_prompt() {
             if open {
-                self.open_file_dialog();
+                self.request_open_file(ctx);
             }
             self.with_active(|entry, services| {
-                if entry.editor.busy() || entry.editor.blocking_prompt() {
+                if services.picker.is_open()
+                    || entry.editor.busy()
+                    || entry.editor.blocking_prompt()
+                {
                     return;
                 }
                 if save {
@@ -367,7 +459,9 @@ impl Workbench {
                 ui.add_enabled_ui(!self.has_prompt(), |ui| {
                     self.open_commands(ui, false);
                     self.with_active(|entry, services| {
-                        let enabled = !entry.editor.busy() && !entry.editor.blocking_prompt();
+                        let enabled = !services.picker.is_open()
+                            && !entry.editor.busy()
+                            && !entry.editor.blocking_prompt();
                         if ui
                             .add_enabled(enabled, egui::Button::new("Save copy…"))
                             .clicked()
@@ -470,7 +564,9 @@ impl Workbench {
             if self.tabs.active.is_some() {
                 self.with_active(|entry, services| {
                     ui.push_id((entry.family.info().id, entry.id), |ui| {
-                        ui.add_enabled_ui(!closing, |ui| entry.editor.show(ui, services))
+                        ui.add_enabled_ui(!closing && !services.picker.is_open(), |ui| {
+                            entry.editor.show(ui, services)
+                        })
                     });
                 });
             } else {
@@ -510,11 +606,16 @@ impl Workbench {
         self.recording_window(ctx);
         self.device_check_window(ctx);
         self.detect_dialog(ctx);
+        // Window closes discard their actions before any late picker result runs.
+        self.poll_picker(ctx);
     }
 
     fn open_commands(&mut self, ui: &mut egui::Ui, start_panel: bool) {
-        if ui.button("Open file…").clicked() {
-            self.open_file_dialog();
+        if ui
+            .add_enabled(!self.picker.is_open(), egui::Button::new("Open file…"))
+            .clicked()
+        {
+            self.request_open_file(ui.ctx());
         }
         if start_panel {
             for &family in registry::FAMILIES {
