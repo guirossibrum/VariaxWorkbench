@@ -379,6 +379,40 @@ fn mismatched_old_and_incomplete_backups_are_refused() {
 }
 
 #[test]
+fn backup_comparison_reports_a_saved_tone_toggle_and_preserves_both_captures() {
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    let active = settings();
+    let mut saved = active;
+    saved[64] = 1;
+
+    for (folder, raw) in [(first.path(), active), (second.path(), saved)] {
+        backup_at(folder, &raw, "2026-11-24", false);
+        let loaded = backup::load_variax_library(folder).unwrap();
+        let (_, metadata) = loaded
+            .presets
+            .iter()
+            .find(|(preset, _)| *preset == location())
+            .unwrap();
+        assert_eq!(metadata.raw, raw);
+    }
+
+    let name = format!("{}-1.syx", backup::variax_preset_stem(location()));
+    let comparison = backup::compare(first.path(), second.path()).unwrap();
+    assert_eq!(comparison.identical, 119);
+    assert_eq!(comparison.problems, [format!("differs: {name}")]);
+    assert!(!comparison.verified());
+    assert_eq!(
+        fs::read(first.path().join(&name)).unwrap(),
+        reply(&active[..96])
+    );
+    assert_eq!(
+        fs::read(second.path().join(&name)).unwrap(),
+        reply(&saved[..96])
+    );
+}
+
+#[test]
 fn backup_check_accepts_bank_name_replies() {
     let dir = tempfile::tempdir().unwrap();
     let baseline = settings();
