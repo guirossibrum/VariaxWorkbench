@@ -3,12 +3,12 @@ use super::{
 };
 use crate::procedure::full_read;
 
-// The owner directly approved one #234 run on 2026-11-24, after reviewer check.
+// The owner directly approved one chunked #234 run on 2026-11-24, after reviewer check.
 const OWNER_RUN_APPROVED: bool = true;
 
 pub(super) fn run(offline: bool, archive: &Path, log_root: &Path) -> Result<(), String> {
     if !offline && !OWNER_RUN_APPROVED {
-        return Err("The #234 stepped buffer read has no owner approval for a live run.".into());
+        return Err("The #234 chunked buffer read has no owner approval for a live run.".into());
     }
     let trace = Trace::create(log_root, "full-read")?;
     let result = (|| {
@@ -30,7 +30,10 @@ pub(super) fn run(offline: bool, archive: &Path, log_root: &Path) -> Result<(), 
     trace.record(match &result {
         Err(error) => format!("STOPPED: {error}"),
         Ok(()) if offline => "PASS: factory reference verified offline.".into(),
-        Ok(()) => "Captured all five active-buffer replies.".into(),
+        Ok(()) => format!(
+            "Captured all {} active-buffer chunks.",
+            full_read::CHUNK_COUNT
+        ),
     });
     println!("Log folder: {}", trace.path.display());
     combine(result, trace.finish())?;

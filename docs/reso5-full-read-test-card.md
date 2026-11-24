@@ -1,7 +1,13 @@
-# Reso-5 stepped buffer read test card
+# Reso-5 chunked buffer read test card
 
-**Approved 2026-11-24 for one owner run.** The reviewer checks the owner build
-before the run.
+**Approved 2026-11-24 for one owner run of the chunked read.** The reviewer
+checks the owner build before the run.
+
+In two owner runs, the PODxt Live delivered no reply to the 64-word request
+whose expected reply was 392 bytes. The established 32-word metadata requests return
+200-byte replies. A relay size limit is likely, and its exact cutoff remains
+unverified. The chunked read uses the same request format as those metadata
+reads. [Owner run results](https://github.com/guirossibrum/VariaxWorkbench/issues/234).
 
 ## Offline check
 
@@ -28,24 +34,25 @@ Pass `--full-read-card` to print this card.
    tail can trigger the existing one-time identity retry.
 4. The tool sends bridge on (`03 23 01`) and waits **1,000 ms**, matching
    Line 6 Monkey's large-buffer enable. It then sends guitar session on
-   (`2A 01`) and waits 100 ms before the first read. Every `0x3C` request
-   starts at zero. [Monkey relay trace](podxt-variax-relay.md).
+   (`2A 01`) and waits 100 ms before the first read. It then sends 35
+   `0x3C` requests, one at a time. Each reply must contain `8 + 6 × count`
+   bytes, including `F7`. [Monkey relay trace](podxt-variax-relay.md).
 
-   | Words | Expected reply bytes, including `F7` |
-   | ---: | ---: |
-   | 64 | 392 |
-   | 128 | 776 |
-   | 256 | 1,544 |
-   | 512 | 3,080 |
-   | 1,092 | 6,560 |
+   | Start words | Words per request | Requests | Reply bytes |
+   | --- | ---: | ---: | ---: |
+   | 0, 32, …, 1,056 | 32 | 34 | 200 |
+   | 1,088 | 4 | 1 | 32 |
 
-5. The host allows at most 10 seconds per step. Each complete, valid
-   `0x3C` reply is saved as `start-0-count-N.syx` before the next request.
+5. The host allows at most 10 seconds per chunk. Each complete, valid
+   `0x3C` reply is saved as `start-S-count-N.syx` before the next request.
+   The reply carries no start address, so the tool assembles replies in
+   request order.
    The raw transport log also records incomplete and malformed traffic.
    After the last request or first failure, the tool attempts guitar session
    off (`2A 00`) and bridge release (`03 23 00`), then releases USB.
-6. The tool compares the active buffer with the factory Reso-5 program. It
-   prints each differing word with its index, active value and factory value.
+6. After all 35 replies arrive, the tool assembles all 1,092 words and
+   compares them with the factory Reso-5 program. It prints each differing
+   word with its index, active value and factory value.
    Differences at words 871–872 are **unknown, not a failure**. Every other
    differing word is a finding to report.
 
@@ -63,13 +70,13 @@ or transport error. Keep the log and the completed reply files. Ctrl+C takes
 effect between requests so the host can drain an in-flight reply through
 `F7` or its deadline.
 
-If a step stalls, the guitar's knobs may freeze while sound continues.
+If a chunk stalls, the guitar's knobs may freeze while sound continues.
 The firmware trace shows that this path touches no flash. Cleanup attempts
 may leave messages queued while the parser is stalled. [Stall trace](firmware-variax-dispatch.md#a-reply-that-stops-partway).
 
 After the tool exits and releases USB, unplug the **guitar's VDI cable** for
 **10 seconds**, then reconnect it. The owner must check that the guitar
 responds to its knobs and selector and that sound is normal. Report the failed
-step and the outcome. Any retry needs a new owner approval. This recovery is
+chunk and the outcome. Any retry needs a new owner approval. This recovery is
 based on resetting the guitar's RAM state and has yet to be observed for this
 stall.
