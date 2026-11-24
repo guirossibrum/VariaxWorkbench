@@ -1,0 +1,419 @@
+# Product families and application shell
+
+**Step 1 proposal for owner review.** Source inventory at `ac56507`. Each
+family owns its editor, files, validation and device behavior. The shell owns
+navigation, the tab list, global commands and status display. The editor
+layouts, file semantics and edit transactions carry forward. Artwork selection
+for Line 6 and POD Farm belongs to the later layout phase.
+
+The first three editor families are Variax 300/600, PODxt Live and POD HD500X.
+The HD500X editor handles files and can show a USB presence match. Its tab says
+“Live connection not supported yet.” Variax 300/600 is the file/editor family.
+Automatic guitar identity is scoped to the approved Variax 600 through PODxt
+Live. See the [product vision](product-vision.md), [initial rig model](unified-app.md)
+and [hardware gates](hardware-gates.md).
+
+## Target module tree
+
+```text
+app/
+  main.rs                    GUI entry point, APP_VERSION, BUILD_NUMBER
+  connect_try.rs             standalone experiment, outside the shell
+src/
+  lib.rs                     offline library entry point and compatibility exports
+  main.rs                    existing CLI
+  check_app.rs               existing manual-check CLI
+  firmware_inspect.rs        existing offline firmware CLI
+  app/
+    shell/                   startup, top bar, tabs, status, help, close, screenshot
+    registry.rs              composition root for built-in family registrations
+    detection/               discovery service, sources, device keys, operation ownership
+  families/
+    variax/
+      file/                  preset, bundle, document, edit domains
+      editor/                Workbench panel, tab state, family artwork and help
+      engine/                body, DSP, host, math, pickup and models
+      live/                  identity adapter and existing editor read orchestration
+      reference/             factory comparisons and bridge evidence
+    podxt/
+      file/                  tone and bank parsing, controls, edit transactions, library
+      editor/                tone/bank panel, practice, file and tab lifecycle
+      live/                  identity adapter and existing tone operation wrappers
+      audio/                 existing PODxt routing policy and evidence
+      reference/             model assets and USB firmware evidence
+    hd500x/
+      file/                  H5EP/H5ES/H5EB, controls, edits, library
+      editor/                HD Edit panel and file and tab lifecycle
+      discovery.rs           manual USB presence matcher
+      reference/             HD driver, file, descriptor and audio evidence
+  shared/
+    dialogs.rs               dialog primitives and native/fake adapters
+    artwork.rs               texture loading/cache, asset directory lookup
+    preferences.rs           platform data paths and preference storage
+    theme.rs                 existing theme application and refresh
+    document.rs              atomic copy saves and family-neutral document support
+    file.rs                  existing regular-file and bounded reader primitives
+    transport/               shared MIDI framing and OS adapter boundaries
+  tools/
+    device_check/            Device check UI, reports and operation orchestration
+    recording/               Test recording UI, recording core and adapters
+  rig/                       existing offline capability/session compatibility API
+  firmware/                  offline container inspector and applicability records
+  simulation/                existing offline receiver emulation
+  hardware_gates.rs          existing compile-time locks and enforcement
+```
+
+Core code remains reachable from `lib.rs` without GUI dependencies. GUI
+modules remain feature-gated and can stay rooted in `app/main.rs` through path
+modules during extraction. The GUI registry is independent of the static
+offline rig API and of the device crate's wire-level family classifier.
+Registration adds one entry at the composition root and code in the new
+family. Family modules depend on shared contracts and their own device adapter.
+Existing cross-family orchestration belongs at the tool or rig boundary.
+
+### Application source inventory
+
+The table gives ownership at the target boundary. Step 2 moves only the
+listed panel and file areas. Other existing paths can remain behind adapters or
+re-exports until their own scoped move. Public library paths and CLI entry
+points remain available to current callers.
+
+| Current path under `src/` unless shown otherwise | Target ownership |
+| --- | --- |
+| `gui.rs` | See the section map below. |
+| `../app/main.rs`, `../app/connect_try.rs`, `main.rs`, `check_app.rs`, `firmware_inspect.rs` | Keep the entry points at their existing paths. The GUI calls the shell. The standalone connection experiment stays outside it. |
+| `lib.rs` | Keep the library root and public exports. Its Variax wire helpers and metadata have Variax live ownership. Its PODxt routing constant belongs with PODxt live compatibility. |
+| `preset.rs`, `bundle.rs`, `document.rs`, `edit.rs` | `families/variax/file/`. Variax owns its actual document, undo history, metadata and bundle transactions. `document::save_new` is already used across families and belongs in `shared/document.rs`, with the existing import path re-exported. Extract further undo primitives only when an existing caller can use them without changing its semantics. |
+| `../app/guitar.rs`, `workbench_asset.rs` | `families/variax/editor/`. Generic asset location and texture cache serve the editor via `shared/artwork.rs`. Family catalog, rendering and original Workbench asset interpretation stay with Variax. |
+| `body.rs` and `body/*`, `dsp.rs` and `dsp/*`, `host.rs` and `host/*`, `math.rs`, `models.rs`, `pickup.rs` and `pickup/*` | `families/variax/engine/`. Preserve coefficient profiles and offline fixture inputs. |
+| `factory_comparison.rs`, `factory_reference.rs`, `variax_bridge_record.rs`, `linux_variax_prefix.rs` | `families/variax/reference/`, including the test-only prefix. |
+| `pod_preset.rs` | PODxt and HD500X file trees, plus the existing compatibility façade. See the split below. |
+| `pod_assets.rs`, `pod_usb_firmware.rs` | `families/podxt/reference/`. PODxt asset names can serve its file parser and editor. USB firmware data stays offline evidence. |
+| `pod_farm_state.rs` | Keep the standalone POD Farm envelope inspector at its existing path. A future POD Farm family would own it. |
+| `pod_audio.rs`, `rig/audio.rs`, `rig/record_transform.rs` | PODxt route data and source-specific transforms in `families/podxt/audio/`. Existing rig and recording interfaces can call the planner with the same types. |
+| `podxt_live.rs`, `podxt_live_packs.rs` | `families/podxt/live/`, with Device check calling the wrappers through existing gates. |
+| `pod_hd500x.rs`, `pod_hd_independent.rs`, `rig/hd500x_audio.rs`, `rig/windows_descriptor.rs` | `families/hd500x/reference/`. Its discovery registration reuses the static HD500X USB match. Existing cross-profile descriptor inspection retains its offline entry point. |
+| `usb.rs`, `read_session.rs`, `identity_stage.rs` | Variax live ownership for the legacy USB/read adapters and step 2 exchange. Keep the three current paths through Step 2. Device check reports continue to consume identity exchange results. |
+| `device_probe.rs` | `tools/device_check/` owns the Device check state machine, consent and rehearsal backend. `app/detection/` reuses its G1 metadata reader and synthetic source through `OsMetadataSource`. |
+| `live_families.rs`, `library_backup.rs`, `manual_check.rs`, `probe_report.rs` | `tools/device_check/` owns combined read and backup orchestration, guided checks and reports. Family-specific read/backup procedures belong behind the existing family APIs. `library_backup.rs` stays at its present path in Step 2. |
+| `recording.rs`, `recording/{aiff,capture,clock}.rs`, `recording/adapters/*` | `tools/recording/` owns panel and recorder. Keep current offline API paths and feature/OS boundaries. Opening the panel does not start capture. |
+| `midi.rs`, `linux_transport.rs` | `shared/transport/` owns legacy framing/identity primitives and the shared Linux-driver research record. |
+| `firmware.rs` and `firmware/*`, `provenance.rs` | Existing offline firmware and provenance APIs. Shared container parsing and validation serve target-specific applicability records. |
+| `rig.rs`, `rig/{backend,capability,model,registry,session,tests}.rs` | Existing offline `rig/` compatibility API. Family file calls delegate to family-owned implementations without changing the static capability matrix as part of this work. |
+| `hardware_gates.rs`, `simulation/*` | Existing gate definitions and offline receiver simulator. The discovery simulator is a separate source for the shell. |
+
+The `tests/*.rs` integration contracts and `tests/fixtures/**` stay at their
+existing paths. Unit tests follow their owning code. Cross-panel regressions
+stay with the shell integration tests. Standalone `tools/**`, build/packaging
+files, documentation and local ignored research inputs retain their current
+roles. The device-crate source map is in Step 4 below.
+
+### `src/gui.rs` section map
+
+Ranges are inclusive at the design baseline. For mixed ranges, the named
+responsibility determines the destination.
+
+| Lines | Target ownership |
+| --- | --- |
+| 1–74 | Imports and composition become module-local. Guitar theme constants, `ModelArt`, and Body/Pickups/Controls go to Variax editor. `Pending` splits between family open/read intent and shell close coordination. |
+| 75–107 | PODxt membership and staged transactions to PODxt editor. |
+| 108–298 | HD staged edit state and button labels to HD500X editor. |
+| 299–415 | `FileDialogs`, native and fake adapters to shared dialogs. Family names, filters and suggested filenames are supplied by the callers once the shell lands. |
+| 416–440 | PODxt filename suggestion and existing rejection presentation to PODxt editor. Preserve the HD use of the legacy rejection presenter during the mechanical move. |
+| 441–459 | Recording route/clock button IDs to recording panel. |
+| 460–673 | PODxt practice examples, pedalboard block enum and tone/bank fixtures to PODxt editor. |
+| 674–748 | Device check backup/tone actions, availability, channel input and consent copy to Device check. |
+| 749–1189 | `Workbench` state and constructor split by ownership. Dialogs, theme, help, screenshot, close and tab state belong to shell/shared services. Guitar document, catalog, drafts and read worker belong to Variax. POD/HD libraries, selections, stages and widget instrumentation belong to their panels. Recording and Device check own their state and workers. Split `pod_open` into shell navigation in Step 3. |
+| 1190–1210 | Guitar load and dirty checks to Variax editor. |
+| 1211–1243 | PODxt dirty and staged edit checks to PODxt editor. Shell aggregates HD dirty/staged state independently in Step 3. |
+| 1244–1467 | Variax read/cancel/undo/redo, artwork, open and save commands to Variax editor and its live wrapper. Close continuations go to shell close coordination, with family callbacks. |
+| 1468–2108 | Guitar edit controls, drawing and workspace to Variax editor. Generic texture cache to shared artwork. |
+| 2109–2160 | Theme refresh to shared theme. App update to shell. |
+| 2161–2245 | Pending dialogs and close dispatch to shell close coordination. Preserve the Variax prompt/operation handling inside the family. |
+| 2246–2308 | Recording quit prompt to recording panel. |
+| 2309–2716 | PODxt stage/bundle/tone prompts, save/discard and name refresh to PODxt editor. `save_next_dirty_pod` and `discard_next_dirty_pod` include HD fallbacks. Keep their invocation order in the Step 2 host and move the HD branches to HD500X editor. |
+| 2717–2891 | Frame dispatch, navigation, shortcuts, footer and help window to shell. Move active read status/cancel and family Help content to Variax contributions. |
+| 2892–3466 | Device check window, backend, reports, backup/tone workers and callbacks to Device check. |
+| 3467–3619, 6393–6520 | Recording window, commands, inputs and file saves to recording panel. |
+| 3620–6392 | PODxt panel, library, block controls, staged edits and saves to PODxt editor. The embedded HD block in `pod_window` (4971–5103), its button and scroll state, plus any HD references in POD status/revert/close, belong to HD500X or the temporary host. Keep HD embedded in Step 2, then render it as its own tab in Step 3. |
+| 6521–8803 | HD quit flow, editor, slot/file selection, stage/apply, open and save to HD500X editor. Shared close coordination invokes it. |
+| 8804–8812 | Cancel and join the read worker in Variax tab teardown, with shell close sequencing. |
+| 8813–9053 | Startup options, display and screenshot to shell. Data directory and preference I/O to shared preferences. Family tab option, auto-select key and default artwork semantics belong to Variax. |
+| 9054–13659 | HD GUI fixtures and regressions to HD500X editor tests. |
+| 13660–14375 | Variax editor tests and shared app/prompt harness. |
+| 14376–15460 | Recording and Device check fixtures/tests with each tool. Keep combined quit-continuation coverage in shell tests. |
+| 15461–21244 | PODxt fixtures and GUI regressions with PODxt editor. Shared close simulation remains in the shell harness. |
+| 21245–21534 | Variax rendering, artwork and bank tests with Variax. Startup/options, screenshot and cross-panel navigation tests with shell. |
+
+### File split inside `pod_preset.rs`
+
+- PODxt model IDs, typed controls, parameter domains and raw/display
+  conversions go to `podxt/file/controls.rs`. Move IFF headers/chunks, PINF,
+  MINF, PARM and tone accessors to `podxt/file/tone.rs`. Put validating and
+  byte-patching `PodTone` methods in `podxt/file/edit.rs`. Keep tone library
+  state and fixed-bank membership/child operations in `library.rs` and
+  `bank.rs` respectively.
+- HD framing constants, `OpaqueH5epPreset`, `H5esSetlist` and `H5ebBundle`
+  go to `hd500x/file/` format modules. Model/slot association, defaults and
+  typed control tables go to its `controls.rs`. Explicit edits and endian
+  transforms live in the HD file implementation. `HdEditorLibrary` owns its
+  dirty/baseline and extracted-child state.
+- Keep `PodPresetFile`, its cross-format parser and `ToneError` compatibility
+  at the existing `pod_preset` import boundary. The compatibility parser
+  delegates to each codec. Both codecs can use a shared format-error primitive
+  preserving existing variants and text at the façade. Route new shell opens
+  directly through each family registration. The façade may know both
+  families, and neither family uses the other's types or parser. Keep the
+  existing regular-file admission and ceilings, sharing only the generic
+  readers. Move fixtures and tests by the codec or transaction under test.
+
+## Family and tab contract
+
+The following is the GUI contract shape. Family IDs are stable names
+registered at startup. A family registration is shared, and each tab has
+its own document, selections, staging, history and runtime state.
+
+```rust
+trait ProductFamily {
+    fn id(&self) -> FamilyId;
+    fn title(&self) -> &'static str;
+    fn file_types(&self) -> &[FileType];
+    fn probe_file(&self, input: &FileCandidate) -> FileMatch;
+    fn discovery(&self) -> &dyn FamilyDiscovery;
+    fn open_tab(&self, input: TabInput, services: &Services)
+        -> Result<Box<dyn FamilyTab>, OpenError>;
+}
+
+trait FamilyDiscovery {
+    fn policy(&self) -> DetectionPolicy;
+    fn candidates(&self, snapshot: &UsbSnapshot, known: &DetectedDevices)
+        -> Vec<DeviceCandidate>;
+    fn identify(&self, candidate: &DeviceCandidate, io: &mut DiscoveryIo)
+        -> DetectionResult;
+}
+
+trait FamilyTab {
+    fn show(&mut self, ui: &mut egui::Ui, services: &mut Services);
+    fn connection_changed(&mut self, state: ConnectionState);
+    fn status(&self) -> TabStatus;
+    fn is_dirty(&self) -> bool;
+    fn prepare_close(&mut self, reason: CloseReason) -> CloseState;
+    fn resolve_close(&mut self, choice: CloseChoice, services: &mut Services)
+        -> CloseState;
+}
+```
+
+`TabInput` covers a new offline tab, a validated file and a connected
+device. `DetectionPolicy` distinguishes automatic identity, manual USB
+presence and offline-only families. Discovery receives only the operation
+capabilities authorized for the selected plan. PODxt and Variax discovery
+share USB topology through neutral candidate data. They neither import
+each other's editors nor use each other's wire codecs.
+
+The shell builds file filters and **New offline tab** from the registry.
+Extensions are dialog hints. A bounded structural probe and the existing
+family parser own admission. Variax claims the supported 300/600 model,
+bank and collection formats by structure and target, PODxt claims its
+verified tone and fixed-bank containers, and HD500X claims H5EP/H5ES/H5EB.
+A shared FORM prefix is insufficient. The registry requires a unique
+claim and reports ambiguous, rejected or unsupported files without
+replacing any open work. Preserve family errors after admission and the
+CLI path and Variax startup panel option. Each successful open creates its
+own offline tab. New blank tabs reuse each family's existing example or
+empty-library initialization. The existing clean Variax example can remain
+the initial offline workspace when no file or device is present. The
+composition root supplies that default to the shell.
+
+The top bar lists tabs and offers **Open file**, **New offline tab**,
+**Detect devices**, **Device check**, **Test recording** and **Help**.
+Existing editor commands and shortcuts delegate to the selected tab when
+applicable. Use the tab ID as the egui ID scope so multiple editors of one
+family keep their widget state independent. Device check and Test recording
+are shared tools, each with its own state and existing consent or quit flow.
+Help can include family contributions through the registry. The footer
+shows selected-tab status alongside app version and build.
+
+The shell sequences tab closes and application quit. A family reports its
+own staged edits, applied dirty state and running operations, supplies its
+existing save/discard/keep-editing prompts and resolves them. Cancel or a
+failed save keeps the work and stops the close. Quit checks all tabs and
+shared tools, including an unsaved recording. Copy saves use the existing
+atomic non-overwriting writer.
+
+## Detection and hot-plug
+
+A `DetectedDevice` contains the registered family ID, a logical device
+key, display model, optional validated firmware, attachment path, detection
+evidence and connection capabilities. The key combines the current USB
+attachment generation and logical role. A direct PODxt and its VDI guitar
+share a physical USB path and have separate keys. USB addresses, an ALSA
+card index and a port path alone cannot establish persistent device identity.
+A late result carries the generation of its input snapshot and is ignored
+after that attachment disappears or changes.
+
+| Source | Job |
+| --- | --- |
+| OS USB presence | Use `device_probe::OsMetadataSource` and its G1 `LinuxSysfs` reader for cached Linux metadata. No app-originated traffic. The shell uses the USB list, and the identity adapter rechecks the existing Device check prerequisites. An unreadable snapshot leaves prior presence uncertain. A successful snapshot with a missing path is removal. Keep an adapter seam for other platforms. |
+| Automatic identity | Run for PODxt Live and Variax 600 on startup or an eligible attachment event. Require a fresh G1 match for the supported PODxt Live rig, including the existing unique bridge and correct interface bindings for the Variax exchange. Cached USB presence can open the PODxt tab with identity pending or unavailable. A validated identity enables the corresponding live capabilities. The bridged guitar requires its own validated reply. Feature or OS refusal yields an unavailable status and offline work continues. |
+| Manual detection | **Detect devices** opens a default-No confirmation showing “Tested on Linux: PODxt Live 3.01 and Variax 600 3.10.” It names the scan and asks before any requests can be sent. Confirming gives the other registered families a fresh OS snapshot. HD500X matches cached `0e41:4159` only. It receives zero traffic and its firmware stays unknown. Future family requests require their own approved procedure and gate as well as this consent. Cancel adds no devices and sends nothing. |
+| Simulated sources | Inject a scripted USB snapshot stream, identity outcomes, and an operation owner into the same service. Headless GUI fixtures construct the shell with these sources. Existing G1 tests continue using fake metadata trees. |
+
+The runtime may retain raw USB metadata for presence monitoring. Manual-only
+families are classified and added only following explicit confirmation.
+A subsequent cached snapshot can mark a previously admitted device removed.
+A new attachment of a manual-only family requires a fresh confirmed scan.
+For the example rig, startup brings up PODxt Live and Variax Workbench.
+Confirming **Detect devices** adds the HD500X tab when its USB match is
+present. Appending a device tab leaves the active editor and its edits in
+place. A second snapshot for the same device updates its tab instead of
+duplicating it.
+
+### Bounded identity and interface ownership
+
+- PODxt Live uses the identity-only portion of its family procedure on its
+  existing own ALSA raw MIDI port. Extract or expose that portion from the
+  Device check current-tone path. Require the same approved PODxt identity
+  and endpoint, and run under the existing PODxt identity policy mapping
+  (`DeviceCheckCurrentSettingsRead`) plus G1. Automatic detection sends
+  only the identity query. It does not call the combined read, tuner,
+  channel, edit, pack, backup or store commands.
+- Variax 600 reuses Device check step 2's G1/G2 preflight and the existing
+  interface-1 open, detach, claim, alternate setting and cleanup sequence.
+  The deployed Device check step 2 wrapper at this baseline performs one
+  request. Reuse the device family's tested lost-first-packet behavior for
+  the automatic variant. Evidence of an orphaned reply tail permits one
+  resend on the same connection. Silence, mismatched identity, competing
+  replies and cleanup failure stop that attempt. The current Device check
+  button retains its existing consent and request semantics. Validate a
+  unique supported guitar reply, release after successful claim and
+  reattach after successful detach on every exit. Refusal to open stops
+  before detach or send. Interface 0 is left alone by the guitar exchange.
+  The automatic variant uses G1 and G2 through `run_if_unlocked`. No
+  current settings or preset data are fetched as part of detection.
+- Acquire one nonblocking operation guard for the physical rig before
+  opening either endpoint or detaching a driver. Both logical tabs and
+  Device check use it, including backup, tone and read workers. A holder
+  keeps it through the complete transaction, including any undo, release,
+  reattach and worker shutdown. In particular, the raw MIDI identity
+  adapter must close its reader as well as its writer before it returns.
+  The existing `RawMidiLink` blocking reader can outlive the writer, so a
+  bounded, joinable reader lifetime is a Step 3 integration requirement.
+  Detection defers while busy, rechecks the generation and preflight when
+  ownership is available, and neither queues repeated identities per
+  frame nor tries to preempt the holder.
+- A process-local lock covers only one instance. Use the same OS-backed
+  lock in app instances and participating owner probes. The owner probe
+  holds it across the entire multi-stage procedure, including pauses and
+  restore, with one lock order for both logical interfaces on the bridge.
+  An exclusive OS interface claim alone cannot protect pauses in a
+  legacy multi-stage probe. Until the owner probes share the guard,
+  close the GUI and let its workers and cleanup finish before running
+  those procedures. Resolve that coordination boundary before enabling
+  background identity in a distributed build. A busy or uncertain
+  endpoint defers the attempt, and cleanup failure suspends further
+  identity on that attachment and reports the failure.
+
+### Disconnect and reconnect
+
+Confirmed USB removal takes the two logical roles of a removed bridge offline.
+A clean auto-created tab may close on removal. A dirty or staged tab remains
+until the user closes it, retains the document and all edit state, and uses
+its normal save-copy and quit dialogs. Keep a detached tab available for
+offline work and never replace its contents with another attachment's state.
+An independently confirmed reconnect may restore connection status only when
+identity is sufficient to associate it safely. Otherwise create a fresh
+device tab and leave the old work in the detached tab. Explicitly closed
+device tabs stay dismissed for that attachment generation, so polling does
+not immediately reopen them. Offline tabs are independent of presence events.
+
+Variax VDI insertion/removal with USB still connected is a separate case.
+The USB descriptor and interface-1 driver binding describe the bridge and
+do not prove guitar presence. Support a logical child change from a reliable
+source event or a permitted identity refresh. For the initial implementation,
+use a one-shot identity on bridge attach and allow an explicit safe refresh
+through the existing scoped procedure. Until a passive VDI signal or an
+approved periodic policy is available, show the last verified guitar
+observation as such. An explicit refresh with no reply makes the guitar
+unavailable, without treating a busy endpoint or an unreadable OS snapshot
+as confirmed removal.
+
+## Delivery and verification
+
+1. **Design.** Commit this document alone and stop for owner review. The
+   family extraction, application shell and device-crate tidy remain
+   pending implementation. The baseline is 725 passing app tests (547
+   library, 141 GUI, 26 integration, 11 owner-probe tests using fake data)
+   and 75 passing device-crate tests with one ignored. This step is a plan
+   for the README status ledger. Record the implementation status there
+   when the approved work changes it.
+2. **Mechanical moves after approval.** Extract one area per commit in this
+   order: PODxt panel ([#141]), HD500X panel ([#142]), recording panel
+   ([#143]), and the PODxt/HD file split ([#144]). Move the Variax panel and
+   file modules ([#140]) last, after reconciling Craft's `app/guitar.rs` and
+   `gui.rs` changes. The owner-directed order supersedes the old panel
+   dependency order in the issue descriptions. Keep the old host as the
+   caller so layout, widget IDs, messages, save and quit behavior and
+   tests stay stable. Move tests and their imports with the code. Keep
+   `src/library_backup.rs`, `src/usb.rs`, `src/read_session.rs`, `crates/**`
+   and `tools/**` at their current paths and untouched in this step.
+3. **App shell after approval.** Introduce the registry and top bar with
+   separate HD500X tabs. Wire the detection and operation ownership
+   adapters, keeping current editing and shared tool workflows. Headless
+   cases cover zero devices, PODxt only, PODxt plus Variax, PODxt plus
+   manually detected HD500X plus Variax, USB and simulated VDI hot-plug,
+   a dirty disconnect, same-family offline tabs, file dispatch, declined
+   detection, duplicate/stale events and busy ownership. Fake transport
+   tests exercise refused access, the one allowed resend, cleanup and
+   gate refusal. Test constructors use only injected sources, without
+   host enumeration, real sysfs/proc, audio or device access.
+4. **Device crate tidy after [#207] and [#177] merge.** Keep typed requests
+   under `crates/line6-devices/src/family/{variax,podxt}`. Split
+   `backup.rs` into family format/load/verify/compare code and shared
+   atomic I/O and manifest primitives, preserving the public backup
+   API where used and existing on-disk layouts. The Variax
+   `write.rs` and tests, PODxt `controls.rs`, `models.rs` and
+   `live_settings.rs` already belong to their families. Keep
+   `transport/{mod,rawmidi,usb}.rs`, `identity.rs` and `midi.rs` as thin
+   shared adapters and framing. Family transport descriptors own the
+   endpoint constants. Keep `session.rs` and `gate.rs` shared, but put
+   messages such as “Variax transfer stopped.” into the family context
+   that supplies the wording, preserving visible messages and failure
+   semantics. Where practical, replace central `Operation` and `Path`
+   enum additions with family-owned typed identifiers checked by the
+   shared policy and link validation. Preserve default denial, rejection
+   of a request on the wrong path, gate meanings and the compile-time
+   lock authority. `family/mod.rs` composes identity classification and
+   `lib.rs` keeps the crate entry point. HD500X has no protocol module
+   until a separately verified implementation exists.
+
+Run `cargo fmt --all -- --check`,
+`cargo clippy --offline --all-features --all-targets -- -D warnings`,
+`cargo test --offline --all-features`, and the same offline all-feature
+test command in `crates/line6-devices` before every commit. Track both suite
+counts and keep test counts unchanged for move-only steps. Shell tests add
+coverage to the existing suites. The branch keeps the build number and
+hardware gate constants. Record completed scope and verified counts in
+README as implementation lands. The repository tracking parent is [#121].
+
+## Decisions for review
+
+- With the bridge left connected, the proposed first release refreshes
+  Variax identity on an explicit request or a reliable attachment event.
+  A periodic VDI identity check would require an agreed trigger and
+  cadence because it can detach interface 1.
+- Decide whether Step 3 should add the shared guard to the owner probes
+  as part of enabling automatic detection, or ship that integration in
+  the same owner release from a separate change. The existing probes
+  cannot signal their inter-stage pauses to the current app.
+- The proposal keeps the clean Variax practice workspace at startup when
+  no file or device is present. An empty shell with **Open file** and
+  **New offline tab** is also possible if preferred.
+
+[#121]: https://github.com/guirossibrum/VariaxWorkbench/issues/121
+[#140]: https://github.com/guirossibrum/VariaxWorkbench/issues/140
+[#141]: https://github.com/guirossibrum/VariaxWorkbench/issues/141
+[#142]: https://github.com/guirossibrum/VariaxWorkbench/issues/142
+[#143]: https://github.com/guirossibrum/VariaxWorkbench/issues/143
+[#144]: https://github.com/guirossibrum/VariaxWorkbench/issues/144
+[#177]: https://github.com/guirossibrum/VariaxWorkbench/issues/177
+[#207]: https://github.com/guirossibrum/VariaxWorkbench/issues/207
