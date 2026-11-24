@@ -4,9 +4,9 @@ Offline design and evidence for [#175](https://github.com/guirossibrum/VariaxWor
 and [#25](https://github.com/guirossibrum/VariaxWorkbench/issues/25). The
 reference is Workbench 1.75 build 121 on the PODxt Live path. The Rust
 implementation is in [the Variax family](../crates/line6-devices/src/family/variax/write.rs).
-It accepts a caller-provided link and gate policy. App and probe policies
-decline both new operations. Device discovery, identity preflight and any
-live activation belong to the owner-run follow-up.
+It accepts a caller-provided link and gate policy. The separate
+[Reso-5 owner test](reso5-test-card.md) uses only the full edit-buffer
+transaction, with its own identity checks, backup verification and G6 policy.
 
 ## Byte and timing contract
 

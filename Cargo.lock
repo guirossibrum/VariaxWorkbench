@@ -2473,6 +2473,7 @@ dependencies = [
  "eframe",
  "flate2",
  "image",
+ "libc",
  "libm",
  "line6-devices",
  "md-5",
