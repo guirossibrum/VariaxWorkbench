@@ -1,7 +1,10 @@
 use super::{METADATA, NAME, PreparedStore, prepare_store};
 use line6_devices::{
     backup,
-    family::variax::slot_read::{SlotIndex, SlotReply, read_slots},
+    family::variax::{
+        self,
+        slot_read::{SlotIndex, SlotReply, read_slots},
+    },
     gate::{GatePolicy, Operation},
     identity::Identity,
     session::{Link, Log, Session},
@@ -21,7 +24,11 @@ struct SlotReadPolicy;
 
 impl GatePolicy for SlotReadPolicy {
     fn allows(&self, operation: Operation) -> bool {
-        operation == Operation::VariaxSlotRead && !is_locked(Gate::FullBackupRead)
+        match operation {
+            Operation::VariaxIdentity => !is_locked(Gate::IdentityRequest),
+            Operation::VariaxSlotRead => !is_locked(Gate::FullBackupRead),
+            _ => false,
+        }
     }
 }
 
@@ -70,17 +77,35 @@ fn check_podxt_backup(dir: &Path, today: &str) -> Result<(), String> {
     super::podxt_identity(&identity)
 }
 
-/// Capture through the G5-only session. Each completed program survives a
-/// later failure, and comparison runs after session and USB cleanup.
+/// Verify the PODxt over its MIDI link before opening the Variax interface.
+pub fn after_podxt_identity<L: Link, T>(
+    podxt: L,
+    log: &mut dyn Log,
+    on_verified: impl FnOnce(&mut dyn Log) -> Result<T, String>,
+) -> Result<T, String> {
+    super::check_podxt(podxt, log)?;
+    on_verified(log)
+}
+
+/// Verify the Variax identity, then capture through the G5 session. Each
+/// completed program survives a later failure, and comparisons run after cleanup.
 pub fn capture<L: Link>(
     link: L,
     log: &mut dyn Log,
     prepared: &PreparedSlotRead,
     dir: &Path,
-    stopping: impl FnMut() -> bool,
+    mut stopping: impl FnMut() -> bool,
 ) -> Result<[SlotReply; 3], String> {
-    let mut replies = Vec::with_capacity(INDICES.len());
+    if stopping() {
+        return Err("Cancelled or log unavailable before Variax identity.".into());
+    }
     let mut session = Session::new(link, &SlotReadPolicy, log);
+    session.require_expected_sysex();
+    let identified = variax::identify(&mut session)?;
+    super::variax_identity(&identified.identity)?;
+    session.note("Verified Variax 300/600 firmware 3.10.");
+
+    let mut replies = Vec::with_capacity(INDICES.len());
     read_slots(&mut session, &INDICES, stopping, |reply| {
         let index = reply.index;
         save_new(

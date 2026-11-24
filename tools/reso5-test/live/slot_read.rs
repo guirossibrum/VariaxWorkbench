@@ -1,6 +1,7 @@
 use super::{
-    CANCELLED, Gate, Ordering, Path, Trace, TracedLink, UsbInterfaceLink, VARIAX_VIA_PODXT_LIVE,
-    combine, install_cancellation, now, run_if_unlocked,
+    CANCELLED, DevicePath, Gate, Log, Ordering, PODXT_LIVE_CARD, Path, RawMidiLink, Trace,
+    TracedLink, UsbInterfaceLink, VARIAX_VIA_PODXT_LIVE, combine, install_cancellation, now,
+    run_if_unlocked,
 };
 use crate::procedure::slot_read::{self, PreparedSlotRead};
 use line6_devices::device_lock::DeviceLock;
@@ -26,7 +27,9 @@ pub(super) fn run(
 
         install_cancellation()?;
         run_if_unlocked(Gate::FullBackupRead, || {
-            run_if_unlocked(Gate::OsDiscovery, || read_device(&prepared, &trace))
+            run_if_unlocked(Gate::IdentityRequest, || {
+                run_if_unlocked(Gate::OsDiscovery, || read_device(&prepared, &trace))
+            })
         })
     })();
     trace.record(match &result {
@@ -46,19 +49,42 @@ fn read_device(prepared: &PreparedSlotRead, trace: &Trace) -> Result<(), String>
     let stopping = || CANCELLED.load(Ordering::Relaxed) || trace.failed();
     if stopping() {
         return Err(
-            "Cancelled or unable to write the log before opening the Variax interface.".into(),
+            "Cancelled or unable to write the log before checking the PODxt Live identity.".into(),
         );
     }
     let _rig = DeviceLock::acquire().map_err(|error| error.to_string())?;
-    let mut usb = UsbInterfaceLink::open(VARIAX_VIA_PODXT_LIVE)?;
+    let podxt = RawMidiLink::open(PODXT_LIVE_CARD, DevicePath::PodxtMidi)?;
     let mut log = trace;
+    slot_read::after_podxt_identity(
+        TracedLink {
+            inner: podxt,
+            trace,
+            label: "PODxt",
+        },
+        &mut log,
+        |log| read_variax(prepared, trace, log, stopping),
+    )
+}
+
+fn read_variax(
+    prepared: &PreparedSlotRead,
+    trace: &Trace,
+    log: &mut dyn Log,
+    mut stopping: impl FnMut() -> bool,
+) -> Result<(), String> {
+    if stopping() {
+        return Err(
+            "Cancelled or unable to write the log before opening the Variax interface.".into(),
+        );
+    }
+    let mut usb = UsbInterfaceLink::open(VARIAX_VIA_PODXT_LIVE)?;
     let captured = slot_read::capture(
         TracedLink {
             inner: &mut usb,
             trace,
             label: "Variax",
         },
-        &mut log,
+        log,
         prepared,
         &trace.path,
         stopping,
