@@ -3,9 +3,8 @@ use super::{
 };
 use crate::procedure::full_read;
 
-// The draft is offline-only until the reviewer explains the firmware findings
-// and the owner directly approves this procedure.
-const OWNER_RUN_APPROVED: bool = false;
+// The owner directly approved one #234 run on 2026-11-24, after reviewer check.
+const OWNER_RUN_APPROVED: bool = true;
 
 pub(super) fn run(offline: bool, archive: &Path, log_root: &Path) -> Result<(), String> {
     if !offline && !OWNER_RUN_APPROVED {

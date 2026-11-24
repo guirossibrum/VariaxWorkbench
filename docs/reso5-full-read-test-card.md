@@ -1,8 +1,7 @@
-# Draft Reso-5 stepped buffer read test card
+# Reso-5 stepped buffer read test card
 
-**Not approved.** The owner approves a live run after the reviewer explains
-the firmware findings and the procedure. The draft build enables the offline
-check and keeps the live stage closed.
+**Approved 2026-11-24 for one owner run.** The reviewer checks the owner build
+before the run.
 
 ## Offline check
 
@@ -17,12 +16,12 @@ cargo run --offline --locked --no-default-features --features owner-reso5-test \
 
 Pass `--full-read-card` to print this card.
 
-## Draft owner procedure
+## Owner procedure
 
 1. Select **Reso, position 5** by hand on the Variax before running the test.
    The tool sends no program change. Close any other editor or device check.
    Keep the selector, knobs and PODxt channel steady during capture.
-2. After approval, use the reviewed owner build. Run the offline command
+2. After the reviewer checks the build, run the offline command
    above with `full-read` in place of `--check full-read`.
 3. The tool checks live PODxt Live 3.01 identity on its ALSA MIDI port, then
    Variax 300/600 3.10 identity on the bridge. A lone orphaned identity reply
@@ -71,5 +70,6 @@ may leave messages queued while the parser is stalled. [Stall trace](firmware-va
 After the tool exits and releases USB, unplug the **guitar's VDI cable** for
 **10 seconds**, then reconnect it. The owner must check that the guitar
 responds to its knobs and selector and that sound is normal. Report the failed
-step and the outcome before any retry. This recovery is based on resetting the
-guitar's RAM state and has yet to be observed for this stall.
+step and the outcome. Any retry needs a new owner approval. This recovery is
+based on resetting the guitar's RAM state and has yet to be observed for this
+stall.
