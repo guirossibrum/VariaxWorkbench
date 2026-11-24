@@ -255,7 +255,7 @@ after that attachment disappears or changes.
 | Source | Job |
 | --- | --- |
 | OS USB presence | Use `device_probe::OsMetadataSource` and its G1 `LinuxSysfs` reader for cached Linux metadata. No app-originated traffic. The shell uses the USB list, and the identity adapter rechecks the existing Device check prerequisites. An unreadable snapshot leaves prior presence uncertain. A successful snapshot with a missing path is removal. Keep an adapter seam for other platforms. |
-| Automatic identity | Run for PODxt Live and Variax 600 on startup or an eligible attachment event. Require a fresh G1 match for the supported PODxt Live rig, including the existing unique bridge and correct interface bindings for the Variax exchange. Cached USB presence can open the PODxt tab with identity pending or unavailable. A validated identity enables the corresponding live capabilities. The bridged guitar requires its own validated reply. Feature or OS refusal yields an unavailable status and offline work continues. |
+| Automatic identity | Run for PODxt Live and Variax 600 on startup or an eligible attachment event. Require a fresh G1 match for the supported PODxt Live rig, including the existing unique bridge and correct interface bindings for the Variax exchange. Cached USB presence can open the PODxt tab with identity pending or unavailable. A validated identity enables the corresponding live capabilities. Confirming the bridged guitar requires its own validated reply. Feature or OS refusal yields an unavailable status and offline work continues. |
 | Manual detection | **Detect devices** opens a default-No confirmation showing “Tested on Linux: PODxt Live 3.01 and Variax 600 3.10.” It names the scan and asks before any requests can be sent. Confirming gives the other registered families a fresh OS snapshot. HD500X matches cached `0e41:4159` only. It receives zero traffic and its firmware stays unknown. Future family requests require their own approved procedure and gate as well as this consent. Cancel adds no devices and sends nothing. |
 | Simulated sources | Inject a scripted USB snapshot stream, identity outcomes, and an operation owner into the same service. Headless GUI fixtures construct the shell with these sources. Existing G1 tests continue using fake metadata trees. |
 
@@ -268,6 +268,24 @@ Confirming **Detect devices** adds the HD500X tab when its USB match is
 present. Appending a device tab leaves the active editor and its edits in
 place. A second snapshot for the same device updates its tab instead of
 duplicating it.
+
+### Step 3b presence behavior
+
+The Linux shell reads cached USB metadata through the existing G1 adapter.
+A supported PODxt Live USB match opens an identity-pending tab. Expected
+interface bindings on that bridge also open a provisional Variax Workbench
+tab with guitar identity pending. The binding describes the bridge. The
+guitar's presence and firmware remain unverified until an identity reply
+in Step 3c. Step 3b uses the existing offline editor constructors for these
+tabs.
+
+A confirmed manual scan admits an HD500X USB attachment for its lifetime.
+The scan sends zero device requests. A subsequent attachment needs fresh
+confirmation. Injected sources provide USB snapshots and logical link
+observations keyed to their parent attachment. Successful absence or a
+changed USB product advances the attachment generation. An unplug and
+replug of the same USB product between two successful snapshots can escape
+observation using the existing G1 fields.
 
 ### Bounded identity and interface ownership
 
@@ -316,9 +334,9 @@ duplicating it.
 ### Disconnect and reconnect
 
 Confirmed USB removal takes the two logical roles of a removed bridge offline.
-A clean auto-created tab may close on removal. A dirty or staged tab remains
-until the user closes it, retains the document and all edit state, and uses
-its normal save-copy and quit dialogs. Keep a detached tab available for
+Step 3b keeps disconnected tabs until the user closes them. This retains
+uncommitted editor input during a disconnect. Dirty tabs use their normal
+save-copy and quit dialogs. Keep a detached tab available for
 offline work and never replace its contents with another attachment's state.
 An independently confirmed reconnect may restore connection status only when
 identity is sufficient to associate it safely. Otherwise create a fresh

@@ -1,6 +1,11 @@
 //! Application navigation, tab lifecycle, and shared commands.
 use super::*;
 
+mod detect;
+#[cfg(test)]
+mod detection_tests;
+pub(super) use detect::DetectConfirmation;
+
 pub(super) enum CloseRequest {
     Tab(TabId),
     Quit { approved: Vec<TabId> },
@@ -64,6 +69,12 @@ impl Workbench {
             recording_capture_attempts: 0,
             defaults,
             tabs: Tabs::default(),
+            detection: DetectionService::platform(),
+            detect_confirmation: None,
+            next_detection: Instant::now(),
+            detection_status: None,
+            #[cfg(test)]
+            detection_buttons: HashMap::new(),
             shell_error: None,
             shell_status: String::new(),
             close_request: None,
@@ -150,6 +161,7 @@ impl Workbench {
 
     pub(super) fn has_prompt(&self) -> bool {
         self.close_request.is_some()
+            || self.detect_confirmation.is_some()
             || self
                 .tabs
                 .active
@@ -230,6 +242,7 @@ impl Workbench {
     }
 
     pub(super) fn request_close(&mut self, ctx: &egui::Context) {
+        self.detect_confirmation = None;
         if self.permit_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
@@ -255,6 +268,7 @@ impl Workbench {
 
     pub(super) fn render(&mut self, ctx: &egui::Context) {
         self.refresh_theme(ctx);
+        self.poll_detection(ctx);
         for entry in &mut self.tabs.entries {
             entry.editor.poll(ctx);
         }
@@ -379,6 +393,12 @@ impl Workbench {
                         if let Some(error) = error {
                             ui.colored_label(Color32::LIGHT_RED, error);
                         }
+                        if let Some(device) = &self.tabs.entries[index].device {
+                            ui.weak(device.status());
+                        }
+                    }
+                    if let Some(error) = &self.detection_status {
+                        ui.colored_label(Color32::LIGHT_RED, error);
                     }
                     if !self.shell_status.is_empty() {
                         ui.weak(&self.shell_status);
@@ -433,6 +453,7 @@ impl Workbench {
         self.pending_dialog(ctx);
         self.recording_window(ctx);
         self.device_check_window(ctx);
+        self.detect_dialog(ctx);
     }
 
     fn open_commands(&mut self, ui: &mut egui::Ui, start_panel: bool) {
@@ -458,8 +479,7 @@ impl Workbench {
                 }
             });
         }
-        ui.add_enabled(false, egui::Button::new("Detect devices"))
-            .on_disabled_hover_text("Device detection is unavailable in this build.");
+        self.detect_button(ui, start_panel);
     }
 
     fn tab_strip(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {

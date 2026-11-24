@@ -1,4 +1,6 @@
+use super::detection::{DetectedDevice, DeviceKey, DeviceSupport};
 use super::{FileDialogs, egui};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 pub(super) struct EditorDefaults {
@@ -78,15 +80,55 @@ pub(super) trait FamilyTab: std::any::Any {
 
 pub(super) type TabId = u64;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Connection {
+    Present,
+    Uncertain,
+    Disconnected,
+}
+
+pub(super) struct DeviceTab {
+    pub device: DetectedDevice,
+    pub connection: Connection,
+}
+
+impl DeviceTab {
+    pub fn status(&self) -> String {
+        match self.connection {
+            Connection::Disconnected => "Disconnected · offline editing".into(),
+            Connection::Uncertain => "USB presence could not be verified".into(),
+            Connection::Present => match &self.device.support {
+                DeviceSupport::IdentityPending if self.device.key.is_linked() => {
+                    "USB bridge detected · guitar identity pending".into()
+                }
+                DeviceSupport::IdentityPending => "USB detected · identity pending".into(),
+                DeviceSupport::FileEditingOnly => "Live connection not supported yet".into(),
+            },
+        }
+    }
+}
+
 pub(super) struct TabEntry {
     pub id: TabId,
     pub family: &'static dyn ProductFamily,
     pub file: Option<PathBuf>,
+    pub device: Option<DeviceTab>,
     pub editor: Box<dyn FamilyTab>,
 }
 
 impl TabEntry {
     pub fn title(&self) -> String {
+        if let Some(device) = &self.device {
+            let name = device.device.model;
+            return match device.connection {
+                Connection::Present if device.device.support == DeviceSupport::IdentityPending => {
+                    format!("{name} · identity pending")
+                }
+                Connection::Present => name.into(),
+                Connection::Uncertain => format!("{name} · presence unknown"),
+                Connection::Disconnected => format!("{name} · disconnected"),
+            };
+        }
         match self
             .editor
             .source_path()
@@ -104,6 +146,7 @@ pub(super) struct Tabs {
     pub entries: Vec<TabEntry>,
     pub active: Option<TabId>,
     next: TabId,
+    dismissed: BTreeSet<DeviceKey>,
 }
 
 impl Tabs {
@@ -125,6 +168,7 @@ impl Tabs {
             id,
             family,
             file,
+            device: None,
             editor,
         });
         Ok(id)
@@ -135,6 +179,16 @@ impl Tabs {
     }
 
     pub fn close(&mut self, id: TabId) {
+        if let Some(device) = self
+            .index(id)
+            .and_then(|index| self.entries[index].device.as_ref())
+        {
+            self.dismissed.insert(device.device.key.clone());
+        }
+        self.remove(id);
+    }
+
+    fn remove(&mut self, id: TabId) {
         let Some(index) = self.index(id) else {
             return;
         };
@@ -146,6 +200,65 @@ impl Tabs {
                 .or_else(|| self.entries.last())
                 .map(|entry| entry.id);
         }
+    }
+    pub fn mark_presence_uncertain(&mut self) {
+        for entry in &mut self.entries {
+            if let Some(device) = &mut entry.device
+                && device.connection == Connection::Present
+            {
+                device.connection = Connection::Uncertain;
+            }
+        }
+    }
+
+    pub fn reconcile_devices(
+        &mut self,
+        detected: Vec<DetectedDevice>,
+        families: &[&'static dyn ProductFamily],
+        defaults: &EditorDefaults,
+    ) -> Result<(), String> {
+        let mut remaining: BTreeMap<_, _> = detected
+            .into_iter()
+            .map(|device| (device.key.clone(), device))
+            .collect();
+        self.dismissed.retain(|key| remaining.contains_key(key));
+        for entry in &mut self.entries {
+            let Some(device) = &mut entry.device else {
+                continue;
+            };
+            if device.connection == Connection::Disconnected {
+                remaining.remove(&device.device.key);
+                continue;
+            }
+            if let Some(present) = remaining.remove(&device.device.key) {
+                device.device = present;
+                device.connection = Connection::Present;
+            } else {
+                // Keep the editor instance, including any uncommitted input the
+                // family keeps outside its applied dirty state.
+                device.connection = Connection::Disconnected;
+            }
+        }
+        for (key, device) in remaining {
+            if self.dismissed.contains(&key) {
+                continue;
+            }
+            let Some(&family) = families
+                .iter()
+                .find(|family| family.info().id == key.family_id)
+            else {
+                continue;
+            };
+            let active = self.active;
+            self.open(family, defaults, TabSource::New)?;
+            let entry = self.entries.last_mut().expect("the device tab just opened");
+            entry.device = Some(DeviceTab {
+                device,
+                connection: Connection::Present,
+            });
+            self.active = active.or(self.active);
+        }
+        Ok(())
     }
 }
 

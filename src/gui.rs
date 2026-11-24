@@ -29,6 +29,10 @@ mod podxt_panel;
 #[path = "tools/recording/panel.rs"]
 mod recording_panel;
 
+#[path = "app/detection/mod.rs"]
+mod detection;
+use detection::{DetectionService, Scan};
+
 #[path = "app/registry.rs"]
 mod registry;
 #[path = "app/shell/mod.rs"]
@@ -41,7 +45,7 @@ use tabs::{
     TabId, TabSource, Tabs,
 };
 
-use shell::CloseRequest;
+use shell::{CloseRequest, DetectConfirmation};
 
 trait FileDialogs {
     fn open(&mut self) -> Option<PathBuf>;
@@ -299,6 +303,12 @@ struct Workbench {
     #[cfg(test)]
     recording_capture_attempts: u32,
     tabs: Tabs,
+    detection: Option<DetectionService>,
+    detect_confirmation: Option<DetectConfirmation>,
+    next_detection: Instant,
+    detection_status: Option<String>,
+    #[cfg(test)]
+    detection_buttons: HashMap<&'static str, Rect>,
     defaults: EditorDefaults,
     shell_error: Option<String>,
     shell_status: String,

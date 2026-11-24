@@ -74,6 +74,8 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 
 ### Verified and passing
 
+- [x] Product-family detection, Step 3b. Linux cached USB presence opens PODxt Live and provisional Variax tabs with identity pending. Confirming **Detect devices** admits an HD500X attachment for file editing. Disconnected tabs keep their work and normal save and close flows. Eight headless tests exercise injected presence, confirmation, hot-plug, stale observations, and disconnects. Offline checks passed **749** app tests (1 ignored) and **91** device-library tests (2 ignored). No identity traffic or physical validation in this step. [#212](https://github.com/guirossibrum/VariaxWorkbench/issues/212).
+
 - [x] Product-family app shell, Step 3a. Device-free startup shows the offline entry points. File routing opens a tab for the recognized family. Tabs own their editor state, including HD500X's separate library and file type. Tab close and app quit check each affected editor and any unsaved recording. Five new headless shell tests bring the offline app suite to **741** passing (1 ignored). The device library remains at **82** passing (2 ignored). Formatting and all-feature Clippy passed. [Family architecture](docs/architecture-families.md).
 
 - [x] #124 static macOS audio pass traced the XT isochronous setup and host format declarations. USB clock, wire sample layout and live audio remain unverified.
@@ -162,7 +164,7 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 
 ### Pending implementation or validation
 
-- [ ] Product-family detection, Steps 3b and 3c. Add USB presence, confirmation, and simulated hot-plug, followed by bounded automatic identity, Refresh guitar, and a cross-process lock shared by the app and owner probes. Step 4 covers the device-crate tidy. [Approved family architecture](docs/architecture-families.md).
+- [ ] Product-family identity, Step 3c. Add bounded automatic PODxt Live and Variax 600 identity, Refresh guitar, and a cross-process lock shared by the app and owner probes. Step 4 covers the device-crate tidy. [Approved family architecture](docs/architecture-families.md).
 
 **Current phase — device check through step 3, plus library backups, for any user of this rig.** Phase 2 (G1, USB recognition) is complete by the owner's decision. On 2026-11-22 the owner released the bounded Variax 600 identity request through the PODxt Live, and then released step 3 after an external read named the Variax 600, the PODxt Live, and the current settings. Step 3 reads both. Step 4 stays locked. The owner then instructed the app to include the Variax and PODxt Live library backups from `tools/device-controls`. Build 16 offers both on This computer. Backup files stay ordinary files you can move or delete. The Variax backup changes presets while it reads, then tries to switch back. If the guitar does not answer the first question, that backup asks again, and if it is still quiet it gives the driver back and tries the connection once more. The PODxt Live backup does not change the current tone. Nothing is written back. #114, #126, and #150 stay open. G4 and G6–G8 are not authorized. The user runs the hardware test. Agents do not. Phases follow the
 owner-approved delivery reset of 2026-11-20; see the
