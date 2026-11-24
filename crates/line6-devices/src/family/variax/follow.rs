@@ -6,7 +6,7 @@ use super::{Preset, identify_variax, is_reply, with_bridged_read_session};
 use crate::{
     device_lock::DeviceLock,
     gate::Operation,
-    midi::Event,
+    midi::{Event, hex},
     session::{Link, POLL, Path, Session},
 };
 
@@ -22,6 +22,10 @@ pub enum FollowUpdate {
     Clip,
     DspOverload,
     MidiQueueOverflow,
+    /// The first nonzero connection state reported during this run.
+    Connected,
+    /// The PODxt reported that the guitar disconnected. Follow ends after cleanup.
+    Disconnected,
 }
 
 /// Follow the verified Variax 300/600 firmware 3.10 on the open guitar link.
@@ -32,8 +36,8 @@ pub enum FollowUpdate {
 /// receives unsolicited updates only, without an initial preset snapshot.
 /// Program changes are labeled from the Workbench mapping and need no read.
 ///
-/// Cancellation returns normally after successful cleanup. A transport or
-/// cleanup failure is returned to the caller. The session-off and bridge-off
+/// Cancellation and a reported guitar disconnect return normally after
+/// successful cleanup. A transport or cleanup failure is returned to the caller. The session-off and bridge-off
 /// sends are both attempted after the listening session starts.
 pub fn follow<L: Link>(
     _rig: &DeviceLock,
@@ -70,13 +74,32 @@ fn follow_on<L: Link>(
     }
 
     with_bridged_read_session(session, Duration::ZERO, |session| {
+        let mut reported_connected = false;
         while !cancelled() {
             for event in session.poll(POLL)?.into_iter().flatten() {
                 if cancelled() {
                     return Ok(());
                 }
-                if let Some(update) = decode(&event) {
-                    publish(update);
+                match decode(&event) {
+                    Some(FollowUpdate::Connected) if reported_connected => {}
+                    Some(update) => {
+                        publish(update);
+                        match update {
+                            FollowUpdate::Connected => reported_connected = true,
+                            FollowUpdate::Disconnected => return Ok(()),
+                            _ => {}
+                        }
+                    }
+                    None => {
+                        let (kind, frame) = match &event {
+                            Event::Sysex(frame) => ("SysEx", frame),
+                            Event::Short(frame) => ("MIDI", frame),
+                        };
+                        session.note(format!(
+                            "Ignored unrecognized Follow {kind} frame: {}",
+                            hex(frame)
+                        ));
+                    }
                 }
             }
         }
@@ -99,7 +122,17 @@ fn decode(event: &Event) -> Option<FollowUpdate> {
         Event::Sysex(frame) if is_reply(frame, 0x28) => Some(FollowUpdate::Clip),
         Event::Sysex(frame) if is_reply(frame, 0x4d) => Some(FollowUpdate::DspOverload),
         Event::Sysex(frame) if is_reply(frame, 0x74) => Some(FollowUpdate::MidiQueueOverflow),
-        _ => None,
+        Event::Sysex(frame) => match frame.as_slice() {
+            // Workbench 1.75 L6VariaxPatchManager.OnSysex. Keep the length
+            // checks implicit in these complete Line 6 SysEx patterns.
+            [0xf0, 0, 1, 0x0c, 0x03, 0x11, _, _, _, state, 0xf7] => Some(if *state == 0 {
+                FollowUpdate::Disconnected
+            } else {
+                FollowUpdate::Connected
+            }),
+            [0xf0, 0, 1, 0x0c, 0x7f, 0x03, _, _, _, _, _, 0xf7] => Some(FollowUpdate::Disconnected),
+            _ => None,
+        },
     }
 }
 
