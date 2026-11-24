@@ -1,0 +1,136 @@
+{
+  "seed": 180600175,
+  "full_corpus_size": 2329,
+  "full_corpus_coverage": {
+    "acoustic-body": 8,
+    "continuous-boundary": 32,
+    "dormant-pairing": 256,
+    "dormant-single": 32,
+    "electrical-choice": 22,
+    "pairing": 640,
+    "random": 1000,
+    "repeat": 2,
+    "single-pickup": 80,
+    "taper-choice": 2,
+    "tuning-boundary": 96,
+    "twelve-boundary": 156,
+    "twelve-off": 3
+  },
+  "corpus_sha256": "f623addd40826c7b4b0b95105be090bf1e7fc81564fc68a86479298e5620f443",
+  "oracle_runtime": "initialized-host-libm-v2",
+  "oracle_sha256": "3aa232329d467101637764397b77a7b8ffa6af0ccd72ec380d02f145477ba9fe",
+  "resources_sha256": "e80a97ebc4d5a8a1def4d528cb7fb3428f19c161e2d308e22af4ac7484e7b420",
+  "rust_binary_sha256": "3a29327be6258cd18cd01862da89bd6dd7456992cf31a67f04a22fbe5d2a93df",
+  "rust_batch_sha256": "95dea737d16050fadfb2c360889e7875ea4eeba451b7fb7adf22c6497abdec46",
+  "rust_guard_cases": [
+    "nonfinite",
+    "missing",
+    "out-of-range"
+  ],
+  "profile": "host-std-v1",
+  "ordered_engine_changes": {
+    "rust": 1506,
+    "oracle": 1506
+  },
+  "modes": {
+    "fresh": {
+      "totals": {
+        "exact": 2329
+      },
+      "groups": {
+        "acoustic-body": {
+          "exact": 8
+        },
+        "continuous-boundary": {
+          "exact": 32
+        },
+        "dormant-pairing": {
+          "exact": 256
+        },
+        "dormant-single": {
+          "exact": 32
+        },
+        "electrical-choice": {
+          "exact": 22
+        },
+        "pairing": {
+          "exact": 640
+        },
+        "random": {
+          "exact": 1000
+        },
+        "repeat": {
+          "exact": 2
+        },
+        "single-pickup": {
+          "exact": 80
+        },
+        "taper-choice": {
+          "exact": 2
+        },
+        "tuning-boundary": {
+          "exact": 96
+        },
+        "twelve-boundary": {
+          "exact": 156
+        },
+        "twelve-off": {
+          "exact": 3
+        }
+      },
+      "compared_bytes": 7629804,
+      "rust_ordered_case_hashes_sha256": "16ea0031b1234f27f8238909a4f5c7ae7bc85033efc6e83514e80540937d8871",
+      "oracle_ordered_case_hashes_sha256": "16ea0031b1234f27f8238909a4f5c7ae7bc85033efc6e83514e80540937d8871"
+    },
+    "batch": {
+      "totals": {
+        "exact": 2329
+      },
+      "groups": {
+        "acoustic-body": {
+          "exact": 8
+        },
+        "continuous-boundary": {
+          "exact": 32
+        },
+        "dormant-pairing": {
+          "exact": 256
+        },
+        "dormant-single": {
+          "exact": 32
+        },
+        "electrical-choice": {
+          "exact": 22
+        },
+        "pairing": {
+          "exact": 640
+        },
+        "random": {
+          "exact": 1000
+        },
+        "repeat": {
+          "exact": 2
+        },
+        "single-pickup": {
+          "exact": 80
+        },
+        "taper-choice": {
+          "exact": 2
+        },
+        "tuning-boundary": {
+          "exact": 96
+        },
+        "twelve-boundary": {
+          "exact": 156
+        },
+        "twelve-off": {
+          "exact": 3
+        }
+      },
+      "compared_bytes": 7629804,
+      "rust_ordered_case_hashes_sha256": "ce7b5e8375e959374f6be8c8fff1bf010d8e1e87fcf607a979045a6f01b1d177",
+      "oracle_ordered_case_hashes_sha256": "ce7b5e8375e959374f6be8c8fff1bf010d8e1e87fcf607a979045a6f01b1d177"
+    }
+  },
+  "nonexact_cases": []
+}
