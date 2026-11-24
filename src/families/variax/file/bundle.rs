@@ -1,5 +1,5 @@
-//! Offline lossless Workbench bank/collection reader and preset replacement.
-use crate::preset::{PresetFile, chunks, container, unique, word};
+//! Offline lossless Workbench bank and collection serialization and edits.
+use crate::preset::{PresetFile, chunks, container, legacy_text_issue, unique, word};
 use std::ops::Range;
 
 #[derive(Clone, Debug)]
@@ -9,6 +9,7 @@ pub struct Bank {
     presets: Vec<PresetFile>,
     ranges: Vec<Range<usize>>,
     chunk_start: usize,
+    name_offset: usize,
     data_length: usize,
 }
 impl Bank {
@@ -24,7 +25,64 @@ pub struct BundleFile {
     banks: Vec<Bank>,
 }
 
+const DEFAULT_BANKS: [&str; 12] = [
+    "Custom 1", "T-Model", "Spank", "Lester", "Special", "R-Billy", "Chime", "Semi", "Jazzbox",
+    "Acoustic", "Reso", "Custom 2",
+];
+
+fn bank_name_field(name: &str) -> [u8; 64] {
+    let mut bytes = [0; 64];
+    for (character, dest) in name.encode_utf16().zip(bytes.as_chunks_mut::<2>().0) {
+        *dest = character.to_be_bytes();
+    }
+    bytes
+}
+
+fn write_chunk(bytes: &mut Vec<u8>, tag: &[u8; 4], payload: &[u8]) -> Result<(), String> {
+    let size = u32::try_from(payload.len()).map_err(|_| "bundle exceeds IFF size capacity")?;
+    bytes.extend_from_slice(tag);
+    bytes.extend_from_slice(&size.to_be_bytes());
+    bytes.extend_from_slice(payload);
+    if !payload.len().is_multiple_of(2) {
+        bytes.push(0);
+    }
+    Ok(())
+}
+
 impl BundleFile {
+    /// Workbench's fixed Variax template has 12 banks with 5 default models each.
+    pub fn new_default_bundle() -> Result<Self, String> {
+        let model = PresetFile::default_legacy_model()?;
+        let models = [&model; 5];
+        Self::create(true, DEFAULT_BANKS.map(|name| (name, models.as_slice())))
+    }
+
+    /// An editable collection begins with Workbench's empty "New Folder".
+    pub fn new_collection() -> Result<Self, String> {
+        Self::create(false, [("New Folder", [].as_slice())])
+    }
+
+    fn create<'a>(
+        fixed: bool,
+        banks: impl IntoIterator<Item = (&'a str, &'a [&'a PresetFile])>,
+    ) -> Result<Self, String> {
+        let mut payload = if fixed { b"L6BA" } else { b"L6CO" }.to_vec();
+        write_chunk(&mut payload, b"HEAD", &1u32.to_be_bytes())?;
+        for (name, models) in banks {
+            let mut bank = if fixed { b"BANK" } else { b"FLDR" }.to_vec();
+            let mut info = vec![0; 4];
+            info.extend_from_slice(&bank_name_field(name));
+            write_chunk(&mut bank, b"BINF", &info)?;
+            for model in models {
+                bank.extend_from_slice(model.as_bytes());
+            }
+            write_chunk(&mut payload, b"LIST", &bank)?;
+        }
+        let mut bytes = Vec::new();
+        write_chunk(&mut bytes, b"FORM", &payload)?;
+        Self::parse(bytes)
+    }
+
     pub fn parse(bytes: Vec<u8>) -> Result<Self, String> {
         if bytes.len() < 12 || &bytes[..4] != b"FORM" || !matches!(&bytes[8..12], b"L6BA" | b"L6CO")
         {
@@ -75,6 +133,7 @@ impl BundleFile {
                 presets,
                 ranges,
                 chunk_start: bank.data.start - 8,
+                name_offset: info.data.start + 4,
                 data_length: bank.data.len(),
             });
         }
@@ -89,6 +148,15 @@ impl BundleFile {
     }
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes
+    }
+
+    pub fn is_empty_collection(&self) -> bool {
+        !self.fixed
+            && !self.banks.is_empty()
+            && self
+                .banks
+                .iter()
+                .all(|bank| !bank.fixed && bank.presets.is_empty())
     }
     pub fn summary(&self) -> String {
         use std::fmt::Write;
@@ -117,6 +185,54 @@ impl BundleFile {
         }
         out
     }
+    pub(super) fn with_renamed_bank(&self, bank_index: usize, name: &str) -> Result<Self, String> {
+        if legacy_text_issue(name, false).is_some() {
+            return Err("Use at most 18 printable ASCII characters for the bank name.".into());
+        }
+        let bank = self
+            .banks
+            .get(bank_index)
+            .ok_or("bank index is out of range")?;
+        let mut bytes = self.bytes.clone();
+        bytes[bank.name_offset..bank.name_offset + 64].copy_from_slice(&bank_name_field(name));
+        Self::parse(bytes)
+    }
+
+    pub(super) fn with_appended_model(
+        &self,
+        bank_index: usize,
+        model: &PresetFile,
+    ) -> Result<Self, String> {
+        let bank = self
+            .banks
+            .get(bank_index)
+            .ok_or("bank index is out of range")?;
+        if self.fixed || bank.fixed {
+            return Err("Models can only be added to a collection folder.".into());
+        }
+        let model = model.as_bytes();
+        let bank_length = bank
+            .data_length
+            .checked_add(model.len())
+            .ok_or("bank size overflow")?;
+        let file_length = self
+            .bytes
+            .len()
+            .checked_add(model.len())
+            .ok_or("collection size overflow")?;
+        let bank_size = u32::try_from(bank_length).map_err(|_| "bank exceeds IFF size capacity")?;
+        let root_size =
+            u32::try_from(file_length - 8).map_err(|_| "bundle exceeds IFF size capacity")?;
+        let end = bank.chunk_start + 8 + bank.data_length;
+        let mut bytes = Vec::with_capacity(file_length);
+        bytes.extend_from_slice(&self.bytes[..end]);
+        bytes.extend_from_slice(model);
+        bytes.extend_from_slice(&self.bytes[end..]);
+        bytes[bank.chunk_start + 4..bank.chunk_start + 8].copy_from_slice(&bank_size.to_be_bytes());
+        bytes[4..8].copy_from_slice(&root_size.to_be_bytes());
+        Self::parse(bytes)
+    }
+
     pub fn replace(
         &mut self,
         bank_index: usize,
@@ -227,6 +343,35 @@ mod tests {
             assert_eq!(reopened.banks()[0].name, "B");
         }
     }
+    #[test]
+    fn rename_updates_only_the_fixed_width_name_field() {
+        let original = BundleFile::parse(
+            include_bytes!("../../../../tests/fixtures/synthetic-bank.vwb").to_vec(),
+        )
+        .unwrap();
+        for rejected in [
+            "1234567890123456789",
+            "démo",
+            "line\nbreak",
+            "tab\t",
+            "\u{7f}",
+        ] {
+            assert!(original.with_renamed_bank(1, rejected).is_err());
+        }
+        let renamed = original.with_renamed_bank(1, "123456789012345678").unwrap();
+        assert_eq!(renamed.banks()[1].name, "123456789012345678");
+        assert_eq!(renamed.as_bytes().len(), original.as_bytes().len());
+        let offset = original.banks()[1].name_offset;
+        assert_eq!(
+            &renamed.as_bytes()[..offset],
+            &original.as_bytes()[..offset]
+        );
+        assert_eq!(
+            &renamed.as_bytes()[offset + 64..],
+            &original.as_bytes()[offset + 64..]
+        );
+    }
+
     #[test]
     fn replacing_two_resized_models_preserves_opaque_chunks_and_other_banks() {
         let original = BundleFile::parse(

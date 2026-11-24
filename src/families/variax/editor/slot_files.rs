@@ -39,6 +39,7 @@ impl VariaxEditor {
                 self.choose_slot_replacement(services);
             }
             self.slot_transfer_menu(ui, enabled);
+            self.rename_bank_button(ui, available);
         });
     }
 
@@ -59,7 +60,7 @@ impl VariaxEditor {
         let Some(path) = services.dialogs.save(&format!("{stem}.vwm"), "vwm") else {
             return;
         };
-        let path = model_output_path(path);
+        let path = with_file_extension(path, "vwm");
         match save_new(&path, model.as_bytes()) {
             Ok(()) => {
                 self.error = None;
@@ -165,15 +166,16 @@ impl VariaxEditor {
     }
 }
 
-fn model_output_path(path: PathBuf) -> PathBuf {
+pub(super) fn with_file_extension(path: PathBuf, extension: &str) -> PathBuf {
     if path
         .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("vwm"))
+        .is_some_and(|current| current.eq_ignore_ascii_case(extension))
     {
         path
     } else {
         let mut name = path.into_os_string();
-        name.push(".vwm");
+        name.push(".");
+        name.push(extension);
         name.into()
     }
 }

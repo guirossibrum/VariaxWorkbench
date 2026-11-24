@@ -105,7 +105,7 @@ impl EditorDocument {
                     .file
                     .with_replaced_models(bundle.bank, (start..).zip(&snapshot.models))?,
             );
-            next.preset = bundle.file.banks()[bundle.bank].presets()[bundle.preset].clone();
+            next.preset = Some(bundle.file.banks()[bundle.bank].presets()[bundle.preset].clone());
         }
 
         self.end_gesture();

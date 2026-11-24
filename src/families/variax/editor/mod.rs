@@ -2,6 +2,8 @@ use super::*;
 use serde::Deserialize;
 
 mod guitar;
+mod new_files;
+use new_files::{BankRename, NewFile};
 mod slot_files;
 mod slot_transfers;
 use slot_files::SlotReplacement;
@@ -126,6 +128,8 @@ pub(super) struct VariaxEditor {
     tuning_dialog: Option<TuningDialog>,
     slot_replacement: Option<SlotReplacement>,
     slot_transfer: Option<SlotTransfer>,
+    new_file: Option<NewFile>,
+    bank_rename: Option<BankRename>,
     #[cfg(test)]
     bank_slots: HashMap<usize, Rect>,
     #[cfg(test)]
@@ -150,6 +154,8 @@ pub(super) struct VariaxEditor {
     slot_file_buttons: HashMap<&'static str, Rect>,
     #[cfg(test)]
     slot_transfer_buttons: HashMap<String, Rect>,
+    #[cfg(test)]
+    new_file_buttons: HashMap<&'static str, Rect>,
     #[cfg(test)]
     tuning_preset_rows: HashMap<String, Rect>,
     read_receiver: Option<
@@ -184,6 +190,8 @@ impl VariaxEditor {
             tuning_dialog: None,
             slot_replacement: None,
             slot_transfer: None,
+            new_file: None,
+            bank_rename: None,
             #[cfg(test)]
             bank_slots: HashMap::new(),
             #[cfg(test)]
@@ -209,6 +217,8 @@ impl VariaxEditor {
             #[cfg(test)]
             slot_transfer_buttons: HashMap::new(),
             #[cfg(test)]
+            new_file_buttons: HashMap::new(),
+            #[cfg(test)]
             tuning_preset_rows: HashMap::new(),
             read_receiver: None,
             read_worker: None,
@@ -222,15 +232,19 @@ impl VariaxEditor {
         }
         match EditorDocument::open(path) {
             Ok(document) => {
-                self.document = Some(document);
-                self.source_path = Some(path.to_owned());
-                self.drag_origin = None;
-                self.clear_text_drafts();
-                self.error = None;
+                self.adopt_document(document, path);
                 self.status = format!("Opened {}", path.display());
             }
             Err(error) => self.error = Some(error),
         }
+    }
+
+    fn adopt_document(&mut self, document: EditorDocument, path: &Path) {
+        self.document = Some(document);
+        self.source_path = Some(path.to_owned());
+        self.drag_origin = None;
+        self.clear_text_drafts();
+        self.error = None;
     }
 
     pub(super) fn dirty(&self) -> bool {
@@ -401,7 +415,11 @@ impl VariaxEditor {
         let Some(document) = &mut self.document else {
             return false;
         };
-        let name = model_filename_stem(document.preset().name());
+        let name = model_filename_stem(
+            document
+                .selected_preset()
+                .map_or("New Collection", PresetFile::name),
+        );
         let extension = document.extension();
         let name = format!("{name} - edited.{extension}");
         if let Some(path) = services.dialogs.save(&name, extension) {
@@ -1041,10 +1059,16 @@ impl VariaxEditor {
             });
             return;
         }
-        let available = !self.is_reading()
-            && self.pending.is_none()
-            && self.slot_replacement.is_none()
-            && self.slot_transfer.is_none();
+        let available = !self.is_reading() && !self.blocking_prompt();
+        if self
+            .document
+            .as_ref()
+            .and_then(EditorDocument::selected_preset)
+            .is_none()
+        {
+            guitar_panel().show(ui, |ui| self.empty_collection(ui, available));
+            return;
+        }
         self.guitar_header(ui, available);
         self.slot_file_actions(services, ui, available);
         let editable = self
@@ -1095,7 +1119,7 @@ impl VariaxEditor {
         services: &mut EditorServices<'_>,
         ctx: &egui::Context,
     ) {
-        if self.pending.is_some() {
+        if self.pending.is_some() || self.new_file.is_some() {
             let mut discard = false;
             let mut save_continue = false;
             let mut cancel = false;
@@ -1131,11 +1155,16 @@ impl VariaxEditor {
                     services.close = CloseResult::Cancelled;
                 }
                 self.pending = None;
+                self.new_file = None;
             }
             if save_continue {
                 discard = self.save_dialog(services);
             }
             if discard {
+                if self.new_file.is_some() {
+                    self.create_pending_file();
+                    return;
+                }
                 match self.pending.take() {
                     Some(GuitarPending::Open(path)) => self.load(&path),
                     Some(GuitarPending::ReadCurrent) => self.launch_read(),
@@ -1202,6 +1231,7 @@ impl FamilyTab for VariaxEditor {
         self.tuning_presets_dialog(ctx);
         self.slot_replacement_dialog(services, ctx);
         self.slot_transfer_dialog(services, ctx);
+        self.rename_bank_dialog(services, ctx);
     }
     fn busy(&self) -> bool {
         self.is_reading()
@@ -1214,8 +1244,11 @@ impl FamilyTab for VariaxEditor {
             || self.tuning_dialog.is_some()
             || self.slot_replacement.is_some()
             || self.slot_transfer.is_some()
+            || self.bank_rename.is_some()
+            || self.new_file.is_some()
     }
     fn actions(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
+        self.new_file_menu(ui, services);
         if ui.button("Replace file in this tab…").clicked() {
             self.open_dialog(services);
         }
@@ -1251,7 +1284,11 @@ impl ProductFamily for Family {
                     .iter()
                     .flat_map(|bank| bank.presets())
                     .peekable();
-                patches.peek().is_some() && patches.all(PresetFile::is_legacy_electric)
+                if patches.peek().is_some() {
+                    patches.all(PresetFile::is_legacy_electric)
+                } else {
+                    file.is_empty_collection()
+                }
             })
         } else {
             PresetFile::parse(bytes.to_vec()).is_ok_and(|patch| patch.is_legacy_electric())
@@ -1267,7 +1304,7 @@ impl ProductFamily for Family {
         match source {
             TabSource::New => editor.open_example(),
             TabSource::File(path, bytes) => {
-                editor.document = Some(EditorDocument::from_file_bytes(bytes, &path)?);
+                editor.adopt_document(EditorDocument::from_file_bytes(bytes, &path)?, &path);
                 editor.status = format!("Opened {}", path.display());
             }
         }

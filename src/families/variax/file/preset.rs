@@ -70,6 +70,28 @@ fn reject_new_legacy_text(value: &str) -> Result<(), String> {
 }
 
 impl PresetFile {
+    /// Settings recovered from the Workbench 1.75 legacy-electric Default Patch.
+    /// Build a fresh file so the editor needs no vendor package at runtime.
+    pub fn default_legacy_model() -> Result<Self, String> {
+        use crate::ParameterValue::{Boolean, Float, Integer};
+        let mut metadata = crate::PresetMetadata::from_bytes([0; 192])?;
+        metadata.name = "Default Patch".into();
+        metadata.parameters.extend([
+            ("body_model", Integer(0x0310_0003)),
+            ("pickup1_enabled", Boolean(true)),
+            ("pickup1_model", Integer(0x0311_0004)),
+            ("pickup1_position", Float(f32::from_bits(0x3fe6_cc00))),
+            ("pickup1_angle", Float(f32::from_bits(0x410c_6600))),
+            ("pickup2_model", Integer(0x0311_0003)),
+            ("pickup2_position", Float(f32::from_bits(0x4078_f500))),
+            ("tone_capacitance", Float(f32::from_bits(0x3cb4_3900))),
+            ("tone_resistance", Float(250.0)),
+            ("volume_resistance", Float(250.0)),
+            ("tone_position", Float(1.0)),
+        ]);
+        Self::from_metadata(&metadata, 0x0007_0000, 0)
+    }
+
     /// Construct a portable model/settings file from a current-preset metadata
     /// read. This does not contain the guitar's full DSP or firmware memory.
     pub fn from_metadata(
