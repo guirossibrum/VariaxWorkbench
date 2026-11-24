@@ -357,9 +357,14 @@ an explicit **Refresh guitar** action on the bridge tab and the guitar
 tab when present. Both use the same preflight, guard and bounded exchange.
 The app does no periodic identity polling. A completed refresh with no reply
 makes the guitar unavailable. A busy endpoint or unreadable OS snapshot
-leaves the last observation uncertain. The PODxt `03 11` “Variax connected”
-message is a possible future passive signal. Its use for presence monitoring
-is unverified.
+leaves the last observation uncertain. On Linux, the app listens for the
+code-derived `03 11` and `7F 03` notices on the verified PODxt Live's raw
+MIDI input while the rig is idle. A changed notice queues the same bounded
+identity check. An identity result still determines guitar availability.
+The passive listener holds the rig lock only while it has the input open
+and yields to active work. Real delivery of these notices still needs an
+owner run. Identity from Variax 300/600 firmware below 3.07 produces an
+informational warning on the PODxt tab and stays outside live admission.
 
 ## Delivery and verification
 

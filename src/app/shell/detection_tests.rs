@@ -1,5 +1,6 @@
 use super::super::detection::{
-    AttachmentKey, DeviceSupport, PresenceSource, SimulatedGuitar, SimulatedJob, SimulatedOutcome,
+    AttachmentKey, DeviceSupport, PresenceSource, SimulatedGuitar, SimulatedJob, SimulatedNotice,
+    SimulatedOutcome,
 };
 use super::super::tabs::{Connection, DeviceTab};
 use super::*;
@@ -16,6 +17,7 @@ struct FakeSnapshot {
     usb: Vec<UsbDevice>,
     results: std::collections::BTreeMap<AttachmentKey, SimulatedOutcome>,
     completed: Vec<SimulatedJob>,
+    notices: std::collections::BTreeMap<AttachmentKey, Vec<SimulatedNotice>>,
     fail: bool,
     reads: usize,
 }
@@ -50,9 +52,25 @@ impl PresenceSource for FakePresence {
         snapshot.completed.push(job.clone());
         Some(outcome)
     }
+    fn simulated_notices(&self, attachment: &AttachmentKey) -> Vec<SimulatedNotice> {
+        self.0
+            .borrow_mut()
+            .notices
+            .remove(attachment)
+            .unwrap_or_default()
+    }
 }
 
 impl FakePresence {
+    fn notice(&self, parent: &AttachmentKey, notice: SimulatedNotice) {
+        self.0
+            .borrow_mut()
+            .notices
+            .entry(parent.clone())
+            .or_default()
+            .push(notice);
+    }
+
     fn usb(&self, pod: bool, hd: bool) {
         let mut usb = SyntheticSysfs::new();
         if pod {
@@ -513,4 +531,90 @@ fn cleanup_failure_suspends_refresh_and_stale_replies_do_not_open_guitar_tabs() 
     source.guitar(new.clone());
     app.refresh_guitar(&new);
     assert_eq!(entries(&app).len(), 3);
+}
+
+#[test]
+fn pod_notices_trigger_identity_and_duplicates_do_not_recheck() {
+    let (ctx, mut app, source) = fixture();
+    source.usb(true, false);
+    tick(&ctx, &mut app);
+    let attachment = entries(&app)[0].2.device.key.attachment.clone();
+    source.finish(attachment.clone(), SimulatedGuitar::Silent);
+    tick(&ctx, &mut app);
+
+    source.notice(&attachment, SimulatedNotice::Connected);
+    tick(&ctx, &mut app);
+    assert_eq!(entries(&app).len(), 1, "a notice alone cannot add a tab");
+    assert!(
+        entries(&app)[0]
+            .2
+            .device
+            .guitar_status
+            .as_ref()
+            .unwrap()
+            .contains("checking")
+    );
+    source.guitar(attachment.clone());
+    tick(&ctx, &mut app);
+    let original = entries(&app)[1].2.device.key.clone();
+    assert_eq!(source.0.borrow().completed.len(), 2);
+
+    source.notice(&attachment, SimulatedNotice::Connected);
+    tick(&ctx, &mut app);
+    assert_eq!(source.0.borrow().completed.len(), 2);
+    assert_eq!(
+        entries(&app)[1].2.device.support,
+        DeviceSupport::Verified("3.10")
+    );
+
+    source.notice(&attachment, SimulatedNotice::Disconnected);
+    tick(&ctx, &mut app);
+    assert_eq!(
+        entries(&app)[1].2.device.support,
+        DeviceSupport::Refreshing("3.10")
+    );
+    source.finish(attachment.clone(), SimulatedGuitar::Silent);
+    tick(&ctx, &mut app);
+    assert_eq!(entries(&app)[1].2.connection, Connection::Disconnected);
+
+    source.notice(&attachment, SimulatedNotice::Connected);
+    source.guitar(attachment.clone());
+    tick(&ctx, &mut app);
+    assert_eq!(source.0.borrow().completed.len(), 4);
+    assert_eq!(entries(&app)[2].2.connection, Connection::Present);
+    assert_ne!(entries(&app)[2].2.device.key, original);
+
+    // A disconnect and reconnect in one read window still recheck once.
+    source.notice(&attachment, SimulatedNotice::Disconnected);
+    source.notice(&attachment, SimulatedNotice::Connected);
+    source.guitar(attachment.clone());
+    tick(&ctx, &mut app);
+    assert_eq!(source.0.borrow().completed.len(), 5);
+    tick(&ctx, &mut app);
+    assert_eq!(source.0.borrow().completed.len(), 5);
+}
+
+#[test]
+fn older_guitar_firmware_warns_on_the_pod_without_admitting_a_guitar_tab() {
+    let (ctx, mut app, source) = fixture();
+    source.usb(true, false);
+    tick(&ctx, &mut app);
+    let attachment = entries(&app)[0].2.device.key.attachment.clone();
+    source.finish(
+        attachment.clone(),
+        SimulatedGuitar::OlderFirmware("3.06".into()),
+    );
+    tick(&ctx, &mut app);
+    assert_eq!(entries(&app).len(), 1);
+    let warning = entries(&app)[0].2.device.guitar_warning.clone().unwrap();
+    assert!(
+        warning.contains("Update Firmware") && warning.contains("3.06") && warning.contains("3.07")
+    );
+    assert!(has_label(&frame(&ctx, &mut app, vec![]).shapes, &warning));
+
+    source.notice(&attachment, SimulatedNotice::Connected);
+    source.guitar(attachment);
+    tick(&ctx, &mut app);
+    assert_eq!(entries(&app).len(), 2);
+    assert!(entries(&app)[0].2.device.guitar_warning.is_none());
 }

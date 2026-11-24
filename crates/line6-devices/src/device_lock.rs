@@ -2,6 +2,7 @@
 use std::fmt;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum LockError {
@@ -23,6 +24,7 @@ const LOCK_NAME: &str = "variax-workbench-podxt-live.lock";
 pub struct DeviceLock {
     // The OS releases the lock when the last clone of this handle closes.
     _file: File,
+    _active: File,
 }
 
 impl DeviceLock {
@@ -110,10 +112,67 @@ fn lock(file: &File) -> Result<(), LockError> {
     })
 }
 
+// Active work signals intent before competing for the original rig lock.
+// Passive listeners yield within a read poll and cannot reacquire over it.
+fn active_file(path: &Path) -> Result<File, LockError> {
+    open_lock_file(&path.with_extension("active.lock"))
+}
+
 fn acquire_at(path: &Path) -> Result<DeviceLock, LockError> {
+    let active = active_file(path)?;
+    // The monitor may be in its brief try/unlock check when active work arrives.
+    match lock(&active) {
+        Err(LockError::Busy) => {
+            std::thread::sleep(Duration::from_millis(4));
+            lock(&active)?;
+        }
+        result => result?,
+    }
     let file = open_lock_file(path)?;
-    lock(&file)?;
-    Ok(DeviceLock { _file: file })
+    let deadline = Instant::now() + Duration::from_millis(100);
+    loop {
+        match lock(&file) {
+            Ok(()) => {
+                return Ok(DeviceLock {
+                    _file: file,
+                    _active: active,
+                });
+            }
+            Err(LockError::Busy) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(4));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// An interruptible lease on the normal rig lock for passive input only.
+pub struct PassiveDeviceLock {
+    _file: File,
+    active: File,
+}
+
+impl PassiveDeviceLock {
+    pub fn acquire() -> Result<Self, LockError> {
+        Self::acquire_at(&lock_path(std::env::var_os("XDG_RUNTIME_DIR")))
+    }
+
+    fn acquire_at(path: &Path) -> Result<Self, LockError> {
+        let active = active_file(path)?;
+        lock(&active)?;
+        let file = open_lock_file(path)?;
+        lock(&file)?;
+        active.unlock().map_err(unavailable)?;
+        Ok(Self {
+            _file: file,
+            active,
+        })
+    }
+
+    /// Call before each bounded read. Any failure also ends the lease.
+    pub fn yield_requested(&self) -> bool {
+        lock(&self.active).is_err() || self.active.unlock().is_err()
+    }
 }
 
 #[cfg(unix)]
@@ -160,6 +219,33 @@ mod tests {
 #[cfg(all(test, target_os = "linux"))]
 mod linux {
     use super::*;
+
+    #[test]
+    fn passive_listener_yields_to_active_work_and_cannot_reenter() {
+        let folder =
+            std::env::temp_dir().join(format!("variax-passive-lock-test-{}", std::process::id()));
+        std::fs::create_dir(&folder).unwrap();
+        let path = folder.join("lock");
+        let passive = PassiveDeviceLock::acquire_at(&path).unwrap();
+        assert!(!passive.yield_requested());
+        let pending = active_file(&path).unwrap();
+        lock(&pending).unwrap();
+        assert!(passive.yield_requested());
+        assert!(matches!(
+            PassiveDeviceLock::acquire_at(&path),
+            Err(LockError::Busy)
+        ));
+        drop(passive);
+        drop(pending);
+        let active = acquire_at(&path).unwrap();
+        assert!(matches!(
+            PassiveDeviceLock::acquire_at(&path),
+            Err(LockError::Busy)
+        ));
+        drop(active);
+        assert!(PassiveDeviceLock::acquire_at(&path).is_ok());
+        std::fs::remove_dir_all(folder).unwrap();
+    }
 
     #[test]
     fn exclusive_until_the_last_inherited_handle_closes() {

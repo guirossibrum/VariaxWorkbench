@@ -74,6 +74,8 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 
 ### Verified and passing
 
+- [x] Variax live-link follow-up. Code-derived PODxt Live connect and disconnect notices can queue the existing read-only identity check. A Variax 300/600 reply below firmware 3.07 shows an informational warning on the PODxt tab. Offline validation passed **802** app tests (1 ignored), **116** device-library tests (2 ignored), and **4** owner-probe tests. Physical notice delivery and the first owner run remain pending. [Owner test card](docs/automatic-identity-owner-test-card.md) · [#201](https://github.com/guirossibrum/VariaxWorkbench/issues/201).
+
 - [x] Device check opens directly on **This computer** and scrolls when space is limited. Each step defaults to **No**. Synthetic and fake sources remain available in tests. Offline checks passed **778** app tests (1 ignored), **98** device-library tests (2 ignored), and **4** owner-probe tests. [Device check](docs/device-check.md) · [#228](https://github.com/guirossibrum/VariaxWorkbench/issues/228).
 
 - [x] Product-family device-crate tidy, Step 4. Variax and PODxt own their backup layouts and endpoint descriptors. Existing backups and tool imports still work. The app and owner probes use the standard-library file lock in `XDG_RUNTIME_DIR` with a temporary-directory fallback. Offline checks passed **772** app tests (1 ignored), **98** device-library tests (2 ignored), and **4** owner-probe tests. [Family architecture](docs/architecture-families.md) · [#214](https://github.com/guirossibrum/VariaxWorkbench/issues/214).

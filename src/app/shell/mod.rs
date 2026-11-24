@@ -417,6 +417,11 @@ impl Workbench {
                         if let Some(device) = &self.tabs.entries[index].device {
                             ui.weak(device.status());
                             if device.connection == tabs::Connection::Present
+                                && let Some(warning) = &device.device.guitar_warning
+                            {
+                                ui.colored_label(Color32::YELLOW, warning);
+                            }
+                            if device.connection == tabs::Connection::Present
                                 && let Some(status) = device.device.guitar_status.clone()
                             {
                                 let attachment = device

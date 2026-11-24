@@ -1,6 +1,6 @@
 //! One identity-only operation at a time. Results belong to the USB
 //! attachment generation that started the operation.
-use super::AttachmentKey;
+use super::{AttachmentKey, notice::Notice};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
@@ -9,6 +9,7 @@ use std::thread::JoinHandle;
 pub(in crate::editor) enum JobKind {
     Initial,
     RefreshGuitar,
+    Listen,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -29,6 +30,11 @@ pub(in crate::editor) enum Guitar {
         allow(dead_code)
     )]
     Silent,
+    #[cfg_attr(
+        not(any(test, all(feature = "usb", target_os = "linux"))),
+        allow(dead_code)
+    )]
+    OlderFirmware(String),
     Unavailable(String),
     CleanupFailed,
 }
@@ -40,6 +46,11 @@ pub(in crate::editor) enum Outcome {
         allow(dead_code)
     )]
     Deferred,
+    #[cfg_attr(
+        not(any(test, all(feature = "usb", target_os = "linux"))),
+        allow(dead_code)
+    )]
+    Notices(Vec<Notice>),
     Finished {
         pod_firmware: Option<&'static str>,
         guitar: Guitar,
@@ -78,9 +89,16 @@ impl Worker {
     }
 
     pub fn finish(self) -> (Job, Outcome) {
-        let outcome = self.handle.join().unwrap_or(Outcome::Finished {
-            pod_firmware: None,
-            guitar: Guitar::CleanupFailed,
+        let outcome = self.handle.join().unwrap_or_else(|_| {
+            if self.job.kind == JobKind::Listen {
+                eprintln!("PODxt Variax presence: listener stopped unexpectedly");
+                Outcome::Notices(Vec::new())
+            } else {
+                Outcome::Finished {
+                    pod_firmware: None,
+                    guitar: Guitar::CleanupFailed,
+                }
+            }
         });
         (self.job, outcome)
     }
@@ -99,8 +117,10 @@ pub(super) fn platform() -> Option<Identify> {
 
 #[cfg(all(feature = "usb", target_os = "linux", not(test)))]
 mod live {
+    use super::super::notice::read_notices;
     use super::*;
-    use line6_devices::device_lock::{DeviceLock, LockError};
+    use line6_devices::device_lock::{DeviceLock, LockError, PassiveDeviceLock};
+    use line6_devices::transport::rawmidi::RawMidiInput;
     use line6_devices::{
         family::podxt::transport::PODXT_LIVE_MIDI, transport::rawmidi::RawMidiLink,
     };
@@ -109,11 +129,14 @@ mod live {
     };
     use variax_workbench::hardware_gates::{Gate, is_locked, run_if_unlocked};
     use variax_workbench::identity_stage::{
-        BRIDGE_VERSION, GUITAR_VERSION, IdentifyError, IdentityFailure,
+        BRIDGE_VERSION, DiscoveryIdentity, GUITAR_VERSION, IdentifyError, IdentityFailure,
     };
     use variax_workbench::usb;
 
     pub(super) fn identify(job: &Job, cancel: &AtomicBool) -> Outcome {
+        if job.kind == JobKind::Listen {
+            return Outcome::Notices(listen(job, cancel).unwrap_or_default());
+        }
         if is_locked(Gate::OsDiscovery) {
             return unavailable("USB discovery is closed.");
         }
@@ -124,6 +147,49 @@ mod live {
         };
         run_if_unlocked(Gate::OsDiscovery, || Ok(identify_on(&rig, job, cancel)))
             .unwrap_or_else(unavailable)
+    }
+
+    fn listen(job: &Job, cancel: &AtomicBool) -> Option<Vec<Notice>> {
+        run_if_unlocked(Gate::OsDiscovery, || {
+            run_if_unlocked(Gate::IdentityRequest, || {
+                run_if_unlocked(Gate::DeviceCheckCurrentSettingsRead, || {
+                    Ok(listen_on(job, cancel))
+                })
+            })
+        })
+        .ok()
+        .flatten()
+    }
+
+    fn listen_on(job: &Job, cancel: &AtomicBool) -> Option<Vec<Notice>> {
+        let Recognition::Recognised {
+            device,
+            sound_cards,
+        } = recognise(&LinuxSysfs::new())
+        else {
+            return None;
+        };
+        if device.sysfs_name != job.attachment.path || cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        let mut cards = sound_cards
+            .iter()
+            .filter(|card| card.id == PODXT_LIVE_MIDI.card_id);
+        let (Some(card), None) = (cards.next(), cards.next()) else {
+            return None;
+        };
+        let rig = PassiveDeviceLock::acquire().ok()?;
+        if cancel.load(Ordering::Relaxed) || rig.yield_requested() {
+            return None;
+        }
+        // Opening a read-only descriptor sends no request and never detaches a driver.
+        let mut input = RawMidiInput::open(PODXT_LIVE_MIDI.device_node(card.index)).ok()?;
+        let notices = read_notices(
+            |wait| input.read(wait),
+            || cancel.load(Ordering::Relaxed) || rig.yield_requested(),
+            |message| eprintln!("PODxt Variax presence: ignored {message}"),
+        );
+        (!cancel.load(Ordering::Relaxed)).then_some(notices)
     }
 
     fn identify_on(rig: &DeviceLock, job: &Job, cancel: &AtomicBool) -> Outcome {
@@ -169,7 +235,8 @@ mod live {
             Guitar::Unavailable("The expected guitar interface driver is unavailable.".into())
         } else {
             match usb::read_discovery_identity(rig, &job.attachment.path, cancel) {
-                Ok(_) => Guitar::Verified(GUITAR_VERSION),
+                Ok(DiscoveryIdentity::Verified) => Guitar::Verified(GUITAR_VERSION),
+                Ok(DiscoveryIdentity::OlderFirmware(firmware)) => Guitar::OlderFirmware(firmware),
                 Err(IdentifyError::Locked) => {
                     Guitar::Unavailable("The guitar identity gate is closed.".into())
                 }

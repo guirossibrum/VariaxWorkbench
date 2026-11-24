@@ -58,6 +58,13 @@ pub struct IdentityPair {
     pub guitar: Identity,
 }
 
+/// An automatic identity can report outdated firmware without approving it
+/// for a live tab or any settings operation.
+pub enum DiscoveryIdentity {
+    Verified,
+    OlderFirmware(String),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IdentityFailure {
     RigBusy,
@@ -171,6 +178,7 @@ pub struct IdentityExchange {
     /// not pass, and kept here so a report can name what was decoded.
     pub bridge: Option<CanonicalIdentity>,
     pub guitar: Option<CanonicalIdentity>,
+    older_guitar: Option<String>,
     pub requests_sent: usize,
     pub release_attempted: bool,
     pub reattach_attempted: bool,
@@ -562,6 +570,14 @@ fn read_window(
     let Some(frame) = first else {
         return Err(IdentityFailure::TimedOut);
     };
+    if let Ok(identity) = Identity::parse(&frame)
+        && identity.product_id() == GUITAR_PRODUCT
+        && identity
+            .version
+            .is_some_and(|version| version < 0x0307_0000)
+    {
+        exchange.older_guitar = Some(identity.version_string());
+    }
     match classify(&frame)? {
         (identity, parsed) if identity.role == IdentityRole::Guitar => {
             remember(exchange, identity);
@@ -662,6 +678,7 @@ fn run_exchange(
         pair: None,
         bridge: None,
         guitar: None,
+        older_guitar: None,
         requests_sent: 0,
         release_attempted: false,
         reattach_attempted: false,
@@ -676,6 +693,19 @@ fn run_exchange(
     }
     finish_cleanup(transport, &mut exchange);
     exchange
+}
+
+#[cfg(any(test, all(target_os = "linux", feature = "usb")))]
+pub(crate) fn discovery_result(
+    mut exchange: IdentityExchange,
+) -> Result<DiscoveryIdentity, IdentifyError> {
+    if exchange.cleanup_failure.is_none()
+        && exchange.failure == Some(IdentityFailure::Inconsistent)
+        && let Some(firmware) = exchange.older_guitar.take()
+    {
+        return Ok(DiscoveryIdentity::OlderFirmware(firmware));
+    }
+    exchange_result(exchange).map(|_| DiscoveryIdentity::Verified)
 }
 
 pub(crate) fn exchange_result(exchange: IdentityExchange) -> Result<IdentityPair, IdentifyError> {
@@ -750,6 +780,50 @@ mod tests {
                 ..
             }))
         ));
+    }
+
+    #[test]
+    fn an_old_guitar_reply_warns_without_passing_the_manual_or_automatic_identity() {
+        for (revision, warned) in [(b"0306", true), (b"0307", false), (b"030X", false)] {
+            let mut reply = guitar_reply();
+            reply[12..16].copy_from_slice(revision);
+            let (manual, _) = run(ScriptedIdentity::new([reply.clone()]));
+            assert!(matches!(
+                exchange_result(manual),
+                Err(IdentifyError::Failed(IdentifyStop {
+                    failure: IdentityFailure::Inconsistent,
+                    ..
+                }))
+            ));
+            let mut transport = ScriptedIdentity::new([reply.clone()]);
+            let exchange = run_discovery_exchange(&mut transport, &AtomicBool::new(false));
+            assert_eq!(transport.sent(), &[IDENTITY_REQUEST]);
+            assert_full_cleanup(&exchange, &transport);
+            assert!(exchange.pair.is_none());
+            if warned {
+                assert!(
+                    matches!(discovery_result(exchange), Ok(DiscoveryIdentity::OlderFirmware(version)) if version == "3.06")
+                );
+            } else {
+                assert!(discovery_result(exchange).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn an_old_reply_cannot_mask_ambiguity_or_cleanup_failure() {
+        let mut reply = guitar_reply();
+        reply[12..16].copy_from_slice(b"0306");
+        for mut transport in [
+            ScriptedIdentity::new([reply.clone(), guitar_reply()]),
+            ScriptedIdentity::new([reply]).fail_reattach(),
+        ] {
+            let result = discovery_result(run_discovery_exchange(
+                &mut transport,
+                &AtomicBool::new(false),
+            ));
+            assert!(result.is_err());
+        }
     }
 
     fn assert_full_cleanup(exchange: &IdentityExchange, script: &ScriptedIdentity) {

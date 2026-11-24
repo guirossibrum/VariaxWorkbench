@@ -429,12 +429,12 @@ fn identity_on<T: IdentityTransport>(
     open: impl FnOnce() -> Result<T, String>,
     cancel: &AtomicBool,
     exchange: impl FnOnce(&mut T, &AtomicBool) -> identity_stage::IdentityExchange,
-) -> Result<identity_stage::IdentityPair, identity_stage::IdentifyError> {
+) -> Result<identity_stage::IdentityExchange, identity_stage::IdentifyError> {
     if cancel.load(Ordering::Relaxed) {
         return Err(open_stopped(IdentityFailure::Cancelled));
     }
     let mut session = open().map_err(|error| open_stopped(open_failure_kind(&error)))?;
-    identity_stage::exchange_result(exchange(&mut session, cancel))
+    Ok(exchange(&mut session, cancel))
 }
 
 /// One Variax identity request. Gate G2 only: this does not require the
@@ -473,6 +473,7 @@ pub fn read_identity(
             cancel,
             identity_stage::run_identity_exchange,
         )
+        .and_then(identity_stage::exchange_result)
     }
 }
 
@@ -483,7 +484,7 @@ pub fn read_discovery_identity(
     _rig: &line6_devices::device_lock::DeviceLock,
     expected_path: &str,
     cancel: &AtomicBool,
-) -> Result<identity_stage::IdentityPair, identity_stage::IdentifyError> {
+) -> Result<identity_stage::DiscoveryIdentity, identity_stage::IdentifyError> {
     use identity_stage::IdentifyError;
     hardware_gates::run_if_unlocked(Gate::OsDiscovery, || {
         hardware_gates::run_if_unlocked(Gate::IdentityRequest, || {
@@ -491,7 +492,8 @@ pub fn read_discovery_identity(
                 || Session::open_handle(Some(expected_path)),
                 cancel,
                 identity_stage::run_discovery_exchange,
-            ))
+            )
+            .and_then(identity_stage::discovery_result))
         })
     })
     .unwrap_or(Err(IdentifyError::Locked))
