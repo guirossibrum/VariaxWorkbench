@@ -1,0 +1,43 @@
+{
+  "archive_sha256": "e9f471e987b04cf31321e8a0da068f44abcdff2edbb32368385c08f92b999c1a",
+  "product_id": "00070004",
+  "version_hex": "03100000",
+  "opcode": "0x3C",
+  "handler": "P:0x144A9",
+  "buffer": "Y:0xA47",
+  "address_formula": "Y:0xA47 + start + i when m6 is linear",
+  "handler_writes_m6": false,
+  "buffer_words": 1092,
+  "last_buffer_address": "Y:0xE8A",
+  "first_address_past_buffer": "Y:0xE8B",
+  "initialized_record_through": "Y:0xEA6",
+  "span_check": false,
+  "flash_call": false,
+  "reply_header": [
+    "0x00",
+    "0x01",
+    "0x0C",
+    "0x07",
+    "0x04"
+  ],
+  "reply_bytes": "8 + 6 * count",
+  "reply_bytes_for_count_32": 200,
+  "largest_count_from_start_0": 1092,
+  "reply_bytes_for_full_buffer": 6560,
+  "queue_index_mask": "0x3F",
+  "queue_bytes": 63,
+  "transmit_wait": "P:0x1241",
+  "transmit_drain_vector": "P:0x0058",
+  "host_reads": [
+    {
+      "start": 851,
+      "count": 32,
+      "last_word": 882
+    },
+    {
+      "start": 883,
+      "count": 32,
+      "last_word": 914
+    }
+  ]
+}

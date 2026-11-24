@@ -1,0 +1,234 @@
+{
+  "archive_sha256": "e9f471e987b04cf31321e8a0da068f44abcdff2edbb32368385c08f92b999c1a",
+  "product_id": "00070004",
+  "version_hex": "03100000",
+  "bus": {
+    "aar0": {
+      "value": "0x000539",
+      "written_at": "P:0x0DBC",
+      "spaces": [
+        "X",
+        "Y",
+        "P"
+      ],
+      "window": "0x000000-0x07FFFF",
+      "pin": "AA0",
+      "active_low": true,
+      "access": "SRAM"
+    },
+    "aar1": {
+      "value": "0xD00431",
+      "written_at": "P:0x0DBE",
+      "spaces": [
+        "X",
+        "Y"
+      ],
+      "window": "0xD00000-0xDFFFFF",
+      "pin": "AA1",
+      "active_low": true,
+      "access": "SRAM",
+      "packing": false
+    },
+    "aar2": {
+      "value": "0x000001",
+      "spaces_enabled": false
+    },
+    "aar3": {
+      "value": "0x000001",
+      "spaces_enabled": false
+    },
+    "bcr": {
+      "value": "0x1F27C2",
+      "written_at": "P:0x14004",
+      "selects_between_these_paths": false
+    },
+    "address_helpers_add_offset": false,
+    "pdre_bit4": {
+      "register": "Y:0xFFFF9D",
+      "pin": "PE4",
+      "manual_name": "ESAI_1 FST",
+      "gpio_output_programmed_at": "P:0x141CD",
+      "called_from": "P:0x1A13",
+      "board_net": "unknown"
+    },
+    "external_address_pins": "A0-A17",
+    "index_plus_64_same_a0_a17": true,
+    "physical_overlap_opposite_bit4": "unresolved; contradicted by owner backup (program 63 loads a distinct valid program)"
+  },
+  "erase": {
+    "helper": "P:0x0F63",
+    "base": "0xD00000",
+    "stride_bytes": 4096,
+    "one_call_one_sector": true,
+    "restart_tick_compare": 488
+  },
+  "byte_program_restart_compare": 10000,
+  "wide_erase": {
+    "0x63": {
+      "handler": "P:0x146BD",
+      "sectors": {
+        "first": 64,
+        "last": 127
+      },
+      "includes_60_through_62": false,
+      "before_trailer": true,
+      "pdre_bit4": "set",
+      "same_a0_a17_as_index_minus_64": true
+    },
+    "0x68": {
+      "handler": "P:0x146C0",
+      "sectors": {
+        "first": 32,
+        "last": 63
+      },
+      "includes_60_through_62": true,
+      "before_trailer": true,
+      "pdre_bit4": "clear",
+      "physical_overlap_with_store": "unresolved; contradicted by owner backup (program 63 loads a distinct valid program)"
+    }
+  },
+  "code_load": {
+    "0x60": {
+      "handler": "P:0x14687",
+      "sectors": {
+        "first": 16,
+        "last": 31
+      },
+      "includes_60_through_62": false,
+      "pdre_bit4": "clear",
+      "physical_overlap_with_presets": "unresolved; contradicted by owner backup (program 63 loads a distinct valid program)",
+      "commits_only_after_trailer_and_sum": true,
+      "reject_reply": "0x73",
+      "then_resets": true
+    },
+    "0x6F": {
+      "handler": "P:0x1468B",
+      "read_branch_erases": false,
+      "commit_sectors": {
+        "first": 0,
+        "last": 3
+      },
+      "includes_60_through_62": false,
+      "pdre_bit4": "clear",
+      "physical_overlap_with_presets": "unresolved; contradicted by owner backup (program 63 loads a distinct valid program)",
+      "other_values_return": true,
+      "commit_then_resets": true
+    }
+  },
+  "slot_read": {
+    "opcode": "0x44",
+    "handler": "P:0x147F2",
+    "reply_opcode": "0x45",
+    "requires_trailer_before_read": true,
+    "ram_index": "0x7F",
+    "ram_words": 1092,
+    "ram_nibble_bytes": 6552,
+    "flash_bytes": 3276,
+    "flash_nibble_bytes": 6552,
+    "sector_bytes_not_sent": 820,
+    "programs_or_erases": false,
+    "pdre_bit4_during_flash_walk": "set",
+    "index_7f_sets_bit4": false,
+    "index_50_address": "0xD32000",
+    "index_62_address": "0xD3E000",
+    "same_external_pins_as_store": true,
+    "host_image_byte_compare": false,
+    "peripheral_register_writes_in_walk": [
+      "Y:0xFFFF9D bit 4"
+    ]
+  },
+  "conditional_store": {
+    "opcode": "0x45",
+    "handler": "P:0x1480A",
+    "words": 1092,
+    "matching_checksum_stores_before_trailer": true,
+    "mismatch_reply": "0x72",
+    "match_reply": "0x71"
+  },
+  "bulk_store": {
+    "opcode": "0x58",
+    "handler": "P:0x145BD",
+    "all_argument": "0x7F",
+    "all_sectors": {
+      "first": 5,
+      "last": 54
+    },
+    "below_50_sector": "argument + 5",
+    "at_or_above_50_stores": false
+  },
+  "received_program": {
+    "0x62": {
+      "handler": "P:0x1474A",
+      "sectors": {
+        "first": 0,
+        "last": 59
+      },
+      "erases": false,
+      "consumes_input_as_data": true,
+      "pdre_bit4": "set",
+      "same_external_pins_as_store": true
+    },
+    "0x67": {
+      "handler": "P:0x14798",
+      "erases": false,
+      "addresses_stay_below": "0x21000"
+    },
+    "0x59": {
+      "handler": "P:0x147D8",
+      "requires_trailer_first": true,
+      "source_sectors": {
+        "first": 5,
+        "last": 54
+      },
+      "erases": false,
+      "program_addresses_stay_below": "0x21000"
+    }
+  },
+  "string_levels": {
+    "receive_opcode": "0x54",
+    "commit_opcode": "0x56",
+    "reply_opcode": "0x57",
+    "ram": "Y:0x2D8",
+    "words": 6,
+    "sector": 4,
+    "destination": "0xD04000",
+    "memory_space": "X",
+    "pdre_bit4": "clear",
+    "address_offset_added": false,
+    "physical_overlap_with_preset_index": "unresolved; contradicted by owner backup (program 63 loads a distinct valid program)",
+    "commit_after_trailer": true,
+    "uses_spare": false
+  },
+  "bank_names": {
+    "write_opcode": "0x6C",
+    "read_opcode": "0x6D",
+    "sector": 8,
+    "destination": "0xD08000",
+    "memory_space": "X",
+    "pdre_bit4": "clear",
+    "address_offset_added": false,
+    "physical_overlap_with_preset_index": "unresolved; contradicted by owner backup (program 63 loads a distinct valid program)",
+    "words": 132,
+    "marker": "0xD081FE",
+    "commit_before_trailer": true,
+    "uses_spare": false,
+    "ram_offset_scale_measured": false
+  },
+  "reset_opcode": {
+    "opcode": "0x7D",
+    "handler": "P:0x1469B",
+    "resets_before_trailer": true,
+    "erases_60_through_62_in_this_image": false
+  },
+  "version_stamp_literals": [
+    "P:0x1473B"
+  ],
+  "checksum_failure": {
+    "flag": "Y:0xA48",
+    "value": "0x100000",
+    "copies_slot": false,
+    "reload_copies_flag_to": "Y:0xD0"
+  },
+  "startup_calls_loader": false,
+  "startup_erases_60_through_62": false
+}
