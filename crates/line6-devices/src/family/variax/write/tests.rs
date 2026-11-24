@@ -13,9 +13,13 @@ const BRIDGE_OFF: &[u8] = &[0xf0, 0, 1, 0x0c, 3, 0x23, 0, 0xf7];
 struct Recording {
     writes: Vec<Vec<u8>>,
     transcript: Vec<String>,
+    reply_read_at: Vec<usize>,
     elapsed: Duration,
     reply: Option<Vec<u8>>,
+    difference_replies: VecDeque<Vec<Vec<u8>>>,
+    difference_in_flight: bool,
     notices: VecDeque<(Duration, Vec<u8>)>,
+    store_notices: VecDeque<(Duration, Vec<u8>)>,
     fail_at: Vec<usize>,
 }
 
@@ -25,6 +29,27 @@ impl Link for Recording {
     }
 
     fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
+        if bytes.first() == Some(&0x3b) {
+            self.difference_in_flight = true;
+        }
+        if bytes == [0xf7] && self.difference_in_flight {
+            self.difference_in_flight = false;
+            self.notices.extend(
+                self.difference_replies
+                    .pop_front()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|packet| (Duration::ZERO, packet)),
+            );
+        }
+        if bytes.len() == 2 && bytes[0] == 0x61 {
+            self.notices.append(&mut self.store_notices);
+        }
+        if matches!(bytes, [0x61, _] | [0x6d])
+            && let Some(reply) = self.reply.take()
+        {
+            self.notices.push_back((Duration::ZERO, reply));
+        }
         self.writes.push(bytes.to_vec());
         let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
         self.transcript.push(format!("out {hex}"));
@@ -36,12 +61,14 @@ impl Link for Recording {
 
     fn read(&mut self, timeout: Duration) -> Result<Option<Vec<u8>>, String> {
         if let Some((delay, notice)) = self.notices.pop_front() {
-            assert!(delay <= timeout);
+            if delay > timeout {
+                self.notices.push_front((delay - timeout, notice));
+                self.elapsed += timeout;
+                return Ok(None);
+            }
+            self.reply_read_at.push(self.writes.len());
             self.elapsed += delay;
             return Ok(Some(notice));
-        }
-        if let Some(reply) = self.reply.take() {
-            return Ok(Some(reply));
         }
         self.elapsed += timeout;
         Ok(None)
@@ -114,7 +141,7 @@ fn store_confirmation_success_timeout_and_unexpected_reply() {
             writes[33..36].concat(),
             [0xf0, 0, 1, 0x0c, 7, 0, 0x61, 42, 0xf7]
         );
-        assert_eq!(session.link.elapsed.as_millis(), elapsed_ms);
+        assert_eq!(session.link.elapsed.as_millis(), elapsed_ms + 2);
         assert_cleanup(writes);
     }
 }
@@ -142,7 +169,7 @@ fn each_store_notice_is_logged_and_skipped_even_with_strict_replies() {
         notice[5] = 4;
         let mut session = Session::new(
             Recording {
-                notices: [(Duration::ZERO, notice)].into(),
+                store_notices: [(Duration::ZERO, notice)].into(),
                 reply: Some(ACK.to_vec()),
                 ..Default::default()
             },
@@ -179,7 +206,7 @@ fn store_notices_do_not_restart_the_fifteen_second_deadline() {
     let mut log = Quiet;
     let mut session = Session::new(
         Recording {
-            notices: (0..149).map(|_| (POLL, sysex(0x28, []))).collect(),
+            store_notices: (0..149).map(|_| (POLL, sysex(0x28, []))).collect(),
             ..Default::default()
         },
         &AllowAll,
@@ -192,7 +219,7 @@ fn store_notices_do_not_restart_the_fifteen_second_deadline() {
         .unwrap_err()
         .starts_with("Timed out")
     );
-    assert_eq!(session.link.elapsed, Duration::from_millis(15200));
+    assert_eq!(session.link.elapsed, Duration::from_millis(15202));
     assert_cleanup(&session.link.writes);
 }
 
@@ -340,29 +367,349 @@ fn bank_name_reply_validation_and_timeout_keep_cleanup_order() {
 }
 
 #[test]
-fn explicit_original_diff_encoding_and_tone_cc() {
+fn ordinary_differences_keep_original_bytes() {
     let old = packed("");
     let mut new = old;
-    new[..3].copy_from_slice(&[0x12, 0x34, 0x56]);
-    new[3270..3273].copy_from_slice(&[0x78, 0x9a, 0xbc]);
-    let checksum =
-        (u32::from_be_bytes([0, old[3273], old[3274], old[3275]]) + 0x123456) & 0xff_ffff;
-    new[3273..].copy_from_slice(&checksum.to_be_bytes()[1..]);
+    set_word(&mut new, 0, 0x123456);
+    set_word(&mut new, 10, 0xab);
+    set_word(&mut new, 11, 0xcd);
+    set_word(
+        &mut new,
+        CHECKSUM_WORD,
+        Program(&old).word(CHECKSUM_WORD) + 0x1235ce,
+    );
     let previous = Program::new("", &old).unwrap();
     let next = Program::new("", &new).unwrap();
     assert_eq!(
-        difference(Some(&previous), &next).unwrap(),
+        difference(&previous, &next).unwrap(),
         [
             0xf0, 0, 1, 0x0c, 7, 0, 0x3b, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 5, 4, 3, 2, 1, 2,
-            4, 4, 0, 0, 0, 1, 0, 0, 0, 0, 0, 12, 11, 10, 9, 8, 7, 0xf7
+            0, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0, 11, 10, 0, 0, 0, 0, 13, 12, 0, 0, 0, 0, 0xf7,
         ]
     );
-    assert!(difference(Some(&previous), &previous).is_none());
+    assert!(difference(&previous, &previous).is_none());
+}
+
+fn set_word(bytes: &mut [u8; WORDS * 3], index: usize, value: u64) {
+    bytes[index * 3..][..3].copy_from_slice(&value.to_be_bytes()[5..]);
+}
+
+#[test]
+fn tone_cc_uses_original_truncation() {
     let mut log = Quiet;
     let mut session = Session::new(Recording::default(), &AllowAll, &mut log);
     edit(&mut session, &[Edit::Tone(0.5)], || false).unwrap();
     assert_eq!(session.link.writes[4], [0xb0, 79, 63]);
     assert_cleanup(&session.link.writes);
+}
+
+#[test]
+fn program_requires_both_checksums_before_a_write() {
+    let mut bytes = packed("");
+    let mut log = Quiet;
+    let mut session = Session::new(Recording::default(), &AllowAll, &mut log);
+    for index in [1089, 1090] {
+        set_word(&mut bytes, index, 1);
+        let result = Program::new("", &bytes)
+            .and_then(|program| edit(&mut session, &[Edit::Full(&program)], || false));
+        assert!(result.unwrap_err().contains("firmware checksum"));
+        set_word(&mut bytes, index, 0);
+    }
+    set_word(&mut bytes, 1089, 1);
+    set_word(&mut bytes, 1090, WORD_MASK);
+    assert!(
+        Program::new("", &bytes).is_ok(),
+        "the two words cancel modulo 24 bits"
+    );
+    set_word(&mut bytes, 1089, 2);
+    set_word(
+        &mut bytes,
+        CHECKSUM_WORD,
+        Program(&packed("")).word(CHECKSUM_WORD) + 1,
+    );
+    assert!(
+        Program::new("", &bytes)
+            .err()
+            .unwrap()
+            .contains("host checksum")
+    );
+    assert!(session.link.writes.is_empty());
+}
+
+#[test]
+fn full_is_the_unknown_baseline_path_for_an_edit_or_a_tuning_toggle() {
+    let bytes = packed("Final");
+    let program = Program::new("Final", &bytes).unwrap();
+    let mut log = Quiet;
+    let mut session = Session::new(Recording::default(), &AllowAll, &mut log);
+    edit(&mut session, &[Edit::Full(&program)], || false).unwrap();
+    assert_eq!(session.sent[2], full(&program));
+    assert_eq!(session.sent.len(), 6);
+    assert!(session.link.reply_read_at.is_empty());
+    assert_cleanup(&session.link.writes);
+}
+
+#[test]
+fn every_difference_reply_is_read_before_the_next_write_and_store_gets_its_own_reply() {
+    let old = packed("Old");
+    let new = packed("New");
+    let previous = Program::new("Old", &old).unwrap();
+    let next = Program::new("New", &new).unwrap();
+    let mut log = Quiet;
+    let mut session = Session::new(
+        Recording {
+            difference_replies: [
+                vec![sysex(0x28, []), ACK[..4].to_vec(), ACK[4..].to_vec()],
+                vec![ACK.to_vec()],
+            ]
+            .into(),
+            reply: Some(ACK.to_vec()),
+            ..Default::default()
+        },
+        &AllowAll,
+        &mut log,
+    );
+    edit(
+        &mut session,
+        &[
+            Edit::Difference {
+                previous: &previous,
+                next: &previous,
+            },
+            Edit::Difference {
+                previous: &previous,
+                next: &next,
+            },
+            Edit::AlternateTuning {
+                previous: &next,
+                transition: &previous,
+                full: &next,
+            },
+        ],
+        || false,
+    )
+    .unwrap();
+    assert_eq!(session.link.reply_read_at, [7, 7, 7, 10]);
+    assert_eq!(session.sent[2], difference(&previous, &next).unwrap());
+    assert_eq!(session.sent[3], difference(&next, &previous).unwrap());
+    assert_eq!(session.sent[4], full(&next));
+    store(&mut session, Preset::new(0, 0).unwrap(), &next, || false).unwrap();
+    assert_eq!(session.link.reply_read_at, [7, 7, 7, 10, 79]);
+}
+
+#[test]
+fn missing_or_wrong_difference_reply_stops_before_the_tuning_upload() {
+    let old = packed("Old");
+    let new = packed("New");
+    let previous = Program::new("Old", &old).unwrap();
+    let next = Program::new("New", &new).unwrap();
+    for (packets, expected) in [
+        (vec![], "Timed out"),
+        (vec![sysex(0x70, []), ACK.to_vec()], "Unexpected"),
+    ] {
+        let packet_count = packets.len();
+        let mut log = Quiet;
+        let mut session = Session::new(
+            Recording {
+                difference_replies: [packets].into(),
+                ..Default::default()
+            },
+            &AllowAll,
+            &mut log,
+        );
+        let error = edit(
+            &mut session,
+            &[Edit::AlternateTuning {
+                previous: &previous,
+                transition: &next,
+                full: &next,
+            }],
+            || false,
+        )
+        .unwrap_err();
+        assert!(error.contains(expected));
+        assert_eq!(session.link.reply_read_at, vec![7; packet_count]);
+        assert!(session.sent.iter().all(|message| message[6] != 0x43));
+        assert_cleanup(&session.link.writes);
+    }
+}
+
+#[test]
+fn interrupted_difference_consumes_any_reply_to_recovery_eox() {
+    let old = packed("Old");
+    let new = packed("New");
+    let previous = Program::new("Old", &old).unwrap();
+    let next = Program::new("New", &new).unwrap();
+    for (fail_at, expected) in [(vec![], "stopped"), (vec![5], "write failure")] {
+        let mut log = Quiet;
+        let mut session = Session::new(
+            Recording {
+                difference_replies: [vec![ACK.to_vec()]].into(),
+                fail_at,
+                ..Default::default()
+            },
+            &AllowAll,
+            &mut log,
+        );
+        let mut checks = 0;
+        let error = edit(
+            &mut session,
+            &[Edit::Difference {
+                previous: &previous,
+                next: &next,
+            }],
+            || {
+                checks += 1;
+                checks >= 4
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains(expected));
+        assert_eq!(session.link.reply_read_at, [7]);
+        assert_cleanup(&session.link.writes);
+    }
+}
+
+#[test]
+fn store_refuses_a_queued_or_delayed_unread_reply_on_an_edit_link() {
+    let bytes = packed("");
+    let program = Program::new("", &bytes).unwrap();
+    // A split reply still counts as unread, even before the assembler emits an event.
+    for (delay, packet) in [(0, ACK), (0, &ACK[..4]), (2, ACK)] {
+        let mut log = Quiet;
+        let mut session = Session::new(
+            Recording {
+                notices: [(Duration::from_millis(delay), packet.to_vec())].into(),
+                ..Default::default()
+            },
+            &AllowAll,
+            &mut log,
+        );
+        let error =
+            store(&mut session, Preset::new(0, 0).unwrap(), &program, || false).unwrap_err();
+        assert!(error.contains("Unread MIDI data"));
+        assert!(session.sent.iter().all(|message| message[6] != 0x61));
+        if delay == 0 {
+            assert!(session.link.writes.is_empty());
+        } else {
+            assert_cleanup(&session.link.writes);
+        }
+    }
+}
+
+// Bounded edit-buffer projection of P:0x14433 and P:0x14668 in #181.
+// Read a whole six-nibble word even if F7 appears inside it. Only the
+// command loop recognizes F7. Stop when the transcript runs out or a write
+// would leave the modeled buffer.
+fn replay_buffer(message: &[u8], buffer: &mut [u64; WORDS]) -> Option<u8> {
+    fn read_word(bytes: &mut &[u8]) -> Option<usize> {
+        let (word, rest) = bytes.split_first_chunk::<6>()?;
+        *bytes = rest;
+        Some(
+            word.iter()
+                .enumerate()
+                .map(|(i, nibble)| usize::from(nibble & 15) << (i * 4))
+                .sum(),
+        )
+    }
+    let mut bytes = &message[7..];
+    if message[6] == 0x43 {
+        let count = read_word(&mut bytes)?;
+        for index in 0..count {
+            *buffer.get_mut(index)? = read_word(&mut bytes)? as u64;
+        }
+        assert_eq!(bytes, [0xf7]);
+        assert_eq!(buffer[..1091].iter().sum::<u64>() & 0xff_ffff, buffer[1091]);
+        return None; // A valid full upload reloads without 0x71.
+    }
+    assert_eq!(message[6], 0x3b);
+    loop {
+        if bytes.first() == Some(&0xf7) {
+            return Some(0x71);
+        }
+        let count = read_word(&mut bytes)? & 0xffff;
+        let start = read_word(&mut bytes)?;
+        for index in start..start + count {
+            *buffer.get_mut(index)? = read_word(&mut bytes)? as u64;
+        }
+    }
+}
+
+fn legacy_run(start: u64, count: u64, data: impl IntoIterator<Item = u64>) -> Vec<u8> {
+    let mut payload = Vec::new();
+    for word in [start, count].into_iter().chain(data) {
+        push_word(&mut payload, word);
+    }
+    sysex(0x3b, payload)
+}
+
+#[test]
+fn receiver_replay_terminal_runs_follow_firmware_count_start_order() {
+    let old = packed("");
+    let mut new = old;
+    // The cancelling pair passes both sums and reaches the terminal word.
+    set_word(&mut new, 1089, 3);
+    set_word(&mut new, 1090, 0xfffffd);
+    let previous = Program::new("", &old).unwrap();
+    let next = Program::new("", &new).unwrap();
+
+    let mut old_buffer = std::array::from_fn(|index| previous.word(index));
+    let old_frame = legacy_run(1089, 2, [3, 0xfffffd]);
+    assert_eq!(replay_buffer(&old_frame, &mut old_buffer), None);
+    assert_eq!(old_buffer[2..4], [3, 0xfffffd]);
+    assert_eq!(old_buffer[1089..1091], [0, 0]);
+
+    let mut single_word = std::array::from_fn(|index| previous.word(index));
+    assert_eq!(
+        replay_buffer(&legacy_run(1090, 1, [0x789abc]), &mut single_word),
+        None
+    );
+    assert_eq!(single_word[1], 0x789abc);
+    assert_eq!(single_word[1090], 0);
+
+    let mut log = Quiet;
+    let mut session = Session::new(
+        Recording {
+            difference_replies: [vec![ACK.to_vec()]].into(),
+            ..Default::default()
+        },
+        &AllowAll,
+        &mut log,
+    );
+    edit(
+        &mut session,
+        &[Edit::Difference {
+            previous: &previous,
+            next: &next,
+        }],
+        || false,
+    )
+    .unwrap();
+    let mut new_buffer = std::array::from_fn(|index| previous.word(index));
+    assert_eq!(replay_buffer(&session.sent[2], &mut new_buffer), Some(0x71));
+    assert_eq!(new_buffer, std::array::from_fn(|index| next.word(index)));
+    assert_eq!(session.link.reply_read_at, [7]);
+}
+
+#[test]
+fn receiver_replay_unknown_baseline_requires_a_full_upload() {
+    let mut bytes = packed("");
+    set_word(&mut bytes, 0, 1);
+    set_word(&mut bytes, 1, 4);
+    set_word(&mut bytes, 2, 17);
+    set_word(
+        &mut bytes,
+        CHECKSUM_WORD,
+        Program(&packed("")).word(CHECKSUM_WORD) + 22,
+    );
+    let next = Program::new("", &bytes).unwrap();
+    let mut buffer = [0; WORDS];
+    let legacy = legacy_run(0, 1091, (0..1091).map(|index| next.word(index)));
+    let _ = replay_buffer(&legacy, &mut buffer);
+    assert_eq!(buffer[0], 0);
+    assert_eq!(buffer[4], 17, "legacy data is parsed as a second run");
+    assert_eq!(replay_buffer(&full(&next), &mut buffer), None);
+    assert_eq!(buffer, std::array::from_fn(|index| next.word(index)));
 }
 
 /// The private differential corpus is supplied by verify_variax_write.py.
@@ -397,22 +744,26 @@ fn original_transcripts() {
         .collect();
     for (index, program) in programs.iter().enumerate() {
         let mut log = Quiet;
-        let mut session = Session::new(Recording::default(), &AllowAll, &mut log);
+        let link = Recording {
+            difference_replies: [vec![ACK.to_vec()], vec![ACK.to_vec()]].into(),
+            ..Default::default()
+        };
+        let mut session = Session::new(link, &AllowAll, &mut log);
         let previous = &programs[(index + programs.len() - 1) % programs.len()];
         edit(
             &mut session,
             &[
                 Edit::Full(program),
                 Edit::Difference {
-                    previous: Some(program),
+                    previous: program,
                     next: program,
                 },
                 Edit::Difference {
-                    previous: Some(program),
+                    previous: program,
                     next: previous,
                 },
                 Edit::AlternateTuning {
-                    previous: Some(previous),
+                    previous,
                     transition: &Program::new(names[index], &transitions[index]).unwrap(),
                     full: program,
                 },

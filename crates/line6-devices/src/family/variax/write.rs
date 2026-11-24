@@ -14,8 +14,12 @@ use crate::session::{Link, POLL, Path, Request, Session};
 use std::time::Duration;
 
 const WORDS: usize = 1092;
+const CHECKSUM_WORD: usize = WORDS - 1;
+const HOST_SUM_WORDS: usize = 1089;
+const WORD_MASK: u64 = 0xff_ffff;
 const NAME_OFFSET: usize = 2553;
 const STORE_SETTLE: Duration = Duration::from_millis(100);
+const DIFFERENCE_ACK: Duration = Duration::from_secs(1);
 const STORE_ACK: Duration = Duration::from_secs(15);
 const BANK_SELECT_SETTLE: Duration = Duration::from_millis(200);
 const BANK_WRITE_SETTLE: Duration = Duration::from_millis(700);
@@ -31,9 +35,17 @@ impl<'a> Program<'a> {
             return Err("The compiled Variax program contains a different model name.".into());
         }
         let program = Self(packed);
-        let checksum = (0..1089).map(|i| program.word(i)).sum::<u64>() & 0xffffff;
-        if checksum != program.word(WORDS - 1) {
-            return Err("The compiled Variax program has an invalid checksum.".into());
+        let host_sum = (0..HOST_SUM_WORDS).map(|i| program.word(i)).sum::<u64>();
+        let checksum = program.word(CHECKSUM_WORD);
+        if host_sum & WORD_MASK != checksum {
+            return Err("The compiled Variax program has an invalid host checksum.".into());
+        }
+        let firmware_sum = host_sum
+            + (HOST_SUM_WORDS..CHECKSUM_WORD)
+                .map(|i| program.word(i))
+                .sum::<u64>();
+        if firmware_sum & WORD_MASK != checksum {
+            return Err("The compiled Variax program has an invalid firmware checksum.".into());
         }
         Ok(program)
     }
@@ -75,29 +87,23 @@ fn full(program: &Program<'_>) -> Vec<u8> {
     sysex(0x43, payload)
 }
 
-fn difference(previous: Option<&Program<'_>>, next: &Program<'_>) -> Option<Vec<u8>> {
+fn difference(previous: &Program<'_>, next: &Program<'_>) -> Option<Vec<u8>> {
     let mut payload = Vec::new();
-    let limit = WORDS - 1;
-    let changed = |index| previous.is_none_or(|previous| previous.word(index) != next.word(index));
+    let changed = |index| previous.word(index) != next.word(index);
     let mut index = 0;
-    while index < limit {
+    while index < CHECKSUM_WORD {
         if !changed(index) {
             index += 1;
             continue;
         }
         let start = index;
-        while index < limit && changed(index) {
+        while index < CHECKSUM_WORD && changed(index) {
             index += 1;
         }
         let count = index - start;
-        // The original flushes a terminal run with its fields reversed.
-        let (first, second) = if index == limit {
-            (start, count)
-        } else {
-            (count, start)
-        };
-        push_word(&mut payload, first as u64);
-        push_word(&mut payload, second as u64);
+        // Firmware 3.10 reads count/start even for a run reaching word 1,090.
+        push_word(&mut payload, count as u64);
+        push_word(&mut payload, start as u64);
         for word in start..index {
             push_word(&mut payload, next.word(word));
         }
@@ -212,15 +218,19 @@ fn transaction<L: Link, T>(
 
 /// A G6 edit within one open Workbench-style session.
 pub enum Edit<'a> {
+    /// Upload the final program when the current edit-buffer contents are unknown.
     Full(&'a Program<'a>),
+    /// The caller supplies the program currently in the guitar's edit buffer.
     Difference {
-        previous: Option<&'a Program<'a>>,
+        previous: &'a Program<'a>,
         next: &'a Program<'a>,
     },
     /// The original generates the diff target with its tuning-transition flag
     /// set, then regenerates the full program with the flag cleared.
+    /// Supply the current program as the baseline, or upload the final program
+    /// with `Edit::Full` when the baseline is unknown.
     AlternateTuning {
-        previous: Option<&'a Program<'a>>,
+        previous: &'a Program<'a>,
         transition: &'a Program<'a>,
         full: &'a Program<'a>,
     },
@@ -248,9 +258,8 @@ pub fn edit<L: Link>(
                 Edit::Full(program) => WriteRequest(G6, Message::Full(&full(program)))
                     .send_until(session, &mut stopping)?,
                 Edit::Difference { previous, next } => {
-                    if let Some(bytes) = difference(*previous, next) {
-                        WriteRequest(G6, Message::Difference(&bytes))
-                            .send_until(session, &mut stopping)?;
+                    if let Some(bytes) = difference(previous, next) {
+                        send_difference(session, &bytes, &mut stopping)?;
                     }
                 }
                 Edit::AlternateTuning {
@@ -258,9 +267,8 @@ pub fn edit<L: Link>(
                     transition,
                     full: program,
                 } => {
-                    if let Some(bytes) = difference(*previous, transition) {
-                        WriteRequest(G6, Message::Difference(&bytes))
-                            .send_until(session, &mut stopping)?;
+                    if let Some(bytes) = difference(previous, transition) {
+                        send_difference(session, &bytes, &mut stopping)?;
                     }
                     WriteRequest(G6, Message::Full(&full(program)))
                         .send_until(session, &mut stopping)?;
@@ -274,6 +282,41 @@ pub fn edit<L: Link>(
     })
 }
 
+fn send_difference<L: Link>(
+    session: &mut Session<L>,
+    bytes: &[u8],
+    mut stopping: impl FnMut() -> bool,
+) -> Result<(), String> {
+    require_quiet_reply_stream(session)?;
+    let mut attempted = false;
+    let sent = WriteRequest(G6, Message::Difference(bytes)).send_until(session, || {
+        let stopped = stopping();
+        attempted |= !stopped;
+        stopped
+    });
+    // EOX recovery after cancellation or a transport error can still elicit
+    // 0x71. Finish this wait before sending another command.
+    if !attempted {
+        return sent;
+    }
+    let reply = wait_for_confirmation(session, DIFFERENCE_ACK, "difference");
+    match (sent, reply) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(format!("{error} Reopen the link before writing.")),
+        (Err(send), Err(reply)) => Err(format!("{send} {reply} Reopen the link before writing.")),
+    }
+}
+
+fn require_quiet_reply_stream<L: Link>(session: &mut Session<L>) -> Result<(), String> {
+    if session.poll(Duration::from_millis(1))?.is_some() {
+        return Err(
+            "Unread MIDI data in the Variax session. Reopen the link before writing.".into(),
+        );
+    }
+    Ok(())
+}
+
 /// Store one slot. The preparatory edit buffer and cleanup belong to G7.
 /// After sending the store request, always finish waiting for its confirmation.
 pub fn store<L: Link>(
@@ -285,49 +328,57 @@ pub fn store<L: Link>(
     if stopping() {
         return Err("Variax transfer stopped.".into());
     }
+    // A G6-enabled session can have edit acknowledgements on this stream.
+    // Dedicated G7 procedures supply an exclusive, known reply stream.
+    let shared_with_editing = session.allows(G6);
+    if shared_with_editing && session.link.path() == Path::VariaxViaPodxt && session.allows(G7) {
+        require_quiet_reply_stream(session)?;
+    }
     transaction(session, G7, true, |session| {
         WriteRequest(G7, Message::Full(&full(program))).send_until(session, &mut stopping)?;
         session.link.pause(STORE_SETTLE);
         if stopping() {
             return Err("Variax transfer stopped before the slot store.".into());
         }
+        if shared_with_editing {
+            require_quiet_reply_stream(session)?;
+        }
         let unknown = |error| format!("{error} Slot state is unknown.");
         WriteRequest(G7, Message::Store(preset))
             .send(session)
             .map_err(unknown)?;
-        wait_for_store_confirmation(session)
+        wait_for_confirmation(session, STORE_ACK, "store").map_err(unknown)
     })
 }
 
-fn wait_for_store_confirmation<L: Link>(session: &mut Session<L>) -> Result<(), String> {
-    const UNEXPECTED: &str = "Unexpected Variax store reply.";
-    let unknown = |error| format!("{error} Slot state is unknown.");
+fn wait_for_confirmation<L: Link>(
+    session: &mut Session<L>,
+    timeout: Duration,
+    command: &str,
+) -> Result<(), String> {
+    let unexpected = || format!("Unexpected Variax {command} reply.");
     let start = session.link.elapsed();
     let orphans = session.assembler.orphans;
+    let mut unexpected_data = false;
     loop {
-        let remaining = STORE_ACK.saturating_sub(session.link.elapsed().saturating_sub(start));
+        let remaining = timeout.saturating_sub(session.link.elapsed().saturating_sub(start));
         if remaining.is_zero() {
-            return Err(
-                "Timed out waiting for the Variax store reply. Slot state is unknown.".into(),
-            );
+            return if unexpected_data {
+                Err(unexpected())
+            } else {
+                Err(format!("Timed out waiting for the Variax {command} reply."))
+            };
         }
-        let Some(events) = session
-            .poll_with(remaining.min(POLL), |packet| {
-                if packet
-                    .iter()
-                    .any(|byte| matches!(byte, 0xf1..=0xf6 | 0xf8..=0xff))
-                {
-                    return Err(UNEXPECTED.into());
-                }
-                Ok(())
-            })
-            .map_err(unknown)?
+        let Some(events) = session.poll_with(remaining.min(POLL), |packet| {
+            unexpected_data |= packet
+                .iter()
+                .any(|byte| matches!(byte, 0xf1..=0xf6 | 0xf8..=0xff));
+            Ok(())
+        })?
         else {
             continue;
         };
-        if session.assembler.orphans != orphans {
-            return Err(unknown(UNEXPECTED.into()));
-        }
+        unexpected_data |= session.assembler.orphans != orphans;
         let mut acknowledged = false;
         for event in events {
             match event {
@@ -337,16 +388,28 @@ fn wait_for_store_confirmation<L: Link>(session: &mut Session<L>) -> Result<(), 
                     acknowledged = true;
                 }
                 Event::Sysex(reply) if is_reply(&reply, 0x28) => {
-                    session.note("Skipped Variax clip notice (0x28) during store.");
+                    session.note(format!(
+                        "Skipped Variax clip notice (0x28) during {command}."
+                    ));
                 }
                 Event::Sysex(reply) if is_reply(&reply, 0x4d) => {
-                    session.note("Skipped Variax DSP overload notice (0x4D) during store.");
+                    session.note(format!(
+                        "Skipped Variax DSP overload notice (0x4D) during {command}."
+                    ));
                 }
                 Event::Sysex(reply) if is_reply(&reply, 0x74) => {
-                    session.note("Skipped Variax MIDI queue overflow notice (0x74) during store.");
+                    session.note(format!(
+                        "Skipped Variax MIDI queue overflow notice (0x74) during {command}."
+                    ));
                 }
-                _ => return Err(unknown(UNEXPECTED.into())),
+                _ => unexpected_data = true,
             }
+        }
+        // Difference and store share 0x71. Keep reading a difference reply
+        // after unexpected traffic so its acknowledgement does not leak into
+        // a later wait. For a store, unexpected traffic ends the wait.
+        if unexpected_data && (acknowledged || command == "store") {
+            return Err(unexpected());
         }
         if acknowledged {
             return Ok(());
