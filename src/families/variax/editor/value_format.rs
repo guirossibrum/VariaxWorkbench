@@ -16,6 +16,7 @@ impl ValueFormat {
     pub(super) const LEVEL: Self = Self::decimal("dB", 1, true);
     pub(super) const TRIM: Self = Self::decimal("dB", 2, true);
     pub(super) const CENTS: Self = Self::decimal(" cents", 2, true);
+    pub(super) const CENTS_COMPACT: Self = Self::decimal(" cents", 0, true);
     pub(super) const SEMITONES: Self = Self::decimal(" semitones", 0, true);
 
     const fn decimal(suffix: &'static str, decimals: usize, signed: bool) -> Self {

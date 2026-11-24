@@ -1,3 +1,4 @@
+use super::tuning_presets::{DETUNE, MIX, PITCH, TUNINGS, TuningDialog, set_tuning_values};
 use super::{
     BODY, Color32, EditorDocument, FRET_MARKER, GUITAR_SELECTION, GUITAR_SURFACE, PICKUP1, PICKUP2,
     Pos2, PresetFile, Rect, SYSTEM, Sense, TUNING, Tab, TextureHandle, ValueFormat, VariaxEditor,
@@ -7,9 +8,6 @@ use std::{collections::HashSet, path::Path, process::Command};
 use variax_workbench::{bundle::BundleFile, edit::Domain, preset::PresetText};
 
 const GREEN: Color32 = Color32::from_rgb(167, 231, 133);
-const PITCH: u32 = 0x200000;
-const DETUNE: u32 = 0x200006;
-const MIX: u32 = 0x20000c;
 const SPREAD: u32 = 0x200012;
 
 const STRINGS: [(&str, i32); 6] = [
@@ -22,16 +20,6 @@ const STRINGS: [(&str, i32); 6] = [
 ];
 const NOTES: [&str; 12] = [
     "C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B",
-];
-const TUNINGS: [(&str, [i32; 6]); 8] = [
-    ("Standard", [0; 6]),
-    ("Half step down", [-1; 6]),
-    ("Whole step down", [-2; 6]),
-    ("Drop D", [-2, 0, 0, 0, 0, 0]),
-    ("Double Drop D", [-2, 0, 0, 0, 0, -2]),
-    ("DADGAD", [-2, 0, 0, 0, -2, -2]),
-    ("Open D", [-2, 0, 0, -1, -2, -2]),
-    ("Open G", [-2, -2, 0, 0, 0, -2]),
 ];
 
 pub(in crate::editor) fn milestones(ui: &mut egui::Ui) {
@@ -662,6 +650,16 @@ impl VariaxEditor {
             }
             ui.add_enabled_ui(complete_pitch, |ui| {
                 let menu = ui.menu_button("Presets", |ui| {
+                    let manage = ui.button("Manage tuning presets…");
+                    #[cfg(test)]
+                    self.tuning_widgets
+                        .insert("Manage tuning presets…", manage.rect);
+                    if manage.clicked() {
+                        self.tuning_dialog =
+                            Some(TuningDialog::open(self.preferences_path.as_deref()));
+                        ui.close();
+                    }
+                    ui.separator();
                     for (name, offsets) in TUNINGS {
                         let option = ui.button(name);
                         #[cfg(test)]
@@ -747,7 +745,7 @@ impl VariaxEditor {
                 .is_some_and(|value| value.value_type == kind)
     }
 
-    fn set_tuning(&mut self, offsets: [i32; 6], enable: bool) {
+    pub(super) fn set_tuning(&mut self, offsets: [i32; 6], enable: bool) {
         self.change(|preset| {
             set_tuning_values(preset, PITCH, 0, offsets.map(|offset| offset as u32))?;
             if enable {
@@ -851,6 +849,14 @@ impl VariaxEditor {
         } else {
             (1.0, ValueFormat::CENTS)
         };
+        // DragValue uses the same automatic ID for its compact button and focused text field.
+        let editing =
+            can_edit && ui.is_enabled() && ui.memory(|memory| memory.has_focus(ui.next_auto_id()));
+        let display_format = if !is_mix && !editing {
+            ValueFormat::CENTS_COMPACT
+        } else {
+            format
+        };
         let mut value = stored;
         let response = ui.add_enabled(
             can_edit,
@@ -858,7 +864,7 @@ impl VariaxEditor {
                 .range(min..=max)
                 .clamp_existing_to_range(false)
                 .speed(speed)
-                .custom_formatter(move |value, _| format.display(value))
+                .custom_formatter(move |value, _| display_format.display(value))
                 .custom_parser(move |text| format.parse_edit(text, f64::from(stored)))
                 .update_while_editing(false),
         );
@@ -1207,18 +1213,6 @@ fn paint_accidental(painter: &egui::Painter, center: Pos2, shift: i32, color: Co
     }
 }
 
-fn set_tuning_values(
-    preset: &mut PresetFile,
-    first: u32,
-    kind: u32,
-    values: [u32; 6],
-) -> Result<(), String> {
-    for (id, bits) in (first..first + 6).zip(values) {
-        preset.set_parameter(TUNING, id, kind, bits)?;
-    }
-    Ok(())
-}
-
 fn example_document() -> Result<EditorDocument, String> {
     fn chunk(output: &mut Vec<u8>, tag: &[u8; 4], data: &[u8]) {
         output.extend(tag);
@@ -1341,18 +1335,16 @@ mod tests {
         assert_eq!(readable_origin("/tmp/repo.git"), "/tmp/repo.git");
     }
 
+    fn contains_title(shape: &egui::Shape, expected: &str) -> bool {
+        match shape {
+            egui::Shape::Text(text) => text.galley.text() == expected,
+            egui::Shape::Vec(shapes) => shapes.iter().any(|shape| contains_title(shape, expected)),
+            _ => false,
+        }
+    }
+
     #[test]
     fn bank_selector_labels_built_in_examples_and_preserves_file_bank_names() {
-        fn contains_title(shape: &egui::Shape, expected: &str) -> bool {
-            match shape {
-                egui::Shape::Text(text) => text.galley.text() == expected,
-                egui::Shape::Vec(shapes) => {
-                    shapes.iter().any(|shape| contains_title(shape, expected))
-                }
-                _ => false,
-            }
-        }
-
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("example.vwb");
         let ctx = egui::Context::default();
@@ -1386,6 +1378,49 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn detune_displays_whole_cents_until_the_two_decimal_field_is_focused() {
+        let ctx = egui::Context::default();
+        let mut app = Workbench::with_context(&ctx, None, Default::default(), None);
+        app.variax_mut()
+            .document
+            .as_mut()
+            .unwrap()
+            .select(0, 4)
+            .unwrap();
+        let stored = 12.345_f32;
+        app.variax_mut()
+            .change(|preset| preset.set_parameter(TUNING, DETUNE, 1, stored.to_bits()));
+        let before = app.variax().document.as_ref().unwrap().as_bytes().to_vec();
+
+        let mut render = |editing| {
+            let output = ctx.run(Default::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let id = ui.next_auto_id();
+                    ui.memory_mut(|memory| {
+                        if editing {
+                            memory.request_focus(id);
+                        } else {
+                            memory.surrender_focus(id);
+                        }
+                    });
+                    app.variax_mut().twelve_string_value(ui, DETUNE, true);
+                });
+            });
+            let expected = if editing { "+12.35 cents" } else { "+12 cents" };
+            assert!(
+                output
+                    .shapes
+                    .iter()
+                    .any(|shape| contains_title(&shape.shape, expected))
+            );
+        };
+        render(false);
+        render(true);
+        render(false);
+        assert_eq!(app.variax().document.as_ref().unwrap().as_bytes(), before);
     }
 
     #[test]

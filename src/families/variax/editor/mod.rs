@@ -2,6 +2,8 @@ use super::*;
 use serde::Deserialize;
 
 mod guitar;
+mod tuning_presets;
+use tuning_presets::TuningDialog;
 mod value_format;
 use value_format::ValueFormat;
 
@@ -105,6 +107,7 @@ pub(super) struct VariaxEditor {
     /// Where the preference is remembered. Tests leave this empty.
     preferences_path: Option<PathBuf>,
     link_tuning_mix: bool,
+    tuning_dialog: Option<TuningDialog>,
     #[cfg(test)]
     bank_slots: HashMap<usize, Rect>,
     #[cfg(test)]
@@ -125,6 +128,8 @@ pub(super) struct VariaxEditor {
     auto_select_checkbox: Option<Rect>,
     #[cfg(test)]
     tuning_widgets: HashMap<&'static str, Rect>,
+    #[cfg(test)]
+    tuning_preset_rows: HashMap<String, Rect>,
     read_receiver: Option<
         std::sync::mpsc::Receiver<Result<variax_workbench::read_session::CurrentPreset, String>>,
     >,
@@ -154,6 +159,7 @@ impl VariaxEditor {
             auto_select_controls: defaults.preferences.as_deref().is_none_or(load_auto_select),
             preferences_path: defaults.preferences.clone(),
             link_tuning_mix: false,
+            tuning_dialog: None,
             #[cfg(test)]
             bank_slots: HashMap::new(),
             #[cfg(test)]
@@ -174,6 +180,8 @@ impl VariaxEditor {
             auto_select_checkbox: None,
             #[cfg(test)]
             tuning_widgets: HashMap::new(),
+            #[cfg(test)]
+            tuning_preset_rows: HashMap::new(),
             read_receiver: None,
             read_worker: None,
             pending: None,
@@ -1170,6 +1178,7 @@ impl FamilyTab for VariaxEditor {
     }
     fn local_prompt(&mut self, ctx: &egui::Context, services: &mut EditorServices<'_>) {
         self.variax_pending_dialog(services, ctx);
+        self.tuning_presets_dialog(ctx);
     }
     fn busy(&self) -> bool {
         self.is_reading()
@@ -1178,7 +1187,7 @@ impl FamilyTab for VariaxEditor {
         self.cancel_read();
     }
     fn blocking_prompt(&self) -> bool {
-        self.pending.is_some()
+        self.pending.is_some() || self.tuning_dialog.is_some()
     }
     fn actions(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
         if ui.button("Replace file in this tab…").clicked() {
