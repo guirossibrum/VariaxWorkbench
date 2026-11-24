@@ -435,6 +435,14 @@ pub fn read_identity(
                 },
             ));
         }
+        let _rig = line6_devices::device_lock::DeviceLock::acquire().map_err(|error| {
+            open_stopped(match error {
+                line6_devices::device_lock::LockError::Busy => IdentityFailure::RigBusy,
+                line6_devices::device_lock::LockError::Unavailable(_) => {
+                    IdentityFailure::LockUnavailable
+                }
+            })
+        })?;
         let mut session = open_for_identity()?;
         let exchange = identity_stage::run_identity_exchange(&mut session, cancel);
         identity_stage::exchange_result(exchange)
@@ -448,6 +456,8 @@ pub fn read_current(cancel: &AtomicBool) -> Result<CurrentPreset, String> {
     }
     hardware_gates::run_if_unlocked(Gate::IdentityRequest, || {
         hardware_gates::run_if_unlocked(Gate::CurrentSettingsRead, || {
+            let _rig = line6_devices::device_lock::DeviceLock::acquire()
+                .map_err(|error| error.to_string())?;
             let mut session = Session::open()?;
             let operation = read_session::read_current_on(&mut session, cancel);
             let cleanup = session.cleanup();

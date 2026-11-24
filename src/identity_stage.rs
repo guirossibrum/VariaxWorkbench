@@ -60,6 +60,8 @@ pub struct IdentityPair {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IdentityFailure {
+    RigBusy,
+    LockUnavailable,
     Unknown,
     Ambiguous,
     Inconsistent,
@@ -85,6 +87,8 @@ pub enum IdentityFailure {
 impl IdentityFailure {
     pub const fn sentence(self) -> &'static str {
         match self {
+            Self::RigBusy => "PODxt Live is busy with another operation.",
+            Self::LockUnavailable => "Cannot lock the PODxt Live. Nothing was sent.",
             Self::Unknown => {
                 "The answer was not a known PODxt Live or Variax 600 identity. Stopped."
             }
@@ -113,6 +117,8 @@ impl IdentityFailure {
 
     pub const fn stop_token(self) -> &'static str {
         match self {
+            Self::RigBusy => "rig_busy",
+            Self::LockUnavailable => "lock_unavailable",
             Self::Unknown => "stop=unknown",
             Self::Ambiguous => "stop=ambiguous",
             Self::Inconsistent => "stop=inconsistent",

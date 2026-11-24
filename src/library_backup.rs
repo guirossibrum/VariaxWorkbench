@@ -47,6 +47,8 @@ fn run_if_supported(
     }
     #[cfg(all(not(test), target_os = "linux"))]
     {
+        let _rig =
+            line6_devices::device_lock::DeviceLock::acquire().map_err(|error| error.to_string())?;
         run_live(which, root, progress)
     }
 }
