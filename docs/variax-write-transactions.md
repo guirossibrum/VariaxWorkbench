@@ -26,8 +26,8 @@ The lower-level Linux USB packet size and pacing are separate.
 | Operation | Outbound bytes and sequence | Response evidence |
 | --- | --- | --- |
 | Open bridge and MIDI session | PODxt Live `F0 00 01 0C 03 23 01 F7`, then guitar `2A 01`, then wait 100 ms | Original waits for no reply. Device-side acknowledgement or ready indication is unknown. |
-| Full edit buffer (G6) | `43`, one 24-bit count (1,092), then all 1,092 words from the 3,276-byte big-endian packed program. Six low-first nibbles per word. The 6,566-byte message is 25 chunks of 256 and one of 166. | Original waits for no reply. Apply completion, rejected programs or interrupted-transfer effects remain unknown. |
-| Live difference (G6) | One `3B` containing contiguous runs of changed words 0–1,090. Normal runs start with count then address. The original encodes a run reaching word 1,090 as address then count. Omit the checksum word (1,091) and omit the packet when nothing changed. With an unknown baseline, the original treats all 1,091 eligible words as changed. A tuning toggle sends a diff of the muted transition program followed by a full unmuted program. | Original waits for no reply. Receiver behavior for the terminal-run ordering and for partial differences is unknown. |
+| Full edit buffer (G6) | `43`, one 24-bit count (1,092), then all 1,092 words from the 3,276-byte big-endian packed program. Six low-first nibbles per word. The 6,566-byte message is 25 chunks of 256 and one of 166. | Firmware 3.10 sends no reply after a valid full upload. It reloads only after reading the counted words, seeing `F7` and validating the checksum. An interrupted transfer can leave a partly overwritten buffer. Completion time on the rig remains unknown. |
+| Live difference (G6) | One `3B` containing contiguous runs of changed words 0–1,090. Each run starts with count then address. Omit the checksum word (1,091) and omit the packet when nothing changed. A tuning toggle with a known baseline sends a diff of the muted transition program followed by a full unmuted program. With an unknown baseline, upload the final program using `Edit::Full`. | The firmware 3.10 trace at `P:0x14433` confirms count/start for every run and a `0x71` reply at `P:0x14466` on reaching `F7`, followed by a reload. Rust waits for that reply before sending the next command. Workbench 1.75 waits for no reply. [#181](https://github.com/guirossibrum/VariaxWorkbench/issues/181) |
 | Tone position (G6) | Channel-1 `B0 4F vv`, with `vv` calculated by truncating `127 × position` in single precision. | Owner-run reads observed spontaneous tone-knob CC 79. Echo or application of an incoming CC 79 remains unknown. |
 | DSP bypass | `4C 01` at start of the stored patch block, `4C 00` when it ends. The normal real-time edit path leaves DSP processing active and sends DSP on when closing. | Original waits for no reply. Whether audio has resumed after an interrupted transfer is unknown. |
 | Store a slot (G7) | Send `43`, wait 100 ms, send `61` and flash index `bank × 5 + (4 − slot)`. Banks and slots are zero-based. | Original checks the first SysEx within its 15 s wait for an eight-byte `0x71` reply. Rust validates the envelope and skips the three known notices within the same deadline. Other messages leave the slot state unknown. The reply provides no slot identifier or DSP data. Timeout, wrong reply, or transport error after the store may leave the slot changed. |
@@ -41,7 +41,19 @@ Their occurrence and ordering on the rig during stores remain unknown.
 Workbench can truncate names during compilation. Rust rejects a source name
 longer than 18 bytes or containing characters outside printable ASCII. It
 also checks the compiled name field at offset 2,553, space padding for model
-names, and the checksum at word 1,091 before opening a write transaction.
+names, and both sums against the checksum at word 1,091 before opening a
+write transaction. The original host sums words 0–1,088. Firmware 3.10
+sums words 0–1,090. Both use the low 24 bits. Words 1,089 and 1,090 are
+accepted when their sum is zero modulo 2²⁴.
+
+The [#181 trace](firmware-variax-dispatch.md#0x3b-at-p0x14433) confirms
+that the receiver reads count/start even for a run ending at word 1,090.
+Rust therefore uses count/start for every run. Workbench reverses those
+two fields for a run ending at word 1,090, which puts data at the wrong
+addresses or leaves the parser waiting. Ordinary runs retain their
+Workbench bytes. Both difference forms require a previous program in the
+Rust API. An unknown baseline uses one `0x43` upload of the final program.
+
 The stored-name and tone domain limits apply to the transaction input. The
 library's bank-name read alone emits no Program Change.
 
@@ -58,8 +70,11 @@ library's bank-name read alone emits no Program Change.
   they are part of a store or bank rename. The rename also requires the
   G5 bank-name read for verification. Both transactions use a caller-opened
   link. Use one exclusive conversation with a known reply
-  stream. The store reply cannot distinguish a delayed acknowledgement
-  from the current transaction.
+  stream. A session that allows live edits checks for queued MIDI data
+  before a difference, before opening a store, and again before `0x61`.
+  The dedicated G7-only procedure supplies its own exclusive reply stream.
+  A store reply carries no identifier, so reopen the link after an
+  ambiguous difference exchange before making another write.
 - Before G7, verify the G5 backup and confirm the target and approved
   restoration procedure. A Variax backup from the guitar contains metadata
   words 851–914. A restored DSP program would be regenerated from the
@@ -68,6 +83,9 @@ library's bank-name read alone emits no Program Change.
 - Check cancellation before each edit chunk and before sending `0x61`.
   After sending `0x61`, complete the reply wait and never resend on an
   ambiguous result. After a partial SysEx, attempt `F7` before cleanup.
+  After attempting a `0x3B` transfer, finish its one-second reply wait
+  even if cancellation or a write error required a recovery `F7`.
+  A missing or unexpected reply stops the edit sequence.
   Always attempt DSP on, session off and bridge release in order, even if
   a previous step failed. Report cleanup errors separately from the
   original error. Losing the transport can prevent successful cleanup.
@@ -84,7 +102,10 @@ library's bank-name read alone emits no Program Change.
 The [receiver replay](receiver-simulation.md#workbench-application-write-transcript-replay)
 checks the #175 host command shapes and rejection cases for #25. Session on/off
 runs through virtual control. Application write handlers remain outside the
-updater receiver, including store acknowledgement and flash recovery.
+updater receiver, including store acknowledgement and flash recovery. The
+separate bounded replay in the Variax write tests projects the #181
+`0x3B` and `0x43` handlers onto an in-memory buffer. It compares the
+legacy terminal and unknown-baseline frames with the corrected frames.
 
 ## Offline reproduction
 
