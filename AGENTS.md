@@ -108,6 +108,15 @@ helpers. Keep original vendor artifacts, captures, and user settings local and
 ignored. Do not publish them or contact third parties without explicit user
 instructions.
 
+**UI art exception (owner decision 2026-11-24).** As part of the layout work
+(#215–#217, #219, #224), Line 6 UI art from POD Farm 2, Variax Workbench and
+Line 6 Edit may be committed. The owner considers this fair use: the app
+supports legacy gear and does not compete with Line 6. The repository is
+public. Commit only the images the app actually uses, under `assets/ui/`, with
+`assets/ui/SOURCES.md` naming each file's product, version and archive path.
+Installers, binaries, decompiled code, firmware, captures and user data stay
+local and ignored.
+
 Preserve originals. New copies must use atomic non-overwriting saves. Validate
 against original Java/native behavior where practical; label inference, emulated
 behavior, real captures, and unverified behavior distinctly. Report partial

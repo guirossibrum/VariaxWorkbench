@@ -1,68 +1,57 @@
 # Parallel work ownership
 
-The user authorized independent agents using disposable worktrees. GitHub issues
-and the project remain the progress/dependency source of truth; this file records
-ownership and integration boundaries, not a replacement task queue.
+GitHub issues and the project boards are the progress and dependency source of
+truth. This file records **who owns which files**, so that parallel agents never
+edit the same code. It is not a task queue.
 
-## Current coordination policy
+## Lanes (owner decision 2026-11-24)
 
-The existing Codex and Grok implementation milestones in PRs #81, #82 and #83
-are integrated. Both agents now act as Gatekeepers; new implementation belongs
-to the four registered PR1–PR4 VariaxWorkbench contributors through
-agent-coordinator. No current PR is adopted into a contributor assignment.
-Assignments start only after the coordinator owner confirms the repository/CI/
-dispatcher repair and the exact scoped registration/contract is verified.
+Craft Anything is retired. Work runs in four implementation lanes plus research.
+Each lane edits only the files it owns. A change needed in another lane's files
+is reported to the reviewer and goes to that lane's queue; it is not made
+directly.
 
-The agreed tracks are coefficient validation, POD Farm research followed by POD
-editing, connector/Workbench HD research followed by the HD backend, and visual
-research followed by remaining HD500X work. Native prerequisites and unresolved
-source/input gaps still apply. Issue #5 remains open, so #6 must not be presented
-as unblocked merely because PR82 merged. Issues #33/#22 stay late-stage gates;
-no live operations are authorized. GitHub issues/project and AC receipts supply
-the actual execution state; this description does not itself assign work.
+| Lane | Owns | Queue, in order |
+| --- | --- | --- |
+| **1. Shell and devices** | `src/app/` (shell, registry, detection), `src/tools/device_check/` and Device check code, `crates/line6-devices` session, gate, transport, identity and backup code, the device lock in `tools/reso5-test` and `tools/variax-probe` (lock only) | #212 (3b detection) → #213 (3c identity, Refresh guitar, device lock; covers #201) → #214 (device-library tidy) |
+| **2. Design and layout** | `docs/design/`, `src/shared/ui/` (theme and components), `assets/ui/` (committed art); after #213, the visuals of `src/app/shell/` | #215 (specification and mockups, **owner approval before code**) → #216 (theme and component library) → #217 (shell restyle) |
+| **3. Variax editor** | `src/families/variax/` (editor and file) | #192, #193, #194, #195, #196, #197, #198, #199, #200 → after #216: #188, #189, #190, #191, #224 (restyle) → after #213: #203, #204, #206 → #205 (Sync, after the store tests #177/#178) |
+| **4. PODxt editor** | `src/families/podxt/`, `crates/line6-devices/src/family/podxt/` | #210 (parameter table) → #218 → #219 (after #216) → #220 (after #213) → #221 → #222 (after #211 items 3–4) → #223 |
+| Research | `docs/firmware-*.md`, `research/`, `scripts/` (own files only) | #181 (Variax 3.10 firmware), #211 (PODxt Live 3.01 firmware) |
 
-## Prior implementation ownership
+Shared files: `README.md` (one ledger line per delivered item, in your lane's
+section), `Cargo.toml`/`src/lib.rs` (only the wiring your change needs). The
+reviewer reconciles conflicts in shared files during integration.
 
-The following records the earlier manual ownership and integrated milestones.
-It does not authorize Codex or Grok to start another direct implementation.
+The editor lanes use the components from `src/shared/ui/` and never change them.
+Component changes are requested from lane 2. Lane 2 never edits family editors.
 
-- Codex owns the coefficient engine and all issues other than those reserved below.
-  Last direct implementation: #5 historical math-runtime milestone PR82, integrated without changing the default profile; unresolved accuracy criteria stay open. #69 exact rational source-clock AIFF export is integrated. #72 unsaved offline recording-take quit protection is integrated. #19 firmware-improvement feasibility assessment is integrated; no deployable firmware change is justified. #18 bounded receiver/update state simulation is integrated; physical peripherals and recovery remain unsupported. #16 source-mapping research is integrated, with physical recovery explicitly unverified. #15 saved-reference comparison is integrated. #14 archived extraction and the known global-level structure are integrated. #13 static firmware baseline mapping is integrated. #10 research reproducibility and #11 Linux packaging are integrated. #7 parameter domains, #8 bank/collection editing and #9 offline GUI workflow coverage are integrated. #5 portable-math implementation is integrated; its historical-runtime/default-rollout validation remains open. #3 and #4 are integrated.
-- Grok completed #17, #12 and the offline investigation in #21 and architecture in #26, plus offline routing in #27 and recording/file workflow in #28. #20 remains
-  reserved with its recorded artifact/version unknowns; new evidence must not
-  cause a live query. The #29 librarian and bounded missing-domain search are integrated; validated parameter editing remains pending independent definitions. Last direct implementation: #32 independent POD HD500X research milestones PR81/83, integrated; the backend remains incomplete. Codex keeps
-  #16 updater/recovery research and the other unreserved issues.
+## Worktrees and delivery
 
+- One worktree and branch per issue, created from `origin/master` under the
+  ignored `.worktrees/` (for example
+  `git worktree add .worktrees/212-detection -b lane1/212-detection origin/master`).
+  Never work in the main checkout. Never remove, reset, stash or clean another
+  agent's worktree.
+- Rebase onto `origin/master` before delivering.
+- Run `cargo fmt --all -- --check`, `cargo clippy --offline --all-features
+  --all-targets -- -D warnings` and `cargo test --offline --all-features`, plus
+  the same Clippy and tests in `crates/line6-devices` and for
+  `tools/variax-probe` when they are touched. Report the test counts before and
+  after.
+- Commit locally with focused commits. **No push, no PR and no GitHub posts.**
+  The reviewer (Claude Code in the main session) reviews, tests the merge
+  result, merges to `master` and updates the issues.
+- Stop after each issue and report: commits, what changed, test counts, and
+  anything that affects devices.
+- Keep one issue in progress per agent. Target 30–60 minutes of agent time per
+  issue; after two review rounds, propose a split.
 
-## Worktree and delivery rules
+## Boundaries
 
-Each contributor creates a separate branch/worktree per issue, outside the primary
-checkout's source directories (for example, under its ignored `.worktrees/`).
-Keep one implementation issue active per agent and respect dependencies. Never
-stash, reset, clean or overwrite another checkout's changes. Do not share build
-output directories between agents. Disposable means removable after integration
-and verification, not disposable before commits/results have been preserved.
-
-Grok owns implementation/research for its four issues. Codex does not duplicate
-those tasks. Prefer module-specific files and focused documentation. Necessary
-Cargo/lib wiring may change on a branch; keep README changes scoped to the
-assigned feature and avoid rewriting global engine counts or unrelated status.
-Codex reconciles the shared README ledger/backlog index during integration.
-
-Finish each assignment with tests, evidence and remaining limitations, commit/push
-the issue branch and open a focused PR to the configured base. Return the exact
-head through the AC receipt. Gatekeepers review and return corrections or approve
-coordinator CI; the coordinator owns the configured merge/cleanup sequence. Do not
-manually bypass that flow or erase retained research evidence. Preserve prior
-Grok/Codex worktrees until their owner explicitly releases them.
-
-All agents retain the absolute hardware boundary in AGENTS.md: no live USB/MIDI,
-audio capture/playback, probing/enumeration, driver actions, presets/reset/update
-operations, or lock overrides. Vendor packages, extracted binaries, captures,
-credentials and user presets stay ignored/local. Only synthetic test data and
-permitted provenance/derived documentation may be committed. Passing offline
-checks never authorizes hardware operations.
-
-## Required coordinated role reading
-
-Before further coordinated action, contributors must read [the contributor role](roles/contributor.md), and Gatekeepers must read [the Gatekeeper role](roles/gatekeeper.md). Both roles must explicitly load the versioned generic review skill named by their delivery. These role documents preserve all hardware and private-input boundaries; they do not activate a missing coordinator policy or grant work, CI or merge authority.
+AGENTS.md governs hardware, gates and private data. In short: agents never run
+the device tools or open USB, MIDI or audio devices; tests use fake transports
+and injected sources and never read real `/proc` or `/sys`; the owner runs every
+hardware check. Vendor packages, binaries, decompiled code, firmware, captures
+and user data stay local and ignored. The UI art exception in AGENTS.md applies
+to lane 2's `assets/ui/` only.
