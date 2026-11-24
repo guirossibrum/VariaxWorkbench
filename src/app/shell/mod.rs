@@ -211,16 +211,28 @@ impl Workbench {
         action: impl FnOnce(&mut TabEntry, &mut EditorServices<'_>),
     ) -> Option<CloseResult> {
         let index = self.tabs.index(id)?;
+        let attachment = self.tabs.entries[index]
+            .device
+            .as_ref()
+            .and_then(tabs::DeviceTab::guitar_refresh_attachment)
+            .filter(|_| self.detection.is_some() && !self.has_prompt() && !self.permit_close)
+            .cloned();
+        let mut refresh_requested = false;
         let mut services = EditorServices {
             dialogs: self.dialogs.as_mut(),
             picker: &mut self.picker,
             tab: id,
             close: CloseResult::Pending,
+            guitar_refresh: attachment.as_ref().map(|_| &mut refresh_requested),
             #[cfg(test)]
             prompt_buttons: &mut self.pending_buttons,
         };
         action(&mut self.tabs.entries[index], &mut services);
-        Some(services.close)
+        let close = services.close;
+        if refresh_requested && let Some(attachment) = attachment {
+            self.refresh_guitar(&attachment);
+        }
+        Some(close)
     }
 
     fn with_active(&mut self, action: impl FnOnce(&mut TabEntry, &mut EditorServices<'_>)) {

@@ -1,4 +1,4 @@
-use super::detection::{DetectedDevice, DeviceKey, DeviceSupport};
+use super::detection::{AttachmentKey, DetectedDevice, DeviceKey, DeviceSupport};
 use super::{FileDialogs, PickRequest, Picker, PickerAction, egui};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -46,6 +46,7 @@ pub(super) struct EditorServices<'a> {
     #[allow(dead_code)] // Editor-lane migration, see docs/non-blocking-pickers.md.
     pub tab: TabId,
     pub close: CloseResult,
+    pub(super) guitar_refresh: Option<&'a mut bool>,
     #[cfg(test)]
     pub prompt_buttons: &'a mut std::collections::HashMap<&'static str, egui::Rect>,
 }
@@ -77,6 +78,23 @@ impl EditorServices<'_> {
         started
     }
 
+    /// Whether the tab can ask detection to recheck its guitar connection.
+    #[allow(dead_code)] // Used when the Variax editor wires the Refresh button.
+    pub fn can_refresh_guitar(&self) -> bool {
+        self.guitar_refresh.is_some()
+    }
+
+    /// Request the existing identity refresh for this tab's attachment.
+    /// The shell dispatches the request after the editor callback returns.
+    #[allow(dead_code)] // Used when the Variax editor wires the Refresh button.
+    pub fn request_guitar_refresh(&mut self) -> bool {
+        let Some(requested) = self.guitar_refresh.take() else {
+            return false;
+        };
+        *requested = true;
+        true
+    }
+
     pub fn finish_close_if(&mut self, ready: bool) {
         if ready {
             self.close = CloseResult::Ready;
@@ -97,6 +115,7 @@ pub(super) trait FamilyTab: std::any::Any {
     fn redo(&mut self) {}
     /// Called before polling the editor, with the tab's current device.
     /// Use `DeviceTab::verified_attachment` for attachment-scoped USB work.
+    /// UI actions can request an identity refresh through `EditorServices`.
     fn observe_device(&mut self, _device: Option<&DeviceTab>) {}
     fn poll(&mut self, _ctx: &egui::Context) {}
     fn local_prompt(&mut self, _ctx: &egui::Context, _services: &mut EditorServices<'_>) {}
@@ -149,6 +168,11 @@ impl DeviceTab {
             return self.device.key.attachment.usb_location();
         }
         None
+    }
+
+    pub(super) fn guitar_refresh_attachment(&self) -> Option<&AttachmentKey> {
+        (self.connection == Connection::Present && self.device.refresh_guitar)
+            .then_some(&self.device.key.attachment)
     }
 
     pub fn status(&self) -> String {
