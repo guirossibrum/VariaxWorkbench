@@ -284,3 +284,104 @@ fn an_assembler_error_still_closes_the_session_and_bridge() {
     assert_eq!(session.link.writes, WRITES);
     session.link.assert_finished();
 }
+
+fn connection(state: u8) -> Vec<u8> {
+    // The state is byte 9. Adjacent nonzero bytes also appear on disconnect.
+    vec![0xf0, 0, 1, 0x0c, 0x03, 0x11, 0, 2, 9, state, 0xf7]
+}
+
+fn disconnected() -> Vec<u8> {
+    vec![0xf0, 0, 1, 0x0c, 0x7f, 0x03, 0, 0, 0, 6, 0, 0xf7]
+}
+
+#[test]
+fn connection_state_is_reported_once_until_the_disconnect() {
+    let connected = connection(2);
+    let packets = vec![
+        connected[..7].to_vec(),
+        connected[7..].to_vec(),
+        vec![0xb0, 7, 55],
+        connection(1),
+        connection(0),
+    ];
+    let mut quiet = Quiet;
+    let mut session = Session::new(script(packets), &READS, &mut quiet);
+    let mut updates = Vec::new();
+    follow_on(&mut session, || false, |update| updates.push(update)).unwrap();
+    assert_eq!(
+        updates,
+        [
+            FollowUpdate::Connected,
+            FollowUpdate::Volume(55),
+            FollowUpdate::Disconnected
+        ]
+    );
+    assert_eq!(session.link.writes, WRITES);
+    session.link.assert_finished();
+}
+
+#[test]
+fn either_disconnect_frame_stops_once_even_if_repeated_in_the_same_packet() {
+    for frame in [connection(0), disconnected()] {
+        let mut quiet = Quiet;
+        let prefix = frame[..frame.len() - 1].to_vec();
+        let packet = [vec![0xf7], frame, vec![0xb0, 79, 63]].concat();
+        let mut session = Session::new(script(vec![prefix, packet]), &READS, &mut quiet);
+        let mut updates = Vec::new();
+        follow_on(&mut session, || false, |update| updates.push(update)).unwrap();
+        assert_eq!(updates, [FollowUpdate::Disconnected]);
+        assert_eq!(session.link.writes, WRITES);
+        session.link.assert_finished();
+    }
+}
+
+#[test]
+fn malformed_lengths_and_unknown_frames_are_logged_and_ignored() {
+    #[derive(Default)]
+    struct Notes(Vec<String>);
+    impl crate::session::Log for Notes {
+        fn line(&mut self, line: String) {
+            self.0.push(line);
+        }
+    }
+
+    let mut unknown = Vec::new();
+    for mut frame in [connection(0), disconnected()] {
+        let index = frame.len() - 2;
+        let mut short = frame.clone();
+        short.remove(index);
+        unknown.push(short);
+        frame.insert(index, 0);
+        unknown.push(frame);
+    }
+    let mut foreign = disconnected();
+    foreign[3] = 0x0d;
+    unknown.push(foreign);
+    let mut unknown_opcode = connection(0);
+    unknown_opcode[5] = 0x12;
+    unknown.push(unknown_opcode);
+
+    let mut notes = Notes::default();
+    let mut packets = unknown.clone();
+    packets.push(disconnected());
+    let mut session = Session::new(script(packets), &READS, &mut notes);
+    session.log_packets = false;
+
+    let mut updates = Vec::new();
+    follow_on(&mut session, || false, |update| updates.push(update)).unwrap();
+    assert_eq!(updates, [FollowUpdate::Disconnected]);
+    assert_eq!(session.link.writes, WRITES);
+    session.link.assert_finished();
+    let ignored: Vec<_> = notes
+        .0
+        .iter()
+        .filter_map(|line| {
+            line.split_once("Ignored unrecognized Follow SysEx frame: ")
+                .map(|(_, raw)| raw)
+        })
+        .collect();
+    assert_eq!(
+        ignored,
+        unknown.iter().map(|frame| hex(frame)).collect::<Vec<_>>()
+    );
+}
