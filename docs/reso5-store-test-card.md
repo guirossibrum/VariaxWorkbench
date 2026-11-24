@@ -5,7 +5,7 @@ explains the procedure. Complete and review each step before asking for the next
 
 | Step | Mode | Program to send | Approval |
 | --- | --- | --- | --- |
-| 1a | `rename` | The captured Reso-5 program with name `Reso-5 T`, space padding and a recomputed checksum | **Not approved** |
+| 1a | `rename` | The captured Reso-5 program with name `Reso-5 T`, space padding and a recomputed checksum | **Approved 2026-11-24 for one owner run** |
 | 1b | `restore` | The original captured Reso-5 program | **Not approved** |
 | 2 | `factory` | The Variax 3.10 archive's slot 50 factory program | **Not approved** |
 
