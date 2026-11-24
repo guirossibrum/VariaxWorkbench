@@ -167,6 +167,29 @@ impl EditorDocument {
         Ok(())
     }
 
+    /// The current standalone model inside an open bank or collection.
+    pub fn selected_slot_model(&self) -> Result<&PresetFile, String> {
+        self.selection()
+            .ok_or("Open a bank or collection and select a model slot.")?;
+        validate_slot_model(self.preset())?;
+        Ok(self.preset())
+    }
+
+    pub fn validate_slot_replacement(&self, replacement: &PresetFile) -> Result<(), String> {
+        self.selected_slot_model()?;
+        validate_slot_model(replacement)
+    }
+
+    /// Replace the selected model in one undo step, retaining the source bytes.
+    pub fn replace_slot_model(&mut self, replacement: PresetFile) -> Result<(), String> {
+        self.validate_slot_replacement(&replacement)?;
+        self.end_gesture();
+        self.apply(|preset| {
+            *preset = replacement;
+            Ok(())
+        })
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.as_bytes() != self.saved.bytes()
     }
@@ -236,9 +259,96 @@ impl EditorDocument {
     }
 }
 
+fn validate_slot_model(model: &PresetFile) -> Result<(), String> {
+    if model.is_podxt_live_target() {
+        return Err("A PODxt Live tone cannot be placed in a Variax model slot.".into());
+    }
+    // Workbench's L6ToneCompatibilityFilter treats these legacy electric IDs
+    // as data-compatible. A fixed bundle replacement keeps the model's target ID.
+    if !model.is_legacy_electric() {
+        return Err("The model must target a Variax 300/600 or 500/700.".into());
+    }
+    if model.as_bytes().get(8..12) != Some(b"L6PA") {
+        return Err("Choose a standalone Workbench model (.vwm).".into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn model_bytes(device: u32, form: &[u8; 4]) -> Vec<u8> {
+        let mut bytes = include_bytes!("../../../../tests/fixtures/editor-preset.vwm").to_vec();
+        bytes[8..12].copy_from_slice(form);
+        bytes[24..28].copy_from_slice(&device.to_be_bytes());
+        bytes
+    }
+
+    #[test]
+    fn model_slot_replacement_supports_fixed_banks_and_collections() {
+        let replacement = PresetFile::parse(model_bytes(0x0007_0000, b"L6PA")).unwrap();
+        for (path, bytes) in [
+            (
+                Path::new("bank.vwb"),
+                include_bytes!("../../../../tests/fixtures/synthetic-bank.vwb").as_slice(),
+            ),
+            (
+                Path::new("collection.l6c"),
+                include_bytes!("../../../../tests/fixtures/synthetic-collection.l6c").as_slice(),
+            ),
+        ] {
+            let mut document = EditorDocument::from_file_bytes(bytes.to_vec(), path).unwrap();
+            let selected = document.selection().unwrap();
+            assert_eq!(
+                document.selected_slot_model().unwrap().device_id(),
+                0x0007_0004
+            );
+            document.replace_slot_model(replacement.clone()).unwrap();
+            assert!(document.slot_is_dirty(selected.0, selected.1));
+            let current = document.as_bytes().to_vec();
+            let reopened = BundleFile::parse(current.clone()).unwrap();
+            assert_eq!(
+                reopened.banks()[selected.0].presets()[selected.1].as_bytes(),
+                replacement.as_bytes()
+            );
+            document.undo();
+            assert_eq!(document.as_bytes(), bytes);
+            assert!(!document.can_undo());
+            document.redo();
+            assert_eq!(document.as_bytes(), current);
+        }
+    }
+
+    #[test]
+    fn model_slot_validation_preserves_the_document_on_rejection_and_identical_replacement() {
+        let bytes = include_bytes!("../../../../tests/fixtures/synthetic-bank.vwb");
+        let mut document =
+            EditorDocument::from_file_bytes(bytes.to_vec(), Path::new("bank.vwb")).unwrap();
+        for (target, form, error) in [
+            (0x0003_000a, b"L6PA", "PODxt Live"),
+            (0x0007_0001, b"L6PA", "300/600 or 500/700"),
+            (0x0007_0005, b"L6PA", "300/600 or 500/700"),
+            (0x0007_0004, b"L6FS", "standalone Workbench model"),
+            (0x0007_0004, b"L6AS", "standalone Workbench model"),
+        ] {
+            let replacement = PresetFile::parse(model_bytes(target, form)).unwrap();
+            let failure = document.replace_slot_model(replacement).unwrap_err();
+            assert!(failure.contains(error), "{failure}");
+        }
+        document
+            .replace_slot_model(document.preset().clone())
+            .unwrap();
+        assert_eq!(document.as_bytes(), bytes);
+        assert!(!document.can_undo());
+        assert!(!document.is_dirty());
+
+        let model = PresetFile::parse(model_bytes(0x0007_0004, b"L6PA")).unwrap();
+        let mut single = EditorDocument::from_preset(model.clone(), PathBuf::from("single.vwm"));
+        assert!(single.selected_slot_model().is_err());
+        assert!(single.replace_slot_model(model).is_err());
+        assert!(!single.can_undo());
+    }
 
     #[test]
     fn guitar_document_rejects_a_podxt_live_tone_and_a_bank_that_contains_one() {
