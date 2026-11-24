@@ -119,21 +119,28 @@ fn shell_passes_verified_attachment_and_disconnect_cancels_the_worker() {
     worker.thread.take().unwrap().join().unwrap().unwrap();
     app.podxt_mut().live.worker = None;
 
+    let tab_id = app.tabs.entries[0].id;
     presence.attached.set(true);
     presence.identified.set(false);
     frame(&mut app);
-    let new_device = app
-        .tabs
-        .entries
-        .iter()
-        .filter_map(|entry| entry.device.as_ref())
-        .find(|tab| tab.connection == tabs::Connection::Present)
-        .expect("new attachment");
-    assert_ne!(new_device.device.key, device);
+    assert_eq!(app.tabs.entries.len(), 1);
+    assert_eq!(app.tabs.entries[0].id, tab_id);
+    let tab = app.tabs.entries[0].device.as_ref().unwrap();
+    assert_eq!(tab.connection, tabs::Connection::Disconnected);
+    assert_eq!(tab.device.key, device);
+
+    presence.identified.set(true);
+    frame(&mut app);
+    assert_eq!(app.tabs.entries.len(), 1);
+    assert_eq!(app.tabs.entries[0].id, tab_id);
+    let tab = app.tabs.entries[0].device.as_ref().unwrap();
+    assert_eq!(tab.connection, tabs::Connection::Present);
+    assert_ne!(tab.device.key, device);
     assert_eq!(
-        new_device.device.support,
-        detection::DeviceSupport::IdentityPending
+        tab.device.support,
+        detection::DeviceSupport::Verified("3.01")
     );
+    assert!(!app.podxt().live.busy(), "reattachment starts no read");
 }
 
 pub(super) struct FakeLock<'a>(pub(super) &'a Cell<bool>);

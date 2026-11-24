@@ -347,6 +347,11 @@ impl DetectionService {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub fn attachment_key(&self, path: &str) -> AttachmentKey {
+        self.attachments[path].key.clone()
+    }
+
     fn bridge_mut(&mut self, key: &AttachmentKey) -> Option<&mut Bridge> {
         self.attachments
             .get_mut(&key.path)

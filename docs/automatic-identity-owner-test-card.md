@@ -37,9 +37,11 @@ control flow with fakes. This card records what happens on the physical rig.
    verified guitar separately from the current result. If no automatic
    transition occurs, record that result and use **Refresh guitar**.
 5. Reconnect the guitar, then unplug and reconnect the PODxt USB link.
-   Expect one automatic identity attempt for the new USB attachment and
-   one fresh Variax device tab after a valid reply. Previously disconnected
-   tabs should keep their own work.
+   Expect one automatic identity attempt for the new USB attachment. As
+   each identity succeeds, its existing PODxt Live or Variax tab should
+   reconnect in place, keeping its document and undo history. If the tab
+   has unsaved edits, expect **Reconnected. Your unsaved edits are kept;
+   nothing was sent.** The reattachment sends no editor data.
 6. In a separate run, quit while **Guitar: checking…** is visible. Confirm
    the app waits for cleanup if needed, then exits. Check that the expected
    interface-1 driver is bound again.

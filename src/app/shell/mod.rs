@@ -288,6 +288,12 @@ impl Workbench {
             self.advance_close(ctx);
         }
         for entry in &mut self.tabs.entries {
+            if let Some(device) = &mut entry.device
+                && device.reconnected_with_edits
+                && !entry.editor.dirty()
+            {
+                device.reconnected_with_edits = false;
+            }
             entry.editor.observe_device(entry.device.as_ref());
             entry.editor.poll(ctx);
         }
@@ -416,6 +422,11 @@ impl Workbench {
                         }
                         if let Some(device) = &self.tabs.entries[index].device {
                             ui.weak(device.status());
+                            if device.connection == tabs::Connection::Present
+                                && device.reconnected_with_edits
+                            {
+                                ui.label(tabs::RECONNECTED_WITH_EDITS);
+                            }
                             if device.connection == tabs::Connection::Present
                                 && let Some(warning) = &device.device.guitar_warning
                             {

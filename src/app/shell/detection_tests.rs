@@ -72,10 +72,14 @@ impl FakePresence {
     }
 
     fn usb(&self, pod: bool, hd: bool) {
+        self.usb_paths(if pod { &["8-2.1"] } else { &[] }, hd);
+    }
+
+    fn usb_paths(&self, paths: &[&str], hd: bool) {
         let mut usb = SyntheticSysfs::new();
-        if pod {
+        for path in paths {
             usb.add_device(
-                "8-2.1",
+                path,
                 PODXT_LIVE_USB.0,
                 PODXT_LIVE_USB.1,
                 "PODxt Live",
@@ -203,12 +207,61 @@ fn usb_hotplug_opens_one_pod_tab_and_detaches_it_on_removal() {
 
     source.usb(true, false);
     tick(&ctx, &mut app);
-    assert_eq!(entries(&app).len(), 2);
-    assert_eq!(entries(&app)[0].2.connection, Connection::Disconnected);
-    assert_ne!(entries(&app)[1].2.device.key, first_key);
-    app.close_tab(id, &ctx);
     assert_eq!(entries(&app).len(), 1);
-    assert_eq!(entries(&app)[0].2.connection, Connection::Present);
+    assert_eq!(entries(&app)[0].2.connection, Connection::Disconnected);
+    let next = app.detection.as_ref().unwrap().attachment_key("8-2.1");
+    source.finish(next, SimulatedGuitar::Silent);
+    tick(&ctx, &mut app);
+    let tabs = entries(&app);
+    assert_eq!(tabs.len(), 1);
+    assert_eq!(tabs[0].1, id);
+    assert_eq!(tabs[0].2.connection, Connection::Present);
+    assert_ne!(tabs[0].2.device.key, first_key);
+}
+
+#[test]
+fn reconnect_uses_disconnect_order_and_leaves_other_tabs_offline() {
+    let (ctx, mut app, source) = fixture();
+    source.usb_paths(&["8-2.1", "8-3.1"], false);
+    tick(&ctx, &mut app);
+    let tabs = entries(&app);
+    let first = tabs[0].1;
+    let second = tabs[1].1;
+    source.finish(
+        tabs[0].2.device.key.attachment.clone(),
+        SimulatedGuitar::Silent,
+    );
+    source.finish(
+        tabs[1].2.device.key.attachment.clone(),
+        SimulatedGuitar::Silent,
+    );
+    tick(&ctx, &mut app);
+    tick(&ctx, &mut app);
+
+    // Disconnect the most recently opened tab first.
+    source.usb_paths(&["8-2.1"], false);
+    tick(&ctx, &mut app);
+    assert_eq!(entries(&app)[1].2.connection, Connection::Disconnected);
+    source.usb_paths(&[], false);
+    tick(&ctx, &mut app);
+    assert_eq!(entries(&app)[0].2.connection, Connection::Disconnected);
+
+    source.usb_paths(&["8-4.1"], false);
+    tick(&ctx, &mut app);
+    assert_eq!(entries(&app).len(), 2);
+    let key = app.detection.as_ref().unwrap().attachment_key("8-4.1");
+    source.finish(key, SimulatedGuitar::Silent);
+    tick(&ctx, &mut app);
+    let tabs = entries(&app);
+    assert_eq!(tabs.len(), 2);
+    assert_eq!(
+        (tabs[0].1, tabs[0].2.connection),
+        (first, Connection::Present)
+    );
+    assert_eq!(
+        (tabs[1].1, tabs[1].2.connection),
+        (second, Connection::Disconnected)
+    );
 }
 
 #[test]
@@ -340,10 +393,27 @@ fn dirty_disconnect_keeps_the_editor_until_the_user_closes_it() {
     source.guitar(new_parent);
     tick(&ctx, &mut app);
     let tabs = entries(&app);
-    assert_eq!(tabs.len(), 3);
+    assert_eq!(tabs.len(), 2);
     assert_eq!(tabs[0].1, guitar);
-    assert_eq!(tabs[0].2.connection, Connection::Disconnected);
-    assert_eq!(tabs[2].2.connection, Connection::Present);
+    assert_eq!(tabs[0].2.connection, Connection::Present);
+    assert_eq!(app.tabs.active, Some(guitar));
+    assert!(tabs[0].2.reconnected_with_edits);
+    assert_eq!(
+        app.variax().document.as_ref().unwrap().preset().name(),
+        "Unsaved guitar"
+    );
+    assert!(has_label(
+        &frame(&ctx, &mut app, vec![]).shapes,
+        tabs::RECONNECTED_WITH_EDITS
+    ));
+    assert!(app.variax().read_worker.is_none());
+    assert_eq!(source.0.borrow().completed.len(), 2);
+    app.tabs.entries[0].editor.undo();
+    assert_ne!(
+        app.variax().document.as_ref().unwrap().preset().name(),
+        "Unsaved guitar"
+    );
+    app.tabs.entries[0].editor.redo();
     assert_eq!(
         app.variax().document.as_ref().unwrap().preset().name(),
         "Unsaved guitar"
@@ -520,17 +590,17 @@ fn cleanup_failure_suspends_refresh_and_stale_replies_do_not_open_guitar_tabs() 
     tick(&ctx, &mut app);
     source.usb(true, false);
     tick(&ctx, &mut app);
-    assert_eq!(entries(&app).len(), 2);
-    let new = entries(&app)[1].2.device.key.attachment.clone();
+    assert_eq!(entries(&app).len(), 1);
+    let new = app.detection.as_ref().unwrap().attachment_key("8-2.1");
     source.finish(
         new.clone(),
         SimulatedGuitar::Unavailable("Linux refused the open.".into()),
     );
     tick(&ctx, &mut app);
-    assert_eq!(entries(&app).len(), 2);
+    assert_eq!(entries(&app).len(), 1);
     source.guitar(new.clone());
     app.refresh_guitar(&new);
-    assert_eq!(entries(&app).len(), 3);
+    assert_eq!(entries(&app).len(), 2);
 }
 
 #[test]
@@ -581,8 +651,9 @@ fn pod_notices_trigger_identity_and_duplicates_do_not_recheck() {
     source.guitar(attachment.clone());
     tick(&ctx, &mut app);
     assert_eq!(source.0.borrow().completed.len(), 4);
-    assert_eq!(entries(&app)[2].2.connection, Connection::Present);
-    assert_ne!(entries(&app)[2].2.device.key, original);
+    assert_eq!(entries(&app).len(), 2);
+    assert_eq!(entries(&app)[1].2.connection, Connection::Present);
+    assert_ne!(entries(&app)[1].2.device.key, original);
 
     // A disconnect and reconnect in one read window still recheck once.
     source.notice(&attachment, SimulatedNotice::Disconnected);

@@ -344,11 +344,14 @@ Step 3b keeps disconnected tabs until the user closes them. This retains
 uncommitted editor input during a disconnect. Dirty tabs use their normal
 save-copy and quit dialogs. Keep a detached tab available for
 offline work and never replace its contents with another attachment's state.
-An independently confirmed reconnect may restore connection status only when
-identity is sufficient to associate it safely. Otherwise create a fresh
-device tab and leave the old work in the detached tab. Explicitly closed
-device tabs stay dismissed for that attachment generation, so polling does
-not immediately reopen them. Offline tabs are independent of presence events.
+An admitted device reattaches the most recently disconnected tab of its
+family. The old tab stays offline while identity is pending. If no
+disconnected family tab exists, detection opens a new one. Reattachment
+keeps the editor, undo history and unsaved file changes. Other disconnected
+tabs remain offline and editable. Reattachment sends no editor data.
+Explicitly closed device tabs stay dismissed for the current attachment
+generation. Offline tabs opened by the user are independent of presence
+events.
 
 Variax VDI insertion/removal with USB still connected is a separate case.
 The USB descriptor and interface-1 driver binding describe the bridge.
