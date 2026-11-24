@@ -6,8 +6,13 @@ explains the procedure. Complete and review each step before asking for the next
 | Step | Mode | Program to send | Approval |
 | --- | --- | --- | --- |
 | 1a | `rename` | The captured Reso-5 program with name `Reso-5 T`, space padding and a recomputed checksum | **One owner run completed 2026-11-24** |
-| 1b | `restore` | The original captured Reso-5 program | **Approved 2026-11-24 for one owner run** |
-| 2 | `factory` | The Variax 3.10 archive's slot 50 factory program | **Not approved** |
+| 1b | `restore` | The original captured Reso-5 program | **One owner run completed and verified 2026-11-24** |
+| 2 | `factory` | The Variax 3.10 archive's slot 50 factory program | **Approved 2026-11-24 for one owner run** |
+
+The factory run is scheduled for 2026-11-25 UTC or later. The #236 full
+byte-level backup `variax-full-library-20261124T234218Z` contains slot 50
+with SHA-256 `3d8bae813991fa5996fb649ad80d116de8ef358c03724770183b89cdef5ad249`.
+[#236 owner-run results](https://github.com/guirossibrum/VariaxWorkbench/issues/236#issuecomment-7147820415).
 
 ## Prepare each step
 
@@ -15,9 +20,10 @@ explains the procedure. Complete and review each step before asking for the next
    The rig is Variax 300/600 firmware 3.10 through PODxt Live 3.01.
 2. Use a complete **Device check Variax backup**. The tool checks its
    manifest and requires its slot 50 settings to match the baseline for
-   this step. Restore expects `Reso-5 T` in slot 50. The backup can be from
-   an earlier day. Keep the original pre-rename backup as well. Close the
-   app and any other editors.
+   this step. For factory, the backup must show `Reso-5` in slot 50. The
+   restore backup showed `Reso-5 T`. The backup can be from an earlier
+   day. Keep the original pre-rename backup as well. Close the app and
+   any other editors.
 3. Select **Reso, position 5** by hand. Keep the PODxt channel and the guitar
    controls steady. The tool sends no program change.
 4. Supply the fingerprinted 3.10 archive and the original 35-file #234
@@ -45,9 +51,10 @@ the low 24 bits of the sum of words 0–1,090 in word 1,091.
 
 1. Use the reviewed owner build. Remove `--check` from the command. The tool
    checks both identities and compares all 192 live settings bytes with the
-   backup's slot 50 settings. It then reads the active buffer in 35 chunks. It requires an exact match to the original capture
-   before rename or factory. Restore requires the current buffer to match
-   the renamed image (SHA-256 `75bcaaf5…c716b`) byte for byte.
+   backup's slot 50 settings. It then reads the active buffer in 35 chunks.
+   Factory preflight requires the current buffer to match the captured
+   original (SHA-256 `3d8bae81…d249`) byte for byte. Rename used the same
+   baseline. Restore required the renamed image (SHA-256 `75bcaaf5…c716b`).
    It saves each completed reply in the new log folder. After a damaged
    `0x3C` reply, the tool waits 100 ms and logs and resends the same
    request, up to twice. This applies to the preflight and post-store reads.
