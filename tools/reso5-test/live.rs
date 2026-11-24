@@ -1,3 +1,5 @@
+mod slot_read;
+
 use super::procedure::{self, Stage, StorePolicy, VariaxPolicy};
 use line6_devices::{
     backup,
@@ -19,9 +21,10 @@ use std::{
 };
 use variax_workbench::hardware_gates::{Gate, run_if_unlocked};
 
-const USAGE: &str = "Usage: variax-reso5-test --card | --store-card
+const USAGE: &str = "Usage: variax-reso5-test --card | --store-card | --slot-read-card
        variax-reso5-test [--check] stage-1|stage-2 BACKUP_DIR ARCHIVE.vxf MODELS.tsv LOG_ROOT
-       variax-reso5-test [--check] store BACKUP_DIR ARCHIVE.vxf LOG_ROOT";
+       variax-reso5-test [--check] store BACKUP_DIR ARCHIVE.vxf LOG_ROOT
+       variax-reso5-test [--check] slot-read VARIAX_BACKUP PODXT_BACKUP ARCHIVE.vxf LOG_ROOT";
 
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 
@@ -53,6 +56,17 @@ pub fn run(args: &[OsString]) -> Result<(), String> {
         [option, remaining @ ..] if option == "--check" => (true, remaining),
         _ => (false, args),
     };
+    if let [stage, variax_backup, podxt_backup, archive, log_root] = args
+        && stage == "slot-read"
+    {
+        return slot_read::run(
+            offline,
+            Path::new(variax_backup),
+            Path::new(podxt_backup),
+            Path::new(archive),
+            Path::new(log_root),
+        );
+    }
     if let [stage, backup_dir, archive, log_root] = args
         && stage == "store"
     {

@@ -1,3 +1,5 @@
+pub mod slot_read;
+
 use line6_devices::{
     backup,
     family::{podxt, variax, variax::write},
@@ -108,6 +110,12 @@ pub fn check_podxt<L: Link>(link: L, log: &mut dyn Log) -> Result<(), String> {
         return Err("No PODxt Live identity reply.".into());
     };
     let identity = Identity::parse(&reply).expect("matched identity reply");
+    podxt_identity(&identity)?;
+    session.note("Verified PODxt Live firmware 3.01.");
+    Ok(())
+}
+
+fn podxt_identity(identity: &Identity) -> Result<(), String> {
     if !identity.is_line6()
         || (identity.family, identity.member, identity.version)
             != (
@@ -120,7 +128,6 @@ pub fn check_podxt<L: Link>(link: L, log: &mut dyn Log) -> Result<(), String> {
             "Expected PODxt Live firmware 3.01, got {identity:?}."
         ));
     }
-    session.note("Verified PODxt Live firmware 3.01.");
     Ok(())
 }
 
