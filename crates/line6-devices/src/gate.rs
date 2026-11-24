@@ -34,6 +34,8 @@ pub enum Operation {
     VariaxEditBufferWrite,
     /// Variax slot store and bank rename (G7).
     VariaxStoreRestore,
+    /// PODxt saved-tone slot write and block commit (G7).
+    PodxtStoreRestore,
     /// PODxt-family installed model-pack query (`03 0E`), read-only.
     PodxtPackQuery,
     /// PODxt-family edit-buffer write (G6): a controller change that alters
