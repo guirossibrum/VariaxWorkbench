@@ -1,5 +1,8 @@
 # Owner test card — Phase 2, Stage 1: USB recognition (G1)
 
+> The mode selector below describes the historical builds in this record.
+> Current [Device check](../device-check.md) opens directly on **This computer**.
+
 Issue [#158](https://github.com/guirossibrum/VariaxWorkbench/issues/158); results
 go to [#125](https://github.com/guirossibrum/VariaxWorkbench/issues/125).
 

@@ -14,15 +14,14 @@ changes presets while it reads, then tries to switch back. The PODxt Live
 backup reads stored tones and setups by memory location while the current tone
 remains selected. Both backups leave device storage untouched.
 See [the G1 procedure](hardware-gates/g1.md).
-The window still opens in **Simulation**. **This computer** is offered only
-when a live step is available. Its label, banner, and report name the gates
-this build can actually run. Steps 2 and 3 are offered on Linux only in a binary
-built with the `usb` feature, and step 2 only after a fresh step 1 pass. A build
-without `usb` still offers only step 1. The corner shows build 16. On This
-computer, under the steps, Back up the Variax and Back up the PODxt Live each
-ask first. No is the default. If the guitar does not answer the first Variax
-question, that backup asks again on the same connection, and if it is still
-quiet it gives the driver back and tries the connection once more.
+The window opens on **This computer**. The banner and report name the gates
+available in the build. The window scrolls if its contents exceed the
+available height. Steps 2 and 3 require Linux and the `usb` feature. Step 2
+also needs a fresh step 1 pass. A Linux build without `usb` offers step 1.
+Each step asks first, with **No** as the default. The two backup actions
+also ask before running. If the guitar does not answer the first Variax
+backup question, that backup asks again on the same connection. If it is
+still quiet, it gives the driver back and tries the connection once more.
 
 ## Variax library backup
 
@@ -85,9 +84,7 @@ in `src/device_probe.rs`; the window shows them verbatim before asking.
 
 - The default answer is **No** (`Consent::default()`); in the window the
   focused default button is **No, stop**.
-- Step 2's Yes button says **Yes, send one Variax identity request** on a
-  real computer, and **Yes, rehearse one Variax identity request
-  (simulation)** in Simulation. The rehearsal does not claim a live send.
+- Step 2's Yes button says **Yes, send one Variax identity request**.
 - Only **Yes** runs the waiting step. No, or closing the window before the
   step starts, stops the sequence and sends nothing. Close in the same
   moment as Yes wins. Once Yes has started, the exchange runs on the window
@@ -114,43 +111,22 @@ in `src/device_probe.rs`; the window shows them verbatim before asking.
 
 ## Backends
 
-`ProbeBackend` has two window backends.
+`HostRig` uses `LinuxSysfs` for step 1. The app reads only the
+[G1 paths](hardware-gates/g1.md#1-what-the-app-reads). Tests inject a
+temporary root for those paths. Both metadata reads use
+`run_if_unlocked(Gate::OsDiscovery, …)`. The label, banner and Reports
+note describe which steps the build can run.
 
-**Simulation** (the default) uses `SimulatedRig`:
-
-- Stage 1 reads `SyntheticSysfs`, an in-memory copy of the sysfs/procfs
-  layout through the `OsMetadataSource` trait. Choosing Simulation never
-  constructs `LinuxSysfs`.
-- Stage 2 uses an in-memory identity script (`src/identity_stage.rs`). The
-  success script is given one Variax 600 reply. That is simulated behavior.
-  Stages 3–4 still use `simulation::VirtualControl` and
-  `read_session::read_current_on` (revision `0001`, preset name `SIMULATED`).
-- The **Pretend setup** list picks a scenario: connected, nothing connected,
-  two PODxt Live units, unreadable information, a silent guitar, or tuning
-  left unchanged.
-
-**This computer** uses `HostRig` around `LinuxSysfs`. It is offered only
-when `live_stage_available(Stage::UsbRecognition)` is true. The mode label,
-the banner, the completion sentence, and the Reports note come from
-`open_gates()`. On Linux a normal build includes `usb`, so that is G1
-and G2. Without `usb` it is G1 only, and the window says step 1 finished
-and that gate G2 stays unoffered. The `gui` feature alone does not include
-`usb`. The reader is built only when that mode is chosen.
-It reads only the [g1.md section 1](hardware-gates/g1.md#1-what-the-app-reads)
-paths under a configurable root (the app uses `/`; tests inject a temporary
-fake tree) with `read_dir`, `read_to_string` and `read_link`, fills the same
-in-memory map and reuses its parser. Both trait methods run their reads inside
-`run_if_unlocked(Gate::OsDiscovery, …)`. Step 2 is offered only after a fresh
-expected driver binding, and only when G2 is live in that binary. Steps 3 and
-4 stay locked. A passed step never starts the next one. The answer stays
-**No** until the person chooses Yes. Test builds do not open USB.
+Core and headless tests can inject `SimulatedRig`. It uses
+`SyntheticSysfs` for step 1, a scripted transport for identity, and
+`simulation::VirtualControl` for settings and change reads.
 
 ## Tests
 
 - Core simulation (`src/device_probe.rs`): recognised, absent, two devices,
   malformed metadata (vendor/product, interface number, card list), missing
   card list, decline, cancel, no automatic advance, full ladder, silent guitar.
-  Simulation mode never holds a `LinuxSysfs`.
+  The simulated test backend holds a `SyntheticSysfs` fixture.
 - Real reader (`src/device_probe.rs`, Unix tests on temporary fake trees, never
   the real `/sys` or `/proc`): PODxt Live with `snd-usb-pod` and
   `snd-usb-variax` bound through relative `driver` symlinks, and the same
@@ -161,21 +137,13 @@ expected driver binding, and only when G2 is live in that binary. Steps 3 and
   missing card list, empty tree; `serial`/`descriptors` present but never
   read. `real_reader_reads_only_its_injected_root_with_g1_open` checks that
   the default root constant is `/` and then reads only an injected temporary
-  tree. No test calls `LinuxSysfs::new()` and reads from it. This-computer
-  mode runs step 1 only; decline and cancel run nothing; the report contains
-  no serial number. G3–G7 stay locked (`src/hardware_gates.rs`). These
-  step-1 tests do not call the identity path.
-- GUI (`src/gui.rs`): default-No via Enter, decline button, no automatic
-  advance, stop on failure and start over, all in Simulation with zero real
-  readers built. The mode test checks that **This computer** is present
-  only on Linux and that the step-1 indicator does not say the real reader is
-  open on any other platform. With `usb`, the label names G1 and G2. On Linux, this-computer mode uses an injected
-  fake tree, runs only step 1, and a decline reads nothing. Enter on the
-  focused Yes button reads that tree
-  (`device_check_enter_on_focused_yes_reads_the_injected_tree`). Closing the
-  window in the same frame as that Yes
-  (`device_check_close_in_the_same_frame_as_yes_reads_nothing`) cancels through
-  the window dispatch and the injected reader records zero calls.
+  tree. These step-1 tests leave the identity path untouched. Decline and
+  cancel run nothing, and the report omits the serial number.
+- GUI (`src/gui.rs`): opens directly on **This computer**. Headless tests
+  cover No as the default for each live step, decline, start over, access to
+  the report on short viewports, and close taking precedence over Yes. The
+  host-backend tests read only injected temporary trees. Tests that need
+  identity or settings replies use a scripted rig.
 
 ## Decision on `preview/device-check-visual` (#137)
 
@@ -195,7 +163,7 @@ only.
   normal and the owner observed no display or light change after Yes.
   The [Phase 2 test card](owner-tests/phase-2.md) specifies a master build.
   Results belong on #125.
-- Stage 2 in Simulation feeds one published Variax 600 3.10 reply to one
+- The scripted stage 2 test feeds one published Variax 600 3.10 reply to one
   identity request, then keeps listening until the three-second window ends.
   A second reply that arrives after the first does not pass. That proves the
   simulation's decision. The 2026-11-14 captures show the same request and

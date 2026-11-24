@@ -42,16 +42,8 @@ impl Workbench {
             tone_channel: "1A".into(),
             tone_rx: None,
             device_check_step_two_saved: false,
-            device_check: ProbeSession::new(RigBackend::Simulated(SimulatedRig::new(
-                device_probe::Scenario::Connected,
-            ))),
-            device_check_scenario: device_probe::Scenario::Connected,
-            #[cfg(not(test))]
-            device_check_root: PathBuf::from(device_probe::DEFAULT_ROOT),
-            #[cfg(test)]
-            device_check_root: PathBuf::new(),
-            #[cfg(test)]
-            host_reader_builds: 0,
+            device_check: Self::new_device_check(),
+            device_check_focus: None,
             recorder: recording::Panel::new(),
             #[cfg(test)]
             pending_buttons: HashMap::new(),

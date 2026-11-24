@@ -3,8 +3,8 @@
 [#207](https://github.com/guirossibrum/VariaxWorkbench/issues/207) · Variax 600
 through PODxt Live · Device check G5
 
-1. Note the current guitar bank and selector position. In Device check,
-   select **This computer**, choose **Back up the Variax**, and confirm.
+1. Note the current guitar bank and selector position. Open Device check,
+   choose **Back up the Variax**, and confirm.
 2. Expect **60 of 60 presets** and **12 of 12 bank names**. Check the switch-back
    result against the starting preset. Stop and record the message and backup
    folder if the sweep stops or cleanup fails.

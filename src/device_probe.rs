@@ -42,7 +42,6 @@ pub const WATCHED_SETTING: &str = "string1_tuning";
 pub const LIVE_STAGES: [Stage; 2] = [Stage::UsbRecognition, Stage::Identification];
 /// The answer used whenever the person has not chosen.
 pub const DEFAULT_CONSENT: Consent = Consent::No;
-pub const SIMULATION_LABEL: &str = "Simulation — pretend devices only. Nothing is sent to, or read from, a real PODxt Live or guitar.";
 pub const THIS_COMPUTER_LABEL: &str = "This computer (G1) — step 1 reads what Linux already knows about connected USB devices and sound cards. Nothing is sent to the PODxt Live or the guitar.";
 pub const G1_ONLY_BANNER: &str = "Only gate G1 (USB recognition) is open in this build, by the owner's direct permission. Gates G2–G7 stay locked: steps 2–4 never run on a real device.";
 /// Driver on PODxt Live interface 0 when the rig is ready for step 2.
@@ -124,7 +123,7 @@ impl Stage {
                 "Look at what Linux already knows about connected USB devices: vendor and product numbers, the description Linux saved when the device was plugged in, which Linux driver owns each part of it, and the list of sound cards. The app sends nothing to the PODxt Live or the guitar."
             }
             Self::Identification => concat!(
-                "Send one identity request and accept only the Variax 600 answer. In Simulation the reply is pretend and nothing is sent to a device. A real run sends that question, then reads the answer in short pieces and waits up to 3 seconds. Incomplete and missing replies stop the check. ",
+                "Send one identity request and accept only the Variax 600 answer. A real run sends that question, then reads the answer in short pieces and waits up to 3 seconds. Incomplete and missing replies stop the check. ",
                 "The app sends one identity request. After the driver is given back, Linux's own snd-usb-variax startup can send that same kind of question by itself. That later traffic is Linux, not a second request from this app. ",
                 "A PODxt Live identity is not requested in this step. Step 3 reads the Variax settings and the PODxt Live tone. Nothing is stored on the devices. Choosing Yes accepts the risk for this step. No stays the default. There is no password. If Linux refuses the open, the question is not sent and the guitar driver stays in place. After a reported success, save the steps 1–2 report, then run step 1 again and confirm snd-usb-pod on interface 0 and snd-usb-variax on interface 1."
             ),
@@ -144,7 +143,7 @@ impl Stage {
                 "Low risk. The app only reads information Linux keeps. When the PODxt Live was plugged in, Linux's own drivers already talked to it (for example the Variax driver asks for a version); that happens without this app. If no device, several devices or unreadable information is found, the check stops instead of guessing."
             }
             Self::Identification => {
-                "Medium risk on a real run, higher than USB recognition. Yes would send one identity question and briefly take the guitar-control connection away from Linux. It does not change presets or settings. If Linux does not get that connection back, unplug the PODxt Live and plug it in again, and do not continue. In Simulation nothing is sent."
+                "Medium risk on a real run, higher than USB recognition. Yes would send one identity question and briefly take the guitar-control connection away from Linux. It does not change presets or settings. If Linux does not get that connection back, unplug the PODxt Live and plug it in again, and do not continue."
             }
             Self::SettingsRead => {
                 "High risk, higher than identification. Several messages go to the guitar and change its session state while reading, and the PODxt Live is asked for its name and its current tone. Nothing is stored. The result is the current settings, not a backup."
@@ -1051,7 +1050,7 @@ impl<S: OsMetadataSource> ProbeBackend for HostRig<S> {
     }
 }
 
-/// The window's backend: simulation (default) or this computer.
+/// A staged check uses the host reader or an injected simulated rig.
 pub enum RigBackend {
     Simulated(SimulatedRig),
     ThisComputer(HostRig<LinuxSysfs>),
