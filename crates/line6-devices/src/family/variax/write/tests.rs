@@ -146,6 +146,35 @@ fn store_confirmation_success_timeout_and_unexpected_reply() {
     }
 }
 
+#[test]
+fn store_checked_identifies_silent_timeout_only_after_cleanup_sends_succeed() {
+    let bytes = packed("A model");
+    let program = Program::new("A model", &bytes).unwrap();
+    let preset = Preset::new(10, 4).unwrap();
+    for fail_at in [vec![], vec![36]] {
+        let mut log = Quiet;
+        let fail_cleanup = !fail_at.is_empty();
+        let mut session = Session::new(
+            Recording {
+                fail_at,
+                ..Default::default()
+            },
+            &AllowAll,
+            &mut log,
+        );
+        let error = store_checked(&mut session, preset, &program, || false).unwrap_err();
+        if fail_cleanup {
+            assert!(matches!(error, StoreError::Other(_)));
+            assert!(error.to_string().contains("Timed out"));
+            assert!(error.to_string().contains("cleanup failed"));
+            assert_eq!(session.link.writes.last().unwrap(), BRIDGE_OFF);
+        } else {
+            assert_eq!(error, StoreError::NoConfirmation);
+            assert_cleanup(&session.link.writes);
+        }
+    }
+}
+
 #[derive(Default)]
 struct Notes(Vec<String>);
 
