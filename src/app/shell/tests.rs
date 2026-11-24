@@ -275,3 +275,40 @@ fn app_quit_checks_every_dirty_tab_and_keeps_all_tabs_when_cancelled() {
     click_prompt(&ctx, &mut app, "discard");
     assert!(app.permit_close);
 }
+
+#[test]
+fn control_q_uses_the_existing_quit_prompt_and_plain_q_does_nothing() {
+    let ctx = egui::Context::default();
+    let mut app = empty_shell(&ctx);
+    app.new_tab(registry::LEGACY_STARTUP);
+    let id = app.tabs.active.unwrap();
+    guitar_editor(&mut app, id, "Unsaved");
+
+    for (pressed, modifiers) in [
+        (true, egui::Modifiers::NONE),
+        (false, egui::Modifiers::NONE),
+        (true, egui::Modifiers::CTRL),
+    ] {
+        let _ = ctx.run(
+            egui::RawInput {
+                modifiers,
+                events: vec![egui::Event::Key {
+                    key: egui::Key::Q,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers,
+                }],
+                ..Default::default()
+            },
+            |ctx| app.render(ctx),
+        );
+        if modifiers == egui::Modifiers::NONE {
+            assert!(app.close_request.is_none());
+        }
+    }
+
+    assert_eq!(app.closing_tab, Some(id));
+    assert!(!app.permit_close);
+    assert!(app.tabs.entries[0].editor.dirty());
+}

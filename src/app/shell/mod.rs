@@ -34,6 +34,7 @@ impl Workbench {
             theme_polled: Instant::now() - Duration::from_secs(2),
             theme_text: String::new(),
             screenshot: None,
+            window_preferences: None,
             frame_count: 0,
             recording_open: false,
             device_check_open: false,
@@ -421,7 +422,7 @@ impl Workbench {
                 i.key_pressed(egui::Key::S) && i.modifiers.command,
                 i.key_pressed(egui::Key::Z) && i.modifiers.command && !i.modifiers.shift,
                 i.key_pressed(egui::Key::Z) && i.modifiers.command && i.modifiers.shift,
-                i.key_pressed(egui::Key::Q) && !ctx.wants_keyboard_input(),
+                i.key_pressed(egui::Key::Q) && i.modifiers.matches_exact(egui::Modifiers::CTRL),
                 i.key_pressed(egui::Key::Questionmark) && !ctx.wants_keyboard_input(),
             )
         });
@@ -628,7 +629,7 @@ impl Workbench {
                         ("Ctrl+S", "Save a new copy"),
                         ("Ctrl+Z", "Undo"),
                         ("Ctrl+Shift+Z", "Redo"),
-                        ("Q", "Quit"),
+                        ("Ctrl+Q", "Quit"),
                         ("?", "Toggle Help"),
                     ] {
                         ui.horizontal(|ui| {

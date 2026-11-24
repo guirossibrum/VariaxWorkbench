@@ -48,6 +48,10 @@ use tabs::{
     TabId, TabSource, Tabs,
 };
 
+#[path = "app/shell/window.rs"]
+mod window;
+use window::WindowPreferences;
+
 use shell::{CloseRequest, DetectConfirmation};
 
 trait FileDialogs {
@@ -262,6 +266,7 @@ struct Workbench {
     permit_close: bool,
     theme_polled: Instant,
     theme_text: String,
+    window_preferences: Option<WindowPreferences>,
     screenshot: Option<PathBuf>,
     frame_count: u32,
     recording_open: bool,
@@ -360,7 +365,19 @@ impl Workbench {
 
 impl eframe::App for Workbench {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Some(window) = &mut self.window_preferences {
+            ctx.input(|input| window.observe(input.viewport(), input.viewport_rect().size()));
+        }
         self.render(ctx);
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if self.permit_close
+            && let Some(window) = &self.window_preferences
+            && let Err(error) = window.save()
+        {
+            eprintln!("Could not save window preferences: {error}");
+        }
     }
 }
 
@@ -1110,11 +1127,19 @@ pub(crate) fn run(title: &str) -> eframe::Result {
             std::process::exit(1);
         }
     };
+    let window = arguments
+        .screenshot
+        .is_none()
+        .then(|| WindowPreferences::load(arguments.preferences.with_file_name("window.txt")));
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_app_id("variax-workbench")
+        .with_inner_size([1120.0, 760.0])
+        .with_min_inner_size([960.0, 680.0]);
+    if let Some(window) = &window {
+        viewport = window.apply(viewport);
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_app_id("variax-workbench")
-            .with_inner_size([1120.0, 760.0])
-            .with_min_inner_size([960.0, 680.0]),
+        viewport,
         ..Default::default()
     };
     #[cfg(target_os = "linux")]
@@ -1141,7 +1166,11 @@ pub(crate) fn run(title: &str) -> eframe::Result {
     eframe::run_native(
         title,
         options,
-        Box::new(move |cc| Ok(Box::new(Workbench::from_options(&cc.egui_ctx, arguments)))),
+        Box::new(move |cc| {
+            let mut app = Workbench::from_options(&cc.egui_ctx, arguments);
+            app.window_preferences = window;
+            Ok(Box::new(app))
+        }),
     )
 }
 
