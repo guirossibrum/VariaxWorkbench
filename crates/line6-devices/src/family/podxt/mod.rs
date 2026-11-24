@@ -13,7 +13,9 @@ pub mod controls;
 pub mod models;
 pub mod transport;
 
+mod live_read;
 mod live_settings;
+pub use live_read::{ReadCommand, ReadUpdate, read_live};
 pub use live_settings::{LiveControl, LiveTarget, Setting, SettingMessage};
 
 use crate::gate::Operation;

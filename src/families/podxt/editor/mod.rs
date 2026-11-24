@@ -1,6 +1,8 @@
 use super::*;
 use variax_workbench::pod_preset::Library;
 
+#[cfg(feature = "usb")]
+mod live_panel;
 mod parameter_panel;
 use parameter_panel::ParameterPanel;
 
@@ -282,6 +284,8 @@ fn sample_pod_bundle(tones: &[Vec<u8>]) -> Vec<u8> {
 }
 
 pub(super) struct PodxtEditor {
+    #[cfg(feature = "usb")]
+    live: live_panel::LivePanel,
     parameter_panel: ParameterPanel,
     #[cfg(test)]
     table_view_in_test: bool,
@@ -392,6 +396,8 @@ pub(super) struct PodxtEditor {
 impl PodxtEditor {
     fn new() -> Self {
         Self {
+            #[cfg(feature = "usb")]
+            live: live_panel::LivePanel::default(),
             parameter_panel: ParameterPanel::default(),
             #[cfg(test)]
             table_view_in_test: false,
@@ -2840,7 +2846,14 @@ impl PodxtEditor {
             });
         }
         ui.horizontal(|ui| {
-            let _fetch = self.pod_button_enabled(ui, "fetch-pod", "Fetch from PODxt Live", false);
+            #[cfg(feature = "usb")]
+            let show_offline_fetch = !self.live.visible();
+            #[cfg(not(feature = "usb"))]
+            let show_offline_fetch = true;
+            if show_offline_fetch {
+                let _fetch =
+                    self.pod_button_enabled(ui, "fetch-pod", "Fetch from PODxt Live", false);
+            }
             let _send_bank = self.pod_button_enabled(ui, "send-bank", "Send current bank", false);
             let _send_all = self.pod_button_enabled(ui, "send-all", "Send all banks", false);
             ui.small(
@@ -3745,7 +3758,14 @@ impl FamilyTab for PodxtEditor {
         if self.legacy_control_widgets() {
             self.pod_window(services, ui);
         } else {
-            egui::ScrollArea::vertical().show(ui, |ui| self.pod_window(services, ui));
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                #[cfg(feature = "usb")]
+                if self.live.visible() {
+                    self.live.show(ui);
+                    ui.separator();
+                }
+                self.pod_window(services, ui);
+            });
         }
     }
     fn undo(&mut self) {
@@ -3766,7 +3786,21 @@ impl FamilyTab for PodxtEditor {
     fn save_copy(&mut self, services: &mut EditorServices<'_>) {
         self.save_pod_tone(services);
     }
+    #[cfg(feature = "usb")]
+    fn observe_device(&mut self, device: Option<&tabs::DeviceTab>) {
+        self.live.set_device(device);
+    }
+    #[cfg(feature = "usb")]
+    fn busy(&self) -> bool {
+        self.live.busy()
+    }
+    #[cfg(feature = "usb")]
+    fn cancel_operation(&mut self) {
+        self.live.cancel();
+    }
     fn poll(&mut self, _ctx: &egui::Context) {
+        #[cfg(feature = "usb")]
+        self.live.poll(_ctx);
         self.invalidate_stale_eq_reset_stage();
     }
 }
