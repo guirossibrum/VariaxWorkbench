@@ -145,7 +145,7 @@ impl Preset {
 pub struct Identified {
     pub reply: Vec<u8>,
     pub identity: Identity,
-    /// 1, or 2 when the first reply lost its start and the request was resent.
+    /// Number of identity requests sent (one or two).
     pub requests: u8,
 }
 
@@ -158,7 +158,23 @@ fn is_identity_reply(message: &[u8]) -> bool {
 /// arrives without its start, the same request is sent exactly once more.
 /// Silence is not retried.
 pub fn identify<L: Link>(session: &mut Session<L>) -> Result<Identified, String> {
-    identify_if_present(session)?
+    require_identity(session, None)
+}
+
+/// Opt in to one delayed resend when no packet arrived during the first wait.
+/// The existing orphan-tail resend takes precedence, with the same two-send limit.
+pub fn identify_retrying_silence<L: Link>(
+    session: &mut Session<L>,
+    delay: Duration,
+) -> Result<Identified, String> {
+    require_identity(session, Some(delay))
+}
+
+fn require_identity<L: Link>(
+    session: &mut Session<L>,
+    silence_delay: Option<Duration>,
+) -> Result<Identified, String> {
+    identify_exchange(session, silence_delay)?
         .ok_or_else(|| "No reply to the identity request: nothing arrived from the guitar.".into())
 }
 
@@ -168,25 +184,42 @@ pub fn identify<L: Link>(session: &mut Session<L>) -> Result<Identified, String>
 pub fn identify_if_present<L: Link>(
     session: &mut Session<L>,
 ) -> Result<Option<Identified>, String> {
+    identify_exchange(session, None)
+}
+
+fn identify_exchange<L: Link>(
+    session: &mut Session<L>,
+    silence_delay: Option<Duration>,
+) -> Result<Option<Identified>, String> {
     let orphans_before = session.assembler.orphans;
+    let packets_before = session.packets_in;
     session.send(VariaxRequest::Identity)?;
-    let mut requests = 1;
-    let reply = match session.wait_for(WINDOW, is_identity_reply, true)? {
-        Wait::Found(reply) => reply,
-        _ if session.assembler.orphans > orphans_before => {
+    let (reply, requests) = match session.wait_for(WINDOW, is_identity_reply, true)? {
+        Wait::Found(reply) => (reply, 1),
+        _ => {
             let lost = session.assembler.orphans - orphans_before;
-            session.note(format!(
-                "reply tail without its start ({lost} orphan bytes): first packet lost. \
-                 Sending the identity request once more."
-            ));
+            if lost != 0 {
+                session.note(format!(
+                    "reply tail without its start ({lost} orphan bytes): first packet lost. \
+                     Sending the identity request once more."
+                ));
+            } else if let Some(delay) = silence_delay
+                && session.packets_in == packets_before
+            {
+                session.note(format!(
+                    "No Variax identity traffic. Waiting {} ms before one more request.",
+                    delay.as_millis(),
+                ));
+                session.link.pause(delay);
+            } else {
+                return Ok(None);
+            }
             session.send(VariaxRequest::Identity)?;
-            requests = 2;
             match session.wait_for(WINDOW, is_identity_reply, false)? {
-                Wait::Found(reply) => reply,
+                Wait::Found(reply) => (reply, 2),
                 _ => return Err("No complete identity reply after the second request.".into()),
             }
         }
-        _ => return Ok(None),
     };
     let identity = Identity::parse(&reply).expect("checked by is_identity_reply");
     Ok(Some(Identified {
@@ -197,7 +230,10 @@ pub fn identify_if_present<L: Link>(
 }
 
 fn identify_variax<L: Link>(session: &mut Session<L>) -> Result<Identified, String> {
-    let identified = identify(session)?;
+    require_variax(identify(session)?)
+}
+
+fn require_variax(identified: Identified) -> Result<Identified, String> {
     if !identified.identity.is_line6() || identified.identity.family != IDENTITY_FAMILY {
         return Err("The reply is not a Variax identity. Nothing else was sent.".into());
     }
@@ -258,7 +294,7 @@ pub struct CurrentPreset {
 
 /// Identity, session on, metadata blocks 1 and 2, session off.
 pub fn read_current<L: Link>(session: &mut Session<L>) -> Result<CurrentPreset, String> {
-    read_current_with(session, ReadKind::Metadata, |_| Ok(()))
+    read_current_with(session, ReadKind::Metadata, None, |_| Ok(()))
 }
 
 /// Read the same two metadata blocks after checking the identity on this link.
@@ -267,15 +303,30 @@ pub fn read_current_checked<L: Link>(
     session: &mut Session<L>,
     check_identity: impl FnOnce(&Identity) -> Result<(), String>,
 ) -> Result<CurrentPreset, String> {
-    read_current_with(session, ReadKind::CheckedMetadata, check_identity)
+    read_current_with(session, ReadKind::CheckedMetadata, None, check_identity)
+}
+
+/// Checked settings read with one delayed identity resend on a silent link.
+pub fn read_current_checked_retrying_silence<L: Link>(
+    session: &mut Session<L>,
+    delay: Duration,
+    check_identity: impl FnOnce(&Identity) -> Result<(), String>,
+) -> Result<CurrentPreset, String> {
+    read_current_with(
+        session,
+        ReadKind::CheckedMetadata,
+        Some(delay),
+        check_identity,
+    )
 }
 
 fn read_current_with<L: Link>(
     session: &mut Session<L>,
     kind: ReadKind,
+    silence_delay: Option<Duration>,
     check_identity: impl FnOnce(&Identity) -> Result<(), String>,
 ) -> Result<CurrentPreset, String> {
-    let identified = identify_variax(session)?;
+    let identified = require_variax(require_identity(session, silence_delay)?)?;
     check_identity(&identified.identity)?;
     let replies = in_session(session, |session| {
         Ok([

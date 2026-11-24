@@ -177,36 +177,48 @@ fn slot_read_refuses_wrong_live_identities_before_enabling_the_bridge() {
 }
 
 #[test]
-fn slot_read_retries_a_variax_identity_tail_once_and_does_not_retry_silence() {
+fn slot_read_retries_silence_or_an_identity_tail_once() {
     let (original, prepared) = baseline();
-    for (identity_replies, requests, retry_succeeds) in [
-        (vec![], 1, false),
-        (vec![vec![0xf7]], 2, false),
-        (
-            vec![
-                vec![0xf7],
-                vec![],
-                vec![],
-                vec![],
-                VARIAX_IDENTITY.to_vec(),
-                slot_reply(0x7f, &original),
-                slot_reply(0x32, &original),
-                slot_reply(0x3e, &[0xff; PROGRAM_BYTES]),
-            ],
-            2,
-            true,
-        ),
+    for (first_wait, resend_at) in [
+        (std::iter::repeat_n(vec![], 30).collect::<Vec<_>>(), 5000),
+        (vec![vec![0xf7], vec![], vec![], vec![]], 400),
     ] {
-        let dir = tempfile::tempdir().unwrap();
-        let mut variax = Fake::new(DevicePath::VariaxViaPodxt, identity_replies.into());
-        let result = slot_read::capture(&mut variax, &mut Quiet, &prepared, dir.path(), || false);
-        assert_eq!(result.is_ok(), retry_succeeds);
-        assert_eq!(variax.writes[..requests], vec![IDENTITY_REQUEST; requests]);
-        if retry_succeeds {
-            assert_eq!(variax.writes[requests], BRIDGE_ON);
-            assert_eq!(variax.writes.len(), requests + 7);
-        } else {
-            assert_eq!(variax.writes.len(), requests);
+        for succeeds in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut inbox = first_wait.clone();
+            if succeeds {
+                inbox.extend([
+                    VARIAX_IDENTITY.to_vec(),
+                    slot_reply(0x7f, &original),
+                    slot_reply(0x32, &original),
+                    slot_reply(0x3e, &[0xff; PROGRAM_BYTES]),
+                ]);
+            }
+            let mut variax = Fake::new(DevicePath::VariaxViaPodxt, inbox.into());
+            let result =
+                slot_read::capture(&mut variax, &mut Quiet, &prepared, dir.path(), || false);
+            assert_eq!(variax.writes[..2], [IDENTITY_REQUEST; 2]);
+            assert_eq!(variax.write_times[1], Duration::from_millis(resend_at));
+            if succeeds {
+                result.unwrap();
+                assert_eq!(variax.writes[2], BRIDGE_ON);
+                assert_eq!(variax.writes.len(), 9);
+            } else {
+                assert!(result.unwrap_err().contains("after the second request"));
+                assert_eq!(variax.writes.len(), 2);
+                assert_eq!(variax.clock, Duration::from_millis(resend_at + 3000));
+            }
         }
     }
+}
+
+#[test]
+fn an_unterminated_identity_start_is_not_treated_as_silence() {
+    let (_, prepared) = baseline();
+    let dir = tempfile::tempdir().unwrap();
+    let mut variax = Fake::new(DevicePath::VariaxViaPodxt, [vec![0xf0, 0x7e]].into());
+    let result = slot_read::capture(&mut variax, &mut Quiet, &prepared, dir.path(), || false);
+    assert!(result.is_err());
+    assert_eq!(variax.writes, [IDENTITY_REQUEST]);
+    assert!(variax.pauses.is_empty());
 }

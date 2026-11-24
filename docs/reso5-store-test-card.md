@@ -5,8 +5,8 @@ explains the procedure. Complete and review each step before asking for the next
 
 | Step | Mode | Program to send | Approval |
 | --- | --- | --- | --- |
-| 1a | `rename` | The captured Reso-5 program with name `Reso-5 T`, space padding and a recomputed checksum | **Approved 2026-11-24 for one owner run** |
-| 1b | `restore` | The original captured Reso-5 program | **Not approved** |
+| 1a | `rename` | The captured Reso-5 program with name `Reso-5 T`, space padding and a recomputed checksum | **One owner run completed 2026-11-24** |
+| 1b | `restore` | The original captured Reso-5 program | **Approved 2026-11-24 for one owner run** |
 | 2 | `factory` | The Variax 3.10 archive's slot 50 factory program | **Not approved** |
 
 ## Prepare each step
@@ -15,8 +15,9 @@ explains the procedure. Complete and review each step before asking for the next
    The rig is Variax 300/600 firmware 3.10 through PODxt Live 3.01.
 2. Take a complete **Device check Variax backup** on the same UTC day.
    The tool requires the backup to match the settings expected before this
-   step. For restore, the backup must show `Reso-5 T`. Keep the original
-   pre-rename backup as well. Close the app and any other editors.
+   step. Restore requires a same-UTC-day Device check backup that shows
+   `Reso-5 T` in slot 50. Keep the original pre-rename backup as well.
+   Close the app and any other editors.
 3. Select **Reso, position 5** by hand. Keep the PODxt channel and the guitar
    controls steady. The tool sends no program change.
 4. Supply the fingerprinted 3.10 archive and the original 35-file #234
@@ -45,7 +46,8 @@ the low 24 bits of the sum of words 0–1,090 in word 1,091.
 1. Use the reviewed owner build. Remove `--check` from the command. The tool
    checks both identities and the 192 settings bytes, then reads the active
    buffer in 35 chunks. It requires an exact match to the original capture
-   before rename or factory and to the renamed stored image before restore.
+   before rename or factory. Restore requires the current buffer to match
+   the renamed image (SHA-256 `75bcaaf5…c716b`) byte for byte.
    It saves each completed reply in the new log folder. After a damaged
    `0x3C` reply, the tool waits 100 ms and logs and resends the same
    request, up to twice. This applies to the preflight and post-store reads.

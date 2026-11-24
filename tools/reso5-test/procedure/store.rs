@@ -227,7 +227,11 @@ pub fn attempt<L: Link>(
     if cancelled() {
         return Err("Cancelled before reading the guitar.".into());
     }
-    let current = variax::read_current_checked(session, variax_identity)?;
+    let current = variax::read_current_checked_retrying_silence(
+        session,
+        super::IDENTITY_RETRY_DELAY,
+        variax_identity,
+    )?;
     if current.metadata.raw != prepared.before[METADATA] {
         return Err("The active Variax settings differ from the expected slot 50 baseline.".into());
     }
@@ -268,7 +272,11 @@ pub fn attempt<L: Link>(
     // Ctrl+C after 0x61 does not interrupt the verification reads.
     let after = full_read::read_chunks(session, &readback_dir, || false)?;
     compare_image(&after, &prepared.after, "Reselected slot 50 read-back")?;
-    let settings = variax::read_current_checked(session, variax_identity)?;
+    let settings = variax::read_current_checked_retrying_silence(
+        session,
+        super::IDENTITY_RETRY_DELAY,
+        variax_identity,
+    )?;
     if settings.metadata.raw != prepared.after[METADATA] {
         return Err("Settings read-back differs from the expected slot 50 settings.".into());
     }

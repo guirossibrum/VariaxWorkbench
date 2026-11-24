@@ -151,6 +151,32 @@ fn all_modes_use_the_exact_complete_sequence_and_compare_reselected_bytes() {
 }
 
 #[test]
+fn restore_preflight_retries_a_silent_identity_before_any_other_request() {
+    let prepared = sample(Mode::Restore);
+    let dir = tempfile::tempdir().unwrap();
+    let mut rig = successful(&prepared);
+    for _ in 0..30 {
+        rig.inbox.push_front(vec![]);
+    }
+    run(&mut rig, &prepared, dir.path(), confirm, || false).unwrap();
+    let identity = line6_devices::identity::REQUEST;
+    let expected = [
+        vec![identity.to_vec()],
+        preflight_writes(),
+        store_writes(&prepared.program),
+        full_read::guitar_sequence(CHUNKS)[1..].to_vec(),
+        metadata_requests(),
+    ]
+    .concat();
+    assert_eq!(rig.writes, expected);
+    assert_eq!(
+        rig.write_times[1] - rig.write_times[0],
+        Duration::from_secs(5)
+    );
+    assert_eq!(rig.pauses[0], Duration::from_secs(2));
+}
+
+#[test]
 fn local_images_change_only_name_and_checksum_for_rename_and_reverse_it_for_restore() {
     for mode in MODES {
         assert_eq!(Mode::parse(mode.label()), Some(mode));

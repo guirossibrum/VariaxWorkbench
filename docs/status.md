@@ -10,6 +10,8 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] The Reso-5 owner tool waits two seconds after a silent Variax identity timeout and resends once. Fake transports verify silence, the original orphan-tail resend, and the restore preflight transcript. [#177](https://github.com/guirossibrum/VariaxWorkbench/issues/177).
+
 - [x] Variax metadata and full-program `0x3C` reads log and retry a damaged reply up to twice, with 100 ms between attempts. Fake transports cover dropped bytes, length and framing errors, retry exhaustion, cancellation and a complete backup with verified switch-back after a damaged reply. [#234](https://github.com/guirossibrum/VariaxWorkbench/issues/234) · [#177](https://github.com/guirossibrum/VariaxWorkbench/issues/177)
 - [x] The shell footer keeps a bounded height when status text wraps. A headless regression checks 24 frames and retains space for the editor. The existing New Collection workflow passes with short and deeply nested file paths. [#237](https://github.com/guirossibrum/VariaxWorkbench/issues/237).
 

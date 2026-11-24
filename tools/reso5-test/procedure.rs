@@ -20,6 +20,8 @@ use variax_workbench::{
     preset::PresetFile,
 };
 
+// Give the reattached kernel driver time to finish its identity traffic.
+const IDENTITY_RETRY_DELAY: Duration = Duration::from_secs(2);
 const NAME: &str = "Reso-5";
 const SETTINGS_HASH: &str = "13f8a99828851153eebff71b2fa644bf390cf144f9da6b73b9ee6c66f502aaf7";
 const OWN_HASH: &str = "7a245957b3263a9dc225633cdabdd2e94ce65d1ad3a6c0eb2cab23ef4e01e6a1";
@@ -356,7 +358,11 @@ pub fn attempt<L: Link>(
     if cancelled() {
         return Err("Cancelled before reading the guitar.".into());
     }
-    let current = variax::read_current_checked(session, variax_identity)?;
+    let current = variax::read_current_checked_retrying_silence(
+        session,
+        IDENTITY_RETRY_DELAY,
+        variax_identity,
+    )?;
     if current.metadata.name != NAME || current.metadata.raw != prepared.start {
         return Err("The active Variax settings differ from the approved Reso-5 baseline.".into());
     }
@@ -372,7 +378,11 @@ pub fn attempt<L: Link>(
             "Cancelled after the edit. Reselect the stored preset per the test card.".into(),
         );
     }
-    let readback = variax::read_current_checked(session, variax_identity)?;
+    let readback = variax::read_current_checked_retrying_silence(
+        session,
+        IDENTITY_RETRY_DELAY,
+        variax_identity,
+    )?;
     if readback.metadata.name != NAME || readback.metadata.raw != prepared.end {
         return Err(
             "Settings read-back differs from the expected edit. Follow the stop rules.".into(),
