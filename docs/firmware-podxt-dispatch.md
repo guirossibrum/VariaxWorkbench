@@ -13,7 +13,7 @@ not an application dependency.
 
 Labels mean: **confirmed** (bytes or disassembly at the address given),
 **likely** (a reading that fits those bytes and is not proven), **unknown**
-(not established). The trap list is a later section of this file.
+(not established). The coverage report and the trap list close this file.
 
 ## Which program sees the bytes
 
@@ -192,6 +192,7 @@ trace of `DM(0x00200000)`.
 | Linked model `03 10` | `0x10` | `0x0000` |
 | `03 11` | `0x11` | `0x0000` |
 | Variax release `03 23` | `0x23` | `0x0000` |
+| Universal identity `F0 7E 7F 06 01 F7` | `0x7E`, the byte after `F0` | `0xAADF` outside the program |
 | `03 0F` | `0x0F` | `0x0000` |
 | `03 24` | `0x24` | `0x0000` |
 | Value `0x40` (CC 64's controller number) | `0x40` | `0x80CE` return |
@@ -684,3 +685,123 @@ Nothing in this work was sent to a device.
 | The `0x8266` sum. | The result is stored at `0x1B9AB` and `0x1B9AA`. No other instruction names those addresses, and the next call is the main loop. | Reset does not branch on the sum. |
 | A tone that leaves the three `0x9380` words unchanged. | The reset line calls `0x9380` and does not itself read the halves. | The boot choice is unchanged. This boot record has no per-slot checksum. |
 | `0x80000` main-loop passes without the `0x8028` interrupt. | `DM(0xC2E5)` starts at 0, `0x95C5` adds one, and `0x95C9` jumps to itself once bit 19 is set. `0x910E` stores 0 and is reached from `0x8028`. | The parser loop does not resume. The spin does not program or erase. |
+
+## Coverage
+
+The [coverage record](../research/podxt-301-coverage.json) locks the region
+byte counts, the 256 opcode dispositions, and the direct-call closure.
+`python scripts/map_podxt_coverage.py` checks them against the container
+and against `PodxtRequest::bytes`. Nothing in this work was sent to a device.
+
+### Image regions
+
+**Confirmed** sizes, `type_raw` values, and `FF` counts. The image is
+1,048,576 bytes in 19 regions. 517,966 bytes are `FF`. The seven regions
+that are entirely `FF` are 409,600 bytes, 39.0625% of the image. Their
+values do not prove they are safe to overwrite.
+
+Roles for regions 1–3 and 6–11 are the observed roles in the
+[firmware map](firmware-map.md). They are not a new classification.
+
+| Region | Bytes | `FF` bytes | Share | Role |
+| --- | --- | --- | --- | --- |
+| 0 | 16,384 | 16,384 | 1.5625% | Entirely `FF`. |
+| 1 | 8,192 | 7,808 | 0.78125% | Settings or name-bearing data. Observed. |
+| 2 | 8,192 | 7,808 | 0.78125% | Settings or name-bearing data. Observed. |
+| 3 | 32,768 | 21,850 | 3.125% | Repeated patterns consistent with display data. Observed. |
+| 4 | 65,536 | 16,946 | 6.25% | SHARC load image. The program and the dispatch table live here. |
+| 5 | 65,536 | 403 | 6.25% | Unidentified length-and-checksum payload. Encoding **unknown**. |
+| 6 | 65,536 | 502 | 6.25% | Resource directory and named records. Observed. |
+| 7 | 65,536 | 326 | 6.25% | Resource directory and named records. Observed. |
+| 8 | 65,536 | 267 | 6.25% | Resource directory and named records. Observed. |
+| 9 | 65,536 | 227 | 6.25% | Resource directory and named records. Observed. |
+| 10 | 65,536 | 189 | 6.25% | Resource directory and named records. Observed. |
+| 11 | 65,536 | 47,946 | 6.25% | Resource directory and named records, mostly padding. Observed. |
+| 12 | 65,536 | 65,536 | 6.25% | Entirely `FF`. |
+| 13 | 65,536 | 65,536 | 6.25% | Entirely `FF`. |
+| 14 | 65,536 | 65,536 | 6.25% | Entirely `FF`. |
+| 15 | 65,536 | 65,536 | 6.25% | Entirely `FF`. |
+| 16 | 65,536 | 65,536 | 6.25% | Entirely `FF`. |
+| 17 | 65,536 | 4,094 | 6.25% | Factory records and the lower stored half. |
+| 18 | 65,536 | 65,536 | 6.25% | Entirely `FF`. The upper stored half in the archive. |
+
+### Program and the paths that can reach it
+
+**Confirmed.** The loaded program is 5,816 words, `0x8000` through `0x96B7`.
+The vector block `0x8000–0x807F` is `NOP` or `RTI` except `IDLE` at
+`0x8004`, the reset jump at `0x8005`, and the jumps at `0x8010`, `0x8020`,
+and `0x8028`. Those four jumps are the reset path, the copy interrupt, the
+byte-receive interrupt, and the interrupt that clears `DM(0xC2E5)`.
+
+The same marker rule as the firmware map, a disassembly line containing
+`?` or `TODO`, marks 28 of the 5,816 lines. All 28 sit at `0x8275–0x82AC`,
+which is the block after the main loop's jump back to `0x8271`. None of
+them is on the direct closure below.
+
+The direct closure starts at the four vector jump targets and at every
+in-program dispatch entry. It follows each absolute `CALL` and `JUMP`,
+including the next instruction after a `CALL` or a conditional branch. An
+unconditional `JUMP` continues at its target. It does not follow an
+indirect `CALL` or `JUMP`. That closure contains 1,376 words, 23.66% of
+the program. The other 4,440 words have no such path. The program contains
+26 indirect transfers. Twelve of those sit inside the closure and are not
+followed, so anything reached only through them stays outside this count.
+The flash routines `0x930F`, `0x9324`, `0x936A`, and `0x9380` are inside
+the closure.
+
+### Every SysEx opcode
+
+The [entry inventory](../research/podxt-301-entry.json) lists all 256
+targets. The coverage record gives each opcode one disposition.
+
+| Disposition | Count | What is established |
+| --- | --- | --- |
+| `zero` | 100 | Table word `0x0000`. `0x80CB` is `JUMP (M15, I15)`. With `M15` still 0 the target is address 0. Effect **unknown**. |
+| `outside` | 86 | Target is outside `0x8000–0x96B7`. Effect **unknown**. |
+| `return` | 26 | Target is `RTS` at `0x80CE`. |
+| `immediate_rts` | 10 | Target is `RTS` at `0x81FA`. Opcodes `0xB5`, `0xB6`, `0xC4`, `0xC5`, `0xD3`, `0xD4`, `0xE2`, `0xE3`, `0xF1`, and `0xF2`. |
+| `traced_entry` | 29 | The entry behavior is in the command and store sections. Indirect callees of those entries are not all expanded. |
+| `receive_vector` | 4 | `0xBF`, `0xCE`, `0xDD`, and `0xFB` are `0x8020`, which jumps to the receive routine at `0x80CF`. Entering that routine from the SysEx jump has an **unknown** effect. |
+| `mid_copy` | 1 | `0xEC` enters `0x81CC`, stores through `I0` and `I1` as they already stand, and returns at `0x81D3`. Those instructions contain no call. What `I0` and `I1` hold is **unknown**. |
+
+CC status `B0` and program change `C0` are not opcodes in this table. The
+parser consumes them and returns. **Confirmed.** Whether another component
+acts on them before the pipe is **unknown**.
+
+`PodxtRequest::bytes` builds SysEx opcodes `0x0E`, `0x10`, `0x23`, `0x57`,
+`0x73`, and `0x75`, plus `B0` and `C0`. The first three are `zero`. The
+last three are `traced_entry`. The same function does not build `0x54`,
+`0x56`, `0x60`, `0x67`, `0x68`, `0x6C`, `0x6D`, `0x6E`, `0x71`, `0x72`, or
+`0x74`. **Confirmed** from that source. It also sends `identity::REQUEST`,
+the universal inquiry `F0 7E 7F 06 01 F7`. If this parser sees that frame,
+the index is `0x7E` and the table word is `0xAADF`, outside the program.
+Whether a front end consumes the inquiry before the pipe is **unknown**.
+`Global::id` is 0, 1, 4, 5, 16–23, and 26–34. The maximum is 34, below
+the `0x56` indexes `0x30`, `0x3B`, `0x3C`, and `0x3D`.
+
+## Trap list
+
+| Trigger | Address | Consequence | Our editor can send it | How the editor avoids it |
+| --- | --- | --- | --- | --- |
+| A family SysEx frame reaches this parser with `00 01 0C 03` still following `F0`. | `0x80CB` | The index is `0x00`. The table word is 0, so the jump target is address 0 when `M15` is 0. Effect **unknown**. | Yes. The six family frames from `PodxtRequest::bytes` start that way. The identity inquiry does not. Whether those four bytes are still present at this parser is the **likely** strip in the command section, and it is **unknown** which component strips them. | The family frame stays the Line 6 header plus one opcode. A read is a traced handler only after that strip. |
+| Opcode `0x0E`, `0x10`, or `0x23` after that strip. Packs, the linked model, and the Variax release. | `0x1A9C1` plus the opcode, then `0x80CB` | The table word is 0. Same jump as the row above. | Yes. Those three are `PodxtRequest` variants. | It does not. They stay the existing pack, link, and release requests. No further zero-target opcode is added by those variants. |
+| Opcode `0x71`. | `0x9420`, `0x930F` | Programs 80 words on the half opposite `DM(0xC2DF)`. No erase and no `0x50`. A word that never reads back stays in `0x931A`. | No. | `PodxtRequest::bytes` has no `0x71`. |
+| Opcode `0x60`, `0x67`, or `0x72`. | `0x936A` | Copies blank spare slots, programs `0x1969`, flips the base, and erases the previous half. Sector length is **unknown**. | No. | `PodxtRequest::bytes` has none of the three opcodes. |
+| Opcode `0x6C`. | `0x81A6`, `0x9324` | Erases at the current `DM(0xC2D6)` and waits for `0xFFFF`. | No. | `PodxtRequest::bytes` has no `0x6C`. |
+| Opcode `0x6D`. | `0x80FB`, `0x930F` | Programs one word per count byte. The count is not checked. | No. | `PodxtRequest::bytes` has no `0x6D`. |
+| Opcode `0x6E`. | `0x80F9` | Stores a raw address at `DM(0xC2D6)`. A later `0x6C` or `0x6D` uses that address. | No. | `PodxtRequest::bytes` has no `0x6E`. |
+| Opcode `0x68`. | `0x8161`, `0x93F2` | Writes `0x100000` words at `DM(0x02000000)` and replies `0x51`. What that address is on the board is **unknown**. | No. | `PodxtRequest::bytes` has no `0x68`. |
+| Opcode `0x74` with fewer than 160 payload bytes. | `0x818F` | Reads 160 ring words and does not test `F7`. | No. The family parses an incoming `0x74` dump. It does not send one. | `PodxtRequest::bytes` has no `0x74`. |
+| Opcode `0x56` with index `0x30`, `0x3B`, `0x3C`, `0x3D`, or another outside slot. | `0x8124`, `0x95A0` | Jumps through `DM(0x1B978 + index)` to an address outside the loaded program. | No. The editor sends `0x57`, not `0x56`. | `Global::id` stops at 34. Those four indexes are 48 and above. `0x57` reads one word and does not take the `0x95A0` jump. |
+| A stored read or a store whose index is 409, or any index `0x81A8` does not compare. | `0x81A8` | Index 409 includes the sentinel and continues `0x20` words past the half. A non-zero `0x76` count sends that many frames. | The editor can send `0x73`. It cannot send `0x71`. | `Location::new` accepts only the bank sizes, so `Location::address` stops at 298. The stored-read arm sends two zero count bytes. |
+| Reset while both half-base words fail the `0xFFFF` test, including after power loss during `0x936A`. | `0x9380` | Erases one of the two halves. The sector length is **unknown**, so the erase may cover more than the half. | No store message starts that path. | `PodxtRequest` has no store. The editor also has no repair for a half that is already in this state. |
+| Reset reaches `0x808B` while bit 30 of `DM(0xE1)` stays clear. | `0x808B` | The parser does not start. `0x8080` does not erase. What the bit is is **unknown**. | No message causes it. | A host timeout is not a device reset and is not a cue to send a program or erase opcode. |
+| `0x80000` main-loop passes without the `0x8028` interrupt. | `0x95C9` | The parser loop does not resume. The spin does not program or erase. | No message clears `DM(0xC2E5)`. | A silent device is not a cue to send a flash opcode. The opcode that clears the counter is the interrupt at `0x8028`, not a SysEx request. |
+| `FLAG1_IN` stays clear while a reply is transmitted. | `0x80D9` | The transmit loop does not return. | Yes, in the sense that `0x75`, `0x73`, and `0x57` reply. The editor does not hold the flag. | Host waits are 2 seconds for an edit buffer and 30 seconds for a library read. Neither wait clears the device loop. |
+| Universal identity `F0 7E 7F 06 01 F7`. | `0x7E` targets `0xAADF`, then `0x80CB` | If this parser sees the frame, the jump leaves the loaded program. Effect **unknown**. Whether a front end consumes the inquiry first is **unknown**. | Yes. `PodxtRequest::Identity` sends `identity::REQUEST`. | It does not. The inquiry stays as it is. It is not rewritten into a program or erase opcode. |
+| Opcode `0xBF`, `0xCE`, `0xDD`, `0xFB`, or an outside-program opcode other than that identity frame. | `0x8020` for the four; the table word for the others | The four enter the receive routine. The other outside targets leave the loaded program. Effect **unknown**. | No. | The six family opcodes are the three zero targets and the three traced reads. CC and program change are consumed before the table. |
+| Opcode `0xEC`. | `0x81CC` | Copies four words through the current `I0` and `I1`, then returns. No call. | No. | `PodxtRequest::bytes` has no `0xEC`. |
+| Body at `0x940A`, if some indirect path enters it. | `0x940A` | Calls `0x9324` at six addresses starting at `0x01018000`. No decoded direct call or jump targets `0x940A`. Reachability is **unknown**. | No traced editor message enters it. | `PodxtRequest` has no opcode whose traced entry is `0x940A`. |
+
+CC and program change are included above only to record that this parser
+does not turn them into a table jump. The editor does send both.
