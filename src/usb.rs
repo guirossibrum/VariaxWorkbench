@@ -11,6 +11,7 @@ use crate::{
 };
 use line6_devices::device_lock::DeviceLock;
 use line6_devices::family::variax::transport::VARIAX_VIA_PODXT_LIVE as USB;
+use line6_devices::transport::usb::UsbInterfaceLink;
 use std::{
     collections::VecDeque,
     sync::atomic::{AtomicBool, Ordering},
@@ -501,16 +502,26 @@ pub fn read_discovery_identity(
 pub fn open_variax_bridge(
     rig: DeviceLock,
     (path, address): (&str, u8),
-) -> Result<line6_devices::transport::usb::UsbInterfaceLink, String> {
+) -> Result<UsbInterfaceLink, String> {
+    with_variax_bridge_gates(|| UsbInterfaceLink::open_attachment(USB, path, address, rig))
+}
+
+/// Open interface 1 for a verified editor attachment using the worker's lock.
+/// Check the operation's gate before acquiring the lock, then pass the same
+/// lock to Follow or Refresh. Finish or drop the link before releasing the lock.
+pub fn open_variax_bridge_borrowed<'rig>(
+    rig: &'rig DeviceLock,
+    (path, address): (&str, u8),
+) -> Result<UsbInterfaceLink<&'rig DeviceLock>, String> {
+    with_variax_bridge_gates(|| UsbInterfaceLink::open_attachment_borrowed(USB, path, address, rig))
+}
+
+fn with_variax_bridge_gates<T>(open: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     if cfg!(test) {
         return Err("test builds do not open a USB device".into());
     }
     hardware_gates::run_if_unlocked(Gate::OsDiscovery, || {
-        hardware_gates::run_if_unlocked(Gate::IdentityRequest, || {
-            line6_devices::transport::usb::UsbInterfaceLink::open_attachment(
-                USB, path, address, rig,
-            )
-        })
+        hardware_gates::run_if_unlocked(Gate::IdentityRequest, open)
     })
 }
 
