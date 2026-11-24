@@ -10,7 +10,7 @@ use super::{
 };
 use crate::gate::Operation;
 use crate::midi::Event;
-use crate::session::{Link, POLL, Path, Request, Session, Wait};
+use crate::session::{Link, POLL, Path, Request, Session};
 use std::time::Duration;
 
 const WORDS: usize = 1092;
@@ -353,7 +353,6 @@ fn wait_for_store_confirmation<L: Link>(session: &mut Session<L>) -> Result<(), 
         }
     }
 }
-
 
 /// Update the selected bank's name and read it back. Selecting a bank sends
 /// Workbench's program change to switch position zero and changes the preset.
