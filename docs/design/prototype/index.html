@@ -73,7 +73,7 @@ html.shot .proto-nav { display: none; }
 .card span { color: var(--muted); }
 
 .vx { height: 100%; display: flex; flex-direction: column; padding: 12px 16px 8px; gap: 8px; }
-.vx-head { height: 92px; flex: none; border-radius: 8px; padding: 8px 12px; display: flex; flex-direction: column; justify-content: center; gap: 6px; color: var(--text);
+.vx-head { min-height: 92px; flex: none; border-radius: 8px; padding: 8px 12px; display: flex; flex-direction: column; justify-content: center; gap: 6px; color: var(--text);
   background:
     repeating-linear-gradient(90deg, rgba(0,0,0,.15) 0 1px, transparent 1px 6px),
     linear-gradient(180deg, #7a4b2a, #3a2416); }
@@ -82,7 +82,10 @@ html.shot .proto-nav { display: none; }
 .slot { width: 32px; height: 32px; padding: 0; background: #1c140c; color: var(--text); border-color: #5a3a22; }
 .slot.on { outline: 2px solid var(--variax); outline-offset: 1px; }
 .grow { flex: 1; }
-.field { height: 32px; min-width: 120px; padding: 4px 8px; border-radius: 6px; border: 1px solid #5a3a22; background: #1c140c; }
+.field { height: 32px; width: 100%; padding: 4px 8px; border-radius: 6px; border: 1px solid #5a3a22; background: #1c140c; color: var(--text); }
+.fields { display: grid; grid-template-columns: 240px 200px minmax(0, 1fr) auto; gap: 8px; align-items: end; }
+.fields label { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.pup { width: 32px; height: 32px; object-fit: contain; background: #1c140c; border-radius: 6px; }
 .vx-mid { flex: 1; min-height: 0; display: grid; grid-template-columns: 1.15fr 1fr; gap: 12px; }
 .well { border-radius: 8px; background: #16130f; border: 1px solid #3a3028; display: flex; flex-direction: column; align-items: center; justify-content: center; position: relative; overflow: hidden; }
 .well img.body { max-height: 78%; max-width: 70%; object-fit: contain; }
@@ -93,21 +96,22 @@ html.shot .proto-nav { display: none; }
   background:
     repeating-linear-gradient(180deg, rgba(255,255,255,.05) 0 1px, transparent 1px 3px),
     linear-gradient(180deg, #d5cfc6, #9a948c); }
-.insp h2 { margin: 0 0 8px; font-size: 15px; }
+.insp h2 { margin: 0; font-size: 15px; }
+.puprow { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
 .seg { display: flex; gap: 4px; margin-bottom: 12px; }
 .seg button { background: #f4f1ea; color: var(--ink); border-color: #6d675f; }
 .seg button.on { background: var(--ink); color: var(--text); }
-.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; margin-bottom: 8px; }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; margin-bottom: 4px; }
 .pair label, .stack label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
 .pair select, .stack select, .insp input[type="text"] { min-height: 32px; border-radius: 6px; border: 1px solid #6d675f; background: #f4f1ea; color: var(--ink); padding: 4px 8px; }
-.check { display: flex; gap: 8px; align-items: flex-start; margin: 8px 0; font-size: 13px; }
-.fret { height: 118px; flex: none; border-radius: 8px; position: relative; overflow: hidden; background: #1a120c center/cover no-repeat; }
+.check { display: flex; gap: 8px; align-items: center; margin: 4px 0; font-size: 13px; }
+.fret { height: 88px; flex: none; border-radius: 8px; position: relative; overflow: hidden; background: #1a120c center/cover no-repeat; }
 .strings { position: absolute; inset: 28px 16px 16px; display: grid; grid-template-columns: repeat(6, 1fr); }
 .strings div { text-align: center; font-size: 13px; color: #f4f1ea; text-shadow: 0 1px 2px #000; }
 .strings b { display: block; font-size: 15px; }
 
 .stage { height: calc(100% - 16px); margin: 8px 12px; display: flex; flex-direction: column; gap: 6px; padding: 22px 14px 10px;
-  background: #000 url("../../assets/ui/pod-farm/stage-frame.png") center/100% 100% no-repeat; }
+  background: #000 url("../../../assets/ui/pod-farm/stage-frame.png") center/100% 100% no-repeat; }
 .meta { display: flex; gap: 8px; align-items: center; color: var(--text); font-size: 13px; }
 .meta input { min-height: 32px; width: 220px; border-radius: 6px; border: 1px solid var(--line); background: var(--raised); color: var(--text); padding: 4px 8px; }
 .switches { display: flex; gap: 6px; }
@@ -162,11 +166,12 @@ html.shot .proto-nav { display: none; }
 <div id="root"></div>
 <nav class="proto-nav" id="nav"></nav>
 <script>
-const MARK = "../../assets/ui/shell/workbench-mark.png";
-const VARIAX_ICON = "../../assets/ui/shell/variax.png";
-const POD_ICON = "../../assets/ui/shell/podxt-live.png";
-const BODY = "../../assets/ui/variax/spank-body.png";
-const FRET = "../../assets/ui/variax/fretboard.png";
+const MARK = "../../../assets/ui/shell/workbench-mark.png";
+const VARIAX_ICON = "../../../assets/ui/shell/variax.png";
+const POD_ICON = "../../../assets/ui/shell/podxt-live.png";
+const BODY = "../../../assets/ui/variax/spank-body.png";
+const PICKUP = "../../../assets/ui/variax/spank-pickup.png";
+const FRET = "../../../assets/ui/variax/fretboard.png";
 
 const LINKS = [
   ["start", "Start"],
@@ -329,10 +334,10 @@ function vxHead(activeSlot) {
       ${btn("Undo")}
       ${btn("Redo")}
     </div>
-    <div class="row">
+    <div class="fields">
       <label>Model <input class="field" value="Spank example" readonly></label>
       <label>Author <input class="field" value="" readonly></label>
-      <label class="grow">Notes <input class="field" style="width:100%" value="" readonly></label>
+      <label>Notes <input class="field" value="" readonly></label>
       <span>Output trim 0.00dB</span>
     </div>
   </header>`;
@@ -363,7 +368,7 @@ function fret() {
 function variax(section) {
   let inspector = "";
   if (section === "variax-body") {
-    inspector = `<h2>Guitar body</h2><div class="stack"><label>Body<select><option>Spank</option></select></label></div><p class="cap">Artwork folder stays on this section.</p>`;
+    inspector = `<h2>Guitar body</h2><div class="stack"><label>Body<select><option>Spank</option></select></label></div><div class="row" style="margin-top:8px">${btn("Artwork folder…")}</div>`;
   } else if (section === "variax-controls") {
     inspector = `<h2>Volume knob</h2>
       <div class="pair"><label>Resistance<select><option>500k Ω</option></select></label><label>Taper<select><option>Audio</option></select></label></div>
@@ -372,10 +377,10 @@ function variax(section) {
       <div class="pair"><label>Tone position<input type="text" value="100%" readonly></label><label class="check"><input type="checkbox" disabled> Save tone-knob position</label></div>
       <label class="check"><input type="checkbox" checked disabled> Auto-select Tone/Volume defaults when selecting pickup types</label>`;
   } else {
-    inspector = `<h2>Pickup 1</h2>
+    inspector = `<div class="puprow"><img class="pup" alt="" src="${PICKUP}"><h2>Pickup 1</h2></div>
       <div class="stack"><label>Model<select><option>Spank Single Coil Bridge</option></select></label></div>
       <div class="pair"><label>Position<input type="text" value='1.80"' readonly></label><label>Angle<input type="text" value="8.7°" readonly></label><label>Level<input type="text" value="+1.3dB" readonly></label></div>
-      <h2>Pickup 2</h2>
+      <div class="puprow"><img class="pup" alt="" src="${PICKUP}"><h2>Pickup 2</h2></div>
       <div class="stack"><label>Model<select><option>Spank Single Coil Middle</option></select></label></div>
       <div class="pair"><label>Position<input type="text" value='3.88"' readonly></label><label>Angle<input type="text" value="0.0°" readonly></label><label>Level<input type="text" value="+1.4dB" readonly></label></div>
       <label class="check"><input type="checkbox" disabled> Reverse pickup 2 phase</label>
@@ -393,6 +398,7 @@ function startPage() {
       <a class="card" href="#podxt-offline"><img alt="" src="${POD_ICON}"><b>PODxt Live</b><span>Example tone. Nothing is sent, and no preset is switched.</span></a>
       <div class="card"><div class="hdmark">HD</div><b>POD HD500X</b><span>File editor. Live connection not supported yet.</span></div>
     </div>
+    <p class="notice">Detect devices is enabled when this build can scan. A build without USB detection disables the button, and its hover says: USB presence detection is unavailable in this build.</p>
   </div>`;
 }
 

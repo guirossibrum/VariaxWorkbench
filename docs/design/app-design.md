@@ -216,9 +216,9 @@ of this app.
 
 | Region | Size | Contents |
 | --- | --- | --- |
-| Header | 92 | Bank, slots, model, author, notes, Undo, Redo, Unsaved |
+| Header | about 92, taller when the metadata row needs it | Bank, slots, model, author, notes, Undo, Redo, Unsaved |
 | Middle | remaining | Guitar body, about 1.15fr, and the inspector, about 1fr |
-| Fretboard | 118 | The committed fretboard image and the six stored pitch offsets |
+| Fretboard | about 90 | The committed fretboard image and the six stored pitch offsets |
 
 The wood header, the body well, and the brushed-metal inspector are CSS, not
 bitmaps. The photos that are committed are the Spank body, the Spank pickup
