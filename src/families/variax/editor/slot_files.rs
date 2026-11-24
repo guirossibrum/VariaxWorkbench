@@ -38,6 +38,7 @@ impl VariaxEditor {
             if replace.clicked() {
                 self.choose_slot_replacement(services);
             }
+            self.slot_transfer_menu(ui, enabled);
         });
     }
 

@@ -123,37 +123,49 @@ impl BundleFile {
         preset_index: usize,
         replacement: &PresetFile,
     ) -> Result<(), String> {
+        *self = self.with_replaced_models(bank_index, [(preset_index, replacement)])?;
+        Ok(())
+    }
+
+    /// Replace models in ascending slot order while retaining every other chunk.
+    pub(super) fn with_replaced_models<'a>(
+        &self,
+        bank_index: usize,
+        replacements: impl IntoIterator<Item = (usize, &'a PresetFile)>,
+    ) -> Result<Self, String> {
         let bank = self
             .banks
             .get(bank_index)
             .ok_or("bank index is out of range")?;
-        let range = bank
-            .ranges
-            .get(preset_index)
-            .ok_or("preset index is out of range")?
-            .clone();
-        let new_bank_length = bank
-            .data_length
-            .checked_sub(range.len())
-            .and_then(|n| n.checked_add(replacement.as_bytes().len()))
-            .ok_or("bundle size overflow")?;
-        let new_file_length = self
-            .bytes
-            .len()
-            .checked_sub(range.len())
-            .and_then(|n| n.checked_add(replacement.as_bytes().len()))
-            .ok_or("bundle size overflow")?;
+        let mut bank_length = bank.data_length;
+        let mut bytes = Vec::with_capacity(self.bytes.len());
+        let mut tail = 0;
+        for (preset_index, replacement) in replacements {
+            let range = bank
+                .ranges
+                .get(preset_index)
+                .ok_or("preset index is out of range")?;
+            if range.start < tail {
+                return Err("replacement slots must be unique and in ascending order".into());
+            }
+            let replacement = replacement.as_bytes();
+            bank_length = bank_length
+                .checked_sub(range.len())
+                .and_then(|length| length.checked_add(replacement.len()))
+                .ok_or("bundle size overflow")?;
+            bytes.extend_from_slice(&self.bytes[tail..range.start]);
+            bytes.extend_from_slice(replacement);
+            tail = range.end;
+        }
+        bytes.extend_from_slice(&self.bytes[tail..]);
         let bank_length =
-            u32::try_from(new_bank_length).map_err(|_| "bank exceeds IFF size capacity")?;
+            u32::try_from(bank_length).map_err(|_| "bank exceeds IFF size capacity")?;
         let root_length =
-            u32::try_from(new_file_length - 8).map_err(|_| "bundle exceeds IFF size capacity")?;
+            u32::try_from(bytes.len() - 8).map_err(|_| "bundle exceeds IFF size capacity")?;
         let header = bank.chunk_start;
-        let mut bytes = self.bytes.clone();
-        bytes.splice(range, replacement.as_bytes().iter().copied());
         bytes[header + 4..header + 8].copy_from_slice(&bank_length.to_be_bytes());
         bytes[4..8].copy_from_slice(&root_length.to_be_bytes());
-        *self = Self::parse(bytes)?;
-        Ok(())
+        Self::parse(bytes)
     }
 }
 
@@ -215,6 +227,48 @@ mod tests {
             assert_eq!(reopened.banks()[0].name, "B");
         }
     }
+    #[test]
+    fn replacing_two_resized_models_preserves_opaque_chunks_and_other_banks() {
+        let original = BundleFile::parse(
+            include_bytes!("../../../../tests/fixtures/synthetic-collection.l6c").to_vec(),
+        )
+        .unwrap();
+        let source = &original.banks()[1];
+        let mut first = source.presets()[1].clone();
+        first
+            .set_metadata(crate::preset::PresetText::Notes, "A larger first model")
+            .unwrap();
+        let mut second = source.presets()[0].clone();
+        second
+            .set_metadata(
+                crate::preset::PresetText::Notes,
+                "A larger second model, too",
+            )
+            .unwrap();
+        let updated = original
+            .with_replaced_models(1, [(0, &first), (1, &second)])
+            .unwrap();
+        let destination = &updated.banks()[1];
+        assert_eq!(destination.presets()[0].as_bytes(), first.as_bytes());
+        assert_eq!(destination.presets()[1].as_bytes(), second.as_bytes());
+        assert_eq!(source.name, destination.name);
+
+        let unaffected = |file: &BundleFile| {
+            let bank = &file.banks()[1];
+            let bytes = file.as_bytes();
+            [
+                // Root type, opaque root chunks, and the bank's tag.
+                &bytes[8..bank.chunk_start + 4],
+                // Bank type, BINF and opaque bank metadata.
+                &bytes[bank.chunk_start + 8..bank.ranges[0].start],
+                &bytes[bank.ranges[0].end..bank.ranges[1].start],
+                &bytes[bank.ranges[1].end..],
+            ]
+            .concat()
+        };
+        assert_eq!(unaffected(&original), unaffected(&updated));
+    }
+
     #[test]
     fn malformed_bundle_lengths_fail_without_panics() {
         let bytes = example();

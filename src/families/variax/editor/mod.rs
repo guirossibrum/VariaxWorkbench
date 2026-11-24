@@ -3,7 +3,9 @@ use serde::Deserialize;
 
 mod guitar;
 mod slot_files;
+mod slot_transfers;
 use slot_files::SlotReplacement;
+use slot_transfers::SlotTransfer;
 mod tuning_presets;
 use tuning_presets::TuningDialog;
 mod value_format;
@@ -123,6 +125,7 @@ pub(super) struct VariaxEditor {
     link_tuning_mix: bool,
     tuning_dialog: Option<TuningDialog>,
     slot_replacement: Option<SlotReplacement>,
+    slot_transfer: Option<SlotTransfer>,
     #[cfg(test)]
     bank_slots: HashMap<usize, Rect>,
     #[cfg(test)]
@@ -145,6 +148,8 @@ pub(super) struct VariaxEditor {
     tuning_widgets: HashMap<&'static str, Rect>,
     #[cfg(test)]
     slot_file_buttons: HashMap<&'static str, Rect>,
+    #[cfg(test)]
+    slot_transfer_buttons: HashMap<String, Rect>,
     #[cfg(test)]
     tuning_preset_rows: HashMap<String, Rect>,
     read_receiver: Option<
@@ -178,6 +183,7 @@ impl VariaxEditor {
             link_tuning_mix: false,
             tuning_dialog: None,
             slot_replacement: None,
+            slot_transfer: None,
             #[cfg(test)]
             bank_slots: HashMap::new(),
             #[cfg(test)]
@@ -200,6 +206,8 @@ impl VariaxEditor {
             tuning_widgets: HashMap::new(),
             #[cfg(test)]
             slot_file_buttons: HashMap::new(),
+            #[cfg(test)]
+            slot_transfer_buttons: HashMap::new(),
             #[cfg(test)]
             tuning_preset_rows: HashMap::new(),
             read_receiver: None,
@@ -1033,8 +1041,10 @@ impl VariaxEditor {
             });
             return;
         }
-        let available =
-            !self.is_reading() && self.pending.is_none() && self.slot_replacement.is_none();
+        let available = !self.is_reading()
+            && self.pending.is_none()
+            && self.slot_replacement.is_none()
+            && self.slot_transfer.is_none();
         self.guitar_header(ui, available);
         self.slot_file_actions(services, ui, available);
         let editable = self
@@ -1191,6 +1201,7 @@ impl FamilyTab for VariaxEditor {
         self.variax_pending_dialog(services, ctx);
         self.tuning_presets_dialog(ctx);
         self.slot_replacement_dialog(services, ctx);
+        self.slot_transfer_dialog(services, ctx);
     }
     fn busy(&self) -> bool {
         self.is_reading()
@@ -1199,7 +1210,10 @@ impl FamilyTab for VariaxEditor {
         self.cancel_read();
     }
     fn blocking_prompt(&self) -> bool {
-        self.pending.is_some() || self.tuning_dialog.is_some() || self.slot_replacement.is_some()
+        self.pending.is_some()
+            || self.tuning_dialog.is_some()
+            || self.slot_replacement.is_some()
+            || self.slot_transfer.is_some()
     }
     fn actions(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
         if ui.button("Replace file in this tab…").clicked() {
