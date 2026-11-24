@@ -72,8 +72,7 @@ pub(in crate::editor) fn milestones(ui: &mut egui::Ui) {
          Leaving a change on stays off. Nothing is saved. Back up the Variax still reads all \
          60 presets and tries to put the original preset back. Back up the PODxt Live still \
          reads the stored tones and does not change the current tone on purpose. Backup files \
-         are ordinary files you can move or delete. Step 4 stays off. No is still the default. \
-         Close the old window and open this one so the corner says build 20.",
+         are ordinary files you can move or delete. Step 4 stays off. No is still the default.",
     );
     for (label, url) in [
         (

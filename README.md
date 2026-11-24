@@ -74,7 +74,7 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 
 ### Verified and passing
 
-- [x] Device reconnect reattaches the most recently disconnected tab of that family after admission. It keeps the open document, history and unsaved edits, and sends no editor data. Headless checks cover PODxt and Variax reconnect, disconnect order and the unsaved-edits notice. The owner reproduced duplicate tabs in the earlier run. Step 5 is pending a rerun with this change. [Owner test card](docs/automatic-identity-owner-test-card.md) · [#235](https://github.com/guirossibrum/VariaxWorkbench/issues/235).
+- [x] Device reconnect reattaches the most recently disconnected tab of that family after admission. It keeps the open document, history and unsaved edits, and sends no editor data. Headless checks cover PODxt and Variax reconnect, disconnect order and the unsaved-edits notice. The owner reproduced duplicate tabs in the earlier run. Step 5 is pending a rerun with this change. The four-commit update passed **826** app tests (2 ignored), **144** device-library tests (2 ignored), and **4** owner-probe tests. [Owner test card](docs/automatic-identity-owner-test-card.md) · [#235](https://github.com/guirossibrum/VariaxWorkbench/issues/235).
 
 - [x] Variax live-link follow-up. Code-derived PODxt Live connect and disconnect notices can queue the existing read-only identity check. A Variax 300/600 reply below firmware 3.07 shows an informational warning on the PODxt tab. Offline validation passed **802** app tests (1 ignored), **116** device-library tests (2 ignored), and **4** owner-probe tests. Physical notice delivery and the first owner run remain pending. [Owner test card](docs/automatic-identity-owner-test-card.md) · [#201](https://github.com/guirossibrum/VariaxWorkbench/issues/201).
 
@@ -322,6 +322,18 @@ PRs #167–#172 were merged on 2026-11-22 by owner override, after local merge-r
 ## Run the offline editor
 
 The graphical editor is the default run target for Craft Anything's **Play** and `cargo run`.
+For a numbered application release build, run:
+
+```sh
+python3 scripts/build_release.py
+```
+
+The command reserves the next number in `app/BUILD_NUMBER` and builds the
+GUI with Cargo's offline release profile. The title, footer and `--version`
+use that number. Commit the number with the release source. A failed build
+keeps its reserved number. Ordinary Cargo builds reuse the number in that
+checkout.
+
 On Linux, you can select the X11 backend explicitly. The default build does not
 link libusb: the locked live USB adapter is only in the optional `usb` feature.
 
