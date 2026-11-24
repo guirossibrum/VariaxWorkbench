@@ -107,11 +107,12 @@ programs stay private.
 
 ## Decision
 
-**Step 2 encoder ([#175](https://github.com/guirossibrum/VariaxWorkbench/issues/175))
-is a no-go under its current dependency on a passing #174.** Firmware parity
-remains unresolved.
+The owner subsequently approved the [step 2 encoder](variax-write-transactions.md)
+using byte-for-byte agreement with an original Workbench host. The remaining
+factory-firmware difference measurements and the accepted bound are tracked
+in [#179](https://github.com/guirossibrum/VariaxWorkbench/issues/179).
 
 **Step 3 first edit-buffer test ([#176](https://github.com/guirossibrum/VariaxWorkbench/issues/176))
-is a no-go.** Every archived slot still has unexplained differences, so the
-stop rule also holds steps 4 and 5. The remaining offline evidence gap is the
-factory generator, its exact inputs and the runtime that produced those words.
+waits for #175 and #179.** Steps 4 and 5 follow the owner-run edit-buffer test.
+The factory generator, its exact inputs and the runtime that produced those
+words remain unknown.

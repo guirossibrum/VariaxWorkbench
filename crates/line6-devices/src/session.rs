@@ -112,6 +112,15 @@ impl<'a, L: Link> Session<'a, L> {
 
     /// The only way bytes reach a device.
     pub fn send<R: Request>(&mut self, request: R) -> Result<(), String> {
+        self.check_request(request)?;
+        let bytes = request.bytes();
+        self.note(format!("OUT {}", hex(&bytes)));
+        self.link.write(&bytes)?;
+        self.sent.push(bytes);
+        Ok(())
+    }
+
+    fn check_request<R: Request>(&self, request: R) -> Result<(), String> {
         if request.path() != self.link.path() {
             return Err(format!("{request:?} is not sent on {:?}", self.link.path()));
         }
@@ -121,9 +130,45 @@ impl<'a, L: Link> Session<'a, L> {
                 request.operation()
             ));
         }
+        Ok(())
+    }
+
+    /// Stream one permitted SysEx message using the original bridge's maximum
+    /// chunk size. A separate header length keeps the header and terminator
+    /// in their own sends. On a partial send, attempt EOX before cleanup.
+    pub(crate) fn send_chunked_sysex<R: Request>(
+        &mut self,
+        request: R,
+        chunk_size: usize,
+        separate_header_len: Option<usize>,
+        mut stopping: impl FnMut() -> bool,
+    ) -> Result<(), String> {
+        self.check_request(request)?;
         let bytes = request.bytes();
         self.note(format!("OUT {}", hex(&bytes)));
-        self.link.write(&bytes)?;
+        let (header_end, payload_end) =
+            separate_header_len.map_or((0, bytes.len()), |len| (len, bytes.len() - 1));
+        let segments = [
+            &bytes[..header_end],
+            &bytes[header_end..payload_end],
+            &bytes[payload_end..],
+        ];
+        let chunks = segments
+            .into_iter()
+            .flat_map(|segment| segment.chunks(chunk_size));
+        for (index, chunk) in chunks.enumerate() {
+            let (result, possibly_partial) = if stopping() {
+                (Err("Variax transfer stopped.".into()), index != 0)
+            } else {
+                (self.link.write(chunk), true)
+            };
+            if let Err(error) = result {
+                if possibly_partial && let Err(end) = self.link.write(&[0xf7]) {
+                    return Err(format!("{error} SysEx termination also failed: {end}"));
+                }
+                return Err(error);
+            }
+        }
         self.sent.push(bytes);
         Ok(())
     }

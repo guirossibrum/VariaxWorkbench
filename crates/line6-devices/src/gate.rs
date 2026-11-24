@@ -19,6 +19,10 @@ pub enum Operation {
     PodxtLibraryRead,
     /// Program change to the Variax: switches the guitar's active preset.
     VariaxPresetSwitch,
+    /// Variax edit-buffer transfer and live edits (G6).
+    VariaxEditBufferWrite,
+    /// Variax slot store and bank-name transactions (G7).
+    VariaxStoreRestore,
     /// PODxt-family installed model-pack query (`03 0E`), read-only.
     PodxtPackQuery,
     /// PODxt-family edit-buffer write (G6): a controller change that alters

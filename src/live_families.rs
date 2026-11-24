@@ -31,6 +31,8 @@ impl GatePolicy for DeviceCheckPolicy {
             // Library backup and preset switching stay on the backup policy.
             Operation::PodxtLibraryRead
             | Operation::VariaxPresetSwitch
+            | Operation::VariaxEditBufferWrite
+            | Operation::VariaxStoreRestore
             | Operation::PodxtPackQuery
             | Operation::PodxtEditBufferWrite => false,
             // Opened in the app on the owner's direct permission (2026-11-23,

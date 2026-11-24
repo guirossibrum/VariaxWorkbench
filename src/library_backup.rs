@@ -96,7 +96,9 @@ impl line6_devices::gate::GatePolicy for BackupPolicy {
             | line6_devices::gate::Operation::PodxtVariaxControlRelease
             | line6_devices::gate::Operation::PodxtLinkedVariaxModelEdit
             | line6_devices::gate::Operation::PodxtGlobalRead
-            | line6_devices::gate::Operation::PodxtTunerMode => false,
+            | line6_devices::gate::Operation::PodxtTunerMode
+            | line6_devices::gate::Operation::VariaxEditBufferWrite
+            | line6_devices::gate::Operation::VariaxStoreRestore => false,
         }
     }
 }

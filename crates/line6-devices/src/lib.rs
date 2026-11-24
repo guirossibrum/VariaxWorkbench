@@ -15,7 +15,8 @@
 //!   compare), so every front end produces the same layout.
 //!
 //! PODxt Live edit-buffer changes and channel selection run through their
-//! product-family APIs. The crate has no preset store or firmware API.
+//! product-family APIs. Variax write transactions require a caller-supplied
+//! link and G6/G7 policy. The crate has no firmware-install API.
 
 #![forbid(unsafe_code)]
 

@@ -48,6 +48,7 @@ impl GatePolicy for OwnerGrants {
             Operation::VariaxIdentity => true,
             // G3: Variax current-preset metadata read (session on/off, two blocks).
             Operation::VariaxRead => true,
+            Operation::VariaxEditBufferWrite | Operation::VariaxStoreRestore => false,
             // "test my podxtlive same way": PODxt identity and current-tone read.
             Operation::PodxtIdentity | Operation::PodxtRead => true,
             // G5 for the PODxt: read every stored tone/setup by location (no switching).
