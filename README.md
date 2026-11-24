@@ -73,6 +73,7 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 [pickup response](docs/pickup-response.md), [generator results](docs/offline-generator-results.md), and [backlog](docs/github-backlog.md).
 
 ### Verified and passing
+- [x] #124 static Windows startup pass traced interface-1 registration, descriptor setup and two control writes. Polling and conditional transitions remain unverified.
 - [x] #124 static Windows MIDI pass checked WDM/KS registration, ASIO properties, editor JNI and the Variax bridge evidence. Runtime port names and private routing remain unverified.
 - [x] #124 static driver inventory checked the Windows PE/INF/catalog and macOS Mach-O/Info.plist inputs. See [Windows](docs/driver-windows-podxt.md) and [macOS](docs/driver-macos-podxt.md).
 
