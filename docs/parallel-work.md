@@ -56,3 +56,10 @@ and injected sources and never read real `/proc` or `/sys`; the owner runs every
 hardware check. Vendor packages, binaries, decompiled code, firmware, captures
 and user data stay local and ignored. The UI art exception in AGENTS.md applies
 to lane 2's `assets/ui/` only.
+
+## Builds and scratch space
+
+Build in your worktree under `.worktrees/` or set `CARGO_TARGET_DIR` to a folder on
+`/home`. Do not build full copies of the project under `/tmp`: it is a 30 GB RAM disk
+shared by every agent, and a full link there crashed `rust-lld` with SIGBUS on
+2026-11-24 when it filled up. Delete your own scratch copies when you finish.
