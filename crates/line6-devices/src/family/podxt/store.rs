@@ -105,7 +105,7 @@ fn store_at<L: Link>(
     if TonePayload::from_dump(&before)? != confirmation.0.original {
         return Err(format!(
             "Slot {} differs from its verified backup. No store was sent.",
-            slot.label()
+            slot.slot_name()
         ));
     }
     confirmation.verify_day(current_day()?)?;

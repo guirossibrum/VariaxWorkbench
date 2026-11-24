@@ -1313,6 +1313,17 @@ pub fn switch_channel<L: Link>(
     original: Option<Location>,
     back: bool,
 ) -> Result<ChannelSwitch, String> {
+    switch_channel_checked(session, target, original, back, |_, _| Ok(()))
+}
+
+/// Run a final check of the playing and destination tones before program change.
+pub fn switch_channel_checked<L: Link>(
+    session: &mut Session<L>,
+    target: Location,
+    original: Option<Location>,
+    back: bool,
+    before_switch: impl FnOnce(&EditBuffer, &EditBuffer) -> Result<(), String>,
+) -> Result<ChannelSwitch, String> {
     if target.kind() != BankKind::Tones || original.is_some_and(|o| o.kind() != BankKind::Tones) {
         return Err("Only tone channels can be selected.".into());
     }
@@ -1336,6 +1347,7 @@ pub fn switch_channel<L: Link>(
         },
     };
     let target_stored = read_stored(session, target)?;
+    before_switch(&before, &target_stored)?;
     session.send(PodxtRequest::Program(target))?;
     session.link.pause(CHANNEL_LOAD);
     session.listen(Duration::from_millis(50))?;
@@ -1477,6 +1489,15 @@ impl Location {
             BankKind::FxSetups => (128, 256),
         };
         self.index + if self.index < 64 { low_base } else { high_base }
+    }
+
+    /// An unambiguous name for confirmations across the device's three banks.
+    pub fn slot_name(self) -> String {
+        match self.kind {
+            BankKind::Tones => self.label(),
+            BankKind::AmpSetups => format!("AMP {}", self.index + 1),
+            BankKind::FxSetups => format!("FX {}", self.index + 1),
+        }
     }
 
     /// Tones as the PODxt shows channels (`1A`..`32D`); setups as `#1`...
@@ -2670,6 +2691,53 @@ mod tests {
         let mut s = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
         let result = switch_channel(&mut s, target, Some(orig), true).unwrap();
         assert!(result.switched() && result.returned());
+    }
+
+    #[test]
+    fn channel_review_can_stop_program_change_after_reading_both_linked_tones() {
+        let original = Location::tone_from_label("7B").unwrap();
+        let target = Location::tone_from_label("3C").unwrap();
+        let mut before = tone(b"Old", 42);
+        let mut destination = tone(b"New", 63);
+        before[39 + 120] = 10;
+        destination[39 + 120] = 15;
+        for accepted in [false, true] {
+            let mut script = vec![
+                (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+                (PodxtRequest::EditBuffer, vec![before.clone()]),
+                (PodxtRequest::Stored(original), vec![before.clone()]),
+                (PodxtRequest::Stored(target), vec![destination.clone()]),
+            ];
+            if accepted {
+                script.extend([
+                    (PodxtRequest::Program(target), vec![]),
+                    (PodxtRequest::EditBuffer, vec![destination.clone()]),
+                ]);
+            }
+            let mut log = Quiet;
+            let mut session = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
+            let result =
+                switch_channel_checked(&mut session, target, Some(original), false, |a, b| {
+                    assert_eq!((a.cc(120), b.cc(120)), (10, 15));
+                    if accepted {
+                        Ok(())
+                    } else {
+                        Err("Linked model review needed.".into())
+                    }
+                });
+            if accepted {
+                assert!(result.unwrap().switched());
+            } else {
+                assert!(result.is_err());
+                assert!(
+                    session
+                        .sent
+                        .iter()
+                        .all(|bytes| bytes.first() != Some(&0xc0))
+                );
+            }
+            session.link.assert_finished();
+        }
     }
 
     #[test]

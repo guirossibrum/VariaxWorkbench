@@ -40,7 +40,11 @@ impl ConfirmedStore {
 
 impl PreparedStore {
     pub fn confirmation(&self) -> String {
-        format!("STORE PODXT {}", self.slot.label())
+        format!("STORE PODXT {}", self.slot.slot_name())
+    }
+
+    pub fn original_matches(&self, tone: &TonePayload) -> bool {
+        &self.original == tone
     }
 
     pub fn original_name(&self) -> String {
@@ -82,9 +86,6 @@ fn prepare_at(
     source: StoreSource,
     day: u64,
 ) -> Result<PreparedStore, String> {
-    if slot.kind() != BankKind::Tones {
-        return Err("Select a saved PODxt tone slot (1A–32D).".into());
-    }
     if directory
         .file_name()
         .and_then(|name| name.to_str())

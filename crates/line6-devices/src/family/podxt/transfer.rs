@@ -29,6 +29,10 @@ impl TonePayload {
         Self::from_bytes(payload)
     }
 
+    pub fn as_bytes(&self) -> &[u8; TONE_BYTES] {
+        &self.0
+    }
+
     pub fn name(&self) -> String {
         String::from_utf8_lossy(&self.0[..16])
             .trim_end_matches([' ', '\0'])
