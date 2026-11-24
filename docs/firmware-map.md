@@ -31,6 +31,10 @@ a tag. The exact terminator's nominal entry is word `0xDBC`. Destination zero
 contains a DSP56300-compatible absolute jump to that entry. The entry initializes
 registers and jumps to a separately mapped block at `0x14004`.
 
+Phase A of #181 maps all 110 SysEx dispatch entries in the main region and
+traces the session flag and current-preset buffer read. See the
+[Variax 3.10 dispatcher inventory](firmware-variax-dispatch.md).
+
 Independent static decoding used the MIT-licensed Rust DSP56300 toolkit v1.0.0,
 commit `aab3649fc452daf03da8b5e36fdc0c308d874101`, built separately with
 Rust 1.99.1, `cargo build --locked --release -p dsp56300-disasm`. It is an optional

@@ -140,6 +140,10 @@ authorize a gate by signing a GitHub issue. Agents do not run the live check.
   completed offline source review. Issue #23 tracks backup planning and any
   future capture under its own exact-procedure authorization. Issue #22 remains
   a later G6/G7 write-readiness prerequisite, not a G5 prerequisite.
+- **Static evidence for #119:** The 3.10 `0x3C` handler reads the current preset
+  buffer. Its address calculation includes DSP words 0–850 and has no explicit
+  bounds guard. Physical readback beyond the existing metadata pairs remains
+  unverified. [Dispatcher trace](firmware-variax-dispatch.md#answer-for-119).
 
 ### G6 — Edit-buffer write
 
