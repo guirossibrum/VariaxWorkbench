@@ -1,5 +1,11 @@
-use super::{EditorDocument, EditorServices, PathBuf, PresetFile, VariaxEditor, egui};
+use super::{EditorDocument, EditorServices, Path, PathBuf, PresetFile, VariaxEditor, egui};
+#[cfg(feature = "usb")]
+use variax_workbench::bundle::BackupBundle;
 use variax_workbench::{bundle::BundleFile, document::save_new};
+
+#[cfg(all(test, feature = "usb"))]
+#[path = "../file/bundle/synthetic_backup.rs"]
+mod synthetic_backup;
 
 #[derive(Clone, Copy)]
 enum FileKind {
@@ -31,7 +37,23 @@ impl FileKind {
 
 pub(super) struct NewFile {
     path: PathBuf,
-    kind: FileKind,
+    contents: NewFileContents,
+}
+
+enum NewFileContents {
+    Template(FileKind),
+    #[cfg(feature = "usb")]
+    Backup(BackupBundle),
+}
+
+impl NewFile {
+    pub(super) fn destination(&self, path: &Path) -> Result<PathBuf, String> {
+        match &self.contents {
+            NewFileContents::Template(_) => Ok(path.to_owned()),
+            #[cfg(feature = "usb")]
+            NewFileContents::Backup(backup) => backup.destination(path),
+        }
+    }
 }
 
 pub(super) struct BankRename {
@@ -52,14 +74,23 @@ impl VariaxEditor {
                 if response.clicked() {
                     ui.close();
                     if let Some(path) = services.dialogs.save(suggested, extension) {
-                        self.new_file = Some(NewFile {
+                        self.queue_new_file(NewFile {
                             path: super::slot_files::with_file_extension(path, extension),
-                            kind,
+                            contents: NewFileContents::Template(kind),
                         });
-                        if !self.dirty() {
-                            self.create_pending_file();
-                        }
                     }
+                }
+            }
+            #[cfg(feature = "usb")]
+            {
+                ui.separator();
+                let label = "Open backup folder as .vwb…";
+                let response = ui.button(label);
+                #[cfg(test)]
+                self.new_file_buttons.insert(label, response.rect);
+                if response.clicked() {
+                    ui.close();
+                    self.choose_backup_file(services);
                 }
             }
         });
@@ -70,18 +101,67 @@ impl VariaxEditor {
         let _ = menu;
     }
 
-    pub(super) fn create_pending_file(&mut self) {
-        let Some(NewFile { path, kind }) = self.new_file.take() else {
+    #[cfg(feature = "usb")]
+    fn choose_backup_file(&mut self, services: &mut EditorServices<'_>) {
+        let Some(directory) = services.dialogs.pick_folder() else {
             return;
         };
-        let result = kind.create(path.clone()).and_then(|document| {
-            save_new(&path, document.as_bytes())?;
-            Ok(document)
+        let backup = match BackupBundle::load(&directory) {
+            Ok(backup) => backup,
+            Err(error) => {
+                self.error = Some(error);
+                return;
+            }
+        };
+        let Some(path) = services.dialogs.save("Variax backup.vwb", "vwb") else {
+            return;
+        };
+        self.queue_new_file(NewFile {
+            path: super::slot_files::with_file_extension(path, "vwb"),
+            contents: NewFileContents::Backup(backup),
         });
+    }
+
+    fn queue_new_file(&mut self, pending: NewFile) {
+        if let Err(error) = pending.destination(&pending.path) {
+            self.error = Some(error);
+            return;
+        }
+        self.new_file = Some(pending);
+        if !self.dirty() {
+            self.create_pending_file();
+        }
+    }
+
+    pub(super) fn create_pending_file(&mut self) {
+        let Some(pending) = self.new_file.take() else {
+            return;
+        };
+        let result = (|| -> Result<_, String> {
+            let path = pending.destination(&pending.path)?;
+            let (document, status) = match pending.contents {
+                NewFileContents::Template(kind) => (
+                    kind.create(path.clone())?,
+                    format!("Created {}", path.display()),
+                ),
+                #[cfg(feature = "usb")]
+                NewFileContents::Backup(backup) => {
+                    let captured = backup.captured_bank_names();
+                    let document = EditorDocument::from_bundle(backup.into_bundle(), path.clone())?;
+                    let status = format!(
+                        "Opened {} · {captured}/12 captured bank names. Tone positions may reflect the live knob.",
+                        path.display(),
+                    );
+                    (document, status)
+                }
+            };
+            save_new(&path, document.as_bytes())?;
+            Ok((document, path, status))
+        })();
         match result {
-            Ok(document) => {
+            Ok((document, path, status)) => {
                 self.adopt_document(document, &path);
-                self.status = format!("Created {}", path.display());
+                self.status = status;
             }
             Err(error) => self.error = Some(error),
         }
@@ -343,6 +423,82 @@ mod tests {
                 .selected_preset()
                 .is_none()
         );
+    }
+
+    #[cfg(feature = "usb")]
+    #[test]
+    fn backup_conversion_opens_a_new_bundle_and_leaves_the_source_tree_untouched() {
+        let (ctx, mut app) = app();
+        let root = tempfile::tempdir().unwrap();
+        let partial = synthetic_backup::make_backup(root.path(), "partial", 59, 4);
+        let source = synthetic_backup::make_backup(root.path(), "backup", 60, 4);
+        let before = synthetic_backup::snapshot(&source);
+        let collision = root.path().join("existing.vwb");
+        save_new(&collision, b"existing output").unwrap();
+        let destination = root.path().join("converted");
+        let inside = source.join("invalid-export.vwb");
+        let inside_copy = source.join("invalid-copy.vwm");
+        app.dialogs = Box::new(FakeDialogs {
+            folder: [
+                Some(partial),
+                Some(source.clone()),
+                Some(source.clone()),
+                Some(source.clone()),
+                Some(source.clone()),
+            ]
+            .into(),
+            save: [
+                Some(inside.clone()),
+                Some(collision.clone()),
+                Some(destination.clone()),
+                Some(inside_copy.clone()),
+                Some(destination.clone()),
+            ]
+            .into(),
+            ..Default::default()
+        });
+
+        const COMMAND: &str = "Open backup folder as .vwb…";
+        choose_file(&ctx, &mut app, COMMAND);
+        assert!(app.variax().error.as_deref().unwrap().contains("59 of 60"));
+        choose_file(&ctx, &mut app, COMMAND);
+        assert!(
+            app.variax()
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("outside the Variax backup")
+        );
+        assert!(!inside.exists());
+        choose_file(&ctx, &mut app, COMMAND);
+        assert!(app.variax().error.is_some());
+        assert_eq!(fs::read(collision).unwrap(), b"existing output");
+
+        app.variax_mut()
+            .change(|preset| preset.rename("Keep this edit"));
+        let edited = app.variax().document.as_ref().unwrap().as_bytes().to_vec();
+        let output = destination.with_extension("vwb");
+        choose_file(&ctx, &mut app, COMMAND);
+        assert!(app.has_prompt());
+        click_prompt(&ctx, &mut app, "save");
+        assert!(app.has_prompt());
+        assert!(!inside_copy.exists());
+        assert!(!output.exists());
+        click_prompt(&ctx, &mut app, "cancel");
+        assert_eq!(app.variax().document.as_ref().unwrap().as_bytes(), edited);
+
+        choose_file(&ctx, &mut app, COMMAND);
+        click_prompt(&ctx, &mut app, "discard");
+        assert!(!app.has_prompt());
+        assert!(app.variax().error.is_none());
+        let document = app.variax().document.as_ref().unwrap();
+        assert_eq!(document.source, output);
+        assert_eq!(document.banks().unwrap().len(), 12);
+        assert_eq!(document.as_bytes(), fs::read(&output).unwrap());
+        assert!(app.variax().status.contains("2/12 captured bank names"));
+        assert!(app.variax().status.contains("live knob"));
+        assert!(!app.variax().dirty());
+        assert_eq!(synthetic_backup::snapshot(&source), before);
     }
 
     #[test]
