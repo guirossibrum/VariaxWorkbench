@@ -52,7 +52,7 @@ With the app stopped and no device operation in progress, hold the same
 advisory lock for 15 seconds from a terminal:
 
 ```sh
-flock -n /tmp/variax-workbench-podxt-live.lock sleep 15
+flock -n "${XDG_RUNTIME_DIR:-/tmp}/variax-workbench-podxt-live.lock" sleep 15
 ```
 
 While that command holds the lock, launch the app with the rig connected.

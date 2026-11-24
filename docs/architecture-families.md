@@ -329,8 +329,9 @@ physical verification for #213 and #201.
   ownership is available, and neither queues repeated identities per
   frame nor tries to preempt the holder.
 - On Linux the app and rebuilt `tools/reso5-test` and `tools/variax-probe`
-  share an advisory lock at `/tmp/variax-workbench-podxt-live.lock`. The
-  linked-recall launcher passes the locked descriptor to its subprocesses
+  share the advisory lock `variax-workbench-podxt-live.lock` in the
+  session's `XDG_RUNTIME_DIR`, with `/tmp` as the Unix fallback. Use the
+  same runtime directory for the app and both probes. The linked-recall launcher passes the locked descriptor to its subprocesses
   and holds it across pauses and restore. Older binaries and unrelated
   programs need to be closed before using the same rig. A busy or uncertain
   endpoint defers entry. A cleanup failure suspends further identity on

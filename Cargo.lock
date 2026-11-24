@@ -1192,8 +1192,8 @@ dependencies = [
 name = "line6-devices"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "rusb",
- "rustix 1.1.6",
  "sha2",
 ]
 

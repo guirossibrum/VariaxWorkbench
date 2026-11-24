@@ -2,7 +2,6 @@
 //! exposes it. No driver is detached.
 
 use crate::session::{Link, Path};
-use rustix::fs::OFlags;
 use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
 use std::io::{Read, Write};
@@ -47,7 +46,7 @@ impl RawMidiLink {
         let port = OpenOptions::new()
             .read(true)
             .write(true)
-            .custom_flags(OFlags::NONBLOCK.bits() as i32)
+            .custom_flags(libc::O_NONBLOCK)
             .open(&device)
             .map_err(|e| format!("{}: {e}", device.display()))?;
         Ok(Self {
@@ -128,10 +127,10 @@ fn pause_until(deadline: Instant) -> bool {
 mod tests {
     use super::*;
     use std::os::fd::OwnedFd;
+    use std::os::unix::net::UnixStream;
 
     fn fixture(port: impl Into<OwnedFd>) -> RawMidiLink {
         let port = File::from(port.into());
-        rustix::fs::fcntl_setfl(&port, OFlags::NONBLOCK).unwrap();
         RawMidiLink {
             port,
             opened: Instant::now(),
@@ -142,7 +141,9 @@ mod tests {
 
     #[test]
     fn nonblocking_link_reads_writes_and_closes_the_only_descriptor() {
-        let (reader, writer) = std::io::pipe().unwrap();
+        let (reader, writer) = UnixStream::pair().unwrap();
+        reader.set_nonblocking(true).unwrap();
+        writer.set_nonblocking(true).unwrap();
         let mut reader = fixture(reader);
         let mut writer = fixture(writer);
         assert_eq!(reader.read(Duration::from_millis(2)).unwrap(), None);
