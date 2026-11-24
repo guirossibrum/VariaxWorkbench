@@ -9,6 +9,7 @@ mod slot_files;
 mod slot_transfers;
 use slot_files::SlotReplacement;
 use slot_transfers::SlotTransfer;
+mod preferences;
 mod tuning_presets;
 use tuning_presets::TuningDialog;
 mod value_format;
@@ -125,6 +126,8 @@ pub(super) struct VariaxEditor {
     auto_select_controls: bool,
     /// Where the preference is remembered. Tests leave this empty.
     preferences_path: Option<PathBuf>,
+    default_author: String,
+    author_preference: Option<preferences::AuthorPreference>,
     link_tuning_mix: bool,
     tuning_dialog: Option<TuningDialog>,
     slot_replacement: Option<SlotReplacement>,
@@ -173,14 +176,15 @@ pub(super) struct VariaxEditor {
 
 impl VariaxEditor {
     fn new(defaults: &EditorDefaults) -> Self {
+        let (artwork, error) = preferences::startup_artwork(defaults);
         Self {
             document: None,
             source_path: None,
             catalog: load_catalog(),
-            artwork: defaults.artwork.clone(),
+            artwork,
             textures: HashMap::new(),
             missing_textures: HashSet::new(),
-            error: None,
+            error,
             status: "Edit preset files offline. Your guitar is unchanged.".into(),
             tab: Tab::Body,
             drag_origin: None,
@@ -189,6 +193,8 @@ impl VariaxEditor {
             author_draft: None,
             auto_select_controls: defaults.preferences.as_deref().is_none_or(load_auto_select),
             preferences_path: defaults.preferences.clone(),
+            default_author: String::new(),
+            author_preference: None,
             link_tuning_mix: false,
             tuning_dialog: None,
             slot_replacement: None,
@@ -395,10 +401,7 @@ impl VariaxEditor {
         }
         services.request_picker::<Self>(ctx, PickRequest::Artwork, |editor, path, _| {
             if let Some(path) = path {
-                editor.artwork = path;
-                editor.textures.clear();
-                editor.missing_textures.clear();
-                editor.error = None;
+                editor.choose_artwork(path);
             }
         });
     }
@@ -1094,6 +1097,7 @@ impl VariaxEditor {
                         if ui.button("Try example banks").clicked() && self.document.is_none() {
                             self.open_example();
                         }
+                        self.preference_button(ui);
                     });
                 });
             });
@@ -1106,7 +1110,10 @@ impl VariaxEditor {
             .and_then(EditorDocument::selected_preset)
             .is_none()
         {
-            guitar_panel().show(ui, |ui| self.empty_collection(ui, available, services));
+            guitar_panel().show(ui, |ui| {
+                self.empty_collection(ui, available, services);
+                ui.add_enabled_ui(available, |ui| self.preference_button(ui));
+            });
             return;
         }
         self.guitar_header(ui, available);
@@ -1141,6 +1148,7 @@ impl VariaxEditor {
                         {
                             self.artwork_dialog(ui.ctx(), services);
                         }
+                        ui.add_enabled_ui(available, |ui| self.preference_button(ui));
                     });
                 });
                 ui.add_enabled_ui(can_edit, |ui| {
@@ -1272,6 +1280,7 @@ impl FamilyTab for VariaxEditor {
     }
     fn local_prompt(&mut self, ctx: &egui::Context, services: &mut EditorServices<'_>) {
         self.variax_pending_dialog(services, ctx);
+        self.preference_dialog(ctx);
         self.tuning_presets_dialog(ctx);
         self.slot_replacement_dialog(services, ctx);
         self.slot_transfer_dialog(services, ctx);
@@ -1289,6 +1298,7 @@ impl FamilyTab for VariaxEditor {
             || self.slot_replacement.is_some()
             || self.slot_transfer.is_some()
             || self.bank_rename.is_some()
+            || self.author_preference.is_some()
             || self.new_file.is_some()
     }
     fn actions(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {

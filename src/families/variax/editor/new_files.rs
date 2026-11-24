@@ -25,13 +25,16 @@ impl FileKind {
         }
     }
 
-    fn create(self, path: PathBuf) -> Result<EditorDocument, String> {
+    fn create(self, path: PathBuf, author: &str) -> Result<EditorDocument, String> {
         match self {
             Self::Model => Ok(EditorDocument::from_preset(
-                PresetFile::default_legacy_model()?,
+                PresetFile::default_legacy_model_with_author(author)?,
                 path,
             )),
-            Self::Bundle => EditorDocument::from_bundle(BundleFile::new_default_bundle()?, path),
+            Self::Bundle => EditorDocument::from_bundle(
+                BundleFile::new_default_bundle_with_author(author)?,
+                path,
+            ),
             Self::Collection => EditorDocument::from_bundle(BundleFile::new_collection()?, path),
         }
     }
@@ -165,7 +168,7 @@ impl VariaxEditor {
             let path = pending.destination(&pending.path)?;
             let (document, status) = match pending.contents {
                 NewFileContents::Template(kind) => (
-                    kind.create(path.clone())?,
+                    kind.create(path.clone(), &self.new_model_author())?,
                     format!("Created {}", path.display()),
                 ),
                 #[cfg(feature = "usb")]
@@ -309,20 +312,26 @@ impl VariaxEditor {
             #[cfg(test)]
             self.new_file_buttons
                 .insert("Add default model", response.rect);
-            if response.clicked()
-                && let Some(document) = &mut self.document
-            {
-                match PresetFile::default_legacy_model()
-                    .and_then(|model| document.append_collection_model(model))
-                {
-                    Ok(()) => {
-                        self.error = None;
-                        self.status = "Added the default model to the collection.".into();
-                    }
-                    Err(error) => self.error = Some(error),
-                }
+            if response.clicked() {
+                self.append_default_model();
             }
         });
+    }
+
+    fn append_default_model(&mut self) {
+        let author = self.new_model_author();
+        let Some(document) = &mut self.document else {
+            return;
+        };
+        match PresetFile::default_legacy_model_with_author(&author)
+            .and_then(|model| document.append_collection_model(model))
+        {
+            Ok(()) => {
+                self.error = None;
+                self.status = "Added the default model to the collection.".into();
+            }
+            Err(error) => self.error = Some(error),
+        }
     }
 }
 
@@ -365,6 +374,60 @@ mod tests {
         click(ctx, app, "New Variax file");
         click(ctx, app, label);
         frame(ctx, app, vec![]);
+    }
+
+    #[test]
+    fn file_creation_uses_the_remembered_author_for_new_models() {
+        use variax_workbench::preset::PresetText;
+
+        let (ctx, mut app) = app();
+        let root = tempfile::tempdir().unwrap();
+        let artwork = root.path().join("artwork");
+        fs::write(
+            root.path().join("variax-preferences.json"),
+            br#"{"default_author":"Ana"}"#,
+        )
+        .unwrap();
+        app.variax_mut().preferences_path = Some(root.path().join("editor-preferences.txt"));
+        let model = root.path().join("model.vwm");
+        let bundle = root.path().join("models.vwb");
+        let collection = root.path().join("empty.l6c");
+        app.dialogs = Box::new(FakeDialogs {
+            save: [Some(model.clone()), Some(bundle.clone()), Some(collection)].into(),
+            artwork: [Some(artwork)].into(),
+            ..Default::default()
+        });
+        app.artwork_dialog();
+
+        choose_file(&ctx, &mut app, "New Model…");
+        let document = EditorDocument::open(&model).unwrap();
+        assert_eq!(
+            document.preset().metadata(PresetText::Author).as_deref(),
+            Ok("Ana")
+        );
+
+        choose_file(&ctx, &mut app, "New Bundle…");
+        let document = EditorDocument::open(&bundle).unwrap();
+        let models = document
+            .banks()
+            .unwrap()
+            .iter()
+            .flat_map(|bank| bank.presets());
+        assert_eq!(
+            models
+                .filter(|preset| preset.metadata(PresetText::Author).as_deref() == Ok("Ana"))
+                .count(),
+            60
+        );
+
+        choose_file(&ctx, &mut app, "New Collection…");
+        app.variax_mut().append_default_model();
+        let document = app.variax().document.as_ref().unwrap();
+        assert_eq!(
+            document.preset().metadata(PresetText::Author).as_deref(),
+            Ok("Ana")
+        );
+        assert!(document.is_dirty() && document.can_undo());
     }
 
     #[test]
