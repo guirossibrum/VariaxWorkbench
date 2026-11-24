@@ -1,3 +1,4 @@
+use super::tuning_presets::{DETUNE, MIX, PITCH, TUNINGS, TuningDialog, set_tuning_values};
 use super::{
     BODY, Color32, EditorDocument, FRET_MARKER, GUITAR_SELECTION, GUITAR_SURFACE, PICKUP1, PICKUP2,
     Pos2, PresetFile, Rect, SYSTEM, Sense, TUNING, Tab, TextureHandle, ValueFormat, VariaxEditor,
@@ -7,9 +8,6 @@ use std::{collections::HashSet, path::Path, process::Command};
 use variax_workbench::{bundle::BundleFile, edit::Domain, preset::PresetText};
 
 const GREEN: Color32 = Color32::from_rgb(167, 231, 133);
-const PITCH: u32 = 0x200000;
-const DETUNE: u32 = 0x200006;
-const MIX: u32 = 0x20000c;
 const SPREAD: u32 = 0x200012;
 
 const STRINGS: [(&str, i32); 6] = [
@@ -22,16 +20,6 @@ const STRINGS: [(&str, i32); 6] = [
 ];
 const NOTES: [&str; 12] = [
     "C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B",
-];
-const TUNINGS: [(&str, [i32; 6]); 8] = [
-    ("Standard", [0; 6]),
-    ("Half step down", [-1; 6]),
-    ("Whole step down", [-2; 6]),
-    ("Drop D", [-2, 0, 0, 0, 0, 0]),
-    ("Double Drop D", [-2, 0, 0, 0, 0, -2]),
-    ("DADGAD", [-2, 0, 0, 0, -2, -2]),
-    ("Open D", [-2, 0, 0, -1, -2, -2]),
-    ("Open G", [-2, -2, 0, 0, 0, -2]),
 ];
 
 pub(in crate::editor) fn milestones(ui: &mut egui::Ui) {
@@ -662,6 +650,16 @@ impl VariaxEditor {
             }
             ui.add_enabled_ui(complete_pitch, |ui| {
                 let menu = ui.menu_button("Presets", |ui| {
+                    let manage = ui.button("Manage tuning presets…");
+                    #[cfg(test)]
+                    self.tuning_widgets
+                        .insert("Manage tuning presets…", manage.rect);
+                    if manage.clicked() {
+                        self.tuning_dialog =
+                            Some(TuningDialog::open(self.preferences_path.as_deref()));
+                        ui.close();
+                    }
+                    ui.separator();
                     for (name, offsets) in TUNINGS {
                         let option = ui.button(name);
                         #[cfg(test)]
@@ -747,7 +745,7 @@ impl VariaxEditor {
                 .is_some_and(|value| value.value_type == kind)
     }
 
-    fn set_tuning(&mut self, offsets: [i32; 6], enable: bool) {
+    pub(super) fn set_tuning(&mut self, offsets: [i32; 6], enable: bool) {
         self.change(|preset| {
             set_tuning_values(preset, PITCH, 0, offsets.map(|offset| offset as u32))?;
             if enable {
@@ -1213,18 +1211,6 @@ fn paint_accidental(painter: &egui::Painter, center: Pos2, shift: i32, color: Co
         painter.line_segment([at(-4.7, -0.8), at(4.7, -3.0)], bars);
         painter.line_segment([at(-4.7, 3.0), at(4.7, 0.8)], bars);
     }
-}
-
-fn set_tuning_values(
-    preset: &mut PresetFile,
-    first: u32,
-    kind: u32,
-    values: [u32; 6],
-) -> Result<(), String> {
-    for (id, bits) in (first..first + 6).zip(values) {
-        preset.set_parameter(TUNING, id, kind, bits)?;
-    }
-    Ok(())
 }
 
 fn example_document() -> Result<EditorDocument, String> {
