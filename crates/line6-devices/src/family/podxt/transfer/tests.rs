@@ -14,8 +14,10 @@ pub(in crate::family::podxt) fn events(case: &str, tag: &str) -> Vec<Vec<u8>> {
         .take_while(|line| !line.starts_with("case "))
         .filter_map(|line| line.strip_prefix(tag))
         .map(|hex| {
-            hex.as_bytes()
-                .chunks_exact(2)
+            let (pairs, suffix) = hex.as_bytes().as_chunks::<2>();
+            assert!(suffix.is_empty(), "incomplete hex byte");
+            pairs
+                .iter()
                 .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
                 .collect()
         })
