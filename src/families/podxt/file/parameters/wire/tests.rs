@@ -50,6 +50,20 @@ fn backup_bundle_has_all_device_slots_in_line6_order() {
         assert_eq!(bundle.tone(index, count - 1).unwrap().container(), kind);
     }
     assert!(pod_bundle_from_tones(true, &banks[..2]).is_err());
+    if let Some(path) = std::env::var_os("PODXT_LOCKER_ORACLE_INPUT") {
+        let vendor = PodBundleLibrary::parse(std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(vendor.bank_count(), 3);
+        for (index, (name, kind, _)) in PODXT_BANKS.into_iter().enumerate() {
+            assert_eq!(vendor.bank_name(index), Some(name));
+            let tone = vendor.tone(index, 0).unwrap();
+            assert_eq!(tone.container(), kind);
+            assert_eq!(tone.name(), "Locker fixture");
+            assert_eq!(
+                tone.to_podxt_payload().unwrap(),
+                banks[index].1[0].to_podxt_payload().unwrap()
+            );
+        }
+    }
     if let Some(path) = std::env::var_os("PODXT_LOCKER_ORACLE_OUTPUT") {
         bundle.save_copy(Path::new(&path)).unwrap();
     }

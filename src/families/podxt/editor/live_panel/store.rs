@@ -8,6 +8,7 @@ const STORE_OWNER_APPROVED: bool = false;
 #[derive(Default)]
 pub(super) struct StorePanel {
     index: u16,
+    bank: usize,
     prepared: Option<PreparedStore>,
     typed: String,
     worker: Option<StoreWorker>,
@@ -15,6 +16,7 @@ pub(super) struct StorePanel {
 }
 
 struct StoreWorker {
+    device: detection::DeviceKey,
     control: Arc<StoreControl>,
     thread: Option<std::thread::JoinHandle<Result<StoreResult, String>>>,
 }
@@ -106,9 +108,26 @@ impl StorePanel {
         }
     }
 
-    fn clear_preparation(&mut self) {
+    pub(super) fn clear_preparation(&mut self) {
         self.prepared = None;
         self.typed.clear();
+    }
+
+    pub(super) fn prepare_replacement(
+        &mut self,
+        directory: &std::path::Path,
+        slot: Location,
+        tone: podxt::TonePayload,
+        original: &podxt::TonePayload,
+    ) -> Result<(), String> {
+        self.clear_preparation();
+        let prepared = podxt::prepare_tone_store(directory, slot, StoreSource::Replacement(tone))?;
+        if !prepared.original_matches(original) {
+            return Err("The verified backup and the slot used to stage this edit differ.".into());
+        }
+        self.prepared = Some(prepared);
+        self.status = None;
+        Ok(())
     }
 
     pub(super) fn detach(&mut self) {
@@ -133,13 +152,14 @@ impl StorePanel {
             }
         };
         let device = device.clone();
+        let endpoint = device.clone();
         let control = Arc::new(StoreControl::default());
         let thread_control = Arc::clone(&control);
         let repaint = ctx.clone();
         let thread = std::thread::Builder::new()
             .name("podxt-store".into())
             .spawn(move || {
-                let result = platform_store(&device, confirmation, &thread_control);
+                let result = platform_store(&endpoint, confirmation, &thread_control);
                 repaint.request_repaint();
                 result
             });
@@ -147,6 +167,7 @@ impl StorePanel {
             Ok(thread) => {
                 self.status = None;
                 self.worker = Some(StoreWorker {
+                    device,
                     control,
                     thread: Some(thread),
                 });
@@ -157,30 +178,41 @@ impl StorePanel {
         }
     }
 
-    pub(super) fn poll(&mut self, ctx: &egui::Context) {
+    pub(super) fn poll(
+        &mut self,
+        ctx: &egui::Context,
+    ) -> Option<(detection::DeviceKey, Result<podxt::StoredTone, ()>)> {
         let Some(worker) = &self.worker else {
-            return;
+            return None;
         };
         if !worker.thread.as_ref().expect("store worker").is_finished() {
             ctx.request_repaint_after(REPAINT_WHILE_READING);
-            return;
+            return None;
         }
         let mut worker = self.worker.take().expect("finished store worker");
         let result = worker.thread.take().expect("store worker").join();
-        self.status = Some(match result {
+        self.status = Some(match &result {
             Ok(Ok(StoreResult::Verified { slot, .. })) => format!(
                 "Slot {} acknowledged and verified byte for byte.",
-                slot.label()
+                slot.slot_name()
             ),
             Ok(Ok(StoreResult::SlotStateUnknown { slot, reason })) => {
-                format!("Slot {} state unknown. {reason}", slot.label())
+                format!("Slot {} state unknown. {reason}", slot.slot_name())
             }
-            Ok(Err(error)) => error,
+            Ok(Err(error)) => error.clone(),
             Err(_) if worker.control.started() => {
                 "Slot state unknown. The store worker stopped after dispatch.".into()
             }
             Err(_) => "The store worker stopped before dispatch.".into(),
         });
+        let outcome = match result {
+            Ok(Ok(StoreResult::Verified { slot, tone })) => Ok(podxt::StoredTone {
+                location: slot,
+                tone,
+            }),
+            _ => Err(()),
+        };
+        Some((worker.device.clone(), outcome))
     }
 
     pub(super) fn show(
@@ -189,74 +221,110 @@ impl StorePanel {
         services: &mut EditorServices<'_>,
         device: Option<&detection::DeviceKey>,
         other_idle: bool,
+        sync: bool,
     ) {
-        ui.collapsing("Store original to slot", |ui| {
-            if !STORE_OWNER_APPROVED {
-                ui.label("PODxt store is not approved. Backup verification is available offline.");
-            }
-            ui.add_enabled_ui(other_idle && !self.busy(), |ui| {
-                let selected = Location::new(BankKind::Tones, self.index).expect("valid selection");
-                egui::ComboBox::from_label("Destination slot")
-                    .selected_text(selected.label())
-                    .show_ui(ui, |ui| {
-                        for slot in Location::all(&[BankKind::Tones]) {
-                            ui.selectable_value(&mut self.index, slot.index(), slot.label());
-                        }
-                    });
-                if self.index != selected.index() {
-                    self.clear_preparation();
-                    self.status = None;
+        ui.collapsing(
+            if sync {
+                "Sync slot confirmation"
+            } else {
+                "Store original to slot"
+            },
+            |ui| {
+                if !STORE_OWNER_APPROVED {
+                    ui.label(
+                        "PODxt store is not approved. Backup verification is available offline.",
+                    );
                 }
-                if ui.button("Verify same-day backup").clicked()
-                    && let Some(folder) = services.dialogs.pick_folder()
-                {
-                    self.clear_preparation();
-                    let destination =
-                        Location::new(BankKind::Tones, self.index).expect("valid selection");
-                    match podxt::prepare_tone_store(&folder, destination, StoreSource::OriginalSlot)
-                    {
-                        Ok(prepared) => {
+                ui.add_enabled_ui(other_idle && !self.busy(), |ui| {
+                    if !sync {
+                        let old_bank = self.bank;
+                        egui::ComboBox::from_label("Destination bank")
+                            .selected_text(BankKind::ALL[self.bank].name())
+                            .show_ui(ui, |ui| {
+                                for (index, bank) in BankKind::ALL.into_iter().enumerate() {
+                                    ui.selectable_value(&mut self.bank, index, bank.name());
+                                }
+                            });
+                        if self.bank != old_bank {
+                            self.index = 0;
+                        }
+                        let kind = BankKind::ALL[self.bank];
+                        let selected = Location::new(kind, self.index).expect("valid selection");
+                        egui::ComboBox::from_label("Destination slot")
+                            .selected_text(selected.slot_name())
+                            .show_ui(ui, |ui| {
+                                for slot in Location::all(&[kind]) {
+                                    ui.selectable_value(
+                                        &mut self.index,
+                                        slot.index(),
+                                        slot.slot_name(),
+                                    );
+                                }
+                            });
+                        if self.index != selected.index() || self.bank != old_bank {
+                            self.clear_preparation();
                             self.status = None;
-                            self.prepared = Some(prepared);
                         }
-                        Err(error) => self.status = Some(error),
+                        if ui.button("Verify same-day backup").clicked()
+                            && let Some(folder) = services.dialogs.pick_folder()
+                        {
+                            self.clear_preparation();
+                            let destination = Location::new(BankKind::Tones, self.index)
+                                .expect("valid selection");
+                            match podxt::prepare_tone_store(
+                                &folder,
+                                destination,
+                                StoreSource::OriginalSlot,
+                            ) {
+                                Ok(prepared) => {
+                                    self.status = None;
+                                    self.prepared = Some(prepared);
+                                }
+                                Err(error) => self.status = Some(error),
+                            }
+                        }
                     }
-                }
-                if let Some(prepared) = &self.prepared {
-                    let phrase = prepared.confirmation();
-                    ui.label(format!("Verified backup · {}", prepared.original_name()));
-                    ui.label(format!("Type {phrase} to confirm the destination."));
-                    ui.text_edit_singleline(&mut self.typed);
-                    let confirmed = self.typed == phrase && admitted();
-                    if ui
+                    if let Some(prepared) = &self.prepared {
+                        let phrase = prepared.confirmation();
+                        ui.label(format!("Verified backup · {}", prepared.original_name()));
+                        ui.label(format!("Candidate · {}", prepared.candidate_name()));
+                        ui.label(format!("Type {phrase} to confirm the destination."));
+                        ui.text_edit_singleline(&mut self.typed);
+                        let confirmed = self.typed == phrase && admitted();
+                        if ui
+                            .add_enabled(
+                                confirmed && device.is_some(),
+                                egui::Button::new(if sync {
+                                    "Store selected slot"
+                                } else {
+                                    "Store original to slot"
+                                }),
+                            )
+                            .clicked()
+                            && let Some(device) = device
+                        {
+                            self.start(device, ui.ctx());
+                        }
+                    }
+                });
+                if let Some(worker) = &self.worker {
+                    if worker.control.started() {
+                        ui.label("Store dispatched. Waiting for acknowledgement and readback.");
+                    } else if ui
                         .add_enabled(
-                            confirmed && device.is_some(),
-                            egui::Button::new("Store original to slot"),
+                            !worker.control.cancelled(),
+                            egui::Button::new("Cancel before store"),
                         )
                         .clicked()
-                        && let Some(device) = device
                     {
-                        self.start(device, ui.ctx());
+                        worker.control.cancel();
                     }
                 }
-            });
-            if let Some(worker) = &self.worker {
-                if worker.control.started() {
-                    ui.label("Store dispatched. Waiting for acknowledgement and readback.");
-                } else if ui
-                    .add_enabled(
-                        !worker.control.cancelled(),
-                        egui::Button::new("Cancel before store"),
-                    )
-                    .clicked()
-                {
-                    worker.control.cancel();
+                if let Some(status) = &self.status {
+                    ui.label(status);
                 }
-            }
-            if let Some(status) = &self.status {
-                ui.label(status);
-            }
-        });
+            },
+        );
     }
 }
 
