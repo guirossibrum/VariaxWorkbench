@@ -11,6 +11,7 @@
 pub mod backup;
 pub mod controls;
 pub mod models;
+mod store_backup;
 mod transfer;
 pub mod transport;
 
@@ -20,6 +21,7 @@ mod live_settings;
 pub use live_edit::{EditorBuffer, EditorEdit, edit_editor_buffer, get_editor_buffer};
 pub use live_read::{ReadCommand, ReadUpdate, read_live};
 pub use live_settings::{LiveControl, LiveTarget, Setting, SettingMessage};
+pub use store_backup::{ConfirmedStore, PreparedStore, StoreSource, prepare_tone_store};
 pub use transfer::{TonePayload, WholeToneSource, send_whole_tone};
 
 use crate::gate::Operation;
