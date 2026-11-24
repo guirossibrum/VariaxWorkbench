@@ -5,8 +5,9 @@ The [dispatch inventory](../research/variax-310-dispatch.json) covers all 110
 table entries. The [handler records](../research/variax-310-read-handlers.json)
 cover the session flag and preset-buffer read. The
 [store trace](../research/variax-310-store-handlers.json) covers opcode `0x61`.
-Findings are static. Firmware execution and live device checks remain outside
-this work.
+The [buffer trace](../research/variax-310-buffer-handlers.json) covers `0x43`
+and `0x3B`. Findings are static. Firmware execution and live device checks
+remain outside this work.
 
 ## Coverage
 
@@ -14,7 +15,7 @@ this work.
 | --- | --- | --- |
 | Line 6 SysEx table | `P:0x14316` indexes 110 words at `P:0x14326–0x14393`, for opcodes `0x10–0x7D`. All targets are present in the main-region P load records. | The shared header parser and receive state machine still need end-to-end analysis. |
 | Direct exits | 64 entries target the common stack-unwind return at `P:0x1483E` without calling a command-specific handler. | Follow the outer parser after this return to establish what happens to remaining input. |
-| Command-specific targets | 46 distinct entries. Traced here: `0x2A`, `0x3C` and `0x61`. | The other 43 remain. Track each group through its callees. Historical traces for string levels and updater paths are in [factory extraction](factory-extraction.md) and [update research](update-recovery.md). |
+| Command-specific targets | 46 distinct entries. Traced here: `0x2A`, `0x3C`, `0x3B`, `0x43` and `0x61`. | The other 41 remain. Track each group through its callees. Historical traces for string levels and updater paths are in [factory extraction](factory-extraction.md) and [update research](update-recovery.md). |
 | Image bytes | The 110 pointer words classify 330 bytes as dispatch data in the 442,402-byte decompressed Variax image (0.075%). | Whole-image classification, MIDI CC and program-change handling, universal SysEx, and PODxt Live coverage remain open. |
 
 The dispatcher subtracts `0x10` at `P:0x1431A`. It branches on underflow
@@ -280,6 +281,77 @@ The same store routine is also called from `P:0x1186`, `P:0x141A4`,
 including `P:0x1016`. This slice identifies those sites so a later pass can
 block them. It does not describe how to invoke them.
 
+## Full buffer (`0x43`) and difference (`0x3B`)
+
+Both handlers write the current preset buffer at `Y:0xA47`. Neither compares
+the count or the start with 1,092. The word reader at `P:0x1268` assembles
+six low nibbles and has no `F7` test, so an early terminator is payload and
+a short message leaves the reader waiting. **Confirmed.** A typed `do a1`
+program on the DSP56300 emulator skipped its body for a count of 0 and ran
+it for a count of 2. The loop counter in that emulator is 16 bits.
+
+### `0x43` at `P:0x14668`
+
+The first word is the count. The handler then stores that many words at
+`Y:0xA47`. Each word is committed when its six nibbles have arrived, so a
+transfer that stops after K complete words leaves those K words replaced and
+the rest of the buffer as it was. **Confirmed.**
+
+The byte after the counted words must be `F7`. Any other value replies `0x66`
+at `P:0x1482D` and does not reload. The counted words are already stored.
+`P:0x2095` then sums 1,091 words and compares the sum with word 1,091. A
+mismatch returns at `P:0x1483E` with no reply and no call to `P:0x1E9C`.
+The rejected image stays in the buffer. A match jumps to `P:0x1483A`, which
+calls `P:0x1E9C`, and sends no `0x71`. **Confirmed.** That is why the
+original editor waits for no `0x43` reply.
+
+The host check in `Program::new` sums words 0–1,088. The firmware sum also
+includes words 1,089 and 1,090. A host-valid program with either of those
+words nonzero fails `P:0x2095` after the buffer has been replaced.
+`store()` does not read a `0x43` reply. When the send itself returns
+success, it waits 100 ms and sends `0x61`. The store handler then overwrites
+word 1,091 with its own sum, so a rejected buffer can still be the image
+that goes to flash. A send error returns before `0x61`. Whether 100 ms is
+always enough for the guitar to finish the counted loop is **unknown**.
+
+Our editor's full-buffer message carries the count 1,092, which fills words
+0–1,091 and stops at `Y:0xE8A`.
+
+### `0x3B` at `P:0x14433`
+
+The handler repeats until `F7`. Each run is a count word, a start word, and
+then that many data words, written at `Y:0xA47 + start`. There is no
+checksum. `F7` replies `0x71` at `P:0x14466` and falls into the same reload
+at `P:0x1483A`. **Confirmed.** The original editor does not wait for that
+`0x71`.
+
+Workbench's ordinary runs are count then start, and they match this parser.
+A run whose last word is 1,089 still uses that order. The formula tests
+lock both cases. A run that includes word 1,090 is the exception in
+[the write contract](variax-write-transactions.md): the editor sends the
+start and then the count. `P:0x14433` does not swap those words.
+
+| Editor run | Words it sends first | What `P:0x14433` does |
+| --- | --- | --- |
+| Words 10–13 | count 4, start 10 | Writes those four words. |
+| Words 1,000–1,089 | count 90, start 1,000 | Writes those 90 words. |
+| Word 1,090 only | start 1,090, count 1, and one data word | Takes 1,090 as the count and 1 as the start. Stores the one data word at word 1, then waits for 1,089 more words. |
+| Words 0–1,090, the unknown-baseline run | start 0, count 1,091, and 1,091 data words | Takes the count as 0. A zero count writes nothing on the emulator used here. The data words are then read as another run. |
+
+`Edit::Difference` emits the reversed header whenever the changed run
+includes word 1,090, including `previous: None`. `store()` does not send
+`0x3B`. It sends `0x43` with count 1,092.
+
+### Trap list (edit buffer)
+
+| Trigger | Address | Consequence | Our editor can send it | How the editor avoids it |
+| --- | --- | --- | --- | --- |
+| `0x43` ends before the counted words, or its bytes arrive while the reader is still inside `P:0x1268`. | `P:0x14668` | The completed prefix of the buffer is replaced. The reader waits. There is no reply and no reload. | Yes, if the transfer stops after `0x43` has started. `store()` sends `0x61` only when the `0x43` send returns success. | Keep the backup. Do not send `0x61` after an incomplete `0x43`. The 100 ms pause does not prove the guitar has finished. |
+| Host checksum matches and word 1,089 or 1,090 is nonzero. | `P:0x2095` | The whole buffer is replaced, the firmware sum fails, and there is no reply and no reload. `0x61` can still store that buffer, with a newly computed checksum. | Yes. `Program::new` checks the 1,089-word sum and does not force those two words to zero. Factory slots have them zero. | Keep words 1,089 and 1,090 at zero, or do not store a program whose firmware sum disagrees. Do not treat a missing `0x43` reply as success or as rejection: success sends none. |
+| Count above 1,092, or a `0x3B` start and count that pass word 1,091. | `P:0x14670`, `P:0x14436` | Writes continue past `Y:0xE8A`. What occupies the following addresses is unknown. | The normal `0x43` count is 1,092. An in-order `0x3B` run stays inside words 0–1,089. | Keep those message shapes. The reversed run below is the case that does not. |
+| A `0x3B` run includes word 1,090. | `P:0x14433` | The firmware reads start as the count and count as the start. The single-word case stores that word at word 1 and then waits. The all-words case uses a zero count, writes nothing for that header, and parses the data as a new run. `F7` still replies `0x71` and reloads whatever was written. | Yes, through `Edit::Difference` when word 1,090 changed or the baseline is unknown. `store()` does not send it. | Send a full `0x43` for a program whose changed run includes word 1,090. Do not send that `0x3B` shape. |
+| A `0x3B` reply is still unread when a store wait begins. | `P:0x14466`, then the store wait | `0x3B` transmits `0x71`. The store wait accepts the first eight-byte `0x71` and the reply carries no slot id. | Not from `store()` itself. A caller can leave the reply on a shared stream. | Finish or discard the difference reply before waiting for a store. |
+
 ## Reproduction
 
 Use the original local archive with SHA-256
@@ -290,14 +362,18 @@ python3 scripts/map_variax_dispatch.py /path/to/Variax300_3.10.vxf \
   --check research/variax-310-dispatch.json
 python3 scripts/map_variax_store.py /path/to/Variax300_3.10.vxf \
   --check research/variax-310-store-handlers.json
-python3 -m unittest discover -s scripts -p test_variax_store_trace.py
+python3 scripts/map_variax_buffer.py /path/to/Variax300_3.10.vxf \
+  --check research/variax-310-buffer-handlers.json
+python3 -m unittest discover -s scripts -p 'test_variax_*trace.py'
 ```
 
 The scripts reconstruct raw tag-0 program loads from region 1 using the
 existing [firmware parser](../scripts/map_firmware.py). The store checker
 compares call order, branch targets and the address words with
-[the store trace](../research/variax-310-store-handlers.json). The formula
-tests do not read the archive and do not launch an emulator. The group
+[the store trace](../research/variax-310-store-handlers.json). The buffer
+checker does the same for
+[the edit-buffer trace](../research/variax-310-buffer-handlers.json). The
+formula tests do not read the archive and do not launch an emulator. The group
 quotients recorded in those tests were measured on a typed divide-by-20
 program whose words at `P:0x001A`–`P:0x0034` match this archive. The
 measurement used the local MIT DSP56300 toolkit and loaded no firmware

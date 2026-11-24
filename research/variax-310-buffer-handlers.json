@@ -1,0 +1,32 @@
+{
+  "archive_sha256": "e9f471e987b04cf31321e8a0da068f44abcdff2edbb32368385c08f92b999c1a",
+  "product_id": "00070004",
+  "version_hex": "03100000",
+  "full_buffer": {
+    "opcode": "0x43",
+    "handler": "P:0x14668",
+    "count_source": "first word",
+    "destination": "Y:0xA47",
+    "bounds_check": false,
+    "word_reader": "P:0x1268",
+    "word_reader_nibbles": 6,
+    "word_reader_checks_terminator": false,
+    "terminator_after_count": "F7",
+    "bad_terminator": "P:0x1482D replies 0x66 and does not reload",
+    "checksum": "P:0x2095",
+    "checksum_words": 1091,
+    "checksum_failure": "P:0x1483E returns with no reply and no reload",
+    "checksum_success": "P:0x1483A reloads through P:0x1E9C and sends no 0x71"
+  },
+  "difference": {
+    "opcode": "0x3B",
+    "handler": "P:0x14433",
+    "header": "count word, then start word",
+    "destination": "Y:0xA47 + start",
+    "bounds_check": false,
+    "checksum": false,
+    "terminator": "F7",
+    "on_terminator": "P:0x14466 replies 0x71, then P:0x1483A reloads",
+    "editor_terminal_run": "start word, then count word, when the run includes word 1090"
+  }
+}
