@@ -2,6 +2,7 @@ use super::super::tests::{
     app, click_prompt, prepare_quit_take, prompt_frame, recording_frame, recording_frame_tall,
 };
 use super::*;
+use variax_workbench::recording::ClockSelection;
 
 fn click_pod(context: &egui::Context, app: &mut Workbench, id: &'static str) {
     recording_frame(context, app, vec![]);
