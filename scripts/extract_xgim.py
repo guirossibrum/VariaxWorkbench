@@ -3,7 +3,10 @@
 
 POD Farm 2.58 stores UI art in ``.imb`` files. The ones inspected for the
 layout work start with a 16-byte header and then PNG bytes, one after another.
-They do not carry a name index. This script does not invent names.
+They do not carry a name index. When the header's index offset lands inside
+the file, the tail is one 20-byte record per image: numeric id, PNG offset,
+PNG size, a kind word and a flags word. This script checks those records
+and does not invent names.
 
 Header, big-endian, as observed in POD Farm 2.58 ``App.imb``:
 
@@ -30,6 +33,7 @@ MAGIC = b"XGIM"
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 IEND = b"IEND\xaeB`\x82"
 HEADER = struct.Struct(">4sIII")
+INDEX_ENTRY = struct.Struct(">IIIII")
 
 
 class XgimError(ValueError):
@@ -65,15 +69,44 @@ def parse_xgim(data: bytes) -> dict:
         raise XgimError(f"header count {count} but found {len(images)} PNG payloads")
     trailing = data[pos:]
     index_inside = HEADER.size <= index_offset < len(data)
+    entries = _index_entries(data, index_offset, count) if index_inside else []
+    if entries:
+        by_offset = {entry["offset"]: entry for entry in entries}
+        for image in images:
+            entry = by_offset.get(image["offset"])
+            if entry is None or entry["size"] != len(image["bytes"]):
+                raise XgimError(f"index does not match the PNG at offset {image['offset']}")
+            image["id"] = entry["id"]
+            image["kind"] = entry["kind"]
+            image["flags"] = entry["flags"]
     return {
         "count": count,
         "index_offset": index_offset,
         "reserved": reserved,
+        # Ids are numbers. The container does not store file names.
         "has_name_index": False,
         "index_inside_file": index_inside,
         "trailing_bytes": len(trailing),
         "images": images,
     }
+
+
+def _index_entries(data: bytes, index_offset: int, count: int) -> list[dict]:
+    need = count * INDEX_ENTRY.size
+    if index_offset + need != len(data):
+        raise XgimError(
+            f"index at {index_offset} does not fill the file "
+            f"({need} bytes expected, {len(data) - index_offset} present)"
+        )
+    entries = []
+    for index in range(count):
+        resource_id, offset, size, kind, flags = INDEX_ENTRY.unpack_from(
+            data, index_offset + index * INDEX_ENTRY.size
+        )
+        entries.append(
+            {"id": resource_id, "offset": offset, "size": size, "kind": kind, "flags": flags}
+        )
+    return entries
 
 
 def _png_size(blob: bytes) -> tuple[int, int]:
@@ -86,20 +119,29 @@ def _png_size(blob: bytes) -> tuple[int, int]:
     return width, height
 
 
+def image_filename(index: int, image: dict) -> str:
+    if "id" in image:
+        return f"{index:04d}-{image['id']:08x}.png"
+    return f"{index:04d}.png"
+
+
 def manifest_rows(parsed: dict) -> list[dict]:
     rows = []
     for index, image in enumerate(parsed["images"]):
         blob = image["bytes"]
-        rows.append(
-            {
-                "file": f"{index:04d}.png",
-                "index": index,
-                "width": image["width"],
-                "height": image["height"],
-                "bytes": len(blob),
-                "sha256": hashlib.sha256(blob).hexdigest(),
-            }
-        )
+        row = {
+            "file": image_filename(index, image),
+            "index": index,
+            "width": image["width"],
+            "height": image["height"],
+            "bytes": len(blob),
+            "sha256": hashlib.sha256(blob).hexdigest(),
+        }
+        if "id" in image:
+            row["id"] = image["id"]
+            row["kind"] = image["kind"]
+            row["flags"] = image["flags"]
+        rows.append(row)
     return rows
 
 

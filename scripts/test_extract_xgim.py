@@ -19,9 +19,17 @@ def png(width, height, rgb):
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
 
 
-def container(images, index_offset=None, reserved=0):
+def container(images, index_offset=None, reserved=0, indexed=False):
     body = b"".join(images)
-    if index_offset is None:
+    if indexed:
+        index_offset = 16 + len(body)
+        entries = b""
+        cursor = 16
+        for number, image in enumerate(images, start=1):
+            entries += struct.pack(">IIIII", 0x00010000 + number, cursor, len(image), 1, 1)
+            cursor += len(image)
+        body += entries
+    elif index_offset is None:
         index_offset = 16 + len(body) + 64
     return b"XGIM" + struct.pack(">III", index_offset, len(images), reserved) + body
 
@@ -53,6 +61,18 @@ class ExtractXgimTests(unittest.TestCase):
             self.assertIn('"has_name_index": false', (output / "manifest.json").read_text())
             with self.assertRaises(XgimError):
                 write_images(parsed, output)
+
+    def test_numeric_index_is_checked_and_is_not_a_name(self):
+        images = [png(2, 2, (1, 1, 1)), png(3, 1, (2, 2, 2))]
+        parsed = parse_xgim(container(images, indexed=True))
+        self.assertTrue(parsed["index_inside_file"])
+        self.assertFalse(parsed["has_name_index"])
+        self.assertEqual([image["id"] for image in parsed["images"]], [0x00010001, 0x00010002])
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            write_images(parsed, output)
+            self.assertTrue((output / "0000-00010001.png").is_file())
+            self.assertTrue((output / "0001-00010002.png").is_file())
 
     def test_list_writes_nothing(self):
         with tempfile.TemporaryDirectory() as directory:
