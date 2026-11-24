@@ -73,6 +73,13 @@ pub fn edit_editor_buffer<L: Link>(
             return Err("PODxt Live editor writes are closed. No edit was sent.".into());
         }
     }
+    validate_editor_tone(&expected.tone)?;
+    if let EditorEdit::Undo(snapshot) = edit {
+        validate_editor_tone(&snapshot.tone)?;
+        if snapshot.channel != expected.channel {
+            return Err("The edit snapshot belongs to a different playing channel.".into());
+        }
+    }
     open_editor(session, &cancelled)?;
     check_channel(session, expected.channel)?;
     let before = editor_tone(session)?;
@@ -85,9 +92,6 @@ pub fn edit_editor_buffer<L: Link>(
 
     let (tone, packs) = match edit {
         EditorEdit::Undo(snapshot) => {
-            if snapshot.channel != expected.channel {
-                return Err("The edit snapshot belongs to a different playing channel.".into());
-            }
             let controls = changed_controls(&before, &snapshot.tone);
             let packs = checked_models(
                 session,
@@ -101,7 +105,14 @@ pub fn edit_editor_buffer<L: Link>(
             check_channel(session, expected.channel)?;
             check_stop(&cancelled)?;
             (
-                restore_snapshot(session, expected.channel, &before, &snapshot.tone, controls)?,
+                restore_snapshot(
+                    session,
+                    expected.channel,
+                    &before,
+                    &snapshot.tone,
+                    controls,
+                    &cancelled,
+                )?,
                 packs,
             )
         }
@@ -147,9 +158,7 @@ pub fn edit_editor_buffer<L: Link>(
                     control.describe(value)
                 ));
             }
-            if matches!(edit, EditorEdit::Send(_))
-                && !still_current(&project(&before, &changes), &tone)
-            {
+            if full && !transfer_matches(&before, &changes, &tone) {
                 return Err("The edit-buffer transfer did not match the sent tone. Get edit buffer before undoing.".into());
             }
             (tone, packs)
@@ -198,10 +207,21 @@ fn check_channel<L: Link>(session: &mut Session<L>, expected: Location) -> Resul
 
 fn editor_tone<L: Link>(session: &mut Session<L>) -> Result<EditBuffer, String> {
     let tone = read_edit_buffer(session)?;
-    if tone.raw[6] != PODXT_LIVE_MEMBER as u8 || tone.raw[7..167].iter().any(|byte| *byte > 127) {
-        return Err("The reply is not a seven-bit PODxt Live edit buffer.".into());
-    }
+    validate_editor_tone(&tone)?;
     Ok(tone)
+}
+
+fn validate_editor_tone(tone: &EditBuffer) -> Result<(), String> {
+    if !is_edit_buffer(&tone.raw)
+        || tone.raw[6] != PODXT_LIVE_MEMBER as u8
+        || tone.raw[EDIT_BUFFER_LEN - 1] != 0xf7
+        || tone.raw[7..EDIT_BUFFER_LEN - 1]
+            .iter()
+            .any(|byte| *byte > 127)
+    {
+        return Err("The tone is not a seven-bit PODxt Live edit buffer.".into());
+    }
+    Ok(())
 }
 
 fn still_current(expected: &EditBuffer, observed: &EditBuffer) -> bool {
@@ -319,6 +339,35 @@ fn project(before: &EditBuffer, changes: &[(LiveControl, u16)]) -> EditBuffer {
     draft
 }
 
+fn transfer_matches(
+    before: &EditBuffer,
+    changes: &[(LiveControl, u16)],
+    observed: &EditBuffer,
+) -> bool {
+    let mut sent = project(before, changes);
+    let modified = |setting| {
+        changes.iter().any(|&(control, value)| {
+            control == LiveControl::Additional(setting) && control.read(before) != value
+        })
+    };
+    for (timing, note) in [
+        (Setting::ModSpeed, Setting::ModNote),
+        (Setting::DelayTime, Setting::DelayNote),
+    ] {
+        if (modified(Setting::Tempo) || modified(note))
+            && LiveControl::Additional(note).read(&sent) != 0
+            && !modified(timing)
+        {
+            // Firmware can recalculate synchronized time from the sent NOTE/tempo.
+            let control = LiveControl::Additional(timing);
+            for (cc, byte, _) in control.messages(control.read(observed)) {
+                sent.raw[39 + usize::from(cc)] = byte;
+            }
+        }
+    }
+    still_current(&sent, observed)
+}
+
 fn send_dump<L: Link>(
     session: &mut Session<L>,
     before: &EditBuffer,
@@ -380,6 +429,7 @@ fn restore_snapshot<L: Link>(
     before: &EditBuffer,
     snapshot: &EditBuffer,
     mut controls: Vec<LiveControl>,
+    cancelled: &impl Fn() -> bool,
 ) -> Result<EditBuffer, String> {
     let mut observed = before.clone();
     // Model changes can reset companion controls. A second pass repairs the
@@ -388,27 +438,30 @@ fn restore_snapshot<L: Link>(
         if controls.is_empty() {
             break;
         }
+        let mut changes: Vec<_> = controls
+            .iter()
+            .map(|&control| (control, control.read(snapshot)))
+            .collect();
         for (timing, note) in [
             (Setting::ModSpeed, Setting::ModNote),
             (Setting::DelayTime, Setting::DelayNote),
         ] {
             let rate = LiveControl::Additional(timing);
             let note = LiveControl::Additional(note);
-            if !controls.contains(&rate) {
-                continue;
-            }
-            if note.read(&snapshot) != 0 && !controls.contains(&note) {
-                controls.push(note);
-            }
-            if note.read(&observed) != 0 {
-                let (_, _, request) = note.messages(0).next().expect("one NOTE message");
-                session.send(request)?;
-                session.link.pause(CC_GAP);
+            if controls.contains(&rate) {
+                // Turn sync off after model and tempo changes, then restore
+                // the original NOTE after sending both rate bytes.
+                if !changes.contains(&(note, 0)) {
+                    changes.push((note, 0));
+                }
+                let original_note = note.read(snapshot);
+                if original_note != 0 && !changes.contains(&(note, original_note)) {
+                    changes.push((note, original_note));
+                }
             }
         }
-        controls.sort_by_key(|control| control.order(control.read(snapshot)));
-        let (status, _) = undo_settings(session, snapshot, &controls);
-        status?;
+        changes.sort_by_key(|&(control, value)| control.order(value));
+        send_controls(session, &changes, cancelled)?;
         observed = read_after_write(session, channel)?;
         // A model that failed to restore must not be sent indefinitely.
         controls = changed_controls(&observed, snapshot);

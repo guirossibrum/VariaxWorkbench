@@ -363,3 +363,41 @@ fn gate_denial_and_unconfirmed_readback_are_errors() {
     );
     s.link.assert_finished();
 }
+
+#[test]
+fn undo_restores_tempo_before_manual_rate_and_reenables_the_original_note_last() {
+    let original = buffer(&[(30, 19), (62, 51), (31, 9), (89, 7), (90, 41)]);
+    let current = buffer(&[(30, 15), (62, 101), (31, 8), (89, 8), (90, 111)]);
+    let mut script = begin(&current.tone);
+    script.extend([
+        channel(17),
+        cc(89, 7),
+        cc(90, 41),
+        cc(31, 0),
+        cc(30, 19),
+        cc(62, 51),
+        cc(31, 9),
+        dump(&original.tone),
+        channel(17),
+    ]);
+    let mut log = Quiet;
+    let mut s = Session::new(
+        Fake::from_bytes(Path::PodxtMidi, script),
+        &AllowAll,
+        &mut log,
+    );
+    let got = edit_editor_buffer(&mut s, &current, EditorEdit::Undo(&original), || false).unwrap();
+    assert_eq!(got.tone, original.tone);
+    s.link.assert_finished();
+}
+
+#[test]
+fn transfer_readback_accepts_synchronized_timing_and_rejects_linked_field_changes() {
+    let before = frame(&[(30, 19), (62, 51), (31, 9), (89, 7), (90, 41)]);
+    let changes = [(LiveControl::Additional(Setting::Tempo), 1135)];
+    let after = frame(&[(30, 15), (62, 101), (31, 9), (89, 8), (90, 111)]);
+    assert!(transfer_matches(&before, &changes, &after));
+    let mut linked = after.clone();
+    linked.raw[39 + 96] = 12;
+    assert!(!transfer_matches(&before, &changes, &linked));
+}
