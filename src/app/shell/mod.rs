@@ -1,5 +1,6 @@
 //! Application navigation, tab lifecycle, and shared commands.
 use super::*;
+use variax_workbench::ui::{assets, chrome, theme};
 
 mod detect;
 #[cfg(test)]
@@ -13,15 +14,15 @@ pub(super) enum CloseRequest {
 
 impl Workbench {
     pub(super) fn new(ctx: &egui::Context, defaults: EditorDefaults) -> Self {
-        ctx.set_visuals(egui::Visuals::dark());
-        let mut style = (*ctx.style()).clone();
-        style.spacing.item_spacing = Vec2::new(10.0, 10.0);
-        style.spacing.button_padding = Vec2::new(12.0, 7.0);
-        style.visuals.window_corner_radius = 0.into();
-        style.visuals.widgets.inactive.corner_radius = 0.into();
-        style.visuals.widgets.hovered.corner_radius = 0.into();
-        style.visuals.widgets.active.corner_radius = 0.into();
-        ctx.set_style(style);
+        theme::apply(ctx);
+        // Family editors are still laid out for the previous spacing. The
+        // Variax pickup drag is calibrated to that scale. #219 restyles the
+        // editors. Shell controls ask for the 32px target themselves.
+        ctx.style_mut(|style| {
+            style.spacing.item_spacing = egui::vec2(10.0, 10.0);
+            style.spacing.button_padding = egui::vec2(12.0, 7.0);
+            style.spacing.interact_size = egui::vec2(40.0, 18.0);
+        });
         Self {
             #[cfg(not(test))]
             dialogs: Box::new(NativeDialogs),
@@ -452,113 +453,138 @@ impl Workbench {
         if quit || ctx.input(|i| i.viewport().close_requested()) {
             self.request_close(ctx);
         }
-        egui::TopBottomPanel::top("header").show(ctx, |ui| {
-            ui.add_space(8.0);
-            ui.horizontal_wrapped(|ui| {
-                ui.heading("Variax Workbench");
-                ui.add_enabled_ui(!self.has_prompt(), |ui| {
-                    self.open_commands(ui, false);
-                    self.with_active(|entry, services| {
-                        let enabled = !services.picker.is_open()
-                            && !entry.editor.busy()
-                            && !entry.editor.blocking_prompt();
-                        if ui
-                            .add_enabled(enabled, egui::Button::new("Save copy…"))
-                            .clicked()
-                        {
-                            entry.editor.save_copy(services);
-                        }
-                        ui.add_enabled_ui(enabled, |ui| entry.editor.actions(ui, services));
+        egui::TopBottomPanel::top("header")
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(shell_bar(4))
+            .show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(theme::SPACE_8, theme::SPACE_4);
+                    ui.spacing_mut().button_padding = egui::vec2(theme::SPACE_12, theme::SPACE_4);
+                    ui.spacing_mut().interact_size.y = theme::TARGET;
+                    paint_product_mark(ui);
+                    ui.label(
+                        egui::RichText::new("Variax Workbench")
+                            .size(theme::SECTION)
+                            .strong()
+                            .color(theme::TEXT),
+                    );
+                    ui.add_enabled_ui(!self.has_prompt(), |ui| {
+                        self.open_commands(ui, false);
+                        self.with_active(|entry, services| {
+                            let enabled = !services.picker.is_open()
+                                && !entry.editor.busy()
+                                && !entry.editor.blocking_prompt();
+                            if command_button(ui, "Save copy…", enabled).clicked() {
+                                entry.editor.save_copy(services);
+                            }
+                            ui.add_enabled_ui(enabled, |ui| entry.editor.actions(ui, services));
+                        });
                     });
-                });
-                let response = ui.button("Device check…");
-                #[cfg(test)]
-                self.device_check_buttons.insert("open", response.rect);
-                if response.clicked() {
-                    self.device_check_open = true;
-                }
-                let response = ui.button("Test recording…");
-                #[cfg(test)]
-                self.recording_buttons
-                    .insert("open-recording", response.rect);
-                if response.clicked() {
-                    self.recording_open = true;
-                }
-                if ui.button("Milestone & Help").clicked() {
-                    self.help = true;
-                }
-            });
-            self.tab_strip(ui, ctx);
-        });
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            self.with_active(|entry, _| {
-                if entry.editor.busy() {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label("Reading model settings…");
-                        if ui.button("Cancel read").clicked() {
-                            entry.editor.cancel_operation();
-                        }
-                    });
-                }
-            });
-            let mut guitar_refresh = None;
-            let allow_refresh = !self.has_prompt();
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui| {
-                ui.label(format!("build {}", crate::BUILD_NUMBER));
-                ui.label(crate::APP_VERSION);
-                ui.vertical(|ui| {
-                    if let Some(index) = self.tabs.active.and_then(|id| self.tabs.index(id)) {
-                        let (status, error) = self.tabs.entries[index].editor.status();
-                        ui.weak(status);
-                        if let Some(error) = error {
-                            ui.colored_label(Color32::LIGHT_RED, error);
-                        }
-                        if let Some(device) = &self.tabs.entries[index].device {
-                            ui.weak(device.status());
-                            if device.connection == tabs::Connection::Present
-                                && device.reconnected_with_edits
-                            {
-                                ui.label(tabs::RECONNECTED_WITH_EDITS);
-                            }
-                            if device.connection == tabs::Connection::Present
-                                && let Some(warning) = &device.device.guitar_warning
-                            {
-                                ui.colored_label(Color32::YELLOW, warning);
-                            }
-                            if device.connection == tabs::Connection::Present
-                                && let Some(status) = device.device.guitar_status.clone()
-                            {
-                                let attachment = device
-                                    .device
-                                    .refresh_guitar
-                                    .then(|| device.device.key.attachment.clone());
-                                ui.horizontal(|ui| {
-                                    ui.label(status);
-                                    if let Some(attachment) = attachment
-                                        && self.refresh_guitar_button(ui, allow_refresh)
-                                    {
-                                        guitar_refresh = Some(attachment);
-                                    }
-                                });
-                            }
-                        }
+                    let response = command_button(ui, "Device check…", true);
+                    #[cfg(test)]
+                    self.device_check_buttons.insert("open", response.rect);
+                    if response.clicked() {
+                        self.device_check_open = true;
                     }
-                    if let Some(error) = &self.detection_status {
-                        ui.colored_label(Color32::LIGHT_RED, error);
+                    let response = command_button(ui, "Test recording…", true);
+                    #[cfg(test)]
+                    self.recording_buttons
+                        .insert("open-recording", response.rect);
+                    if response.clicked() {
+                        self.recording_open = true;
                     }
-                    if !self.shell_status.is_empty() {
-                        ui.weak(&self.shell_status);
-                    }
-                    if let Some(error) = &self.shell_error {
-                        ui.colored_label(Color32::LIGHT_RED, error);
+                    if command_button(ui, "Help", true).clicked() {
+                        self.help = true;
                     }
                 });
             });
-            if let Some(attachment) = guitar_refresh {
-                self.refresh_guitar(&attachment);
-            }
-        });
+        egui::TopBottomPanel::top("tabs")
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(shell_bar(0))
+            .show(ctx, |ui| {
+                ui.set_min_height(40.0);
+                self.tab_strip(ui, ctx);
+            });
+        egui::TopBottomPanel::bottom("status")
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(shell_bar(0))
+            .show(ctx, |ui| {
+                let mut guitar_refresh = None;
+                let allow_refresh = !self.has_prompt();
+                ui.with_layout(
+                    egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true),
+                    |ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(theme::SPACE_16, theme::SPACE_4);
+                        self.with_active(|entry, _| {
+                            if entry.editor.busy() {
+                                ui.spinner();
+                                status_line(ui, "Reading model settings…", theme::TEXT);
+                                if command_button(ui, "Cancel read", true).clicked() {
+                                    entry.editor.cancel_operation();
+                                }
+                            }
+                        });
+                        if let Some(index) = self.tabs.active.and_then(|id| self.tabs.index(id)) {
+                            let (status, error) = self.tabs.entries[index].editor.status();
+                            if !status.is_empty() {
+                                status_line(ui, status, theme::MUTED);
+                            }
+                            if let Some(error) = error {
+                                status_line(ui, error, theme::DANGER);
+                            }
+                            if let Some(device) = &self.tabs.entries[index].device {
+                                connection_chip(ui, &device.status());
+                                if device.connection == tabs::Connection::Present
+                                    && device.reconnected_with_edits
+                                {
+                                    status_line(ui, tabs::RECONNECTED_WITH_EDITS, theme::TEXT);
+                                }
+                                if device.connection == tabs::Connection::Present
+                                    && let Some(warning) = &device.device.guitar_warning
+                                {
+                                    status_line(ui, warning, theme::AMBER);
+                                }
+                                if device.connection == tabs::Connection::Present
+                                    && let Some(status) = device.device.guitar_status.clone()
+                                {
+                                    let attachment = device
+                                        .device
+                                        .refresh_guitar
+                                        .then(|| device.device.key.attachment.clone());
+                                    ui.horizontal(|ui| {
+                                        status_line(ui, &status, theme::MUTED);
+                                        if let Some(attachment) = attachment
+                                            && self.refresh_guitar_button(ui, allow_refresh)
+                                        {
+                                            guitar_refresh = Some(attachment);
+                                        }
+                                    });
+                                }
+                            } else {
+                                chrome::status_chip(ui, chrome::LinkState::NoDevice);
+                            }
+                        } else {
+                            status_line(ui, "No file open", theme::MUTED);
+                            chrome::status_chip(ui, chrome::LinkState::NoDevice);
+                        }
+                        if let Some(error) = &self.detection_status {
+                            status_line(ui, error, theme::DANGER);
+                        }
+                        if !self.shell_status.is_empty() {
+                            status_line(ui, &self.shell_status, theme::MUTED);
+                        }
+                        if let Some(error) = &self.shell_error {
+                            status_line(ui, error, theme::DANGER);
+                        }
+                    },
+                );
+                if let Some(attachment) = guitar_refresh {
+                    self.refresh_guitar(&attachment);
+                }
+            });
         let closing = self.close_request.is_some();
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.tabs.active.is_some() {
@@ -570,8 +596,7 @@ impl Workbench {
                     });
                 });
             } else {
-                ui.heading("Open a file or start an offline tab");
-                self.open_commands(ui, true);
+                self.start_page(ui);
             }
         });
         if self.help {
@@ -582,6 +607,17 @@ impl Workbench {
                 .default_height(600.0)
                 .vscroll(true)
                 .show(ctx, |ui| {
+                    ui.label(
+                        egui::RichText::new(format!("Version {}", crate::APP_VERSION))
+                            .size(theme::BODY)
+                            .color(theme::TEXT),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!("Build {}", crate::BUILD_NUMBER))
+                            .size(theme::BODY)
+                            .color(theme::TEXT),
+                    );
+                    ui.separator();
                     for &family in registry::FAMILIES {
                         family.help(ui);
                     }
@@ -611,32 +647,44 @@ impl Workbench {
     }
 
     fn open_commands(&mut self, ui: &mut egui::Ui, start_panel: bool) {
-        if ui
-            .add_enabled(!self.picker.is_open(), egui::Button::new("Open file…"))
-            .clicked()
-        {
+        if command_button(ui, "Open file…", !self.picker.is_open()).clicked() {
             self.request_open_file(ui.ctx());
         }
-        if start_panel {
-            for &family in registry::FAMILIES {
-                if ui
-                    .button(format!("New offline tab · {}", family.info().new_label))
-                    .clicked()
-                {
-                    self.new_tab(family);
-                }
-            }
-        } else {
-            ui.menu_button("New offline tab", |ui| {
+        ui.menu_button(
+            egui::RichText::new("New offline tab").size(theme::BODY),
+            |ui| {
                 for &family in registry::FAMILIES {
-                    if ui.button(family.info().new_label).clicked() {
+                    if command_button(ui, family.info().new_label, true).clicked() {
                         self.new_tab(family);
                         ui.close();
                     }
                 }
-            });
-        }
+            },
+        );
         self.detect_button(ui, start_panel);
+    }
+
+    fn start_page(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(theme::SPACE_24);
+        ui.label(
+            egui::RichText::new("Open a file or start an offline tab")
+                .size(theme::TITLE)
+                .strong()
+                .color(theme::TEXT),
+        );
+        ui.add_space(theme::SPACE_16);
+        ui.spacing_mut().item_spacing = egui::vec2(theme::SPACE_16, theme::SPACE_16);
+        let mut chosen = None;
+        ui.columns(registry::FAMILIES.len(), |columns| {
+            for (column, family) in columns.iter_mut().zip(registry::FAMILIES.iter().copied()) {
+                if start_card(column, family).clicked() {
+                    chosen = Some(family);
+                }
+            }
+        });
+        if let Some(family) = chosen {
+            self.new_tab(family);
+        }
     }
 
     fn tab_strip(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -646,23 +694,29 @@ impl Workbench {
             .id_salt("editor-tabs")
             .show(ui, |ui| {
                 ui.add_enabled_ui(!self.has_prompt(), |ui| {
-                    ui.horizontal(|ui| {
+                    // Top alignment keeps the row at the 40px tab height. Centered
+                    // horizontal layout would stretch to the panel and shrink the page.
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = theme::SPACE_4;
                         for entry in &self.tabs.entries {
-                            ui.push_id((entry.family.info().id, entry.id), |ui| {
-                                let mut label = entry.title();
-                                if entry.editor.dirty() {
-                                    label.push_str(" *");
+                            let title = entry.title();
+                            let family_id = entry.family.info().id;
+                            let tab_id = entry.id;
+                            ui.push_id((family_id, tab_id), |ui| {
+                                let output = chrome::DocumentTab {
+                                    title: &title,
+                                    family: chrome_family(family_id),
+                                    active: self.tabs.active == Some(tab_id),
+                                    unsaved: entry.editor.dirty(),
                                 }
-                                let response =
-                                    ui.selectable_label(self.tabs.active == Some(entry.id), label);
+                                .show(ui);
                                 #[cfg(test)]
-                                self.tab_buttons
-                                    .insert(entry.family.info().id, response.rect);
-                                if response.clicked() {
-                                    select = Some(entry.id);
+                                self.tab_buttons.insert(family_id, output.response.rect);
+                                if output.response.clicked() {
+                                    select = Some(tab_id);
                                 }
-                                if ui.small_button("×").on_hover_text("Close tab").clicked() {
-                                    close = Some(entry.id);
+                                if output.close.clicked() {
+                                    close = Some(tab_id);
                                 }
                             });
                         }
@@ -676,4 +730,169 @@ impl Workbench {
             self.close_tab(id, ctx);
         }
     }
+}
+
+fn shell_bar(vertical: i8) -> egui::Frame {
+    egui::Frame::new()
+        .fill(theme::BAR)
+        .inner_margin(egui::Margin::symmetric(16, vertical))
+}
+
+fn command_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(egui::RichText::new(label).size(theme::BODY))
+            .min_size(egui::vec2(theme::TARGET, theme::TARGET)),
+    )
+}
+
+fn status_line(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
+    ui.add(
+        egui::Label::new(egui::RichText::new(text).size(theme::STATUS).color(color))
+            .wrap_mode(egui::TextWrapMode::Wrap),
+    );
+}
+
+fn connection_chip(ui: &mut egui::Ui, text: &str) {
+    egui::Frame::new()
+        .fill(theme::BAR)
+        .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
+        .corner_radius(theme::RADIUS_CONTROL)
+        .inner_margin(egui::Margin::symmetric(12, 4))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(text)
+                    .size(theme::STATUS)
+                    .color(theme::MUTED),
+            );
+        });
+}
+
+fn paint_product_mark(ui: &mut egui::Ui) {
+    let mark = shell_image(ui.ctx(), "shell/workbench-mark.png");
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
+    assets::paint(ui, &mark, rect);
+}
+
+fn chrome_family(id: &str) -> chrome::Family {
+    match id {
+        "variax" => chrome::Family::Variax,
+        "podxt" => chrome::Family::Podxt,
+        _ => chrome::Family::Hd,
+    }
+}
+
+fn card_icon(id: &str) -> Option<&'static str> {
+    match id {
+        "variax" => Some("shell/variax.png"),
+        "podxt" => Some("shell/podxt-live.png"),
+        _ => None,
+    }
+}
+
+fn card_blurb(id: &str) -> &'static str {
+    match id {
+        "variax" => "Custom 1 and Custom 2, with the Spank example open on Pickups.",
+        "podxt" => "Example tone. Nothing is sent, and no preset is switched.",
+        _ => "File editor. Live connection not supported yet.",
+    }
+}
+
+fn start_card(ui: &mut egui::Ui, family: &dyn ProductFamily) -> egui::Response {
+    let info = family.info();
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), 220.0),
+        egui::Sense::click(),
+    );
+    let fill = if response.hovered() {
+        egui::Color32::from_rgb(0x2c, 0x31, 0x38)
+    } else {
+        theme::RAISED
+    };
+    let painter = ui.painter();
+    painter.rect_filled(rect, theme::RADIUS_PANEL, fill);
+    painter.rect_stroke(
+        rect,
+        theme::RADIUS_PANEL,
+        egui::Stroke::new(1.0_f32, theme::LINE),
+        egui::StrokeKind::Inside,
+    );
+    if response.has_focus() {
+        painter.rect_stroke(
+            rect.expand(theme::FOCUS_RING),
+            theme::RADIUS_PANEL,
+            egui::Stroke::new(theme::FOCUS_RING, theme::FOCUS),
+            egui::StrokeKind::Outside,
+        );
+    }
+    let content = rect.shrink(theme::SPACE_16);
+    let icon = egui::Rect::from_min_size(content.min, egui::vec2(64.0, 64.0));
+    if let Some(path) = card_icon(info.id) {
+        let image = shell_image(ui.ctx(), path);
+        assets::paint(ui, &image, icon);
+    } else {
+        painter.rect_filled(
+            icon,
+            theme::RADIUS_PANEL,
+            egui::Color32::from_rgb(0x2a, 0x31, 0x38),
+        );
+        painter.text(
+            icon.center(),
+            egui::Align2::CENTER_CENTER,
+            "HD",
+            egui::FontId::proportional(theme::TITLE),
+            theme::HD,
+        );
+    }
+    let title_rect = painter.text(
+        egui::pos2(content.left(), icon.bottom() + theme::SPACE_8),
+        egui::Align2::LEFT_TOP,
+        info.new_label,
+        egui::FontId::proportional(theme::SECTION),
+        theme::TEXT,
+    );
+    let blurb = painter.layout(
+        card_blurb(info.id).to_owned(),
+        egui::FontId::proportional(theme::BODY),
+        theme::MUTED,
+        content.width(),
+    );
+    painter.galley(
+        egui::pos2(content.left(), title_rect.bottom() + theme::SPACE_8),
+        blurb,
+        theme::MUTED,
+    );
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+fn shell_image(ctx: &egui::Context, relative: &'static str) -> assets::UiImage {
+    #[derive(Clone)]
+    struct Cached {
+        name: String,
+        pixels: [usize; 2],
+        texture: Option<egui::TextureHandle>,
+        missing: bool,
+    }
+    let id = egui::Id::new(("shell-art", relative));
+    if let Some(cached) = ctx.data(|data| data.get_temp::<Cached>(id)) {
+        return assets::UiImage {
+            name: cached.name,
+            pixels: cached.pixels,
+            texture: cached.texture,
+            missing: cached.missing,
+        };
+    }
+    let loaded = assets::load(ctx, &assets::workspace_root(), relative);
+    ctx.data_mut(|data| {
+        data.insert_temp(
+            id,
+            Cached {
+                name: loaded.name.clone(),
+                pixels: loaded.pixels,
+                texture: loaded.texture.clone(),
+                missing: loaded.missing,
+            },
+        );
+    });
+    loaded
 }

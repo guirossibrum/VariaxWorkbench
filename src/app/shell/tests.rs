@@ -54,12 +54,23 @@ fn default_startup_renders_an_empty_shell_with_offline_entry_points() {
         "Detect devices",
         "Test recording…",
         "Device check…",
+        "Help",
+        "Open a file or start an offline tab",
+        "No file open",
+        "No device",
     ] {
         assert!(
             labels.iter().any(|label| label == required),
             "missing {required}"
         );
     }
+    assert!(labels.iter().all(|label| label != "Milestone & Help"));
+    assert!(
+        labels
+            .iter()
+            .all(|label| !label.starts_with("New offline tab · "))
+    );
+    assert!(labels.iter().all(|label| !label.starts_with("build ")));
     for family in registry::FAMILIES {
         assert!(
             labels

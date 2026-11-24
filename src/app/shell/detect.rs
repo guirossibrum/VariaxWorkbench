@@ -1,6 +1,7 @@
 //! Presence updates and the consent prompt for a manual scan.
 use super::super::detection::AttachmentKey;
 use super::*;
+use variax_workbench::ui::{chrome, theme};
 
 const PRESENCE_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -51,7 +52,11 @@ impl Workbench {
     }
 
     pub(super) fn refresh_guitar_button(&mut self, ui: &mut egui::Ui, enabled: bool) -> bool {
-        let response = ui.add_enabled(enabled, egui::Button::new("Refresh guitar"));
+        let response = ui.add_enabled(
+            enabled,
+            egui::Button::new(egui::RichText::new("Refresh guitar").size(theme::BODY))
+                .min_size(egui::vec2(theme::TARGET, theme::TARGET)),
+        );
         #[cfg(test)]
         self.detection_buttons
             .insert("refresh-guitar", response.rect);
@@ -68,22 +73,29 @@ impl Workbench {
         }
     }
 
-    pub(super) fn detect_button(&mut self, ui: &mut egui::Ui, _start_panel: bool) {
-        let response = ui
-            .add_enabled(
-                self.detection.is_some(),
-                egui::Button::new("Detect devices"),
-            )
-            .on_disabled_hover_text("USB presence detection is unavailable in this build.");
-        #[cfg(test)]
-        self.detection_buttons.insert(
-            if _start_panel {
-                "start-detect"
-            } else {
-                "detect"
-            },
-            response.rect,
+    pub(super) fn detect_button(&mut self, ui: &mut egui::Ui, start_panel: bool) {
+        let response = chrome::toolbar_button(
+            ui,
+            "Detect devices",
+            self.detection.is_some(),
+            chrome::DETECTION_UNAVAILABLE,
         );
+        #[cfg(test)]
+        {
+            self.detection_buttons.insert(
+                if start_panel {
+                    "start-detect"
+                } else {
+                    "detect"
+                },
+                response.rect,
+            );
+            if !start_panel && self.tabs.entries.is_empty() {
+                self.detection_buttons.insert("start-detect", response.rect);
+            }
+        }
+        #[cfg(not(test))]
+        let _ = start_panel;
         if response.clicked() {
             self.detect_confirmation = Some(DetectConfirmation::Start);
         }
@@ -94,24 +106,48 @@ impl Workbench {
             return;
         };
         let starting = matches!(confirmation, DetectConfirmation::Start);
-        let dialog = egui::Modal::new(egui::Id::new("confirm-device-detection")).show(ctx, |ui| {
-            ui.heading("Detect devices");
-            ui.label("Tested on Linux: PODxt Live 3.01 and Variax 600 3.10.");
-            ui.label("Scan cached USB information for supported devices? This scan sends no device requests.");
-            ui.horizontal(|ui| {
-                let yes = ui.button("Yes, scan");
-                let no = ui.button("No");
-                if starting {
-                    no.request_focus();
-                }
-                #[cfg(test)]
-                {
-                    self.detection_buttons.insert("yes", yes.rect);
-                    self.detection_buttons.insert("no", no.rect);
-                }
-                (yes.clicked(), no.clicked())
-            }).inner
-        });
+        let frame = egui::Frame::new()
+            .fill(theme::RAISED)
+            .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
+            .corner_radius(theme::RADIUS_PANEL)
+            .inner_margin(egui::Margin::same(16));
+        let dialog = egui::Modal::new(egui::Id::new("confirm-device-detection"))
+            .frame(frame)
+            .show(ctx, |ui| {
+                ui.set_min_width(360.0);
+                ui.label(
+                    egui::RichText::new("Detect devices")
+                        .size(theme::TITLE)
+                        .strong()
+                        .color(theme::TEXT),
+                );
+                ui.label(
+                    egui::RichText::new("Tested on Linux: PODxt Live 3.01 and Variax 600 3.10.")
+                        .size(theme::BODY)
+                        .color(theme::TEXT),
+                );
+                ui.label(
+                    egui::RichText::new(
+                        "Scan cached USB information for supported devices? This scan sends no device requests.",
+                    )
+                    .size(theme::BODY)
+                    .color(theme::TEXT),
+                );
+                ui.horizontal(|ui| {
+                    let yes = detect_choice(ui, "Yes, scan");
+                    let no = detect_choice(ui, "No");
+                    if starting {
+                        no.request_focus();
+                    }
+                    #[cfg(test)]
+                    {
+                        self.detection_buttons.insert("yes", yes.rect);
+                        self.detection_buttons.insert("no", no.rect);
+                    }
+                    (yes.clicked(), no.clicked())
+                })
+                .inner
+            });
         let (yes, no) = dialog.inner;
         if no || dialog.should_close() {
             self.detect_confirmation = None;
@@ -122,4 +158,11 @@ impl Workbench {
             self.detect_confirmation = Some(DetectConfirmation::Waiting);
         }
     }
+}
+
+fn detect_choice(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(egui::RichText::new(label).size(theme::BODY))
+            .min_size(egui::vec2(theme::TARGET, theme::TARGET)),
+    )
 }

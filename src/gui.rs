@@ -18,7 +18,7 @@ use variax_workbench::{document::EditorDocument, preset::PresetFile};
 
 #[path = "families/variax/editor/mod.rs"]
 mod variax_panel;
-use variax_panel::FRET_MARKER;
+use variax_workbench::ui::theme;
 
 #[path = "families/hd500x/editor/mod.rs"]
 mod hd500x_panel;
@@ -398,7 +398,10 @@ impl Workbench {
         id: &'static str,
         label: &str,
     ) -> egui::Response {
-        let response = ui.button(label);
+        let response = ui.add(
+            egui::Button::new(egui::RichText::new(label).size(theme::BODY))
+                .min_size(egui::vec2(theme::TARGET, theme::TARGET)),
+        );
         #[cfg(test)]
         {
             self.device_check_buttons.insert(id, response.rect);
@@ -625,8 +628,8 @@ impl Workbench {
             }
             let mut visible = String::new();
             let banner = device_probe::availability_banner();
-            ui.colored_label(FRET_MARKER, &banner);
             visible.push_str(&banner);
+            let mut gate_notes = vec![banner];
             let label = device_probe::this_computer_label();
             ui.label(label);
             visible.push_str(&format!("\n{label}"));
@@ -651,35 +654,42 @@ impl Workbench {
                 let unavailable = self.device_check.locked(stage);
                 let gate_locked = hardware_gates::is_locked(stage.gate());
                 let (mark, colour, state) = match status {
-                    StageStatus::Passed => ("✔", Color32::from_rgb(167, 231, 133), status.label()),
-                    StageStatus::Stopped => ("■", Color32::LIGHT_RED, status.label()),
+                    StageStatus::Passed => ("✔", theme::OK, status.label()),
+                    StageStatus::Stopped => ("■", theme::DANGER, status.label()),
                     StageStatus::NotRun if unavailable && gate_locked => {
-                        ("○", Color32::GRAY, "locked in this build")
+                        ("○", theme::DIM, "locked in this build")
                     }
                     StageStatus::NotRun if unavailable => {
-                        ("○", Color32::GRAY, "unavailable in this build")
+                        ("○", theme::DIM, "unavailable in this build")
                     }
-                    StageStatus::NotRun if waiting => ("▶", FRET_MARKER, "waiting for your answer"),
-                    StageStatus::NotRun => ("○", Color32::GRAY, status.label()),
+                    StageStatus::NotRun if waiting => {
+                        ("▶", theme::AMBER, "waiting for your answer")
+                    }
+                    StageStatus::NotRun => ("○", theme::DIM, status.label()),
                 };
+                let lock = if device_probe::live_stage_available(stage) {
+                    "real device: open"
+                } else if gate_locked {
+                    "real device: locked"
+                } else {
+                    "real device: unavailable"
+                };
+                visible.push_str(&format!("\nstep {} {state} {lock}", stage.number()));
+                gate_notes.push(format!(
+                    "Step {} · {} ({}) · {lock}",
+                    stage.number(),
+                    stage.title(),
+                    stage.gate_label()
+                ));
                 ui.horizontal(|ui| {
                     ui.colored_label(colour, mark);
-                    ui.strong(format!(
-                        "Step {} · {} ({})",
-                        stage.number(),
-                        stage.title(),
-                        stage.gate_label()
-                    ));
-                    ui.weak(state);
-                    let lock = if device_probe::live_stage_available(stage) {
-                        "real device: open"
-                    } else if gate_locked {
-                        "real device: locked"
-                    } else {
-                        "real device: unavailable"
-                    };
-                    ui.weak(format!("· {lock}"));
-                    visible.push_str(&format!("\nstep {} {state} {lock}", stage.number()));
+                    ui.label(
+                        egui::RichText::new(format!("Step {} · {}", stage.number(), stage.title()))
+                            .size(theme::BODY)
+                            .strong()
+                            .color(theme::TEXT),
+                    );
+                    ui.label(egui::RichText::new(state).size(theme::STATUS).color(colour));
                 });
                 if let Some(detail) = self.device_check.detail(stage) {
                     ui.indent(("device-check-detail", stage.number()), |ui| {
@@ -688,6 +698,11 @@ impl Workbench {
                     visible.push_str(&format!(": {detail}"));
                 }
             }
+            ui.collapsing("Details", |ui| {
+                for note in &gate_notes {
+                    ui.label(note);
+                }
+            });
             ui.separator();
             if let Some(stage) = self.device_check.awaiting() {
                 ui.heading(format!("Step {}: {}", stage.number(), stage.title()));
@@ -877,10 +892,19 @@ impl Workbench {
         // within these bounds, then the scroll area can shrink to its content.
         let mut bounds = ctx.content_rect().shrink(8.0);
         bounds.min.y = (bounds.min.y + 48.0).min(bounds.max.y);
+        // The title bar grows with the 32px target and the theme margin. Keep the
+        // frame margin at egui's 6 so this window still ends inside a short screen.
+        let frame = egui::Frame::new()
+            .fill(theme::RAISED)
+            .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
+            .corner_radius(theme::RADIUS_PANEL)
+            .inner_margin(egui::Margin::same(6))
+            .shadow(ctx.style().visuals.window_shadow);
         egui::Window::new("Device check")
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
+            .frame(frame)
             .default_width(640.0)
             .min_height(bounds.height())
             .constrain_to(bounds)
