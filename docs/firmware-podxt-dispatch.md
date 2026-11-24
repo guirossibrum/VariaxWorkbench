@@ -13,7 +13,7 @@ not an application dependency.
 
 Labels mean: **confirmed** (bytes or disassembly at the address given),
 **likely** (a reading that fits those bytes and is not proven), **unknown**
-(not established). The store, boot checks, and the trap list are later
+(not established). The remaining boot checks and the trap list are later
 sections of this file.
 
 ## Which program sees the bytes
@@ -64,8 +64,8 @@ Reset at `0x823C` clears the length registers, sets the same ring base in `B6`
 with length `0x100`, and calls `0x9380`, `0x8080`, and `0x9609` before enabling
 the main loop. `0x8080` writes `0x100000` zero words starting at `DM(0x02000000)`.
 **Confirmed** as instructions. What that address is on the board is **unknown**.
-`0x9380` compares shifted reads from `0x01078000`, `0x01070000`, and
-`0x01077FFF` with `0xFFFF0000` and `0x19690000`. Its role is **unknown** here.
+`0x9380` selects which stored half is active. The store section records
+the four paths.
 
 The transmit loop at `0x80D9` has no counted timeout. **Confirmed.** Elapsed
 time is **unknown**.
@@ -337,7 +337,8 @@ to `0x80E0` is at `0x8165` (`0x68`). **Confirmed.**
 poll `0x9324`. **Confirmed.** `0x60`, `0x67`, and `0x72` therefore both program
 and erase. `0x6C` erases and does not program. `0x6D` programs and does not
 erase. `0x68` does not use the unlock sequence. What `DM(0x02000000)` is on
-the board is **unknown**.
+the board is **unknown**. Which half is erased, and what a power loss leaves,
+is in the store section.
 
 `0x940A` calls `0x9324` at `0x01018000`, `0x01020000`, `0x01028000`,
 `0x01030000`, `0x01038000`, and `0x01040000`, then jumps to `0x80DC`. No
@@ -376,6 +377,202 @@ Opcodes `0x40–0x51`, `0x58`, `0x5A`, `0x5B`, `0x62`, `0x64`, `0x6A`, `0x6B`,
 and `0x70` are the `RTS` at `0x80CE`. They read no argument and send no reply.
 **Confirmed.**
 
+## Store and storage
+
+The [store record](../research/podxt-301-store.json) locks 77 instruction
+lines and the archived half measurements.
+`python scripts/map_podxt_store.py` checks them against the container.
+Nothing in this work was sent to a device.
+
+### Slot window
+
+**Confirmed** arithmetic. A slot is `0x50` words (160 bytes). `0x936C` walks
+`0x180` slots, offsets `0` through `0x77FF`. The sentinel offset `0x7FFF` is
+not a slot start. Offsets `0x7800` through `0x7FFE` are between the last slot
+and the sentinel.
+
+`0x81A8` builds `I0 = (14-bit index × 0x50) + DM(0xC2DF)` and does not
+compare the index. **Confirmed.** The host addresses from `Location::address`
+(Line 6 Edit `TranslateAddr`) are tones 0–63 and 192–255, amp setups 64–127
+and 256–298, and FX setups 128–191. The maximum is 298, and
+`298 × 0x50 + 0x50` stays inside the 384 slots. **Confirmed** as that formula
+and that fit. The firmware does not branch on bank kind. **Likely** the host
+index is the firmware slot index. That is not a captured trace.
+
+Index 409 starts at word offset `0x7FD0`. Word `0x2F` of that slot is
+`0x7FFF`, the sentinel. The 80-word program continues through offset
+`0x8020`, `0x20` words past an `0x8000`-word half. **Confirmed** arithmetic.
+The host addresses do not include 409.
+
+### Where the two halves sit
+
+**Confirmed** file facts. The width-2 load record contains
+`DM(0xC2DF) = 0x01070000` and `DM(0xC2D6) = 0`. Region 17 is `0x10000` bytes
+at file `0xE0000`. Region 18 is `0x10000` bytes at file `0xF0000`. Those
+offsets equal `(address − 0x01000000) × 2`. The firmware map uses that same
+formula for the resource directory. Region 18 is entirely `FF`. Region 17's
+first two bytes are `50 6c` and its last two bytes are `19 69`. Of the 384
+slots, the lower half has 0 whose first two bytes are `FF FF`, and the upper
+half has 384.
+
+**Likely** a CPU read of those addresses returns those bytes, and a 16-bit
+big-endian read makes the upper first word `0xFFFF` and the lower last word
+`0x1969`. The installed flash can differ from this archive. The load-record
+value being present at reset is **likely** on the same basis as treating
+`0x8000` as the loaded program. It is not a confirmed CPU start state.
+
+Bit 15 of `0x01070000` is clear. Bit 15 of `0x01078000` is set. The two
+bases differ by `0x8000` words.
+
+### Opcode 0x71
+
+**Confirmed.** `0x9420` calls the state preamble `0x93DF`. `0x9421–0x9423`
+copy `B4`/`I4`/`L4` into `B5`/`I5`/`L5`. `0x9424` advances `I5` by 2.
+`0x9425` calls `0x9428`. `0x9426` clears `L5`. `0x9427` is `RTS`. The body
+`0x9420–0x9430` does not call `0x9324`, `0x931C`, or `0x936A`, and it does
+not jump to `0x80DC`. There is no `0x50` and no `0x51`.
+
+`0x81A8` consumes the two address bytes from `I4`. `0x9428` toggles bit 15
+of the returned address, stores it at `DM(0xC2D6)`, and calls `0x930F`
+eighty times. Each pass reads two bytes from `I5` and assembles
+`second | (first << 8)`. There is no range check and no test that the
+destination word is `0xFFFF`. The only callers of `0x9428` are `0x9367`
+(opcode `0x60`) and `0x9425` (opcode `0x71`).
+
+`0x930F` programs one masked 16-bit word and polls until the read matches.
+`0x931A` has no other exit. **Confirmed.** A second program of a word that
+never reads back as the new value stays in that loop. Whether the part can
+change a programmed word is **unknown**. The main loop does not return while
+the poll runs.
+
+Opcode `0x71` does not write `DM(0xC2DF)`. The only assignments are
+`0x9378`, `0x9387`, and `0x9390`. **Confirmed.** The `0x76` read at
+`0x816B–0x8186` contains no `BTGL`, so it uses the untoggled base. A lone
+`0x71` is not the half a following read addresses until something else flips
+the base.
+
+With the load-record base `0x01070000`, the toggled address is the upper
+half. **Likely** when path A below has left that base in place.
+
+### Commit at 0x936A
+
+**Confirmed.** The only callers are `0x9368` (opcode `0x60`, after
+programming one slot from `DM(0x1B9D8)`), `0x943C` (opcode `0x67`, after
+`0x9333`), and `0x941E` (opcode `0x72`, which calls `0x936A` and then sends
+`0x50`). `0x60`, `0x67`, and `0x72` call `0x93ED` first. Opcode `0x71` does
+not.
+
+`0x936A` saves `DM(0xC2DF)` and loops `0x180` times. Each pass toggles bit
+15 of the running address, reads the toggled address, shifts that read left
+16, and calls `0x9333` when the difference from `0xFFFF0000` is zero.
+`0x9333` stores `R0` at `DM(0xC2DA)`, `R1` at `DM(0xC2D6)`, and `R2` at
+`DM(0xC2DB)`. At the call, `R0` is the untoggled address, `R1` is the
+toggled address, and `R2` is `0x50`. A spare slot whose first word has high
+half `0xFFFF` is copied from the active slot. The running address then
+advances by `0x50`.
+
+After the loop, `0x9377–0x9378` store the toggled base at `DM(0xC2DF)`.
+`0x9379` loads `0x7FFF`. `0x937A` is
+`R0 = R0 + R1, R1 = DM(I7, -0x01)`. **Likely** the add uses `0x7FFF` and
+the load overwrites `R1`, the same reading as the parallel store at
+`0x81AC`. `0x937B` stores that sum at `DM(0xC2D6)`. `0x937C–0x937D` program
+`0x1969` through `0x930F`. `0x937E` restores `DM(0xC2D6)` to the original
+base. `0x937F` jumps to `0x9324`, which issues `0x30` and polls until that
+one word reads `0xFFFF`.
+
+The code issues one erase command at one address. It does not erase per
+slot. **Likely** the following code treats the `0x8000`-word half as the
+unit, because the scan covers that many slots and the sentinel is written
+at `+0x7FFF`. The sector length is **unknown**.
+
+### Reset selector 0x9380
+
+**Confirmed.** Reset at `0x825E` calls `0x9380` before `0x8080` and `0x9609`.
+
+| Path | Test | `DM(0xC2DF)` | Erase |
+| --- | --- | --- | --- |
+| A | `DM(0x01078000)`, shifted left 16, equals `0xFFFF0000` | not written | none |
+| B | otherwise, and `DM(0x01070000)`, shifted left 16, equals `0xFFFF0000` | set to `0x01078000` | none |
+| C | otherwise, and `DM(0x01077FFF)`, shifted left 16, equals `0x19690000` | set to `0x01070000` | `0x9324` at `0x01078000` |
+| D | otherwise | set to `0x01078000` | `0x9324` at `0x01070000` |
+
+Path C toggles `R2`, which holds `0x01078000`, before storing it. Path D
+does not. `0x9391` toggles again into `DM(0xC2D6)`, so the erase address is
+the other half. The routine reads the upper first word, the lower first
+word, and the lower last word. It does not read `0x0107FFFF`.
+
+On the archived bytes, under the likely mapping, the upper first word is
+`0xFFFF`, so reset takes path A and leaves the load-record base
+`0x01070000`. Reads use the lower half. Opcode `0x71` writes the upper
+half. **Likely.**
+
+If both first words fail the `0xFFFF` test, path C or D erases one half.
+The erase address is one of the two bank bases, not the program block at
+file `0x10000`. Whether a chip erase stays inside the addressed half is
+**unknown**.
+
+### Power loss
+
+These are instruction consequences. They are not the current device state.
+They also depend on the flash matching this archive, which is **unknown**.
+
+During `0x71` the path issues no erase. A word whose poll at `0x930F` has
+completed matches the value written. The word in progress may not. Later
+words are not written. `DM(0xC2DF)` is unchanged, so the write address is
+the opposite half from the one reads use. That pointer is a DM location in
+the 32-bit load record. Opcode `0x71` does not store it to flash.
+
+If the opposite half is the upper one and index 0 completes, the upper
+first word is no longer `0xFFFF`. The next reset is not path A. If the
+lower sentinel still reads as `0x1969`, path C keeps the lower half and
+erases the upper half, which discards the `0x71` words. **Likely** under
+the big-endian reading and the file mapping.
+
+A non-zero index leaves the upper first word `FF` when slot 0 was not the
+target, so path A can remain and the partial slot stays. A later `0x936A`
+does not copy over a spare slot whose first word fails the `0xFFFF` test.
+It still flips the base and erases the previous half, so the torn slot can
+be the one that remains. The torn word's value is **unknown**.
+
+During the `0x936A` copy, before the sentinel program finishes, some spare
+slots may already be programmed, `DM(0xC2DF)` is not yet flipped, and the
+old half is not yet erased. If slot 0 was copied, both first words fail the
+`0xFFFF` test and the old sentinel is still present. The next reset uses
+that sentinel to choose which half to erase.
+
+After the sentinel poll completes, `0x9324` erases the old half and waits
+until its first word reads `0xFFFF`. A reset in that window can see neither
+first word as `0xFFFF`. Path C or D then erases one half, which can be the
+half that still holds the copy. **Confirmed** as the control flow. The
+physical cell state is **unknown**.
+
+### What this path does not place
+
+**Confirmed** for the instructions named. The only lines that name
+`0x1B9A8` or `0x1B9A9` are `0x812A` (opcode `0x57`), `0x8133` (opcode
+`0x56`), and `0x8C73`. `0x8C73` can store one word at `0x1B9A9` and returns
+at `0x8C7B`. A 40-instruction straight line from `0x8C73`, and from each
+in-program word of the `0x1B978` table, does not reach `0x930F`, `0x931C`,
+`0x9324`, `0x9333`, or `0x936A`. An indirect callee is not expanded.
+Whether another pointer aliases `0x1B9A8` is **unknown**. This does not
+show that globals are stored in flash. Regions 1 and 2 are not named by
+the store instructions traced here.
+
+Opcodes `0x10`, `0x11`, and `0x23` are table word 0. This store path does
+not name a separate Variax-link pointer. Whether a link value sits inside
+the 80-word record is **unknown**. The record is 160 bytes, the same size
+as the factory records in region 17. **Likely** the same record size. The
+field layout is **unknown**.
+
+Opcodes `0x6E`, `0x6D`, and `0x6C` remain the raw pointer path from the
+command section. `0x6E` stores an address at `DM(0xC2D6)` with no slot
+multiply. That address is outside this 384-slot map.
+
+`0x940A` still calls `0x9324` at six addresses `0x8000` apart, starting at
+`0x01018000`. Under the file-offset formula those addresses land on the
+resource regions. No decoded call or jump targets `0x940A`. Reachability
+is **unknown**. The body is a confirmed erase sequence if it is entered.
+
 ## Device-facing notes from this slice
 
 Nothing in this work was sent to a device.
@@ -391,3 +588,9 @@ Nothing in this work was sent to a device.
 | Opcode `0x68`. | `0x93F2` writes `0x100000` words at `DM(0x02000000)` and the handler replies `0x51`. | The address is **unknown**. The reply byte is the same opcode the host uses for a failed store. |
 | Opcode `0x56` with index `0x30`, `0x3B`, `0x3C`, `0x3D`, or another outside slot of `0x1B978`. | `0x95A0` jumps through that word. | The target is outside the loaded program. Effect **unknown**. |
 | Opcode `0x54` with an index of `0x80` or above. | `0x8111` jumps through `DM(0x1BB78 + index)` with no range check. | Words in that upper half include 0 and addresses outside the loaded program. Effect **unknown**. |
+| Opcode `0x71`. | `0x9420–0x9427` returns after `0x9428`. That body does not call `0x9324`, `0x931C`, or `0x936A`. `0x9429` toggles bit 15 before `0x930F`. | Programs 80 words on the half opposite `DM(0xC2DF)`. No erase, no flip of `DM(0xC2DF)`, and no `0x50` or `0x51`. A word that never reads back stays in `0x931A`. |
+| Opcode `0x60`, `0x67`, or `0x72`. | The only callers of `0x936A` are `0x9368`, `0x943C`, and `0x941E`. | Copies spare slots whose first word has high half `0xFFFF`, programs `0x1969`, flips `DM(0xC2DF)`, and erases the previous half. |
+| Power loss during `0x71`. | That body issues no erase. `0x930F` polls each word before the next. | Completed words match. The word in progress and the words not started are not established. `DM(0xC2DF)` is unchanged. A completed index 0 on the spare makes the next reset take a path other than A. |
+| Reset while both half-base words fail the `0xFFFF` test. | `0x9380` then uses the lower sentinel and jumps to `0x9324`. | Erases one of the two halves. The choice follows the lower sentinel. Sector length is **unknown**, so the erase may cover more than that half. This is the instruction path, not the current device. |
+| Store index 409. | `409 × 0x50 + 0x2F = 0x7FFF`. `0x81A8` does not compare the index. | The 80-word program includes the sentinel and continues `0x20` words past the half. Host addresses stop at 298. |
+| Globals `0x56`/`0x57`, and opcodes `0x10`, `0x11`, `0x23`. | The only lines naming `0x1B9A8` or `0x1B9A9` are `0x812A`, `0x8133`, and `0x8C73`. The three opcode words are 0. | No flash routine on the straight-line paths checked. No separate Variax-link slot was identified on this store path. |

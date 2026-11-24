@@ -1,0 +1,32 @@
+{
+  "archive_sha256": "738f72e95f72e0bf4e52c4973ca86f098fae54a5d68e1c7b46112ad261ff07f5",
+  "evidence_count": 77,
+  "loaded_c2df": "0x01070000",
+  "loaded_c2d6": "0x00000000",
+  "c2df_writers": [
+    "0x9378",
+    "0x9387",
+    "0x9390"
+  ],
+  "slot_words": 80,
+  "slot_count": 384,
+  "sentinel_offset": "0x7FFF",
+  "lower_file_offset": "0xE0000",
+  "upper_file_offset": "0xF0000",
+  "lower_first_bytes": "506c",
+  "lower_last_bytes": "1969",
+  "upper_all_ff": true,
+  "lower_blank_slots": 0,
+  "upper_blank_slots": 384,
+  "host_address_max": 298,
+  "sentinel_index": 409,
+  "global_address_instructions": [
+    "0x812A",
+    "0x8133",
+    "0x8C73"
+  ],
+  "global_straight_line_flash_targets": 0,
+  "opcode_0x71_erases": false,
+  "target_confidence": "confirmed",
+  "file_mapping": "likely"
+}
