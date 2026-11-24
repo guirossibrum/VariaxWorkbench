@@ -727,7 +727,7 @@ fn same_port_replug_hands_the_verified_new_address_to_the_existing_editor() {
         fn status(&self) -> (&str, Option<&str>) {
             ("", None)
         }
-        fn save_copy(&mut self, _: &mut EditorServices<'_>) {}
+        fn save_copy(&mut self, _: &egui::Context, _: &mut EditorServices<'_>) {}
         fn observe_device(&mut self, device: Option<&DeviceTab>) {
             self.0.borrow_mut().push(
                 device

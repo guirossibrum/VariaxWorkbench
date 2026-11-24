@@ -95,7 +95,7 @@ fn failed_open_and_missing_save_directory_preserve_dirty_document_and_history() 
     });
     app.variax_mut().change(|p| p.rename("Retained"));
     let before = app.variax().document.as_ref().unwrap().as_bytes().to_vec();
-    assert!(!app.save_dialog());
+    app.save_dialog();
     assert!(app.variax().error.is_some());
     app.open_dialog();
     click_prompt(&context, &mut app, "discard");
@@ -122,7 +122,7 @@ fn close_during_fake_operation_cancels_it_and_retains_document_after_disconnect(
     assert!(!app.permit_close);
     assert!(app.test_pending().is_none());
     app.open_dialog();
-    assert!(!app.save_dialog()); // Fake adapter panics if invoked.
+    app.save_dialog(); // Fake adapter panics if invoked.
     drop(sender);
     app.variax_mut().poll_read();
     assert!(!app.variax().is_reading());
@@ -912,4 +912,87 @@ fn bank_dropdown_and_slots_preserve_edits_and_block_browsing_during_an_operation
         app.variax_mut().redo();
         assert!(!app.variax().document.as_ref().unwrap().is_dirty());
     }
+}
+
+#[test]
+fn delayed_open_keeps_rendering_and_completes_in_the_originating_variax_tab() {
+    let (ctx, mut app) = app();
+    let origin = app.test_editor_id::<VariaxEditor>();
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/synthetic-host-preset.vwm");
+    let expected = std::fs::read(&path).unwrap();
+    let ready = std::rc::Rc::new(std::cell::Cell::new(false));
+    let signal = ready.clone();
+    app.dialogs = Box::new(FakeDialogs {
+        next_picker: Some(Box::pin(std::future::poll_fn(move |_| {
+            if signal.get() {
+                std::task::Poll::Ready(Some(path.clone()))
+            } else {
+                std::task::Poll::Pending
+            }
+        }))),
+        ..Default::default()
+    });
+
+    app.test_action(|editor: &mut VariaxEditor, services| {
+        editor.open_dialog(&ctx, services);
+        editor.artwork_dialog(&ctx, services);
+    });
+    assert!(app.picker.is_open());
+    let before = app.variax().document.as_ref().unwrap().as_bytes().to_vec();
+    let other = app
+        .tabs
+        .entries
+        .iter()
+        .find(|entry| entry.id != origin)
+        .unwrap()
+        .id;
+    app.tabs.active = Some(other);
+    let frame_count = app.frame_count;
+    let _ = ctx.run(Default::default(), |ctx| app.render(ctx));
+    assert!(app.frame_count > frame_count);
+    assert!(app.picker.is_open());
+    assert_eq!(app.variax().document.as_ref().unwrap().as_bytes(), before);
+
+    ready.set(true);
+    app.poll_picker(&ctx);
+    assert!(!app.picker.is_open());
+    assert_eq!(app.tabs.active, Some(other));
+    assert_eq!(app.variax().document.as_ref().unwrap().as_bytes(), expected);
+}
+
+#[test]
+fn delayed_save_and_close_waits_for_atomic_publication() {
+    let (ctx, mut app) = app();
+    let id = app.test_editor_id::<VariaxEditor>();
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("saved.vwm");
+    let path = destination.clone();
+    let ready = std::rc::Rc::new(std::cell::Cell::new(false));
+    let signal = ready.clone();
+    app.dialogs = Box::new(FakeDialogs {
+        next_picker: Some(Box::pin(std::future::poll_fn(move |_| {
+            if signal.get() {
+                std::task::Poll::Ready(Some(path.clone()))
+            } else {
+                std::task::Poll::Pending
+            }
+        }))),
+        ..Default::default()
+    });
+    app.variax_mut()
+        .change(|preset| preset.rename("Save before close"));
+    let expected = app.variax().document.as_ref().unwrap().as_bytes().to_vec();
+    app.close_tab(id, &ctx);
+    click_prompt(&ctx, &mut app, "save");
+    assert!(app.picker.is_open());
+    assert_eq!(app.closing_tab, Some(id));
+    assert!(app.tabs.index(id).is_some());
+    assert!(!destination.exists());
+
+    ready.set(true);
+    app.poll_picker(&ctx);
+    assert!(!app.picker.is_open());
+    assert!(app.tabs.index(id).is_none());
+    assert_eq!(std::fs::read(destination).unwrap(), expected);
 }

@@ -3886,7 +3886,7 @@ impl FamilyTab for PodxtEditor {
     fn status(&self) -> (&str, Option<&str>) {
         (&self.pod_message, None)
     }
-    fn save_copy(&mut self, services: &mut EditorServices<'_>) {
+    fn save_copy(&mut self, _ctx: &egui::Context, services: &mut EditorServices<'_>) {
         self.save_pod_tone(services);
     }
     fn observe_device(&mut self, device: Option<&tabs::DeviceTab>) {

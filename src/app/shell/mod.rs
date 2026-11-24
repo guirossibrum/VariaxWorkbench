@@ -437,7 +437,7 @@ impl Workbench {
                     return;
                 }
                 if save {
-                    entry.editor.save_copy(services);
+                    entry.editor.save_copy(ctx, services);
                 }
                 if undo {
                     entry.editor.undo();
@@ -476,7 +476,7 @@ impl Workbench {
                                 && !entry.editor.busy()
                                 && !entry.editor.blocking_prompt();
                             if command_button(ui, "Save copy…", enabled).clicked() {
-                                entry.editor.save_copy(services);
+                                entry.editor.save_copy(ctx, services);
                             }
                             ui.add_enabled_ui(enabled, |ui| entry.editor.actions(ui, services));
                         });

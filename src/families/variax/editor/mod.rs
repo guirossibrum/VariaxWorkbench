@@ -385,70 +385,94 @@ impl VariaxEditor {
         }
     }
 
-    pub(super) fn artwork_dialog(&mut self, services: &mut EditorServices<'_>) {
+    pub(super) fn artwork_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        services: &mut EditorServices<'_>,
+    ) {
         if self.is_reading() || self.pending.is_some() {
             return;
         }
-        if let Some(path) = services.dialogs.artwork() {
-            self.artwork = path;
-            self.textures.clear();
-            self.missing_textures.clear();
-            self.error = None;
-        }
-    }
-
-    pub(super) fn open_dialog(&mut self, services: &mut EditorServices<'_>) {
-        if self.is_reading() {
-            return;
-        }
-        if self.pending.is_some() {
-            return;
-        }
-        if let Some(path) = services.dialogs.open() {
-            if self.dirty() {
-                self.pending = Some(GuitarPending::Open(path));
-            } else {
-                self.load(&path);
+        services.request_picker::<Self>(ctx, PickRequest::Artwork, |editor, path, _| {
+            if let Some(path) = path {
+                editor.artwork = path;
+                editor.textures.clear();
+                editor.missing_textures.clear();
+                editor.error = None;
             }
-        }
+        });
     }
 
-    pub(super) fn save_dialog(&mut self, services: &mut EditorServices<'_>) -> bool {
-        if self.is_reading() {
-            return false;
+    pub(super) fn open_dialog(&mut self, ctx: &egui::Context, services: &mut EditorServices<'_>) {
+        if self.is_reading() || self.pending.is_some() {
+            return;
         }
-        let Some(document) = &mut self.document else {
-            return false;
+        services.request_picker::<Self>(ctx, PickRequest::OpenWorkbenchFile, |editor, path, _| {
+            if let Some(path) = path {
+                if editor.dirty() {
+                    editor.pending = Some(GuitarPending::Open(path));
+                } else {
+                    editor.load(&path);
+                }
+            }
+        });
+    }
+
+    fn save_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        services: &mut EditorServices<'_>,
+        continue_after_save: bool,
+    ) {
+        if self.is_reading() {
+            return;
+        }
+        let Some(document) = &self.document else {
+            return;
         };
-        let name = model_filename_stem(
+        let stem = model_filename_stem(
             document
                 .selected_preset()
                 .map_or("New Collection", PresetFile::name),
         );
         let extension = document.extension();
-        let name = format!("{name} - edited.{extension}");
-        if let Some(path) = services.dialogs.save(&name, extension) {
-            let path = if let Some(pending) = &self.new_file {
-                match pending.destination(&path) {
-                    Ok(path) => path,
-                    Err(error) => {
-                        self.error = Some(error);
-                        return false;
-                    }
-                }
-            } else {
-                path
+        let request = PickRequest::SaveWorkbenchFile {
+            name: format!("{stem} - edited.{extension}"),
+            extension: extension.into(),
+        };
+        services.request_picker::<Self>(ctx, request, move |editor, path, services| {
+            if let Some(path) = path
+                && editor.save_copy_to(path)
+                && continue_after_save
+            {
+                editor.continue_pending(services);
+            }
+        });
+    }
+
+    fn save_copy_to(&mut self, path: PathBuf) -> bool {
+        let Some(document) = &mut self.document else {
+            return false;
+        };
+        let result = (|| {
+            let path = match &self.new_file {
+                Some(pending) => pending.destination(&path)?,
+                None => path,
             };
-            match document.save_copy(&path) {
-                Ok(()) => {
-                    self.error = None;
-                    self.status = format!("Saved copy: {}", path.display());
-                    return true;
-                }
-                Err(error) => self.error = Some(error),
+            document.save_copy(&path)?;
+            Ok(path)
+        })();
+        match result {
+            Ok(path) => {
+                self.error = None;
+                self.status = format!("Saved copy: {}", path.display());
+                true
+            }
+            Err(error) => {
+                self.error = Some(error);
+                false
             }
         }
-        false
     }
 
     pub(super) fn change(&mut self, change: impl FnOnce(&mut PresetFile) -> Result<(), String>) {
@@ -1065,7 +1089,7 @@ impl VariaxEditor {
                 ui.horizontal_wrapped(|ui| {
                     ui.add_enabled_ui(!self.is_reading() && self.pending.is_none(), |ui| {
                         if ui.button("Open file…").clicked() {
-                            self.open_dialog(services);
+                            self.open_dialog(ui.ctx(), services);
                         }
                         if ui.button("Try example banks").clicked() && self.document.is_none() {
                             self.open_example();
@@ -1115,7 +1139,7 @@ impl VariaxEditor {
                             .add_enabled(available, egui::Button::new("Artwork folder…").small())
                             .clicked()
                         {
-                            self.artwork_dialog(services);
+                            self.artwork_dialog(ui.ctx(), services);
                         }
                     });
                 });
@@ -1174,20 +1198,24 @@ impl VariaxEditor {
                 self.new_file = None;
             }
             if save_continue {
-                discard = self.save_dialog(services);
+                self.save_dialog(ctx, services, true);
             }
             if discard {
-                if self.new_file.is_some() {
-                    self.create_pending_file();
-                    return;
-                }
-                match self.pending.take() {
-                    Some(GuitarPending::Open(path)) => self.load(&path),
-                    Some(GuitarPending::ReadCurrent) => self.launch_read(),
-                    Some(GuitarPending::Quit) => services.close = CloseResult::Ready,
-                    None => {}
-                }
+                self.continue_pending(services);
             }
+        }
+    }
+
+    fn continue_pending(&mut self, services: &mut EditorServices<'_>) {
+        if self.new_file.is_some() {
+            self.create_pending_file();
+            return;
+        }
+        match self.pending.take() {
+            Some(GuitarPending::Open(path)) => self.load(&path),
+            Some(GuitarPending::ReadCurrent) => self.launch_read(),
+            Some(GuitarPending::Quit) => services.finish_close_if(true),
+            None => {}
         }
     }
 }
@@ -1227,8 +1255,8 @@ impl FamilyTab for VariaxEditor {
     fn source_path(&self) -> Option<&Path> {
         self.source_path.as_deref()
     }
-    fn save_copy(&mut self, services: &mut EditorServices<'_>) {
-        self.save_dialog(services);
+    fn save_copy(&mut self, ctx: &egui::Context, services: &mut EditorServices<'_>) {
+        self.save_dialog(ctx, services, false);
     }
     fn undo(&mut self) {
         VariaxEditor::undo(self);
@@ -1266,7 +1294,7 @@ impl FamilyTab for VariaxEditor {
     fn actions(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
         self.new_file_menu(ui, services);
         if ui.button("Replace file in this tab…").clicked() {
-            self.open_dialog(services);
+            self.open_dialog(ui.ctx(), services);
         }
         if ui
             .add_enabled(false, egui::Button::new("Live access locked"))

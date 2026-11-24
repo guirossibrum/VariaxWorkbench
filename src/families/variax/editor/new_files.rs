@@ -1,4 +1,6 @@
-use super::{EditorDocument, EditorServices, Path, PathBuf, PresetFile, VariaxEditor, egui};
+use super::{
+    EditorDocument, EditorServices, Path, PathBuf, PickRequest, PresetFile, VariaxEditor, egui,
+};
 #[cfg(feature = "usb")]
 use variax_workbench::bundle::BackupBundle;
 use variax_workbench::{bundle::BundleFile, document::save_new};
@@ -73,12 +75,18 @@ impl VariaxEditor {
                 self.new_file_buttons.insert(label, response.rect);
                 if response.clicked() {
                     ui.close();
-                    if let Some(path) = services.dialogs.save(suggested, extension) {
-                        self.queue_new_file(NewFile {
-                            path: super::slot_files::with_file_extension(path, extension),
-                            contents: NewFileContents::Template(kind),
-                        });
-                    }
+                    let request = PickRequest::SaveWorkbenchFile {
+                        name: suggested.into(),
+                        extension: extension.into(),
+                    };
+                    services.request_picker::<Self>(ui.ctx(), request, move |editor, path, _| {
+                        if let Some(path) = path {
+                            editor.queue_new_file(NewFile {
+                                path: super::slot_files::with_file_extension(path, extension),
+                                contents: NewFileContents::Template(kind),
+                            });
+                        }
+                    });
                 }
             }
             #[cfg(feature = "usb")]
@@ -90,7 +98,7 @@ impl VariaxEditor {
                 self.new_file_buttons.insert(label, response.rect);
                 if response.clicked() {
                     ui.close();
-                    self.choose_backup_file(services);
+                    self.choose_backup_file(ui.ctx(), services);
                 }
             }
         });
@@ -102,24 +110,40 @@ impl VariaxEditor {
     }
 
     #[cfg(feature = "usb")]
-    fn choose_backup_file(&mut self, services: &mut EditorServices<'_>) {
-        let Some(directory) = services.dialogs.pick_folder() else {
-            return;
-        };
-        let backup = match BackupBundle::load(&directory) {
-            Ok(backup) => backup,
-            Err(error) => {
-                self.error = Some(error);
-                return;
-            }
-        };
-        let Some(path) = services.dialogs.save("Variax backup.vwb", "vwb") else {
-            return;
-        };
-        self.queue_new_file(NewFile {
-            path: super::slot_files::with_file_extension(path, "vwb"),
-            contents: NewFileContents::Backup(backup),
-        });
+    fn choose_backup_file(&mut self, ctx: &egui::Context, services: &mut EditorServices<'_>) {
+        let completion_ctx = ctx.clone();
+        services.request_picker::<Self>(
+            ctx,
+            PickRequest::Folder,
+            move |editor, directory, services| {
+                let Some(directory) = directory else {
+                    return;
+                };
+                let backup = match BackupBundle::load(&directory) {
+                    Ok(backup) => backup,
+                    Err(error) => {
+                        editor.error = Some(error);
+                        return;
+                    }
+                };
+                let request = PickRequest::SaveWorkbenchFile {
+                    name: "Variax backup.vwb".into(),
+                    extension: "vwb".into(),
+                };
+                services.request_picker::<Self>(
+                    &completion_ctx,
+                    request,
+                    move |editor, path, _| {
+                        if let Some(path) = path {
+                            editor.queue_new_file(NewFile {
+                                path: super::slot_files::with_file_extension(path, "vwb"),
+                                contents: NewFileContents::Backup(backup),
+                            });
+                        }
+                    },
+                );
+            },
+        );
     }
 
     fn queue_new_file(&mut self, pending: NewFile) {
@@ -340,6 +364,7 @@ mod tests {
     fn choose_file(ctx: &egui::Context, app: &mut Workbench, label: &'static str) {
         click(ctx, app, "New Variax file");
         click(ctx, app, label);
+        frame(ctx, app, vec![]);
     }
 
     #[test]
@@ -408,7 +433,7 @@ mod tests {
             app.variax().document.as_ref().unwrap().preset().name(),
             "Default Patch"
         );
-        assert!(app.save_dialog());
+        app.save_dialog();
         assert_eq!(
             EditorDocument::open(&populated).unwrap().preset().name(),
             "Default Patch"

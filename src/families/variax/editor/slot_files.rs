@@ -1,4 +1,7 @@
-use super::{EditorServices, FAMILY, PathBuf, PresetFile, ProductFamily, VariaxEditor, egui, tabs};
+use super::{
+    EditorServices, FAMILY, PathBuf, PickRequest, PresetFile, ProductFamily, VariaxEditor, egui,
+    tabs,
+};
 use variax_workbench::document::save_new;
 
 pub(super) struct SlotReplacement {
@@ -34,10 +37,10 @@ impl VariaxEditor {
                 self.slot_file_buttons.insert("replace-slot", replace.rect);
             }
             if save.clicked() {
-                self.save_slot_model(services);
+                self.save_slot_model(ui.ctx(), services);
             }
             if replace.clicked() {
-                self.choose_slot_replacement(services);
+                self.choose_slot_replacement(ui.ctx(), services);
             }
             self.slot_transfer_menu(ui, enabled);
             self.rename_bank_button(ui, available);
@@ -45,7 +48,7 @@ impl VariaxEditor {
         });
     }
 
-    fn save_slot_model(&mut self, services: &mut EditorServices<'_>) {
+    fn save_slot_model(&mut self, ctx: &egui::Context, services: &mut EditorServices<'_>) {
         let Some(model) = self
             .document
             .as_ref()
@@ -59,29 +62,55 @@ impl VariaxEditor {
         } else {
             stem.trim()
         };
-        let Some(path) = services.dialogs.save(&format!("{stem}.vwm"), "vwm") else {
-            return;
+        let request = PickRequest::SaveWorkbenchFile {
+            name: format!("{stem}.vwm"),
+            extension: "vwm".into(),
         };
-        let path = with_file_extension(path, "vwm");
-        match save_new(&path, model.as_bytes()) {
-            Ok(()) => {
-                self.error = None;
-                self.status = format!("Saved model: {}", path.display());
+        let bytes = model.as_bytes().to_vec();
+        services.request_picker::<Self>(ctx, request, move |editor, path, _| {
+            let Some(path) = path else {
+                return;
+            };
+            let path = with_file_extension(path, "vwm");
+            match save_new(&path, &bytes) {
+                Ok(()) => {
+                    editor.error = None;
+                    editor.status = format!("Saved model: {}", path.display());
+                }
+                Err(error) => editor.error = Some(error),
             }
-            Err(error) => self.error = Some(error),
-        }
+        });
     }
 
-    fn choose_slot_replacement(&mut self, services: &mut EditorServices<'_>) {
-        let Some(document) = &self.document else {
-            return;
-        };
-        let (Some(selection), Ok(previous)) =
-            (document.selection(), document.selected_slot_model())
+    fn choose_slot_replacement(&mut self, ctx: &egui::Context, services: &mut EditorServices<'_>) {
+        let Some(selection) = self
+            .document
+            .as_ref()
+            .and_then(|document| document.selection())
         else {
             return;
         };
-        let Some(path) = services.dialogs.open() else {
+        services.request_picker::<Self>(
+            ctx,
+            PickRequest::OpenWorkbenchFile,
+            move |editor, path, _| {
+                if let Some(path) = path {
+                    editor.stage_slot_replacement(selection, path);
+                }
+            },
+        );
+    }
+
+    fn stage_slot_replacement(&mut self, selection: (usize, usize), path: PathBuf) {
+        let Some(document) = self
+            .document
+            .as_ref()
+            .filter(|document| document.selection() == Some(selection))
+        else {
+            self.error = Some("The selected slot changed. Choose the replacement again.".into());
+            return;
+        };
+        let Ok(previous) = document.selected_slot_model() else {
             return;
         };
         let result = tabs::open_candidate(&path, FAMILY.info().ceiling)
@@ -204,6 +233,7 @@ mod tests {
                 |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| app.guitar_workspace(ui));
                     app.pending_dialog(ctx);
+                    app.poll_picker(ctx);
                 },
             );
         }
@@ -377,7 +407,7 @@ mod tests {
         assert_eq!(fs::read(source).unwrap(), bank);
         assert_eq!(fs::read(model_file).unwrap(), replacement.as_bytes());
 
-        assert!(app.save_dialog());
+        app.save_dialog();
         assert_eq!(fs::read(&bank_copy).unwrap(), changed);
         let tab_count = app.tabs.entries.len();
         app.open_file_dialog();
