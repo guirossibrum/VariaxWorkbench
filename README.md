@@ -73,11 +73,13 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 [pickup response](docs/pickup-response.md), [generator results](docs/offline-generator-results.md), and [backlog](docs/github-backlog.md).
 
 ### Verified and passing
+
 - [x] #124 static macOS audio pass traced the XT isochronous setup and host format declarations. USB clock, wire sample layout and live audio remain unverified.
 - [x] #124 static macOS MIDI pass traced CoreMIDI to the kext interrupt transport and distinguished the Linux interface-1 guitar path. Wire timing remains unverified.
 - [x] #124 static Windows startup pass traced interface-1 registration, descriptor setup and two control writes. Polling and conditional transitions remain unverified.
 - [x] #124 static Windows MIDI pass checked WDM/KS registration, ASIO properties, editor JNI and the Variax bridge evidence. Runtime port names and private routing remain unverified.
 - [x] #124 static driver inventory checked the Windows PE/INF/catalog and macOS Mach-O/Info.plist inputs. See [Windows](docs/driver-windows-podxt.md) and [macOS](docs/driver-macos-podxt.md).
+- [x] #124 documented candidate Windows and macOS adapters, G1–G3 system effects and remaining transport unknowns. Static research only.
 
 - [x] Product-family refactor, Step 2. PODxt, HD500X and Variax editor panels and their GUI tests now live in their family modules. Test recording has its own tool module. PODxt and HD500X have separate preset implementations, and Variax owns its file and document modules. Existing import paths, editor layout and workflows carry forward. Offline formatting and Clippy with warnings denied passed. The app suite passed **736** tests (1 ignored) and the device library passed **82** tests (2 ignored), matching the rebased baseline. [Architecture and delivery order](docs/architecture-families.md). [#121](https://github.com/guirossibrum/VariaxWorkbench/issues/121).
 
