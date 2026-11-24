@@ -1,27 +1,14 @@
-//! Shared offline editor state and atomic creation of new preset files.
+//! Variax offline editor state and document history.
 use crate::{
     bundle::{Bank, BundleFile},
     preset::PresetFile,
 };
 use std::{
     fs,
-    io::Write,
     path::{Path, PathBuf},
 };
 
-pub fn save_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
-    temporary.write_all(bytes).map_err(|e| e.to_string())?;
-    temporary.as_file().sync_all().map_err(|e| e.to_string())?;
-    temporary
-        .persist_noclobber(path)
-        .map_err(|e| format!("{}: {}", path.display(), e.error))?;
-    Ok(())
-}
+pub use crate::shared::document::save_new;
 
 #[derive(Clone)]
 struct SelectedBundle {
@@ -253,7 +240,7 @@ mod tests {
     fn guitar_document_rejects_a_podxt_live_tone_and_a_bank_that_contains_one() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("pod.vwm");
-        let mut bytes = include_bytes!("../tests/fixtures/editor-preset.vwm").to_vec();
+        let mut bytes = include_bytes!("../../../../tests/fixtures/editor-preset.vwm").to_vec();
         bytes[24..28].copy_from_slice(&0x0003_000au32.to_be_bytes());
         std::fs::write(&path, &bytes).unwrap();
         match EditorDocument::open(&path) {
@@ -261,7 +248,7 @@ mod tests {
             Ok(_) => panic!("opened a PODxt Live tone as a guitar document"),
         }
         let bank_path = directory.path().join("pod.vwb");
-        let mut bank = include_bytes!("../tests/fixtures/synthetic-bank.vwb").to_vec();
+        let mut bank = include_bytes!("../../../../tests/fixtures/synthetic-bank.vwb").to_vec();
         let at = bank
             .windows(4)
             .position(|item| item == 0x0007_0004u32.to_be_bytes())

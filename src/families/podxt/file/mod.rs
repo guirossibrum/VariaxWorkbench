@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
 //! PODxt Live tone and bank files.
-use crate::document;
-use crate::preset;
+use crate::shared::document;
 use crate::shared::file::{PathFacts, ToneError};
+use crate::shared::iff as preset;
 use std::io::Read;
 use std::{ops::Range, path::Path};
 

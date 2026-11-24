@@ -177,7 +177,7 @@ mod tests {
         info[4..6].copy_from_slice(&('B' as u16).to_be_bytes());
         let mut bank = b"BANK".to_vec();
         bank.extend(chunk(b"BINF", &info));
-        let mut preset = include_bytes!("../tests/fixtures/editor-preset.vwm").to_vec();
+        let mut preset = include_bytes!("../../../../tests/fixtures/editor-preset.vwm").to_vec();
         preset[8..12].copy_from_slice(&kind);
         bank.extend_from_slice(&preset);
         let mut bundle = b"L6BA".to_vec();

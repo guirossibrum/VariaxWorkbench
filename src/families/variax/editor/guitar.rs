@@ -34,7 +34,7 @@ const TUNINGS: [(&str, [i32; 6]); 8] = [
     ("Open G", [-2, -2, 0, 0, 0, -2]),
 ];
 
-pub(super) fn milestones(ui: &mut egui::Ui) {
+pub(in crate::editor) fn milestones(ui: &mut egui::Ui) {
     show_source_checkout(ui);
     ui.separator();
     ui.heading("Complete · Offline Variax 600 editing");
@@ -294,7 +294,7 @@ fn readable_origin(origin: &str) -> String {
 }
 
 impl Workbench {
-    pub(super) fn open_example(&mut self) {
+    pub(in crate::editor) fn open_example(&mut self) {
         match example_document() {
             Ok(document) => {
                 self.document = Some(document);
@@ -1214,8 +1214,9 @@ fn example_document() -> Result<EditorDocument, String> {
         }
     }
 
-    let mut base =
-        PresetFile::parse(include_bytes!("../tests/fixtures/synthetic-host-preset.vwm").to_vec())?;
+    let mut base = PresetFile::parse(
+        include_bytes!("../../../../tests/fixtures/synthetic-host-preset.vwm").to_vec(),
+    )?;
     base.select_model(PICKUP1, 0x03110004)?;
     base.select_model(PICKUP2, 0x03110003)?;
     for (slot, id, value) in [

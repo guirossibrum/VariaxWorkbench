@@ -6,12 +6,11 @@
 
 use std::collections::BTreeMap;
 
+pub use families::variax::file::{bundle, document, edit, preset};
+
 pub mod body;
-pub mod bundle;
 pub mod device_probe;
-pub mod document;
 pub mod dsp;
-pub mod edit;
 pub mod factory_comparison;
 pub mod factory_reference;
 mod families;
@@ -40,7 +39,6 @@ pub mod pod_preset;
 pub mod pod_usb_firmware;
 #[cfg(feature = "usb")]
 pub mod podxt_live;
-pub mod preset;
 pub mod probe_report;
 pub mod provenance;
 pub mod read_session;
