@@ -1,0 +1,447 @@
+# App design
+
+Proposal for issue #215. This document, the HTML prototype, and the
+screenshots under `docs/design/mockups/` are the design. They do not change
+the running app. #216 (shared components), #217 (shell), #219 (PODxt editor)
+and #224 (Variax editor) implement it after the owner approves this proposal.
+
+The current editors already edit files offline. The layout does not. One
+wrapped row of buttons, a repeated start screen, a hex form for the PODxt,
+and a plain two-column guitar page sit in the same dark egui theme. The
+replacement is one shell, with two historical instrument layouts inside it.
+
+- The PODxt Live page uses POD Farm 2's dark stage and hardware materials,
+  and Line 6 Edit 3.06's block grid (`bg_xtlive.png`, 734×583, cited below
+  and not committed).
+- The Variax page keeps Variax Workbench 1.75's regions: wood header, guitar
+  body, pickup and control inspector, fretboard.
+- POD HD500X stays a file editor in the same shell. It does not borrow either
+  chassis.
+
+`docs/visual/` remains a Helix study and a component contract. It is not this
+app's layout. No vendor font is shipped. The app keeps egui's default font.
+
+The element-by-element map is [element-mapping.md](element-mapping.md).
+The clickable prototype is [prototype/index.html](prototype/index.html).
+Open it from a local server rooted at this worktree so the image paths
+resolve. Add `?shot=1` to hide the prototype's own navigation.
+
+## Window
+
+| | |
+| --- | --- |
+| Design canvas | 1440×900 logical points |
+| Comfortable minimum | 1100×720 |
+| Current viewport | 1120×760, minimum 960×680 (`src/gui.rs`) |
+
+Below 1100×720 the page scrolls. Type size and control targets do not shrink.
+#217 may raise the viewport toward the design canvas. This issue does not
+change `src/gui.rs`.
+
+The shell is three fixed bands plus the page:
+
+| Band | Height |
+| --- | ---: |
+| Top bar | 56 |
+| Tab strip | 40 |
+| Status bar | 32 |
+
+Page padding is 16. The PODxt grid and the Variax middle row fill the rest.
+
+## Typography
+
+Sizes are logical points. egui scales them once by `pixels_per_point`.
+
+| Role | Size | Line |
+| --- | ---: | ---: |
+| Page title | 20 | 28 |
+| Section title | 15 | 22 |
+| Body | 14 | 20 |
+| Compact body | 13 | 20 |
+| Knob label | 11 | 14 |
+| Status | 13 | 20 |
+
+Weight is regular for body and semibold for titles, block names, and the
+focused dialog button. Knob values use the same face, tabular if the font
+provides it. There is no second UI font and no new font dependency.
+
+## Colour
+
+Tokens are the screen colours. Block fills are separate, because Line 6 Edit
+paints each effect a different hardware colour and the label ink has to
+follow that fill.
+
+| Token | Hex | Use |
+| --- | --- | --- |
+| `bg` | `#101114` | Window |
+| `bar` | `#171a1f` | Top bar, tab strip, status |
+| `raised` | `#22262c` | Cards, dialogs, inputs |
+| `line` | `#3a4048` | Hairline, disabled fill |
+| `text` | `#f4f1ea` | Primary text |
+| `muted` | `#c4bfb4` | Secondary text |
+| `dim` | `#9a9488` | Hints only, still 4.5:1 on `bar` |
+| `amber` | `#f0a202` | Accent, LED, dirty marker. Not body text |
+| `focus` | `#ffc14d` | 2px focus ring |
+| `danger` | `#ffb4a8` | Errors |
+| `ok` | `#b6e3a2` | Passed, enabled LED on a dark block |
+| Variax accent | `#e0b15a` | Family mark and active Variax tab |
+| PODxt accent | `#e4572e` | Family mark and active PODxt tab |
+| HD accent | `#8aa0b4` | Family mark and active HD tab |
+| Ink | `#1c140c` | Text on light block fills |
+
+Block fills, with the ink that meets 4.5:1:
+
+| Block | Fill | Ink | Contrast |
+| --- | --- | --- | ---: |
+| Amp | `#c5c8cc` | `#1c140c` | 10.83 |
+| Mic | `#e4d7b0` | `#1c140c` | 12.68 |
+| Stomp | `#d06a1c` | `#1c140c` | 4.99 |
+| Reverb | `#c6a04a` | `#1c140c` | 7.39 |
+| Comp | `#2f646e` | `#f4f1ea` | 5.87 |
+| Mod | `#2a558f` | `#f4f1ea` | 6.66 |
+| Delay | `#2f6b3c` | `#f4f1ea` | 5.66 |
+| EQ | `#14697a` | `#f4f1ea` | 5.59 |
+| Pedal | `#4a4f55` | `#f4f1ea` | 7.33 |
+| Gate | `#8fd0da` | `#1c140c` | 10.57 |
+
+Gate is not `#1c7f90`. Cream on that cyan is 4.15:1 and fails. Cream on the
+window, bar, and raised surfaces is 16.74, 15.46, and 13.47. Muted on the bar
+is 9.52. Dim on the bar is 5.79. Focus amber on the bar is 10.79. Danger on
+raised is 8.94. OK on raised is 10.49. Amber as text on the bar is 8.20, so
+it may label a state, and it is not used for paragraphs.
+
+A bypassed block keeps its fill at about 45% opacity and draws its LED off.
+The name stays readable.
+
+## Spacing and targets
+
+The space scale is 4, 8, 12, 16, 24. Corner radius is 6 on controls and 8 on
+panels and dialogs. Every click target is at least 32×32, including tab close,
+knob hit area, and the five pickup-position buttons. The focus ring sits
+outside the target and is not the same colour as selection.
+
+## High DPI
+
+Layout uses logical points. Bitmaps (`stage-frame.png`, the guitar photos,
+the 64px product icons) are drawn at their intended point size and may render
+sharper on a high-DPI screen. They are not pre-scaled a second time. The
+Workaround of multiplying both `pixels_per_point` and a manual image scale is
+rejected.
+
+## Components
+
+Each component has hover, keyboard focus, disabled, and, where it applies,
+error, dirty, and pressed.
+
+| Component | Drawn as | States that matter |
+| --- | --- | --- |
+| Knob | CSS hardware dial, value under it, unit in the value | Hover brightens the tick. Focus rings the dial. Disabled dial is flat and the value stays visible. Drag is vertical. Double-click or Enter edits the value as text. |
+| Switch | LED plus the block name | On draws the LED. Off draws an empty lamp. Disabled does not toggle. |
+| Selector | Raised menu, current name, 32px row | Empty selection says what is missing (`No amp model`). Disabled keeps the name. |
+| Block panel | Coloured plate, name, bypass LED, knobs | Bypassed plate dims. The panel does not collapse. |
+| LED | 8px lamp, amber or the block's on-colour | Off is a dark well. On is not the only sign of state: the switch also says On or Off. |
+| Display | One-line readout (tempo, channel, trim) | Read-only. No fake meter. |
+| Tab | Family accent on the active tab, close control, dirty word | Hover lightens. Focus rings. The active tab is a fill, not colour alone. |
+| Toolbar button | Text button on the bar | Hover and focus as above. Disabled explains itself in hover text. |
+| Status chip | Short phrase in the status bar | Offline, present, disconnected, and uncertain use the sentences below. |
+| Dialog | Raised window, scrim, title, body, actions | Focus starts on the safe button. Escape cancels. Tab cycles the buttons. |
+
+## Keyboard
+
+Tab order is top bar, tab strip, page controls, status bar. A modal dialog
+cycles only its own buttons. Escape cancels. Enter activates the focused
+button. Arrow keys move inside one group: a bank's slots, one block's knobs,
+or the five position buttons.
+
+These shortcuts already exist in Help and stay:
+
+| Key | Action |
+| --- | --- |
+| Ctrl+O | Open file in a new tab |
+| Ctrl+S | Save a new copy |
+| Ctrl+Z | Undo |
+| Ctrl+Shift+Z | Redo |
+| Q | Quit |
+| ? | Toggle Help |
+
+The safe button is focused when a dialog opens: `No` on Detect devices,
+`Keep editing` on unsaved changes, `No, stop` on a device-check step.
+
+Dirty state is the word `Unsaved` on the tab and in the page header. A colour
+may accompany it. Colour is not the only signal.
+
+## Shell
+
+The top bar is the product mark, the name Variax Workbench, and the commands
+that apply to the whole window:
+
+`Open file…` · `New offline tab` · `Detect devices` · `Save copy…` · `Device check…` · `Test recording…` · `Help`
+
+`New offline tab` is one menu: `Variax (example banks)`, `PODxt Live`,
+`POD HD500X`. The start page does not repeat those labels as a second row of
+the same buttons. Build number and version leave the status bar and stay in
+Help.
+
+The tab strip shows every open document. A tab title is the family and the
+document name. A device tab uses the connection phrases in
+[Connection](#connection). Close is a control on the tab. The active tab uses
+its family accent.
+
+The status bar is one line: the page status, then the connection chip. Errors
+use `danger` and stay on this line. A long error wraps inside the bar rather
+than covering the page.
+
+Test recording keeps its current panel. This proposal does not redraw it.
+Firmware installation is not a button.
+
+## Start
+
+No devices are connected. The page is three cards and two commands.
+
+| Card | Opens | Icon |
+| --- | --- | --- |
+| Variax (example banks) | The built-in Custom 1 / Custom 2 example | `assets/ui/shell/variax.png` |
+| PODxt Live | An empty offline tone, labeled as an example until a file is open | `assets/ui/shell/podxt-live.png` |
+| POD HD500X | The HD file editor, with no file open | Text mark `HD`. There is no HD500X icon in the 64px set, and this design does not invent one. |
+
+`Open file…` and `Detect devices` sit above the cards. On a normal Linux
+build with USB detection, Detect devices is enabled and opens the disclaimer.
+On a build without detection the button is disabled, and its hover is the
+current sentence: `USB presence detection is unavailable in this build.`
+
+## Variax
+
+The page is the Workbench 1.75 arrangement, with the type, targets, and units
+of this app.
+
+| Region | Size | Contents |
+| --- | --- | --- |
+| Header | 92 | Bank, slots, model, author, notes, Undo, Redo, Unsaved |
+| Middle | remaining | Guitar body, about 1.15fr, and the inspector, about 1fr |
+| Fretboard | 118 | The committed fretboard image and the six stored pitch offsets |
+
+The wood header, the body well, and the brushed-metal inspector are CSS, not
+bitmaps. The photos that are committed are the Spank body, the Spank pickup
+sprite, the fretboard, and the Workbench mark. See `assets/ui/SOURCES.md`.
+
+The example the page shows is the built-in Spank example (Custom 1, slot 2).
+`example_document` sets these values, and the labels are the Workbench formats
+in `value_format.rs`:
+
+| Control | Stored by the example | Shown |
+| --- | --- | --- |
+| Body | model `0x03100003` | Spank |
+| Pickup 1 | `0x03110004`, position 1.8, angle 8.7, level 1.3 | Spank Single Coil Bridge, `1.80"`, `8.7°`, `+1.3dB` |
+| Pickup 2 | `0x03110003`, position 3.88, level 1.4, angle left at 0 | Spank Single Coil Middle, `3.88"`, `0.0°`, `+1.4dB` |
+| Tone resistance | 470 | `470k Ω` |
+| Tone capacitance | 0.011 | `11 nF` |
+| Volume taper | integer 1 | Audio |
+| Output trim | 0.0 | `0.00dB` |
+| Pitch offsets | six zeros | `0 semitones` on each string |
+
+The example builder does not assign volume resistance, tone position, or
+save-tone. The synthetic base preset stores volume resistance 500, tone
+position 1.0, and save-tone 0, so the editor shows `500k Ω`, `100%`, and an
+unchecked save-tone box. Position is `ValueFormat::POSITION` (`1.80"`).
+Angle is one decimal and a degree sign. Level is a signed decibel. Trim is
+two decimals. Percent truncates. Resistance labels use a space before Ω
+(`500k Ω`, `470k Ω`, `1M Ω`).
+
+The inspector has Body type, Pickups, and Controls. The body photo stays
+visible on all three. The example currently opens on Pickups; the new page
+does the same, and Body type remains one click away.
+
+Workbench's positions 1–5 are the pickup selector. The Rust editor has no
+five-position control yet. The five buttons are drawn, they do not pretend to
+edit, and the caption is `Not in this editor yet`. No detent inches are invented.
+
+`Get from guitar` and `Send to guitar` leave the header. They are disabled
+dead ends (`locked during offline editing`). Reading and writing a guitar
+stay in Device check, behind that window's own questions. The toolbar button
+`Live access locked` leaves for the same reason. Spread stays off the Spank
+page. The editor already says Workbench 1.75 had no Spread control.
+
+Auto-select remains a checkbox with its current meaning: choosing a humbucker
+sets 500 kΩ, 500 kΩ and 0.047 µF, and other pickups set 250 kΩ, 250 kΩ and
+0.022 µF. The example opens with it on.
+
+## PODxt Live
+
+The page is a stage, not a form. The only committed POD Farm bitmap is
+`assets/ui/pod-farm/stage-frame.png` (App.imb image `0x00010003`, 826×497).
+Amp and FX images are model art and stay ignored. The wooden venue image in
+the same container is not used. POD Farm's single large amp view is not the
+layout.
+
+Line 6 Edit's plate is the grid, not a committed image:
+
+`analysis/extracted/rea-full/line6-edit-3.06.0-win/embedded-zip/modules/sharctone/editor/images/backgrounds/bg_xtlive.png`
+
+The grid sits inside the stage frame, inset about 22 points at the top and
+14 on the sides. Twelve columns:
+
+| Row | Columns |
+| --- | --- |
+| Signal switches | Gate, Wah, Stomp, Comp, EQ, Vol, Mod, Delay, Verb |
+| 1 | Amp 1–6, Mic 7–9, Comp 10–12 |
+| 2 | Stomp 1–5, Mod 6–9, Gate 10–12 |
+| 3 | Delay 1–5, Reverb 6–8, EQ 9–12 |
+| 4 | Pedal strip, all 12 columns |
+
+Every block is visible. Each has its own on/off. Knobs show the parameter
+table's display format (`docs/podxt-live-parameter-table.md`): percent,
+decibels, milliseconds, hertz, BPM. Host-scale `0–1` labels leave the page.
+Raw parameter ids leave the page and sit in a closed Details disclosure.
+
+The mockup's tone is synthetic. It is named Example tone, and its numbers are
+the ones visible on the Line 6 Edit default-tone screen, relabeled so they
+are not a user capture:
+
+| Block | Shown |
+| --- | --- |
+| Amp | Volume `78%`. Amp, cab, and mic selectors empty: `No amp model`, `No cab`, `No mic` |
+| Comp | Threshold `0 dB`, Gain `0 dB`. LED off |
+| Stomp | Drive `100%`, Gain `50%`, Tone `50%`, Axial Fuzz |
+| Mod | Speed `0.00 Hz`, Depth `50%`, Bass `50%`, Treble `50%`, Mix `50%`, Sine Chorus |
+| Delay | Time `500 ms`, Feedback `10%`, Bass `50%`, Treble `50%`, Mix `50%`, Analog Delay |
+| Reverb | Dwell `50%`, Tone `50%`, Mix `20%`, Lux Spring |
+| Gate | Threshold `-50 dB`, Decay. LED off |
+| EQ | A four-band graph, frequency `100 Hz`, gain `0.0 dB` |
+| Wah | Vetta Wah. LED off |
+| Pedal | `1-Wah 2-Vol`, Compressor Threshold, Vol min `0%`, Wah position `50%` |
+| Tempo | `120.0 BPM`. No tap that sends anything |
+| Variax link | `(no Variax)` and `No linked model`. Display only. It does not send a guitar command |
+
+Wah, Gate, and Comp show their LEDs off so bypass is visible. The other
+blocks are on. There is no input meter and no output meter. The readout says
+`No live audio`. The metadata strip is one row: tone name, and
+`No channel · file only` when the document has no program address.
+`Submit This Tone To Online Library` is removed.
+
+The status chip for this example is `Example tone · file · nothing is sent`.
+A present USB device adds `USB present · identity pending`. The page does not
+say synced.
+
+Three findings stay available from Parameter notes, which is closed on the
+mockup: the compressor alias, mod and delay 14-bit rounding versus truncation,
+and the volume pedal's 128 versus 127. They are not presented as a finished
+live match. #219 binds the knobs to the table. This issue only places them.
+
+## POD HD500X
+
+Same shell. The page says `No HD Edit file open` until a file is chosen.
+It shows the current notices, shortened only by wrapping:
+
+- `HD Edit files are handled offline. Internal target and physical compatibility remain unverified.`
+- `No device, audio, firmware or driver operation is available here. Copy saves never replace an existing file.`
+- `Live connection not supported yet.`
+
+The page does not invent amp, effect, or pedal controls. An open file shows
+its file name. A name is not shown for bytes that are not an HD Edit file.
+
+## Device check
+
+The window keeps every safety sentence. It drops gate codes and
+`real device: locked` from the primary row. Those move into Details, which
+is closed in the mockup.
+
+The mockup shows the This computer consent for step 1, because that is the
+sentence a normal Linux USB build asks. `No, stop` is focused. Nothing in
+the picture has run. Steps 2, 3, and 4 are `not run`. The mode radios remain
+`Simulation` and `This computer`. Simulation stays the app's default; the
+frame selects This computer so the owner can read the real consent. The Yes
+label on that frame is `Yes, read this computer's USB list`.
+
+Step 1's primary text is the current action and risk, without a gate letter
+in the heading:
+
+> Look at what Linux already knows about connected USB devices: vendor and
+> product numbers, the description Linux saved when the device was plugged in,
+> which Linux driver owns each part of it, and the list of sound cards. The
+> app sends nothing to the PODxt Live or the guitar.
+
+> Low risk. The app only reads information Linux keeps. When the PODxt Live
+> was plugged in, Linux's own drivers already talked to it (for example the
+> Variax driver asks for a version); that happens without this app. If no
+> device, several devices or unreadable information is found, the check stops
+> instead of guessing.
+
+The standing rules stay on the window, in the current words: each step asks
+first, the answer is No unless you choose Yes, and a passed step never starts
+the next one. Close stops a step before it starts. Backup and tone sections
+that the current window already offers stay behind their own Yes, and this
+set of mockups does not redraw them.
+
+## Detect devices
+
+The dialog is the current copy:
+
+- Title: `Detect devices`
+- `Tested on Linux: PODxt Live 3.01 and Variax 600 3.10.`
+- `Scan cached USB information for supported devices? This scan sends no device requests.`
+- Buttons: `Yes, scan` and `No`. `No` is focused.
+
+A finished scan still reports `No supported devices found.` or
+`Detected N supported device(s).`
+
+## Save and close
+
+The dialog is the current copy, over the dirty document:
+
+- Title: `Unsaved changes`
+- `Save a copy to keep your changes before continuing.`
+- Order: `Save copy and continue…`, `Keep editing`, `Discard changes`
+- `Keep editing` is focused. Escape matches it.
+
+Save copy remains a new file. It does not overwrite.
+
+## Connection
+
+The chip and the tab title use the current sentences. None of them say synced.
+
+| State | Tab | Status |
+| --- | --- | --- |
+| No device | Family and file name | `No device` |
+| Present, identity pending | `PODxt Live · identity pending` | `USB detected · identity pending` |
+| Present, linked bridge | the model name plus `identity pending` | `USB bridge detected · guitar identity pending` |
+| Uncertain | `PODxt Live · presence unknown` | `USB presence could not be verified` |
+| Disconnected | `PODxt Live · disconnected` | `Disconnected · editing the open file` |
+| HD, file only | `POD HD500X` | `Live connection not supported yet` |
+
+`No device` is the design phrase for an offline tab. The current status string
+for a tab that was connected and then lost is `Disconnected · offline editing`.
+The disconnected mockup uses that situation's tab title and the design chip
+`Disconnected · editing the open file`, which says the open file is what you
+are editing.
+
+## What stays unsupported
+
+Unsupported work stays on screen and is labeled. The mockups do not show a
+successful guitar write, a synced preset, a live meter, an HD connection, a
+firmware installer, or a five-position edit.
+
+| Item | How it appears |
+| --- | --- |
+| Pickup positions 1–5 | Visible, caption `Not in this editor yet` |
+| HD live connection | `Live connection not supported yet` |
+| Identity before a real read | `identity pending`, never synced |
+| Empty amp, cab, and mic on the example tone | `No amp model`, `No cab`, `No mic` |
+| Detection missing from a build | Disabled Detect devices, current hover sentence |
+| Step 4 and any later write | Not offered by this picture. Device check lists step 4 as `not run` |
+
+## Art
+
+Committed images and their origins are `assets/ui/SOURCES.md`. The extractor
+is `scripts/extract_xgim.py`. It records numeric XGIM ids. Those ids are not
+file names. Extracted containers stay in the ignored `analysis/` tree.
+
+Knobs, wood, metal, and the Edit grid are drawn in the prototype. They are
+not crops of the Workbench chrome sheet or of `background.png`.
+
+## After approval
+
+#216 builds the components in `src/shared/ui` from this inventory. #217 applies
+the shell, start page, tabs, status, and dialogs. The Variax and PODxt lanes
+restyle their own editors with those components. This issue does not edit
+`src/families/` or device code, and it does not change README.md, because the
+design is not an implemented behavior.
