@@ -1,6 +1,6 @@
 //! Bounded reads of the 1,092-word active buffer on Variax firmware 3.10.
 
-use super::{HEADER, bridge_message, decode_word, in_session, is_reply, with_release_error};
+use super::{HEADER, decode_word, is_reply, with_bridged_read_session};
 use crate::{
     gate::Operation,
     midi::Event,
@@ -89,23 +89,6 @@ pub struct SpanReply {
     pub words: Vec<u32>,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct ReadBridge(bool);
-
-impl Request for ReadBridge {
-    fn bytes(self) -> Vec<u8> {
-        bridge_message(self.0)
-    }
-
-    fn path(self) -> Path {
-        Path::VariaxViaPodxt
-    }
-
-    fn operation(self) -> Operation {
-        Operation::VariaxRead
-    }
-}
-
 /// Read spans in order in one G3 session. Hand off each complete reply before
 /// sending the next request. Cancellation takes effect between spans so the
 /// host keeps draining an in-flight reply until it ends or the deadline expires.
@@ -124,29 +107,18 @@ pub fn read_spans<L: Link>(
     if stopping() {
         return Err("Variax buffer read cancelled or log unavailable.".into());
     }
-    let result = session.send(ReadBridge(true)).and_then(|()| {
-        in_session(session, |session| {
-            for &span in spans {
-                if stopping() {
-                    return Err("Variax buffer read cancelled or log unavailable.".into());
-                }
-                let reply = read_span(session, span).map_err(|error| {
-                    format!("Start {}, count {}: {error}", span.start(), span.count())
-                })?;
-                received(reply)?;
+    with_bridged_read_session(session, |session| {
+        for &span in spans {
+            if stopping() {
+                return Err("Variax buffer read cancelled or log unavailable.".into());
             }
-            Ok(())
-        })
-    });
-    let release = session
-        .send(ReadBridge(false))
-        .err()
-        .map(|error| format!("PODxt Variax-messages release failed: {error}"));
-    match (result, release) {
-        (result, None) => result,
-        (Ok(()), Some(error)) => Err(error),
-        (Err(error), release) => Err(with_release_error(error, release)),
-    }
+            let reply = read_span(session, span).map_err(|error| {
+                format!("Start {}, count {}: {error}", span.start(), span.count())
+            })?;
+            received(reply)?;
+        }
+        Ok(())
+    })
 }
 
 fn read_span<L: Link>(session: &mut Session<L>, span: PresetSpan) -> Result<SpanReply, String> {

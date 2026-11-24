@@ -7,6 +7,8 @@
 //! backup.
 
 pub mod backup;
+mod follow;
+pub use follow::{FollowUpdate, follow};
 pub mod slot_read;
 pub mod span_read;
 pub mod transport;
@@ -291,6 +293,41 @@ pub fn listen<L: Link>(
 
 fn bridge_message(enabled: bool) -> Vec<u8> {
     vec![0xf0, 0, 1, 0x0c, 3, 0x23, u8::from(enabled), 0xf7]
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ReadBridge(bool);
+
+impl Request for ReadBridge {
+    fn bytes(self) -> Vec<u8> {
+        bridge_message(self.0)
+    }
+
+    fn path(self) -> Path {
+        Path::VariaxViaPodxt
+    }
+
+    fn operation(self) -> Operation {
+        Operation::VariaxRead
+    }
+}
+
+fn with_bridged_read_session<L: Link, T>(
+    session: &mut Session<L>,
+    body: impl FnOnce(&mut Session<L>) -> Result<T, String>,
+) -> Result<T, String> {
+    let result = session
+        .send(ReadBridge(true))
+        .and_then(|()| in_session(session, body));
+    let release = session
+        .send(ReadBridge(false))
+        .err()
+        .map(|error| format!("PODxt Variax-messages release failed: {error}"));
+    match (result, release) {
+        (result, None) => result,
+        (Ok(_), Some(error)) => Err(error),
+        (Err(error), release) => Err(with_release_error(error, release)),
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
