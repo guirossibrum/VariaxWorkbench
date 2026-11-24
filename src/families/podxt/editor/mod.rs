@@ -583,10 +583,7 @@ impl Workbench {
         if let Some(index) = self.pod_library.first_dirty() {
             return self.write_pod_copy(index);
         }
-        if let Some(index) = self.hd_library.first_dirty() {
-            return self.write_hd_copy(index);
-        }
-        false
+        self.save_next_dirty_hd()
     }
 
     pub(super) fn discard_next_dirty_pod(&mut self) -> bool {
@@ -624,45 +621,7 @@ impl Workbench {
                 }
             };
         }
-        let Some(index) = self.hd_library.first_dirty() else {
-            return false;
-        };
-        match self.hd_library.revert_unsaved(index) {
-            Ok(()) => {
-                if self
-                    .hd_type9_pending
-                    .is_some_and(|pending| pending.file_index == index)
-                {
-                    self.hd_type9_pending = None;
-                }
-                if self
-                    .hd_type8_pending
-                    .is_some_and(|pending| pending.file_index == index)
-                {
-                    self.hd_type8_pending = None;
-                }
-                if self
-                    .hd_type10_pending
-                    .is_some_and(|pending| pending.file_index == index)
-                {
-                    self.hd_type10_pending = None;
-                }
-                self.hd_type11_pending
-                    .retain(|(file_index, _, _), _| *file_index != index);
-                self.hd_type12_pending
-                    .retain(|(file_index, _, _), _| *file_index != index);
-                self.hd_type13_pending
-                    .retain(|(file_index, _, _), _| *file_index != index);
-                self.hd_type19_pending
-                    .retain(|(file_index, _, _), _| *file_index != index);
-                self.pod_message = "Discarded one unsaved HD Edit file change.".into();
-                true
-            }
-            Err(error) => {
-                self.pod_message = error.detail();
-                false
-            }
-        }
+        self.discard_next_dirty_hd()
     }
 
     fn restore_staged_amp_if_origin_matches(
@@ -2067,139 +2026,7 @@ impl Workbench {
                     );
                 }
 
-                if self.pod_button(ui, "load-hd-file", "Open HD Edit file…") {
-                    self.load_hd_editor_file();
-                }
-                let selected_enable = self.hd_selected.and_then(|index| {
-                    let slot = pod_preset::HdFxSlot::new(self.hd_effect_slot).ok()?;
-                    let PodPresetFile::H5ep(preset) = self.hd_library.file(index)? else {
-                        return None;
-                    };
-                    Some((index, slot, preset.effect_enabled(slot)?))
-                });
-                if let Some((index, slot, enabled)) = selected_enable {
-                    let (button_id, label) = if enabled {
-                        ("disable-hd-effect", "Disable effect offline")
-                    } else {
-                        ("enable-hd-effect", "Enable effect offline")
-                    };
-                    if self.pod_button(ui, button_id, label) {
-                        let result = Session::extension(ProductProfile::PodHd500x).and_then(
-                            |session| {
-                                session.set_hd_effect_enabled(
-                                    &mut self.hd_library,
-                                    index,
-                                    slot,
-                                    !enabled,
-                                )
-                            },
-                        );
-                        match result {
-                            Ok(()) => {
-                                self.pod_message = format!(
-                                    "Effect {} updated in this offline preset. Nothing was sent; save a new copy to keep the change.",
-                                    if enabled { "disabled" } else { "enabled" }
-                                );
-                            }
-                            Err(error) => self.pod_message = rejection_text(&error),
-                        }
-                    }
-                }
-                if let Some(pending) = self.hd_type9_pending
-                    && self.hd_selected == Some(pending.file_index)
-                    && self.hd_effect_slot == pending.slot.index()
-                {
-                    ui.label(format!(
-                        "{} for FX slot {} is staged.",
-                        pending.choice.label(),
-                        pending.slot.index()
-                    ));
-                    ui.horizontal(|ui| {
-                        if self.pod_button(
-                            ui,
-                            "apply-hd-type9-choice",
-                            "Apply offline choice",
-                        ) {
-                            self.apply_hd_type9_choice(
-                                pending.file_index,
-                                pending.slot,
-                                pending.model_id,
-                                pending.choice,
-                            );
-                        }
-                        if self.pod_button(
-                            ui,
-                            "discard-hd-type9-choice",
-                            "Discard staged choice",
-                        ) {
-                            self.hd_type9_pending = None;
-                            self.pod_message = "Discarded the staged HD type-9 choice.".into();
-                        }
-                    });
-                }
-                if let Some(pending) = self.hd_type8_pending
-                    && self.hd_selected == Some(pending.file_index)
-                    && self.hd_effect_slot == pending.slot.index()
-                {
-                    ui.label(format!(
-                        "{} for FX slot {} is staged.",
-                        pending.choice.label(),
-                        pending.slot.index()
-                    ));
-                    ui.horizontal(|ui| {
-                        if self.pod_button(
-                            ui,
-                            "apply-hd-type8-choice",
-                            "Apply offline choice",
-                        ) {
-                            self.apply_hd_type8_choice(
-                                pending.file_index,
-                                pending.slot,
-                                pending.model_id,
-                                pending.choice,
-                            );
-                        }
-                        if self.pod_button(
-                            ui,
-                            "discard-hd-type8-choice",
-                            "Discard staged choice",
-                        ) {
-                            self.hd_type8_pending = None;
-                            self.pod_message = "Discarded the staged HD type-8 choice.".into();
-                        }
-                    });
-                }
-                if let Some(pending) = self.hd_type10_pending
-                    && self.hd_selected == Some(pending.file_index)
-                    && self.hd_effect_slot == pending.slot.index()
-                {
-                    ui.label(format!("{} for FX slot {} is staged.", pending.choice.label(), pending.slot.index()));
-                    ui.horizontal(|ui| {
-                        if self.pod_button(ui, "apply-hd-type10-choice", "Apply offline choice") { self.apply_hd_type10_choice(pending.file_index,pending.slot,pending.model_id,pending.choice); }
-                        if self.pod_button(ui, "discard-hd-type10-choice", "Discard staged choice") { self.hd_type10_pending=None; self.pod_message="Discarded the staged HD type-10 choice.".into(); }
-                    });
-                }
-                if self.hd_selected.is_some_and(|index| {
-                    self.hd_library
-                        .file(index)
-                        .is_some_and(|file| file.hd_container_kind().is_some())
-                }) && self.pod_button(ui, "save-hd-copy", "Save HD file copy…")
-                {
-                    self.write_hd_copy(self.hd_selected.expect("selected HD file"));
-                }
-
-                ui.separator();
-                let scroll = egui::ScrollArea::vertical()
-                    .max_height(560.0)
-                    .id_salt("pod-hd-editor-panel")
-                    .show(ui, |ui| self.hd_editor_panel(ui));
-                #[cfg(test)]
-                {
-                    self.pod_scroll_area =
-                        Some((scroll.id, scroll.inner_rect, scroll.content_size.y));
-                }
-                #[cfg(not(test))]
-                let _ = scroll;
+                self.show_embedded_hd_panel(ui);
             });
     }
 
