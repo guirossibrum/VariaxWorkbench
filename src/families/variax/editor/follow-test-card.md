@@ -16,10 +16,11 @@ that Follow preserves it.
 4. Turn **Follow** off. Further knob movement should leave the editor view
    alone. Start Follow again and close the tab. The next **Refresh guitar**
    should be able to use the rig.
-5. If you unplug the VDI cable while the PODxt stays connected, turn Follow
-   off and use **Refresh guitar** to detect the disconnect. After reconnecting,
-   verify that the same tab returns with local edits intact. Turn Follow on
-   again to resume listening.
+5. Unplug the VDI cable while the PODxt stays connected. Record whether the
+   editor reports the disconnect and switches Follow off. If the PODxt sends
+   no notice, turn Follow off and use **Refresh guitar** to detect the
+   disconnect. After reconnecting and verifying identity again, check that
+   the tab still contains the local edits before you restart Follow.
 
 Follow opens the verified attachment for a G3 read session. It sends no
 preset changes, preset edits or store commands.

@@ -15,6 +15,12 @@ const SLOT_SETTLE: Duration = Duration::from_millis(300);
 const EDITED_SLOT_SETTLE: Duration = Duration::from_secs(1);
 const CLIP_PULSE: Duration = Duration::from_millis(200);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConnectionNotice {
+    Connected,
+    Disconnected,
+}
+
 #[derive(Clone, Copy, Default)]
 struct Snapshot {
     program: Option<(Preset, Instant)>,
@@ -23,6 +29,7 @@ struct Snapshot {
     clip_until: Option<Instant>,
     dsp_overload: bool,
     queue_overflow: bool,
+    notice: Option<ConnectionNotice>,
 }
 
 impl Snapshot {
@@ -41,6 +48,8 @@ impl Snapshot {
             FollowUpdate::Clip => self.clip_until = Some(now + CLIP_PULSE),
             FollowUpdate::DspOverload => self.dsp_overload = true,
             FollowUpdate::MidiQueueOverflow => self.queue_overflow = true,
+            FollowUpdate::Connected => self.notice = Some(ConnectionNotice::Connected),
+            FollowUpdate::Disconnected => self.notice = Some(ConnectionNotice::Disconnected),
         }
     }
 }
@@ -49,6 +58,7 @@ type Source =
     fn(&Attachment, &AtomicBool, &mut dyn FnMut(FollowUpdate, Instant)) -> Result<(), String>;
 
 struct Worker {
+    attachment: Attachment,
     stop: Arc<AtomicBool>,
     snapshot: Arc<Mutex<Snapshot>>,
     thread: JoinHandle<Result<(), String>>,
@@ -61,6 +71,7 @@ pub(super) struct Follow {
     worker: Option<Worker>,
     snapshot: Snapshot,
     consumed_program: Option<(Preset, Instant)>,
+    notice: Option<ConnectionNotice>,
     error: Option<String>,
 }
 
@@ -71,12 +82,19 @@ impl Follow {
         if self.attachment != attachment {
             self.stop();
             self.error = None;
+            if attachment.is_some() {
+                self.notice = None;
+            }
             self.attachment = attachment;
         }
     }
 
     pub(super) fn busy(&self) -> bool {
         self.worker.is_some()
+    }
+
+    pub(super) fn disconnected(&self) -> bool {
+        self.notice == Some(ConnectionNotice::Disconnected)
     }
 
     pub(super) fn stop(&mut self) {
@@ -95,6 +113,10 @@ impl Follow {
             .attachment
             .clone()
             .ok_or("Follow needs a verified Variax attachment.")?;
+        if self.disconnected() {
+            return Err("Follow needs the guitar connection to be verified again.".into());
+        }
+        let worker_attachment = attachment.clone();
         let worker_ctx = ctx.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let snapshot = Arc::new(Mutex::new(Snapshot::default()));
@@ -103,7 +125,7 @@ impl Follow {
         let thread = std::thread::Builder::new()
             .name("variax-follow".into())
             .spawn(move || {
-                let result = source(&attachment, &worker_stop, &mut |update, at| {
+                let result = source(&worker_attachment, &worker_stop, &mut |update, at| {
                     if let Ok(mut state) = worker_snapshot.lock() {
                         state.receive(update, at);
                     }
@@ -114,7 +136,9 @@ impl Follow {
             })
             .map_err(|error| format!("Could not start Variax Follow: {error}"))?;
         self.error = None;
+        self.notice = None;
         self.worker = Some(Worker {
+            attachment,
             stop,
             snapshot,
             thread,
@@ -128,7 +152,30 @@ impl Follow {
             return;
         };
         let stopping = worker.stop.load(Ordering::Relaxed);
-        if worker.thread.is_finished() {
+        let finished = worker.thread.is_finished();
+        let update = worker.snapshot.lock().ok().map(|mut snapshot| {
+            let notice = snapshot.notice.take();
+            (*snapshot, notice)
+        });
+        if let Some((snapshot, notice)) = update
+            && self.attachment.as_ref() == Some(&worker.attachment)
+        {
+            match notice {
+                Some(ConnectionNotice::Disconnected) => {
+                    self.notice = notice;
+                    self.stop();
+                }
+                _ if !stopping => {
+                    if notice.is_some() {
+                        self.notice = notice;
+                    }
+                    self.snapshot = snapshot;
+                }
+                _ => {}
+            }
+        }
+
+        if finished {
             let worker = self.worker.take().expect("finished Follow worker");
             self.error = worker
                 .thread
@@ -137,9 +184,6 @@ impl Follow {
                 .err();
             self.stop();
         } else {
-            if !stopping && let Ok(state) = worker.snapshot.lock() {
-                self.snapshot = *state;
-            }
             // Also repaint on reap if the last worker repaint arrived just
             // before the thread's result became joinable.
             ctx.request_repaint_after(Duration::from_millis(100));
@@ -195,6 +239,7 @@ impl Follow {
                 || (!stopping
                     && available
                     && self.attachment.is_some()
+                    && !self.disconnected()
                     && cfg!(target_os = "linux"));
             if ui
                 .add_enabled(enabled, egui::Checkbox::new(&mut following, "Follow"))
@@ -239,8 +284,14 @@ impl Follow {
                 }
             }
         });
-        if following {
-            ui.weak("Guitar unplug detection uses Refresh guitar. Turn Follow off first.");
+        match self.notice {
+            Some(ConnectionNotice::Connected) if following => {
+                ui.weak("Guitar connected via PODxt Live.");
+            }
+            Some(ConnectionNotice::Disconnected) => {
+                ui.weak("Guitar disconnected.");
+            }
+            _ => {}
         }
         if let Some(error) = &self.error {
             ui.colored_label(egui::Color32::LIGHT_RED, error);
@@ -375,6 +426,7 @@ mod tests {
         let now = Instant::now();
         let changed = now - Duration::from_secs(2);
         let preset = Preset::new(4, 2).unwrap();
+        publish(FollowUpdate::Connected, changed);
         publish(FollowUpdate::ProgramChange(preset), changed);
         publish(
             FollowUpdate::Volume(1),
@@ -430,6 +482,8 @@ mod tests {
         editor.follow.start(fake_source, &ctx).unwrap();
         poll_until(editor, &ctx, |follow| follow.snapshot.queue_overflow);
         let snapshot = editor.follow.snapshot;
+        assert_eq!(editor.follow.notice, Some(ConnectionNotice::Connected));
+        assert!(editor.follow.busy());
         assert_eq!(snapshot.program.unwrap().0, Preset::new(4, 2).unwrap());
         assert_eq!(snapshot.volume, Some(64));
         assert_eq!(snapshot.tone, Some(127));
@@ -458,6 +512,39 @@ mod tests {
         super::super::refresh::tests::attach(editor);
         assert!(editor.follow.attachment.is_some());
         assert!(!editor.follow.busy());
+    }
+
+    #[test]
+    fn completed_worker_delivers_disconnect_before_its_snapshot_is_cleared() {
+        let (ctx, mut app) = app();
+        let editor = app.variax_mut();
+        super::super::refresh::tests::attach(editor);
+        editor.change(|preset| preset.rename("Keep this edit"));
+        let before = editor.document.as_ref().unwrap().as_bytes().to_vec();
+        let source: Source = |_, _, publish| {
+            publish(FollowUpdate::Connected, Instant::now());
+            publish(FollowUpdate::Disconnected, Instant::now());
+            Ok(())
+        };
+
+        editor.follow.start(source, &ctx).unwrap();
+        let started = Instant::now();
+        while !editor.follow.worker.as_ref().unwrap().thread.is_finished() {
+            assert!(started.elapsed() < Duration::from_secs(1));
+            std::thread::yield_now();
+        }
+        editor.poll_follow(&ctx);
+        assert!(!editor.follow.busy());
+        assert!(editor.follow.disconnected());
+        assert!(editor.follow.start(source, &ctx).is_err());
+        assert_eq!(editor.document.as_ref().unwrap().as_bytes(), before);
+
+        editor.observe_device(None);
+        assert!(editor.follow.disconnected());
+        super::super::refresh::tests::attach(editor);
+        assert!(!editor.follow.disconnected());
+        assert!(!editor.follow.busy());
+        assert_eq!(editor.document.as_ref().unwrap().as_bytes(), before);
     }
 
     #[test]

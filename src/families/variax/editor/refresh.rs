@@ -93,7 +93,10 @@ impl VariaxEditor {
             return;
         }
         let button = ui.add_enabled(
-            cfg!(target_os = "linux") && !self.refresh.busy() && !self.follow.busy(),
+            cfg!(target_os = "linux")
+                && !self.refresh.busy()
+                && !self.follow.busy()
+                && !self.follow.disconnected(),
             egui::Button::new("Refresh from guitar…"),
         );
         if button.clicked() {
@@ -104,6 +107,7 @@ impl VariaxEditor {
     fn request_refresh(&mut self, read: ReadLibrary) {
         if self.is_reading()
             || self.follow.busy()
+            || self.follow.disconnected()
             || self.blocking_prompt()
             || self.refresh.attachment.is_none()
         {
