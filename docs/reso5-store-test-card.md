@@ -1,10 +1,10 @@
 # Reso-5 factory store test card
 
-Owner run only. Review the flash-interruption findings from #181 item 1 and
-wait for the separate go for #177 before running the live command. The target is Reso, lever position 5, flash slot 50 on a Variax
-300/600 with firmware 3.10 through one PODxt Live with firmware 3.01. The two
-guitar models share a MIDI identity. The tool reads the active name and settings
-and the owner verifies the physical selector position.
+Owner run only. Review the #181 flash-interruption findings and wait for the
+separate go for #177. The target is Reso, lever position 5, flash slot 50 on a
+Variax 300/600 with firmware 3.10 through a PODxt Live with firmware 3.01.
+The two guitar models share a MIDI identity. The tool checks the active name
+and settings, and the owner verifies the physical selector position.
 
 ## Prepare and run
 
@@ -38,10 +38,18 @@ and the owner verifies the physical selector position.
      compare BEFORE_BACKUP AFTER_BACKUP
    ```
 
-The 3,276-byte payload is the archived firmware's own slot 50 program. The
-store assumes the guitar's original DSP words are still the factory words.
-The checks compare metadata and the observed sound. Full stored DSP read-back
-is still open under [#119](https://github.com/guirossibrum/VariaxWorkbench/issues/119).
+The 3,276-byte payload is the firmware archive's slot 50 factory program. The
+owner's #225 run on 2026-11-24 at 15:08 UTC received no `0x44` reply through the
+PODxt Live, and the guitar worked normally afterward. The store procedure uses
+the established identity and 192-byte settings reads. The original slot's DSP
+words and the spare sector remain unverified on this route.
+
+For future direct-interface readback only, the expected 3,276-byte stored
+image has SHA-256
+`90d79131f7909639aa2d0793cb3f617fbd95a95a1ada7a54f90ec84de4e28164`.
+The firmware writes `0310` to words 767–770, then sets word 1,091 to the low 24
+bits of the sum of words 0–1,090 (`A3219C`). The offline check verifies this
+reference against the private archive.
 
 ## Stop rules
 
@@ -55,14 +63,17 @@ never repeat the store before the log has been reviewed.
 
 ## If 0x71 does not arrive
 
-**Do not power off immediately.** Flash operations may still be running.
-Wait at least **2 minutes** without touching anything and note what the guitar
-and PODxt do. Then try selecting another preset on the guitar. If the guitar
-responds, take a backup and compare it with the first one. If it does not
-respond, report before powering off so the next step can be decided with
-[#181](https://github.com/guirossibrum/VariaxWorkbench/issues/181)'s findings.
-Keep the log folder for review.
+**Keep the rig powered and untouched.** After a silent 15-second confirmation
+wait and successful cleanup sends, the tool announces and waits another
+**2 minutes**, then releases the interface and tells you to check the guitar.
+It sends no more MIDI messages during this phase.
 
-**Pending #181 item 1.** The effects of power loss during each phase of the
-store and any startup recovery will be filled in from the reviewed flash
-analysis.
+Try selecting another preset. If the guitar responds, take a **Device check
+Variax backup**, compare it with the first one, and report the result. If the
+guitar does not respond, report before powering off. Keep the store log.
+
+**Do not store any slot in 40–59 until spare 62 reads blank.** The current
+PODxt Live route cannot verify that condition. The [#181 static trace](firmware-variax-dispatch.md#preset-store-0x61)
+shows that the firmware has no timeout on the flash polls or spare-sector
+recovery at startup. A loss of power between slot erase and confirmed
+programming can leave slot 50 unusable until a later successful store.

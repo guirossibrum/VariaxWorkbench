@@ -29,6 +29,7 @@ fn run_store(
         &mut session,
         prepared,
         || confirm_store(STORE_CONFIRMATION),
+        |_| {},
         cancelled,
     )
 }
@@ -110,6 +111,8 @@ fn store_policy_restricts_each_operation_to_its_gate() {
     for forbidden in [
         Operation::VariaxEditBufferWrite,
         Operation::VariaxPresetSwitch,
+        Operation::VariaxSlotRead,
+        Operation::VariaxBankNameRead,
         Operation::PodxtIdentity,
         Operation::PodxtRead,
         Operation::PodxtLibraryRead,
@@ -161,6 +164,7 @@ fn store_refuses_wrong_guitar_identity_wrong_name_settings_and_confirmation() {
             &mut session,
             &prepared,
             || confirm_store("STORE RESO-5"),
+            |_| panic!("unexpected timeout"),
             || false
         )
         .unwrap_err()
@@ -171,42 +175,46 @@ fn store_refuses_wrong_guitar_identity_wrong_name_settings_and_confirmation() {
     assert!(confirm_store(&format!(" {STORE_CONFIRMATION}")).is_err());
 }
 
+fn store_requests(prepared: &PreparedStore) -> Vec<Vec<u8>> {
+    let full = guitar(
+        &[
+            &[0x43, 4, 4, 4, 0, 0, 0][..],
+            &sysex_words(&prepared.program),
+        ]
+        .concat(),
+    );
+    assert_eq!(full.len(), 6566);
+    let mut writes = vec![
+        BRIDGE_ON.into(),
+        HEADER.into(),
+        vec![0x2a, 1],
+        vec![0xf7],
+        HEADER.into(),
+        vec![0x4c, 1],
+        vec![0xf7],
+    ];
+    writes.extend(full.chunks(256).map(<[u8]>::to_vec));
+    writes.extend([HEADER.into(), vec![0x61, 50], vec![0xf7]]);
+    writes.extend(cleanup());
+    writes
+}
+
 #[test]
-fn store_success_matches_library_slot_50_transcript_and_reads_back() {
+fn store_success_checks_both_identities_and_reads_back_only_settings() {
     let prepared = sample();
     let ack = guitar(&[0x71]);
-    let mut direct = Fake::new(DevicePath::VariaxViaPodxt, [ack.clone()].into());
-    let mut quiet = Quiet;
-    let mut session = Session::new(&mut direct, &StorePolicy, &mut quiet);
-    let program = write::Program::new(NAME, &prepared.program).unwrap();
-    write::store(
-        &mut session,
-        variax::Preset::new(10, 4).unwrap(),
-        &program,
-        || false,
-    )
-    .unwrap();
-    assert_eq!(
-        session
-            .sent
-            .iter()
-            .map(|bytes| bytes[6])
-            .collect::<Vec<_>>(),
-        [1, 0x2a, 0x4c, 0x43, 0x61, 0x4c, 0x2a, 0]
-    );
-    assert_eq!(session.sent[4], guitar(&[0x61, 50]));
-    assert_eq!(session.sent[3].len(), 6566);
-    assert_eq!(
-        direct.writes[7..33]
-            .iter()
-            .map(Vec::len)
-            .collect::<Vec<_>>(),
-        [vec![256; 25], vec![166]].concat()
-    );
-    let expected = [metadata_requests(), direct.writes, metadata_requests()].concat();
+    let expected = [
+        metadata_requests(),
+        store_requests(&prepared),
+        metadata_requests(),
+    ]
+    .concat();
     for notices in [vec![], vec![guitar(&[0x28])]] {
         let replies = [notices, vec![ack.clone()]].concat();
         let mut fake = store_fake(&prepared, &replies, true);
+        let mut podxt = Fake::new(DevicePath::PodxtMidi, [PODXT_IDENTITY.into()].into());
+        check_podxt(&mut podxt, &mut Quiet).unwrap();
+        assert_eq!(podxt.writes, [line6_devices::identity::REQUEST]);
         run_store(&mut fake, &prepared, || false).unwrap();
         assert_eq!(fake.writes, expected);
         assert_eq!(fake.pauses, [Duration::from_millis(100); 4]);
@@ -215,31 +223,56 @@ fn store_success_matches_library_slot_50_transcript_and_reads_back() {
 }
 
 #[test]
-fn store_timeout_and_wrong_reply_stop_after_cleanup_without_retry_or_readback() {
+fn silent_timeout_waits_two_minutes_and_reports_without_more_sends() {
     let prepared = sample();
-    for (replies, message) in [
-        (vec![], "Timed out waiting"),
-        (vec![guitar(&[0x70])], "Unexpected Variax store reply"),
-    ] {
-        let mut fake = store_fake(&prepared, &replies, false);
-        let error = run_store(&mut fake, &prepared, || false).unwrap_err();
-        assert!(error.contains(message) && error.contains("Slot state is unknown."));
-        assert!(fake.writes.ends_with(&cleanup()));
-        assert_eq!(
-            fake.writes
-                .iter()
-                .filter(|chunk| chunk.as_slice() == [0x61, 50])
-                .count(),
-            1
-        );
-        assert_eq!(
-            fake.writes
-                .iter()
-                .filter(|chunk| chunk.as_slice() == line6_devices::identity::REQUEST)
-                .count(),
-            1
-        );
-    }
+    let mut fake = store_fake(&prepared, &[], false);
+    let mut quiet = Quiet;
+    let mut session = Session::new(&mut fake, &StorePolicy, &mut quiet);
+    let mut announced = false;
+    let error = attempt_store(
+        &mut session,
+        &prepared,
+        || confirm_store(STORE_CONFIRMATION),
+        |notice| {
+            announced = true;
+            assert!(notice.contains("Keep the rig powered and untouched for 2 minutes."));
+            assert!(notice.contains(SPARE_STORE_WARNING));
+        },
+        || false,
+    )
+    .unwrap_err();
+    assert!(announced);
+    assert!(error.contains("Slot state is unknown"));
+    assert!(error.contains("Device check Variax backup"));
+    assert!(error.contains("report before powering off"));
+    assert!(error.contains(SPARE_STORE_WARNING));
+    assert_eq!(
+        fake.writes,
+        [metadata_requests(), store_requests(&prepared)].concat()
+    );
+    assert_eq!(
+        fake.pauses,
+        [
+            Duration::from_millis(100),
+            Duration::from_millis(100),
+            Duration::from_millis(100),
+            Duration::from_secs(120),
+        ]
+    );
+}
+
+#[test]
+fn unexpected_reply_stops_after_cleanup_without_timeout_wait_or_retry() {
+    let prepared = sample();
+    let mut fake = store_fake(&prepared, &[guitar(&[0x70])], false);
+    let error = run_store(&mut fake, &prepared, || false).unwrap_err();
+    assert!(error.contains("Unexpected Variax store reply"));
+    assert!(error.contains("Slot state is unknown."));
+    assert_eq!(
+        fake.writes,
+        [metadata_requests(), store_requests(&prepared)].concat()
+    );
+    assert_eq!(fake.pauses, [Duration::from_millis(100); 3]);
 }
 
 #[test]
@@ -322,4 +355,28 @@ fn partial_program_write_error_terminates_and_cleans_up_without_storing() {
             .iter()
             .any(|chunk| chunk.as_slice() == [0x61, 50])
     );
+}
+
+#[test]
+fn expected_image_stamps_four_words_and_sums_through_word_1090() {
+    let mut program = [0; PROGRAM_BYTES];
+    program[767 * 3..771 * 3].fill(0xff);
+    program[1089 * 3..1090 * 3].copy_from_slice(&[0xff, 0xff, 0xfe]);
+    program[1090 * 3..1091 * 3].copy_from_slice(&[0, 0, 5]);
+    let expected = expected_stored_image(&program);
+    assert_eq!(&expected[767 * 3..771 * 3], b"\0\x000\0\x003\0\x001\0\x000");
+    assert_eq!(expected[..767 * 3], program[..767 * 3]);
+    assert_eq!(expected[771 * 3..1091 * 3], program[771 * 3..1091 * 3]);
+    assert_eq!(&expected[1091 * 3..], &[0, 0, 0xc7]);
+}
+
+#[test]
+#[ignore = "requires a private copy of the fingerprinted 3.10 archive"]
+fn stamped_slot_50_hash_matches_factory_archive() {
+    let archive = std::env::var_os("VARIAX_310_ARCHIVE").expect("set VARIAX_310_ARCHIVE");
+    let factory = FactoryReference::parse(&read(Path::new(&archive)).unwrap()).unwrap();
+    let program = canonical_store_program(factory.slots()[50].raw_program(), STORE_HASH).unwrap();
+    let stamped = expected_stored_image(&program);
+    assert_eq!(&stamped[1091 * 3..], &[0xa3, 0x21, 0x9c]);
+    assert!(matches_hash(&stamped, STORED_HASH));
 }

@@ -11,7 +11,10 @@ transaction, with its own identity checks, backup verification and G6 policy.
 The separate [Reso-5 slot 50 owner test](reso5-store-test-card.md) uses
 G7 and its own write policy. It sends only the archived factory program pinned
 to slot 50. It verifies the same-day backup and compares the current settings
-before and after the store. Its file-only check requires no host model manifest.
+before and after the store. The #225 owner run received no stored-slot reply
+through the PODxt Live. The test card documents the stamped image for future
+direct-interface verification and the two-minute wait and manual checks after
+a silent timeout. The file-only check requires no host model manifest.
 
 ## Byte and timing contract
 
