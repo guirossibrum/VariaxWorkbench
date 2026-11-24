@@ -184,7 +184,7 @@ impl VariaxEditor {
         })();
         match result {
             Ok((document, path, status)) => {
-                self.adopt_document(document, &path);
+                self.adopt_document(document, Some(&path));
                 self.status = status;
             }
             Err(error) => self.error = Some(error),

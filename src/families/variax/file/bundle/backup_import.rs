@@ -1,7 +1,10 @@
 //! Convert a Device check Variax settings backup without changing the source.
 use super::{BundleFile, PresetFile};
 use crate::{ParameterValue, PresetMetadata, midi::Identity};
-use line6_devices::family::variax::{self, backup::load_variax_library};
+use line6_devices::family::variax::{
+    self,
+    backup::{LoadedVariax, load_variax_library},
+};
 use std::{
     fs,
     io::Read,
@@ -20,44 +23,14 @@ impl BackupBundle {
     pub fn load(directory: &Path) -> Result<Self, String> {
         let directory = canonicalize(directory)?;
         let loaded = load_variax_library(&directory)?;
-        if !loaded
-            .presets
-            .iter()
-            .map(|(slot, _)| *slot)
-            .eq(variax::Preset::all())
-        {
-            return Err(format!(
-                "Incomplete Variax backup: found {} of {} stored model reply pairs.",
-                loaded.presets.len(),
-                variax::Preset::all().count()
-            ));
-        }
-
         let identity = backup_identity(&directory)?;
-        let mut names = variax::BANKS.map(str::to_owned);
         let captured_bank_names = loaded.bank_names.len();
-        for (bank, name) in loaded.bank_names {
-            names[usize::from(bank)] = name.name;
-        }
-
-        // #229: both modes retain the captured position, which may reflect the
-        // live knob. Keep the saved-tone flag and all distinct bank locations.
-        let models = loaded
-            .presets
-            .into_iter()
-            .map(|(_, metadata)| {
-                PresetFile::from_metadata(
-                    &editor_metadata(metadata),
-                    identity.product_id(),
-                    identity.version.unwrap_or_default(),
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let rows = names
-            .iter()
-            .map(String::as_str)
-            .zip(models.chunks_exact(usize::from(variax::PRESETS_PER_BANK)));
-        let bundle = BundleFile::create(true, rows)?;
+        let bundle = library_bundle(
+            loaded,
+            identity.product_id(),
+            identity.version.unwrap_or_default(),
+            false,
+        )?;
         Ok(Self {
             bundle,
             directory,
@@ -91,6 +64,77 @@ impl BackupBundle {
         }
         Ok(parent.join(name))
     }
+}
+
+impl BundleFile {
+    /// Build a complete editor bank from a live sweep. The backup importer
+    /// alone may supply Workbench defaults for missing bank names.
+    pub fn from_refreshed_variax(
+        loaded: LoadedVariax,
+        identity_reply: &[u8],
+    ) -> Result<Self, String> {
+        let identity = Identity::parse(identity_reply)?;
+        if identity.product_id() != 0x0007_0004 || identity.version != Some(0x0310_0000) {
+            return Err("Variax Refresh requires Variax 300/600 firmware 3.10.".into());
+        }
+        library_bundle(
+            loaded,
+            identity.product_id(),
+            identity.version.unwrap_or_default(),
+            true,
+        )
+    }
+}
+
+fn library_bundle(
+    loaded: LoadedVariax,
+    product_id: u32,
+    version: u32,
+    require_all_names: bool,
+) -> Result<BundleFile, String> {
+    if !loaded
+        .presets
+        .iter()
+        .map(|(slot, _)| *slot)
+        .eq(variax::Preset::all())
+    {
+        return Err(format!(
+            "Incomplete Variax backup: found {} of {} stored model reply pairs.",
+            loaded.presets.len(),
+            variax::Preset::all().count()
+        ));
+    }
+
+    let mut names = variax::BANKS.map(str::to_owned);
+    let mut captured = [false; variax::BANKS.len()];
+    for (bank, name) in loaded.bank_names {
+        let bank = usize::from(bank);
+        let seen = captured
+            .get_mut(bank)
+            .ok_or("Variax bank name index is out of range.")?;
+        if std::mem::replace(seen, true) {
+            return Err("Duplicate Variax bank name reply.".into());
+        }
+        names[bank] = name.name;
+    }
+    if require_all_names && captured.contains(&false) {
+        return Err("Variax Refresh did not return all 12 bank names.".into());
+    }
+
+    // #229: both modes retain the captured position, which may reflect the
+    // live knob. Keep the saved-tone flag and all distinct bank locations.
+    let models = loaded
+        .presets
+        .into_iter()
+        .map(|(_, metadata)| {
+            PresetFile::from_metadata(&editor_metadata(metadata), product_id, version)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let rows = names
+        .iter()
+        .map(String::as_str)
+        .zip(models.chunks_exact(usize::from(variax::PRESETS_PER_BANK)));
+    BundleFile::create(true, rows)
 }
 
 fn canonicalize(path: &Path) -> Result<PathBuf, String> {
@@ -145,6 +189,51 @@ mod tests {
         document::{EditorDocument, save_new},
         edit::WIRING,
     };
+
+    #[test]
+    fn live_conversion_requires_a_complete_sweep_and_preserves_the_captured_tone_modes() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = synthetic_backup::make_backup(root.path(), "sweep", 60, 4);
+        let identity = fs::read(directory.join("identity.syx")).unwrap();
+        let load = || {
+            let mut loaded = load_variax_library(&directory).unwrap();
+            loaded.bank_names = (0..12)
+                .map(|bank| {
+                    (
+                        bank,
+                        variax::BankName {
+                            name: format!("Captured {bank}"),
+                            reply: vec![],
+                        },
+                    )
+                })
+                .collect();
+            loaded
+        };
+        let mut partial = load();
+        partial.presets.pop();
+        assert!(BundleFile::from_refreshed_variax(partial, &identity).is_err());
+        let partial = load_variax_library(&directory).unwrap();
+        assert!(BundleFile::from_refreshed_variax(partial, &identity).is_err());
+
+        let file = BundleFile::from_refreshed_variax(load(), &identity).unwrap();
+        assert_eq!(file.banks().len(), 12);
+        for (bank, row) in file.banks().iter().enumerate() {
+            assert_eq!(row.name, format!("Captured {bank}"));
+            assert_eq!(row.presets().len(), 5);
+        }
+        let presets = file.banks()[0].presets();
+        for (slot, saved, position) in [(0, 0, 0.25_f32), (1, 1, 0.25), (2, 1, 0.75)] {
+            assert_eq!(
+                presets[slot].parameter(WIRING, 0x200005).unwrap().bits,
+                saved
+            );
+            assert_eq!(
+                presets[slot].parameter(WIRING, 0x200004).unwrap().bits,
+                position.to_bits()
+            );
+        }
+    }
 
     #[test]
     fn full_backup_keeps_slot_order_names_identity_and_captured_tone_state() {
