@@ -400,6 +400,11 @@ impl PresetFile {
         self.device_id
     }
 
+    /// The Variax 300/600 and 500/700 share the legacy electric preset format.
+    pub fn is_legacy_electric(&self) -> bool {
+        matches!(self.device_id, 0x0007_0000 | 0x0007_0004)
+    }
+
     /// PODxt Live tones share the FORM/L6PA container and are not guitar presets.
     pub fn is_podxt_live_target(&self) -> bool {
         self.device_id == 0x0003_000a
@@ -505,7 +510,7 @@ impl PresetFile {
     }
 
     fn require_legacy_electric(&self) -> Result<(), String> {
-        if !matches!(self.device_id, 0x70000 | 0x70004) {
+        if !self.is_legacy_electric() {
             return Err("parameter editing is limited to legacy electric Variax presets".into());
         }
         Ok(())

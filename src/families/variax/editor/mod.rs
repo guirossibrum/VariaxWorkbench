@@ -2,6 +2,8 @@ use super::*;
 use serde::Deserialize;
 
 mod guitar;
+mod slot_files;
+use slot_files::SlotReplacement;
 mod tuning_presets;
 use tuning_presets::TuningDialog;
 mod value_format;
@@ -56,6 +58,18 @@ fn load_catalog() -> Vec<ModelArt> {
         .expect("bundled model catalog")
 }
 
+fn model_filename_stem(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == ' ' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 /// Original preference key `variax_editor.auto_select_control_values`.
 /// A missing file stays on. `1` is on and `0` is off.
 fn load_auto_select(path: &Path) -> bool {
@@ -108,6 +122,7 @@ pub(super) struct VariaxEditor {
     preferences_path: Option<PathBuf>,
     link_tuning_mix: bool,
     tuning_dialog: Option<TuningDialog>,
+    slot_replacement: Option<SlotReplacement>,
     #[cfg(test)]
     bank_slots: HashMap<usize, Rect>,
     #[cfg(test)]
@@ -128,6 +143,8 @@ pub(super) struct VariaxEditor {
     auto_select_checkbox: Option<Rect>,
     #[cfg(test)]
     tuning_widgets: HashMap<&'static str, Rect>,
+    #[cfg(test)]
+    slot_file_buttons: HashMap<&'static str, Rect>,
     #[cfg(test)]
     tuning_preset_rows: HashMap<String, Rect>,
     read_receiver: Option<
@@ -160,6 +177,7 @@ impl VariaxEditor {
             preferences_path: defaults.preferences.clone(),
             link_tuning_mix: false,
             tuning_dialog: None,
+            slot_replacement: None,
             #[cfg(test)]
             bank_slots: HashMap::new(),
             #[cfg(test)]
@@ -180,6 +198,8 @@ impl VariaxEditor {
             auto_select_checkbox: None,
             #[cfg(test)]
             tuning_widgets: HashMap::new(),
+            #[cfg(test)]
+            slot_file_buttons: HashMap::new(),
             #[cfg(test)]
             tuning_preset_rows: HashMap::new(),
             read_receiver: None,
@@ -373,18 +393,7 @@ impl VariaxEditor {
         let Some(document) = &mut self.document else {
             return false;
         };
-        let name: String = document
-            .preset()
-            .name()
-            .chars()
-            .map(|c| {
-                if c.is_alphanumeric() || c == ' ' || c == '-' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect();
+        let name = model_filename_stem(document.preset().name());
         let extension = document.extension();
         let name = format!("{name} - edited.{extension}");
         if let Some(path) = services.dialogs.save(&name, extension) {
@@ -1024,8 +1033,10 @@ impl VariaxEditor {
             });
             return;
         }
-        let available = !self.is_reading() && self.pending.is_none();
+        let available =
+            !self.is_reading() && self.pending.is_none() && self.slot_replacement.is_none();
         self.guitar_header(ui, available);
+        self.slot_file_actions(services, ui, available);
         let editable = self
             .document
             .as_ref()
@@ -1179,6 +1190,7 @@ impl FamilyTab for VariaxEditor {
     fn local_prompt(&mut self, ctx: &egui::Context, services: &mut EditorServices<'_>) {
         self.variax_pending_dialog(services, ctx);
         self.tuning_presets_dialog(ctx);
+        self.slot_replacement_dialog(services, ctx);
     }
     fn busy(&self) -> bool {
         self.is_reading()
@@ -1187,7 +1199,7 @@ impl FamilyTab for VariaxEditor {
         self.cancel_read();
     }
     fn blocking_prompt(&self) -> bool {
-        self.pending.is_some() || self.tuning_dialog.is_some()
+        self.pending.is_some() || self.tuning_dialog.is_some() || self.slot_replacement.is_some()
     }
     fn actions(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
         if ui.button("Replace file in this tab…").clicked() {
@@ -1225,10 +1237,10 @@ impl ProductFamily for Family {
                     .iter()
                     .flat_map(|bank| bank.presets())
                     .peekable();
-                patches.peek().is_some() && patches.all(|patch| patch.device_id() == 0x0007_0004)
+                patches.peek().is_some() && patches.all(PresetFile::is_legacy_electric)
             })
         } else {
-            PresetFile::parse(bytes.to_vec()).is_ok_and(|patch| patch.device_id() == 0x0007_0004)
+            PresetFile::parse(bytes.to_vec()).is_ok_and(|patch| patch.is_legacy_electric())
         }
     }
 
