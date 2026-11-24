@@ -1,6 +1,6 @@
 # Product families and application shell
 
-**Step 1 proposal for owner review.** Source inventory at `ac56507`. Each
+**Step 1 approved.** Source inventory at `80934fd`, after #207, #177 and #181. Each
 family owns its editor, files, validation and device behavior. The shell owns
 navigation, the tab list, global commands and status display. The editor
 layouts, file semantics and edit transactions carry forward. Artwork selection
@@ -95,12 +95,12 @@ points remain available to current callers.
 | `pod_hd500x.rs`, `pod_hd_independent.rs`, `rig/hd500x_audio.rs`, `rig/windows_descriptor.rs` | `families/hd500x/reference/`. Its discovery registration reuses the static HD500X USB match. Existing cross-profile descriptor inspection retains its offline entry point. |
 | `usb.rs`, `read_session.rs`, `identity_stage.rs` | Variax live ownership for the legacy USB/read adapters and step 2 exchange. Keep the three current paths through Step 2. Device check reports continue to consume identity exchange results. |
 | `device_probe.rs` | `tools/device_check/` owns the Device check state machine, consent and rehearsal backend. `app/detection/` reuses its G1 metadata reader and synthetic source through `OsMetadataSource`. |
-| `live_families.rs`, `library_backup.rs`, `manual_check.rs`, `probe_report.rs` | `tools/device_check/` owns combined read and backup orchestration, guided checks and reports. Family-specific read/backup procedures belong behind the existing family APIs. `library_backup.rs` stays at its present path in Step 2. |
+| `live_families.rs`, `library_backup.rs`, `manual_check.rs`, `probe_report.rs` | `tools/device_check/` owns combined read and backup orchestration, guided checks and reports. Family-specific read/backup procedures belong behind the existing family APIs. After #207, the Variax wrapper reports bank-name coverage and release failure and records partial sweeps. Keep those policies and reports at the current paths during Step 2. |
 | `recording.rs`, `recording/{aiff,capture,clock}.rs`, `recording/adapters/*` | `tools/recording/` owns panel and recorder. Keep current offline API paths and feature/OS boundaries. Opening the panel does not start capture. |
 | `midi.rs`, `linux_transport.rs` | `shared/transport/` owns legacy framing/identity primitives and the shared Linux-driver research record. |
 | `firmware.rs` and `firmware/*`, `provenance.rs` | Existing offline firmware and provenance APIs. Shared container parsing and validation serve target-specific applicability records. |
 | `rig.rs`, `rig/{backend,capability,model,registry,session,tests}.rs` | Existing offline `rig/` compatibility API. Family file calls delegate to family-owned implementations without changing the static capability matrix as part of this work. |
-| `hardware_gates.rs`, `simulation/*` | Existing gate definitions and offline receiver simulator. The discovery simulator is a separate source for the shell. |
+| `hardware_gates.rs`, `simulation/*` | Existing gate definitions and offline receiver simulator, including the test-only `simulation/write_transcript.rs` Workbench replay. The discovery simulator is a separate source for the shell. |
 
 The `tests/*.rs` integration contracts and `tests/fixtures/**` stay at their
 existing paths. Unit tests follow their owning code. Cross-panel regressions
@@ -220,9 +220,10 @@ claim and reports ambiguous, rejected or unsupported files without
 replacing any open work. Preserve family errors after admission and the
 CLI path and Variax startup panel option. Each successful open creates its
 own offline tab. New blank tabs reuse each family's existing example or
-empty-library initialization. The existing clean Variax example can remain
-the initial offline workspace when no file or device is present. The
-composition root supplies that default to the shell.
+empty-library initialization. With no device or file at startup, show an empty shell with a start panel
+for **Open file**, per-family **New offline tab**, and **Detect devices**.
+**New offline tab → Variax (example banks)** opens the example banks.
+The existing startup option continues to supply the example to current tests.
 
 The top bar lists tabs and offers **Open file**, **New offline tab**,
 **Detect devices**, **Device check**, **Test recording** and **Help**.
@@ -301,15 +302,14 @@ duplicating it.
   Detection defers while busy, rechecks the generation and preflight when
   ownership is available, and neither queues repeated identities per
   frame nor tries to preempt the holder.
-- A process-local lock covers only one instance. Use the same OS-backed
-  lock in app instances and participating owner probes. The owner probe
+- A process-local lock covers only one instance. Step 3 delivers the same OS-backed lock in app instances and in
+  `tools/reso5-test` and `tools/variax-probe`. The owner probe
   holds it across the entire multi-stage procedure, including pauses and
   restore, with one lock order for both logical interfaces on the bridge.
   An exclusive OS interface claim alone cannot protect pauses in a
   legacy multi-stage probe. Until the owner probes share the guard,
   close the GUI and let its workers and cleanup finish before running
-  those procedures. Resolve that coordination boundary before enabling
-  background identity in a distributed build. A busy or uncertain
+  those procedures. Automatic identity ships in the same step as the shared interlock. A busy or uncertain
   endpoint defers the attempt, and cleanup failure suspends further
   identity on that attachment and reports the failure.
 
@@ -327,25 +327,23 @@ device tabs stay dismissed for that attachment generation, so polling does
 not immediately reopen them. Offline tabs are independent of presence events.
 
 Variax VDI insertion/removal with USB still connected is a separate case.
-The USB descriptor and interface-1 driver binding describe the bridge and
-do not prove guitar presence. Support a logical child change from a reliable
-source event or a permitted identity refresh. For the initial implementation,
-use a one-shot identity on bridge attach and allow an explicit safe refresh
-through the existing scoped procedure. Until a passive VDI signal or an
-approved periodic policy is available, show the last verified guitar
-observation as such. An explicit refresh with no reply makes the guitar
-unavailable, without treating a busy endpoint or an unreadable OS snapshot
-as confirmed removal.
+The USB descriptor and interface-1 driver binding describe the bridge.
+Run one automatic identity exchange per eligible bridge appearance, plus
+an explicit **Refresh guitar** action on the bridge tab and the guitar
+tab when present. Both use the same preflight, guard and bounded exchange.
+The app does no periodic identity polling. A completed refresh with no reply
+makes the guitar unavailable. A busy endpoint or unreadable OS snapshot
+leaves the last observation uncertain. The PODxt `03 11` “Variax connected”
+message is a possible future passive signal. Its use for presence monitoring
+is unverified.
 
 ## Delivery and verification
 
-1. **Design.** Commit this document alone and stop for owner review. The
-   family extraction, application shell and device-crate tidy remain
-   pending implementation. The baseline is 725 passing app tests (547
-   library, 141 GUI, 26 integration, 11 owner-probe tests using fake data)
-   and 75 passing device-crate tests with one ignored. This step is a plan
-   for the README status ledger. Record the implementation status there
-   when the approved work changes it.
+1. **Design.** The owner approved the design on 2026-11-24. Before the
+   mechanical moves, rebase onto `80934fd` and record the clarified
+   startup, guitar refresh and shared-operation ownership decisions here.
+   The rebased baseline is 736 passing app tests and 82 passing
+   device-crate tests.
 2. **Mechanical moves after approval.** Extract one area per commit in this
    order: PODxt panel ([#141]), HD500X panel ([#142]), recording panel
    ([#143]), and the PODxt/HD file split ([#144]). Move the Variax panel and
@@ -357,8 +355,8 @@ as confirmed removal.
    `src/library_backup.rs`, `src/usb.rs`, `src/read_session.rs`, `crates/**`
    and `tools/**` at their current paths and untouched in this step.
 3. **App shell after approval.** Introduce the registry and top bar with
-   separate HD500X tabs. Wire the detection and operation ownership
-   adapters, keeping current editing and shared tool workflows. Headless
+   separate HD500X tabs. Wire detection and the cross-process lock, including
+   both owner probes, while keeping current editing and shared tool workflows. Headless
    cases cover zero devices, PODxt only, PODxt plus Variax, PODxt plus
    manually detected HD500X plus Variax, USB and simulated VDI hot-plug,
    a dirty disconnect, same-family offline tabs, file dispatch, declined
@@ -394,20 +392,6 @@ counts and keep test counts unchanged for move-only steps. Shell tests add
 coverage to the existing suites. The branch keeps the build number and
 hardware gate constants. Record completed scope and verified counts in
 README as implementation lands. The repository tracking parent is [#121].
-
-## Decisions for review
-
-- With the bridge left connected, the proposed first release refreshes
-  Variax identity on an explicit request or a reliable attachment event.
-  A periodic VDI identity check would require an agreed trigger and
-  cadence because it can detach interface 1.
-- Decide whether Step 3 should add the shared guard to the owner probes
-  as part of enabling automatic detection, or ship that integration in
-  the same owner release from a separate change. The existing probes
-  cannot signal their inter-stage pauses to the current app.
-- The proposal keeps the clean Variax practice workspace at startup when
-  no file or device is present. An empty shell with **Open file** and
-  **New offline tab** is also possible if preferred.
 
 [#121]: https://github.com/guirossibrum/VariaxWorkbench/issues/121
 [#140]: https://github.com/guirossibrum/VariaxWorkbench/issues/140
