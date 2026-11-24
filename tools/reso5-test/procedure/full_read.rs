@@ -65,24 +65,31 @@ pub fn capture<L: Link>(
         .map_err(|_| "Incomplete full buffer.".into())
 }
 
-/// Compare every word while the firmware work identifies which words can
-/// change in RAM. A differing live word alone cannot identify a flash change.
+/// Compare all words, reporting the two words with unresolved tone-position
+/// effects separately from other findings (#181 and #234).
 pub fn summarize(factory: &[u8; PROGRAM_BYTES], captured: &FullBuffer) -> Vec<String> {
-    let mut differences = Vec::new();
+    let mut lines = Vec::new();
+    let mut findings = 0;
+    let mut unknown = 0;
     for (index, (&[a, b, c], &active)) in
         factory.as_chunks::<3>().0.iter().zip(captured).enumerate()
     {
         let expected = u32::from_be_bytes([0, a, b, c]);
         if active != expected {
-            differences.push(format!(
-                "Word {index}: active 0x{active:06X}, factory 0x{expected:06X}"
+            let status = if matches!(index, 871 | 872) {
+                unknown += 1;
+                "unknown, not a failure"
+            } else {
+                findings += 1;
+                "finding"
+            };
+            lines.push(format!(
+                "Word {index}: active 0x{active:06X}, factory 0x{expected:06X} ({status})"
             ));
         }
     }
-    let summary = format!(
-        "Compared {BUFFER_WORDS} active words against factory Reso-5. {} differing words (no live-word exclusions).",
-        differences.len()
-    );
-    differences.push(summary);
-    differences
+    lines.push(format!(
+        "Compared {BUFFER_WORDS} active words against factory Reso-5. Findings: {findings}. Unknown differences: {unknown}."
+    ));
+    lines
 }

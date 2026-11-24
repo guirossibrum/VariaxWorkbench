@@ -9,6 +9,8 @@ use crate::{
 use std::time::Duration;
 
 pub const BUFFER_WORDS: u16 = 1092;
+// Monkey enables the same PODxt Live large-buffer relay, then waits 1 s (#232).
+const BRIDGE_SETTLE: Duration = Duration::from_secs(1);
 const REPLY_WINDOW: Duration = Duration::from_secs(10);
 
 /// An in-bounds, nonempty range in the active preset buffer, in words.
@@ -107,7 +109,7 @@ pub fn read_spans<L: Link>(
     if stopping() {
         return Err("Variax buffer read cancelled or log unavailable.".into());
     }
-    with_bridged_read_session(session, |session| {
+    with_bridged_read_session(session, BRIDGE_SETTLE, |session| {
         for &span in spans {
             if stopping() {
                 return Err("Variax buffer read cancelled or log unavailable.".into());

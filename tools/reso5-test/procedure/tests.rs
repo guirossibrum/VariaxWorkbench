@@ -23,6 +23,7 @@ struct Fake {
     pauses: Vec<Duration>,
     inbox: VecDeque<Vec<u8>>,
     writes: Vec<Vec<u8>>,
+    write_times: Vec<Duration>,
     chunks: Cell<usize>,
     fail_at: Option<usize>,
     cancel_on_write: Option<CancelOnWrite>,
@@ -46,6 +47,7 @@ impl Fake {
             pauses: vec![],
             inbox,
             writes: vec![],
+            write_times: vec![],
             chunks: Cell::new(0),
             fail_at: None,
             cancel_on_write: None,
@@ -61,6 +63,7 @@ impl Link for Fake {
     fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
         let index = self.writes.len();
         self.writes.push(bytes.into());
+        self.write_times.push(self.clock);
         if let Some(trigger) = &self.cancel_on_write
             && self.writes.ends_with(&trigger.chunks)
         {

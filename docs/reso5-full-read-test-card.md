@@ -19,16 +19,18 @@ Pass `--full-read-card` to print this card.
 
 ## Draft owner procedure
 
-1. On the Variax, select **Reso, position 5** by hand. Close any other editor
-   or device check. Keep the selector, knobs and PODxt channel steady during
-   capture.
+1. Select **Reso, position 5** by hand on the Variax before running the test.
+   The tool sends no program change. Close any other editor or device check.
+   Keep the selector, knobs and PODxt channel steady during capture.
 2. After approval, use the reviewed owner build. Run the offline command
    above with `full-read` in place of `--check full-read`.
 3. The tool checks live PODxt Live 3.01 identity on its ALSA MIDI port, then
    Variax 300/600 3.10 identity on the bridge. A lone orphaned identity reply
    tail can trigger the existing one-time identity retry.
-4. The tool sends bridge on (`03 23 01`), guitar session on (`2A 01`), and
-   waits 100 ms before the first read. Every `0x3C` request starts at zero.
+4. The tool sends bridge on (`03 23 01`) and waits **1,000 ms**, matching
+   Line 6 Monkey's large-buffer enable. It then sends guitar session on
+   (`2A 01`) and waits 100 ms before the first read. Every `0x3C` request
+   starts at zero. [Monkey relay trace](podxt-variax-relay.md).
 
    | Words | Expected reply bytes, including `F7` |
    | ---: | ---: |
@@ -43,27 +45,31 @@ Pass `--full-read-card` to print this card.
    The raw transport log also records incomplete and malformed traffic.
    After the last request or first failure, the tool attempts guitar session
    off (`2A 00`) and bridge release (`03 23 00`), then releases USB.
-6. A complete comparison prints every differing word with its index, active
-   value and factory value. This draft includes all 1,092 words. The result
-   describes the active buffer and awaits the firmware findings below before
-   it can be interpreted as evidence about a stored slot.
+6. The tool compares the active buffer with the factory Reso-5 program. It
+   prints each differing word with its index, active value and factory value.
+   Differences at words 871–872 are **unknown, not a failure**. Every other
+   differing word is a finding to report.
 
-## Stop rules
+The firmware trace shows that a valid-checksum load copies all 1,092 words.
+Reload restores the flag in word 1 before the read can start, and the traced
+tone and volume paths leave the program words unchanged. Words 871–872 contain
+tone-position metadata whose live behavior remains unresolved. The trace also
+leaves two conditional write paths unbounded, so report findings rather than
+attributing them to flash. [Full-buffer firmware findings](firmware-variax-dispatch.md#full-buffer-0x3c-read).
+
+## Stop and recovery
 
 Stop at the first incomplete, malformed or timed-out reply, file-save error,
 or transport error. Keep the log and the completed reply files. Ctrl+C takes
-effect between requests so the host can continue draining an in-flight reply
-through `F7` or its deadline. A host timeout and attempted cleanup leave the
-device's receive and audio state unresolved. Report the first failed step and
-wait for the reviewed recovery procedure before further device interaction.
+effect between requests so the host can drain an in-flight reply through
+`F7` or its deadline.
 
-## Firmware TODOs before approval
+If a step stalls, the guitar's knobs may freeze while sound continues.
+The firmware trace shows that this path touches no flash. Cleanup attempts
+may leave messages queued while the parser is stalled. [Stall trace](firmware-variax-dispatch.md#a-reply-that-stops-partway).
 
-- Confirm that loading a slot with a valid checksum copies all 1,092 words
-  into the active buffer. Identify the exact reload, tone, volume and other
-  live or transient words to exclude from a stored-image comparison.
-- Confirm reply pacing, what a stalled response leaves in the parser and
-  audio path, whether cleanup reaches the guitar, and the recovery procedure.
-  Establish whether a power cycle recovers without a flash effect.
-
-The current static findings and open questions are tracked in #234.
+After the tool exits and releases USB, unplug the **guitar's VDI cable** for
+**10 seconds**, then reconnect it. The owner must check that the guitar
+responds to its knobs and selector and that sound is normal. Report the failed
+step and the outcome before any retry. This recovery is based on resetting the
+guitar's RAM state and has yet to be observed for this stall.
