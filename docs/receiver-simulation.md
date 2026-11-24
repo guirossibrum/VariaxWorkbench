@@ -96,6 +96,37 @@ freshness or atomicity for different stale, reordered or mixed replies, and it
 does not turn current metadata into a complete backup. No additional request or
 opcode was added, and physical access remains disabled.
 
+## Workbench application write transcript replay
+
+The [#175 differential harness](variax-write-transactions.md#offline-reproduction)
+replays its 180 original Workbench transcripts (60 each for edit, store and bank
+name). A test-only reader reassembles the original send fragments and routes
+session on/off (`0x2A`) through the existing virtual control model. The fixture
+starts identified because #175 starts with a known target. The replay checks
+the host wire shape and requires a complete `0x43` in the same transaction
+before `0x61`. A short full payload, wrong count, absent `F7` and store without
+a preceding full upload are rejected by the replay. These are host transaction
+checks. The firmware's handling of these failures is unknown.
+
+The application-mode updater receiver reports `WrongStage` for all six write
+opcodes on every replay that contains them. The
+[3.10 dispatcher inventory](firmware-variax-dispatch.md) establishes entry
+points and traces `0x2A` and `0x3C`. The write handler semantics remain outside
+this model:
+
+| Opcode | Replay scope | Receiver gap |
+| --- | --- | --- |
+| `0x43` full buffer | Count 1,092, exact body length and nibble encoding | Edit-buffer application, checksum handling and partial-frame effects |
+| `0x3B` live difference | Nibble and word alignment | Run interpretation, including the original terminal order, and DSP application |
+| `0x4C` DSP control | Single on/off byte | DSP state and audio |
+| `0x61` store | One slot byte in 0–59 and prior full frame | Flash operations, `0x71` generation, interruption and recovery |
+| `0x6C` / `0x6D` bank name | 18-byte set and empty read body | Bank selection, name persistence and reply |
+
+The PODxt bridge messages, tone CC and bank-select Program Change remain
+outside receiver emulation. Timing and original chunk boundaries are verified
+by the existing #175 differential comparison. Store and bank-name replies in
+that comparison are synthetic.
+
 ## Validation scope
 
 Sixteen module tests include independent host-reference hashes at word/chunk

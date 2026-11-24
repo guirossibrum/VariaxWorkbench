@@ -117,11 +117,14 @@ def verify(args, directory):
     for path in sorted(directory.glob('java-*.txt')):
         output = path.with_name(path.name.replace('java-', 'reference-', 1))
         output.write_text(chunker.transcript(path.read_text()))
+    env = {**os.environ, 'VARIAX_WRITE_REFERENCE': str(directory)}
     subprocess.run(['cargo', 'test', '--offline', '--manifest-path',
                     'crates/line6-devices/Cargo.toml', 'original_transcripts',
-                    '--', '--ignored'], cwd=ROOT, check=True,
-                   env={**os.environ, 'VARIAX_WRITE_REFERENCE': str(directory)})
+                    '--', '--ignored'], cwd=ROOT, check=True, env=env)
     print('180 exact transcript comparisons (60 models × edit, store, and bank).')
+    subprocess.run(['cargo', 'test', '--offline', '--lib', 'original_write_transcripts',
+                    '--', '--ignored'], cwd=ROOT, check=True, env=env)
+    print('180 transcript replays with explicit receiver-model gaps.')
 
 
 def main():

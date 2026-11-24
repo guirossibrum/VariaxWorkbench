@@ -182,3 +182,6 @@ impl Candidate {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod write_transcript;

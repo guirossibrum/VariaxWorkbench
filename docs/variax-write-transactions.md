@@ -76,6 +76,11 @@ library's bank-name read alone emits no Program Change.
   byte for byte. A store acknowledgement alone cannot verify the result
   or prove recovery.
 
+The [receiver replay](receiver-simulation.md#workbench-application-write-transcript-replay)
+checks the #175 host command shapes and rejection cases for #25. Session on/off
+runs through virtual control. Application write handlers remain outside the
+updater receiver, including store acknowledgement and flash recovery.
+
 ## Offline reproduction
 
 From this worktree, use the local artifact root from
