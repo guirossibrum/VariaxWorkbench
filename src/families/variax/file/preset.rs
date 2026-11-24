@@ -92,6 +92,14 @@ impl PresetFile {
         Self::from_metadata(&metadata, 0x0007_0000, 0)
     }
 
+    pub fn default_legacy_model_with_author(author: &str) -> Result<Self, String> {
+        let mut model = Self::default_legacy_model()?;
+        if !author.is_empty() {
+            model.set_metadata(PresetText::Author, author)?;
+        }
+        Ok(model)
+    }
+
     /// Construct a portable model/settings file from a current-preset metadata
     /// read. This does not contain the guitar's full DSP or firmware memory.
     pub fn from_metadata(

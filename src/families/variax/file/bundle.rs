@@ -57,7 +57,11 @@ fn write_chunk(bytes: &mut Vec<u8>, tag: &[u8; 4], payload: &[u8]) -> Result<(),
 impl BundleFile {
     /// Workbench's fixed Variax template has 12 banks with 5 default models each.
     pub fn new_default_bundle() -> Result<Self, String> {
-        let model = PresetFile::default_legacy_model()?;
+        Self::new_default_bundle_with_author("")
+    }
+
+    pub fn new_default_bundle_with_author(author: &str) -> Result<Self, String> {
+        let model = PresetFile::default_legacy_model_with_author(author)?;
         let models = [&model; 5];
         Self::create(true, DEFAULT_BANKS.map(|name| (name, models)))
     }
