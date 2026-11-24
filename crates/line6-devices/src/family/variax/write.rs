@@ -159,12 +159,19 @@ impl WriteRequest<'_> {
     fn send_until<L: Link>(
         self,
         session: &mut Session<L>,
-        stopping: impl FnMut() -> bool,
+        mut stopping: impl FnMut() -> bool,
     ) -> Result<(), String> {
+        let check_stop = || {
+            if stopping() {
+                Err("Variax transfer stopped.")
+            } else {
+                Ok(())
+            }
+        };
         match self.1 {
             Message::Bridge(_) | Message::Tone(_) | Message::SelectBank(_) => session.send(self),
-            Message::Full(_) => session.send_chunked_sysex(self, BRIDGE_CHUNK, None, stopping),
-            _ => session.send_chunked_sysex(self, BRIDGE_CHUNK, Some(HEADER.len() + 1), stopping),
+            Message::Full(_) => session.send_chunked_sysex(self, BRIDGE_CHUNK, None, check_stop),
+            _ => session.send_chunked_sysex(self, BRIDGE_CHUNK, Some(HEADER.len() + 1), check_stop),
         }
     }
 }

@@ -368,7 +368,7 @@ fn read_current_bank_name<L: Link>(session: &mut Session<L>) -> Result<BankName,
         VariaxRequest::BankName,
         BRIDGE_CHUNK,
         Some(HEADER.len() + 1),
-        || false,
+        || Ok(()),
     )?;
     match session.wait_for(BANK_REPLY_WINDOW, is_bank_name_reply, false)? {
         Wait::Found(reply) => BankName::from_reply(reply),

@@ -141,15 +141,15 @@ impl<'a, L: Link> Session<'a, L> {
         Ok(())
     }
 
-    /// Stream one permitted SysEx message using the original bridge's maximum
-    /// chunk size. A separate header length keeps the header and terminator
+    /// Stream one permitted SysEx message using the caller's chunk size. A
+    /// separate header length keeps the header and terminator
     /// in their own sends. On a partial send, attempt EOX before cleanup.
     pub(crate) fn send_chunked_sysex<R: Request>(
         &mut self,
         request: R,
         chunk_size: usize,
         separate_header_len: Option<usize>,
-        mut stopping: impl FnMut() -> bool,
+        mut check_stop: impl FnMut() -> Result<(), &'static str>,
     ) -> Result<(), String> {
         self.check_request(request)?;
         let bytes = request.bytes();
@@ -165,10 +165,9 @@ impl<'a, L: Link> Session<'a, L> {
             .into_iter()
             .flat_map(|segment| segment.chunks(chunk_size));
         for (index, chunk) in chunks.enumerate() {
-            let (result, possibly_partial) = if stopping() {
-                (Err("Variax transfer stopped.".into()), index != 0)
-            } else {
-                (self.link.write(chunk), true)
+            let (result, possibly_partial) = match check_stop() {
+                Err(message) => (Err(message.into()), index != 0),
+                Ok(()) => (self.link.write(chunk), true),
             };
             if let Err(error) = result {
                 if possibly_partial && let Err(end) = self.link.write(&[0xf7]) {
