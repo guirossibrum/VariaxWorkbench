@@ -1,6 +1,9 @@
 use super::*;
 use variax_workbench::pod_preset::Library;
 
+mod parameter_panel;
+use parameter_panel::ParameterPanel;
+
 #[cfg(test)]
 pub(super) mod tests;
 
@@ -276,6 +279,9 @@ fn sample_pod_bundle(tones: &[Vec<u8>]) -> Vec<u8> {
 }
 
 pub(super) struct PodxtEditor {
+    parameter_panel: ParameterPanel,
+    #[cfg(test)]
+    table_view_in_test: bool,
     pub(super) pod_library: Library,
     pub(super) pod_bundle: Option<pod_preset::PodBundleLibrary>,
     pub(super) pod_selected: Option<usize>,
@@ -376,6 +382,9 @@ pub(super) struct PodxtEditor {
 impl PodxtEditor {
     fn new() -> Self {
         Self {
+            parameter_panel: ParameterPanel::default(),
+            #[cfg(test)]
+            table_view_in_test: false,
             pod_library: Library::default(),
             pod_bundle: None,
             pod_selected: None,
@@ -795,6 +804,7 @@ impl PodxtEditor {
         if let Some(index) = self.pod_library.first_dirty() {
             return match self.pod_library.revert_unsaved(index) {
                 Ok(()) => {
+                    self.parameter_panel.clear_tone_history(index);
                     let staged_amp = self.pod_amp_model_pending;
                     self.refresh_selected_pod_name();
                     self.restore_staged_amp_if_origin_matches(staged_amp);
@@ -862,6 +872,18 @@ impl PodxtEditor {
         }
     }
 
+    // Retain the former widgets for the existing compatibility regression suite.
+    fn legacy_control_widgets(&self) -> bool {
+        #[cfg(test)]
+        {
+            !self.table_view_in_test
+        }
+        #[cfg(not(test))]
+        {
+            false
+        }
+    }
+
     pub(super) fn pod_window(&mut self, services: &mut EditorServices<'_>, ui: &mut egui::Ui) {
         #[cfg(test)]
         {
@@ -904,7 +926,7 @@ impl PodxtEditor {
                 ui.label(pod_preset::OFFLINE_BANNER);
                 ui.label(pod_preset::NOT_GUITAR);
                 ui.label(pod_preset::NOT_SENT);
-                ui.label(pod_preset::PAYLOADS_NOT_DECODED);
+                if self.legacy_control_widgets() { ui.label(pod_preset::PAYLOADS_NOT_DECODED); }
                 // Keep the editor status on one line, with the full text on hover.
                 ui.add(egui::Label::new(&self.pod_message).truncate())
                     .on_hover_text(&self.pod_message);
@@ -914,6 +936,7 @@ impl PodxtEditor {
                     self.pod_pedalboard(ui);
                 });
                 ui.separator();
+                if self.legacy_control_widgets() {
                 let reverb_model_state = self.pod_selected.and_then(|index| {
                     self.pod_library.tone(index).and_then(|tone| {
                         (tone.container() == pod_preset::ContainerKind::L6pa).then(|| {
@@ -968,6 +991,7 @@ impl PodxtEditor {
                     } else {
                         ui.label(format!("Reverb ID · current {} (uneditable: requires one recognized primary or fallback model)", current.map_or_else(|| "unavailable".into(), |id| format!("{id:08x}"))));
                     }
+                }
                 }
                 let membership_selection = self.pod_selected.and_then(|index| {
                     self.pod_bundle.as_ref().and_then(|bundle| {
@@ -1030,7 +1054,7 @@ impl PodxtEditor {
                         let slot_kind = if folder_editable { "Folder" } else { "Fixed bank" };
                         ui.label(format!("{slot_kind} slot {} of {count}", preset + 1));
                     }
-                    if let Some(index) = self.pod_selected {
+                    if self.legacy_control_widgets() && let Some(index) = self.pod_selected {
                         let _response = ui.menu_button("Model flags…", |ui| {
                             self.model_enable_menu(ui, index);
                         });
@@ -1059,14 +1083,14 @@ impl PodxtEditor {
                             .unwrap_or_default();
                         Some((
                             index,
-                            format!(
+                            if self.legacy_control_widgets() { format!(
                                 "{bank}{index} {} {} amp {} stomp {} cab {}",
                                 tone.container().tag(),
                                 tone.name(),
                                 pod_preset::PodTone::model_label(tone.amp_model_id()),
                                 pod_preset::PodTone::model_label(tone.stomp_model_id()),
                                 pod_preset::PodTone::model_label(tone.cab_model_id()),
-                            ),
+                            ) } else { format!("{bank}{}", tone.name()) },
                             tone.name().to_owned(),
                         ))
                     })
@@ -1079,6 +1103,13 @@ impl PodxtEditor {
                         self.select_pod_index(index);
                     }
                 }
+                if !self.legacy_control_widgets() {
+                    ui.horizontal(|ui| {
+                        ui.label("Tone");
+                        ui.text_edit_singleline(&mut self.pod_name);
+                    });
+                    self.parameter_panel(ui);
+                } else {
                 let amp_choice_state = self.pod_selected.and_then(|index| {
                     self.pod_library.tone(index).and_then(|tone| {
                         if tone.container() != pod_preset::ContainerKind::L6pa {
@@ -2169,6 +2200,7 @@ impl PodxtEditor {
                 if let Some(detail) = detail {
                     ui.label(detail);
                 }
+                }
                 #[cfg(test)]
                 {
                     let selected = self.pod_selected.and_then(|index| {
@@ -2368,6 +2400,7 @@ impl PodxtEditor {
             }
         }
         self.clear_pod_stages();
+        self.parameter_panel.clear_history();
         self.refresh_selected_pod_name();
         self.restore_staged_amp_if_origin_matches(staged_amp);
         if self.pod_amp_model_pending.is_some() {
@@ -2393,8 +2426,8 @@ impl PodxtEditor {
             Ok(pod_preset::ModelEnableState::Canonical(false)) => {
                 format!("{} · Bypassed", block.label())
             }
-            Ok(pod_preset::ModelEnableState::NonCanonical { raw, .. }) => {
-                format!("{} · stored 0x{raw:02x}", block.label())
+            Ok(pod_preset::ModelEnableState::NonCanonical { .. }) => {
+                format!("{} · unavailable", block.label())
             }
             Err(_) => format!("{} · no model", block.label()),
         }
@@ -2502,7 +2535,21 @@ impl PodxtEditor {
             );
             return;
         };
-        match self.edit_pod_tone(index, |tone| tone.set_model_enabled(control, !enabled)) {
+        let result = if self.legacy_control_widgets() {
+            self.edit_pod_tone(index, |tone| tone.set_model_enabled(control, !enabled))
+        } else {
+            let key = match block {
+                PodBlock::Amp => "AMP_ENABLE",
+                PodBlock::Stomp => "STOMP_ENABLE",
+                PodBlock::Mod => "MOD_ENABLE",
+                PodBlock::Delay => "DELAY_ENABLE",
+            };
+            self.table_edit(index, |tone| {
+                tone.set_table_parameter(key, u32::from(!enabled))?;
+                Ok(Default::default())
+            })
+        };
+        match result {
             Ok(()) => {
                 self.pod_message = format!(
                     "{} is now {}. The model, its settings, and the other blocks were kept. Nothing was sent.",
@@ -2632,23 +2679,26 @@ impl PodxtEditor {
                 self.toggle_pod_block_bypass();
             }
         });
-        ui.small(self.pod_block_model_line(self.pod_block));
-        ui.small(self.pod_block_controls_line(self.pod_block));
-        let enable_note = self.pod_selected.and_then(|index| {
-            self.pod_library.tone(index).and_then(|tone| {
+        if self.legacy_control_widgets() {
+            ui.small(self.pod_block_model_line(self.pod_block));
+            ui.small(self.pod_block_controls_line(self.pod_block));
+        }
+        let enable_note =
+            self.pod_selected.and_then(|index| {
+                self.pod_library.tone(index).and_then(|tone| {
                 match tone.model_enable_state(self.pod_block.enable()) {
                     Ok(pod_preset::ModelEnableState::Canonical(_)) => None,
                     Ok(pod_preset::ModelEnableState::NonCanonical {
-                        raw,
+                        raw: _,
                         source_interpretation,
                     }) => Some(format!(
-                        "On/Bypass is unavailable. Stored flag 0x{raw:02x} reads as {} and was left unchanged.",
+                        "On/Bypass is unavailable. Stored flag reads as {} and cannot be edited.",
                         if source_interpretation { "on" } else { "bypassed" }
                     )),
                     Err(error) => Some(format!("On/Bypass is unavailable. {}", error.detail())),
                 }
             })
-        });
+            });
         if let Some(note) = enable_note {
             ui.small(note);
         }
@@ -2980,6 +3030,7 @@ impl PodxtEditor {
         }
         self.pod_library = library;
         self.pod_bundle = Some(bundle);
+        self.parameter_panel.clear_history();
         self.pod_document_generation = self.pod_document_generation.wrapping_add(1);
         self.pod_selected = Some(0);
         self.pod_eq_reset_pending = None;
@@ -3000,6 +3051,7 @@ impl PodxtEditor {
             }
         }
         self.pod_library = library;
+        self.parameter_panel.clear_history();
         self.pod_cab_pending = None;
         self.pod_harmony_pending = None;
         Ok(())
@@ -3048,6 +3100,7 @@ impl PodxtEditor {
         match result {
             Ok((selected, library)) => {
                 self.pod_bundle = Some(candidate);
+                self.parameter_panel.clear_history();
                 self.pod_library = library;
                 self.pod_selected = Some(selected);
                 self.pod_eq_reset_pending = None;
@@ -3131,6 +3184,7 @@ impl PodxtEditor {
                     Ok(index) => {
                         self.pod_library = candidate_library;
                         if replaces_bundle_document {
+                            self.parameter_panel.clear_history();
                             self.pod_bundle = None;
                             self.pod_document_generation =
                                 self.pod_document_generation.wrapping_add(1);
@@ -3168,6 +3222,16 @@ impl PodxtEditor {
             self.pod_message = "Select a tone before renaming it.".into();
             return;
         };
+        if !self.legacy_control_widgets() {
+            let name = self.pod_name.clone();
+            if let Err(error) = self.table_edit(index, |tone| {
+                tone.rename(&name)?;
+                Ok(Default::default())
+            }) {
+                self.pod_message = error.detail();
+            }
+            return;
+        }
         let Some(current) = self
             .pod_library
             .tone(index)
