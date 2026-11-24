@@ -851,6 +851,14 @@ impl VariaxEditor {
         } else {
             (1.0, ValueFormat::CENTS)
         };
+        // DragValue uses the same automatic ID for its compact button and focused text field.
+        let editing =
+            can_edit && ui.is_enabled() && ui.memory(|memory| memory.has_focus(ui.next_auto_id()));
+        let display_format = if !is_mix && !editing {
+            ValueFormat::CENTS_COMPACT
+        } else {
+            format
+        };
         let mut value = stored;
         let response = ui.add_enabled(
             can_edit,
@@ -858,7 +866,7 @@ impl VariaxEditor {
                 .range(min..=max)
                 .clamp_existing_to_range(false)
                 .speed(speed)
-                .custom_formatter(move |value, _| format.display(value))
+                .custom_formatter(move |value, _| display_format.display(value))
                 .custom_parser(move |text| format.parse_edit(text, f64::from(stored)))
                 .update_while_editing(false),
         );
@@ -1341,18 +1349,16 @@ mod tests {
         assert_eq!(readable_origin("/tmp/repo.git"), "/tmp/repo.git");
     }
 
+    fn contains_title(shape: &egui::Shape, expected: &str) -> bool {
+        match shape {
+            egui::Shape::Text(text) => text.galley.text() == expected,
+            egui::Shape::Vec(shapes) => shapes.iter().any(|shape| contains_title(shape, expected)),
+            _ => false,
+        }
+    }
+
     #[test]
     fn bank_selector_labels_built_in_examples_and_preserves_file_bank_names() {
-        fn contains_title(shape: &egui::Shape, expected: &str) -> bool {
-            match shape {
-                egui::Shape::Text(text) => text.galley.text() == expected,
-                egui::Shape::Vec(shapes) => {
-                    shapes.iter().any(|shape| contains_title(shape, expected))
-                }
-                _ => false,
-            }
-        }
-
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("example.vwb");
         let ctx = egui::Context::default();
@@ -1386,6 +1392,49 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn detune_displays_whole_cents_until_the_two_decimal_field_is_focused() {
+        let ctx = egui::Context::default();
+        let mut app = Workbench::with_context(&ctx, None, Default::default(), None);
+        app.variax_mut()
+            .document
+            .as_mut()
+            .unwrap()
+            .select(0, 4)
+            .unwrap();
+        let stored = 12.345_f32;
+        app.variax_mut()
+            .change(|preset| preset.set_parameter(TUNING, DETUNE, 1, stored.to_bits()));
+        let before = app.variax().document.as_ref().unwrap().as_bytes().to_vec();
+
+        let mut render = |editing| {
+            let output = ctx.run(Default::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let id = ui.next_auto_id();
+                    ui.memory_mut(|memory| {
+                        if editing {
+                            memory.request_focus(id);
+                        } else {
+                            memory.surrender_focus(id);
+                        }
+                    });
+                    app.variax_mut().twelve_string_value(ui, DETUNE, true);
+                });
+            });
+            let expected = if editing { "+12.35 cents" } else { "+12 cents" };
+            assert!(
+                output
+                    .shapes
+                    .iter()
+                    .any(|shape| contains_title(&shape.shape, expected))
+            );
+        };
+        render(false);
+        render(true);
+        render(false);
+        assert_eq!(app.variax().document.as_ref().unwrap().as_bytes(), before);
     }
 
     #[test]
