@@ -37,6 +37,7 @@ impl GatePolicy for DeviceCheckPolicy {
             | Operation::VariaxPresetSwitch
             | Operation::VariaxEditBufferWrite
             | Operation::VariaxStoreRestore
+            | Operation::VariaxSlotRead
             | Operation::PodxtPackQuery
             | Operation::PodxtEditBufferWrite => false,
             // Opened in the app on the owner's direct permission (2026-11-23,
