@@ -73,6 +73,7 @@ Detailed evidence and limitations: [body interpolation](docs/body-definitions.md
 [pickup response](docs/pickup-response.md), [generator results](docs/offline-generator-results.md), and [backlog](docs/github-backlog.md).
 
 ### Verified and passing
+- [x] #124 static driver inventory checked the Windows PE/INF/catalog and macOS Mach-O/Info.plist inputs. See [Windows](docs/driver-windows-podxt.md) and [macOS](docs/driver-macos-podxt.md).
 
 - [x] Product-family refactor, Step 2. PODxt, HD500X and Variax editor panels and their GUI tests now live in their family modules. Test recording has its own tool module. PODxt and HD500X have separate preset implementations, and Variax owns its file and document modules. Existing import paths, editor layout and workflows carry forward. Offline formatting and Clippy with warnings denied passed. The app suite passed **736** tests (1 ignored) and the device library passed **82** tests (2 ignored), matching the rebased baseline. [Architecture and delivery order](docs/architecture-families.md). [#121](https://github.com/guirossibrum/VariaxWorkbench/issues/121).
 
