@@ -13,7 +13,7 @@ directly.
 
 | Lane | Owns | Queue, in order |
 | --- | --- | --- |
-| **1. Shell and devices** | `src/app/` (shell, registry, detection), `src/tools/device_check/` and Device check code, `crates/line6-devices` session, gate, transport, identity and backup code, the device lock in `tools/reso5-test` and `tools/variax-probe` (lock only) | #212 (3b detection) → #213 (3c identity, Refresh guitar, device lock; covers #201) → #214 (device-library tidy) |
+| **1. Shell and devices** | `src/app/` (shell, registry, detection), `src/tools/device_check/` and Device check code, `crates/line6-devices` session, gate, transport, identity and backup code, the device lock in `tools/reso5-test` and `tools/variax-probe` (lock only) | #212 (3b detection) → #213 (3c identity, Refresh guitar, device lock; covers #201) → #214 (device-library tidy) → #228 (Device check: drop Simulation mode, scrolling) |
 | **2. Design and layout** | `docs/design/`, `src/shared/ui/` (theme and components), `assets/ui/` (committed art); after #213, the visuals of `src/app/shell/` | #215 (specification and mockups, **owner approval before code**) → #216 (theme and component library) → #217 (shell restyle) |
 | **3. Variax editor** | `src/families/variax/` (editor and file) | #192, #193, #194, #195, #196, #197, #198, #199, #200 → after #216: #188, #189, #190, #191, #224 (restyle) → after #213: #203, #204, #206 → #205 (Sync, after the store tests #177/#178) |
 | **4. PODxt editor** | `src/families/podxt/`, `crates/line6-devices/src/family/podxt/` | #210 (parameter table) → #218 → #219 (after #216) → #220 (after #213) → #221 → #222 (after #211 items 3–4) → #223 |
