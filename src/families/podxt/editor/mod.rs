@@ -3761,7 +3761,7 @@ impl FamilyTab for PodxtEditor {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 #[cfg(feature = "usb")]
                 if self.live.visible() {
-                    self.live.show(ui);
+                    self.live.show(ui, services);
                     ui.separator();
                     ui.heading("File editor");
                     ui.weak("Changes here affect the open file only. Linked Variax settings and tone metadata are file-only.");
