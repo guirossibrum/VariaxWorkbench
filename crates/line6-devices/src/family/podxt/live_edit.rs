@@ -22,25 +22,6 @@ pub enum EditorEdit<'a> {
     Undo(&'a EditorBuffer),
 }
 
-/// EncodePatch's edit destination prefixes the 160-byte payload with 74 0A.
-/// The reverse direction has the same frame layout. No slot address is present.
-#[derive(Clone, Copy, Debug)]
-struct SendEditorBuffer<'a>(&'a EditBuffer);
-
-impl Request for SendEditorBuffer<'_> {
-    fn bytes(self) -> Vec<u8> {
-        self.0.raw.clone()
-    }
-
-    fn path(self) -> Path {
-        Path::PodxtMidi
-    }
-
-    fn operation(self) -> Operation {
-        Operation::PodxtEditBufferWrite
-    }
-}
-
 pub fn get_editor_buffer<L: Link>(
     session: &mut Session<L>,
     cancelled: impl Fn() -> bool,
@@ -171,7 +152,7 @@ pub fn edit_editor_buffer<L: Link>(
     })
 }
 
-fn check_stop(cancelled: &impl Fn() -> bool) -> Result<(), String> {
+pub(super) fn check_stop(cancelled: &impl Fn() -> bool) -> Result<(), String> {
     if cancelled() {
         Err("PODxt Live operation cancelled.".into())
     } else {
@@ -179,7 +160,7 @@ fn check_stop(cancelled: &impl Fn() -> bool) -> Result<(), String> {
     }
 }
 
-fn open_editor<L: Link>(
+pub(super) fn open_editor<L: Link>(
     session: &mut Session<L>,
     cancelled: &impl Fn() -> bool,
 ) -> Result<(), String> {
@@ -198,14 +179,17 @@ fn playing_channel<L: Link>(session: &mut Session<L>) -> Result<Location, String
         .ok_or_else(|| "No valid playing-channel reply from the PODxt Live.".into())
 }
 
-fn check_channel<L: Link>(session: &mut Session<L>, expected: Location) -> Result<(), String> {
+pub(super) fn check_channel<L: Link>(
+    session: &mut Session<L>,
+    expected: Location,
+) -> Result<(), String> {
     if playing_channel(session)? != expected {
         return Err("The playing channel changed. Get edit buffer for the current channel.".into());
     }
     Ok(())
 }
 
-fn editor_tone<L: Link>(session: &mut Session<L>) -> Result<EditBuffer, String> {
+pub(super) fn editor_tone<L: Link>(session: &mut Session<L>) -> Result<EditBuffer, String> {
     let tone = read_edit_buffer(session)?;
     validate_editor_tone(&tone)?;
     Ok(tone)
@@ -224,7 +208,7 @@ fn validate_editor_tone(tone: &EditBuffer) -> Result<(), String> {
     Ok(())
 }
 
-fn still_current(expected: &EditBuffer, observed: &EditBuffer) -> bool {
+pub(super) fn still_current(expected: &EditBuffer, observed: &EditBuffer) -> bool {
     expected
         .raw
         .iter()
@@ -374,11 +358,8 @@ fn send_dump<L: Link>(
     changes: &[(LiveControl, u16)],
     cancelled: &impl Fn() -> bool,
 ) -> Result<(), String> {
-    let mut draft = project(before, changes);
-    // 03 74 already carries both timing bytes and NOTE. Only allow manual
-    // rate changes with sync off. The remaining bytes come from the POD.
-    draft.raw[6] = PODXT_LIVE_MEMBER as u8;
-    session.send_chunked_sysex(SendEditorBuffer(&draft), 32, Some(7), || {
+    let draft = TonePayload::from_dump(&project(before, changes))?;
+    session.send_chunked_sysex(transfer::EditFrame(&draft), 32, Some(7), || {
         if cancelled() {
             Err("PODxt edit-buffer transfer cancelled.")
         } else {
@@ -387,7 +368,7 @@ fn send_dump<L: Link>(
     })
 }
 
-fn read_after_write<L: Link>(
+pub(super) fn read_after_write<L: Link>(
     session: &mut Session<L>,
     channel: Location,
 ) -> Result<EditBuffer, String> {
