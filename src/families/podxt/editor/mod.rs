@@ -3797,7 +3797,6 @@ impl PodxtEditor {
                     egui::Button::new("Export file tone list"),
                 )
                 .clicked()
-                && let Some(path) = services.dialogs.save_pod_tone("PODxt Tones.html")
             {
                 let entries: Vec<_> = (0..self.pod_library.len())
                     .filter_map(|index| {
@@ -3810,18 +3809,29 @@ impl PodxtEditor {
                                 Some(format!("{} {}", bundle.bank_name(bank)?, slot + 1))
                             })
                             .unwrap_or_else(|| (index + 1).to_string());
-                        Some((location, tone.name()))
+                        Some((location, tone.name().to_owned()))
                     })
                     .collect();
-                self.pod_message = match pod_preset::save_podxt_html(
-                    &path,
-                    entries
-                        .iter()
-                        .map(|(location, name)| (location.as_str(), *name)),
-                ) {
-                    Ok(()) => "Exported tone list.".into(),
-                    Err(error) => error.detail(),
-                };
+                services.request_picker::<Self>(
+                    ui.ctx(),
+                    PickRequest::SaveTone {
+                        name: "PODxt Tones.html".into(),
+                    },
+                    move |editor, path, _| {
+                        if let Some(path) = path {
+                            let result = pod_preset::save_podxt_html(
+                                &path,
+                                entries
+                                    .iter()
+                                    .map(|(location, name)| (location.as_str(), name.as_str())),
+                            );
+                            editor.pod_message = match result {
+                                Ok(()) => "Exported tone list.".into(),
+                                Err(error) => error.detail(),
+                            };
+                        }
+                    },
+                );
             }
         });
     }

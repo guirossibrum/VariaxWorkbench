@@ -2,7 +2,8 @@
 
 **Not approved.** Sync, setup stores and channel switching each await a
 separate owner decision. The #222 whole-tone and store test stages remain
-unapproved. This card is a proposed procedure for a later owner run.
+unapproved. Approving the #222 tone store alone leaves the separate setup
+and Sync locks closed. This card is a proposed procedure for a later owner run.
 
 ## Offline rehearsal
 

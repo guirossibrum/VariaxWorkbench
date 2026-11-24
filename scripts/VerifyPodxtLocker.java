@@ -59,20 +59,20 @@ public final class VerifyPodxtLocker {
                 throw new AssertionError("expected 3-bank L6BA");
             }
             int[] sizes = {128, 107, 64};
-            for (int i = 0; i < 3; ++i) {
+            int[] types = {0, 2, 1};
+            var map = new L6PODxtParamMap(PRODUCT);
+            for (int i = 0; i < sizes.length; ++i) {
                 L6PatchBank bank = bundle.GetBank(i);
                 if (!bank.IsFixed() || bank.NumPatches() != sizes[i]) throw new AssertionError("bank size");
-                L6Patch first = bank.GetPatch(0);
-                if (first.GetType() != new int[]{0, 2, 1}[i] || first.GetTargetMIDIID() != PRODUCT) {
-                    throw new AssertionError("patch type or target");
+                for (int slot = 0; slot < sizes[i]; ++slot) {
+                    L6Patch tone = bank.GetPatch(slot);
+                    if (tone.GetType() != types[i] || tone.GetTargetMIDIID() != PRODUCT
+                        || !"Locker fixture".equals(tone.GetName())
+                        || map.GetParamValueFloat(tone, 65538) != 64.0f / 127.0f
+                        || map.GetParamValueInt(tone, 786441) != 10) {
+                        throw new AssertionError("tone fields at " + i + ":" + slot);
+                    }
                 }
-            }
-            var map = new L6PODxtParamMap(PRODUCT);
-            L6Patch first = bundle.GetBank(0).GetPatch(0);
-            if (!"Locker fixture".equals(first.GetName())
-                || map.GetParamValueFloat(first, 65538) != 64.0f / 127.0f
-                || map.GetParamValueInt(first, 786441) != 10) {
-                throw new AssertionError("tone fields");
             }
             System.out.println("Original Line 6 Edit loaded all 299 generated entries and checked tone fields.");
             return;

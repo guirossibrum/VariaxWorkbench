@@ -356,60 +356,52 @@ impl Locker {
                 .add_enabled(idle, egui::Button::new("Get bundle"))
                 .clicked();
             let complete = snapshot.library.len() == 299;
-            if ui
-                .add_enabled(complete, egui::Button::new("Save backup bundle"))
-                .clicked()
-                && let Some(path) = services.dialogs.save_pod_tone("PODxt Live Backup.l6b")
-            {
-                let result = backup_bundle(snapshot)
-                    .and_then(|bundle| bundle.save_copy(&path).map_err(|error| error.detail()));
-                self.remember(result, "Saved Line 6 Edit backup bundle.");
-            }
-            if ui
-                .add_enabled(
-                    complete && !self.dirty() && !self.syncing(),
-                    egui::Button::new("Send bundle…"),
-                )
-                .clicked()
-                && let Some(path) = services.dialogs.open_pod_tone()
-            {
-                let result = read_file(&path)
-                    .and_then(|bytes| {
-                        PodBundleLibrary::parse(bytes).map_err(|error| error.detail())
-                    })
-                    .and_then(|bundle| stage_bundle(&bundle, snapshot));
-                match result {
-                    Ok(staged) => {
-                        self.staged = staged;
-                        self.status =
-                            format!("{} changed slots staged for Sync.", self.staged.len());
+            if ui.add_enabled(complete, egui::Button::new("Save backup bundle")).clicked() {
+                let snapshot = snapshot.clone();
+                services.request_picker::<PodxtEditor>(ui.ctx(), PickRequest::SaveTone {
+                    name: "PODxt Live Backup.l6b".into(),
+                }, move |editor, path, _| {
+                    if let Some(path) = path {
+                        let result = backup_bundle(&snapshot)
+                            .and_then(|bundle| bundle.save_copy(&path).map_err(|error| error.detail()));
+                        editor.live.locker.remember(result, "Saved Line 6 Edit backup bundle.");
                     }
-                    Err(error) => self.status = error,
-                }
+                });
             }
-            if ui
-                .add_enabled(
-                    !snapshot.library.is_empty(),
-                    egui::Button::new("Export device list"),
-                )
-                .clicked()
-                && let Some(path) = services.dialogs.save_pod_tone("PODxt Live Tones.html")
-            {
-                let list: Vec<_> = Location::all(&BankKind::ALL)
-                    .filter_map(|slot| {
-                        snapshot
-                            .library
-                            .get(&slot.address())
-                            .map(|tone| (slot.slot_name(), tone.name()))
-                    })
-                    .collect();
-                let result = save_podxt_html(
-                    &path,
-                    list.iter()
-                        .map(|(slot, name)| (slot.as_str(), name.as_str())),
-                )
-                .map_err(|error| error.detail());
-                self.remember(result, "Exported tone list.");
+            if ui.add_enabled(complete && !self.dirty() && !self.syncing(), egui::Button::new("Send bundle…")).clicked() {
+                let original = snapshot.library.clone();
+                services.request_picker::<PodxtEditor>(ui.ctx(), PickRequest::OpenTone, move |editor, path, _| {
+                    let Some(path) = path else { return; };
+                    let live = &mut editor.live;
+                    if live.locker.dirty() || live.locker.syncing() || live.snapshot.library != original {
+                        live.locker.status = "The library or staged edits changed. Review and select the bundle again.".into();
+                        return;
+                    }
+                    let result = read_file(&path)
+                        .and_then(|bytes| PodBundleLibrary::parse(bytes).map_err(|error| error.detail()))
+                        .and_then(|bundle| stage_bundle(&bundle, &live.snapshot));
+                    match result {
+                        Ok(staged) => {
+                            live.locker.staged = staged;
+                            live.locker.status = format!("{} changed slots staged for Sync.", live.locker.staged.len());
+                        }
+                        Err(error) => live.locker.status = error,
+                    }
+                });
+            }
+            if ui.add_enabled(!snapshot.library.is_empty(), egui::Button::new("Export device list")).clicked() {
+                let list: Vec<_> = Location::all(&BankKind::ALL).filter_map(|slot| {
+                    snapshot.library.get(&slot.address()).map(|tone| (slot.slot_name(), tone.name()))
+                }).collect();
+                services.request_picker::<PodxtEditor>(ui.ctx(), PickRequest::SaveTone {
+                    name: "PODxt Live Tones.html".into(),
+                }, move |editor, path, _| {
+                    if let Some(path) = path {
+                        let result = save_podxt_html(&path, list.iter().map(|(slot, name)| (slot.as_str(), name.as_str())))
+                            .map_err(|error| error.detail());
+                        editor.live.locker.remember(result, "Exported tone list.");
+                    }
+                });
             }
         });
     }
@@ -482,13 +474,20 @@ impl Locker {
     ) {
         ui.horizontal(|ui| {
             ui.strong("Files");
-            if ui.button("Choose folder…").clicked()
-                && let Some(path) = services.dialogs.pick_folder()
-            {
-                self.directory = Some(path);
-                self.file = None;
-                let result = self.refresh_files();
-                self.remember(result, "");
+            if ui.button("Choose folder…").clicked() {
+                services.request_picker::<PodxtEditor>(
+                    ui.ctx(),
+                    PickRequest::Folder,
+                    |editor, path, _| {
+                        if let Some(path) = path {
+                            let locker = &mut editor.live.locker;
+                            locker.directory = Some(path);
+                            locker.file = None;
+                            let result = locker.refresh_files();
+                            locker.remember(result, "");
+                        }
+                    },
+                );
             }
         });
         if let Some(dir) = &self.directory {
@@ -555,17 +554,29 @@ impl Locker {
                     }
                 }
             }
-            if let (Some(dir), Some(tone)) = (&self.directory, &self.clipboard)
+            if let Some(tone) = &self.clipboard
                 && ui.button("Paste new file…").clicked()
-                && let Some(path) = services
-                    .dialogs
-                    .save_pod_tone(dir.join("Tone copy.l6t").to_string_lossy().as_ref())
             {
-                let result = tone
-                    .save_copy(&path)
-                    .map_err(|error| error.detail())
-                    .and_then(|()| self.refresh_files());
-                self.remember(result, "Saved tone copy.");
+                let name = match tone.container() {
+                    ContainerKind::L6pa => "Tone copy.l6t",
+                    ContainerKind::L6as => "Amp Setup copy.l6a",
+                    ContainerKind::L6fs => "FX Setup copy.l6f",
+                };
+                let tone = tone.clone();
+                services.request_picker::<PodxtEditor>(
+                    ui.ctx(),
+                    PickRequest::SaveTone { name: name.into() },
+                    move |editor, path, _| {
+                        if let Some(path) = path {
+                            let locker = &mut editor.live.locker;
+                            let result = tone
+                                .save_copy(&path)
+                                .map_err(|error| error.detail())
+                                .and_then(|()| locker.refresh_files());
+                            locker.remember(result, "Saved tone copy.");
+                        }
+                    },
+                );
             }
         });
     }
@@ -722,7 +733,19 @@ impl Locker {
                 )
                 .clicked()
             {
-                self.backup = services.dialogs.pick_folder();
+                services.request_picker::<PodxtEditor>(
+                    ui.ctx(),
+                    PickRequest::Folder,
+                    move |editor, path, _| {
+                        let locker = &mut editor.live.locker;
+                        if let Some(path) = path
+                            && locker.queue.front() == Some(&slot)
+                            && locker.awaiting.is_none()
+                        {
+                            locker.backup = Some(path);
+                        }
+                    },
+                );
             }
             if ui
                 .add_enabled(

@@ -5,11 +5,39 @@ use podxt::{ConfirmedStore, PreparedStore, StoreControl, StoreResult, StoreSourc
 // is required before the native entry point can open the rig.
 const STORE_OWNER_APPROVED: bool = false;
 
+const SETUP_STORE_OWNER_APPROVED: bool = false;
+const SYNC_OWNER_APPROVED: bool = false;
+
+#[derive(Clone, Copy)]
+enum StoreStage {
+    Tone,
+    Setup,
+    Sync,
+}
+
+impl StoreStage {
+    fn original(bank: BankKind) -> Self {
+        match bank {
+            BankKind::Tones => Self::Tone,
+            BankKind::AmpSetups | BankKind::FxSetups => Self::Setup,
+        }
+    }
+
+    fn approved(self) -> bool {
+        STORE_OWNER_APPROVED
+            && match self {
+                Self::Tone => true,
+                Self::Setup => SETUP_STORE_OWNER_APPROVED,
+                Self::Sync => SYNC_OWNER_APPROVED,
+            }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct StorePanel {
     index: u16,
     bank: usize,
-    prepared: Option<PreparedStore>,
+    prepared: Option<(StoreStage, PreparedStore)>,
     typed: String,
     worker: Option<StoreWorker>,
     status: Option<String>,
@@ -65,11 +93,12 @@ fn store_transaction<G, L: Link>(
 #[cfg(all(target_os = "linux", not(test)))]
 fn platform_store(
     device: &detection::DeviceKey,
+    stage: StoreStage,
     confirmation: ConfirmedStore,
     control: &StoreControl,
 ) -> Result<StoreResult, String> {
-    if !STORE_OWNER_APPROVED {
-        return Err("PODxt store awaits separate owner approval.".into());
+    if !stage.approved() {
+        return Err("This PODxt store stage awaits separate owner approval.".into());
     }
     store_transaction(
         confirmation,
@@ -82,14 +111,15 @@ fn platform_store(
 #[cfg(any(test, not(target_os = "linux")))]
 fn platform_store(
     _device: &detection::DeviceKey,
+    _stage: StoreStage,
     _confirmation: ConfirmedStore,
     _control: &StoreControl,
 ) -> Result<StoreResult, String> {
     Err("PODxt store is unavailable in this build.".into())
 }
 
-fn admitted() -> bool {
-    STORE_OWNER_APPROVED
+fn admitted(stage: StoreStage) -> bool {
+    stage.approved()
         && cfg!(all(target_os = "linux", not(test)))
         && !hardware_gates::is_locked(Gate::StoreRestore)
         && !hardware_gates::is_locked(Gate::FullBackupRead)
@@ -125,7 +155,7 @@ impl StorePanel {
         if !prepared.original_matches(original) {
             return Err("The verified backup and the slot used to stage this edit differ.".into());
         }
-        self.prepared = Some(prepared);
+        self.prepared = Some((StoreStage::Sync, prepared));
         self.status = None;
         Ok(())
     }
@@ -136,10 +166,15 @@ impl StorePanel {
     }
 
     fn start(&mut self, device: &detection::DeviceKey, ctx: &egui::Context) {
-        if !admitted() || self.busy() {
+        if self.busy()
+            || !self
+                .prepared
+                .as_ref()
+                .is_some_and(|(stage, _)| admitted(*stage))
+        {
             return;
         }
-        let Some(prepared) = self.prepared.take() else {
+        let Some((stage, prepared)) = self.prepared.take() else {
             return;
         };
         let confirmation = prepared.confirm(&self.typed);
@@ -159,7 +194,7 @@ impl StorePanel {
         let thread = std::thread::Builder::new()
             .name("podxt-store".into())
             .spawn(move || {
-                let result = platform_store(&endpoint, confirmation, &thread_control);
+                let result = platform_store(&endpoint, stage, confirmation, &thread_control);
                 repaint.request_repaint();
                 result
             });
@@ -230,7 +265,12 @@ impl StorePanel {
                 "Store original to slot"
             },
             |ui| {
-                if !STORE_OWNER_APPROVED {
+                let stage = if sync {
+                    StoreStage::Sync
+                } else {
+                    StoreStage::original(BankKind::ALL[self.bank])
+                };
+                if !stage.approved() {
                     ui.label(
                         "PODxt store is not approved. Backup verification is available offline.",
                     );
@@ -265,32 +305,50 @@ impl StorePanel {
                             self.clear_preparation();
                             self.status = None;
                         }
-                        if ui.button("Verify same-day backup").clicked()
-                            && let Some(folder) = services.dialogs.pick_folder()
-                        {
-                            self.clear_preparation();
-                            let destination = Location::new(BankKind::Tones, self.index)
-                                .expect("valid selection");
-                            match podxt::prepare_tone_store(
-                                &folder,
-                                destination,
-                                StoreSource::OriginalSlot,
-                            ) {
-                                Ok(prepared) => {
-                                    self.status = None;
-                                    self.prepared = Some(prepared);
-                                }
-                                Err(error) => self.status = Some(error),
-                            }
+                        if ui.button("Verify same-day backup").clicked() {
+                            let destination =
+                                Location::new(kind, self.index).expect("valid selection");
+                            services.request_picker::<PodxtEditor>(
+                                ui.ctx(),
+                                PickRequest::Folder,
+                                move |editor, folder, _| {
+                                    let Some(folder) = folder else {
+                                        return;
+                                    };
+                                    let live = &mut editor.live;
+                                    let store = &mut live.store;
+                                    if live.locker.syncing()
+                                        || BankKind::ALL[store.bank] != destination.kind()
+                                        || store.index != destination.index()
+                                    {
+                                        return;
+                                    }
+                                    store.clear_preparation();
+                                    match podxt::prepare_tone_store(
+                                        &folder,
+                                        destination,
+                                        StoreSource::OriginalSlot,
+                                    ) {
+                                        Ok(prepared) => {
+                                            store.status = None;
+                                            store.prepared = Some((
+                                                StoreStage::original(destination.kind()),
+                                                prepared,
+                                            ));
+                                        }
+                                        Err(error) => store.status = Some(error),
+                                    }
+                                },
+                            );
                         }
                     }
-                    if let Some(prepared) = &self.prepared {
+                    if let Some((stage, prepared)) = &self.prepared {
                         let phrase = prepared.confirmation();
                         ui.label(format!("Verified backup · {}", prepared.original_name()));
                         ui.label(format!("Candidate · {}", prepared.candidate_name()));
                         ui.label(format!("Type {phrase} to confirm the destination."));
                         ui.text_edit_singleline(&mut self.typed);
-                        let confirmed = self.typed == phrase && admitted();
+                        let confirmed = self.typed == phrase && admitted(*stage);
                         if ui
                             .add_enabled(
                                 confirmed && device.is_some(),
