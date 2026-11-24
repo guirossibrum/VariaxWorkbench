@@ -391,6 +391,28 @@ impl DetectionService {
             .as_mut()
     }
 
+    /// Invalidate the previously verified guitar for a matching Follow notice.
+    /// Update the cached devices so the shell can reconcile without opening a link.
+    pub fn report_guitar_disconnect(
+        &mut self,
+        key: &DeviceKey,
+        profiles: &[DiscoveryProfile],
+    ) -> Option<Vec<DetectedDevice>> {
+        if !self.known.contains_key(key) {
+            return None;
+        }
+        let generation = key.linked_generation?;
+        let bridge = self.bridge_mut(&key.attachment)?;
+        if bridge.guitar?.0 != generation {
+            return None;
+        }
+        bridge.guitar = None;
+        bridge.status = "disconnected".into();
+        bridge.last_notice = Some(Notice::Disconnected);
+        self.rebuild_devices(Scan::Automatic, profiles);
+        Some(self.known.values().cloned().collect())
+    }
+
     pub fn queue_guitar_refresh(&mut self, key: &AttachmentKey) -> bool {
         let Some(bridge) = self.bridge_mut(key).filter(|bridge| bridge.can_refresh()) else {
             return false;

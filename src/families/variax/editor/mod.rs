@@ -1312,6 +1312,10 @@ impl FamilyTab for VariaxEditor {
             ctx.request_repaint_after(Duration::from_millis(50));
         }
     }
+    #[cfg(feature = "usb")]
+    fn take_device_event(&mut self) -> Option<crate::editor::tabs::DeviceEvent> {
+        self.follow.take_device_event()
+    }
     fn local_prompt(&mut self, ctx: &egui::Context, services: &mut EditorServices<'_>) {
         self.variax_pending_dialog(services, ctx);
         self.preference_dialog(ctx);

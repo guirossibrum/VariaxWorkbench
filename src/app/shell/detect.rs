@@ -1,5 +1,6 @@
 //! Presence updates and the consent prompt for a manual scan.
 use super::super::detection::AttachmentKey;
+use super::super::tabs::{Connection, DeviceEvent};
 use super::*;
 use variax_workbench::ui::{chrome, theme};
 
@@ -48,6 +49,30 @@ impl Workbench {
                 self.tabs.mark_presence_uncertain();
                 self.detection_status = Some(format!("Device detection: {error}."));
             }
+        }
+    }
+
+    pub(super) fn apply_device_event(&mut self, tab: TabId, event: DeviceEvent) {
+        let DeviceEvent::GuitarDisconnected(key) = event;
+        let Some(device) = self
+            .tabs
+            .index(tab)
+            .and_then(|index| self.tabs.entries[index].device.as_ref())
+        else {
+            return;
+        };
+        if device.connection != Connection::Present || device.device.key != key {
+            return;
+        }
+        if let Some(devices) = self
+            .detection
+            .as_mut()
+            .and_then(|service| service.report_guitar_disconnect(&key, registry::DEVICE_PROFILES))
+        {
+            self.detection_status = self
+                .tabs
+                .reconcile_devices(devices, registry::FAMILIES, &self.defaults)
+                .err();
         }
     }
 

@@ -2,7 +2,7 @@ use crate::editor::{detection::DeviceKey, tabs::DeviceTab};
 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct Attachment {
-    key: DeviceKey,
+    pub(super) key: DeviceKey,
     pub(super) path: String,
     pub(super) address: u8,
 }

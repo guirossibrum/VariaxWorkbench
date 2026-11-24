@@ -102,6 +102,11 @@ impl EditorServices<'_> {
     }
 }
 
+pub(super) enum DeviceEvent {
+    #[cfg_attr(not(any(feature = "usb", test)), allow(dead_code))]
+    GuitarDisconnected(DeviceKey),
+}
+
 pub(super) trait FamilyTab: std::any::Any {
     fn show(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>);
     fn dirty(&self) -> bool;
@@ -118,6 +123,10 @@ pub(super) trait FamilyTab: std::any::Any {
     /// UI actions can request an identity refresh through `EditorServices`.
     fn observe_device(&mut self, _device: Option<&DeviceTab>) {}
     fn poll(&mut self, _ctx: &egui::Context) {}
+    /// One-shot device observation keyed to the attachment that produced it.
+    fn take_device_event(&mut self) -> Option<DeviceEvent> {
+        None
+    }
     fn local_prompt(&mut self, _ctx: &egui::Context, _services: &mut EditorServices<'_>) {}
     fn busy(&self) -> bool {
         false

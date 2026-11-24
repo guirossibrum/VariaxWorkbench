@@ -1,5 +1,5 @@
 use super::{EditorDocument, FamilyTab, VariaxEditor, egui, live_attachment::Attachment};
-use crate::editor::tabs::DeviceTab;
+use crate::editor::tabs::{DeviceEvent, DeviceTab};
 use line6_devices::family::variax::{FollowUpdate, Preset};
 use std::{
     sync::{
@@ -48,7 +48,10 @@ impl Snapshot {
             FollowUpdate::Clip => self.clip_until = Some(now + CLIP_PULSE),
             FollowUpdate::DspOverload => self.dsp_overload = true,
             FollowUpdate::MidiQueueOverflow => self.queue_overflow = true,
-            FollowUpdate::Connected => self.notice = Some(ConnectionNotice::Connected),
+            FollowUpdate::Connected => {
+                // Retain a queued disconnect until the shell can invalidate its identity.
+                self.notice.get_or_insert(ConnectionNotice::Connected);
+            }
             FollowUpdate::Disconnected => self.notice = Some(ConnectionNotice::Disconnected),
         }
     }
@@ -71,6 +74,7 @@ pub(super) struct Follow {
     worker: Option<Worker>,
     snapshot: Snapshot,
     consumed_program: Option<(Preset, Instant)>,
+    device_event: Option<DeviceEvent>,
     notice: Option<ConnectionNotice>,
     error: Option<String>,
 }
@@ -91,6 +95,10 @@ impl Follow {
 
     pub(super) fn busy(&self) -> bool {
         self.worker.is_some()
+    }
+
+    pub(super) fn take_device_event(&mut self) -> Option<DeviceEvent> {
+        self.device_event.take()
     }
 
     pub(super) fn disconnected(&self) -> bool {
@@ -162,6 +170,9 @@ impl Follow {
         {
             match notice {
                 Some(ConnectionNotice::Disconnected) => {
+                    self.device_event = Some(DeviceEvent::GuitarDisconnected(
+                        worker.attachment.key.clone(),
+                    ));
                     self.notice = notice;
                     self.stop();
                 }
@@ -524,6 +535,7 @@ mod tests {
         let source: Source = |_, _, publish| {
             publish(FollowUpdate::Connected, Instant::now());
             publish(FollowUpdate::Disconnected, Instant::now());
+            publish(FollowUpdate::Connected, Instant::now());
             Ok(())
         };
 
@@ -536,6 +548,12 @@ mod tests {
         editor.poll_follow(&ctx);
         assert!(!editor.follow.busy());
         assert!(editor.follow.disconnected());
+        let key = editor.follow.attachment.as_ref().unwrap().key.clone();
+        assert!(matches!(
+            editor.take_device_event(),
+            Some(DeviceEvent::GuitarDisconnected(notice_key)) if notice_key == key
+        ));
+        assert!(editor.take_device_event().is_none());
         assert!(editor.follow.start(source, &ctx).is_err());
         assert_eq!(editor.document.as_ref().unwrap().as_bytes(), before);
 

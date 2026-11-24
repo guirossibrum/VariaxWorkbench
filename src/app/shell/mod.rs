@@ -392,6 +392,7 @@ impl Workbench {
         if self.waiting_for_hardware {
             self.advance_close(ctx);
         }
+        let mut device_events = Vec::new();
         for entry in &mut self.tabs.entries {
             if let Some(device) = &mut entry.device
                 && device.reconnected_with_edits
@@ -401,6 +402,12 @@ impl Workbench {
             }
             entry.editor.observe_device(entry.device.as_ref());
             entry.editor.poll(ctx);
+            if let Some(event) = entry.editor.take_device_event() {
+                device_events.push((entry.id, event));
+            }
+        }
+        for (tab, event) in device_events {
+            self.apply_device_event(tab, event);
         }
         self.frame_count += 1;
         if self.screenshot.is_some() && self.frame_count <= 5 {

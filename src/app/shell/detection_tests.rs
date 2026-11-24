@@ -831,3 +831,74 @@ fn editor_refresh_uses_its_current_attachment_even_when_another_tab_is_active() 
     tick(&ctx, &mut app);
     assert_eq!(source.0.borrow().completed.last().unwrap().attachment, new);
 }
+
+#[test]
+fn follow_disconnect_keeps_the_tab_and_reattaches_only_after_reconnect_identity() {
+    let (ctx, mut app, source) = fixture();
+    source.usb(true, false);
+    tick(&ctx, &mut app);
+    let parent = entries(&app)[0].2.device.key.attachment.clone();
+    source.guitar(parent.clone());
+    tick(&ctx, &mut app);
+    let (_, guitar, device) = entries(&app)[1];
+    let old = device.device.key.clone();
+    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/editor-preset.vwm");
+    app.with_tab(guitar, |entry, _| {
+        let editor = entry.editor.as_mut() as &mut dyn std::any::Any;
+        let editor = editor.downcast_mut::<VariaxEditor>().unwrap();
+        editor.load(&file);
+        editor.change(|preset| preset.rename("Unsaved model"));
+    });
+
+    app.apply_device_event(guitar, tabs::DeviceEvent::GuitarDisconnected(old.clone()));
+    assert_eq!(entries(&app)[1].2.connection, Connection::Disconnected);
+    assert_eq!(entries(&app)[0].2.connection, Connection::Present);
+    assert_eq!(source.0.borrow().completed.len(), 1);
+
+    source.notice(&parent, SimulatedNotice::Connected);
+    tick(&ctx, &mut app);
+    assert_eq!(entries(&app)[1].2.connection, Connection::Disconnected);
+    source.guitar(parent);
+    tick(&ctx, &mut app);
+
+    let tabs = entries(&app);
+    assert_eq!(tabs.len(), 2);
+    assert_eq!(tabs[1].1, guitar);
+    assert_eq!(tabs[1].2.connection, Connection::Present);
+    assert_ne!(tabs[1].2.device.key, old);
+    assert!(tabs[1].2.reconnected_with_edits);
+    assert_eq!(
+        app.variax().document.as_ref().unwrap().preset().name(),
+        "Unsaved model"
+    );
+}
+
+#[test]
+fn follow_notice_for_another_attachment_or_tab_is_ignored() {
+    let (ctx, mut app, source) = fixture();
+    source.usb(true, false);
+    tick(&ctx, &mut app);
+    let parent = entries(&app)[0].2.device.key.attachment.clone();
+    source.guitar(parent);
+    tick(&ctx, &mut app);
+    let (_, guitar, device) = entries(&app)[1];
+    let old = device.device.key.clone();
+
+    source.usb(false, false);
+    tick(&ctx, &mut app);
+    source.usb_paths(&["8-4.1"], false);
+    tick(&ctx, &mut app);
+    let parent = app.detection.as_ref().unwrap().attachment_key("8-4.1");
+    source.guitar(parent);
+    tick(&ctx, &mut app);
+    let pod = entries(&app)[0].1;
+    let (_, reattached, device) = entries(&app)[1];
+    assert_eq!(reattached, guitar);
+    let current = device.device.key.clone();
+
+    app.apply_device_event(guitar, tabs::DeviceEvent::GuitarDisconnected(old));
+    app.apply_device_event(pod, tabs::DeviceEvent::GuitarDisconnected(current.clone()));
+    assert_eq!(entries(&app)[1].2.connection, Connection::Present);
+    assert_eq!(entries(&app)[1].2.device.key, current);
+    assert_eq!(source.0.borrow().completed.len(), 2);
+}
