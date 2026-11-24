@@ -530,9 +530,24 @@ fn restore<L: Link>(
 /// the original preset. Close the session and release the bridge afterwards.
 pub fn read_library<L: Link>(
     session: &mut Session<L>,
+    progress: impl FnMut(&StoredPreset),
+) -> Result<Library, String> {
+    sweep_library(session, || false, progress)
+}
+
+fn sweep_library<L: Link>(
+    session: &mut Session<L>,
+    mut cancelled: impl FnMut() -> bool,
     mut progress: impl FnMut(&StoredPreset),
 ) -> Result<Library, String> {
+    const CANCELLED: &str = "Variax library read cancelled.";
+    if cancelled() {
+        return Err(CANCELLED.into());
+    }
     let identified = identify_variax(session)?;
+    if cancelled() {
+        return Err(CANCELLED.into());
+    }
     let (result, release_error) = with_library_bridge(session, |session| {
         in_session(session, |session| {
             let (original_replies, original) = read_metadata(session)?;
@@ -540,6 +555,10 @@ pub fn read_library<L: Link>(
             let mut bank_names = Vec::new();
             let mut stopped = None;
             for preset in Preset::all() {
+                if cancelled() {
+                    stopped = Some(CANCELLED.into());
+                    break;
+                }
                 let stored = match read_stored(session, preset) {
                     Ok(stored) => stored,
                     Err(error) => {
@@ -554,6 +573,10 @@ pub fn read_library<L: Link>(
                 progress(&stored);
                 presets.push(stored);
                 if preset.slot() + 1 == PRESETS_PER_BANK {
+                    if cancelled() {
+                        stopped = Some(CANCELLED.into());
+                        break;
+                    }
                     match read_current_bank_name(session) {
                         Ok(name) => bank_names.push((preset.bank(), name)),
                         Err(error) => {

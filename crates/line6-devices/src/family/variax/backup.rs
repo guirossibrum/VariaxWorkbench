@@ -2,8 +2,13 @@
 //! two raw SysEx metadata replies per stored preset.
 
 use super as variax;
-use crate::backup::{BackupFolder, read_optional, verify_manifest};
-use std::path::Path;
+use crate::{
+    backup::{BackupFolder, read_optional, verify_manifest},
+    device_lock::DeviceLock,
+    gate::Operation,
+    session::{Link, Session},
+};
+use std::{fmt, path::Path};
 
 pub(crate) const STORED_FOLDERS: &[&str] = &["presets"];
 
@@ -121,3 +126,126 @@ pub fn load_variax_library(dir: &Path) -> Result<LoadedVariax, String> {
         bank_names,
     })
 }
+
+/// Complete editor input from one sweep, in the same representation as a
+/// loaded backup. Switch-back and bridge release are reported independently.
+pub struct RefreshedLibrary {
+    pub identified: variax::Identified,
+    pub library: LoadedVariax,
+    pub restore: variax::Restore,
+    pub release_error: Option<String>,
+}
+
+#[derive(Debug)]
+pub enum RefreshError {
+    Read(String),
+    Incomplete {
+        reason: String,
+        restore: variax::Restore,
+        release_error: Option<String>,
+    },
+}
+
+impl fmt::Display for RefreshError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Read(error) => formatter.write_str(error),
+            Self::Incomplete {
+                reason,
+                restore,
+                release_error,
+            } => {
+                write!(formatter, "Variax Refresh incomplete: {reason} ")?;
+                match restore {
+                    variax::Restore::Switched { to, verified } => {
+                        write!(
+                            formatter,
+                            "Reselected {} {}. Read-back verified: {verified}.",
+                            to.bank_name(),
+                            to.slot() + 1,
+                        )?;
+                    }
+                    variax::Restore::NoUniqueMatch { matches } => {
+                        write!(
+                            formatter,
+                            "Found {matches} matches for the original preset. No preset was reselected."
+                        )?;
+                    }
+                    variax::Restore::Failed(error) => {
+                        write!(formatter, "Could not verify the original preset: {error}")?;
+                    }
+                }
+                if let Some(error) = release_error {
+                    write!(formatter, " {error}")?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl std::error::Error for RefreshError {}
+
+/// Capture all 60 preset settings and 12 bank names without saving files.
+/// Acquire the rig lock before opening the link and hold it through cleanup.
+/// Progress reports a preset after both metadata replies have decoded.
+/// Cancellation is checked between requests for presets and bank names. On
+/// cancellation or read failure, the backup sweep still attempts to reselect
+/// a unique match for the original preset. Only complete data reaches the editor.
+///
+/// This uses the backup's gated program selections, settings reads, and read
+/// bank name (`0x6D`). DSP processing stays active.
+pub fn refresh_library<L: Link>(
+    _rig: &DeviceLock,
+    session: &mut Session<L>,
+    cancelled: impl FnMut() -> bool,
+    progress: impl FnMut(variax::Preset),
+) -> Result<RefreshedLibrary, RefreshError> {
+    refresh_on(session, cancelled, progress)
+}
+
+fn refresh_on<L: Link>(
+    session: &mut Session<L>,
+    cancelled: impl FnMut() -> bool,
+    mut progress: impl FnMut(variax::Preset),
+) -> Result<RefreshedLibrary, RefreshError> {
+    for operation in [
+        Operation::VariaxIdentity,
+        Operation::VariaxLibraryBridge,
+        Operation::VariaxRead,
+        Operation::VariaxPresetSwitch,
+        Operation::VariaxBankNameRead,
+    ] {
+        if !session.allows(operation) {
+            return Err(RefreshError::Read(format!(
+                "Variax Refresh requires {operation:?}."
+            )));
+        }
+    }
+    let read = variax::sweep_library(session, cancelled, |stored| progress(stored.preset))
+        .map_err(RefreshError::Read)?;
+    if let Some(reason) = read.stopped {
+        return Err(RefreshError::Incomplete {
+            reason,
+            restore: read.restore,
+            release_error: read.release_error,
+        });
+    }
+    Ok(RefreshedLibrary {
+        identified: read.identified,
+        library: LoadedVariax {
+            original: Some(read.original),
+            presets: read
+                .presets
+                .into_iter()
+                .map(|stored| (stored.preset, stored.metadata))
+                .collect(),
+            bank_names: read.bank_names,
+        },
+        restore: read.restore,
+        release_error: read.release_error,
+    })
+}
+
+#[cfg(test)]
+mod tests;
