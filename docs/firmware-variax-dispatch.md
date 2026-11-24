@@ -657,6 +657,57 @@ drive the same pins as the store. `0x63` sets the bit, and index `64 + n`
 drives the same A0–A17 as index `n`. The editor sends none of `0x62`,
 `0x63`, `0x68`, or the code-load opcodes.
 
+### Clear PE4, and who leaves it set
+
+PE4 is bit 4 of `Y:0xFFFF9D`. Four windows erase or program while that bit
+is clear: bank names, string levels, `0x68`, and both code-load erases.
+
+| Path | What this image does with PE4 | Label |
+| --- | --- | --- |
+| Bank names `0x6C`, commit `P:0x1416B` | No set and no clear in the handler or the commit. Boot clears the bit at `P:0x140E8` before its own call. | **Confirmed.** Relies on the bit already being clear. |
+| String levels `0x56`, commit `P:0x14142` | No set and no clear. The same boot clear precedes the string-level compare and that boot call. | **Confirmed.** Relies on the bit already being clear. |
+| `0x68` | The 32–63 erase walk does not write the bit. | **Confirmed.** Relies on the bit already being clear. |
+| Both code-load erases | Each window clears the bit, then erases. Neither window sets it. | **Confirmed.** Clears explicitly. |
+
+The image sets this bit at the store, the loader copy, the `0x44` flash
+walk, `0x62`, `0x63`, the two checksum Y reads, and the one-byte Y read
+inside `P:0x141AA`. Each of those clears it before its own return. The
+five paths below are the ones that hold it across a poll.
+
+| Path | Return to the parser | Stall with PE4 still set | Label |
+| --- | --- | --- | --- |
+| Store `P:0x0FA6` | Clears at `P:0x0FCF` on the only path back. | The program and erase polls spin until the part answers. They do not read the MIDI queue. | **Confirmed.** |
+| Loader copy `P:0x1FE1` | Clears at `P:0x1FF9` after the copy. A checksum miss never sets the bit. | The copy is a RAM loop. It does not poll the part or the host. | **Confirmed.** No stall, and no return with the bit set. |
+| `0x44` flash walk | Clears at `P:0x148D2` after the walk, then queues the trailer. Index `0x7F` never sets the bit. A trailer other than `F7` returns before the walk. | `P:0x1241` spins while its 64-entry ring is full. That spin does not call the parser. The transmit interrupt drains the ring and returns without parsing. The receive interrupt only enqueues. A host that stops reading leaves the walk in that spin with the bit set. | **Confirmed.** |
+| `0x62` | Clears at `P:0x14796` after the sector walk. | The payload wait spins without the idle parser. The byte-program poll can restart with the bit still set. | **Confirmed.** |
+| `0x63` | Clears at `P:0x0F97` after its walk. | The erase poll can spin with the bit still set, and it does not parse MIDI. | **Confirmed.** |
+
+The family write API sends `0x6C` from `rename_bank`. That is the only
+clear-PE4 write among its commands and the #225 slot-read commands. The
+editor also sends `0x61` and program change. Both set the bit and clear
+it before they return. The editor does not send `0x44`, `0x56`, `0x62`,
+`0x63`, `0x68`, or either code-load opcode.
+
+The #225 tool sends a universal identity request (`F0 7E 7F 06 01 F7`),
+bridge on, session on, `0x44` for `0x7F`, then `0x32`, then `0x3E`, then
+session off and bridge off. The identity request matches `F7` at
+`P:0x142E3` and replies without setting PE4. The tool waits until each
+slot reply ends in `F7` before the next request. It does not send `0x6C`,
+`0x56`, `0x68`, or a code-load opcode.
+
+A host that stops reading during a flash `0x44` stalls in the ring wait
+with the bit set. A rename queued behind that reply is not parsed until
+the walk returns, and that return has already cleared the bit. A rename
+queued during a store poll waits the same way. **Confirmed:** neither
+sequence enters the name commit while PE4 is set.
+
+No sequence built only from those two senders' commands enters a
+clear-PE4 write while the bit is set. **Confirmed.** `0x6C`, `0x56` and
+`0x68` would keep a set bit if some earlier command returned with it
+set. These senders do not have such a command. Startup in this image
+clears the bit at `P:0x141CD` and again at `P:0x140E8` before the name
+and string reads. A power cycle was not measured.
+
 ### What erases sectors 60–62
 
 A completed `0x61` still erases one spare at the end of `P:0x0FA6`, after
