@@ -10,6 +10,8 @@ mod bank;
 mod controls;
 mod edit;
 mod library;
+mod metadata;
+mod parameters;
 #[cfg(test)]
 pub(crate) mod tests;
 mod tone;
@@ -17,4 +19,6 @@ mod tone;
 pub use bank::*;
 pub use controls::*;
 pub use library::*;
+pub use metadata::*;
+pub use parameters::*;
 pub use tone::*;
