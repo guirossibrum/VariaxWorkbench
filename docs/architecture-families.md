@@ -289,10 +289,16 @@ observation using the existing G1 fields.
 
 ### Bounded identity and interface ownership
 
-- PODxt Live uses the identity-only portion of its family procedure on its
-  existing own ALSA raw MIDI port. Extract or expose that portion from the
-  Device check current-tone path. Require the same approved PODxt identity
-  and endpoint, and run under the existing PODxt identity policy mapping
+Step 3c replaces the provisional Variax device tab. The PODxt tab shows
+**Guitar: checking…** while identity is pending and **Guitar: no guitar
+answered** after a silent exchange. Only a valid Variax 600 identity with
+successful interface cleanup admits a connected Variax tab. The
+[first-run owner test card](automatic-identity-owner-test-card.md) tracks
+physical verification for #213 and #201.
+
+- PODxt Live uses an identity-only session on its own ALSA raw MIDI port,
+  sharing the family's typed identity request and session transport. The
+  session requires PODxt Live 3.01 and runs under the existing policy mapping
   (`DeviceCheckCurrentSettingsRead`) plus G1. Automatic detection sends
   only the identity query. It does not call the combined read, tuner,
   channel, edit, pack, backup or store commands.
@@ -315,21 +321,20 @@ observation using the existing G1 fields.
   keeps it through the complete transaction, including any undo, release,
   reattach and worker shutdown. In particular, the raw MIDI identity
   adapter must close its reader as well as its writer before it returns.
-  The existing `RawMidiLink` blocking reader can outlive the writer, so a
-  bounded, joinable reader lifetime is a Step 3 integration requirement.
+  The raw MIDI transport uses one nonblocking descriptor for bounded
+  reads and writes. That descriptor closes before the identity worker
+  returns. Quitting waits for the identity worker or an in-flight Device
+  check backup or tone operation to finish.
   Detection defers while busy, rechecks the generation and preflight when
   ownership is available, and neither queues repeated identities per
   frame nor tries to preempt the holder.
-- A process-local lock covers only one instance. Step 3 delivers the same OS-backed lock in app instances and in
-  `tools/reso5-test` and `tools/variax-probe`. The owner probe
-  holds it across the entire multi-stage procedure, including pauses and
-  restore, with one lock order for both logical interfaces on the bridge.
-  An exclusive OS interface claim alone cannot protect pauses in a
-  legacy multi-stage probe. Until the owner probes share the guard,
-  close the GUI and let its workers and cleanup finish before running
-  those procedures. Automatic identity ships in the same step as the shared interlock. A busy or uncertain
-  endpoint defers the attempt, and cleanup failure suspends further
-  identity on that attachment and reports the failure.
+- On Linux the app and rebuilt `tools/reso5-test` and `tools/variax-probe`
+  share an advisory lock at `/tmp/variax-workbench-podxt-live.lock`. The
+  linked-recall launcher passes the locked descriptor to its subprocesses
+  and holds it across pauses and restore. Older binaries and unrelated
+  programs need to be closed before using the same rig. A busy or uncertain
+  endpoint defers entry. A cleanup failure suspends further identity on
+  that attachment.
 
 ### Disconnect and reconnect
 

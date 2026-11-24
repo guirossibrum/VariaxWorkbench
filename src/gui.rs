@@ -313,6 +313,7 @@ struct Workbench {
     shell_error: Option<String>,
     shell_status: String,
     close_request: Option<CloseRequest>,
+    waiting_for_hardware: bool,
     closing_tab: Option<TabId>,
     recording_close_pending: bool,
     #[cfg(test)]
@@ -447,10 +448,18 @@ impl Workbench {
             return;
         };
         let mut finished = None;
-        while let Ok(event) = rx.try_recv() {
-            match event {
-                BackupEvent::Progress(line) => self.device_check_notice = line,
-                BackupEvent::Finished(result) => finished = Some(result),
+        loop {
+            match rx.try_recv() {
+                Ok(BackupEvent::Progress(line)) => self.device_check_notice = line,
+                Ok(BackupEvent::Finished(result)) => {
+                    finished = Some(result);
+                    break;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    finished = Some(Err("The device operation ended without a result.".into()));
+                    break;
+                }
             }
         }
         if let Some(result) = finished {
@@ -510,10 +519,18 @@ impl Workbench {
             return;
         };
         let mut finished = None;
-        while let Ok(event) = rx.try_recv() {
-            match event {
-                BackupEvent::Progress(line) => self.device_check_notice = line,
-                BackupEvent::Finished(result) => finished = Some(result),
+        loop {
+            match rx.try_recv() {
+                Ok(BackupEvent::Progress(line)) => self.device_check_notice = line,
+                Ok(BackupEvent::Finished(result)) => {
+                    finished = Some(result);
+                    break;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    finished = Some(Err("The device operation ended without a result.".into()));
+                    break;
+                }
             }
         }
         if let Some(result) = finished {

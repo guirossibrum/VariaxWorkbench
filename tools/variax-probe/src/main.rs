@@ -953,8 +953,49 @@ fn run_podxt(capture: &mut Capture) -> Result<(), String> {
     capture.file("editbuffer.syx", &tone.tone.raw)
 }
 
+const LINKED_RECALL_LOCK: &str = "VARIAX_WORKBENCH_LINKED_RECALL_LOCK";
+
+fn acquire_rig() -> Result<Option<line6_devices::device_lock::DeviceLock>, String> {
+    use line6_devices::device_lock::DeviceLock;
+    #[cfg(target_os = "linux")]
+    if std::env::var_os(LINKED_RECALL_LOCK).is_some() {
+        DeviceLock::verify_inherited_stdin().map_err(|error| error.to_string())?;
+        return Ok(None);
+    }
+    DeviceLock::acquire()
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn run_locked_recall(script: &str) -> Result<i32, String> {
+    let rig =
+        line6_devices::device_lock::DeviceLock::acquire().map_err(|error| error.to_string())?;
+    let stdin = rig.child_stdin().map_err(|error| error.to_string())?;
+    let status = std::process::Command::new("bash")
+        .arg(script)
+        .stdin(stdin)
+        .env(LINKED_RECALL_LOCK, "1")
+        .status()
+        .map_err(|error| error.to_string())?;
+    Ok(status.code().unwrap_or(1))
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    #[cfg(target_os = "linux")]
+    if let [flag, script] = args.as_slice()
+        && flag == "--lock-linked-recall"
+    {
+        let result = run_locked_recall(script);
+        match result {
+            Ok(status) => std::process::exit(status),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+    }
     let (command, out) = match parse(&args) {
         Ok(parsed) => parsed,
         Err(message) => {
@@ -990,6 +1031,13 @@ fn main() {
     let Some(out) = out else {
         eprintln!("--out DIR is required for device commands.\n{USAGE}");
         std::process::exit(2);
+    };
+    let _rig = match acquire_rig() {
+        Ok(rig) => rig,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
     };
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)

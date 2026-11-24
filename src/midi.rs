@@ -56,6 +56,11 @@ pub struct SysexDecoder {
     pending: Vec<u8>,
 }
 impl SysexDecoder {
+    #[cfg(feature = "usb")]
+    pub(crate) fn is_idle(&self) -> bool {
+        self.pending.is_empty()
+    }
+
     pub fn feed(&mut self, bytes: &[u8]) -> Result<Vec<Vec<u8>>, String> {
         let mut messages = Vec::new();
         for &byte in bytes {

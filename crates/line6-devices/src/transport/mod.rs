@@ -1,5 +1,5 @@
 //! Thin, replaceable links. Each implements [`crate::session::Link`] for one
-//! [`crate::session::Path`]. Tests never construct these.
+//! [`crate::session::Path`]. Tests use in-memory links or local fixture descriptors.
 
 #[cfg(target_os = "linux")]
 pub mod rawmidi;

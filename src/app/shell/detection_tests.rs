@@ -1,4 +1,6 @@
-use super::super::detection::{AttachmentKey, DeviceSupport, LinkedObservation, PresenceSource};
+use super::super::detection::{
+    AttachmentKey, DeviceSupport, PresenceSource, SimulatedGuitar, SimulatedJob, SimulatedOutcome,
+};
 use super::super::tabs::{Connection, DeviceTab};
 use super::*;
 use std::cell::RefCell;
@@ -12,7 +14,8 @@ use variax_workbench::pod_hd500x::{USB_PRODUCT_ID, USB_VENDOR_ID};
 #[derive(Default)]
 struct FakeSnapshot {
     usb: Vec<UsbDevice>,
-    linked: Vec<LinkedObservation>,
+    results: std::collections::BTreeMap<AttachmentKey, SimulatedOutcome>,
+    completed: Vec<SimulatedJob>,
     fail: bool,
     reads: usize,
 }
@@ -41,8 +44,11 @@ impl PresenceSource for FakePresence {
         self
     }
 
-    fn linked_devices(&self) -> Vec<LinkedObservation> {
-        self.0.borrow().linked.clone()
+    fn simulated_identity(&self, job: &SimulatedJob) -> Option<SimulatedOutcome> {
+        let mut snapshot = self.0.borrow_mut();
+        let outcome = snapshot.results.remove(&job.attachment)?;
+        snapshot.completed.push(job.clone());
+        Some(outcome)
     }
 }
 
@@ -65,10 +71,17 @@ impl FakePresence {
     }
 
     fn guitar(&self, parent: AttachmentKey) {
-        self.0.borrow_mut().linked = vec![LinkedObservation {
+        self.finish(parent, SimulatedGuitar::Verified("3.10"));
+    }
+
+    fn finish(&self, parent: AttachmentKey, guitar: SimulatedGuitar) {
+        self.0.borrow_mut().results.insert(
             parent,
-            family_id: "variax",
-        }];
+            SimulatedOutcome::Finished {
+                pod_firmware: Some("3.01"),
+                guitar,
+            },
+        );
     }
 }
 
@@ -181,7 +194,7 @@ fn usb_hotplug_opens_one_pod_tab_and_detaches_it_on_removal() {
 }
 
 #[test]
-fn linked_observation_opens_variax_without_duplicate_or_stealing_focus() {
+fn verified_identity_opens_variax_without_duplicate_or_stealing_focus() {
     let (ctx, mut app, source) = fixture();
     app.new_tab(registry::LEGACY_STARTUP);
     let offline = app.tabs.active;
@@ -189,18 +202,12 @@ fn linked_observation_opens_variax_without_duplicate_or_stealing_focus() {
     tick(&ctx, &mut app);
     let parent = entries(&app)[0].2.device.key.attachment.clone();
     source.guitar(parent);
-    // A duplicated logical observation still represents one connected guitar.
-    let observation = source.0.borrow().linked[0].clone();
-    source.0.borrow_mut().linked.push(observation);
     tick(&ctx, &mut app);
 
     let tabs = entries(&app);
     assert_eq!(tabs.len(), 2);
     assert_eq!(tabs[1].0, "variax");
-    assert_eq!(
-        tabs[1].2.status(),
-        "USB bridge detected · guitar identity pending"
-    );
+    assert_eq!(tabs[1].2.status(), "Identity verified · firmware 3.10");
     assert_eq!(app.tabs.active, offline);
     assert_eq!(app.tabs.entries.len(), 3);
     let id = tabs[1].1;
@@ -309,7 +316,6 @@ fn dirty_disconnect_keeps_the_editor_until_the_user_closes_it() {
 
     source.usb(true, false);
     tick(&ctx, &mut app);
-    // The vanished parent is still in the injected logical source.
     assert_eq!(entries(&app).len(), 2);
     let new_parent = entries(&app)[1].2.device.key.attachment.clone();
     assert_ne!(old_parent, new_parent);
@@ -371,16 +377,16 @@ fn dismissal_lasts_only_for_the_current_logical_attachment() {
     tick(&ctx, &mut app);
     assert_eq!(entries(&app).len(), 1);
 
-    source.0.borrow_mut().linked.clear();
-    tick(&ctx, &mut app);
-    source.guitar(parent);
-    tick(&ctx, &mut app);
+    source.finish(parent.clone(), SimulatedGuitar::Silent);
+    app.refresh_guitar(&parent);
+    source.guitar(parent.clone());
+    app.refresh_guitar(&parent);
     assert_eq!(entries(&app).len(), 2);
     assert_ne!(entries(&app)[1].2.device.key, old_key);
 }
 
 #[test]
-fn expected_cached_bridge_binding_shows_guitar_identity_pending() {
+fn expected_cached_bridge_binding_only_shows_the_pod_while_checking() {
     let (ctx, mut app, source) = fixture();
     source.usb(true, false);
     source.0.borrow_mut().usb[0].interfaces.push(UsbInterface {
@@ -390,22 +396,121 @@ fn expected_cached_bridge_binding_shows_guitar_identity_pending() {
 
     tick(&ctx, &mut app);
     let tabs = entries(&app);
-    assert_eq!(tabs.len(), 2);
+    assert_eq!(tabs.len(), 1);
     assert_eq!(tabs[0].0, "podxt");
-    assert_eq!(tabs[1].0, "variax");
     assert_eq!(
-        tabs[0].2.device.key.attachment,
-        tabs[1].2.device.key.attachment
+        tabs[0].2.device.guitar_status.as_deref(),
+        Some("Guitar: checking…")
     );
+    let parent = tabs[0].2.device.key.attachment.clone();
+    source.finish(parent.clone(), SimulatedGuitar::Silent);
+    tick(&ctx, &mut app);
+    let tabs = entries(&app);
+    assert_eq!(tabs.len(), 1);
+    assert_eq!(
+        tabs[0].2.device.guitar_status.as_deref(),
+        Some("Guitar: no guitar answered")
+    );
+    assert!(tabs[0].2.device.refresh_guitar);
+    source.guitar(parent);
+    tick(&ctx, &mut app);
+    assert_eq!(entries(&app).len(), 1);
+    assert_eq!(source.0.borrow().completed.len(), 1);
+}
+
+#[test]
+fn refresh_button_waits_while_the_rig_is_busy_and_opens_only_after_verification() {
+    let (ctx, mut app, source) = fixture();
+    source.usb(true, false);
+    tick(&ctx, &mut app);
+    let attachment = entries(&app)[0].2.device.key.attachment.clone();
+    source.finish(attachment.clone(), SimulatedGuitar::Silent);
+    tick(&ctx, &mut app);
+    source
+        .0
+        .borrow_mut()
+        .results
+        .insert(attachment.clone(), SimulatedOutcome::Deferred);
+    detection_button(&ctx, &mut app, "refresh-guitar");
+    assert_eq!(entries(&app).len(), 1);
+    let pod = entries(&app)[0].2;
+    assert_eq!(
+        pod.device.guitar_status.as_deref(),
+        Some("Guitar: checking… (waiting for the rig)")
+    );
+    assert!(!pod.device.refresh_guitar);
+    source.guitar(attachment);
+    tick(&ctx, &mut app);
+    assert_eq!(entries(&app).len(), 2);
+    assert_eq!(
+        entries(&app)[1].2.device.support,
+        DeviceSupport::Verified("3.10")
+    );
+    tick(&ctx, &mut app);
+    assert_eq!(source.0.borrow().completed.len(), 3);
+}
+
+#[test]
+fn refresh_silence_detaches_guitar_and_keeps_last_verified_identity_as_history() {
+    let (ctx, mut app, source) = fixture();
+    source.usb(true, false);
+    tick(&ctx, &mut app);
+    let attachment = entries(&app)[0].2.device.key.attachment.clone();
+    source.guitar(attachment.clone());
+    tick(&ctx, &mut app);
+    let guitar = entries(&app)[1].1;
+
+    app.refresh_guitar(&attachment);
+    assert_eq!(
+        entries(&app)[1].2.device.support,
+        DeviceSupport::Refreshing("3.10")
+    );
+    source.finish(attachment, SimulatedGuitar::Silent);
+    tick(&ctx, &mut app);
+    let tabs = entries(&app);
+    assert_eq!(tabs[1].1, guitar);
+    assert_eq!(tabs[1].2.connection, Connection::Disconnected);
+    assert_eq!(
+        tabs[0].2.device.guitar_status.as_deref(),
+        Some("Guitar: no guitar answered · last verified Variax 600 3.10")
+    );
+}
+
+#[test]
+fn cleanup_failure_suspends_refresh_and_stale_replies_do_not_open_guitar_tabs() {
+    let (ctx, mut app, source) = fixture();
+    source.usb(true, false);
+    tick(&ctx, &mut app);
+    let old = entries(&app)[0].2.device.key.attachment.clone();
+    source.finish(old.clone(), SimulatedGuitar::CleanupFailed);
+    tick(&ctx, &mut app);
+    let pod = entries(&app)[0].2;
     assert!(
-        tabs.iter()
-            .all(|tab| tab.2.device.support == DeviceSupport::IdentityPending)
+        pod.device
+            .guitar_status
+            .as_ref()
+            .unwrap()
+            .contains("cleanup failed")
     );
-    assert!(
-        app.tabs
-            .entries
-            .iter()
-            .all(|entry| entry.title().ends_with("identity pending"))
+    assert!(!pod.device.refresh_guitar);
+    app.refresh_guitar(&old);
+    source.guitar(old);
+    tick(&ctx, &mut app);
+    assert_eq!(entries(&app).len(), 1);
+
+    source.usb(false, false);
+    tick(&ctx, &mut app);
+    source.usb(true, false);
+    tick(&ctx, &mut app);
+    assert_eq!(entries(&app).len(), 2);
+    let new = entries(&app)[1].2.device.key.attachment.clone();
+    source.finish(
+        new.clone(),
+        SimulatedGuitar::Unavailable("Linux refused the open.".into()),
     );
-    assert!(source.0.borrow().linked.is_empty());
+    tick(&ctx, &mut app);
+    assert_eq!(entries(&app).len(), 2);
+    source.guitar(new.clone());
+    app.refresh_guitar(&new);
+    assert_eq!(entries(&app).len(), 3);
 }

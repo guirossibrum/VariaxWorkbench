@@ -78,6 +78,7 @@ impl Workbench {
             shell_error: None,
             shell_status: String::new(),
             close_request: None,
+            waiting_for_hardware: false,
             closing_tab: None,
             recording_close_pending: false,
             #[cfg(test)]
@@ -201,12 +202,34 @@ impl Workbench {
         self.closing_tab = None;
         self.close_request = None;
         self.recording_close_pending = false;
+        self.waiting_for_hardware = false;
     }
 
     fn advance_close(&mut self, ctx: &egui::Context) {
         let Some(request) = &self.close_request else {
             return;
         };
+        if matches!(request, CloseRequest::Quit { .. }) {
+            let identity_busy = self
+                .detection
+                .as_mut()
+                .is_some_and(DetectionService::cancel_for_quit);
+            let was_waiting = self.waiting_for_hardware;
+            self.waiting_for_hardware =
+                identity_busy || self.backup_rx.is_some() || self.tone_rx.is_some();
+            if self.waiting_for_hardware {
+                self.shell_status =
+                    "Waiting for the device operation to finish before quitting.".into();
+                ctx.request_repaint_after(Duration::from_millis(100));
+                return;
+            }
+            if was_waiting
+                && self.shell_status
+                    == "Waiting for the device operation to finish before quitting."
+            {
+                self.shell_status.clear();
+            }
+        }
         let mut target = None;
         for entry in &mut self.tabs.entries {
             let consider = match request {
@@ -269,6 +292,9 @@ impl Workbench {
     pub(super) fn render(&mut self, ctx: &egui::Context) {
         self.refresh_theme(ctx);
         self.poll_detection(ctx);
+        if self.waiting_for_hardware {
+            self.advance_close(ctx);
+        }
         for entry in &mut self.tabs.entries {
             entry.editor.poll(ctx);
         }
@@ -383,6 +409,8 @@ impl Workbench {
                     });
                 }
             });
+            let mut guitar_refresh = None;
+            let allow_refresh = !self.has_prompt();
             ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui| {
                 ui.label(format!("build {}", crate::BUILD_NUMBER));
                 ui.label(crate::APP_VERSION);
@@ -395,6 +423,22 @@ impl Workbench {
                         }
                         if let Some(device) = &self.tabs.entries[index].device {
                             ui.weak(device.status());
+                            if device.connection == tabs::Connection::Present
+                                && let Some(status) = device.device.guitar_status.clone()
+                            {
+                                let attachment = device
+                                    .device
+                                    .refresh_guitar
+                                    .then(|| device.device.key.attachment.clone());
+                                ui.horizontal(|ui| {
+                                    ui.label(status);
+                                    if let Some(attachment) = attachment
+                                        && self.refresh_guitar_button(ui, allow_refresh)
+                                    {
+                                        guitar_refresh = Some(attachment);
+                                    }
+                                });
+                            }
                         }
                     }
                     if let Some(error) = &self.detection_status {
@@ -408,6 +452,9 @@ impl Workbench {
                     }
                 });
             });
+            if let Some(attachment) = guitar_refresh {
+                self.refresh_guitar(&attachment);
+            }
         });
         let closing = self.close_request.is_some();
         egui::CentralPanel::default().show(ctx, |ui| {

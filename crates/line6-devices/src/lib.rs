@@ -21,6 +21,7 @@
 #![forbid(unsafe_code)]
 
 pub mod backup;
+pub mod device_lock;
 pub mod family;
 pub mod gate;
 pub mod identity;

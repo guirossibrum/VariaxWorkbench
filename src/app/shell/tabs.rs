@@ -98,10 +98,14 @@ impl DeviceTab {
             Connection::Disconnected => "Disconnected · offline editing".into(),
             Connection::Uncertain => "USB presence could not be verified".into(),
             Connection::Present => match &self.device.support {
-                DeviceSupport::IdentityPending if self.device.key.is_linked() => {
-                    "USB bridge detected · guitar identity pending".into()
-                }
                 DeviceSupport::IdentityPending => "USB detected · identity pending".into(),
+                DeviceSupport::UsbOnly => "USB detected · identity unverified".into(),
+                DeviceSupport::Verified(firmware) => {
+                    format!("Identity verified · firmware {firmware}")
+                }
+                DeviceSupport::Refreshing(firmware) => {
+                    format!("Checking connection · last verified firmware {firmware}")
+                }
                 DeviceSupport::FileEditingOnly => "Live connection not supported yet".into(),
             },
         }
@@ -123,6 +127,11 @@ impl TabEntry {
             return match device.connection {
                 Connection::Present if device.device.support == DeviceSupport::IdentityPending => {
                     format!("{name} · identity pending")
+                }
+                Connection::Present
+                    if matches!(device.device.support, DeviceSupport::Refreshing(_)) =>
+                {
+                    format!("{name} · checking")
                 }
                 Connection::Present => name.into(),
                 Connection::Uncertain => format!("{name} · presence unknown"),

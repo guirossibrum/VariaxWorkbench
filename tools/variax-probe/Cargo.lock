@@ -153,6 +153,7 @@ name = "line6-devices"
 version = "0.1.0"
 dependencies = [
  "rusb",
+ "rustix",
  "sha2",
 ]
 
