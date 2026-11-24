@@ -16,6 +16,12 @@ from map_firmware import pod_word_section
 from map_podxt_commands import PROGRAM_END, PROGRAM_START, _disassembly, _program_bytes, _width1_words
 from map_podxt_entry import RETURN_WORD, TABLE_BASE
 
+HOST_TO_SHARC = (
+    "contradicted by owner hardware runs; host-to-SHARC translation unknown"
+)
+SHARC_SCOPE = (
+    "SHARC internal command set; no host message is shown to reach these routines"
+)
 ARCHIVE_SHA256 = "738f72e95f72e0bf4e52c4973ca86f098fae54a5d68e1c7b46112ad261ff07f5"
 IMAGE_BYTES = 0x100000
 FAMILY_SOURCE = Path("crates/line6-devices/src/family/podxt/mod.rs")
@@ -126,6 +132,30 @@ def _indirect(text):
     return ("JUMP" in text or "CALL" in text) and DIRECT.search(text) is None
 
 
+def _region5_xor(payload):
+    """Count 6-byte ASCII windows after each single-byte XOR.
+
+    A constant XOR permutes byte values and preserves entropy, so the
+    entropy is not a signal. The window count is.
+    """
+    readable = 0
+    for key in range(256):
+        decoded = bytes(byte ^ key for byte in payload)
+        start = 0
+        while True:
+            found = min(
+                (index for token in (b"POD", b"USB", b"Line") if (index := decoded.find(token, start)) >= 0),
+                default=-1,
+            )
+            if found < 0:
+                break
+            window = decoded[found:found + 6]
+            if len(window) == 6 and all(32 <= byte < 127 for byte in window):
+                readable += 1
+            start = found + 1
+    return readable
+
+
 def inventory(archive, family_source):
     if hashlib.sha256(archive).hexdigest() != ARCHIVE_SHA256:
         raise ValueError("expected the exact archived PODxt Live 3.01 container")
@@ -221,6 +251,27 @@ def inventory(archive, family_source):
         raise ValueError("an editor opcode is no longer a zero target")
     if any(dispositions[opcode] != "traced_entry" for opcode in ("0x57", "0x73", "0x75")):
         raise ValueError("an editor read opcode is no longer a traced entry")
+    if listing[0x818B] != "LCNTR = 0x00A0, DO (0x0000818D) UNTIL LCE":
+        raise ValueError("opcode 0x75 transmit loop changed")
+    if "pub const EDIT_BUFFER_LEN: usize = 168" not in family_source:
+        raise ValueError("host edit-buffer length changed")
+    if image.find("No Amp".encode("utf-16-be")) != 0x31000:
+        raise ValueError("resource name No Amp moved")
+    if image.find("Bypass".encode("utf-16-be")) != 0x31020:
+        raise ValueError("resource name Bypass moved")
+    anchor_counts = (
+        image.count(bytes.fromhex("f07e7f0602")),
+        image.count(bytes.fromhex("f000010c")),
+        image.count(bytes.fromhex("00010c03")),
+        image.count(b"3.01"),
+        image.count("3.01".encode("utf-16-be")),
+        sum(1 for text in listing.values() if "0x0000007E" in text),
+    )
+    if any(anchor_counts):
+        raise ValueError("a host identity or version anchor is present in the image")
+    xor_readable = _region5_xor(image[0x20008:0x30000])
+    if xor_readable:
+        raise ValueError("region 5 XOR screen found a readable window")
     return {
         "archive_sha256": ARCHIVE_SHA256,
         "image_bytes": IMAGE_BYTES,
@@ -242,6 +293,21 @@ def inventory(archive, family_source):
         "global_id_max": max(ids),
         "evidence_count": len(EVIDENCE),
         "target_confidence": "confirmed",
+        "host_to_sharc": HOST_TO_SHARC,
+        "sharc_scope": SHARC_SCOPE,
+        "identity_reply_prefix_count": image.count(bytes.fromhex("f07e7f0602")),
+        "family_header_count": image.count(bytes.fromhex("f000010c")),
+        "manufacturer_family_count": image.count(bytes.fromhex("00010c03")),
+        "ascii_version_3_01_count": image.count(b"3.01"),
+        "utf16_version_3_01_count": image.count("3.01".encode("utf-16-be")),
+        "immediate_0x7e_count": sum(1 for text in listing.values() if "0x0000007E" in text),
+        "sysex_75_loop": listing[0x818B],
+        "sharc_75_payload_bytes": 0xA0,
+        "sharc_75_frame_bytes": 163,
+        "host_edit_buffer_bytes": 168,
+        "resource_name_no_amp": "0x31000",
+        "resource_name_bypass": "0x31020",
+        "region5_xor_readable_windows": xor_readable,
     }
 
 

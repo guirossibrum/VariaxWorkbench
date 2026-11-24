@@ -475,5 +475,20 @@
   ],
   "global_id_max": 34,
   "evidence_count": 9,
-  "target_confidence": "confirmed"
+  "target_confidence": "confirmed",
+  "host_to_sharc": "contradicted by owner hardware runs; host-to-SHARC translation unknown",
+  "sharc_scope": "SHARC internal command set; no host message is shown to reach these routines",
+  "identity_reply_prefix_count": 0,
+  "family_header_count": 0,
+  "manufacturer_family_count": 0,
+  "ascii_version_3_01_count": 0,
+  "utf16_version_3_01_count": 0,
+  "immediate_0x7e_count": 0,
+  "sysex_75_loop": "LCNTR = 0x00A0, DO (0x0000818D) UNTIL LCE",
+  "sharc_75_payload_bytes": 160,
+  "sharc_75_frame_bytes": 163,
+  "host_edit_buffer_bytes": 168,
+  "resource_name_no_amp": "0x31000",
+  "resource_name_bypass": "0x31020",
+  "region5_xor_readable_windows": 0
 }

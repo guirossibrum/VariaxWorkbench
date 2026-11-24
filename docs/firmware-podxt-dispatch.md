@@ -13,7 +13,65 @@ not an application dependency.
 
 Labels mean: **confirmed** (bytes or disassembly at the address given),
 **likely** (a reading that fits those bytes and is not proven), **unknown**
-(not established). The coverage report and the trap list close this file.
+(not established). One more label is used where a host opcode was read as a
+SHARC table index: **contradicted by owner hardware runs; host-to-SHARC
+translation unknown**. The coverage report and the trap list close this file.
+
+## Host messages and this parser
+
+Owner runs on PODxt Live 3.01, 2026-11-22 through 2026-11-24, answer the
+universal identity inquiry every time and display revision 3.01. `03 23 01`
+and `03 23 00` were sent many times. `03 75` returns the 168-byte edit
+buffer. Stored-tone and global reads in both library backups completed,
+299 of 299 files. CC edits with undo completed. No reset was observed.
+
+Those runs contradict reading the host opcode as this parser's index.
+
+**Confirmed** SHARC facts. The table word for `0x23` is 0. `0x80CB` is
+`JUMP (M15, I15)`. The only decoded writes of `M15` store 0, at `0x824F`
+and `0x8259`, so an index of `0x23` jumps to address 0. The identity
+inquiry is `F0 7E 7F 06 01 F7`. If this parser took the byte after `F0`
+as the index, that index would be `0x7E`, whose table word is `0xAADF`,
+outside the loaded program. Opcode `0x75` at `0x8187` transmits `F0`,
+`0x74`, then 160 bytes (`LCNTR = 0x00A0` ending at `0x818D`), then `F7`.
+That frame is 163 bytes. The host edit buffer is 168 bytes and begins
+`F0 00 01 0C 03 74`, with `F7` at the end, so 161 bytes sit after the
+opcode. Inserting `00 01 0C 03` into the 163-byte frame produces 167
+bytes and still 160 payload bytes. The parser consumes `B0` and `C0` and
+returns without a table jump, and it does not write the edit buffer.
+
+**Confirmed** absences in the 1,048,576-byte image. The byte strings
+`F0 7E 7F 06 02`, `F0 00 01 0C`, and `00 01 0C 03` occur zero times. ASCII
+`3.01` and UTF-16BE `3.01` occur zero times. No disassembled immediate
+is `0x0000007E`. Nine occurrences of `00 01 0C` are recorded in the entry
+inventory, and none is followed by `03`. UTF-16BE `No Amp` is at file
+`0x31000` and `Bypass` at `0x31020`, which is the resource directory in
+regions 6–11.
+
+**Confirmed** region screen. Region 4 is the only coherent SHARC program.
+Region 5's payload stays unidentified: entropy 7.916, and the earlier
+marker count on a SHARC disassembly of that payload is 5,371 of 10,921
+words. Regions 0, 12–16, and 18 are entirely `FF`. Region 17 holds the
+factory records. No second instruction set was identified. The local
+PODxt driver DLL contains none of the identity-reply prefix, and the one
+`00 01 0C 03` hit in the Windows control-panel binary is a host template
+for opcodes `0x56` and `0x57`. The USB-firmware catalog row remains the
+empty `0.00` placeholder in the [USB component note](pod-usb-firmware.md).
+
+The included schematic pages are drawing 35-00-0134, sheets 5–9, the
+standard SHARCPOD board. Sheet 5 shows U13 `ADSP-21065LKS-240`. Nets that
+leave that sheet include `DSP_TO_MIDI_DATA_RDY`, `MIDI_TO_DSP_DATA_RDY`,
+`DSP_RESET_READY`, `USB_TX_SDATA`, and `USB_RX_SDATA`. Sheet 7 is the
+analog MIDI input and output and the FBX foot interface. The parts pages
+in that PDF name passives, cables, and mechanical parts. Sheets 1–4 are
+not in the PDF. The controller IC and its firmware are **unknown**.
+
+The flash routines `0x930F`, `0x9324`, `0x936A`, and `0x9380`, and the
+boot checks, stay as SHARC-internal findings. They apply to the SHARC
+command set. No host message is shown to reach them. Which host message,
+if any, becomes opcode `0x71` or the `0x60` / `0x67` / `0x72` half erase
+is **unknown**. That is the open store question for
+[#222](https://github.com/guirossibrum/VariaxWorkbench/issues/222).
 
 ## Which program sees the bytes
 
@@ -33,9 +91,9 @@ that word in the ring, and returns from interrupt. Transmit at `0x80D6–0x80DB`
 waits while `FLAG1_IN` is clear, then stores `R0` to the same address. Those
 are the only two decoded references to `0x00200000`. The address is absolute
 external memory. Which pin or peripheral decodes it is **unknown**. The
-[schematic reference](rig-schematics.md) shows the ADSP-21065L handshaking with
-a controller and shows separate MIDI circuitry. This image does not say which
-of those paths feeds `0x00200000`.
+[schematic reference](rig-schematics.md) and the host-path section name the
+off-sheet handshake nets. This image does not say which of those nets feeds
+`0x00200000`.
 
 **Confirmed.** The parser at `0x80B2` is called from the reset main loop at
 `0x8271` and from nowhere else in the decoded program. It returns immediately
@@ -150,14 +208,14 @@ Loaded entries at and below `0x76`:
 The host editor's SysEx frames are `F0 00 01 0C 03 <opcode> … F7`. A search
 of the whole image finds zero occurrences of `F0 00 01 0C`. The SHARC send
 and receive path above emits `F0`, then one opcode byte, then payload, then
-`F7`. **Likely:** another stage removes `00 01 0C 03` before this parser and
-inserts it on the way out. The reason for that reading is that the populated
-table slots are the host opcodes (`0x57`, `0x71`, `0x73`, `0x74`, `0x75`) and
-several of those entries transmit the reply opcode the host already pairs
-with the request. If the four manufacturer and family bytes were still
-present, the index would be `0x00` and the target would be address 0.
-**Unknown:** which component does that, and why the host's 168-byte edit
-buffer is five bytes longer than the 163-byte frame at `0x8187`. The
+`F7`. Reading the host opcode as this table index is **contradicted by
+owner hardware runs; host-to-SHARC translation unknown**. The populated
+table slots include the same byte values the host uses (`0x57`, `0x71`,
+`0x73`, `0x74`, `0x75`), and several of those entries transmit the reply
+opcode the host already pairs with the request. That similarity is not a
+translation. If the four manufacturer and family bytes were still present
+at this parser, the index would be `0x00` and the target would be address
+0. The host edit buffer is 168 bytes. The frame at `0x8187` is 163. The
 [USB component note](pod-usb-firmware.md) still has no USB-firmware image.
 This main-flash image is not that artifact. **Confirmed.**
 
@@ -177,9 +235,9 @@ The other high slots are zero or outside the loaded program, including
 
 ### Bytes the editor uses
 
-The table match below is **confirmed**. Treating the host opcode as the
-SHARC index is the **likely** header-stripping reading above, not a captured
-trace of `DM(0x00200000)`.
+The table match below is **confirmed** as the SHARC word for that index.
+Treating the host opcode as that index is **contradicted by owner hardware
+runs; host-to-SHARC translation unknown**.
 
 | Editor message | Table index if that byte is the opcode | Recorded word |
 | --- | --- | --- |
@@ -192,7 +250,7 @@ trace of `DM(0x00200000)`.
 | Linked model `03 10` | `0x10` | `0x0000` |
 | `03 11` | `0x11` | `0x0000` |
 | Variax release `03 23` | `0x23` | `0x0000` |
-| Universal identity `F0 7E 7F 06 01 F7` | `0x7E`, the byte after `F0` | `0xAADF` outside the program |
+| Universal identity `F0 7E 7F 06 01 F7` | `0x7E` only if this parser sees the raw frame | `0xAADF` outside the program. Direct delivery is contradicted by owner hardware runs; host-to-SHARC translation unknown. |
 | `03 0F` | `0x0F` | `0x0000` |
 | `03 24` | `0x24` | `0x0000` |
 | Value `0x40` (CC 64's controller number) | `0x40` | `0x80CE` return |
@@ -229,17 +287,22 @@ shifts 0 through 5 mark 958, 887, 1,021, 918, 958, and 953 lines. Two payload
 bytes remain after the aligned 48-bit split.
 
 **Unknown.** The measurements do not identify an ISA, a compression scheme, or
-encryption. High entropy is not evidence of encryption. No 8051, Thumb, or
-XOR sweep was run. No separate USB-controller executable was identified in
-this image.
+encryption. High entropy is not evidence of encryption. A constant XOR
+preserves byte-count entropy, so that screen cannot identify one. The
+coverage check still XORs the region-5 payload, after its 8-byte length
+and checksum, with each of the 256 byte values and counts 6-byte ASCII
+windows that begin with `POD`, `USB`, or `Line`. The count is 0. No Thumb
+decoder was run. No separate controller executable was identified in this
+image.
 
 ## Command handlers
 
 CC status and program change still have no handler. Every byte from
 `DM(0x00200000)` enters the ring, and the parser returns without a table jump
-for every status other than `F0` and `F7`. **Confirmed.** A front end that
-turned a CC or a program change into a SysEx opcode before the pipe is
-**unknown**; nothing in this image does that conversion.
+for every status other than `F0` and `F7`. **Confirmed.** Owner CC edits
+changed the tone, so another component applies them. Nothing in this image
+turns a CC or a program change into a SysEx opcode. Host-to-SHARC
+translation for those status bytes is **unknown**.
 
 Ring reads in the handlers below do not compare the read pointer with the
 write pointer and do not test for `F7`. A short or truncated message therefore
@@ -253,7 +316,12 @@ words at `0x1B917`. The archived initial word at `0x1B910` is 0, and slots 0,
 writes `0xB0` to `DM(0x01000000)` and waits until `DM(0xC2D7)` changes.
 **Confirmed.** The live value of the state word after boot is **unknown**.
 
-### Editor opcodes
+### SHARC indexes with the same byte as a host opcode
+
+The opcode column is the SHARC index. Reading the host opcode as that
+index is **contradicted by owner hardware runs; host-to-SHARC translation
+unknown**. The flash column is what that SHARC index does. No host message
+is shown to reach those routines.
 
 | Opcode | Entry | Confirmed action | Reply | Flash |
 | --- | --- | --- | --- | --- |
@@ -397,8 +465,10 @@ compare the index. **Confirmed.** The host addresses from `Location::address`
 (Line 6 Edit `TranslateAddr`) are tones 0–63 and 192–255, amp setups 64–127
 and 256–298, and FX setups 128–191. The maximum is 298, and
 `298 × 0x50 + 0x50` stays inside the 384 slots. **Confirmed** as that formula
-and that fit. The firmware does not branch on bank kind. **Likely** the host
-index is the firmware slot index. That is not a captured trace.
+and that fit. The firmware does not branch on bank kind. Reading the host
+`Location::address` as this SHARC index is **contradicted by owner hardware
+runs; host-to-SHARC translation unknown**. The stored reads in the owner
+backups completed. That does not show these indexes entering `0x81A8`.
 
 Index 409 starts at word offset `0x7FD0`. Word `0x2F` of that slot is
 `0x7FFF`, the sentinel. The 80-word program continues through offset
@@ -662,11 +732,16 @@ failures on this path. They are not a claim about the current device.
 
 ## Device-facing notes from this slice
 
-Nothing in this work was sent to a device.
+Nothing in this work was sent to a device. Each row is what the SHARC
+parser does when its own index has that value. The flash and boot rows
+apply to the SHARC command set. No host message is shown to reach them.
+Where a row used to treat a host opcode or a host address as that index,
+the reading is **contradicted by owner hardware runs; host-to-SHARC
+translation unknown**.
 
 | Trigger | Evidence | Consequence established here |
 | --- | --- | --- |
-| A SysEx opcode whose table word is 0, including `0x00–0x3F` and the editor opcodes `0x0E`, `0x10`, `0x11`, `0x23`, `0x0F`, and `0x24` if they arrive as the first byte after `F0`. | `JUMP (M15, I15)` has no range check. Those words are `0x0000`. | Target address 0 if `M15` is still 0. Address 0 is not in this load image. Further effect **unknown**. |
+| A SHARC index whose table word is 0, including `0x00–0x3F`, `0x0E`, `0x10`, `0x11`, `0x23`, `0x0F`, and `0x24`. | `JUMP (M15, I15)` has no range check. Those words are `0x0000`. | Target address 0 if `M15` is still 0. Address 0 is not in this load image. Further effect **unknown**. Reading a host opcode as that index is contradicted by owner hardware runs; host-to-SHARC translation unknown. |
 | A SysEx opcode whose table word is outside `0x8000–0x96B7` (86 opcodes, including `0x77–0x7F`). | The inventory lists the words. | Where execution would continue is **unknown**. |
 | Opcodes `0xBF`, `0xCE`, `0xDD`, and `0xFB`. | The word is `0x8020`, and `0x8020` jumps to the receive routine that ends in `RTI`. | Entering that routine from the SysEx jump is **unknown** in effect. |
 | Transmit with `FLAG1_IN` held clear. | `0x80D9` jumps to itself. | The loop has no timeout in the instruction. |
@@ -679,8 +754,8 @@ Nothing in this work was sent to a device.
 | Opcode `0x60`, `0x67`, or `0x72`. | The only callers of `0x936A` are `0x9368`, `0x943C`, and `0x941E`. | Copies spare slots whose first word has high half `0xFFFF`, programs `0x1969`, flips `DM(0xC2DF)`, and erases the previous half. |
 | Power loss during `0x71`. | That body issues no erase. `0x930F` polls each word before the next. | Completed words match. The word in progress and the words not started are not established. `DM(0xC2DF)` is unchanged. A completed index 0 on the spare makes the next reset take a path other than A. |
 | Reset while both half-base words fail the `0xFFFF` test. | `0x9380` then uses the lower sentinel and jumps to `0x9324`. | Erases one of the two halves. The choice follows the lower sentinel. Sector length is **unknown**, so the erase may cover more than that half. This is the instruction path, not the current device. |
-| Store index 409. | `409 × 0x50 + 0x2F = 0x7FFF`. `0x81A8` does not compare the index. | The 80-word program includes the sentinel and continues `0x20` words past the half. Host addresses stop at 298. |
-| Globals `0x56`/`0x57`, and opcodes `0x10`, `0x11`, `0x23`. | The only lines naming `0x1B9A8` or `0x1B9A9` are `0x812A`, `0x8133`, and `0x8C73`. The three opcode words are 0. | No flash routine on the straight-line paths checked. No separate Variax-link slot was identified on this store path. |
+| SHARC store index 409. | `409 × 0x50 + 0x2F = 0x7FFF`. `0x81A8` does not compare the index. | The 80-word program includes the sentinel and continues `0x20` words past the half. `Location::address` stops at 298. Reading that host address as this index is contradicted by owner hardware runs; host-to-SHARC translation unknown. No host message is shown to reach index 409. |
+| SHARC globals `0x56`/`0x57`, and SHARC indexes `0x10`, `0x11`, `0x23`. | The only lines naming `0x1B9A8` or `0x1B9A9` are `0x812A`, `0x8133`, and `0x8C73`. The three index words are 0. | No flash routine on the straight-line paths checked. No separate Variax-link slot was identified on this store path. Reading host `0x10`, `0x23`, or `0x57` as these indexes is contradicted by owner hardware runs; host-to-SHARC translation unknown. |
 | Reset reaches `0x808B` while bit 30 of `DM(0xE1)` stays clear. | `0x808B` jumps to `0x8089`. `0x8080` does not call `0x930F` or `0x9324`. | Reset does not reach the parser. What the bit is on the board is **unknown**. |
 | The `0x8266` sum. | The result is stored at `0x1B9AB` and `0x1B9AA`. No other instruction names those addresses, and the next call is the main loop. | Reset does not branch on the sum. |
 | A tone that leaves the three `0x9380` words unchanged. | The reset line calls `0x9380` and does not itself read the halves. | The boot choice is unchanged. This boot record has no per-slot checksum. |
@@ -765,43 +840,56 @@ targets. The coverage record gives each opcode one disposition.
 | `mid_copy` | 1 | `0xEC` enters `0x81CC`, stores through `I0` and `I1` as they already stand, and returns at `0x81D3`. Those instructions contain no call. What `I0` and `I1` hold is **unknown**. |
 
 CC status `B0` and program change `C0` are not opcodes in this table. The
-parser consumes them and returns. **Confirmed.** Whether another component
-acts on them before the pipe is **unknown**.
+parser consumes them and returns. **Confirmed.** Owner CC edits changed
+the tone and then restored it, so the component that applied those edits
+is not this consume-and-return path. Host-to-SHARC translation for `B0`
+and `C0` is **unknown**.
 
 `PodxtRequest::bytes` builds SysEx opcodes `0x0E`, `0x10`, `0x23`, `0x57`,
-`0x73`, and `0x75`, plus `B0` and `C0`. The first three are `zero`. The
-last three are `traced_entry`. The same function does not build `0x54`,
-`0x56`, `0x60`, `0x67`, `0x68`, `0x6C`, `0x6D`, `0x6E`, `0x71`, `0x72`, or
-`0x74`. **Confirmed** from that source. It also sends `identity::REQUEST`,
-the universal inquiry `F0 7E 7F 06 01 F7`. If this parser sees that frame,
-the index is `0x7E` and the table word is `0xAADF`, outside the program.
-Whether a front end consumes the inquiry before the pipe is **unknown**.
-`Global::id` is 0, 1, 4, 5, 16–23, and 26–34. The maximum is 34, below
-the `0x56` indexes `0x30`, `0x3B`, `0x3C`, and `0x3D`.
+`0x73`, and `0x75`, plus `B0` and `C0`. As SHARC table indexes, the first
+three are `zero` and the last three are `traced_entry`. Reading the host
+opcodes as those indexes is **contradicted by owner hardware runs;
+host-to-SHARC translation unknown**. The same function does not build
+`0x54`, `0x56`, `0x60`, `0x67`, `0x68`, `0x6C`, `0x6D`, `0x6E`, `0x71`,
+`0x72`, or `0x74`. **Confirmed** from that source. That absence is the
+host constructor. It is not a translation result, and no host message is
+shown to reach those SHARC routines. The function also sends
+`identity::REQUEST`. The SHARC table word for `0x7E` is `0xAADF`. Direct
+delivery of the inquiry to this parser is contradicted by the same owner
+runs. `Global::id` is 0, 1, 4, 5, 16–23, and 26–34. The maximum is 34,
+below the `0x56` indexes `0x30`, `0x3B`, `0x3C`, and `0x3D`.
 
 ## Trap list
 
+Each row is what this SHARC parser does when its own index byte has the
+value in the Trigger column. The flash and boot rows apply to the SHARC
+command set. No host message is shown to reach them. Where a row used to
+treat a host opcode as that index, the reading is **contradicted by owner
+hardware runs; host-to-SHARC translation unknown**.
+
 | Trigger | Address | Consequence | Our editor can send it | How the editor avoids it |
 | --- | --- | --- | --- | --- |
-| A family SysEx frame reaches this parser with `00 01 0C 03` still following `F0`. | `0x80CB` | The index is `0x00`. The table word is 0, so the jump target is address 0 when `M15` is 0. Effect **unknown**. | Yes. The six family frames from `PodxtRequest::bytes` start that way. The identity inquiry does not. Whether those four bytes are still present at this parser is the **likely** strip in the command section, and it is **unknown** which component strips them. | The family frame stays the Line 6 header plus one opcode. A read is a traced handler only after that strip. |
-| Opcode `0x0E`, `0x10`, or `0x23` after that strip. Packs, the linked model, and the Variax release. | `0x1A9C1` plus the opcode, then `0x80CB` | The table word is 0. Same jump as the row above. | Yes. Those three are `PodxtRequest` variants. | It does not. They stay the existing pack, link, and release requests. No further zero-target opcode is added by those variants. |
-| Opcode `0x71`. | `0x9420`, `0x930F` | Programs 80 words on the half opposite `DM(0xC2DF)`. No erase and no `0x50`. A word that never reads back stays in `0x931A`. | No. | `PodxtRequest::bytes` has no `0x71`. |
-| Opcode `0x60`, `0x67`, or `0x72`. | `0x936A` | Copies blank spare slots, programs `0x1969`, flips the base, and erases the previous half. Sector length is **unknown**. | No. | `PodxtRequest::bytes` has none of the three opcodes. |
-| Opcode `0x6C`. | `0x81A6`, `0x9324` | Erases at the current `DM(0xC2D6)` and waits for `0xFFFF`. | No. | `PodxtRequest::bytes` has no `0x6C`. |
-| Opcode `0x6D`. | `0x80FB`, `0x930F` | Programs one word per count byte. The count is not checked. | No. | `PodxtRequest::bytes` has no `0x6D`. |
-| Opcode `0x6E`. | `0x80F9` | Stores a raw address at `DM(0xC2D6)`. A later `0x6C` or `0x6D` uses that address. | No. | `PodxtRequest::bytes` has no `0x6E`. |
-| Opcode `0x68`. | `0x8161`, `0x93F2` | Writes `0x100000` words at `DM(0x02000000)` and replies `0x51`. What that address is on the board is **unknown**. | No. | `PodxtRequest::bytes` has no `0x68`. |
-| Opcode `0x74` with fewer than 160 payload bytes. | `0x818F` | Reads 160 ring words and does not test `F7`. | No. The family parses an incoming `0x74` dump. It does not send one. | `PodxtRequest::bytes` has no `0x74`. |
-| Opcode `0x56` with index `0x30`, `0x3B`, `0x3C`, `0x3D`, or another outside slot. | `0x8124`, `0x95A0` | Jumps through `DM(0x1B978 + index)` to an address outside the loaded program. | No. The editor sends `0x57`, not `0x56`. | `Global::id` stops at 34. Those four indexes are 48 and above. `0x57` reads one word and does not take the `0x95A0` jump. |
-| A stored read or a store whose index is 409, or any index `0x81A8` does not compare. | `0x81A8` | Index 409 includes the sentinel and continues `0x20` words past the half. A non-zero `0x76` count sends that many frames. | The editor can send `0x73`. It cannot send `0x71`. | `Location::new` accepts only the bank sizes, so `Location::address` stops at 298. The stored-read arm sends two zero count bytes. |
-| Reset while both half-base words fail the `0xFFFF` test, including after power loss during `0x936A`. | `0x9380` | Erases one of the two halves. The sector length is **unknown**, so the erase may cover more than the half. | No store message starts that path. | `PodxtRequest` has no store. The editor also has no repair for a half that is already in this state. |
+| The parser's index byte is `0x00`, which is what a family frame would select if `00 01 0C 03` were still the first bytes after `F0`. | `0x80CB` | The table word is 0, so the jump target is address 0 when `M15` is 0. Effect **unknown**. | The six family frames start with those bytes. Direct delivery is contradicted by owner hardware runs; host-to-SHARC translation unknown. | The family frame stays the Line 6 header plus one opcode. That constructor fact does not show the translation. |
+| SHARC index `0x0E`, `0x10`, or `0x23`. | `0x1A9C1` plus the index, then `0x80CB` | The table word is 0. Same jump as the row above. | `PodxtRequest` can send host opcodes `0x0E`, `0x10`, and `0x23`. Direct delivery is contradicted by owner hardware runs; host-to-SHARC translation unknown. `03 23` was sent many times with no reset. | The variants stay the existing pack, link, and release requests. No translation into a program or erase opcode is shown. |
+| SHARC opcode `0x71`. | `0x9420`, `0x930F` | Programs 80 words on the half opposite `DM(0xC2DF)`. No erase and no `0x50`. A word that never reads back stays in `0x931A`. | No host constructor sends `0x71`. No host message is shown to reach this routine. | `PodxtRequest::bytes` has no `0x71`. That is not a translation result. |
+| SHARC opcode `0x60`, `0x67`, or `0x72`. | `0x936A` | Copies blank spare slots, programs `0x1969`, flips the base, and erases the previous half. Sector length is **unknown**. | No host constructor sends them. No host message is shown to reach this routine. | `PodxtRequest::bytes` has none of the three opcodes. That is not a translation result. |
+| SHARC opcode `0x6C`. | `0x81A6`, `0x9324` | Erases at the current `DM(0xC2D6)` and waits for `0xFFFF`. | No host message is shown to reach this routine. | `PodxtRequest::bytes` has no `0x6C`. |
+| SHARC opcode `0x6D`. | `0x80FB`, `0x930F` | Programs one word per count byte. The count is not checked. | No host message is shown to reach this routine. | `PodxtRequest::bytes` has no `0x6D`. |
+| SHARC opcode `0x6E`. | `0x80F9` | Stores a raw address at `DM(0xC2D6)`. A later `0x6C` or `0x6D` uses that address. | No host message is shown to reach this routine. | `PodxtRequest::bytes` has no `0x6E`. |
+| SHARC opcode `0x68`. | `0x8161`, `0x93F2` | Writes `0x100000` words at `DM(0x02000000)` and replies `0x51`. What that address is on the board is **unknown**. | No host message is shown to reach this routine. | `PodxtRequest::bytes` has no `0x68`. |
+| SHARC opcode `0x74` with fewer than 160 payload bytes. | `0x818F` | Reads 160 ring words and does not test `F7`. | The family parses an incoming host `0x74` dump. It does not send one. No host message is shown to reach this routine. | `PodxtRequest::bytes` has no `0x74`. |
+| SHARC opcode `0x56` with index `0x30`, `0x3B`, `0x3C`, `0x3D`, or another outside slot. | `0x8124`, `0x95A0` | Jumps through `DM(0x1B978 + index)` to an address outside the loaded program. | The host constructor sends `0x57`, not `0x56`. Direct delivery of `0x57` is contradicted by owner hardware runs; host-to-SHARC translation unknown. | `Global::id` stops at 34. Those four indexes are 48 and above. The SHARC entry for index `0x57` reads one word and does not take the `0x95A0` jump. |
+| A SHARC stored read or store whose index is 409, or any index `0x81A8` does not compare. | `0x81A8` | Index 409 includes the sentinel and continues `0x20` words past the half. A non-zero `0x76` count sends that many frames. | The host constructor can send `0x73` and cannot send `0x71`. Direct delivery of `0x73` is contradicted by owner hardware runs; host-to-SHARC translation unknown. | `Location::new` accepts only the bank sizes, so `Location::address` stops at 298. The stored-read arm sends two zero count bytes. |
+| Reset while both half-base words fail the `0xFFFF` test, including after power loss during the SHARC routine `0x936A`. | `0x9380` | Erases one of the two halves. The sector length is **unknown**, so the erase may cover more than the half. | No host message is shown to start that path. | `PodxtRequest` has no store. The editor also has no repair for a half that is already in this state. |
 | Reset reaches `0x808B` while bit 30 of `DM(0xE1)` stays clear. | `0x808B` | The parser does not start. `0x8080` does not erase. What the bit is is **unknown**. | No message causes it. | A host timeout is not a device reset and is not a cue to send a program or erase opcode. |
 | `0x80000` main-loop passes without the `0x8028` interrupt. | `0x95C9` | The parser loop does not resume. The spin does not program or erase. | No message clears `DM(0xC2E5)`. | A silent device is not a cue to send a flash opcode. The opcode that clears the counter is the interrupt at `0x8028`, not a SysEx request. |
-| `FLAG1_IN` stays clear while a reply is transmitted. | `0x80D9` | The transmit loop does not return. | Yes, in the sense that `0x75`, `0x73`, and `0x57` reply. The editor does not hold the flag. | Host waits are 2 seconds for an edit buffer and 30 seconds for a library read. Neither wait clears the device loop. |
-| Universal identity `F0 7E 7F 06 01 F7`. | `0x7E` targets `0xAADF`, then `0x80CB` | If this parser sees the frame, the jump leaves the loaded program. Effect **unknown**. Whether a front end consumes the inquiry first is **unknown**. | Yes. `PodxtRequest::Identity` sends `identity::REQUEST`. | It does not. The inquiry stays as it is. It is not rewritten into a program or erase opcode. |
+| `FLAG1_IN` stays clear while this SHARC transmit loop runs. | `0x80D9` | The transmit loop does not return. | No host message is shown to enter this loop. The editor does not hold the flag. | Host waits are 2 seconds for an edit buffer and 30 seconds for a library read. Neither wait clears a SHARC loop, and neither wait shows that the loop is running. |
+| SHARC index `0x7E`, the byte after `F0` in the universal identity inquiry. | `0xAADF`, then `0x80CB` | The jump leaves the loaded program. Effect **unknown**. | `PodxtRequest::Identity` sends the inquiry, and the owner runs are answered with revision 3.01 and no reset. Direct delivery is contradicted by owner hardware runs; host-to-SHARC translation unknown. | The inquiry stays as it is. No translation into a program or erase opcode is shown. |
 | Opcode `0xBF`, `0xCE`, `0xDD`, `0xFB`, or an outside-program opcode other than that identity frame. | `0x8020` for the four; the table word for the others | The four enter the receive routine. The other outside targets leave the loaded program. Effect **unknown**. | No. | The six family opcodes are the three zero targets and the three traced reads. CC and program change are consumed before the table. |
 | Opcode `0xEC`. | `0x81CC` | Copies four words through the current `I0` and `I1`, then returns. No call. | No. | `PodxtRequest::bytes` has no `0xEC`. |
 | Body at `0x940A`, if some indirect path enters it. | `0x940A` | Calls `0x9324` at six addresses starting at `0x01018000`. No decoded direct call or jump targets `0x940A`. Reachability is **unknown**. | No traced editor message enters it. | `PodxtRequest` has no opcode whose traced entry is `0x940A`. |
 
 CC and program change are included above only to record that this parser
-does not turn them into a table jump. The editor does send both.
+does not turn them into a table jump. The editor does send both, and the
+owner CC edits took effect, so another component applies them.
+Host-to-SHARC translation for those status bytes is unknown.

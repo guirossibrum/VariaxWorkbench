@@ -65,6 +65,20 @@ class CoverageClaimTests(unittest.TestCase):
         self.assertEqual(record["regions"][17]["ff_bytes"], 4094)
         self.assertEqual(record["regions"][18]["ff_bytes"], 65536)
         self.assertEqual(record["target_confidence"], "confirmed")
+        self.assertEqual(
+            record["host_to_sharc"],
+            "contradicted by owner hardware runs; host-to-SHARC translation unknown",
+        )
+        self.assertEqual(record["identity_reply_prefix_count"], 0)
+        self.assertEqual(record["family_header_count"], 0)
+        self.assertEqual(record["manufacturer_family_count"], 0)
+        self.assertEqual(record["ascii_version_3_01_count"], 0)
+        self.assertEqual(record["immediate_0x7e_count"], 0)
+        self.assertEqual(record["sharc_75_payload_bytes"], 160)
+        self.assertEqual(record["sharc_75_frame_bytes"], 163)
+        self.assertEqual(record["host_edit_buffer_bytes"], 168)
+        self.assertEqual(record["sysex_75_loop"], "LCNTR = 0x00A0, DO (0x0000818D) UNTIL LCE")
+        self.assertEqual(record["region5_xor_readable_windows"], 0)
 
     def test_identity_inquiry_is_outside_the_loaded_program(self):
         identity = IDENTITY.read_text()

@@ -228,6 +228,8 @@ def inventory(archive):
         "region5": _region5(region5),
         "target_confidence": "confirmed",
         "region5_identity": "unknown",
+        "host_to_sharc": "contradicted by owner hardware runs; host-to-SHARC translation unknown",
+        "sharc_scope": "SHARC internal command set; no host message is shown to reach these routines",
     }
 
 

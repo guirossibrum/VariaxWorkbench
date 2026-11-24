@@ -110,6 +110,8 @@ def inventory(archive):
         "counter_clear_entry": "0x8028",
         "global_base": f"0x{GLOBAL_BASE:08X}",
         "target_confidence": "confirmed",
+        "host_to_sharc": "contradicted by owner hardware runs; host-to-SHARC translation unknown",
+        "sharc_scope": "SHARC internal command set; no host message is shown to reach these routines",
     }
 
 

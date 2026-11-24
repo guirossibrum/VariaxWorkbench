@@ -28,5 +28,7 @@
   "global_straight_line_flash_targets": 0,
   "opcode_0x71_erases": false,
   "target_confidence": "confirmed",
-  "file_mapping": "likely"
+  "file_mapping": "likely",
+  "host_to_sharc": "contradicted by owner hardware runs; host-to-SHARC translation unknown",
+  "sharc_scope": "SHARC internal command set; no host message is shown to reach these routines"
 }

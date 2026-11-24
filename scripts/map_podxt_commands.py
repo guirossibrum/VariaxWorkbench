@@ -234,6 +234,8 @@ def inventory(archive):
         "register_immediate_0x13": False,
         "target_confidence": "confirmed",
         "flash_identity": "likely",
+        "host_to_sharc": "contradicted by owner hardware runs; host-to-SHARC translation unknown",
+        "sharc_scope": "SHARC internal command set; no host message is shown to reach these routines",
     }
 
 

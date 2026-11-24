@@ -121,11 +121,18 @@ SHARC-compatible ISA. The reset-vector convention matches the ADSP-21065L entry
 in the manufacturer's [loader manual](https://www.analog.com/media/en/dsp-documentation/legacy-software-manuals/438698055513140_loader_man.pdf)
 (Table 4-2 and reset-vector discussion). It is an inference about compatibility,
 not identification of the installed IC or proof that the entire image executes
-correctly. No separate 8051 or USB-controller executable is identified here. The
+correctly. A later pass still finds no second instruction set in the 19
+regions. Region 5 stays an unidentified high-entropy payload. Regions 6–11
+are the named resource directory. The host-facing processor and its firmware
+are unknown. Owner runs contradict reading a host opcode as a SHARC table
+index. The phrase for that reading is: contradicted by owner hardware runs;
+host-to-SHARC translation unknown. The
 [PODxt Live 3.01 entry, command, store, boot, and coverage map](firmware-podxt-dispatch.md)
-follows the region-4 byte pipe, the handlers reached from it, the two
-`0x8000`-word halves used by opcode `0x71` and `0x936A`, the reset
-checksum, and the trap list. Region 5's encoding stays unidentified.
+follows the region-4 byte pipe, the SHARC-internal handlers, the two
+`0x8000`-word halves used by SHARC opcode `0x71` and `0x936A`, the reset
+checksum, and the trap list. Those flash routines and boot checks apply to
+the SHARC command set. No host message is shown to reach them. Region 5's
+encoding stays unidentified.
 
 Independent static decoding used Ville Linde's BSD-3-Clause MAME SHARC
 disassembler at tag `mame0285`, commit
