@@ -22,6 +22,13 @@ const NOTES: [&str; 12] = [
     "C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B",
 ];
 
+pub(super) fn tuning_note(string: usize, offset: i32) -> Option<&'static str> {
+    let (_, pitch_class) = *STRINGS.get(string)?;
+    (-12..=12)
+        .contains(&offset)
+        .then(|| NOTES[(pitch_class + offset).rem_euclid(12) as usize])
+}
+
 pub(in crate::editor) fn milestones(ui: &mut egui::Ui) {
     show_source_checkout(ui);
     ui.separator();
@@ -788,7 +795,7 @@ impl VariaxEditor {
                 ui.weak("Shift");
                 ui.weak("Note");
                 ui.end_row();
-                for (index, (label, pitch_class)) in STRINGS.into_iter().enumerate().rev() {
+                for (index, (label, _)) in STRINGS.into_iter().enumerate().rev() {
                     let index_id = index as u32;
                     let id = PITCH + index_id;
                     let pitch = self.integer(TUNING, id);
@@ -817,11 +824,7 @@ impl VariaxEditor {
                     } else {
                         ui.label("—");
                     }
-                    let note = pitch.and_then(|offset| {
-                        (-12..=12)
-                            .contains(&offset)
-                            .then(|| NOTES[(pitch_class + offset).rem_euclid(12) as usize])
-                    });
+                    let note = pitch.and_then(|offset| tuning_note(index, offset));
                     rows[index] = ui.label(note.unwrap_or("—")).rect.center().y;
                     ui.end_row();
                 }

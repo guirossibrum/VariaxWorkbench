@@ -259,7 +259,12 @@ impl VariaxEditor {
         self.bank_rename = Some(draft);
     }
 
-    pub(super) fn empty_collection(&mut self, ui: &mut egui::Ui, available: bool) {
+    pub(super) fn empty_collection(
+        &mut self,
+        ui: &mut egui::Ui,
+        available: bool,
+        services: &mut EditorServices<'_>,
+    ) {
         let Some((_, folder)) = self
             .document
             .as_ref()
@@ -275,6 +280,7 @@ impl VariaxEditor {
         ui.label("This collection folder has no models.");
         ui.horizontal_wrapped(|ui| {
             self.rename_bank_button(ui, available);
+            self.html_export_button(ui, services, available);
             let response = ui.add_enabled(available, egui::Button::new("Add default model"));
             #[cfg(test)]
             self.new_file_buttons
