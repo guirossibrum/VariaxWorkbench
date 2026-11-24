@@ -1,6 +1,9 @@
 use eframe::egui::{self, Color32, Modifiers, Pos2, Rect, Vec2};
 
 use super::assets::{self, UiImage};
+use super::body_canvas::{
+    self, BodyCanvas, BodyEvent, DragKind, PickupPlacement, PickupSprite, PickupZone, SpriteHit,
+};
 use super::chrome::{self, DialogButton, DialogEvent, Family, LinkState};
 use super::controls::{Selector, Switch};
 use super::gallery::GalleryState;
@@ -9,6 +12,7 @@ use super::theme::{
     self, AMBER, BG, DANGER, DIM, FOCUS, HD, INK, LINE, MUTED, OK, PANEL, PODXT, RAISED, TEXT,
     VARIAX,
 };
+use super::tuning_panel::{self, TuningEvent, TuningPanel, TuningRow};
 
 fn texts(output: &egui::FullOutput) -> Vec<String> {
     fn walk(shape: &egui::Shape, labels: &mut Vec<String>) {
@@ -533,6 +537,8 @@ fn gallery_names_every_component() {
         "Status",
         "Dialog",
         "Editor",
+        "Body",
+        "Tuning",
         "Unsaved",
         "No device",
         "No amp model",
@@ -542,4 +548,676 @@ fn gallery_names_every_component() {
             "missing {name}"
         );
     }
+}
+
+fn missing_image(name: &str, pixels: [usize; 2]) -> UiImage {
+    let mut image = UiImage::missing(name);
+    image.pixels = pixels;
+    image
+}
+
+struct PickupView {
+    inches: f32,
+    degrees: f32,
+    enabled: bool,
+    selected: bool,
+}
+
+fn show_body(
+    ui: &mut egui::Ui,
+    body: &UiImage,
+    pickup: &UiImage,
+    views: &[PickupView],
+    interactive: bool,
+    outline: Option<&UiImage>,
+) -> super::body_canvas::BodyOutput {
+    let sprites: Vec<PickupSprite<'_>> = views
+        .iter()
+        .map(|view| PickupSprite {
+            position_inches: view.inches,
+            angle_degrees: view.degrees,
+            enabled: view.enabled,
+            selected: view.selected,
+            image: pickup,
+        })
+        .collect();
+    let mut canvas = BodyCanvas::new(body, &sprites).interactive(interactive);
+    if let Some(outline) = outline {
+        canvas = canvas.outline(Some(outline));
+    }
+    canvas.show(ui)
+}
+
+fn open_rows(labels: &[String; 6]) -> Vec<TuningRow<'_>> {
+    const NAMES: [&str; 6] = ["High E", "B", "G", "D", "A", "Low E"];
+    const NOTES: [&str; 6] = ["E", "B", "G", "D", "A", "E"];
+    (0..6)
+        .map(|row| {
+            let id = 5 - row;
+            TuningRow {
+                id,
+                name: NAMES[row],
+                shift: 0,
+                shift_label: &labels[id],
+                note: NOTES[row],
+            }
+        })
+        .collect()
+}
+
+fn show_tuning(
+    ui: &mut egui::Ui,
+    rows: &[TuningRow<'_>],
+    interactive: bool,
+    lock_enabled: bool,
+    transpose: bool,
+) -> super::tuning_panel::TuningOutput {
+    TuningPanel::new(rows)
+        .interactive(interactive)
+        .lock(lock_enabled, false)
+        .transpose_enabled(transpose)
+        .show(ui)
+}
+
+#[test]
+fn pickup_placement_and_hit_testing_follow_the_approved_map() {
+    let placement = PickupPlacement::default();
+    assert_eq!(placement.position_to_art(0.1).x, placement.x_min);
+    assert_eq!(placement.position_to_art(9.5).x, placement.x_max);
+    let at_one_eight = placement.position_to_art(1.8).x;
+    assert!((at_one_eight - 125.5106).abs() < 1.0e-3, "{at_one_eight}");
+    assert!((placement.art_x_to_position(at_one_eight) - 1.8).abs() < 1.0e-4);
+
+    let lester = PickupPlacement {
+        art: egui::vec2(426.0, 412.0),
+        x_min: -8.0,
+        x_max: 503.0,
+        y: 100.0,
+    };
+    assert_eq!(lester.position_to_art(0.1).x, -8.0);
+    assert_eq!(lester.position_to_art(9.5).x, 503.0);
+    assert_eq!(body_canvas::move_inches(9.5, 40.0, placement), 9.5);
+    assert!((body_canvas::rotate_degrees(0.0, -20.0, false) - 18.0).abs() < 0.01);
+    assert!((body_canvas::rotate_degrees(0.0, -20.0, true) - 1.8).abs() < 0.01);
+    assert_eq!(body_canvas::rotate_degrees(0.0, -80.0, false), 45.0);
+
+    let sprite = egui::vec2(120.0, 120.0);
+    assert_eq!(
+        body_canvas::zone_at(Vec2::ZERO, sprite),
+        Some(PickupZone::Move)
+    );
+    assert_eq!(
+        body_canvas::zone_at(egui::vec2(0.0, 40.0), sprite),
+        Some(PickupZone::Rotate)
+    );
+    assert_eq!(body_canvas::zone_at(egui::vec2(0.0, 70.0), sprite), None);
+
+    let center = Pos2::new(80.0, 90.0);
+    let order = [
+        SpriteHit {
+            index: 0,
+            center,
+            sprite,
+            angle_degrees: 0.0,
+            selected: false,
+        },
+        SpriteHit {
+            index: 1,
+            center,
+            sprite,
+            angle_degrees: 0.0,
+            selected: true,
+        },
+    ];
+    assert_eq!(
+        body_canvas::hit_sprite(center, &order),
+        Some((1, PickupZone::Move))
+    );
+    let turned = SpriteHit {
+        index: 4,
+        center: Pos2::new(200.0, 200.0),
+        sprite,
+        angle_degrees: 90.0,
+        selected: false,
+    };
+    assert_eq!(
+        body_canvas::hit_sprite(Pos2::new(240.0, 200.0), &[turned]),
+        Some((4, PickupZone::Rotate))
+    );
+    assert_eq!(
+        body_canvas::hit_sprite(Pos2::new(270.0, 200.0), &[turned]),
+        None
+    );
+
+    let neck = Rect::from_min_max(Pos2::new(10.0, 20.0), Pos2::new(410.0, 200.0));
+    for semitone in -12..=12 {
+        assert_eq!(
+            tuning_panel::semitone_at(neck, tuning_panel::scale_x(neck, semitone)),
+            semitone
+        );
+    }
+    let marker = tuning_panel::marker_center(neck, 40.0, 0);
+    assert!(tuning_panel::marker_hit(
+        marker + egui::vec2(16.0, 0.0),
+        marker
+    ));
+    assert!(!tuning_panel::marker_hit(
+        marker + egui::vec2(16.1, 0.0),
+        marker
+    ));
+}
+
+#[test]
+fn body_canvas_drag_reports_move_rotate_and_clamp() {
+    let body = missing_image("variax/spank-body.png", [426, 412]);
+    let pickup = missing_image("variax/spank-pickup.png", [120, 120]);
+    let views = [PickupView {
+        inches: 1.8,
+        degrees: 0.0,
+        enabled: true,
+        selected: true,
+    }];
+    let placement = PickupPlacement::default();
+    let mut harness = Harness::new();
+    let mut art = Rect::NOTHING;
+    harness.run(vec![], Default::default(), |_, ui| {
+        art = show_body(ui, &body, &pickup, &views, true, None).art_rect;
+    });
+    let scale = placement.screen_scale(art);
+    let center = placement.screen_point(art, 1.8);
+    let end = center + egui::vec2(30.0, 0.0);
+    harness.run(
+        vec![egui::Event::PointerMoved(center), pointer(center, true)],
+        Default::default(),
+        |_, ui| {
+            let _ = show_body(ui, &body, &pickup, &views, true, None);
+        },
+    );
+    let mut inches = None;
+    harness.run(
+        vec![egui::Event::PointerMoved(end)],
+        Default::default(),
+        |_, ui| {
+            let output = show_body(ui, &body, &pickup, &views, true, None);
+            assert!(output.events.iter().any(|event| matches!(
+                event,
+                BodyEvent::DragStarted {
+                    index: 0,
+                    kind: DragKind::Move
+                }
+            )));
+            inches = output.events.iter().find_map(|event| match event {
+                BodyEvent::Moved { index: 0, inches } => Some(*inches),
+                _ => None,
+            });
+        },
+    );
+    let inches = inches.expect("move");
+    let expected = body_canvas::move_inches(1.8, 30.0 / scale, placement);
+    assert!((inches - expected).abs() < 1.0e-3, "{inches} vs {expected}");
+    assert!(inches > 1.8);
+    let mut finished = false;
+    harness.run(vec![pointer(end, false)], Default::default(), |_, ui| {
+        finished = show_body(ui, &body, &pickup, &views, true, None)
+            .events
+            .iter()
+            .any(|event| {
+                matches!(
+                    event,
+                    BodyEvent::DragFinished {
+                        index: 0,
+                        kind: DragKind::Move
+                    }
+                )
+            });
+    });
+    assert!(finished);
+
+    let sprite = body_canvas::sprite_art_size(pickup.pixels, placement.art) * scale;
+    let rotate_at = center + egui::vec2(0.0, sprite.y * 0.4);
+    let rotate = |fine: bool, dy: f32| -> f32 {
+        let mut harness = Harness::new();
+        let up = rotate_at + egui::vec2(0.0, dy);
+        harness.run(vec![], Default::default(), |_, ui| {
+            let _ = show_body(ui, &body, &pickup, &views, true, None);
+        });
+        harness.run(
+            vec![
+                egui::Event::PointerMoved(rotate_at),
+                pointer(rotate_at, true),
+            ],
+            Default::default(),
+            |_, ui| {
+                let _ = show_body(ui, &body, &pickup, &views, true, None);
+            },
+        );
+        let mut degrees = None;
+        harness.run(
+            vec![egui::Event::PointerMoved(up)],
+            Modifiers {
+                ctrl: fine,
+                ..Default::default()
+            },
+            |_, ui| {
+                let output = show_body(ui, &body, &pickup, &views, true, None);
+                assert!(output.events.iter().any(|event| matches!(
+                    event,
+                    BodyEvent::DragStarted {
+                        index: 0,
+                        kind: DragKind::Rotate
+                    }
+                )));
+                degrees = output.events.iter().find_map(|event| match event {
+                    BodyEvent::Rotated { index: 0, degrees } => Some(*degrees),
+                    _ => None,
+                });
+            },
+        );
+        degrees.expect("rotate")
+    };
+    let coarse = rotate(false, -20.0);
+    let fine = rotate(true, -20.0);
+    let clamped = rotate(false, -80.0);
+    assert!((coarse - 18.0).abs() < 0.05, "{coarse}");
+    assert!((fine - 1.8).abs() < 0.05, "{fine}");
+    assert_eq!(clamped, 45.0);
+
+    let capped = [PickupView {
+        inches: 9.5,
+        degrees: 0.0,
+        enabled: true,
+        selected: true,
+    }];
+    let mut harness = Harness::new();
+    let mut art = Rect::NOTHING;
+    harness.run(vec![], Default::default(), |_, ui| {
+        art = show_body(ui, &body, &pickup, &capped, true, None).art_rect;
+    });
+    let at_end = placement.screen_point(art, 9.5);
+    let past = at_end + egui::vec2(40.0, 0.0);
+    harness.run(
+        vec![egui::Event::PointerMoved(at_end), pointer(at_end, true)],
+        Default::default(),
+        |_, ui| {
+            let _ = show_body(ui, &body, &pickup, &capped, true, None);
+        },
+    );
+    harness.run(
+        vec![egui::Event::PointerMoved(past)],
+        Default::default(),
+        |_, ui| {
+            let events = show_body(ui, &body, &pickup, &capped, true, None).events;
+            assert!(events.iter().any(|event| matches!(
+                event,
+                BodyEvent::DragStarted {
+                    index: 0,
+                    kind: DragKind::Move
+                }
+            )));
+            assert!(
+                events
+                    .iter()
+                    .all(|event| !matches!(event, BodyEvent::Moved { .. }))
+            );
+        },
+    );
+}
+
+#[test]
+fn body_canvas_clicks_select_toggle_and_can_be_inert() {
+    let body = missing_image("variax/spank-body.png", [426, 412]);
+    let pickup = missing_image("variax/spank-pickup.png", [120, 120]);
+    let overlapping = [
+        PickupView {
+            inches: 3.0,
+            degrees: 0.0,
+            enabled: true,
+            selected: false,
+        },
+        PickupView {
+            inches: 3.0,
+            degrees: 0.0,
+            enabled: true,
+            selected: true,
+        },
+    ];
+    let placement = PickupPlacement::default();
+    let mut harness = Harness::new();
+    let mut art = Rect::NOTHING;
+    harness.run(vec![], Default::default(), |_, ui| {
+        art = show_body(ui, &body, &pickup, &overlapping, true, None).art_rect;
+    });
+    let center = placement.screen_point(art, 3.0);
+    harness.run(
+        vec![egui::Event::PointerMoved(center), pointer(center, true)],
+        Default::default(),
+        |_, ui| {
+            let _ = show_body(ui, &body, &pickup, &overlapping, true, None);
+        },
+    );
+    harness.run(vec![pointer(center, false)], Default::default(), |_, ui| {
+        let events = show_body(ui, &body, &pickup, &overlapping, true, None).events;
+        assert_eq!(events, vec![BodyEvent::PickupClicked { index: 1 }]);
+    });
+
+    let away = art.left_top() + egui::vec2(2.0, 2.0);
+    harness.run(
+        vec![egui::Event::PointerMoved(away), pointer(away, true)],
+        Default::default(),
+        |_, ui| {
+            let _ = show_body(ui, &body, &pickup, &overlapping, true, None);
+        },
+    );
+    harness.run(vec![pointer(away, false)], Default::default(), |_, ui| {
+        let events = show_body(ui, &body, &pickup, &overlapping, true, None).events;
+        assert_eq!(events, vec![BodyEvent::BodyClicked]);
+    });
+
+    let one = [PickupView {
+        inches: 3.0,
+        degrees: 0.0,
+        enabled: true,
+        selected: true,
+    }];
+    let mut harness = Harness::new();
+    let mut art = Rect::NOTHING;
+    harness.run(vec![], Default::default(), |_, ui| {
+        art = show_body(ui, &body, &pickup, &one, true, None).art_rect;
+    });
+    let center = placement.screen_point(art, 3.0);
+    let mut first = Vec::new();
+    harness.run(
+        vec![egui::Event::PointerMoved(center), pointer(center, true)],
+        Default::default(),
+        |_, ui| {
+            let _ = show_body(ui, &body, &pickup, &one, true, None);
+        },
+    );
+    harness.run(vec![pointer(center, false)], Default::default(), |_, ui| {
+        first = show_body(ui, &body, &pickup, &one, true, None).events;
+    });
+    assert_eq!(first, vec![BodyEvent::PickupClicked { index: 0 }]);
+    harness.run(
+        vec![egui::Event::PointerMoved(center), pointer(center, true)],
+        Default::default(),
+        |_, ui| {
+            let _ = show_body(ui, &body, &pickup, &one, true, None);
+        },
+    );
+    harness.run(vec![pointer(center, false)], Default::default(), |_, ui| {
+        let events = show_body(ui, &body, &pickup, &one, true, None).events;
+        assert_eq!(events, vec![BodyEvent::PickupToggled { index: 0 }]);
+    });
+
+    let mut harness = Harness::new();
+    harness.run(vec![], Default::default(), |_, ui| {
+        art = show_body(ui, &body, &pickup, &one, false, None).art_rect;
+    });
+    let center = placement.screen_point(art, 3.0);
+    let end = center + egui::vec2(30.0, 0.0);
+    harness.run(
+        vec![egui::Event::PointerMoved(center), pointer(center, true)],
+        Default::default(),
+        |_, ui| {
+            assert!(
+                show_body(ui, &body, &pickup, &one, false, None)
+                    .events
+                    .is_empty()
+            );
+        },
+    );
+    harness.run(
+        vec![egui::Event::PointerMoved(end)],
+        Default::default(),
+        |_, ui| {
+            assert!(
+                show_body(ui, &body, &pickup, &one, false, None)
+                    .events
+                    .is_empty()
+            );
+        },
+    );
+
+    let mut harness = Harness::new();
+    harness.run(vec![], Default::default(), |_, ui| {
+        art = show_body(ui, &body, &pickup, &one, true, None).art_rect;
+    });
+    let center = placement.screen_point(art, 3.0);
+    let end = center + egui::vec2(30.0, 0.0);
+    harness.run(
+        vec![egui::Event::PointerMoved(center), pointer(center, true)],
+        Default::default(),
+        |_, ui| {
+            let _ = show_body(ui, &body, &pickup, &one, true, None);
+        },
+    );
+    harness.run(
+        vec![egui::Event::PointerMoved(end)],
+        Default::default(),
+        |_, ui| {
+            assert!(
+                show_body(ui, &body, &pickup, &one, true, None)
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, BodyEvent::DragStarted { .. }))
+            );
+        },
+    );
+    harness.run(vec![], Default::default(), |_, ui| {
+        let events = show_body(ui, &body, &pickup, &one, false, None).events;
+        assert_eq!(
+            events,
+            vec![BodyEvent::DragFinished {
+                index: 0,
+                kind: DragKind::Move
+            }]
+        );
+    });
+}
+
+#[test]
+fn body_outline_paints_only_when_requested() {
+    let body = missing_image("variax/spank-body.png", [426, 412]);
+    let outline = UiImage::missing("variax/outline.png");
+    let none: &[PickupSprite] = &[];
+    let mut harness = Harness::new();
+    let with_outline = harness.run(vec![], Default::default(), |_, ui| {
+        let _ = BodyCanvas::new(&body, none)
+            .outline(Some(&outline))
+            .show(ui);
+    });
+    assert!(
+        texts(&with_outline)
+            .iter()
+            .any(|label| label.contains("outline.png"))
+    );
+    let photo_only = harness.run(vec![], Default::default(), |_, ui| {
+        let _ = BodyCanvas::new(&body, none).show(ui);
+    });
+    let labels = texts(&photo_only);
+    assert!(labels.iter().all(|label| !label.contains("outline.png")));
+    assert!(labels.iter().any(|label| label.contains("spank-body.png")));
+}
+
+#[test]
+fn tuning_panel_reports_neck_drags_and_the_table_controls() {
+    let labels = std::array::from_fn(|_| "0 semitones".to_owned());
+    let mut harness = Harness::new();
+    let mut neck = Rect::NOTHING;
+    let mut row_y = 0.0;
+    let mut enable = Rect::NOTHING;
+    let mut presets = Rect::NOTHING;
+    let mut lock = Rect::NOTHING;
+    let mut reset = Rect::NOTHING;
+    let mut flat = Rect::NOTHING;
+    let mut sharp = Rect::NOTHING;
+    let drawn = harness.run(vec![], Default::default(), |_, ui| {
+        let rows = open_rows(&labels);
+        let output = show_tuning(ui, &rows, true, false, true);
+        neck = output.neck;
+        row_y = output.rows.iter().find(|row| row.id == 5).unwrap().y;
+        enable = output.enable;
+        presets = output.presets;
+        lock = output.lock;
+        reset = output.reset;
+        flat = output.flat;
+        sharp = output.sharp;
+    });
+    let labels_drawn = texts(&drawn);
+    for name in [
+        "String",
+        "Shift",
+        "Note",
+        "High E",
+        "Low E",
+        "0 semitones",
+        "Lock",
+        "Reset",
+        "\u{2212}12",
+        "+12",
+        "\u{266d}",
+        "\u{266f}",
+    ] {
+        assert!(
+            labels_drawn.iter().any(|label| label.contains(name)),
+            "missing {name}"
+        );
+    }
+
+    let start = tuning_panel::marker_center(neck, row_y, 0);
+    let end = Pos2::new(tuning_panel::scale_x(neck, 5), row_y);
+    harness.run(
+        vec![egui::Event::PointerMoved(start), pointer(start, true)],
+        Default::default(),
+        |_, ui| {
+            let rows = open_rows(&labels);
+            let _ = show_tuning(ui, &rows, true, false, true);
+        },
+    );
+    harness.run(
+        vec![egui::Event::PointerMoved(end)],
+        Default::default(),
+        |_, ui| {
+            let rows = open_rows(&labels);
+            assert_eq!(
+                show_tuning(ui, &rows, true, false, true).events,
+                vec![
+                    TuningEvent::DragStarted { id: 5 },
+                    TuningEvent::Shift {
+                        id: 5,
+                        semitones: 5
+                    },
+                ]
+            );
+        },
+    );
+    harness.run(vec![pointer(end, false)], Default::default(), |_, ui| {
+        let rows = open_rows(&labels);
+        assert_eq!(
+            show_tuning(ui, &rows, true, false, true).events,
+            vec![TuningEvent::DragFinished { id: 5 }]
+        );
+    });
+
+    let at_seven = Pos2::new(tuning_panel::scale_x(neck, 7), row_y);
+    let mut seen = Vec::new();
+    click_at(&mut harness, at_seven, |ui| {
+        let rows = open_rows(&labels);
+        seen = show_tuning(ui, &rows, true, false, true).events;
+    });
+    assert_eq!(
+        seen,
+        vec![TuningEvent::Shift {
+            id: 5,
+            semitones: 7
+        }]
+    );
+
+    let clicks = [
+        (enable, TuningEvent::Enable),
+        (presets, TuningEvent::Presets),
+        (reset, TuningEvent::Reset),
+        (flat, TuningEvent::FlattenAll),
+        (sharp, TuningEvent::SharpenAll),
+    ];
+    for (rect, expected) in clicks {
+        click_at(&mut harness, rect.center(), |ui| {
+            let rows = open_rows(&labels);
+            seen = show_tuning(ui, &rows, true, false, true).events;
+        });
+        assert_eq!(seen, vec![expected]);
+    }
+    click_at(&mut harness, lock.center(), |ui| {
+        let rows = open_rows(&labels);
+        seen = show_tuning(ui, &rows, true, false, true).events;
+    });
+    assert!(
+        seen.iter()
+            .all(|event| !matches!(event, TuningEvent::Lock(_)))
+    );
+
+    let mut harness = Harness::new();
+    let mut lock = Rect::NOTHING;
+    harness.run(vec![], Default::default(), |_, ui| {
+        let rows = open_rows(&labels);
+        lock = show_tuning(ui, &rows, true, true, true).lock;
+    });
+    let mut seen = Vec::new();
+    click_at(&mut harness, lock.center(), |ui| {
+        let rows = open_rows(&labels);
+        seen = show_tuning(ui, &rows, true, true, true).events;
+    });
+    assert_eq!(seen, vec![TuningEvent::Lock(true)]);
+
+    let mut harness = Harness::new();
+    let mut sharp = Rect::NOTHING;
+    harness.run(vec![], Default::default(), |_, ui| {
+        let rows = open_rows(&labels);
+        sharp = show_tuning(ui, &rows, true, false, false).sharp;
+    });
+    let mut seen = Vec::new();
+    click_at(&mut harness, sharp.center(), |ui| {
+        let rows = open_rows(&labels);
+        seen = show_tuning(ui, &rows, true, false, false).events;
+    });
+    assert!(seen.is_empty());
+
+    let mut harness = Harness::new();
+    let mut neck = Rect::NOTHING;
+    let mut row_y = 0.0;
+    harness.run(vec![], Default::default(), |_, ui| {
+        let rows = open_rows(&labels);
+        let output = show_tuning(ui, &rows, false, false, true);
+        neck = output.neck;
+        row_y = output.rows.iter().find(|row| row.id == 5).unwrap().y;
+    });
+    let start = tuning_panel::marker_center(neck, row_y, 0);
+    let end = Pos2::new(tuning_panel::scale_x(neck, 5), row_y);
+    harness.run(
+        vec![egui::Event::PointerMoved(start), pointer(start, true)],
+        Default::default(),
+        |_, ui| {
+            let rows = open_rows(&labels);
+            assert!(show_tuning(ui, &rows, false, false, true).events.is_empty());
+        },
+    );
+    harness.run(
+        vec![egui::Event::PointerMoved(end)],
+        Default::default(),
+        |_, ui| {
+            let rows = open_rows(&labels);
+            assert!(show_tuning(ui, &rows, false, false, true).events.is_empty());
+        },
+    );
+}
+
+fn click_at(harness: &mut Harness, pos: Pos2, mut draw: impl FnMut(&mut egui::Ui)) {
+    harness.run(
+        vec![egui::Event::PointerMoved(pos), pointer(pos, true)],
+        Default::default(),
+        |_, ui| draw(ui),
+    );
+    harness.run(vec![pointer(pos, false)], Default::default(), |_, ui| {
+        draw(ui);
+    });
 }
