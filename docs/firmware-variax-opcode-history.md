@@ -207,6 +207,80 @@ command handlers.
 not send, with the same kind of source list and table. Nothing is
 attributed here.
 
+## Variax update through a PODxt Live
+
+This is the route question left open by #226. It does not add rows to the
+section above. No device was opened, and no image was executed.
+
+The PODxt messages are family 3, opcode `0x23`, one data byte:
+
+| Direction | Bytes |
+| --- | --- |
+| On, before the flash segments | `F0 00 01 0C 03 23 01 F7` |
+| Off, on the way out | `F0 00 01 0C 03 23 00 F7` |
+
+**Confirmed.** Monkey's Variax flash writer sends the on frame when the
+connected device name contains `PODxt` and a device-info bit of value 2 is
+set, then waits 1,000 ms. It sends the off frame on the way out only when
+that same condition was taken. The writer's log calls the pair enable and
+disable of large buffers in PODxt Live. The sends are the eight bytes at
+the referenced templates, not a nearby string.
+
+| Build | SHA-256 | Call |
+| --- | --- | --- |
+| Monkey 1.77 Windows, also the Workbench HD 2.15 Windows bundle | `eb06a7ffaed9cd13119ca8fd4783fddfd03d4e22e23f2fbb3aa9524e272b2cde` | `FUN_004577d0` sends `DAT_005cff3c`; `FUN_00457ff3` sends `DAT_005cff44` |
+| Monkey 1.33 Windows, bundled with GearBox 3.72 | `a419574af0358e291a2a282cb8b993ac775fcf257d9e98dd0ff272f37d3366e8` | `FUN_0044c000` sends `DAT_00529868` for the on frame |
+| Monkey 1.78 Mac, also the Workbench HD 2.15 Mac bundle | `47417308c9697456eeed59720ec97281ec226139c707347e4cad3ce787491a37` | `FUN_000668a2` sends `DAT_00160c38` and `DAT_00160c48` |
+
+The 1.78 disk-image URL is the one already recorded for that hash in
+`research/variax-opcode-history.json`. The other two URLs were not captured.
+The same two frames are present in the other Monkey builds named in that
+file (1.33 Mac, 1.68 Mac, 1.73 Windows, and 1.77 Mac). Those four were
+identified by the byte string, not by reading each writer again.
+
+The writer compares the product id with `0x00070004`. Monkey's `default.cfg`
+names that id Variax 300/600, and names USB id `0x4650` PODxt Live. Decimal
+18000 is that USB id. The same writer also handles `0x00070000` and
+`0x00070005`. **Confirmed.**
+
+**Confirmed.** After a failed update whose product id is in the
+`0x0007xxxx` range, Monkey adds one sentence when a short in the connection
+record equals 18000. The sentence says a Variax update failure can come
+from PODxt Live flash memory older than version 2.11. It is in Monkey 1.33,
+1.68, 1.73, 1.77, and 1.78. The 1.77 Windows record reads the short at
+offset 6. The 1.33 Windows record reads it at offset `0x106`. The compared
+value is the same.
+
+**Unknown.** What sets the device-info bit of value 2. The name test is the
+substring `PODxt`, so the send itself is not limited to USB id `0x4650`.
+
+**Confirmed.** Workbench 1.75 stores the off frame as
+`XTLIVE_ENABLE_VARIAXMESSAGES_MSG` and writes byte 6 to 1 or 0.
+Connection mode 1 sends the on frame from `OnInit` and the off frame from
+`OnClose`. That is an editor session. The opcode table above already
+records that Workbench 1.75 has no sender for the Variax flash opcodes.
+
+**Confirmed.** Line 6 Central 1.06 Windows `UpdaterV3EngineDLL.dll`,
+SHA-256 `d24bb48b0f13d9b46c6dd514e712c347ff9a00d4763555614f700c22634bebc7`,
+has the same writer shape for product `0x00070004`. The name needle is
+`PODxt`, the bit test is the same, `FUN_101f9f60` sends `DAT_10464600`
+(the on frame) and waits 1,000 ms, then sends `DAT_1046462c` (the off
+frame) on the way out. That DLL does not contain the version 2.11
+sentence. Its URL was not captured. No file named as a separate Variax
+updater was in the local Monkey, Workbench, GearBox, or Central extracts.
+
+**Unknown.** Which PODxt processor acts on opcode `0x23`. The SHARC map
+already records that the 3.01 image has no host family header. This section
+does not add a device-side reading.
+
+Two other writers in Monkey 1.77 Windows send the same pair under the same
+name and bit test (`FUN_00454310` and `FUN_00454b80`). They are not the
+function that compares `0x00070004`. Their products were not identified.
+
+The relay note left these large-buffer bytes unknown because the log
+strings only sat near the templates. The calls in the table are the
+cross-reference. That note was not edited from this pass.
+
 ## Out of scope
 
 Using any of these commands on the rig is a separate trace, a separate
