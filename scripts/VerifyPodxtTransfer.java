@@ -16,8 +16,6 @@ import modules.sharctone.device.podxt.L6PODxtParamMap;
 
 import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Field;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.util.ArrayDeque;
 import java.util.HexFormat;
 import sun.misc.Unsafe;
@@ -39,21 +37,32 @@ public final class VerifyPodxtTransfer {
         field.set(object, value);
     }
 
-    private static void invoke(L6SharcTonePatchManager manager, String name,
-                               Class<?>[] types, Object... args) throws Exception {
-        Method method = L6SharcTonePatchManager.class.getDeclaredMethod(name, types);
-        method.setAccessible(true);
-        try {
-            method.invoke(manager, args);
-        } catch (InvocationTargetException error) {
-            if (error.getCause() instanceof Exception cause) throw cause;
-            throw error;
-        }
-    }
-
     private static final class Device extends L6PODxtDevice {
         private Device() { super(null, PRODUCT); throw new AssertionError("hardware constructor"); }
         @Override public int GetDeviceID() { return PRODUCT; }
+        @Override public boolean IsConnected(boolean refresh) { return true; }
+        @Override public boolean SetBusy(boolean next) {
+            boolean previous = busy;
+            busy = next;
+            return previous;
+        }
+        private boolean busy;
+    }
+
+    private static final class Patches extends L6SharcTonePatchManager {
+        private L6Patch tone;
+        private Patches() { super(null); throw new AssertionError("hardware constructor"); }
+
+        @Override public L6Patch GetPatch(int bank, int index) {
+            if (bank != 0 || index < 0 || index >= 128) {
+                throw new AssertionError("unexpected bank or slot");
+            }
+            return tone;
+        }
+        @Override public void SetPatchSyncStatus(int bank, int index, boolean synced) {
+            if (!synced) throw new AssertionError("successful store must synchronize the patch");
+        }
+        void sendEdit() throws L6MIDIException { SendDeviceEditBuffer_Sync(tone); }
     }
 
     private static final class Midi extends L6MIDIJava {
@@ -112,17 +121,18 @@ public final class VerifyPodxtTransfer {
         set(L6SharcToneDevice.class, device, "m_midi_transcoder",
             new L6SharcToneMIDITranscoder(device));
 
-        L6SharcTonePatchManager patches = offline(L6SharcTonePatchManager.class);
+        Patches patches = offline(Patches.class);
         set(L6PatchManager.class, patches, "m_device", device);
         L6Patch tone = new L6Patch("Offline Tone", PRODUCT, VERSION);
         map.SetParam(tone, 65538, Float.floatToRawIntBits(0.5f));
         map.SetParam(tone, 786443, 10); // Synthetic F-T-Model 1 link field.
+        patches.tone = tone;
         set(L6PatchManager.class, patches, "m_current_patch", tone);
 
         for (String scenario : new String[]{"edit", "ok-16d", "ok-17a", "ok-32d", "fail", "timeout"}) {
             System.out.println("case " + scenario);
             if (scenario.equals("edit")) {
-                invoke(patches, "SendDeviceEditBuffer", new Class<?>[]{L6Patch.class}, tone);
+                patches.sendEdit();
             } else {
                 int index = switch (scenario) {
                     case "ok-16d" -> 63;
@@ -132,12 +142,8 @@ public final class VerifyPodxtTransfer {
                 if (scenario.equals("ok-17a")) manager.replies.add(HEX.parseHex("f000010c030ff7"));
                 if (scenario.startsWith("ok")) manager.replies.add(HEX.parseHex("f000010c0350f7"));
                 if (scenario.equals("fail")) manager.replies.add(HEX.parseHex("f000010c0351f7"));
-                // The same three original methods reached by L6PatchManager.SendPatch.
-                invoke(patches, "BeginSendPatchBlock", new Class<?>[]{});
-                invoke(patches, "SendDevicePatch",
-                    new Class<?>[]{L6Patch.class, int.class, int.class}, tone, 0, index);
                 try {
-                    invoke(patches, "EndSendPatchBlock", new Class<?>[]{});
+                    if (!patches.SendPatch(0, index)) throw new AssertionError("patch refused");
                     System.out.println("result ok");
                 } catch (L6MIDITimeoutException error) {
                     System.out.println("result timeout");
