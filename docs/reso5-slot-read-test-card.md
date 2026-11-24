@@ -2,7 +2,7 @@
 
 Owner run only, under the [#225 approval](https://github.com/guirossibrum/VariaxWorkbench/issues/225). Use the Variax 600 on firmware 3.10 through one PODxt Live on firmware 3.01. Compare the returned programs with the expectations below before using these results for #177. The firmware research traces the read and store paths for indices 50 and 62. [#181 static trace](firmware-variax-dispatch.md#read-of-one-stored-slot-0x44)
 
-1. Use Device check to make same-day (UTC) Variax and PODxt Live library backups on this rig. Confirm both firmware versions in Device check, then close the app and any other editor. Keep the complete backup folders.
+1. Use complete Device check Variax and PODxt Live library backups from this rig. The backups can be from an earlier day. Confirm both firmware versions in Device check, then close the app and any other editor. Keep the complete backup folders.
 2. Select **Reso, position 5** on the guitar and leave the PODxt channel and guitar controls alone during the read. The tool checks the captured firmware identities during offline preflight, verifies both live identities before opening the guitar session, and checks the first slot reply against the factory Reso-5 metadata. The Variax 300 and 600 share a MIDI identity, so verify the guitar model and selector in person.
 3. From the issue worktree, use the completed backup folders, the private factory archive and a local log root such as `backups`.
 

@@ -1,6 +1,6 @@
 use super::{
-    METADATA, NAME, STORED_HASH, check_backup, expected_stored_image, full_read, location,
-    matches_hash, set_firmware_checksum, variax_identity,
+    METADATA, NAME, STORED_HASH, check_backup, compare_settings, expected_stored_image, full_read,
+    location, matches_hash, set_firmware_checksum, variax_identity,
 };
 use line6_devices::{
     family::variax::{self, write},
@@ -148,17 +148,15 @@ pub(super) fn make_images(mode: Mode, capture: Image, factory: Image) -> Result<
 pub fn prepare(
     mode: Mode,
     backup: &Path,
-    today: &str,
     archive: &Path,
     capture: &Path,
-) -> Result<Prepared, String> {
+) -> Result<(Prepared, [u8; 192]), String> {
     let prepared = reference_images(mode, archive, capture)?;
-    check_backup(
+    let backup_settings = check_backup(
         backup,
-        today,
         prepared.before[METADATA].try_into().expect("metadata size"),
     )?;
-    Ok(prepared)
+    Ok((prepared, backup_settings))
 }
 
 pub(super) fn reference_images(
@@ -207,6 +205,19 @@ fn compare_image(
     for (index, (&word, &[a, b, c])) in actual.iter().zip(expected.as_chunks::<3>().0).enumerate() {
         let expected = u32::from_be_bytes([0, a, b, c]);
         if word != expected {
+            let start = index * 3;
+            if METADATA.contains(&start) {
+                let byte = word.to_be_bytes()[1..]
+                    .iter()
+                    .zip([a, b, c])
+                    .position(|(&actual, expected)| actual != expected)
+                    .expect("different word");
+                let offset = start - METADATA.start + byte;
+                let name = variax::PresetMetadata::field_at(offset).unwrap_or("unmapped settings");
+                return Err(format!(
+                    "{phase} differs at word {index} ({name}, settings byte {offset}): read 0x{word:06X}, expected 0x{expected:06X}."
+                ));
+            }
             return Err(format!(
                 "{phase} differs at word {index}: read 0x{word:06X}, expected 0x{expected:06X}."
             ));
@@ -218,6 +229,7 @@ fn compare_image(
 pub fn attempt<L: Link>(
     session: &mut Session<L>,
     prepared: &Prepared,
+    backup_settings: &[u8; 192],
     dir: &Path,
     mut prompt: impl FnMut(Prompt) -> Result<(), String>,
     announce_timeout: impl FnOnce(&str),
@@ -232,9 +244,11 @@ pub fn attempt<L: Link>(
         super::IDENTITY_RETRY_DELAY,
         variax_identity,
     )?;
-    if current.metadata.raw != prepared.before[METADATA] {
-        return Err("The active Variax settings differ from the expected slot 50 baseline.".into());
-    }
+    compare_settings(
+        &current.metadata.raw,
+        backup_settings,
+        "The active Variax settings compared with the backup's slot 50 settings",
+    )?;
     let preflight_dir = dir.join("preflight");
     let readback_dir = dir.join("readback");
     for path in [&preflight_dir, &readback_dir] {
@@ -277,9 +291,11 @@ pub fn attempt<L: Link>(
         super::IDENTITY_RETRY_DELAY,
         variax_identity,
     )?;
-    if settings.metadata.raw != prepared.after[METADATA] {
-        return Err("Settings read-back differs from the expected slot 50 settings.".into());
-    }
+    compare_settings(
+        &settings.metadata.raw,
+        &prepared.after[METADATA],
+        "Settings read-back",
+    )?;
     session.note("Verified all 1,092 reselected words and all 192 settings bytes.");
     Ok(())
 }

@@ -1,4 +1,4 @@
-use super::{METADATA, NAME, PreparedStore, prepare_store};
+use super::{METADATA, PreparedStore, prepare_store};
 use line6_devices::{
     backup,
     family::variax::{
@@ -37,14 +37,13 @@ pub struct PreparedSlotRead(pub(super) PreparedStore);
 pub fn prepare(
     variax_backup: &Path,
     podxt_backup: &Path,
-    today: &str,
     archive: &Path,
 ) -> Result<PreparedSlotRead, String> {
-    check_podxt_backup(podxt_backup, today)?;
-    prepare_store(variax_backup, today, archive).map(PreparedSlotRead)
+    check_podxt_backup(podxt_backup)?;
+    prepare_store(variax_backup, archive).map(PreparedSlotRead)
 }
 
-fn check_podxt_backup(dir: &Path, today: &str) -> Result<(), String> {
+fn check_podxt_backup(dir: &Path) -> Result<(), String> {
     if dir
         .file_name()
         .and_then(|name| name.to_str())
@@ -65,12 +64,12 @@ fn check_podxt_backup(dir: &Path, today: &str) -> Result<(), String> {
     backup::verify_manifest(dir)?;
     let log = super::read(&dir.join("log.txt"))?;
     let log = std::str::from_utf8(&log).map_err(|error| error.to_string())?;
-    if !log.lines().next().is_some_and(|line| {
-        line.strip_prefix("PODxt Live library backup at ")
-            .and_then(|stamp| stamp.split_once(' '))
-            .is_some_and(|(date, _)| date == today)
-    }) {
-        return Err("Select a Device check PODxt Live library backup made today (UTC).".into());
+    if !log
+        .lines()
+        .next()
+        .is_some_and(|line| line.starts_with("PODxt Live library backup at "))
+    {
+        return Err("Select a Device check PODxt Live library backup.".into());
     }
     let identity = Identity::parse(&super::read(&dir.join("identity.syx"))?)
         .ok_or("The PODxt Live backup identity is invalid.")?;
@@ -113,10 +112,12 @@ pub fn capture<L: Link>(
             &reply.program,
         )?;
         // Check the active metadata before asking for either stored index.
-        if index == SlotIndex::CURRENT && reply.program[METADATA] != prepared.0.settings {
-            return Err(format!(
-                "The 0x7F program metadata differs from the approved {NAME} baseline."
-            ));
+        if index == SlotIndex::CURRENT {
+            super::compare_settings(
+                &reply.program[METADATA],
+                &prepared.0.settings,
+                "The 0x7F program metadata compared with the backup's slot 50 settings",
+            )?;
         }
         replies.push(reply);
         Ok(())
@@ -190,7 +191,7 @@ mod tests {
     use line6_devices::family::podxt;
 
     #[test]
-    fn offline_podxt_preflight_requires_a_current_verified_301_capture() {
+    fn offline_podxt_preflight_requires_a_verified_301_capture() {
         let root = tempfile::tempdir().unwrap();
         for (name, version, complete, passes) in [
             ("right", [0, 3, 0, 1], true, true),
@@ -217,13 +218,16 @@ mod tests {
             identity.push(0xf7);
             folder.file("identity.syx", &identity).unwrap();
             let path = folder.finish(complete).unwrap();
-            assert_eq!(check_podxt_backup(&path, "2026-11-24").is_ok(), passes);
-            assert!(check_podxt_backup(&path, "2026-11-25").is_err());
-            let unused = root.path().join("unused");
-            let Err(error) = prepare(&unused, &path, "2026-11-25", &unused) else {
-                panic!("preflight accepted a stale backup");
+            assert_eq!(check_podxt_backup(&path).is_ok(), passes);
+            let unused = root.path().join("unused.vxf");
+            let Err(error) = prepare(&unused, &path, &unused) else {
+                panic!("preflight accepted a missing archive");
             };
-            assert!(error.contains("PODxt Live"));
+            if passes {
+                assert!(error.contains("unused.vxf"));
+            } else {
+                assert!(error.contains("PODxt Live"));
+            }
         }
     }
 }

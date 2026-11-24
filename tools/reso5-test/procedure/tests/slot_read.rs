@@ -119,7 +119,7 @@ fn slot_read_rejects_wrong_active_metadata_before_either_stored_slot() {
     let mut fake = guitar_with_replies([slot_reply(0x7f, &wrong)]);
     let error =
         slot_read::capture(&mut fake, &mut Quiet, &prepared, dir.path(), || false).unwrap_err();
-    assert!(error.contains("metadata differs"));
+    assert!(error.contains("preset name at settings byte 0"));
     assert_eq!(
         fake.writes[3..],
         [

@@ -144,7 +144,26 @@ fn location() -> variax::Preset {
     variax::Preset::new(10, 4).expect("Reso position 5")
 }
 
-fn check_backup(dir: &Path, today: &str, expected: &[u8; 192]) -> Result<(), String> {
+fn compare_settings(actual: &[u8], expected: &[u8], field: &str) -> Result<(), String> {
+    if actual.len() != expected.len() {
+        return Err(format!(
+            "{field} length differs: found {} bytes, expected {}.",
+            actual.len(),
+            expected.len()
+        ));
+    }
+    for (offset, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
+        if actual != expected {
+            let name = variax::PresetMetadata::field_at(offset).unwrap_or("unmapped settings");
+            return Err(format!(
+                "{field} differs in {name} at settings byte {offset}: found 0x{actual:02X}, expected 0x{expected:02X}."
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn check_backup(dir: &Path, expected: &[u8; 192]) -> Result<[u8; 192], String> {
     if dir
         .file_name()
         .and_then(|name| name.to_str())
@@ -173,12 +192,12 @@ fn check_backup(dir: &Path, today: &str, expected: &[u8; 192]) -> Result<(), Str
     }
     let library = backup::load_variax_library(dir)?;
     let log = String::from_utf8(read(&dir.join("log.txt"))?).map_err(|e| e.to_string())?;
-    if !log.lines().next().is_some_and(|line| {
-        line.strip_prefix("Variax library backup at ")
-            .and_then(|stamp| stamp.split_once(' '))
-            .is_some_and(|(date, _)| date == today)
-    }) {
-        return Err("Select a Device check Variax library backup made today (UTC).".into());
+    if !log
+        .lines()
+        .next()
+        .is_some_and(|line| line.starts_with("Variax library backup at "))
+    {
+        return Err("Select a Device check Variax library backup.".into());
     }
     let identity = Identity::parse(&read(&dir.join("identity.syx"))?)
         .ok_or("The Variax backup identity is invalid.")?;
@@ -191,10 +210,8 @@ fn check_backup(dir: &Path, today: &str, expected: &[u8; 192]) -> Result<(), Str
         .iter()
         .find(|(preset, _)| *preset == location())
         .ok_or("The Variax backup has no Reso position 5.")?;
-    if &metadata.raw != expected {
-        return Err("The backup's Reso position 5 differs from the approved baseline.".into());
-    }
-    Ok(())
+    compare_settings(&metadata.raw, expected, "The backup's slot 50 settings")?;
+    Ok(metadata.raw)
 }
 
 pub struct Prepared {
@@ -206,7 +223,6 @@ pub struct Prepared {
 pub fn prepare(
     stage: Stage,
     backup: &Path,
-    today: &str,
     archive: &Path,
     models: &Path,
 ) -> Result<Prepared, String> {
@@ -220,7 +236,7 @@ pub fn prepare(
     if preset.name() != NAME || !matches_hash(preset.as_bytes(), SETTINGS_HASH) {
         return Err("The archived Reso-5 settings do not match the approved fingerprint.".into());
     }
-    check_backup(backup, today, &start)?;
+    let start = check_backup(backup, &start)?;
     if let Stage::Trim = stage {
         preset.set_parameter(SYSTEM_SLOT, TRIM_PARAM, 1, TRIM_DB.to_bits())?;
     }
@@ -254,7 +270,7 @@ pub struct PreparedStore {
     program: [u8; PROGRAM_BYTES],
 }
 
-pub fn prepare_store(backup: &Path, today: &str, archive: &Path) -> Result<PreparedStore, String> {
+pub fn prepare_store(backup: &Path, archive: &Path) -> Result<PreparedStore, String> {
     let factory = FactoryReference::parse(&read(archive)?)?;
     let slot = &factory.slots()[50];
     let program = canonical_store_program(slot.raw_program(), STORE_HASH)?;
@@ -262,7 +278,7 @@ pub fn prepare_store(backup: &Path, today: &str, archive: &Path) -> Result<Prepa
         return Err("The expected stamped slot 50 image has an incorrect SHA-256.".into());
     }
     let settings = program[METADATA].try_into().expect("fixed metadata range");
-    check_backup(backup, today, &settings)?;
+    let settings = check_backup(backup, &settings)?;
     Ok(PreparedStore { settings, program })
 }
 
@@ -363,9 +379,11 @@ pub fn attempt<L: Link>(
         IDENTITY_RETRY_DELAY,
         variax_identity,
     )?;
-    if current.metadata.name != NAME || current.metadata.raw != prepared.start {
-        return Err("The active Variax settings differ from the approved Reso-5 baseline.".into());
-    }
+    compare_settings(
+        &current.metadata.raw,
+        &prepared.start,
+        "The active Variax settings compared with the backup's slot 50 settings",
+    )?;
     if cancelled() {
         return Err("Cancelled before opening the edit session.".into());
     }

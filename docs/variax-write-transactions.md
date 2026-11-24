@@ -9,9 +9,11 @@ It accepts a caller-provided link and gate policy. The separate
 transaction, with its own identity checks, backup verification and G6 policy.
 
 The [Reso-5 slot 50 ladder](reso5-store-test-card.md) uses the same G7
-transaction for rename, restore and factory modes. It checks a same-day backup
-and the full current buffer before each store and verifies the reselected
-buffer against the firmware-stamped image after confirmation. The read-back
+transaction for rename, restore and factory modes. Before a store, it
+compares the backup's slot 50 settings with the live settings and checks the
+full current buffer against the expected image for that mode. After
+confirmation, it verifies the reselected buffer against the firmware-stamped
+image. The read-back
 uses #234's chunked `0x3C` reads. Spare 62 remains unavailable on the PODxt
 Live route. The card covers the two-minute wait and manual checks after a
 silent timeout.

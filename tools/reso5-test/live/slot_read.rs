@@ -17,8 +17,8 @@ pub(super) fn run(
     let result = (|| {
         let (_, started) = now()?;
         trace.record(format!("Reso-5 0x44 slot read at {started}."));
-        let prepared = slot_read::prepare(variax_backup, podxt_backup, &started[..10], archive)?;
-        let evidence = "Verified same-day backup evidence for Variax 300/600 firmware 3.10 and PODxt Live firmware 3.01, and the factory Reso-5 fingerprint.";
+        let prepared = slot_read::prepare(variax_backup, podxt_backup, archive)?;
+        let evidence = "Verified backup evidence for Variax 300/600 firmware 3.10 and PODxt Live firmware 3.01, and the factory Reso-5 fingerprint.";
         trace.record(evidence.into());
         println!("{evidence}");
         if offline {

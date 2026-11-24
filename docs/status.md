@@ -238,7 +238,7 @@ PRs #167–#172 were merged on 2026-11-22 by owner override, after local merge-r
 
 - [x] #25 offline replay checks all 180 #175 host transcripts and rejects malformed full frames and stores without a full upload. Virtual control models session on/off. The six write opcodes report explicit receiver-model gaps. [Replay scope](receiver-simulation.md#workbench-application-write-transcript-replay).
 
-- [x] #177 slot 50 store ladder implements rename, restore and factory modes. Each verifies the pinned #234 capture, same-day backup and exact current buffer before storing, then the full reselected image and 192 settings bytes. Fake transports cover all modes and failure paths. Each live mode awaits separate owner approval. [Owner test card](reso5-store-test-card.md).
+- [x] #177 slot 50 store ladder implements rename, restore and factory modes. Each verifies the pinned #234 capture, a backup whose slot 50 settings match live preflight, and the exact current buffer before storing, then the full reselected image and 192 settings bytes. Fake transports cover all modes and failure paths. Each live mode awaits separate owner approval. [Owner test card](reso5-store-test-card.md).
 
 - [x] [#225](https://github.com/guirossibrum/VariaxWorkbench/issues/225) Variax slot-read decoder checked offline. The owner-run 2026-11-24 15:08 UTC check received no reply to `0x44 7F` through PODxt Live. Slot 50 and spare 62 were never requested, and the guitar worked normally afterward. The decoder remains available for future direct-interface work. [Owner test card](reso5-slot-read-test-card.md).
 

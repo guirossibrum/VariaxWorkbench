@@ -828,7 +828,7 @@ impl PresetMetadata {
         let mut parameters = BTreeMap::new();
         let mut cursor = 18;
         // Field order and types from Workbench `DecodePatch`.
-        let mut read = |key, width: usize, kind| {
+        let read = |key, width: usize, kind| {
             let bytes = &raw[cursor..cursor + width];
             cursor += width;
             let value = match kind {
@@ -845,72 +845,91 @@ impl PresetMetadata {
             };
             parameters.insert(key, value);
         };
-        read("body_model", 4, 'i');
-        for (enabled, model, position, angle, level) in [
-            (
-                "pickup1_enabled",
-                "pickup1_model",
-                "pickup1_position",
-                "pickup1_angle",
-                "pickup1_level",
-            ),
-            (
-                "pickup2_enabled",
-                "pickup2_model",
-                "pickup2_position",
-                "pickup2_angle",
-                "pickup2_level",
-            ),
-        ] {
-            read(enabled, 1, 'b');
-            read(model, 4, 'i');
-            read(position, 3, 'f');
-            read(angle, 3, 'f');
-            read(level, 3, 'f');
-        }
-        read("pickup2_phase_reverse", 1, 'b');
-        for key in ["tone_capacitance", "tone_resistance", "volume_resistance"] {
-            read(key, 3, 'f');
-        }
-        read("volume_taper", 1, 'u');
-        read("tone_position", 3, 'f');
-        read("save_tone_position", 1, 'b');
-        read("trim", 3, 'f');
-        read("alternate_tuning_enabled", 1, 'b');
-        for key in [
-            "string1_tuning",
-            "string2_tuning",
-            "string3_tuning",
-            "string4_tuning",
-            "string5_tuning",
-            "string6_tuning",
-        ] {
-            read(key, 1, 's');
-        }
-        for key in [
-            "string1_detune",
-            "string2_detune",
-            "string3_detune",
-            "string4_detune",
-            "string5_detune",
-            "string6_detune",
-            "string1_mix",
-            "string2_mix",
-            "string3_mix",
-            "string4_mix",
-            "string5_mix",
-            "string6_mix",
-            "string_spread",
-        ] {
-            read(key, 3, 'f');
-        }
-        read("pickups_in_series", 1, 'b');
+        visit_metadata_fields(read);
         Ok(Self {
             name,
             parameters,
             raw,
         })
     }
+    /// Name of the stored settings field at this zero-based byte offset.
+    pub fn field_at(offset: usize) -> Option<&'static str> {
+        if offset < 18 {
+            return Some("preset name");
+        }
+        let mut cursor = 18;
+        let mut field = None;
+        visit_metadata_fields(|key, width, _| {
+            if (cursor..cursor + width).contains(&offset) {
+                field = Some(key);
+            }
+            cursor += width;
+        });
+        field
+    }
+}
+
+fn visit_metadata_fields(mut read: impl FnMut(&'static str, usize, char)) {
+    read("body_model", 4, 'i');
+    for (enabled, model, position, angle, level) in [
+        (
+            "pickup1_enabled",
+            "pickup1_model",
+            "pickup1_position",
+            "pickup1_angle",
+            "pickup1_level",
+        ),
+        (
+            "pickup2_enabled",
+            "pickup2_model",
+            "pickup2_position",
+            "pickup2_angle",
+            "pickup2_level",
+        ),
+    ] {
+        read(enabled, 1, 'b');
+        read(model, 4, 'i');
+        read(position, 3, 'f');
+        read(angle, 3, 'f');
+        read(level, 3, 'f');
+    }
+    read("pickup2_phase_reverse", 1, 'b');
+    for key in ["tone_capacitance", "tone_resistance", "volume_resistance"] {
+        read(key, 3, 'f');
+    }
+    read("volume_taper", 1, 'u');
+    read("tone_position", 3, 'f');
+    read("save_tone_position", 1, 'b');
+    read("trim", 3, 'f');
+    read("alternate_tuning_enabled", 1, 'b');
+    for key in [
+        "string1_tuning",
+        "string2_tuning",
+        "string3_tuning",
+        "string4_tuning",
+        "string5_tuning",
+        "string6_tuning",
+    ] {
+        read(key, 1, 's');
+    }
+    for key in [
+        "string1_detune",
+        "string2_detune",
+        "string3_detune",
+        "string4_detune",
+        "string5_detune",
+        "string6_detune",
+        "string1_mix",
+        "string2_mix",
+        "string3_mix",
+        "string4_mix",
+        "string5_mix",
+        "string6_mix",
+        "string_spread",
+    ] {
+        read(key, 3, 'f');
+    }
+    read("pickups_in_series", 1, 'b');
 }
 
 #[cfg(test)]

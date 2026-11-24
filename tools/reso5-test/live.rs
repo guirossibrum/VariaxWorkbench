@@ -109,16 +109,10 @@ pub fn run(args: &[OsString]) -> Result<(), String> {
             stage.number(),
             backup_dir.display()
         ));
-        let today = &started[..10];
-        let prepared = procedure::prepare(
-            stage,
-            backup_dir,
-            today,
-            Path::new(archive),
-            Path::new(models),
-        )?;
+        let prepared =
+            procedure::prepare(stage, backup_dir, Path::new(archive), Path::new(models))?;
         trace.record(
-            "Verified the same-day backup, original program SHA-256 and provisional reverb bounds."
+            "Verified the matching backup, original program SHA-256 and provisional reverb bounds."
                 .into(),
         );
         if offline {
@@ -135,9 +129,6 @@ pub fn run(args: &[OsString]) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         if answer.trim_end_matches(['\r', '\n']) != confirmation {
             return Err("Stage confirmation was not given.".into());
-        }
-        if &now()?.1[..10] != today {
-            return Err("The UTC day changed during preflight. Select a current backup.".into());
         }
         install_cancellation()?;
         run_if_unlocked(Gate::EditBufferWrite, || {
@@ -194,16 +185,15 @@ fn run_store(
     let trace = Trace::create(log_root, &format!("store-{}", mode.label()))?;
     let result = (|| {
         let (_, started) = now()?;
-        let today = &started[..10];
         trace.record(format!(
             "Reso-5 slot 50 {} at {started}. Backup: {}. Capture: {}",
             mode.label(),
             backup_dir.display(),
             capture.display()
         ));
-        let prepared = store::prepare(mode, backup_dir, today, archive, capture)?;
+        let (prepared, backup_settings) = store::prepare(mode, backup_dir, archive, capture)?;
         let verified = format!(
-            "Verified the archive, pinned capture and same-day backup. Expected stored-image SHA-256 ({}): {}",
+            "Verified the archive, pinned capture and matching backup. Expected stored-image SHA-256 ({}): {}",
             mode.label(),
             prepared.expected_sha256()
         );
@@ -219,7 +209,7 @@ fn run_store(
             run_if_unlocked(Gate::CurrentSettingsRead, || {
                 run_if_unlocked(Gate::IdentityRequest, || {
                     run_if_unlocked(Gate::OsDiscovery, || {
-                        run_device(DeviceTask::Store(&prepared, today), &trace)
+                        run_device(DeviceTask::Store(&prepared, &backup_settings), &trace)
                     })
                 })
             })
@@ -243,10 +233,10 @@ fn run_store(
 enum DeviceTask<'a> {
     FullRead(&'a [u8; variax_workbench::factory_reference::PROGRAM_BYTES]),
     Edit(&'a procedure::Prepared),
-    Store(&'a store::Prepared, &'a str),
+    Store(&'a store::Prepared, &'a [u8; 192]),
 }
 
-fn prompt_store(prompt: Prompt, today: &str, stopping: impl Fn() -> bool) -> Result<(), String> {
+fn prompt_store(prompt: Prompt, stopping: impl Fn() -> bool) -> Result<(), String> {
     let phrase = match prompt {
         Prompt::Confirm(mode) => mode.confirmation(),
         Prompt::Reselect => {
@@ -294,11 +284,6 @@ fn prompt_store(prompt: Prompt, today: &str, stopping: impl Fn() -> bool) -> Res
         if byte == b'\n' {
             let answer = std::str::from_utf8(&answer).map_err(|error| error.to_string())?;
             store::require_confirmation(prompt, answer)?;
-            if matches!(prompt, Prompt::Confirm(_)) && &now()?.1[..10] != today {
-                return Err(
-                    "The UTC day changed during preflight. Select a current backup.".into(),
-                );
-            }
             return Ok(());
         }
     }
@@ -352,14 +337,15 @@ fn run_device(task: DeviceTask<'_>, trace: &Trace) -> Result<(), String> {
                 let mut session = Session::new(link, &VariaxPolicy, &mut log);
                 procedure::attempt(&mut session, prepared, stopping)
             }
-            DeviceTask::Store(prepared, today) => {
+            DeviceTask::Store(prepared, backup_settings) => {
                 let mut session = Session::new(link, &StorePolicy, &mut log);
                 store::attempt(
                     &mut session,
                     prepared,
+                    backup_settings,
                     &trace.path,
                     |prompt| {
-                        prompt_store(prompt, today, || {
+                        prompt_store(prompt, || {
                             matches!(prompt, Prompt::Confirm(_)) && stopping()
                         })
                     },

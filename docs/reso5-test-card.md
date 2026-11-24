@@ -8,9 +8,10 @@ different guitar preset.
 
 ## Prepare
 
-1. Use Device check → **Back up the Variax**. Wait for all 60 presets and a
-   completed backup folder. Use this same backup for both stages. The probe
-   checks the date in UTC.
+1. Use a complete **Device check Variax backup** with all 60 presets.
+   The backup can be from an earlier day. Use it for both stages. The tool
+   requires the backup's Reso-5 settings to match the archive and the live
+   preflight settings.
 2. On the guitar, select bank **Reso**, position **5**. Leave the knob there
    while each command runs. Close other editors or device checks.
 

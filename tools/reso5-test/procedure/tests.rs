@@ -359,26 +359,22 @@ fn backup_at(dir: &Path, reso: &[u8; 192], date: &str, include_bank_names: bool)
 }
 
 #[test]
-fn mismatched_old_and_incomplete_backups_are_refused() {
-    let dir = tempfile::tempdir().unwrap();
+fn matching_old_backup_is_accepted_but_mismatched_or_incomplete_backups_are_refused() {
+    let old = tempfile::tempdir().unwrap();
+    let recent = tempfile::tempdir().unwrap();
     let baseline = settings();
-    let date = "2026-11-23";
-    backup_at(dir.path(), &baseline, date, false);
-    check_backup(dir.path(), date, &baseline).unwrap();
-    assert!(
-        check_backup(dir.path(), "2026-11-24", &baseline)
-            .unwrap_err()
-            .contains("today")
-    );
+    backup_at(old.path(), &baseline, "2025-01-01", false);
+    assert_eq!(check_backup(old.path(), &baseline).unwrap(), baseline);
+
     let mut different = baseline;
-    different[191] = 1;
-    assert!(
-        check_backup(dir.path(), date, &different)
-            .unwrap_err()
-            .contains("differs")
-    );
-    fs::remove_file(dir.path().join("presets/10-Reso-5-2.syx")).unwrap();
-    assert!(check_backup(dir.path(), date, &baseline).is_err());
+    different[64] ^= 1;
+    backup_at(recent.path(), &different, "2026-11-24", false);
+    let error = check_backup(recent.path(), &baseline).unwrap_err();
+    assert!(error.contains("backup's slot 50 settings"));
+    assert!(error.contains("save_tone_position at settings byte 64"));
+
+    fs::remove_file(old.path().join("presets/10-Reso-5-2.syx")).unwrap();
+    assert!(check_backup(old.path(), &baseline).is_err());
 }
 
 #[test]
@@ -421,14 +417,14 @@ fn backup_check_accepts_bank_name_replies() {
     let baseline = settings();
     let date = "2026-11-23";
     backup_at(dir.path(), &baseline, date, true);
-    check_backup(dir.path(), date, &baseline).unwrap();
+    check_backup(dir.path(), &baseline).unwrap();
 }
 
 #[test]
 fn nonexistent_reference_is_refused_offline() {
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("missing.vxf");
-    let Err(error) = prepare(Stage::Own, dir.path(), "2026-11-23", &missing, &missing) else {
+    let Err(error) = prepare(Stage::Own, dir.path(), &missing, &missing) else {
         panic!("invalid archive accepted");
     };
     assert!(

@@ -13,11 +13,11 @@ explains the procedure. Complete and review each step before asking for the next
 
 1. Use stable power, leave cables connected, and keep the amp volume low.
    The rig is Variax 300/600 firmware 3.10 through PODxt Live 3.01.
-2. Take a complete **Device check Variax backup** on the same UTC day.
-   The tool requires the backup to match the settings expected before this
-   step. Restore requires a same-UTC-day Device check backup that shows
-   `Reso-5 T` in slot 50. Keep the original pre-rename backup as well.
-   Close the app and any other editors.
+2. Use a complete **Device check Variax backup**. The tool checks its
+   manifest and requires its slot 50 settings to match the baseline for
+   this step. Restore expects `Reso-5 T` in slot 50. The backup can be from
+   an earlier day. Keep the original pre-rename backup as well. Close the
+   app and any other editors.
 3. Select **Reso, position 5** by hand. Keep the PODxt channel and the guitar
    controls steady. The tool sends no program change.
 4. Supply the fingerprinted 3.10 archive and the original 35-file #234
@@ -29,7 +29,7 @@ explains the procedure. Complete and review each step before asking for the next
      --bin variax-reso5-test -- --check store MODE BEFORE_BACKUP ARCHIVE.vxf CAPTURE_DIR LOG_ROOT
    ```
 
-The offline check verifies the archive, same-day backup, capture and
+The offline check verifies the archive, matching backup, capture and
 checksums, then prints and logs the expected stored-image SHA-256. The
 captured program is pinned to `3d8bae813991fa5996fb649ad80d116de8ef358c03724770183b89cdef5ad249`.
 The firmware writes the four characters of `0310` to words 767–770 and puts
@@ -44,8 +44,8 @@ the low 24 bits of the sum of words 0–1,090 in word 1,091.
 ## Run after separate approval
 
 1. Use the reviewed owner build. Remove `--check` from the command. The tool
-   checks both identities and the 192 settings bytes, then reads the active
-   buffer in 35 chunks. It requires an exact match to the original capture
+   checks both identities and compares all 192 live settings bytes with the
+   backup's slot 50 settings. It then reads the active buffer in 35 chunks. It requires an exact match to the original capture
    before rename or factory. Restore requires the current buffer to match
    the renamed image (SHA-256 `75bcaaf5…c716b`) byte for byte.
    It saves each completed reply in the new log folder. After a damaged

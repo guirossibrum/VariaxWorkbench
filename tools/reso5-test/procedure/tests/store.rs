@@ -63,6 +63,7 @@ fn run(
     ladder::attempt(
         &mut Session::new(fake, &StorePolicy, &mut Quiet),
         prepared,
+        prepared.before[METADATA].try_into().unwrap(),
         dir,
         prompt,
         |_| {},
@@ -297,28 +298,20 @@ fn rejects_an_illegal_reply_or_a_complete_capture_with_wrong_words() {
 }
 
 #[test]
-fn each_mode_requires_the_same_day_backup_of_its_pre_store_settings() {
+fn each_mode_accepts_matching_old_backup_and_refuses_recent_backup_with_different_settings() {
     for mode in MODES {
         let prepared = sample(mode);
-        let today = "2026-11-24";
-        let good = tempfile::tempdir().unwrap();
-        let bad = tempfile::tempdir().unwrap();
+        let old = tempfile::tempdir().unwrap();
+        let recent = tempfile::tempdir().unwrap();
         let expected: &[u8; 192] = prepared.before[METADATA].try_into().unwrap();
         let mut wrong = *expected;
         wrong[0] = b'X';
-        backup_at(good.path(), expected, today, false);
-        backup_at(bad.path(), &wrong, today, false);
-        check_backup(good.path(), today, expected).unwrap();
-        assert!(
-            check_backup(good.path(), "2026-11-25", expected)
-                .unwrap_err()
-                .contains("today")
-        );
-        assert!(
-            check_backup(bad.path(), today, expected)
-                .unwrap_err()
-                .contains("differs")
-        );
+        backup_at(old.path(), expected, "2025-01-01", false);
+        backup_at(recent.path(), &wrong, "2026-11-24", false);
+        assert_eq!(check_backup(old.path(), expected).unwrap(), *expected);
+        let error = check_backup(recent.path(), expected).unwrap_err();
+        assert!(error.contains("backup's slot 50 settings"));
+        assert!(error.contains("preset name at settings byte 0"));
     }
 }
 
@@ -343,7 +336,9 @@ fn refuses_wrong_identity_settings_and_complete_preflight_mismatch() {
         assert!(
             run(&mut rig, &prepared, dir.path(), no_prompt, || false)
                 .unwrap_err()
-                .contains("settings differ")
+                .contains(
+                    "backup's slot 50 settings differs in unmapped settings at settings byte 191"
+                )
         );
         assert_eq!(rig.writes, metadata_requests());
 
@@ -355,6 +350,13 @@ fn refuses_wrong_identity_settings_and_complete_preflight_mismatch() {
                 .unwrap_err()
                 .contains("preflight differs at word 0")
         );
+        assert_eq!(rig.writes, preflight_writes());
+        let mut wrong = prepared.before;
+        wrong[METADATA.start + 64] ^= 1;
+        let dir = tempfile::tempdir().unwrap();
+        let mut rig = fake(&prepared.before, &wrong, &[], None);
+        let error = run(&mut rig, &prepared, dir.path(), no_prompt, || false).unwrap_err();
+        assert!(error.contains("save_tone_position, settings byte 64"));
         assert_eq!(rig.writes, preflight_writes());
     }
 }
@@ -481,6 +483,7 @@ fn silent_timeout_waits_without_further_sends_and_wrong_reply_stops() {
         let error = ladder::attempt(
             &mut Session::new(&mut rig, &StorePolicy, &mut Quiet),
             &prepared,
+            prepared.before[METADATA].try_into().unwrap(),
             dir.path(),
             |prompt| {
                 assert!(matches!(prompt, Prompt::Confirm(_)));
@@ -603,22 +606,21 @@ fn private_inputs_verify_all_three_expected_image_hashes() {
             ladder::reference_images(mode, Path::new(&archive), Path::new(&capture)).unwrap();
         assert_eq!(prepared.expected_sha256(), hash);
         let backup = tempfile::tempdir().unwrap();
-        let today = "2026-11-24";
         backup_at(
             backup.path(),
             prepared.before[METADATA].try_into().unwrap(),
-            today,
+            "2025-01-01",
             false,
         );
         assert_eq!(
             ladder::prepare(
                 mode,
                 backup.path(),
-                today,
                 Path::new(&archive),
                 Path::new(&capture)
             )
             .unwrap()
+            .0
             .expected_sha256(),
             hash,
         );
