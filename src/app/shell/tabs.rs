@@ -66,6 +66,7 @@ pub(super) trait FamilyTab: std::any::Any {
     fn save_copy(&mut self, services: &mut EditorServices<'_>);
     fn undo(&mut self) {}
     fn redo(&mut self) {}
+    fn observe_device(&mut self, _device: Option<&DeviceTab>) {}
     fn poll(&mut self, _ctx: &egui::Context) {}
     fn local_prompt(&mut self, _ctx: &egui::Context, _services: &mut EditorServices<'_>) {}
     fn busy(&self) -> bool {

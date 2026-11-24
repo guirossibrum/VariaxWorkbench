@@ -296,6 +296,7 @@ impl Workbench {
             self.advance_close(ctx);
         }
         for entry in &mut self.tabs.entries {
+            entry.editor.observe_device(entry.device.as_ref());
             entry.editor.poll(ctx);
         }
         self.frame_count += 1;
