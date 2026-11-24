@@ -26,6 +26,11 @@ path = "src/check_app.rs"
 name = "variax-firmware-inspect"
 path = "src/firmware_inspect.rs"
 
+[[bin]]
+name = "variax-reso5-test"
+path = "tools/reso5-test/main.rs"
+required-features = ["owner-reso5-test"]
+
 [features]
 # The app opened from a normal build includes the identity check for any user.
 # `gui` alone still does not link USB. Turning default features off leaves step 2 off.
@@ -37,6 +42,12 @@ gui = ["dep:eframe", "dep:winit", "dep:image", "dep:rfd", "dep:serde", "dep:serd
 # On Linux, this feature offers the identity check and the step 3 read of both
 # families. Step 4 stays off. The editor fetch stays behind the G3 constant.
 usb = ["dep:rusb", "dep:line6-devices", "line6-devices/usb"]
+
+# The bounded owner-run probe is built separately from the normal application.
+owner-reso5-test = ["usb", "dep:libc"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { version = "0.2", optional = true }
 
 [dependencies]
 libm = { version = "=0.2.16", optional = true, default-features = false, features = ["force-soft-floats"] }

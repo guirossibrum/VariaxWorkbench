@@ -229,7 +229,16 @@ pub struct CurrentPreset {
 
 /// Identity, session on, metadata blocks 1 and 2, session off.
 pub fn read_current<L: Link>(session: &mut Session<L>) -> Result<CurrentPreset, String> {
+    read_current_checked(session, |_| Ok(()))
+}
+
+/// Read the same two metadata blocks, after checking the identity on this link.
+pub fn read_current_checked<L: Link>(
+    session: &mut Session<L>,
+    check_identity: impl FnOnce(&Identity) -> Result<(), String>,
+) -> Result<CurrentPreset, String> {
     let identified = identify_variax(session)?;
+    check_identity(&identified.identity)?;
     let replies = in_session(session, |session| {
         Ok([
             read_block(session, VariaxRequest::Metadata1)?,

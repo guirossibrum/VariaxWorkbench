@@ -86,6 +86,7 @@ pub struct Session<'a, L: Link> {
     /// (long library reads). Sent requests are always logged.
     pub log_packets: bool,
     pub packets_in: usize,
+    require_expected_sysex: bool,
 }
 
 impl<'a, L: Link> Session<'a, L> {
@@ -98,7 +99,14 @@ impl<'a, L: Link> Session<'a, L> {
             sent: Vec::new(),
             log_packets: true,
             packets_in: 0,
+            require_expected_sysex: false,
         }
+    }
+
+    /// Stop on unexpected SysEx or a program change during a reply wait.
+    /// Identity discovery may still request the existing orphan-tail retry.
+    pub fn require_expected_sysex(&mut self) {
+        self.require_expected_sysex = true;
     }
 
     pub fn note(&mut self, text: impl Into<String>) {
@@ -227,16 +235,41 @@ impl<'a, L: Link> Session<'a, L> {
                 continue;
             };
             last_packet = self.link.elapsed();
+            if self.require_expected_sysex
+                && !stop_on_orphan_quiet
+                && self.assembler.orphans > orphans_before
+            {
+                return Err("Unexpected orphan MIDI bytes while waiting for a reply.".into());
+            }
+
+            let mut expected = None;
             for event in events {
-                if let Event::Sysex(message) = event {
-                    if wanted(&message) {
-                        return Ok(Wait::Found(message));
+                match event {
+                    Event::Sysex(message) if wanted(&message) && expected.is_none() => {
+                        if !self.require_expected_sysex {
+                            return Ok(Wait::Found(message));
+                        }
+                        expected = Some(message);
                     }
-                    self.note(format!(
-                        "    (other SysEx message, {} bytes)",
-                        message.len()
-                    ));
+                    Event::Sysex(message) if self.require_expected_sysex => {
+                        return Err(format!("Unexpected SysEx reply: {}", hex(&message)));
+                    }
+                    Event::Sysex(message) => {
+                        self.note(format!(
+                            "    (other SysEx message, {} bytes)",
+                            message.len()
+                        ));
+                    }
+                    Event::Short(message)
+                        if self.require_expected_sysex && message[0] & 0xf0 == 0xc0 =>
+                    {
+                        return Err(format!("Unexpected program change: {}", hex(&message)));
+                    }
+                    Event::Short(_) => {}
                 }
+            }
+            if let Some(reply) = expected {
+                return Ok(Wait::Found(reply));
             }
         }
     }

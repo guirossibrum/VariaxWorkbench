@@ -103,7 +103,7 @@ def load_models(oracle, directory):
     return initial, manifest, digest(json.dumps(model_hashes, sort_keys=True).encode())
 
 
-def original_programs(artifact_root, directory, presets, generate, *, muted=False):
+def original_programs(artifact_root, directory, presets, generate, *, muted=False, count=SLOTS):
     app = artifact_root / 'analysis/extracted/windows-app'
     scripts = ROOT / 'scripts'
     subprocess.run([
@@ -117,9 +117,9 @@ def original_programs(artifact_root, directory, presets, generate, *, muted=Fals
     cases = directory / 'cases.txt'
     # File mode reads the actual .vwm, so only flags, mask and case order matter.
     flags = 2 if muted else 0
-    preserve(cases, f'00 {flags} ffffffff 00000000\n'.encode() * SLOTS)
+    preserve(cases, f'00 {flags} ffffffff 00000000\n'.encode() * count)
     mapped = run_java(directory, cases, layout, '-', presets, artifact_root=artifact_root)
-    if len(mapped) != SLOTS:
+    if len(mapped) != count:
         raise ValueError('original Java mapping output count mismatch')
     native = bytearray()
     for slot, (settings, mask, _placeholder) in enumerate(mapped):

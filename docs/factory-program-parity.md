@@ -302,8 +302,10 @@ After reviewing these measurements, the owner decided:
    tone point 4 is **2.113 dB lower at 18,730.52 Hz**: Rust/Mac 0.57172
    (−4.856 dB) vs firmware 0.72914 (−2.744 dB). These are modeled gains of the
    isolated bandpass, and the original Mac Workbench produces the same values.
-   The original Windows engine matches the firmware there. An optional
-   Windows-precision Rust profile would address it.
+   The original Windows engine is much closer to the firmware there. The
+   [#184 slot 52 trace](factory-program-slot52.md) confirms that primary-biquad
+   intermediate precision changes the secondary peak search before the Q table
+   is smoothed and packed. A Windows-compatible Rust profile remains optional.
 
 ### Reproduction
 
