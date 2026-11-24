@@ -136,7 +136,7 @@ fn shell_passes_verified_attachment_and_disconnect_cancels_the_worker() {
     );
 }
 
-struct FakeLock<'a>(&'a Cell<bool>);
+pub(super) struct FakeLock<'a>(pub(super) &'a Cell<bool>);
 
 impl Drop for FakeLock<'_> {
     fn drop(&mut self) {
@@ -144,12 +144,12 @@ impl Drop for FakeLock<'_> {
     }
 }
 
-struct FakeLink<'a> {
-    held: &'a Cell<bool>,
-    script: VecDeque<(PodxtRequest, Vec<u8>)>,
-    reply: Option<Vec<u8>>,
-    time: Duration,
-    writes: &'a Cell<usize>,
+pub(super) struct FakeLink<'a> {
+    pub(super) held: &'a Cell<bool>,
+    pub(super) script: VecDeque<(PodxtRequest, Vec<u8>)>,
+    pub(super) reply: Option<Vec<u8>>,
+    pub(super) time: Duration,
+    pub(super) writes: &'a Cell<usize>,
 }
 
 impl Link for FakeLink<'_> {

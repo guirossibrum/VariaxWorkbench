@@ -50,7 +50,7 @@ impl ParameterPanel {
     }
 }
 
-const GROUPS: [(&str, &str); 16] = [
+pub(super) const GROUPS: [(&str, &str); 16] = [
     ("amp", "Amp"),
     ("drive", "Drive"),
     ("cab", "Cab and room"),

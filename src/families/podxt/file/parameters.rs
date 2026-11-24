@@ -155,6 +155,69 @@ impl PodParameterTable {
     }
 }
 
+/// Presentation for a controller in a PODxt Live tone dump. The device
+/// library still decides which controllers may be sent.
+#[cfg(feature = "usb")]
+pub struct PodWireLabel<'a> {
+    pub block: &'a str,
+    pub label: &'a str,
+    format: Option<&'a DisplayFormat>,
+}
+
+#[cfg(feature = "usb")]
+impl PodWireLabel<'_> {
+    pub fn choices(&self) -> impl Iterator<Item = (u32, &str)> {
+        self.format
+            .into_iter()
+            .flat_map(|format| &format.choices)
+            .filter_map(|choice| match choice {
+                Choice::Integer((value, label)) => Some((*value, label.as_str())),
+                Choice::Association(_) => None,
+            })
+    }
+}
+
+#[cfg(feature = "usb")]
+impl PodParameterTable {
+    pub fn wire_label(
+        &self,
+        cc: u8,
+        current_model: impl FnOnce(&str) -> Option<u32>,
+    ) -> Option<PodWireLabel<'_>> {
+        let offset = 32 + usize::from(cc);
+        let row = self.parameters.iter().find(|row| {
+            row.availability.as_deref() == Some("Live") && row.tone_offsets.first() == Some(&offset)
+        })?;
+        let definition_key = match row.definition.as_deref()? {
+            "asset selector" => {
+                return Some(PodWireLabel {
+                    block: &row.block,
+                    label: "Model",
+                    format: None,
+                });
+            }
+            "model-specific" => {
+                let layout = self.layout(&row.block, current_model(&row.block)?)?;
+                layout.knobs.get(&row.key)?
+            }
+            key => key,
+        };
+        let definition = self.definitions.get(definition_key)?;
+        let format = self.formats.get(&definition.format);
+        let format = format.and_then(|format| {
+            format
+                .alias
+                .as_ref()
+                .map_or(Some(format), |alias| self.formats.get(alias))
+        });
+        Some(PodWireLabel {
+            block: &row.block,
+            label: &definition.label,
+            format,
+        })
+    }
+}
+
 pub struct PodControl<'a> {
     pub parameter: &'a PodParameter,
     pub definition: Option<&'a Definition>,

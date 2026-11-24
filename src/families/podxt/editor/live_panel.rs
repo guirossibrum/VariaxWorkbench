@@ -1,4 +1,6 @@
 use super::*;
+
+mod edit;
 use line6_devices::family::podxt::{
     self, BankKind, Control, EditBuffer, GlobalValues, LiveControl, Location, Packs, ReadCommand,
     ReadUpdate, Setting, TunerReading,
@@ -20,6 +22,7 @@ pub(super) struct LivePanel {
     device: Option<detection::DeviceKey>,
     device_tab: bool,
     worker: Option<Worker>,
+    editor: edit::LiveEditor,
     snapshot: Snapshot,
     selected: Option<Location>,
     bank: usize,
@@ -129,9 +132,37 @@ fn requires_library(command: ReadCommand) -> bool {
     command == ReadCommand::Library
 }
 
-/// Both the open and the read run within the gate closures. The guard
-/// outlives the link, including the tuner-off attempt and close on errors.
-#[cfg(any(test, all(target_os = "linux", feature = "usb")))]
+/// The guard outlives the link, including cleanup on errors.
+#[cfg(any(test, target_os = "linux"))]
+fn with_session<G, L: Link, T>(
+    stop: &AtomicBool,
+    lock: impl FnOnce() -> Result<G, String>,
+    open: impl FnOnce(&G) -> Result<L, String>,
+    policy: &dyn GatePolicy,
+    run: impl FnOnce(&mut MidiSession<'_, L>) -> Result<T, String>,
+) -> Result<T, String> {
+    hardware_gates::run_if_unlocked(Gate::OsDiscovery, || {
+        hardware_gates::run_if_unlocked(Gate::CurrentSettingsRead, || {
+            let check_stop = || {
+                if stop.load(Ordering::Acquire) {
+                    Err("PODxt Live operation cancelled.".into())
+                } else {
+                    Ok::<(), String>(())
+                }
+            };
+            check_stop()?;
+            let rig = lock()?;
+            check_stop()?;
+            let link = open(&rig)?;
+            let mut quiet = Quiet;
+            let mut session = MidiSession::new(link, policy, &mut quiet);
+            session.log_packets = false;
+            run(&mut session)
+        })
+    })
+}
+
+#[cfg(any(test, target_os = "linux"))]
 fn transaction<G, L: Link>(
     command: ReadCommand,
     stop: &AtomicBool,
@@ -139,24 +170,9 @@ fn transaction<G, L: Link>(
     open: impl FnOnce(&G) -> Result<L, String>,
     publish: impl FnMut(ReadUpdate),
 ) -> Result<(), String> {
-    let cancelled = || stop.load(Ordering::Acquire);
     let operation = || {
-        hardware_gates::run_if_unlocked(Gate::OsDiscovery, || {
-            hardware_gates::run_if_unlocked(Gate::CurrentSettingsRead, || {
-                if cancelled() {
-                    return Err("PODxt read cancelled.".into());
-                }
-                let rig = lock()?;
-                if cancelled() {
-                    return Err("PODxt read cancelled.".into());
-                }
-                let link = open(&rig)?;
-                let mut quiet = Quiet;
-                let policy = ReadPolicy(command);
-                let mut session = MidiSession::new(link, &policy, &mut quiet);
-                session.log_packets = false;
-                podxt::read_live(&mut session, command, cancelled, publish)
-            })
+        with_session(stop, lock, open, &ReadPolicy(command), |session| {
+            podxt::read_live(session, command, || stop.load(Ordering::Acquire), publish)
         })
     };
     if requires_library(command)
@@ -168,47 +184,49 @@ fn transaction<G, L: Link>(
     }
 }
 
-#[cfg(all(target_os = "linux", feature = "usb", not(test)))]
+#[cfg(all(target_os = "linux", not(test)))]
+fn open_platform(
+    device: &detection::DeviceKey,
+) -> Result<line6_devices::transport::rawmidi::RawMidiLink, String> {
+    use line6_devices::{
+        family::podxt::transport::PODXT_LIVE_MIDI, transport::rawmidi::RawMidiLink,
+    };
+    use variax_workbench::device_probe::{LinuxSysfs, Recognition, recognise};
+
+    let Recognition::Recognised {
+        device: detected,
+        sound_cards,
+    } = recognise(&LinuxSysfs::new())
+    else {
+        return Err("The verified PODxt Live attachment is no longer available.".into());
+    };
+    if detected.sysfs_name != device.attachment.path {
+        return Err("The PODxt Live attachment changed. Wait for automatic identity.".into());
+    }
+    let mut cards = sound_cards
+        .iter()
+        .filter(|card| card.id == PODXT_LIVE_MIDI.card_id);
+    let (Some(card), None) = (cards.next(), cards.next()) else {
+        return Err("The verified PODxt Live has no unique ALSA MIDI card.".into());
+    };
+    RawMidiLink::open_device(
+        PODXT_LIVE_MIDI.device_node(card.index),
+        PODXT_LIVE_MIDI.path,
+    )
+}
+
+#[cfg(all(target_os = "linux", not(test)))]
 fn platform_read(
     device: &detection::DeviceKey,
     command: ReadCommand,
     stop: &AtomicBool,
     publish: impl FnMut(ReadUpdate),
 ) -> Result<(), String> {
-    use line6_devices::device_lock::DeviceLock;
-    use line6_devices::{
-        family::podxt::transport::PODXT_LIVE_MIDI, transport::rawmidi::RawMidiLink,
-    };
-    use variax_workbench::device_probe::{LinuxSysfs, Recognition, recognise};
-
     transaction(
         command,
         stop,
-        || DeviceLock::acquire().map_err(|error| error.to_string()),
-        |_| {
-            let Recognition::Recognised {
-                device: detected,
-                sound_cards,
-            } = recognise(&LinuxSysfs::new())
-            else {
-                return Err("The verified PODxt Live attachment is no longer available.".into());
-            };
-            if detected.sysfs_name != device.attachment.path {
-                return Err(
-                    "The PODxt Live attachment changed. Wait for automatic identity.".into(),
-                );
-            }
-            let mut cards = sound_cards
-                .iter()
-                .filter(|card| card.id == PODXT_LIVE_MIDI.card_id);
-            let (Some(card), None) = (cards.next(), cards.next()) else {
-                return Err("The verified PODxt Live has no unique ALSA MIDI card.".into());
-            };
-            RawMidiLink::open_device(
-                PODXT_LIVE_MIDI.device_node(card.index),
-                PODXT_LIVE_MIDI.path,
-            )
-        },
+        || line6_devices::device_lock::DeviceLock::acquire().map_err(|error| error.to_string()),
+        |_| open_platform(device),
         publish,
     )
 }
@@ -248,6 +266,7 @@ impl LivePanel {
             return;
         }
         self.cancel();
+        self.editor.detach();
         self.device = verified.cloned();
         self.snapshot = Snapshot::default();
         self.selected = None;
@@ -259,10 +278,11 @@ impl LivePanel {
     }
 
     pub(super) fn busy(&self) -> bool {
-        self.worker.is_some()
+        self.worker.is_some() || self.editor.busy()
     }
 
-    pub(super) fn cancel(&self) {
+    pub(super) fn cancel(&mut self) {
+        self.editor.cancel();
         if let Some(worker) = &self.worker {
             worker.stop.store(true, Ordering::Release);
         }
@@ -272,7 +292,7 @@ impl LivePanel {
         let Some(device) = self.device.clone() else {
             return;
         };
-        if self.worker.is_some() || !Self::admitted(command) {
+        if self.busy() || !Self::admitted(command) {
             return;
         }
         let mut previous = self.snapshot.clone();
@@ -325,6 +345,14 @@ impl LivePanel {
     }
 
     pub(super) fn poll(&mut self, ctx: &egui::Context) {
+        if let Some(buffer) = self
+            .editor
+            .poll(self.device.as_ref(), self.worker.is_none(), ctx)
+        {
+            self.snapshot.tone = Some(buffer.tone.clone());
+            self.snapshot.packs = Some(buffer.packs);
+            self.snapshot.channel = Some(buffer.channel);
+        }
         let Some(worker) = &self.worker else {
             return;
         };
@@ -339,6 +367,7 @@ impl LivePanel {
         // Leave the worker's stop guard in place until the thread has closed the link.
         // Taking it via Option makes Drop remain the cancellation path on early close.
         let command = worker.command;
+        let same_device = self.device.as_ref() == Some(&worker.device);
         let stopped = worker.stop.load(Ordering::Acquire);
         if command == ReadCommand::Tuner {
             self.snapshot.tuner = None;
@@ -349,6 +378,9 @@ impl LivePanel {
             .expect("worker thread")
             .join()
             .unwrap_or_else(|_| Err("PODxt reader stopped unexpectedly.".into()));
+        if !same_device {
+            return;
+        }
         self.message = Some(match result {
             Ok(()) if command == ReadCommand::Library => format!(
                 "Library read complete. {} entries.",
@@ -482,6 +514,8 @@ impl LivePanel {
         if let Some(tone) = &self.snapshot.tone {
             tone_panel(ui, "Current tone", tone, &mut self.show_values);
         }
+        self.editor
+            .show(ui, self.device.as_ref(), self.worker.is_none());
         self.show_library(ui);
     }
 
