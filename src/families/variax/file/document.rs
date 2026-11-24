@@ -6,13 +6,18 @@ use crate::{
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 pub use crate::shared::document::save_new;
 
+mod transfers;
+pub use transfers::SlotBuffer;
+use transfers::SlotBuffers;
+
 #[derive(Clone)]
 struct SelectedBundle {
-    file: BundleFile,
+    file: Arc<BundleFile>,
     bank: usize,
     preset: usize,
 }
@@ -21,6 +26,7 @@ struct SelectedBundle {
 struct DocumentState {
     preset: PresetFile,
     bundle: Option<SelectedBundle>,
+    buffers: SlotBuffers,
 }
 impl DocumentState {
     fn bytes(&self) -> &[u8] {
@@ -88,6 +94,7 @@ impl EditorDocument {
             DocumentState {
                 preset,
                 bundle: None,
+                buffers: SlotBuffers::default(),
             },
             source,
         )
@@ -104,10 +111,11 @@ impl EditorDocument {
             DocumentState {
                 preset,
                 bundle: Some(SelectedBundle {
-                    file,
+                    file: Arc::new(file),
                     bank,
                     preset: 0,
                 }),
+                buffers: SlotBuffers::default(),
             },
             source,
         ))
@@ -213,17 +221,23 @@ impl EditorDocument {
         change(&mut next.preset)?;
         if next.preset.as_bytes() != self.state.preset.as_bytes() {
             if let Some(bundle) = &mut next.bundle {
-                bundle
-                    .file
-                    .replace(bundle.bank, bundle.preset, &next.preset)?;
+                bundle.file = Arc::new(
+                    bundle
+                        .file
+                        .with_replaced_models(bundle.bank, [(bundle.preset, &next.preset)])?,
+                );
             }
-            let previous = std::mem::replace(&mut self.state, next);
-            if self.group_base.is_none() {
-                self.undo.push(previous);
-                self.redo.clear();
-            }
+            self.commit_state(next);
         }
         Ok(())
+    }
+
+    fn commit_state(&mut self, next: DocumentState) {
+        let previous = std::mem::replace(&mut self.state, next);
+        if self.group_base.is_none() {
+            self.undo.push(previous);
+            self.redo.clear();
+        }
     }
 
     pub fn undo(&mut self) {
