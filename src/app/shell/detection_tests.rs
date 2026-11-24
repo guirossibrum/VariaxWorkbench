@@ -791,3 +791,43 @@ fn full_backup_refuses_a_guitar_replaced_while_the_folder_picker_is_open() {
     );
     assert!(app.backup_rx.is_none());
 }
+
+#[test]
+fn editor_refresh_uses_its_current_attachment_even_when_another_tab_is_active() {
+    let (ctx, mut app, source) = fixture();
+    source.usb(true, false);
+    tick(&ctx, &mut app);
+    let old = entries(&app)[0].2.device.key.attachment.clone();
+    source.guitar(old.clone());
+    tick(&ctx, &mut app);
+    let guitar = entries(&app)[1].1;
+
+    app.new_tab(registry::LEGACY_STARTUP);
+    let offline = app.tabs.active.unwrap();
+    assert!(!app.test_request_guitar_refresh(offline));
+    assert!(app.test_request_guitar_refresh(guitar));
+    assert_eq!(app.tabs.active, Some(offline));
+    assert_eq!(
+        entries(&app)[1].2.device.support,
+        DeviceSupport::Refreshing("3.10")
+    );
+    assert!(!app.test_request_guitar_refresh(guitar));
+
+    source.guitar(old.clone());
+    tick(&ctx, &mut app);
+    assert_eq!(source.0.borrow().completed.last().unwrap().attachment, old);
+    source.usb(false, false);
+    tick(&ctx, &mut app);
+    assert!(!app.test_request_guitar_refresh(guitar));
+
+    source.usb_paths(&["8-4.1"], false);
+    tick(&ctx, &mut app);
+    let new = app.detection.as_ref().unwrap().attachment_key("8-4.1");
+    source.guitar(new.clone());
+    tick(&ctx, &mut app);
+    assert_eq!(entries(&app)[1].1, guitar);
+    assert!(app.test_request_guitar_refresh(guitar));
+    source.guitar(new.clone());
+    tick(&ctx, &mut app);
+    assert_eq!(source.0.borrow().completed.last().unwrap().attachment, new);
+}

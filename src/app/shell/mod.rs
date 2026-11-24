@@ -211,16 +211,28 @@ impl Workbench {
         action: impl FnOnce(&mut TabEntry, &mut EditorServices<'_>),
     ) -> Option<CloseResult> {
         let index = self.tabs.index(id)?;
+        let attachment = self.tabs.entries[index]
+            .device
+            .as_ref()
+            .and_then(tabs::DeviceTab::guitar_refresh_attachment)
+            .filter(|_| self.detection.is_some() && !self.has_prompt() && !self.permit_close)
+            .cloned();
+        let mut refresh_requested = false;
         let mut services = EditorServices {
             dialogs: self.dialogs.as_mut(),
             picker: &mut self.picker,
             tab: id,
             close: CloseResult::Pending,
+            guitar_refresh: attachment.as_ref().map(|_| &mut refresh_requested),
             #[cfg(test)]
             prompt_buttons: &mut self.pending_buttons,
         };
         action(&mut self.tabs.entries[index], &mut services);
-        Some(services.close)
+        let close = services.close;
+        if refresh_requested && let Some(attachment) = attachment {
+            self.refresh_guitar(&attachment);
+        }
+        Some(close)
     }
 
     fn with_active(&mut self, action: impl FnOnce(&mut TabEntry, &mut EditorServices<'_>)) {
@@ -517,73 +529,70 @@ impl Workbench {
             .show(ctx, |ui| {
                 let mut guitar_refresh = None;
                 let allow_refresh = !self.has_prompt();
-                ui.with_layout(
-                    egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true),
-                    |ui| {
-                        ui.spacing_mut().item_spacing = egui::vec2(theme::SPACE_16, theme::SPACE_4);
-                        self.with_active(|entry, _| {
-                            if entry.editor.busy() {
-                                ui.spinner();
-                                status_line(ui, "Reading model settings…", theme::TEXT);
-                                if command_button(ui, "Cancel read", true).clicked() {
-                                    entry.editor.cancel_operation();
-                                }
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(theme::SPACE_16, theme::SPACE_4);
+                    self.with_active(|entry, _| {
+                        if entry.editor.busy() {
+                            ui.spinner();
+                            status_line(ui, "Reading model settings…", theme::TEXT);
+                            if command_button(ui, "Cancel read", true).clicked() {
+                                entry.editor.cancel_operation();
                             }
-                        });
-                        if let Some(index) = self.tabs.active.and_then(|id| self.tabs.index(id)) {
-                            let (status, error) = self.tabs.entries[index].editor.status();
-                            if !status.is_empty() {
-                                status_line(ui, status, theme::MUTED);
+                        }
+                    });
+                    if let Some(index) = self.tabs.active.and_then(|id| self.tabs.index(id)) {
+                        let (status, error) = self.tabs.entries[index].editor.status();
+                        if !status.is_empty() {
+                            status_line(ui, status, theme::MUTED);
+                        }
+                        if let Some(error) = error {
+                            status_line(ui, error, theme::DANGER);
+                        }
+                        if let Some(device) = &self.tabs.entries[index].device {
+                            connection_chip(ui, &device.status());
+                            if device.connection == tabs::Connection::Present
+                                && device.reconnected_with_edits
+                            {
+                                status_line(ui, tabs::RECONNECTED_WITH_EDITS, theme::TEXT);
                             }
-                            if let Some(error) = error {
-                                status_line(ui, error, theme::DANGER);
+                            if device.connection == tabs::Connection::Present
+                                && let Some(warning) = &device.device.guitar_warning
+                            {
+                                status_line(ui, warning, theme::AMBER);
                             }
-                            if let Some(device) = &self.tabs.entries[index].device {
-                                connection_chip(ui, &device.status());
-                                if device.connection == tabs::Connection::Present
-                                    && device.reconnected_with_edits
-                                {
-                                    status_line(ui, tabs::RECONNECTED_WITH_EDITS, theme::TEXT);
-                                }
-                                if device.connection == tabs::Connection::Present
-                                    && let Some(warning) = &device.device.guitar_warning
-                                {
-                                    status_line(ui, warning, theme::AMBER);
-                                }
-                                if device.connection == tabs::Connection::Present
-                                    && let Some(status) = device.device.guitar_status.clone()
-                                {
-                                    let attachment = device
-                                        .device
-                                        .refresh_guitar
-                                        .then(|| device.device.key.attachment.clone());
-                                    ui.horizontal(|ui| {
-                                        status_line(ui, &status, theme::MUTED);
-                                        if let Some(attachment) = attachment
-                                            && self.refresh_guitar_button(ui, allow_refresh)
-                                        {
-                                            guitar_refresh = Some(attachment);
-                                        }
-                                    });
-                                }
-                            } else {
-                                chrome::status_chip(ui, chrome::LinkState::NoDevice);
+                            if device.connection == tabs::Connection::Present
+                                && let Some(status) = device.device.guitar_status.clone()
+                            {
+                                let attachment = device
+                                    .device
+                                    .refresh_guitar
+                                    .then(|| device.device.key.attachment.clone());
+                                ui.horizontal(|ui| {
+                                    status_line(ui, &status, theme::MUTED);
+                                    if let Some(attachment) = attachment
+                                        && self.refresh_guitar_button(ui, allow_refresh)
+                                    {
+                                        guitar_refresh = Some(attachment);
+                                    }
+                                });
                             }
                         } else {
-                            status_line(ui, "No file open", theme::MUTED);
                             chrome::status_chip(ui, chrome::LinkState::NoDevice);
                         }
-                        if let Some(error) = &self.detection_status {
-                            status_line(ui, error, theme::DANGER);
-                        }
-                        if !self.shell_status.is_empty() {
-                            status_line(ui, &self.shell_status, theme::MUTED);
-                        }
-                        if let Some(error) = &self.shell_error {
-                            status_line(ui, error, theme::DANGER);
-                        }
-                    },
-                );
+                    } else {
+                        status_line(ui, "No file open", theme::MUTED);
+                        chrome::status_chip(ui, chrome::LinkState::NoDevice);
+                    }
+                    if let Some(error) = &self.detection_status {
+                        status_line(ui, error, theme::DANGER);
+                    }
+                    if !self.shell_status.is_empty() {
+                        status_line(ui, &self.shell_status, theme::MUTED);
+                    }
+                    if let Some(error) = &self.shell_error {
+                        status_line(ui, error, theme::DANGER);
+                    }
+                });
                 if let Some(attachment) = guitar_refresh {
                     self.refresh_guitar(&attachment);
                 }
