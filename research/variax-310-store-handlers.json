@@ -1,0 +1,123 @@
+{
+  "archive_sha256": "e9f471e987b04cf31321e8a0da068f44abcdff2edbb32368385c08f92b999c1a",
+  "product_id": "00070004",
+  "version_hex": "03100000",
+  "handler": "P:0x14731",
+  "store_routine": "P:0x0FA6",
+  "slot_address": "0xD00000 + index * 0x1000",
+  "spare_address": "0xD3C000 + (index // 20) * 0x1000",
+  "ordered_steps": [
+    {
+      "step": 1,
+      "operation": "program_words",
+      "words": 1092,
+      "address": "spare",
+      "helper": "P:0x0F17"
+    },
+    {
+      "step": 2,
+      "operation": "program_one_zero_byte",
+      "words": 1,
+      "address": "slot",
+      "space": "Y",
+      "helper": "P:0x0F45"
+    },
+    {
+      "step": 3,
+      "operation": "erase_sector",
+      "address": "slot",
+      "helper": "P:0x0F63"
+    },
+    {
+      "step": 4,
+      "operation": "program_words",
+      "words": 1092,
+      "address": "slot",
+      "space": "X",
+      "helper": "P:0x0F17"
+    },
+    {
+      "step": 5,
+      "operation": "erase_sector",
+      "address": "spare",
+      "helper": "P:0x0F63"
+    }
+  ],
+  "groups": [
+    {
+      "indices": "0-19",
+      "spare_sector": 60,
+      "spare_address": "0xD3C000",
+      "banks": [
+        "Custom 1",
+        "T-Model",
+        "Spank",
+        "Lester"
+      ]
+    },
+    {
+      "indices": "20-39",
+      "spare_sector": 61,
+      "spare_address": "0xD3D000",
+      "banks": [
+        "Special",
+        "R-Billy",
+        "Chime",
+        "Semi"
+      ]
+    },
+    {
+      "indices": "40-59",
+      "spare_sector": 62,
+      "spare_address": "0xD3E000",
+      "banks": [
+        "Jazzbox",
+        "Acoustic",
+        "Reso",
+        "Custom 2"
+      ]
+    }
+  ],
+  "reply_0x71": "P:0x14805",
+  "reply_only_after_store_returns": true,
+  "rejection_0x66": "P:0x1482D",
+  "second_byte_required": "0xF7",
+  "stamp_source": "Y:0x151BB",
+  "stamp_destination_words": [
+    767,
+    768,
+    769,
+    770
+  ],
+  "stamp_words": [
+    "0x30",
+    "0x33",
+    "0x31",
+    "0x30"
+  ],
+  "checksum_words_summed": 1091,
+  "checksum_destination_word": 1091,
+  "checksum_delta_when_stamp_and_words_1089_1090_are_zero": "0xC4",
+  "factory_slots": {
+    "slot_count": 60,
+    "sector_bytes": 4096,
+    "programmed_bytes": 3276,
+    "stamp_nonzero_slots": 0,
+    "words_1089_1090_nonzero_slots": 0,
+    "bytes_3276_4095_nonzero_slots": 0,
+    "checksum_mismatch_slots": 0
+  },
+  "spare_literal": "P:0x0FB0",
+  "store_callers": [
+    "P:0x1186",
+    "P:0x141A4",
+    "P:0x145E2",
+    "P:0x145F3",
+    "P:0x14747",
+    "P:0x1481E"
+  ],
+  "loader_does_not_read_spare": true,
+  "reload_does_not_read_spare": true,
+  "index_aliasing_its_spare": 63,
+  "editor_store_index_set": "0-59 exactly once"
+}
