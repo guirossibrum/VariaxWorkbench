@@ -314,11 +314,15 @@ impl Request for ReadBridge {
 
 fn with_bridged_read_session<L: Link, T>(
     session: &mut Session<L>,
+    bridge_settle: Duration,
     body: impl FnOnce(&mut Session<L>) -> Result<T, String>,
 ) -> Result<T, String> {
-    let result = session
-        .send(ReadBridge(true))
-        .and_then(|()| in_session(session, body));
+    let result = session.send(ReadBridge(true)).and_then(|()| {
+        if !bridge_settle.is_zero() {
+            session.link.pause(bridge_settle);
+        }
+        in_session(session, body)
+    });
     let release = session
         .send(ReadBridge(false))
         .err()

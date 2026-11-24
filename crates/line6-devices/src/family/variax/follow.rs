@@ -1,5 +1,7 @@
 //! Read-only live input from a Variax 300/600 through the PODxt Live bridge.
 
+use std::time::Duration;
+
 use super::{Preset, identify_variax, is_reply, with_bridged_read_session};
 use crate::{
     device_lock::DeviceLock,
@@ -67,7 +69,7 @@ fn follow_on<L: Link>(
         return Ok(());
     }
 
-    with_bridged_read_session(session, |session| {
+    with_bridged_read_session(session, Duration::ZERO, |session| {
         while !cancelled() {
             for event in session.poll(POLL)?.into_iter().flatten() {
                 if cancelled() {

@@ -71,7 +71,18 @@ fn exact_identity_and_stepped_read_sequence_saves_each_reply_and_compares_every_
         .unwrap();
     assert_eq!(podxt.writes, [line6_devices::identity::REQUEST]);
     assert_eq!(variax.writes, guitar_sequence(STEPS.len()));
-    assert_eq!(variax.pauses, [Duration::from_millis(100)]);
+    assert_eq!(
+        variax.pauses,
+        [Duration::from_secs(1), Duration::from_millis(100)]
+    );
+    assert_eq!(
+        variax.write_times[2] - variax.write_times[1],
+        Duration::from_secs(1)
+    );
+    assert_eq!(
+        variax.write_times[3] - variax.write_times[2],
+        Duration::from_millis(100)
+    );
     assert!(variax.inbox.is_empty());
     for ((count, _), raw) in STEPS.iter().zip(&replies) {
         assert_eq!(raw.len(), reads(*count));
@@ -84,9 +95,9 @@ fn exact_identity_and_stepped_read_sequence_saves_each_reply_and_compares_every_
     assert_eq!(
         summary,
         [
-            "Word 0: active 0x123400, factory 0xFF3400",
-            "Word 1091: active 0x123843, factory 0x123800",
-            "Compared 1092 active words against factory Reso-5. 2 differing words (no live-word exclusions)."
+            "Word 0: active 0x123400, factory 0xFF3400 (finding)",
+            "Word 1091: active 0x123843, factory 0x123800 (finding)",
+            "Compared 1092 active words against factory Reso-5. Findings: 2. Unknown differences: 0."
         ]
     );
 }
@@ -108,7 +119,7 @@ fn a_stall_at_any_step_keeps_prior_replies_and_only_sends_cleanup() {
         let earlier_polls: usize = prior.iter().map(|raw| raw.len().div_ceil(160)).sum();
         assert_eq!(
             fake.clock,
-            Duration::from_millis(200 + 100 * earlier_polls as u64) + Duration::from_secs(10)
+            Duration::from_millis(1200 + 100 * earlier_polls as u64) + Duration::from_secs(10)
         );
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), failed);
         for ((earlier_count, _), raw) in STEPS[..failed].iter().zip(prior) {
@@ -184,4 +195,21 @@ fn a_capture_collision_preserves_the_existing_file_and_stops() {
     assert!(procedure::capture(&mut fake, &mut Quiet, dir.path(), || false).is_err());
     assert_eq!(fake.writes, guitar_sequence(1));
     assert_eq!(fs::metadata(filename).unwrap().len(), 0);
+}
+
+#[test]
+fn reports_only_words_871_and_872_as_unknown() {
+    let factory = [0; PROGRAM_BYTES];
+    let mut captured = [0; 1092];
+    captured[870..874].fill(1);
+    assert_eq!(
+        procedure::summarize(&factory, &captured),
+        [
+            "Word 870: active 0x000001, factory 0x000000 (finding)",
+            "Word 871: active 0x000001, factory 0x000000 (unknown, not a failure)",
+            "Word 872: active 0x000001, factory 0x000000 (unknown, not a failure)",
+            "Word 873: active 0x000001, factory 0x000000 (finding)",
+            "Compared 1092 active words against factory Reso-5. Findings: 2. Unknown differences: 2.",
+        ]
+    );
 }
