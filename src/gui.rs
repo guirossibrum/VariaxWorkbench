@@ -12,45 +12,47 @@ use variax_workbench::device_probe::{
     StageStatus,
 };
 use variax_workbench::hardware_gates::{self, Gate};
-use variax_workbench::pod_preset::{self, Library, PodPresetFile};
+use variax_workbench::pod_preset;
 use variax_workbench::recording;
-use variax_workbench::rig::{HdEditorLibrary, ProductProfile, Rejection, RoleKind, Session};
+use variax_workbench::rig::{ProductProfile, Rejection, RoleKind, Session};
 use variax_workbench::{document::EditorDocument, preset::PresetFile};
 
 #[path = "families/variax/editor/mod.rs"]
 mod variax_panel;
-use variax_panel::{FRET_MARKER, ModelArt, PICKUP1, Tab, load_auto_select};
-
-#[path = "families/podxt/editor/mod.rs"]
-mod podxt_panel;
-#[cfg(test)]
-use podxt_panel::PracticeTone;
-use podxt_panel::{
-    PendingDelayEdit, PendingModEdit, PendingPodEqReset, PendingStompHarmony, PodBlock,
-    rejection_text,
-};
+use variax_panel::FRET_MARKER;
 
 #[path = "families/hd500x/editor/mod.rs"]
 mod hd500x_panel;
-use hd500x_panel::{
-    PendingHdType8Choice, PendingHdType9Choice, PendingHdType10Choice, PendingHdType11Choice,
-    PendingHdType12Choice, PendingHdType13Choice, PendingHdType19Choice,
-};
+#[path = "families/podxt/editor/mod.rs"]
+mod podxt_panel;
 
 #[path = "tools/recording/panel.rs"]
 mod recording_panel;
 
-enum Pending {
-    Open(PathBuf),
-    ReadCurrent,
-    Quit,
-    /// Quit while a PODxt Live tone has applied or staged unsaved work.
-    QuitPod,
-    QuitRecording,
-}
+#[path = "app/registry.rs"]
+mod registry;
+#[path = "app/shell/mod.rs"]
+mod shell;
+#[path = "app/shell/tabs.rs"]
+mod tabs;
+
+use tabs::{
+    CloseResult, EditorDefaults, EditorServices, FamilyInfo, FamilyTab, ProductFamily, TabEntry,
+    TabId, TabSource, Tabs,
+};
+
+use shell::CloseRequest;
 
 trait FileDialogs {
     fn open(&mut self) -> Option<PathBuf>;
+    fn open_family_file(&mut self, families: &[&dyn ProductFamily]) -> Option<PathBuf> {
+        debug_assert!(
+            families
+                .iter()
+                .all(|family| !family.info().extensions.is_empty())
+        );
+        self.open()
+    }
     fn save(&mut self, suggested: &str, extension: &str) -> Option<PathBuf>;
     fn artwork(&mut self) -> Option<PathBuf>;
     fn open_wav(&mut self) -> Option<PathBuf>;
@@ -78,6 +80,18 @@ impl FileDialogs for NativeDialogs {
             )
             .pick_file()
     }
+    fn open_family_file(&mut self, families: &[&dyn ProductFamily]) -> Option<PathBuf> {
+        let all: Vec<_> = families
+            .iter()
+            .flat_map(|family| family.info().extensions.iter().copied())
+            .collect();
+        let mut dialog = rfd::FileDialog::new().add_filter("Editor files", &all);
+        for family in families {
+            dialog = dialog.add_filter(family.info().title, family.info().extensions);
+        }
+        dialog.add_filter("All files", &["*"]).pick_file()
+    }
+
     fn save(&mut self, suggested: &str, extension: &str) -> Option<PathBuf> {
         rfd::FileDialog::new()
             .add_filter("Workbench document", &[extension])
@@ -243,31 +257,8 @@ enum ToneChoice {
 
 struct Workbench {
     dialogs: Box<dyn FileDialogs>,
-    document: Option<EditorDocument>,
-    catalog: Vec<ModelArt>,
-    artwork: PathBuf,
-    textures: HashMap<String, TextureHandle>,
-    missing_textures: HashSet<String>,
-    error: Option<String>,
-    status: String,
-    tab: Tab,
     help: bool,
-    pending: Option<Pending>,
     permit_close: bool,
-    drag_origin: Option<(u32, f32, f32, f32)>,
-    /// Which pickup is painted last. Pickup 1 starts in front, matching the
-    /// original panel's first child. This is view state, not a file field.
-    pickup_front: u32,
-    /// Unsaved model-name typing. It is not a file field and not an undo step.
-    name_draft: Option<String>,
-    /// Unsaved author typing. It is not a file field and not an undo step.
-    author_draft: Option<String>,
-    /// Original `variax_editor.auto_select_control_values`. Default on.
-    /// This is an editor preference, not a field in the preset file.
-    auto_select_controls: bool,
-    /// Where the preference is remembered. Tests leave this empty.
-    preferences_path: Option<PathBuf>,
-    link_tuning_mix: bool,
     theme_polled: Instant,
     theme_text: String,
     screenshot: Option<PathBuf>,
@@ -293,74 +284,8 @@ struct Workbench {
     device_check_root: PathBuf,
     #[cfg(test)]
     host_reader_builds: usize,
-    pod_open: bool,
-    pod_library: Library,
-    hd_library: HdEditorLibrary,
-    hd_selected: Option<usize>,
-    hd_effect_slot: usize,
-    hd_default_target: pod_preset::HdDistortionDefault,
-    hd_dynamics_default_target: pod_preset::HdDynamicsDefault,
-    hd_reverb_default_target: pod_preset::HdReverbDefault,
-    hd_control: pod_preset::HdType1Control,
-    hd_mapped_control: pod_preset::HdType1MappedControl,
-    hd_control_percent: u8,
-    hd_numeric_control: pod_preset::HdNumericControl,
-    hd_numeric_value: i32,
-    hd_type9_pending: Option<PendingHdType9Choice>,
-    hd_type8_pending: Option<PendingHdType8Choice>,
-    hd_type10_pending: Option<PendingHdType10Choice>,
-    hd_type11_pending:
-        HashMap<(usize, pod_preset::HdFxSlot, pod_preset::HdType11Control), PendingHdType11Choice>,
-    hd_type12_pending:
-        HashMap<(usize, pod_preset::HdFxSlot, pod_preset::HdType12Control), PendingHdType12Choice>,
-    hd_type13_pending:
-        HashMap<(usize, pod_preset::HdFxSlot, pod_preset::HdType13Control), PendingHdType13Choice>,
-    hd_type19_pending:
-        HashMap<(usize, pod_preset::HdFxSlot, pod_preset::HdType19Control), PendingHdType19Choice>,
-    hd_setlist_index: usize,
-    hd_preset_index: usize,
-    pod_bundle: Option<pod_preset::PodBundleLibrary>,
-    pod_selected: Option<usize>,
-    /// Bank shown by Bank Down / Bank Up. Channel clicks keep this in sync.
-    pod_bank: usize,
-    /// Block whose settings the pedalboard is showing. Switching it does not
-    /// discard edits on another block.
-    pod_block: PodBlock,
-    pod_revert_confirm: bool,
-    pod_cab_pending: Option<(usize, pod_preset::PodCabModelChoice)>,
-    pod_cab_pending_origin: Option<(u64, usize, Vec<u8>)>,
-    pod_delay_model_pending: Option<(usize, pod_preset::PodDelayModelChoice)>,
-    pod_mod_model_pending: Option<(usize, pod_preset::PodModModelChoice)>,
-    pod_stomp_model_pending: Option<(usize, pod_preset::PodStompModelChoice)>,
-    pod_reverb_model_pending: Option<(usize, pod_preset::PodReverbModelChoice)>,
-    pod_amp_model_pending: Option<(usize, u32, pod_preset::PodAmpModelChoice)>,
-    pod_eq_reset_pending: Option<PendingPodEqReset>,
-    pod_document_generation: u64,
-    pod_harmony_pending: Option<(usize, pod_preset::StompHarmonyControl, PendingStompHarmony)>,
-    pod_delay_pending: Option<(usize, PendingDelayEdit)>,
-    pod_mod_pending: Option<(usize, PendingModEdit)>,
-    pod_name: String,
-    pod_message: String,
-    #[cfg(test)]
-    bank_slots: HashMap<usize, Rect>,
-    #[cfg(test)]
-    bank_options: HashMap<usize, Rect>,
-    #[cfg(test)]
-    bank_dropdown: Option<Rect>,
     #[cfg(test)]
     pending_buttons: HashMap<&'static str, Rect>,
-    #[cfg(test)]
-    pickup_slider: Option<Rect>,
-    #[cfg(test)]
-    tuning_toggle: Option<Rect>,
-    #[cfg(test)]
-    pickup_controls: HashMap<(u32, &'static str), Rect>,
-    #[cfg(test)]
-    name_notice: String,
-    #[cfg(test)]
-    auto_select_checkbox: Option<Rect>,
-    #[cfg(test)]
-    tuning_widgets: HashMap<&'static str, Rect>,
     #[cfg(test)]
     recording_buttons: HashMap<&'static str, Rect>,
     #[cfg(test)]
@@ -373,348 +298,18 @@ struct Workbench {
     device_check_visible: String,
     #[cfg(test)]
     recording_capture_attempts: u32,
+    tabs: Tabs,
+    defaults: EditorDefaults,
+    shell_error: Option<String>,
+    shell_status: String,
+    close_request: Option<CloseRequest>,
+    closing_tab: Option<TabId>,
+    recording_close_pending: bool,
     #[cfg(test)]
-    pod_buttons: HashMap<&'static str, Rect>,
-    #[cfg(test)]
-    pod_rows: HashMap<usize, Rect>,
-    #[cfg(test)]
-    pod_scroll_area: Option<(egui::Id, Rect, f32)>,
-    #[cfg(test)]
-    pod_cab_combo: Option<Rect>,
-    #[cfg(test)]
-    pod_cab_options: HashMap<u32, Rect>,
-    #[cfg(test)]
-    pod_practice_combo: Option<Rect>,
-    #[cfg(test)]
-    pod_practice_options: HashMap<PracticeTone, Rect>,
-    #[cfg(test)]
-    pod_drive_slider: Option<Rect>,
-    #[cfg(test)]
-    pod_stomp_sliders: HashMap<pod_preset::StompControl, Rect>,
-    #[cfg(test)]
-    pod_whammy_knob_sliders: HashMap<pod_preset::StompWhammyKnob, Rect>,
-    #[cfg(test)]
-    pod_eq_frequency_sliders: HashMap<pod_preset::PodxtEqBand, Rect>,
-    #[cfg(test)]
-    pod_eq_gain_sliders: HashMap<pod_preset::PodxtEqBand, Rect>,
-    #[cfg(test)]
-    pod_model_enable_checks: HashMap<pod_preset::PodModelEnable, Rect>,
-    #[cfg(test)]
-    pod_model_enable_menu: Option<Rect>,
-    #[cfg(test)]
-    pod_mod_sliders: HashMap<pod_preset::ModControl, Rect>,
-    #[cfg(test)]
-    pod_reverb_sliders: HashMap<pod_preset::ReverbControl, Rect>,
-    #[cfg(test)]
-    pod_delay_sliders: HashMap<pod_preset::DelayControl, Rect>,
-    #[cfg(test)]
-    pod_delay_note_options: HashMap<pod_preset::DelayNoteChoice, Rect>,
-    #[cfg(test)]
-    pod_delay_model_combo: Option<Rect>,
-    #[cfg(test)]
-    pod_delay_model_options: HashMap<u32, Rect>,
-    #[cfg(test)]
-    pod_mod_model_combo: Option<Rect>,
-    #[cfg(test)]
-    pod_mod_model_options: HashMap<u32, Rect>,
-    #[cfg(test)]
-    pod_stomp_model_combo: Option<Rect>,
-    #[cfg(test)]
-    pod_stomp_model_options: HashMap<u32, Rect>,
-    #[cfg(test)]
-    pod_reverb_model_combo: Option<Rect>,
-    #[cfg(test)]
-    pod_reverb_model_options: HashMap<u32, Rect>,
-    #[cfg(test)]
-    pod_amp_model_combo: Option<Rect>,
-    #[cfg(test)]
-    pod_amp_model_options: HashMap<u32, Rect>,
-    #[cfg(test)]
-    pod_mod_note_options: HashMap<pod_preset::ModNoteChoice, Rect>,
-    #[cfg(test)]
-    pod_delay_time_slider: Option<Rect>,
-    #[cfg(test)]
-    pod_mod_speed_slider: Option<Rect>,
-    #[cfg(test)]
-    pod_delay_heads_choices: HashMap<pod_preset::DelayHeadsSelection, Rect>,
-    #[cfg(test)]
-    pod_delay_bits_choices: HashMap<pod_preset::DelayBitsSelection, Rect>,
-    #[cfg(test)]
-    pod_stomp_wave_choices: HashMap<pod_preset::StompWaveSelection, Rect>,
-    #[cfg(test)]
-    pod_harmony1_choices: HashMap<pod_preset::StompHarmony1M335Selection, Rect>,
-    #[cfg(test)]
-    pod_harmony2_choices: HashMap<pod_preset::StompHarmony1457Selection, Rect>,
-    #[cfg(test)]
-    pod_visible: String,
-    read_receiver: Option<
-        std::sync::mpsc::Receiver<Result<variax_workbench::read_session::CurrentPreset, String>>,
-    >,
-    read_worker: Option<(
-        std::sync::Arc<std::sync::atomic::AtomicBool>,
-        std::thread::JoinHandle<()>,
-    )>,
+    tab_buttons: HashMap<&'static str, Rect>,
 }
 
 impl Workbench {
-    fn with_context(
-        ctx: &egui::Context,
-        preset: Option<PathBuf>,
-        artwork: PathBuf,
-        tab: Option<Tab>,
-    ) -> Self {
-        ctx.set_visuals(egui::Visuals::dark());
-        let mut style = (*ctx.style()).clone();
-        style.spacing.item_spacing = Vec2::new(10.0, 10.0);
-        style.spacing.button_padding = Vec2::new(12.0, 7.0);
-        style.visuals.window_corner_radius = 0.into();
-        style.visuals.widgets.inactive.corner_radius = 0.into();
-        style.visuals.widgets.hovered.corner_radius = 0.into();
-        style.visuals.widgets.active.corner_radius = 0.into();
-        ctx.set_style(style);
-        let catalog = variax_panel::load_catalog();
-        let mut app = Self {
-            #[cfg(not(test))]
-            dialogs: Box::new(NativeDialogs),
-            #[cfg(test)]
-            dialogs: Box::new(FakeDialogs::default()),
-            document: None,
-            catalog,
-            artwork,
-            textures: HashMap::new(),
-            missing_textures: HashSet::new(),
-            error: None,
-            status: "Edit preset files offline. Your guitar is unchanged.".into(),
-            tab: Tab::Body,
-            help: false,
-            pending: None,
-            permit_close: false,
-            drag_origin: None,
-            pickup_front: PICKUP1,
-            name_draft: None,
-            author_draft: None,
-            auto_select_controls: true,
-            preferences_path: None,
-            link_tuning_mix: false,
-            theme_polled: Instant::now() - Duration::from_secs(2),
-            theme_text: String::new(),
-            screenshot: None,
-            frame_count: 0,
-            recording_open: false,
-            device_check_open: false,
-            device_check_notice: String::new(),
-            backup_choice: None,
-            backup_rx: None,
-            tone_choice: None,
-            tone_channel: "1A".into(),
-            tone_rx: None,
-            device_check_step_two_saved: false,
-            device_check: ProbeSession::new(RigBackend::Simulated(SimulatedRig::new(
-                device_probe::Scenario::Connected,
-            ))),
-            device_check_scenario: device_probe::Scenario::Connected,
-            #[cfg(not(test))]
-            device_check_root: PathBuf::from(device_probe::DEFAULT_ROOT),
-            #[cfg(test)]
-            device_check_root: PathBuf::new(),
-            #[cfg(test)]
-            host_reader_builds: 0,
-            recorder: recording::Panel::new(),
-            pod_open: false,
-            pod_library: Library::default(),
-            hd_library: Session::initial_rig().new_hd_editor_library(),
-            hd_selected: None,
-            hd_effect_slot: 0,
-            hd_default_target: pod_preset::HdDistortionDefault::JetFuzz,
-            hd_dynamics_default_target: pod_preset::HdDynamicsDefault::HardGate,
-            hd_reverb_default_target: pod_preset::HdReverbDefault::Octo,
-            hd_control: pod_preset::HdType1Control::Screamer(pod_preset::ScreamerControl::Drive),
-            hd_mapped_control: pod_preset::HD_TYPE1_MAPPED_CONTROLS[0],
-            hd_control_percent: 0,
-            hd_numeric_control: pod_preset::HD_NUMERIC_CONTROLS[0],
-            hd_numeric_value: 0,
-            hd_type9_pending: None,
-            hd_type8_pending: None,
-            hd_type10_pending: None,
-            hd_type11_pending: HashMap::new(),
-            hd_type12_pending: HashMap::new(),
-            hd_type13_pending: HashMap::new(),
-            hd_type19_pending: HashMap::new(),
-            hd_setlist_index: 0,
-            hd_preset_index: 0,
-            pod_bundle: None,
-            pod_selected: None,
-            pod_bank: 0,
-            pod_block: PodBlock::Amp,
-            pod_revert_confirm: false,
-            pod_cab_pending: None,
-            pod_cab_pending_origin: None,
-            pod_delay_model_pending: None,
-            pod_mod_model_pending: None,
-            pod_stomp_model_pending: None,
-            pod_reverb_model_pending: None,
-            pod_amp_model_pending: None,
-            pod_eq_reset_pending: None,
-            pod_document_generation: 0,
-            pod_harmony_pending: None,
-            pod_delay_pending: None,
-            pod_mod_pending: None,
-            pod_name: String::new(),
-            pod_message: String::new(),
-            #[cfg(test)]
-            bank_slots: HashMap::new(),
-            #[cfg(test)]
-            bank_options: HashMap::new(),
-            #[cfg(test)]
-            bank_dropdown: None,
-            #[cfg(test)]
-            pending_buttons: HashMap::new(),
-            #[cfg(test)]
-            pickup_slider: None,
-            #[cfg(test)]
-            tuning_toggle: None,
-            #[cfg(test)]
-            pickup_controls: HashMap::new(),
-            #[cfg(test)]
-            name_notice: String::new(),
-            #[cfg(test)]
-            auto_select_checkbox: None,
-            #[cfg(test)]
-            tuning_widgets: HashMap::new(),
-            #[cfg(test)]
-            recording_buttons: HashMap::new(),
-            #[cfg(test)]
-            recording_visible: String::new(),
-            #[cfg(test)]
-            device_check_buttons: HashMap::new(),
-            #[cfg(test)]
-            device_check_button_ids: HashMap::new(),
-            #[cfg(test)]
-            device_check_visible: String::new(),
-            #[cfg(test)]
-            recording_capture_attempts: 0,
-            #[cfg(test)]
-            pod_buttons: HashMap::new(),
-            #[cfg(test)]
-            pod_rows: HashMap::new(),
-            #[cfg(test)]
-            pod_scroll_area: None,
-            #[cfg(test)]
-            pod_cab_combo: None,
-            #[cfg(test)]
-            pod_cab_options: HashMap::new(),
-            #[cfg(test)]
-            pod_practice_combo: None,
-            #[cfg(test)]
-            pod_practice_options: HashMap::new(),
-            #[cfg(test)]
-            pod_drive_slider: None,
-            #[cfg(test)]
-            pod_stomp_sliders: HashMap::new(),
-            #[cfg(test)]
-            pod_whammy_knob_sliders: HashMap::new(),
-            #[cfg(test)]
-            pod_eq_frequency_sliders: HashMap::new(),
-            #[cfg(test)]
-            pod_eq_gain_sliders: HashMap::new(),
-            #[cfg(test)]
-            pod_model_enable_checks: HashMap::new(),
-            #[cfg(test)]
-            pod_model_enable_menu: None,
-            #[cfg(test)]
-            pod_mod_sliders: HashMap::new(),
-            #[cfg(test)]
-            pod_reverb_sliders: HashMap::new(),
-            #[cfg(test)]
-            pod_delay_sliders: HashMap::new(),
-            #[cfg(test)]
-            pod_delay_note_options: HashMap::new(),
-            #[cfg(test)]
-            pod_delay_model_combo: None,
-            #[cfg(test)]
-            pod_delay_model_options: HashMap::new(),
-            #[cfg(test)]
-            pod_mod_model_combo: None,
-            #[cfg(test)]
-            pod_mod_model_options: HashMap::new(),
-            #[cfg(test)]
-            pod_stomp_model_combo: None,
-            #[cfg(test)]
-            pod_stomp_model_options: HashMap::new(),
-            #[cfg(test)]
-            pod_reverb_model_combo: None,
-            #[cfg(test)]
-            pod_reverb_model_options: HashMap::new(),
-            #[cfg(test)]
-            pod_amp_model_combo: None,
-            #[cfg(test)]
-            pod_amp_model_options: HashMap::new(),
-            #[cfg(test)]
-            pod_mod_note_options: HashMap::new(),
-            #[cfg(test)]
-            pod_delay_time_slider: None,
-            #[cfg(test)]
-            pod_mod_speed_slider: None,
-            #[cfg(test)]
-            pod_delay_heads_choices: HashMap::new(),
-            #[cfg(test)]
-            pod_delay_bits_choices: HashMap::new(),
-            #[cfg(test)]
-            pod_stomp_wave_choices: HashMap::new(),
-            #[cfg(test)]
-            pod_harmony1_choices: HashMap::new(),
-            #[cfg(test)]
-            pod_harmony2_choices: HashMap::new(),
-            #[cfg(test)]
-            pod_visible: String::new(),
-            read_receiver: None,
-            read_worker: None,
-        };
-        if let Some(preset) = preset {
-            app.load(&preset);
-        } else {
-            app.open_example();
-        }
-        if let Some(tab) = tab {
-            app.tab = tab;
-        }
-        app
-    }
-
-    fn continue_pending(&mut self, ctx: &egui::Context) {
-        if self.is_reading() {
-            return;
-        }
-        match self.pending.take() {
-            Some(Pending::Open(path)) => self.load(&path),
-            Some(Pending::ReadCurrent) => self.launch_read(),
-            Some(Pending::Quit | Pending::QuitPod | Pending::QuitRecording) => {
-                // Guitar save or discard must not close while a POD tone is unsaved.
-                if self.pod_dirty()
-                    || self.pod_has_staged_edit()
-                    || self.hd_library.any_dirty()
-                    || self.hd_type9_pending.is_some()
-                    || self.hd_type8_pending.is_some()
-                    || self.hd_type10_pending.is_some()
-                    || !self.hd_type11_pending.is_empty()
-                    || !self.hd_type12_pending.is_empty()
-                    || !self.hd_type13_pending.is_empty()
-                    || !self.hd_type19_pending.is_empty()
-                {
-                    self.pending = Some(Pending::QuitPod);
-                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                } else if self.recorder.has_unsaved_take() {
-                    self.pending = Some(Pending::QuitRecording);
-                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                } else {
-                    self.permit_close = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-            }
-            None => {}
-        }
-    }
-
     fn refresh_theme(&mut self, ctx: &egui::Context) {
         if self.theme_polled.elapsed() < Duration::from_secs(1) {
             return;
@@ -767,226 +362,6 @@ impl eframe::App for Workbench {
 }
 
 impl Workbench {
-    fn pending_dialog(&mut self, ctx: &egui::Context) {
-        #[cfg(test)]
-        self.pending_buttons.clear();
-        if matches!(self.pending, Some(Pending::QuitRecording)) {
-            self.recording_quit_dialog(ctx);
-            return;
-        }
-        if matches!(self.pending, Some(Pending::QuitPod)) {
-            self.pod_quit_dialog(ctx);
-            return;
-        }
-        self.variax_pending_dialog(ctx);
-    }
-
-    fn request_close(&mut self, ctx: &egui::Context) {
-        if self.is_reading() {
-            self.cancel_read();
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        } else if self.pending.is_some() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        } else if self.dirty() && !self.permit_close {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.pending = Some(Pending::Quit);
-        } else if (self.pod_dirty()
-            || self.pod_has_staged_edit()
-            || self.hd_library.any_dirty()
-            || self.hd_type9_pending.is_some()
-            || self.hd_type8_pending.is_some()
-            || self.hd_type10_pending.is_some()
-            || !self.hd_type11_pending.is_empty()
-            || !self.hd_type12_pending.is_empty()
-            || !self.hd_type13_pending.is_empty()
-            || !self.hd_type19_pending.is_empty())
-            && !self.permit_close
-        {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.pending = Some(Pending::QuitPod);
-        } else if self.recorder.has_unsaved_take() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.pending = Some(Pending::QuitRecording);
-        } else {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
-    }
-
-    fn render(&mut self, ctx: &egui::Context) {
-        self.invalidate_stale_eq_reset_stage();
-        self.refresh_theme(ctx);
-        self.poll_read();
-        if self.read_receiver.is_some() {
-            ctx.request_repaint_after(Duration::from_millis(50));
-        }
-        self.frame_count += 1;
-        if self.screenshot.is_some() && self.frame_count <= 5 {
-            ctx.request_repaint();
-            if self.frame_count == 5 {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
-            }
-        }
-        for event in ctx.input(|input| input.events.clone()) {
-            if let egui::Event::Screenshot { image: capture, .. } = event
-                && let Some(path) = self.screenshot.take()
-            {
-                let pixels: Vec<u8> = capture
-                    .pixels
-                    .iter()
-                    .flat_map(|pixel| pixel.to_array())
-                    .collect();
-                if let Err(error) = save_screenshot(
-                    &path,
-                    &pixels,
-                    capture.size[0] as u32,
-                    capture.size[1] as u32,
-                ) {
-                    self.error = Some(format!("Screenshot: {error}"));
-                } else {
-                    self.request_close(ctx);
-                }
-            }
-        }
-        let (open, save, undo, redo, quit, help) = ctx.input(|i| {
-            (
-                i.key_pressed(egui::Key::O) && i.modifiers.command,
-                i.key_pressed(egui::Key::S) && i.modifiers.command,
-                i.key_pressed(egui::Key::Z) && i.modifiers.command && !i.modifiers.shift,
-                i.key_pressed(egui::Key::Z) && i.modifiers.command && i.modifiers.shift,
-                i.key_pressed(egui::Key::Q) && !ctx.wants_keyboard_input(),
-                i.key_pressed(egui::Key::Questionmark) && !ctx.wants_keyboard_input(),
-            )
-        });
-        if open {
-            self.open_dialog();
-        }
-        if save && self.pending.is_none() {
-            self.save_dialog();
-        }
-        if undo {
-            self.undo();
-        }
-        if redo {
-            self.redo();
-        }
-        if help {
-            self.help = !self.help;
-        }
-        if quit || ctx.input(|i| i.viewport().close_requested()) {
-            self.request_close(ctx);
-        }
-        egui::TopBottomPanel::top("header").show(ctx, |ui| {
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.heading("Variax Workbench");
-                ui.weak("Offline validation");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Milestone & Help").clicked() {
-                        self.help = true;
-                    }
-                    if ui.add_enabled(!self.is_reading() && self.pending.is_none(), egui::Button::new("Save copy…")).clicked() {
-                        self.save_dialog();
-                    }
-                    if ui
-                        .add_enabled(
-                            false,
-                            egui::Button::new("Live access locked"),
-                        )
-                        .on_disabled_hover_text("Hardware testing is locked during offline validation. Future testing starts with the lowest-risk operation and advances one explicitly approved step at a time.")
-                        .clicked()
-                    {
-                        self.start_read();
-                    }
-                    if ui.add_enabled(!self.is_reading() && self.pending.is_none(), egui::Button::new("Open…")).clicked() {
-                        self.open_dialog();
-                    }
-                    let response = ui.button("Device check…");
-                    #[cfg(test)]
-                    self.device_check_buttons.insert("open", response.rect);
-                    if response.clicked() {
-                        self.device_check_open = true;
-                    }
-                    let response = ui.button("Test recording…");
-                    #[cfg(test)]
-                    self.recording_buttons.insert("open-recording", response.rect);
-                    if response.clicked() {
-                        self.recording_open = true;
-                    }
-                    let pod_tab = ui.selectable_label(self.pod_open, "PODxt Live");
-                    #[cfg(test)]
-                    self.pod_buttons.insert("open-pod", pod_tab.rect);
-                    if pod_tab.clicked() {
-                        self.pod_open = true;
-                    }
-                    let variax_tab = ui.selectable_label(!self.pod_open, "Variax");
-                    #[cfg(test)]
-                    self.pod_buttons.insert("show-variax", variax_tab.rect);
-                    if variax_tab.clicked() {
-                        // Leaving the tab keeps the in-memory tones and unsaved edits.
-                        self.pod_open = false;
-                    }
-                });
-            });
-        });
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            if self.is_reading() {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label("Reading model settings…");
-                    if ui.button("Cancel read").clicked() {
-                        self.cancel_read();
-                    }
-                });
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui| {
-                ui.label(format!("build {}", crate::BUILD_NUMBER));
-                ui.label(crate::APP_VERSION);
-                ui.vertical(|ui| {
-                    ui.weak(&self.status);
-                    if let Some(error) = &self.error {
-                        ui.colored_label(Color32::LIGHT_RED, error);
-                    }
-                });
-            });
-        });
-        egui::CentralPanel::default().show(ctx, |ui| {
-            if self.pod_open {
-                self.pod_window(ui);
-            } else {
-                self.guitar_workspace(ui);
-            }
-        });
-        if self.help {
-            egui::Window::new(format!("Workbench Help · {}", crate::APP_VERSION))
-                .open(&mut self.help)
-                .collapsible(false)
-                .default_width(400.0)
-                .default_height(600.0)
-                .vscroll(true)
-                .show(ctx, |ui| {
-                    variax_panel::milestones(ui);
-                    ui.separator();
-                    ui.heading("Keyboard shortcuts");
-                    for (key, action) in [
-                        ("Ctrl+O", "Open preset"),
-                        ("Ctrl+S", "Save a new copy"),
-                        ("Ctrl+Z", "Undo"),
-                        ("Ctrl+Shift+Z", "Redo"),
-                        ("Q", "Quit"),
-                        ("?", "Toggle Help"),
-                    ] {
-                        ui.horizontal(|ui| {
-                            ui.monospace(key);
-                            ui.label(action);
-                        });
-                    }
-                });
-        }
-        self.pending_dialog(ctx);
-        self.recording_window(ctx);
-        self.device_check_window(ctx);
-    }
-
     fn device_check_button(
         &mut self,
         ui: &mut egui::Ui,
@@ -1074,7 +449,7 @@ impl Workbench {
                 Ok(text) => text,
                 Err(text) => text,
             };
-            self.status = "Backup finished. See Device check for the result.".into();
+            self.shell_status = "Backup finished. See Device check for the result.".into();
         } else {
             ctx.request_repaint_after(Duration::from_millis(200));
         }
@@ -1137,7 +512,7 @@ impl Workbench {
                 Ok(text) => text,
                 Err(text) => text,
             };
-            self.status = "Tone check finished. See Device check for the result.".into();
+            self.shell_status = "Tone check finished. See Device check for the result.".into();
         } else {
             ctx.request_repaint_after(Duration::from_millis(200));
         }
@@ -1205,7 +580,7 @@ impl Workbench {
             .default_width(640.0)
             .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 56.0))
             .show(ctx, |ui| {
-                if self.pending.is_some() {
+                if self.has_prompt() {
                     ui.disable();
                 }
                 let mut visible = String::new();
@@ -1579,7 +954,7 @@ struct GuiOptions {
     artwork: PathBuf,
     preferences: PathBuf,
     screenshot: Option<PathBuf>,
-    tab: Option<Tab>,
+    tab: Option<&'static str>,
     display: String,
 }
 
@@ -1656,10 +1031,10 @@ fn parse_options(
             }
             "--tab" => {
                 options.tab = Some(match value.as_str() {
-                    "body" => Tab::Body,
-                    "pickups" => Tab::Pickups,
-                    "tuning" => Tab::Pickups, // Tuning is always visible.
-                    "controls" => Tab::Controls,
+                    "body" => "body",
+                    "pickups" => "pickups",
+                    "tuning" => "pickups", // Tuning is always visible.
+                    "controls" => "controls",
                     _ => return Err(format!("Unknown editor tab: {value}")),
                 });
             }
@@ -1762,19 +1137,181 @@ pub(crate) fn run(title: &str) -> eframe::Result {
     eframe::run_native(
         title,
         options,
-        Box::new(move |cc| {
-            let mut app = Workbench::with_context(
-                &cc.egui_ctx,
-                arguments.preset,
-                arguments.artwork,
-                arguments.tab,
-            );
-            app.auto_select_controls = load_auto_select(&arguments.preferences);
-            app.preferences_path = Some(arguments.preferences);
-            app.screenshot = arguments.screenshot;
-            Ok(Box::new(app))
-        }),
+        Box::new(move |cc| Ok(Box::new(Workbench::from_options(&cc.egui_ctx, arguments)))),
     )
+}
+
+#[cfg(test)]
+use hd500x_panel::HdEditor;
+#[cfg(test)]
+use podxt_panel::PodxtEditor;
+#[cfg(test)]
+use variax_panel::{GuitarPending, Tab, VariaxEditor};
+
+#[cfg(test)]
+enum Pending {
+    Open,
+    ReadCurrent,
+    Quit,
+    QuitPod,
+    QuitHd,
+    QuitRecording,
+}
+
+#[cfg(test)]
+impl Workbench {
+    fn with_context(
+        ctx: &egui::Context,
+        preset: Option<PathBuf>,
+        artwork: PathBuf,
+        panel: Option<&'static str>,
+    ) -> Self {
+        let mut app = Self::new(
+            ctx,
+            EditorDefaults {
+                artwork,
+                preferences: None,
+                startup_panel: panel,
+            },
+        );
+        for &family in registry::FAMILIES {
+            app.new_tab(family);
+        }
+        app.select_test_editor::<VariaxEditor>();
+        if let Some(path) = preset {
+            let editor = app.variax_mut();
+            editor.document = None;
+            if panel.is_none() {
+                editor.tab = Tab::Body;
+            }
+            editor.load(&path);
+        }
+        app
+    }
+
+    fn test_editor_id<T: FamilyTab>(&self) -> TabId {
+        self.tabs
+            .entries
+            .iter()
+            .find_map(|entry| {
+                ((entry.editor.as_ref() as &dyn std::any::Any).is::<T>()).then_some(entry.id)
+            })
+            .expect("fixture tab")
+    }
+
+    fn test_editor_is_active<T: FamilyTab>(&self) -> bool {
+        self.tabs.active == Some(self.test_editor_id::<T>())
+    }
+
+    fn select_test_editor<T: FamilyTab>(&mut self) {
+        self.tabs.active = Some(self.test_editor_id::<T>());
+    }
+
+    fn editor<T: FamilyTab>(&self) -> &T {
+        let id = self.test_editor_id::<T>();
+        let any = self.tabs.entries[self.tabs.index(id).unwrap()]
+            .editor
+            .as_ref() as &dyn std::any::Any;
+        any.downcast_ref::<T>().unwrap()
+    }
+
+    fn editor_mut<T: FamilyTab>(&mut self) -> &mut T {
+        let id = self.test_editor_id::<T>();
+        let index = self.tabs.index(id).unwrap();
+        let any = self.tabs.entries[index].editor.as_mut() as &mut dyn std::any::Any;
+        any.downcast_mut::<T>().unwrap()
+    }
+
+    fn variax(&self) -> &VariaxEditor {
+        self.editor()
+    }
+    fn variax_mut(&mut self) -> &mut VariaxEditor {
+        self.editor_mut()
+    }
+    fn podxt(&self) -> &PodxtEditor {
+        self.editor()
+    }
+    fn podxt_mut(&mut self) -> &mut PodxtEditor {
+        self.editor_mut()
+    }
+    fn hd(&self) -> &HdEditor {
+        self.editor()
+    }
+    fn hd_mut(&mut self) -> &mut HdEditor {
+        self.editor_mut()
+    }
+
+    fn test_pending(&self) -> Option<Pending> {
+        if self.recording_close_pending {
+            return Some(Pending::QuitRecording);
+        }
+        if let Some(id) = self.closing_tab {
+            return Some(if id == self.test_editor_id::<PodxtEditor>() {
+                Pending::QuitPod
+            } else if id == self.test_editor_id::<HdEditor>() {
+                Pending::QuitHd
+            } else {
+                Pending::Quit
+            });
+        }
+        match self.variax().pending {
+            Some(GuitarPending::Open(_)) => Some(Pending::Open),
+            Some(GuitarPending::ReadCurrent) => Some(Pending::ReadCurrent),
+            Some(GuitarPending::Quit) => Some(Pending::Quit),
+            None => None,
+        }
+    }
+
+    fn force_test_quit<T: FamilyTab>(&mut self) {
+        let id = self.test_editor_id::<T>();
+        self.tabs.active = Some(id);
+        self.close_request = Some(CloseRequest::Quit {
+            approved: Vec::new(),
+        });
+        self.closing_tab = Some(id);
+    }
+
+    fn cancel_test_prompt(&mut self) {
+        self.cancel_close();
+        self.variax_mut().pending = None;
+    }
+
+    fn test_action<T: FamilyTab, R>(
+        &mut self,
+        f: impl FnOnce(&mut T, &mut EditorServices<'_>) -> R,
+    ) -> R {
+        let id = self.test_editor_id::<T>();
+        let mut result = None;
+        self.with_tab(id, |entry, services| {
+            let any = entry.editor.as_mut() as &mut dyn std::any::Any;
+            result = Some(f(any.downcast_mut::<T>().unwrap(), services));
+        });
+        result.unwrap()
+    }
+
+    fn open_dialog(&mut self) {
+        self.test_action(VariaxEditor::open_dialog);
+    }
+    fn save_dialog(&mut self) -> bool {
+        self.test_action(VariaxEditor::save_dialog)
+    }
+    fn artwork_dialog(&mut self) {
+        self.test_action(VariaxEditor::artwork_dialog);
+    }
+    fn guitar_workspace(&mut self, ui: &mut egui::Ui) {
+        self.test_action(|editor: &mut VariaxEditor, services| {
+            editor.guitar_workspace(services, ui)
+        });
+    }
+    fn load_pod_tone(&mut self) {
+        self.test_action(PodxtEditor::load_pod_tone);
+    }
+    fn load_hd_editor_file(&mut self) {
+        self.test_action(HdEditor::load_hd_editor_file);
+    }
+    fn write_hd_copy(&mut self, index: usize) -> bool {
+        self.test_action(|editor: &mut HdEditor, services| editor.write_hd_copy(services, index))
+    }
 }
 
 #[cfg(test)]
@@ -2040,8 +1577,8 @@ mod tests {
         assert_eq!(app.device_check.backend().calls(), Default::default());
         assert!(app.device_check_visible.contains("Stopped at step 1"));
         assert!(!app.device_check_buttons.is_empty());
-        assert!(app.read_worker.is_none());
-        assert!(!app.is_reading());
+        assert!(app.variax().read_worker.is_none());
+        assert!(!app.variax().is_reading());
     }
 
     #[test]
@@ -2292,7 +1829,7 @@ mod tests {
             !report.contains(&*tree.path().to_string_lossy()),
             "path leaked"
         );
-        assert!(app.read_worker.is_none());
+        assert!(app.variax().read_worker.is_none());
     }
 
     #[cfg(all(target_os = "linux", feature = "usb"))]
@@ -2476,7 +2013,7 @@ mod tests {
             "the injected reader must record zero calls"
         );
         assert_eq!(app.host_reader_builds, builds, "close must not restart");
-        assert!(app.read_worker.is_none());
+        assert!(app.variax().read_worker.is_none());
     }
 
     #[test]
@@ -2587,7 +2124,7 @@ mod tests {
             root,
         )
         .unwrap();
-        assert_eq!(options.tab, Some(Tab::Controls));
+        assert_eq!(options.tab, Some("controls"));
         assert_eq!(options.preset.as_deref(), Some(Path::new("model.vwm")));
     }
 
@@ -2601,14 +2138,14 @@ mod tests {
             Workbench::with_context(&context, options.preset, options.artwork, options.tab);
         app.theme_polled = Instant::now();
         let _ = context.run(egui::RawInput::default(), |ctx| app.render(ctx));
-        assert!(app.error.is_none());
-        assert_eq!(app.tab, Tab::Pickups);
+        assert!(app.variax().error.is_none());
+        assert_eq!(app.variax().tab, Tab::Pickups);
         assert_eq!(
-            app.document.as_ref().unwrap().preset().name(),
+            app.variax().document.as_ref().unwrap().preset().name(),
             "Spank example"
         );
-        assert!(app.read_worker.is_none());
-        assert!(app.textures.is_empty());
+        assert!(app.variax().read_worker.is_none());
+        assert!(app.variax().textures.is_empty());
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
         let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/editor-preset.vwm");
         app.dialogs = Box::new(FakeDialogs {
@@ -2616,12 +2153,12 @@ mod tests {
             ..Default::default()
         });
         app.open_dialog();
-        assert!(app.error.is_none());
+        assert!(app.variax().error.is_none());
         let before = fs::read(file).unwrap();
         let _ = context.run(egui::RawInput::default(), |ctx| app.render(ctx));
-        assert!(app.error.is_none());
-        assert_eq!(app.document.as_ref().unwrap().as_bytes(), before);
-        assert!(!app.dirty());
+        assert!(app.variax().error.is_none());
+        assert_eq!(app.variax().document.as_ref().unwrap().as_bytes(), before);
+        assert!(!app.variax().dirty());
     }
 
     #[test]
@@ -2631,24 +2168,31 @@ mod tests {
         let artwork = directory.path().join("artwork");
         let context = egui::Context::default();
 
-        let example = Workbench::with_context(&context, None, artwork.clone(), Some(Tab::Controls));
-        assert_eq!(example.tab, Tab::Controls);
+        let example = Workbench::with_context(&context, None, artwork.clone(), Some("controls"));
+        assert_eq!(example.variax().tab, Tab::Controls);
         assert_eq!(
-            example.document.as_ref().unwrap().preset().name(),
+            example.variax().document.as_ref().unwrap().preset().name(),
             "Spank example"
         );
 
         let supplied = Workbench::with_context(&context, Some(file.clone()), artwork.clone(), None);
-        assert_eq!(supplied.tab, Tab::Body);
+        assert_eq!(supplied.variax().tab, Tab::Body);
         assert_eq!(
-            supplied.document.as_ref().unwrap().as_bytes(),
+            supplied.variax().document.as_ref().unwrap().as_bytes(),
             fs::read(file).unwrap()
         );
 
         let missing = directory.path().join("missing.vwm");
         let failed = Workbench::with_context(&context, Some(missing), artwork, None);
-        assert!(failed.document.is_none());
-        assert!(failed.error.as_deref().unwrap().contains("missing.vwm"));
+        assert!(failed.variax().document.is_none());
+        assert!(
+            failed
+                .variax()
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("missing.vwm")
+        );
     }
 
     #[test]
@@ -2696,3 +2240,7 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), original);
     }
 }
+
+#[cfg(test)]
+#[path = "app/shell/tests.rs"]
+mod shell_tests;

@@ -27,7 +27,7 @@ fn clock_button_id(clock: ClockSelection) -> &'static str {
 impl Workbench {
     pub(super) fn recording_quit_dialog(&mut self, ctx: &egui::Context) {
         if !self.recorder.has_unsaved_take() {
-            self.continue_pending(ctx);
+            self.continue_recording_close(ctx);
             return;
         }
         let native = self.recorder.take_can_save_aiff();
@@ -69,7 +69,7 @@ impl Workbench {
                 });
             });
         if cancel {
-            self.pending = None;
+            self.cancel_close();
         } else if save {
             if self.recorder.phase() == recording::Phase::Recording
                 && let Err(error) = self.recorder.stop()
@@ -78,11 +78,11 @@ impl Workbench {
                 return;
             }
             if self.save_recording() {
-                self.continue_pending(ctx);
+                self.continue_recording_close(ctx);
             }
         } else if discard {
             match self.recorder.cancel() {
-                Ok(()) => self.continue_pending(ctx),
+                Ok(()) => self.continue_recording_close(ctx),
                 Err(error) => self.recorder.note(error.to_string()),
             }
         }
@@ -99,7 +99,7 @@ impl Workbench {
             .resizable(false)
             .anchor(egui::Align2::LEFT_TOP, egui::vec2(24.0, 64.0))
             .show(ctx, |ui| {
-                if self.pending.is_some() {
+                if self.has_prompt() {
                     ui.disable();
                 }
                 ui.label(recording::OFFLINE_BANNER);

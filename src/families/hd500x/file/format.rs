@@ -1588,3 +1588,44 @@ pub fn read_regular_hd_editor_file<R: Read>(
         "HD editor file exceeds the offline file-size ceiling",
     )
 }
+
+/// An offline HD Edit preset, setlist, or bundle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HdEditFile {
+    H5ep(OpaqueH5epPreset),
+    H5es(H5esSetlist),
+    H5eb(H5ebBundle),
+}
+
+impl HdEditFile {
+    pub fn parse(bytes: Vec<u8>) -> Result<Self, ToneError> {
+        match bytes.get(..4) {
+            Some(b"H5EP") => OpaqueH5epPreset::parse(bytes).map(Self::H5ep),
+            Some(b"H5ES") => H5esSetlist::parse(bytes).map(Self::H5es),
+            Some(b"H5EB") => H5ebBundle::parse(bytes).map(Self::H5eb),
+            _ => Err(ToneError::format(
+                "HD editor library accepts H5EP, H5ES, and H5EB files only",
+            )),
+        }
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::H5ep(file) => file.as_bytes(),
+            Self::H5es(file) => file.as_bytes(),
+            Self::H5eb(file) => file.as_bytes(),
+        }
+    }
+
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::H5ep(_) => "H5EP preset",
+            Self::H5es(_) => "H5ES setlist",
+            Self::H5eb(_) => "H5EB bundle",
+        }
+    }
+
+    pub fn save_copy(&self, path: &Path) -> Result<(), ToneError> {
+        document::save_new(path, self.as_bytes()).map_err(ToneError::format)
+    }
+}

@@ -54,14 +54,14 @@ fn offline_test_recording_window_does_not_start_a_device_or_a_worker() {
     );
     assert!(app.recording_visible.contains(recording::PHASE_IDLE));
     assert!(app.recording_visible.contains("not a live route change"));
-    assert!(app.read_worker.is_none());
-    assert!(!app.is_reading());
+    assert!(app.variax().read_worker.is_none());
+    assert!(!app.variax().is_reading());
     assert_eq!(app.recording_capture_attempts, 0);
     assert_eq!(app.recorder.phase(), recording::Phase::Idle);
     assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
     click_recording(&context, &mut app, "start");
     assert_eq!(app.recorder.phase(), recording::Phase::Idle);
-    assert!(app.read_worker.is_none());
+    assert!(app.variax().read_worker.is_none());
     click_recording(&context, &mut app, "route-clean");
     click_recording(&context, &mut app, "inspect-native-plan");
     #[cfg(target_os = "linux")]
@@ -97,7 +97,7 @@ fn offline_test_recording_window_does_not_start_a_device_or_a_worker() {
     click_recording(&context, &mut app, "start");
     assert_eq!(app.recorder.phase(), recording::Phase::Recording);
     assert_eq!(app.recording_capture_attempts, 0);
-    assert!(app.read_worker.is_none());
+    assert!(app.variax().read_worker.is_none());
     assert!(!app.recorder.device_opened());
     click_recording(&context, &mut app, "feed");
     assert!(app.recording_visible.contains("Left peak 1000"));
@@ -112,9 +112,9 @@ fn offline_test_recording_window_does_not_start_a_device_or_a_worker() {
     assert!(sidecar.contains("\"sample_rate_hz\": 44100"));
     assert!(!sidecar.contains("39062"));
     assert!(!sidecar.contains("78125"));
-    assert!(app.read_worker.is_none());
-    app.start_read();
-    assert!(app.read_worker.is_none());
+    assert!(app.variax().read_worker.is_none());
+    app.variax_mut().start_read();
+    assert!(app.variax().read_worker.is_none());
     const {
         assert!(!hardware_gates::is_locked(Gate::CurrentSettingsRead));
     }
@@ -142,7 +142,7 @@ fn rendered_simulated_callback_workflow_is_synthetic_and_offline() {
             .contains("Generated software test data")
     );
     assert_eq!(app.recording_capture_attempts, 0);
-    assert!(app.read_worker.is_none());
+    assert!(app.variax().read_worker.is_none());
     assert!(!app.recorder.device_opened());
     click_recording(&context, &mut app, "feed");
     click_recording(&context, &mut app, "stop");
@@ -152,7 +152,7 @@ fn rendered_simulated_callback_workflow_is_synthetic_and_offline() {
     assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 48_000);
     assert_eq!(&wav[44..48], &[0xe8, 0x03, 0x30, 0xf8]);
     assert_eq!(app.recording_capture_attempts, 0);
-    assert!(app.read_worker.is_none());
+    assert!(app.variax().read_worker.is_none());
     assert!(!app.recorder.device_opened());
 }
 
@@ -195,28 +195,28 @@ fn recording_quit_cancel_and_failed_save_retain_audio_until_success() {
     prepare_quit_take(&mut app, ClockSelection::Integer(44_100));
     let levels = app.recorder.levels();
     app.request_close(&context);
-    assert!(matches!(app.pending, Some(Pending::QuitRecording)));
+    assert!(matches!(app.test_pending(), Some(Pending::QuitRecording)));
     click_prompt(&context, &mut app, "cancel");
-    assert!(app.pending.is_none());
+    assert!(app.test_pending().is_none());
     assert_eq!(app.recorder.phase(), recording::Phase::Recording);
     assert!(app.recorder.has_unsaved_take());
     assert!(!app.permit_close);
     app.request_close(&context);
     click_prompt(&context, &mut app, "save"); // explicit stop, cancelled dialog
     assert_eq!(app.recorder.phase(), recording::Phase::Stopped);
-    assert!(matches!(app.pending, Some(Pending::QuitRecording)));
+    assert!(matches!(app.test_pending(), Some(Pending::QuitRecording)));
     assert!(app.recorder.has_unsaved_take());
     assert_eq!(app.recorder.levels(), levels);
     assert!(!app.permit_close);
     click_prompt(&context, &mut app, "save"); // refused overwrite
-    assert!(matches!(app.pending, Some(Pending::QuitRecording)));
+    assert!(matches!(app.test_pending(), Some(Pending::QuitRecording)));
     assert!(app.recorder.has_unsaved_take());
     assert_eq!(std::fs::read(&blocked).unwrap(), b"keep");
     assert_eq!(app.recorder.levels(), levels);
     assert!(!app.permit_close);
     click_prompt(&context, &mut app, "save");
     assert!(!app.recorder.has_unsaved_take());
-    assert!(app.pending.is_none());
+    assert!(app.test_pending().is_none());
     assert!(app.permit_close);
     let decoded = recording::parse_wav(&std::fs::read(&good).unwrap()).unwrap();
     assert!(!decoded.data.is_empty());
@@ -229,7 +229,7 @@ fn recording_quit_cancel_and_failed_save_retain_audio_until_success() {
             .all(|frame| *frame == [0xe8, 3, 0x30, 0xf8])
     );
     assert_eq!(app.recording_capture_attempts, 0);
-    assert!(app.read_worker.is_none());
+    assert!(app.variax().read_worker.is_none());
 }
 
 #[test]
@@ -244,7 +244,7 @@ fn native_clock_quit_cancelled_save_retains_the_take_until_explicit_discard() {
     app.recorder.stop().unwrap();
     app.request_close(&context);
     click_prompt(&context, &mut app, "save"); // cancelled AIFF picker
-    assert!(matches!(app.pending, Some(Pending::QuitRecording)));
+    assert!(matches!(app.test_pending(), Some(Pending::QuitRecording)));
     assert!(app.recorder.has_unsaved_take());
     assert!(!app.permit_close);
     click_prompt(&context, &mut app, "cancel");
@@ -254,7 +254,7 @@ fn native_clock_quit_cancelled_save_retains_the_take_until_explicit_discard() {
     click_prompt(&context, &mut app, "discard");
     assert!(!app.recorder.has_unsaved_take());
     assert_eq!(app.recorder.phase(), recording::Phase::Idle);
-    assert!(app.pending.is_none());
+    assert!(app.test_pending().is_none());
     assert!(app.permit_close);
     assert!(!app.recorder.device_opened());
 }
@@ -272,7 +272,7 @@ fn native_recording_quit_saves_an_exact_clock_file_and_retains_its_source() {
     prepare_quit_take(&mut app, ClockSelection::NativePodxt);
     app.request_close(&context);
     click_prompt(&context, &mut app, "save");
-    assert!(app.pending.is_none());
+    assert!(app.test_pending().is_none());
     assert!(app.permit_close);
     assert!(!app.recorder.has_unsaved_take());
     assert_eq!(app.recorder.phase(), recording::Phase::Stopped);
@@ -295,10 +295,10 @@ fn native_recording_quit_saves_an_exact_clock_file_and_retains_its_source() {
     app.recorder.cancel().unwrap();
     prepare_quit_take(&mut app, ClockSelection::NativePodxt);
     app.request_close(&context);
-    assert!(matches!(app.pending, Some(Pending::QuitRecording)));
+    assert!(matches!(app.test_pending(), Some(Pending::QuitRecording)));
     assert!(!app.permit_close);
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
-    assert!(app.read_worker.is_none());
+    assert!(app.variax().read_worker.is_none());
     assert_eq!(app.recording_capture_attempts, 0);
 }
 
@@ -312,22 +312,27 @@ fn guitar_and_pod_quit_continuations_cannot_skip_an_unsaved_take() {
         save: [Some(saved.clone())].into(),
         ..Default::default()
     });
-    app.change(|preset| preset.rename("Guitar changed"));
-    let index = app.pod_library.import_bytes(sample_pod_tone()).unwrap();
-    app.pod_selected = Some(index);
-    app.pod_name = "POD changed".into();
-    app.apply_pod_name();
+    app.variax_mut()
+        .change(|preset| preset.rename("Guitar changed"));
+    let index = app
+        .podxt_mut()
+        .pod_library
+        .import_bytes(sample_pod_tone())
+        .unwrap();
+    app.podxt_mut().pod_selected = Some(index);
+    app.podxt_mut().pod_name = "POD changed".into();
+    app.podxt_mut().apply_pod_name();
     prepare_quit_callback_take(&mut app, ClockSelection::Integer(48_000));
     app.request_close(&context);
-    assert!(matches!(app.pending, Some(Pending::Quit)));
+    assert!(matches!(app.test_pending(), Some(Pending::Quit)));
     click_prompt(&context, &mut app, "save");
     assert!(saved.exists());
-    assert!(!app.dirty());
-    assert!(matches!(app.pending, Some(Pending::QuitPod)));
+    assert!(!app.variax().dirty());
+    assert!(matches!(app.test_pending(), Some(Pending::QuitPod)));
     assert!(!app.permit_close);
     click_prompt(&context, &mut app, "discard");
-    assert!(!app.pod_library.any_dirty());
-    assert!(matches!(app.pending, Some(Pending::QuitRecording)));
+    assert!(!app.podxt().pod_library.any_dirty());
+    assert!(matches!(app.test_pending(), Some(Pending::QuitRecording)));
     assert!(app.recorder.has_unsaved_take());
     assert!(!app.permit_close);
     // Background editors cannot alter the take while this decision is pending.
@@ -335,14 +340,14 @@ fn guitar_and_pod_quit_continuations_cannot_skip_an_unsaved_take() {
     click_recording(&context, &mut app, "cancel");
     assert!(app.recorder.has_unsaved_take());
     click_prompt(&context, &mut app, "cancel");
-    assert!(app.pending.is_none());
+    assert!(app.test_pending().is_none());
     assert!(app.recorder.has_unsaved_take());
     app.request_close(&context);
-    assert!(matches!(app.pending, Some(Pending::QuitRecording)));
+    assert!(matches!(app.test_pending(), Some(Pending::QuitRecording)));
     click_prompt(&context, &mut app, "discard");
     assert!(app.permit_close);
     assert!(!app.recorder.has_unsaved_take());
-    assert!(app.read_worker.is_none());
+    assert!(app.variax().read_worker.is_none());
     const {
         assert!(!hardware_gates::is_locked(Gate::CurrentSettingsRead));
     }
@@ -361,8 +366,8 @@ fn load_recording_wav_refuses_a_nonregular_path_without_opening_it() {
     app.load_recording_wav();
     assert!(app.recorder.message().contains("regular file"));
     assert!(app.recorder.message().contains("not opened"));
-    assert!(app.read_worker.is_none());
-    assert!(!app.is_reading());
+    assert!(app.variax().read_worker.is_none());
+    assert!(!app.variax().is_reading());
     assert_eq!(app.recording_capture_attempts, 0);
     assert!(!app.recorder.device_opened());
     const {

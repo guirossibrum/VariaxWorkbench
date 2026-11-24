@@ -180,11 +180,9 @@ fn summarize_hd_editor_file(
     let file = library
         .file(index)
         .ok_or_else(|| Rejection::format("file index is outside the HD editor library"))?;
-    let kind = file
-        .hd_container_kind()
-        .ok_or_else(|| Rejection::format("file is outside the HD Edit file family"))?;
+    let kind = file.kind();
     let header_words_10_14 = match file {
-        crate::pod_preset::PodPresetFile::H5ep(preset) => Some(preset.header_words_10_14()),
+        crate::pod_preset::HdEditFile::H5ep(preset) => Some(preset.header_words_10_14()),
         _ => None,
     };
     Ok(HdEditorFileSummary {
@@ -629,7 +627,7 @@ impl Session {
     ) -> Result<(), Rejection> {
         let _ = self;
         let preset = match library.file_mut(file) {
-            Some(crate::pod_preset::PodPresetFile::H5ep(preset)) => preset,
+            Some(crate::pod_preset::HdEditFile::H5ep(preset)) => preset,
             Some(_) => {
                 return Err(Rejection::format(
                     "HD type-1 controls require an H5EP preset",
@@ -658,7 +656,7 @@ impl Session {
     ) -> Result<(), Rejection> {
         let _ = self;
         let preset = match library.file_mut(file) {
-            Some(crate::pod_preset::PodPresetFile::H5ep(preset)) => preset,
+            Some(crate::pod_preset::HdEditFile::H5ep(preset)) => preset,
             Some(_) => {
                 return Err(Rejection::format(
                     "HD mapped type-1 controls require an H5EP preset",
@@ -688,7 +686,7 @@ impl Session {
     ) -> Result<(), Rejection> {
         let _ = self;
         let preset = match library.file_mut(file) {
-            Some(crate::pod_preset::PodPresetFile::H5ep(preset)) => preset,
+            Some(crate::pod_preset::HdEditFile::H5ep(preset)) => preset,
             Some(_) => {
                 return Err(Rejection::format(
                     "HD numeric controls require an H5EP preset",

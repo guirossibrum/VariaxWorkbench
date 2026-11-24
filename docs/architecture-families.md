@@ -354,16 +354,28 @@ is unverified.
    tests stay stable. Move tests and their imports with the code. Keep
    `src/library_backup.rs`, `src/usb.rs`, `src/read_session.rs`, `crates/**`
    and `tools/**` at their current paths and untouched in this step.
-3. **App shell after approval.** Introduce the registry and top bar with
-   separate HD500X tabs. Wire detection and the cross-process lock, including
-   both owner probes, while keeping current editing and shared tool workflows. Headless
-   cases cover zero devices, PODxt only, PODxt plus Variax, PODxt plus
-   manually detected HD500X plus Variax, USB and simulated VDI hot-plug,
-   a dirty disconnect, same-family offline tabs, file dispatch, declined
-   detection, duplicate/stale events and busy ownership. Fake transport
-   tests exercise refused access, the one allowed resend, cleanup and
-   gate refusal. Test constructors use only injected sources, without
-   host enumeration, real sysfs/proc, audio or device access.
+3. **App shell and detection.** The owner reviews each part before the next
+   begins.
+   - **3a, offline shell.** The registry and tab manager open a separate
+     editor instance for each file or new tab. HD500X uses its own
+     `HdEditFile` type and tab. The shell coordinates dirty tabs and the
+     Test recording take on quit. The start panel exposes the offline
+     entry points and the disabled Detect devices button. The original
+     `--tab` startup option still opens the requested Variax view.
+   - **3b, detection with simulated sources.** Add device keys, the
+     `OsMetadataSource` adapter, confirmation for Detect devices, and
+     hot-plug and dirty-disconnect handling. Headless tests cover zero
+     devices, PODxt only, PODxt plus Variax, and PODxt plus manually
+     detected HD500X plus Variax. Test duplicate and stale events,
+     cancelled detection, and offline tabs alongside connection events.
+     Use injected USB snapshots and device events.
+   - **3c, identity and operation ownership.** Add the two automatic
+     identity procedures, Refresh guitar, and the cross-process lock
+     across the app and both owner probes. Tool changes add the lock
+     around the approved procedures and leave their messages, stages and
+     confirmations intact. Test gate and busy refusal, the single allowed
+     resend, and cleanup with fake transports. All test constructors use
+     injected sources.
 4. **Device crate tidy after [#207] and [#177] merge.** Keep typed requests
    under `crates/line6-devices/src/family/{variax,podxt}`. Split
    `backup.rs` into family format/load/verify/compare code and shared

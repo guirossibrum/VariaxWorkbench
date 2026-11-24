@@ -2,7 +2,6 @@ use super::*;
 use serde::Deserialize;
 
 mod guitar;
-pub(super) use guitar::milestones;
 
 #[cfg(test)]
 mod tests;
@@ -48,14 +47,14 @@ pub(super) enum Tab {
     Controls,
 }
 
-pub(super) fn load_catalog() -> Vec<ModelArt> {
+fn load_catalog() -> Vec<ModelArt> {
     serde_json::from_str(include_str!("../../../../assets/model-ui.json"))
         .expect("bundled model catalog")
 }
 
 /// Original preference key `variax_editor.auto_select_control_values`.
 /// A missing file stays on. `1` is on and `0` is off.
-pub(super) fn load_auto_select(path: &Path) -> bool {
+fn load_auto_select(path: &Path) -> bool {
     !matches!(std::fs::read_to_string(path), Ok(text) if text.trim() == "0")
 }
 
@@ -80,7 +79,105 @@ fn save_auto_select(path: &Path, enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
-impl Workbench {
+pub(super) struct VariaxEditor {
+    pub(super) document: Option<EditorDocument>,
+    source_path: Option<PathBuf>,
+    catalog: Vec<ModelArt>,
+    artwork: PathBuf,
+    pub(super) textures: HashMap<String, TextureHandle>,
+    missing_textures: HashSet<String>,
+    pub(super) error: Option<String>,
+    pub(super) status: String,
+    pub(super) tab: Tab,
+    drag_origin: Option<(u32, f32, f32, f32)>,
+    /// Which pickup is painted last. Pickup 1 starts in front, matching the
+    /// original panel's first child. This is view state, not a file field.
+    pickup_front: u32,
+    /// Unsaved model-name typing. It is not a file field and not an undo step.
+    name_draft: Option<String>,
+    /// Unsaved author typing. It is not a file field and not an undo step.
+    author_draft: Option<String>,
+    /// Original `variax_editor.auto_select_control_values`. Default on.
+    /// This is an editor preference, not a field in the preset file.
+    auto_select_controls: bool,
+    /// Where the preference is remembered. Tests leave this empty.
+    preferences_path: Option<PathBuf>,
+    link_tuning_mix: bool,
+    #[cfg(test)]
+    bank_slots: HashMap<usize, Rect>,
+    #[cfg(test)]
+    bank_options: HashMap<usize, Rect>,
+    #[cfg(test)]
+    bank_dropdown: Option<Rect>,
+    #[cfg(test)]
+    pickup_slider: Option<Rect>,
+    #[cfg(test)]
+    pickup_drag_ids: HashMap<u32, egui::Id>,
+    #[cfg(test)]
+    tuning_toggle: Option<Rect>,
+    #[cfg(test)]
+    pickup_controls: HashMap<(u32, &'static str), Rect>,
+    #[cfg(test)]
+    name_notice: String,
+    #[cfg(test)]
+    auto_select_checkbox: Option<Rect>,
+    #[cfg(test)]
+    tuning_widgets: HashMap<&'static str, Rect>,
+    read_receiver: Option<
+        std::sync::mpsc::Receiver<Result<variax_workbench::read_session::CurrentPreset, String>>,
+    >,
+    pub(super) read_worker: Option<(
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        std::thread::JoinHandle<()>,
+    )>,
+    pub(super) pending: Option<GuitarPending>,
+}
+
+impl VariaxEditor {
+    fn new(defaults: &EditorDefaults) -> Self {
+        Self {
+            document: None,
+            source_path: None,
+            catalog: load_catalog(),
+            artwork: defaults.artwork.clone(),
+            textures: HashMap::new(),
+            missing_textures: HashSet::new(),
+            error: None,
+            status: "Edit preset files offline. Your guitar is unchanged.".into(),
+            tab: Tab::Body,
+            drag_origin: None,
+            pickup_front: PICKUP1,
+            name_draft: None,
+            author_draft: None,
+            auto_select_controls: defaults.preferences.as_deref().is_none_or(load_auto_select),
+            preferences_path: defaults.preferences.clone(),
+            link_tuning_mix: false,
+            #[cfg(test)]
+            bank_slots: HashMap::new(),
+            #[cfg(test)]
+            bank_options: HashMap::new(),
+            #[cfg(test)]
+            bank_dropdown: None,
+            #[cfg(test)]
+            pickup_slider: None,
+            #[cfg(test)]
+            pickup_drag_ids: HashMap::new(),
+            #[cfg(test)]
+            tuning_toggle: None,
+            #[cfg(test)]
+            pickup_controls: HashMap::new(),
+            #[cfg(test)]
+            name_notice: String::new(),
+            #[cfg(test)]
+            auto_select_checkbox: None,
+            #[cfg(test)]
+            tuning_widgets: HashMap::new(),
+            read_receiver: None,
+            read_worker: None,
+            pending: None,
+        }
+    }
+
     pub(super) fn load(&mut self, path: &Path) {
         if self.is_reading() {
             return;
@@ -88,6 +185,7 @@ impl Workbench {
         match EditorDocument::open(path) {
             Ok(document) => {
                 self.document = Some(document);
+                self.source_path = Some(path.to_owned());
                 self.drag_origin = None;
                 self.clear_text_drafts();
                 self.error = None;
@@ -152,7 +250,7 @@ impl Workbench {
             return;
         }
         if self.dirty() {
-            self.pending = Some(Pending::ReadCurrent);
+            self.pending = Some(GuitarPending::ReadCurrent);
             return;
         }
         self.launch_read();
@@ -230,11 +328,11 @@ impl Workbench {
         }
     }
 
-    pub(super) fn artwork_dialog(&mut self) {
+    pub(super) fn artwork_dialog(&mut self, services: &mut EditorServices<'_>) {
         if self.is_reading() || self.pending.is_some() {
             return;
         }
-        if let Some(path) = self.dialogs.artwork() {
+        if let Some(path) = services.dialogs.artwork() {
             self.artwork = path;
             self.textures.clear();
             self.missing_textures.clear();
@@ -242,23 +340,23 @@ impl Workbench {
         }
     }
 
-    pub(super) fn open_dialog(&mut self) {
+    pub(super) fn open_dialog(&mut self, services: &mut EditorServices<'_>) {
         if self.is_reading() {
             return;
         }
         if self.pending.is_some() {
             return;
         }
-        if let Some(path) = self.dialogs.open() {
+        if let Some(path) = services.dialogs.open() {
             if self.dirty() {
-                self.pending = Some(Pending::Open(path));
+                self.pending = Some(GuitarPending::Open(path));
             } else {
                 self.load(&path);
             }
         }
     }
 
-    pub(super) fn save_dialog(&mut self) -> bool {
+    pub(super) fn save_dialog(&mut self, services: &mut EditorServices<'_>) -> bool {
         if self.is_reading() {
             return false;
         }
@@ -279,7 +377,7 @@ impl Workbench {
             .collect();
         let extension = document.extension();
         let name = format!("{name} - edited.{extension}");
-        if let Some(path) = self.dialogs.save(&name, extension) {
+        if let Some(path) = services.dialogs.save(&name, extension) {
             match document.save_copy(&path) {
                 Ok(()) => {
                     self.error = None;
@@ -641,13 +739,15 @@ impl Workbench {
                     && self.can_edit(slot, Some(0x200000));
                 let response = ui.interact(
                     Rect::from_center_size(center_at(position), dimension + Vec2::splat(12.0)),
-                    egui::Id::new(("pickup-drag", slot)),
+                    ui.make_persistent_id(("pickup-drag", slot)),
                     if can_drag {
                         Sense::drag()
                     } else {
                         Sense::hover()
                     },
                 );
+                #[cfg(test)]
+                self.pickup_drag_ids.insert(slot, response.id);
                 if can_drag {
                     let response = response
                         .on_hover_and_drag_cursor(egui::CursorIcon::ResizeHorizontal)
@@ -878,14 +978,18 @@ impl Workbench {
         }
     }
 
-    pub(super) fn guitar_workspace(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn guitar_workspace(
+        &mut self,
+        services: &mut EditorServices<'_>,
+        ui: &mut egui::Ui,
+    ) {
         if self.document.is_none() {
             guitar_panel().show(ui, |ui| {
                 ui.heading("Open a Variax preset, bank or collection");
                 ui.horizontal_wrapped(|ui| {
                     ui.add_enabled_ui(!self.is_reading() && self.pending.is_none(), |ui| {
                         if ui.button("Open file…").clicked() {
-                            self.open_dialog();
+                            self.open_dialog(services);
                         }
                         if ui.button("Try example banks").clicked() && self.document.is_none() {
                             self.open_example();
@@ -925,7 +1029,7 @@ impl Workbench {
                             .add_enabled(available, egui::Button::new("Artwork folder…").small())
                             .clicked()
                         {
-                            self.artwork_dialog();
+                            self.artwork_dialog(services);
                         }
                     });
                 });
@@ -940,7 +1044,11 @@ impl Workbench {
         });
     }
 
-    pub(super) fn variax_pending_dialog(&mut self, ctx: &egui::Context) {
+    pub(super) fn variax_pending_dialog(
+        &mut self,
+        services: &mut EditorServices<'_>,
+        ctx: &egui::Context,
+    ) {
         if self.pending.is_some() {
             let mut discard = false;
             let mut save_continue = false;
@@ -954,42 +1062,173 @@ impl Workbench {
                     ui.horizontal(|ui| {
                         let response = ui.button("Save copy and continue…");
                         #[cfg(test)]
-                        self.pending_buttons.insert("save", response.rect);
+                        services.prompt_buttons.insert("save", response.rect);
                         if response.clicked() {
                             save_continue = true;
                         }
                         let response = ui.button("Keep editing");
                         #[cfg(test)]
-                        self.pending_buttons.insert("cancel", response.rect);
+                        services.prompt_buttons.insert("cancel", response.rect);
                         if response.clicked() {
                             cancel = true;
                         }
                         let response = ui.button("Discard changes");
                         #[cfg(test)]
-                        self.pending_buttons.insert("discard", response.rect);
+                        services.prompt_buttons.insert("discard", response.rect);
                         if response.clicked() {
                             discard = true;
                         }
                     });
                 });
             if cancel {
+                if matches!(self.pending, Some(GuitarPending::Quit)) {
+                    services.close = CloseResult::Cancelled;
+                }
                 self.pending = None;
             }
             if save_continue {
-                discard = self.save_dialog();
+                discard = self.save_dialog(services);
             }
             if discard {
-                self.continue_pending(ctx);
+                match self.pending.take() {
+                    Some(GuitarPending::Open(path)) => self.load(&path),
+                    Some(GuitarPending::ReadCurrent) => self.launch_read(),
+                    Some(GuitarPending::Quit) => services.close = CloseResult::Ready,
+                    None => {}
+                }
             }
         }
     }
 }
 
-impl Drop for Workbench {
+impl Drop for VariaxEditor {
     fn drop(&mut self) {
         if let Some((cancel, worker)) = self.read_worker.take() {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
             let _ = worker.join();
         }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum GuitarPending {
+    Open(PathBuf),
+    ReadCurrent,
+    Quit,
+}
+
+impl FamilyTab for VariaxEditor {
+    fn show(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
+        self.guitar_workspace(services, ui);
+    }
+    fn dirty(&self) -> bool {
+        VariaxEditor::dirty(self)
+    }
+    fn close_prompt(&mut self, ctx: &egui::Context, services: &mut EditorServices<'_>) {
+        if self.pending.is_none() {
+            self.pending = Some(GuitarPending::Quit);
+        }
+        self.variax_pending_dialog(services, ctx);
+    }
+    fn status(&self) -> (&str, Option<&str>) {
+        (&self.status, self.error.as_deref())
+    }
+    fn source_path(&self) -> Option<&Path> {
+        self.source_path.as_deref()
+    }
+    fn save_copy(&mut self, services: &mut EditorServices<'_>) {
+        self.save_dialog(services);
+    }
+    fn undo(&mut self) {
+        VariaxEditor::undo(self);
+    }
+    fn redo(&mut self) {
+        VariaxEditor::redo(self);
+    }
+    fn poll(&mut self, ctx: &egui::Context) {
+        self.poll_read();
+        if self.is_reading() {
+            ctx.request_repaint_after(Duration::from_millis(50));
+        }
+    }
+    fn local_prompt(&mut self, ctx: &egui::Context, services: &mut EditorServices<'_>) {
+        self.variax_pending_dialog(services, ctx);
+    }
+    fn busy(&self) -> bool {
+        self.is_reading()
+    }
+    fn cancel_operation(&mut self) {
+        self.cancel_read();
+    }
+    fn blocking_prompt(&self) -> bool {
+        self.pending.is_some()
+    }
+    fn actions(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
+        if ui.button("Replace file in this tab…").clicked() {
+            self.open_dialog(services);
+        }
+        if ui
+            .add_enabled(false, egui::Button::new("Live access locked"))
+            .clicked()
+        {
+            self.start_read();
+        }
+    }
+}
+
+pub(super) struct Family;
+
+pub(super) const FAMILY: Family = Family;
+
+impl ProductFamily for Family {
+    fn info(&self) -> FamilyInfo {
+        FamilyInfo {
+            id: "variax",
+            title: "Variax Workbench",
+            new_label: "Variax (example banks)",
+            extensions: &["vwm", "vwb", "l6c"],
+            ceiling: 16_777_216,
+        }
+    }
+
+    fn claims(&self, bytes: &[u8]) -> bool {
+        if matches!(bytes.get(8..12), Some(b"L6BA" | b"L6CO")) {
+            variax_workbench::bundle::BundleFile::parse(bytes.to_vec()).is_ok_and(|file| {
+                let mut patches = file
+                    .banks()
+                    .iter()
+                    .flat_map(|bank| bank.presets())
+                    .peekable();
+                patches.peek().is_some() && patches.all(|patch| patch.device_id() == 0x0007_0004)
+            })
+        } else {
+            PresetFile::parse(bytes.to_vec()).is_ok_and(|patch| patch.device_id() == 0x0007_0004)
+        }
+    }
+
+    fn open(
+        &self,
+        defaults: &EditorDefaults,
+        source: TabSource,
+    ) -> Result<Box<dyn FamilyTab>, String> {
+        let mut editor = VariaxEditor::new(defaults);
+        match source {
+            TabSource::New => editor.open_example(),
+            TabSource::File(path, bytes) => {
+                editor.document = Some(EditorDocument::from_file_bytes(bytes, &path)?);
+                editor.status = format!("Opened {}", path.display());
+            }
+        }
+        editor.tab = match defaults.startup_panel {
+            Some("body") => Tab::Body,
+            Some("pickups") => Tab::Pickups,
+            Some("controls") => Tab::Controls,
+            _ => editor.tab,
+        };
+        Ok(Box::new(editor))
+    }
+
+    fn help(&self, ui: &mut egui::Ui) {
+        guitar::milestones(ui);
     }
 }

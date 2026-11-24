@@ -53,6 +53,10 @@ pub struct EditorDocument {
 impl EditorDocument {
     pub fn open(path: &Path) -> Result<Self, String> {
         let bytes = fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        Self::from_file_bytes(bytes, path)
+    }
+
+    pub fn from_file_bytes(bytes: Vec<u8>, path: &Path) -> Result<Self, String> {
         if matches!(bytes.get(8..12), Some(b"L6BA" | b"L6CO")) {
             let file = BundleFile::parse(bytes)?;
             if file

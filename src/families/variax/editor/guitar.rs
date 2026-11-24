@@ -1,6 +1,6 @@
 use super::{
     BODY, Color32, EditorDocument, FRET_MARKER, GUITAR_SELECTION, GUITAR_SURFACE, PICKUP1, PICKUP2,
-    Pos2, PresetFile, Rect, SYSTEM, Sense, TUNING, Tab, TextureHandle, WIRING, Workbench, egui,
+    Pos2, PresetFile, Rect, SYSTEM, Sense, TUNING, Tab, TextureHandle, VariaxEditor, WIRING, egui,
     guitar_panel,
 };
 use std::{collections::HashSet, path::Path, process::Command};
@@ -293,7 +293,7 @@ fn readable_origin(origin: &str) -> String {
     origin.to_owned()
 }
 
-impl Workbench {
+impl VariaxEditor {
     pub(in crate::editor) fn open_example(&mut self) {
         match example_document() {
             Ok(document) => {
@@ -1287,6 +1287,7 @@ fn example_document() -> Result<EditorDocument, String> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::Workbench;
     use super::*;
 
     #[test]
@@ -1341,18 +1342,24 @@ mod tests {
         let path = directory.path().join("example.vwb");
         let ctx = egui::Context::default();
         let mut app = Workbench::with_context(&ctx, None, Default::default(), None);
-        app.document.as_mut().unwrap().save_copy(&path).unwrap();
+        app.variax_mut()
+            .document
+            .as_mut()
+            .unwrap()
+            .save_copy(&path)
+            .unwrap();
 
         for suffix in [" (example)", ""] {
             if suffix.is_empty() {
-                app.load(&path);
+                app.variax_mut().load(&path);
             }
             for (index, name) in ["Custom 1", "Custom 2"].into_iter().enumerate() {
-                let document = app.document.as_mut().unwrap();
+                let document = app.variax_mut().document.as_mut().unwrap();
                 document.select(index, 0).unwrap();
                 assert_eq!(document.banks().unwrap()[index].name, name);
                 let output = ctx.run(Default::default(), |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| app.guitar_header(ui, true));
+                    egui::CentralPanel::default()
+                        .show(ctx, |ui| app.variax_mut().guitar_header(ui, true));
                 });
                 let title = format!("Editing bank: {name}{suffix}");
                 assert!(
@@ -1377,7 +1384,7 @@ mod tests {
                 },
                 |ctx| {
                     egui::CentralPanel::default()
-                        .show(ctx, |ui| app.fretboard(ui, true))
+                        .show(ctx, |ui| app.variax_mut().fretboard(ui, true))
                         .inner
                 },
             );
@@ -1393,7 +1400,7 @@ mod tests {
         }
 
         fn click(ctx: &egui::Context, app: &mut Workbench, name: &str) {
-            let pos = app.tuning_widgets[name].center();
+            let pos = app.variax().tuning_widgets[name].center();
             frame(
                 ctx,
                 app,
@@ -1404,10 +1411,10 @@ mod tests {
         }
 
         let ctx = egui::Context::default();
-        let mut app = Workbench::with_context(&ctx, None, Default::default(), Some(Tab::Controls));
+        let mut app = Workbench::with_context(&ctx, None, Default::default(), Some("controls"));
         ctx.style_mut(|style| style.animation_time = 0.0);
         let offsets = |app: &Workbench| {
-            std::array::from_fn(|i| app.integer(TUNING, PITCH + i as u32).unwrap())
+            std::array::from_fn(|i| app.variax().integer(TUNING, PITCH + i as u32).unwrap())
         };
         frame(&ctx, &mut app, vec![]);
         frame(&ctx, &mut app, vec![]);
@@ -1415,7 +1422,8 @@ mod tests {
         click(&ctx, &mut app, "Drop D");
         assert_eq!(offsets(&app), [-2, 0, 0, 0, 0, 0]);
         assert!(
-            app.document
+            app.variax()
+                .document
                 .as_ref()
                 .unwrap()
                 .preset()
@@ -1429,18 +1437,18 @@ mod tests {
         assert_eq!(offsets(&app), [-2, 0, 0, 0, 0, 0]);
         click(&ctx, &mut app, "Reset");
         assert_eq!(offsets(&app), [0; 6]);
-        app.undo();
+        app.variax_mut().undo();
         assert_eq!(offsets(&app), [-2, 0, 0, 0, 0, 0]);
         click(&ctx, &mut app, "Lock");
-        assert!(!app.link_tuning_mix);
+        assert!(!app.variax().link_tuning_mix);
 
-        let document = app.document.as_mut().unwrap();
+        let document = app.variax_mut().document.as_mut().unwrap();
         document.select(0, 4).unwrap();
         frame(&ctx, &mut app, vec![]);
         frame(&ctx, &mut app, vec![]);
         click(&ctx, &mut app, "Lock");
-        assert!(app.link_tuning_mix);
-        let start = app.tuning_widgets["Low E mix"].center();
+        assert!(app.variax().link_tuning_mix);
+        let start = app.variax().tuning_widgets["Low E mix"].center();
         let end = start + egui::vec2(18.0, 0.0);
         frame(
             &ctx,
@@ -1449,9 +1457,9 @@ mod tests {
         );
         frame(&ctx, &mut app, vec![egui::Event::PointerMoved(end)]);
         frame(&ctx, &mut app, vec![pointer(end, false)]);
-        let changed = app.float(TUNING, MIX).unwrap();
+        let changed = app.variax().float(TUNING, MIX).unwrap();
         assert_ne!(changed, 0.5);
-        assert!((MIX..MIX + 6).all(|id| app.float(TUNING, id) == Some(changed)));
-        assert_eq!(app.tab, Tab::Controls);
+        assert!((MIX..MIX + 6).all(|id| app.variax().float(TUNING, id) == Some(changed)));
+        assert_eq!(app.variax().tab, Tab::Controls);
     }
 }

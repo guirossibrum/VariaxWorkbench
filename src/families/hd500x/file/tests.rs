@@ -1,4 +1,5 @@
 use super::*;
+use crate::pod_preset::PodPresetFile;
 use crate::pod_preset::TONE_BYTES_CEILING;
 use crate::shared::file::ContinuousReader;
 use std::cell::Cell;
@@ -2363,12 +2364,9 @@ fn hd_editor_library_tracks_edits_and_extracts_children_without_changing_parents
 
     let mut library = HdEditorLibrary::default();
     let preset = library.import_bytes(bytes.clone()).unwrap();
-    assert_eq!(
-        library.file(preset).unwrap().hd_container_kind(),
-        Some("H5EP preset")
-    );
+    assert_eq!(library.file(preset).unwrap().kind(), "H5EP preset");
     assert!(!library.any_dirty());
-    let Some(PodPresetFile::H5ep(preset_file)) = library.file_mut(preset) else {
+    let Some(HdEditFile::H5ep(preset_file)) = library.file_mut(preset) else {
         panic!("expected H5EP");
     };
     assert_eq!(preset_file.screamer_drive_percent(0), Some(25));

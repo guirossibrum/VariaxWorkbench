@@ -1,6 +1,5 @@
 #![forbid(unsafe_code)]
 //! POD HD500X Edit file formats and offline library.
-use crate::pod_preset::PodPresetFile;
 use crate::shared::document;
 use crate::shared::file::{PathFacts, ToneError};
 use std::io::Read;

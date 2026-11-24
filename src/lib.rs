@@ -7,6 +7,7 @@
 use std::collections::BTreeMap;
 
 pub use families::variax::file::{bundle, document, edit, preset};
+pub use shared::file::{PathFacts, open_regular_file, path_facts};
 
 pub mod body;
 pub mod device_probe;

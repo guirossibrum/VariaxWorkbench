@@ -2,7 +2,7 @@ use super::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct StoredHdFile {
-    file: PodPresetFile,
+    file: HdEditFile,
     saved: Vec<u8>,
 }
 
@@ -28,7 +28,7 @@ impl HdEditorLibrary {
             .get_mut(index)
             .ok_or_else(|| ToneError::format("file index is outside the HD editor library"))?;
         match &mut entry.file {
-            PodPresetFile::H5ep(preset) => preset.set_hd_type9_choice(effect_slot, choice),
+            HdEditFile::H5ep(preset) => preset.set_hd_type9_choice(effect_slot, choice),
             _ => Err(ToneError::format(
                 "HD type-9 choice requires an extracted H5EP preset",
             )),
@@ -48,7 +48,7 @@ impl HdEditorLibrary {
             .get_mut(index)
             .ok_or_else(|| ToneError::format("file index is outside the HD editor library"))?;
         match &mut entry.file {
-            PodPresetFile::H5ep(preset) => preset.set_hd_type8_choice(effect_slot, choice),
+            HdEditFile::H5ep(preset) => preset.set_hd_type8_choice(effect_slot, choice),
             _ => Err(ToneError::format(
                 "HD type-8 choice requires an extracted H5EP preset",
             )),
@@ -66,7 +66,7 @@ impl HdEditorLibrary {
             .get_mut(index)
             .ok_or_else(|| ToneError::format("file index is outside the HD editor library"))?;
         match &mut entry.file {
-            PodPresetFile::H5ep(preset) => preset.set_hd_type10_choice(effect_slot, choice),
+            HdEditFile::H5ep(preset) => preset.set_hd_type10_choice(effect_slot, choice),
             _ => Err(ToneError::format(
                 "HD type-10 choice requires an extracted H5EP preset",
             )),
@@ -87,9 +87,7 @@ impl HdEditorLibrary {
             .get_mut(index)
             .ok_or_else(|| ToneError::format("file index is outside the HD editor library"))?;
         match &mut entry.file {
-            PodPresetFile::H5ep(preset) => {
-                preset.set_hd_type11_choice(effect_slot, control, choice)
-            }
+            HdEditFile::H5ep(preset) => preset.set_hd_type11_choice(effect_slot, control, choice),
             _ => Err(ToneError::format(
                 "HD type-11 choice requires an extracted H5EP preset",
             )),
@@ -109,9 +107,7 @@ impl HdEditorLibrary {
             .get_mut(index)
             .ok_or_else(|| ToneError::format("file index is outside the HD editor library"))?;
         match &mut entry.file {
-            PodPresetFile::H5ep(preset) => {
-                preset.set_hd_type12_choice(effect_slot, control, choice)
-            }
+            HdEditFile::H5ep(preset) => preset.set_hd_type12_choice(effect_slot, control, choice),
             _ => Err(ToneError::format(
                 "HD type-12 choice requires an extracted H5EP preset",
             )),
@@ -132,9 +128,7 @@ impl HdEditorLibrary {
             .get_mut(index)
             .ok_or_else(|| ToneError::format("file index is outside the HD editor library"))?;
         match &mut entry.file {
-            PodPresetFile::H5ep(preset) => {
-                preset.set_hd_type13_choice(effect_slot, control, choice)
-            }
+            HdEditFile::H5ep(preset) => preset.set_hd_type13_choice(effect_slot, control, choice),
             _ => Err(ToneError::format(
                 "HD type-13 choice requires an extracted H5EP preset",
             )),
@@ -155,9 +149,7 @@ impl HdEditorLibrary {
             .get_mut(index)
             .ok_or_else(|| ToneError::format("file index is outside the HD editor library"))?;
         match &mut entry.file {
-            PodPresetFile::H5ep(preset) => {
-                preset.set_hd_type19_choice(effect_slot, control, choice)
-            }
+            HdEditFile::H5ep(preset) => preset.set_hd_type19_choice(effect_slot, control, choice),
             _ => Err(ToneError::format(
                 "HD descriptor type-0x13 choice requires an extracted H5EP preset",
             )),
@@ -177,7 +169,7 @@ impl HdEditorLibrary {
             .get_mut(index)
             .ok_or_else(|| ToneError::format("file index is outside the HD editor library"))?;
         match &mut entry.file {
-            PodPresetFile::H5ep(preset) => preset.set_effect_enabled(effect_slot, enabled),
+            HdEditFile::H5ep(preset) => preset.set_effect_enabled(effect_slot, enabled),
             _ => Err(ToneError::format(
                 "HD effect enable requires an extracted H5EP preset",
             )),
@@ -185,12 +177,7 @@ impl HdEditorLibrary {
     }
 
     pub fn import_bytes(&mut self, bytes: Vec<u8>) -> Result<usize, ToneError> {
-        let file = PodPresetFile::parse(bytes)?;
-        if file.hd_container_kind().is_none() {
-            return Err(ToneError::format(
-                "HD editor library accepts H5EP, H5ES, and H5EB files only",
-            ));
-        }
+        let file = HdEditFile::parse(bytes)?;
         let saved = file.as_bytes().to_vec();
         self.files.push(StoredHdFile { file, saved });
         Ok(self.files.len() - 1)
@@ -204,11 +191,11 @@ impl HdEditorLibrary {
         self.files.is_empty()
     }
 
-    pub fn file(&self, index: usize) -> Option<&PodPresetFile> {
+    pub fn file(&self, index: usize) -> Option<&HdEditFile> {
         self.files.get(index).map(|entry| &entry.file)
     }
 
-    pub fn file_mut(&mut self, index: usize) -> Option<&mut PodPresetFile> {
+    pub fn file_mut(&mut self, index: usize) -> Option<&mut HdEditFile> {
         self.files.get_mut(index).map(|entry| &mut entry.file)
     }
 
@@ -219,11 +206,11 @@ impl HdEditorLibrary {
         preset: usize,
     ) -> Result<usize, ToneError> {
         let child = match self.file(index) {
-            Some(PodPresetFile::H5ep(_)) if setlist == 0 && preset == 0 => {
+            Some(HdEditFile::H5ep(_)) if setlist == 0 && preset == 0 => {
                 return Ok(index);
             }
-            Some(PodPresetFile::H5es(file)) if setlist == 0 => file.preset_bytes(preset),
-            Some(PodPresetFile::H5eb(file)) => file.setlist_bytes(setlist).and_then(|bytes| {
+            Some(HdEditFile::H5es(file)) if setlist == 0 => file.preset_bytes(preset),
+            Some(HdEditFile::H5eb(file)) => file.setlist_bytes(setlist).and_then(|bytes| {
                 let start = H5ES_HEADER_BYTES + preset.checked_mul(H5EP_MIN_BYTES)?;
                 bytes.get(start..start.checked_add(H5EP_MIN_BYTES)?)
             }),
@@ -231,7 +218,7 @@ impl HdEditorLibrary {
         }
         .ok_or_else(|| ToneError::format("setlist or preset index is outside the file"))?
         .to_vec();
-        let file = PodPresetFile::H5ep(OpaqueH5epPreset::parse(child)?);
+        let file = HdEditFile::H5ep(OpaqueH5epPreset::parse(child)?);
         let saved = file.as_bytes().to_vec();
         self.files.push(StoredHdFile { file, saved });
         Ok(self.files.len() - 1)
@@ -250,7 +237,7 @@ impl HdEditorLibrary {
             .get_mut(index)
             .ok_or_else(|| ToneError::format("file index is outside the HD editor library"))?;
         match &mut entry.file {
-            PodPresetFile::H5ep(preset) => {
+            HdEditFile::H5ep(preset) => {
                 preset.replace_octave_fuzz_with_vintage_pre_defaults(effect_slot)
             }
             _ => Err(ToneError::format(
@@ -271,7 +258,7 @@ impl HdEditorLibrary {
             .get_mut(index)
             .ok_or_else(|| ToneError::format("file index is outside the HD editor library"))?;
         match &mut entry.file {
-            PodPresetFile::H5ep(preset) => {
+            HdEditFile::H5ep(preset) => {
                 preset.replace_octave_fuzz_with_screamer_defaults(effect_slot)
             }
             _ => Err(ToneError::format(
@@ -293,7 +280,7 @@ impl HdEditorLibrary {
             .get_mut(index)
             .ok_or_else(|| ToneError::format("file index is outside the HD editor library"))?;
         match &mut entry.file {
-            PodPresetFile::H5ep(preset) => {
+            HdEditFile::H5ep(preset) => {
                 preset.replace_octave_fuzz_with_sub_octave_fuzz_defaults(effect_slot)
             }
             _ => Err(ToneError::format(
@@ -314,7 +301,7 @@ impl HdEditorLibrary {
             .get_mut(index)
             .ok_or_else(|| ToneError::format("file index is outside the HD editor library"))?;
         match &mut entry.file {
-            PodPresetFile::H5ep(preset) => {
+            HdEditFile::H5ep(preset) => {
                 preset.replace_octave_fuzz_with_noise_gate_defaults(effect_slot)
             }
             _ => Err(ToneError::format(
@@ -336,7 +323,7 @@ impl HdEditorLibrary {
             .get_mut(index)
             .ok_or_else(|| ToneError::format("file index is outside the HD editor library"))?;
         match &mut entry.file {
-            PodPresetFile::H5ep(preset) => {
+            HdEditFile::H5ep(preset) => {
                 preset.replace_octave_fuzz_with_admitted_defaults(effect_slot, target)
             }
             _ => Err(ToneError::format(
@@ -358,7 +345,7 @@ impl HdEditorLibrary {
             .get_mut(index)
             .ok_or_else(|| ToneError::format("file index is outside the HD editor library"))?;
         match &mut entry.file {
-            PodPresetFile::H5ep(preset) => {
+            HdEditFile::H5ep(preset) => {
                 preset.replace_octave_fuzz_with_admitted_dynamics_defaults(effect_slot, target)
             }
             _ => Err(ToneError::format(
@@ -380,7 +367,7 @@ impl HdEditorLibrary {
             .get_mut(index)
             .ok_or_else(|| ToneError::format("file index is outside the HD editor library"))?;
         match &mut entry.file {
-            PodPresetFile::H5ep(preset) => {
+            HdEditFile::H5ep(preset) => {
                 preset.replace_octave_fuzz_with_admitted_reverb_defaults(effect_slot, target)
             }
             _ => Err(ToneError::format(
@@ -429,7 +416,7 @@ impl HdEditorLibrary {
             .get_mut(index)
             .ok_or_else(|| ToneError::format("file index is outside the HD editor library"))?;
         if entry.file.as_bytes() != entry.saved {
-            entry.file = PodPresetFile::parse(entry.saved.clone())?;
+            entry.file = HdEditFile::parse(entry.saved.clone())?;
         }
         Ok(())
     }

@@ -1,4 +1,5 @@
 use super::*;
+use variax_workbench::pod_preset::Library;
 
 #[cfg(test)]
 pub(super) mod tests;
@@ -49,7 +50,7 @@ fn suggested_tone_name(name: &str) -> String {
     }
 }
 
-pub(super) fn rejection_text(rejection: &Rejection) -> String {
+fn rejection_text(rejection: &Rejection) -> String {
     match rejection {
         Rejection::Format { detail } => detail.clone(),
         Rejection::CrossFamily { .. } => {
@@ -274,7 +275,202 @@ fn sample_pod_bundle(tones: &[Vec<u8>]) -> Vec<u8> {
     chunk(b"FORM", &root)
 }
 
-impl Workbench {
+pub(super) struct PodxtEditor {
+    pub(super) pod_library: Library,
+    pub(super) pod_bundle: Option<pod_preset::PodBundleLibrary>,
+    pub(super) pod_selected: Option<usize>,
+    /// Bank shown by Bank Down / Bank Up. Channel clicks keep this in sync.
+    pod_bank: usize,
+    /// Block whose settings the pedalboard is showing. Switching it does not
+    /// discard edits on another block.
+    pod_block: PodBlock,
+    pod_revert_confirm: bool,
+    pod_cab_pending: Option<(usize, pod_preset::PodCabModelChoice)>,
+    pod_cab_pending_origin: Option<(u64, usize, Vec<u8>)>,
+    pod_delay_model_pending: Option<(usize, pod_preset::PodDelayModelChoice)>,
+    pod_mod_model_pending: Option<(usize, pod_preset::PodModModelChoice)>,
+    pod_stomp_model_pending: Option<(usize, pod_preset::PodStompModelChoice)>,
+    pod_reverb_model_pending: Option<(usize, pod_preset::PodReverbModelChoice)>,
+    pod_amp_model_pending: Option<(usize, u32, pod_preset::PodAmpModelChoice)>,
+    pod_eq_reset_pending: Option<PendingPodEqReset>,
+    pod_document_generation: u64,
+    pod_harmony_pending: Option<(usize, pod_preset::StompHarmonyControl, PendingStompHarmony)>,
+    pod_delay_pending: Option<(usize, PendingDelayEdit)>,
+    pod_mod_pending: Option<(usize, PendingModEdit)>,
+    pub(super) pod_name: String,
+    pod_message: String,
+    #[cfg(test)]
+    pod_buttons: HashMap<&'static str, Rect>,
+    #[cfg(test)]
+    pod_rows: HashMap<usize, Rect>,
+    #[cfg(test)]
+    pod_cab_combo: Option<Rect>,
+    #[cfg(test)]
+    pod_cab_options: HashMap<u32, Rect>,
+    #[cfg(test)]
+    pod_practice_combo: Option<Rect>,
+    #[cfg(test)]
+    pod_practice_options: HashMap<PracticeTone, Rect>,
+    #[cfg(test)]
+    pod_drive_slider: Option<Rect>,
+    #[cfg(test)]
+    pod_stomp_sliders: HashMap<pod_preset::StompControl, Rect>,
+    #[cfg(test)]
+    pod_whammy_knob_sliders: HashMap<pod_preset::StompWhammyKnob, Rect>,
+    #[cfg(test)]
+    pod_eq_frequency_sliders: HashMap<pod_preset::PodxtEqBand, Rect>,
+    #[cfg(test)]
+    pod_eq_gain_sliders: HashMap<pod_preset::PodxtEqBand, Rect>,
+    #[cfg(test)]
+    pod_model_enable_checks: HashMap<pod_preset::PodModelEnable, Rect>,
+    #[cfg(test)]
+    pod_model_enable_menu: Option<Rect>,
+    #[cfg(test)]
+    pod_mod_sliders: HashMap<pod_preset::ModControl, Rect>,
+    #[cfg(test)]
+    pod_reverb_sliders: HashMap<pod_preset::ReverbControl, Rect>,
+    #[cfg(test)]
+    pod_delay_sliders: HashMap<pod_preset::DelayControl, Rect>,
+    #[cfg(test)]
+    pod_delay_note_options: HashMap<pod_preset::DelayNoteChoice, Rect>,
+    #[cfg(test)]
+    pod_delay_model_combo: Option<Rect>,
+    #[cfg(test)]
+    pod_delay_model_options: HashMap<u32, Rect>,
+    #[cfg(test)]
+    pod_mod_model_combo: Option<Rect>,
+    #[cfg(test)]
+    pod_mod_model_options: HashMap<u32, Rect>,
+    #[cfg(test)]
+    pod_stomp_model_combo: Option<Rect>,
+    #[cfg(test)]
+    pod_stomp_model_options: HashMap<u32, Rect>,
+    #[cfg(test)]
+    pod_reverb_model_combo: Option<Rect>,
+    #[cfg(test)]
+    pod_reverb_model_options: HashMap<u32, Rect>,
+    #[cfg(test)]
+    pod_amp_model_combo: Option<Rect>,
+    #[cfg(test)]
+    pod_amp_model_options: HashMap<u32, Rect>,
+    #[cfg(test)]
+    pod_mod_note_options: HashMap<pod_preset::ModNoteChoice, Rect>,
+    #[cfg(test)]
+    pod_delay_time_slider: Option<Rect>,
+    #[cfg(test)]
+    pod_mod_speed_slider: Option<Rect>,
+    #[cfg(test)]
+    pod_delay_heads_choices: HashMap<pod_preset::DelayHeadsSelection, Rect>,
+    #[cfg(test)]
+    pod_delay_bits_choices: HashMap<pod_preset::DelayBitsSelection, Rect>,
+    #[cfg(test)]
+    pod_stomp_wave_choices: HashMap<pod_preset::StompWaveSelection, Rect>,
+    #[cfg(test)]
+    pod_harmony1_choices: HashMap<pod_preset::StompHarmony1M335Selection, Rect>,
+    #[cfg(test)]
+    pod_harmony2_choices: HashMap<pod_preset::StompHarmony1457Selection, Rect>,
+    #[cfg(test)]
+    pod_visible: String,
+}
+
+impl PodxtEditor {
+    fn new() -> Self {
+        Self {
+            pod_library: Library::default(),
+            pod_bundle: None,
+            pod_selected: None,
+            pod_bank: 0,
+            pod_block: PodBlock::Amp,
+            pod_revert_confirm: false,
+            pod_cab_pending: None,
+            pod_cab_pending_origin: None,
+            pod_delay_model_pending: None,
+            pod_mod_model_pending: None,
+            pod_stomp_model_pending: None,
+            pod_reverb_model_pending: None,
+            pod_amp_model_pending: None,
+            pod_eq_reset_pending: None,
+            pod_document_generation: 0,
+            pod_harmony_pending: None,
+            pod_delay_pending: None,
+            pod_mod_pending: None,
+            pod_name: String::new(),
+            pod_message: String::new(),
+            #[cfg(test)]
+            pod_buttons: HashMap::new(),
+            #[cfg(test)]
+            pod_rows: HashMap::new(),
+            #[cfg(test)]
+            pod_cab_combo: None,
+            #[cfg(test)]
+            pod_cab_options: HashMap::new(),
+            #[cfg(test)]
+            pod_practice_combo: None,
+            #[cfg(test)]
+            pod_practice_options: HashMap::new(),
+            #[cfg(test)]
+            pod_drive_slider: None,
+            #[cfg(test)]
+            pod_stomp_sliders: HashMap::new(),
+            #[cfg(test)]
+            pod_whammy_knob_sliders: HashMap::new(),
+            #[cfg(test)]
+            pod_eq_frequency_sliders: HashMap::new(),
+            #[cfg(test)]
+            pod_eq_gain_sliders: HashMap::new(),
+            #[cfg(test)]
+            pod_model_enable_checks: HashMap::new(),
+            #[cfg(test)]
+            pod_model_enable_menu: None,
+            #[cfg(test)]
+            pod_mod_sliders: HashMap::new(),
+            #[cfg(test)]
+            pod_reverb_sliders: HashMap::new(),
+            #[cfg(test)]
+            pod_delay_sliders: HashMap::new(),
+            #[cfg(test)]
+            pod_delay_note_options: HashMap::new(),
+            #[cfg(test)]
+            pod_delay_model_combo: None,
+            #[cfg(test)]
+            pod_delay_model_options: HashMap::new(),
+            #[cfg(test)]
+            pod_mod_model_combo: None,
+            #[cfg(test)]
+            pod_mod_model_options: HashMap::new(),
+            #[cfg(test)]
+            pod_stomp_model_combo: None,
+            #[cfg(test)]
+            pod_stomp_model_options: HashMap::new(),
+            #[cfg(test)]
+            pod_reverb_model_combo: None,
+            #[cfg(test)]
+            pod_reverb_model_options: HashMap::new(),
+            #[cfg(test)]
+            pod_amp_model_combo: None,
+            #[cfg(test)]
+            pod_amp_model_options: HashMap::new(),
+            #[cfg(test)]
+            pod_mod_note_options: HashMap::new(),
+            #[cfg(test)]
+            pod_delay_time_slider: None,
+            #[cfg(test)]
+            pod_mod_speed_slider: None,
+            #[cfg(test)]
+            pod_delay_heads_choices: HashMap::new(),
+            #[cfg(test)]
+            pod_delay_bits_choices: HashMap::new(),
+            #[cfg(test)]
+            pod_stomp_wave_choices: HashMap::new(),
+            #[cfg(test)]
+            pod_harmony1_choices: HashMap::new(),
+            #[cfg(test)]
+            pod_harmony2_choices: HashMap::new(),
+            #[cfg(test)]
+            pod_visible: String::new(),
+        }
+    }
+
     pub(super) fn pod_dirty(&self) -> bool {
         self.pod_library.any_dirty()
             || self
@@ -308,9 +504,13 @@ impl Workbench {
         }
     }
 
-    pub(super) fn pod_quit_dialog(&mut self, ctx: &egui::Context) {
+    pub(super) fn pod_quit_dialog(
+        &mut self,
+        services: &mut EditorServices<'_>,
+        ctx: &egui::Context,
+    ) {
         if self.pod_eq_reset_pending.is_some() {
-            self.pod_eq_reset_quit_dialog(ctx);
+            self.pod_eq_reset_quit_dialog(services, ctx);
             return;
         }
         if self
@@ -318,27 +518,15 @@ impl Workbench {
             .as_ref()
             .is_some_and(|bundle| bundle.is_dirty())
         {
-            self.pod_bundle_quit_dialog(ctx);
+            self.pod_bundle_quit_dialog(services, ctx);
             return;
         }
         let Some(index) = self.pod_library.first_dirty() else {
             if self.pod_has_staged_amp_choice() {
-                self.pod_amp_quit_dialog(ctx);
+                self.pod_amp_quit_dialog(services, ctx);
                 return;
             }
-            if self.hd_library.any_dirty()
-                || self.hd_type9_pending.is_some()
-                || self.hd_type8_pending.is_some()
-                || self.hd_type10_pending.is_some()
-                || !self.hd_type11_pending.is_empty()
-                || !self.hd_type12_pending.is_empty()
-                || !self.hd_type13_pending.is_empty()
-                || !self.hd_type19_pending.is_empty()
-            {
-                self.hd_quit_dialog(ctx);
-                return;
-            }
-            self.continue_pending(ctx);
+            services.finish_close_if(!self.needs_close());
             return;
         };
         let Some(name) = self
@@ -346,7 +534,7 @@ impl Workbench {
             .tone(index)
             .map(|tone| tone.name().to_owned())
         else {
-            self.pending = None;
+            services.close = CloseResult::Cancelled;
             return;
         };
         let remaining = self.pod_library.dirty_count();
@@ -371,38 +559,38 @@ impl Workbench {
                 ui.horizontal(|ui| {
                     let response = ui.button("Save copy and continue…");
                     #[cfg(test)]
-                    self.pending_buttons.insert("save", response.rect);
+                    services.prompt_buttons.insert("save", response.rect);
                     if response.clicked() {
                         save_continue = true;
                     }
                     let response = ui.button("Keep editing");
                     #[cfg(test)]
-                    self.pending_buttons.insert("cancel", response.rect);
+                    services.prompt_buttons.insert("cancel", response.rect);
                     if response.clicked() {
                         cancel = true;
                     }
                     let response = ui.button("Discard this tone");
                     #[cfg(test)]
-                    self.pending_buttons.insert("discard", response.rect);
+                    services.prompt_buttons.insert("discard", response.rect);
                     if response.clicked() {
                         discard = true;
                     }
                 });
             });
         if cancel {
-            self.pending = None;
+            services.close = CloseResult::Cancelled;
         } else if save_continue {
-            if self.save_next_dirty_pod() && !self.pod_library.any_dirty() {
-                self.continue_pending(ctx);
+            if self.save_next_dirty_pod(services) {
+                services.finish_close_if(!self.needs_close());
             }
-        } else if discard && self.discard_next_dirty_pod() && !self.pod_library.any_dirty() {
-            self.continue_pending(ctx);
+        } else if discard && self.discard_next_dirty_pod() {
+            services.finish_close_if(!self.needs_close());
         }
     }
 
-    fn pod_amp_quit_dialog(&mut self, ctx: &egui::Context) {
+    fn pod_amp_quit_dialog(&mut self, services: &mut EditorServices<'_>, ctx: &egui::Context) {
         let Some((index, origin_id, choice)) = self.pod_amp_model_pending else {
-            self.continue_pending(ctx);
+            services.finish_close_if(!self.needs_close());
             return;
         };
         let current_id = self
@@ -411,7 +599,7 @@ impl Workbench {
             .and_then(pod_preset::PodTone::amp_model_id);
         if current_id != Some(origin_id) {
             self.pod_amp_model_pending = None;
-            self.continue_pending(ctx);
+            services.finish_close_if(!self.needs_close());
             return;
         }
 
@@ -431,15 +619,16 @@ impl Workbench {
                 ui.horizontal(|ui| {
                     let response = ui.button("Apply and continue…");
                     #[cfg(test)]
-                    self.pending_buttons.insert("amp-apply", response.rect);
+                    services.prompt_buttons.insert("amp-apply", response.rect);
                     apply = response.clicked();
                     let response = ui.button("Discard AMP choice");
                     #[cfg(test)]
-                    self.pending_buttons.insert("amp-discard", response.rect);
+                    services.prompt_buttons.insert("amp-discard", response.rect);
                     discard = response.clicked();
                     let response = ui.button("Keep editing");
                     #[cfg(test)]
-                    self.pending_buttons
+                    services
+                        .prompt_buttons
                         .insert("amp-keep-editing", response.rect);
                     keep_editing = response.clicked();
                 });
@@ -449,19 +638,19 @@ impl Workbench {
             self.pod_selected = Some(index);
             if self.apply_pod_amp_model_choice(choice, Some(origin_id)) {
                 self.pod_amp_model_pending = None;
-                self.continue_staged_pod_quit(ctx);
+                self.continue_staged_pod_quit(services);
             }
         } else if discard {
             self.pod_amp_model_pending = None;
-            self.continue_staged_pod_quit(ctx);
+            self.continue_staged_pod_quit(services);
         } else if keep_editing {
-            self.pending = None;
+            services.close = CloseResult::Cancelled;
         }
     }
 
-    fn pod_eq_reset_quit_dialog(&mut self, ctx: &egui::Context) {
+    fn pod_eq_reset_quit_dialog(&mut self, services: &mut EditorServices<'_>, ctx: &egui::Context) {
         let Some(pending) = self.pod_eq_reset_pending.clone() else {
-            self.continue_staged_pod_quit(ctx);
+            self.continue_staged_pod_quit(services);
             return;
         };
         let current_context = self
@@ -473,7 +662,7 @@ impl Workbench {
         {
             self.pod_eq_reset_pending = None;
             self.pod_message = "Discarded a stale EQ reset because its target EQ changed.".into();
-            self.continue_staged_pod_quit(ctx);
+            self.continue_staged_pod_quit(services);
             return;
         }
         let mut apply = false;
@@ -491,17 +680,20 @@ impl Workbench {
                 ui.horizontal(|ui| {
                     let response = ui.button("Apply reset and continue…");
                     #[cfg(test)]
-                    self.pending_buttons
+                    services
+                        .prompt_buttons
                         .insert("eq-reset-quit-apply", response.rect);
                     apply = response.clicked();
                     let response = ui.button("Discard EQ reset");
                     #[cfg(test)]
-                    self.pending_buttons
+                    services
+                        .prompt_buttons
                         .insert("eq-reset-quit-discard", response.rect);
                     discard = response.clicked();
                     let response = ui.button("Keep editing");
                     #[cfg(test)]
-                    self.pending_buttons
+                    services
+                        .prompt_buttons
                         .insert("eq-reset-quit-keep", response.rect);
                     keep_editing = response.clicked();
                 });
@@ -510,26 +702,21 @@ impl Workbench {
             self.pod_selected = Some(pending.index);
             if self.apply_pod_eq_reset(Some(&pending)) {
                 self.pod_eq_reset_pending = None;
-                self.continue_staged_pod_quit(ctx);
+                self.continue_staged_pod_quit(services);
             }
         } else if discard {
             self.pod_eq_reset_pending = None;
-            self.continue_staged_pod_quit(ctx);
+            self.continue_staged_pod_quit(services);
         } else if keep_editing {
-            self.pending = None;
+            services.close = CloseResult::Cancelled;
         }
     }
 
-    fn continue_staged_pod_quit(&mut self, ctx: &egui::Context) {
-        if self.pod_has_staged_edit() {
-            self.pending = Some(Pending::QuitPod);
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        } else {
-            self.continue_pending(ctx);
-        }
+    fn continue_staged_pod_quit(&mut self, services: &mut EditorServices<'_>) {
+        services.finish_close_if(!self.needs_close());
     }
 
-    fn pod_bundle_quit_dialog(&mut self, ctx: &egui::Context) {
+    fn pod_bundle_quit_dialog(&mut self, services: &mut EditorServices<'_>, ctx: &egui::Context) {
         let mut discard = false;
         let mut save_continue = false;
         let mut cancel = false;
@@ -542,24 +729,24 @@ impl Workbench {
                 ui.horizontal(|ui| {
                     let response = ui.button("Save bank copy and continue…");
                     #[cfg(test)]
-                    self.pending_buttons.insert("save", response.rect);
+                    services.prompt_buttons.insert("save", response.rect);
                     save_continue = response.clicked();
                     let response = ui.button("Keep editing");
                     #[cfg(test)]
-                    self.pending_buttons.insert("cancel", response.rect);
+                    services.prompt_buttons.insert("cancel", response.rect);
                     cancel = response.clicked();
                     let response = ui.button("Discard bank edits");
                     #[cfg(test)]
-                    self.pending_buttons.insert("discard", response.rect);
+                    services.prompt_buttons.insert("discard", response.rect);
                     discard = response.clicked();
                 });
             });
         if cancel {
-            self.pending = None;
+            services.close = CloseResult::Cancelled;
         } else if save_continue {
             let index = self.pod_library.first_dirty().unwrap_or(0);
-            if self.write_pod_copy(index) && !self.pod_library.any_dirty() {
-                self.continue_pending(ctx);
+            if self.write_pod_copy(services, index) {
+                services.finish_close_if(!self.needs_close());
             }
         } else if discard {
             let staged_amp = self.pod_amp_model_pending;
@@ -572,18 +759,18 @@ impl Workbench {
                     self.refresh_selected_pod_name();
                     self.restore_staged_amp_if_origin_matches(staged_amp);
                     self.pod_message = "Discarded offline bank edits. Nothing was sent.".into();
-                    self.continue_pending(ctx);
+                    services.finish_close_if(!self.needs_close());
                 }
                 Err(error) => self.pod_message = error.detail(),
             }
         }
     }
 
-    pub(super) fn save_next_dirty_pod(&mut self) -> bool {
+    pub(super) fn save_next_dirty_pod(&mut self, services: &mut EditorServices<'_>) -> bool {
         if let Some(index) = self.pod_library.first_dirty() {
-            return self.write_pod_copy(index);
+            return self.write_pod_copy(services, index);
         }
-        self.save_next_dirty_hd()
+        false
     }
 
     pub(super) fn discard_next_dirty_pod(&mut self) -> bool {
@@ -621,7 +808,7 @@ impl Workbench {
                 }
             };
         }
-        self.discard_next_dirty_hd()
+        false
     }
 
     fn restore_staged_amp_if_origin_matches(
@@ -675,10 +862,7 @@ impl Workbench {
         }
     }
 
-    pub(super) fn pod_window(&mut self, ui: &mut egui::Ui) {
-        if !self.pod_open {
-            return;
-        }
+    pub(super) fn pod_window(&mut self, services: &mut EditorServices<'_>, ui: &mut egui::Ui) {
         #[cfg(test)]
         {
             self.pod_rows.clear();
@@ -717,21 +901,15 @@ impl Workbench {
                 {
                     self.pod_drive_slider = None;
                 }
-                if self.pending.is_some() {
-                    ui.disable();
-                }
                 ui.label(pod_preset::OFFLINE_BANNER);
                 ui.label(pod_preset::NOT_GUITAR);
                 ui.label(pod_preset::NOT_SENT);
                 ui.label(pod_preset::PAYLOADS_NOT_DECODED);
-                // One line, with the full text on hover. A wrapping status
-                // line pushes the HD replacement controls below the window.
+                // Keep the editor status on one line, with the full text on hover.
                 ui.add(egui::Label::new(&self.pod_message).truncate())
                     .on_hover_text(&self.pod_message);
                 ui.separator();
-                // Keep these controls on their own id stack. Buttons use the
-                // parent auto-id counter, and a shift here sends later clicks
-                // to the wrong POD or HD control.
+                // Keep the pedalboard widget IDs independent of the editor controls.
                 ui.push_id("pod-pedalboard", |ui| {
                     self.pod_pedalboard(ui);
                 });
@@ -807,7 +985,7 @@ impl Workbench {
                 let mut membership_action = None;
                 ui.horizontal(|ui| {
                     if self.pod_button(ui, "load-pod", "Load tone or bank…") {
-                        self.load_pod_tone();
+                        self.load_pod_tone(services);
                     }
                     if let Some(sample) = self.practice_tone_menu(ui) {
                         self.import_pod_document(sample.bytes());
@@ -816,7 +994,7 @@ impl Workbench {
                         self.apply_pod_name();
                     }
                     if self.pod_button(ui, "save-pod", "Save copy…") {
-                        self.save_pod_tone();
+                        self.save_pod_tone(services);
                     }
                     if self.pod_button_enabled(ui, "revert-pod", "Revert", self.pod_can_revert()) {
                         self.pod_revert_confirm = true;
@@ -2007,12 +2185,11 @@ impl Workbench {
                         })
                     });
                     self.pod_visible = format!(
-                        "{}\n{}\n{}\n{}\n{}\n{}",
+                        "{}\n{}\n{}\n{}\n{}",
                         pod_preset::OFFLINE_BANNER,
                         pod_preset::NOT_GUITAR,
                         pod_preset::NOT_SENT,
                         pod_preset::PAYLOADS_NOT_DECODED,
-                        pod_preset::HD_EDITOR_OFFLINE_NOTICE,
                         self.pod_message,
                     );
                     if let Some(selected) = selected {
@@ -2026,7 +2203,6 @@ impl Workbench {
                     );
                 }
 
-                self.show_embedded_hd_panel(ui);
             });
     }
 
@@ -2498,7 +2674,7 @@ impl Workbench {
         });
     }
 
-    pub(super) fn pod_button(&mut self, ui: &mut egui::Ui, id: &'static str, label: &str) -> bool {
+    fn pod_button(&mut self, ui: &mut egui::Ui, id: &'static str, label: &str) -> bool {
         let response = ui.button(label);
         #[cfg(test)]
         self.pod_buttons.insert(id, response.rect);
@@ -2897,8 +3073,8 @@ impl Workbench {
         }
     }
 
-    fn load_pod_tone(&mut self) {
-        let Some(path) = self.dialogs.open_pod_tone() else {
+    pub(super) fn load_pod_tone(&mut self, services: &mut EditorServices<'_>) {
+        let Some(path) = services.dialogs.open_pod_tone() else {
             self.pod_message = "Load cancelled. No file was read.".into();
             return;
         };
@@ -3244,17 +3420,17 @@ impl Workbench {
         }
     }
 
-    pub(super) fn save_pod_tone(&mut self) {
+    pub(super) fn save_pod_tone(&mut self, services: &mut EditorServices<'_>) {
         let Some(index) = self.pod_selected else {
             self.pod_message = "Select a tone before saving a copy.".into();
             return;
         };
-        self.write_pod_copy(index);
+        self.write_pod_copy(services, index);
     }
 
-    fn write_pod_copy(&mut self, index: usize) -> bool {
+    fn write_pod_copy(&mut self, services: &mut EditorServices<'_>, index: usize) -> bool {
         if self.pod_bundle.is_some() {
-            let Some(path) = self.dialogs.save_pod_tone("podxt-live-bank.vwb") else {
+            let Some(path) = services.dialogs.save_pod_tone("podxt-live-bank.vwb") else {
                 self.pod_message = "Save cancelled. No file was written.".into();
                 return false;
             };
@@ -3291,7 +3467,7 @@ impl Workbench {
             self.pod_message = "Select a tone before saving a copy.".into();
             return false;
         };
-        let Some(path) = self.dialogs.save_pod_tone(&suggested) else {
+        let Some(path) = services.dialogs.save_pod_tone(&suggested) else {
             self.pod_message = "Save cancelled. No file was written.".into();
             return false;
         };
@@ -3314,5 +3490,71 @@ impl Workbench {
                 false
             }
         }
+    }
+}
+
+impl PodxtEditor {
+    fn needs_close(&self) -> bool {
+        self.pod_dirty() || self.pod_has_staged_edit()
+    }
+}
+
+impl FamilyTab for PodxtEditor {
+    fn show(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
+        self.pod_window(services, ui);
+    }
+    fn dirty(&self) -> bool {
+        self.needs_close()
+    }
+    fn close_prompt(&mut self, ctx: &egui::Context, services: &mut EditorServices<'_>) {
+        self.pod_quit_dialog(services, ctx);
+    }
+    fn status(&self) -> (&str, Option<&str>) {
+        (&self.pod_message, None)
+    }
+    fn save_copy(&mut self, services: &mut EditorServices<'_>) {
+        self.save_pod_tone(services);
+    }
+    fn poll(&mut self, _ctx: &egui::Context) {
+        self.invalidate_stale_eq_reset_stage();
+    }
+}
+
+pub(super) struct Family;
+
+pub(super) const FAMILY: Family = Family;
+
+impl ProductFamily for Family {
+    fn info(&self) -> FamilyInfo {
+        FamilyInfo {
+            id: "podxt",
+            title: "PODxt Live",
+            new_label: "PODxt Live",
+            extensions: &["l6t", "tone", "l6a", "l6s", "vwb", "l6c"],
+            ceiling: pod_preset::BUNDLE_BYTES_CEILING,
+        }
+    }
+
+    fn claims(&self, bytes: &[u8]) -> bool {
+        if matches!(bytes.get(8..12), Some(b"L6BA" | b"L6CO")) {
+            pod_preset::PodBundleLibrary::parse(bytes.to_vec()).is_ok()
+        } else {
+            pod_preset::PodTone::parse(bytes.to_vec()).is_ok()
+        }
+    }
+
+    fn open(
+        &self,
+        _defaults: &EditorDefaults,
+        source: TabSource,
+    ) -> Result<Box<dyn FamilyTab>, String> {
+        let mut editor = PodxtEditor::new();
+        if let TabSource::File(_, bytes) = source {
+            editor.import_pod_document(bytes);
+            if editor.pod_library.is_empty() {
+                return Err(editor.pod_message);
+            }
+        }
+        Ok(Box::new(editor))
     }
 }

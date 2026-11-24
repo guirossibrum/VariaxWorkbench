@@ -148,7 +148,7 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
         library
             .file(numeric_summary.index)
             .and_then(|file| match file {
-                crate::pod_preset::PodPresetFile::H5ep(preset) => {
+                crate::pod_preset::HdEditFile::H5ep(preset) => {
                     preset.hd_numeric_control_value(0, control)
                 }
                 _ => None,
@@ -279,7 +279,7 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
             crate::pod_preset::HdFxSlot::new(0).unwrap(),
         )
         .expect("bounded Screamer replacement on extracted child");
-    let crate::pod_preset::PodPresetFile::H5ep(replaced_child) = library.file(child.index).unwrap()
+    let crate::pod_preset::HdEditFile::H5ep(replaced_child) = library.file(child.index).unwrap()
     else {
         panic!("extracted child remains H5EP");
     };
@@ -295,7 +295,7 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
             crate::pod_preset::HdFxSlot::new(0).unwrap(),
         )
         .expect("bounded Sub Octave Fuzz replacement through the shared session");
-    let crate::pod_preset::PodPresetFile::H5ep(replaced_child) = library.file(child.index).unwrap()
+    let crate::pod_preset::HdEditFile::H5ep(replaced_child) = library.file(child.index).unwrap()
     else {
         panic!("extracted child remains H5EP");
     };
@@ -310,7 +310,7 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
             crate::pod_preset::HdFxSlot::new(0).unwrap(),
         )
         .expect("bounded Noise Gate replacement through the shared session");
-    let crate::pod_preset::PodPresetFile::H5ep(replaced_child) = library.file(child.index).unwrap()
+    let crate::pod_preset::HdEditFile::H5ep(replaced_child) = library.file(child.index).unwrap()
     else {
         panic!("extracted child remains H5EP");
     };
@@ -394,7 +394,7 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
                 target,
             )
             .expect("closed-set batch replacement through shared session");
-        let crate::pod_preset::PodPresetFile::H5ep(replaced_child) =
+        let crate::pod_preset::HdEditFile::H5ep(replaced_child) =
             library.file(child.index).unwrap()
         else {
             panic!("extracted child remains H5EP");
@@ -466,7 +466,7 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
                 target,
             )
             .expect("closed dynamics/FX defaults through shared session");
-        let crate::pod_preset::PodPresetFile::H5ep(replaced_child) =
+        let crate::pod_preset::HdEditFile::H5ep(replaced_child) =
             library.file(child.index).unwrap()
         else {
             panic!("extracted child remains H5EP");
@@ -524,7 +524,7 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
                 target,
             )
             .expect("closed reverb defaults in extracted H5ES child");
-        let crate::pod_preset::PodPresetFile::H5ep(replaced_child) =
+        let crate::pod_preset::HdEditFile::H5ep(replaced_child) =
             library.file(child.index).unwrap()
         else {
             panic!("extracted child remains H5EP");
@@ -631,7 +631,7 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
             crate::pod_preset::HdFxSlot::new(0).unwrap(),
         )
         .expect("bounded Sub Octave Fuzz replacement in extracted H5EB child");
-    let crate::pod_preset::PodPresetFile::H5ep(bundle_replaced_child) =
+    let crate::pod_preset::HdEditFile::H5ep(bundle_replaced_child) =
         library.file(bundle_child.index).unwrap()
     else {
         panic!("extracted bundle child remains H5EP");
@@ -648,7 +648,7 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
             crate::pod_preset::HdDistortionDefault::TubeDrive,
         )
         .expect("admitted batch replacement in extracted H5EB child");
-    let crate::pod_preset::PodPresetFile::H5ep(bundle_batch_child) =
+    let crate::pod_preset::HdEditFile::H5ep(bundle_batch_child) =
         library.file(bundle_child.index).unwrap()
     else {
         panic!("extracted bundle child remains H5EP");
@@ -664,7 +664,7 @@ fn shared_hd_editor_session_keeps_file_context_distinct_from_physical_identity()
             crate::pod_preset::HdDynamicsDefault::BlueCompTreb,
         )
         .expect("closed-set dynamics defaults in extracted H5EB child");
-    let crate::pod_preset::PodPresetFile::H5ep(bundle_dynamics_child) =
+    let crate::pod_preset::HdEditFile::H5ep(bundle_dynamics_child) =
         library.file(bundle_child.index).unwrap()
     else {
         panic!("extracted bundle child remains H5EP");
@@ -1944,8 +1944,7 @@ fn hd500x_enable_session_is_profile_gated_and_keeps_file_and_version_guards() {
         .set_hd_effect_enabled(&mut library, summary.index, slot, true)
         .expect("bounded HD500X offline enable edit");
     assert!(library.is_dirty(summary.index));
-    let crate::pod_preset::PodPresetFile::H5ep(preset) = library.file(summary.index).unwrap()
-    else {
+    let crate::pod_preset::HdEditFile::H5ep(preset) = library.file(summary.index).unwrap() else {
         panic!("the imported file remains an H5EP");
     };
     assert_eq!(preset.effect_enabled(slot), Some(true));
