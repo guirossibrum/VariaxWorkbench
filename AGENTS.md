@@ -95,6 +95,15 @@ F-T-Model 1, wait 10 seconds and verify the original guitar metadata and
 PODxt tone. This approval is limited to that worktree probe procedure and
 those two models. It includes no PODxt channel change or save.
 
+The owner directly authorized an owner-run read-only Variax slot read on
+2026-11-24 (#225). The tool sends `0x44` (stored-slot read, reply `0x45`) for
+the current buffer (`0x7F`), Reso-5's slot (flash index 50) and its spare
+sector (62), and compares the replies offline. Workbench 1.75 never sends
+`0x44`. The #181 trace finds no program or erase call in its handler. It
+sends no `0x45`, `0x61`, `0x6C` or other write, no program change, and no
+PODxt write. The read results are a prerequisite for the #177 store test.
+This approval covers that read only.
+
 Stored-bank writes (G7) are released for the owner-run bank-write tests. No
 firmware install or reset is planned.
 Firmware downloads, version comparison, static extraction and offline
