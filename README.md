@@ -32,6 +32,10 @@ Captured in floating windows with built-in examples and device discovery disable
   on hardware. Full Variax program backup is implemented and verified offline.
 - **Live reads and edits.** Device check has read current settings on both
   devices. PODxt Live edit-buffer changes have been tested in owner-run tools.
+  A complete Variax preset program can be read through the PODxt Live.
+- **Saving to the guitar.** The first Variax preset store has been tested on
+  hardware: one preset renamed, then checked byte for byte and against a full
+  backup. More store steps follow one at a time.
 - **Recording.** Try the recorder with synthetic audio or a WAV file and save
   a take. This workflow is offline only.
 
@@ -48,6 +52,8 @@ Captured in floating windows with built-in examples and device discovery disable
   the app misses the change.
 - The PODxt Live cannot relay large guitar replies. Full program backups use
   smaller reads.
+- Reads through the PODxt Live occasionally lose a byte. The app rejects the
+  damaged reply instead of using it; automatic retries are being added.
 - Native Windows and macOS apps and hardware connections remain untested.
 - Live audio and firmware installation are unavailable.
 
