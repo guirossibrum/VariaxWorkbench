@@ -168,7 +168,7 @@ pub fn run(args: &[OsString]) -> Result<(), String> {
 }
 
 // Each ladder step needs its own direct owner approval on the reviewed build.
-const APPROVED_RENAME: bool = false;
+const APPROVED_RENAME: bool = true;
 const APPROVED_RESTORE: bool = false;
 const APPROVED_FACTORY: bool = false;
 
