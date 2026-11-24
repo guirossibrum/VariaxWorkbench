@@ -312,6 +312,16 @@ pub struct PodModelChange {
     pub preserved: Vec<(u32, u32)>,
 }
 
+fn fixed_model_id(slot: u32) -> Option<u32> {
+    match slot {
+        0x0002_0000 => Some(0x020b_0000), // GetGateModel
+        0x0003_0003 => Some(0x020b_0002), // GetAIRModel
+        0x0003_0004 => Some(0x020c_0002), // GetEQModel
+        0x0005_0000 => Some(0x020b_0001), // GetCompModel
+        _ => None,
+    }
+}
+
 impl PodTone {
     fn table_model(&self, slots: &[u32]) -> Result<Option<usize>, ToneError> {
         let mut found = self
@@ -382,7 +392,7 @@ impl PodTone {
                     .as_deref()
                     .map_or(format, |alias| &table.formats[alias])
             });
-        let bits = self.read_table_bits(row).ok()?;
+        let bits = self.read_table_bits(row, definition).ok()?;
         let choices = if let Some(block) = &row.catalog {
             table
                 .catalog
@@ -453,11 +463,18 @@ impl PodTone {
             .collect()
     }
 
-    fn read_table_bits(&self, row: &PodParameter) -> Result<Option<u32>, ToneError> {
+    fn read_table_bits(
+        &self,
+        row: &PodParameter,
+        definition: Option<&Definition>,
+    ) -> Result<Option<u32>, ToneError> {
         let Some(index) = self.table_model(&row.slots)? else {
             return Ok(None);
         };
         let model = &self.models[index];
+        if fixed_model_id(model.slot).is_some_and(|expected| model.model_id != expected) {
+            return Err(ToneError::format("Unexpected model in a fixed PODxt slot"));
+        }
         Ok(match row.file_field {
             Some(FileField::Model) => Some(model.model_id),
             Some(FileField::Slot) => Some(u32::from(model.slot == row.slots[1])),
@@ -470,15 +487,25 @@ impl PodTone {
                     .ok_or_else(|| ToneError::format("Model flag is missing or opaque"))?;
                 Some(u32::from(flag))
             }
-            Some(FileField::Parameter) => self
-                .find_table_parm(index, row.parm.expect("PARM id"))?
-                .map(|p| match model.parameters[p] {
-                    ModelParameter::Recorded {
-                        value: ParameterValue::Float { bits } | ParameterValue::Int { bits },
-                        ..
-                    } => bits,
-                    _ => unreachable!("PARM type checked"),
-                }),
+            Some(FileField::Parameter) => {
+                let Some(position) = self.find_table_parm(index, row.parm.expect("PARM id"))?
+                else {
+                    return Ok(None);
+                };
+                let ModelParameter::Recorded { value, .. } = model.parameters[position] else {
+                    unreachable!("PARM type checked");
+                };
+                let host_type = definition.expect("PARM definition").host_type;
+                match (host_type, value) {
+                    (HostType::Float32, ParameterValue::Float { bits })
+                    | (HostType::Int, ParameterValue::Int { bits }) => Some(bits),
+                    _ => {
+                        return Err(ToneError::format(
+                            "Parameter record has an unexpected value type",
+                        ));
+                    }
+                }
+            }
             None => None,
         })
     }
@@ -525,26 +552,26 @@ impl PodTone {
 
     fn create_table_model(&mut self, row: &PodParameter) -> Result<usize, ToneError> {
         let slot = row.slots[0];
-        let (id, enabled) = match slot {
-            0x0003_0000 => (0x0002_0000, true),  // GetAmpModel
-            0x0003_0001 => (0x0102_0000, true),  // GetCabModel
-            0x0001_0000 => (0x3e70_0000, true),  // GetSystemModel
-            0x0002_0000 => (0x020b_0000, false), // GetGateModel
-            0x0002_0001 => (0x0207_0000, true),  // GetVolPedalModel
-            0x0002_0002 => (0x0206_0000, false), // GetWahPedalModel
-            0x0003_0003 => (0x020b_0002, false), // GetAIRModel
-            0x0003_0004 => (0x020c_0002, false), // GetEQModel
-            0x0005_0000 => (0x020b_0001, false), // GetCompModel
-            _ => {
-                let catalog = row.catalog.as_deref().unwrap_or(&row.block);
-                let Some(first) = pod_parameter_table()
-                    .catalog
-                    .iter()
-                    .find(|m| m.block == catalog)
-                else {
-                    return Err(ToneError::format("No model is selected for this block"));
-                };
-                (first.id, matches!(catalog, "amp" | "cab"))
+        let (id, enabled) = if let Some(id) = fixed_model_id(slot) {
+            (id, false)
+        } else {
+            match slot {
+                0x0003_0000 => (0x0002_0000, true),  // GetAmpModel
+                0x0003_0001 => (0x0102_0000, true),  // GetCabModel
+                0x0001_0000 => (0x3e70_0000, true),  // GetSystemModel
+                0x0002_0001 => (0x0207_0000, true),  // GetVolPedalModel
+                0x0002_0002 => (0x0206_0000, false), // GetWahPedalModel
+                _ => {
+                    let catalog = row.catalog.as_deref().unwrap_or(&row.block);
+                    let Some(first) = pod_parameter_table()
+                        .catalog
+                        .iter()
+                        .find(|m| m.block == catalog)
+                    else {
+                        return Err(ToneError::format("No model is selected for this block"));
+                    };
+                    (first.id, matches!(catalog, "amp" | "cab"))
+                }
             }
         };
         let mut minf = Vec::from(id.to_be_bytes());
@@ -654,11 +681,15 @@ impl PodTone {
                 } else {
                     "DELAY_NOTE"
                 };
-                let note_row = pod_parameter_table().parameter(note).unwrap();
-                if candidate
-                    .read_table_bits(note_row)?
-                    .is_some_and(|value| value > 0)
-                {
+                let table = pod_parameter_table();
+                let note_row = table.parameter(note).unwrap();
+                let stored = candidate.read_sync_bits(note)?.unwrap_or(0);
+                if stored as usize > table.note_sync.ordinal_1_to_13.len() {
+                    return Err(ToneError::format(
+                        "Stored NOTE is outside the supported choices",
+                    ));
+                }
+                if stored != 0 {
                     let note_control = candidate
                         .table_control(note_row, 0)
                         .ok_or_else(|| ToneError::format("Cannot clear the stored NOTE"))?;
@@ -671,15 +702,21 @@ impl PodTone {
         Ok(())
     }
 
+    fn read_sync_bits(&self, key: &str) -> Result<Option<u32>, ToneError> {
+        let table = pod_parameter_table();
+        let row = table.parameter(key).expect("sync field");
+        let definition = row
+            .definition
+            .as_ref()
+            .and_then(|key| table.definitions.get(key));
+        self.read_table_bits(row, definition)
+    }
+
     fn update_table_sync(&mut self) -> Result<(), ToneError> {
         let table = pod_parameter_table();
-        let tempo = self
-            .read_table_bits(table.parameter("TEMPO").unwrap())?
-            .map_or(120.0, f32::from_bits);
+        let tempo = self.read_sync_bits("TEMPO")?.map_or(120.0, f32::from_bits);
         for (note, scalar) in [("MOD_NOTE", "MOD_SPEED"), ("DELAY_NOTE", "DELAY_TIME")] {
-            let raw = self
-                .read_table_bits(table.parameter(note).unwrap())?
-                .unwrap_or(0);
+            let raw = self.read_sync_bits(note)?.unwrap_or(0);
             if raw == 0 {
                 continue;
             }
@@ -746,6 +783,7 @@ impl PodTone {
         if use_defaults {
             // Companion model IDs are installed before interpreting any companion
             // parameter, for example the microphone definition of a new cab.
+            let mut companion_slots = Vec::new();
             for param in table.parameters.iter().filter(|param| {
                 param.file_field == Some(FileField::Model) && param.selector != Some(selector)
             }) {
@@ -761,7 +799,10 @@ impl PodTone {
                         "Companion model is unknown or requires an installed pack",
                     ));
                 }
-                candidate.write_table_bits(param, None, companion)?;
+                if choices.bits != Some(companion) {
+                    candidate.write_table_bits(param, None, companion)?;
+                    companion_slots.push(param.slots[0]);
+                }
             }
             // Preflight fields through the original tone before changing offsets.
             let mut edits = Vec::new();
@@ -784,16 +825,7 @@ impl PodTone {
                     && !control
                         .bits
                         .is_some_and(|old| param.applicable_amp_ids.contains(&old));
-                let companion_model_changed = table.parameters.iter().any(|model| {
-                    model.file_field == Some(FileField::Model)
-                        && model.slots == param.slots
-                        && model.selector != Some(selector)
-                        && source
-                            .parameter_bits(selector, id, model.selector.unwrap())
-                            .is_some_and(|companion| {
-                                self.read_table_bits(model).ok().flatten() != Some(companion)
-                            })
-                });
+                let companion_model_changed = companion_slots.contains(&param.slots[0]);
                 if supplied.is_none() && !same_slot && !newly_applicable && !companion_model_changed
                 {
                     continue;

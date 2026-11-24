@@ -10770,7 +10770,12 @@ fn table_default_provider_obeys_amp_toggle_and_rejects_invalid_values_atomically
     struct Defaults(u32);
     impl PodModelDefaults for Defaults {
         fn parameter_bits(&self, _: u32, _: u32, selector: u32) -> Option<u32> {
-            (selector == 65538).then_some(self.0)
+            match selector {
+                65_538 => Some(self.0),           // Amp Drive
+                0x1002_0000 => Some(0x0102_0003), // Cab model
+                0x0002_0001 => Some(2),           // Microphone
+                _ => None,
+            }
         }
     }
 
@@ -10786,12 +10791,19 @@ fn table_default_provider_obeys_amp_toggle_and_rejects_invalid_values_atomically
         table_test_control(&tone, "DRIVE").bits,
         Some(0.25f32.to_bits())
     );
+    assert_eq!(table_test_control(&tone, "CAB_MODEL").bits, None);
+    assert_eq!(table_test_control(&tone, "MIC_MODEL").bits, None);
     tone.set_table_model("AMP_MODEL", 0x0002_0001, 0, true, &source)
         .unwrap();
     assert_eq!(
         table_test_control(&tone, "DRIVE").bits,
         Some(0.75f32.to_bits())
     );
+    assert_eq!(
+        table_test_control(&tone, "CAB_MODEL").bits,
+        Some(0x0102_0003)
+    );
+    assert_eq!(table_test_control(&tone, "MIC_MODEL").bits, Some(2));
     let before = tone.clone();
     assert!(
         tone.set_table_model(
@@ -10890,6 +10902,40 @@ fn table_writes_preserve_opaque_records_and_refuse_ambiguous_targets() {
     let before = tone.clone();
     assert!(
         tone.set_table_parameter("DRIVE", 0.75f32.to_bits())
+            .is_err()
+    );
+    assert_eq!(tone, before);
+}
+
+#[test]
+fn table_refuses_foreign_fixed_models_and_opaque_sync_dependencies() {
+    let threshold = drive_record(0x3f, 0, 1, (-48.0f32).to_bits());
+    let opaque_note = drive_record(0x3f, 0x0020_0000, 1, 6);
+    let mut tone = PodTone::parse(custom_tone(
+        ContainerKind::L6pa,
+        &[
+            BuiltModel {
+                slot: 0x0002_0000,
+                model_id: 0x7fff_abcd,
+                tail: &[0, 0, 0, 1],
+                parameters: &[&threshold],
+            },
+            BuiltModel {
+                slot: MOD_SLOT,
+                model_id: 0x0203_0004,
+                tail: &[0, 0, 0, 1],
+                parameters: &[&opaque_note],
+            },
+        ],
+    ))
+    .unwrap();
+    let before = tone.clone();
+    assert!(
+        tone.set_table_parameter("GATE_THRESH", (-12.0f32).to_bits())
+            .is_err()
+    );
+    assert!(
+        tone.set_table_parameter("TEMPO", 125.0f32.to_bits())
             .is_err()
     );
     assert_eq!(tone, before);

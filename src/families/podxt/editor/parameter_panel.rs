@@ -373,7 +373,7 @@ impl PodxtEditor {
                     })
                     .unwrap_or(min);
                 let slider = egui::Slider::new(&mut value, min..=max)
-                    .max_decimals(format.decimals.unwrap_or(0).max(0) as usize)
+                    .fixed_decimals(format.decimals.unwrap_or(0).max(0) as usize)
                     .suffix(format.unit.as_deref().unwrap_or(""));
                 let response = ui.add(slider);
                 if response.dragged() || response.drag_started() {
