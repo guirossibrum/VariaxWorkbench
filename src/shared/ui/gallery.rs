@@ -9,7 +9,7 @@ use super::chrome::{self, DialogButton, DocumentTab, Family, LinkState};
 use super::controls::{self, Selector, Switch};
 use super::knob::Knob;
 use super::theme::{self, BODY, SECTION, TEXT};
-use super::tuning_panel::{TuningEvent, TuningPanel, TuningRow};
+use super::tuning_panel::{TuningEvent, TuningPanel, TuningRow, TwelveStringRow};
 use eframe::egui::{self, RichText};
 
 pub struct GalleryState {
@@ -31,6 +31,9 @@ pub struct GalleryState {
     pub tuning_on: bool,
     pub shifts: [i32; 6],
     pub tuning_locked: bool,
+    pub twelve_string: bool,
+    pub mix: [f32; 6],
+    pub detune: [f32; 6],
 }
 
 impl Default for GalleryState {
@@ -62,6 +65,9 @@ impl Default for GalleryState {
             tuning_on: false,
             shifts: [0; 6],
             tuning_locked: false,
+            twelve_string: false,
+            mix: [0.5; 6],
+            detune: [3.25, -4.12, 5.0, 3.5, -0.5, 0.0],
         }
     }
 }
@@ -229,6 +235,7 @@ impl GalleryState {
 
     fn tuning_gallery(&mut self, ui: &mut egui::Ui) {
         caption(ui, "Tuning");
+        ui.checkbox(&mut self.twelve_string, "Twelve-string");
         let labels: Vec<String> = self.shifts.iter().copied().map(shift_text).collect();
         let notes: Vec<&str> = (0..6).map(|id| note_name(id, self.shifts[id])).collect();
         let names = ["High E", "B", "G", "D", "A", "Low E"];
@@ -244,11 +251,18 @@ impl GalleryState {
                 }
             })
             .collect();
-        let events = TuningPanel::new(&rows)
+        let secondary: [TwelveStringRow; 6] = std::array::from_fn(|id| TwelveStringRow {
+            id,
+            mix: Some(self.mix[id]),
+            detune: Some(self.detune[id]),
+        });
+        let mut panel = TuningPanel::new(&rows)
             .enabled(self.tuning_on)
-            .lock(false, self.tuning_locked)
-            .show(ui)
-            .events;
+            .lock(self.twelve_string, self.tuning_locked);
+        if self.twelve_string {
+            panel = panel.twelve_string(&secondary);
+        }
+        let events = panel.show(ui).events;
         for event in events {
             match event {
                 TuningEvent::Enable => self.tuning_on = !self.tuning_on,
@@ -268,6 +282,14 @@ impl GalleryState {
                         *shift = semitones;
                     }
                 }
+                TuningEvent::Mix { id, fraction } => {
+                    if self.tuning_locked {
+                        self.mix.fill(fraction);
+                    } else {
+                        self.mix[id] = fraction;
+                    }
+                }
+                TuningEvent::Detune { id, cents } => self.detune[id] = cents,
                 TuningEvent::Lock(locked) => self.tuning_locked = locked,
                 TuningEvent::Presets
                 | TuningEvent::DragStarted { .. }

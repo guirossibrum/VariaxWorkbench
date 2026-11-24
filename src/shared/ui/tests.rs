@@ -12,7 +12,7 @@ use super::theme::{
     self, AMBER, BG, DANGER, DIM, FOCUS, HD, INK, LINE, MUTED, OK, PANEL, PODXT, RAISED, TEXT,
     VARIAX,
 };
-use super::tuning_panel::{self, TuningEvent, TuningPanel, TuningRow};
+use super::tuning_panel::{self, TuningEvent, TuningPanel, TuningRow, TwelveStringRow};
 
 fn texts(output: &egui::FullOutput) -> Vec<String> {
     fn walk(shape: &egui::Shape, labels: &mut Vec<String>) {
@@ -1220,4 +1220,177 @@ fn click_at(harness: &mut Harness, pos: Pos2, mut draw: impl FnMut(&mut egui::Ui
     harness.run(vec![pointer(pos, false)], Default::default(), |_, ui| {
         draw(ui);
     });
+}
+
+fn type_tuning_value(
+    harness: &mut Harness,
+    pos: Pos2,
+    value: &str,
+    mut draw: impl FnMut(&mut egui::Ui),
+) {
+    click_widget(harness, pos, &mut draw);
+    harness.run(vec![], Default::default(), |_, ui| draw(ui));
+    harness.run(
+        vec![egui::Event::Text(value.into())],
+        Default::default(),
+        |_, ui| draw(ui),
+    );
+    harness.run(vec![key(egui::Key::Enter)], Default::default(), |_, ui| {
+        draw(ui)
+    });
+    harness.run(
+        vec![egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers: Default::default(),
+        }],
+        Default::default(),
+        |_, ui| draw(ui),
+    );
+}
+
+#[test]
+fn tuning_shift_cells_accept_typed_semitones_and_validate_entry() {
+    let labels = std::array::from_fn(|_| "0 semitones".to_owned());
+    let rows = open_rows(&labels);
+    for (input, expected) in [
+        ("−3 semitones", Some(-3)),
+        ("21", Some(12)),
+        ("1.7", Some(2)),
+        ("NaN", None),
+        ("invalid", None),
+    ] {
+        let mut harness = Harness::new();
+        let mut cell = Rect::NOTHING;
+        harness.run(vec![], Default::default(), |_, ui| {
+            cell = TuningPanel::new(&rows).show(ui).rows[0].shift_cell;
+        });
+        let mut seen = Vec::new();
+        type_tuning_value(&mut harness, cell.center(), input, |ui| {
+            seen.extend(TuningPanel::new(&rows).show(ui).events);
+        });
+        assert_eq!(
+            seen,
+            expected
+                .map(|semitones| TuningEvent::Shift { id: 5, semitones })
+                .into_iter()
+                .collect::<Vec<_>>(),
+            "{input}"
+        );
+        assert_eq!(rows[0].shift, 0, "the caller applies events");
+    }
+}
+
+#[test]
+fn tuning_twelve_string_mode_shows_optional_values_and_reports_edits() {
+    let labels = std::array::from_fn(|_| "0 semitones".to_owned());
+    let rows = open_rows(&labels);
+    let values = [TwelveStringRow {
+        id: 5,
+        mix: Some(0.5),
+        detune: Some(3.25),
+    }];
+    let mut harness = Harness::new();
+    let absent = harness.run(vec![], Default::default(), |_, ui| {
+        let output = TuningPanel::new(&rows).show(ui);
+        assert!(
+            output
+                .rows
+                .iter()
+                .all(|row| row.mix_cell.is_none() && row.detune_cell.is_none())
+        );
+    });
+    assert!(
+        !texts(&absent)
+            .iter()
+            .any(|line| line == "Mix" || line == "Detune")
+    );
+
+    let mut mix = Rect::NOTHING;
+    let mut detune = Rect::NOTHING;
+    let mut missing = Rect::NOTHING;
+    let visible = harness.run(vec![], Default::default(), |_, ui| {
+        let output = TuningPanel::new(&rows).twelve_string(&values).show(ui);
+        mix = output.rows[0].mix_cell.unwrap();
+        detune = output.rows[0].detune_cell.unwrap();
+        missing = output.rows[1].mix_cell.unwrap();
+        assert!(detune.right() < output.neck.left());
+    });
+    let labels = texts(&visible);
+    for name in ["Mix", "Detune", "50%", "+3 cents", "—"] {
+        assert!(labels.iter().any(|line| line == name), "{name}: {labels:?}");
+    }
+
+    let mut output = Vec::new();
+    type_tuning_value(&mut harness, missing.center(), "77", |ui| {
+        output.extend(
+            TuningPanel::new(&rows)
+                .twelve_string(&values)
+                .show(ui)
+                .events,
+        );
+    });
+    assert!(output.is_empty());
+    type_tuning_value(&mut harness, mix.center(), "75%", |ui| {
+        output.extend(
+            TuningPanel::new(&rows)
+                .twelve_string(&values)
+                .show(ui)
+                .events,
+        );
+    });
+    assert_eq!(
+        output,
+        [TuningEvent::Mix {
+            id: 5,
+            fraction: 0.75
+        }]
+    );
+
+    click_widget(&mut harness, detune.center(), |ui| {
+        TuningPanel::new(&rows).twelve_string(&values).show(ui);
+    });
+    let editing = harness.run(vec![], Default::default(), |_, ui| {
+        TuningPanel::new(&rows).twelve_string(&values).show(ui);
+    });
+    let editing_labels = texts(&editing);
+    assert!(
+        editing_labels.iter().any(|line| line == "+3.25 cents"),
+        "{editing_labels:?}"
+    );
+    let typed = harness.run(
+        vec![egui::Event::Text("-7.25 cents".into())],
+        Default::default(),
+        |_, ui| {
+            output.extend(
+                TuningPanel::new(&rows)
+                    .twelve_string(&values)
+                    .show(ui)
+                    .events,
+            );
+        },
+    );
+    assert!(
+        texts(&typed).iter().any(|line| line == "-7.25 cents"),
+        "{:?}",
+        texts(&typed)
+    );
+    assert_eq!(output.len(), 1);
+    harness.run(vec![key(egui::Key::Enter)], Default::default(), |_, ui| {
+        output.extend(
+            TuningPanel::new(&rows)
+                .twelve_string(&values)
+                .show(ui)
+                .events,
+        );
+    });
+    assert_eq!(
+        output[1],
+        TuningEvent::Detune {
+            id: 5,
+            cents: -7.25
+        }
+    );
 }

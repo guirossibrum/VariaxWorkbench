@@ -1,7 +1,7 @@
 //! Alternate-tuning panel from the approved mockups.
 //!
-//! The table is String, Shift, and Note, high string at the top when the
-//! caller orders the rows that way. [`TuningRow::id`] comes back on each
+//! The table is String, Shift, and Note, with optional Mix and Detune fields.
+//! The caller chooses the string order. [`TuningRow::id`] comes back on each
 //! event. Lock, Reset, the global ♭ / ♯ pair, and the −12…+12 neck report
 //! events only. The caller owns the shifts, the note names, and the shift
 //! text. There is no fretboard image and there are no inlay dots.
@@ -10,9 +10,10 @@ use eframe::egui::{
     self, Align2, CornerRadius, FontId, Margin, Pos2, Rect, RichText, Sense, Stroke, Vec2, vec2,
 };
 
+use eframe::egui::text::{CCursor, CCursorRange};
+
 use super::theme::{
-    self, AMBER, BODY, COMPACT, DIM, FOCUS, INK, LINE, MUTED, PANEL, RADIUS_CONTROL, RADIUS_PANEL,
-    TARGET, TEXT,
+    self, AMBER, BODY, COMPACT, DIM, FOCUS, INK, LINE, MUTED, PANEL, RADIUS_PANEL, TARGET, TEXT,
 };
 
 pub const SEMITONE_MIN: i32 = -12;
@@ -22,6 +23,8 @@ pub const SCALE_INSET: f32 = 18.0;
 const NAME_W: f32 = 88.0;
 const SHIFT_W: f32 = 148.0;
 const NOTE_W: f32 = 40.0;
+const MIX_W: f32 = 68.0;
+const DETUNE_W: f32 = 106.0;
 const TABLE_W: f32 = NAME_W + SHIFT_W + NOTE_W + 16.0;
 
 const SCALE_LABELS: [(i32, &str); 7] = [
@@ -45,11 +48,20 @@ pub struct TuningRow<'a> {
     pub note: &'a str,
 }
 
+/// The optional secondary-string settings for one row. Mix is a fraction
+/// from zero to one. Detune is measured in cents. A missing value is shown
+/// as unavailable.
+pub struct TwelveStringRow {
+    pub id: usize,
+    pub mix: Option<f32>,
+    pub detune: Option<f32>,
+}
+
 /// What the user did. A marker drag is [`TuningEvent::DragStarted`], one or
 /// more [`TuningEvent::Shift`] values, then [`TuningEvent::DragFinished`],
 /// so the caller can keep the whole drag as one undo step. A click on the
 /// lane is a single [`TuningEvent::Shift`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TuningEvent {
     Enable,
     Presets,
@@ -59,11 +71,14 @@ pub enum TuningEvent {
     SharpenAll,
     DragStarted { id: usize },
     Shift { id: usize, semitones: i32 },
+    Mix { id: usize, fraction: f32 },
+    Detune { id: usize, cents: f32 },
     DragFinished { id: usize },
 }
 
 pub struct TuningPanel<'a> {
     rows: &'a [TuningRow<'a>],
+    twelve_string: Option<&'a [TwelveStringRow]>,
     enabled: bool,
     interactive: bool,
     lock_enabled: bool,
@@ -77,6 +92,7 @@ impl<'a> TuningPanel<'a> {
     pub fn new(rows: &'a [TuningRow<'a>]) -> Self {
         Self {
             rows,
+            twelve_string: None,
             enabled: false,
             interactive: true,
             lock_enabled: false,
@@ -85,6 +101,12 @@ impl<'a> TuningPanel<'a> {
             transpose_enabled: true,
             reset_enabled: true,
         }
+    }
+
+    /// Show Mix and Detune in addition to Shift for the given string IDs.
+    pub fn twelve_string(mut self, values: &'a [TwelveStringRow]) -> Self {
+        self.twelve_string = Some(values);
+        self
     }
 
     /// Alternate tuning is on. Markers stay visible either way.
@@ -132,7 +154,12 @@ impl<'a> TuningPanel<'a> {
             ui.spacing_mut().interact_size.y = TARGET;
             ui.horizontal_top(|ui| {
                 let table = ui.vertical(|ui| {
-                    ui.set_width(TABLE_W);
+                    let extra = if self.twelve_string.is_some() {
+                        MIX_W + DETUNE_W + 2.0 * theme::SPACE_8
+                    } else {
+                        0.0
+                    };
+                    ui.set_width(TABLE_W + extra);
                     self.table(ui)
                 });
                 let column_height = table.response.rect.height().max(1.0);
@@ -164,6 +191,9 @@ impl<'a> TuningPanel<'a> {
                         id: row.id,
                         y: row.y,
                         lane,
+                        shift_cell: row.shift_cell,
+                        mix_cell: row.mix_cell,
+                        detune_cell: row.detune_cell,
                     });
                 }
                 paint_labels(ui, neck, table.inner.footer_y);
@@ -212,12 +242,18 @@ pub struct TuningRowGeom {
     pub id: usize,
     pub y: f32,
     pub lane: Rect,
+    pub shift_cell: Rect,
+    pub mix_cell: Option<Rect>,
+    pub detune_cell: Option<Rect>,
 }
 
 struct LaidRow {
     id: usize,
     y: f32,
     low: bool,
+    shift_cell: Rect,
+    mix_cell: Option<Rect>,
+    detune_cell: Option<Rect>,
 }
 
 struct TableInner {
@@ -275,15 +311,12 @@ impl TuningPanel<'_> {
             (enable.rect, presets.rect, ui.min_rect().center().y)
         });
         ui.add_space(4.0);
-        header(ui);
+        header(ui, self.twelve_string.is_some());
         let mut rows = Vec::new();
         for (index, row) in self.rows.iter().enumerate() {
-            let y = string_row(ui, row);
-            rows.push(LaidRow {
-                id: row.id,
-                y,
-                low: index + 2 >= self.rows.len() && self.rows.len() >= 2,
-            });
+            let mut layout = self.string_row(ui, row, &mut events);
+            layout.low = index + 2 >= self.rows.len() && self.rows.len() >= 2;
+            rows.push(layout);
         }
         ui.add_space(4.0);
         let footer = ui.horizontal(|ui| {
@@ -322,12 +355,80 @@ impl TuningPanel<'_> {
             rows,
         }
     }
+
+    fn string_row(
+        &self,
+        ui: &mut egui::Ui,
+        row: &TuningRow<'_>,
+        events: &mut Vec<TuningEvent>,
+    ) -> LaidRow {
+        ui.horizontal(|ui| {
+            ui.set_min_height(TARGET);
+            cell(ui, NAME_W, row.name);
+            let (shift_cell, next_shift) = value_cell(
+                ui,
+                SHIFT_W,
+                Some(f64::from(row.shift)),
+                CellFormat::Shift(row.shift_label),
+                self.interactive,
+            );
+            if let Some(value) = next_shift {
+                events.push(TuningEvent::Shift {
+                    id: row.id,
+                    semitones: value as i32,
+                });
+            }
+            cell(ui, NOTE_W, row.note);
+            let mut mix_cell = None;
+            let mut detune_cell = None;
+            if let Some(rows) = self.twelve_string {
+                let values = rows.iter().find(|values| values.id == row.id);
+                let mix = values.and_then(|values| values.mix).map(f64::from);
+                let detune = values.and_then(|values| values.detune).map(f64::from);
+                let (rect, value) = value_cell(ui, MIX_W, mix, CellFormat::Mix, self.interactive);
+                mix_cell = Some(rect);
+                if let Some(value) = value {
+                    events.push(TuningEvent::Mix {
+                        id: row.id,
+                        fraction: value as f32,
+                    });
+                }
+                let (rect, value) =
+                    value_cell(ui, DETUNE_W, detune, CellFormat::Detune, self.interactive);
+                detune_cell = Some(rect);
+                if let Some(value) = value {
+                    events.push(TuningEvent::Detune {
+                        id: row.id,
+                        cents: value as f32,
+                    });
+                }
+            }
+            LaidRow {
+                id: row.id,
+                y: ui.min_rect().center().y,
+                low: false,
+                shift_cell,
+                mix_cell,
+                detune_cell,
+            }
+        })
+        .inner
+    }
 }
 
-fn header(ui: &mut egui::Ui) {
+fn header(ui: &mut egui::Ui, twelve_string: bool) {
     ui.horizontal(|ui| {
         ui.set_min_height(18.0);
-        for (width, label) in [(NAME_W, "String"), (SHIFT_W, "Shift"), (NOTE_W, "Note")] {
+        let number_columns = [(MIX_W, "Mix"), (DETUNE_W, "Detune")];
+        let extra = if twelve_string {
+            number_columns.as_slice()
+        } else {
+            &[]
+        };
+        for (width, label) in [(NAME_W, "String"), (SHIFT_W, "Shift"), (NOTE_W, "Note")]
+            .into_iter()
+            .chain(extra.iter().copied())
+        {
             let (rect, _) = ui.allocate_exact_size(vec2(width, 18.0), Sense::hover());
             ui.painter().text(
                 rect.left_center(),
@@ -340,31 +441,141 @@ fn header(ui: &mut egui::Ui) {
     });
 }
 
-fn string_row(ui: &mut egui::Ui, row: &TuningRow<'_>) -> f32 {
-    let line = ui.horizontal(|ui| {
-        ui.set_min_height(TARGET);
-        cell(ui, NAME_W, row.name);
-        let (shift, response) = ui.allocate_exact_size(vec2(SHIFT_W, TARGET), Sense::hover());
-        let painter = ui.painter();
-        painter.rect_filled(shift, RADIUS_CONTROL, theme::RAISED);
-        painter.rect_stroke(
-            shift,
-            RADIUS_CONTROL,
-            Stroke::new(1.0_f32, LINE),
-            egui::StrokeKind::Inside,
-        );
-        painter.text(
-            shift.left_center() + vec2(8.0, 0.0),
+#[derive(Clone, Copy)]
+enum CellFormat<'a> {
+    Shift(&'a str),
+    Mix,
+    Detune,
+}
+
+impl CellFormat<'_> {
+    fn range(self) -> std::ops::RangeInclusive<f64> {
+        match self {
+            Self::Shift(_) => f64::from(SEMITONE_MIN)..=f64::from(SEMITONE_MAX),
+            Self::Mix => 0.0..=1.0,
+            Self::Detune => -100.0..=100.0,
+        }
+    }
+
+    fn label(self, value: f64, editing: bool) -> String {
+        match self {
+            Self::Shift(label) if !editing => label.to_owned(),
+            Self::Shift(_) => {
+                let sign = if value > 0.0 { "+" } else { "" };
+                format!("{sign}{value:.0} semitones")
+            }
+            Self::Mix => format!("{:.0}%", ((value as f32).clamp(0.0, 1.0) * 100.0).trunc()),
+            Self::Detune => {
+                let decimals = if editing { 2 } else { 0 };
+                let scale = if editing { 100.0 } else { 1.0 };
+                let rounded = (value * scale).round() / scale + 0.0;
+                let sign = if rounded > 0.0 { "+" } else { "" };
+                format!("{sign}{rounded:.decimals$} cents")
+            }
+        }
+    }
+
+    fn parse(self, text: &str, stored: f64) -> Option<f64> {
+        let text = text.trim();
+        if text == self.label(stored, true) {
+            return None;
+        }
+        let unit = match self {
+            Self::Shift(_) => "semitones",
+            Self::Mix => "%",
+            Self::Detune => "cents",
+        };
+        let value: f64 = text
+            .strip_suffix(unit)
+            .unwrap_or(text)
+            .trim()
+            .replace('−', "-")
+            .parse()
+            .ok()?;
+        if !value.is_finite() {
+            return None;
+        }
+        Some(match self {
+            Self::Shift(_) => value.round(),
+            Self::Mix => value / 100.0,
+            Self::Detune => value,
+        })
+    }
+}
+
+fn value_cell(
+    ui: &mut egui::Ui,
+    width: f32,
+    stored: Option<f64>,
+    format: CellFormat<'_>,
+    interactive: bool,
+) -> (Rect, Option<f64>) {
+    let Some(stored) = stored.filter(|value| value.is_finite()) else {
+        let (rect, _) = ui.allocate_exact_size(vec2(width, TARGET), Sense::hover());
+        ui.painter().text(
+            rect.left_center(),
             Align2::LEFT_CENTER,
-            row.shift_label,
-            FontId::proportional(BODY),
-            TEXT,
+            "—",
+            FontId::proportional(COMPACT),
+            DIM,
         );
-        response.on_hover_text("Drag or click to set semitones");
-        cell(ui, NOTE_W, row.note);
-        ui.min_rect().center().y
-    });
-    line.inner
+        return (rect, None);
+    };
+    let interactive = interactive && ui.is_enabled();
+    let mut value = stored;
+    let range = format.range();
+    let response = ui
+        .allocate_ui_with_layout(
+            vec2(width, TARGET),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.spacing_mut().interact_size = vec2(width, TARGET);
+                ui.spacing_mut().button_padding.x = 8.0;
+                ui.style_mut().drag_value_text_style = egui::TextStyle::Body;
+                let editing =
+                    interactive && ui.memory(|memory| memory.has_focus(ui.next_auto_id()));
+                let speed = match format {
+                    CellFormat::Mix => 0.01,
+                    _ => 1.0,
+                };
+                let response = ui.add_enabled(
+                    interactive,
+                    egui::DragValue::new(&mut value)
+                        .range(range.clone())
+                        .speed(speed)
+                        .clamp_existing_to_range(false)
+                        .custom_formatter(move |value, _| format.label(value, editing))
+                        .custom_parser(move |text| format.parse(text, stored))
+                        .update_while_editing(false),
+                );
+                // DragValue selects the compact label on click. Extend that
+                // selection to the longer text shown on entry.
+                if matches!(format, CellFormat::Detune)
+                    && !editing
+                    && response.has_focus()
+                    && let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), response.id)
+                {
+                    let end = CCursor::new(format.label(stored, true).chars().count());
+                    state
+                        .cursor
+                        .set_char_range(Some(CCursorRange::two(CCursor::new(0), end)));
+                    egui::TextEdit::store_state(ui.ctx(), response.id, state);
+                }
+                response
+            },
+        )
+        .inner;
+    let changed = if interactive && value != stored {
+        let value = value.clamp(*range.start(), *range.end());
+        let value = match format {
+            CellFormat::Shift(_) => value.round(),
+            _ => f64::from(value as f32),
+        };
+        (value != stored).then_some(value)
+    } else {
+        None
+    };
+    (response.rect, changed)
 }
 
 fn cell(ui: &mut egui::Ui, width: f32, text: &str) {
