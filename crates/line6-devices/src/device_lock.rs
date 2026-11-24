@@ -55,6 +55,11 @@ impl DeviceLock {
         acquire_tracked(&lock_path(std::env::var_os("XDG_RUNTIME_DIR")))
     }
 
+    #[cfg(all(test, feature = "usb", target_os = "linux"))]
+    pub(crate) fn acquire_test_lock(path: &Path) -> Result<Self, LockError> {
+        acquire_at(path)
+    }
+
     /// Pass the same locked file description to a multi-stage owner procedure.
     #[cfg(unix)]
     pub fn child_stdin(&self) -> std::io::Result<std::process::Stdio> {

@@ -14,14 +14,14 @@ pub use crate::family::variax::transport::VARIAX_VIA_PODXT_LIVE;
 
 const WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 
-pub struct UsbInterfaceLink {
+pub struct UsbInterfaceLink<Rig = Option<DeviceLock>> {
     spec: InterfaceSpec,
     handle: rusb::DeviceHandle<rusb::GlobalContext>,
     opened: Instant,
     detached: bool,
     claimed: bool,
     finished: bool,
-    _rig: Option<DeviceLock>,
+    _rig: Rig,
 }
 
 impl UsbInterfaceLink {
@@ -57,10 +57,37 @@ impl UsbInterfaceLink {
         Self::open_device(spec, &device, Some(rig))
     }
 
+    /// Open the verified attachment while the worker keeps its rig lock.
+    /// The returned link borrows that lock through interface and driver cleanup.
+    ///
+    /// ```compile_fail
+    /// use line6_devices::device_lock::DeviceLock;
+    /// use line6_devices::transport::usb::{UsbInterfaceLink, VARIAX_VIA_PODXT_LIVE};
+    ///
+    /// let rig = DeviceLock::acquire().unwrap();
+    /// let mut link =
+    ///     UsbInterfaceLink::open_attachment_borrowed(VARIAX_VIA_PODXT_LIVE, "8-2.1", 11, &rig)
+    ///         .unwrap();
+    /// drop(rig);
+    /// link.finish().unwrap();
+    /// ```
+    pub fn open_attachment_borrowed<'rig>(
+        spec: InterfaceSpec,
+        path: &str,
+        address: u8,
+        rig: &'rig DeviceLock,
+    ) -> Result<UsbInterfaceLink<&'rig DeviceLock>, String> {
+        with_attachment(rig, spec, path, address, |device| {
+            UsbInterfaceLink::open_device(spec, &device, rig)
+        })
+    }
+}
+
+impl<Rig> UsbInterfaceLink<Rig> {
     fn open_device(
         spec: InterfaceSpec,
         device: &rusb::Device<rusb::GlobalContext>,
-        rig: Option<DeviceLock>,
+        rig: Rig,
     ) -> Result<Self, String> {
         let handle = device
             .open()
@@ -190,7 +217,7 @@ fn with_matching_device<D, T>(
     }
 }
 
-impl Drop for UsbInterfaceLink {
+impl<Rig> Drop for UsbInterfaceLink<Rig> {
     fn drop(&mut self) {
         if !self.finished {
             let _ = self.finish();
@@ -198,7 +225,7 @@ impl Drop for UsbInterfaceLink {
     }
 }
 
-impl Link for UsbInterfaceLink {
+impl<Rig> Link for UsbInterfaceLink<Rig> {
     fn path(&self) -> Path {
         self.spec.path
     }
@@ -265,5 +292,93 @@ mod tests {
             |_| -> Result<(), String> { panic!("mismatch must not open, detach, or send") },
         );
         assert!(result.unwrap_err().contains("USB attachment changed"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn borrowed_open_and_driver_return_leave_the_rig_locked_by_the_worker() {
+        use std::cell::Cell;
+        use std::fs::{self, File, TryLockError};
+
+        struct FakeBridge<'rig> {
+            _rig: &'rig DeviceLock,
+            address: u8,
+            lock_file: &'rig std::path::Path,
+            finished: bool,
+            driver_returns: &'rig Cell<usize>,
+        }
+
+        impl FakeBridge<'_> {
+            fn finish(&mut self) {
+                assert!(matches!(
+                    File::open(self.lock_file).unwrap().try_lock(),
+                    Err(TryLockError::WouldBlock)
+                ));
+                self.driver_returns.set(self.driver_returns.get() + 1);
+                self.finished = true;
+            }
+        }
+
+        impl Drop for FakeBridge<'_> {
+            fn drop(&mut self) {
+                if !self.finished {
+                    self.finish();
+                }
+            }
+        }
+
+        let folder = std::env::temp_dir().join(format!(
+            "variax-usb-borrowed-lock-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir(&folder).unwrap();
+        let path = folder.join("lock");
+        let rig = DeviceLock::acquire_test_lock(&path).unwrap();
+        let candidates = [(8, &[2, 1][..], 11), (8, &[3][..], 12)];
+        let driver_returns = Cell::new(0);
+        let open = |(_, _, address)| {
+            assert!(matches!(
+                File::open(&path).unwrap().try_lock(),
+                Err(TryLockError::WouldBlock)
+            ));
+            Ok(FakeBridge {
+                _rig: &rig,
+                address,
+                lock_file: &path,
+                finished: false,
+                driver_returns: &driver_returns,
+            })
+        };
+
+        for explicit_cleanup in [true, false] {
+            let mut bridge = with_matching_device(
+                candidates,
+                |&(bus, ports, address)| matches_attachment(("8-2.1", 11), bus, ports, address),
+                open,
+            )
+            .unwrap();
+            assert_eq!(bridge.address, 11);
+            if explicit_cleanup {
+                bridge.finish();
+            }
+            drop(bridge);
+            assert!(matches!(
+                File::open(&path).unwrap().try_lock(),
+                Err(TryLockError::WouldBlock)
+            ));
+        }
+        let mismatch: Result<(), String> = with_matching_device(
+            candidates,
+            |&(bus, ports, address)| matches_attachment(("8-2.1", 12), bus, ports, address),
+            |device| {
+                let _bridge = open(device)?;
+                panic!("mismatch must not detach or send")
+            },
+        );
+        assert!(mismatch.is_err());
+        assert_eq!(driver_returns.get(), 2);
+        drop(rig);
+        assert!(File::open(&path).unwrap().try_lock().is_ok());
+        fs::remove_dir_all(&folder).unwrap();
     }
 }
