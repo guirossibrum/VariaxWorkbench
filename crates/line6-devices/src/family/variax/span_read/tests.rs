@@ -41,13 +41,20 @@ fn encode(words: &[u32]) -> Vec<u8> {
 type Script = Vec<(Vec<u8>, Vec<Vec<u8>>)>;
 
 fn conversation(span: PresetSpan, replies: Vec<Vec<u8>>) -> Script {
-    vec![
+    attempts(span, [replies])
+}
+
+fn attempts(span: PresetSpan, replies: impl IntoIterator<Item = Vec<Vec<u8>>>) -> Script {
+    let mut script = vec![
         (vec![0xf0, 0, 1, 0x0c, 3, 0x23, 1, 0xf7], vec![]),
         (VariaxRequest::SessionOn.bytes(), vec![]),
-        (span.bytes(), replies),
+    ];
+    script.extend(replies.into_iter().map(|packets| (span.bytes(), packets)));
+    script.extend([
         (VariaxRequest::SessionOff.bytes(), vec![]),
         (vec![0xf0, 0, 1, 0x0c, 3, 0x23, 0, 0xf7], vec![]),
-    ]
+    ]);
+    script
 }
 
 #[test]
@@ -196,29 +203,136 @@ fn drains_through_f7_and_skips_only_known_notices_and_unsolicited_controls() {
 }
 
 #[test]
-fn malformed_frames_and_new_starts_before_f7_stop_and_cleanup() {
-    let valid = encode(&payload(64));
-    for malformed in [
-        packets(&encode(&payload(63))),
-        packets(&frame(0x72, &[])),
-        vec![valid[..80].to_vec(), valid],
-    ] {
-        let mut log = Quiet;
-        let mut session = Session::new(
-            Fake::from_bytes(Path::VariaxViaPodxt, conversation(span(64), malformed)),
-            &ReadOnly,
-            &mut log,
-        );
-        let error = read_spans(
-            &mut session,
-            &[span(64), span(128)],
-            || false,
-            |_| panic!("malformed frame was accepted"),
-        )
-        .unwrap_err();
-        assert!(error.starts_with("Start 0, count 64:"));
-        session.link.assert_finished();
-    }
+fn a_dropped_byte_retries_the_same_span_after_100_ms_and_delivers_only_the_good_reply() {
+    let span = PresetSpan::new(416, 32).unwrap();
+    let words = payload(32);
+    let valid = encode(&words);
+    let mut short = valid.clone();
+    short.remove(99);
+    let mut log = Notes::default();
+    let attempts = [packets(&short), packets(&valid)];
+    let packet_time =
+        Duration::from_millis(4 * attempts.iter().map(Vec::len).sum::<usize>() as u64);
+    let script = self::attempts(span, attempts);
+    let mut session = Session::new(
+        Fake::from_bytes(Path::VariaxViaPodxt, script),
+        &ReadOnly,
+        &mut log,
+    );
+    let mut captures = Vec::new();
+    read_spans(
+        &mut session,
+        &[span],
+        || false,
+        |reply| {
+            captures.push(reply);
+            Ok(())
+        },
+    )
+    .unwrap();
+    session.link.assert_finished();
+    assert_eq!(session.link.writes[2..4], [span.bytes(), span.bytes()]);
+    assert_eq!(
+        session.link.elapsed(),
+        BRIDGE_SETTLE + Duration::from_millis(100) + packet_time + Duration::from_millis(100),
+    );
+    assert_eq!(captures.len(), 1);
+    assert_eq!(captures[0].raw, valid);
+    assert_eq!(captures[0].words, words);
+    assert!(log.0.iter().any(|line| line.contains(
+        "Retrying Variax 0x3C start 416, count 32 (attempt 2/3): Variax 0x3C reply has 199 bytes, expected 200."
+    )));
+}
+
+#[test]
+fn three_bad_frames_stop_before_the_next_span_and_cleanup() {
+    let span = span(32);
+    let mut long = encode(&payload(32));
+    long.insert(100, 0);
+    let mut malformed = encode(&payload(32));
+    malformed[9] = 16;
+    let valid = encode(&payload(32));
+    let mut log = Notes::default();
+    let script = attempts(
+        span,
+        [
+            packets(&long),
+            packets(&malformed),
+            packets(&[&valid[..80], &valid[..]].concat()),
+        ],
+    );
+    let mut session = Session::new(
+        Fake::from_bytes(Path::VariaxViaPodxt, script),
+        &ReadOnly,
+        &mut log,
+    );
+    let error = read_spans(
+        &mut session,
+        &[span, PresetSpan::new(32, 32).unwrap()],
+        || false,
+        |_| panic!("malformed frame was accepted"),
+    )
+    .unwrap_err();
+    assert!(error.starts_with("Start 0, count 32: New SysEx before the previous F7."));
+    assert!(error.contains("Failed after 3 attempts"));
+    session.link.assert_finished();
+    let retries: Vec<_> = log
+        .0
+        .iter()
+        .filter(|line| line.contains("Retrying"))
+        .collect();
+    assert_eq!(retries.len(), 2);
+    assert!(retries[0].contains("(attempt 2/3): Variax 0x3C reply has 201 bytes, expected 200."));
+    assert!(retries[1].contains("(attempt 3/3):"));
+}
+
+#[test]
+fn missing_f7_is_drained_to_the_deadline_and_the_retry_starts_a_new_frame() {
+    let span = span(32);
+    let valid = encode(&payload(32));
+    let mut log = Quiet;
+    let script = attempts(span, [packets(&valid[..valid.len() - 1]), packets(&valid)]);
+    let mut session = Session::new(
+        Fake::from_bytes(Path::VariaxViaPodxt, script),
+        &ReadOnly,
+        &mut log,
+    );
+    read_spans(
+        &mut session,
+        &[span],
+        || false,
+        |reply| {
+            assert_eq!(reply.raw, valid);
+            Ok(())
+        },
+    )
+    .unwrap();
+    session.link.assert_finished();
+}
+
+#[test]
+fn cancellation_after_a_bad_reply_prevents_resending_it() {
+    let span = span(32);
+    let script = conversation(span, packets(&encode(&payload(31))));
+    let mut log = Quiet;
+    let mut session = Session::new(
+        Fake::from_bytes(Path::VariaxViaPodxt, script),
+        &ReadOnly,
+        &mut log,
+    );
+    let checks = Cell::new(0);
+    let error = read_spans(
+        &mut session,
+        &[span],
+        || {
+            checks.set(checks.get() + 1);
+            checks.get() == 3
+        },
+        |_| panic!("malformed frame was accepted"),
+    )
+    .unwrap_err();
+    assert!(error.contains("cancelled"));
+    session.link.assert_finished();
 }
 
 #[test]

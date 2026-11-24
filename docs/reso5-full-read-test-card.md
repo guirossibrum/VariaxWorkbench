@@ -43,8 +43,10 @@ Pass `--full-read-card` to print this card.
    | 0, 32, …, 1,056 | 32 | 34 | 200 |
    | 1,088 | 4 | 1 | 32 |
 
-5. The host allows at most 10 seconds per chunk. Each complete, valid
-   `0x3C` reply is saved as `start-S-count-N.syx` before the next request.
+5. The host allows up to 10 seconds per attempt. After a damaged reply,
+   it waits 100 ms and resends the same chunk request, up to twice. Each
+   retry is logged. Each valid `0x3C` reply is saved as
+   `start-S-count-N.syx` before the next request.
    The reply carries no start address, so the tool assembles replies in
    request order.
    The raw transport log also records incomplete and malformed traffic.
@@ -65,10 +67,10 @@ attributing them to flash. [Full-buffer firmware findings](firmware-variax-dispa
 
 ## Stop and recovery
 
-Stop at the first incomplete, malformed or timed-out reply, file-save error,
-or transport error. Keep the log and the completed reply files. Ctrl+C takes
-effect between requests so the host can drain an in-flight reply through
-`F7` or its deadline.
+Stop if no reply arrives, three attempts return damaged replies, a file
+cannot be saved, or a transport error occurs. Keep the log and the completed
+reply files. Ctrl+C takes effect between sends so the host can drain an
+in-flight reply through `F7` or its deadline.
 
 If a chunk stalls, the guitar's knobs may freeze while sound continues.
 The firmware trace shows that this path touches no flash. Cleanup attempts
@@ -77,6 +79,6 @@ may leave messages queued while the parser is stalled. [Stall trace](firmware-va
 After the tool exits and releases USB, unplug the **guitar's VDI cable** for
 **10 seconds**, then reconnect it. The owner must check that the guitar
 responds to its knobs and selector and that sound is normal. Report the failed
-chunk and the outcome. Any retry needs a new owner approval. This recovery is
-based on resetting the guitar's RAM state and has yet to be observed for this
-stall.
+chunk and the outcome. Starting another run needs a new owner approval.
+This recovery is based on resetting the guitar's RAM state and has yet to be
+observed for this stall.

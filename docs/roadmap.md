@@ -10,6 +10,8 @@ GitHub issues and the [project board](https://github.com/users/guirossibrum/proj
 
 - [ ] Historical math-runtime parity, cross-target/default-rollout review of the experimental portable profile, and broader complete Rust/native validation — [#5](https://github.com/guirossibrum/VariaxWorkbench/issues/5), [#6](https://github.com/guirossibrum/VariaxWorkbench/issues/6). The synthetic-only core now passes Windows/macOS/Linux CI; other targets and full application integration remain pending.
 
+- [ ] Owner verification of bounded `0x3C` read retries through the PODxt Live. The owner observed occasional missing bytes upstream of USB in full-program reads and a Device check backup. The retry is verified with fake transports. [#177 owner run notes](https://github.com/guirossibrum/VariaxWorkbench/issues/177#issuecomment-7145405712).
+
 - [ ] **Owner verification for #207.** Compare a fresh Device check backup against the 120 saved preset replies and check all 12 displayed bank names. [Owner test card](variax-backup-test-card.md).
 
 - [ ] Additional calibration completeness/preservation, full-bank backup and physical restoration safety — [#16](https://github.com/guirossibrum/VariaxWorkbench/issues/16), [#23](https://github.com/guirossibrum/VariaxWorkbench/issues/23).

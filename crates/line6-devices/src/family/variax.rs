@@ -14,6 +14,7 @@ pub mod span_read;
 pub mod transport;
 pub mod write;
 
+use self::span_read::ReadKind;
 use crate::gate::Operation;
 use crate::identity::{self, Identity};
 use crate::midi::ControllerTally;
@@ -236,12 +237,17 @@ fn read_block<L: Link>(
     session: &mut Session<L>,
     request: VariaxRequest,
     window: Duration,
+    kind: ReadKind,
 ) -> Result<Vec<u8>, String> {
-    session.send(request)?;
-    match session.wait_for(window, is_metadata_reply, false)? {
-        Wait::Found(reply) => Ok(reply),
-        _ => Err(format!("No 200-byte metadata reply to {request:?}.")),
-    }
+    let start = match request {
+        VariaxRequest::Metadata1 => 851,
+        VariaxRequest::Metadata2 => 883,
+        _ => unreachable!("read_block accepts only metadata requests"),
+    };
+    let span = span_read::PresetSpan::new(start, 32).expect("metadata span in bounds");
+    span_read::read_span(session, span, window, kind, || false)
+        .map(|reply| reply.raw)
+        .map_err(|error| format!("No 200-byte metadata reply to {request:?}. {error}"))
 }
 
 pub struct CurrentPreset {
@@ -252,20 +258,29 @@ pub struct CurrentPreset {
 
 /// Identity, session on, metadata blocks 1 and 2, session off.
 pub fn read_current<L: Link>(session: &mut Session<L>) -> Result<CurrentPreset, String> {
-    read_current_checked(session, |_| Ok(()))
+    read_current_with(session, ReadKind::Metadata, |_| Ok(()))
 }
 
-/// Read the same two metadata blocks, after checking the identity on this link.
+/// Read the same two metadata blocks after checking the identity on this link.
+/// Checked reads stop on unsolicited notices or a program change.
 pub fn read_current_checked<L: Link>(
     session: &mut Session<L>,
+    check_identity: impl FnOnce(&Identity) -> Result<(), String>,
+) -> Result<CurrentPreset, String> {
+    read_current_with(session, ReadKind::CheckedMetadata, check_identity)
+}
+
+fn read_current_with<L: Link>(
+    session: &mut Session<L>,
+    kind: ReadKind,
     check_identity: impl FnOnce(&Identity) -> Result<(), String>,
 ) -> Result<CurrentPreset, String> {
     let identified = identify_variax(session)?;
     check_identity(&identified.identity)?;
     let replies = in_session(session, |session| {
         Ok([
-            read_block(session, VariaxRequest::Metadata1, WINDOW)?,
-            read_block(session, VariaxRequest::Metadata2, WINDOW)?,
+            read_block(session, VariaxRequest::Metadata1, WINDOW, kind)?,
+            read_block(session, VariaxRequest::Metadata2, WINDOW, kind)?,
         ])
     })?;
     let metadata = PresetMetadata::from_replies(&replies[0], &replies[1])?;
@@ -496,8 +511,18 @@ fn read_metadata<L: Link>(
     session: &mut Session<L>,
 ) -> Result<([Vec<u8>; 2], PresetMetadata), String> {
     let replies = [
-        read_block(session, VariaxRequest::Metadata1, BACKUP_BLOCK_WINDOW)?,
-        read_block(session, VariaxRequest::Metadata2, BACKUP_BLOCK_WINDOW)?,
+        read_block(
+            session,
+            VariaxRequest::Metadata1,
+            BACKUP_BLOCK_WINDOW,
+            ReadKind::Metadata,
+        )?,
+        read_block(
+            session,
+            VariaxRequest::Metadata2,
+            BACKUP_BLOCK_WINDOW,
+            ReadKind::Metadata,
+        )?,
     ];
     let metadata = PresetMetadata::from_replies(&replies[0], &replies[1])?;
     Ok((replies, metadata))

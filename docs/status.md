@@ -10,6 +10,8 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] Variax metadata and full-program `0x3C` reads log and retry a damaged reply up to twice, with 100 ms between attempts. Fake transports cover dropped bytes, length and framing errors, retry exhaustion, cancellation and a complete backup with verified switch-back after a damaged reply. [#234](https://github.com/guirossibrum/VariaxWorkbench/issues/234) · [#177](https://github.com/guirossibrum/VariaxWorkbench/issues/177)
+
 - [x] [#202](https://github.com/guirossibrum/VariaxWorkbench/issues/202) adds Follow to the verified Variax device tab, with live preset, volume and tone displays, clip and device notices, and Workbench slot settling. Live values leave the saved preset and its tone flag intact. Use Refresh guitar with Follow off to detect a VDI unplug. [Owner test card](src/families/variax/editor/follow-test-card.md).
 
 - [x] Shared non-blocking picker for shell Open File, Device check reports and backup folders, and recording load and save. Four headless tests cover results, cancellation, duplicate requests, and continued updates while a picker is pending. The family-editor callers and the Hyprland owner check remain pending. [Picker handoff and owner check](non-blocking-pickers.md) · [#233](https://github.com/guirossibrum/VariaxWorkbench/issues/233).

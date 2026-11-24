@@ -124,7 +124,7 @@ fn exact_35_chunk_sequence_saves_and_assembles_all_words() {
 }
 
 #[test]
-fn silence_or_an_incomplete_chunk_stops_and_keeps_completed_captures() {
+fn silence_stops_and_keeps_completed_captures_even_after_retrying_an_incomplete_chunk() {
     let data = fixture();
     for (failed, silent) in [(0, true), (17, false), (34, false)] {
         let dir = tempfile::tempdir().unwrap();
@@ -139,14 +139,26 @@ fn silence_or_an_incomplete_chunk_stops_and_keeps_completed_captures() {
         let mut fake = Fake::new(DevicePath::VariaxViaPodxt, inbox);
         let error = procedure::capture(&mut fake, &mut Quiet, dir.path(), || false).unwrap_err();
         assert!(error.contains(&format!("Start {start}, count {count}: Timed out")));
-        assert_eq!(fake.writes, guitar_sequence(failed + 1));
+        let mut expected = guitar_sequence(failed + 1);
+        if !silent {
+            let cleanup = expected.len() - 2;
+            expected.insert(cleanup, expected[cleanup - 1].clone());
+        }
+        assert_eq!(fake.writes, expected);
         let earlier_polls: usize = prior
             .iter()
             .map(|raw| raw.len().div_ceil(USB_PACKET_BYTES))
             .sum();
+        let retry_time = if silent {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(10_100)
+        };
         assert_eq!(
             fake.clock,
-            Duration::from_millis(1200 + 100 * earlier_polls as u64) + Duration::from_secs(10)
+            Duration::from_millis(1200 + 100 * earlier_polls as u64)
+                + Duration::from_secs(10)
+                + retry_time
         );
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), failed);
         for ((earlier_start, earlier_count), raw) in chunks().zip(prior) {
@@ -159,16 +171,20 @@ fn silence_or_an_incomplete_chunk_stops_and_keeps_completed_captures() {
 }
 
 #[test]
-fn malformed_reply_stops_before_the_next_chunk_even_with_more_input_available() {
+fn three_malformed_replies_stop_before_the_next_chunk_even_with_more_input_available() {
     let dir = tempfile::tempdir().unwrap();
     let data = fixture();
+    let short = reply(&data[..31 * 3]);
     let mut fake = Fake::new(
         DevicePath::VariaxViaPodxt,
-        fragmented_inbox(&[reply(&data[..31 * 3]), reply(&data[..32 * 3])]),
+        fragmented_inbox(&[short.clone(), short.clone(), short, reply(&data[..32 * 3])]),
     );
     let error = procedure::capture(&mut fake, &mut Quiet, dir.path(), || false).unwrap_err();
     assert!(error.contains("Start 0, count 32: Variax 0x3C reply has 194 bytes, expected 200."));
-    assert_eq!(fake.writes, guitar_sequence(1));
+    assert!(error.contains("Failed after 3 attempts"));
+    let mut expected = guitar_sequence(1);
+    expected.splice(4..4, [expected[3].clone(), expected[3].clone()]);
+    assert_eq!(fake.writes, expected);
     assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
     assert!(!fake.inbox.is_empty());
 }

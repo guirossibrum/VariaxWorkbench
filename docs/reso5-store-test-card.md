@@ -46,7 +46,9 @@ the low 24 bits of the sum of words 0–1,090 in word 1,091.
    checks both identities and the 192 settings bytes, then reads the active
    buffer in 35 chunks. It requires an exact match to the original capture
    before rename or factory and to the renamed stored image before restore.
-   It saves each completed reply in the new log folder.
+   It saves each completed reply in the new log folder. After a damaged
+   `0x3C` reply, the tool waits 100 ms and logs and resends the same
+   request, up to twice. This applies to the preflight and post-store reads.
 2. Enter the displayed mode-specific phrase only when ready.
 
    - `STORE RESO-5 RENAME PROGRAM TO SLOT 50`
@@ -68,9 +70,9 @@ the low 24 bits of the sum of words 0–1,090 in word 1,091.
 
 ## Stop rules
 
-Stop and report any refusal, incomplete read, transport error, missing or
-unexpected confirmation, full-image or settings mismatch, audible change,
-or unexpected backup difference. Keep all completed chunk captures. After
+Stop and report any refusal, unanswered read, read that exhausts its
+retries, transport error, missing or unexpected confirmation, full-image
+or settings mismatch, audible change, or unexpected backup difference. Keep all completed chunk captures. After
 `0x61`, wait for reply handling, verification and USB cleanup. The tool
 never retries a store.
 

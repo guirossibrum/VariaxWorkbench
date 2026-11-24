@@ -168,6 +168,45 @@ fn refresh_returns_all_sixty_settings_and_twelve_bank_names_in_backup_order() {
 }
 
 #[test]
+fn a_damaged_metadata_block_retries_without_reselecting_and_the_backup_completes() {
+    let original = 85;
+    let mut script = whole_sweep(original, false);
+    let damaged = script
+        .iter()
+        .position(|(request, _)| request == &[0xc0, 74])
+        .unwrap()
+        + 1;
+    let (request, _) = &script[damaged];
+    assert_eq!(request, BLOCK_1);
+    let mut short = encode_reply(metadata(74)[..96].try_into().unwrap());
+    short.remove(99);
+    script.insert(damaged, (BLOCK_1.into(), packets(&short)));
+
+    let mut log = Quiet;
+    let fake = Fake::from_bytes(DevicePath::VariaxViaPodxt, script);
+    let mut session = Session::new(fake, &Policy(None), &mut log);
+    let backup = variax::read_library(&mut session, |_| {}).unwrap();
+    session.link.assert_finished();
+    assert!(backup.stopped.is_none() && backup.release_error.is_none());
+    assert_eq!(backup.presets.len(), 60);
+    assert_eq!(backup.bank_names.len(), 12);
+    assert_eq!(
+        backup.restore,
+        Restore::Switched {
+            to: Preset::new(6, 4).unwrap(),
+            verified: true,
+        }
+    );
+    let lester = backup
+        .presets
+        .iter()
+        .find(|entry| entry.preset.program_number() == 74)
+        .unwrap();
+    assert_eq!(lester.metadata.raw, metadata(74));
+    assert_eq!(lester.replies[0].len(), 200);
+}
+
+#[test]
 fn cancel_between_presets_attempts_switch_back_and_withholds_partial_library() {
     let mut script = start(4);
     select(&mut script, 4, 4);
@@ -402,7 +441,10 @@ fn bad_checksum_or_truncated_reply_keeps_settings_and_marks_the_program_missing(
             script.push(program_chunk(4, 0, false));
             let (request, mut reply) = program_chunk(4, 32, false);
             reply.pop(); // Missing the end of this span.
-            script.push((request, reply));
+            script.extend([
+                (request.clone(), reply),
+                (request, vec![]), // No reply to the retry.
+            ]);
         }
         select(&mut script, 4, 4);
         end(&mut script);
