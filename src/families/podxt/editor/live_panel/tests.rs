@@ -440,11 +440,12 @@ fn connected_stage_uses_current_tone_channel_and_librarian_and_follows_updates()
         "Live editing",
         "Tuner",
         "Tone Locker",
-        "Advanced",
     ] {
         assert!(visible.contains(label), "missing {label}: {visible}");
     }
     for hidden in [
+        "Advanced",
+        "Details",
         "Read installed packs",
         "Read globals",
         "Resend whole current tone",

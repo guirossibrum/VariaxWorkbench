@@ -40,7 +40,6 @@ pub(super) struct LivePanel {
 enum StagePanel {
     Locker,
     Store,
-    Advanced,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -632,7 +631,6 @@ impl LivePanel {
                     && !self.editor.has_pending()
                     && self.snapshot.channel.is_some(),
             ),
-            (StagePanel::Advanced, "Advanced", true),
         ] {
             if panel != StagePanel::Locker && !self.visible()
                 || panel == StagePanel::Store && !*current
@@ -732,19 +730,6 @@ impl LivePanel {
                 self.show_current_store(ui, services);
                 None
             }
-            StagePanel::Advanced => {
-                self.show_advanced(ui, services);
-                if !self.locker.syncing() {
-                    self.store.show(
-                        ui,
-                        services,
-                        self.device.as_ref(),
-                        self.worker.is_none() && !self.editor.busy() && !self.editor.has_pending(),
-                        store::StoreView::Original,
-                    );
-                }
-                None
-            }
         });
         if std::mem::take(&mut self.scroll_to_panel) {
             view.response.scroll_to_me(Some(egui::Align::Min));
@@ -793,6 +778,25 @@ impl LivePanel {
                 idle,
                 store::StoreView::Current,
             );
+        });
+    }
+
+    pub(super) fn device_check_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        services: &mut EditorServices<'_>,
+    ) {
+        ui.collapsing("PODxt Live diagnostics", |ui| {
+            self.show_advanced(ui, services);
+            if !self.locker.syncing() && self.panel != Some(StagePanel::Store) {
+                self.store.show(
+                    ui,
+                    services,
+                    self.device.as_ref(),
+                    self.worker.is_none() && !self.editor.busy() && !self.editor.has_pending(),
+                    store::StoreView::Original,
+                );
+            }
         });
     }
 

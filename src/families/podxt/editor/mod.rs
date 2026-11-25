@@ -3830,6 +3830,15 @@ impl PodxtEditor {
         });
     }
 
+    #[cfg(feature = "usb")]
+    pub(in crate::editor) fn device_check_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        services: &mut EditorServices<'_>,
+    ) {
+        self.live.device_check_panel(ui, services);
+    }
+
     fn needs_close(&self) -> bool {
         #[cfg(feature = "usb")]
         if self.live.locker_dirty() {
