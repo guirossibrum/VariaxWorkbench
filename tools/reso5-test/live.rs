@@ -250,8 +250,8 @@ fn run_store(
 }
 
 const APPROVED_LISTEN_4A: bool = false;
-const APPROVED_STORE_4B: bool = true;
-const APPROVED_RESTORE_4C: bool = false;
+const APPROVED_STORE_4B: bool = false;
+const APPROVED_RESTORE_4C: bool = true;
 const APPROVED_RENAME_3A: bool = false;
 const APPROVED_FACTORY_3B: bool = false;
 
@@ -332,50 +332,8 @@ fn prompt_store(prompt: Prompt, stopping: impl Fn() -> bool) -> Result<(), Strin
             store::RESELECT_CONFIRMATION
         }
     };
-    store::require_confirmation(prompt, &confirmation_line(phrase, stopping)?)
-}
-
-fn confirmation_line(phrase: &str, stopping: impl Fn() -> bool) -> Result<String, String> {
-    print!("Type {phrase} and press Enter: ");
-    io::stdout().flush().map_err(|e| e.to_string())?;
-    let mut answer = Vec::new();
-    let mut stdin = libc::pollfd {
-        fd: libc::STDIN_FILENO,
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    // Poll stdin so Ctrl+C can release the already-open interface even when
-    // no confirmation line has been entered.
-    while !stopping() {
-        let ready = unsafe { libc::poll(&mut stdin, 1, 100) };
-        if ready == 0 {
-            continue;
-        }
-        if ready < 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(format!("Cannot read slot confirmation: {error}"));
-        }
-        let mut byte = 0u8;
-        let count = unsafe { libc::read(stdin.fd, (&mut byte as *mut u8).cast(), 1) };
-        if count < 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(format!("Cannot read slot confirmation: {error}"));
-        }
-        if count == 0 || answer.len() > phrase.len() + 1 {
-            break;
-        }
-        answer.push(byte);
-        if byte == b'\n' {
-            return String::from_utf8(answer).map_err(|error| error.to_string());
-        }
-    }
-    Ok(String::new())
+    super::confirmation::confirm(phrase, stopping)?;
+    store::require_confirmation(prompt, phrase)
 }
 
 fn run_device(task: DeviceTask<'_>, trace: &Trace) -> Result<(), String> {
@@ -435,13 +393,7 @@ fn run_device(task: DeviceTask<'_>, trace: &Trace) -> Result<(), String> {
                     &mut session,
                     prepared,
                     &trace.path,
-                    |phrase| {
-                        let answer = confirmation_line(phrase, stopping)?;
-                        if answer.trim_end_matches(['\r', '\n']) != phrase {
-                            return Err("The displayed confirmation was not given.".into());
-                        }
-                        Ok(())
-                    },
+                    |phrase| super::confirmation::confirm(phrase, stopping),
                     |line| {
                         println!("{line}");
                         trace.record(line.to_owned());
