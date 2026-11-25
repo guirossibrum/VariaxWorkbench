@@ -5,7 +5,6 @@ use super::*;
 use crate::midi::Event;
 use crate::session::POLL;
 use std::sync::atomic::{AtomicU8, Ordering};
-use store_backup::check_live_identity;
 
 const STORE_WAIT: Duration = Duration::from_secs(7);
 const PENDING: u8 = 0;
@@ -89,8 +88,7 @@ pub fn store_tone<L: Link>(
         return Err("PODxt Live store is closed. No store was sent.".into());
     }
     control.check()?;
-    let (_, identity) = identify_podxt(session)?;
-    check_live_identity(&identity)?;
+    identify_podxt_live(session)?;
     control.check()?;
     confirmation.0.backup.verify_slot(session)?;
     let candidate = confirmation.0.candidate;

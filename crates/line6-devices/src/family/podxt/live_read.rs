@@ -83,7 +83,7 @@ pub fn read_live<L: Link>(
         current_due: None,
         after_reply: Vec::new(),
     };
-    reader.identify()?;
+    reader.identify(command == ReadCommand::Tuner)?;
     match command {
         ReadCommand::Current => reader.current(),
         ReadCommand::Library => reader.library(&BankKind::ALL),
@@ -114,7 +114,7 @@ impl<L: Link> Reader<'_, '_, L> {
         }
     }
 
-    fn identify(&mut self) -> Result<(), String> {
+    fn identify(&mut self, tuner: bool) -> Result<(), String> {
         // This short drain discards events queued before the port was verified.
         let before = self.session.link.elapsed() + Duration::from_millis(200);
         while self.session.link.elapsed() < before {
@@ -137,16 +137,9 @@ impl<L: Link> Reader<'_, '_, L> {
             }
         }
         self.check_cancel()?;
-        if identity.is_some_and(|reply| {
-            reply.is_line6()
-                && reply.family == IDENTITY_FAMILY
-                && reply.member == PODXT_LIVE_MEMBER
-                && reply.version == [0, 3, 0, 1]
-        }) {
-            Ok(())
-        } else {
-            Err("The open MIDI port did not verify as PODxt Live 3.01.".into())
-        }
+        let missing = "The open MIDI port did not verify as PODxt Live 3.01.";
+        let identity = identity.ok_or(missing)?;
+        check_live_identity(&identity).map_err(|error| if tuner { error } else { missing.into() })
     }
 
     fn remaining(&self, end: Duration) -> Option<Duration> {
