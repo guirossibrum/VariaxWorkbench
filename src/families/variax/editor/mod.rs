@@ -18,9 +18,10 @@ mod slot_transfers;
 mod startup_library;
 use slot_files::SlotReplacement;
 use slot_transfers::SlotTransfer;
-use startup_library::LibraryOrigin;
+use startup_library::{LibraryImport, LibraryOrigin};
 mod preferences;
 mod tuning_presets;
+mod twelve_string;
 use tuning_presets::TuningDialog;
 mod value_format;
 use value_format::ValueFormat;
@@ -117,6 +118,7 @@ pub(super) struct VariaxEditor {
     opening_file: bool,
     parked_library: Option<ParkedLibrary>,
     library_origin: Option<LibraryOrigin>,
+    library_import: Option<LibraryImport>,
     connection_status: Option<String>,
     #[cfg(feature = "usb")]
     refresh: refresh::Refresh,
@@ -204,6 +206,7 @@ impl VariaxEditor {
             opening_file: false,
             parked_library: None,
             library_origin: None,
+            library_import: None,
             connection_status: None,
             #[cfg(feature = "usb")]
             refresh: refresh::Refresh::default(),
@@ -908,6 +911,11 @@ impl VariaxEditor {
         );
     }
 
+    fn acoustic_body(&self) -> bool {
+        self.model_id(BODY)
+            .is_some_and(variax_workbench::edit::is_acoustic)
+    }
+
     fn tab_controls(&mut self, ui: &mut egui::Ui) {
         let slot = match self.tab {
             Tab::Body => BODY,
@@ -918,7 +926,13 @@ impl VariaxEditor {
             .document
             .as_ref()
             .map(|d| d.preset().edit_availability(slot, None));
-        if let Some(Err(reason)) = &availability {
+        let acoustic = self.acoustic_body();
+        if acoustic && self.tab == Tab::Pickups {
+            ui.strong("No pickups available");
+            ui.label("Pickup models are not available when using an acoustic body model.");
+        } else if acoustic && self.tab == Tab::Controls {
+            ui.strong("Param not available");
+        } else if let Some(Err(reason)) = &availability {
             ui.label("These controls are unavailable for this model.")
                 .on_hover_text(reason);
         }
@@ -1052,6 +1066,11 @@ impl VariaxEditor {
                             self.open_dialog(ui.ctx(), services);
                         }
                         if self.preferences_path.is_some()
+                            && ui.button("Open library backup…").clicked()
+                        {
+                            self.choose_library_backup(ui.ctx(), services);
+                        }
+                        if self.preferences_path.is_some()
                             && ui.button("Choose factory firmware…").clicked()
                         {
                             self.choose_factory_archive(ui.ctx(), services);
@@ -1075,7 +1094,9 @@ impl VariaxEditor {
             });
             return;
         }
-        self.guitar_header(ui, available);
+        if self.guitar_header(ui, available) {
+            self.choose_library_backup(ui.ctx(), services);
+        }
         self.slot_file_actions(services, ui, available);
         let editable = self
             .document
@@ -1180,6 +1201,7 @@ impl VariaxEditor {
                 }
                 self.pending = None;
                 self.new_file = None;
+                self.library_import = None;
             }
             if save_continue {
                 if save_open {
@@ -1204,6 +1226,7 @@ impl VariaxEditor {
                 self.choose_open_file(ctx, services)
             }
             Some(GuitarPending::Open(OpenDestination::Library)) => self.return_to_library(),
+            Some(GuitarPending::Open(OpenDestination::Backup)) => self.adopt_imported_library(),
             #[cfg(test)]
             Some(GuitarPending::ReadCurrent) => self.launch_read(),
             Some(GuitarPending::Quit) => services.finish_close_if(true),
@@ -1234,6 +1257,7 @@ pub(super) enum GuitarPending {
 pub(super) enum OpenDestination {
     File,
     Library,
+    Backup,
 }
 
 impl FamilyTab for VariaxEditor {

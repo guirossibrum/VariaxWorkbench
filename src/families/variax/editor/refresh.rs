@@ -224,7 +224,8 @@ impl VariaxEditor {
             return;
         }
         match result.and_then(|capture| {
-            let mut document = EditorDocument::from_unsaved_bundle(capture.bundle)?;
+            let mut document =
+                EditorDocument::from_bundle(capture.bundle, "Downloaded Variax library".into())?;
             if let Restore::Switched { to, .. } = capture.restore {
                 document.select(usize::from(to.bank()), usize::from(to.slot()))?;
             }
@@ -533,6 +534,16 @@ pub(super) mod tests {
             "a saved download already supplies the library"
         );
 
+        editor.library_origin = Some(super::super::LibraryOrigin::Backup(
+            variax_workbench::variax_library::BackupSource::ImportedBackup,
+            SystemTime::now(),
+        ));
+        editor.poll(&ctx);
+        assert!(
+            !editor.refresh.busy(),
+            "an import already supplies the library"
+        );
+
         editor.library_origin = Some(super::super::LibraryOrigin::Factory);
         editor.change(|preset| preset.rename("Keep these edits"));
         editor.poll(&ctx);
@@ -547,7 +558,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn verified_refresh_confirms_dirty_replacement_and_loads_an_unsaved_bundle() {
+    fn verified_refresh_confirms_dirty_replacement_and_loads_a_clean_bundle() {
         let (ctx, mut app) = app();
         let directory = tempfile::tempdir().unwrap();
         let defaults = super::super::EditorDefaults {
@@ -575,7 +586,7 @@ pub(super) mod tests {
 
         let document = editor.document.as_ref().unwrap();
         assert_eq!(document.selection(), Some((3, 2)));
-        assert!(document.is_dirty());
+        assert!(!document.is_dirty());
         assert!(!document.can_undo());
         assert!(!document.slot_is_dirty(3, 2));
         assert!(editor.source_path().is_none());
@@ -594,6 +605,8 @@ pub(super) mod tests {
 
         let target = directory.path().join("Guitar.vwb");
         std::fs::write(&target, b"original").unwrap();
+        editor.change(|preset| preset.rename("Edit after reading"));
+        assert!(editor.dirty());
         assert!(!editor.save_copy_to(target.clone()));
         assert!(editor.dirty());
         assert_eq!(std::fs::read(&target).unwrap(), b"original");

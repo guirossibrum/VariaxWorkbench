@@ -14,6 +14,7 @@ use std::time::SystemTime;
 pub enum BackupSource {
     DeviceCheck,
     FullBackup,
+    ImportedBackup,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,6 +64,48 @@ impl CompletedVariaxBackup {
         })
     }
 
+    /// Admit an existing complete backup as read-only input. A legacy
+    /// capture does not identify the original USB path in its identity reply.
+    #[cfg(feature = "gui")]
+    pub fn import(folder: &Path) -> Result<Self, String> {
+        use std::{fs, io::Read};
+        let folder = folder.canonicalize().map_err(|error| error.to_string())?;
+        let source = BackupSource::ImportedBackup;
+        let manifest_verified_files = verify_complete_manifest(&folder, source)?.len();
+        let path = folder.join("identity.syx");
+        let facts = crate::path_facts(&path).map_err(|error| error.to_string())?;
+        if !facts.regular_file || facts.len != 17 {
+            return Err("The backup identity.syx must contain one complete Variax reply.".into());
+        }
+        let mut bytes = Vec::new();
+        crate::open_regular_file(&path)
+            .and_then(|file| file.take(18).read_to_end(&mut bytes))
+            .map_err(|error| error.to_string())?;
+        let identity = crate::midi::Identity::parse(&bytes)?;
+        let product_id = identity.product_id();
+        if !matches!(product_id, 0x0007_0000 | 0x0007_0004) || identity.version.is_none() {
+            return Err(
+                "The backup identity must identify a legacy electric Variax and its firmware."
+                    .into(),
+            );
+        }
+        let completed_at = fs::metadata(folder.join("MANIFEST.sha256"))
+            .and_then(|metadata| metadata.modified())
+            .map_err(|error| format!("Could not read the backup completion time: {error}"))?;
+        Ok(Self {
+            folder,
+            source,
+            completed_at,
+            identity: BackupIdentity {
+                device: line6_devices::family::variax::member_name(identity.model).into(),
+                firmware: identity.version_string(),
+                usb_path: String::new(),
+                product_id,
+            },
+            manifest_verified_files,
+        })
+    }
+
     #[cfg(feature = "gui")]
     fn verified_entries(&self) -> Result<Vec<String>, String> {
         let entries = verify_complete_manifest(&self.folder, self.source)?;
@@ -104,12 +147,13 @@ fn verify_complete_manifest(folder: &Path, source: BackupSource) -> Result<Vec<S
     if names.len() != entries.len() {
         return Err("The Variax backup manifest lists duplicate files.".into());
     }
-    if source == BackupSource::FullBackup
-        && names
-            .iter()
-            .filter(|name| name.starts_with("programs/") && name.ends_with(".bin"))
-            .count()
-            != Preset::all().count()
+    let programs = names
+        .iter()
+        .filter(|name| name.starts_with("programs/") && name.ends_with(".bin"))
+        .count();
+    if (source == BackupSource::FullBackup
+        || source == BackupSource::ImportedBackup && programs != 0)
+        && programs != Preset::all().count()
     {
         return Err("The full Variax backup manifest is missing program files.".into());
     }

@@ -1,6 +1,6 @@
 use super::{
-    EditorDefaults, EditorDocument, EditorServices, FAMILY, FileFilter, Path, PathBuf, PickRequest,
-    ProductFamily, VariaxEditor, egui, tabs,
+    EditorDefaults, EditorDocument, EditorServices, FAMILY, FileFilter, GuitarPending,
+    OpenDestination, Path, PathBuf, PickRequest, ProductFamily, VariaxEditor, egui, tabs,
 };
 use line6_devices::{
     backup::utc,
@@ -16,7 +16,7 @@ use variax_workbench::{
     bundle::{BackupBundle, BundleFile},
     factory_reference::FactoryReference,
     firmware::MAX_CONTAINER_BYTES,
-    variax_library::{BackupSource, LibraryPreferences},
+    variax_library::{BackupSource, CompletedVariaxBackup, LibraryPreferences},
 };
 
 #[derive(Clone, Copy)]
@@ -32,6 +32,7 @@ impl LibraryOrigin {
             Self::Download(time) => ("Downloaded from guitar", time),
             Self::Backup(BackupSource::DeviceCheck, time) => ("Device check backup", time),
             Self::Backup(BackupSource::FullBackup, time) => ("Full Variax backup", time),
+            Self::Backup(BackupSource::ImportedBackup, time) => ("Imported backup", time),
             Self::Factory => {
                 return "Factory presets from your Variax 3.10 firmware archive".into();
             }
@@ -154,6 +155,19 @@ fn factory_bundle(path: &Path) -> Result<BundleFile, String> {
     BundleFile::from_variax_factory(&reference)
 }
 
+pub(super) struct LibraryImport {
+    bundle: BundleFile,
+    receipt: CompletedVariaxBackup,
+}
+
+impl LibraryImport {
+    fn load(folder: &Path) -> Result<Self, String> {
+        let receipt = CompletedVariaxBackup::import(folder)?;
+        let bundle = BackupBundle::load(receipt.folder())?.into_bundle();
+        Ok(Self { bundle, receipt })
+    }
+}
+
 impl VariaxEditor {
     pub(super) fn load_initial_library(&mut self, defaults: &EditorDefaults) {
         #[cfg(test)]
@@ -191,7 +205,7 @@ impl VariaxEditor {
         }
     }
 
-    fn adopt_startup_library(
+    pub(super) fn adopt_startup_library(
         &mut self,
         bundle: BundleFile,
         origin: LibraryOrigin,
@@ -205,6 +219,53 @@ impl VariaxEditor {
         self.library_origin = Some(origin);
         self.status.clear();
         Ok(())
+    }
+
+    pub(super) fn choose_library_backup(
+        &mut self,
+        ctx: &egui::Context,
+        services: &mut EditorServices<'_>,
+    ) {
+        if self.preferences_path.is_some()
+            && services.request_picker::<Self>(ctx, PickRequest::Folder, |editor, path, _| {
+                editor.opening_file = false;
+                let Some(path) = path else { return };
+                match LibraryImport::load(&path) {
+                    Ok(import) => {
+                        editor.library_import = Some(import);
+                        if editor.dirty() {
+                            editor.pending = Some(GuitarPending::Open(OpenDestination::Backup));
+                        } else {
+                            editor.adopt_imported_library();
+                        }
+                    }
+                    Err(error) => {
+                        editor.error =
+                            Some(format!("Could not open the Variax library backup: {error}"))
+                    }
+                }
+            })
+        {
+            self.opening_file = true;
+        }
+    }
+
+    pub(super) fn adopt_imported_library(&mut self) {
+        let Some(import) = self.library_import.take() else {
+            return;
+        };
+        let Some(preferences) = self.preferences_path.as_deref() else {
+            return;
+        };
+        let origin = LibraryOrigin::Backup(import.receipt.source, import.receipt.completed_at);
+        let result = LibraryPreferences::new(preferences)
+            .remember_backup(&import.receipt)
+            .and_then(|()| self.adopt_startup_library(import.bundle, origin));
+        if let Err(error) = result {
+            self.error = Some(format!(
+                "Could not remember the Variax library backup: {error}"
+            ));
+        }
     }
 
     pub(super) fn choose_factory_archive(
@@ -349,6 +410,100 @@ mod tests {
                 .contains("Could not open Variax factory presets")
         );
         assert_eq!(fs::read(&archive).unwrap(), b"unknown inputs");
+    }
+
+    #[cfg(feature = "usb")]
+    #[test]
+    fn imported_backup_is_verified_read_only_and_reopens_as_a_download() {
+        let (ctx, mut app) = app();
+        let directory = tempfile::tempdir().unwrap();
+        let defaults = defaults(directory.path());
+        let preferences = defaults.preferences.as_deref().unwrap();
+        let names = std::array::from_fn::<_, 12, _>(|bank| (bank, BANKS[bank]));
+        let bad = synthetic_backup::make_backup_with_names(
+            directory.path(),
+            "wrong-identity",
+            60,
+            1,
+            &names,
+        );
+        let folder = synthetic_backup::make_backup_with_names(
+            directory.path(),
+            "legacy-capture",
+            60,
+            4,
+            &names,
+        );
+        let before = synthetic_backup::snapshot(&folder);
+        *app.variax_mut() = VariaxEditor::new(&defaults);
+        app.dialogs = Box::new(FakeDialogs {
+            folder: [Some(bad), Some(folder.clone())].into(),
+            ..Default::default()
+        });
+        let choose = |app: &mut crate::editor::Workbench| {
+            app.test_action(|editor: &mut VariaxEditor, services| {
+                editor.choose_library_backup(&ctx, services)
+            });
+            app.poll_picker(&ctx);
+        };
+        choose(&mut app);
+        assert!(
+            app.variax()
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("backup identity")
+        );
+        assert!(!app.variax().has_document());
+        assert!(
+            LibraryPreferences::new(preferences)
+                .latest_variax_library()
+                .is_none()
+        );
+
+        choose(&mut app);
+        assert!(!app.variax().dirty());
+        assert!(app.variax().source_path.is_none());
+        assert!(matches!(
+            app.variax().library_origin,
+            Some(LibraryOrigin::Backup(BackupSource::ImportedBackup, _))
+        ));
+        let receipt = LibraryPreferences::new(preferences)
+            .latest_variax_library()
+            .unwrap();
+        assert_ne!(receipt.folder(), folder.canonicalize().unwrap());
+        assert!(receipt.folder().starts_with(directory.path()));
+        for (path, bytes) in &before {
+            let relative = path.strip_prefix(&folder).unwrap();
+            assert_eq!(
+                fs::read(receipt.folder().join(relative)).unwrap(),
+                *bytes,
+                "{relative:?}"
+            );
+        }
+        assert_eq!(receipt.identity.firmware, "3.10");
+        assert_eq!(receipt.identity.product_id, 0x0007_0004);
+        assert_eq!(receipt.source, BackupSource::ImportedBackup);
+        let mut reopened = VariaxEditor::new(&defaults);
+        reopened.load_initial_library(&defaults);
+        assert_eq!(
+            reopened.document.as_ref().unwrap().as_bytes(),
+            app.variax().document.as_ref().unwrap().as_bytes()
+        );
+        assert_eq!(synthetic_backup::snapshot(&folder), before);
+
+        let identity = folder.join("identity.syx");
+        fs::remove_file(&identity).unwrap();
+        fs::write(&identity, b"changed after making the manifest").unwrap();
+        assert!(
+            CompletedVariaxBackup::import(&folder)
+                .unwrap_err()
+                .contains("MANIFEST.sha256")
+        );
+        assert_eq!(
+            LibraryPreferences::new(preferences).latest_variax_library(),
+            Some(receipt)
+        );
     }
 
     #[cfg(feature = "usb")]

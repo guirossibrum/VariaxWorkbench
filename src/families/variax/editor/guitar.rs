@@ -1,4 +1,6 @@
-use super::tuning_presets::{DETUNE, MIX, PITCH, TUNINGS, TuningDialog, set_tuning_values};
+#[cfg(test)]
+use super::tuning_presets::DETUNE;
+use super::tuning_presets::{MIX, PITCH, TUNINGS, TuningDialog, set_tuning_values};
 use super::{
     BODY, Color32, FRET_MARKER, GUITAR_SURFACE, Pos2, Rect, SYSTEM, Sense, TUNING, TextureHandle,
     ValueFormat, VariaxEditor, egui,
@@ -12,13 +14,14 @@ use variax_workbench::{
     preset::PresetText,
     ui::{
         theme,
-        tuning_panel::{TuningEvent, TuningPanel, TuningRow, TwelveStringRow, semitone_at},
+        tuning_panel::{TuningEvent, TuningPanel, TuningRow, semitone_at},
     },
 };
 
+#[cfg(test)]
 const SPREAD: u32 = 0x200012;
 
-const STRINGS: [(&str, i32); 6] = [
+pub(super) const STRINGS: [(&str, i32); 6] = [
     ("Low E", 4),
     ("A", 9),
     ("D", 2),
@@ -311,7 +314,7 @@ impl VariaxEditor {
         }
     }
 
-    pub(super) fn guitar_header(&mut self, ui: &mut egui::Ui, available: bool) {
+    pub(super) fn guitar_header(&mut self, ui: &mut egui::Ui, available: bool) -> bool {
         egui::Frame::new()
             .inner_margin(9)
             .corner_radius(theme::RADIUS_PANEL)
@@ -323,12 +326,14 @@ impl VariaxEditor {
                 if let Some(origin) = self.library_origin {
                     ui.label(origin.label());
                 }
-                self.bank_strip(ui, available);
+                let import = self.bank_strip(ui, available);
                 self.model_details(ui, available);
-            });
+                import
+            })
+            .inner
     }
 
-    fn bank_strip(&mut self, ui: &mut egui::Ui, available: bool) {
+    fn bank_strip(&mut self, ui: &mut egui::Ui, available: bool) -> bool {
         #[cfg(test)]
         self.bank_slots.clear();
         let artwork_paths = self
@@ -356,6 +361,7 @@ impl VariaxEditor {
         let example = cfg!(test) && document.source.as_os_str().is_empty();
         let suffix = if example { " (example)" } else { "" };
         let mut next = document.selection();
+        let mut import = false;
         ui.horizontal_wrapped(|ui| {
             if let (Some(banks), Some((bank_index, selected))) = (document.banks(), next) {
                 let bank = &banks[bank_index];
@@ -372,6 +378,13 @@ impl VariaxEditor {
                                 .map(|bank| bank.name.as_str())
                                 .filter(|name| !names.insert(*name))
                                 .collect();
+                            if self.preferences_path.is_some() {
+                                if ui.button("Open library backup…").clicked() {
+                                    import = true;
+                                    ui.close();
+                                }
+                                ui.separator();
+                            }
                             for (index, entry) in banks.iter().enumerate() {
                                 let count = entry.presets().len();
                                 let title = if entry.name.is_empty() {
@@ -480,6 +493,7 @@ impl VariaxEditor {
             Some(Err(error)) => self.error = Some(error),
             None => {}
         }
+        import
     }
 
     fn model_details(&mut self, ui: &mut egui::Ui, available: bool) {
@@ -700,26 +714,26 @@ impl VariaxEditor {
                     .unwrap_or("—"),
             }
         });
-        let secondary = std::array::from_fn::<_, 6, _>(|id| TwelveStringRow {
-            id,
-            mix: self.float(TUNING, MIX + id as u32),
-            detune: self.float(TUNING, DETUNE + id as u32),
-        });
-        let mut panel = TuningPanel::new(&rows)
+        let panel = TuningPanel::new(&rows)
             .enabled(enabled)
             .interactive(can_edit)
             .lock(complete_mix, self.link_tuning_mix)
             .presets_enabled(complete_pitch)
             .transpose_enabled(complete_pitch)
             .reset_enabled(complete_pitch);
-        if twelve_string {
-            panel = panel.twelve_string(&secondary);
-        }
         ui.add_visible(
             show_off,
             egui::Label::new("Alternate tuning is off: these offsets are saved but not played."),
         );
-        let output = panel.show(ui);
+        let output = ui
+            .horizontal_top(|ui| {
+                let left = ui.available_rect_before_wrap().left();
+                ui.add_space(super::twelve_string::WIDTH);
+                let output = panel.show(ui);
+                self.twelve_string_panel(ui, left, &output, twelve_string, can_edit, complete_mix);
+                output
+            })
+            .inner;
         if show_off {
             let [r, g, b, _] = theme::PANEL.to_array();
             let dim = Color32::from_rgba_unmultiplied(r, g, b, 96);
@@ -746,12 +760,6 @@ impl VariaxEditor {
             }
             if let Some(low) = output.rows.iter().find(|row| row.id == 0) {
                 self.tuning_widgets.insert("Low E shift", low.shift_cell);
-                if let Some(rect) = low.mix_cell {
-                    self.tuning_widgets.insert("Low E mix", rect);
-                }
-                if let Some(rect) = low.detune_cell {
-                    self.tuning_widgets.insert("Low E detune", rect);
-                }
             }
         }
         let presets_clicked = output.events.contains(&TuningEvent::Presets);
@@ -764,30 +772,7 @@ impl VariaxEditor {
                 TuningEvent::FlattenAll => self.transpose_tuning(-1),
                 TuningEvent::SharpenAll => self.transpose_tuning(1),
                 TuningEvent::Shift { id, semitones } => self.set_string_shift(id, semitones),
-                TuningEvent::Mix { id, fraction } => {
-                    let parameter = MIX + id as u32;
-                    if self.tuning_parameter(parameter, 1)
-                        && (!self.link_tuning_mix || complete_mix)
-                    {
-                        let value = fraction.to_bits();
-                        let linked = self.link_tuning_mix;
-                        self.change(|preset| {
-                            if linked {
-                                set_tuning_values(preset, MIX, 1, [value; 6])
-                            } else {
-                                preset.set_parameter(TUNING, parameter, 1, value)
-                            }
-                        });
-                    }
-                }
-                TuningEvent::Detune { id, cents } => {
-                    let parameter = DETUNE + id as u32;
-                    if self.tuning_parameter(parameter, 1) {
-                        self.change(|preset| {
-                            preset.set_parameter(TUNING, parameter, 1, cents.to_bits())
-                        });
-                    }
-                }
+                TuningEvent::Mix { .. } | TuningEvent::Detune { .. } => {}
                 TuningEvent::DragStarted { id } => {
                     if self.tuning_parameter(PITCH + id as u32, 0)
                         && let Some(document) = &mut self.document
@@ -813,22 +798,6 @@ impl VariaxEditor {
                 }
                 TuningEvent::Presets => {}
             }
-        }
-        if twelve_string {
-            ui.horizontal_wrapped(|ui| {
-                let detune =
-                    can_edit && (DETUNE..DETUNE + 6).all(|id| self.tuning_parameter(id, 1));
-                if ui
-                    .add_enabled(detune, egui::Button::new("Zero detune").small())
-                    .on_hover_text("Reset all twelve-string detune values to zero")
-                    .clicked()
-                {
-                    self.change(|preset| set_tuning_values(preset, DETUNE, 1, [0; 6]));
-                }
-                ui.add_enabled_ui(can_edit, |ui| {
-                    self.float_control(ui, TUNING, SPREAD, "Spread", ValueFormat::Percent(25.0));
-                });
-            });
         }
     }
 
@@ -882,7 +851,7 @@ impl VariaxEditor {
         });
     }
 
-    fn tuning_parameter(&self, id: u32, kind: u32) -> bool {
+    pub(super) fn tuning_parameter(&self, id: u32, kind: u32) -> bool {
         self.can_edit(TUNING, Some(id))
             && self
                 .document
@@ -1296,14 +1265,17 @@ mod tests {
         };
         contains(frame(&mut app, vec![]), "+12 cents");
         let pos = app.variax().tuning_widgets["Low E detune"].center();
-        let button = |pressed| egui::Event::PointerButton {
+        let pointer = |pos, pressed| egui::Event::PointerButton {
             pos,
             button: egui::PointerButton::Primary,
             pressed,
             modifiers: egui::Modifiers::NONE,
         };
-        let _ = frame(&mut app, vec![egui::Event::PointerMoved(pos), button(true)]);
-        let _ = frame(&mut app, vec![button(false)]);
+        let _ = frame(
+            &mut app,
+            vec![egui::Event::PointerMoved(pos), pointer(pos, true)],
+        );
+        let _ = frame(&mut app, vec![pointer(pos, false)]);
         contains(frame(&mut app, vec![]), "+12.35 cents");
         let _ = frame(
             &mut app,
@@ -1316,6 +1288,24 @@ mod tests {
             }],
         );
         contains(frame(&mut app, vec![]), "+12 cents");
+        assert_eq!(app.variax().document.as_ref().unwrap().as_bytes(), before);
+        let output = frame(&mut app, vec![]);
+        assert!(
+            !output
+                .shapes
+                .iter()
+                .any(|shape| contains_title(&shape.shape, "Spread"))
+        );
+        let original_spread = app.variax().float(TUNING, SPREAD);
+        let pos = app.variax().tuning_widgets["Zero detune"].center();
+        let _ = frame(
+            &mut app,
+            vec![egui::Event::PointerMoved(pos), pointer(pos, true)],
+        );
+        let _ = frame(&mut app, vec![pointer(pos, false)]);
+        assert!((DETUNE..DETUNE + 6).all(|id| app.variax().float(TUNING, id) == Some(0.0)));
+        assert_eq!(app.variax().float(TUNING, SPREAD), original_spread);
+        app.variax_mut().undo();
         assert_eq!(app.variax().document.as_ref().unwrap().as_bytes(), before);
     }
 
