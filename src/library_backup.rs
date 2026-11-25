@@ -11,6 +11,10 @@
 use std::path::Path;
 
 use crate::hardware_gates::{self, Gate};
+use crate::variax_library::BackupResult;
+
+#[cfg(all(not(test), target_os = "linux"))]
+use crate::variax_library::{BackupIdentity, BackupSource, CompletedVariaxBackup};
 
 #[cfg(all(not(test), target_os = "linux"))]
 use line6_devices::session::Log;
@@ -27,7 +31,7 @@ pub fn offered() -> bool {
     cfg!(target_os = "linux") && !hardware_gates::is_locked(Gate::DeviceCheckBackup)
 }
 
-pub fn run(which: Which, root: &Path, progress: impl FnMut(&str)) -> Result<String, String> {
+pub fn run(which: Which, root: &Path, progress: impl FnMut(&str)) -> Result<BackupResult, String> {
     hardware_gates::run_if_unlocked(Gate::DeviceCheckBackup, || {
         hardware_gates::run_if_unlocked(Gate::OsDiscovery, || {
             run_if_supported(which, root, progress)
@@ -42,7 +46,7 @@ pub fn run_full_variax(
     attachment: (&str, u8),
     cancelled: &std::sync::atomic::AtomicBool,
     progress: impl FnMut(&str),
-) -> Result<String, String> {
+) -> Result<BackupResult, String> {
     hardware_gates::run_if_unlocked(Gate::DeviceCheckBackup, || {
         hardware_gates::run_if_unlocked(Gate::CurrentSettingsRead, || {
             #[cfg(all(not(test), target_os = "linux"))]
@@ -64,7 +68,7 @@ fn backup_full_variax(
     attachment: (&str, u8),
     cancelled: &std::sync::atomic::AtomicBool,
     mut progress: impl FnMut(&str),
-) -> Result<String, String> {
+) -> Result<BackupResult, String> {
     use line6_devices::backup::BackupFolder;
     use line6_devices::device_lock::DeviceLock;
     use line6_devices::family::variax::backup::read_full_library;
@@ -83,7 +87,7 @@ fn backup_full_variax(
         Ok(link) => link,
         Err(error) => {
             folder.line(format!("STOPPED: {error}"));
-            return close_folder(folder, false, Err(error));
+            return Err(close_folder(folder, false, Err(error)).unwrap_err());
         }
     };
     progress("Reading 60 programs in 2,100 chunks. The guitar will change presets.");
@@ -109,6 +113,7 @@ fn backup_full_variax(
     drop(link);
     drop(rig);
     let mut complete = false;
+    let mut identity = None;
     let mut result = read.and_then(|library| {
         let text = format!(
             "Full programs verified: {} of 60. {}",
@@ -119,6 +124,7 @@ fn backup_full_variax(
             .save(&mut folder)
             .map_err(|error| format!("{text} Saving the backup failed: {error}"))?;
         complete = library.complete();
+        identity = Some(backup_identity(&library.settings, attachment.0.to_owned()));
         Ok(text)
     });
     if let Err(error) = cleanup {
@@ -134,14 +140,15 @@ fn backup_full_variax(
         Ok(text) if complete => folder.line(text.clone()),
         Ok(text) | Err(text) => folder.line(format!("PARTIAL FULL BACKUP: {text}")),
     }
-    close_folder(folder, complete, result).map_err(|text| format!("Partial full backup. {text}"))
+    close_variax_folder(folder, complete, result, identity, BackupSource::FullBackup)
+        .map_err(|text| format!("Partial full backup. {text}"))
 }
 
 fn run_if_supported(
     which: Which,
     root: &Path,
     progress: impl FnMut(&str),
-) -> Result<String, String> {
+) -> Result<BackupResult, String> {
     #[cfg(any(test, not(target_os = "linux")))]
     {
         let _ = (which, root, progress);
@@ -165,10 +172,10 @@ fn stamp() -> (String, String) {
 }
 
 #[cfg(all(not(test), target_os = "linux"))]
-fn run_live(which: Which, root: &Path, progress: impl FnMut(&str)) -> Result<String, String> {
+fn run_live(which: Which, root: &Path, progress: impl FnMut(&str)) -> Result<BackupResult, String> {
     match which {
         Which::Variax => backup_variax(root, progress),
-        Which::Podxt => backup_podxt(root, progress),
+        Which::Podxt => backup_podxt(root, progress).map(BackupResult::Podxt),
     }
 }
 
@@ -225,17 +232,67 @@ fn close_folder(
     complete: bool,
     summary: Result<String, String>,
 ) -> Result<String, String> {
-    let path = folder.finish(complete).map_err(|error| match &summary {
-        Ok(text) | Err(text) => format!("{text} The folder could not be closed: {error}"),
-    })?;
-    let text = match summary {
-        Ok(text) | Err(text) => format!("{text} Saved in {}.", path.display()),
-    };
-    if complete { Ok(text) } else { Err(text) }
+    close_folder_path(folder, complete, summary).map(|(_, notice)| notice)
 }
 
 #[cfg(all(not(test), target_os = "linux"))]
-fn backup_variax(root: &Path, mut progress: impl FnMut(&str)) -> Result<String, String> {
+fn close_folder_path(
+    folder: line6_devices::backup::BackupFolder,
+    complete: bool,
+    summary: Result<String, String>,
+) -> Result<(std::path::PathBuf, String), String> {
+    let text = match summary {
+        Ok(text) | Err(text) => text,
+    };
+    let path = folder
+        .finish(complete)
+        .map_err(|error| format!("{text} The folder could not be closed: {error}"))?;
+    let text = format!("{text} Saved in {}.", path.display());
+    if complete {
+        Ok((path, text))
+    } else {
+        Err(text)
+    }
+}
+
+#[cfg(all(not(test), target_os = "linux"))]
+fn close_variax_folder(
+    folder: line6_devices::backup::BackupFolder,
+    complete: bool,
+    summary: Result<String, String>,
+    identity: Option<BackupIdentity>,
+    source: BackupSource,
+) -> Result<BackupResult, String> {
+    let (path, notice) = close_folder_path(folder, complete, summary)?;
+    let identity =
+        identity.ok_or_else(|| format!("{notice} The backup USB path could not be identified."))?;
+    let backup =
+        CompletedVariaxBackup::verify(path, source, std::time::SystemTime::now(), identity)
+            .map_err(|error| format!("{notice} Backup manifest verification failed: {error}"))?;
+    Ok(BackupResult::Variax { backup, notice })
+}
+
+#[cfg(all(not(test), target_os = "linux"))]
+fn backup_identity(
+    library: &line6_devices::family::variax::Library,
+    usb_path: String,
+) -> BackupIdentity {
+    let identity = &library.identified.identity;
+    BackupIdentity {
+        device: if identity.member == 4 {
+            "Variax 300/600"
+        } else {
+            "Variax"
+        }
+        .into(),
+        firmware: identity.version_text(),
+        usb_path,
+        product_id: (u32::from(identity.family) << 16) | u32::from(identity.member),
+    }
+}
+
+#[cfg(all(not(test), target_os = "linux"))]
+fn backup_variax(root: &Path, mut progress: impl FnMut(&str)) -> Result<BackupResult, String> {
     use line6_devices::backup::{self, BackupFolder};
     use line6_devices::family::variax::transport::VARIAX_VIA_PODXT_LIVE;
     use line6_devices::transport::usb::UsbInterfaceLink;
@@ -250,9 +307,10 @@ fn backup_variax(root: &Path, mut progress: impl FnMut(&str)) -> Result<String, 
         Ok(link) => link,
         Err(error) => {
             folder.line(format!("STOPPED: {error}"));
-            return close_folder(folder, false, Err(error));
+            return Err(close_folder(folder, false, Err(error)).unwrap_err());
         }
     };
+    let mut usb_path = link.usb_port_path().ok();
     let mut lines = Vec::new();
     let policy = BackupPolicy;
     let (mut library, mut cleanup) =
@@ -273,6 +331,7 @@ fn backup_variax(root: &Path, mut progress: impl FnMut(&str)) -> Result<String, 
         std::thread::sleep(std::time::Duration::from_secs(1));
         match UsbInterfaceLink::open(VARIAX_VIA_PODXT_LIVE) {
             Ok(mut again) => {
+                usb_path = again.usb_port_path().ok();
                 let (library_again, cleanup_again) =
                     read_variax_on(&mut again, &policy, &mut folder, &mut lines, &mut progress);
                 library = library_again;
@@ -290,6 +349,11 @@ fn backup_variax(root: &Path, mut progress: impl FnMut(&str)) -> Result<String, 
     let sweep_complete = library
         .as_ref()
         .is_ok_and(|library| library.stopped.is_none() && library.release_error.is_none());
+    let identity = library
+        .as_ref()
+        .ok()
+        .zip(usb_path)
+        .map(|(library, path)| backup_identity(library, path));
     let summary = match library {
         Ok(library) => {
             let text = variax_summary(&library);
@@ -312,7 +376,13 @@ fn backup_variax(root: &Path, mut progress: impl FnMut(&str)) -> Result<String, 
             Ok(text) | Err(text) => format!("{text} The guitar driver was not given back: {error}"),
         }),
     };
-    close_folder(folder, sweep_complete && cleanup_ok, summary)
+    close_variax_folder(
+        folder,
+        sweep_complete && cleanup_ok,
+        summary,
+        identity,
+        BackupSource::DeviceCheck,
+    )
 }
 
 #[cfg(all(not(test), target_os = "linux"))]
