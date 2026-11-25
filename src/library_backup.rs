@@ -175,7 +175,7 @@ fn stamp() -> (String, String) {
 fn run_live(which: Which, root: &Path, progress: impl FnMut(&str)) -> Result<BackupResult, String> {
     match which {
         Which::Variax => backup_variax(root, progress),
-        Which::Podxt => backup_podxt(root, progress).map(BackupResult::Podxt),
+        Which::Podxt => backup_podxt(root, progress),
     }
 }
 
@@ -490,7 +490,8 @@ fn read_variax_on(
 }
 
 #[cfg(all(not(test), target_os = "linux"))]
-fn backup_podxt(root: &Path, mut progress: impl FnMut(&str)) -> Result<String, String> {
+fn backup_podxt(root: &Path, mut progress: impl FnMut(&str)) -> Result<BackupResult, String> {
+    use crate::podxt_library::CompletedPodxtBackup;
     use line6_devices::backup::{self, BackupFolder};
     use line6_devices::family::podxt;
     use line6_devices::session::Session;
@@ -508,7 +509,7 @@ fn backup_podxt(root: &Path, mut progress: impl FnMut(&str)) -> Result<String, S
         Ok(link) => link,
         Err(error) => {
             folder.line(format!("STOPPED: {error}"));
-            return close_folder(folder, false, Err(error));
+            return Err(close_folder(folder, false, Err(error)).unwrap_err());
         }
     };
     let policy = BackupPolicy;
@@ -556,6 +557,9 @@ fn backup_podxt(root: &Path, mut progress: impl FnMut(&str)) -> Result<String, S
     for line in &lines {
         folder.record(line.clone());
     }
+    let complete = library
+        .as_ref()
+        .is_ok_and(|library| library.stopped.is_none());
     let summary = match library {
         Ok(library) => {
             if let Err(error) = backup::save_podxt_library(&mut folder, &library) {
@@ -569,10 +573,12 @@ fn backup_podxt(root: &Path, mut progress: impl FnMut(&str)) -> Result<String, S
     if let Err(error) = &summary {
         folder.line(format!("STOPPED: {error}"));
     }
-    let complete = summary
-        .as_ref()
-        .is_ok_and(|text| !text.contains("Stopped early"));
-    close_folder(folder, complete, summary)
+    let midi_device = link.device.clone();
+    drop(link);
+    let (path, notice) = close_folder_path(folder, complete && summary.is_ok(), summary)?;
+    let backup = CompletedPodxtBackup::verify(path, std::time::SystemTime::now(), midi_device)
+        .map_err(|error| format!("{notice} Backup manifest verification failed: {error}"))?;
+    Ok(BackupResult::Podxt { backup, notice })
 }
 
 #[cfg(all(not(test), target_os = "linux"))]

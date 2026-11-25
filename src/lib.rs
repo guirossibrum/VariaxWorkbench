@@ -21,6 +21,9 @@ pub mod host;
 pub mod identity_stage;
 #[cfg(feature = "usb")]
 pub mod library_backup;
+#[cfg(feature = "gui")]
+#[path = "app/library_preferences.rs"]
+mod library_preferences;
 pub mod linux_transport;
 #[cfg(test)]
 pub mod linux_variax_prefix;
@@ -38,6 +41,8 @@ pub mod pod_hd500x;
 pub mod pod_hd_independent;
 pub mod pod_preset;
 pub mod pod_usb_firmware;
+#[path = "app/podxt_library.rs"]
+pub mod podxt_library;
 #[cfg(feature = "usb")]
 pub mod podxt_live;
 pub mod probe_report;

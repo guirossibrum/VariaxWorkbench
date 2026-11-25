@@ -480,7 +480,7 @@ impl Workbench {
             self.backup_cancel = None;
             use variax_workbench::variax_library::BackupResult;
             self.device_check_notice = match result {
-                Ok(BackupResult::Variax { notice, .. } | BackupResult::Podxt(notice))
+                Ok(BackupResult::Variax { notice, .. } | BackupResult::Podxt { notice, .. })
                 | Err(notice) => notice,
             };
             self.shell_status = "Backup finished. See Device check for the result.".into();
@@ -570,13 +570,23 @@ impl Workbench {
                             })
                     }
                 };
-                if let Ok(BackupResult::Variax { backup, notice }) = &mut result
-                    && let Some(path) = preferences.as_deref()
-                    && let Err(error) = LibraryPreferences::new(path).remember_backup(backup)
+                if let Some(path) = preferences.as_deref()
+                    && let Ok(backup_result) = &mut result
                 {
-                    notice.push_str(&format!(
-                        " Could not remember this library for startup: {error}"
-                    ));
+                    let preferences = LibraryPreferences::new(path);
+                    let (saved, notice) = match backup_result {
+                        BackupResult::Variax { backup, notice } => {
+                            (preferences.remember_backup(backup), notice)
+                        }
+                        BackupResult::Podxt { backup, notice } => {
+                            (preferences.remember_podxt_backup(backup), notice)
+                        }
+                    };
+                    if let Err(error) = saved {
+                        notice.push_str(&format!(
+                            " Could not remember this library for startup: {error}"
+                        ));
+                    }
                 }
                 let _ = tx.send(DeviceOperationEvent::Finished(result));
             });

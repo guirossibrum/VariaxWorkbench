@@ -10,6 +10,8 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] Device check records complete PODxt Live library backups as typed startup receipts with independent, manifest-verified app-data snapshots. Headless tests load the current tone and all stored entries after moving the original, and cover refusal of partial or mismatched backups and fallback from a damaged snapshot. [#242](https://github.com/guirossibrum/VariaxWorkbench/issues/242).
+
 - [x] Device check saves an independent, manifest-verified Variax library snapshot in app data before publishing its startup receipt. Headless tests cover startup after moving the original full backup, all 60 program files and the original identity and manifest, repeated saves, and a failed snapshot with no published receipt. [#240](https://github.com/guirossibrum/VariaxWorkbench/issues/240).
 
 - [x] #238 listen-list accepts editor VWM files in order. Fake transports verify one working-buffer upload and full read-back per file, a fresh Enter after each audition, and verified switch-back on completion or failure. The four variants built from the owner's model matched the original Workbench oracle across all 1,092 words each. An offline sweep of 28 body baselines and 40 one-field variants per body matched all 1,148 programs word for word. The listen-list live switch is closed. [Owner card](variax-listen-list-test-card.md).
