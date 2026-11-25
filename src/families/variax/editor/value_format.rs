@@ -15,8 +15,8 @@ impl ValueFormat {
     pub(super) const ANGLE: Self = Self::decimal("°", 1, false);
     pub(super) const LEVEL: Self = Self::decimal("dB", 1, true);
     pub(super) const TRIM: Self = Self::decimal("dB", 2, true);
+    #[allow(dead_code)] // Used by the owner tool, which includes this module.
     pub(super) const CENTS: Self = Self::decimal(" cents", 2, true);
-    pub(super) const CENTS_COMPACT: Self = Self::decimal(" cents", 0, true);
     pub(super) const SEMITONES: Self = Self::decimal(" semitones", 0, true);
 
     const fn decimal(suffix: &'static str, decimals: usize, signed: bool) -> Self {
