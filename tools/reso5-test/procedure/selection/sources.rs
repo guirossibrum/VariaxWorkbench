@@ -28,7 +28,7 @@ pub(super) fn metadata(image: &Image) -> Result<PresetMetadata, String> {
     PresetMetadata::from_bytes(image[METADATA].try_into().expect("settings length"))
 }
 
-fn digest(image: &Image) -> String {
+pub(super) fn digest(image: &Image) -> String {
     format!("{:x}", Sha256::digest(image))
 }
 
@@ -94,18 +94,31 @@ fn archive_slot(factory: &FactoryReference, index: u8) -> Result<Image, String> 
     firmware_image(image)
 }
 
-fn render(preset: &PresetFile, models: &Path) -> Result<Image, String> {
+pub(super) fn models(path: &Path) -> Result<ModelLibrary, String> {
     if variax_workbench::math::PROFILE != "host-std-v1" {
         return Err("Build the owner tool without portable-math to render a .vwm.".into());
     }
+    ModelLibrary::load_manifest(path).map_err(|error| format!("{}: {error}", path.display()))
+}
+
+pub(super) fn render_file(path: &Path, models: &ModelLibrary) -> Result<Image, String> {
+    if !path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("vwm"))
+    {
+        return Err("Expected an editor .vwm.".into());
+    }
+    render(&PresetFile::parse(read(path)?)?, models)
+}
+
+fn render(preset: &PresetFile, models: &ModelLibrary) -> Result<Image, String> {
     if !matches!(preset.device_id(), 0x70000 | 0x70004) || &preset.as_bytes()[8..12] != b"L6PA" {
         return Err("Expected a first-generation Variax FORM/L6PA .vwm preset.".into());
     }
     let parameters = HostParameters::from_preset(preset)?;
     let settings = parameters.map(Default::default())?;
-    let models = ModelLibrary::load_manifest(models)
-        .map_err(|error| format!("{}: {error}", models.display()))?;
-    let generated = HostEngine::new(&models).generate(&settings)?;
+    let generated = HostEngine::new(models).generate(&settings)?;
     let image = parameters.finish(preset.name(), &settings, generated.packed());
     write::Program::new(preset.name(), &image)?;
     Ok(image)
@@ -113,7 +126,7 @@ fn render(preset: &PresetFile, models: &Path) -> Result<Image, String> {
 
 fn source(
     path: &Path,
-    models: &Path,
+    manifest: &Path,
     factory: &FactoryReference,
     slot: u8,
 ) -> Result<Image, String> {
@@ -129,9 +142,7 @@ fn source(
     }
     match path.extension().and_then(|extension| extension.to_str()) {
         Some(ext) if ext.eq_ignore_ascii_case("bin") => firmware_image(read(path)?),
-        Some(ext) if ext.eq_ignore_ascii_case("vwm") => {
-            render(&PresetFile::parse(read(path)?)?, models)
-        }
+        Some(ext) if ext.eq_ignore_ascii_case("vwm") => render_file(path, &models(manifest)?),
         _ => Err("Source must be archive, a backup .bin, or an editor .vwm.".into()),
     }
 }
@@ -140,6 +151,21 @@ fn renamed(mut image: Image) -> Image {
     image[METADATA.start..METADATA.start + 18].copy_from_slice(b"Reso-5 T          ");
     set_firmware_checksum(&mut image);
     image
+}
+
+pub(super) fn load_current_library(
+    backup: &Path,
+    archive: &Path,
+) -> Result<(Vec<Image>, FactoryReference, Image), String> {
+    let current = library(backup)?;
+    let factory = FactoryReference::parse(&read(archive)?)?;
+    let stamped_reso = expected_stored_image(&archive_slot(&factory, 50)?);
+    if !matches_hash(&current[50], ORIGINAL_RESO) || !matches_hash(&stamped_reso, STORED_HASH) {
+        return Err(
+            "The slot 50 backup or the post-#177 factory baseline has the wrong hash.".into(),
+        );
+    }
+    Ok((current, factory, stamped_reso))
 }
 
 pub fn prepare(
@@ -156,15 +182,8 @@ pub fn prepare(
     {
         return Err("Rungs 3a and 3b require flash slot 50 and the archive source.".into());
     }
-    let mut current = library(backup)?;
-    let factory = FactoryReference::parse(&read(archive)?)?;
+    let (mut current, factory, stamped_reso) = load_current_library(backup, archive)?;
     let factory_reso = archive_slot(&factory, 50)?;
-    let stamped_reso = expected_stored_image(&factory_reso);
-    if !matches_hash(&current[50], ORIGINAL_RESO) || !matches_hash(&stamped_reso, STORED_HASH) {
-        return Err(
-            "The slot 50 backup or the post-#177 factory baseline has the wrong hash.".into(),
-        );
-    }
     let i = usize::from(slot);
     let backed_up = current[i];
     current[50] = stamped_reso;
@@ -288,7 +307,12 @@ pub(super) fn audition_sound(old: &Image, new: &Image) -> Result<String, String>
                 pickups.push(model(id));
             }
         }
-        let pickups = if pickups.is_empty() {
+        let ParameterValue::Integer(body) = data.parameters["body_model"] else {
+            unreachable!("decoded body type");
+        };
+        let pickups = if variax_workbench::edit::is_acoustic(body as u32) {
+            "acoustic body voice".into()
+        } else if pickups.is_empty() {
             "no enabled pickups".into()
         } else {
             pickups.join(" and ")
@@ -305,7 +329,24 @@ pub(super) fn audition_sound(old: &Image, new: &Image) -> Result<String, String>
                 )
                 .collect::<Vec<_>>()
                 .join("/");
-            format!("alternate tuning on ({steps} semitones, strings 1–6)")
+            if variax_workbench::edit::is_twelve_string(body as u32) {
+                let formatted = |kind| {
+                    (1..=6)
+                        .map(|i| {
+                            let key = format!("string{i}_{kind}");
+                            format_value(&key, &data.parameters[key.as_str()], &catalog)
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                format!(
+                    "alternate tuning on ({steps} semitones, strings 1–6), detune {}, mix {}",
+                    formatted("detune"),
+                    formatted("mix")
+                )
+            } else {
+                format!("alternate tuning on ({steps} semitones, strings 1–6)")
+            }
         } else if pitch_enabled {
             "alternate tuning off in the settings, pitch processing active".into()
         } else {

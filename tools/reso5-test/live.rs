@@ -1,6 +1,7 @@
 mod full_read;
 mod slot_read;
 
+use super::procedure::selection::listen_list;
 use super::procedure::{
     self, Stage, StorePolicy, VariaxPolicy, selection,
     store::{self, Mode, Prompt},
@@ -26,12 +27,13 @@ use std::{
 use variax_workbench::hardware_gates::{Gate, run_if_unlocked};
 
 const USAGE: &str =
-    "Usage: variax-reso5-test --card | --store-card | --slot-read-card | --full-read-card | --any-selection-card
+    "Usage: variax-reso5-test --card | --store-card | --slot-read-card | --full-read-card | --any-selection-card | --listen-list-card
        variax-reso5-test [--check] stage-1|stage-2 BACKUP_DIR ARCHIVE.vxf MODELS.tsv LOG_ROOT
        variax-reso5-test [--check] store rename|restore|factory BACKUP_DIR ARCHIVE.vxf CAPTURE_DIR LOG_ROOT
        variax-reso5-test [--check] slot-read VARIAX_BACKUP PODXT_BACKUP ARCHIVE.vxf LOG_ROOT
        variax-reso5-test [--check] full-read ARCHIVE.vxf LOG_ROOT
-       variax-reso5-test [--check] any-selection MODE FLASH_INDEX FULL_BACKUP ARCHIVE.vxf SOURCE MODELS.tsv LOG_ROOT";
+       variax-reso5-test [--check] any-selection MODE FLASH_INDEX FULL_BACKUP ARCHIVE.vxf SOURCE MODELS.tsv LOG_ROOT
+       variax-reso5-test [--check] listen-list FULL_BACKUP ARCHIVE.vxf MODELS.tsv LOG_ROOT INPUT.vwm [INPUT.vwm ...]";
 
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 
@@ -63,6 +65,16 @@ pub fn run(args: &[OsString]) -> Result<(), String> {
         [option, remaining @ ..] if option == "--check" => (true, remaining),
         _ => (false, args),
     };
+    if let [stage, backup, archive, models, log, files @ ..] = args
+        && stage == "listen-list"
+    {
+        let files: Vec<_> = files.iter().map(Path::new).collect();
+        return run_listen_list(
+            offline,
+            [backup, archive, models, log].map(Path::new),
+            &files,
+        );
+    }
     if let [stage, mode, slot, backup, archive, source, models, log] = args
         && stage == "any-selection"
     {
@@ -249,6 +261,7 @@ fn run_store(
     Ok(())
 }
 
+const APPROVED_LISTEN_LIST: bool = false;
 const APPROVED_LISTEN_4A: bool = false;
 const APPROVED_STORE_4B: bool = false;
 const APPROVED_RESTORE_4C: bool = false;
@@ -286,25 +299,12 @@ fn run_selection(
             return Ok(());
         }
         print!("{}", super::SELECTION_CARD);
-        println!("HEAR: Your starting preset stays selected while the tool checks the rig.");
-        println!("SEE: Wait while the tool checks the PODxt Live. Nothing to type.");
-        install_cancellation()?;
         let write_gate = if mode.listens() {
             Gate::EditBufferWrite
         } else {
             Gate::StoreRestore
         };
-        run_if_unlocked(write_gate, || {
-            run_if_unlocked(Gate::FullBackupRead, || {
-                run_if_unlocked(Gate::CurrentSettingsRead, || {
-                    run_if_unlocked(Gate::IdentityRequest, || {
-                        run_if_unlocked(Gate::OsDiscovery, || {
-                            run_device(DeviceTask::Selection(&prepared), &trace)
-                        })
-                    })
-                })
-            })
-        })
+        run_selection_device(write_gate, DeviceTask::Selection(&prepared), &trace)
     })();
     trace.record(match &result {
         Err(error) => format!("STOPPED: {error}"),
@@ -315,11 +315,64 @@ fn run_selection(
     combine(result, trace.finish())
 }
 
+fn run_listen_list(offline: bool, paths: [&Path; 4], files: &[&Path]) -> Result<(), String> {
+    if !offline && !APPROVED_LISTEN_LIST {
+        return Err("The listen-list audition has no owner approval for a live run.".into());
+    }
+    let [backup, archive, models, log] = paths;
+    let trace = Trace::create(log, "listen-list")?;
+    let result = (|| {
+        let prepared = listen_list::prepare(backup, archive, models, files)?;
+        for line in prepared.description() {
+            println!("{line}");
+            trace.record(line);
+        }
+        if offline {
+            return Ok(());
+        }
+        print!("{}", super::LISTEN_LIST_CARD);
+        run_selection_device(
+            Gate::EditBufferWrite,
+            DeviceTask::ListenList(&prepared),
+            &trace,
+        )
+    })();
+    trace.record(match &result {
+        Err(error) => format!("STOPPED: {error}"),
+        Ok(()) if offline => "PASS: offline check. No device was opened.".into(),
+        Ok(()) => {
+            "PASS: every audition buffer and the return to the original were verified.".into()
+        }
+    });
+    println!("Log folder: {}", trace.path.display());
+    combine(result, trace.finish())
+}
+
+fn run_selection_device(
+    write_gate: Gate,
+    task: DeviceTask<'_>,
+    trace: &Trace,
+) -> Result<(), String> {
+    println!("HEAR: Your starting preset stays selected while the tool checks the rig.");
+    println!("SEE: Wait while the tool checks the PODxt Live. Nothing to type.");
+    install_cancellation()?;
+    run_if_unlocked(write_gate, || {
+        run_if_unlocked(Gate::FullBackupRead, || {
+            run_if_unlocked(Gate::CurrentSettingsRead, || {
+                run_if_unlocked(Gate::IdentityRequest, || {
+                    run_if_unlocked(Gate::OsDiscovery, || run_device(task, trace))
+                })
+            })
+        })
+    })
+}
+
 enum DeviceTask<'a> {
     FullRead(&'a [u8; variax_workbench::factory_reference::PROGRAM_BYTES]),
     Edit(&'a procedure::Prepared),
     Store(&'a store::Prepared, &'a [u8; 192]),
     Selection(&'a selection::Prepared),
+    ListenList(&'a listen_list::Prepared),
 }
 
 fn prompt_store(prompt: Prompt, stopping: impl Fn() -> bool) -> Result<(), String> {
@@ -355,7 +408,7 @@ fn run_device(task: DeviceTask<'_>, trace: &Trace) -> Result<(), String> {
             &mut log,
         )?;
     }
-    if matches!(&task, DeviceTask::Selection(_)) {
+    if matches!(&task, DeviceTask::Selection(_) | DeviceTask::ListenList(_)) {
         println!("PODxt Live verified.");
     }
     if stopping() {
@@ -394,6 +447,21 @@ fn run_device(task: DeviceTask<'_>, trace: &Trace) -> Result<(), String> {
                     prepared,
                     &trace.path,
                     |phrase| super::confirmation::confirm(phrase, stopping),
+                    |line| {
+                        println!("{line}");
+                        trace.record(line.to_owned());
+                    },
+                    stopping,
+                )
+            }
+            DeviceTask::ListenList(prepared) => {
+                let policy = selection::Policy(selection::Mode::Listen);
+                let mut session = Session::new(link, &policy, &mut log);
+                listen_list::attempt(
+                    &mut session,
+                    prepared,
+                    &trace.path,
+                    || super::confirmation::confirm("", stopping),
                     |line| {
                         println!("{line}");
                         trace.record(line.to_owned());

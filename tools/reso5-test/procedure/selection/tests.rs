@@ -737,3 +737,156 @@ fn rejects_bad_firmware_checksums_and_truncated_source_programs() {
             .contains("checksum")
     );
 }
+
+fn upload_list_entry(script: &mut Script, program: &Image) {
+    send(script, BRIDGE_ON);
+    send(script, &guitar(&[0x2a, 1]));
+    let message = guitar(&[&[0x43, 4, 4, 4, 0, 0, 0][..], &nibbles(program)].concat());
+    for bytes in message.chunks(256) {
+        send(script, bytes);
+    }
+    send(script, &guitar(&[0x2a, 0]));
+    send(script, BRIDGE_OFF);
+}
+
+#[test]
+fn listen_list_uploads_in_order_waits_after_each_and_restores_without_a_store() {
+    let original = target(51).unwrap();
+    let current = test_prepared(Mode::Listen).current;
+    let original_image = current[51];
+    let mut script = vec![];
+    reply(&mut script, &REQUEST, &IDENTITY);
+    read_chunks(&mut script, None, &original_image);
+    let files = ["A.vwm", "B.vwm", "C.vwm", "D.vwm"]
+        .into_iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let program = image(100 + i as u8, "Audition");
+            upload_list_entry(&mut script, &program);
+            read_chunks(&mut script, None, &program);
+            super::listen_list::Entry {
+                label: name.into(),
+                program,
+            }
+        })
+        .collect();
+    read_chunks(
+        &mut script,
+        Some(original.program_number()),
+        &original_image,
+    );
+    let prepared = super::listen_list::Prepared::fixture(current, files);
+    let description = prepared.description();
+    assert_eq!(description.len(), 5);
+    for (i, name) in ["A.vwm", "B.vwm", "C.vwm", "D.vwm"].into_iter().enumerate() {
+        let hash = sources::digest(&image(100 + i as u8, "Audition"));
+        assert_eq!(
+            description[i + 1],
+            format!(
+                "{:02}. {name} | upload and expected working image SHA-256: {hash}",
+                i + 1
+            )
+        );
+    }
+
+    let mut fake = Fake::new(script, Cancel::Never);
+    let root = tempfile::tempdir().unwrap();
+    let events = Rc::clone(&fake.events);
+    let mut quiet = Quiet;
+    let mut session = Session::new(&mut fake, &Policy(Mode::Listen), &mut quiet);
+    super::listen_list::attempt(
+        &mut session,
+        &prepared,
+        root.path(),
+        || {
+            events.borrow_mut().push("Enter".into());
+            Ok(())
+        },
+        |line| events.borrow_mut().push(line.to_owned()),
+        || false,
+    )
+    .unwrap();
+    fake.assert_finished();
+    assert_eq!(fake.store_at, None);
+    let events = events.borrow();
+    let mut order = events.iter();
+    for name in ["A.vwm", "B.vwm", "C.vwm", "D.vwm"] {
+        for anchor in [
+            format!("HEAR: Loading {name}."),
+            "Wire: upload".into(),
+            format!("{name} working buffer verified."),
+            "SEE: Play now.".into(),
+            "Enter".into(),
+        ] {
+            assert!(order.any(|event| event.starts_with(&anchor)), "{events:#?}");
+        }
+    }
+    assert!(order.any(|event| event == "Wire: MIDI program 106"));
+    assert_eq!(events.iter().filter(|event| *event == "Enter").count(), 4);
+    assert_eq!(
+        events.last().unwrap(),
+        "Done. Auditioned 4 files. Nothing was saved. The guitar is on Reso 4."
+    );
+}
+
+#[test]
+fn listen_list_mismatch_or_cancel_stops_the_list_and_restores_the_original() {
+    for mismatch in [false, true] {
+        let current = test_prepared(Mode::Listen).current;
+        let original = current[51];
+        let files = vec![
+            super::listen_list::Entry {
+                label: "First.vwm".into(),
+                program: image(71, "First"),
+            },
+            super::listen_list::Entry {
+                label: "Second.vwm".into(),
+                program: image(72, "Second"),
+            },
+        ];
+        let mut script = vec![];
+        reply(&mut script, &REQUEST, &IDENTITY);
+        read_chunks(&mut script, None, &original);
+        upload_list_entry(&mut script, &files[0].program);
+        let reply = if mismatch {
+            &original
+        } else {
+            &files[0].program
+        };
+        read_chunks(&mut script, None, reply);
+        read_chunks(
+            &mut script,
+            Some(target(51).unwrap().program_number()),
+            &original,
+        );
+        let prepared = super::listen_list::Prepared::fixture(current, files);
+        let mut fake = Fake::new(script, Cancel::Never);
+        let root = tempfile::tempdir().unwrap();
+        let mut quiet = Quiet;
+        let mut session = Session::new(&mut fake, &Policy(Mode::Listen), &mut quiet);
+        let mut enters = 0;
+        let error = super::listen_list::attempt(
+            &mut session,
+            &prepared,
+            root.path(),
+            || {
+                enters += 1;
+                Err("Cancelled at the Enter prompt.".into())
+            },
+            |_| {},
+            || false,
+        )
+        .unwrap_err();
+        fake.assert_finished();
+        assert!(error.contains("Original preset was reselected and verified."));
+        assert_eq!(enters, usize::from(!mismatch));
+        assert_eq!(fake.store_at, None);
+    }
+}
+
+#[test]
+fn listen_list_refuses_an_empty_list_before_accessing_inputs() {
+    let unused = Path::new("unreadable");
+    let status = super::listen_list::prepare(unused, unused, unused, &[]);
+    assert!(status.err().unwrap().contains("at least one .vwm"));
+}
