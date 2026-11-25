@@ -24,7 +24,6 @@ pub struct Script {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // Wrong and Skip arrive with the save steps (#258, #259).
 pub enum SaveTyping {
     /// Type exactly what the notice asks for.
     Exact,

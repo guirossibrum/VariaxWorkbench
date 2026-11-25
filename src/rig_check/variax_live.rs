@@ -262,7 +262,8 @@ mod tests {
         );
         assert_eq!(person.questions[0].verified_by_bytes.len(), 2);
         let rig = rig.borrow();
-        assert_eq!(rig.variax.working_uploads, 2);
-        assert_eq!(rig.variax.stores, 0, "live steps never store");
+        // Two auditions (4.2, 4.3) and the program sent before the 5.1 store.
+        assert_eq!(rig.variax.working_uploads, 3);
+        assert_eq!(rig.variax.stores, 1, "only the save step 5.1 stores");
     }
 }

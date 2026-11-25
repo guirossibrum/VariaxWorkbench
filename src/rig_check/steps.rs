@@ -99,6 +99,7 @@ pub fn execute(ctx: &mut Ctx<'_>) -> Result<(), String> {
         (4, 1) => super::live::podxt_stomp(ctx),
         (4, 2) => super::variax_live::variax_own_bytes(ctx),
         (4, 3) => super::variax_live::variax_test_model(ctx),
+        (5, 1) => super::variax_save::save_own_bytes(ctx),
         (6, 2) => rig_guard(ctx),
         _ => placeholder(ctx),
     }

@@ -24,6 +24,10 @@ pub enum Decision {
 /// The default when the person has not chosen.
 pub const DEFAULT_DECISION: Decision = Decision::Skip;
 
+/// A step returns an error starting with this when the person declined
+/// inside the step (for example the typed save confirmation). Nothing ran.
+pub const SKIPPED: &str = "SKIPPED: ";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Retry {
     TryAgain,
@@ -211,6 +215,10 @@ impl<'a> Runner<'a> {
                 let stopped_now = self.op.stop_requested();
                 let outcome = match result {
                     Ok(()) => Outcome::Passed,
+                    Err(reason) if reason.starts_with(SKIPPED) => {
+                        rec.note(reason.trim_start_matches(SKIPPED));
+                        Outcome::SkippedByPerson
+                    }
                     Err(error) if stopped_now => Outcome::Stopped(error),
                     Err(error) => Outcome::Failed(error),
                 };

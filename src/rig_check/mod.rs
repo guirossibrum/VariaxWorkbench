@@ -34,6 +34,7 @@ pub mod steps;
 pub(crate) mod testing;
 pub mod variax_live;
 pub mod variax_reads;
+pub mod variax_save;
 
 use port::{PracticePort, RigPort};
 use practice::{Faults, SimRig};
