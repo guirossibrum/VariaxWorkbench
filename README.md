@@ -24,24 +24,26 @@ Captured in floating windows with built-in examples and device discovery disable
   collections, undo changes, and save a new copy. File editing works offline.
 - **PODxt editor.** Edit supported amp, cab, and effect settings. Browse and
   organize tone libraries and save copies. Built-in examples work offline.
-- **HD500X files.** Open presets, setlists, and bundles, edit supported settings,
-  and save copies. File editing only.
+- **HD500X files (early).** Opens HD Edit presets, setlists, and bundles and
+  saves copies. Only a few settings on nine effect models can be edited; the
+  rest is kept as is. There is no HD editor page or device support yet.
 - **Device connection.** Linux detection and device tabs have been tested on
   the Variax 600 and PODxt Live. Offline tabs work with the rig disconnected.
-- **Backups.** Variax settings and PODxt Live library backups have been tested
-  on hardware. Full Variax program backup is implemented and verified offline.
+- **Backups.** Full Variax 600 backups (all 60 presets, byte for byte) and
+  PODxt Live library backups have been tested on hardware.
 - **Live reads and edits.** Device check has read current settings on both
   devices. PODxt Live edit-buffer changes have been tested in owner-run tools.
   A complete Variax preset program can be read through the PODxt Live.
-- **Saving to the guitar.** The first Variax preset store has been tested on
-  hardware: one preset renamed, then checked byte for byte and against a full
-  backup. More store steps follow one at a time.
+- **Saving to the guitar.** Variax preset stores have been tested on hardware
+  with an owner-run tool: a rename, a restore, a factory preset, and a preset
+  edited in this app (with alternate tuning), each read back byte for byte.
+  Saving from the editor itself is not available yet.
 - **Recording.** Try the recorder with synthetic audio or a WAV file and save
   a take. This workflow is offline only.
 
 ## Coming next
 
-- Validate full Variax backups on the rig and verify a safe restore procedure.
+- Restore a full Variax backup to the guitar and send/save from the editors.
 - Bring more live guitar and POD workflows into the editors.
 - Validate USB recording and playback on Linux.
 - Extend device and platform support.
@@ -53,7 +55,7 @@ Captured in floating windows with built-in examples and device discovery disable
 - The PODxt Live cannot relay large guitar replies. Full program backups use
   smaller reads.
 - Reads through the PODxt Live occasionally lose a byte. The app rejects the
-  damaged reply instead of using it; automatic retries are being added.
+  damaged reply and retries it.
 - Native Windows and macOS apps and hardware connections remain untested.
 - Live audio and firmware installation are unavailable.
 
