@@ -6,10 +6,14 @@ use variax_workbench::ui::{chrome, theme};
 
 const PRESENCE_INTERVAL: Duration = Duration::from_secs(1);
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(in crate::editor) enum DetectConfirmation {
     Start,
     Waiting,
+    Reattach {
+        attachment: AttachmentKey,
+        starting: bool,
+    },
 }
 
 impl Workbench {
@@ -89,11 +93,15 @@ impl Workbench {
     }
 
     pub(super) fn refresh_guitar(&mut self, attachment: &AttachmentKey) {
-        if self
-            .detection
-            .as_mut()
-            .is_some_and(|service| service.queue_guitar_refresh(attachment))
-        {
+        let Some(service) = &mut self.detection else {
+            return;
+        };
+        if service.needs_guitar_driver_consent(attachment) {
+            self.detect_confirmation = Some(DetectConfirmation::Reattach {
+                attachment: attachment.clone(),
+                starting: true,
+            });
+        } else if service.queue_guitar_refresh(attachment, false) {
             self.refresh_detection(Scan::Automatic);
         }
     }
@@ -127,10 +135,30 @@ impl Workbench {
     }
 
     pub(super) fn detect_dialog(&mut self, ctx: &egui::Context) {
-        let Some(confirmation) = self.detect_confirmation else {
+        let Some(confirmation) = self.detect_confirmation.clone() else {
             return;
         };
-        let starting = matches!(confirmation, DetectConfirmation::Start);
+        let (starting, repair) = match &confirmation {
+            DetectConfirmation::Start => (true, None),
+            DetectConfirmation::Waiting => (false, None),
+            DetectConfirmation::Reattach {
+                attachment,
+                starting,
+            } => (*starting, Some(attachment)),
+        };
+        let (title, question, accept) = if repair.is_some() {
+            (
+                "Reattach guitar interface driver",
+                "Ask Linux to reattach the PODxt Live’s guitar interface driver? The app sends no guitar commands during reattachment. If it succeeds, the usual guitar identity check runs.",
+                "Yes, reattach",
+            )
+        } else {
+            (
+                "Detect devices",
+                "Scan cached USB information for supported devices? This scan sends no device requests.",
+                "Yes, scan",
+            )
+        };
         let frame = egui::Frame::new()
             .fill(theme::RAISED)
             .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
@@ -140,26 +168,31 @@ impl Workbench {
             .frame(frame)
             .show(ctx, |ui| {
                 ui.set_min_width(360.0);
+                if repair.is_some() {
+                    ui.set_max_width(440.0);
+                }
                 ui.label(
-                    egui::RichText::new("Detect devices")
+                    egui::RichText::new(title)
                         .size(theme::TITLE)
                         .strong()
                         .color(theme::TEXT),
                 );
+                if repair.is_none() {
+                    ui.label(
+                        egui::RichText::new(
+                            "Tested on Linux: PODxt Live 3.01 and Variax 600 3.10.",
+                        )
+                        .size(theme::BODY)
+                        .color(theme::TEXT),
+                    );
+                }
                 ui.label(
-                    egui::RichText::new("Tested on Linux: PODxt Live 3.01 and Variax 600 3.10.")
+                    egui::RichText::new(question)
                         .size(theme::BODY)
                         .color(theme::TEXT),
                 );
-                ui.label(
-                    egui::RichText::new(
-                        "Scan cached USB information for supported devices? This scan sends no device requests.",
-                    )
-                    .size(theme::BODY)
-                    .color(theme::TEXT),
-                );
                 ui.horizontal(|ui| {
-                    let yes = detect_choice(ui, "Yes, scan");
+                    let yes = detect_choice(ui, accept);
                     let no = detect_choice(ui, "No");
                     if starting {
                         no.request_focus();
@@ -178,9 +211,25 @@ impl Workbench {
             self.detect_confirmation = None;
         } else if yes && !starting {
             self.detect_confirmation = None;
-            self.refresh_detection(Scan::Confirmed);
+            if let Some(attachment) = repair {
+                if self
+                    .detection
+                    .as_mut()
+                    .is_some_and(|service| service.queue_guitar_refresh(attachment, true))
+                {
+                    self.refresh_detection(Scan::Automatic);
+                }
+            } else {
+                self.refresh_detection(Scan::Confirmed);
+            }
         } else {
-            self.detect_confirmation = Some(DetectConfirmation::Waiting);
+            self.detect_confirmation = Some(match confirmation {
+                DetectConfirmation::Reattach { attachment, .. } => DetectConfirmation::Reattach {
+                    attachment,
+                    starting: false,
+                },
+                _ => DetectConfirmation::Waiting,
+            });
         }
     }
 }

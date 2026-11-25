@@ -10,6 +10,8 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] App and owner-tool cleanup verify the Linux guitar driver binding after releasing PODxt Live interface 1. If it stays unbound, cleanup waits briefly and retries once. Refresh guitar offers default-No recovery on the verified attachment before the usual identity check. Six synthetic sysfs and fake-attach tests cover binding verification, bounded retry, failure and address changes. Two headless tests cover unbound startup, consent and replacement attachments. [#239](https://github.com/guirossibrum/VariaxWorkbench/issues/239).
+
 - [x] The Reso-5 owner tool waits two seconds after a silent Variax identity timeout and resends once. Fake transports verify silence, the original orphan-tail resend, and the restore preflight transcript. [#177](https://github.com/guirossibrum/VariaxWorkbench/issues/177).
 
 - [x] Variax metadata and full-program `0x3C` reads log and retry a damaged reply up to twice, with 100 ms between attempts. Fake transports cover dropped bytes, length and framing errors, retry exhaustion, cancellation and a complete backup with verified switch-back after a damaged reply. [#234](https://github.com/guirossibrum/VariaxWorkbench/issues/234) · [#177](https://github.com/guirossibrum/VariaxWorkbench/issues/177)

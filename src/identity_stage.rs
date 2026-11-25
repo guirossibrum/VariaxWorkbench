@@ -365,6 +365,9 @@ pub(crate) trait IdentityTransport {
     fn take_scripted_cancel(&mut self) -> bool;
     fn take_orphan_end(&mut self) -> bool;
     fn release_interface(&mut self) -> Result<(), IdentityFailure>;
+    fn needs_driver_return(&self) -> bool {
+        self.detach_succeeded()
+    }
     fn reattach_driver(&mut self) -> Result<(), IdentityFailure>;
     fn release_attempted(&self) -> bool;
     fn reattach_attempted(&self) -> bool;
@@ -631,7 +634,7 @@ fn finish_cleanup(transport: &mut impl IdentityTransport, exchange: &mut Identit
     if transport.claim_succeeded() {
         let _ = transport.release_interface();
     }
-    if transport.detach_succeeded() {
+    if transport.needs_driver_return() {
         let _ = transport.reattach_driver();
     }
     exchange.release_attempted = transport.release_attempted();

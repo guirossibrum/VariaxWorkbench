@@ -41,7 +41,7 @@ pub const THIS_COMPUTER_LABEL: &str = "This computer (G1) — step 1 reads what 
 /// Driver on PODxt Live interface 0 when the rig is ready for step 2.
 pub const EXPECTED_POD_DRIVER: &str = "snd-usb-pod";
 /// Driver on PODxt Live interface 1 when the rig is ready for step 2.
-pub const EXPECTED_VARIAX_DRIVER: &str = "snd-usb-variax";
+pub use line6_devices::family::variax::driver::EXPECTED_VARIAX_DRIVER;
 /// What the window can actually cancel. Close is handled before Yes in the
 /// same frame. After Yes, the exchange runs on the UI thread and the window
 /// has no way to stop it.
@@ -738,7 +738,7 @@ pub fn expected_driver_binding(device: &UsbDevice) -> bool {
     match (driver(0), driver(1)) {
         (Some(pod), Some(variax)) => {
             same_driver_spelling(pod, EXPECTED_POD_DRIVER)
-                && same_driver_spelling(variax, EXPECTED_VARIAX_DRIVER)
+                && line6_devices::family::variax::driver::is_variax_driver(variax)
         }
         _ => false,
     }
@@ -1159,6 +1159,9 @@ fn identity_detail(stop: &IdentifyStop) -> String {
     };
     if stop.release_failed && stop.reattach_failed {
         text.push_str(" Release failed. Reattach failed.");
+    }
+    if stop.reattach_failed {
+        text.push_str(" If the guitar driver stays unbound, use Refresh guitar to reattach it. Replug PODxt Live USB as a last resort.");
     }
     text
 }

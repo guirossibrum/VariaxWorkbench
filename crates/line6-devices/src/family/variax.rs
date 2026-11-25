@@ -9,6 +9,7 @@
 pub mod backup;
 mod follow;
 pub use follow::{FollowUpdate, follow};
+pub mod driver;
 pub mod slot_read;
 pub mod span_read;
 pub mod transport;

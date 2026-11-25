@@ -10,7 +10,8 @@ use variax_workbench::device_probe::{MetadataError, OsMetadataSource, UsbDevice}
 
 #[cfg(test)]
 pub(super) use identity::{
-    Guitar as SimulatedGuitar, Job as SimulatedJob, Outcome as SimulatedOutcome,
+    Guitar as SimulatedGuitar, Job as SimulatedJob, JobKind as SimulatedJobKind,
+    Outcome as SimulatedOutcome,
 };
 #[cfg(test)]
 pub(super) use notice::Notice as SimulatedNotice;
@@ -126,6 +127,7 @@ struct Bridge {
     firmware_warning: Option<String>,
     last_notice: Option<Notice>,
     suspended: bool,
+    driver_unbound: bool,
 }
 
 impl Bridge {
@@ -146,6 +148,7 @@ impl Bridge {
             firmware_warning: None,
             last_notice: None,
             suspended: false,
+            driver_unbound: false,
         }
     }
 
@@ -179,6 +182,7 @@ impl Bridge {
                 if kind == JobKind::Initial {
                     self.pod = pod_firmware;
                 }
+                self.driver_unbound = matches!(guitar, Guitar::DriverUnbound(_));
                 match guitar {
                     Guitar::Verified(firmware) => {
                         let key = self.guitar.map_or_else(
@@ -202,7 +206,7 @@ impl Bridge {
                                 ));
                                 format!("Variax 300/600 {version}")
                             }
-                            Guitar::Unavailable(reason) => reason,
+                            Guitar::Unavailable(reason) | Guitar::DriverUnbound(reason) => reason,
                             Guitar::CleanupFailed => {
                                 self.suspended = true;
                                 "USB cleanup failed. Guitar identity is suspended until USB reconnects.".into()
@@ -216,7 +220,10 @@ impl Bridge {
     }
 
     fn observe_notice(&mut self, notice: Notice) {
-        if self.last_notice.replace(notice) != Some(notice) && self.can_refresh() {
+        if self.last_notice.replace(notice) != Some(notice)
+            && self.can_refresh()
+            && !self.driver_unbound
+        {
             self.queued = Some(JobKind::RefreshGuitar);
         }
     }
@@ -413,11 +420,23 @@ impl DetectionService {
         Some(self.known.values().cloned().collect())
     }
 
-    pub fn queue_guitar_refresh(&mut self, key: &AttachmentKey) -> bool {
-        let Some(bridge) = self.bridge_mut(key).filter(|bridge| bridge.can_refresh()) else {
+    pub fn needs_guitar_driver_consent(&mut self, key: &AttachmentKey) -> bool {
+        self.bridge_mut(key)
+            .is_some_and(|bridge| bridge.can_refresh() && bridge.driver_unbound)
+    }
+
+    pub fn queue_guitar_refresh(&mut self, key: &AttachmentKey, reattach: bool) -> bool {
+        let Some(bridge) = self
+            .bridge_mut(key)
+            .filter(|bridge| bridge.can_refresh() && bridge.driver_unbound == reattach)
+        else {
             return false;
         };
-        bridge.queued = Some(JobKind::RefreshGuitar);
+        bridge.queued = Some(if reattach {
+            JobKind::ReattachGuitarDriver
+        } else {
+            JobKind::RefreshGuitar
+        });
         self.cancel_listener();
         true
     }

@@ -280,6 +280,7 @@ name = "variax-workbench"
 version = "0.9.0"
 dependencies = [
  "flate2",
+ "line6-devices",
  "md-5",
  "sha2",
  "tempfile",

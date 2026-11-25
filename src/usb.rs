@@ -212,25 +212,29 @@ impl Session {
             }
             self.enabled = false;
         }
-        if self.claimed {
-            if let Err(e) = self.handle.release_interface(USB.interface) {
-                errors.push(e.to_string());
-            } else {
-                self.claimed = false;
-            }
+        if self.claimed && !self.release_was_attempted && self.release_interface().is_err() {
+            errors.push("Could not release USB interface 1.".into());
         }
-        if self.detached {
-            if let Err(e) = self.handle.attach_kernel_driver(USB.interface) {
-                errors.push(e.to_string());
-            } else {
-                self.detached = false;
-            }
+        if self.needs_driver_return()
+            && let Err(error) = self.return_driver()
+        {
+            errors.push(error);
         }
         if errors.is_empty() {
             Ok(())
         } else {
             Err(format!("USB cleanup: {}", errors.join("; ")))
         }
+    }
+    fn return_driver(&mut self) -> Result<(), String> {
+        self.reattach_was_attempted = true;
+        let result =
+            line6_devices::transport::usb::return_variax_driver(&self.handle, self.detached);
+        self.reattach_did_fail = result.is_err();
+        if result.is_ok() {
+            self.detached = false;
+        }
+        result
     }
 }
 
@@ -337,21 +341,13 @@ impl IdentityTransport for Session {
         }
     }
 
+    fn needs_driver_return(&self) -> bool {
+        !self.reattach_was_attempted && (self.detached || self.release_was_attempted)
+    }
+
     fn reattach_driver(&mut self) -> Result<(), IdentityFailure> {
-        self.reattach_was_attempted = true;
-        if !self.detached {
-            return Ok(());
-        }
-        match self.handle.attach_kernel_driver(USB.interface) {
-            Ok(()) => {
-                self.detached = false;
-                Ok(())
-            }
-            Err(_) => {
-                self.reattach_did_fail = true;
-                Err(IdentityFailure::CleanupFailed)
-            }
-        }
+        self.return_driver()
+            .map_err(|_| IdentityFailure::CleanupFailed)
     }
 
     fn release_attempted(&self) -> bool {

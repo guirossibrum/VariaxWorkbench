@@ -143,19 +143,32 @@ impl<Rig> UsbInterfaceLink<Rig> {
 
     /// Release the interface and give it back to the kernel driver.
     pub fn finish(&mut self) -> Result<(), String> {
+        if self.finished {
+            return Ok(());
+        }
         self.finished = true;
         let interface = self.spec.interface;
         let mut errors = Vec::new();
+        let verify_driver = self.claimed || self.detached;
         if self.claimed {
             match self.handle.release_interface(interface) {
                 Ok(()) => self.claimed = false,
                 Err(e) => errors.push(format!("release interface {interface}: {e}")),
             }
         }
-        if self.detached {
-            match self.handle.attach_kernel_driver(interface) {
+        if verify_driver {
+            let result = if self.spec.path == Path::VariaxViaPodxt {
+                return_variax_driver(&self.handle, self.detached)
+            } else if self.detached {
+                self.handle
+                    .attach_kernel_driver(interface)
+                    .map_err(|e| e.to_string())
+            } else {
+                Ok(())
+            };
+            match result {
                 Ok(()) => self.detached = false,
-                Err(e) => errors.push(format!("reattach kernel driver: {e}")),
+                Err(error) => errors.push(format!("reattach kernel driver: {error}")),
             }
         }
         if errors.is_empty() {
@@ -164,6 +177,67 @@ impl<Rig> UsbInterfaceLink<Rig> {
             Err(errors.join("; "))
         }
     }
+}
+
+/// Verify the Variax driver after release, including a bounded retry if needed.
+pub fn return_variax_driver(
+    handle: &rusb::DeviceHandle<rusb::GlobalContext>,
+    detached: bool,
+) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let device = handle.device();
+        let ports = device
+            .port_numbers()
+            .map_err(|error| format!("USB port path: {error}"))?;
+        let path = attachment_path(device.bus_number(), &ports);
+        crate::family::variax::driver::linux::restore(
+            || variax_driver_binding(&path, device.address()),
+            || {
+                handle
+                    .attach_kernel_driver(VARIAX_VIA_PODXT_LIVE.interface)
+                    .map_err(|error| error.to_string())
+            },
+            detached,
+            std::thread::sleep,
+            |line| eprintln!("{line}"),
+        )
+        .inspect_err(|error| eprintln!("PODxt Live interface 1 cleanup: {error}"))
+    }
+    #[cfg(not(target_os = "linux"))]
+    if detached {
+        handle
+            .attach_kernel_driver(VARIAX_VIA_PODXT_LIVE.interface)
+            .map_err(|error| error.to_string())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub use crate::family::variax::driver::linux::Binding as VariaxDriverBinding;
+
+#[cfg(target_os = "linux")]
+pub fn variax_driver_binding(path: &str, address: u8) -> Result<VariaxDriverBinding, String> {
+    if cfg!(test) {
+        return Err("Test builds must inject synthetic USB metadata.".into());
+    }
+    crate::family::variax::driver::linux::check(std::path::Path::new("/"), path, address)
+}
+
+/// Restore the binding on the verified attachment. Does not claim the
+/// interface or send device commands. The caller retains the rig lock.
+#[cfg(target_os = "linux")]
+pub fn reattach_variax_driver(rig: &DeviceLock, path: &str, address: u8) -> Result<(), String> {
+    if cfg!(test) {
+        return Err("Test builds do not open a USB device.".into());
+    }
+    with_attachment(rig, VARIAX_VIA_PODXT_LIVE, path, address, |device| {
+        let handle = device.open().map_err(|error| {
+            format!("Cannot open PODxt Live USB to reattach the guitar interface driver: {error}.")
+        })?;
+        return_variax_driver(&handle, false)
+    })
 }
 
 /// Apply an operation to the single USB device at the verified physical
@@ -195,14 +269,16 @@ pub fn with_attachment<T>(
 }
 
 fn matches_attachment(expected: (&str, u8), bus: u8, ports: &[u8], address: u8) -> bool {
-    address == expected.1 && {
-        let ports = ports
-            .iter()
-            .map(u8::to_string)
-            .collect::<Vec<_>>()
-            .join(".");
-        format!("{bus}-{ports}") == expected.0
-    }
+    address == expected.1 && attachment_path(bus, ports) == expected.0
+}
+
+fn attachment_path(bus: u8, ports: &[u8]) -> String {
+    let ports = ports
+        .iter()
+        .map(u8::to_string)
+        .collect::<Vec<_>>()
+        .join(".");
+    format!("{bus}-{ports}")
 }
 
 fn with_matching_device<D, T>(
