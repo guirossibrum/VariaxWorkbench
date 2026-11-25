@@ -3773,30 +3773,16 @@ impl PodxtEditor {
         ui.horizontal_wrapped(|ui| {
             if ui.button("New tone").clicked() {
                 match pod_preset::PodTone::new_podxt_tone("New Tone") {
-                    Ok(tone) => {
-                        self.import_individual_pod_tone(tone.into_bytes());
-                        self.show_file_stage();
-                    }
+                    Ok(tone) => self.open_stage_document(tone.into_bytes()),
                     Err(error) => self.pod_message = error.detail(),
                 }
             }
             for (label, fixed) in [("New bundle", true), ("New collection", false)] {
-                if ui
-                    .add_enabled(
-                        !self.pod_dirty() && !self.pod_has_staged_edit(),
-                        egui::Button::new(label),
-                    )
-                    .clicked()
-                {
-                    let result = pod_preset::new_podxt_bundle(fixed)
-                        .and_then(|bundle| self.load_pod_bundle_bytes(bundle.as_bytes().to_vec()));
-                    self.pod_message = match result {
-                        Ok(()) => {
-                            self.show_file_stage();
-                            format!("{label} opened. Use Save copy to keep it.")
-                        }
-                        Err(error) => error.detail(),
-                    };
+                if ui.button(label).clicked() {
+                    match pod_preset::new_podxt_bundle(fixed) {
+                        Ok(bundle) => self.open_stage_document(bundle.as_bytes().to_vec()),
+                        Err(error) => self.pod_message = error.detail(),
+                    }
                 }
             }
             if ui
@@ -3844,6 +3830,15 @@ impl PodxtEditor {
         });
     }
 
+    #[cfg(feature = "usb")]
+    pub(in crate::editor) fn device_check_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        services: &mut EditorServices<'_>,
+    ) {
+        self.live.device_check_panel(ui, services);
+    }
+
     fn needs_close(&self) -> bool {
         #[cfg(feature = "usb")]
         if self.live.locker_dirty() {
@@ -3868,18 +3863,30 @@ impl FamilyTab for PodxtEditor {
                             .pod_selected
                             .and_then(|index| self.pod_library.tone(index));
                         if let Some(bytes) = self.live.panels(ui, services, file_tone) {
-                            self.import_pod_document(bytes);
-                            self.show_file_stage();
+                            self.open_stage_document(bytes);
                         }
                     }
                 });
         }
     }
+    fn source_path(&self) -> Option<&Path> {
+        self.stage.path.as_deref()
+    }
+    fn local_prompt(&mut self, ctx: &egui::Context, services: &mut EditorServices<'_>) {
+        self.stage_document_prompt(ctx, services);
+    }
+    fn blocking_prompt(&self) -> bool {
+        self.stage_has_pending_document()
+    }
     fn undo(&mut self) {
-        self.table_history(false);
+        if !self.stage_is_current() {
+            self.table_history(false);
+        }
     }
     fn redo(&mut self) {
-        self.table_history(true);
+        if !self.stage_is_current() {
+            self.table_history(true);
+        }
     }
     fn dirty(&self) -> bool {
         self.needs_close()
@@ -3888,6 +3895,10 @@ impl FamilyTab for PodxtEditor {
         self.pod_quit_dialog(services, ctx);
     }
     fn status(&self) -> (&str, Option<&str>) {
+        #[cfg(feature = "usb")]
+        if self.stage_is_current() {
+            return (self.live.stage_footer(), None);
+        }
         (&self.pod_message, None)
     }
     fn save_copy(&mut self, _ctx: &egui::Context, services: &mut EditorServices<'_>) {
@@ -3949,8 +3960,13 @@ impl ProductFamily for Family {
     ) -> Result<Box<dyn FamilyTab>, String> {
         let mut editor = PodxtEditor::new();
         editor.initialize_stage(defaults.preferences.clone());
-        if let TabSource::File(_, bytes) = source {
+        if let TabSource::File(path, bytes) = source {
             editor.import_pod_document(bytes);
+            editor.stage.path = Some(path);
+            #[cfg(feature = "usb")]
+            editor
+                .live
+                .use_document_directory(editor.stage.path.as_deref());
             if editor.pod_library.is_empty() {
                 return Err(editor.pod_message);
             }

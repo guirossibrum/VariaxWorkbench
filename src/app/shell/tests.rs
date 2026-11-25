@@ -459,3 +459,45 @@ fn variax_file_commands_keep_the_active_tab_and_use_save_as_destination_afterwar
     );
     assert!(!app.tabs.entries[0].editor.dirty());
 }
+
+#[test]
+fn podxt_open_command_replaces_the_document_in_the_same_tab() {
+    let ctx = egui::Context::default();
+    let mut app = empty_shell(&ctx);
+    app.new_tab(&super::podxt_panel::FAMILY);
+    let original = app.tabs.active;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("Replacement.l6t");
+    fs::write(&path, sample_pod_tone()).unwrap();
+    app.dialogs = Box::new(FakeDialogs {
+        pod_open: [Some(path.clone())].into(),
+        ..Default::default()
+    });
+    let modifiers = egui::Modifiers {
+        command: true,
+        ctrl: true,
+        ..Default::default()
+    };
+    let _ = ctx.run(
+        egui::RawInput {
+            modifiers,
+            events: vec![egui::Event::Key {
+                key: egui::Key::O,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }],
+            ..Default::default()
+        },
+        |ctx| app.render(ctx),
+    );
+    app.poll_picker(&ctx);
+    assert_eq!(app.tabs.active, original);
+    assert_eq!(app.tabs.entries.len(), 1);
+    assert_eq!(
+        app.tabs.entries[0].editor.source_path(),
+        Some(path.as_path())
+    );
+    assert!(app.tabs.entries[0].title().ends_with("Replacement.l6t"));
+}

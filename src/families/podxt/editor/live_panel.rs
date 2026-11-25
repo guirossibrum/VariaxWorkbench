@@ -40,7 +40,6 @@ pub(super) struct LivePanel {
 enum StagePanel {
     Locker,
     Store,
-    Advanced,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -487,17 +486,44 @@ impl LivePanel {
         self.snapshot.tone.is_some()
     }
 
-    pub(super) fn stage_tone(&self) -> Option<(pod_preset::PodTone, u8)> {
-        let dump = self.snapshot.tone.as_ref()?;
-        let payload = self.editor.stage_payload(dump)?;
+    pub(super) fn stage_tone(&self) -> Result<Option<(pod_preset::PodTone, u8)>, String> {
+        let Some(dump) = self.snapshot.tone.as_ref() else {
+            return Ok(None);
+        };
+        let payload = self
+            .editor
+            .stage_payload(dump)
+            .ok_or_else(|| format!("{} · The edit buffer could not be decoded.", dump.name()))?;
         let tone =
             pod_preset::PodTone::from_podxt_payload(&payload, pod_preset::ContainerKind::L6pa)
-                .ok()?;
-        Some((tone, self.snapshot.packs.map_or(0, |packs| packs.0)))
+                .map_err(|error| format!("{} · {}", dump.name(), error.detail()))?;
+        Ok(Some((tone, self.snapshot.packs.map_or(0, |packs| packs.0))))
+    }
+
+    pub(super) fn use_document_directory(&mut self, path: Option<&std::path::Path>) {
+        self.locker.use_document_directory(path);
+    }
+
+    pub(super) fn stage_footer(&self) -> &str {
+        self.editor
+            .status_text()
+            .or(self.message.as_deref())
+            .unwrap_or("Current POD tone")
     }
 
     pub(super) fn has_library_bank(&self, bank: BankKind) -> bool {
         Location::all(&[bank]).any(|slot| self.stored_tone(slot).is_some())
+    }
+
+    pub(super) fn channel_modified(&self, slot: Location) -> bool {
+        self.snapshot.channel == Some(slot)
+            && (self.editor.has_pending()
+                || self
+                    .snapshot
+                    .tone
+                    .as_ref()
+                    .zip(self.stored_tone(slot))
+                    .is_some_and(|(playing, saved)| !playing.same_tone(saved)))
     }
 
     pub(super) fn stored_tone(&self, slot: Location) -> Option<&EditBuffer> {
@@ -543,9 +569,6 @@ impl LivePanel {
     }
 
     pub(super) fn toolbar(&mut self, ui: &mut egui::Ui, current: &mut bool) {
-        if !self.visible() {
-            return;
-        }
         let command_running = self.worker.as_ref().map(|worker| worker.command);
         let idle = !self.busy();
         let connected = self.connected();
@@ -574,6 +597,9 @@ impl LivePanel {
             (ReadCommand::Tuner, "Tuner", "Stop tuner"),
             (ReadCommand::Follow, "Follow", "Stop following"),
         ] {
+            if !self.visible() {
+                continue;
+            }
             let running = command_running == Some(command);
             let ready = connected
                 && idle
@@ -595,7 +621,7 @@ impl LivePanel {
             }
         }
         for (panel, label, enabled) in [
-            (StagePanel::Locker, "Tone Locker", true),
+            (StagePanel::Locker, "Tone Locker · Librarian", true),
             (
                 StagePanel::Store,
                 "Store to POD…",
@@ -605,9 +631,10 @@ impl LivePanel {
                     && !self.editor.has_pending()
                     && self.snapshot.channel.is_some(),
             ),
-            (StagePanel::Advanced, "Advanced", true),
         ] {
-            if panel == StagePanel::Store && !*current {
+            if panel != StagePanel::Locker && !self.visible()
+                || panel == StagePanel::Store && !*current
+            {
                 continue;
             }
             let selected = self.panel == Some(panel);
@@ -616,6 +643,11 @@ impl LivePanel {
                     enabled || selected,
                     egui::Button::selectable(selected, label),
                 )
+                .on_hover_text(if panel == StagePanel::Locker {
+                    "Browse local files and PODxt banks. CustomTone was a separate online service."
+                } else {
+                    ""
+                })
                 .clicked()
             {
                 if self.panel == Some(StagePanel::Store) || panel == StagePanel::Store {
@@ -665,9 +697,6 @@ impl LivePanel {
         services: &mut EditorServices<'_>,
         file_tone: Option<&pod_preset::PodTone>,
     ) -> Option<Vec<u8>> {
-        if !self.visible() {
-            return None;
-        }
         let panel = self.panel?;
         let view = ui.scope(|ui| match panel {
             StagePanel::Locker => {
@@ -699,19 +728,6 @@ impl LivePanel {
             }
             StagePanel::Store => {
                 self.show_current_store(ui, services);
-                None
-            }
-            StagePanel::Advanced => {
-                self.show_advanced(ui, services);
-                if !self.locker.syncing() {
-                    self.store.show(
-                        ui,
-                        services,
-                        self.device.as_ref(),
-                        self.worker.is_none() && !self.editor.busy() && !self.editor.has_pending(),
-                        store::StoreView::Original,
-                    );
-                }
                 None
             }
         });
@@ -762,6 +778,25 @@ impl LivePanel {
                 idle,
                 store::StoreView::Current,
             );
+        });
+    }
+
+    pub(super) fn device_check_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        services: &mut EditorServices<'_>,
+    ) {
+        ui.collapsing("PODxt Live diagnostics", |ui| {
+            self.show_advanced(ui, services);
+            if !self.locker.syncing() && self.panel != Some(StagePanel::Store) {
+                self.store.show(
+                    ui,
+                    services,
+                    self.device.as_ref(),
+                    self.worker.is_none() && !self.editor.busy() && !self.editor.has_pending(),
+                    store::StoreView::Original,
+                );
+            }
         });
     }
 

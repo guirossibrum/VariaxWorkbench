@@ -944,6 +944,26 @@ impl Workbench {
                     visible.push_str(&self.tone_channel);
                 }
             }
+            #[cfg(feature = "usb")]
+            if self.backup_rx.is_none() && self.tone_rx.is_none() {
+                let mut podxts = self.tabs.entries.iter().filter(|entry| {
+                    entry.family.info().id == "podxt"
+                        && entry
+                            .device
+                            .as_ref()
+                            .and_then(tabs::DeviceTab::verified_attachment)
+                            .is_some()
+                });
+                if let (Some(id), None) = (podxts.next().map(|entry| entry.id), podxts.next()) {
+                    self.with_tab(id, |entry, services| {
+                        if let Some(editor) = (&mut *entry.editor as &mut dyn std::any::Any)
+                            .downcast_mut::<podxt_panel::PodxtEditor>()
+                        {
+                            editor.device_check_panel(ui, services);
+                        }
+                    });
+                }
+            }
             let report = self.device_check.report();
             let sanitized = self.device_check.sanitized_report();
             ui.horizontal(|ui| {

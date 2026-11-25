@@ -127,14 +127,17 @@ impl Workbench {
     fn request_editor_open(&mut self, ctx: &egui::Context) {
         let mut handled = false;
         self.with_active(|entry, services| {
-            let Some(editor) =
-                (&mut *entry.editor as &mut dyn std::any::Any).downcast_mut::<VariaxEditor>()
-            else {
-                return;
-            };
-            handled = true;
-            if !services.picker.is_open() && !editor.busy() && !editor.blocking_prompt() {
-                editor.open_dialog(ctx, services);
+            let editor = &mut *entry.editor as &mut dyn std::any::Any;
+            if let Some(editor) = editor.downcast_mut::<VariaxEditor>() {
+                handled = true;
+                if !services.picker.is_open() && !editor.busy() && !editor.blocking_prompt() {
+                    editor.open_dialog(ctx, services);
+                }
+            } else if let Some(editor) = editor.downcast_mut::<super::podxt_panel::PodxtEditor>() {
+                handled = true;
+                if !services.picker.is_open() && !editor.busy() && !editor.blocking_prompt() {
+                    editor.open_dialog(ctx, services);
+                }
             }
         });
         if !handled {

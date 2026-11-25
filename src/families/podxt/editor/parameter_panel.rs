@@ -6,15 +6,19 @@ use variax_workbench::pod_preset::{PodControl, PodMetadata, PodModelChange, PodT
 pub(super) struct ParameterPanel {
     pub(super) packs: u8,
     pub(super) keep_amp_settings: bool,
-    pub(super) undo: Vec<Revision>,
-    pub(super) redo: Vec<Revision>,
+    histories: BTreeMap<usize, ToneHistory>,
     pub(super) unknown: BTreeMap<usize, BTreeSet<u32>>,
     metadata: Option<MetadataDraft>,
     pub(super) slider: Option<(usize, u32, f64)>,
 }
 
-pub(super) struct Revision {
-    index: usize,
+#[derive(Default)]
+struct ToneHistory {
+    undo: Vec<Revision>,
+    redo: Vec<Revision>,
+}
+
+struct Revision {
     bytes: Vec<u8>,
     unknown: BTreeSet<u32>,
 }
@@ -27,23 +31,34 @@ struct MetadataDraft {
 
 impl ParameterPanel {
     pub(super) fn clear_history(&mut self) {
-        self.undo.clear();
-        self.redo.clear();
+        self.histories.clear();
         self.unknown.clear();
         self.metadata = None;
         self.slider = None;
     }
 
     pub(super) fn clear_tone_history(&mut self, index: usize) {
-        self.undo.retain(|item| item.index != index);
-        self.redo.retain(|item| item.index != index);
+        self.histories.remove(&index);
         self.unknown.remove(&index);
     }
 
-    fn push_undo(&mut self, revision: Revision) {
-        self.undo.push(revision);
-        if self.undo.len() > 32 {
-            self.undo.remove(0);
+    pub(super) fn can_history(&self, index: Option<usize>, redo: bool) -> bool {
+        index
+            .and_then(|index| self.histories.get(&index))
+            .is_some_and(|history| !if redo { &history.redo } else { &history.undo }.is_empty())
+    }
+}
+
+impl ToneHistory {
+    fn stack(&mut self, redo: bool) -> &mut Vec<Revision> {
+        if redo { &mut self.redo } else { &mut self.undo }
+    }
+
+    fn push(&mut self, redo: bool, revision: Revision) {
+        let stack = self.stack(redo);
+        stack.push(revision);
+        if stack.len() > 32 {
+            stack.remove(0);
         }
     }
 }
@@ -90,46 +105,45 @@ impl PodxtEditor {
             return Ok(());
         }
         let revision = Revision {
-            index,
             bytes: tone.as_bytes().to_vec(),
             unknown: prior_unknown,
         };
         self.replace_pod_tone(index, candidate.into_bytes())?;
         self.parameter_panel.unknown.insert(index, unknown);
-        self.parameter_panel.push_undo(revision);
-        self.parameter_panel.redo.clear();
+        let history = self.parameter_panel.histories.entry(index).or_default();
+        history.push(false, revision);
+        history.redo.clear();
         self.pod_message = "Tone edited offline.".into();
         Ok(())
     }
 
     pub(super) fn table_history(&mut self, redo: bool) {
-        let panel = &mut self.parameter_panel;
-        let stack = if redo {
-            &mut panel.redo
-        } else {
-            &mut panel.undo
-        };
-        let Some(revision) = stack.pop() else {
+        let Some(index) = self.pod_selected else {
             return;
         };
-        let index = revision.index;
+        let panel = &mut self.parameter_panel;
+        let Some(revision) = panel
+            .histories
+            .get_mut(&index)
+            .and_then(|history| history.stack(redo).pop())
+        else {
+            return;
+        };
         let Some(current) = self.pod_library.tone(index) else {
             return;
         };
         let inverse = Revision {
-            index,
             bytes: current.as_bytes().to_vec(),
             unknown: panel.unknown.get(&index).cloned().unwrap_or_default(),
         };
         match self.replace_pod_tone(index, revision.bytes.clone()) {
             Ok(()) => {
                 self.parameter_panel.unknown.insert(index, revision.unknown);
-                if redo {
-                    self.parameter_panel.push_undo(inverse);
-                } else {
-                    self.parameter_panel.redo.push(inverse);
-                }
-                self.select_pod_index(index);
+                self.parameter_panel
+                    .histories
+                    .entry(index)
+                    .or_default()
+                    .push(!redo, inverse);
                 self.refresh_selected_pod_name();
                 self.pod_message = if redo {
                     "Tone edit redone."
@@ -139,13 +153,11 @@ impl PodxtEditor {
                 .into();
             }
             Err(error) => {
-                let panel = &mut self.parameter_panel;
-                if redo {
-                    &mut panel.redo
-                } else {
-                    &mut panel.undo
-                }
-                .push(revision);
+                self.parameter_panel
+                    .histories
+                    .entry(index)
+                    .or_default()
+                    .push(redo, revision);
                 self.pod_message = error.detail();
             }
         }
