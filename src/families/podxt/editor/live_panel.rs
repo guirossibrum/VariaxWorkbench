@@ -29,7 +29,24 @@ pub(super) struct LivePanel {
     locker: locker::Locker,
     snapshot: Snapshot,
     show_values: bool,
+    startup: Option<Startup>,
+    pub(super) live_editing: bool,
+    panel: Option<StagePanel>,
+    scroll_to_panel: bool,
     message: Option<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StagePanel {
+    Locker,
+    Store,
+    Advanced,
+}
+
+#[derive(Clone, Copy)]
+enum Startup {
+    Current,
+    Tones,
 }
 
 struct Worker {
@@ -122,8 +139,10 @@ impl GatePolicy for ReadPolicy {
                     && !hardware_gates::is_locked(Gate::CurrentSettingsRead)
             }
             Operation::PodxtLibraryRead => {
-                matches!(self.0, ReadCommand::Library | ReadCommand::Follow)
-                    && !hardware_gates::is_locked(Gate::FullBackupRead)
+                matches!(
+                    self.0,
+                    ReadCommand::Library | ReadCommand::ToneBank | ReadCommand::Follow
+                ) && !hardware_gates::is_locked(Gate::FullBackupRead)
             }
             _ => false,
         }
@@ -131,7 +150,7 @@ impl GatePolicy for ReadPolicy {
 }
 
 fn requires_library(command: ReadCommand) -> bool {
-    command == ReadCommand::Library
+    matches!(command, ReadCommand::Library | ReadCommand::ToneBank)
 }
 
 /// The guard outlives the link, including cleanup on errors.
@@ -248,6 +267,7 @@ const fn title(command: ReadCommand) -> &'static str {
     match command {
         ReadCommand::Current => "Read current tone",
         ReadCommand::Library => "Read library",
+        ReadCommand::ToneBank => "Read tone channels",
         ReadCommand::Packs => "Read installed packs",
         ReadCommand::Globals => "Read globals",
         ReadCommand::Tuner => "Start tuner",
@@ -256,7 +276,8 @@ const fn title(command: ReadCommand) -> &'static str {
 }
 
 impl LivePanel {
-    pub(super) fn set_device(&mut self, device: Option<&tabs::DeviceTab>) {
+    /// True when a new verified attachment should take over the stage.
+    pub(super) fn set_device(&mut self, device: Option<&tabs::DeviceTab>) -> bool {
         self.device_tab = device.is_some();
         let verified = device
             .filter(|tab| {
@@ -266,15 +287,22 @@ impl LivePanel {
             })
             .map(|tab| &tab.device.key);
         if self.device.as_ref() == verified {
-            return;
+            return false;
         }
         self.cancel();
         self.editor.detach();
         self.store.detach();
         self.locker.detach(&mut self.store);
         self.device = verified.cloned();
+        self.startup = self.device.as_ref().map(|_| Startup::Current);
+        self.live_editing = false;
+        if self.panel == Some(StagePanel::Store) {
+            self.panel = None;
+        }
+        self.editor.set_live(false);
         self.snapshot = Snapshot::default();
         self.message = None;
+        self.device.is_some()
     }
 
     pub(super) fn playing_channel(&self) -> Option<Location> {
@@ -290,6 +318,7 @@ impl LivePanel {
     }
 
     pub(super) fn cancel(&mut self) {
+        self.startup = None;
         self.editor.cancel();
         self.store.cancel();
         if let Some(worker) = &self.worker {
@@ -304,12 +333,17 @@ impl LivePanel {
         if self.busy() || !Self::admitted(command) {
             return;
         }
+        if command == ReadCommand::Follow {
+            self.store.clear_preparation();
+            self.editor.set_live(false);
+            self.live_editing = false;
+        }
         let mut previous = self.snapshot.clone();
         previous.warning = None;
         previous.clip = None;
         previous.tap = None;
         previous.tuner = None;
-        if command == ReadCommand::Library {
+        if requires_library(command) {
             previous.library_count = None;
         }
         let snapshot = Arc::new(Mutex::new(previous));
@@ -368,11 +402,28 @@ impl LivePanel {
             self.worker.is_none() && !self.store.busy(),
             ctx,
         ) {
+            if self.panel == Some(StagePanel::Store)
+                && (self.snapshot.tone.as_ref() != Some(&buffer.tone)
+                    || self.snapshot.channel != Some(buffer.channel))
+            {
+                self.store.clear_preparation();
+            }
             self.snapshot.tone = Some(buffer.tone.clone());
             self.snapshot.packs = Some(buffer.packs);
             self.snapshot.channel = Some(buffer.channel);
         }
         let Some(worker) = &self.worker else {
+            if !self.busy() {
+                match self.startup.take() {
+                    Some(Startup::Current) => {
+                        self.refresh_current(ctx);
+                        self.startup = Some(Startup::Tones);
+                        ctx.request_repaint();
+                    }
+                    Some(Startup::Tones) => self.start(ReadCommand::ToneBank, ctx),
+                    None => {}
+                }
+            }
             return;
         };
         if self.device.as_ref() == Some(&worker.device) {
@@ -401,13 +452,13 @@ impl LivePanel {
             return;
         }
         self.message = Some(match result {
-            Ok(()) if command == ReadCommand::Library => format!(
+            Ok(()) if requires_library(command) => format!(
                 "Library read complete. {} entries.",
                 self.snapshot.library.len()
             ),
             Ok(()) if command == ReadCommand::Tuner => "Tuner stopped.".into(),
             Ok(()) => format!("{} complete.", title(command)),
-            Err(error) if stopped && command == ReadCommand::Library => {
+            Err(error) if stopped && requires_library(command) => {
                 format!(
                     "Library read stopped after {} entries. {error}",
                     self.snapshot.library.len()
@@ -415,6 +466,64 @@ impl LivePanel {
             }
             Err(error) => error,
         });
+        if command == ReadCommand::Follow {
+            self.refresh_current(ctx);
+        }
+    }
+
+    pub(super) fn connected(&self) -> bool {
+        self.device.is_some()
+    }
+
+    pub(super) fn has_current(&self) -> bool {
+        self.snapshot.tone.is_some()
+    }
+
+    pub(super) fn stage_tone(&self) -> Option<(pod_preset::PodTone, u8)> {
+        let dump = self.snapshot.tone.as_ref()?;
+        let payload = self.editor.stage_payload(dump)?;
+        let tone =
+            pod_preset::PodTone::from_podxt_payload(&payload, pod_preset::ContainerKind::L6pa)
+                .ok()?;
+        Some((tone, self.snapshot.packs.map_or(0, |packs| packs.0)))
+    }
+
+    pub(super) fn has_library_bank(&self, bank: BankKind) -> bool {
+        Location::all(&[bank]).any(|slot| self.stored_tone(slot).is_some())
+    }
+
+    pub(super) fn stored_tone(&self, slot: Location) -> Option<&EditBuffer> {
+        self.snapshot.library.get(&slot.address())
+    }
+
+    pub(super) fn refresh_current(&mut self, ctx: &egui::Context) {
+        if !self.busy()
+            && let Some(device) = &self.device
+        {
+            self.editor.get(device, ctx);
+        }
+    }
+
+    pub(super) fn queue_stage_target(&mut self, target: podxt::LiveTarget, ctx: &egui::Context) {
+        if self.device.is_some() && self.worker.is_none() && !self.store.busy() {
+            self.editor.queue_stage_target(target, ctx);
+        }
+    }
+
+    pub(super) fn can_change_control(&self, control: LiveControl, block: &str) -> bool {
+        self.device.is_some()
+            && self.worker.is_none()
+            && !self.store.busy()
+            && self.editor.can_change(control, block)
+    }
+
+    pub(super) fn recall(&mut self, slot: Location, ctx: &egui::Context) {
+        if self.live_editing
+            && !self.busy()
+            && let Some(device) = &self.device
+        {
+            self.editor.recall(slot, device, ctx);
+        }
     }
 
     pub(super) fn locker_dirty(&self) -> bool {
@@ -425,12 +534,230 @@ impl LivePanel {
         self.locker.discard(&mut self.store);
     }
 
-    pub(super) fn show(
+    pub(super) fn toolbar(&mut self, ui: &mut egui::Ui, current: &mut bool) {
+        if !self.visible() {
+            return;
+        }
+        let command_running = self.worker.as_ref().map(|worker| worker.command);
+        let idle = !self.busy();
+        let connected = self.connected();
+        if *current
+            && ui
+                .add_enabled(
+                    connected && idle && !self.editor.has_pending() && self.editor.stage_editable(),
+                    egui::Checkbox::new(&mut self.live_editing, "Live editing"),
+                )
+                .changed()
+        {
+            if let Some(device) = self.device.as_ref().filter(|_| self.live_editing) {
+                self.editor.begin_live(device, ui.ctx());
+            } else {
+                self.editor.set_live(false);
+            }
+        }
+        if *current {
+            self.editor.toolbar(
+                ui,
+                self.device.as_ref(),
+                self.worker.is_none() && !self.store.busy(),
+            );
+        }
+        for (command, idle_label, active_label) in [
+            (ReadCommand::Tuner, "Tuner", "Stop tuner"),
+            (ReadCommand::Follow, "Follow", "Stop following"),
+        ] {
+            let running = command_running == Some(command);
+            let ready = connected
+                && idle
+                && Self::admitted(command)
+                && (command != ReadCommand::Follow
+                    || self.snapshot.channel.is_some() && !self.editor.has_pending());
+            if ui
+                .add_enabled(
+                    running || ready,
+                    egui::Button::new(if running { active_label } else { idle_label }),
+                )
+                .clicked()
+            {
+                if running {
+                    self.cancel();
+                } else {
+                    self.start(command, ui.ctx());
+                }
+            }
+        }
+        for (panel, label, enabled) in [
+            (StagePanel::Locker, "Tone Locker", true),
+            (
+                StagePanel::Store,
+                "Store to POD…",
+                *current
+                    && idle
+                    && !self.locker.syncing()
+                    && !self.editor.has_pending()
+                    && self.snapshot.channel.is_some(),
+            ),
+            (StagePanel::Advanced, "Advanced", true),
+        ] {
+            if panel == StagePanel::Store && !*current {
+                continue;
+            }
+            let selected = self.panel == Some(panel);
+            if ui
+                .add_enabled(
+                    enabled || selected,
+                    egui::Button::selectable(selected, label),
+                )
+                .clicked()
+            {
+                if self.panel == Some(StagePanel::Store) || panel == StagePanel::Store {
+                    self.store.clear_preparation();
+                }
+                self.panel = (!selected).then_some(panel);
+                self.scroll_to_panel = self.panel.is_some();
+            }
+        }
+    }
+
+    pub(super) fn stage_status(&self, ui: &mut egui::Ui) {
+        if !self.visible() {
+            return;
+        }
+        if let Some(reading) = self.snapshot.tuner {
+            let note = reading.note.map_or("—", podxt::tuner_note_name);
+            let deviation = reading.deviation.map(podxt::tuner_cents);
+            ui.label(deviation.map_or_else(
+                || format!("Tuner {note}"),
+                |cents| format!("Tuner {note} · {cents:+.0} cents"),
+            ));
+        }
+        if let Some(worker) = &self.worker
+            && requires_library(worker.command)
+            && let Some(count) = self.snapshot.library_count
+        {
+            let total = if worker.command == ReadCommand::ToneBank {
+                128
+            } else {
+                299
+            };
+            ui.weak(format!("Reading library · {count}/{total}"));
+            if ui.button("Cancel library read").clicked() {
+                worker.stop.store(true, Ordering::Release);
+            }
+        }
+        self.editor.status(ui);
+        if let Some(message) = &self.message {
+            ui.weak(message);
+        }
+    }
+
+    pub(super) fn panels(
         &mut self,
         ui: &mut egui::Ui,
         services: &mut EditorServices<'_>,
         file_tone: Option<&pod_preset::PodTone>,
     ) -> Option<Vec<u8>> {
+        if !self.visible() {
+            return None;
+        }
+        let panel = self.panel?;
+        let view = ui.scope(|ui| match panel {
+            StagePanel::Locker => {
+                let idle = !self.busy() && !self.editor.has_pending();
+                let actions = self.locker.show(
+                    ui,
+                    services,
+                    locker::View {
+                        snapshot: &self.snapshot,
+                        idle,
+                        can_get: idle && self.connected() && Self::admitted(ReadCommand::Library),
+                        editor_tone: file_tone,
+                    },
+                    &mut self.store,
+                );
+                if actions.get {
+                    self.start(ReadCommand::Library, ui.ctx());
+                }
+                if self.locker.syncing() {
+                    self.store.show(
+                        ui,
+                        services,
+                        self.device.as_ref(),
+                        idle,
+                        store::StoreView::Sync,
+                    );
+                }
+                actions.open
+            }
+            StagePanel::Store => {
+                self.show_current_store(ui, services);
+                None
+            }
+            StagePanel::Advanced => {
+                self.show_advanced(ui, services);
+                if !self.locker.syncing() {
+                    self.store.show(
+                        ui,
+                        services,
+                        self.device.as_ref(),
+                        self.worker.is_none() && !self.editor.busy() && !self.editor.has_pending(),
+                        store::StoreView::Original,
+                    );
+                }
+                None
+            }
+        });
+        if std::mem::take(&mut self.scroll_to_panel) {
+            view.response.scroll_to_me(Some(egui::Align::Min));
+        }
+        view.inner
+    }
+
+    fn show_current_store(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
+        let Some(slot) = self.snapshot.channel else {
+            return;
+        };
+        let idle = !self.busy() && !self.editor.has_pending();
+        ui.group(|ui| {
+            ui.strong(format!("Store to POD · {}", slot.slot_name()));
+            if ui
+                .add_enabled(
+                    idle && self.snapshot.tone.is_some(),
+                    egui::Button::new("Verify library backup…"),
+                )
+                .clicked()
+            {
+                services.request_picker::<PodxtEditor>(
+                    ui.ctx(),
+                    PickRequest::Folder,
+                    move |editor, path, _| {
+                        let Some(path) = path else {
+                            return;
+                        };
+                        let live = &mut editor.live;
+                        if live.panel == Some(StagePanel::Store)
+                            && !live.locker.syncing()
+                            && !live.busy()
+                            && !live.editor.has_pending()
+                            && live.snapshot.channel == Some(slot)
+                        {
+                            live.store
+                                .prepare_current(&path, slot, live.snapshot.tone.as_ref());
+                        }
+                    },
+                );
+            }
+            self.store.show(
+                ui,
+                services,
+                self.device.as_ref(),
+                idle,
+                store::StoreView::Current,
+            );
+        });
+    }
+
+    fn show_advanced(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
         ui.heading("PODxt Live reads");
         ui.horizontal_wrapped(|ui| {
             for command in [
@@ -438,8 +765,6 @@ impl LivePanel {
                 ReadCommand::Library,
                 ReadCommand::Packs,
                 ReadCommand::Globals,
-                ReadCommand::Tuner,
-                ReadCommand::Follow,
             ] {
                 let enabled = self.device.is_some() && !self.busy() && Self::admitted(command);
                 if ui
@@ -552,29 +877,6 @@ impl LivePanel {
             self.device.as_ref(),
             self.worker.is_none() && !self.store.busy(),
         );
-        let idle = !self.busy();
-        let actions = self.locker.show(
-            ui,
-            services,
-            locker::View {
-                snapshot: &self.snapshot,
-                idle,
-                can_get: idle && self.device.is_some() && Self::admitted(ReadCommand::Library),
-                editor_tone: file_tone,
-            },
-            &mut self.store,
-        );
-        if actions.get {
-            self.start(ReadCommand::Library, ui.ctx());
-        }
-        self.store.show(
-            ui,
-            services,
-            self.device.as_ref(),
-            self.worker.is_none() && !self.editor.busy(),
-            self.locker.syncing(),
-        );
-        actions.open
     }
 }
 

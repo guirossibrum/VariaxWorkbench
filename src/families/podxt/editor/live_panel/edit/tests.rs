@@ -1,6 +1,6 @@
 use super::super::tests::{FakeLink, FakeLock};
 use super::*;
-use podxt::{Global, PodxtRequest};
+use podxt::{Global, PodxtRequest, Value};
 use std::{cell::Cell, collections::VecDeque};
 
 fn sample(drive: u8, index: u16) -> EditorBuffer {
@@ -24,6 +24,7 @@ fn queued_drag_edits_keep_the_latest_value_and_honor_the_dispatch_interval() {
     let now = Instant::now();
     let mut editor = LiveEditor {
         last_dispatch: Some(now),
+        stage_only: false,
         ..Default::default()
     };
     let control = LiveControl::Basic(Control::Drive);

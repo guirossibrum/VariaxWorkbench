@@ -48,25 +48,6 @@ impl ParameterPanel {
     }
 }
 
-pub(super) const GROUPS: [(&str, &str); 16] = [
-    ("amp", "Amp"),
-    ("drive", "Drive"),
-    ("cab", "Cab and room"),
-    ("mic", "Microphone"),
-    ("gate", "Noise gate"),
-    ("compressor", "Compressor"),
-    ("eq", "EQ"),
-    ("stomp", "Stomp"),
-    ("mod", "Modulation"),
-    ("delay", "Delay"),
-    ("reverb", "Reverb"),
-    ("wah", "Wah"),
-    ("volume pedal", "Volume pedal"),
-    ("tempo", "Tempo"),
-    ("system", "Pedal, Tweak and footswitch"),
-    ("Variax link", "Linked Variax"),
-];
-
 impl PodxtEditor {
     pub(super) fn table_edit(
         &mut self,

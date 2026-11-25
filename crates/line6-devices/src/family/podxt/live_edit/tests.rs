@@ -401,3 +401,51 @@ fn transfer_readback_accepts_synchronized_timing_and_rejects_linked_field_change
     linked.raw[39 + 96] = 12;
     assert!(!transfer_matches(&before, &changes, &linked));
 }
+
+#[test]
+fn librarian_recall_refuses_edited_tones_and_verified_recall_only_changes_program() {
+    let playing = buffer(&[(13, 42)]);
+    let target = Location::new(BankKind::Tones, 18).unwrap();
+    let saved_target = frame(&[(13, 77)]);
+    let mut log = Quiet;
+
+    let mut edited = begin(&playing.tone);
+    edited.push(reply(
+        PodxtRequest::Stored(playing.channel),
+        frame(&[(13, 41)]).raw,
+    ));
+    let mut session = Session::new(
+        Fake::from_bytes(Path::PodxtMidi, edited),
+        &AllowAll,
+        &mut log,
+    );
+    assert!(
+        recall_editor_channel(&mut session, target, || false)
+            .unwrap_err()
+            .contains("Nothing was switched")
+    );
+    session.link.assert_finished();
+
+    let mut script = begin(&playing.tone);
+    script.extend([
+        reply(
+            PodxtRequest::Stored(playing.channel),
+            playing.tone.raw.clone(),
+        ),
+        reply(PodxtRequest::Stored(target), saved_target.raw.clone()),
+        packs(4),
+        channel(17),
+        (vec![0xc0, 18], vec![]),
+        dump(&saved_target),
+        channel(18),
+    ]);
+    let mut session = Session::new(
+        Fake::from_bytes(Path::PodxtMidi, script),
+        &AllowAll,
+        &mut log,
+    );
+    let recalled = recall_editor_channel(&mut session, target, || false).unwrap();
+    assert_eq!(recalled.channel, target);
+    assert_eq!(recalled.tone, saved_target);
+    session.link.assert_finished();
+}

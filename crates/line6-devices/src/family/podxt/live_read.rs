@@ -11,6 +11,7 @@ use std::collections::VecDeque;
 pub enum ReadCommand {
     Current,
     Library,
+    ToneBank,
     Packs,
     Globals,
     Tuner,
@@ -85,7 +86,8 @@ pub fn read_live<L: Link>(
     reader.identify()?;
     match command {
         ReadCommand::Current => reader.current(),
-        ReadCommand::Library => reader.library(),
+        ReadCommand::Library => reader.library(&BankKind::ALL),
+        ReadCommand::ToneBank => reader.library(&[BankKind::Tones]),
         ReadCommand::Packs => reader.packs(),
         ReadCommand::Globals => reader.globals(),
         ReadCommand::Tuner => reader.tuner(),
@@ -229,10 +231,10 @@ impl<L: Link> Reader<'_, '_, L> {
         self.check_cancel()
     }
 
-    fn library(&mut self) -> Result<(), String> {
+    fn library(&mut self, banks: &[BankKind]) -> Result<(), String> {
         self.check_cancel()?;
         (self.publish)(ReadUpdate::LibraryStarted);
-        for location in Location::all(&BankKind::ALL) {
+        for location in Location::all(banks) {
             self.stored(location)?;
         }
         Ok(())
@@ -531,6 +533,33 @@ mod tests {
             assert_eq!(fake.writes.len(), count + 1);
             fake.assert_finished();
         }
+    }
+
+    #[test]
+    fn librarian_reads_only_the_128_tone_channels() {
+        let expected: Vec<_> = Location::all(&[BankKind::Tones]).collect();
+        let mut script = vec![(PodxtRequest::Identity, packets(&identity()))];
+        script.extend(
+            expected
+                .iter()
+                .map(|&slot| (PodxtRequest::Stored(slot), packets(&tone(b"Librarian")))),
+        );
+        let mut fake = Fake::new(Path::PodxtMidi, script);
+        let mut seen = Vec::new();
+        run(
+            &mut fake,
+            ReadCommand::ToneBank,
+            || false,
+            |update| {
+                if let ReadUpdate::Stored(stored) = update {
+                    seen.push(stored.location);
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(seen, expected);
+        assert_eq!(seen.len(), 128);
+        fake.assert_finished();
     }
 
     struct Disconnect {

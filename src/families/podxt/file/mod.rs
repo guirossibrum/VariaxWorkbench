@@ -14,6 +14,8 @@ mod library;
 mod metadata;
 #[cfg(any(feature = "podxt-table", test))]
 mod parameters;
+#[cfg(feature = "gui")]
+mod startup;
 #[cfg(test)]
 pub(crate) mod tests;
 mod tone;
@@ -24,4 +26,6 @@ pub use library::*;
 pub use metadata::*;
 #[cfg(any(feature = "podxt-table", test))]
 pub use parameters::*;
+#[cfg(feature = "gui")]
+pub use startup::*;
 pub use tone::*;

@@ -3773,7 +3773,10 @@ impl PodxtEditor {
         ui.horizontal_wrapped(|ui| {
             if ui.button("New tone").clicked() {
                 match pod_preset::PodTone::new_podxt_tone("New Tone") {
-                    Ok(tone) => self.import_individual_pod_tone(tone.into_bytes()),
+                    Ok(tone) => {
+                        self.import_individual_pod_tone(tone.into_bytes());
+                        self.show_file_stage();
+                    }
                     Err(error) => self.pod_message = error.detail(),
                 }
             }
@@ -3788,7 +3791,10 @@ impl PodxtEditor {
                     let result = pod_preset::new_podxt_bundle(fixed)
                         .and_then(|bundle| self.load_pod_bundle_bytes(bundle.as_bytes().to_vec()));
                     self.pod_message = match result {
-                        Ok(()) => format!("{label} opened. Use Save copy to keep it."),
+                        Ok(()) => {
+                            self.show_file_stage();
+                            format!("{label} opened. Use Save copy to keep it.")
+                        }
                         Err(error) => error.detail(),
                     };
                 }
@@ -3857,16 +3863,14 @@ impl FamilyTab for PodxtEditor {
                 .show(ui, |ui| {
                     self.show_stage(ui, services);
                     #[cfg(feature = "usb")]
-                    if self.live.visible() {
-                        ui.add_space(8.0);
-                        ui.collapsing("Device and Tone Locker", |ui| {
-                            let file_tone = self
-                                .pod_selected
-                                .and_then(|index| self.pod_library.tone(index));
-                            if let Some(bytes) = self.live.show(ui, services, file_tone) {
-                                self.import_pod_document(bytes);
-                            }
-                        });
+                    {
+                        let file_tone = self
+                            .pod_selected
+                            .and_then(|index| self.pod_library.tone(index));
+                        if let Some(bytes) = self.live.panels(ui, services, file_tone) {
+                            self.import_pod_document(bytes);
+                            self.show_file_stage();
+                        }
                     }
                 });
         }
@@ -3892,7 +3896,13 @@ impl FamilyTab for PodxtEditor {
     fn observe_device(&mut self, device: Option<&tabs::DeviceTab>) {
         self.stage.observe(device);
         #[cfg(feature = "usb")]
-        self.live.set_device(device);
+        {
+            if self.live.set_device(device) {
+                self.stage.view_current = true;
+            } else if !self.live.connected() {
+                self.stage.view_current = false;
+            }
+        }
     }
     #[cfg(feature = "usb")]
     fn busy(&self) -> bool {
@@ -3934,10 +3944,11 @@ impl ProductFamily for Family {
 
     fn open(
         &self,
-        _defaults: &EditorDefaults,
+        defaults: &EditorDefaults,
         source: TabSource,
     ) -> Result<Box<dyn FamilyTab>, String> {
         let mut editor = PodxtEditor::new();
+        editor.initialize_stage(defaults.preferences.clone());
         if let TabSource::File(_, bytes) = source {
             editor.import_pod_document(bytes);
             if editor.pod_library.is_empty() {
