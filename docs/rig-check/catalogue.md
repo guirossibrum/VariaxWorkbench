@@ -111,18 +111,18 @@ owner-rig issue or card that proved the procedure.
 | 3.1 | Variax identity, model and firmware | 1.2 | G2 | Read | #213 |
 | 3.2 | Variax current settings | 3.1 | G3 | Read | #176, #225 |
 | 3.3 | Variax full current program (35 reads) | 3.1 | G3 | Read | #234, [full-read card](../reso5-full-read-test-card.md) |
-| 3.4 | Variax one stored preset, and back | 3.3 | G5 | Read (switches preset and back) | #238, [selection card](../variax-any-selection-test-card.md) |
-| 3.5 | Variax one bank (5 presets), and back | 3.4 | G5 | Read (switches preset and back) | #236 |
-| 3.6 | Variax all 60 presets (backup), and back | 3.4 | G5 | Read (switches preset and back) | #236, [backup card](../variax-backup-test-card.md) |
+| 3.4 | Variax all 60 presets (backup), and back | 3.3 | G5 | Read (switches preset and back) | #236, [backup card](../variax-backup-test-card.md) |
+| 3.5 | Variax one stored preset, and back | 3.4 | G5 | Read (switches preset and back) | #238, [selection card](../variax-any-selection-test-card.md) |
+| 3.6 | Variax one bank (5 presets), and back | 3.5 | G5 | Read (switches preset and back) | #236 |
 | 4.1 | PODxt Live: change one control, read back, undo | 2.2 | G6 | Live | #221, [edit card](../podxt-live-edit-test-card.md) |
 | 4.2 | Variax: send the current preset's own bytes to the working buffer | 3.3 | G6 | Live (no audible change) | #176, [Reso-5 card](../reso5-test-card.md) |
-| 4.3 | Variax: listen to a test model, then return | 4.2, 3.6 | G6 | Live | #238 listen-list, [listen card](../variax-listen-list-test-card.md) |
-| 5.1 | Variax: save a preset's own bytes back to its slot | 3.6, 4.2 | G7 | Save | #177, #238 4c, [store card](../reso5-store-test-card.md) |
+| 4.3 | Variax: listen to a test model, then return | 4.2, 3.4 | G6 | Live | #238 listen-list, [listen card](../variax-listen-list-test-card.md) |
+| 5.1 | Variax: save a preset's own bytes back to its slot | 3.4, 4.2 | G7 | Save | #177, #238 4c, [store card](../reso5-store-test-card.md) |
 | 5.2 | PODxt Live: save a channel's own bytes back to it | 2.5, 4.1 | G7 | Save | #222 stage B (owner run pending), [store card](../podxt-store-test-card.md) |
 | 5.3 | Variax: edit and restore a slot (not in this version) | 5.1 | G7 | Save | #238 4b/4c |
 | 6.1 | VDI cable unplug and replug noticed | 3.1 | G2 | Read | #235 |
 | 6.2 | Rig back to its starting state, driver given back | – | G1–G3, G6 | Read (switches back if needed) | #239, #238 |
-| 7.1 | Turn the Variax selector to a named preset | 3.6 | G3 | Read | #202 Follow, #238 |
+| 7.1 | Turn the Variax selector to a named preset | 3.4 | G3 | Read | #202 Follow, #238 |
 | 7.2 | Sweep the Variax volume and tone knobs | 3.1 | G3 | Read | live-control-midi (CC 7, CC 79) |
 | 7.3 | Switch the PODxt Live to a named channel | 2.5 | G3 | Read | #220 |
 | 7.4 | Move the PODxt Live pedal | 2.1 | G3 | Read | #220 (CC 7 / CC 4) |
@@ -247,20 +247,29 @@ so they can be read from where the guitar is.
 - **Evidence:** per read: request, reply, retries, lost bytes; SHA-256 of
   the full program and its checksum word.
 
-### 3.4 Variax one stored preset, and back
-- **What it does:** Switches the guitar to one stored preset, reads it,
-  switches back to the starting preset and checks all 1,092 words match.
-- **HEAR:** the sound changes for a few seconds and comes back.
-- **Risk:** Read (preset switch and back). **Evidence:** program, return check.
-
-### 3.5 Variax one bank (5 presets), and back
-- Same as 3.4 for the five presets of one bank. **HEAR:** five short changes.
-
-### 3.6 Variax all 60 presets (backup), and back
-- **What it does:** Reads all 60 stored presets the same way and saves them
-  to the evidence folder. The start preset is verified at the end.
+### 3.4 Variax all 60 presets (backup), and back
+- **What it does:** Reads all 60 stored presets (1,092 words each) and saves
+  them to the evidence folder. It finds the preset you started on (the one
+  matching 3.3), switches back to it and checks all words.
+- **You do:** Start on a saved preset without unsaved changes. The first
+  preset switch discards unsaved guitar edits, and an edited sound matches
+  no stored preset, so Rig Check could not switch back to it.
 - **HEAR:** the sound changes 60 times, then comes back. About 4 minutes.
-- **Risk:** Read. **Evidence:** 60 SHA-256 values, manifest, return check.
+- **Risk:** Read. **Evidence:** 60 SHA-256 values, manifest, the starting
+  preset, return check.
+- The full backup comes first (before 3.5 and 3.6) because a single preset
+  read can only switch back once the starting preset is known.
+
+### 3.5 Variax one stored preset, and back
+- **What it does:** Switches the guitar to one other stored preset, reads
+  it, compares it with the backup, switches back to the starting preset and
+  checks all 1,092 words.
+- **HEAR:** the sound changes for a few seconds and comes back.
+- **Risk:** Read (preset switch and back). **Evidence:** program, backup
+  comparison, return check.
+
+### 3.6 Variax one bank (5 presets), and back
+- Same as 3.5 for the five presets of one bank. **HEAR:** five short changes.
 
 ### 4.1 PODxt Live: change one control, read back, undo
 - **What it does:** Changes one control of the tone you are playing (the
@@ -286,7 +295,7 @@ so they can be read from where the guitar is.
 - **Evidence:** upload and read-back hashes, answers next to byte checks.
 
 ### 5.1 Variax: save a preset's own bytes back to its slot
-- **Shown after the save notice.** Uses the preset read in 3.6.
+- **Shown after the save notice.** Uses the backup from 3.4.
 - **What it does:** Checks the slot still matches the backup, sends its own
   program, waits 100 ms, sends one save command, waits up to 15 s for one
   confirmation, then reads the slot back (35 reads) and compares it with the

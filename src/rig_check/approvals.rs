@@ -1,0 +1,150 @@
+//! Per-step owner approvals for real devices.
+//!
+//! Each device, guided or audio step has its own compile-time constant. They
+//! are all `false`: the owner has not yet authorized any Rig Check step on a
+//! real rig (#267). A step runs on real devices only when its constant is
+//! `true` **and** every hardware gate it names is open
+//! ([`crate::hardware_gates`]). There is no runtime, command-line, GUI or
+//! test switch that changes these constants. Practice mode never touches a
+//! device and does not consult them.
+
+use super::catalogue::{self, StepId};
+use crate::hardware_gates::{self, Gate};
+
+pub const APPROVED_STEP_1_1: bool = false;
+pub const APPROVED_STEP_1_2: bool = false;
+pub const APPROVED_STEP_2_1: bool = false;
+pub const APPROVED_STEP_2_2: bool = false;
+pub const APPROVED_STEP_2_3: bool = false;
+pub const APPROVED_STEP_2_4: bool = false;
+pub const APPROVED_STEP_2_5: bool = false;
+pub const APPROVED_STEP_3_1: bool = false;
+pub const APPROVED_STEP_3_2: bool = false;
+pub const APPROVED_STEP_3_3: bool = false;
+pub const APPROVED_STEP_3_4: bool = false;
+pub const APPROVED_STEP_3_5: bool = false;
+pub const APPROVED_STEP_3_6: bool = false;
+pub const APPROVED_STEP_4_1: bool = false;
+pub const APPROVED_STEP_4_2: bool = false;
+pub const APPROVED_STEP_4_3: bool = false;
+pub const APPROVED_STEP_5_1: bool = false;
+pub const APPROVED_STEP_5_2: bool = false;
+/// Excluded from the shared version by default (#243).
+pub const APPROVED_STEP_5_3: bool = false;
+pub const APPROVED_STEP_6_1: bool = false;
+pub const APPROVED_STEP_6_2: bool = false;
+pub const APPROVED_STEP_7_1: bool = false;
+pub const APPROVED_STEP_7_2: bool = false;
+pub const APPROVED_STEP_7_3: bool = false;
+pub const APPROVED_STEP_7_4: bool = false;
+pub const APPROVED_STEP_8_2: bool = false;
+pub const APPROVED_STEP_8_3: bool = false;
+pub const APPROVED_STEP_8_4: bool = false;
+pub const APPROVED_STEP_8_5: bool = false;
+/// Opening any audio stream needs the owner's separate approval (AGENTS.md).
+pub const AUDIO_STREAMS_APPROVED: bool = false;
+
+pub const NOT_AUTHORIZED: &str = "not yet authorized by the owner (#267)";
+
+/// The owner's approval for one step. Computer steps need none.
+pub const fn approved(id: StepId) -> bool {
+    match (id.0, id.1) {
+        (1, 1) => APPROVED_STEP_1_1,
+        (1, 2) => APPROVED_STEP_1_2,
+        (2, 1) => APPROVED_STEP_2_1,
+        (2, 2) => APPROVED_STEP_2_2,
+        (2, 3) => APPROVED_STEP_2_3,
+        (2, 4) => APPROVED_STEP_2_4,
+        (2, 5) => APPROVED_STEP_2_5,
+        (3, 1) => APPROVED_STEP_3_1,
+        (3, 2) => APPROVED_STEP_3_2,
+        (3, 3) => APPROVED_STEP_3_3,
+        (3, 4) => APPROVED_STEP_3_4,
+        (3, 5) => APPROVED_STEP_3_5,
+        (3, 6) => APPROVED_STEP_3_6,
+        (4, 1) => APPROVED_STEP_4_1,
+        (4, 2) => APPROVED_STEP_4_2,
+        (4, 3) => APPROVED_STEP_4_3,
+        (5, 1) => APPROVED_STEP_5_1,
+        (5, 2) => APPROVED_STEP_5_2,
+        (5, 3) => APPROVED_STEP_5_3,
+        (6, 1) => APPROVED_STEP_6_1,
+        (6, 2) => APPROVED_STEP_6_2,
+        (7, 1) => APPROVED_STEP_7_1,
+        (7, 2) => APPROVED_STEP_7_2,
+        (7, 3) => APPROVED_STEP_7_3,
+        (7, 4) => APPROVED_STEP_7_4,
+        (8, 2) => APPROVED_STEP_8_2 && AUDIO_STREAMS_APPROVED,
+        (8, 3) => APPROVED_STEP_8_3 && AUDIO_STREAMS_APPROVED,
+        (8, 4) => APPROVED_STEP_8_4 && AUDIO_STREAMS_APPROVED,
+        (8, 5) => APPROVED_STEP_8_5 && AUDIO_STREAMS_APPROVED,
+        _ => false,
+    }
+}
+
+/// Whether a step may touch real devices on this build. `Ok` for computer
+/// steps; otherwise the step's approval and every gate it names must be open.
+pub fn real_device_check(id: StepId) -> Result<(), String> {
+    let Some(step) = catalogue::step(id) else {
+        return Err(format!("Step {id} is not in the catalogue."));
+    };
+    if !step.needs_device_approval() {
+        return Ok(());
+    }
+    if !approved(id) {
+        return Err(format!(
+            "Step {id} is {NOT_AUTHORIZED}. Nothing was sent to any device."
+        ));
+    }
+    check_gates(id, step.gates)
+}
+
+fn check_gates(id: StepId, gates: &[Gate]) -> Result<(), String> {
+    for gate in gates {
+        hardware_gates::run_if_unlocked(*gate, || Ok(()))
+            .map_err(|error| format!("Step {id}: {error}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rig_check::catalogue::{Kind, STEPS};
+
+    #[test]
+    fn no_step_is_approved_in_this_build() {
+        const {
+            assert!(!APPROVED_STEP_1_1 && !APPROVED_STEP_1_2);
+            assert!(!APPROVED_STEP_2_1 && !APPROVED_STEP_2_2 && !APPROVED_STEP_2_3);
+            assert!(!APPROVED_STEP_2_4 && !APPROVED_STEP_2_5);
+            assert!(!APPROVED_STEP_3_1 && !APPROVED_STEP_3_2 && !APPROVED_STEP_3_3);
+            assert!(!APPROVED_STEP_3_4 && !APPROVED_STEP_3_5 && !APPROVED_STEP_3_6);
+            assert!(!APPROVED_STEP_4_1 && !APPROVED_STEP_4_2 && !APPROVED_STEP_4_3);
+            assert!(!APPROVED_STEP_5_1 && !APPROVED_STEP_5_2 && !APPROVED_STEP_5_3);
+            assert!(!APPROVED_STEP_6_1 && !APPROVED_STEP_6_2);
+            assert!(!APPROVED_STEP_7_1 && !APPROVED_STEP_7_2);
+            assert!(!APPROVED_STEP_7_3 && !APPROVED_STEP_7_4);
+            assert!(!APPROVED_STEP_8_2 && !APPROVED_STEP_8_3);
+            assert!(!APPROVED_STEP_8_4 && !APPROVED_STEP_8_5);
+            assert!(!AUDIO_STREAMS_APPROVED);
+        }
+        for step in STEPS {
+            assert!(!approved(step.id), "{}", step.id);
+        }
+    }
+
+    #[test]
+    fn every_device_step_is_refused_with_the_owner_message() {
+        for step in STEPS {
+            let result = real_device_check(step.id);
+            if step.kind == Kind::Computer {
+                assert!(result.is_ok(), "{}", step.id);
+            } else {
+                let error = result.unwrap_err();
+                assert!(error.contains("not yet authorized by the owner (#267)"));
+                assert!(error.contains("Nothing was sent"));
+            }
+        }
+    }
+}

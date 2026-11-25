@@ -1,0 +1,58 @@
+//! Rig Check: a standalone test-and-evidence app for the PODxt Live and
+//! Variax rig (#243).
+//!
+//! It walks a person through the catalogue (`docs/rig-check/catalogue.md`)
+//! one explained, confirmed step at a time and writes a text report after
+//! every step. Device steps use the same device library as the editor
+//! (`line6-devices`). Practice mode runs the whole catalogue against
+//! simulated devices ([`practice`]); real mode refuses every device step
+//! until the owner approves it ([`approvals`], #267).
+//!
+//! Hardware boundary: tests use the simulated rig and synthetic data only.
+//! They never open USB, MIDI or audio devices and never read real `/proc` or
+//! `/sys`.
+
+pub mod approvals;
+pub mod catalogue;
+pub mod cli;
+pub mod hints;
+pub mod port;
+pub mod practice;
+pub mod procedures;
+pub mod record;
+pub mod runner;
+pub mod steps;
+#[cfg(test)]
+pub(crate) mod testing;
+
+use port::{PracticePort, RigPort};
+use practice::{Faults, SimRig};
+use runner::{Operator, ReportSink, Runner};
+use steps::RunData;
+
+/// Run the whole catalogue in practice mode against a fresh simulated rig.
+pub fn run_practice(
+    faults: Faults,
+    op: &mut dyn Operator,
+    sink: &mut dyn ReportSink,
+    data: RunData,
+) -> (
+    record::RunRecord,
+    RunData,
+    std::rc::Rc<std::cell::RefCell<SimRig>>,
+) {
+    let rig = SimRig::shared(faults);
+    let mut port = PracticePort::new(rig.clone());
+    let (run, data) = Runner::new(&mut port, op, sink, data).run();
+    (run, data, rig)
+}
+
+/// Run the whole catalogue on a caller-supplied port (the real rig).
+pub fn run_on(
+    port: &mut dyn RigPort,
+    op: &mut dyn Operator,
+    sink: &mut dyn ReportSink,
+    data: RunData,
+) -> (record::RunRecord, RunData) {
+    Runner::new(port, op, sink, data).run()
+}
