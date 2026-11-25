@@ -1,8 +1,8 @@
 # Variax listen-list audition (#238 follow-up)
 
-**Not approved.** Use only the offline check until the owner approves a
-reviewed run. The list uses temporary working-buffer uploads and returns
-the guitar to its verified starting preset.
+**Approved 2026-11-25 for one owner run.** This run uses the four test
+models in order A–D. The list uses temporary working-buffer uploads and
+returns the guitar to its verified starting preset.
 
 ## Offline check
 
@@ -21,9 +21,9 @@ Review the oracle comparison for the files you intend to audition.
 
 ## Owner procedure after separate approval
 
-1. Use the Variax 600 firmware 3.10 and PODxt Live firmware 3.01 rig. Start on
-   a saved, unedited preset whose full program matches exactly one library
-   entry. The verified post-#177 factory image is used for slot 50.
+1. Use the Variax 600 firmware 3.10 and PODxt Live firmware 3.01 rig. Start
+   on **Spank 1**, unedited, with its restored #236 program. The full
+   program must match exactly one library entry.
    **HEAR:** The starting sound stays selected. **SEE:** Wait for the tool
    to identify both devices and name and verify the starting preset.
 2. For each file, **HEAR:** the tool loads the next sound and describes its
