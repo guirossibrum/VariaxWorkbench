@@ -26,9 +26,12 @@ impl VariaxEditor {
         &self,
         ui: &mut egui::Ui,
         services: &mut EditorServices<'_>,
+        has_download: bool,
     ) -> Option<egui::Response> {
         ui.weak(self.guitar_connection_status());
-        self.connection_status.as_ref()?;
+        if has_download || self.connection_status.is_none() {
+            return None;
+        }
         let button = ui.add_enabled(
             services.can_refresh_guitar(),
             egui::Button::new("Refresh guitar").min_size(egui::vec2(0.0, theme::TARGET)),
@@ -71,7 +74,7 @@ mod tests {
             },
             |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    button = editor.connection_controls(ui, &mut services);
+                    button = editor.connection_controls(ui, &mut services, false);
                 });
             },
         );
@@ -93,6 +96,46 @@ mod tests {
         );
         frame(ctx, editor, Some(&mut *request), vec![button(true)]);
         frame(ctx, editor, Some(request), vec![button(false)]);
+    }
+
+    #[test]
+    fn active_variax_tab_has_one_connection_status_and_one_guitar_action() {
+        fn count(shape: &egui::Shape, label: &str) -> usize {
+            match shape {
+                egui::Shape::Text(text) => usize::from(text.galley.text() == label),
+                egui::Shape::Vec(shapes) => shapes.iter().map(|shape| count(shape, label)).sum(),
+                _ => 0,
+            }
+        }
+        let (ctx, mut app) = app();
+        let index = app.tabs.index(app.tabs.active.unwrap()).unwrap();
+        app.tabs.entries[index].device = Some(super::super::refresh::tests::verified_tab());
+        let render = |app: &mut crate::editor::Workbench| {
+            ctx.run(egui::RawInput::default(), |ctx| app.render(ctx))
+        };
+        let count_labels = |output: &egui::FullOutput, label| {
+            output
+                .shapes
+                .iter()
+                .map(|shape| count(&shape.shape, label))
+                .sum::<usize>()
+        };
+        let connected = render(&mut app);
+        assert_eq!(count_labels(&connected, "Guitar: Variax 600 3.10"), 1);
+        assert_eq!(count_labels(&connected, "Download from guitar…"), 1);
+        assert_eq!(count_labels(&connected, "Refresh guitar"), 0);
+        assert_eq!(
+            count_labels(&connected, "Identity verified · firmware 3.10"),
+            0
+        );
+
+        let tab = app.tabs.entries[index].device.as_mut().unwrap();
+        tab.device.support = DeviceSupport::Refreshing("3.10");
+        tab.device.guitar_status = Some("Guitar: checking…".into());
+        let checking = render(&mut app);
+        assert_eq!(count_labels(&checking, "Guitar: checking…"), 1);
+        assert_eq!(count_labels(&checking, "Download from guitar…"), 0);
+        assert_eq!(count_labels(&checking, "Refresh guitar"), 1);
     }
 
     #[test]

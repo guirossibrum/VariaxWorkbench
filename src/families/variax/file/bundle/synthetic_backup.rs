@@ -10,6 +10,22 @@ use std::{
 };
 
 pub(crate) fn make_backup(root: &Path, name: &str, count: usize, member: u8) -> PathBuf {
+    make_backup_with_names(
+        root,
+        name,
+        count,
+        member,
+        &[(0, "Renamed Custom"), (11, "")],
+    )
+}
+
+pub(crate) fn make_backup_with_names(
+    root: &Path,
+    name: &str,
+    count: usize,
+    member: u8,
+    names: &[(usize, &str)],
+) -> PathBuf {
     let mut folder = BackupFolder::create(root, name).unwrap();
     let mut identity = vec![0xf0, 0x7e, 0x7f, 6, 2, 0, 1, 12, 7, 0, member, 0];
     identity.extend_from_slice(b"0310");
@@ -46,7 +62,7 @@ pub(crate) fn make_backup(root: &Path, name: &str, count: usize, member: u8) -> 
     original[..13].copy_from_slice(b"Active buffer");
     folder.file("original-1.syx", &reply(original)).unwrap();
     folder.file("original-2.syx", &reply([0; 96])).unwrap();
-    for (bank, name) in [(0, "Renamed Custom"), (11, "")] {
+    for &(bank, name) in names {
         let mut bank_reply = vec![0xf0, 0, 1, 12, 7, 4, 0x6d];
         bank_reply.extend_from_slice(name.as_bytes());
         bank_reply.resize(25, 0);

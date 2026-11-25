@@ -55,11 +55,11 @@ impl VariaxEditor {
     fn file_mode_actions(&mut self, ui: &mut egui::Ui, available: bool) {
         ui.horizontal_wrapped(|ui| {
             ui.add_enabled_ui(available, |ui| self.library_position(ui));
-            let enabled = self.parked_library.as_ref().is_some_and(|(library, _)| {
+            let enabled = self.parked_library.as_ref().is_some_and(|library| {
                 self.document
                     .as_ref()
                     .and_then(|file| file.selected_preset())
-                    .is_some_and(|model| library.validate_slot_replacement(model).is_ok())
+                    .is_some_and(|model| library.document.validate_slot_replacement(model).is_ok())
             });
             let place = ui
                 .add_enabled(
@@ -90,9 +90,10 @@ impl VariaxEditor {
     }
 
     fn library_position(&mut self, ui: &mut egui::Ui) {
-        let Some((library, _)) = &mut self.parked_library else {
+        let Some(library) = &mut self.parked_library else {
             return;
         };
+        let library = &mut library.document;
         let mut selection = library.selection();
         let label = selection.and_then(|(bank, slot)| {
             Some(format!(
@@ -132,10 +133,10 @@ impl VariaxEditor {
         else {
             return;
         };
-        let Some((library, _)) = &mut self.parked_library else {
+        let Some(library) = &mut self.parked_library else {
             return;
         };
-        match library.replace_slot_model(model.clone()) {
+        match library.document.replace_slot_model(model.clone()) {
             Ok(()) => {
                 self.return_to_library();
                 self.status = "Model placed in the library. Not sent to guitar.".into();
@@ -546,7 +547,7 @@ fn opening_then_placing_a_file_uses_the_existing_position_and_one_undo_step() {
     let editor = app.variax();
     assert_eq!(editor.source_path.as_deref(), Some(file.as_path()));
     assert_eq!(editor.document.as_ref().unwrap().selection(), None);
-    let (parked, _) = editor.parked_library.as_ref().unwrap();
+    let parked = &editor.parked_library.as_ref().unwrap().document;
     assert_eq!(parked.as_bytes(), original);
     assert_eq!(parked.selection(), Some((1, 2)));
 

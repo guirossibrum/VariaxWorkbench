@@ -15,8 +15,10 @@ mod refresh;
 use new_files::{BankRename, NewFile};
 mod slot_files;
 mod slot_transfers;
+mod startup_library;
 use slot_files::SlotReplacement;
 use slot_transfers::SlotTransfer;
+use startup_library::LibraryOrigin;
 mod preferences;
 mod tuning_presets;
 use tuning_presets::TuningDialog;
@@ -42,42 +44,6 @@ fn guitar_panel() -> egui::Frame {
         .corner_radius(8)
         .fill(GUITAR_SURFACE)
         .stroke(egui::Stroke::new(1.0_f32, GUITAR_EDGE))
-}
-
-fn style_inspector(ui: &mut egui::Ui) {
-    use variax_workbench::ui::theme;
-    let visuals = ui.visuals_mut();
-    visuals.dark_mode = false;
-    visuals.override_text_color = Some(theme::INK);
-    visuals.extreme_bg_color = Color32::from_rgb(245, 242, 234);
-    visuals.faint_bg_color = Color32::from_rgb(214, 209, 197);
-    let edge = Color32::from_rgb(115, 107, 95);
-    for (widget, fill) in [
-        (
-            &mut visuals.widgets.inactive,
-            Color32::from_rgb(242, 238, 228),
-        ),
-        (
-            &mut visuals.widgets.hovered,
-            Color32::from_rgb(250, 245, 231),
-        ),
-        (
-            &mut visuals.widgets.active,
-            Color32::from_rgb(235, 207, 154),
-        ),
-        (&mut visuals.widgets.open, Color32::from_rgb(241, 225, 192)),
-        (
-            &mut visuals.widgets.noninteractive,
-            Color32::from_rgb(202, 197, 186),
-        ),
-    ] {
-        widget.bg_fill = fill;
-        widget.weak_bg_fill = fill;
-        widget.bg_stroke.color = edge;
-        widget.fg_stroke.color = theme::INK;
-    }
-    visuals.selection.bg_fill = Color32::from_rgb(235, 207, 154);
-    visuals.selection.stroke.color = Color32::from_rgb(112, 76, 40);
 }
 
 #[derive(Clone, Deserialize)]
@@ -139,10 +105,17 @@ fn save_auto_select(path: &Path, enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
+struct ParkedLibrary {
+    document: EditorDocument,
+    path: Option<PathBuf>,
+    origin: Option<LibraryOrigin>,
+}
+
 pub(super) struct VariaxEditor {
     pub(super) document: Option<EditorDocument>,
     source_path: Option<PathBuf>,
-    parked_library: Option<(EditorDocument, Option<PathBuf>)>,
+    parked_library: Option<ParkedLibrary>,
+    library_origin: Option<LibraryOrigin>,
     connection_status: Option<String>,
     #[cfg(feature = "usb")]
     refresh: refresh::Refresh,
@@ -190,6 +163,8 @@ pub(super) struct VariaxEditor {
     #[cfg(test)]
     tuning_toggle: Option<Rect>,
     #[cfg(test)]
+    workspace_cards: Option<(Rect, Rect)>,
+    #[cfg(test)]
     pickup_controls: HashMap<(u32, &'static str), Rect>,
     #[cfg(test)]
     name_notice: String,
@@ -226,6 +201,7 @@ impl VariaxEditor {
             document: None,
             source_path: None,
             parked_library: None,
+            library_origin: None,
             connection_status: None,
             #[cfg(feature = "usb")]
             refresh: refresh::Refresh::default(),
@@ -265,6 +241,8 @@ impl VariaxEditor {
             pickup_centers: HashMap::new(),
             #[cfg(test)]
             tuning_toggle: None,
+            #[cfg(test)]
+            workspace_cards: None,
             #[cfg(test)]
             pickup_controls: HashMap::new(),
             #[cfg(test)]
@@ -309,7 +287,11 @@ impl VariaxEditor {
                             if library.is_dirty() {
                                 library.discard_changes();
                             }
-                            (library, self.source_path.take())
+                            ParkedLibrary {
+                                document: library,
+                                path: self.source_path.take(),
+                                origin: self.library_origin.take(),
+                            }
                         })
                     } else {
                         self.parked_library.take()
@@ -329,6 +311,7 @@ impl VariaxEditor {
         self.document = Some(document);
         self.source_path = path.map(Path::to_owned);
         self.parked_library = None;
+        self.library_origin = None;
         self.drag_origin = None;
         self.clear_text_drafts();
         self.error = None;
@@ -590,8 +573,9 @@ impl VariaxEditor {
     }
 
     fn return_to_library(&mut self) {
-        if let Some((library, path)) = self.parked_library.take() {
-            self.adopt_document(library, path.as_deref());
+        if let Some(library) = self.parked_library.take() {
+            self.adopt_document(library.document, library.path.as_deref());
+            self.library_origin = library.origin;
             self.status = "Editing the library.".into();
         }
     }
@@ -1049,14 +1033,17 @@ impl VariaxEditor {
         self.follow_panel(ui);
         if self.document.is_none() {
             guitar_panel().show(ui, |ui| {
-                ui.heading("Open a Variax preset, bank or collection");
+                ui.heading("No Variax library is available");
+                ui.label("Connect a verified Variax to download its library, or open a file.");
                 ui.horizontal_wrapped(|ui| {
                     ui.add_enabled_ui(!self.is_reading() && self.pending.is_none(), |ui| {
                         if ui.button("Open file…").clicked() {
                             self.open_dialog(ui.ctx(), services);
                         }
-                        if ui.button("Try example banks").clicked() && self.document.is_none() {
-                            self.open_example();
+                        if self.preferences_path.is_some()
+                            && ui.button("Choose factory firmware…").clicked()
+                        {
+                            self.choose_factory_archive(ui.ctx(), services);
                         }
                         self.preference_button(ui);
                     });
@@ -1099,14 +1086,13 @@ impl VariaxEditor {
             .show_inside(ui, |ui| self.fretboard(ui, can_edit));
         let panel_height = (ui.available_height() - 22.0).max(64.0);
         ui.columns(2, |columns| {
-            self.guitar(&mut columns[0], panel_height, can_edit);
-            egui::Frame::new()
+            let _body = self.guitar(&mut columns[0], panel_height, can_edit);
+            let _inspector = egui::Frame::new()
                 .inner_margin(10)
-                .corner_radius(variax_workbench::ui::theme::RADIUS_PANEL)
-                .fill(Color32::from_rgb(202, 197, 186))
-                .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(156, 150, 139)))
+                .corner_radius(theme::RADIUS_PANEL)
+                .fill(theme::PANEL)
+                .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
                 .show(&mut columns[1], |ui| {
-                    style_inspector(ui);
                     ui.set_min_height((panel_height - 20.0).max(0.0));
                     ui.set_min_width(ui.available_width());
                     ui.horizontal_wrapped(|ui| {
@@ -1117,6 +1103,10 @@ impl VariaxEditor {
                         self.controls(ui, (panel_height - 40.0).max(32.0))
                     });
                 });
+            #[cfg(test)]
+            {
+                self.workspace_cards = Some((_body, _inspector.response.rect));
+            }
         });
     }
 
@@ -1321,8 +1311,17 @@ impl FamilyTab for VariaxEditor {
     fn actions(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
         self.new_file_menu(ui, services);
         #[cfg(feature = "usb")]
-        self.refresh_button(ui);
-        self.connection_controls(ui, services);
+        let has_download = self.download_button(ui);
+        #[cfg(not(feature = "usb"))]
+        let has_download = false;
+        let recovery = self.connection_controls(ui, services, has_download);
+        if !has_download && recovery.is_none() && self.document.is_none() {
+            ui.add_enabled(
+                false,
+                egui::Button::new("Download from guitar…").min_size(egui::vec2(0.0, theme::TARGET)),
+            )
+            .on_disabled_hover_text("Connect a verified Variax to download its library.");
+        }
     }
 }
 
@@ -1335,7 +1334,7 @@ impl ProductFamily for Family {
         FamilyInfo {
             id: "variax",
             title: "Variax Workbench",
-            new_label: "Variax (example banks)",
+            new_label: "Variax",
             extensions: &["vwm", "vwb", "l6c"],
             ceiling: 16_777_216,
         }
@@ -1367,7 +1366,7 @@ impl ProductFamily for Family {
     ) -> Result<Box<dyn FamilyTab>, String> {
         let mut editor = VariaxEditor::new(defaults);
         match source {
-            TabSource::New => editor.open_example(),
+            TabSource::New => editor.load_initial_library(defaults),
             TabSource::File(path, bytes) => {
                 editor.adopt_document(EditorDocument::from_file_bytes(bytes, &path)?, Some(&path));
                 editor.status = format!("Opened {}", path.display());

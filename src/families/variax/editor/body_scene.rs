@@ -67,7 +67,7 @@ impl VariaxEditor {
         })
     }
 
-    pub(super) fn guitar(&mut self, ui: &mut egui::Ui, height: f32, editable: bool) {
+    pub(super) fn guitar(&mut self, ui: &mut egui::Ui, height: f32, editable: bool) -> egui::Rect {
         let body = self
             .canvas_image(ui.ctx(), BODY)
             .unwrap_or_else(|| UiImage::missing("Guitar artwork unavailable"));
@@ -95,17 +95,16 @@ impl VariaxEditor {
             })
             .collect();
         let placement = PickupPlacement::default();
-        let output = ui
-            .allocate_ui_with_layout(
-                egui::vec2(ui.available_width(), height),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| {
-                    BodyCanvas::new(&body, &sprites)
-                        .interactive(editable && ui.is_enabled())
-                        .show(ui)
-                },
-            )
-            .inner;
+        let canvas = ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), height),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                BodyCanvas::new(&body, &sprites)
+                    .interactive(editable && ui.is_enabled())
+                    .show(ui)
+            },
+        );
+        let output = canvas.inner;
         #[cfg(test)]
         {
             self.pickup_centers.clear();
@@ -192,6 +191,7 @@ impl VariaxEditor {
         } else if let (Some(drag), Some(pointer)) = (&mut self.drag_origin, pointer) {
             drag.pointer = pointer;
         }
+        canvas.response.rect
     }
 
     fn apply_body_drag(&mut self, slot: u32, parameter: u32, value: f32) {

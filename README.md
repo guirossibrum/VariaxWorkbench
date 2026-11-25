@@ -10,7 +10,7 @@ Windows and macOS support are longer-term goals. [Product vision](docs/product-v
 
 ## Screenshots
 
-Captured in floating windows with built-in examples and device discovery disabled.
+Earlier captures from floating windows using test presets with device discovery disabled.
 
 | Start screen | Variax editor |
 | --- | --- |
@@ -21,7 +21,9 @@ Captured in floating windows with built-in examples and device discovery disable
 ## What works today
 
 - **Variax editor.** Edit models, pickups, wiring, and tuning. Browse banks and
-  collections, undo changes, and save a new copy. File editing works offline.
+  collections, undo changes, and save files offline. New tabs start with your
+  latest complete download, factory presets from a selected firmware archive,
+  or an empty editor.
 - **PODxt editor.** Edit supported amp, cab, and effect settings. Browse and
   organize tone libraries and save copies. Built-in examples work offline.
 - **HD500X files (early).** Opens HD Edit presets, setlists, and bundles and
@@ -85,7 +87,7 @@ cargo build --no-default-features --features gui --bin variax-workbench-gui
 cargo run --no-default-features --features gui --bin variax-workbench-gui -- --display x11
 ```
 
-Use **Open file** for a preset or **New offline tab** for an example. The
+Use **Open file** for a preset or **New offline tab** for an editor. The
 [Linux packaging guide](docs/linux-package.md) covers dependencies and releases.
 For a numbered release build, run `python3 scripts/build_release.py`.
 

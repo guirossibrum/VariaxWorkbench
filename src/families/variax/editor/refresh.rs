@@ -7,7 +7,7 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 use variax_workbench::bundle::BundleFile;
 
@@ -88,20 +88,19 @@ impl Drop for Refresh {
 }
 
 impl VariaxEditor {
-    pub(super) fn refresh_button(&mut self, ui: &mut egui::Ui) {
-        if self.refresh.attachment.is_none() {
-            return;
+    pub(super) fn download_button(&mut self, ui: &mut egui::Ui) -> bool {
+        if self.refresh.attachment.is_none() || self.follow.disconnected() {
+            return false;
         }
         let button = ui.add_enabled(
-            cfg!(target_os = "linux")
-                && !self.refresh.busy()
-                && !self.follow.busy()
-                && !self.follow.disconnected(),
-            egui::Button::new("Refresh from guitar…"),
+            cfg!(target_os = "linux") && !self.refresh.busy() && !self.follow.busy(),
+            egui::Button::new("Download from guitar…")
+                .min_size(egui::vec2(0.0, super::theme::TARGET)),
         );
         if button.clicked() {
             self.request_refresh(read_library);
         }
+        true
     }
 
     fn request_refresh(&mut self, read: ReadLibrary) {
@@ -136,10 +135,10 @@ impl VariaxEditor {
         }
         let dialog = egui::Modal::new(egui::Id::new("variax-refresh-confirmation")).show(ctx, |ui| {
             ui.heading("Replace unsaved changes?");
-            ui.label("Refresh reads the stored presets and bank names. It replaces this document only after the full read succeeds.");
+            ui.label("Download reads the stored presets and bank names. It replaces this document only after the full read succeeds.");
             ui.horizontal(|ui| {
                 let cancel = ui.button("Keep editing");
-                let replace = ui.button("Refresh and replace");
+                let replace = ui.button("Download and replace");
                 (cancel.clicked(), replace.clicked())
             }).inner
         });
@@ -189,7 +188,16 @@ impl VariaxEditor {
             Ok((document, capture.restore, capture.release_error))
         }) {
             Ok((document, restore, release_error)) => {
+                let time = SystemTime::now();
+                let snapshot_error = self.preferences_path.as_deref().and_then(|preferences| {
+                    super::startup_library::save_download(preferences, &document, time)
+                        .err()
+                        .map(|error| {
+                            format!("Could not remember the downloaded Variax library: {error}")
+                        })
+                });
                 self.adopt_document(document, None);
+                self.library_origin = Some(super::LibraryOrigin::Download(time));
                 self.status =
                     "Read 60 guitar presets and 12 bank names. Use Save As to keep this library."
                         .into();
@@ -197,6 +205,9 @@ impl VariaxEditor {
                     Restore::Switched { verified: true, .. } => release_error,
                     other => Some(with_release_error(restore_notice(&other), release_error)),
                 };
+                if let Some(error) = snapshot_error {
+                    self.error = Some(with_release_error(error, self.error.take()));
+                }
             }
             Err(error) => {
                 self.error = Some(error);
@@ -416,7 +427,14 @@ pub(super) mod tests {
     #[test]
     fn verified_refresh_confirms_dirty_replacement_and_loads_an_unsaved_bundle() {
         let (ctx, mut app) = app();
+        let directory = tempfile::tempdir().unwrap();
+        let defaults = super::super::EditorDefaults {
+            artwork: directory.path().join("artwork"),
+            preferences: Some(directory.path().join("editor-preferences.txt")),
+            startup_panel: None,
+        };
         let editor = app.variax_mut();
+        editor.preferences_path.clone_from(&defaults.preferences);
         editor.change(|preset| preset.rename("Unsaved edit"));
         let old = editor.document.as_ref().unwrap().as_bytes().to_vec();
         editor.request_refresh(complete_capture);
@@ -440,7 +458,18 @@ pub(super) mod tests {
         assert!(!document.slot_is_dirty(3, 2));
         assert!(editor.source_path().is_none());
 
-        let directory = tempfile::tempdir().unwrap();
+        let mut reopened = VariaxEditor::new(&defaults);
+        reopened.load_initial_library(&defaults);
+        assert_eq!(
+            reopened.document.as_ref().unwrap().as_bytes(),
+            document.as_bytes()
+        );
+        assert!(matches!(
+            reopened.library_origin,
+            Some(super::super::LibraryOrigin::Download(_))
+        ));
+        assert!(!reopened.dirty());
+
         let target = directory.path().join("Guitar.vwb");
         std::fs::write(&target, b"original").unwrap();
         assert!(!editor.save_copy_to(target.clone()));

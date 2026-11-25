@@ -7,7 +7,7 @@ switch back.
 
 1. Open a file in that tab, make an unsaved edit, then choose **Refresh from
    guitar…**. Choose **Keep editing** and verify the original edit remains.
-2. Choose **Refresh from guitar…** again, choose **Refresh and replace**, and
+2. Choose **Download from guitar…** again, choose **Download and replace**, and
    watch the progress count. The existing file view remains in place until all
    60 presets and 12 bank names are available.
 3. Check all 12 bank names and five presets per bank against your backup.
