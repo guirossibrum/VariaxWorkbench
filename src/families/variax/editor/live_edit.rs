@@ -1,5 +1,6 @@
 //! Workbench editor-side scheduling. The device adapter is supplied by #245.
 use super::{FamilyTab, PresetFile, TUNING, VariaxEditor, egui, live_attachment::Attachment};
+use line6_devices::family::variax::procedures::Image;
 use std::{
     sync::{
         Arc,
@@ -14,35 +15,42 @@ const LIVE_EDIT_SEND_LOCKED: bool = true;
 const MANUAL_EDIT_BUFFER_SEND_LOCKED: bool = true;
 const DEBOUNCE: Duration = Duration::from_millis(120);
 
-/// The #245 adapter must obtain and hold the rig lock, re-verify the
-/// attachment, and admit only reference-verified programs. A send result
+/// The adapter holds the rig lock, re-verifies the
+/// attachment, and admits only reference-verified programs. A send result
 /// means the working buffer was verified. All operations honor cancellation
 /// and release the session before returning. No request addresses flash.
 pub(super) trait EditBufferDevice: Send + Sync {
-    /// With a verified previous model, use changed words and the tone-knob
-    /// command as appropriate. Without it, upload the full buffer.
     fn send(
         &self,
         attachment: &Attachment,
         model: &PresetFile,
-        previous: Option<&PresetFile>,
+        previous: Option<&Previous>,
         cancel: &AtomicBool,
-    ) -> Result<(), String>;
+    ) -> Result<Image, String>;
 
-    fn get(&self, attachment: &Attachment, cancel: &AtomicBool) -> Result<PresetFile, String>;
+    fn get(
+        &self,
+        attachment: &Attachment,
+        cancel: &AtomicBool,
+    ) -> Result<(PresetFile, Image), String>;
+}
+
+pub(super) struct Previous {
+    pub(super) image: Box<Image>,
+    pub(super) tuning_transition: bool,
 }
 
 enum Request {
     Send {
         model: PresetFile,
-        previous: Option<PresetFile>,
+        previous: Option<Previous>,
     },
     Get,
 }
 
 enum Reply {
-    Verified,
-    Current(PresetFile),
+    Verified(Box<Image>),
+    Current(PresetFile, Box<Image>),
 }
 
 #[derive(Clone)]
@@ -88,7 +96,7 @@ pub(super) struct LiveEdit {
     enabled: bool,
     generation: u64,
     seen: Option<Model>,
-    verified: Option<Model>,
+    verified: Option<(Model, Box<Image>)>,
     queued: Option<(Model, Instant)>,
     worker: Option<Work>,
     #[cfg(test)]
@@ -96,6 +104,19 @@ pub(super) struct LiveEdit {
 }
 
 impl LiveEdit {
+    pub(super) fn new(_preferences: Option<&std::path::Path>) -> Self {
+        #[cfg(all(target_os = "linux", not(test)))]
+        {
+            let mut state = Self::default();
+            state.device = Some(Arc::new(super::procedure_device::EditorDevice::new(
+                _preferences,
+            )));
+            state
+        }
+        #[cfg(any(not(target_os = "linux"), test))]
+        Self::default()
+    }
+
     pub(super) fn busy(&self) -> bool {
         self.worker.is_some()
     }
@@ -166,14 +187,17 @@ impl LiveEdit {
             Action::Get => Request::Get,
             _ => {
                 let target = model.as_ref().ok_or("Select a Variax model first.")?;
-                let previous = self.verified.as_ref().filter(|previous| {
-                    matches!(action, Action::Automatic)
-                        && previous.same_location(target)
-                        && previous.tuning_enabled() == target.tuning_enabled()
+                let previous = self.verified.as_ref().and_then(|(before, image)| {
+                    (matches!(action, Action::Automatic) && before.same_location(target)).then(
+                        || Previous {
+                            image: image.clone(),
+                            tuning_transition: before.tuning_enabled() != target.tuning_enabled(),
+                        },
+                    )
                 });
                 Request::Send {
                     model: target.preset.clone(),
-                    previous: previous.map(|previous| previous.preset.clone()),
+                    previous,
                 }
             }
         };
@@ -191,11 +215,12 @@ impl LiveEdit {
                         return Err("Edit-buffer operation cancelled.".into());
                     }
                     match request {
-                        Request::Send { model, previous } => {
-                            device.send(&attachment, &model, previous.as_ref(), &worker_cancel)?;
-                            Ok(Reply::Verified)
-                        }
-                        Request::Get => device.get(&attachment, &worker_cancel).map(Reply::Current),
+                        Request::Send { model, previous } => device
+                            .send(&attachment, &model, previous.as_ref(), &worker_cancel)
+                            .map(|image| Reply::Verified(Box::new(image))),
+                        Request::Get => device
+                            .get(&attachment, &worker_cancel)
+                            .map(|(preset, image)| Reply::Current(preset, Box::new(image))),
                     }
                 })
             })
@@ -254,9 +279,7 @@ impl VariaxEditor {
                     enabled || free && has_model && self.live_edit.ready(Action::Automatic),
                     egui::Checkbox::new(&mut enabled, "Live editing"),
                 )
-                .on_disabled_hover_text(
-                    "Live editing awaits the shared device adapter and an owner test.",
-                )
+                .on_disabled_hover_text("Live editing awaits its first owner test.")
                 .changed()
             {
                 if enabled {
@@ -370,7 +393,7 @@ impl VariaxEditor {
                 .live_edit
                 .verified
                 .as_ref()
-                .is_some_and(|verified| verified.same(&model))
+                .is_some_and(|(verified, _)| verified.same(&model))
             {
                 self.start_edit_buffer(Action::Automatic, Some(model));
             }
@@ -392,11 +415,11 @@ impl VariaxEditor {
             return;
         }
         match (work.action, result) {
-            (Action::Automatic | Action::Send, Ok(Reply::Verified)) => {
-                self.live_edit.verified = work.model;
+            (Action::Automatic | Action::Send, Ok(Reply::Verified(image))) => {
+                self.live_edit.verified = work.model.map(|model| (model, image));
                 self.status = "Guitar working buffer verified.".into();
             }
-            (Action::Get, Ok(Reply::Current(preset))) if preset.is_legacy_electric() => {
+            (Action::Get, Ok(Reply::Current(preset, image))) if preset.is_legacy_electric() => {
                 let current = self.live_model();
                 let unchanged = match (&work.model, current.as_ref()) {
                     (Some(before), Some(after)) => before.same(after),
@@ -415,7 +438,7 @@ impl VariaxEditor {
                 );
                 let model = self.live_model();
                 self.live_edit.seen = model.clone();
-                self.live_edit.verified = model;
+                self.live_edit.verified = model.map(|model| (model, image));
                 self.status = "Read the guitar working buffer.".into();
             }
             (_, result) => {
@@ -439,6 +462,7 @@ mod tests {
     #[derive(Debug, PartialEq, Eq)]
     enum Call {
         Full(String),
+        Transition(String),
         Difference { before: String, after: String },
         Get,
     }
@@ -455,15 +479,21 @@ mod tests {
             &self,
             attachment: &Attachment,
             model: &PresetFile,
-            previous: Option<&PresetFile>,
+            previous: Option<&Previous>,
             cancel: &AtomicBool,
-        ) -> Result<(), String> {
+        ) -> Result<Image, String> {
             assert!(attachment == &self.attachment);
             let call = match previous {
-                Some(previous) => Call::Difference {
-                    before: previous.name().into(),
-                    after: model.name().into(),
-                },
+                Some(previous) if previous.tuning_transition => {
+                    Call::Transition(model.name().into())
+                }
+                Some(previous) => {
+                    let name = &previous.image[1..=usize::from(previous.image[0])];
+                    Call::Difference {
+                        before: String::from_utf8_lossy(name).into(),
+                        after: model.name().into(),
+                    }
+                }
                 None => Call::Full(model.name().into()),
             };
             self.calls.lock().unwrap().push(call);
@@ -473,14 +503,25 @@ mod tests {
                 }
                 ack.send(()).unwrap();
             }
-            Ok(())
+            Ok(fake_image(model.name()))
         }
 
-        fn get(&self, attachment: &Attachment, _: &AtomicBool) -> Result<PresetFile, String> {
+        fn get(
+            &self,
+            attachment: &Attachment,
+            _: &AtomicBool,
+        ) -> Result<(PresetFile, Image), String> {
             assert!(attachment == &self.attachment);
             self.calls.lock().unwrap().push(Call::Get);
-            Ok(self.result.clone())
+            Ok((self.result.clone(), fake_image(self.result.name())))
         }
+    }
+
+    fn fake_image(name: &str) -> Image {
+        let mut image = [0; line6_devices::family::variax::procedures::PROGRAM_BYTES];
+        image[0] = name.len() as u8;
+        image[1..=name.len()].copy_from_slice(name.as_bytes());
+        image
     }
 
     fn connect(editor: &mut VariaxEditor, cancelled: Option<mpsc::Sender<()>>) -> Arc<Fake> {
@@ -513,7 +554,7 @@ mod tests {
     }
 
     #[test]
-    fn live_edits_debounce_differences_and_upload_every_model_load_and_tuning_toggle() {
+    fn live_edits_debounce_differences_and_route_model_loads_and_tuning_toggles() {
         let (_, mut app) = app();
         let editor = app.variax_mut();
         editor.open_example();
@@ -572,7 +613,7 @@ mod tests {
         complete(editor, tuning + DEBOUNCE);
         assert_eq!(
             device.calls.lock().unwrap()[2],
-            Call::Full("Debounced edit".into())
+            Call::Transition("Debounced edit".into())
         );
 
         editor.document.as_mut().unwrap().select(0, 3).unwrap();
