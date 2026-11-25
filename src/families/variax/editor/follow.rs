@@ -328,7 +328,10 @@ fn control_position(label: &str, value: Option<u8>) -> String {
 
 impl VariaxEditor {
     pub(super) fn follow_panel(&mut self, ui: &mut egui::Ui) {
-        let available = !self.is_reading() && !self.blocking_prompt();
+        let available = !self.is_reading()
+            && !self.blocking_prompt()
+            && !self.live_edit.busy()
+            && !self.live_edit.enabled();
         self.follow.show(ui, available);
     }
 

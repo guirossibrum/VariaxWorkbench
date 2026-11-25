@@ -4,7 +4,6 @@ use crate::{
     preset::PresetFile,
 };
 use std::{
-    collections::HashSet,
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -29,7 +28,6 @@ struct DocumentState {
     preset: Option<PresetFile>,
     bundle: Option<SelectedBundle>,
     buffers: SlotBuffers,
-    unsent_positions: HashSet<(usize, usize)>,
 }
 impl DocumentState {
     fn bytes(&self) -> &[u8] {
@@ -56,6 +54,7 @@ pub struct EditorDocument {
     undo: Vec<DocumentState>,
     redo: Vec<DocumentState>,
     saved: DocumentState,
+    library_baseline: Option<Arc<BundleFile>>,
     group_base: Option<DocumentState>,
     pub source: PathBuf,
 }
@@ -99,7 +98,6 @@ impl EditorDocument {
                 preset: Some(preset),
                 bundle: None,
                 buffers: SlotBuffers::default(),
-                unsent_positions: HashSet::new(),
             },
             source,
         )
@@ -129,7 +127,6 @@ impl EditorDocument {
                     preset: 0,
                 }),
                 buffers: SlotBuffers::default(),
-                unsent_positions: HashSet::new(),
             },
             source,
         ))
@@ -138,6 +135,7 @@ impl EditorDocument {
     fn from_state(state: DocumentState, source: PathBuf) -> Self {
         Self {
             saved: state.clone(),
+            library_baseline: state.bundle.as_ref().map(|bundle| Arc::clone(&bundle.file)),
             state,
             undo: vec![],
             redo: vec![],
@@ -218,20 +216,22 @@ impl EditorDocument {
     pub fn replace_slot_model(&mut self, replacement: PresetFile) -> Result<(), String> {
         self.validate_slot_replacement(&replacement)?;
         self.end_gesture();
-        let position = self.selection().expect("validated library slot");
-        let changed = replacement.as_bytes() != self.preset().as_bytes();
         self.apply(|preset| {
             *preset = replacement;
             Ok(())
-        })?;
-        if changed {
-            self.state.unsent_positions.insert(position);
-        }
-        Ok(())
+        })
     }
 
+    /// Compare with the library before local changes. Saving a file copy
+    /// does not establish that the guitar's stored position changed.
     pub fn slot_is_unsent(&self, bank: usize, slot: usize) -> bool {
-        self.state.unsent_positions.contains(&(bank, slot))
+        let baseline = self
+            .library_baseline
+            .as_ref()
+            .and_then(|bundle| bundle.banks().get(bank))
+            .and_then(|bank| bank.presets().get(slot))
+            .map(PresetFile::as_bytes);
+        self.state.slot_bytes(bank, slot) != baseline
     }
 
     pub fn discard_changes(&mut self) {
@@ -454,6 +454,24 @@ fn validate_slot_model(model: &PresetFile) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saving_a_library_copy_does_not_mark_edited_positions_as_stored() {
+        let bundle = BundleFile::new_default_bundle().unwrap();
+        let mut doc = EditorDocument::from_bundle(bundle, PathBuf::new()).unwrap();
+        doc.apply(|preset| preset.rename("Changed pickup")).unwrap();
+        assert!(doc.slot_is_unsent(0, 0));
+        assert!(!doc.slot_is_unsent(0, 1));
+        let directory = tempfile::tempdir().unwrap();
+        doc.save_copy(&directory.path().join("edited.vwb")).unwrap();
+        assert!(!doc.is_dirty());
+        assert!(doc.slot_is_unsent(0, 0));
+
+        doc.undo();
+        assert!(!doc.slot_is_unsent(0, 0));
+        doc.redo();
+        assert!(doc.slot_is_unsent(0, 0));
+    }
 
     #[test]
     fn fixed_template_uses_workbench_topology_and_default_model_settings() {
