@@ -93,6 +93,7 @@ pub fn execute(ctx: &mut Ctx<'_>) -> Result<(), String> {
         (3, 4) => variax_all_presets(ctx),
         (3, 5) => super::variax_reads::one_preset(ctx),
         (3, 6) => super::variax_reads::one_bank(ctx),
+        (4, 1) => super::live::podxt_stomp(ctx),
         (6, 2) => rig_guard(ctx),
         _ => placeholder(ctx),
     }
