@@ -10,6 +10,8 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] #271 device groundwork adds a separately gated Variax 300/600 current-program read that reports firmware verification status. Fake links cover 3.10, another version, rejected identities, and malformed chunk retry and cleanup. The read uses identity, two settings blocks and 35 current-buffer chunks, with no preset selection. [Shared API](variax-shared-procedures.md).
+
 - [x] Rig Check uses the shared #245 Variax identity, buffer read, preset reload, audition and store exchanges. Practice-mode comparison rules and per-step approval switches are preserved. [#243](https://github.com/guirossibrum/VariaxWorkbench/issues/243) · [Shared API](variax-shared-procedures.md).
 
 - [x] #245 moves the verified Variax wire procedures into the device crate. Existing owner-tool fake transports still assert the original bytes, including the store and switch-back sequences. The difference audition covers the exact 0x3B send, the retained checksum word, the full read-back and the return. [Shared API](variax-shared-procedures.md).

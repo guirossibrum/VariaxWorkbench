@@ -4,6 +4,8 @@ GitHub issues and the [project board](https://github.com/users/guirossibrum/proj
 
 ## Pending implementation or validation
 
+- [ ] #271 Rig Check UI and owner verification for Variax 300/600 firmware compatibility reads. The device-crate API is available for integration and its separate live approval switch is closed.
+
 - [ ] #245 first owner run of the 0x3B difference audition. Live approval is closed. Editor sends and stores in #204/#205 use their own compile-time switches and require separately approved owner runs. [Difference audition card](variax-diff-listen-test-card.md).
 
 - [ ] Rig Check on Windows and macOS: the [transport research](rig-check/transport-research.md) finds that Workbench 1.75 reaches the PODxt Live through the Line 6 driver's private port with the guitar relayed in the POD's MIDI stream (`03 23 01`, 256-byte send split), lists what steps 0.2/1.x must detect, and recommends a thin WinMM/CoreMIDI `Link` with a separate relayed-guitar path. Whether a third-party program gets the same relay through the plain driver MIDI ports is unknown until an owner-approved identity test. Report only, no code. [#262](https://github.com/guirossibrum/VariaxWorkbench/issues/262).

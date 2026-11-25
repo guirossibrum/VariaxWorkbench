@@ -85,3 +85,16 @@ and verification regardless of cancellation. A missing or ambiguous reply
 never triggers a resend or program change. For unknown state, include
 `spare_warning(target)` in the result. For example, do not store to slots
 40–59 until spare 62 is known blank.
+
+## Compatibility read (#271)
+
+`line6_devices::family::variax::firmware_read::read_current_program` reads
+a Variax 300/600 identity, current settings and the complete current buffer.
+It returns the reported identity and a `FirmwareStatus` of `Verified310`
+or `Unverified`. This status describes the firmware identity. Data from
+another version is diagnostic and does not establish compatibility.
+
+The caller needs the rig lock and the identity and read gates. The separate
+`APPROVED_FIRMWARE_READ` switch is closed. The procedure keeps the current
+preset selected. Rig Check integration is pending. The usual firmware 3.10
+checks still apply to sends and stores.
