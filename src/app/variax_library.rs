@@ -55,7 +55,7 @@ impl CompletedVariaxBackup {
     ) -> Result<Self, String> {
         let folder = std::path::absolute(folder).map_err(|error| error.to_string())?;
         Ok(Self {
-            manifest_verified_files: verify_complete_manifest(&folder, source)?,
+            manifest_verified_files: verify_complete_manifest(&folder, source)?.len(),
             folder,
             source,
             completed_at,
@@ -64,14 +64,22 @@ impl CompletedVariaxBackup {
     }
 
     #[cfg(feature = "gui")]
+    fn verified_entries(&self) -> Result<Vec<String>, String> {
+        let entries = verify_complete_manifest(&self.folder, self.source)?;
+        if entries.len() != self.manifest_verified_files {
+            return Err("The Variax backup manifest file count changed.".into());
+        }
+        Ok(entries)
+    }
+
+    #[cfg(feature = "gui")]
     fn verify_again(&self) -> bool {
-        verify_complete_manifest(&self.folder, self.source)
-            .is_ok_and(|count| count == self.manifest_verified_files)
+        self.verified_entries().is_ok()
     }
 }
 
 #[cfg(any(feature = "gui", all(feature = "usb", target_os = "linux")))]
-fn verify_complete_manifest(folder: &Path, source: BackupSource) -> Result<usize, String> {
+fn verify_complete_manifest(folder: &Path, source: BackupSource) -> Result<Vec<String>, String> {
     if folder
         .file_name()
         .is_some_and(|name| name.to_string_lossy().ends_with("-INCOMPLETE"))
@@ -105,7 +113,7 @@ fn verify_complete_manifest(folder: &Path, source: BackupSource) -> Result<usize
     {
         return Err("The full Variax backup manifest is missing program files.".into());
     }
-    Ok(names.len())
+    Ok(entries)
 }
 
 #[derive(Debug)]

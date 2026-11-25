@@ -478,19 +478,10 @@ impl Workbench {
         if let Some(result) = finished {
             self.backup_rx = None;
             self.backup_cancel = None;
-            use variax_workbench::variax_library::{BackupResult, LibraryPreferences};
+            use variax_workbench::variax_library::BackupResult;
             self.device_check_notice = match result {
-                Ok(BackupResult::Variax { backup, mut notice }) => {
-                    if let Some(path) = self.defaults.preferences.as_deref()
-                        && let Err(error) = LibraryPreferences::new(path).remember_backup(&backup)
-                    {
-                        notice.push_str(&format!(
-                            " Could not remember this library for startup: {error}"
-                        ));
-                    }
-                    notice
-                }
-                Ok(BackupResult::Podxt(text)) | Err(text) => text,
+                Ok(BackupResult::Variax { notice, .. } | BackupResult::Podxt(notice))
+                | Err(notice) => notice,
             };
             self.shell_status = "Backup finished. See Device check for the result.".into();
         } else {
@@ -549,6 +540,7 @@ impl Workbench {
         #[cfg(all(not(test), feature = "usb"))]
         {
             use variax_workbench::library_backup::{self, Which};
+            use variax_workbench::variax_library::{BackupResult, LibraryPreferences};
 
             let (tx, rx) = std::sync::mpsc::channel();
             self.backup_rx = Some(rx);
@@ -557,11 +549,12 @@ impl Workbench {
                 self.backup_cancel = Some(cancelled.clone());
             }
             self.device_check_notice = "Backup started. Leave this window open.".into();
+            let preferences = self.defaults.preferences.clone();
             std::thread::spawn(move || {
                 let progress = |line: &str| {
                     let _ = tx.send(DeviceOperationEvent::Progress(line.to_owned()));
                 };
-                let result = match choice {
+                let mut result = match choice {
                     BackupChoice::Variax => library_backup::run(Which::Variax, &root, progress),
                     BackupChoice::Podxt => library_backup::run(Which::Podxt, &root, progress),
                     BackupChoice::VariaxFull => {
@@ -577,6 +570,14 @@ impl Workbench {
                             })
                     }
                 };
+                if let Ok(BackupResult::Variax { backup, notice }) = &mut result
+                    && let Some(path) = preferences.as_deref()
+                    && let Err(error) = LibraryPreferences::new(path).remember_backup(backup)
+                {
+                    notice.push_str(&format!(
+                        " Could not remember this library for startup: {error}"
+                    ));
+                }
                 let _ = tx.send(DeviceOperationEvent::Finished(result));
             });
         }
