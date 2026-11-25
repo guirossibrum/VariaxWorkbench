@@ -367,10 +367,8 @@ impl SimRig {
                     self.podxt.stores += 1;
                 }
             }
-            [0xf0, 0x00, 0x01, 0x0c, 0x03, 0x72, 0xf7] => {
-                if !self.faults.silent_podxt_store {
-                    self.reply_podxt(&[0xf0, 0, 1, 0x0c, 3, 0x50, 0xf7]);
-                }
+            [0xf0, 0x00, 0x01, 0x0c, 0x03, 0x72, 0xf7] if !self.faults.silent_podxt_store => {
+                self.reply_podxt(&[0xf0, 0, 1, 0x0c, 3, 0x50, 0xf7]);
             }
             _ => {}
         }

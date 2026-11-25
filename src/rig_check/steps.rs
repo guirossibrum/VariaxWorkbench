@@ -1,6 +1,7 @@
 //! What each step does once the person has chosen Run.
 
 use super::catalogue::StepId;
+use super::evidence;
 use super::practice::{Program, preset_label};
 use super::procedures::{
     self, GUARD, PODXT_IDENTITY, PODXT_LIBRARY, PODXT_READ, VARIAX_IDENTITY, VARIAX_SELECT,
@@ -160,6 +161,8 @@ fn podxt_identity(ctx: &mut Ctx<'_>) -> Result<(), String> {
 }
 
 fn podxt_current_tone(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    // A closure, not the function path: the session's link lifetime is generic.
+    #[allow(clippy::redundant_closure)]
     let current = with_podxt(ctx, PODXT_READ, |session| podxt::read_current(session))?;
     let tone = current.tone;
     ctx.rec.note(format!("Current tone: {}", tone.name()));
@@ -200,6 +203,26 @@ fn podxt_library(ctx: &mut Ctx<'_>) -> Result<(), String> {
             .note("The playing tone is unchanged after the library read."),
         Ok(_) => return Err("The playing tone changed during the library read.".into()),
         Err(error) => return Err(format!("The closing current-tone read failed: {error}")),
+    }
+    if let Some(root) = ctx.data.evidence_dir.clone() {
+        let files: Vec<(String, Vec<u8>)> = library
+            .entries
+            .iter()
+            .map(|entry| {
+                (
+                    format!(
+                        "{}-{}.syx",
+                        entry.location.kind().slug(),
+                        evidence::file_name(&entry.location.label())
+                    ),
+                    entry.tone.raw.clone(),
+                )
+            })
+            .collect();
+        let manifest = evidence::save_folder(&root, "podxt-library", &files)?;
+        ctx.rec.note(format!(
+            "Saved 299 dumps to the evidence folder podxt-library (manifest SHA-256 {manifest})."
+        ));
     }
     ctx.data.podxt_library = library
         .entries
@@ -360,6 +383,26 @@ fn variax_all_presets(ctx: &mut Ctx<'_>) -> Result<(), String> {
             matches.len()
         )),
     };
+    if let Some(root) = ctx.data.evidence_dir.clone() {
+        let files: Vec<(String, Vec<u8>)> = library
+            .iter()
+            .map(|(preset, words)| {
+                (
+                    format!(
+                        "{:02}-{}.bin",
+                        super::practice::flash_index(*preset),
+                        evidence::file_name(&preset_label(*preset))
+                    ),
+                    program_bytes(words),
+                )
+            })
+            .collect();
+        let manifest = evidence::save_folder(&root, "variax-library", &files)?;
+        ctx.rec.note(format!(
+            "Saved {} programs to the evidence folder variax-library (manifest SHA-256 {manifest}).",
+            files.len()
+        ));
+    }
     ctx.data.variax_library = library;
     if let Some(failure) = failure {
         return Err(match back {

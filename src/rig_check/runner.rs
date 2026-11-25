@@ -193,6 +193,8 @@ impl<'a> Runner<'a> {
                 id != RIG_GUARD
             }
             Decision::Run => {
+                self.run.current = Some(id);
+                self.write_report();
                 let started = utc_now();
                 let clock = Instant::now();
                 let mut rec = std::mem::replace(self.run.step_mut(id), StepRecord::new(id));
@@ -216,11 +218,12 @@ impl<'a> Runner<'a> {
                     self.run.rig_state = rec
                         .evidence
                         .iter()
-                        .filter(|line| line.starts_with("Rig:"))
-                        .cloned()
+                        .filter_map(|line| line.strip_prefix("Rig: "))
+                        .map(str::to_owned)
                         .collect::<Vec<_>>()
                         .join(" ");
                 }
+                self.run.current = None;
                 super::hints::attach(&mut rec, &outcome);
                 *self.run.step_mut(id) = rec;
                 self.run.computer = self.data.computer.clone();
@@ -262,10 +265,11 @@ impl<'a> Runner<'a> {
         {
             return Some(Outcome::NotAuthorized(reason));
         }
-        if step.verified_devices_only && step.kind != Kind::Computer {
-            if let Some(reason) = self.data.unverified_reason(step.id) {
-                return Some(Outcome::UnverifiedDevice(reason));
-            }
+        if step.verified_devices_only
+            && step.kind != Kind::Computer
+            && let Some(reason) = self.data.unverified_reason(step.id)
+        {
+            return Some(Outcome::UnverifiedDevice(reason));
         }
         None
     }

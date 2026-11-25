@@ -15,11 +15,14 @@
 pub mod approvals;
 pub mod catalogue;
 pub mod cli;
+pub mod evidence;
 pub mod hints;
 pub mod port;
 pub mod practice;
 pub mod procedures;
 pub mod record;
+pub mod redact;
+pub mod report;
 pub mod runner;
 pub mod steps;
 #[cfg(test)]

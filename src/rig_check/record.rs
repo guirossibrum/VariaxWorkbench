@@ -153,6 +153,8 @@ pub struct RunRecord {
     pub rig_state: String,
     pub finished: bool,
     pub stopped_at: Option<StepId>,
+    /// The step running right now (written before it starts).
+    pub current: Option<StepId>,
 }
 
 /// Recorded by `scripts/rig-check-package.sh` at build time, if used.
@@ -177,6 +179,7 @@ impl RunRecord {
             rig_state: "Not checked yet.".into(),
             finished: false,
             stopped_at: None,
+            current: None,
         }
     }
 
