@@ -11,17 +11,19 @@ use variax_workbench::rig_check::{
     self, cli::Terminal, port::RealPort, practice::Faults, redact::Redactor, report, steps::RunData,
 };
 
-const USAGE: &str = "Usage: rig-check --practice | --real [--out DIR] [--evidence]
+const USAGE: &str = "Usage: rig-check --practice | --real [--out DIR] [--evidence] [--engine-folder DIR]
        rig-check --catalogue
   --practice  rehearse every step with simulated devices (nothing is sent to real hardware)
   --real      use the connected PODxt Live and Variax (device steps need the owner's approval)
   --out DIR   folder for the report (default: rig-check-output next to this program)
-  --evidence  also save backups and captures in a separate evidence folder";
+  --evidence  also save backups and captures in a separate evidence folder
+  --engine-folder DIR  your own reference models for step 0.3 (models.tsv, NAME.vwm, NAME.packed or NAME.sha256)";
 
 struct Options {
     practice: bool,
     out: PathBuf,
     evidence: bool,
+    engine_folder: Option<PathBuf>,
 }
 
 fn default_out() -> PathBuf {
@@ -36,12 +38,14 @@ fn options() -> Result<Options, String> {
     let mut practice = None;
     let mut out = None;
     let mut evidence = false;
+    let mut engine_folder = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--practice" => practice = Some(true),
             "--real" => practice = Some(false),
             "--evidence" => evidence = true,
             "--out" => out = Some(PathBuf::from(args.next().ok_or(USAGE)?)),
+            "--engine-folder" => engine_folder = Some(PathBuf::from(args.next().ok_or(USAGE)?)),
             "--catalogue" => {
                 for step in rig_check::catalogue::STEPS {
                     println!("{} {} [{}]", step.id, step.title, step.risk.label());
@@ -55,6 +59,7 @@ fn options() -> Result<Options, String> {
         practice: practice.ok_or(USAGE)?,
         out: out.unwrap_or_else(default_out),
         evidence,
+        engine_folder,
     })
 }
 
@@ -74,7 +79,10 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let mut data = RunData::default();
+    let mut data = RunData {
+        engine_folder: options.engine_folder.clone(),
+        ..RunData::default()
+    };
     if options.evidence {
         let stem = sink
             .path

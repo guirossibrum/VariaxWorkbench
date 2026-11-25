@@ -38,6 +38,10 @@ pub struct RunData {
     pub touched_variax: bool,
     /// The USB view from step 0.2.
     pub usb: Option<UsbView>,
+    /// A private folder of reference models for step 0.3 (optional).
+    pub engine_folder: Option<PathBuf>,
+    /// Step 0.3 results, for linking recording differences (#266).
+    pub engine_summary: Vec<String>,
 }
 
 impl RunData {
@@ -71,6 +75,7 @@ pub fn execute(ctx: &mut Ctx<'_>) -> Result<(), String> {
     match (id.0, id.1) {
         (0, 1) => computer_system(ctx),
         (0, 2) => computer_usb(ctx),
+        (0, 3) => engine_check(ctx),
         (2, 1) => podxt_identity(ctx),
         (2, 2) => podxt_current_tone(ctx),
         (2, 5) => podxt_library(ctx),
@@ -128,6 +133,64 @@ fn computer_system(ctx: &mut Ctx<'_>) -> Result<(), String> {
         ctx.data.computer.push((name, value));
     }
     Ok(())
+}
+
+fn engine_check(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    use super::engine_check as engine;
+    let builtin = engine::builtin();
+    let mut results: Vec<engine::ModelResult> = builtin.to_vec();
+    if let Some(folder) = ctx.data.engine_folder.clone() {
+        match engine::local_folder(&folder) {
+            Ok(local) => results.extend(local),
+            Err(error) => ctx
+                .rec
+                .note(format!("Your reference folder could not be read: {error}")),
+        }
+    }
+    let cases: Vec<&engine::ModelResult> = results
+        .iter()
+        .filter(|r| r.name.starts_with("Synthetic engine case"))
+        .collect();
+    let identical_cases = cases.iter().filter(|r| r.identical()).count();
+    let mut summary = Vec::new();
+    for result in results
+        .iter()
+        .filter(|r| !r.name.starts_with("Synthetic engine case") || !r.identical())
+    {
+        summary.push(result.summary());
+    }
+    summary.push(format!(
+        "Synthetic engine cases 01-{:02}: {identical_cases} of {} identical",
+        cases.len(),
+        cases.len()
+    ));
+    for line in &summary {
+        ctx.rec.note(line.clone());
+    }
+    for result in &results {
+        if let Some(hash) = &result.actual_sha256
+            && !result.name.starts_with("Synthetic engine case")
+        {
+            ctx.rec
+                .checksums
+                .push((format!("{} (built here)", result.name), hash.clone()));
+        }
+        if !result.diffs.is_empty() {
+            ctx.rec.note(format!("{} — word detail:", result.name));
+            for line in result.details() {
+                ctx.rec.note(line);
+            }
+        }
+    }
+    ctx.data.engine_summary = summary;
+    let different = results.iter().filter(|r| !r.identical()).count();
+    if different == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "{different} reference program(s) differ on this computer. The word, bit and sound-part detail is in the report."
+        ))
+    }
 }
 
 /// Windows/macOS lines that belong to step 0.2 rather than 0.1.

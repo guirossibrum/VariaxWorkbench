@@ -174,6 +174,16 @@ so they can be read from where the guitar is.
 - **You do:** Nothing, or choose a folder with your own reference models.
 - **Risk:** None.
 - **Evidence:** one line per model, full word/bit detail when different.
+- **Built-in references** are synthetic only (the repository's synthetic
+  body and pickup resources, 48 synthetic native cases with their original
+  outputs, and one synthetic preset with its original Java/native result).
+  No vendor model data, factory preset or owner file is built in.
+- **Your own references** (optional, `--engine-folder DIR`): a private
+  folder with `models.tsv` (your local model manifest, as for
+  `variax-workbench render-preset`) and `NAME.vwm` files, each with
+  `NAME.packed` (expected program) or `NAME.sha256` (its hash only). This is
+  how the owner's Stratocaster and test models A-D are checked without
+  putting them in the repository.
 
 ### 1.1 See the PODxt Live on USB
 - **What it does:** Looks for one PODxt Live in the USB list from 0.2 and
