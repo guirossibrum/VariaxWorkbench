@@ -50,7 +50,7 @@ podxt-table = ["dep:serde", "dep:serde_json"]
 usb = ["dep:rusb", "dep:line6-devices", "line6-devices/usb"]
 
 # The bounded owner-run probe is built separately from the normal application.
-owner-reso5-test = ["usb", "dep:libc"]
+owner-reso5-test = ["usb", "dep:libc", "dep:serde", "dep:serde_json"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = { version = "0.2", optional = true }

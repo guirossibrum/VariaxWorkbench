@@ -2,7 +2,7 @@ mod full_read;
 mod slot_read;
 
 use super::procedure::{
-    self, Stage, StorePolicy, VariaxPolicy,
+    self, Stage, StorePolicy, VariaxPolicy, selection,
     store::{self, Mode, Prompt},
 };
 use line6_devices::{
@@ -26,11 +26,12 @@ use std::{
 use variax_workbench::hardware_gates::{Gate, run_if_unlocked};
 
 const USAGE: &str =
-    "Usage: variax-reso5-test --card | --store-card | --slot-read-card | --full-read-card
+    "Usage: variax-reso5-test --card | --store-card | --slot-read-card | --full-read-card | --any-selection-card
        variax-reso5-test [--check] stage-1|stage-2 BACKUP_DIR ARCHIVE.vxf MODELS.tsv LOG_ROOT
        variax-reso5-test [--check] store rename|restore|factory BACKUP_DIR ARCHIVE.vxf CAPTURE_DIR LOG_ROOT
        variax-reso5-test [--check] slot-read VARIAX_BACKUP PODXT_BACKUP ARCHIVE.vxf LOG_ROOT
-       variax-reso5-test [--check] full-read ARCHIVE.vxf LOG_ROOT";
+       variax-reso5-test [--check] full-read ARCHIVE.vxf LOG_ROOT
+       variax-reso5-test [--check] any-selection MODE FLASH_INDEX FULL_BACKUP ARCHIVE.vxf SOURCE MODELS.tsv LOG_ROOT";
 
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 
@@ -62,6 +63,24 @@ pub fn run(args: &[OsString]) -> Result<(), String> {
         [option, remaining @ ..] if option == "--check" => (true, remaining),
         _ => (false, args),
     };
+    if let [stage, mode, slot, backup, archive, source, models, log] = args
+        && stage == "any-selection"
+    {
+        let mode = mode
+            .to_str()
+            .and_then(selection::Mode::parse)
+            .ok_or(USAGE)?;
+        let slot = slot
+            .to_str()
+            .and_then(|text| text.parse::<u8>().ok())
+            .ok_or(USAGE)?;
+        return run_selection(
+            offline,
+            mode,
+            slot,
+            [backup, archive, source, models, log].map(Path::new),
+        );
+    }
     if let [stage, archive, log_root] = args
         && stage == "full-read"
     {
@@ -161,7 +180,7 @@ pub fn run(args: &[OsString]) -> Result<(), String> {
 // Each ladder step needs its own direct owner approval on the reviewed build.
 const APPROVED_RENAME: bool = false;
 const APPROVED_RESTORE: bool = false;
-const APPROVED_FACTORY: bool = true;
+const APPROVED_FACTORY: bool = false;
 
 fn run_store(
     offline: bool,
@@ -230,10 +249,75 @@ fn run_store(
     Ok(())
 }
 
+const APPROVED_LISTEN_4A: bool = false;
+const APPROVED_STORE_4B: bool = false;
+const APPROVED_RESTORE_4C: bool = false;
+const APPROVED_RENAME_3A: bool = false;
+const APPROVED_FACTORY_3B: bool = false;
+
+fn run_selection(
+    offline: bool,
+    mode: selection::Mode,
+    slot: u8,
+    paths: [&Path; 5],
+) -> Result<(), String> {
+    let approved = match mode {
+        selection::Mode::Listen => APPROVED_LISTEN_4A,
+        selection::Mode::Store => APPROVED_STORE_4B,
+        selection::Mode::Restore => APPROVED_RESTORE_4C,
+        selection::Mode::RenameReso => APPROVED_RENAME_3A,
+        selection::Mode::FactoryReso => APPROVED_FACTORY_3B,
+    };
+    if !offline && !approved {
+        return Err(format!(
+            "The #238 {} rung has no owner approval for a live run.",
+            mode.label()
+        ));
+    }
+    let [backup, archive, source, models, log] = paths;
+    let trace = Trace::create(log, &format!("any-selection-{}", mode.label()))?;
+    let result = (|| {
+        let prepared = selection::prepare(mode, slot, backup, archive, source, models)?;
+        for line in prepared.description() {
+            println!("{line}");
+            trace.record(line.clone());
+        }
+        if offline {
+            return Ok(());
+        }
+        print!("{}", super::SELECTION_CARD);
+        install_cancellation()?;
+        let write_gate = if mode.listens() {
+            Gate::EditBufferWrite
+        } else {
+            Gate::StoreRestore
+        };
+        run_if_unlocked(write_gate, || {
+            run_if_unlocked(Gate::FullBackupRead, || {
+                run_if_unlocked(Gate::CurrentSettingsRead, || {
+                    run_if_unlocked(Gate::IdentityRequest, || {
+                        run_if_unlocked(Gate::OsDiscovery, || {
+                            run_device(DeviceTask::Selection(&prepared), &trace)
+                        })
+                    })
+                })
+            })
+        })
+    })();
+    trace.record(match &result {
+        Err(error) => format!("STOPPED: {error}"),
+        Ok(()) if offline => "PASS: offline check. No device was opened.".into(),
+        Ok(()) => "PASS: read-back and original selection verified.".into(),
+    });
+    println!("Log folder: {}", trace.path.display());
+    combine(result, trace.finish())
+}
+
 enum DeviceTask<'a> {
     FullRead(&'a [u8; variax_workbench::factory_reference::PROGRAM_BYTES]),
     Edit(&'a procedure::Prepared),
     Store(&'a store::Prepared, &'a [u8; 192]),
+    Selection(&'a selection::Prepared),
 }
 
 fn prompt_store(prompt: Prompt, stopping: impl Fn() -> bool) -> Result<(), String> {
@@ -246,6 +330,10 @@ fn prompt_store(prompt: Prompt, stopping: impl Fn() -> bool) -> Result<(), Strin
             store::RESELECT_CONFIRMATION
         }
     };
+    store::require_confirmation(prompt, &confirmation_line(phrase, stopping)?)
+}
+
+fn confirmation_line(phrase: &str, stopping: impl Fn() -> bool) -> Result<String, String> {
     print!("Type {phrase} and press Enter: ");
     io::stdout().flush().map_err(|e| e.to_string())?;
     let mut answer = Vec::new();
@@ -282,12 +370,10 @@ fn prompt_store(prompt: Prompt, stopping: impl Fn() -> bool) -> Result<(), Strin
         }
         answer.push(byte);
         if byte == b'\n' {
-            let answer = std::str::from_utf8(&answer).map_err(|error| error.to_string())?;
-            store::require_confirmation(prompt, answer)?;
-            return Ok(());
+            return String::from_utf8(answer).map_err(|error| error.to_string());
         }
     }
-    store::require_confirmation(prompt, "")
+    Ok(String::new())
 }
 
 fn run_device(task: DeviceTask<'_>, trace: &Trace) -> Result<(), String> {
@@ -336,6 +422,24 @@ fn run_device(task: DeviceTask<'_>, trace: &Trace) -> Result<(), String> {
             DeviceTask::Edit(prepared) => {
                 let mut session = Session::new(link, &VariaxPolicy, &mut log);
                 procedure::attempt(&mut session, prepared, stopping)
+            }
+            DeviceTask::Selection(prepared) => {
+                let policy = selection::Policy(prepared.mode);
+                let mut session = Session::new(link, &policy, &mut log);
+                selection::attempt(
+                    &mut session,
+                    prepared,
+                    &trace.path,
+                    |phrase| {
+                        let answer = confirmation_line(phrase, stopping)?;
+                        if answer.trim_end_matches(['\r', '\n']) != phrase {
+                            return Err("The displayed confirmation was not given.".into());
+                        }
+                        Ok(())
+                    },
+                    |line| println!("{line}"),
+                    stopping,
+                )
             }
             DeviceTask::Store(prepared, backup_settings) => {
                 let mut session = Session::new(link, &StorePolicy, &mut log);

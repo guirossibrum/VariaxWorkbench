@@ -1,4 +1,5 @@
 pub mod full_read;
+pub mod selection;
 pub mod slot_read;
 pub mod store;
 

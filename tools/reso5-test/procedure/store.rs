@@ -13,7 +13,7 @@ use variax_workbench::{factory_reference::PROGRAM_BYTES, open_regular_file, path
 const CAPTURE_HASH: &str = "3d8bae813991fa5996fb649ad80d116de8ef358c03724770183b89cdef5ad249";
 const RENAME_HASH: &str = "75bcaaf5f775bcd2f5ba22289aa4b8e9cac0c6115b4ac32b75144b4ccb5c716b";
 const RENAMED: &str = "Reso-5 T";
-const AFTER_TIMEOUT: Duration = Duration::from_secs(120);
+pub(super) const AFTER_TIMEOUT: Duration = Duration::from_secs(120);
 pub const SPARE_WARNING: &str = "Do not store any slot in 40–59 until spare 62 is known blank.";
 
 type Image = [u8; PROGRAM_BYTES];
@@ -197,7 +197,7 @@ pub fn require_confirmation(prompt: Prompt, answer: &str) -> Result<(), String> 
     Ok(())
 }
 
-fn compare_image(
+pub(super) fn compare_image(
     actual: &full_read::FullBuffer,
     expected: &Image,
     phase: &str,

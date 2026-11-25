@@ -4,6 +4,8 @@ GitHub issues and the [project board](https://github.com/users/guirossibrum/proj
 
 ## Pending implementation or validation
 
+- [ ] #238 owner validation from another selected preset. Each rung (4a, 4b, 4c, 3a and 3b) needs separate approval. The draft card has the offline checks and the stop procedure. [Draft owner card](variax-any-selection-test-card.md).
+
 - [ ] Phase 3 closeout and follow-up. [#114](https://github.com/guirossibrum/VariaxWorkbench/issues/114) remains open for the full inventory, and [#112](https://github.com/guirossibrum/VariaxWorkbench/issues/112) retains the open evidence questions. [#126](https://github.com/guirossibrum/VariaxWorkbench/issues/126), [#159](https://github.com/guirossibrum/VariaxWorkbench/issues/159) and [#150](https://github.com/guirossibrum/VariaxWorkbench/issues/150) remain open. The capture interface and firmware handler remain unverified.
 
 - [ ] Historical macOS math parity and full Rust/native validation remain pending. The old uninitialized whole-generator/JNI baseline stays invalidated; use only the versioned candidates described in [native runtime evidence](native-runtime.md).

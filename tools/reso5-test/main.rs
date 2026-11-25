@@ -6,6 +6,7 @@ mod procedure;
 #[cfg(all(not(test), target_os = "linux"))]
 mod live;
 
+const SELECTION_CARD: &str = include_str!("../../docs/variax-any-selection-test-card.md");
 const FULL_READ_CARD: &str = include_str!("../../docs/reso5-full-read-test-card.md");
 const SLOT_READ_CARD: &str = include_str!("../../docs/reso5-slot-read-test-card.md");
 const STORE_CARD: &str = include_str!("../../docs/reso5-store-test-card.md");
@@ -20,6 +21,10 @@ fn main() {
 }
 
 fn run(args: &[OsString]) -> Result<(), String> {
+    if args == ["--any-selection-card"] {
+        print!("{SELECTION_CARD}");
+        return Ok(());
+    }
     if args == ["--full-read-card"] {
         print!("{FULL_READ_CARD}");
         return Ok(());

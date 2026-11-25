@@ -7,9 +7,9 @@ explains the procedure. Complete and review each step before asking for the next
 | --- | --- | --- | --- |
 | 1a | `rename` | The captured Reso-5 program with name `Reso-5 T`, space padding and a recomputed checksum | **One owner run completed 2026-11-24** |
 | 1b | `restore` | The original captured Reso-5 program | **One owner run completed and verified 2026-11-24** |
-| 2 | `factory` | The Variax 3.10 archive's slot 50 factory program | **Approved 2026-11-24 for one owner run** |
+| 2 | `factory` | The Variax 3.10 archive's slot 50 factory program | **One owner run completed and verified** |
 
-The factory run is scheduled for 2026-11-25 UTC or later. The #236 full
+The factory rung completed on 2026-11-25 UTC. The #236 full
 byte-level backup `variax-full-library-20261124T234218Z` contains slot 50
 with SHA-256 `3d8bae813991fa5996fb649ad80d116de8ef358c03724770183b89cdef5ad249`.
 [#236 owner-run results](https://github.com/guirossibrum/VariaxWorkbench/issues/236#issuecomment-7147820415).

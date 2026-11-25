@@ -2,7 +2,7 @@ use super::{STORE_HASH, canonical_store_program, read, variax_identity};
 use line6_devices::{
     family::variax::{
         self,
-        span_read::{BUFFER_WORDS, PresetSpan, read_spans},
+        span_read::{BUFFER_WORDS, PresetSpan, read_selected_spans, read_spans},
     },
     gate::{GatePolicy, Operation},
     session::{Link, Log, Session},
@@ -72,12 +72,26 @@ pub(super) fn read_chunks<L: Link>(
     dir: &Path,
     stopping: impl FnMut() -> bool,
 ) -> Result<FullBuffer, String> {
+    read_chunks_selecting(session, dir, None, stopping)
+}
+
+pub(super) fn read_chunks_selecting<L: Link>(
+    session: &mut Session<L>,
+    dir: &Path,
+    selected: Option<line6_devices::family::variax::Preset>,
+    stopping: impl FnMut() -> bool,
+) -> Result<FullBuffer, String> {
     let mut full = Vec::with_capacity(usize::from(BUFFER_WORDS));
-    read_spans(session, &chunks(), stopping, |reply| {
+    let save = |reply: line6_devices::family::variax::span_read::SpanReply| {
         save_new(&chunk_path(dir, reply.span), &reply.raw)?;
         full.extend(reply.words);
         Ok(())
-    })?;
+    };
+    if let Some(preset) = selected {
+        read_selected_spans(session, preset, &chunks(), stopping, save)?;
+    } else {
+        read_spans(session, &chunks(), stopping, save)?;
+    }
     full.try_into()
         .map_err(|_| "Incomplete full buffer.".into())
 }
