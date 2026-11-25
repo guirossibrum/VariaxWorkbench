@@ -19,6 +19,7 @@ mod startup_library;
 use slot_files::SlotReplacement;
 use slot_transfers::SlotTransfer;
 use startup_library::{LibraryImport, LibraryOrigin};
+mod pickup_positions;
 mod preferences;
 mod tuning_presets;
 mod twelve_string;
@@ -145,6 +146,8 @@ pub(super) struct VariaxEditor {
     auto_select_controls: bool,
     /// Where the preference is remembered. Tests leave this empty.
     preferences_path: Option<PathBuf>,
+    body_definitions: Option<PathBuf>,
+    pickup_position_dialog: Option<pickup_positions::PickupPositionDialog>,
     default_author: String,
     author_preference: Option<preferences::AuthorPreference>,
     link_tuning_mix: bool,
@@ -226,6 +229,8 @@ impl VariaxEditor {
             author_draft: None,
             auto_select_controls: defaults.preferences.as_deref().is_none_or(load_auto_select),
             preferences_path: defaults.preferences.clone(),
+            body_definitions: preferences::startup_body_definitions(defaults),
+            pickup_position_dialog: None,
             default_author: String::new(),
             author_preference: None,
             link_tuning_mix: false,
@@ -878,7 +883,7 @@ impl VariaxEditor {
         }
     }
 
-    pub(super) fn controls(&mut self, ui: &mut egui::Ui, height: f32) {
+    fn controls(&mut self, ui: &mut egui::Ui, height: f32, services: &mut EditorServices<'_>) {
         let slider_width = (ui.available_width() * 0.45).min(190.0);
         let compact = ui.ctx().content_rect().height() < 720.0;
         let style = ui.style_mut();
@@ -906,7 +911,7 @@ impl VariaxEditor {
                 ui.separator();
                 egui::ScrollArea::vertical()
                     .id_salt(self.tab)
-                    .show(ui, |ui| self.tab_controls(ui));
+                    .show(ui, |ui| self.tab_controls(ui, services));
             },
         );
     }
@@ -916,7 +921,7 @@ impl VariaxEditor {
             .is_some_and(variax_workbench::edit::is_acoustic)
     }
 
-    fn tab_controls(&mut self, ui: &mut egui::Ui) {
+    fn tab_controls(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
         let slot = match self.tab {
             Tab::Body => BODY,
             Tab::Pickups => PICKUP1,
@@ -949,8 +954,8 @@ impl VariaxEditor {
                 }
                 Tab::Pickups => {
                     ui.columns(2, |columns| {
-                        self.pickup_column(&mut columns[0], PICKUP1, "Pickup 1");
-                        self.pickup_column(&mut columns[1], PICKUP2, "Pickup 2");
+                        self.pickup_column(&mut columns[0], PICKUP1, "Pickup 1", services);
+                        self.pickup_column(&mut columns[1], PICKUP2, "Pickup 2", services);
                     });
                     ui.horizontal_wrapped(|ui| {
                         self.boolean_control(ui, PICKUP2, 0x200002, "Reverse pickup 2 phase");
@@ -962,7 +967,13 @@ impl VariaxEditor {
         });
     }
 
-    fn pickup_column(&mut self, ui: &mut egui::Ui, slot: u32, title: &str) {
+    fn pickup_column(
+        &mut self,
+        ui: &mut egui::Ui,
+        slot: u32,
+        title: &str,
+        services: &mut EditorServices<'_>,
+    ) {
         ui.horizontal_wrapped(|ui| {
             ui.strong(title);
             self.enabled_control(ui, slot, "Enabled");
@@ -971,6 +982,7 @@ impl VariaxEditor {
             }
         });
         self.model_control(ui, slot, "pickup");
+        self.standard_pickup_positions(ui, slot, services);
         if ui.available_width() >= 130.0 {
             ui.spacing_mut().slider_width = (ui.available_width() - 100.0).clamp(30.0, 190.0);
         } else {
@@ -1132,7 +1144,7 @@ impl VariaxEditor {
                         ui.add_enabled_ui(available, |ui| self.preference_button(ui));
                     });
                     ui.add_enabled_ui(can_edit, |ui| {
-                        self.controls(ui, (panel_height - 40.0).max(32.0))
+                        self.controls(ui, (panel_height - 40.0).max(32.0), services)
                     });
                 });
             #[cfg(test)]
@@ -1321,6 +1333,7 @@ impl FamilyTab for VariaxEditor {
         self.tuning_presets_dialog(ctx);
         self.slot_replacement_dialog(services, ctx);
         self.slot_transfer_dialog(services, ctx);
+        self.pickup_position_dialog(ctx, services);
         self.rename_bank_dialog(services, ctx);
         #[cfg(feature = "usb")]
         self.refresh_confirmation(ctx);
@@ -1340,6 +1353,7 @@ impl FamilyTab for VariaxEditor {
             || self.tuning_dialog.is_some()
             || self.slot_replacement.is_some()
             || self.slot_transfer.is_some()
+            || self.pickup_position_dialog.is_some()
             || self.bank_rename.is_some()
             || self.author_preference.is_some()
             || self.new_file.is_some()

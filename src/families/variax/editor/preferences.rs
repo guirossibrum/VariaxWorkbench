@@ -8,6 +8,7 @@ use variax_workbench::preset::legacy_text_issue;
 struct Preferences {
     default_author: String,
     artwork: Option<OsString>,
+    body_definitions: Option<OsString>,
 }
 
 fn settings_path(editor_preferences: &Path) -> PathBuf {
@@ -85,6 +86,14 @@ pub(super) fn startup_artwork(defaults: &EditorDefaults) -> (PathBuf, Option<Str
     }
 }
 
+pub(super) fn startup_body_definitions(defaults: &EditorDefaults) -> Option<PathBuf> {
+    let path = defaults.preferences.as_deref()?;
+    load(&settings_path(path))
+        .ok()?
+        .body_definitions
+        .map(PathBuf::from)
+}
+
 #[derive(Default)]
 pub(super) struct AuthorPreference {
     value: String,
@@ -93,6 +102,20 @@ pub(super) struct AuthorPreference {
 }
 
 impl VariaxEditor {
+    pub(super) fn remember_body_definitions(&mut self, folder: &Path) -> Result<(), String> {
+        if !folder.is_dir() {
+            return Err("Choose the Workbench body definitions folder.".into());
+        }
+        if let Some(path) = self.preferences_path.as_deref() {
+            update(&settings_path(path), |prefs| {
+                prefs.body_definitions = Some(folder.as_os_str().to_os_string());
+            })?;
+        }
+        self.body_definitions = Some(folder.to_owned());
+        self.error = None;
+        Ok(())
+    }
+
     fn author_setting(&self) -> Result<String, String> {
         match self.preferences_path.as_deref() {
             Some(path) => Ok(load(&settings_path(path))?.default_author),
@@ -163,6 +186,13 @@ impl VariaxEditor {
             if self.preferences_path.is_some() && ui.button("Choose factory firmware…").clicked()
             {
                 self.choose_factory_archive(ctx, services);
+            }
+            if ui
+                .button("Body definitions folder…")
+                .on_hover_text("Select the extracted Workbench 1.75 coefeng/data/bodies folder.")
+                .clicked()
+            {
+                self.choose_body_definitions(ctx, services, None);
             }
             ui.label("Default author for new models");
             let field = ui.text_edit_singleline(&mut draft.value);
