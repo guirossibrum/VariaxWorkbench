@@ -80,17 +80,36 @@ impl EditorDocument {
         buffer: SlotBuffer,
         exchange: bool,
     ) -> Result<(), String> {
+        self.paste_buffer(buffer, exchange, false)
+    }
+
+    /// Workbench marks a device position unsynchronised on paste, even
+    /// if the clipboard and destination have identical model bytes.
+    pub fn paste_into_guitar_position(&mut self) -> Result<(), String> {
+        self.paste_buffer(SlotBuffer::ModelClipboard, false, true)
+    }
+
+    fn paste_buffer(
+        &mut self,
+        buffer: SlotBuffer,
+        exchange: bool,
+        mark_position: bool,
+    ) -> Result<(), String> {
         if exchange && !buffer.is_swap() {
             return Err("Choose a Swap Buffer to exchange models.".into());
         }
         let (label, models, snapshot) = self.paste_selection(buffer)?;
         let same_contents = same_models(&snapshot.models, models);
         let buffer_changed = exchange && (!same_contents || label != snapshot.label);
-        if same_contents && !buffer_changed {
+        let position = self
+            .selection()
+            .filter(|position| mark_position && !self.state.pasted_positions.contains(position));
+        if same_contents && !buffer_changed && position.is_none() {
             return Ok(());
         }
 
         let mut next = self.state.clone();
+        next.pasted_positions.extend(position);
         if buffer_changed {
             next.buffers.entries[buffer as usize] = Some(Arc::new(Snapshot {
                 label,

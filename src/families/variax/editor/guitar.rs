@@ -298,6 +298,15 @@ fn readable_origin(origin: &str) -> String {
     origin.to_owned()
 }
 
+enum SlotCommand {
+    Select,
+    Rename,
+    Copy,
+    Paste,
+    #[cfg(feature = "usb")]
+    Device(super::device_sync::Action),
+}
+
 impl VariaxEditor {
     #[cfg(test)]
     pub(in crate::editor) fn open_example(&mut self) {
@@ -354,6 +363,22 @@ impl VariaxEditor {
             .into_iter()
             .map(|path| path.and_then(|path| self.texture(ui.ctx(), &path)))
             .collect();
+        #[cfg(feature = "usb")]
+        let device_commands = {
+            use super::device_sync::Action;
+            [
+                (
+                    "Write to device",
+                    Action::WriteSelected,
+                    self.sync_ready(Action::WriteSelected),
+                ),
+                (
+                    "Read unmodified from device",
+                    Action::ReadUnmodified,
+                    self.sync_ready(Action::ReadUnmodified),
+                ),
+            ]
+        };
         let document = self
             .document
             .as_ref()
@@ -362,6 +387,7 @@ impl VariaxEditor {
         let suffix = if example { " (example)" } else { "" };
         let mut next = document.selection();
         let mut import = false;
+        let mut command = None;
         ui.horizontal_wrapped(|ui| {
             if let (Some(banks), Some((bank_index, selected))) = (document.banks(), next) {
                 let bank = &banks[bank_index];
@@ -439,6 +465,50 @@ impl VariaxEditor {
                         if response.clicked() && !active {
                             next = Some((bank_index, index));
                         }
+                        response.context_menu(|ui| {
+                            use variax_workbench::document::SlotBuffer;
+                            for (label, action, enabled) in [
+                                ("Edit", SlotCommand::Select, available),
+                                ("Load", SlotCommand::Select, available),
+                                ("Rename", SlotCommand::Rename, available),
+                                ("", SlotCommand::Select, false),
+                                ("Copy", SlotCommand::Copy, available),
+                                (
+                                    "Paste",
+                                    SlotCommand::Paste,
+                                    available
+                                        && document
+                                            .slot_buffer_label(SlotBuffer::ModelClipboard)
+                                            .is_some(),
+                                ),
+                            ] {
+                                if label.is_empty() {
+                                    ui.separator();
+                                } else if ui
+                                    .add_enabled(enabled, egui::Button::new(label))
+                                    .clicked()
+                                {
+                                    command = Some(((bank_index, index), action));
+                                    ui.close();
+                                }
+                            }
+                            #[cfg(feature = "usb")]
+                            {
+                                ui.separator();
+                                for (label, action, ready) in device_commands {
+                                    if ui
+                                        .add_enabled(available && ready, egui::Button::new(label))
+                                        .clicked()
+                                    {
+                                        command = Some((
+                                            (bank_index, index),
+                                            SlotCommand::Device(action),
+                                        ));
+                                        ui.close();
+                                    }
+                                }
+                            }
+                        });
                     }
                 });
             } else {
@@ -466,6 +536,9 @@ impl VariaxEditor {
             );
         });
 
+        if let Some((position, SlotCommand::Select | SlotCommand::Rename)) = &command {
+            next = Some(*position);
+        }
         let switched = if next != document.selection()
             && let Some((bank, slot)) = next
             && let Some(document) = &mut self.document
@@ -493,6 +566,52 @@ impl VariaxEditor {
             Some(Err(error)) => self.error = Some(error),
             None => {}
         }
+        if let Some((position, command)) = command {
+            use variax_workbench::document::SlotBuffer;
+            match command {
+                SlotCommand::Select => {}
+                SlotCommand::Rename => {
+                    ui.memory_mut(|memory| memory.request_focus(egui::Id::new("variax-model-name")))
+                }
+                SlotCommand::Copy | SlotCommand::Paste => {
+                    let guitar_library = matches!(
+                        self.library_origin,
+                        Some(super::LibraryOrigin::Backup(..) | super::LibraryOrigin::Download(..))
+                    );
+                    let document = self.document.as_mut().expect("open library");
+                    let (bank, slot) = document.selection().expect("selected model");
+                    let result = document.select(position.0, position.1).and_then(|()| {
+                        let operation = if matches!(command, SlotCommand::Copy) {
+                            document.copy_to_slot_buffer(SlotBuffer::ModelClipboard)
+                        } else if guitar_library {
+                            document.paste_into_guitar_position()
+                        } else {
+                            document.paste_from_slot_buffer(SlotBuffer::ModelClipboard, false)
+                        };
+                        let restored = document.select(bank, slot);
+                        operation.and(restored)
+                    });
+                    match result {
+                        Ok(()) => {
+                            self.error = None;
+                            if matches!(command, SlotCommand::Copy) {
+                                self.status = "Copied model.".into();
+                            } else {
+                                self.clear_text_drafts();
+                                #[cfg(feature = "usb")]
+                                if position == (bank, slot) {
+                                    self.live_paste_completed();
+                                }
+                                self.status = "Pasted model.".into();
+                            }
+                        }
+                        Err(error) => self.error = Some(error),
+                    }
+                }
+                #[cfg(feature = "usb")]
+                SlotCommand::Device(action) => self.confirm_position_action(action, position),
+            }
+        }
         import
     }
 
@@ -519,6 +638,7 @@ impl VariaxEditor {
                     let response = ui.add_enabled(
                         editable,
                         egui::TextEdit::singleline(&mut name)
+                            .id(egui::Id::new("variax-model-name"))
                             .desired_width(168.0)
                             .hint_text("Model name"),
                     );

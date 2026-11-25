@@ -259,11 +259,21 @@ impl VariaxEditor {
         })
     }
 
+    pub(super) fn live_paste_completed(&mut self) {
+        // Copy/Paste changes the library locally. The next explicit edit or
+        // model selection can send again from an unknown buffer baseline.
+        let enabled = self.live_edit.enabled();
+        self.live_edit.stop();
+        self.live_edit.enabled = enabled;
+        self.live_edit.seen = self.live_model();
+    }
+
     pub(super) fn edit_buffer_controls(&mut self, ui: &mut egui::Ui) {
         if self.connection_status.is_none() {
             return;
         }
-        let free = !self.is_reading()
+        let free = !self.device_sync.stopped_after_store()
+            && !self.is_reading()
             && !self.follow.busy()
             && !self.follow.disconnected()
             && !self.blocking_prompt();
@@ -317,7 +327,11 @@ impl VariaxEditor {
     }
 
     pub(super) fn get_edit_buffer(&mut self) {
-        if !self.is_reading() && !self.follow.busy() && !self.follow.disconnected() {
+        if !self.device_sync.stopped_after_store()
+            && !self.is_reading()
+            && !self.follow.busy()
+            && !self.follow.disconnected()
+        {
             self.start_edit_buffer(Action::Get, self.live_model());
         }
     }

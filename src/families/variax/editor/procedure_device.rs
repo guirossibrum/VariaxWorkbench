@@ -1,5 +1,9 @@
 //! Attachment-scoped adapter for the shared Workbench procedures.
-use super::live_edit::Previous;
+use super::{
+    PresetFile,
+    device_sync::{Report, Target},
+    live_edit::Previous,
+};
 use line6_devices::{
     family::variax::{
         procedures::{self, BufferEdit, Image},
@@ -51,11 +55,91 @@ fn send_on<L: Link>(
     )
 }
 
+fn decode_model(image: &Image) -> Result<PresetFile, String> {
+    let metadata = variax_workbench::PresetMetadata::from_bytes(
+        image[procedures::METADATA]
+            .try_into()
+            .expect("bounded metadata"),
+    )?;
+    PresetFile::from_metadata(&metadata, 0x0007_0004, 0x0310_0000)
+}
+
+struct StoreImages {
+    candidate: Image,
+    backup: Image,
+}
+
+fn sync_on<L: Link>(
+    session: &mut Session<L>,
+    targets: &[Target],
+    stores: Option<&[StoreImages]>,
+    cancel: &AtomicBool,
+    mut notice: impl FnMut(String),
+) -> Report {
+    use procedures::VerifiedStoreError;
+    let mut report = Report::default();
+    let stopping = || cancel.load(Ordering::Relaxed);
+    for (index, target) in targets.iter().enumerate() {
+        if stopping() {
+            report.error = Some("Cancelled remaining guitar library work.".into());
+            break;
+        }
+        let slot = target.position.slot() + 1;
+        let label = format!("{} {slot}", target.position.bank_name());
+        notice(format!("Reading saved {label}…"));
+        let result = procedures::read_unmodified(session, target.position, stopping, |_| Ok(()))
+            .and_then(|words| {
+                let Some(images) = stores.map(|images| &images[index]) else {
+                    return decode_model(&procedures::pack(&words));
+                };
+                procedures::compare_image(
+                    &words,
+                    &images.backup,
+                    "Saved position differs from the verified restore backup",
+                )?;
+                let program = Program::new(target.model.name(), &images.candidate)?;
+                notice(format!("Storing and verifying {label}…"));
+                match procedures::store_and_reload(
+                    session,
+                    target.position,
+                    &program,
+                    stopping,
+                    |message| notice(message.to_owned()),
+                    |_| Ok(()),
+                ) {
+                    Ok(()) => Ok(target.model.clone()),
+                    Err(error) => {
+                        report.store_unknown =
+                            !matches!(error, VerifiedStoreError::BeforeCommit(_));
+                        let warning = if report.store_unknown {
+                            format!(" {}", procedures::spare_warning(target.position))
+                        } else {
+                            String::new()
+                        };
+                        Err(format!("{error}{warning}"))
+                    }
+                }
+            });
+        match result {
+            Ok(model) => report.verified.push((
+                usize::from(target.position.bank()),
+                usize::from(slot - 1),
+                model,
+            )),
+            Err(error) => {
+                report.error = Some(format!("{label}: {error}"));
+                break;
+            }
+        }
+    }
+    report
+}
+
 #[cfg(all(target_os = "linux", not(test)))]
 mod linux {
     use super::*;
     use crate::editor::variax_panel::{
-        PresetFile, live_attachment::Attachment, live_edit::EditBufferDevice,
+        PresetFile, device_sync::Action, live_attachment::Attachment, live_edit::EditBufferDevice,
     };
     use line6_devices::{
         device_lock::DeviceLock,
@@ -67,12 +151,12 @@ mod linux {
     use std::{
         io::Read,
         path::{Path, PathBuf},
+        sync::mpsc::Sender,
     };
     use variax_workbench::{
-        PresetMetadata,
         hardware_gates::{Gate, is_locked, run_if_unlocked},
         host::{HostEngine, HostOptions, HostParameters, ModelLibrary},
-        variax_library::LibraryPreferences,
+        variax_library::{CompletedVariaxBackup, LibraryPreferences},
     };
 
     pub(in crate::editor::variax_panel) struct EditorDevice {
@@ -87,16 +171,30 @@ mod linux {
         }
     }
 
-    struct EditPolicy {
-        writing: bool,
+    #[derive(Clone, Copy)]
+    enum Mode {
+        BufferRead,
+        BufferWrite,
+        LibraryRead,
+        LibraryWrite,
     }
 
-    impl GatePolicy for EditPolicy {
+    impl GatePolicy for Mode {
         fn allows(&self, operation: Operation) -> bool {
             let gate = match operation {
                 Operation::VariaxIdentity => Gate::IdentityRequest,
                 Operation::VariaxRead => Gate::CurrentSettingsRead,
-                Operation::VariaxEditBufferWrite if self.writing => Gate::EditBufferWrite,
+                Operation::VariaxEditBufferWrite if matches!(self, Self::BufferWrite) => {
+                    Gate::EditBufferWrite
+                }
+                Operation::VariaxPresetSwitch
+                    if matches!(self, Self::LibraryRead | Self::LibraryWrite) =>
+                {
+                    Gate::FullBackupRead
+                }
+                Operation::VariaxStoreRestore if matches!(self, Self::LibraryWrite) => {
+                    Gate::StoreRestore
+                }
                 _ => return false,
             };
             !is_locked(gate)
@@ -113,7 +211,7 @@ mod linux {
     fn session<T>(
         attachment: &Attachment,
         cancel: &AtomicBool,
-        writing: bool,
+        policy: Mode,
         execute: impl FnOnce(&mut Session<'_, UsbInterfaceLink<&DeviceLock>>) -> Result<T, String>,
     ) -> Result<T, String> {
         for gate in [
@@ -123,8 +221,14 @@ mod linux {
         ] {
             run_if_unlocked(gate, || Ok(()))?;
         }
-        if writing {
-            run_if_unlocked(Gate::EditBufferWrite, || Ok(()))?;
+        match policy {
+            Mode::BufferWrite => run_if_unlocked(Gate::EditBufferWrite, || Ok(()))?,
+            Mode::LibraryRead => run_if_unlocked(Gate::FullBackupRead, || Ok(()))?,
+            Mode::LibraryWrite => {
+                run_if_unlocked(Gate::FullBackupRead, || Ok(()))?;
+                run_if_unlocked(Gate::StoreRestore, || Ok(()))?;
+            }
+            Mode::BufferRead => {}
         }
         check_cancel(cancel)?;
         // Variax tab admission already verified PODxt Live 3.01 for this USB
@@ -136,7 +240,6 @@ mod linux {
             (&attachment.path, attachment.address),
         )?;
         let mut log = Quiet;
-        let policy = EditPolicy { writing };
         let mut session = Session::new(link, &policy, &mut log);
         session.log_packets = false;
         let result = check_cancel(cancel)
@@ -190,6 +293,118 @@ mod linux {
         }
     }
 
+    fn require_backup(preferences: &Path) -> Result<CompletedVariaxBackup, String> {
+        LibraryPreferences::new(preferences)
+            .latest_variax_library()
+            .ok_or("Variax writes require a verified library backup.".into())
+    }
+
+    fn load_reference(preferences: &Path) -> Result<(ModelLibrary, String), String> {
+        if variax_workbench::math::PROFILE != "host-std-v1" {
+            return Err("Variax writes require the verified host-std-v1 math profile.".into());
+        }
+        let directory = preferences.with_file_name("variax-live-reference");
+        let reference = open_reference(&directory.join("workbench.sha256"))?;
+        let models = ModelLibrary::load_manifest(&directory.join("models.tsv"))?;
+        Ok((models, reference))
+    }
+
+    fn prepare_stores(
+        preferences: Option<&Path>,
+        imported_backup: Option<&Path>,
+        targets: &[Target],
+        cancel: &AtomicBool,
+    ) -> Result<Vec<StoreImages>, String> {
+        let preferences = preferences.ok_or("Variax stores require a local app data directory.")?;
+        let backup = match imported_backup {
+            Some(path) => CompletedVariaxBackup::import(path)?,
+            None => require_backup(preferences)?,
+        };
+        if backup.identity.product_id != 0x0007_0004 || backup.identity.firmware != "3.10" {
+            return Err(
+                "Variax stores require a verified 3.10 backup for the supported guitar.".into(),
+            );
+        }
+        let entries = line6_devices::backup::verified_manifest_entries(backup.folder())?;
+        let (models, reference) = load_reference(preferences)?;
+        targets
+            .iter()
+            .map(|target| {
+                check_cancel(cancel)?;
+                let p = target.position;
+                let index = (p.bank() + 1) * 5 - 1 - p.slot();
+                let name = format!(
+                    "programs/{index:02}-{}-{}.bin",
+                    p.bank_name().replace(' ', "_"),
+                    p.slot() + 1
+                );
+                if !entries.contains(&name) {
+                    return Err(format!(
+                        "The verified backup must include the byte-level restore image {name}."
+                    ));
+                }
+                let path = backup.folder().join(name);
+                let mut bytes = Vec::new();
+                variax_workbench::open_regular_file(&path)
+                    .and_then(|file| {
+                        file.take((procedures::PROGRAM_BYTES + 1) as u64)
+                            .read_to_end(&mut bytes)
+                    })
+                    .map_err(|error| format!("{}: {error}", path.display()))?;
+                let backup = Image::try_from(bytes)
+                    .map_err(|_| format!("{} has an invalid program length.", path.display()))?;
+                let candidate = render(&target.model, &models, false)?;
+                require_reference(&reference, &candidate)?;
+                Program::new(target.model.name(), &candidate)?;
+                Ok(StoreImages { candidate, backup })
+            })
+            .collect()
+    }
+
+    pub(in crate::editor::variax_panel) fn sync(
+        action: Action,
+        attachment: &Attachment,
+        (preferences, imported_backup): (Option<&Path>, Option<&Path>),
+        targets: &[Target],
+        cancel: &AtomicBool,
+        status: &Sender<String>,
+    ) -> Report {
+        let mut report = Report::default();
+        let result = (|| {
+            if !action.permitted() {
+                return Err(
+                    "This Variax store path is closed pending its first owner test.".into(),
+                );
+            }
+            let (mode, images) = if action.writes() {
+                (
+                    Mode::LibraryWrite,
+                    Some(prepare_stores(
+                        preferences,
+                        imported_backup,
+                        targets,
+                        cancel,
+                    )?),
+                )
+            } else {
+                (Mode::LibraryRead, None)
+            };
+            session(attachment, cancel, mode, |session| {
+                report = sync_on(session, targets, images.as_deref(), cancel, |message| {
+                    let _ = status.send(message);
+                });
+                Ok(())
+            })
+        })();
+        if let Err(error) = result {
+            report.error = Some(match report.error.take() {
+                Some(prior) => format!("{prior} {error}"),
+                None => error,
+            });
+        }
+        report
+    }
+
     impl EditBufferDevice for EditorDevice {
         fn send(
             &self,
@@ -199,24 +414,12 @@ mod linux {
             cancel: &AtomicBool,
         ) -> Result<Image, String> {
             check_cancel(cancel)?;
-            if variax_workbench::math::PROFILE != "host-std-v1" {
-                return Err(
-                    "Variax live sends require the verified host-std-v1 math profile.".into(),
-                );
-            }
             let preferences = self
                 .preferences
                 .as_deref()
                 .ok_or("Variax live sends require a local app data directory.")?;
-            if LibraryPreferences::new(preferences)
-                .latest_variax_library()
-                .is_none()
-            {
-                return Err("Variax live sends require a verified library backup.".into());
-            }
-            let directory = preferences.with_file_name("variax-live-reference");
-            let reference = open_reference(&directory.join("workbench.sha256"))?;
-            let models = ModelLibrary::load_manifest(&directory.join("models.tsv"))?;
+            require_backup(preferences)?;
+            let (models, reference) = load_reference(preferences)?;
             let image = render(model, &models, false)?;
             require_reference(&reference, &image)?;
             let transition = if previous.is_some_and(|previous| previous.tuning_transition) {
@@ -226,7 +429,7 @@ mod linux {
             } else {
                 None
             };
-            session(attachment, cancel, true, |session| {
+            session(attachment, cancel, Mode::BufferWrite, |session| {
                 send_on(
                     session,
                     model.name(),
@@ -243,27 +446,21 @@ mod linux {
             attachment: &Attachment,
             cancel: &AtomicBool,
         ) -> Result<(PresetFile, Image), String> {
-            session(attachment, cancel, false, |session| {
+            session(attachment, cancel, Mode::BufferRead, |session| {
                 let words = procedures::read_buffer(
                     session,
                     || cancel.load(Ordering::Relaxed),
                     |_| Ok(()),
                 )?;
                 let image = procedures::pack(&words);
-                let metadata = PresetMetadata::from_bytes(
-                    image[procedures::METADATA]
-                        .try_into()
-                        .expect("bounded metadata"),
-                )?;
-                let model = PresetFile::from_metadata(&metadata, 0x0007_0004, 0x0310_0000)?;
-                Ok((model, image))
+                Ok((decode_model(&image)?, image))
             })
         }
     }
 }
 
 #[cfg(all(target_os = "linux", not(test)))]
-pub(super) use linux::EditorDevice;
+pub(super) use linux::{EditorDevice, sync};
 
 #[cfg(test)]
 mod tests;

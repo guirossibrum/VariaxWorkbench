@@ -4,6 +4,7 @@ use crate::{
     preset::PresetFile,
 };
 use std::{
+    collections::BTreeSet,
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -28,6 +29,7 @@ struct DocumentState {
     preset: Option<PresetFile>,
     bundle: Option<SelectedBundle>,
     buffers: SlotBuffers,
+    pasted_positions: BTreeSet<(usize, usize)>,
 }
 impl DocumentState {
     fn bytes(&self) -> &[u8] {
@@ -98,6 +100,7 @@ impl EditorDocument {
                 preset: Some(preset),
                 bundle: None,
                 buffers: SlotBuffers::default(),
+                pasted_positions: BTreeSet::new(),
             },
             source,
         )
@@ -127,6 +130,7 @@ impl EditorDocument {
                     preset: 0,
                 }),
                 buffers: SlotBuffers::default(),
+                pasted_positions: BTreeSet::new(),
             },
             source,
         ))
@@ -231,7 +235,47 @@ impl EditorDocument {
             .and_then(|bundle| bundle.banks().get(bank))
             .and_then(|bank| bank.presets().get(slot))
             .map(PresetFile::as_bytes);
-        self.state.slot_bytes(bank, slot) != baseline
+        self.state.pasted_positions.contains(&(bank, slot))
+            || self.state.slot_bytes(bank, slot) != baseline
+    }
+
+    /// Accept verified guitar state independently from the file-save baseline.
+    /// Reloaded models replace the working copies in one undo step.
+    pub fn accept_guitar_models(
+        &mut self,
+        models: &[(usize, usize, PresetFile)],
+        replace_working: bool,
+    ) -> Result<(), String> {
+        let Some(baseline) = &self.library_baseline else {
+            return Err("Open a guitar library first.".into());
+        };
+        let mut baseline = (**baseline).clone();
+        self.end_gesture();
+        let mut next = self.state.clone();
+        let selected = next.bundle.as_mut().ok_or("Open a guitar library first.")?;
+        let mut working = (*selected.file).clone();
+        for (bank, slot, model) in models {
+            validate_slot_model(model)?;
+            baseline.replace(*bank, *slot, model)?;
+            if replace_working {
+                working.replace(*bank, *slot, model)?;
+            }
+        }
+        if replace_working && working.as_bytes() != selected.file.as_bytes() {
+            next.preset = Some(working.banks()[selected.bank].presets()[selected.preset].clone());
+            selected.file = Arc::new(working);
+            self.commit_state(next);
+        }
+        for state in std::iter::once(&mut self.state)
+            .chain(&mut self.undo)
+            .chain(&mut self.redo)
+        {
+            for (bank, slot, _) in models {
+                state.pasted_positions.remove(&(*bank, *slot));
+            }
+        }
+        self.library_baseline = Some(Arc::new(baseline));
+        Ok(())
     }
 
     pub fn discard_changes(&mut self) {
