@@ -10,6 +10,8 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] #238 listen-list accepts editor VWM files in order. Fake transports verify one working-buffer upload and full read-back per file, a fresh Enter after each audition, and verified switch-back on completion or failure. The four variants built from the owner's model matched the original Workbench oracle across all 1,092 words each. An offline sweep of 28 body baselines and 40 one-field variants per body matched all 1,148 programs word for word. The listen-list live switch is closed. [Owner card](variax-listen-list-test-card.md).
+
 - [x] Device check returns a typed Variax backup receipt with the folder, verified manifest file count, completion time, backup source, and the identity read at the USB port. Startup preferences retain complete verified backup receipts and the owner's selected factory archive using atomic non-overwriting saves. Offline tests cover completion ordering, missing or damaged backup files, and refusal of a firmware archive with an unknown fingerprint. Editor startup integration remains in [#240](https://github.com/guirossibrum/VariaxWorkbench/issues/240).
 
 - [x] #238 owner tool builds and compares archive, #236 backup, and editor VWM programs offline. Scripted transports verify all five rungs, unique active-buffer identification, target reload and switch-back, cancellation, the silent store timeout, and the order and wording of the owner prompts. All live switches are closed. [#238](https://github.com/guirossibrum/VariaxWorkbench/issues/238) · [Owner card](variax-any-selection-test-card.md).

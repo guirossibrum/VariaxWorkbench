@@ -4,6 +4,8 @@ GitHub issues and the [project board](https://github.com/users/guirossibrum/proj
 
 ## Pending implementation or validation
 
+- [ ] #238 listen-list owner audition. Offline checks and fake transports passed. Live execution requires a separate owner approval. [Draft test card](variax-listen-list-test-card.md).
+
 - [ ] #238 rungs 4a–4c passed. Owner confirmation is pending on omitting rungs 3a and 3b, whose store-and-restore coverage overlaps #177 and #238. [Owner card](variax-any-selection-test-card.md).
 - [ ] Owner verification of normal interface 1 cleanup and recovery when the guitar driver is naturally unbound. [Driver return test card](variax-driver-rebind-test-card.md) · [#239](https://github.com/guirossibrum/VariaxWorkbench/issues/239).
 

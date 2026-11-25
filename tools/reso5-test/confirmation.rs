@@ -24,8 +24,12 @@ fn confirm_with(
         check_stopping(&mut stopping)?;
         input.discard_pending(&mut stopping)?;
         check_stopping(&mut stopping)?;
-        writeln!(output, "Type this exact line and press Enter.")?;
-        writeln!(output, "{phrase}")?;
+        if phrase.is_empty() {
+            writeln!(output, "Press Enter to continue.")?;
+        } else {
+            writeln!(output, "Type this exact line and press Enter.")?;
+            writeln!(output, "{phrase}")?;
+        }
         output.flush()?;
 
         let mut received = Vec::new();
@@ -178,6 +182,21 @@ mod tests {
 
     fn keys(bytes: &[u8]) -> Vec<Key> {
         bytes.iter().copied().map(Key::Byte).collect()
+    }
+
+    #[test]
+    fn enter_prompt_discards_stale_enter_and_waits_for_a_new_empty_line() {
+        let mut fake = Fake {
+            pending: keys(b"\n").into(),
+            after_prompt: [keys(b"next\n"), keys(b"\n")].into(),
+            ..Fake::default()
+        };
+        let mut output = Vec::new();
+        confirm_with(&mut fake, &mut output, "", || false).unwrap();
+        assert_eq!(fake.discarded, [1, 0]);
+        let output = String::from_utf8(output).unwrap();
+        assert_eq!(output.matches("Press Enter to continue.").count(), 2);
+        assert!(output.contains("Received \"next\". Expected \"\"."));
     }
 
     #[test]

@@ -1,4 +1,5 @@
 //! Owner-only #238 procedure. The live adapter keeps each rung separately closed.
+pub mod listen_list;
 mod sources;
 
 use super::{IDENTITY_RETRY_DELAY, METADATA, compare_settings, full_read, store, variax_identity};
@@ -206,6 +207,33 @@ fn returned<L: Link>(
     }
 }
 
+fn snapshot<L: Link>(
+    session: &mut Session<L>,
+    current: &[Image],
+    root: &Path,
+    announce: &mut impl FnMut(&str),
+    stopping: &mut impl FnMut() -> bool,
+) -> Result<(Preset, Image), String> {
+    session.require_expected_sysex();
+    if stopping() {
+        return Err("Cancelled before Variax identity.".into());
+    }
+    step(
+        announce,
+        &format!("Your current preset stays selected while the tool identifies it in {READ_TIME}."),
+        "Wait for the tool to name your starting preset. Retries can take longer. Nothing to type.",
+    );
+    let device = variax::identify_retrying_silence(session, IDENTITY_RETRY_DELAY)?;
+    variax_identity(&device.identity)?;
+    let snapshot = pack(&capture(session, root, "snapshot", None, stopping)?);
+    let original = identify(&snapshot, current)?;
+    session.note(format!("Identified current {}.", slot_label(original)));
+    let original_name = preset_name(original);
+
+    announce(&format!("Starting preset is {original_name}, verified."));
+    Ok((original, snapshot))
+}
+
 pub fn attempt<L: Link>(
     session: &mut Session<L>,
     prepared: &Prepared,
@@ -214,23 +242,15 @@ pub fn attempt<L: Link>(
     mut announce: impl FnMut(&str),
     mut stopping: impl FnMut() -> bool,
 ) -> Result<(), String> {
-    session.require_expected_sysex();
-    if stopping() {
-        return Err("Cancelled before Variax identity.".into());
-    }
-    step(
+    let (original, snapshot) = snapshot(
+        session,
+        &prepared.current,
+        root,
         &mut announce,
-        &format!("Your current preset stays selected while the tool identifies it in {READ_TIME}."),
-        "Wait for the tool to name your starting preset. Retries can take longer. Nothing to type.",
-    );
-    let device = variax::identify_retrying_silence(session, IDENTITY_RETRY_DELAY)?;
-    variax_identity(&device.identity)?;
-    let snapshot = pack(&capture(session, root, "snapshot", None, &mut stopping)?);
-    let original = identify(&snapshot, &prepared.current)?;
-    session.note(format!("Identified current {}.", slot_label(original)));
+        &mut stopping,
+    )?;
     let original_name = preset_name(original);
     let target_name = preset_name(prepared.target);
-    announce(&format!("Starting preset is {original_name}, verified."));
     if original == prepared.target && !prepared.mode.listens() {
         return Err("Select a different starting preset. Overwriting the original slot prevents a verified switch-back.".into());
     }
