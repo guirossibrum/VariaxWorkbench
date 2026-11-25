@@ -249,7 +249,7 @@ fn run_store(
     Ok(())
 }
 
-const APPROVED_LISTEN_4A: bool = false;
+const APPROVED_LISTEN_4A: bool = true;
 const APPROVED_STORE_4B: bool = false;
 const APPROVED_RESTORE_4C: bool = false;
 const APPROVED_RENAME_3A: bool = false;

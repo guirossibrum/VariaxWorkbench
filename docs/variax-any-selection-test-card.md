@@ -7,8 +7,8 @@ while the tool is running.
 
 | Rung | Mode | Flash slot and MIDI program | Source | Approval |
 | --- | --- | --- | --- | --- |
-| 4a | `listen` | 14, Spank 1, MIDI 69 | Edited `Stratocaster.vwm` | **Completed. Any repeat needs separate approval.** |
-| 4b | `store` | 14, Spank 1, MIDI 69 | The same `Stratocaster.vwm` | **Not approved** |
+| 4a | `listen` | 14, Spank 1, MIDI 69 | `Stratocaster - edited.vwm` with Alternate Tuning enabled | **Approved 2026-11-25 for one owner run** |
+| 4b | `store` | 14, Spank 1, MIDI 69 | The same tuning-enabled `.vwm` | **Not approved** |
 | 4c | `restore` | 14, Spank 1, MIDI 69 | #236 `14-Spank-1.bin` | **Not approved** |
 | 3a | `3a` | 50, Reso 5, MIDI 105 | Archive Reso-5 renamed to `Reso-5 T` | **Not approved** |
 | 3b | `3b` | 50, Reso 5, MIDI 105 | Archive Reso-5 | **Not approved** |
@@ -25,8 +25,9 @@ cargo run --offline --locked --no-default-features --features owner-reso5-test \
   --bin variax-reso5-test -- --check any-selection MODE FLASH_INDEX FULL_BACKUP ARCHIVE.vxf SOURCE MODELS.tsv LOG_ROOT
 ```
 
-For 4a and 4b, use `Stratocaster.vwm` as SOURCE and provide the local model
-manifest used by #176. For 4c, pass the same 4b source and manifest so
+For the approved 4a repeat, use `Stratocaster - edited.vwm` as SOURCE and
+provide the corrected local model manifest from #176. Quote the source
+path. For 4c, pass the same source and manifest used for 4b so
 preflight can reconstruct the current slot image. The upload bytes come
 from the target's file in the verified #236 backup. For 3a and 3b, pass
 `archive` as SOURCE and `-` for the unused model manifest. In generic
@@ -59,10 +60,11 @@ expects the renamed factory image from 3a. Rung 4c expects the stamped
 image from 4b and must reproduce the backup file byte for byte
 (`4e6b812d…` for Spank 1).
 
-The 4a source used in the owner run had alternate tuning off. Its six
-semitone offsets were saved in the settings, with pitch shifting disabled
-in the compiled sound. Reloading a 4b store of that file should give the
-edited tone without the six programmed pitch offsets.
+The first 4a run used `Stratocaster.vwm` with Alternate Tuning off. The
+approved repeat uses `Stratocaster - edited.vwm`, with offsets of
++1/-1/+1/-1/+1/-1 semitones. Offline checks verified that this program
+enables pitch shifting and that its working image has SHA-256
+`91e020845ef238267a9cf91bdc8c2442b2367695e62f5a250f312d04b037e9bd`.
 
 The 4a audition checks all 1,092 words after the temporary `0x43` upload.
 A store uploads with `0x43`, waits 100 ms, sends `0x61` once, and waits up
