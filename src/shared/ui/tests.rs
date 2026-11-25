@@ -30,6 +30,47 @@ fn texts(output: &egui::FullOutput) -> Vec<String> {
     labels
 }
 
+fn shape_has_amber_stroke(shape: &egui::Shape) -> bool {
+    match shape {
+        egui::Shape::Noop
+        | egui::Shape::Text(_)
+        | egui::Shape::Mesh(_)
+        | egui::Shape::Callback(_) => false,
+        egui::Shape::Vec(shapes) => shapes.iter().any(shape_has_amber_stroke),
+        egui::Shape::Circle(shape) => shape.stroke.color == AMBER,
+        egui::Shape::Ellipse(shape) => shape.stroke.color == AMBER,
+        egui::Shape::LineSegment { stroke, .. } => stroke.color == AMBER,
+        egui::Shape::Rect(shape) => shape.stroke.color == AMBER,
+        egui::Shape::Path(shape) => path_stroke_is_amber(&shape.stroke),
+        egui::Shape::QuadraticBezier(shape) => path_stroke_is_amber(&shape.stroke),
+        egui::Shape::CubicBezier(shape) => path_stroke_is_amber(&shape.stroke),
+    }
+}
+
+fn path_stroke_is_amber(stroke: &egui::epaint::PathStroke) -> bool {
+    stroke.width > 0.0
+        && matches!(
+            stroke.color,
+            egui::epaint::ColorMode::Solid(color) if color == AMBER
+        )
+}
+
+fn label_center(output: &egui::FullOutput, label: &str) -> Option<Pos2> {
+    fn walk(shape: &egui::Shape, label: &str) -> Option<Pos2> {
+        match shape {
+            egui::Shape::Text(text) if text.galley.text() == label => {
+                Some(text.pos + text.galley.rect.size() * 0.5)
+            }
+            egui::Shape::Vec(shapes) => shapes.iter().find_map(|shape| walk(shape, label)),
+            _ => None,
+        }
+    }
+    output
+        .shapes
+        .iter()
+        .find_map(|shape| walk(&shape.shape, label))
+}
+
 struct Harness {
     ctx: egui::Context,
     time: f64,
@@ -538,6 +579,8 @@ fn gallery_names_every_component() {
         "Dialog",
         "Editor",
         "Body",
+        "Pickup 1",
+        "Pickup 2",
         "Tuning",
         "Unsaved",
         "No device",
@@ -548,6 +591,67 @@ fn gallery_names_every_component() {
             "missing {name}"
         );
     }
+}
+
+#[test]
+fn selected_pickup_paints_no_box_on_the_body() {
+    let mut harness = Harness::new();
+    let body = missing_image("variax/spank-body.png", [426, 412]);
+    let pickup = missing_image("variax/spank-pickup.png", [120, 120]);
+    let output = harness.run(vec![], Default::default(), |_, ui| {
+        ui.allocate_ui(egui::vec2(360.0, 280.0), |ui| {
+            let _ = show_body(
+                ui,
+                &body,
+                &pickup,
+                &[
+                    PickupView {
+                        inches: 1.8,
+                        degrees: 8.7,
+                        enabled: true,
+                        selected: true,
+                    },
+                    PickupView {
+                        inches: 3.88,
+                        degrees: 0.0,
+                        enabled: true,
+                        selected: false,
+                    },
+                ],
+                true,
+                None,
+            );
+        });
+    });
+    assert!(
+        output
+            .shapes
+            .iter()
+            .all(|shape| !shape_has_amber_stroke(&shape.shape)),
+        "a selected pickup painted an amber stroke on the body"
+    );
+}
+
+#[test]
+fn gallery_pickup_controls_change_which_sprite_is_in_front() {
+    let mut harness = Harness::new();
+    let mut state = GalleryState::default();
+    assert_eq!(state.selected_pickup, 0);
+    let output = harness.run(vec![], Default::default(), |ctx, _| state.show(ctx));
+    let center = label_center(&output, "Pickup 2").expect("Pickup 2 control");
+    harness.run(
+        vec![egui::Event::PointerMoved(center), pointer(center, true)],
+        Default::default(),
+        |ctx, _| state.show(ctx),
+    );
+    harness.run(
+        vec![pointer(center, false)],
+        Default::default(),
+        |ctx, _| {
+            state.show(ctx);
+        },
+    );
+    assert_eq!(state.selected_pickup, 1);
 }
 
 fn missing_image(name: &str, pixels: [usize; 2]) -> UiImage {

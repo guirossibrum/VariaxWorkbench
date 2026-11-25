@@ -3,6 +3,7 @@
 //! The caller owns each pickup's position, angle, and on/off state. This
 //! canvas paints the body and reports gestures. Position is inches along the
 //! approved map, angle is degrees, and a drag does not write either value.
+//! A selected pickup is painted last. The body draws no selection box.
 //!
 //! #189 uses the move circle, the rotate margin, Ctrl, double-click, and the
 //! body and pickup clicks. #190 passes a per-body [`PickupPlacement`]. #191
@@ -11,7 +12,7 @@
 use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, Vec2, vec2};
 
 use super::assets::{self, UiImage};
-use super::theme::{AMBER, BG, LINE, RADIUS_PANEL};
+use super::theme::{BG, LINE, RADIUS_PANEL};
 
 /// Spank body art, and the art size the default placement uses.
 pub const DEFAULT_ART: Vec2 = vec2(426.0, 412.0);
@@ -405,16 +406,15 @@ fn paint_image(ui: &egui::Ui, image: &UiImage, rect: Rect) {
 }
 
 fn paint_pickup(ui: &egui::Ui, image: &UiImage, sprite: &SpriteHit, enabled: bool) {
-    let painter = ui.painter();
-    let half = sprite.sprite * 0.5;
-    let rotation = egui::emath::Rot2::from_angle(sprite.angle_degrees.to_radians());
-    let corners = [
-        vec2(-half.x, -half.y),
-        vec2(half.x, -half.y),
-        vec2(half.x, half.y),
-        vec2(-half.x, half.y),
-    ];
     if let Some(texture) = image.texture.as_ref().filter(|_| !image.missing) {
+        let half = sprite.sprite * 0.5;
+        let rotation = egui::emath::Rot2::from_angle(sprite.angle_degrees.to_radians());
+        let corners = [
+            vec2(-half.x, -half.y),
+            vec2(half.x, -half.y),
+            vec2(half.x, half.y),
+            vec2(-half.x, half.y),
+        ];
         let color = Color32::from_white_alpha(if enabled { 255 } else { 102 });
         let uvs = [
             Pos2::new(0.0, 0.0),
@@ -431,23 +431,13 @@ fn paint_pickup(ui: &egui::Ui, image: &UiImage, sprite: &SpriteHit, enabled: boo
             });
         }
         mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
-        painter.add(egui::Shape::mesh(mesh));
+        ui.painter().add(egui::Shape::mesh(mesh));
     } else {
         assets::paint(
             ui,
             image,
             Rect::from_center_size(sprite.center, sprite.sprite),
         );
-    }
-    if sprite.selected {
-        let stroke = Stroke::new(3.0_f32, AMBER);
-        let points: Vec<Pos2> = corners
-            .into_iter()
-            .map(|corner| sprite.center + rotation * corner)
-            .collect();
-        for index in 0..4 {
-            painter.line_segment([points[index], points[(index + 1) % 4]], stroke);
-        }
     }
 }
 

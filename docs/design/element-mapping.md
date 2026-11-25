@@ -139,7 +139,8 @@ Screenshots:
 
 `02-tabs.png` is the shell with Variax, PODxt Live, and POD HD500X open, on
 the Body type section. `03-variax-pickups.png` is the section the example
-opens on, with pickup 1 highlighted on the body. `06-podxt-offline.png` is
+opens on, with pickup 1 selected in the Pickup controls and drawn in front.
+The body has no selection box. `06-podxt-offline.png` is
 the same tone with Delay moved from Post to Pre. `08-podxt-unknown.png` keeps
 the all-post chain and selects EQ so the four bands are on screen. The other
 PODxt frames select the amp.
