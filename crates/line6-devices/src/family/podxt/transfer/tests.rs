@@ -35,8 +35,20 @@ pub(in crate::family::podxt) fn tone() -> TonePayload {
     TonePayload::from_bytes(data).unwrap()
 }
 
-#[test]
-fn whole_tone_send_is_byte_identical_to_the_original_encoder() {
+type Script = Vec<(Vec<u8>, Vec<Vec<u8>>)>;
+
+fn reply(request: PodxtRequest, bytes: Vec<u8>) -> (Vec<u8>, Vec<Vec<u8>>) {
+    (request.bytes(), vec![bytes])
+}
+
+fn channel_reply() -> (Vec<u8>, Vec<Vec<u8>>) {
+    reply(
+        PodxtRequest::QueryGlobal(Global::CurrentChannel),
+        vec![0xf0, 0, 1, 0x0c, 3, 0x56, 17, 0, 0, 4, 0, 0xf7],
+    )
+}
+
+fn whole_tone_preflight() -> (EditorBuffer, VerifiedToneBackup, Script) {
     let source = tone();
     let dump = source.edit_dump();
     let channel = Location::new(BankKind::Tones, 64).unwrap();
@@ -44,13 +56,6 @@ fn whole_tone_send_is_byte_identical_to_the_original_encoder() {
         channel,
         tone: dump.clone(),
         packs: Packs(4),
-    };
-    let reply = |request: PodxtRequest, bytes: Vec<u8>| (request.bytes(), vec![bytes]);
-    let channel_reply = || {
-        reply(
-            PodxtRequest::QueryGlobal(Global::CurrentChannel),
-            vec![0xf0, 0, 1, 0x0c, 3, 0x56, 17, 0, 0, 4, 0, 0xf7],
-        )
     };
     let mut identity = PODXT_LIVE.to_vec();
     identity[12..16].copy_from_slice(&[0, 3, 0, 1]);
@@ -62,15 +67,29 @@ fn whole_tone_send_is_byte_identical_to_the_original_encoder() {
             PodxtRequest::InstalledPacks,
             vec![0xf0, 0, 1, 0x0c, 3, 0x0e, 0x0a, 4, 0xf7],
         ),
-        channel_reply(),
-        (events("edit", "out ").remove(0), vec![dump.raw.clone()]),
-        reply(PodxtRequest::EditBuffer, dump.raw.clone()),
-        channel_reply(),
+        reply(PodxtRequest::Stored(channel), dump.raw),
     ];
+    let backup = VerifiedToneBackup {
+        slot: channel,
+        original: source,
+    };
+    (original, backup, script)
+}
+
+#[test]
+fn whole_tone_send_is_byte_identical_to_the_original_encoder() {
+    let (original, backup, mut script) = whole_tone_preflight();
+    let dump = &original.tone.raw;
+    script.extend([
+        channel_reply(),
+        (events("edit", "out ").remove(0), vec![dump.clone()]),
+        reply(PodxtRequest::EditBuffer, dump.clone()),
+        channel_reply(),
+    ]);
     let mut cached = original.clone();
     cached.tone.raw[39 + 7] = 50; // Get preceded a physical pedal movement.
     for (expected, candidate) in [
-        (&original, WholeToneSource::Payload(&source)),
+        (&original, WholeToneSource::Payload(&backup.original)),
         (&cached, WholeToneSource::Current),
     ] {
         let mut quiet = Quiet;
@@ -79,8 +98,59 @@ fn whole_tone_send_is_byte_identical_to_the_original_encoder() {
             &AllowAll,
             &mut quiet,
         );
-        let result = send_whole_tone(&mut session, expected, candidate, || false).unwrap();
-        assert_eq!(result.tone.raw, dump.raw);
+        let result = send_whole_tone(&mut session, expected, candidate, &backup, || false).unwrap();
+        assert_eq!(&result.tone.raw, dump);
+        session.link.assert_finished();
+    }
+}
+
+#[test]
+fn whole_tone_send_refuses_a_wrong_slot_mismatch_or_missing_stored_dump() {
+    let (expected, mut backup, script) = whole_tone_preflight();
+    let mut quiet = Quiet;
+    backup.slot = Location::new(BankKind::Tones, 65).unwrap();
+    let mut session = Session::new(
+        Fake::from_bytes(Path::PodxtMidi, vec![]),
+        &AllowAll,
+        &mut quiet,
+    );
+    assert!(
+        send_whole_tone(
+            &mut session,
+            &expected,
+            WholeToneSource::Current,
+            &backup,
+            || false
+        )
+        .unwrap_err()
+        .contains("playing channel")
+    );
+
+    backup.slot = expected.channel;
+    for (reply, error) in [(true, "differs"), (false, "No dump")] {
+        let mut script = script.clone();
+        let stored_replies = &mut script.last_mut().unwrap().1;
+        if reply {
+            stored_replies[0][39 + 7] = 50; // The addressed dump must match even on a pedal byte.
+        } else {
+            stored_replies.clear();
+        }
+        let mut session = Session::new(
+            Fake::from_bytes(Path::PodxtMidi, script),
+            &AllowAll,
+            &mut quiet,
+        );
+        assert!(
+            send_whole_tone(
+                &mut session,
+                &expected,
+                WholeToneSource::Current,
+                &backup,
+                || false
+            )
+            .unwrap_err()
+            .contains(error)
+        );
         session.link.assert_finished();
     }
 }

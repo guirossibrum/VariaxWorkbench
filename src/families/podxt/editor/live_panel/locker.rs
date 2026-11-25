@@ -724,7 +724,7 @@ impl Locker {
             if ui
                 .add_enabled(
                     idle && self.awaiting.is_none(),
-                    egui::Button::new("Choose same-day backup…"),
+                    egui::Button::new("Choose library backup…"),
                 )
                 .clicked()
             {

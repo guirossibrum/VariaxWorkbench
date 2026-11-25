@@ -548,6 +548,7 @@ impl LivePanel {
         }
         self.editor.show(
             ui,
+            services,
             self.device.as_ref(),
             self.worker.is_none() && !self.store.busy(),
         );

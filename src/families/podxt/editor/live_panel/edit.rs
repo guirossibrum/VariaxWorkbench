@@ -1,5 +1,7 @@
 use super::*;
-use podxt::{EditorBuffer, EditorEdit, LiveTarget, Target, Value, WholeToneSource};
+use podxt::{
+    EditorBuffer, EditorEdit, LiveTarget, Target, Value, VerifiedToneBackup, WholeToneSource,
+};
 
 const EDIT_INTERVAL: Duration = Duration::from_millis(150);
 // #222's full-payload transfer has a separate first-run decision.
@@ -10,6 +12,7 @@ pub(super) struct LiveEditor {
     session: Option<ActiveEdit>,
     worker: Option<EditWorker>,
     pending: Pending,
+    whole_tone_backup: Option<VerifiedToneBackup>,
     stage_only: bool,
     needs_get: bool,
     last_dispatch: Option<Instant>,
@@ -95,6 +98,10 @@ impl GatePolicy for EditPolicy {
             | Operation::PodxtRead
             | Operation::PodxtGlobalRead
             | Operation::PodxtPackQuery => !hardware_gates::is_locked(Gate::CurrentSettingsRead),
+            Operation::PodxtLibraryRead => {
+                self.0 == Action::ResendWholeTone
+                    && !hardware_gates::is_locked(Gate::FullBackupRead)
+            }
             Operation::PodxtEditBufferWrite | Operation::PodxtAdditionalEditBufferWrite => {
                 self.0 != Action::Get && !hardware_gates::is_locked(Gate::EditBufferWrite)
             }
@@ -108,6 +115,7 @@ impl GatePolicy for EditPolicy {
 
 struct Job {
     action: Action,
+    whole_tone_backup: Option<VerifiedToneBackup>,
     current: Option<EditorBuffer>,
     original: Option<EditorBuffer>,
     targets: Vec<LiveTarget>,
@@ -130,6 +138,9 @@ fn edit_transaction<G, L: Link>(
                         session,
                         job.current.as_ref().expect("whole-tone send has snapshot"),
                         WholeToneSource::Current,
+                        job.whole_tone_backup
+                            .as_ref()
+                            .ok_or("Verify a backup for the playing channel first.")?,
                         stopped,
                     );
                 }
@@ -149,7 +160,13 @@ fn edit_transaction<G, L: Link>(
         run()
     } else {
         hardware_gates::run_if_unlocked(Gate::EditBufferWrite, || {
-            hardware_gates::run_if_unlocked(Gate::KeepLiveEdit, run)
+            hardware_gates::run_if_unlocked(Gate::KeepLiveEdit, || {
+                if job.action == Action::ResendWholeTone {
+                    hardware_gates::run_if_unlocked(Gate::FullBackupRead, run)
+                } else {
+                    run()
+                }
+            })
         })
     }
 }
@@ -177,7 +194,13 @@ fn platform_edit(
     job: &Job,
     _stop: &AtomicBool,
 ) -> Result<EditorBuffer, String> {
-    let _ = (job.action, &job.current, &job.original, &job.targets);
+    let _ = (
+        job.action,
+        &job.whole_tone_backup,
+        &job.current,
+        &job.original,
+        &job.targets,
+    );
     Err("PODxt Live editing is unavailable in this build.".into())
 }
 
@@ -201,6 +224,7 @@ impl LiveEditor {
             worker.device = None;
         }
         self.session = None;
+        self.whole_tone_backup = None;
         self.pending.0.clear();
         self.needs_get = false;
         self.last_dispatch = None;
@@ -209,7 +233,8 @@ impl LiveEditor {
 
     fn admitted(action: Action) -> bool {
         cfg!(all(target_os = "linux", not(test)))
-            && (action != Action::ResendWholeTone || WHOLE_TONE_SEND_APPROVED)
+            && (action != Action::ResendWholeTone
+                || WHOLE_TONE_SEND_APPROVED && !hardware_gates::is_locked(Gate::FullBackupRead))
             && !hardware_gates::is_locked(Gate::OsDiscovery)
             && !hardware_gates::is_locked(Gate::CurrentSettingsRead)
             && (action == Action::Get
@@ -220,6 +245,7 @@ impl LiveEditor {
     fn start(&mut self, action: Action, device: &detection::DeviceKey, ctx: &egui::Context) {
         if self.worker.is_some()
             || !Self::admitted(action)
+            || action == Action::ResendWholeTone && self.whole_tone_backup.is_none()
             || action != Action::Get && (self.session.is_none() || self.needs_get)
         {
             return;
@@ -231,8 +257,16 @@ impl LiveEditor {
                 Vec::new()
             }
         };
+        if action == Action::Get {
+            self.whole_tone_backup = None;
+        }
         let job = Job {
             action,
+            whole_tone_backup: if action == Action::ResendWholeTone {
+                self.whole_tone_backup.take()
+            } else {
+                None
+            },
             current: self.session.as_ref().map(|active| active.current.clone()),
             original: self.session.as_ref().map(|active| active.original.clone()),
             targets: targets.clone(),
@@ -352,6 +386,7 @@ impl LiveEditor {
     pub(super) fn show(
         &mut self,
         ui: &mut egui::Ui,
+        services: &mut EditorServices<'_>,
         device: Option<&detection::DeviceKey>,
         read_idle: bool,
     ) {
@@ -380,18 +415,70 @@ impl LiveEditor {
                 self.detach();
             }
         });
-        let resend = ui
-            .add_enabled(
-                idle && snapshot
-                    && !self.needs_get
-                    && self.pending.0.is_empty()
-                    && Self::admitted(Action::ResendWholeTone),
-                egui::Button::new(Action::ResendWholeTone.label()),
-            )
-            .on_disabled_hover_text("The separate #222 owner run is awaiting approval.");
-        if resend.clicked() {
-            action = Some(Action::ResendWholeTone);
-        }
+        ui.horizontal_wrapped(|ui| {
+            let channel = self.session.as_ref().map(|active| active.current.channel);
+            if ui
+                .add_enabled(
+                    idle && !self.needs_get && channel.is_some(),
+                    egui::Button::new("Verify backup for whole-tone resend…"),
+                )
+                .clicked()
+                && let Some(channel) = channel
+            {
+                services.request_picker::<PodxtEditor>(
+                    ui.ctx(),
+                    PickRequest::Folder,
+                    move |editor, folder, _| {
+                        let Some(folder) = folder else { return };
+                        let editor = &mut editor.live.editor;
+                        if editor.busy()
+                            || editor.needs_get
+                            || !editor
+                                .session
+                                .as_ref()
+                                .is_some_and(|active| active.current.channel == channel)
+                        {
+                            return;
+                        }
+                        editor.whole_tone_backup = None;
+                        match podxt::verify_tone_backup(&folder, channel) {
+                            Ok(backup) => {
+                                editor.message = None;
+                                editor.whole_tone_backup = Some(backup);
+                            }
+                            Err(error) => editor.message = Some(Err(error)),
+                        }
+                    },
+                );
+            }
+            let backup = self
+                .whole_tone_backup
+                .as_ref()
+                .filter(|backup| Some(backup.slot()) == channel);
+            if let Some(backup) = backup {
+                ui.label(format!(
+                    "Verified backup · {} · {}",
+                    backup.slot().slot_name(),
+                    backup.tone_name()
+                ));
+            }
+            let resend = ui
+                .add_enabled(
+                    idle && backup.is_some()
+                        && !self.needs_get
+                        && self.pending.0.is_empty()
+                        && Self::admitted(Action::ResendWholeTone),
+                    egui::Button::new(Action::ResendWholeTone.label()),
+                )
+                .on_disabled_hover_text(if WHOLE_TONE_SEND_APPROVED {
+                    "Get the edit buffer and verify the playing channel's backup first."
+                } else {
+                    "The separate #222 owner run is awaiting approval."
+                });
+            if resend.clicked() {
+                action = Some(Action::ResendWholeTone);
+            }
+        });
         if let (Some(action), Some(device)) = (action, device) {
             self.start(action, device, ui.ctx());
         }

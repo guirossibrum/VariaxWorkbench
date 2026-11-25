@@ -23,7 +23,10 @@ pub use live_edit::{EditorBuffer, EditorEdit, edit_editor_buffer, get_editor_buf
 pub use live_read::{ReadCommand, ReadUpdate, read_live};
 pub use live_settings::{LiveControl, LiveTarget, Setting, SettingMessage};
 pub use store::{StoreControl, StoreResult, store_tone};
-pub use store_backup::{ConfirmedStore, PreparedStore, StoreSource, prepare_tone_store};
+pub use store_backup::{
+    ConfirmedStore, PreparedStore, StoreSource, VerifiedToneBackup, prepare_tone_store,
+    verify_tone_backup,
+};
 pub use transfer::{TonePayload, WholeToneSource, send_whole_tone};
 
 use crate::gate::Operation;

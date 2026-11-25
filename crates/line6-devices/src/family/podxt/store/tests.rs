@@ -2,10 +2,8 @@ use super::super::transfer::tests::{events, tone};
 use super::*;
 use crate::gate::{AllClosed, GatePolicy};
 use crate::identity::tests::PODXT_LIVE;
-use crate::session::Quiet;
 use crate::session::testing::{AllowAll, Fake};
-
-const DAY: u64 = 20_781;
+use crate::session::{Log, Quiet};
 
 fn identity() -> Vec<u8> {
     let mut identity = PODXT_LIVE.to_vec();
@@ -19,9 +17,10 @@ fn slot(index: u16) -> Location {
 
 fn plan(slot: Location) -> ConfirmedStore {
     PreparedStore {
-        slot,
-        day: DAY,
-        original: tone(),
+        backup: VerifiedToneBackup {
+            slot,
+            original: tone(),
+        },
         candidate: tone(),
     }
     .confirm(&format!("STORE PODXT {}", slot.label()))
@@ -64,7 +63,7 @@ fn store_and_block_end_match_original_transcripts_at_three_slot_addresses() {
             &AllowAll,
             &mut quiet,
         );
-        let result = store_at(&mut session, plan(slot), &control, || Ok(DAY)).unwrap();
+        let result = store_tone(&mut session, plan(slot), &control).unwrap();
         let StoreResult::Verified {
             slot: actual,
             tone: echoed,
@@ -91,7 +90,7 @@ fn negative_reply_silence_and_readback_mismatch_report_slot_state_unknown() {
             &AllowAll,
             &mut quiet,
         );
-        let result = store_at(&mut session, plan(slot), &control(), || Ok(DAY)).unwrap();
+        let result = store_tone(&mut session, plan(slot), &control()).unwrap();
         assert!(
             matches!(result, StoreResult::SlotStateUnknown { reason, .. } if reason.contains(expected))
         );
@@ -105,7 +104,7 @@ fn negative_reply_silence_and_readback_mismatch_report_slot_state_unknown() {
         &AllowAll,
         &mut quiet,
     );
-    let result = store_at(&mut session, plan(slot), &control(), || Ok(DAY)).unwrap();
+    let result = store_tone(&mut session, plan(slot), &control()).unwrap();
     assert!(
         matches!(result, StoreResult::SlotStateUnknown { reason, .. } if reason.contains("byte for byte"))
     );
@@ -113,7 +112,7 @@ fn negative_reply_silence_and_readback_mismatch_report_slot_state_unknown() {
 }
 
 #[test]
-fn typed_confirmation_closed_policy_and_changed_backup_day_stop_before_store() {
+fn typed_confirmation_and_closed_policy_stop_before_store() {
     let slot = slot(64);
     let prepared = plan(slot).0;
     assert!(prepared.confirm("STORE PODXT 17B").is_err());
@@ -126,42 +125,35 @@ fn typed_confirmation_closed_policy_and_changed_backup_day_stop_before_store() {
     );
     let control = StoreControl::default();
     assert!(
-        store_at(&mut session, plan(slot), &control, || Ok(DAY))
+        store_tone(&mut session, plan(slot), &control)
             .unwrap_err()
             .contains("closed")
     );
     assert!(!control.started());
     assert!(session.link.writes.is_empty());
-
-    let mut session = Session::new(
-        Fake::from_bytes(Path::PodxtMidi, preflight(slot)),
-        &AllowAll,
-        &mut quiet,
-    );
-    let control = StoreControl::default();
-    assert!(
-        store_at(&mut session, plan(slot), &control, || Ok(DAY + 1))
-            .unwrap_err()
-            .contains("UTC day")
-    );
-    assert!(!control.started());
-    session.link.assert_finished();
 }
 
 #[test]
 fn cancellation_immediately_before_dispatch_prevents_both_write_frames() {
+    struct CancelOnDump<'a>(&'a StoreControl);
+
+    impl Log for CancelOnDump<'_> {
+        fn line(&mut self, line: String) {
+            if line.contains("IN  f0 00 01 0c 03 74") {
+                assert!(self.0.cancel());
+            }
+        }
+    }
+
     let slot = slot(64);
-    let mut quiet = Quiet;
+    let control = StoreControl::default();
+    let mut log = CancelOnDump(&control);
     let mut session = Session::new(
         Fake::from_bytes(Path::PodxtMidi, preflight(slot)),
         &AllowAll,
-        &mut quiet,
+        &mut log,
     );
-    let control = StoreControl::default();
-    let result = store_at(&mut session, plan(slot), &control, || {
-        assert!(control.cancel());
-        Ok(DAY)
-    });
+    let result = store_tone(&mut session, plan(slot), &control);
     assert!(result.unwrap_err().contains("cancelled"));
     assert!(!control.started());
     session.link.assert_finished();
@@ -176,10 +168,7 @@ fn first_transport_error_is_indeterminate_and_is_never_retried() {
     link.fail_at.push(2);
     let mut quiet = Quiet;
     let mut session = Session::new(link, &AllowAll, &mut quiet);
-    let result = store_at(&mut session, plan(slot), &StoreControl::default(), || {
-        Ok(DAY)
-    })
-    .unwrap();
+    let result = store_tone(&mut session, plan(slot), &StoreControl::default()).unwrap();
     assert!(
         matches!(result, StoreResult::SlotStateUnknown { reason, .. } if reason.contains("simulated write failure"))
     );
@@ -226,7 +215,7 @@ fn unrelated_frames_cannot_extend_the_seven_second_deadline() {
 fn stale_destination_and_unavailable_readback_gate_prevent_dispatch() {
     let slot = slot(64);
     let mut script = preflight(slot);
-    script[1].1[0][39 + 13] = 32;
+    script[1].1[0][39 + 7] = 32; // Even live-state CC bytes must match a stored-slot backup.
     let mut quiet = Quiet;
     let mut session = Session::new(
         Fake::from_bytes(Path::PodxtMidi, script),
@@ -234,11 +223,9 @@ fn stale_destination_and_unavailable_readback_gate_prevent_dispatch() {
         &mut quiet,
     );
     assert!(
-        store_at(&mut session, plan(slot), &StoreControl::default(), || Ok(
-            DAY
-        ))
-        .unwrap_err()
-        .contains("differs")
+        store_tone(&mut session, plan(slot), &StoreControl::default())
+            .unwrap_err()
+            .contains("differs")
     );
     session.link.assert_finished();
 
@@ -256,11 +243,9 @@ fn stale_destination_and_unavailable_readback_gate_prevent_dispatch() {
         &mut quiet,
     );
     assert!(
-        store_at(&mut session, plan(slot), &StoreControl::default(), || Ok(
-            DAY
-        ))
-        .unwrap_err()
-        .contains("PodxtLibraryRead")
+        store_tone(&mut session, plan(slot), &StoreControl::default())
+            .unwrap_err()
+            .contains("PodxtLibraryRead")
     );
     session.link.assert_finished();
 }
@@ -279,9 +264,7 @@ fn setup_slots_use_their_own_addresses_and_the_same_store_transaction() {
         bytes[32 + 13] = 27;
         let candidate = TonePayload::from_bytes(bytes).unwrap();
         let prepared = PreparedStore {
-            slot,
-            day: DAY,
-            original,
+            backup: VerifiedToneBackup { slot, original },
             candidate: candidate.clone(),
         };
         assert_eq!(prepared.confirmation(), format!("STORE PODXT {label}"));
@@ -307,7 +290,7 @@ fn setup_slots_use_their_own_addresses_and_the_same_store_transaction() {
             &AllowAll,
             &mut quiet,
         );
-        let result = store_at(&mut session, confirm, &StoreControl::default(), || Ok(DAY)).unwrap();
+        let result = store_tone(&mut session, confirm, &StoreControl::default()).unwrap();
         assert!(matches!(result, StoreResult::Verified { slot: stored, .. } if stored == slot));
         session.link.assert_finished();
     }

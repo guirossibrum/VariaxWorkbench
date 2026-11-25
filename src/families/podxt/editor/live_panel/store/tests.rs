@@ -1,11 +1,10 @@
 use super::*;
 use crate::editor::podxt_panel::live_panel::tests::FakeLock;
-use line6_devices::backup::{BackupFolder, utc};
+use line6_devices::backup::BackupFolder;
 use line6_devices::session::{Path as MidiPath, Request};
 use podxt::PodxtRequest;
 use std::cell::Cell;
 use std::collections::VecDeque;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 struct ScriptedLink<'a> {
     held: &'a Cell<bool>,
@@ -59,13 +58,8 @@ fn fixture(root: &std::path::Path) -> (ConfirmedStore, Vec<u8>, Location) {
     raw[..7].copy_from_slice(&[0xf0, 0, 1, 0x0c, 3, 0x74, 0x0a]);
     raw[7..11].copy_from_slice(b"Test");
     raw[167] = 0xf7;
-    let stamp = utc(SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs())
-    .1;
     let mut folder = BackupFolder::create(root, "backup").unwrap();
-    folder.record(format!("PODxt Live library backup at {stamp}."));
+    folder.record("PODxt Live library backup at 2024-01-01 00:00:00 UTC.".into());
     folder
         .file(
             "identity.syx",

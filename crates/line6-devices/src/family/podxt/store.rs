@@ -5,7 +5,7 @@ use super::*;
 use crate::midi::Event;
 use crate::session::POLL;
 use std::sync::atomic::{AtomicU8, Ordering};
-use store_backup::{check_live_identity, utc_day};
+use store_backup::check_live_identity;
 
 const STORE_WAIT: Duration = Duration::from_secs(7);
 const PENDING: u8 = 0;
@@ -84,16 +84,7 @@ pub fn store_tone<L: Link>(
     confirmation: ConfirmedStore,
     control: &StoreControl,
 ) -> Result<StoreResult, String> {
-    store_at(session, confirmation, control, utc_day)
-}
-
-fn store_at<L: Link>(
-    session: &mut Session<L>,
-    confirmation: ConfirmedStore,
-    control: &StoreControl,
-    current_day: impl FnOnce() -> Result<u64, String>,
-) -> Result<StoreResult, String> {
-    let slot = confirmation.0.slot;
+    let slot = confirmation.0.backup.slot();
     if !session.allows(Operation::PodxtStoreRestore) {
         return Err("PODxt Live store is closed. No store was sent.".into());
     }
@@ -101,14 +92,7 @@ fn store_at<L: Link>(
     let (_, identity) = identify_podxt(session)?;
     check_live_identity(&identity)?;
     control.check()?;
-    let before = read_stored(session, slot)?;
-    if TonePayload::from_dump(&before)? != confirmation.0.original {
-        return Err(format!(
-            "Slot {} differs from its verified backup. No store was sent.",
-            slot.slot_name()
-        ));
-    }
-    confirmation.verify_day(current_day()?)?;
+    confirmation.0.backup.verify_slot(session)?;
     let candidate = confirmation.0.candidate;
     control.dispatch()?;
 

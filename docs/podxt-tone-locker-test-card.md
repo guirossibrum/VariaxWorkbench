@@ -23,8 +23,8 @@ and Sync locks closed. This card is a proposed procedure for a later owner run.
 
 1. Close other software using the rig. Wait for automatic PODxt Live 3.01
    identity. Keep the Variax link off for the store trials. Make two
-   complete Device Check backups on the same UTC day, verify both
-   manifests and compare all 299 stored entries.
+   complete Device Check backups, verify both manifests and compare all
+   299 stored entries.
 2. In **Tone Locker**, choose **Get bundle**. Check 128 channels, 107 amp
    setups and 64 FX setups. Load one setup of each kind into the file
    editor and save copies. Compare the model names and settings with the
@@ -35,7 +35,7 @@ and Sync locks closed. This card is a proposed procedure for a later owner run.
    device unchanged. Try **Revert selected**. Request to close the tab
    and choose **Keep working** at the staged-changes warning.
 4. For the first setup store, use **Store original to slot** with the chosen
-   setup bank and its original slot. Choose the same-day backup and type
+   setup bank and its original slot. Choose the verified backup and type
    the exact prompt, for example **STORE PODXT AMP 1** or **STORE PODXT FX
    1**. Confirm the acknowledged readback matches all bytes and compare a
    new complete Device Check backup with the baseline.
