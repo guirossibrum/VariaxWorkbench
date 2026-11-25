@@ -39,6 +39,7 @@ pub mod runner;
 pub mod steps;
 #[cfg(test)]
 pub(crate) mod testing;
+mod variax_evidence;
 pub mod variax_live;
 pub mod variax_reads;
 pub mod variax_save;

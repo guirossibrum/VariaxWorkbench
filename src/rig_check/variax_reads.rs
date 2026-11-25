@@ -266,48 +266,19 @@ mod tests {
     }
 
     #[test]
-    fn unverified_devices_run_read_steps_only() {
+    fn an_unverified_podxt_still_runs_its_read_steps_only() {
         let mut person = Script::run_all();
         let faults = Faults {
-            unverified_variax: true,
             unverified_podxt: true,
             ..Faults::default()
         };
         let (run, _, _) = run_practice(faults, &mut person, &mut NoReport, RunData::default());
-        for id in [
-            StepId(3, 1),
-            StepId(3, 2),
-            StepId(3, 3),
-            StepId(3, 4),
-            StepId(3, 5),
-            StepId(2, 5),
-        ] {
-            assert!(
-                run.step(id).outcome.passed(),
-                "{id}: {:?}",
-                run.step(id).outcome
-            );
-        }
-        assert!(
-            run.step(StepId(3, 3))
-                .evidence
-                .iter()
-                .any(|l| l.starts_with("Flagged: unverified device"))
-        );
-        for id in [
-            StepId(4, 1),
-            StepId(4, 2),
-            StepId(4, 3),
-            StepId(5, 1),
-            StepId(5, 2),
-        ] {
-            assert!(
-                matches!(
-                    run.step(id).outcome,
-                    Outcome::UnverifiedDevice(_) | Outcome::SkippedNeeds(_)
-                ),
-                "{id}"
-            );
+        assert!(run.step(StepId(2, 5)).outcome.passed());
+        for id in [StepId(4, 1), StepId(5, 2)] {
+            assert!(matches!(
+                run.step(id).outcome,
+                Outcome::UnverifiedDevice(_) | Outcome::SkippedNeeds(_)
+            ));
             assert!(!person.cards.contains(&id), "{id} was not offered");
         }
         assert!(

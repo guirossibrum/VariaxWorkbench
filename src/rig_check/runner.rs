@@ -4,11 +4,14 @@
 //! * Nothing moves into a new step by itself.
 //! * A step runs only when every step it needs has passed.
 //! * Real mode refuses each device step whose owner approval is off.
-//! * Stop ends the run; the rig guard (6.2) is still offered and still asks.
+//! * Stop ends the run; the usual rig guard (6.2) still asks. Evidence mode
+//!   only releases the USB interface.
 //! * The report sink is called after every step so a crash leaves evidence.
 
 use super::approvals;
-use super::catalogue::{self, Kind, RIG_GUARD, RUN_ORDER, START_NOTICE, SaveNotice, Step, StepId};
+use super::catalogue::{
+    self, Kind, RIG_GUARD, RUN_ORDER, START_NOTICE, SaveNotice, Step, StepId, VARIAX_EVIDENCE,
+};
 use super::port::RigPort;
 use super::record::{Mode, Outcome, RunRecord, StepRecord, utc_now};
 use super::steps::{self, RunData};
@@ -179,16 +182,53 @@ impl<'a> Runner<'a> {
             if stopped {
                 break;
             }
+            if id == VARIAX_EVIDENCE && self.variax_evidence_applicable() {
+                self.run_variax_evidence();
+                break;
+            }
             stopped = self.step(id);
             if stopped {
                 self.write_report();
             }
         }
-        // The rig guard is always offered last, also after Stop.
-        self.step(RIG_GUARD);
+        if self.variax_evidence_applicable() {
+            self.release_evidence_rig();
+        } else {
+            // The usual guard is offered last, also after Stop.
+            self.step(RIG_GUARD);
+        }
         self.run.finished = true;
         self.write_report();
         (self.run, self.data)
+    }
+
+    fn variax_evidence_applicable(&self) -> bool {
+        self.run.step(StepId(3, 1)).outcome.passed()
+            && super::variax_evidence::applicable(self.data.variax_identity.as_ref())
+    }
+
+    fn run_variax_evidence(&mut self) {
+        if self.op.accept_start(super::variax_evidence::NOTICE) {
+            self.step(VARIAX_EVIDENCE);
+        } else {
+            self.finish(VARIAX_EVIDENCE, Outcome::SkippedByPerson, None, None);
+        }
+    }
+
+    fn release_evidence_rig(&mut self) {
+        let release = if self.port.variax_claimed() {
+            self.port.release_variax().map(|lines| lines.join(" "))
+        } else {
+            Ok("The guitar interface was already released.".into())
+        };
+        self.run.rig_state =
+            release.unwrap_or_else(|error| format!("Guitar interface release failed: {error}"));
+        self.finish(
+            RIG_GUARD,
+            Outcome::NotAvailable("Evidence mode ends with USB release only.".into()),
+            None,
+            None,
+        );
     }
 
     /// Run or skip one step. Returns `true` when the person stopped the run.
@@ -270,6 +310,11 @@ impl<'a> Runner<'a> {
 
     /// Why a step cannot be offered, without asking.
     fn precheck(&self, step: &Step) -> Option<Outcome> {
+        if step.id == VARIAX_EVIDENCE && !self.variax_evidence_applicable() {
+            return Some(Outcome::NotAvailable(
+                "Available only for unverified Variax 300/600 firmware.".into(),
+            ));
+        }
         if let Some(reason) = step.not_in_this_version {
             return Some(Outcome::NotAvailable(reason.into()));
         }

@@ -16,6 +16,8 @@ pub struct Script {
     pub retry: Retry,
     pub answer: Answer,
     pub cards: Vec<StepId>,
+    pub notices: Vec<String>,
+    pub accept_evidence: bool,
     pub instructions: Vec<(StepId, String)>,
     pub questions: Vec<Question>,
     pub saves: Vec<String>,
@@ -42,6 +44,8 @@ impl Script {
             retry: Retry::Skip,
             answer: Answer::Yes,
             cards: Vec::new(),
+            notices: Vec::new(),
+            accept_evidence: true,
             instructions: Vec::new(),
             questions: Vec::new(),
             saves: Vec::new(),
@@ -62,8 +66,13 @@ impl Script {
 }
 
 impl Operator for Script {
-    fn accept_start(&mut self, _: &str) -> bool {
-        self.accept
+    fn accept_start(&mut self, notice: &str) -> bool {
+        self.notices.push(notice.to_owned());
+        if notice == super::variax_evidence::NOTICE {
+            self.accept_evidence
+        } else {
+            self.accept
+        }
     }
 
     fn confirm(&mut self, step: &Step, _: Mode) -> Decision {
@@ -113,7 +122,7 @@ impl Operator for Script {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rig_check::catalogue::{RIG_GUARD, RUN_ORDER, STEPS};
+    use crate::rig_check::catalogue::{RIG_GUARD, RUN_ORDER, STEPS, VARIAX_EVIDENCE};
     use crate::rig_check::port::RealPort;
     use crate::rig_check::practice::{Faults, SimRig, flash_index};
     use crate::rig_check::run_on;
@@ -148,7 +157,7 @@ mod tests {
         assert!(run.finished && run.start_notice_accepted);
         for step in STEPS {
             let outcome = &run.step(step.id).outcome;
-            if step.not_in_this_version.is_some() {
+            if step.id == VARIAX_EVIDENCE || step.not_in_this_version.is_some() {
                 assert!(matches!(outcome, Outcome::NotAvailable(_)), "{}", step.id);
             } else {
                 assert_eq!(
@@ -165,10 +174,11 @@ mod tests {
             .iter()
             .copied()
             .filter(|id| {
-                crate::rig_check::catalogue::step(*id)
-                    .unwrap()
-                    .not_in_this_version
-                    .is_none()
+                *id != VARIAX_EVIDENCE
+                    && crate::rig_check::catalogue::step(*id)
+                        .unwrap()
+                        .not_in_this_version
+                        .is_none()
             })
             .collect();
         assert_eq!(person.cards, offered);

@@ -101,6 +101,7 @@ pub fn execute(ctx: &mut Ctx<'_>) -> Result<(), String> {
         (3, 4) => variax_all_presets(ctx),
         (3, 5) => super::variax_reads::one_preset(ctx),
         (3, 6) => super::variax_reads::one_bank(ctx),
+        (3, 7) => super::variax_evidence::read(ctx),
         (4, 1) => super::live::podxt_stomp(ctx),
         (4, 2) => super::variax_live::variax_own_bytes(ctx),
         (4, 3) => super::variax_live::variax_test_model(ctx),
@@ -465,6 +466,8 @@ fn variax_identity(ctx: &mut Ctx<'_>) -> Result<(), String> {
         identity.version_text(),
         if verified {
             " (verified device)"
+        } else if super::variax_evidence::applicable(Some(&identity)) {
+            " (unverified firmware: evidence mode available)"
         } else {
             " (unverified device: read-only steps only)"
         }

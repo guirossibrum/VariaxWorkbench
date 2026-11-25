@@ -10,6 +10,9 @@ use crate::{
     session::{Link, Session},
 };
 
+mod replay;
+pub use replay::replay_current_program;
+
 /// Separate owner approval for the #271 compatibility read.
 pub const APPROVED_FIRMWARE_READ: bool = false;
 

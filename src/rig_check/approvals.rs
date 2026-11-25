@@ -24,6 +24,7 @@ pub const APPROVED_STEP_3_3: bool = false;
 pub const APPROVED_STEP_3_4: bool = false;
 pub const APPROVED_STEP_3_5: bool = false;
 pub const APPROVED_STEP_3_6: bool = false;
+pub const APPROVED_VARIAX_EVIDENCE: bool = false;
 pub const APPROVED_STEP_4_1: bool = false;
 pub const APPROVED_STEP_4_2: bool = false;
 pub const APPROVED_STEP_4_3: bool = false;
@@ -62,6 +63,7 @@ pub const fn approved(id: StepId) -> bool {
         (3, 4) => APPROVED_STEP_3_4,
         (3, 5) => APPROVED_STEP_3_5,
         (3, 6) => APPROVED_STEP_3_6,
+        (3, 7) => APPROVED_VARIAX_EVIDENCE,
         (4, 1) => APPROVED_STEP_4_1,
         (4, 2) => APPROVED_STEP_4_2,
         (4, 3) => APPROVED_STEP_4_3,
@@ -95,6 +97,14 @@ pub fn real_device_check(id: StepId) -> Result<(), String> {
         return Err(format!(
             "Step {id} is {NOT_AUTHORIZED}. Nothing was sent to any device."
         ));
+    }
+    if id == catalogue::VARIAX_EVIDENCE
+        && !line6_devices::family::variax::firmware_read::APPROVED_FIRMWARE_READ
+    {
+        return Err(
+            "The device crate's Variax firmware compatibility read is closed. Nothing was sent."
+                .into(),
+        );
     }
     check_gates(id, step.gates)
 }

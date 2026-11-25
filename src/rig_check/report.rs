@@ -392,7 +392,7 @@ mod tests {
             assert!(snapshot.starts_with("RIG CHECK REPORT"), "{n}");
             let json = json_block(snapshot).unwrap_or_else(|| panic!("JSON in snapshot {n}"));
             assert!(json.starts_with('{') && json.ends_with('}'));
-            assert!(snapshot.contains("Catalogue: 1.0"));
+            assert!(snapshot.contains(&format!("Catalogue: {}", catalogue::CATALOGUE_VERSION)));
         }
         // An interrupted run says which step was running.
         assert!(
