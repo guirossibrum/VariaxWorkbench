@@ -114,6 +114,7 @@ struct ParkedLibrary {
 pub(super) struct VariaxEditor {
     pub(super) document: Option<EditorDocument>,
     source_path: Option<PathBuf>,
+    opening_file: bool,
     parked_library: Option<ParkedLibrary>,
     library_origin: Option<LibraryOrigin>,
     connection_status: Option<String>,
@@ -200,6 +201,7 @@ impl VariaxEditor {
         Self {
             document: None,
             source_path: None,
+            opening_file: false,
             parked_library: None,
             library_origin: None,
             connection_status: None,
@@ -473,11 +475,18 @@ impl VariaxEditor {
     }
 
     fn choose_open_file(&mut self, ctx: &egui::Context, services: &mut EditorServices<'_>) {
-        services.request_picker::<Self>(ctx, PickRequest::OpenWorkbenchFile, |editor, path, _| {
-            if let Some(path) = path {
-                editor.load(&path);
-            }
-        });
+        if services.request_picker::<Self>(
+            ctx,
+            PickRequest::OpenWorkbenchFile,
+            |editor, path, _| {
+                editor.opening_file = false;
+                if let Some(path) = path {
+                    editor.load(&path);
+                }
+            },
+        ) {
+            self.opening_file = true;
+        }
     }
 
     fn save_dialog(
@@ -1034,8 +1043,10 @@ impl VariaxEditor {
         if self.document.is_none() {
             guitar_panel().show(ui, |ui| {
                 ui.heading("No Variax library is available");
-                ui.label("Connect a verified Variax to download its library, or open a file.");
+                ui.label("There is no recorded download or chosen factory firmware file.");
                 ui.horizontal_wrapped(|ui| {
+                    #[cfg(feature = "usb")]
+                    self.download_button(ui);
                     ui.add_enabled_ui(!self.is_reading() && self.pending.is_none(), |ui| {
                         if ui.button("Open file…").clicked() {
                             self.open_dialog(ui.ctx(), services);
@@ -1266,6 +1277,7 @@ impl FamilyTab for VariaxEditor {
     fn poll(&mut self, ctx: &egui::Context) {
         #[cfg(feature = "usb")]
         {
+            self.start_automatic_download();
             self.poll_refresh(ctx);
             self.poll_follow(ctx);
         }
@@ -1311,17 +1323,16 @@ impl FamilyTab for VariaxEditor {
     fn actions(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
         self.new_file_menu(ui, services);
         #[cfg(feature = "usb")]
-        let has_download = self.download_button(ui);
+        let has_download = {
+            let ready = self.download_target_ready();
+            if ready && self.document.is_some() {
+                self.download_button(ui);
+            }
+            ready
+        };
         #[cfg(not(feature = "usb"))]
         let has_download = false;
-        let recovery = self.connection_controls(ui, services, has_download);
-        if !has_download && recovery.is_none() && self.document.is_none() {
-            ui.add_enabled(
-                false,
-                egui::Button::new("Download from guitar…").min_size(egui::vec2(0.0, theme::TARGET)),
-            )
-            .on_disabled_hover_text("Connect a verified Variax to download its library.");
-        }
+        self.connection_controls(ui, services, has_download);
     }
 }
 

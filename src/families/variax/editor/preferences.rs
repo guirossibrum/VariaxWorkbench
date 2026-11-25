@@ -131,7 +131,7 @@ impl VariaxEditor {
     }
 
     pub(super) fn preference_button(&mut self, ui: &mut egui::Ui) {
-        if ui.add(egui::Button::new("Preferences…").small()).clicked() {
+        if ui.button("Preferences…").clicked() {
             match self.author_setting() {
                 Ok(value) => {
                     self.author_preference = Some(AuthorPreference {
