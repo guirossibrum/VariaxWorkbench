@@ -10,7 +10,7 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
-- [x] #238 owner tool builds and compares archive, #236 backup, and editor VWM programs offline. Scripted transports verify all five rungs, unique active-buffer identification, target reload and switch-back, cancellation, and the silent store timeout. The completed #177 factory switch and all #238 live switches are closed. [#238](https://github.com/guirossibrum/VariaxWorkbench/issues/238) · [Draft owner card](variax-any-selection-test-card.md).
+- [x] #238 owner tool builds and compares archive, #236 backup, and editor VWM programs offline. Scripted transports verify all five rungs, unique active-buffer identification, target reload and switch-back, cancellation, and the silent store timeout. The 4a owner audition verified the edited buffer and the return to the starting preset. Offline comparison traced the unchanged pitch to the input file’s disabled alternate tuning. Fake transcripts verify the owner prompts and their order. All #238 live switches are closed. [#238](https://github.com/guirossibrum/VariaxWorkbench/issues/238) · [Draft owner card](variax-any-selection-test-card.md).
 
 - [x] App and owner-tool cleanup verify the Linux guitar driver binding after releasing PODxt Live interface 1. If it stays unbound, cleanup waits briefly and retries once. Refresh guitar offers default-No recovery on the verified attachment before the usual identity check. Six synthetic sysfs and fake-attach tests cover binding verification, bounded retry, failure and address changes. Two headless tests cover unbound startup, consent and replacement attachments. [#239](https://github.com/guirossibrum/VariaxWorkbench/issues/239).
 

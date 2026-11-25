@@ -267,11 +267,62 @@ fn format_value(key: &str, value: &ParameterValue, catalog: &[ModelName]) -> Str
     }
 }
 
+fn catalog() -> Vec<ModelName> {
+    serde_json::from_str(include_str!("../../../../assets/model-ui.json"))
+        .expect("bundled model catalog")
+}
+
+pub(super) fn audition_sound(old: &Image, new: &Image) -> Result<String, String> {
+    // Word 1 bit 4 controls the DSP pitch block independently of the settings.
+    let (old_pitch, new_pitch) = (old[5] & 0x10 != 0, new[5] & 0x10 != 0);
+    let (old, new) = (metadata(old)?, metadata(new)?);
+    let catalog = catalog();
+    let describe = |data: &PresetMetadata, pitch_enabled: bool| {
+        let model = |key| format_value(key, &data.parameters[key], &catalog);
+        let mut pickups = Vec::new();
+        for (enabled, id) in [
+            ("pickup1_enabled", "pickup1_model"),
+            ("pickup2_enabled", "pickup2_model"),
+        ] {
+            if data.parameters[enabled] == ParameterValue::Boolean(true) {
+                pickups.push(model(id));
+            }
+        }
+        let pickups = if pickups.is_empty() {
+            "no enabled pickups".into()
+        } else {
+            pickups.join(" and ")
+        };
+        let tuning = if pitch_enabled
+            && data.parameters["alternate_tuning_enabled"] == ParameterValue::Boolean(true)
+        {
+            let steps = (1..=6)
+                .map(
+                    |i| match data.parameters[format!("string{i}_tuning").as_str()] {
+                        ParameterValue::Integer(steps) => format!("{steps:+}"),
+                        _ => unreachable!("decoded tuning type"),
+                    },
+                )
+                .collect::<Vec<_>>()
+                .join("/");
+            format!("alternate tuning on ({steps} semitones, strings 1–6)")
+        } else if pitch_enabled {
+            "alternate tuning off in the settings, pitch processing active".into()
+        } else {
+            "alternate tuning off".into()
+        };
+        format!("{} body, {pickups}, {tuning}", model("body_model"))
+    };
+    Ok(format!(
+        "Expect the edited sound: {}. Your starting preset had {}.",
+        describe(&new, new_pitch),
+        describe(&old, old_pitch)
+    ))
+}
+
 pub(super) fn diff(old: &Image, new: &Image) -> Result<Vec<String>, String> {
     let (old, new) = (metadata(old)?, metadata(new)?);
-    let catalog: Vec<ModelName> =
-        serde_json::from_str(include_str!("../../../../assets/model-ui.json"))
-            .expect("bundled model catalog");
+    let catalog = catalog();
     let mut changes = Vec::new();
     if old.name != new.name {
         changes.push(format!("  Preset name: {:?} → {:?}", old.name, new.name));
