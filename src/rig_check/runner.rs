@@ -77,8 +77,9 @@ pub trait Operator {
     fn ask(&mut self, question: &Question) -> (Answer, String);
     /// A short progress line.
     fn progress(&mut self, text: &str);
-    /// A step finished (any outcome).
-    fn finished(&mut self, record: &StepRecord);
+    /// Publish any outcome. If the step ran, wait for the person to read it.
+    /// Return false when they choose Stop or leave the session.
+    fn finished(&mut self, record: &StepRecord) -> bool;
     /// The person asked to stop the running step.
     fn stop_requested(&self) -> bool;
 }
@@ -179,7 +180,9 @@ impl<'a> Runner<'a> {
                 break;
             }
             stopped = self.step(id);
-            self.write_report();
+            if stopped {
+                self.write_report();
+            }
         }
         // The rig guard is always offered last, also after Stop.
         self.step(RIG_GUARD);
@@ -230,7 +233,7 @@ impl<'a> Runner<'a> {
                 let outcome = match result {
                     Ok(()) => Outcome::Passed,
                     Err(reason) if reason.starts_with(SKIPPED) => {
-                        rec.note(reason.trim_start_matches(SKIPPED));
+                        rec.show(reason.trim_start_matches(SKIPPED));
                         Outcome::SkippedByPerson
                     }
                     Err(error) if stopped_now => Outcome::Stopped(error),
@@ -250,13 +253,13 @@ impl<'a> Runner<'a> {
                 *self.run.step_mut(id) = rec;
                 self.run.computer = self.data.computer.clone();
                 self.run.devices = self.data.devices.clone();
-                self.finish(
+                let continuing = self.finish(
                     id,
                     outcome,
                     Some(started),
                     Some(clock.elapsed().as_millis()),
                 );
-                if stopped_now && id != RIG_GUARD {
+                if (stopped_now || !continuing) && id != RIG_GUARD {
                     self.run.stopped_at = Some(id);
                     return true;
                 }
@@ -302,7 +305,7 @@ impl<'a> Runner<'a> {
         outcome: Outcome,
         started: Option<String>,
         duration: Option<u128>,
-    ) {
+    ) -> bool {
         let rec = self.run.step_mut(id);
         rec.outcome = outcome;
         if started.is_some() {
@@ -310,6 +313,7 @@ impl<'a> Runner<'a> {
             rec.duration_ms = duration;
         }
         let rec = rec.clone();
-        self.op.finished(&rec);
+        self.write_report();
+        self.op.finished(&rec)
     }
 }

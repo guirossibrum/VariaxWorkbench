@@ -150,7 +150,7 @@ fn window(options: Options) {
         let mut sink = match report::ReportFile::create(&out, Redactor::from_environment()) {
             Ok(sink) => sink,
             Err(error) => {
-                let _ = op.to_ui.send(Prompt::Progress(format!(
+                op.send(Prompt::Progress(format!(
                     "Cannot create the report: {error}"
                 )));
                 return;
@@ -187,7 +187,7 @@ fn window(options: Options) {
             let state_file = sink.path.with_extension("state");
             rig_check::run_with_state(&mut port, &mut op, &mut sink, data, state_file).0
         };
-        let _ = op.to_ui.send(Prompt::Done {
+        op.send(Prompt::Done {
             run: Box::new(run),
             report: sink.last.clone(),
             path: sink.path.display().to_string(),
@@ -284,7 +284,7 @@ fn main() {
         run.count("passed"),
         run.count("failed"),
         run.count("skipped") + run.count("skipped_needs"),
-        run.rig_state,
+        rig_check::record::plain_result(&run.rig_state),
         sink.path.display()
     );
     let mut input = BufReader::new(io::stdin().lock());
@@ -295,9 +295,6 @@ fn main() {
         let _ = input.read_line(&mut line);
         line.trim().to_owned()
     };
-    if ask("Show the report now? [y/N]").eq_ignore_ascii_case("y") {
-        println!("{}", sink.last);
-    }
     let target = ask("Save a copy of the report to (file path, Enter to skip):");
     if !target.is_empty() {
         match report::save_copy(&sink.last, std::path::Path::new(&target)) {

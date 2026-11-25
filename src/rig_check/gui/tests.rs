@@ -12,14 +12,21 @@ fn frame(ctx: &egui::Context, wizard: &mut Wizard, events: Vec<Event>) -> Vec<St
         ..Default::default()
     };
     let output = ctx.run(input, |ctx| wizard.show(ctx));
-    let mut texts = Vec::new();
-    fn walk(shape: &egui::Shape, texts: &mut Vec<String>) {
+    labels(&output).into_iter().map(|(text, _)| text).collect()
+}
+
+fn labels(output: &egui::FullOutput) -> Vec<(String, Pos2)> {
+    fn walk(shape: &egui::Shape, texts: &mut Vec<(String, Pos2)>) {
         match shape {
-            egui::Shape::Text(text) => texts.push(text.galley.text().to_owned()),
+            egui::Shape::Text(text) => texts.push((
+                text.galley.text().to_owned(),
+                text.pos + text.galley.rect.center().to_vec2(),
+            )),
             egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, texts)),
             _ => {}
         }
     }
+    let mut texts = Vec::new();
     output
         .shapes
         .iter()
@@ -138,7 +145,9 @@ fn the_channel_operator_runs_practice_mode_from_another_thread() {
     // The test plays the person: accept, Run every card, type every
     // confirmation, answer Yes.
     let mut cards = 0;
-    while let Ok(prompt) = from_runner.recv() {
+    let mut results = 0;
+    let ctx = egui::Context::default();
+    while let Ok(prompt) = from_runner.recv_timeout(std::time::Duration::from_secs(10)) {
         let reply = match prompt {
             Prompt::Start(_) => Reply::Accept(true),
             Prompt::Card(..) => {
@@ -148,19 +157,112 @@ fn the_channel_operator_runs_practice_mode_from_another_thread() {
             Prompt::Save { confirmation, .. } => Reply::Typed(Some(confirmation)),
             Prompt::NotSeen { .. } => Reply::Retry(Retry::Skip),
             Prompt::Ask(_) => Reply::Answer(Answer::Yes, String::new()),
+            Prompt::Finished(record) if record.started.is_some() => {
+                results += 1;
+                assert!(
+                    from_runner.try_recv().is_err(),
+                    "the runner must wait at {}",
+                    record.id
+                );
+                let (mut wizard, replies) = wired(Prompt::Finished(record.clone()));
+                let texts = frame(&ctx, &mut wizard, Vec::new());
+                assert!(texts.iter().any(|s| s == record.outcome.label()));
+                let expected: &[&str] = match record.id {
+                    StepId(0, 1) => &["Practice Linux (simulated)"],
+                    StepId(0, 2) => &["USB devices: 2", "Port 1-2: PODxt Live"],
+                    StepId(0, 3) => &["Synthetic preset (full pipeline)", "48 of 48 identical"],
+                    StepId(1, 1) => &["PODxt Live found on port 1-2"],
+                    StepId(1, 2) => &["Guitar interface opened and given back", "snd-usb-variax"],
+                    StepId(2, 1) => &["PODxt Live, firmware 3.01 (verified device)"],
+                    StepId(2, 2) => &["Current tone: Practice 5B", "Does the PODxt Live display"],
+                    StepId(2, 3) => &[
+                        "Channel 1A: Practice 1A",
+                        "does its display show the same name?",
+                    ],
+                    StepId(2, 4) => &[
+                        "Channel 1A: Practice 1A",
+                        "Channel 1B: Practice 1B",
+                        "Channel 1C: Practice 1C",
+                        "Channel 1D: Practice 1D",
+                    ],
+                    StepId(2, 5) => &["Read 299 of 299 entries"],
+                    StepId(3, 1) => &["Variax 300/600", "firmware 3.10 (verified device)"],
+                    StepId(3, 2) => &["Preset name: \"Spank 1\""],
+                    StepId(3, 3) => &["Progress 35 of 35 chunks", "checksum OK"],
+                    StepId(3, 4) => &["Read 60 of 60 presets", "Back on Spank 1"],
+                    StepId(3, 5) => &["Read Spank 2: matches the backup", "Back on Spank 1"],
+                    StepId(3, 6) => &["Read 5 of 5 presets", "Back on Spank 1"],
+                    StepId(4, 1) => &[
+                        "Stomp off to on: read back as sent",
+                        "The whole tone matches the start",
+                    ],
+                    StepId(4, 2) => &["Sent and read back: all 1,092 words identical"],
+                    StepId(4, 3) => &[
+                        "Practice test model (drop D): you answered Yes",
+                        "Back on Spank 1",
+                    ],
+                    StepId(5, 1) => &["Saved and verified Spank 1"],
+                    StepId(5, 2) => &["Saved and verified channel 5B"],
+                    StepId(6, 1) => &[
+                        "reported the guitar disconnected",
+                        "reported the guitar connected again",
+                        "firmware 3.10",
+                    ],
+                    StepId(6, 2) => &[
+                        "the PODxt Live tone is the starting tone",
+                        "the Variax plays the starting program",
+                        "snd-usb-variax",
+                    ],
+                    StepId(7, 1) => &["Spank 2 plays the program", "Back on Spank 1"],
+                    StepId(7, 2) => &["volume 0-127, tone 0-127"],
+                    StepId(7, 3) => &["Practice 5C", "Back on channel 5B"],
+                    StepId(7, 4) => &["Pedal range seen: 0-127"],
+                    StepId(8, 1) => &[
+                        "Audio system: ALSA",
+                        "PODxt Live audio device: card 1",
+                        "No audio stream was opened",
+                    ],
+                    other => panic!("Missing SEE expectation for {other}"),
+                };
+                for value in expected {
+                    assert!(
+                        texts.iter().any(|line| line.contains(value)),
+                        "{} should show {value}: {texts:?}",
+                        record.id
+                    );
+                }
+                for line in &texts {
+                    assert!(
+                        !line.contains("0x") && !line.to_ascii_lowercase().contains("f0 00 01 0c")
+                    );
+                    assert!(!line.split_whitespace().any(
+                        |word| word.len() >= 64 && word.bytes().all(|b| b.is_ascii_hexdigit())
+                    ));
+                }
+                assert!(texts.iter().any(|s| s == "Continue"));
+                assert!(texts.iter().any(|s| s == "Stop"));
+                assert!(from_runner.try_recv().is_err());
+                assert!(replies.try_recv().is_err());
+                frame(&ctx, &mut wizard, vec![key(Key::Enter)]);
+                replies
+                    .try_recv()
+                    .expect("Enter continues from the focused button")
+            }
             _ => continue,
         };
         to_runner.send(reply).unwrap();
     }
+    drop(to_runner);
     let passed = worker.join().unwrap();
     assert_eq!(passed, 28);
     assert_eq!(cards, 28);
+    assert_eq!(results, 28);
 }
 
 #[test]
 fn mockups_render_headless() {
     let states = mockup_states();
-    assert_eq!(states.len(), 10);
+    assert_eq!(states.len(), 11);
     let (_, mut wizard) = mockup_states().into_iter().nth(2).unwrap();
     let image = raster::render(400, 300, |ctx| wizard.show(ctx));
     let mut colours = std::collections::BTreeSet::new();
@@ -172,4 +274,92 @@ fn mockups_render_headless() {
         "text and panels were drawn: {}",
         colours.len()
     );
+}
+
+#[test]
+fn clicking_a_finished_step_replays_it_without_continuing_the_active_result() {
+    let ctx = egui::Context::default();
+    let screen = Rect::from_min_size(Pos2::ZERO, vec2(1180.0, 800.0));
+    let mut current = StepRecord::new(StepId(2, 3));
+    current.started = Some("practice".into());
+    current.outcome = Outcome::Passed;
+    current.show("Channel 1A: Practice 1A");
+    let (mut wizard, rx) = wired(Prompt::Finished(current.clone()));
+    let mut previous = StepRecord::new(StepId(2, 1));
+    previous.outcome = Outcome::Passed;
+    previous.show("PODxt Live, firmware 3.01 (verified device)");
+    wizard.progress.extend([previous, current]);
+    let output = ctx.run(
+        RawInput {
+            screen_rect: Some(screen),
+            ..Default::default()
+        },
+        |ctx| wizard.show(ctx),
+    );
+    let position = labels(&output)
+        .into_iter()
+        .find(|(label, _)| label.starts_with("2.1 PODxt Live identity"))
+        .unwrap()
+        .1;
+    let pointer = |pressed| Event::PointerButton {
+        pos: position,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    frame(
+        &ctx,
+        &mut wizard,
+        vec![Event::PointerMoved(position), pointer(true)],
+    );
+    let replay = frame(&ctx, &mut wizard, vec![pointer(false)]);
+    assert!(
+        replay
+            .iter()
+            .any(|line| line == "PODxt Live, firmware 3.01 (verified device)")
+    );
+    assert!(replay.iter().any(|line| line == "Back"));
+    assert!(rx.try_recv().is_err());
+
+    frame(&ctx, &mut wizard, vec![key(Key::Enter)]);
+    let resumed = frame(&ctx, &mut wizard, Vec::new());
+    assert!(resumed.iter().any(|line| line == "Channel 1A: Practice 1A"));
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn stop_at_a_result_offers_the_guard_without_offering_another_step() {
+    let (to_ui, from_runner) = channel();
+    let (to_runner, from_ui) = channel();
+    let worker = std::thread::spawn(move || {
+        let mut op = ChannelOperator {
+            to_ui,
+            from_ui,
+            stop: Arc::new(AtomicBool::new(false)),
+            repaint: None,
+        };
+        run_practice(
+            Faults::default(),
+            &mut op,
+            &mut NoReport,
+            RunData::default(),
+        )
+        .0
+    });
+    let next = || {
+        from_runner
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+    };
+    assert!(matches!(next(), Prompt::Start(_)));
+    to_runner.send(Reply::Accept(true)).unwrap();
+    assert!(matches!(next(), Prompt::Card(StepId(0, 1), _)));
+    to_runner.send(Reply::Decision(Decision::Run)).unwrap();
+    assert!(matches!(next(), Prompt::Finished(record) if record.id == StepId(0, 1)));
+    to_runner.send(Reply::Continue(false)).unwrap();
+    assert!(matches!(next(), Prompt::Card(catalogue::RIG_GUARD, _)));
+    to_runner.send(Reply::Decision(Decision::Skip)).unwrap();
+    let run = worker.join().unwrap();
+    assert_eq!(run.stopped_at, Some(StepId(0, 1)));
+    assert_eq!(run.step(StepId(0, 2)).outcome, Outcome::NotReached);
 }

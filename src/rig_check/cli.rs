@@ -1,7 +1,7 @@
 //! Terminal front end. Every answer defaults to "do not run".
 
 use super::catalogue::{SaveNotice, Step, StepId};
-use super::record::{Mode, StepRecord};
+use super::record::{Mode, StepRecord, plain_result};
 use super::runner::{Answer, Decision, Operator, Question, Retry};
 use std::io::{BufRead, Write};
 
@@ -118,30 +118,64 @@ impl<R: BufRead, W: Write> Operator for Terminal<R, W> {
     }
 
     fn progress(&mut self, text: &str) {
-        self.say(text);
+        self.say(&plain_result(text));
     }
 
-    fn finished(&mut self, record: &StepRecord) {
-        let reason = record
-            .outcome
-            .reason()
-            .map(|r| format!(": {r}"))
-            .unwrap_or_default();
+    fn finished(&mut self, record: &StepRecord) -> bool {
         self.say(&format!(
-            "--- {} {} — {}{reason}",
+            "--- {} {} — {}",
             record.id,
             record.title,
             record.outcome.label()
         ));
-        for line in record.evidence.iter().take(12) {
+        for line in record.result_lines() {
             self.say(&format!("    {line}"));
         }
-        for hint in &record.hints {
-            self.say(&format!("    Hint: {hint}"));
+        if record.started.is_none() {
+            return true;
+        }
+        loop {
+            self.say("[c] Continue   [q] Stop.   Enter = Continue");
+            let mut response = String::new();
+            if self.input.read_line(&mut response).unwrap_or(0) == 0 {
+                return false;
+            }
+            match response.trim().to_ascii_lowercase().as_str() {
+                "" | "c" | "continue" => return true,
+                "q" | "stop" => return false,
+                _ => {}
+            }
         }
     }
 
     fn stop_requested(&self) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rig_check::record::Outcome;
+
+    #[test]
+    fn terminal_result_waits_for_continue_and_keeps_raw_failure_evidence_in_the_report() {
+        let mut record = StepRecord::new(StepId(2, 3));
+        record.started = Some("practice".into());
+        record.outcome = Outcome::Failed("No reply to 0x3C ending in F7.".into());
+        record.show("Channel 1A: Practice 1A");
+        record.note("Identity reply: f0 00 01 0c 03 f7");
+        record.hints.push("Check the cable.".into());
+
+        let mut terminal = Terminal::new(&b"r\nc\n"[..], Vec::new());
+        assert!(terminal.finished(&record));
+        assert!(!terminal.finished(&record), "end of input stops");
+        let text = String::from_utf8(terminal.into_output()).unwrap();
+        for line in record.result_lines() {
+            assert!(text.contains(&line));
+        }
+        assert!(text.contains("FAILED") && text.contains("Hint: Check the cable."));
+        assert!(!text.contains("0x3C") && !text.contains("f0 00 01") && !text.contains("F7"));
+        assert_eq!(text.matches("[c] Continue").count(), 3);
     }
 }

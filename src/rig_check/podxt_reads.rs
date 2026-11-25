@@ -41,6 +41,9 @@ pub fn read_stored<L: Link>(
 fn record(ctx: &mut Ctx<'_>, location: Location, result: &Result<EditBuffer, String>) {
     match result {
         Ok(tone) => {
+            ctx.rec
+                .result
+                .push(format!("Channel {}: {}", location.label(), tone.name()));
             let hash = ctx.rec.checksum(
                 format!("PODxt channel {} (168 bytes)", location.label()),
                 &tone.raw,

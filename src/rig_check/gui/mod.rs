@@ -12,7 +12,7 @@
 pub mod raster;
 
 use super::catalogue::{self, Risk, SaveNotice, Step, StepId};
-use super::record::{Mode, Outcome, RunRecord, StepRecord};
+use super::record::{Mode, Outcome, RunRecord, StepRecord, plain_result};
 use super::runner::{Answer, Decision, Operator, Question, Retry};
 use crate::ui::chrome::section_panel;
 use crate::ui::theme::{
@@ -64,7 +64,7 @@ impl Prompt {
                 | Prompt::Save { .. }
                 | Prompt::NotSeen { .. }
                 | Prompt::Ask(_)
-        )
+        ) || matches!(self, Prompt::Finished(record) if record.started.is_some())
     }
 }
 
@@ -75,6 +75,7 @@ pub enum Reply {
     Typed(Option<String>),
     Retry(Retry),
     Answer(Answer, String),
+    Continue(bool),
 }
 
 /// The runner's side: blocks on the window's answer. A closed window
@@ -87,7 +88,7 @@ pub struct ChannelOperator {
 }
 
 impl ChannelOperator {
-    fn send(&self, prompt: Prompt) {
+    pub fn send(&self, prompt: Prompt) {
         let _ = self.to_ui.send(prompt);
         if let Some(ctx) = &self.repaint {
             ctx.request_repaint();
@@ -155,8 +156,14 @@ impl Operator for ChannelOperator {
         self.send(Prompt::Progress(text.into()));
     }
 
-    fn finished(&mut self, record: &StepRecord) {
-        self.send(Prompt::Finished(record.clone()));
+    fn finished(&mut self, record: &StepRecord) -> bool {
+        let prompt = Prompt::Finished(record.clone());
+        if prompt.needs_reply() {
+            matches!(self.request(prompt), Some(Reply::Continue(true)))
+        } else {
+            self.send(prompt);
+            true
+        }
     }
 
     fn stop_requested(&self) -> bool {
@@ -171,6 +178,7 @@ pub struct Wizard {
     pub instruction: Option<(StepId, String, String)>,
     pub running: Option<StepId>,
     pub progress: Vec<StepRecord>,
+    reviewing: Option<StepId>,
     pub messages: Vec<String>,
     pub typed: String,
     pub note: String,
@@ -190,6 +198,7 @@ impl Default for Wizard {
             instruction: None,
             running: None,
             progress: Vec::new(),
+            reviewing: None,
             messages: Vec::new(),
             typed: String::new(),
             note: String::new(),
@@ -288,6 +297,10 @@ impl Wizard {
                     self.running = None;
                     self.instruction = None;
                     self.progress.retain(|r| r.id != record.id);
+                    if record.started.is_some() {
+                        self.prompt = Some(Prompt::Finished(record.clone()));
+                        self.focus_armed = true;
+                    }
                     self.progress.push(record);
                 }
                 Prompt::Instruct { step, see, hear } => self.instruction = Some((step, see, hear)),
@@ -315,7 +328,7 @@ impl Wizard {
             });
     }
 
-    fn progress_panel(&self, ui: &mut egui::Ui) {
+    fn progress_panel(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new("Rig Check").size(TITLE).strong().color(TEXT));
         ui.label(
             RichText::new(match self.mode {
@@ -330,7 +343,8 @@ impl Wizard {
         egui::ScrollArea::vertical().show(ui, |ui| {
             for id in catalogue::RUN_ORDER {
                 let step = catalogue::step(*id).expect("catalogue step");
-                let (tag, colour) = match self.progress.iter().find(|r| r.id == *id) {
+                let finished = self.progress.iter().find(|r| r.id == *id);
+                let (tag, colour) = match finished {
                     Some(record) => outcome_tag(&record.outcome),
                     None if self.running == Some(*id) => ("RUN", AMBER),
                     None => ("", DIM),
@@ -340,14 +354,20 @@ impl Wizard {
                         vec2(40.0, 18.0),
                         egui::Label::new(RichText::new(tag).size(12.0).strong().color(colour)),
                     );
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(format!("{} {}", id, step.title))
-                                .size(12.0)
-                                .color(if tag.is_empty() { DIM } else { TEXT }),
-                        )
-                        .truncate(),
-                    );
+                    let title = RichText::new(format!("{} {}", id, step.title))
+                        .size(12.0)
+                        .color(if tag.is_empty() { DIM } else { TEXT });
+                    if finished.is_some() {
+                        let active = matches!(&self.prompt, Some(Prompt::Finished(record)) if record.id == *id);
+                        if ui.add(egui::Button::new(title).truncate().selected(
+                            self.reviewing == Some(*id) || (self.reviewing.is_none() && active)
+                        )).clicked() {
+                            self.reviewing = (!active).then_some(*id);
+                            self.focus_armed = true;
+                        }
+                    } else {
+                        ui.add(egui::Label::new(title).truncate());
+                    }
                 });
             }
         });
@@ -382,6 +402,12 @@ impl Wizard {
             });
             return;
         }
+        if let Some(id) = self.reviewing
+            && let Some(record) = self.progress.iter().find(|record| record.id == id).cloned()
+        {
+            self.result(ui, &record, false);
+            return;
+        }
         if let Some((step, see, hear)) = self.instruction.clone()
             && self.prompt.is_none()
         {
@@ -395,7 +421,7 @@ impl Wizard {
             ui.add_space(SPACE_12);
             big(ui, "HEAR ", &hear);
             ui.add_space(SPACE_16);
-            ui.label(RichText::new("Nothing is sent to your rig while Rig Check listens. When it sees your action, this step completes by itself; the next step still asks you first.").size(BODY).color(MUTED));
+            ui.label(RichText::new("Nothing is sent to your rig while Rig Check listens. When it sees your action, the result appears and waits for you to continue.").size(BODY).color(MUTED));
             if button(ui, "Stop", true).clicked() {
                 self.stop.store(true, Ordering::Relaxed);
             }
@@ -408,9 +434,60 @@ impl Wizard {
             Some(Prompt::Save { text, confirmation }) => self.save(ui, &text, &confirmation),
             Some(Prompt::NotSeen { step, what }) => self.not_seen(ui, step, &what),
             Some(Prompt::Ask(question)) => self.question(ui, &question),
+            Some(Prompt::Finished(record)) => self.result(ui, &record, true),
             Some(Prompt::Done { run, report, path }) => self.summary(ui, &run, &report, &path),
             Some(_) => {}
         }
+    }
+
+    fn result(&mut self, ui: &mut egui::Ui, record: &StepRecord, awaiting: bool) {
+        let (_, colour) = outcome_tag(&record.outcome);
+        ui.label(
+            RichText::new(format!("Step {} result", record.id))
+                .size(SECTION)
+                .color(MUTED),
+        );
+        ui.label(
+            RichText::new(record.title)
+                .size(TITLE + 6.0)
+                .strong()
+                .color(TEXT),
+        );
+        ui.label(
+            RichText::new(record.outcome.label())
+                .size(SECTION)
+                .strong()
+                .color(colour),
+        );
+        let lines = record.result_lines();
+        if !lines.is_empty() {
+            ui.add_space(SPACE_8);
+            section_panel(ui, "What Rig Check found", |ui| {
+                for line in &lines {
+                    ui.label(RichText::new(line).size(SECTION).color(TEXT));
+                }
+            });
+        }
+        ui.add_space(SPACE_16);
+        ui.horizontal(|ui| {
+            if awaiting {
+                let next = button(ui, "Continue", true);
+                self.focus_once(&next);
+                let stop = button(ui, "Stop", true);
+                if next.clicked() {
+                    self.reply(Reply::Continue(true));
+                } else if stop.clicked() {
+                    self.reply(Reply::Continue(false));
+                }
+            } else {
+                let back = button(ui, "Back", true);
+                self.focus_once(&back);
+                if back.clicked() {
+                    self.reviewing = None;
+                    self.focus_armed = true;
+                }
+            }
+        });
     }
 
     fn waiting(&mut self, ui: &mut egui::Ui) {
@@ -433,7 +510,7 @@ impl Wizard {
             }
         }
         for line in self.messages.iter().rev().take(5) {
-            ui.label(RichText::new(line).size(BODY).color(MUTED));
+            ui.label(RichText::new(plain_result(line)).size(BODY).color(MUTED));
         }
     }
 
@@ -676,7 +753,11 @@ impl Wizard {
             .color(TEXT),
         );
         section_panel(ui, "Your rig", |ui| {
-            ui.label(RichText::new(&run.rig_state).size(BODY + 1.0).color(TEXT));
+            ui.label(
+                RichText::new(plain_result(&run.rig_state))
+                    .size(BODY + 1.0)
+                    .color(TEXT),
+            );
         });
         ui.add_space(SPACE_8);
         ui.label(
@@ -690,9 +771,9 @@ impl Wizard {
             let preview = button(
                 ui,
                 if self.preview {
-                    "Hide report"
+                    "Hide results"
                 } else {
-                    "Preview report"
+                    "Preview results"
                 },
                 true,
             );
@@ -716,7 +797,21 @@ impl Wizard {
                     egui::ScrollArea::vertical()
                         .max_height(360.0)
                         .show(ui, |ui| {
-                            ui.label(RichText::new(report).monospace().size(12.0).color(TEXT));
+                            for record in run.steps.iter().filter(|record| record.started.is_some())
+                            {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{} {} — {}",
+                                        record.id,
+                                        record.title,
+                                        record.outcome.label()
+                                    ))
+                                    .strong(),
+                                );
+                                for line in record.result_lines() {
+                                    ui.label(line);
+                                }
+                            }
                         });
                 });
         }
@@ -869,10 +964,15 @@ pub fn mockup_states() -> Vec<(&'static str, Wizard)> {
             10,
         ),
     ));
+    let mut record = StepRecord::new(StepId(2, 3));
+    record.started = Some("2026-11-25 22:02:00 UTC".into());
+    record.outcome = Outcome::Passed;
+    record.show("Channel 1A: Practice 1A");
     let mut run = RunRecord::new(Mode::Practice, "2026-11-25 22:00:00 UTC".into());
     for record in &done {
         *run.step_mut(record.id) = record.clone();
     }
+    *run.step_mut(record.id) = record.clone();
     run.rig_state = "The PODxt Live tone is the starting tone (all 168 bytes). The Variax plays the starting program (1,092 words). Guitar interface released. Interface 1 driver: snd-usb-variax (expected).".into();
     run.finished = true;
     let report = super::report::render_plain(&run, "2026-11-25 22:05:00 UTC");
@@ -886,6 +986,10 @@ pub fn mockup_states() -> Vec<(&'static str, Wizard)> {
     );
     summary.preview = true;
     states.push(("10-summary-preview", summary));
+    let mut result = with_progress(practice(Some(Prompt::Finished(record.clone()))), 10);
+    result.progress.push(record);
+    result.focus_armed = true;
+    states.push(("11-step-result", result));
     states
 }
 

@@ -160,7 +160,7 @@ fn computer_system(ctx: &mut Ctx<'_>) -> Result<(), String> {
             .note("Practice mode: this is a simulated computer, not this one.");
     }
     for (name, value) in lines {
-        ctx.rec.note(format!("{name}: {value}"));
+        ctx.rec.show(format!("{name}: {value}"));
         ctx.data.computer.push((name, value));
     }
     Ok(())
@@ -196,7 +196,7 @@ fn engine_check(ctx: &mut Ctx<'_>) -> Result<(), String> {
         cases.len()
     ));
     for line in &summary {
-        ctx.rec.note(line.clone());
+        ctx.rec.show(line.clone());
     }
     for result in &results {
         if let Some(hash) = &result.actual_sha256
@@ -265,6 +265,24 @@ fn computer_usb(ctx: &mut Ctx<'_>) -> Result<(), String> {
         ctx.rec.note(format!("{name}: {value}"));
         ctx.data.computer.push((name.clone(), value.clone()));
     }
+    if cfg!(target_os = "linux") || ctx.mode == Mode::Practice {
+        ctx.rec
+            .result
+            .push(format!("USB devices: {}", view.devices.len()));
+        for device in &view.devices {
+            ctx.rec.result.push(format!(
+                "Port {}: {}",
+                device.port,
+                device.name.as_deref().unwrap_or("Unnamed USB device")
+            ));
+        }
+    } else {
+        ctx.rec.result.extend(
+            view.lines
+                .iter()
+                .map(|(name, value)| format!("{name}: {value}")),
+        );
+    }
     ctx.data.usb = Some(view);
     Ok(())
 }
@@ -291,7 +309,7 @@ fn podxt_identity(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let verified = podxt_verified(&identity);
     let model = podxt::member_name(identity.member);
     ctx.rec.note(format!("Identity reply: {}", hex(&reply)));
-    ctx.rec.note(format!(
+    ctx.rec.show(format!(
         "{model}, firmware {}{}",
         identity.version_text(),
         if verified {
@@ -318,7 +336,7 @@ fn podxt_current_tone(ctx: &mut Ctx<'_>) -> Result<(), String> {
     #[allow(clippy::redundant_closure)]
     let current = with_podxt(ctx, PODXT_READ, |session| podxt::read_current(session))?;
     let tone = current.tone;
-    ctx.rec.note(format!("Current tone: {}", tone.name()));
+    ctx.rec.show(format!("Current tone: {}", tone.name()));
     for line in tone.describe() {
         ctx.rec.note(format!("  {line}"));
     }
@@ -336,14 +354,14 @@ fn podxt_library(ctx: &mut Ctx<'_>) -> Result<(), String> {
         session.log_packets = false;
         podxt::read_library(session, &BankKind::ALL, |_| {})
     })?;
+    ctx.rec
+        .show(format!("Read {} of 299 entries.", library.entries.len()));
     if let Some(reason) = &library.stopped {
         return Err(format!(
             "The library read stopped after {} of 299 entries: {reason}",
             library.entries.len()
         ));
     }
-    ctx.rec
-        .note(format!("Read {} of 299 entries.", library.entries.len()));
     let mut all = Vec::new();
     for entry in &library.entries {
         all.extend_from_slice(&entry.tone.raw);
@@ -353,7 +371,7 @@ fn podxt_library(ctx: &mut Ctx<'_>) -> Result<(), String> {
     match &library.after {
         Ok(after) if after.raw == library.before.raw => ctx
             .rec
-            .note("The playing tone is unchanged after the library read."),
+            .show("The playing tone is unchanged after the library read."),
         Ok(_) => return Err("The playing tone changed during the library read.".into()),
         Err(error) => return Err(format!("The closing current-tone read failed: {error}")),
     }
@@ -413,7 +431,7 @@ fn podxt_library(ctx: &mut Ctx<'_>) -> Result<(), String> {
         match matches[..] {
             [channel] => {
                 ctx.rec
-                    .note(format!("Starting channel: {}", channel.label()));
+                    .show(format!("Starting channel: {}", channel.label()));
                 ctx.data.start_channel = Some(channel);
             }
             _ => ctx.rec.note(format!(
@@ -445,7 +463,7 @@ fn variax_identity(ctx: &mut Ctx<'_>) -> Result<(), String> {
         "Identity requests sent: {} (a second one means the first reply packet was lost or the first try was silent).",
         identified.requests
     ));
-    ctx.rec.note(format!(
+    ctx.rec.show(format!(
         "{model}, firmware {}{}",
         identity.version_text(),
         if verified {
@@ -455,7 +473,7 @@ fn variax_identity(ctx: &mut Ctx<'_>) -> Result<(), String> {
         }
     ));
     ctx.rec
-        .note("The VDI link answered through the PODxt Live.");
+        .show("The VDI link answered through the PODxt Live.");
     ctx.data.devices.push((
         "Variax".into(),
         format!(
@@ -473,6 +491,10 @@ fn variax_current_program(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let read = with_variax(ctx, VARIAX_SELECT, |session, stopping| {
         variax_full_read(session, stopping)
     })?;
+    ctx.rec.show(format!(
+        "Progress {} of 35 chunks, 1,092 words, checksum OK.",
+        read.raw_replies.len()
+    ));
     ctx.rec.note(format!(
         "Read {} chunks, 1,092 words. Retries: {}.",
         read.raw_replies.len(),
@@ -515,7 +537,7 @@ fn variax_all_presets(ctx: &mut Ctx<'_>) -> Result<(), String> {
         }
     }
     ctx.rec
-        .note(format!("Read {} of 60 presets.", library.len()));
+        .show(format!("Read {} of 60 presets.", library.len()));
     for (preset, words) in &library {
         let hash = ctx.rec.checksum(
             format!("Variax {} (1,092 words)", preset_label(*preset)),
@@ -535,13 +557,13 @@ fn variax_all_presets(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let back = match matches[..] {
         [preset] => {
             ctx.rec
-                .note(format!("Starting preset: {}", preset_label(preset)));
+                .show(format!("Starting preset: {}", preset_label(preset)));
             ctx.data.start_preset = Some(preset);
             let read = with_variax(ctx, VARIAX_SELECT, |session, stopping| {
                 variax_read_preset(session, preset, stopping)
             })?;
             if same_program(&read.words, &start) {
-                ctx.rec.note(format!(
+                ctx.rec.show(format!(
                     "Back on {}: all 1,092 words match the start.",
                     preset_label(preset)
                 ));
@@ -591,7 +613,7 @@ fn variax_all_presets(ctx: &mut Ctx<'_>) -> Result<(), String> {
 fn rig_guard(ctx: &mut Ctx<'_>) -> Result<(), String> {
     if !ctx.data.touched_podxt && !ctx.data.touched_variax && !ctx.port.variax_claimed() {
         ctx.rec
-            .note("Rig: no device step ran; the devices were not touched.");
+            .show("Rig: no device step ran; the devices were not touched.");
         return Ok(());
     }
     let mut problems = Vec::new();
@@ -601,9 +623,9 @@ fn rig_guard(ctx: &mut Ctx<'_>) -> Result<(), String> {
         })?;
         if now.raw == start.raw {
             ctx.rec
-                .note("Rig: the PODxt Live tone is the starting tone (all 168 bytes).");
+                .show("Rig: the PODxt Live tone is the starting tone (all 168 bytes).");
         } else if now.same_tone(&start) {
-            ctx.rec.note(format!(
+            ctx.rec.show(format!(
                 "Rig: the PODxt Live tone is the starting tone; only live pedal/knob values differ {:?}.",
                 start.differences(&now)
             ));
@@ -612,7 +634,7 @@ fn rig_guard(ctx: &mut Ctx<'_>) -> Result<(), String> {
                 podxt::switch_channel(session, channel, None, false)
             })?;
             if switch.switched() && switch.target_stored.same_tone(&start) {
-                ctx.rec.note(format!(
+                ctx.rec.show(format!(
                     "Rig: the PODxt Live was switched back to channel {} and verified.",
                     channel.label()
                 ));
@@ -630,7 +652,7 @@ fn rig_guard(ctx: &mut Ctx<'_>) -> Result<(), String> {
         }
     } else if ctx.data.touched_podxt {
         ctx.rec
-            .note("Rig: the PODxt Live starting tone was not recorded (2.2 did not pass).");
+            .show("Rig: the PODxt Live starting tone was not recorded (2.2 did not pass).");
     }
     if let Some(start) = ctx.data.start_program {
         let now = with_variax(ctx, VARIAX_SELECT, |session, stopping| {
@@ -641,13 +663,13 @@ fn rig_guard(ctx: &mut Ctx<'_>) -> Result<(), String> {
         })?;
         if same_program(&now.words, &start) {
             ctx.rec
-                .note("Rig: the Variax plays the starting program (1,092 words).");
+                .show("Rig: the Variax plays the starting program (1,092 words).");
         } else if let Some(preset) = ctx.data.start_preset {
             let back = with_variax(ctx, VARIAX_SELECT, |session, stopping| {
                 variax_read_preset(session, preset, stopping)
             })?;
             if same_program(&back.words, &start) {
-                ctx.rec.note(format!(
+                ctx.rec.show(format!(
                     "Rig: the Variax was switched back to {} and verified.",
                     preset_label(preset)
                 ));
@@ -665,13 +687,13 @@ fn rig_guard(ctx: &mut Ctx<'_>) -> Result<(), String> {
         }
     } else if ctx.data.touched_variax {
         ctx.rec
-            .note("Rig: the Variax starting program was not recorded (3.3 did not pass).");
+            .show("Rig: the Variax starting program was not recorded (3.3 did not pass).");
     }
     if ctx.port.variax_claimed() {
         match ctx.port.release_variax() {
             Ok(lines) => {
                 for line in lines {
-                    ctx.rec.note(format!("Rig: {line}"));
+                    ctx.rec.show(format!("Rig: {line}"));
                 }
             }
             Err(error) => problems.push(error),

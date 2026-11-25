@@ -90,7 +90,7 @@ pub fn vdi_replug(ctx: &mut Ctx<'_>) -> Result<(), String> {
         "Unplug the VDI cable from the guitar now.",
         UserAction::UnplugVdi,
     )?;
-    ctx.rec.note(format!(
+    ctx.rec.show(format!(
         "The PODxt Live reported the guitar disconnected (link time {:.3} s).",
         gone.as_secs_f64()
     ));
@@ -100,7 +100,7 @@ pub fn vdi_replug(ctx: &mut Ctx<'_>) -> Result<(), String> {
         "Plug the VDI cable back into the guitar.",
         UserAction::ReplugVdi,
     )?;
-    ctx.rec.note(format!(
+    ctx.rec.show(format!(
         "The PODxt Live reported the guitar connected again (link time {:.3} s).",
         back.as_secs_f64()
     ));
@@ -113,7 +113,7 @@ pub fn vdi_replug(ctx: &mut Ctx<'_>) -> Result<(), String> {
         .variax_identity
         .as_ref()
         .is_some_and(|before| *before == identified.identity);
-    ctx.rec.note(format!(
+    ctx.rec.show(format!(
         "Identity after the replug: firmware {}, {}.",
         identified.identity.version_text(),
         if same {
@@ -279,7 +279,7 @@ fn restore(ctx: &mut Ctx<'_>, state: &RigState) -> Result<(), String> {
         })?;
         let hash = sha256_hex(&tone.raw);
         if Some(&hash) == state.podxt_tone_sha256.as_ref() {
-            ctx.rec.note(format!(
+            ctx.rec.show(format!(
                 "Rig: the PODxt Live is back on channel {} and its tone matches the start.",
                 channel.label()
             ));
@@ -297,7 +297,7 @@ fn restore(ctx: &mut Ctx<'_>, state: &RigState) -> Result<(), String> {
             variax_read_preset(session, preset, &|| false)
         })?;
         if Some(match_hash(&read.words)) == state.variax_match_sha256 {
-            ctx.rec.note(format!(
+            ctx.rec.show(format!(
                 "Rig: the Variax is back on {} and its program matches the start.",
                 preset_label(preset)
             ));
@@ -312,7 +312,7 @@ fn restore(ctx: &mut Ctx<'_>, state: &RigState) -> Result<(), String> {
         match ctx.port.release_variax() {
             Ok(lines) => lines
                 .into_iter()
-                .for_each(|l| ctx.rec.note(format!("Rig: {l}"))),
+                .for_each(|l| ctx.rec.show(format!("Rig: {l}"))),
             Err(error) => problems.push(error),
         }
     }
@@ -379,8 +379,8 @@ pub fn offer_restore(
         .join(" ");
     *run.step_mut(RIG_GUARD) = rec.clone();
     run.finished = true;
-    op.finished(&rec);
     let _ = sink.update(&run);
+    op.finished(&rec);
     run
 }
 

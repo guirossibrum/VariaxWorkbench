@@ -66,7 +66,7 @@ pub fn variax_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let differences = word_differences(&start, &back);
     if differences.is_empty() {
         ctx.rec
-            .note("Sent and read back: all 1,092 words identical. No store command was sent.");
+            .show("Sent and read back: all 1,092 words identical. No store command was sent.");
         Ok(())
     } else {
         Err(format!(
@@ -171,7 +171,7 @@ pub fn variax_test_model(ctx: &mut Ctx<'_>) -> Result<(), String> {
                 format!("{} — note: {note}", answer.label())
             },
         ));
-        ctx.rec.note(format!(
+        ctx.rec.show(format!(
             "{name}: you answered {} (the byte check already proves the upload).",
             answer.label()
         ));
@@ -187,7 +187,7 @@ pub fn variax_test_model(ctx: &mut Ctx<'_>) -> Result<(), String> {
     });
     no_store_sent(ctx)?;
     match returned {
-        Ok(returned) if same_program(&returned.words, &start) => ctx.rec.note(format!(
+        Ok(returned) if same_program(&returned.words, &start) => ctx.rec.show(format!(
             "Back on {}: all 1,092 words match the start. Nothing was saved.",
             preset_label(preset)
         )),

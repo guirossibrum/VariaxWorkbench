@@ -17,7 +17,8 @@ theme (`src/shared/ui/theme.rs`) and `section_panel`. No Line 6 art is used.
 | Didn't see it: Skip (focused) / Try again | [07-not-seen.png](mockups/07-not-seen.png) |
 | Listening question: Yes / No / Not sure (focused) and a note, with what the byte checks proved | [08-listening-question.png](mockups/08-listening-question.png) |
 | Save notice naming the slot and the backup; Save stays disabled until the confirmation is typed exactly | [09-save-notice.png](mockups/09-save-notice.png) |
-| Summary with rig state, report preview and Save report | [10-summary-preview.png](mockups/10-summary-preview.png) |
+| Summary with rig state, results preview and Save report | [10-summary-preview.png](mockups/10-summary-preview.png) |
+| Step result with the channel name, a display check, Continue and Stop | [11-step-result.png](mockups/11-step-result.png) |
 
 ## Rules the design follows
 
@@ -27,6 +28,16 @@ theme (`src/shared/ui/theme.rs`) and `section_panel`. No Line 6 art is used.
   focused one. On a step card, R = Run, S = Skip, Q = Stop the run. The
   start notice focuses Quit; the save notice focuses Skip and its Save button
   is disabled until the typed confirmation matches.
+- After a step runs, the result screen shows its outcome and the values
+  named on the **SEE** card. A failure includes the reason and any known
+  hint. Display checks ask the person to look and require no answer.
+- **Continue** starts with focus on the result screen. It returns to the next
+  card, which still requires its own Run choice. **Stop** ends the run and
+  still offers the closing rig check.
+- Selecting a finished step in the left list reopens its result. **Back**
+  returns to the pending screen without continuing the run.
+- The terminal uses the same result text. Raw bytes and full hashes stay
+  in the saved report. The summary preview shows the plain step results.
 - **HEAR / SEE** are 34 px, readable from where the guitar is.
 - Status is never colour alone: the progress list shows PASS / FAIL / SKIP /
   STOP / N/A / RUN as words.

@@ -100,8 +100,9 @@ impl Operator for Script {
 
     fn progress(&mut self, _: &str) {}
 
-    fn finished(&mut self, record: &StepRecord) {
+    fn finished(&mut self, record: &StepRecord) -> bool {
         self.finished.push((record.id, record.outcome.clone()));
+        true
     }
 
     fn stop_requested(&self) -> bool {

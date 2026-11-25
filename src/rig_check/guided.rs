@@ -144,7 +144,7 @@ pub fn selector(ctx: &mut Ctx<'_>) -> Result<(), String> {
         .find(|(p, _)| *p == target)
         .map(|(_, w)| *w);
     if backup.is_some_and(|b| same_program(&read.words, &b)) {
-        ctx.rec.note(format!(
+        ctx.rec.show(format!(
             "{name} plays the program from the 3.4 backup (1,092 words)."
         ));
     } else {
@@ -168,7 +168,7 @@ pub fn selector(ctx: &mut Ctx<'_>) -> Result<(), String> {
             "Back on {start_name}, but the program differs from the start."
         ));
     }
-    ctx.rec.note(format!(
+    ctx.rec.show(format!(
         "Back on {start_name}: all 1,092 words match the start."
     ));
     Ok(())
@@ -233,7 +233,7 @@ pub fn knobs(ctx: &mut Ctx<'_>) -> Result<(), String> {
             Ok(seen.then_some((volume, tone)))
         },
     )?;
-    ctx.rec.note(format!(
+    ctx.rec.show(format!(
         "Both knobs swept: volume {}, tone {}.",
         volume.text(),
         tone.text()
@@ -312,7 +312,7 @@ pub fn footswitch(ctx: &mut Ctx<'_>) -> Result<(), String> {
             target.label()
         ));
     }
-    ctx.rec.note(format!(
+    ctx.rec.show(format!(
         "Channel {} plays its stored tone {:?}.",
         target.label(),
         now.name()
@@ -334,7 +334,7 @@ pub fn footswitch(ctx: &mut Ctx<'_>) -> Result<(), String> {
             start.label()
         ));
     }
-    ctx.rec.note(format!(
+    ctx.rec.show(format!(
         "Back on channel {}: the starting tone.",
         start.label()
     ));
@@ -364,7 +364,7 @@ pub fn pedal(ctx: &mut Ctx<'_>) -> Result<(), String> {
             Ok(seen.then_some(range))
         },
     )?;
-    ctx.rec.note(format!("Pedal range seen: {}.", range.text()));
+    ctx.rec.show(format!("Pedal range seen: {}.", range.text()));
     Ok(())
 }
 

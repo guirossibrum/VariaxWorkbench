@@ -47,7 +47,7 @@ pub fn current_settings(ctx: &mut Ctx<'_>) -> Result<(), String> {
         variax::read_current_checked_retrying_silence(session, IDENTITY_RETRY_DELAY, |_| Ok(()))
     })?;
     let metadata = current.metadata;
-    ctx.rec.note(format!("Preset name: {:?}", metadata.name));
+    ctx.rec.show(format!("Preset name: {:?}", metadata.name));
     for (index, reply) in current.replies.iter().enumerate() {
         ctx.rec.note(format!(
             "Reply {} ({} bytes): {}",
@@ -101,6 +101,7 @@ fn read_and_return(ctx: &mut Ctx<'_>, presets: &[Preset]) -> Result<(), String> 
         .ok_or("The starting preset is unknown (3.4).")?;
     let start_program = ctx.data.start_program.ok_or("No starting program (3.3).")?;
     let mut problems = Vec::new();
+    let mut read_count = 0;
     for &preset in presets {
         if ctx.stopping() {
             problems.push("Stopped by you.".to_string());
@@ -111,11 +112,21 @@ fn read_and_return(ctx: &mut Ctx<'_>, presets: &[Preset]) -> Result<(), String> 
         });
         match read {
             Ok(read) => {
+                read_count += 1;
                 let hash = ctx.rec.checksum(
                     format!("Variax {} (1,092 words)", preset_label(preset)),
                     &program_bytes(&read.words),
                 );
                 let matches = backup_of(ctx, preset).is_some_and(|b| b == read.words);
+                ctx.rec.result.push(format!(
+                    "Read {}: {}.",
+                    preset_label(preset),
+                    if matches {
+                        "matches the backup"
+                    } else {
+                        "differs from the backup"
+                    }
+                ));
                 ctx.rec.note(format!(
                     "{}: SHA-256 {}, {}",
                     preset_label(preset),
@@ -136,11 +147,14 @@ fn read_and_return(ctx: &mut Ctx<'_>, presets: &[Preset]) -> Result<(), String> 
             }
         }
     }
+    ctx.rec
+        .result
+        .push(format!("Read {read_count} of {} presets.", presets.len()));
     let back = with_variax(ctx, VARIAX_SELECT, |session, stopping| {
         variax_read_preset(session, start, stopping)
     });
     match back {
-        Ok(back) if same_program(&back.words, &start_program) => ctx.rec.note(format!(
+        Ok(back) if same_program(&back.words, &start_program) => ctx.rec.show(format!(
             "Back on {}: all 1,092 words match the start.",
             preset_label(start)
         )),
