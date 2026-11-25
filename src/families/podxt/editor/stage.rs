@@ -274,13 +274,23 @@ impl PodxtEditor {
                     .map(|tone| (index, tone, self.parameter_panel.packs))
             });
             #[cfg(feature = "usb")]
-            let selected = self
-                .stage
-                .view_current
-                .then(|| self.live.stage_tone())
-                .flatten()
-                .map(|(tone, packs)| (CURRENT_STAGE, tone, packs))
-                .or(selected);
+            let selected = if self.stage_is_current() {
+                match self.live.stage_tone() {
+                    Ok(Some((tone, packs))) => Some((CURRENT_STAGE, tone, packs)),
+                    Ok(None) => {
+                        self.stage_connection(ui, true);
+                        ui.label("Reading the playing tone…");
+                        return;
+                    }
+                    Err(error) => {
+                        self.stage_connection(ui, true);
+                        ui.colored_label(theme::TEXT, error);
+                        return;
+                    }
+                }
+            } else {
+                selected
+            };
             if let Some((index, tone, packs)) = selected {
                 self.stage_header(ui, index, &tone);
                 let rows = tone.table_controls(packs);
@@ -404,7 +414,9 @@ impl PodxtEditor {
             #[cfg(feature = "usb")]
             self.live.toolbar(ui, &mut self.stage.view_current);
             #[cfg(feature = "usb")]
-            self.live.stage_status(ui);
+            if self.stage_is_current() {
+                self.live.stage_status(ui);
+            }
         });
     }
 
@@ -416,16 +428,16 @@ impl PodxtEditor {
         }
     }
 
-    fn stage_is_current(&self) -> bool {
+    pub(super) fn stage_is_current(&self) -> bool {
         #[cfg(feature = "usb")]
         {
-            self.stage.view_current && self.live.has_current()
+            self.stage.view_current && self.live.connected()
         }
         #[cfg(not(feature = "usb"))]
         false
     }
 
-    fn stage_header(&mut self, ui: &mut egui::Ui, index: usize, tone: &PodTone) {
+    fn stage_connection(&self, ui: &mut egui::Ui, current: bool) {
         ui.horizontal_wrapped(|ui| {
             match &self.stage.connection {
                 None => {
@@ -440,9 +452,13 @@ impl PodxtEditor {
                 Some((tabs::Connection::Present, detection::DeviceSupport::Verified(firmware))) => {
                     let status = format!("Connected · firmware {firmware}");
                     #[cfg(feature = "usb")]
-                    let status = self.live.playing_channel().map_or(status.clone(), |ch| {
-                        format!("{status} · Channel {}", ch.label())
-                    });
+                    let status = self
+                        .live
+                        .playing_channel()
+                        .filter(|_| current)
+                        .map_or(status.clone(), |ch| {
+                            format!("{status} · Channel {}", ch.label())
+                        });
                     controls::readout(ui, &status);
                 }
                 Some((tabs::Connection::Present, detection::DeviceSupport::UsbOnly)) => {
@@ -452,7 +468,7 @@ impl PodxtEditor {
                     chrome::status_chip(ui, chrome::LinkState::IdentityPending);
                 }
             }
-            let source = if index == CURRENT_STAGE {
+            let source = if current {
                 #[cfg(feature = "usb")]
                 if self.live.live_editing {
                     "Live editing · edit buffer"
@@ -474,6 +490,10 @@ impl PodxtEditor {
                 controls::readout(ui, "No live audio");
             });
         });
+    }
+
+    fn stage_header(&mut self, ui: &mut egui::Ui, index: usize, tone: &PodTone) {
+        self.stage_connection(ui, index == CURRENT_STAGE);
         if index == CURRENT_STAGE {
             ui.horizontal_wrapped(|ui| {
                 ui.strong(tone.name());
@@ -580,6 +600,7 @@ impl PodxtEditor {
                     }
                 });
             let mut selected = None;
+            let mut file_copy = None;
             egui::ScrollArea::vertical().id_salt("saved-tones").max_height(330.0).show(ui, |ui| {
                 for (slot, dump) in &rows {
                     #[cfg(feature = "usb")]
@@ -597,18 +618,30 @@ impl PodxtEditor {
                         response.scroll_to_me(Some(egui::Align::Center));
                         self.stage.library_highlight = Some(*slot);
                     }
+                    response.context_menu(|ui| {
+                        if ui.button("Open as file copy").clicked() {
+                            file_copy = Some((*slot, dump));
+                            ui.close();
+                        }
+                    });
                     if response.clicked() {
                         selected = Some((*slot, dump));
                     }
                 }
             });
-            if let Some((slot, dump)) = selected {
-                #[cfg(feature = "usb")]
-                if on_device && self.live.live_editing && slot.kind() == BankKind::Tones {
-                    self.live.recall(slot, ui.ctx());
-                    self.stage.view_current = true;
-                    return;
-                }
+            #[cfg(feature = "usb")]
+            if let Some((slot, _)) = selected
+                && on_device
+                && self.live.live_editing
+                && slot.kind() == BankKind::Tones
+            {
+                self.live.recall(slot, ui.ctx());
+                self.stage.view_current = true;
+                return;
+            }
+            if let Some((slot, dump)) =
+                file_copy.or_else(|| (!current).then_some(selected).flatten())
+            {
                 if let Some(tone) = decode_tone(dump, slot.kind()) {
                     self.open_stage_copy(
                         tone,
@@ -619,6 +652,9 @@ impl PodxtEditor {
                         },
                     );
                 }
+            } else if selected.is_some() {
+                self.pod_message =
+                    "Live editing is off. Right-click a channel to open a file copy.".into();
             }
             if !current && self.pod_library.len() > 1 {
                 ui.collapsing("Open files", |ui| self.stage_library(ui));

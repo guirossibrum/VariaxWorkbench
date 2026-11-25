@@ -3888,6 +3888,10 @@ impl FamilyTab for PodxtEditor {
         self.pod_quit_dialog(services, ctx);
     }
     fn status(&self) -> (&str, Option<&str>) {
+        #[cfg(feature = "usb")]
+        if self.stage_is_current() {
+            return (self.live.stage_footer(), None);
+        }
         (&self.pod_message, None)
     }
     fn save_copy(&mut self, _ctx: &egui::Context, services: &mut EditorServices<'_>) {

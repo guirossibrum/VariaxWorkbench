@@ -487,13 +487,25 @@ impl LivePanel {
         self.snapshot.tone.is_some()
     }
 
-    pub(super) fn stage_tone(&self) -> Option<(pod_preset::PodTone, u8)> {
-        let dump = self.snapshot.tone.as_ref()?;
-        let payload = self.editor.stage_payload(dump)?;
+    pub(super) fn stage_tone(&self) -> Result<Option<(pod_preset::PodTone, u8)>, String> {
+        let Some(dump) = self.snapshot.tone.as_ref() else {
+            return Ok(None);
+        };
+        let payload = self
+            .editor
+            .stage_payload(dump)
+            .ok_or_else(|| format!("{} · The edit buffer could not be decoded.", dump.name()))?;
         let tone =
             pod_preset::PodTone::from_podxt_payload(&payload, pod_preset::ContainerKind::L6pa)
-                .ok()?;
-        Some((tone, self.snapshot.packs.map_or(0, |packs| packs.0)))
+                .map_err(|error| format!("{} · {}", dump.name(), error.detail()))?;
+        Ok(Some((tone, self.snapshot.packs.map_or(0, |packs| packs.0))))
+    }
+
+    pub(super) fn stage_footer(&self) -> &str {
+        self.editor
+            .status_text()
+            .or(self.message.as_deref())
+            .unwrap_or("Current POD tone")
     }
 
     pub(super) fn has_library_bank(&self, bank: BankKind) -> bool {

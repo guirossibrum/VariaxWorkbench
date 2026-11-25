@@ -465,6 +465,50 @@ fn connected_stage_uses_current_tone_channel_and_librarian_and_follows_updates()
 }
 
 #[test]
+fn playing_view_does_not_substitute_a_file_when_the_dump_is_unreadable() {
+    let ctx = egui::Context::default();
+    let (mut app, _) = connected_fixture(&ctx);
+    let editor = app.podxt_mut();
+    let file = pod_preset::PodTone::new_podxt_tone("User").unwrap();
+    editor.import_pod_document(file.into_bytes());
+    let slot = Location::new(BankKind::Tones, 1).unwrap();
+    let mut current = valid_dump("Class A-30 TB");
+    current.raw[6] = 2;
+    editor
+        .live
+        .snapshot
+        .apply(ReadUpdate::Channel(slot), Instant::now());
+    editor
+        .live
+        .snapshot
+        .apply(ReadUpdate::Current(current), Instant::now());
+    let visible = stage_frame(&ctx, &mut app);
+    assert!(
+        visible.contains("Channel 1B") && visible.contains("Class A-30 TB"),
+        "{visible}"
+    );
+    assert!(
+        visible.contains("edit buffer could not be decoded"),
+        "{visible}"
+    );
+    assert!(
+        !visible.contains("Loaded User") && !visible.contains("Plexi 45"),
+        "{visible}"
+    );
+
+    app.podxt_mut().live.snapshot.apply(
+        ReadUpdate::Current(valid_dump("Class A-30 TB")),
+        Instant::now(),
+    );
+    let visible = stage_frame(&ctx, &mut app);
+    assert!(
+        visible.contains("Class A-30 TB") && visible.contains("Amp ·"),
+        "{visible}"
+    );
+    assert!(!visible.contains("Loaded User"), "{visible}");
+}
+
+#[test]
 fn disconnected_stage_loads_backup_and_no_backup_shows_labelled_default() {
     let ctx = egui::Context::default();
     let (mut app, presence) = connected_fixture(&ctx);

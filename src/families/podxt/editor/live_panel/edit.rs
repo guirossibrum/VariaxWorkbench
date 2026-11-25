@@ -569,6 +569,17 @@ impl LiveEditor {
         }
     }
 
+    pub(super) fn status_text(&self) -> Option<&str> {
+        self.worker
+            .as_ref()
+            .map(|worker| worker.action.label())
+            .or_else(|| {
+                self.message.as_ref().map(|result| match result {
+                    Ok(message) | Err(message) => message.as_str(),
+                })
+            })
+    }
+
     pub(super) fn status(&self, ui: &mut egui::Ui) {
         if let Some(worker) = &self.worker {
             ui.weak(format!("{}…", worker.action.label()));
