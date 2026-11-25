@@ -173,8 +173,17 @@ impl GalleryState {
 
 impl GalleryState {
     fn body_gallery(&mut self, ui: &mut egui::Ui) {
-        caption(ui, "Body");
-        ui.checkbox(&mut self.show_outline, "Outline");
+        ui.vertical(|ui| {
+            caption(ui, "Body");
+            ui.checkbox(&mut self.show_outline, "Outline");
+            for (index, label) in ["Pickup 1", "Pickup 2"].into_iter().enumerate() {
+                ui.selectable_value(
+                    &mut self.selected_pickup,
+                    index,
+                    RichText::new(label).size(BODY),
+                );
+            }
+        });
         let pickups = [
             PickupSprite {
                 position_inches: self.pickup_position[0],

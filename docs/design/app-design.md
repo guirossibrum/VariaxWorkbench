@@ -221,10 +221,10 @@ Pickup sprites are `spank-pickup.png`, placed with the editor's painter.
 Horizontal center is `68 + 318 * ((position clamped to 0.1…9.5) - 0.1) / 9.4`
 and vertical center is `215`, both in the body image's pixel space, then
 scaled with the image. Pickup 1 sits at 1.80" and is rotated 8.7°. Pickup 2
-sits at 3.88" and is rotated 0.0°. The selected pickup is drawn last. On the
-Pickups section, pickup 1 is selected and drawn with an amber highlight.
-Body type and Controls draw both sprites without that highlight. The body
-photo stays large on every section.
+sits at 3.88" and is rotated 0.0°. The selected pickup is drawn last, in
+front. The body has no selection box. The Pickup 1 and Pickup 2 controls
+show which pickup is selected. Body type and Controls draw both sprites
+with none selected. The body photo stays large on every section.
 
 Position, angle, and level are a slider plus the formatted field. The slider
 uses the edit domain: position 0.1–9.5 inches, angle −45–45 degrees, level
