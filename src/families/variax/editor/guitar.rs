@@ -458,7 +458,7 @@ impl VariaxEditor {
                 .selection()
                 .is_some_and(|(bank, slot)| document.slot_is_unsent(bank, slot))
             {
-                ui.label("Not sent to guitar");
+                ui.label("Modified · not stored on guitar");
             }
             ui.add_visible(
                 document.is_dirty(),
@@ -979,7 +979,7 @@ fn bank_slot(
         description.push_str(" · differs from the last saved file");
     }
     if unsent {
-        description.push_str(" · not sent to guitar");
+        description.push_str(" · modified since the library was opened");
     }
     response.widget_info(|| {
         egui::WidgetInfo::selected(

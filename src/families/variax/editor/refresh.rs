@@ -119,6 +119,7 @@ impl VariaxEditor {
     fn request_refresh(&mut self, read: ReadLibrary) {
         if self.is_reading()
             || self.follow.busy()
+            || self.live_edit.busy()
             || self.follow.disconnected()
             || self.blocking_prompt()
             || self.refresh.attachment.is_none()
@@ -178,6 +179,7 @@ impl VariaxEditor {
             || !self.download_target_ready()
             || self.is_reading()
             || self.follow.busy()
+            || self.live_edit.busy()
             || self.blocking_prompt()
             || self.dirty()
             || self.opening_file

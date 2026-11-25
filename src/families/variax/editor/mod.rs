@@ -9,6 +9,8 @@ mod guitar;
 mod html_export;
 #[cfg(feature = "usb")]
 mod live_attachment;
+#[cfg(feature = "usb")]
+mod live_edit;
 mod new_files;
 #[cfg(feature = "usb")]
 mod refresh;
@@ -125,6 +127,8 @@ pub(super) struct VariaxEditor {
     refresh: refresh::Refresh,
     #[cfg(feature = "usb")]
     follow: follow::Follow,
+    #[cfg(feature = "usb")]
+    live_edit: live_edit::LiveEdit,
     catalog: Vec<ModelArt>,
     artwork: PathBuf,
     pub(super) textures: HashMap<String, TextureHandle>,
@@ -215,6 +219,8 @@ impl VariaxEditor {
             refresh: refresh::Refresh::default(),
             #[cfg(feature = "usb")]
             follow: follow::Follow::default(),
+            #[cfg(feature = "usb")]
+            live_edit: live_edit::LiveEdit::default(),
             catalog: load_catalog(),
             artwork,
             textures: HashMap::new(),
@@ -287,37 +293,43 @@ impl VariaxEditor {
             .and_then(|bytes| EditorDocument::from_file_bytes(bytes, path));
         match result {
             Ok(document) => {
-                let parked_library = if document.banks().is_none() {
-                    if self
-                        .document
-                        .as_ref()
-                        .is_some_and(|current| current.banks().is_some())
-                    {
-                        self.document.take().map(|mut library| {
-                            if library.is_dirty() {
-                                library.discard_changes();
-                            }
-                            ParkedLibrary {
-                                document: library,
-                                path: self.source_path.take(),
-                                origin: self.library_origin.take(),
-                            }
-                        })
-                    } else {
-                        self.parked_library.take()
-                    }
-                } else {
-                    None
-                };
-                self.adopt_document(document, Some(path));
-                self.parked_library = parked_library;
+                self.adopt_opened_document(document, Some(path));
                 self.status = format!("Opened {}", path.display());
             }
             Err(error) => self.error = Some(error),
         }
     }
 
+    fn adopt_opened_document(&mut self, document: EditorDocument, path: Option<&Path>) {
+        let parked_library = if document.banks().is_none() {
+            if self
+                .document
+                .as_ref()
+                .is_some_and(|current| current.banks().is_some())
+            {
+                self.document.take().map(|mut library| {
+                    if library.is_dirty() {
+                        library.discard_changes();
+                    }
+                    ParkedLibrary {
+                        document: library,
+                        path: self.source_path.take(),
+                        origin: self.library_origin.take(),
+                    }
+                })
+            } else {
+                self.parked_library.take()
+            }
+        } else {
+            None
+        };
+        self.adopt_document(document, path);
+        self.parked_library = parked_library;
+    }
+
     fn adopt_document(&mut self, document: EditorDocument, path: Option<&Path>) {
+        #[cfg(feature = "usb")]
+        self.live_edit.new_document();
         self.document = Some(document);
         self.source_path = path.map(Path::to_owned);
         self.parked_library = None;
@@ -1066,6 +1078,8 @@ impl VariaxEditor {
     ) {
         #[cfg(feature = "usb")]
         self.follow_panel(ui);
+        #[cfg(feature = "usb")]
+        self.edit_buffer_controls(ui);
         if self.document.is_none() {
             guitar_panel().show(ui, |ui| {
                 ui.heading("No Variax library is available");
@@ -1239,6 +1253,8 @@ impl VariaxEditor {
             }
             Some(GuitarPending::Open(OpenDestination::Library)) => self.return_to_library(),
             Some(GuitarPending::Open(OpenDestination::Backup)) => self.adopt_imported_library(),
+            #[cfg(feature = "usb")]
+            Some(GuitarPending::Open(OpenDestination::EditBuffer)) => self.get_edit_buffer(),
             #[cfg(test)]
             Some(GuitarPending::ReadCurrent) => self.launch_read(),
             Some(GuitarPending::Quit) => services.finish_close_if(true),
@@ -1270,6 +1286,8 @@ pub(super) enum OpenDestination {
     File,
     Library,
     Backup,
+    #[cfg(feature = "usb")]
+    EditBuffer,
 }
 
 impl FamilyTab for VariaxEditor {
@@ -1281,7 +1299,10 @@ impl FamilyTab for VariaxEditor {
     }
     fn close_prompt(&mut self, ctx: &egui::Context, services: &mut EditorServices<'_>) {
         #[cfg(feature = "usb")]
-        self.follow.stop();
+        {
+            self.follow.stop();
+            self.live_edit.stop();
+        }
         if self.pending.is_none() {
             self.pending = Some(GuitarPending::Quit);
         }
@@ -1308,6 +1329,8 @@ impl FamilyTab for VariaxEditor {
         {
             self.refresh.observe(device);
             self.follow.observe(device);
+            self.live_edit
+                .observe(device.and_then(live_attachment::Attachment::verified));
         }
     }
     fn poll(&mut self, ctx: &egui::Context) {
@@ -1316,6 +1339,7 @@ impl FamilyTab for VariaxEditor {
             self.start_automatic_download();
             self.poll_refresh(ctx);
             self.poll_follow(ctx);
+            self.poll_edit_buffer(ctx);
         }
         #[cfg(test)]
         self.poll_read();
@@ -1339,10 +1363,16 @@ impl FamilyTab for VariaxEditor {
         self.refresh_confirmation(ctx);
     }
     fn busy(&self) -> bool {
+        #[cfg(feature = "usb")]
+        if self.live_edit.busy() {
+            return true;
+        }
         self.is_reading()
     }
     fn cancel_operation(&mut self) {
         self.cancel_read();
+        #[cfg(feature = "usb")]
+        self.live_edit.stop();
     }
     fn blocking_prompt(&self) -> bool {
         #[cfg(feature = "usb")]
