@@ -261,10 +261,18 @@ impl VariaxEditor {
         let result = LibraryPreferences::new(preferences)
             .remember_backup(&import.receipt)
             .and_then(|()| self.adopt_startup_library(import.bundle, origin));
-        if let Err(error) = result {
-            self.error = Some(format!(
-                "Could not remember the Variax library backup: {error}"
-            ));
+        match result {
+            Ok(()) => {
+                #[cfg(feature = "usb")]
+                {
+                    self.device_sync.imported_backup = Some(import.receipt.folder().to_owned());
+                }
+            }
+            Err(error) => {
+                self.error = Some(format!(
+                    "Could not remember the Variax library backup: {error}"
+                ));
+            }
         }
     }
 

@@ -29,6 +29,9 @@ struct Wire {
     expected: VecDeque<(Vec<u8>, Vec<u8>)>,
     inbox: VecDeque<Vec<u8>>,
     time: Duration,
+    pauses: Vec<Duration>,
+    upload_ended: Option<Duration>,
+    store_delays: Vec<Duration>,
 }
 
 impl Wire {
@@ -48,8 +51,15 @@ impl Wire {
 
     // Expected owner-tool wire requests, independently of the live adapter.
     fn read_buffer(&mut self, image: &Image) {
+        self.read_selected(image, None);
+    }
+
+    fn read_selected(&mut self, image: &Image, program: Option<u8>) {
         self.send(BRIDGE_ON);
         self.send(&guitar(&[0x2a, 1]));
+        if let Some(program) = program {
+            self.send(&[0xc0, program]);
+        }
         for start in (0..1092usize).step_by(32) {
             let count = (1092 - start).min(32);
             let request = guitar(&[
@@ -125,6 +135,13 @@ impl Link for Wire {
     fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
         let (expected, response) = self.expected.pop_front().expect("unexpected request");
         assert_eq!(bytes, expected);
+        if bytes.len() > 8 && bytes.last() == Some(&0xf7) {
+            self.upload_ended = Some(self.time);
+        }
+        if matches!(bytes, [0x61, _]) {
+            self.store_delays
+                .push(self.time - self.upload_ended.take().expect("full upload"));
+        }
         self.inbox.extend(response.chunks(16).map(<[u8]>::to_vec));
         Ok(())
     }
@@ -145,6 +162,7 @@ impl Link for Wire {
 
     fn pause(&mut self, duration: Duration) {
         self.time += duration;
+        self.pauses.push(duration);
     }
 }
 
@@ -233,4 +251,182 @@ fn changed_buffer_blocks_writes_after_a_new_attachment_lock() {
     wire.read_buffer(&image(2));
     let error = wire.run(&image(102), None, Some(&previous)).unwrap_err();
     assert!(error.contains("Prior edit-buffer verification"), "{error}");
+}
+
+struct LibraryOnly;
+
+impl GatePolicy for LibraryOnly {
+    fn allows(&self, operation: Operation) -> bool {
+        matches!(
+            operation,
+            Operation::VariaxRead | Operation::VariaxPresetSwitch | Operation::VariaxStoreRestore
+        )
+    }
+}
+
+impl Wire {
+    fn store(&mut self, slot: u8, image: &Image, ack: bool) {
+        self.send(BRIDGE_ON);
+        self.wrapped(&[0x2a, 1]);
+        self.wrapped(&[0x4c, 1]);
+        self.upload(image);
+        self.send(HEADER);
+        self.send(&[0x61, slot]);
+        if ack {
+            let mut reply = Vec::new();
+            for notice in [0x28, 0x4d, 0x74] {
+                reply.extend([0xf0, 0, 1, 0x0c, 7, 4, notice, 0xf7]);
+            }
+            reply.extend(ACK);
+            self.reply(&[0xf7], &reply);
+        } else {
+            self.send(&[0xf7]);
+        }
+        self.close_edit();
+    }
+
+    fn run_sync(
+        &mut self,
+        targets: &[Target],
+        stores: Option<&[StoreImages]>,
+    ) -> (Report, Vec<String>) {
+        let mut notes = Vec::new();
+        let mut log = Quiet;
+        let mut session = Session::new(&mut *self, &LibraryOnly, &mut log);
+        let report = sync_on(
+            &mut session,
+            targets,
+            stores,
+            &AtomicBool::new(false),
+            |message| notes.push(message),
+        );
+        assert!(self.expected.is_empty(), "missing requests");
+        assert!(self.inbox.is_empty(), "unconsumed reply bytes");
+        (report, notes)
+    }
+}
+
+fn target(slot: u8) -> Target {
+    let mut model = PresetFile::default_legacy_model().unwrap();
+    model.rename(NAME).unwrap();
+    Target {
+        position: line6_devices::family::variax::Preset::new(2, slot).unwrap(),
+        model,
+    }
+}
+
+#[test]
+fn store_batch_checks_restore_bytes_and_reloads_each_success_once() {
+    let mut wire = Wire::default();
+    let targets = [target(0), target(1)];
+    let stores = [1, 2].map(|n| StoreImages {
+        candidate: image(n),
+        backup: image(n + 2),
+    });
+    for (i, images) in stores.iter().enumerate() {
+        let i = i as u8;
+        wire.read_selected(&images.backup, Some(69 - i));
+        wire.store(14 - i, &images.candidate, true);
+        wire.read_selected(
+            &procedures::expected_stored_image(&images.candidate),
+            Some(69 - i),
+        );
+    }
+    let (report, _) = wire.run_sync(&targets, Some(&stores));
+    assert!(report.error.is_none(), "{:?}", report.error);
+    assert_eq!(
+        report
+            .verified
+            .iter()
+            .map(|entry| entry.1)
+            .collect::<Vec<_>>(),
+        [0, 1]
+    );
+    assert_eq!(wire.store_delays, [Duration::from_millis(100); 2]);
+}
+
+#[test]
+fn silent_store_waits_two_minutes_and_stops_the_batch() {
+    let mut wire = Wire::default();
+    let targets = [target(0), target(1), target(2)];
+    let stores = [1, 2, 3].map(|n| StoreImages {
+        candidate: image(n),
+        backup: image(n + 3),
+    });
+    wire.read_selected(&stores[0].backup, Some(69));
+    wire.store(14, &stores[0].candidate, true);
+    wire.read_selected(
+        &procedures::expected_stored_image(&stores[0].candidate),
+        Some(69),
+    );
+    wire.read_selected(&stores[1].backup, Some(68));
+    wire.store(13, &stores[1].candidate, false);
+
+    let (report, notes) = wire.run_sync(&targets, Some(&stores));
+    assert_eq!(report.verified.len(), 1);
+    assert!(report.store_unknown);
+    assert!(report.error.unwrap().contains("Slot state is unknown"));
+    assert!(notes.last().unwrap().contains("untouched for 2 minutes"));
+    assert_eq!(wire.pauses.last(), Some(&Duration::from_secs(120)));
+}
+
+#[test]
+fn stale_restore_backup_blocks_store() {
+    let mut wire = Wire::default();
+    wire.read_selected(&image(2), Some(69));
+    let (report, _) = wire.run_sync(
+        &[target(0)],
+        Some(&[StoreImages {
+            candidate: image(3),
+            backup: image(1),
+        }]),
+    );
+    assert!(report.verified.is_empty());
+    assert!(!report.store_unknown);
+    assert!(
+        report
+            .error
+            .unwrap()
+            .contains("differs from the verified restore backup")
+    );
+}
+
+#[test]
+fn read_unmodified_only_selects_and_reads_saved_slot() {
+    let mut wire = Wire::default();
+    let target = target(1);
+    let mut saved = image(0);
+    let model_start = procedures::METADATA.start;
+    saved[model_start..model_start + 18].fill(b' ');
+    saved[model_start..model_start + 5].copy_from_slice(b"Saved");
+    procedures::set_firmware_checksum(&mut saved);
+    wire.read_selected(&saved, Some(68));
+    let (report, _) = wire.run_sync(&[target], None);
+    assert!(report.error.is_none(), "{:?}", report.error);
+    assert_eq!(report.verified.len(), 1);
+    let (bank, slot, model) = &report.verified[0];
+    assert_eq!((*bank, *slot, model.name()), (2, 1, "Saved"));
+}
+
+#[test]
+fn unmatched_post_store_read_stops_the_batch() {
+    let mut wire = Wire::default();
+    let targets = [target(0), target(1)];
+    let stores = [1, 2].map(|n| StoreImages {
+        candidate: image(n),
+        backup: image(n + 3),
+    });
+    wire.read_selected(&stores[0].backup, Some(69));
+    wire.store(14, &stores[0].candidate, true);
+    wire.read_selected(&image(1), Some(69));
+
+    let (report, _) = wire.run_sync(&targets, Some(&stores));
+    assert!(report.verified.is_empty());
+    assert!(report.store_unknown);
+    assert!(
+        report
+            .error
+            .unwrap()
+            .contains("acknowledged; read-back failed")
+    );
 }

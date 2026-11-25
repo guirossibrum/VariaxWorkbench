@@ -99,7 +99,9 @@ impl Drop for Refresh {
 
 impl VariaxEditor {
     pub(super) fn download_target_ready(&self) -> bool {
-        self.refresh.attachment.is_some() && !self.follow.disconnected()
+        self.refresh.attachment.is_some()
+            && !self.follow.disconnected()
+            && !self.device_sync.stopped_after_store()
     }
 
     pub(super) fn download_button(&mut self, ui: &mut egui::Ui) {
@@ -122,7 +124,7 @@ impl VariaxEditor {
             || self.live_edit.busy()
             || self.follow.disconnected()
             || self.blocking_prompt()
-            || self.refresh.attachment.is_none()
+            || !self.download_target_ready()
         {
             return;
         }

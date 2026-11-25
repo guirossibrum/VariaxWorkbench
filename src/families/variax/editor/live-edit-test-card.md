@@ -35,3 +35,89 @@ the muted intermediate image for each tuning transition tested.
 
 This path addresses the guitar working buffer. Stored-bank operations are
 covered separately by #205.
+
+## Prepare the private references offline
+
+Use the same Mac coefficient oracle and original Java mapping as
+`scripts/verify_factory_programs.py`. The artifact root holds the pinned
+Workbench inputs, JDK and Unicorn environment described in
+[Reproducing references](../../../../docs/reproducing-references.md).
+Use a fresh output directory named `variax-live-reference` beside the
+editor preferences. Keep the files local.
+
+Before turning on Live editing, export the exact planned editor states
+as `.vwm` copies. Include the initial model, each settled parameter edit,
+the final state after each tuning toggle, every model the test will load,
+and any manual Send candidate. Use discrete edits with planned final
+values so the 120 ms debounce does not produce unlisted states. Mark the
+destination of each tuning toggle as also requiring a muted render.
+The transition uses the **new** tuning state and the mute flag.
+
+From the repository root, build the offline CLI with
+`cargo build --offline --no-default-features --bin variax-workbench`.
+Run this preparation using the local Python described above. Replace the
+sample file paths and repeat arguments as needed. Set `artifact_root` to
+the absolute private artifact root and `reference_dir` to the new
+absolute `variax-live-reference` directory. A `transition` argument
+generates both the ordinary and the muted program for that file.
+
+```sh
+PYTHONPATH="$PWD/scripts" "$artifact_root/.tools/python/bin/python" - \
+  "$artifact_root" "$reference_dir" "$PWD/target/debug/variax-workbench" \
+  normal:/path/to/initial.vwm normal:/path/to/settled-edit.vwm \
+  transition:/path/to/tuning-after-toggle.vwm <<'PY'
+from hashlib import sha256
+from pathlib import Path
+import subprocess
+import sys
+
+from verify_factory_programs import CoefficientOracle, load_models, original_programs
+from inspect_firmware import preserve
+
+artifact_root, out, host = (Path(arg).resolve() for arg in sys.argv[1:4])
+cases = [arg.split(":", 1) for arg in sys.argv[4:]]
+assert cases and all(mode in ("normal", "transition") for mode, _ in cases)
+assert subprocess.check_output([host, "math-profile"], text=True).strip() == "host-std-v1"
+out.mkdir()
+oracle = CoefficientOracle(artifact_root=artifact_root)
+initial, manifest, _ = load_models(oracle, out)
+
+def generate(settings, _mask):
+    oracle.write(oracle.OBJECT, initial)
+    return oracle.generate(settings)
+
+hashes = []
+for muted in (False, True):
+    phase = out / ("muted" if muted else "normal")
+    phase.mkdir()
+    presets = phase / "presets"
+    presets.mkdir()
+    inputs = [Path(path) for mode, path in cases if not muted or mode == "transition"]
+    if not inputs:
+        continue
+    for index, path in enumerate(inputs):
+        preserve(presets / f"{index}.vwm", path.read_bytes())
+    programs, _ = original_programs(
+        artifact_root, phase, presets, generate, muted=muted, count=len(inputs)
+    )
+    for index, (path, program) in enumerate(zip(inputs, programs, strict=True)):
+        rendered = phase / f"{index}.packed"
+        flags = ["muted"] if muted else []
+        subprocess.run(
+            [host, "render-preset", presets / f"{index}.vwm", manifest, rendered, *flags],
+            check=True,
+        )
+        if rendered.read_bytes() != program:
+            raise SystemExit(f"Workbench mismatch: {path} (muted={muted})")
+        digest = sha256(program).hexdigest()
+        hashes.append(digest)
+        print(f"{digest}  {path} (muted={muted})")
+preserve(out / "workbench.sha256", ("\n".join(dict.fromkeys(hashes)) + "\n").encode())
+PY
+```
+
+The manifest and special model definitions are prepared by `load_models`.
+The hashes come from the original Workbench images after exact comparison
+with Rust. An ordinary `0x3B` test needs the hash of the new fully rendered
+candidate. The read-back separately verifies that the guitar kept the
+previous checksum word, which the difference message excludes.

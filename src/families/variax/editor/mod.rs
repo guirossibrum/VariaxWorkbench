@@ -4,6 +4,8 @@ use serde::Deserialize;
 mod body_scene;
 mod connection;
 #[cfg(feature = "usb")]
+mod device_sync;
+#[cfg(feature = "usb")]
 mod follow;
 mod guitar;
 mod html_export;
@@ -131,6 +133,8 @@ pub(super) struct VariaxEditor {
     follow: follow::Follow,
     #[cfg(feature = "usb")]
     live_edit: live_edit::LiveEdit,
+    #[cfg(feature = "usb")]
+    device_sync: device_sync::DeviceSync,
     catalog: Vec<ModelArt>,
     artwork: PathBuf,
     pub(super) textures: HashMap<String, TextureHandle>,
@@ -223,6 +227,8 @@ impl VariaxEditor {
             follow: follow::Follow::default(),
             #[cfg(feature = "usb")]
             live_edit: live_edit::LiveEdit::new(defaults.preferences.as_deref()),
+            #[cfg(feature = "usb")]
+            device_sync: Default::default(),
             catalog: load_catalog(),
             artwork,
             textures: HashMap::new(),
@@ -331,7 +337,10 @@ impl VariaxEditor {
 
     fn adopt_document(&mut self, document: EditorDocument, path: Option<&Path>) {
         #[cfg(feature = "usb")]
-        self.live_edit.new_document();
+        {
+            self.live_edit.new_document();
+            self.device_sync.imported_backup = None;
+        }
         self.document = Some(document);
         self.source_path = path.map(Path::to_owned);
         self.parked_library = None;
@@ -353,7 +362,7 @@ impl VariaxEditor {
         }
         #[cfg(feature = "usb")]
         {
-            self.refresh.busy()
+            self.refresh.busy() || self.device_sync.busy()
         }
         #[cfg(not(feature = "usb"))]
         {
@@ -363,7 +372,10 @@ impl VariaxEditor {
 
     pub(super) fn cancel_read(&mut self) {
         #[cfg(feature = "usb")]
-        self.refresh.cancel();
+        {
+            self.refresh.cancel();
+            self.device_sync.cancel();
+        }
         #[cfg(test)]
         if let Some((cancel, _)) = &self.read_worker {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1079,6 +1091,10 @@ impl VariaxEditor {
         ui: &mut egui::Ui,
     ) {
         #[cfg(feature = "usb")]
+        if self.device_sync.stopped_after_store() {
+            ui.label("Guitar actions are paused after an unverified store. Follow the store recovery instructions before using the guitar again.");
+        }
+        #[cfg(feature = "usb")]
         self.follow_panel(ui);
         #[cfg(feature = "usb")]
         self.edit_buffer_controls(ui);
@@ -1187,6 +1203,13 @@ impl VariaxEditor {
                 .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
                 .show(ctx, |ui| {
                     ui.label("Save or discard your changes before continuing.");
+                    #[cfg(feature = "usb")]
+                    if matches!(self.pending, Some(GuitarPending::Quit)) {
+                        let count = self.modified_guitar_positions().len();
+                        if count != 0 {
+                            ui.label(format!("There are {count} modified Models. Closing the library discards these pending guitar changes."));
+                        }
+                    }
                     if let Some(error) = &self.error {
                         ui.label(error);
                     }
@@ -1297,6 +1320,10 @@ impl FamilyTab for VariaxEditor {
         self.guitar_workspace(services, ui);
     }
     fn dirty(&self) -> bool {
+        #[cfg(feature = "usb")]
+        if !self.modified_guitar_positions().is_empty() {
+            return true;
+        }
         VariaxEditor::dirty(self)
     }
     fn close_prompt(&mut self, ctx: &egui::Context, services: &mut EditorServices<'_>) {
@@ -1331,13 +1358,15 @@ impl FamilyTab for VariaxEditor {
         {
             self.refresh.observe(device);
             self.follow.observe(device);
-            self.live_edit
-                .observe(device.and_then(live_attachment::Attachment::verified));
+            let attachment = device.and_then(live_attachment::Attachment::verified);
+            self.live_edit.observe(attachment.clone());
+            self.device_sync.observe(attachment);
         }
     }
     fn poll(&mut self, ctx: &egui::Context) {
         #[cfg(feature = "usb")]
         {
+            self.poll_device_sync(ctx);
             self.start_automatic_download();
             self.poll_refresh(ctx);
             self.poll_follow(ctx);
@@ -1362,7 +1391,10 @@ impl FamilyTab for VariaxEditor {
         self.pickup_position_dialog(ctx, services);
         self.rename_bank_dialog(services, ctx);
         #[cfg(feature = "usb")]
-        self.refresh_confirmation(ctx);
+        {
+            self.refresh_confirmation(ctx);
+            self.sync_dialog(ctx);
+        }
     }
     fn busy(&self) -> bool {
         #[cfg(feature = "usb")]
@@ -1378,7 +1410,7 @@ impl FamilyTab for VariaxEditor {
     }
     fn blocking_prompt(&self) -> bool {
         #[cfg(feature = "usb")]
-        if self.refresh.confirming() {
+        if self.refresh.confirming() || self.device_sync.prompting() {
             return true;
         }
         self.pending.is_some()
@@ -1392,6 +1424,8 @@ impl FamilyTab for VariaxEditor {
     }
     fn actions(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
         self.new_file_menu(ui, services);
+        #[cfg(feature = "usb")]
+        self.sync_button(ui);
         #[cfg(feature = "usb")]
         let has_download = {
             let ready = self.download_target_ready();
