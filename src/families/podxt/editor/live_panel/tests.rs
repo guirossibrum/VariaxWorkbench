@@ -408,6 +408,26 @@ fn connected_fixture(ctx: &egui::Context) -> (Workbench, Presence) {
 }
 
 #[test]
+fn startup_is_scheduled_once_per_verified_attachment_and_cancelled_on_detach() {
+    let ctx = egui::Context::default();
+    let (app, _) = connected_fixture(&ctx);
+    let device = app.tabs.entries[0].device.as_ref();
+    let mut panel = LivePanel::default();
+    assert_eq!(panel.next_startup(), None);
+    assert!(panel.set_device(device));
+    assert_eq!(panel.next_startup(), Some(Startup::Current));
+    assert!(!panel.set_device(device));
+    assert_eq!(panel.next_startup(), Some(Startup::Tones));
+    assert_eq!(panel.next_startup(), None);
+
+    panel.set_device(None);
+    assert!(panel.set_device(device));
+    assert_eq!(panel.next_startup(), Some(Startup::Current));
+    panel.set_device(None);
+    assert_eq!(panel.next_startup(), None);
+}
+
+#[test]
 fn connected_stage_uses_current_tone_channel_and_librarian_and_follows_updates() {
     let ctx = egui::Context::default();
     let (mut app, _) = connected_fixture(&ctx);

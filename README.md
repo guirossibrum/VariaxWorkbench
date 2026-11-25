@@ -24,8 +24,9 @@ Earlier captures from floating windows using test presets with device discovery 
   collections, undo changes, and save files offline. New tabs start with your
   latest complete download, factory presets from a selected firmware archive,
   or an empty editor.
-- **PODxt editor.** Edit supported amp, cab, and effect settings. Browse and
-  organize tone libraries and save copies. Built-in examples work offline.
+- **PODxt editor.** Verified connections open on the playing tone, with saved
+  channels beside the stage. Offline, the editor opens a remembered library
+  backup or a labelled default. Edit amp, cab, and effect settings and save copies.
 - **HD500X files (early).** Opens HD Edit presets, setlists, and bundles and
   saves copies. Only a few settings on nine effect models can be edited; the
   rest is kept as is. There is no HD editor page or device support yet.

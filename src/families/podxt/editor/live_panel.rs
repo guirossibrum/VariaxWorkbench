@@ -43,7 +43,7 @@ enum StagePanel {
     Advanced,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Startup {
     Current,
     Tones,
@@ -387,6 +387,17 @@ impl LivePanel {
             && (!requires_library(command) || !hardware_gates::is_locked(Gate::FullBackupRead))
     }
 
+    fn next_startup(&mut self) -> Option<Startup> {
+        if self.busy() {
+            return None;
+        }
+        let request = self.startup.take()?;
+        if request == Startup::Current {
+            self.startup = Some(Startup::Tones);
+        }
+        Some(request)
+    }
+
     pub(super) fn poll(&mut self, ctx: &egui::Context) {
         if let Some((device, result)) = self.store.poll(ctx) {
             let result = if self.device.as_ref() == Some(&device) {
@@ -413,16 +424,13 @@ impl LivePanel {
             self.snapshot.channel = Some(buffer.channel);
         }
         let Some(worker) = &self.worker else {
-            if !self.busy() {
-                match self.startup.take() {
-                    Some(Startup::Current) => {
-                        self.refresh_current(ctx);
-                        self.startup = Some(Startup::Tones);
-                        ctx.request_repaint();
-                    }
-                    Some(Startup::Tones) => self.start(ReadCommand::ToneBank, ctx),
-                    None => {}
+            match self.next_startup() {
+                Some(Startup::Current) => {
+                    self.refresh_current(ctx);
+                    ctx.request_repaint();
                 }
+                Some(Startup::Tones) => self.start(ReadCommand::ToneBank, ctx),
+                None => {}
             }
             return;
         };
