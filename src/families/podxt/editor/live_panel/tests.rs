@@ -509,6 +509,24 @@ fn playing_view_does_not_substitute_a_file_when_the_dump_is_unreadable() {
 }
 
 #[test]
+fn live_library_marks_unsynchronized_playing_tone_but_ignores_pedal_motion() {
+    let ctx = egui::Context::default();
+    let (mut app, _) = connected_fixture(&ctx);
+    let slot = Location::new(BankKind::Tones, 17).unwrap();
+    let mut changed = valid_dump("Saved 5B");
+    changed.raw[39 + 7] ^= 1;
+    app.podxt_mut().live.snapshot.tone = Some(changed.clone());
+    assert!(!app.podxt().live.channel_modified(slot));
+    changed.raw[39 + 13] ^= 1;
+    app.podxt_mut().live.snapshot.tone = Some(changed);
+    assert!(app.podxt().live.channel_modified(slot));
+    let visible = stage_frame(&ctx, &mut app);
+    assert!(
+        visible.contains("Unsynchronized") && visible.contains("5B !  Saved 5B"),
+        "{visible}"
+    );
+}
+#[test]
 fn disconnected_stage_loads_backup_and_no_backup_shows_labelled_default() {
     let ctx = egui::Context::default();
     let (mut app, presence) = connected_fixture(&ctx);

@@ -132,6 +132,40 @@ enum StageSource {
     DeviceCopy(Location),
 }
 
+struct StageDocument {
+    library: Library,
+    bundle: Option<pod_preset::PodBundleLibrary>,
+    source: StageSource,
+    path: Option<PathBuf>,
+}
+
+impl StageDocument {
+    fn parse(
+        bytes: Vec<u8>,
+        source: StageSource,
+        path: Option<PathBuf>,
+    ) -> Result<Self, pod_preset::ToneError> {
+        let mut library = Library::default();
+        let bundle = if matches!(bytes.get(8..12), Some(b"L6BA" | b"L6CO")) {
+            let bundle = pod_preset::PodBundleLibrary::parse(bytes)?;
+            for index in 0..bundle.entry_count() {
+                let (bank, slot) = bundle.entry_location(index).expect("entry index in range");
+                library.import_bytes(bundle.tone(bank, slot)?.into_bytes())?;
+            }
+            Some(bundle)
+        } else {
+            library.import_bytes(bytes)?;
+            None
+        };
+        Ok(Self {
+            library,
+            bundle,
+            source,
+            path,
+        })
+    }
+}
+
 fn decode_tone(dump: &EditBuffer, kind: BankKind) -> Option<PodTone> {
     let kind = match kind {
         BankKind::Tones => ContainerKind::L6pa,
@@ -150,6 +184,8 @@ pub(super) struct Stage {
     preferences: Option<PathBuf>,
     backup: Option<LoadedPodxt>,
     source: StageSource,
+    pub(super) path: Option<PathBuf>,
+    pending_document: Option<StageDocument>,
     bank: usize,
     #[cfg(feature = "usb")]
     pub(super) view_current: bool,
@@ -237,16 +273,109 @@ impl PodxtEditor {
     }
 
     fn open_stage_copy(&mut self, tone: PodTone, source: StageSource) {
-        if self.pod_bundle.is_some() && self.pod_dirty() {
-            self.pod_message = "Save or discard bank edits before opening another tone.".into();
+        self.request_stage_document(tone.into_bytes(), source, None);
+    }
+
+    pub(in crate::editor) fn open_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        services: &mut EditorServices<'_>,
+    ) {
+        if self.busy() || self.stage_has_pending_document() {
             return;
         }
-        self.import_individual_pod_tone(tone.into_bytes());
-        self.stage.source = source;
-        #[cfg(feature = "usb")]
-        {
-            self.stage.view_current = false;
+        services.request_picker::<Self>(ctx, PickRequest::OpenTone, |editor, path, _| {
+            let Some(path) = path else {
+                return;
+            };
+            match tabs::open_candidate(&path, pod_preset::BUNDLE_BYTES_CEILING) {
+                Ok(bytes) => editor.request_stage_document(bytes, StageSource::File, Some(path)),
+                Err(error) => editor.pod_message = error,
+            }
+        });
+    }
+
+    pub(super) fn open_stage_document(&mut self, bytes: Vec<u8>) {
+        self.request_stage_document(bytes, StageSource::File, None);
+    }
+
+    fn request_stage_document(
+        &mut self,
+        bytes: Vec<u8>,
+        source: StageSource,
+        path: Option<PathBuf>,
+    ) {
+        let document = match StageDocument::parse(bytes, source, path) {
+            Ok(document) => document,
+            Err(error) => {
+                self.pod_message = error.detail();
+                return;
+            }
+        };
+        if self.pod_dirty() || self.pod_has_staged_edit() {
+            self.stage.pending_document = Some(document);
+        } else {
+            self.adopt_stage_document(document);
         }
+    }
+
+    fn adopt_stage_document(&mut self, document: StageDocument) {
+        self.pod_library = document.library;
+        self.pod_bundle = document.bundle;
+        self.pod_document_generation = self.pod_document_generation.wrapping_add(1);
+        self.clear_pod_stages();
+        self.parameter_panel.clear_history();
+        self.pod_bank = 0;
+        self.pod_selected = (!self.pod_library.is_empty()).then_some(0);
+        self.refresh_selected_pod_name();
+        self.show_file_stage();
+        self.stage.source = document.source;
+        self.stage.path = document.path;
+        #[cfg(feature = "usb")]
+        self.live.use_document_directory(self.stage.path.as_deref());
+        self.pod_message = self
+            .stage
+            .path
+            .as_ref()
+            .map_or_else(String::new, |path| format!("Opened {}", path.display()));
+    }
+
+    pub(super) fn stage_has_pending_document(&self) -> bool {
+        self.stage.pending_document.is_some()
+    }
+
+    pub(super) fn stage_document_prompt(
+        &mut self,
+        ctx: &egui::Context,
+        services: &mut EditorServices<'_>,
+    ) {
+        if self.stage.pending_document.is_none() {
+            return;
+        }
+        egui::Window::new("Open another PODxt document")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label("The current document has unsaved edits.");
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Save copy and open").clicked()
+                        && let Some(index) = self.pod_selected
+                        && self.write_pod_copy(services, index)
+                        && let Some(document) = self.stage.pending_document.take()
+                    {
+                        self.adopt_stage_document(document);
+                    }
+                    if ui.button("Discard and open").clicked()
+                        && let Some(document) = self.stage.pending_document.take()
+                    {
+                        self.adopt_stage_document(document);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.stage.pending_document = None;
+                    }
+                });
+            });
     }
 
     pub(super) fn show_stage(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
@@ -304,7 +433,7 @@ impl PodxtEditor {
                     ui.vertical(|ui| {
                         ui.set_min_width(ui.available_width());
                         self.stage_editor(ui, index, &tone, &rows);
-                        self.stage_settings(ui, index, &tone, &rows);
+                        self.stage_settings(ui, index, &rows);
                     });
                 });
             } else {
@@ -328,17 +457,8 @@ impl PodxtEditor {
 
     fn stage_toolbar(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
         ui.horizontal_wrapped(|ui| {
-            if chrome::toolbar_button(ui, "Open tone or bank…", true, "").clicked() {
-                services.request_picker::<Self>(
-                    ui.ctx(),
-                    PickRequest::OpenTone,
-                    |editor, path, _| {
-                        if let Some(path) = path {
-                            editor.open_stage_file(&path);
-                            editor.show_file_stage();
-                        }
-                    },
-                );
+            if self.pod_button(ui, "open-stage-document", "Open tone or bank…") {
+                self.open_dialog(ui.ctx(), services);
             }
             ui.menu_button("File actions", |ui| {
                 if ui.button("Open file editor").clicked() {
@@ -375,8 +495,7 @@ impl PodxtEditor {
                 }
                 self.show_new_documents(ui, services);
                 if let Some(sample) = self.practice_tone_menu(ui) {
-                    self.import_pod_document(sample.bytes());
-                    self.show_file_stage();
+                    self.open_stage_document(sample.bytes());
                     ui.close();
                 }
                 if self.pod_button_enabled(
@@ -399,7 +518,7 @@ impl PodxtEditor {
                 ui,
                 "pod-undo",
                 "Undo",
-                file_actions && !self.parameter_panel.undo.is_empty(),
+                file_actions && self.parameter_panel.can_history(self.pod_selected, false),
             ) {
                 self.table_history(false);
             }
@@ -407,7 +526,7 @@ impl PodxtEditor {
                 ui,
                 "pod-redo",
                 "Redo",
-                file_actions && !self.parameter_panel.redo.is_empty(),
+                file_actions && self.parameter_panel.can_history(self.pod_selected, true),
             ) {
                 self.table_history(true);
             }
@@ -497,6 +616,14 @@ impl PodxtEditor {
         if index == CURRENT_STAGE {
             ui.horizontal_wrapped(|ui| {
                 ui.strong(tone.name());
+                #[cfg(feature = "usb")]
+                if self
+                    .live
+                    .playing_channel()
+                    .is_some_and(|slot| self.live.channel_modified(slot))
+                {
+                    ui.label("Unsynchronized");
+                }
                 if ui.button("Edit a file copy").clicked() {
                     self.open_stage_copy(tone.clone(), StageSource::File);
                 }
@@ -572,6 +699,14 @@ impl PodxtEditor {
         let can_show_current = self.live.connected() && self.live.has_current();
         #[cfg(not(feature = "usb"))]
         let can_show_current = false;
+        if !current && self.pod_bundle.is_some() {
+            #[cfg(feature = "usb")]
+            if can_show_current && ui.button("Current POD tone").clicked() {
+                self.stage.view_current = true;
+            }
+            self.stage_library(ui);
+            return;
+        }
         if rows.is_empty() && self.stage.backup.is_none() && !on_device && !can_show_current {
             self.stage_library(ui);
             return;
@@ -599,6 +734,11 @@ impl PodxtEditor {
                         ui.selectable_value(&mut self.stage.bank, index, kind.name());
                     }
                 });
+            ui.small(match bank {
+                BankKind::Tones => "Complete presets on channels 1A–32D.",
+                BankKind::AmpSetups => "Recallable amp, cab and mic settings.",
+                BankKind::FxSetups => "Recallable effect settings and routing.",
+            });
             let mut selected = None;
             let mut file_copy = None;
             egui::ScrollArea::vertical().id_salt("saved-tones").max_height(330.0).show(ui, |ui| {
@@ -610,9 +750,21 @@ impl PodxtEditor {
                     let browsing = matches!(
                         self.stage.source, StageSource::Backup(Some(ch)) | StageSource::DeviceCopy(ch) if ch == *slot
                     ) && !current;
+                    #[cfg(feature = "usb")]
+                    let unsynchronized = on_device && self.live.channel_modified(*slot);
+                    #[cfg(not(feature = "usb"))]
+                    let unsynchronized = false;
+                    let unsaved = browsing && self.pod_selected.is_some_and(|index| self.pod_library.is_dirty(index));
+                    let suffix = if unsaved || unsynchronized { " !" } else { "" };
                     let response = ui.add(
-                        egui::Button::selectable(playing || browsing, format!("{}  {}", slot.slot_name(), dump.name())).truncate()
-                    );
+                        egui::Button::selectable(playing || browsing, format!("{}{suffix}  {}", slot.slot_name(), dump.name())).truncate()
+                    ).on_hover_text(if unsynchronized {
+                        "Unsynchronized with the saved POD slot"
+                    } else if unsaved {
+                        "Unsaved file edits"
+                    } else if current {
+                        "Enable Live editing to recall a channel, or right-click to open a file copy."
+                    } else { "" });
                     #[cfg(feature = "usb")]
                     if playing && self.stage.library_highlight != Some(*slot) {
                         response.scroll_to_me(Some(egui::Align::Center));
@@ -655,9 +807,6 @@ impl PodxtEditor {
             } else if selected.is_some() {
                 self.pod_message =
                     "Live editing is off. Right-click a channel to open a file copy.".into();
-            }
-            if !current && self.pod_library.len() > 1 {
-                ui.collapsing("Open files", |ui| self.stage_library(ui));
             }
         });
     }
@@ -708,7 +857,14 @@ impl PodxtEditor {
                     } else {
                         tone.name().to_owned()
                     };
-                    Some((index, label))
+                    Some((
+                        index,
+                        if self.pod_library.is_dirty(index) {
+                            format!("!  {label}")
+                        } else {
+                            label
+                        },
+                    ))
                 })
                 .collect();
             egui::ScrollArea::vertical()
@@ -1130,13 +1286,7 @@ impl PodxtEditor {
         }
     }
 
-    fn stage_settings(
-        &mut self,
-        ui: &mut egui::Ui,
-        index: usize,
-        tone: &PodTone,
-        rows: &[PodControl<'static>],
-    ) {
+    fn stage_settings(&mut self, ui: &mut egui::Ui, index: usize, rows: &[PodControl<'static>]) {
         ui.horizontal_wrapped(|ui| {
             if let Some(row) = get(rows, "TEMPO") {
                 if let Some(bpm) = value(row) {
@@ -1214,15 +1364,6 @@ impl PodxtEditor {
         if index != CURRENT_STAGE {
             self.metadata_panel(ui, index);
         }
-        ui.collapsing("Details", |ui| {
-            if !self.pod_message.is_empty() { ui.label(&self.pod_message); }
-            for line in tone.control_lines() { ui.small(line); }
-            ui.collapsing("Parameter notes", |ui| {
-                ui.label("Compressor Amount is a Bass PODxt alias. The Live uses Compressor Threshold.");
-                ui.label("Mod Speed and Delay Time round live controller values and truncate tone-file values.");
-                ui.label("The Volume Pedal can move live. The tone encoder writes full pedal level.");
-            });
-        });
     }
 }
 

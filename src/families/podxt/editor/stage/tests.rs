@@ -153,3 +153,61 @@ fn stage_targets_use_verified_live_encoding_and_exclude_variax() {
             .is_none()
     );
 }
+
+#[test]
+fn undo_and_redo_follow_the_selected_bank_position() {
+    let mut editor = PodxtEditor::new();
+    let a = PodTone::new_podxt_tone("First").unwrap();
+    let b = PodTone::new_podxt_tone("Second").unwrap();
+    let bundle = pod_preset::pod_bundle_from_tones(false, &[("Set", vec![a, b])]).unwrap();
+    editor.open_stage_document(bundle.as_bytes().to_vec());
+    let edit_name = |tone: &mut PodTone, name| {
+        tone.rename(name)?;
+        Ok(PodModelChange::default())
+    };
+    editor
+        .table_edit(0, |tone| edit_name(tone, "One edited"))
+        .unwrap();
+    editor
+        .table_edit(1, |tone| edit_name(tone, "Two edited"))
+        .unwrap();
+    assert!(editor.pod_library.is_dirty(0) && editor.pod_library.is_dirty(1));
+
+    editor.select_pod_index(0);
+    editor.table_history(false);
+    assert_eq!(editor.pod_selected, Some(0));
+    assert_eq!(editor.pod_library.tone(0).unwrap().name(), "First");
+    assert!(!editor.pod_library.is_dirty(0));
+    assert_eq!(editor.pod_library.tone(1).unwrap().name(), "Two edited");
+    editor.select_pod_index(1);
+    editor
+        .table_edit(1, |tone| edit_name(tone, "Two again"))
+        .unwrap();
+    editor.select_pod_index(0);
+    editor.table_history(true);
+    assert_eq!(editor.pod_library.tone(0).unwrap().name(), "One edited");
+    assert_eq!(editor.pod_library.tone(1).unwrap().name(), "Two again");
+}
+
+#[test]
+fn opening_replaces_one_document_only_after_dirty_edits_are_resolved() {
+    let mut editor = PodxtEditor::new();
+    let tone = |name| PodTone::new_podxt_tone(name).unwrap().into_bytes();
+    editor.open_stage_document(tone("First"));
+    editor
+        .table_edit(0, |tone| {
+            tone.rename("Editing")?;
+            Ok(PodModelChange::default())
+        })
+        .unwrap();
+
+    editor.open_stage_document(tone("Second"));
+    assert_eq!(editor.pod_library.tone(0).unwrap().name(), "Editing");
+    assert!(editor.stage_has_pending_document());
+    let candidate = editor.stage.pending_document.take().unwrap();
+    editor.adopt_stage_document(candidate);
+    assert_eq!(editor.pod_library.len(), 1);
+    assert_eq!(editor.pod_library.tone(0).unwrap().name(), "Second");
+    assert!(!editor.pod_dirty());
+    assert!(!editor.parameter_panel.can_history(Some(0), false));
+}

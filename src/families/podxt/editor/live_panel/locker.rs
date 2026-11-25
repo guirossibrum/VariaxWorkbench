@@ -274,6 +274,17 @@ impl Locker {
         Ok(())
     }
 
+    pub(super) fn use_document_directory(&mut self, path: Option<&std::path::Path>) {
+        if self.directory.is_none()
+            && let Some(directory) = path.and_then(std::path::Path::parent)
+        {
+            self.directory = Some(directory.to_path_buf());
+            if let Err(error) = self.refresh_files() {
+                self.status = error;
+            }
+        }
+    }
+
     fn refresh_files(&mut self) -> Result<(), String> {
         let Some(directory) = &self.directory else {
             return Ok(());
@@ -318,7 +329,7 @@ impl Locker {
         } = view;
         let mut action = Actions::default();
         ui.group(|ui| {
-            ui.heading("Tone Locker");
+            ui.heading("Tone Locker · Librarian");
             self.toolbar(
                 ui,
                 services,
@@ -417,7 +428,7 @@ impl Locker {
                             let staged = self.staged.get(&slot.address());
                             let name =
                                 staged.map_or_else(|| raw.name(), |tone| tone.candidate.name());
-                            let suffix = if staged.is_some() { " · staged" } else { "" };
+                            let suffix = if staged.is_some() { " ! · staged" } else { "" };
                             let linked = staged
                                 .map(|tone| tone.candidate.clone())
                                 .or_else(|| TonePayload::from_dump(raw).ok())
