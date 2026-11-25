@@ -1087,3 +1087,57 @@ fn body_and_inspector_cards_stay_put_when_alternate_tuning_is_toggled() {
         );
     }
 }
+
+#[test]
+fn acoustic_body_hides_pickup_sprites_and_disables_electrics_with_workbench_labels() {
+    fn has_text(shape: &egui::Shape, expected: &str) -> bool {
+        match shape {
+            egui::Shape::Text(text) => text.galley.text() == expected,
+            egui::Shape::Vec(shapes) => shapes.iter().any(|shape| has_text(shape, expected)),
+            _ => false,
+        }
+    }
+    let (ctx, mut app) = app();
+    app.variax_mut().open_example();
+    let texture = ctx.load_texture(
+        "pickup fixture",
+        egui::ColorImage::filled([26, 92], egui::Color32::WHITE),
+        egui::TextureOptions::LINEAR,
+    );
+    app.variax_mut()
+        .textures
+        .insert("pickups/strat.png".into(), texture);
+    let render = |app: &mut Workbench| {
+        ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1440.0, 960.0))),
+                ..Default::default()
+            },
+            |ctx| app.render(ctx),
+        )
+    };
+    let expect = |output: egui::FullOutput, label| {
+        assert!(
+            output
+                .shapes
+                .iter()
+                .any(|shape| has_text(&shape.shape, label)),
+            "missing {label}"
+        );
+    };
+    let _ = render(&mut app);
+    assert_eq!(app.variax().pickup_centers.len(), 2);
+    app.variax_mut()
+        .change(|preset| preset.select_model(BODY, 0x0310_0012));
+    app.variax_mut().tab = Tab::Pickups;
+    expect(render(&mut app), "No pickups available");
+    expect(
+        render(&mut app),
+        "Pickup models are not available when using an acoustic body model.",
+    );
+    assert!(app.variax().pickup_centers.is_empty());
+    app.variax_mut().tab = Tab::Controls;
+    expect(render(&mut app), "Param not available");
+    expect(render(&mut app), "No 12-String available");
+    assert!(!app.variax().can_edit(WIRING, None));
+}

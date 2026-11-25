@@ -1,5 +1,8 @@
 use super::{EditorDocument, FamilyTab, VariaxEditor, egui, live_attachment::Attachment};
-use crate::editor::tabs::DeviceTab;
+use crate::editor::{
+    detection::DeviceKey,
+    tabs::{Connection, DeviceTab},
+};
 use line6_devices::family::variax::{self, Restore};
 use std::{
     sync::{
@@ -28,6 +31,9 @@ struct Worker {
 #[derive(Default)]
 pub(super) struct Refresh {
     attachment: Option<Attachment>,
+    attempted: Option<DeviceKey>,
+    #[cfg(test)]
+    auto_source: Option<ReadLibrary>,
     confirming: bool,
     worker: Option<Worker>,
 }
@@ -35,6 +41,9 @@ pub(super) struct Refresh {
 impl Refresh {
     pub(super) fn observe(&mut self, device: Option<&DeviceTab>) {
         let attachment = device.and_then(Attachment::verified);
+        if device.is_none_or(|tab| tab.connection == Connection::Disconnected) {
+            self.attempted = None;
+        }
         if self.attachment != attachment {
             self.cancel();
             self.confirming = false;
@@ -61,6 +70,7 @@ impl Refresh {
             .attachment
             .clone()
             .ok_or("The verified Variax attachment is no longer available.")?;
+        self.attempted = Some(attachment.key.clone());
         let stop = Arc::new(AtomicBool::new(false));
         let progress = Arc::new(AtomicUsize::new(0));
         let worker_stop = stop.clone();
@@ -88,19 +98,22 @@ impl Drop for Refresh {
 }
 
 impl VariaxEditor {
-    pub(super) fn download_button(&mut self, ui: &mut egui::Ui) -> bool {
-        if self.refresh.attachment.is_none() || self.follow.disconnected() {
-            return false;
-        }
+    pub(super) fn download_target_ready(&self) -> bool {
+        self.refresh.attachment.is_some() && !self.follow.disconnected()
+    }
+
+    pub(super) fn download_button(&mut self, ui: &mut egui::Ui) {
         let button = ui.add_enabled(
-            cfg!(target_os = "linux") && !self.refresh.busy() && !self.follow.busy(),
+            cfg!(target_os = "linux")
+                && self.download_target_ready()
+                && !self.refresh.busy()
+                && !self.follow.busy(),
             egui::Button::new("Download from guitar…")
                 .min_size(egui::vec2(0.0, super::theme::TARGET)),
         );
         if button.clicked() {
             self.request_refresh(read_library);
         }
-        true
     }
 
     fn request_refresh(&mut self, read: ReadLibrary) {
@@ -154,6 +167,36 @@ impl VariaxEditor {
         }
     }
 
+    pub(super) fn start_automatic_download(&mut self) {
+        #[cfg(test)]
+        let Some(read) = self.refresh.auto_source else {
+            return;
+        };
+        #[cfg(not(test))]
+        let read = read_library;
+        if !cfg!(target_os = "linux")
+            || !self.download_target_ready()
+            || self.is_reading()
+            || self.follow.busy()
+            || self.blocking_prompt()
+            || self.dirty()
+            || self.opening_file
+            || self.source_path.is_some()
+            || self
+                .refresh
+                .attachment
+                .as_ref()
+                .is_none_or(|attachment| self.refresh.attempted.as_ref() == Some(&attachment.key))
+            || (self.document.is_some()
+                && !matches!(self.library_origin, Some(super::LibraryOrigin::Factory)))
+        {
+            return;
+        }
+        // Workbench 1.75 refreshed a missing bundle on connect. The editor
+        // here starts only the library read and does not send an edit buffer.
+        self.start_refresh(read);
+    }
+
     pub(super) fn poll_refresh(&mut self, ctx: &egui::Context) {
         let Some(worker) = &self.refresh.worker else {
             return;
@@ -181,7 +224,8 @@ impl VariaxEditor {
             return;
         }
         match result.and_then(|capture| {
-            let mut document = EditorDocument::from_unsaved_bundle(capture.bundle)?;
+            let mut document =
+                EditorDocument::from_bundle(capture.bundle, "Downloaded Variax library".into())?;
             if let Restore::Switched { to, .. } = capture.restore {
                 document.select(usize::from(to.bank()), usize::from(to.slot()))?;
             }
@@ -425,7 +469,96 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn verified_refresh_confirms_dirty_replacement_and_loads_an_unsaved_bundle() {
+    fn a_verified_connection_downloads_once_and_cancel_remains_available() {
+        let (ctx, mut app) = app();
+        let editor = app.variax_mut();
+        editor.document = None;
+        editor.source_path = None;
+        editor.refresh.auto_source = Some(|attachment, stop, progress| {
+            progress.store(19, Ordering::Relaxed);
+            while !stop.load(Ordering::Relaxed) {
+                std::thread::yield_now();
+            }
+            complete_capture(attachment, stop, progress)
+        });
+        editor.poll(&ctx);
+        assert!(!editor.refresh.busy());
+
+        attach(editor);
+        editor.poll(&ctx);
+        assert!(editor.refresh.busy());
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !editor.status.contains("19/60") {
+            editor.poll(&ctx);
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        editor.cancel_operation();
+        wait_for_completion(editor, &ctx);
+        assert!(editor.document.is_none());
+        editor.poll(&ctx);
+        assert!(
+            !editor.refresh.busy(),
+            "cancel should persist for this connection"
+        );
+
+        editor.observe_device(None);
+        attach(editor);
+        editor.refresh.auto_source = Some(complete_capture);
+        editor.poll(&ctx);
+        wait_for_completion(editor, &ctx);
+        assert!(matches!(
+            editor.library_origin,
+            Some(super::super::LibraryOrigin::Download(_))
+        ));
+        assert_eq!(editor.document.as_ref().unwrap().banks().unwrap().len(), 12);
+    }
+
+    #[test]
+    fn automatic_download_respects_saved_libraries_files_and_dirty_factory_edits() {
+        let (ctx, mut app) = app();
+        let editor = app.variax_mut();
+        editor.refresh.auto_source = Some(complete_capture);
+        attach(editor);
+        editor.poll(&ctx);
+        assert!(
+            !editor.refresh.busy(),
+            "an explicitly opened file stays open"
+        );
+
+        editor.source_path = None;
+        editor.library_origin = Some(super::super::LibraryOrigin::Download(SystemTime::now()));
+        editor.poll(&ctx);
+        assert!(
+            !editor.refresh.busy(),
+            "a saved download already supplies the library"
+        );
+
+        editor.library_origin = Some(super::super::LibraryOrigin::Backup(
+            variax_workbench::variax_library::BackupSource::ImportedBackup,
+            SystemTime::now(),
+        ));
+        editor.poll(&ctx);
+        assert!(
+            !editor.refresh.busy(),
+            "an import already supplies the library"
+        );
+
+        editor.library_origin = Some(super::super::LibraryOrigin::Factory);
+        editor.change(|preset| preset.rename("Keep these edits"));
+        editor.poll(&ctx);
+        assert!(!editor.refresh.busy());
+        editor.undo();
+        editor.poll(&ctx);
+        wait_for_completion(editor, &ctx);
+        assert!(matches!(
+            editor.library_origin,
+            Some(super::super::LibraryOrigin::Download(_))
+        ));
+    }
+
+    #[test]
+    fn verified_refresh_confirms_dirty_replacement_and_loads_a_clean_bundle() {
         let (ctx, mut app) = app();
         let directory = tempfile::tempdir().unwrap();
         let defaults = super::super::EditorDefaults {
@@ -453,7 +586,7 @@ pub(super) mod tests {
 
         let document = editor.document.as_ref().unwrap();
         assert_eq!(document.selection(), Some((3, 2)));
-        assert!(document.is_dirty());
+        assert!(!document.is_dirty());
         assert!(!document.can_undo());
         assert!(!document.slot_is_dirty(3, 2));
         assert!(editor.source_path().is_none());
@@ -472,6 +605,8 @@ pub(super) mod tests {
 
         let target = directory.path().join("Guitar.vwb");
         std::fs::write(&target, b"original").unwrap();
+        editor.change(|preset| preset.rename("Edit after reading"));
+        assert!(editor.dirty());
         assert!(!editor.save_copy_to(target.clone()));
         assert!(editor.dirty());
         assert_eq!(std::fs::read(&target).unwrap(), b"original");

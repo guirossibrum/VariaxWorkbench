@@ -70,9 +70,11 @@ pub(super) fn startup_artwork(defaults: &EditorDefaults) -> (PathBuf, Option<Str
             // The shell supplies its resolved startup directory. A custom
             // command-line path takes precedence over the remembered folder.
             let artwork_override = std::env::args_os().skip(1).any(|arg| arg == "--artwork");
-            let automatic = !artwork_override
-                && (defaults.artwork == path.with_file_name("artwork")
-                    || defaults.artwork == crate::editor::default_artwork());
+            let matches_data_root = defaults.artwork == path.with_file_name("artwork");
+            #[cfg(not(test))]
+            let matches_data_root =
+                matches_data_root || defaults.artwork == crate::editor::default_artwork();
+            let automatic = !artwork_override && matches_data_root;
             let artwork = preferences
                 .artwork
                 .filter(|_| automatic)
@@ -131,7 +133,7 @@ impl VariaxEditor {
     }
 
     pub(super) fn preference_button(&mut self, ui: &mut egui::Ui) {
-        if ui.add(egui::Button::new("Preferences…").small()).clicked() {
+        if ui.button("Preferences…").clicked() {
             match self.author_setting() {
                 Ok(value) => {
                     self.author_preference = Some(AuthorPreference {

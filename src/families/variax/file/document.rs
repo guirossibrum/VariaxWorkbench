@@ -56,7 +56,6 @@ pub struct EditorDocument {
     undo: Vec<DocumentState>,
     redo: Vec<DocumentState>,
     saved: DocumentState,
-    needs_first_save: bool,
     group_base: Option<DocumentState>,
     pub source: PathBuf,
 }
@@ -136,18 +135,9 @@ impl EditorDocument {
         ))
     }
 
-    /// A fresh guitar read needs a first save even before any slot is edited.
-    #[cfg(feature = "usb")]
-    pub fn from_unsaved_bundle(file: BundleFile) -> Result<Self, String> {
-        let mut document = Self::from_bundle(file, PathBuf::from("Variax guitar library"))?;
-        document.needs_first_save = true;
-        Ok(document)
-    }
-
     fn from_state(state: DocumentState, source: PathBuf) -> Self {
         Self {
             saved: state.clone(),
-            needs_first_save: false,
             state,
             undo: vec![],
             redo: vec![],
@@ -296,7 +286,7 @@ impl EditorDocument {
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.needs_first_save || self.as_bytes() != self.saved.bytes()
+        self.as_bytes() != self.saved.bytes()
     }
 
     /// Compare one bundle slot with the last opened, read or saved state.
@@ -391,8 +381,7 @@ impl EditorDocument {
 
     fn replaceable_source(&self, path: &Path) -> Result<PathBuf, String> {
         let protected = "Save can only replace an opened or created Workbench file outside backups, logs, captures, vendor archives and firmware. Use Save As.";
-        if self.needs_first_save
-            || self.source != path
+        if self.source != path
             || !path
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case(self.extension()))
@@ -430,7 +419,6 @@ impl EditorDocument {
 
     fn mark_saved(&mut self) {
         self.saved = self.state.clone();
-        self.needs_first_save = false;
     }
 
     pub fn begin_gesture(&mut self) {

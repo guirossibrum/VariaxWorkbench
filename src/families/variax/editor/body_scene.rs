@@ -76,8 +76,10 @@ impl VariaxEditor {
         } else {
             [PICKUP2, PICKUP1]
         };
+        let acoustic = self.acoustic_body();
         let images: Vec<_> = order
             .into_iter()
+            .filter(|_| !acoustic)
             .filter_map(|slot| self.canvas_image(ui.ctx(), slot).map(|image| (slot, image)))
             .collect();
         let sprites: Vec<_> = images
