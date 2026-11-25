@@ -1,6 +1,6 @@
 //! Bounded reads of the 1,092-word active buffer on Variax firmware 3.10.
 
-use super::{HEADER, decode_word, is_reply, with_bridged_read_session};
+use super::{HEADER, Preset, VariaxRequest, decode_word, is_reply, with_bridged_read_session};
 use crate::{
     gate::Operation,
     midi::{Event, hex},
@@ -100,6 +100,31 @@ pub struct SpanReply {
 pub fn read_spans<L: Link>(
     session: &mut Session<L>,
     spans: &[PresetSpan],
+    stopping: impl FnMut() -> bool,
+    received: impl FnMut(SpanReply) -> Result<(), String>,
+) -> Result<(), String> {
+    read_spans_with_selection(session, None, spans, stopping, received)
+}
+
+/// Select a stored preset using the same command as the library sweep, then
+/// read its active buffer before closing the bridge.
+pub fn read_selected_spans<L: Link>(
+    session: &mut Session<L>,
+    preset: Preset,
+    spans: &[PresetSpan],
+    stopping: impl FnMut() -> bool,
+    received: impl FnMut(SpanReply) -> Result<(), String>,
+) -> Result<(), String> {
+    if !session.allows(Operation::VariaxPresetSwitch) {
+        return Err("Buffer selection requires VariaxPresetSwitch.".into());
+    }
+    read_spans_with_selection(session, Some(preset), spans, stopping, received)
+}
+
+fn read_spans_with_selection<L: Link>(
+    session: &mut Session<L>,
+    preset: Option<Preset>,
+    spans: &[PresetSpan],
     mut stopping: impl FnMut() -> bool,
     received: impl FnMut(SpanReply) -> Result<(), String>,
 ) -> Result<(), String> {
@@ -113,6 +138,12 @@ pub fn read_spans<L: Link>(
         return Err("Variax buffer read cancelled or log unavailable.".into());
     }
     with_bridged_read_session(session, BRIDGE_SETTLE, |session| {
+        if let Some(preset) = preset {
+            if stopping() {
+                return Err("Variax buffer read cancelled before selection.".into());
+            }
+            session.send(VariaxRequest::Program(preset))?;
+        }
         read_active_spans(session, spans, stopping, received)
     })
 }

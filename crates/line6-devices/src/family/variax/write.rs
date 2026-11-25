@@ -224,6 +224,27 @@ fn transaction<L: Link, T, E: From<String> + std::fmt::Display>(
     }
 }
 
+/// Upload only the full working buffer in a read-style bridged session.
+/// The owner audition does not bypass DSP or send a store command.
+pub fn audition<L: Link>(
+    session: &mut Session<L>,
+    program: &Program<'_>,
+    mut stopping: impl FnMut() -> bool,
+) -> Result<(), String> {
+    if session.link.path() != Path::VariaxViaPodxt
+        || !session.allows(G6)
+        || !session.allows(Operation::VariaxRead)
+    {
+        return Err("Variax audition requires the bridged read and edit gates.".into());
+    }
+    if stopping() {
+        return Err("Variax transfer stopped.".into());
+    }
+    super::with_bridged_read_session(session, super::span_read::BRIDGE_SETTLE, |session| {
+        WriteRequest(G6, Message::Full(&full(program))).send_until(session, &mut stopping)
+    })
+}
+
 /// A G6 edit within one open Workbench-style session.
 pub enum Edit<'a> {
     /// Upload the final program when the current edit-buffer contents are unknown.
@@ -374,7 +395,18 @@ pub fn store_checked<L: Link>(
     session: &mut Session<L>,
     preset: Preset,
     program: &Program<'_>,
+    stopping: impl FnMut() -> bool,
+) -> Result<(), StoreError> {
+    store_observing_commit(session, preset, program, stopping, || {})
+}
+
+/// Call the observer immediately before attempting the irreversible slot command.
+pub fn store_observing_commit<L: Link>(
+    session: &mut Session<L>,
+    preset: Preset,
+    program: &Program<'_>,
     mut stopping: impl FnMut() -> bool,
+    committing: impl FnOnce(),
 ) -> Result<(), StoreError> {
     if stopping() {
         return Err(StoreError::Other("Variax transfer stopped.".into()));
@@ -397,6 +429,7 @@ pub fn store_checked<L: Link>(
             require_quiet_reply_stream(session)?;
         }
         let unknown = |error| format!("{error} Slot state is unknown.");
+        committing();
         WriteRequest(G7, Message::Store(preset))
             .send(session)
             .map_err(unknown)?;
