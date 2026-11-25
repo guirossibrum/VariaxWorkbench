@@ -250,7 +250,11 @@ mod tests {
                     continue;
                 }
                 assert_eq!(*person.cards.last().unwrap(), RIG_GUARD, "{stop}");
-                assert!(at_start(&rig), "stop at {stop} (during: {during})");
+                assert!(
+                    at_start(&rig),
+                    "stop at {stop} (during: {during}): {:?}",
+                    run.step(RIG_GUARD)
+                );
                 assert!(
                     run.step(RIG_GUARD).outcome.passed(),
                     "{stop}: {:?}",

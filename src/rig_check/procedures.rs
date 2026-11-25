@@ -114,6 +114,14 @@ pub fn with_variax<T>(
     result
 }
 
+/// Listen briefly (sending nothing) so stale input is logged and does not
+/// interrupt the next read.
+pub const DRAIN: Duration = Duration::from_millis(300);
+
+pub fn drain<L: Link>(session: &mut Session<L>) -> Result<(), String> {
+    session.listen(DRAIN).map(|_| ())
+}
+
 pub fn chunks() -> [PresetSpan; CHUNK_COUNT] {
     std::array::from_fn(|index| {
         let start = index as u16 * CHUNK_WORDS;

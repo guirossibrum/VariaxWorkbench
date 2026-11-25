@@ -107,6 +107,10 @@ pub fn execute(ctx: &mut Ctx<'_>) -> Result<(), String> {
         (5, 1) => super::variax_save::save_own_bytes(ctx),
         (5, 2) => super::podxt_save::save_own_bytes(ctx),
         (6, 2) => rig_guard(ctx),
+        (7, 1) => super::guided::selector(ctx),
+        (7, 2) => super::guided::knobs(ctx),
+        (7, 3) => super::guided::footswitch(ctx),
+        (7, 4) => super::guided::pedal(ctx),
         _ => placeholder(ctx),
     }
 }
@@ -627,6 +631,9 @@ fn rig_guard(ctx: &mut Ctx<'_>) -> Result<(), String> {
     }
     if let Some(start) = ctx.data.start_program {
         let now = with_variax(ctx, VARIAX_SELECT, |session, stopping| {
+            // Let anything the guitar sent meanwhile (a selector turn after
+            // Stop) arrive and be logged before the read starts.
+            procedures::drain(session)?;
             variax_full_read(session, stopping)
         })?;
         if same_program(&now.words, &start) {
