@@ -1,5 +1,7 @@
 # Variax 300/600 write transactions
 
+The editor and Rig Check integration contract is in [shared Variax procedures](variax-shared-procedures.md).
+
 Offline design and evidence for [#175](https://github.com/guirossibrum/VariaxWorkbench/issues/175)
 and [#25](https://github.com/guirossibrum/VariaxWorkbench/issues/25). The
 reference is Workbench 1.75 build 121 on the PODxt Live path. The Rust

@@ -10,6 +10,8 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] #245 moves the verified Variax wire procedures into the device crate. Existing owner-tool fake transports still assert the original bytes, including the store and switch-back sequences. The difference audition covers the exact 0x3B send, the retained checksum word, the full read-back and the return. [Shared API](variax-shared-procedures.md).
+
 - [x] Device check records complete PODxt Live library backups as typed startup receipts with independent, manifest-verified app-data snapshots. Headless tests load the current tone and all stored entries after moving the original, and cover refusal of partial or mismatched backups and fallback from a damaged snapshot. [#242](https://github.com/guirossibrum/VariaxWorkbench/issues/242).
 
 - [x] Device check saves an independent, manifest-verified Variax library snapshot in app data before publishing its startup receipt. Headless tests cover startup after moving the original full backup, all 60 program files and the original identity and manifest, repeated saves, and a failed snapshot with no published receipt. [#240](https://github.com/guirossibrum/VariaxWorkbench/issues/240).

@@ -8,6 +8,7 @@ mod procedure;
 #[cfg(all(not(test), target_os = "linux"))]
 mod live;
 
+const DIFF_LISTEN_CARD: &str = include_str!("../../docs/variax-diff-listen-test-card.md");
 const LISTEN_LIST_CARD: &str = include_str!("../../docs/variax-listen-list-test-card.md");
 const SELECTION_CARD: &str = include_str!("../../docs/variax-any-selection-test-card.md");
 const FULL_READ_CARD: &str = include_str!("../../docs/reso5-full-read-test-card.md");
@@ -24,6 +25,10 @@ fn main() {
 }
 
 fn run(args: &[OsString]) -> Result<(), String> {
+    if args == ["--diff-listen-card"] {
+        print!("{DIFF_LISTEN_CARD}");
+        return Ok(());
+    }
     if args == ["--listen-list-card"] {
         print!("{LISTEN_LIST_CARD}");
         return Ok(());
@@ -61,6 +66,15 @@ fn run(args: &[OsString]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_build_cannot_open_a_device_for_diff_listen() {
+        let args = ["diff-listen", "14", "backup", "archive", "models", "logs"].map(OsString::from);
+        assert_eq!(
+            run(&args).unwrap_err(),
+            "This build prints the test card only. No device was opened."
+        );
+    }
 
     #[test]
     fn test_build_cannot_open_a_device_for_listen_list() {

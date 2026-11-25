@@ -50,6 +50,15 @@ impl<'a> Program<'a> {
         Ok(program)
     }
 
+    pub fn bytes(&self) -> &'a [u8; WORDS * 3] {
+        self.0
+    }
+
+    // A difference can retain the previous checksum word in the active buffer.
+    pub(super) fn difference_baseline(packed: &'a [u8; WORDS * 3]) -> Self {
+        Self(packed)
+    }
+
     fn word(&self, index: usize) -> u64 {
         let bytes = &self.0[index * 3..][..3];
         u64::from(u32::from_be_bytes([0, bytes[0], bytes[1], bytes[2]]))

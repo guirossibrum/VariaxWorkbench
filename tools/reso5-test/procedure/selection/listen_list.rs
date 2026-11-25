@@ -1,6 +1,11 @@
-use super::{Image, READ_TIME, capture, preset_name, returned, snapshot, sources, step, store};
+use super::{
+    Image, READ_TIME, capture_dir, full_read, preset_name, returned, snapshot, sources, step,
+};
 use line6_devices::{
-    family::variax::write,
+    family::variax::{
+        procedures::{self, BufferEdit},
+        write,
+    },
     session::{Link, Session},
 };
 use std::path::Path;
@@ -98,18 +103,15 @@ pub fn attempt<L: Link>(
                 ),
             );
             attempted = true;
-            write::audition(session, &program, &mut stopping)?;
-            let captured = capture(
+            procedures::send_buffer_verified(
                 session,
-                root,
-                &format!("listen-list-{:02}", i + 1),
-                None,
-                &mut stopping,
-            )?;
-            store::compare_image(
-                &captured,
-                &entry.program,
+                BufferEdit::Full(&program),
                 &format!("{} read-back", entry.label),
+                &mut stopping,
+                || {
+                    capture_dir(root, &format!("listen-list-{:02}", i + 1))
+                        .map(full_read::save_chunks)
+                },
             )?;
             announce(&format!("{} working buffer verified.", entry.label));
             let next = if i + 1 == prepared.entries.len() {

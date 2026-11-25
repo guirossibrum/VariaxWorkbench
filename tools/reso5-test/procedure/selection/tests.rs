@@ -1,6 +1,7 @@
 use super::*;
 use crate::procedure::{expected_stored_image, set_firmware_checksum};
 use line6_devices::{
+    family::variax,
     identity::REQUEST,
     session::{Path as DevicePath, Quiet},
 };
@@ -889,4 +890,181 @@ fn listen_list_refuses_an_empty_list_before_accessing_inputs() {
     let unused = Path::new("unreadable");
     let status = super::listen_list::prepare(unused, unused, unused, &[]);
     assert!(status.err().unwrap().contains("at least one .vwm"));
+}
+
+fn difference(script: &mut Script, ack: bool) {
+    send(script, BRIDGE_ON);
+    wrapped(script, &[0x2a, 1]);
+    // A single run containing one word at address 0. The checksum word is
+    // deliberately absent, even though the candidate's checksum changed.
+    send(script, HEADER);
+    send(
+        script,
+        &[0x3b, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 6],
+    );
+    if ack {
+        reply(script, &[0xf7], ACK);
+    } else {
+        send(script, &[0xf7]);
+    }
+    wrapped(script, &[0x4c, 0]);
+    wrapped(script, &[0x2a, 0]);
+    send(script, BRIDGE_OFF);
+}
+
+#[test]
+fn diff_listen_checks_every_word_and_returns_only_after_the_acknowledged_edit() {
+    let original = expected_stored_image(&image(1, "Original"));
+    let mut edited = original;
+    edited[0] = 102;
+    set_firmware_checksum(&mut edited);
+    let mut expected = edited;
+    expected[3273..].copy_from_slice(&original[3273..]);
+
+    for (ack, matches) in [(true, true), (true, false), (false, false)] {
+        let mut script = Vec::new();
+        reply(&mut script, &REQUEST, &IDENTITY);
+        read_chunks(&mut script, None, &original);
+        difference(&mut script, ack);
+        if ack {
+            // Reporting a new checksum here would hide a firmware difference.
+            read_chunks(&mut script, None, if matches { &expected } else { &edited });
+            read_chunks(
+                &mut script,
+                Some(target(0).unwrap().program_number()),
+                &original,
+            );
+        }
+        let mut fake = Fake::new(script, Cancel::Never);
+        let mut log = Quiet;
+        let policy = Policy(Mode::Listen);
+        let root = tempfile::tempdir().unwrap();
+        let prepared = diff_listen::Prepared::fixture(target(0).unwrap(), vec![original], edited);
+        let mut prompted = false;
+        let result = diff_listen::attempt(
+            &mut Session::new(&mut fake, &policy, &mut log),
+            &prepared,
+            root.path(),
+            || {
+                prompted = true;
+                Ok(())
+            },
+            |_| {},
+            || false,
+        );
+        fake.assert_finished();
+        assert_eq!(prompted, matches);
+        match (ack, matches) {
+            (true, true) => result.unwrap(),
+            (true, false) => {
+                let error = result.unwrap_err();
+                assert!(error.contains("word 1091") && error.contains("reselected and verified"));
+            }
+            (false, _) => {
+                let error = result.unwrap_err();
+                assert!(
+                    error.contains("Reopen the link") && error.contains("by hand"),
+                    "{error}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn diff_listen_refuses_another_preset_before_any_edit() {
+    let original = expected_stored_image(&image(1, "Original"));
+    let other = expected_stored_image(&image(2, "Other"));
+    let prepared =
+        diff_listen::Prepared::fixture(target(0).unwrap(), vec![original, other], original);
+    let mut script = Vec::new();
+    reply(&mut script, &REQUEST, &IDENTITY);
+    read_chunks(&mut script, None, &other);
+    let mut fake = Fake::new(script, Cancel::Never);
+    let root = tempfile::tempdir().unwrap();
+    let error = diff_listen::attempt(
+        &mut Session::new(&mut fake, &Policy(Mode::Listen), &mut Quiet),
+        &prepared,
+        root.path(),
+        || panic!("A different preset must not reach the audition."),
+        |_| {},
+        || false,
+    )
+    .unwrap_err();
+    assert!(
+        error.contains(&format!(
+            "Select {} by hand",
+            preset_name(target(0).unwrap())
+        )),
+        "{error}"
+    );
+    fake.assert_finished();
+}
+
+#[test]
+fn shared_store_and_reload_checks_gate_first_and_uses_exact_owner_wire_sequence() {
+    let prepared = test_prepared(Mode::Store);
+    let name = sources::metadata(&prepared.program).unwrap().name;
+    let program = write::Program::new(&name, &prepared.program).unwrap();
+    let mut script = Vec::new();
+    upload(&mut script, &prepared, Some(ACK));
+    read_chunks(
+        &mut script,
+        Some(prepared.target.program_number()),
+        &prepared.expected,
+    );
+    let mut fake = Fake::new(script, Cancel::Never);
+    let mut log = Quiet;
+    let mut session = Session::new(&mut fake, &crate::procedure::StorePolicy, &mut log);
+    let error = procedures::store_and_reload(
+        &mut session,
+        prepared.target,
+        &program,
+        || false,
+        |_| panic!("Unexpected timeout"),
+        |_| Ok(()),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, VerifiedStoreError::BeforeCommit(message) if message.contains("VariaxPresetSwitch"))
+    );
+
+    let mut session = Session::new(&mut fake, &Policy(Mode::Store), &mut log);
+    let mut replies = 0;
+    procedures::store_and_reload(
+        &mut session,
+        prepared.target,
+        &program,
+        || false,
+        |_| panic!("Unexpected timeout"),
+        |_| {
+            replies += 1;
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(replies, 35);
+    fake.assert_finished();
+}
+
+#[test]
+#[ignore = "requires local #236 backup, archive and model manifest"]
+fn private_inputs_verify_spank_one_trim_difference() {
+    let backup = std::env::var_os("VARIAX_SELECTION_BACKUP").unwrap();
+    let archive = std::env::var_os("VARIAX_310_ARCHIVE").unwrap();
+    let manifest = std::env::var_os("VARIAX_SELECTION_MODELS").unwrap();
+    let prepared = diff_listen::prepare(
+        14,
+        Path::new(&backup),
+        Path::new(&archive),
+        Path::new(&manifest),
+    )
+    .unwrap();
+    let description = prepared.description().unwrap();
+    assert_eq!(description.len(), 4);
+    assert_eq!(description[1], "  trim: 0.00dB → -6.00dB");
+    assert_eq!(
+        description[3],
+        "Expected working image SHA-256: b43a2b47105f31d0b49c9fadaae7465159b117524245703aa3b6ac6f13f788de"
+    );
 }

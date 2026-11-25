@@ -1,19 +1,21 @@
 use super::{
     METADATA, NAME, STORED_HASH, check_backup, compare_settings, expected_stored_image, full_read,
-    location, matches_hash, set_firmware_checksum, variax_identity,
+    location, matches_hash, set_firmware_checksum,
 };
 use line6_devices::{
-    family::variax::{self, write},
+    family::variax::{
+        procedures::{self, VerifiedStoreError, compare_image, read_settings},
+        write,
+    },
     session::{Link, Session},
 };
 use sha2::{Digest, Sha256};
-use std::{fs, io::Read, path::Path, time::Duration};
+use std::{fs, io::Read, path::Path};
 use variax_workbench::{factory_reference::PROGRAM_BYTES, open_regular_file, path_facts};
 
 const CAPTURE_HASH: &str = "3d8bae813991fa5996fb649ad80d116de8ef358c03724770183b89cdef5ad249";
 const RENAME_HASH: &str = "75bcaaf5f775bcd2f5ba22289aa4b8e9cac0c6115b4ac32b75144b4ccb5c716b";
 const RENAMED: &str = "Reso-5 T";
-pub(super) const AFTER_TIMEOUT: Duration = Duration::from_secs(120);
 pub const SPARE_WARNING: &str = "Do not store any slot in 40–59 until spare 62 is known blank.";
 
 type Image = [u8; PROGRAM_BYTES];
@@ -197,35 +199,6 @@ pub fn require_confirmation(prompt: Prompt, answer: &str) -> Result<(), String> 
     Ok(())
 }
 
-pub(super) fn compare_image(
-    actual: &full_read::FullBuffer,
-    expected: &Image,
-    phase: &str,
-) -> Result<(), String> {
-    for (index, (&word, &[a, b, c])) in actual.iter().zip(expected.as_chunks::<3>().0).enumerate() {
-        let expected = u32::from_be_bytes([0, a, b, c]);
-        if word != expected {
-            let start = index * 3;
-            if METADATA.contains(&start) {
-                let byte = word.to_be_bytes()[1..]
-                    .iter()
-                    .zip([a, b, c])
-                    .position(|(&actual, expected)| actual != expected)
-                    .expect("different word");
-                let offset = start - METADATA.start + byte;
-                let name = variax::PresetMetadata::field_at(offset).unwrap_or("unmapped settings");
-                return Err(format!(
-                    "{phase} differs at word {index} ({name}, settings byte {offset}): read 0x{word:06X}, expected 0x{expected:06X}."
-                ));
-            }
-            return Err(format!(
-                "{phase} differs at word {index}: read 0x{word:06X}, expected 0x{expected:06X}."
-            ));
-        }
-    }
-    Ok(())
-}
-
 pub fn attempt<L: Link>(
     session: &mut Session<L>,
     prepared: &Prepared,
@@ -239,11 +212,7 @@ pub fn attempt<L: Link>(
     if cancelled() {
         return Err("Cancelled before reading the guitar.".into());
     }
-    let current = variax::read_current_checked_retrying_silence(
-        session,
-        super::IDENTITY_RETRY_DELAY,
-        variax_identity,
-    )?;
+    let current = read_settings(session)?;
     compare_settings(
         &current.metadata.raw,
         backup_settings,
@@ -265,32 +234,35 @@ pub fn attempt<L: Link>(
         "Slot 50 {} confirmed. Sending the pinned program.",
         prepared.mode.label()
     ));
-    match write::store_checked(session, location(), &program, &mut cancelled) {
+    let verified = procedures::store_verified(
+        session,
+        location(),
+        &program,
+        "Reselected slot 50 read-back",
+        &mut cancelled,
+        announce_timeout,
+        |session| {
+            session.note("Received 0x71. Waiting for manual reselection of Reso 5.");
+            prompt(Prompt::Reselect)?;
+            full_read::read_chunks(session, &readback_dir, || false)
+        },
+    );
+    match verified {
         Ok(()) => {}
-        Err(write::StoreError::NoConfirmation) => {
-            let notice = format!(
-                "No 0x71. Keep the rig powered and untouched for 2 minutes. {SPARE_WARNING}"
-            );
-            session.note(&notice);
-            announce_timeout(&notice);
-            session.link.pause(AFTER_TIMEOUT);
+        Err(VerifiedStoreError::SilentTimeout) => {
             return Err(format!(
                 "Timed out waiting for the Variax store reply. Slot state is unknown. Check whether the guitar responds to a preset change. If it responds, take a Device check Variax backup and compare it with the first. Report the result and keep the store log. If it does not respond, report before powering off. {SPARE_WARNING}"
             ));
         }
-        Err(error) => return Err(error.to_string()),
+        Err(
+            VerifiedStoreError::BeforeCommit(error)
+            | VerifiedStoreError::Unknown(error)
+            | VerifiedStoreError::Verification(error),
+        ) => return Err(error),
     }
 
-    session.note("Received 0x71. Waiting for manual reselection of Reso 5.");
-    prompt(Prompt::Reselect)?;
     // Ctrl+C after 0x61 does not interrupt the verification reads.
-    let after = full_read::read_chunks(session, &readback_dir, || false)?;
-    compare_image(&after, &prepared.after, "Reselected slot 50 read-back")?;
-    let settings = variax::read_current_checked_retrying_silence(
-        session,
-        super::IDENTITY_RETRY_DELAY,
-        variax_identity,
-    )?;
+    let settings = read_settings(session)?;
     compare_settings(
         &settings.metadata.raw,
         &prepared.after[METADATA],
