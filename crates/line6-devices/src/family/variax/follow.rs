@@ -45,13 +45,14 @@ pub fn follow<L: Link>(
     cancelled: impl Fn() -> bool,
     publish: impl FnMut(FollowUpdate),
 ) -> Result<(), String> {
-    follow_on(session, cancelled, publish)
+    follow_on(session, None, cancelled, publish)
 }
 
 fn follow_on<L: Link>(
     session: &mut Session<L>,
+    window: Option<Duration>,
     cancelled: impl Fn() -> bool,
-    mut publish: impl FnMut(FollowUpdate),
+    publish: impl FnMut(FollowUpdate),
 ) -> Result<(), String> {
     if session.link.path() != Path::VariaxViaPodxt
         || !session.allows(Operation::VariaxIdentity)
@@ -73,9 +74,39 @@ fn follow_on<L: Link>(
         return Ok(());
     }
 
+    listen_updates(session, window, cancelled, publish)
+}
+
+/// Bounded Follow for an already locked diagnostic link. While waiting for
+/// a replug the prior identity is required from the caller, since the guitar
+/// cannot answer yet. Reverify that identity once it reconnects.
+pub fn follow_window<L: Link>(
+    session: &mut Session<L>,
+    window: Duration,
+    waiting_for_replug: bool,
+    cancelled: impl Fn() -> bool,
+    publish: impl FnMut(FollowUpdate),
+) -> Result<(), String> {
+    if waiting_for_replug {
+        listen_updates(session, Some(window), cancelled, publish)
+    } else {
+        follow_on(session, Some(window), cancelled, publish)
+    }
+}
+
+fn listen_updates<L: Link>(
+    session: &mut Session<L>,
+    window: Option<Duration>,
+    cancelled: impl Fn() -> bool,
+    mut publish: impl FnMut(FollowUpdate),
+) -> Result<(), String> {
     with_bridged_read_session(session, Duration::ZERO, |session| {
         let mut reported_connected = false;
-        while !cancelled() {
+        let start = session.link.elapsed();
+        session.note("Listening window open for Variax Follow.");
+        while !cancelled()
+            && window.is_none_or(|window| session.link.elapsed().saturating_sub(start) < window)
+        {
             for event in session.poll(POLL)?.into_iter().flatten() {
                 if cancelled() {
                     return Ok(());

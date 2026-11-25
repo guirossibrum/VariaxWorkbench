@@ -186,6 +186,7 @@ fn the_channel_operator_runs_practice_mode_from_another_thread() {
                         "Channel 1D: Practice 1D",
                     ],
                     StepId(2, 5) => &["Read 299 of 299 entries"],
+                    StepId(2, 6) => &["Editor Get: 5B", "global values answered"],
                     StepId(3, 1) => &["Variax 300/600", "firmware 3.10 (verified device)"],
                     StepId(3, 2) => &["Preset name: \"Spank 1\""],
                     StepId(3, 3) => &["Progress 35 of 35 chunks", "checksum OK"],
@@ -201,8 +202,20 @@ fn the_channel_operator_runs_practice_mode_from_another_thread() {
                         "Practice test model (drop D): you answered Yes",
                         "Back on Spank 1",
                     ],
+                    StepId(4, 4 | 5) => {
+                        &["working buffer was verified", "original program verified"]
+                    }
+                    StepId(4, 6) => &["whole tone read back as sent"],
+                    StepId(4, 7) => &["verified the return to 5B"],
+                    StepId(4, 8) => &["The tuner is off"],
                     StepId(5, 1) => &["Saved and verified Spank 1"],
                     StepId(5, 2) => &["Saved and verified channel 5B"],
+                    StepId(5, 3) => &["Saved and verified the quieter", "original backup verified"],
+                    StepId(5, 4) => &[
+                        "Synced and verified Spank 1",
+                        "Synced and verified Spank 2",
+                        "Back on Spank 1",
+                    ],
                     StepId(6, 1) => &[
                         "reported the guitar disconnected",
                         "reported the guitar connected again",
@@ -217,6 +230,7 @@ fn the_channel_operator_runs_practice_mode_from_another_thread() {
                     StepId(7, 2) => &["volume 0-127, tone 0-127"],
                     StepId(7, 3) => &["Practice 5C", "Back on channel 5B"],
                     StepId(7, 4) => &["Pedal range seen: 0-127"],
+                    StepId(7, 5) => &["Drive changed", "verified in the tone"],
                     StepId(8, 1) => &[
                         "Audio system: ALSA",
                         "PODxt Live audio device: card 1",
@@ -254,9 +268,9 @@ fn the_channel_operator_runs_practice_mode_from_another_thread() {
     }
     drop(to_runner);
     let passed = worker.join().unwrap();
-    assert_eq!(passed, 28);
-    assert_eq!(cards, 28);
-    assert_eq!(results, 28);
+    assert_eq!(passed, 37);
+    assert_eq!(cards, 37);
+    assert_eq!(results, 37);
 }
 
 #[test]

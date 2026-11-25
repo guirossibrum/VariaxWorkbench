@@ -10,7 +10,7 @@
 
 use super::approvals;
 use super::catalogue::{
-    self, Kind, RIG_GUARD, RUN_ORDER, START_NOTICE, SaveNotice, Step, StepId, VARIAX_EVIDENCE,
+    self, Kind, RIG_GUARD, RUN_ORDER, Risk, START_NOTICE, SaveNotice, Step, StepId, VARIAX_EVIDENCE,
 };
 use super::port::RigPort;
 use super::record::{Mode, Outcome, RunRecord, StepRecord, utc_now};
@@ -191,8 +191,8 @@ impl<'a> Runner<'a> {
                 self.write_report();
             }
         }
-        if self.variax_evidence_applicable() {
-            self.release_evidence_rig();
+        if self.variax_evidence_applicable() || self.data.store_state_unknown {
+            self.release_without_midi();
         } else {
             // The usual guard is offered last, also after Stop.
             self.step(RIG_GUARD);
@@ -215,7 +215,7 @@ impl<'a> Runner<'a> {
         }
     }
 
-    fn release_evidence_rig(&mut self) {
+    fn release_without_midi(&mut self) {
         let release = if self.port.variax_claimed() {
             self.port.release_variax().map(|lines| lines.join(" "))
         } else {
@@ -225,7 +225,14 @@ impl<'a> Runner<'a> {
             release.unwrap_or_else(|error| format!("Guitar interface release failed: {error}"));
         self.finish(
             RIG_GUARD,
-            Outcome::NotAvailable("Evidence mode ends with USB release only.".into()),
+            Outcome::NotAvailable(
+                if self.data.store_state_unknown {
+                    "The store outcome is unknown. USB release only."
+                } else {
+                    "Evidence mode ends with USB release only."
+                }
+                .into(),
+            ),
             None,
             None,
         );
@@ -279,6 +286,7 @@ impl<'a> Runner<'a> {
                     Err(error) if stopped_now => Outcome::Stopped(error),
                     Err(error) => Outcome::Failed(error),
                 };
+                self.data.read_only |= matches!(outcome, Outcome::Failed(_));
                 if id == RIG_GUARD {
                     self.run.rig_state = rec
                         .evidence
@@ -317,6 +325,28 @@ impl<'a> Runner<'a> {
         }
         if let Some(reason) = step.not_in_this_version {
             return Some(Outcome::NotAvailable(reason.into()));
+        }
+        let earlier = || {
+            RUN_ORDER
+                .iter()
+                .copied()
+                .take_while(|&id| id != step.id)
+                .filter(|&id| id != VARIAX_EVIDENCE || self.variax_evidence_applicable())
+        };
+        if matches!(step.risk, Risk::Live | Risk::Save)
+            && let Some(id) =
+                earlier().find(|&id| matches!(self.run.step(id).outcome, Outcome::Failed(_)))
+        {
+            return Some(Outcome::SkippedNeeds(format!(
+                "read-only from here: step {id} failed"
+            )));
+        }
+        if step.risk == Risk::Save
+            && let Some(id) = earlier().find(|&id| !self.run.step(id).outcome.passed())
+        {
+            return Some(Outcome::SkippedNeeds(format!(
+                "read-only from here: step {id} did not pass"
+            )));
         }
         let missing: Vec<String> = step
             .needs

@@ -1,6 +1,6 @@
 # Rig Check test catalogue
 
-**Catalogue version: 1.1 (2026-11-25).** Every report quotes this version.
+**Catalogue version: 1.2 (2026-11-25).** Every report quotes this version.
 Epic [#243](https://github.com/guirossibrum/VariaxWorkbench/issues/243) ·
 catalogue [#244](https://github.com/guirossibrum/VariaxWorkbench/issues/244).
 
@@ -120,7 +120,7 @@ owner-rig issue or card that proved the procedure.
 | 4.3 | Variax: listen to a test model, then return | 4.2, 3.4 | G6 | Live | #238 listen-list, [listen card](../variax-listen-list-test-card.md) |
 | 5.1 | Variax: save a preset's own bytes back to its slot | 3.4, 4.2 | G7 | Save | #177, #238 4c, [store card](../reso5-store-test-card.md) |
 | 5.2 | PODxt Live: save a channel's own bytes back to it | 2.5, 4.1 | G7 | Save | #222 stage B (owner run pending), [store card](../podxt-store-test-card.md) |
-| 5.3 | Variax: edit and restore a slot (not in this version) | 5.1 | G7 | Save | #238 4b/4c |
+| 5.3 | Variax: save a quieter preset and restore it | 5.1 | G7 | Save | #238 4b/4c |
 | 6.1 | VDI cable unplug and replug noticed | 3.1 | G2 | Read | #235 |
 | 6.2 | Rig back to its starting state, driver given back | – | G1–G3, G6 | Read (switches back if needed) | #239, #238 |
 | 7.1 | Turn the Variax selector to a named preset | 3.4 | G3 | Read | #202 Follow, #238 |
@@ -133,17 +133,36 @@ owner-rig issue or card that proved the procedure.
 | 8.4 | Measure latency (not in this version) | 8.2 | G4 | Live | #265 |
 | 8.5 | Record each test model (not in this version) | 4.3, 8.3 | G4 | Live | #265 |
 
-**Run order.** 0.1, 0.2, 0.3, 1.1, 1.2, 2.1, 2.2, 3.1, 3.2, 3.3, 2.3, 2.4,
-2.5, 3.4, 3.5, 3.6, 7.1, 7.2, 7.3, 7.4, 4.1, 4.2, 4.3, 5.1, 5.2, 5.3, 6.1,
-8.1, 8.2, 8.3, 8.4, 8.5, 6.2. Reads come before live changes, live changes
-before saves, and 6.2 comes last (also after **Stop**). The conditional
-step 3.7 can end the normal sequence right after 3.1.
+**Run order.** Computer, identity, reads and guided checks come first. These
+are followed by live steps 4.1–4.8, saves 5.1–5.4, then the closing guard 6.2.
+The conditional evidence branch 3.7 can end the normal sequence after 3.1.
+Every applicable earlier step must pass before a save is offered. A failure
+also closes any remaining live edits. See [coverage](coverage.md).
 
 **Unverified devices.** A Variax other than a 300/600 on firmware 3.10, or a
 PODxt other than a PODxt Live on firmware 3.01, is flagged **unverified
 device**. For a Variax 300/600 with unverified firmware, Rig Check offers
 step 3.7 after 3.1 and ends the normal sequence. For an unverified PODxt,
 live and save steps are skipped with that reason.
+
+## Additional coverage (1.2)
+
+| Step | Action | Player cue |
+| --- | --- | --- |
+| 2.6 | PODxt editor Get, packs and globals | Leave the controls alone. See the current channel, tone and available globals. |
+| 4.4 | Variax trim difference and return | Play the same passage. Hear the quieter sound and then the original level. |
+| 4.5 | Variax alternate-tuning transition and return | Play the low E string. Hear a lower pitch and then the original tuning. |
+| 4.6 | PODxt whole-tone send | The current sound stays loaded. See a verified whole-tone read-back. |
+| 4.7 | PODxt recall and return | Hear the next saved channel, then the starting tone. |
+| 4.8 | PODxt tuner | Pluck an open string. See tuner readings and the tuner turn off. |
+| 5.3 | Variax temporary save and restore | Confirm the named slot. See both stores verified. |
+| 5.4 | Variax two-slot Sync | Confirm both named slots. See each verified, then the original preset. |
+| 7.5 | PODxt Drive knob | Turn Drive and return it to the displayed starting value. See each value checked against a tone read-back. |
+
+The Follow checks use the editor's listeners. 6.1 follows disconnect and
+reconnect. 7.1 and 7.2 check the named preset and both full knob sweeps.
+7.3 waits for a matching channel update and checks the tone Follow reads back.
+7.4 checks pedal movement. 7.5 reports the Drive value after read-back.
 
 ## Step cards
 
@@ -354,9 +373,16 @@ Both the Rig Check and the device-crate evidence approvals are closed.
   then reads the slot back.
 - **Risk:** Save. **Evidence:** pre-check, store messages, receipt, read-back.
 
-### 5.3 Variax: edit and restore a slot (not in this version)
-- Excluded from the shared version by default (#243). Shown as "not
-  available in this version".
+### 5.3 Variax: save a quieter preset and restore it
+
+After the exact save confirmation, store the quieter variant and verify the
+slot. Restore the original verified backup and confirm it reads back.
+
+### 5.4 Variax: Sync two presets' own bytes
+
+Confirm the two named slots. Each is prechecked against the backup, stored
+once using its own bytes and verified. See each result, then the verified
+return to your starting preset.
 
 ### 6.1 VDI cable unplug and replug noticed
 - **What it does:** Asks you to unplug the VDI cable from the guitar, waits
@@ -437,5 +463,6 @@ Both the Rig Check and the device-crate evidence approvals are closed.
 
 ## Changes
 
+- 1.2 (2026-11-25): added app-message and Follow coverage and strict save prerequisites.
 - 1.1 (2026-11-25): added the conditional Variax firmware evidence step (#271).
 - 1.0 (2026-11-25): first catalogue.

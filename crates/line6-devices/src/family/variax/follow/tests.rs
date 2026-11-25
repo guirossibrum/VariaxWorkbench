@@ -80,6 +80,7 @@ fn follows_knobs_presets_and_notices_in_wire_order_with_no_domain_sends() {
     let mut session = Session::new(script(updates), &READS, &mut quiet);
     follow_on(
         &mut session,
+        None,
         || stopped.get(),
         |update| {
             received.push(update);
@@ -142,7 +143,15 @@ fn follow_requires_both_read_gates_and_the_variax_path_before_sending() {
     ] {
         let mut quiet = Quiet;
         let mut session = Session::new(Fake::from_bytes(path, vec![]), policy, &mut quiet);
-        assert!(follow_on(&mut session, || false, |_| panic!("unexpected update")).is_err());
+        assert!(
+            follow_on(
+                &mut session,
+                None,
+                || false,
+                |_| panic!("unexpected update")
+            )
+            .is_err()
+        );
         assert!(session.link.writes.is_empty());
     }
 }
@@ -161,7 +170,15 @@ fn follow_refuses_an_unverified_guitar_before_enabling_the_bridge() {
             &READS,
             &mut quiet,
         );
-        assert!(follow_on(&mut session, || false, |_| panic!("unexpected update")).is_err());
+        assert!(
+            follow_on(
+                &mut session,
+                None,
+                || false,
+                |_| panic!("unexpected update")
+            )
+            .is_err()
+        );
         assert_eq!(session.link.writes, [IDENTITY]);
         session.link.assert_finished();
     }
@@ -183,6 +200,7 @@ fn cancellation_before_identity_or_after_its_reply_stops_before_the_bridge() {
         let checks = Cell::new(0);
         follow_on(
             &mut session,
+            None,
             || {
                 checks.set(checks.get() + 1);
                 !during_identity || checks.get() > 1
@@ -201,6 +219,7 @@ fn cancel_while_idle_closes_the_session_and_releases_the_bridge() {
     let mut session = Session::new(script(vec![]), &READS, &mut quiet);
     follow_on(
         &mut session,
+        None,
         || {
             checks.set(checks.get() + 1);
             checks.get() == 4
@@ -249,7 +268,13 @@ fn disconnect_attempts_both_cleanup_sends_and_preserves_all_failures() {
         fake.fail_at = fail_at;
         let mut quiet = Quiet;
         let mut session = Session::new(Disconnect(fake), &READS, &mut quiet);
-        let error = follow_on(&mut session, || false, |_| panic!("unexpected update")).unwrap_err();
+        let error = follow_on(
+            &mut session,
+            None,
+            || false,
+            |_| panic!("unexpected update"),
+        )
+        .unwrap_err();
         assert!(error.contains("simulated disconnect"));
         assert_eq!(error.contains("Session off also failed"), fail_cleanup);
         assert_eq!(
@@ -268,7 +293,7 @@ fn cancellation_with_a_failed_session_off_still_releases_the_bridge() {
     let mut quiet = Quiet;
     let mut session = Session::new(fake, &READS, &mut quiet);
     let stopped = Cell::new(false);
-    let error = follow_on(&mut session, || stopped.get(), |_| stopped.set(true)).unwrap_err();
+    let error = follow_on(&mut session, None, || stopped.get(), |_| stopped.set(true)).unwrap_err();
     assert!(error.contains("Session off failed"));
     assert_eq!(session.link.writes, WRITES);
     session.link.assert_finished();
@@ -279,7 +304,13 @@ fn an_assembler_error_still_closes_the_session_and_bridge() {
     let malformed = [vec![0xf0], vec![0; 8192]].concat();
     let mut quiet = Quiet;
     let mut session = Session::new(script(packets(&malformed)), &READS, &mut quiet);
-    let error = follow_on(&mut session, || false, |_| panic!("unexpected update")).unwrap_err();
+    let error = follow_on(
+        &mut session,
+        None,
+        || false,
+        |_| panic!("unexpected update"),
+    )
+    .unwrap_err();
     assert!(error.contains("unexpectedly large SysEx"));
     assert_eq!(session.link.writes, WRITES);
     session.link.assert_finished();
@@ -307,7 +338,7 @@ fn connection_state_is_reported_once_until_the_disconnect() {
     let mut quiet = Quiet;
     let mut session = Session::new(script(packets), &READS, &mut quiet);
     let mut updates = Vec::new();
-    follow_on(&mut session, || false, |update| updates.push(update)).unwrap();
+    follow_on(&mut session, None, || false, |update| updates.push(update)).unwrap();
     assert_eq!(
         updates,
         [
@@ -328,7 +359,7 @@ fn either_disconnect_frame_stops_once_even_if_repeated_in_the_same_packet() {
         let packet = [vec![0xf7], frame, vec![0xb0, 79, 63]].concat();
         let mut session = Session::new(script(vec![prefix, packet]), &READS, &mut quiet);
         let mut updates = Vec::new();
-        follow_on(&mut session, || false, |update| updates.push(update)).unwrap();
+        follow_on(&mut session, None, || false, |update| updates.push(update)).unwrap();
         assert_eq!(updates, [FollowUpdate::Disconnected]);
         assert_eq!(session.link.writes, WRITES);
         session.link.assert_finished();
@@ -368,7 +399,7 @@ fn malformed_lengths_and_unknown_frames_are_logged_and_ignored() {
     session.log_packets = false;
 
     let mut updates = Vec::new();
-    follow_on(&mut session, || false, |update| updates.push(update)).unwrap();
+    follow_on(&mut session, None, || false, |update| updates.push(update)).unwrap();
     assert_eq!(updates, [FollowUpdate::Disconnected]);
     assert_eq!(session.link.writes, WRITES);
     session.link.assert_finished();

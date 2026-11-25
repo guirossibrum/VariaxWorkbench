@@ -40,6 +40,8 @@ pub struct RunData {
     pub variax_library: Vec<(Preset, Program)>,
     pub touched_podxt: bool,
     pub touched_variax: bool,
+    pub store_state_unknown: bool,
+    pub read_only: bool,
     /// The USB view from step 0.2.
     pub usb: Option<UsbView>,
     /// The 2.5 backup folder in the shared library's format (used by 5.2).
@@ -59,7 +61,10 @@ pub struct RunData {
 impl RunData {
     /// Why a live or save step must not run on these devices, if so.
     pub fn unverified_reason(&self, step: StepId) -> Option<String> {
-        let podxt_step = matches!((step.0, step.1), (4, 1) | (5, 2));
+        let podxt_step = matches!(
+            (step.0, step.1),
+            (2, 6) | (4, 1 | 6..=8) | (5, 2) | (7, 3..=5)
+        );
         if podxt_step {
             return (self.podxt_verified != Some(true)).then(|| {
                 "Live and save steps run only on a verified PODxt Live with firmware 3.01. This device is flagged unverified: read-only steps only.".into()
@@ -73,7 +78,7 @@ impl RunData {
 
 fn touches(id: StepId) -> (bool, bool) {
     match (id.0, id.1) {
-        (2, _) | (4, 1) | (5, 2) | (7, 3) | (7, 4) => (true, false),
+        (2, _) | (4, 1 | 6..=8) | (5, 2) | (7, 3..=5) => (true, false),
         (1, 2) | (3, _) | (4, _) | (5, _) | (6, 1) | (7, _) => (false, true),
         _ => (false, false),
     }
@@ -95,6 +100,7 @@ pub fn execute(ctx: &mut Ctx<'_>) -> Result<(), String> {
         (2, 3) => super::podxt_reads::one_channel(ctx),
         (2, 4) => super::podxt_reads::one_bank(ctx),
         (2, 5) => podxt_library(ctx),
+        (2, 6) => super::live::podxt_editor_get(ctx),
         (3, 1) => variax_identity(ctx),
         (3, 2) => super::variax_reads::current_settings(ctx),
         (3, 3) => variax_current_program(ctx),
@@ -105,14 +111,22 @@ pub fn execute(ctx: &mut Ctx<'_>) -> Result<(), String> {
         (4, 1) => super::live::podxt_stomp(ctx),
         (4, 2) => super::variax_live::variax_own_bytes(ctx),
         (4, 3) => super::variax_live::variax_test_model(ctx),
+        (4, 4) => super::variax_live::trim(ctx),
+        (4, 5) => super::variax_live::tuning(ctx),
+        (4, 6) => super::live::podxt_whole_tone(ctx),
+        (4, 7) => super::live::podxt_recall(ctx),
+        (4, 8) => super::live::podxt_tune(ctx),
         (5, 1) => super::variax_save::save_own_bytes(ctx),
         (5, 2) => super::podxt_save::save_own_bytes(ctx),
+        (5, 3) => super::variax_save::edit_and_restore(ctx),
+        (5, 4) => super::variax_save::sync_own_bytes(ctx),
         (6, 1) => super::recover::vdi_replug(ctx),
         (6, 2) => rig_guard(ctx),
         (7, 1) => super::guided::selector(ctx),
         (7, 2) => super::guided::knobs(ctx),
         (7, 3) => super::guided::footswitch(ctx),
         (7, 4) => super::guided::pedal(ctx),
+        (7, 5) => super::guided::podxt_knob(ctx),
         (8, 1) => super::audio::detect(ctx),
         (8, _) => super::audio::record_or_play(ctx),
         _ => placeholder(ctx),
@@ -484,6 +498,12 @@ fn variax_current_program(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let read = with_variax(ctx, VARIAX_SELECT, |session, stopping| {
         variax_full_read(session, stopping)
     })?;
+    let image = shared_variax::pack(&read.words);
+    let mut checked = image;
+    shared_variax::set_firmware_checksum(&mut checked);
+    if image != checked {
+        return Err("The Variax current program failed the firmware checksum check.".into());
+    }
     ctx.rec.show(format!(
         "Progress {} of 35 chunks, 1,092 words, checksum OK.",
         read.raw_replies.len()
@@ -510,24 +530,44 @@ fn variax_current_program(ctx: &mut Ctx<'_>) -> Result<(), String> {
 fn variax_all_presets(ctx: &mut Ctx<'_>) -> Result<(), String> {
     super::variax_reads::flag_unverified(ctx);
     let start = ctx.data.start_program.ok_or("No starting program (3.3).")?;
-    let mut library = Vec::new();
-    let mut failure = None;
-    for preset in Preset::all() {
-        let read = with_variax(ctx, VARIAX_SELECT, |session, stopping| {
-            session.log_packets = false;
-            variax_read_preset(session, preset, stopping)
-        });
-        match read {
-            Ok(read) => library.push((preset, read.words)),
-            Err(error) => {
-                failure = Some(format!("{}: {error}", preset_label(preset)));
-                break;
-            }
-        }
-        if ctx.stopping() {
-            failure = Some("Stopped by you.".into());
-            break;
-        }
+    use line6_devices::gate::Operation;
+    const BACKUP: &[Operation] = &[
+        Operation::VariaxIdentity,
+        Operation::VariaxRead,
+        Operation::VariaxPresetSwitch,
+        Operation::VariaxLibraryBridge,
+        Operation::VariaxBankNameRead,
+    ];
+    let read = with_variax(ctx, BACKUP, |session, stopping| {
+        session.log_packets = false;
+        variax::backup::read_full_library_in_session(session, stopping, |_| {})
+    })?;
+    let library: Vec<(Preset, Program)> = read
+        .verified_programs()
+        .map(|(preset, bytes)| {
+            (
+                preset,
+                std::array::from_fn(|index| {
+                    let [a, b, c] = bytes.as_chunks::<3>().0[index];
+                    u32::from_be_bytes([0, a, b, c])
+                }),
+            )
+        })
+        .collect();
+    for (bank, name) in &read.settings.bank_names {
+        ctx.rec.note(format!("Bank {}: {:?}", bank + 1, name.name));
+    }
+    let failure = read
+        .settings
+        .stopped
+        .clone()
+        .or(read.settings.release_error.clone());
+    if !read.complete() || read.settings.bank_names.len() != 12 {
+        ctx.rec.note(format!(
+            "Partial backup: {} programs and {} bank names.",
+            library.len(),
+            read.settings.bank_names.len()
+        ));
     }
     ctx.rec
         .show(format!("Read {} of 60 presets.", library.len()));
@@ -622,7 +662,7 @@ fn rig_guard(ctx: &mut Ctx<'_>) -> Result<(), String> {
                 "Rig: the PODxt Live tone is the starting tone; only live pedal/knob values differ {:?}.",
                 start.differences(&now)
             ));
-        } else if let Some(channel) = ctx.data.start_channel {
+        } else if let Some(channel) = ctx.data.start_channel.filter(|_| !ctx.data.read_only) {
             let switch = with_podxt(ctx, GUARD, |session| {
                 podxt::switch_channel(session, channel, None, false)
             })?;
@@ -657,7 +697,7 @@ fn rig_guard(ctx: &mut Ctx<'_>) -> Result<(), String> {
         if same_program(&now.words, &start) {
             ctx.rec
                 .show("Rig: the Variax plays the starting program (1,092 words).");
-        } else if let Some(preset) = ctx.data.start_preset {
+        } else if let Some(preset) = ctx.data.start_preset.filter(|_| !ctx.data.read_only) {
             let back = with_variax(ctx, VARIAX_SELECT, |session, stopping| {
                 variax_read_preset(session, preset, stopping)
             })?;

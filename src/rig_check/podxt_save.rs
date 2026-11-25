@@ -102,6 +102,7 @@ pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
             Ok(())
         }
         StoreResult::SlotStateUnknown { slot, reason } => {
+            ctx.data.store_state_unknown = true;
             ctx.op.instruct(
                 ctx.rec.id,
                 "Keep the rig powered and untouched. Rig Check waited 2 minutes.",
@@ -141,7 +142,7 @@ mod tests {
             ..RunData::default()
         };
         let mut person = Script::run_all();
-        person.save_typing = typing;
+        person.save_overrides.push((STEP, typing));
         let (run, _, rig) = run_practice(faults, &mut person, &mut NoReport, data);
         (run, rig, person)
     }

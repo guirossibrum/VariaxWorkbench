@@ -13,6 +13,7 @@ pub struct Script {
     /// Ask to stop while this step runs.
     pub stop_during: Option<StepId>,
     pub save_typing: SaveTyping,
+    pub save_overrides: Vec<(StepId, SaveTyping)>,
     pub retry: Retry,
     pub answer: Answer,
     pub cards: Vec<StepId>,
@@ -41,6 +42,7 @@ impl Script {
             overrides: Vec::new(),
             stop_during: None,
             save_typing: SaveTyping::Exact,
+            save_overrides: Vec::new(),
             retry: Retry::Skip,
             answer: Answer::Yes,
             cards: Vec::new(),
@@ -86,7 +88,12 @@ impl Operator for Script {
 
     fn confirm_save(&mut self, notice: &SaveNotice) -> Option<String> {
         self.saves.push(notice.text());
-        match self.save_typing {
+        let typing = self
+            .save_overrides
+            .iter()
+            .find(|(id, _)| Some(*id) == self.current.get())
+            .map_or(self.save_typing, |(_, typing)| *typing);
+        match typing {
             SaveTyping::Exact => Some(notice.confirmation.clone()),
             SaveTyping::Wrong => Some("store it".into()),
             SaveTyping::Skip => None,
@@ -297,6 +304,91 @@ mod tests {
                 assert!(!person.cards.contains(&step.id), "{} was offered", step.id);
             }
         }
+    }
+
+    #[test]
+    fn a_failure_or_unpassed_step_prevents_later_saves() {
+        for (faults, skip, reason) in [
+            (
+                Faults {
+                    driver_not_returned: true,
+                    ..Faults::default()
+                },
+                false,
+                "read-only from here: step 1.2 failed",
+            ),
+            (
+                Faults::default(),
+                true,
+                "read-only from here: step 4.2 did not pass",
+            ),
+        ] {
+            let mut person = Script::run_all();
+            if skip {
+                person.overrides.push((StepId(4, 2), Decision::Skip));
+            }
+            let (run, _, rig) =
+                run_practice(faults, &mut person, &mut NoReport, RunData::default());
+            for id in [StepId(5, 1), StepId(5, 2), StepId(5, 3), StepId(5, 4)] {
+                assert_eq!(run.step(id).outcome, Outcome::SkippedNeeds(reason.into()));
+                assert!(!person.cards.contains(&id));
+            }
+            assert!(person.saves.is_empty());
+            assert_eq!(rig.borrow().variax.stores, 0);
+            assert_eq!(rig.borrow().podxt.stores, 0);
+        }
+    }
+
+    #[test]
+    fn new_steps_use_the_expected_device_messages_and_restore_the_rig() {
+        let mut person = Script::run_all();
+        let (run, _, rig) = run_practice(
+            Faults::default(),
+            &mut person,
+            &mut NoReport,
+            RunData::default(),
+        );
+        for (id, prefixes) in [
+            (
+                StepId(2, 6),
+                &["OUT f0 00 01 0c 03 0e", "OUT f0 00 01 0c 03 57"][..],
+            ),
+            (StepId(4, 4), &["OUT f0 00 01 0c 07 00 3b", "OUT c0"][..]),
+            (
+                StepId(4, 5),
+                &[
+                    "OUT f0 00 01 0c 07 00 3b",
+                    "OUT f0 00 01 0c 07 00 43",
+                    "OUT c0",
+                ][..],
+            ),
+            (StepId(4, 6), &["OUT f0 00 01 0c 03 74"][..]),
+            (StepId(4, 7), &["OUT c0 12", "OUT c0 11"][..]),
+            (
+                StepId(4, 8),
+                &["OUT b0 45 7f", "OUT f0 00 01 0c 03 57", "OUT b0 45 00"][..],
+            ),
+            (
+                StepId(5, 3),
+                &["OUT f0 00 01 0c 07 00 61 0e", "OUT f0 00 01 0c 07 00 61 0e"][..],
+            ),
+            (
+                StepId(5, 4),
+                &["OUT f0 00 01 0c 07 00 61 0e", "OUT f0 00 01 0c 07 00 61 0d"][..],
+            ),
+            (StepId(7, 5), &["IN  b0", "OUT f0 00 01 0c 03 75"][..]),
+        ] {
+            let step = run.step(id);
+            assert!(step.outcome.passed(), "{id}: {:?}", step.outcome);
+            let mut lines = step.messages.iter();
+            for prefix in prefixes {
+                assert!(
+                    lines.any(|line| line.contains(prefix)),
+                    "{id}: missing {prefix}"
+                );
+            }
+        }
+        assert!(at_start(&rig));
     }
 
     #[test]
