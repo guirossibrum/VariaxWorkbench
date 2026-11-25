@@ -181,9 +181,14 @@ pub fn utc(seconds: u64) -> (String, String) {
 
 /// Checks every line of `MANIFEST.sha256`; returns how many files matched.
 pub fn verify_manifest(dir: &Path) -> Result<usize, String> {
+    verified_manifest_entries(dir).map(|entries| entries.len())
+}
+
+/// Checks the manifest and returns the names covered by it.
+pub fn verified_manifest_entries(dir: &Path) -> Result<Vec<String>, String> {
     let path = dir.join("MANIFEST.sha256");
     let manifest = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut checked = 0;
+    let mut checked = Vec::new();
     for line in manifest.lines().filter(|line| !line.is_empty()) {
         let (hash, name) = line
             .split_once("  ")
@@ -195,9 +200,9 @@ pub fn verify_manifest(dir: &Path) -> Result<usize, String> {
         if sha256_hex(&bytes) != hash {
             return Err(format!("{name} does not match MANIFEST.sha256"));
         }
-        checked += 1;
+        checked.push(name.to_owned());
     }
-    if checked == 0 {
+    if checked.is_empty() {
         return Err("MANIFEST.sha256 lists no files".into());
     }
     Ok(checked)

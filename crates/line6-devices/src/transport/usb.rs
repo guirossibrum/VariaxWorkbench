@@ -136,6 +136,15 @@ impl<Rig> UsbInterfaceLink<Rig> {
             })
     }
 
+    /// Bus and port path of the USB handle used for this capture.
+    pub fn usb_port_path(&self) -> Result<String, String> {
+        let device = self.handle.device();
+        let ports = device
+            .port_numbers()
+            .map_err(|error| format!("USB port path: {error}"))?;
+        Ok(attachment_path(device.bus_number(), &ports))
+    }
+
     /// (kernel driver was detached, interface is claimed)
     pub fn state(&self) -> (bool, bool) {
         (self.detached, self.claimed)

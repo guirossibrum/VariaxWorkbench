@@ -191,9 +191,9 @@ enum BackupChoice {
 }
 
 #[cfg_attr(test, allow(dead_code))]
-enum BackupEvent {
+enum DeviceOperationEvent<T> {
     Progress(String),
-    Finished(Result<String, String>),
+    Finished(Result<T, String>),
 }
 
 fn backup_offered() -> bool {
@@ -279,12 +279,16 @@ struct Workbench {
     device_check_notice: String,
     /// Backup question waiting for Yes or No. Nothing is sent until Yes.
     backup_choice: Option<BackupChoice>,
-    backup_rx: Option<std::sync::mpsc::Receiver<BackupEvent>>,
+    backup_rx: Option<
+        std::sync::mpsc::Receiver<
+            DeviceOperationEvent<variax_workbench::variax_library::BackupResult>,
+        >,
+    >,
     backup_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Tone question waiting for Yes or No. Nothing is sent until Yes.
     tone_choice: Option<ToneChoice>,
     tone_channel: String,
-    tone_rx: Option<std::sync::mpsc::Receiver<BackupEvent>>,
+    tone_rx: Option<std::sync::mpsc::Receiver<DeviceOperationEvent<String>>>,
     /// True only after the step 2 report from this session was saved. A later
     /// answer of step 2 clears it. Restarting for the G1 check requires it.
     device_check_step_two_saved: bool,
@@ -459,8 +463,8 @@ impl Workbench {
         let mut finished = None;
         loop {
             match rx.try_recv() {
-                Ok(BackupEvent::Progress(line)) => self.device_check_notice = line,
-                Ok(BackupEvent::Finished(result)) => {
+                Ok(DeviceOperationEvent::Progress(line)) => self.device_check_notice = line,
+                Ok(DeviceOperationEvent::Finished(result)) => {
                     finished = Some(result);
                     break;
                 }
@@ -474,9 +478,19 @@ impl Workbench {
         if let Some(result) = finished {
             self.backup_rx = None;
             self.backup_cancel = None;
+            use variax_workbench::variax_library::{BackupResult, LibraryPreferences};
             self.device_check_notice = match result {
-                Ok(text) => text,
-                Err(text) => text,
+                Ok(BackupResult::Variax { backup, mut notice }) => {
+                    if let Some(path) = self.defaults.preferences.as_deref()
+                        && let Err(error) = LibraryPreferences::new(path).remember_backup(&backup)
+                    {
+                        notice.push_str(&format!(
+                            " Could not remember this library for startup: {error}"
+                        ));
+                    }
+                    notice
+                }
+                Ok(BackupResult::Podxt(text)) | Err(text) => text,
             };
             self.shell_status = "Backup finished. See Device check for the result.".into();
         } else {
@@ -545,7 +559,7 @@ impl Workbench {
             self.device_check_notice = "Backup started. Leave this window open.".into();
             std::thread::spawn(move || {
                 let progress = |line: &str| {
-                    let _ = tx.send(BackupEvent::Progress(line.to_owned()));
+                    let _ = tx.send(DeviceOperationEvent::Progress(line.to_owned()));
                 };
                 let result = match choice {
                     BackupChoice::Variax => library_backup::run(Which::Variax, &root, progress),
@@ -563,7 +577,7 @@ impl Workbench {
                             })
                     }
                 };
-                let _ = tx.send(BackupEvent::Finished(result));
+                let _ = tx.send(DeviceOperationEvent::Finished(result));
             });
         }
         #[cfg(any(test, not(feature = "usb")))]
@@ -587,8 +601,8 @@ impl Workbench {
         let mut finished = None;
         loop {
             match rx.try_recv() {
-                Ok(BackupEvent::Progress(line)) => self.device_check_notice = line,
-                Ok(BackupEvent::Finished(result)) => {
+                Ok(DeviceOperationEvent::Progress(line)) => self.device_check_notice = line,
+                Ok(DeviceOperationEvent::Finished(result)) => {
                     finished = Some(result);
                     break;
                 }
@@ -633,15 +647,16 @@ impl Workbench {
                 let tx_progress = tx.clone();
                 let result = match choice {
                     ToneChoice::Try => variax_workbench::podxt_live::run_try(|line| {
-                        let _ = tx_progress.send(BackupEvent::Progress(line.to_owned()));
+                        let _ = tx_progress.send(DeviceOperationEvent::Progress(line.to_owned()));
                     }),
                     ToneChoice::Channel => {
                         variax_workbench::podxt_live::run_channel(&channel, |line| {
-                            let _ = tx_progress.send(BackupEvent::Progress(line.to_owned()));
+                            let _ =
+                                tx_progress.send(DeviceOperationEvent::Progress(line.to_owned()));
                         })
                     }
                 };
-                let _ = tx.send(BackupEvent::Finished(result));
+                let _ = tx.send(DeviceOperationEvent::Finished(result));
             });
         }
         #[cfg(all(not(test), not(feature = "usb")))]

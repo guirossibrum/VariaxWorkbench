@@ -51,6 +51,8 @@ pub use shared::ui;
 pub mod simulation;
 #[cfg(feature = "usb")]
 pub mod usb;
+#[path = "app/variax_library.rs"]
+pub mod variax_library;
 pub mod workbench_asset;
 
 pub const HEADER: [u8; 6] = [0xf0, 0, 1, 0x0c, 7, 0];
