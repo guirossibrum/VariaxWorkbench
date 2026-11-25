@@ -20,6 +20,15 @@ theme (`src/shared/ui/theme.rs`) and `section_panel`. No Line 6 art is used.
 | Summary with rig state, results preview and Save report | [10-summary-preview.png](mockups/10-summary-preview.png) |
 | Step result with the channel name, a display check, Continue and Stop | [11-step-result.png](mockups/11-step-result.png) |
 
+## Owner release
+
+The 2026-11-25 decision (#267) releases device and guided steps for the
+owner's first real run. The start and save notices remain, with the extra
+notice before unverified Variax evidence. A failed step makes the remaining
+run read-only. Every applicable earlier step must pass before a save card
+appears. Audio streams remain unavailable. A passing owner run approves
+testing the app's matching writes.
+
 ## Rules the design follows
 
 - Every step shows its card and waits. Focus starts on **Skip**, so Enter
@@ -33,7 +42,7 @@ theme (`src/shared/ui/theme.rs`) and `section_panel`. No Line 6 art is used.
   hint. Display checks ask the person to look and require no answer.
 - **Continue** starts with focus on the result screen. It returns to the next
   card, which still requires its own Run choice. **Stop** ends the run and
-  still offers the closing rig check.
+  offers the closing rig check in a normal run.
 - Selecting a finished step in the left list reopens its result. **Back**
   returns to the pending screen without continuing the run.
 - The terminal uses the same result text. Raw bytes and full hashes stay
@@ -43,7 +52,8 @@ theme (`src/shared/ui/theme.rs`) and `section_panel`. No Line 6 art is used.
   STOP / N/A / RUN as words.
 - Risk is coloured by level (read green, live amber, save red) and always
   spelled out with the gate and the steps it needs.
-- The listening window says that nothing is sent while it is open.
+- Guided instructions name the physical control and the value or preset the
+  player will see verified. The terminal and wizard use the same Follow checks.
 - The runner works on a background thread; the window only answers its
   questions (`gui::ChannelOperator`), so the window, the terminal (`--text`)
   and the tests run the same runner code.

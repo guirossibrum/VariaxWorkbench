@@ -95,7 +95,7 @@ or `Unverified`. This status describes the firmware identity. Data from
 another version is diagnostic and does not establish compatibility.
 
 The caller needs the rig lock and the identity and read gates. The separate
-`APPROVED_FIRMWARE_READ` switch is closed. The procedure keeps the current
+`APPROVED_FIRMWARE_READ` switch is open for the first owner-run Rig Check build. The procedure keeps the current
 preset selected. Rig Check uses a separate approval for its evidence step
 and practice replays in-memory replies through the same decoder. The
 firmware 3.10 checks still apply to sends and stores.

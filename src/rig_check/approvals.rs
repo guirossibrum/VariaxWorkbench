@@ -1,51 +1,48 @@
 //! Per-step owner approvals for real devices.
 //!
-//! Each device, guided or audio step has its own compile-time constant. They
-//! are all `false`: the owner has not yet authorized any Rig Check step on a
-//! real rig (#267). A step runs on real devices only when its constant is
-//! `true` **and** every hardware gate it names is open
-//! ([`crate::hardware_gates`]). There is no runtime, command-line, GUI or
-//! test switch that changes these constants. Practice mode never touches a
-//! device and does not consult them.
+//! The owner released device and guided steps for the first real run
+//! (2026-11-25, #267). Audio stays closed. Each step also requires open
+//! hardware gates and the person's Run choice. Saves require every applicable
+//! earlier step to pass and a separate typed confirmation. Practice uses only
+//! simulated devices.
 
 use super::catalogue::{self, StepId};
 use crate::hardware_gates::{self, Gate};
 
-pub const APPROVED_STEP_1_1: bool = false;
-pub const APPROVED_STEP_1_2: bool = false;
-pub const APPROVED_STEP_2_1: bool = false;
-pub const APPROVED_STEP_2_2: bool = false;
-pub const APPROVED_STEP_2_3: bool = false;
-pub const APPROVED_STEP_2_4: bool = false;
-pub const APPROVED_STEP_2_5: bool = false;
-pub const APPROVED_STEP_2_6: bool = false;
-pub const APPROVED_STEP_3_1: bool = false;
-pub const APPROVED_STEP_3_2: bool = false;
-pub const APPROVED_STEP_3_3: bool = false;
-pub const APPROVED_STEP_3_4: bool = false;
-pub const APPROVED_STEP_3_5: bool = false;
-pub const APPROVED_STEP_3_6: bool = false;
-pub const APPROVED_VARIAX_EVIDENCE: bool = false;
-pub const APPROVED_STEP_4_1: bool = false;
-pub const APPROVED_STEP_4_2: bool = false;
-pub const APPROVED_STEP_4_3: bool = false;
-pub const APPROVED_STEP_4_4: bool = false;
-pub const APPROVED_STEP_4_5: bool = false;
-pub const APPROVED_STEP_4_6: bool = false;
-pub const APPROVED_STEP_4_7: bool = false;
-pub const APPROVED_STEP_4_8: bool = false;
-pub const APPROVED_STEP_5_1: bool = false;
-pub const APPROVED_STEP_5_2: bool = false;
-/// Excluded from the shared version by default (#243).
-pub const APPROVED_STEP_5_3: bool = false;
-pub const APPROVED_STEP_5_4: bool = false;
-pub const APPROVED_STEP_6_1: bool = false;
-pub const APPROVED_STEP_6_2: bool = false;
-pub const APPROVED_STEP_7_1: bool = false;
-pub const APPROVED_STEP_7_2: bool = false;
-pub const APPROVED_STEP_7_3: bool = false;
-pub const APPROVED_STEP_7_4: bool = false;
-pub const APPROVED_STEP_7_5: bool = false;
+pub const APPROVED_STEP_1_1: bool = true;
+pub const APPROVED_STEP_1_2: bool = true;
+pub const APPROVED_STEP_2_1: bool = true;
+pub const APPROVED_STEP_2_2: bool = true;
+pub const APPROVED_STEP_2_3: bool = true;
+pub const APPROVED_STEP_2_4: bool = true;
+pub const APPROVED_STEP_2_5: bool = true;
+pub const APPROVED_STEP_2_6: bool = true;
+pub const APPROVED_STEP_3_1: bool = true;
+pub const APPROVED_STEP_3_2: bool = true;
+pub const APPROVED_STEP_3_3: bool = true;
+pub const APPROVED_STEP_3_4: bool = true;
+pub const APPROVED_STEP_3_5: bool = true;
+pub const APPROVED_STEP_3_6: bool = true;
+pub const APPROVED_VARIAX_EVIDENCE: bool = true;
+pub const APPROVED_STEP_4_1: bool = true;
+pub const APPROVED_STEP_4_2: bool = true;
+pub const APPROVED_STEP_4_3: bool = true;
+pub const APPROVED_STEP_4_4: bool = true;
+pub const APPROVED_STEP_4_5: bool = true;
+pub const APPROVED_STEP_4_6: bool = true;
+pub const APPROVED_STEP_4_7: bool = true;
+pub const APPROVED_STEP_4_8: bool = true;
+pub const APPROVED_STEP_5_1: bool = true;
+pub const APPROVED_STEP_5_2: bool = true;
+pub const APPROVED_STEP_5_3: bool = true;
+pub const APPROVED_STEP_5_4: bool = true;
+pub const APPROVED_STEP_6_1: bool = true;
+pub const APPROVED_STEP_6_2: bool = true;
+pub const APPROVED_STEP_7_1: bool = true;
+pub const APPROVED_STEP_7_2: bool = true;
+pub const APPROVED_STEP_7_3: bool = true;
+pub const APPROVED_STEP_7_4: bool = true;
+pub const APPROVED_STEP_7_5: bool = true;
 pub const APPROVED_STEP_8_2: bool = false;
 pub const APPROVED_STEP_8_3: bool = false;
 pub const APPROVED_STEP_8_4: bool = false;
@@ -139,38 +136,23 @@ mod tests {
     use crate::rig_check::catalogue::{Kind, STEPS};
 
     #[test]
-    fn no_step_is_approved_in_this_build() {
-        const {
-            assert!(!APPROVED_STEP_1_1 && !APPROVED_STEP_1_2);
-            assert!(!APPROVED_STEP_2_1 && !APPROVED_STEP_2_2 && !APPROVED_STEP_2_3);
-            assert!(!APPROVED_STEP_2_4 && !APPROVED_STEP_2_5);
-            assert!(!APPROVED_STEP_3_1 && !APPROVED_STEP_3_2 && !APPROVED_STEP_3_3);
-            assert!(!APPROVED_STEP_3_4 && !APPROVED_STEP_3_5 && !APPROVED_STEP_3_6);
-            assert!(!APPROVED_STEP_4_1 && !APPROVED_STEP_4_2 && !APPROVED_STEP_4_3);
-            assert!(!APPROVED_STEP_5_1 && !APPROVED_STEP_5_2 && !APPROVED_STEP_5_3);
-            assert!(!APPROVED_STEP_6_1 && !APPROVED_STEP_6_2);
-            assert!(!APPROVED_STEP_7_1 && !APPROVED_STEP_7_2);
-            assert!(!APPROVED_STEP_7_3 && !APPROVED_STEP_7_4);
-            assert!(!APPROVED_STEP_8_2 && !APPROVED_STEP_8_3);
-            assert!(!APPROVED_STEP_8_4 && !APPROVED_STEP_8_5);
-            assert!(!AUDIO_STREAMS_APPROVED);
-        }
-        for step in STEPS {
-            assert!(!approved(step.id), "{}", step.id);
+    fn device_and_guided_steps_are_released() {
+        for step in STEPS
+            .iter()
+            .filter(|step| matches!(step.kind, Kind::Device | Kind::Guided))
+        {
+            assert!(approved(step.id), "{}", step.id);
+            assert!(real_device_check(step.id).is_ok(), "{}", step.id);
         }
     }
 
     #[test]
-    fn every_device_step_is_refused_with_the_owner_message() {
-        for step in STEPS {
-            let result = real_device_check(step.id);
-            if step.kind == Kind::Computer {
-                assert!(result.is_ok(), "{}", step.id);
-            } else {
-                let error = result.unwrap_err();
-                assert!(error.contains("not yet authorized by the owner (#267)"));
-                assert!(error.contains("Nothing was sent"));
-            }
+    fn audio_streams_and_audio_steps_are_refused() {
+        for step in STEPS.iter().filter(|step| step.kind == Kind::Audio) {
+            assert!(!approved(step.id), "{}", step.id);
+            let error = real_device_check(step.id).unwrap_err();
+            assert!(error.contains("not yet authorized by the owner (#267)"));
+            assert!(error.contains("Nothing was sent"));
         }
     }
 }

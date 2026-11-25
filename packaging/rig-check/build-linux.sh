@@ -36,6 +36,7 @@ mkdir -p "$out"
 mkdir "$dest"
 cp target/release/rig-check "$dest/rig-check"
 cp docs/rig-check/catalogue.md "$dest/CATALOGUE.md"
+cp docs/rig-check/coverage.md "$dest/coverage.md"
 cp docs/rig-check/release-notes.md "$dest/RELEASE-NOTES.md"
 cat > "$dest/rig-check.sh" <<'LAUNCHER'
 #!/bin/sh
@@ -44,5 +45,5 @@ here=$(cd "$(dirname "$0")" && pwd)
 exec "$here/rig-check" --out "$here/rig-check-output" "$@"
 LAUNCHER
 chmod 755 "$dest/rig-check.sh" "$dest/rig-check"
-(cd "$dest" && sha256sum rig-check CATALOGUE.md RELEASE-NOTES.md rig-check.sh > SHA256SUMS)
+(cd "$dest" && sha256sum rig-check CATALOGUE.md coverage.md RELEASE-NOTES.md rig-check.sh > SHA256SUMS)
 echo "$dest"

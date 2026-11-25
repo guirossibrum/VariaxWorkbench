@@ -13,8 +13,8 @@ use crate::{
 mod replay;
 pub use replay::replay_current_program;
 
-/// Separate owner approval for the #271 compatibility read.
-pub const APPROVED_FIRMWARE_READ: bool = false;
+/// Released for the first owner-run Rig Check evidence read (2026-11-25, #271).
+pub const APPROVED_FIRMWARE_READ: bool = true;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FirmwareStatus {

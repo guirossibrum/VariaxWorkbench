@@ -20,7 +20,7 @@ use std::time::Duration;
 pub const TONE_POSITION_WORDS: [usize; 3] = [871, 872, 1091];
 
 /// The operations one step may use. In real mode the step's owner approval
-/// and gates must also be open (they are all closed in this build).
+/// and gates must also be open.
 pub struct StepPolicy {
     pub step: StepId,
     pub mode: Mode,

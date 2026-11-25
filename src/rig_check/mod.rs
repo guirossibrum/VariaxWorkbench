@@ -5,8 +5,8 @@
 //! one explained, confirmed step at a time and writes a text report after
 //! every step. Device steps use the same device library as the editor
 //! (`line6-devices`). Practice mode runs the whole catalogue against
-//! simulated devices ([`practice`]); real mode refuses every device step
-//! until the owner approves it ([`approvals`], #267).
+//! simulated devices ([`practice`]); real mode uses the released device and
+//! guided steps under the approval and confirmation rules ([`approvals`]).
 //!
 //! Hardware boundary: tests use the simulated rig and synthetic data only.
 //! They never open USB, MIDI or audio devices and never read real `/proc` or

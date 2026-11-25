@@ -289,7 +289,7 @@ mod tests {
     }
 
     #[test]
-    fn normal_310_run_has_no_evidence_offer_and_real_approval_is_closed() {
+    fn normal_310_run_has_no_evidence_offer_even_after_release() {
         let mut operator = Script::run_all();
         let (run, _, _) = run_practice(
             Faults::default(),
@@ -300,6 +300,6 @@ mod tests {
         assert_eq!(operator.notices.len(), 1);
         assert!(!operator.cards.contains(&VARIAX_EVIDENCE));
         assert!(run.step(StepId(3, 3)).outcome.passed());
-        assert!(approvals::real_device_check(VARIAX_EVIDENCE).is_err());
+        assert!(approvals::real_device_check(VARIAX_EVIDENCE).is_ok());
     }
 }

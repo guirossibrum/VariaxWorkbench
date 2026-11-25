@@ -285,24 +285,15 @@ mod tests {
     }
 
     #[test]
-    fn real_mode_refuses_every_device_step_without_touching_anything() {
+    fn real_mode_never_offers_audio_cards() {
         let mut person = Script::run_all();
         let mut port = RealPort::with_system(Box::new(
             crate::rig_check::computer::linux::synthetic_machine(true, true),
         ));
         let (run, _) = run_on(&mut port, &mut person, &mut NoReport, RunData::default());
-        for step in STEPS {
-            let outcome = &run.step(step.id).outcome;
-            if step.needs_device_approval() {
-                match outcome {
-                    Outcome::NotAuthorized(reason) => {
-                        assert!(reason.contains("not yet authorized by the owner (#267)"))
-                    }
-                    Outcome::SkippedNeeds(_) | Outcome::NotAvailable(_) => {}
-                    other => panic!("{}: {other:?}", step.id),
-                }
-                assert!(!person.cards.contains(&step.id), "{} was offered", step.id);
-            }
+        for id in [StepId(8, 2), StepId(8, 3), StepId(8, 4), StepId(8, 5)] {
+            assert!(matches!(run.step(id).outcome, Outcome::NotAvailable(_)));
+            assert!(!person.cards.contains(&id));
         }
     }
 
