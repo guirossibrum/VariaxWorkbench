@@ -28,6 +28,7 @@ pub mod port;
 pub mod practice;
 pub mod procedures;
 pub mod record;
+pub mod recover;
 pub mod redact;
 pub mod report;
 pub mod runner;
@@ -58,6 +59,19 @@ pub fn run_practice(
     let mut port = PracticePort::new(rig.clone());
     let (run, data) = Runner::new(&mut port, op, sink, data).run();
     (run, data, rig)
+}
+
+/// Run the whole catalogue, keeping a crash-restore state file (#261).
+pub fn run_with_state(
+    port: &mut dyn RigPort,
+    op: &mut dyn Operator,
+    sink: &mut dyn ReportSink,
+    data: RunData,
+    state_file: std::path::PathBuf,
+) -> (record::RunRecord, RunData) {
+    let mut runner = Runner::new(port, op, sink, data);
+    runner.state_file = Some(state_file);
+    runner.run()
 }
 
 /// Run the whole catalogue on a caller-supplied port (the real rig).

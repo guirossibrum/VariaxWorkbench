@@ -106,6 +106,7 @@ pub fn execute(ctx: &mut Ctx<'_>) -> Result<(), String> {
         (4, 3) => super::variax_live::variax_test_model(ctx),
         (5, 1) => super::variax_save::save_own_bytes(ctx),
         (5, 2) => super::podxt_save::save_own_bytes(ctx),
+        (6, 1) => super::recover::vdi_replug(ctx),
         (6, 2) => rig_guard(ctx),
         (7, 1) => super::guided::selector(ctx),
         (7, 2) => super::guided::knobs(ctx),

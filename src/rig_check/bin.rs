@@ -96,7 +96,29 @@ fn main() {
         rig_check::run_practice(Faults::default(), &mut person, &mut sink, data).0
     } else {
         let mut port = RealPort::default();
-        rig_check::run_on(&mut port, &mut person, &mut sink, data).0
+        // An earlier run that did not finish: offer to put the rig back first.
+        for (path, state) in rig_check::recover::pending(&options.out)
+            .into_iter()
+            .take(1)
+        {
+            let mut restore_sink =
+                match report::ReportFile::create(&options.out, Redactor::from_environment()) {
+                    Ok(sink) => sink,
+                    Err(error) => {
+                        eprintln!("Cannot create the restore report: {error}");
+                        break;
+                    }
+                };
+            rig_check::recover::offer_restore(
+                &mut port,
+                &mut person,
+                &mut restore_sink,
+                &path,
+                &state,
+            );
+        }
+        let state_file = sink.path.with_extension("state");
+        rig_check::run_with_state(&mut port, &mut person, &mut sink, data, state_file).0
     };
     println!(
         "\nRig Check finished: {} passed, {} failed, {} skipped. {}\nWorking report: {}",

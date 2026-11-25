@@ -496,9 +496,20 @@ impl SimRig {
             UserAction::UnplugVdi => {
                 self.variax.connected = false;
                 self.variax_out.clear();
+                // The PODxt Live reports the guitar's connection state.
+                Self::queue(
+                    &mut self.variax_out,
+                    at,
+                    &[0xf0, 0, 1, 0x0c, 3, 0x11, 0, 0, 0, 0, 0xf7],
+                );
             }
             UserAction::ReplugVdi => {
                 self.variax.connected = true;
+                Self::queue(
+                    &mut self.variax_out,
+                    at,
+                    &[0xf0, 0, 1, 0x0c, 3, 0x11, 0, 0, 0, 1, 0xf7],
+                );
             }
         }
     }

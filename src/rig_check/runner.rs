@@ -121,6 +121,8 @@ pub struct Runner<'a> {
     pub sink: &'a mut dyn ReportSink,
     pub data: RunData,
     pub run: RunRecord,
+    /// Where to keep the crash-restore state (#261), if anywhere.
+    pub state_file: Option<std::path::PathBuf>,
 }
 
 impl<'a> Runner<'a> {
@@ -137,10 +139,22 @@ impl<'a> Runner<'a> {
             sink,
             data,
             run: RunRecord::new(mode, utc_now()),
+            state_file: None,
         }
     }
 
     fn write_report(&mut self) {
+        if let Some(path) = &self.state_file {
+            let report = path.with_extension("txt");
+            let report = report
+                .file_name()
+                .map_or(String::new(), |n| n.to_string_lossy().into_owned());
+            let state = super::recover::RigState::from_run(&self.run, &self.data, &report);
+            if let Err(error) = super::recover::write_state(path, &state) {
+                self.op
+                    .progress(&format!("Could not write the restore state: {error}"));
+            }
+        }
         if let Err(error) = self.sink.update(&self.run) {
             self.op
                 .progress(&format!("Could not write the report: {error}"));
