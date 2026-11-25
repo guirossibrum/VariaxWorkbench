@@ -40,7 +40,14 @@ fn default_startup_renders_an_empty_shell_with_offline_entry_points() {
 
     let ctx = egui::Context::default();
     let directory = tempfile::tempdir().unwrap();
-    let options = parse_options(Vec::new(), directory.path()).unwrap();
+    let options = parse_options(
+        [
+            "--data-dir".to_owned(),
+            directory.path().display().to_string(),
+        ],
+        directory.path(),
+    )
+    .unwrap();
     let mut app = Workbench::from_options(&ctx, options);
     app.theme_polled = Instant::now();
     let output = ctx.run(egui::RawInput::default(), |ctx| app.render(ctx));
@@ -189,12 +196,30 @@ fn cli_startup_routes_hd_files_and_keeps_the_explicit_variax_view_option() {
     let directory = tempfile::tempdir().unwrap();
     let hd = directory.path().join("direct.5xe");
     fs::write(&hd, HD).unwrap();
-    let options = parse_options([hd.display().to_string()], directory.path()).unwrap();
+    let data_root = directory.path().display().to_string();
+    let options = parse_options(
+        [
+            hd.display().to_string(),
+            "--data-dir".into(),
+            data_root.clone(),
+        ],
+        directory.path(),
+    )
+    .unwrap();
     let app = Workbench::from_options(&ctx, options);
     assert_eq!(app.tabs.entries.len(), 1);
     assert_eq!(app.tabs.entries[0].family.info().id, "hd500x");
 
-    let options = parse_options(["--tab".into(), "controls".into()], directory.path()).unwrap();
+    let options = parse_options(
+        [
+            "--tab".into(),
+            "controls".into(),
+            "--data-dir".into(),
+            data_root,
+        ],
+        directory.path(),
+    )
+    .unwrap();
     let app = Workbench::from_options(&ctx, options);
     assert_eq!(app.tabs.entries.len(), 1);
     assert_eq!(app.variax().tab, Tab::Controls);

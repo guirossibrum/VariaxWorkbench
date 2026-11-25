@@ -1077,18 +1077,27 @@ struct GuiOptions {
 }
 
 fn editor_preferences_path(data_root: Option<&Path>) -> PathBuf {
-    let absolute_env = |key: &str| {
-        std::env::var_os(key)
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-    };
-    let root = data_root.map(Path::to_path_buf).unwrap_or_else(|| {
-        if let Some(path) = absolute_env("VARIAX_WORKBENCH_DATA_DIR") {
-            return path;
-        }
-        platform_data_root(absolute_env)
-    });
-    root.join("editor-preferences.txt")
+    data_root
+        .map(Path::to_path_buf)
+        .unwrap_or_else(default_data_root)
+        .join("editor-preferences.txt")
+}
+
+#[cfg(not(test))]
+fn absolute_env(key: &str) -> Option<PathBuf> {
+    std::env::var_os(key)
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+}
+
+#[cfg(not(test))]
+fn default_data_root() -> PathBuf {
+    absolute_env("VARIAX_WORKBENCH_DATA_DIR").unwrap_or_else(|| platform_data_root(absolute_env))
+}
+
+#[cfg(test)]
+fn default_data_root() -> PathBuf {
+    panic!("GUI tests must supply a temporary --data-dir")
 }
 
 fn parse_options(
@@ -1098,7 +1107,7 @@ fn parse_options(
     let mut options = GuiOptions {
         preset: None,
         artwork: default_artwork.to_owned(),
-        preferences: editor_preferences_path(None),
+        preferences: PathBuf::new(),
         screenshot: None,
         tab: None,
         display: "auto".into(),
@@ -1166,17 +1175,18 @@ fn parse_options(
     Ok(options)
 }
 
+#[cfg(not(test))]
 fn default_artwork() -> PathBuf {
-    let absolute_env = |key: &str| {
-        std::env::var_os(key)
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-    };
-    if let Some(path) = absolute_env("VARIAX_WORKBENCH_DATA_DIR") {
-        return path.join("artwork");
+    let installed = default_data_root().join("artwork");
+    if absolute_env("VARIAX_WORKBENCH_DATA_DIR").is_some() {
+        return installed;
     }
-    let installed = platform_data_root(absolute_env).join("artwork");
     default_artwork_from_checkout(installed, Path::new(env!("CARGO_MANIFEST_DIR")))
+}
+
+#[cfg(test)]
+fn default_artwork() -> PathBuf {
+    default_data_root().join("artwork")
 }
 
 fn default_artwork_from_checkout(installed: PathBuf, checkout: &Path) -> PathBuf {
@@ -1188,6 +1198,7 @@ fn default_artwork_from_checkout(installed: PathBuf, checkout: &Path) -> PathBuf
     installed
 }
 
+#[cfg(not(test))]
 fn platform_data_root(absolute_env: impl Fn(&str) -> Option<PathBuf>) -> PathBuf {
     #[cfg(target_os = "windows")]
     if let Some(path) = absolute_env("LOCALAPPDATA") {
@@ -2321,7 +2332,8 @@ mod tests {
 
     #[test]
     fn invalid_arguments_return_errors_instead_of_panicking() {
-        let root = Path::new("project");
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
         for args in [
             vec!["--preset"],
             vec!["--artwork", "--preset"],
@@ -2340,6 +2352,8 @@ mod tests {
                 "model.vwm",
                 "--screenshot",
                 "preview.png",
+                "--data-dir",
+                root.to_str().unwrap(),
             ]
             .into_iter()
             .map(str::to_owned),
@@ -2353,7 +2367,14 @@ mod tests {
     #[test]
     fn fresh_install_opens_the_example_without_assets_and_can_open_a_file() {
         let directory = tempfile::tempdir().unwrap();
-        let options = parse_options(Vec::new(), &directory.path().join("artwork")).unwrap();
+        let options = parse_options(
+            [
+                "--data-dir".to_owned(),
+                directory.path().display().to_string(),
+            ],
+            &directory.path().join("artwork"),
+        )
+        .unwrap();
         assert!(options.preset.is_none());
         let context = egui::Context::default();
         let mut app =
@@ -2419,20 +2440,29 @@ mod tests {
 
     #[test]
     fn desktop_file_argument_and_explicit_artwork_override_data_directory() {
-        let root = Path::new("user-data");
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let chosen = root.to_str().unwrap();
         let parse = |args: &[&str]| parse_options(args.iter().map(|s| (*s).to_owned()), root);
-        let options = parse(&["a preset.vwm", "--data-dir", "chosen"]).unwrap();
+        let options = parse(&["a preset.vwm", "--data-dir", chosen]).unwrap();
         assert_eq!(options.preset.as_deref(), Some(Path::new("a preset.vwm")));
-        assert_eq!(options.artwork, Path::new("chosen/artwork"));
+        assert_eq!(options.artwork, root.join("artwork"));
         for args in [
-            vec!["--artwork", "images", "--data-dir", "chosen"],
-            vec!["--data-dir", "chosen", "--artwork", "images"],
+            vec!["--artwork", "images", "--data-dir", chosen],
+            vec!["--data-dir", chosen, "--artwork", "images"],
         ] {
             assert_eq!(parse(&args).unwrap().artwork, Path::new("images"));
         }
         assert!(parse(&["one.vwm", "two.vwm"]).is_err());
         assert!(parse(&["one.vwm", "--preset", "two.vwm"]).is_err());
         assert!(parse(&["--data-dir"]).is_err());
+    }
+
+    #[test]
+    #[should_panic(expected = "GUI tests must supply a temporary --data-dir")]
+    fn tests_refuse_to_resolve_the_real_data_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let _ = parse_options(Vec::new(), directory.path());
     }
 
     #[test]
