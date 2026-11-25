@@ -1,13 +1,13 @@
 # Variax store from another selection (#238)
 
-**Not approved.** Each rung needs separate owner approval after review.
+Each rung needs separate owner approval after review.
 Use a Variax 600 on firmware 3.10 and a PODxt Live on firmware 3.01.
 Keep power stable and leave the preset selector and the PODxt channel alone
 while the tool is running.
 
 | Rung | Mode | Flash slot and MIDI program | Source | Approval |
 | --- | --- | --- | --- | --- |
-| 4a | `listen` | 14, Spank 1, MIDI 69 | Edited `Stratocaster.vwm` | **Not approved** |
+| 4a | `listen` | 14, Spank 1, MIDI 69 | Edited `Stratocaster.vwm` | **Approved 2026-11-25 for one owner run** |
 | 4b | `store` | 14, Spank 1, MIDI 69 | The same `Stratocaster.vwm` | **Not approved** |
 | 4c | `restore` | 14, Spank 1, MIDI 69 | #236 `14-Spank-1.bin` | **Not approved** |
 | 3a | `3a` | 50, Reso 5, MIDI 105 | Archive Reso-5 renamed to `Reso-5 T` | **Not approved** |
