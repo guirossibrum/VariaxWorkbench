@@ -8,8 +8,8 @@ while the tool is running.
 | Rung | Mode | Flash slot and MIDI program | Source | Approval |
 | --- | --- | --- | --- | --- |
 | 4a | `listen` | 14, Spank 1, MIDI 69 | `Stratocaster - edited.vwm` with Alternate Tuning enabled | **Owner run passed 2026-11-25 (tuning enabled)** |
-| 4b | `store` | 14, Spank 1, MIDI 69 | The same tuning-enabled `.vwm` | **Approved 2026-11-25 for one owner run** |
-| 4c | `restore` | 14, Spank 1, MIDI 69 | #236 `14-Spank-1.bin` | **Not approved** |
+| 4b | `store` | 14, Spank 1, MIDI 69 | The same tuning-enabled `.vwm` | **Owner run passed 2026-11-25** |
+| 4c | `restore` | 14, Spank 1, MIDI 69 | #236 `14-Spank-1.bin` | **Approved 2026-11-25 for one owner run** |
 | 3a | `3a` | 50, Reso 5, MIDI 105 | Archive Reso-5 renamed to `Reso-5 T` | **Not approved** |
 | 3b | `3b` | 50, Reso 5, MIDI 105 | Archive Reso-5 | **Not approved** |
 
@@ -25,11 +25,10 @@ cargo run --offline --locked --no-default-features --features owner-reso5-test \
   --bin variax-reso5-test -- --check any-selection MODE FLASH_INDEX FULL_BACKUP ARCHIVE.vxf SOURCE MODELS.tsv LOG_ROOT
 ```
 
-For the approved 4b run, use `Stratocaster - edited.vwm` as SOURCE and
-provide the corrected local model manifest from #176. Quote the source
-path. For 4c, pass the same source and manifest used for 4b so
-preflight can reconstruct the current slot image. The upload bytes come
-from the target's file in the verified #236 backup. For 3a and 3b, pass
+For the approved 4c run, pass the same `Stratocaster - edited.vwm` source
+and corrected model manifest used for 4b. Quote the source path. The tool
+uses the source to reconstruct the current slot image. The restore bytes
+come from `14-Spank-1.bin` in the verified #236 backup. For 3a and 3b, pass
 `archive` as SOURCE and `-` for the unused model manifest. In generic
 listen and store modes, use `archive` for the target's factory program,
 `archive:NN` for a different factory program, or a checksummed backup
@@ -40,7 +39,10 @@ listen and store modes, use `archive` for the target's factory program,
 Start on a different unedited preset for a store. The following example
 uses **Reso 4** as the starting preset and **Spank 1** as the target.
 The tool prints your actual preset names. A clean full read takes about
-seven seconds. Retries can lengthen any wait.
+seven seconds. Retries can lengthen any wait. Wait until the exact
+confirmation phrase appears on its own line. The tool discards input typed
+before that prompt. A mismatch shows the received text next to the expected
+phrase and leaves up to two more attempts.
 
 | Step | HEAR before the step | SEE before the step | Result after the step |
 | --- | --- | --- | --- |
@@ -50,15 +52,15 @@ seven seconds. Retries can lengthen any wait.
 | Return before upload | Reso 4 returns and stays selected. | Wait for verification. Nothing to type. | Back on Reso 4, verified. |
 | 4a confirm and verify | Reso 4 stays selected until you confirm. The edit then plays while the tool checks it and while you audition it. | Type `LISTEN SLOT 14 Spank 1` to load the edit temporarily. Wait for **Play now**. | The working buffer matches the edited program. |
 | 4a play and return | The prompt compares the edit's body, pickups and tuning with Reso 4. The edit stays loaded until you finish. | Play strings only. Leave the knobs and selector alone. Type `RETURN TO ORIGINAL` when finished to reload and verify Reso 4. | Back on Reso 4, verified. The summary says the edit was sent and nothing was saved. |
-| Store confirm | Reso 4 stays selected until you confirm. The sound may change during upload and the save wait. The tool then checks the target and returns to your starting preset. | For 4b, type `STORE SLOT 14 Spank 1`. For another rung, use the displayed mode and target. Wait up to 15 seconds for the save reply, then wait for verification. Leave the guitar controls alone. | The guitar confirmed the save to Spank 1. |
+| Store confirm | Reso 4 stays selected until you confirm. The sound may change during upload and the save wait. The tool then checks the target and returns to your starting preset. | For 4c, type `RESTORE SLOT 14 Spank 1`. For another rung, use the displayed mode and target. Wait up to 15 seconds for the save reply, then wait for verification. Leave the guitar controls alone. | The guitar confirmed the save to Spank 1. |
 | Verify saved target | The tool reloads Spank 1 for a full read and settings check, followed by Reso 4. | Wait for the saved-image and settings checks. Nothing to type. | Spank 1 matches the expected saved sound and settings. |
 | Return after store | Reso 4 returns and stays selected. | Wait for verification and the final summary. Nothing to type. | Back on Reso 4, verified. The summary names what was sent, saved and selected. |
 
 The tool refuses a missing or ambiguous starting-image match. Slot 50
 uses the verified post-#177 factory image `90d79131…8164`. Rung 3b
 expects the renamed factory image from 3a. Rung 4c expects the stamped
-image from 4b and must reproduce the backup file byte for byte
-(`4e6b812d…` for Spank 1).
+image from 4b (`2a21d1a4…`) and must reproduce `14-Spank-1.bin` byte for
+byte (`4e6b812d…`).
 
 The first 4a run used `Stratocaster.vwm` with Alternate Tuning off. The
 successful repeat used `Stratocaster - edited.vwm`, with offsets of

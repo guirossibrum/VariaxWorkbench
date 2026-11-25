@@ -1,6 +1,8 @@
 use std::ffi::OsString;
 
 #[cfg(any(test, target_os = "linux"))]
+mod confirmation;
+#[cfg(any(test, target_os = "linux"))]
 mod procedure;
 
 #[cfg(all(not(test), target_os = "linux"))]
