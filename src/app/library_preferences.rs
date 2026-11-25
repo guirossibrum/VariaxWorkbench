@@ -1,4 +1,5 @@
-use super::CompletedVariaxBackup;
+use crate::podxt_library::CompletedPodxtBackup;
+use crate::variax_library::CompletedVariaxBackup;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::fs;
@@ -9,29 +10,49 @@ use std::time::SystemTime;
 /// Startup choices stored beside the app's editor preferences. Each update
 /// creates a new record, so backup and archive selections cannot clobber each other.
 pub struct LibraryPreferences {
+    variax: LibraryStore,
+    podxt: LibraryStore,
+}
+
+struct LibraryStore {
     directory: PathBuf,
 }
 
 impl LibraryPreferences {
     pub fn new(editor_preferences: &Path) -> Self {
         Self {
-            directory: editor_preferences.with_file_name("variax-library-preferences"),
+            variax: LibraryStore {
+                directory: editor_preferences.with_file_name("variax-library-preferences"),
+            },
+            podxt: LibraryStore {
+                directory: editor_preferences.with_file_name("podxt-library-preferences"),
+            },
         }
     }
 
     /// Most recent recorded complete backup whose folder still verifies.
     pub fn latest_variax_library(&self) -> Option<CompletedVariaxBackup> {
-        let mut backups: Vec<CompletedVariaxBackup> = self.records("backup").collect();
+        let mut backups: Vec<CompletedVariaxBackup> = self.variax.records("backup").collect();
         backups.sort_by_key(|backup| std::cmp::Reverse(backup.completed_at));
         backups
             .into_iter()
             .find(CompletedVariaxBackup::verify_again)
     }
 
+    /// Most recent complete PODxt Live snapshot with a valid manifest.
+    pub fn latest_podxt_library(&self) -> Option<CompletedPodxtBackup> {
+        let mut backups: Vec<CompletedPodxtBackup> = self.podxt.records("backup").collect();
+        backups.sort_by_key(|backup| std::cmp::Reverse(backup.completed_at));
+        backups
+            .into_iter()
+            .find(|backup| backup.verified_entries().is_ok())
+    }
+
     /// Most recently chosen owner archive, if it still exists. The caller
     /// verifies the fingerprint again when extracting factory presets.
     pub fn factory_archive(&self) -> Option<PathBuf> {
         let archive = self
+            .variax
             .records::<ArchiveChoice>("archive")
             .max_by_key(|choice| choice.chosen_at)?;
         let path = PathBuf::from(archive.path);
@@ -41,34 +62,24 @@ impl LibraryPreferences {
     /// Copy the verified files into app data and publish a startup receipt
     /// only after the independent copy passes the same checks.
     pub fn remember_backup(&self, backup: &CompletedVariaxBackup) -> Result<(), String> {
-        let source = backup.folder();
-        let entries = backup.verified_entries()?;
-        let snapshots = std::path::absolute(self.directory.join("snapshots"))
-            .map_err(|error| error.to_string())?;
-        fs::create_dir_all(&snapshots).map_err(|error| error.to_string())?;
-        let snapshot = tempfile::Builder::new()
-            .prefix("backup-")
-            .tempdir_in(snapshots)
-            .map_err(|error| error.to_string())?;
-        let staged = snapshot.path().join("staging");
-        for name in entries
-            .iter()
-            .map(String::as_str)
-            .chain(["MANIFEST.sha256"])
-        {
-            copy_snapshot_file(source, &staged, Path::new(name))?;
-        }
-        let mut receipt = backup.clone();
-        // This destination belongs to a newly reserved directory. Nothing in
-        // app data becomes a startup candidate until record() publishes it.
-        receipt.folder = snapshot.path().join("library");
-        fs::rename(&staged, &receipt.folder).map_err(|error| error.to_string())?;
-        if !receipt.verify_again() {
-            return Err("The Variax library snapshot failed manifest verification.".into());
-        }
-        self.record("backup", &receipt)?;
-        let _ = snapshot.keep();
-        Ok(())
+        self.variax
+            .save_snapshot(backup.folder(), &backup.verified_entries()?, |folder| {
+                let mut receipt = backup.clone();
+                receipt.folder = folder;
+                receipt.verified_entries()?;
+                Ok(receipt)
+            })
+    }
+
+    /// Keep an independent copy of the Device check PODxt Live backup in app data.
+    pub fn remember_podxt_backup(&self, backup: &CompletedPodxtBackup) -> Result<(), String> {
+        self.podxt
+            .save_snapshot(backup.folder(), &backup.verified_entries()?, |folder| {
+                let mut receipt = backup.clone();
+                receipt.folder = folder;
+                receipt.verified_entries()?;
+                Ok(receipt)
+            })
     }
 
     /// Validate the owner's .vxf through the existing file-only factory
@@ -93,13 +104,45 @@ impl LibraryPreferences {
             return Err("The selected Variax firmware archive is not a regular file.".into());
         }
         validate(&path)?;
-        self.record(
+        self.variax.record(
             "archive",
             &ArchiveChoice {
                 chosen_at: SystemTime::now(),
                 path: path.into_os_string(),
             },
         )
+    }
+}
+
+impl LibraryStore {
+    fn save_snapshot<T: Serialize>(
+        &self,
+        source: &Path,
+        entries: &[String],
+        verify_receipt: impl FnOnce(PathBuf) -> Result<T, String>,
+    ) -> Result<(), String> {
+        let snapshots = std::path::absolute(self.directory.join("snapshots"))
+            .map_err(|error| error.to_string())?;
+        fs::create_dir_all(&snapshots).map_err(|error| error.to_string())?;
+        let snapshot = tempfile::Builder::new()
+            .prefix("backup-")
+            .tempdir_in(snapshots)
+            .map_err(|error| error.to_string())?;
+        let staged = snapshot.path().join("staging");
+        for name in entries
+            .iter()
+            .map(String::as_str)
+            .chain(["MANIFEST.sha256"])
+        {
+            copy_snapshot_file(source, &staged, Path::new(name))?;
+        }
+        // This destination belongs to a newly reserved directory. Nothing in
+        // app data becomes a startup candidate until record() publishes it.
+        let folder = snapshot.path().join("library");
+        fs::rename(&staged, &folder).map_err(|error| error.to_string())?;
+        self.record("backup", &verify_receipt(folder)?)?;
+        let _ = snapshot.keep();
+        Ok(())
     }
 
     fn records<T: serde::de::DeserializeOwned>(
@@ -173,7 +216,7 @@ fn copy_snapshot_file(source: &Path, staged: &Path, relative: &Path) -> Result<(
     };
     copy().map_err(|error| {
         format!(
-            "Could not copy {} into the Variax library snapshot: {error}",
+            "Could not copy {} into the library snapshot: {error}",
             relative.display()
         )
     })
@@ -197,7 +240,7 @@ struct ArchiveChoice {
     path: OsString,
 }
 
-pub(super) mod os_path {
+pub(crate) mod os_path {
     use super::*;
 
     pub fn serialize<S: serde::Serializer>(path: &Path, serializer: S) -> Result<S::Ok, S::Error> {
@@ -337,6 +380,7 @@ mod tests {
         preferences.remember_backup(&first).unwrap();
         assert_eq!(
             preferences
+                .variax
                 .records::<CompletedVariaxBackup>("backup")
                 .count(),
             2
@@ -437,11 +481,18 @@ mod tests {
         );
         assert_eq!(
             preferences
+                .variax
                 .records::<CompletedVariaxBackup>("backup")
                 .count(),
             1
         );
-        assert_eq!(preferences.records::<ArchiveChoice>("archive").count(), 1);
+        assert_eq!(
+            preferences
+                .variax
+                .records::<ArchiveChoice>("archive")
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -459,7 +510,7 @@ mod tests {
         let original_manifest = fs::read(backup.folder().join("MANIFEST.sha256")).unwrap();
         preferences.remember_backup(&backup).unwrap();
         preferences.remember_backup(&backup).unwrap();
-        let snapshots: Vec<CompletedVariaxBackup> = preferences.records("backup").collect();
+        let snapshots: Vec<CompletedVariaxBackup> = preferences.variax.records("backup").collect();
         assert_eq!(snapshots.len(), 2);
         assert_ne!(snapshots[0].folder(), snapshots[1].folder());
         assert!(backup.verify_again());
@@ -503,9 +554,9 @@ mod tests {
             BackupSource::DeviceCheck,
         )
         .unwrap();
-        fs::create_dir_all(&preferences.directory).unwrap();
+        fs::create_dir_all(&preferences.variax.directory).unwrap();
         fs::write(
-            preferences.directory.join("snapshots"),
+            preferences.variax.directory.join("snapshots"),
             b"blocks the snapshot directory",
         )
         .unwrap();
@@ -513,6 +564,7 @@ mod tests {
         assert!(preferences.remember_backup(&backup).is_err());
         assert_eq!(
             preferences
+                .variax
                 .records::<CompletedVariaxBackup>("backup")
                 .count(),
             0

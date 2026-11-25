@@ -29,8 +29,8 @@ pub struct BackupIdentity {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "gui", derive(serde::Serialize, serde::Deserialize))]
 pub struct CompletedVariaxBackup {
-    #[cfg_attr(feature = "gui", serde(with = "preferences::os_path"))]
-    folder: PathBuf,
+    #[cfg_attr(feature = "gui", serde(with = "crate::library_preferences::os_path"))]
+    pub(crate) folder: PathBuf,
     pub source: BackupSource,
     pub completed_at: SystemTime,
     pub identity: BackupIdentity,
@@ -64,7 +64,7 @@ impl CompletedVariaxBackup {
     }
 
     #[cfg(feature = "gui")]
-    fn verified_entries(&self) -> Result<Vec<String>, String> {
+    pub(crate) fn verified_entries(&self) -> Result<Vec<String>, String> {
         let entries = verify_complete_manifest(&self.folder, self.source)?;
         if entries.len() != self.manifest_verified_files {
             return Err("The Variax backup manifest file count changed.".into());
@@ -73,7 +73,7 @@ impl CompletedVariaxBackup {
     }
 
     #[cfg(feature = "gui")]
-    fn verify_again(&self) -> bool {
+    pub(crate) fn verify_again(&self) -> bool {
         self.verified_entries().is_ok()
     }
 }
@@ -122,11 +122,11 @@ pub enum BackupResult {
         backup: CompletedVariaxBackup,
         notice: String,
     },
-    Podxt(String),
+    Podxt {
+        backup: crate::podxt_library::CompletedPodxtBackup,
+        notice: String,
+    },
 }
 
 #[cfg(feature = "gui")]
-#[path = "variax_library_preferences.rs"]
-mod preferences;
-#[cfg(feature = "gui")]
-pub use preferences::LibraryPreferences;
+pub use crate::library_preferences::LibraryPreferences;
