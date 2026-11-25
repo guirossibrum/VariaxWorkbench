@@ -191,7 +191,7 @@ impl VariaxEditor {
             Ok((document, restore, release_error)) => {
                 self.adopt_document(document, None);
                 self.status =
-                    "Read 60 guitar presets and 12 bank names. Save a copy to keep this library."
+                    "Read 60 guitar presets and 12 bank names. Use Save As to keep this library."
                         .into();
                 self.error = match restore {
                     Restore::Switched { verified: true, .. } => release_error,

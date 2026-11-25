@@ -13,7 +13,7 @@ switch back.
 3. Check all 12 bank names and five presets per bank against your backup.
    Verify the guitar returned to its original preset. Record any switch-back
    or bridge-release warning and stop the check if one appears.
-4. Use **Save copy…** with a new .vwb filename. Reopen the copy and compare the
+4. Use **Save As…** with a new .vwb filename. Reopen the copy and compare the
    bank names and model settings. The original open file should remain intact.
 5. Start another refresh and choose **Cancel read** partway through. Verify the
    complete open library stays in the editor. Record the reported switch-back

@@ -142,6 +142,7 @@ fn save_auto_select(path: &Path, enabled: bool) -> Result<(), String> {
 pub(super) struct VariaxEditor {
     pub(super) document: Option<EditorDocument>,
     source_path: Option<PathBuf>,
+    parked_library: Option<(EditorDocument, Option<PathBuf>)>,
     connection_status: Option<String>,
     #[cfg(feature = "usb")]
     refresh: refresh::Refresh,
@@ -224,6 +225,7 @@ impl VariaxEditor {
         Self {
             document: None,
             source_path: None,
+            parked_library: None,
             connection_status: None,
             #[cfg(feature = "usb")]
             refresh: refresh::Refresh::default(),
@@ -293,9 +295,30 @@ impl VariaxEditor {
         if self.is_reading() {
             return;
         }
-        match EditorDocument::open(path) {
+        let result = tabs::open_candidate(path, FAMILY.info().ceiling)
+            .and_then(|bytes| EditorDocument::from_file_bytes(bytes, path));
+        match result {
             Ok(document) => {
+                let parked_library = if document.banks().is_none() {
+                    if self
+                        .document
+                        .as_ref()
+                        .is_some_and(|current| current.banks().is_some())
+                    {
+                        self.document.take().map(|mut library| {
+                            if library.is_dirty() {
+                                library.discard_changes();
+                            }
+                            (library, self.source_path.take())
+                        })
+                    } else {
+                        self.parked_library.take()
+                    }
+                } else {
+                    None
+                };
                 self.adopt_document(document, Some(path));
+                self.parked_library = parked_library;
                 self.status = format!("Opened {}", path.display());
             }
             Err(error) => self.error = Some(error),
@@ -305,6 +328,7 @@ impl VariaxEditor {
     fn adopt_document(&mut self, document: EditorDocument, path: Option<&Path>) {
         self.document = Some(document);
         self.source_path = path.map(Path::to_owned);
+        self.parked_library = None;
         self.drag_origin = None;
         self.clear_text_drafts();
         self.error = None;
@@ -450,17 +474,25 @@ impl VariaxEditor {
         });
     }
 
-    pub(super) fn open_dialog(&mut self, ctx: &egui::Context, services: &mut EditorServices<'_>) {
+    pub(in crate::editor) fn open_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        services: &mut EditorServices<'_>,
+    ) {
         if self.is_reading() || self.pending.is_some() {
             return;
         }
+        if self.dirty() {
+            self.pending = Some(GuitarPending::Open(OpenDestination::File));
+        } else {
+            self.choose_open_file(ctx, services);
+        }
+    }
+
+    fn choose_open_file(&mut self, ctx: &egui::Context, services: &mut EditorServices<'_>) {
         services.request_picker::<Self>(ctx, PickRequest::OpenWorkbenchFile, |editor, path, _| {
             if let Some(path) = path {
-                if editor.dirty() {
-                    editor.pending = Some(GuitarPending::Open(path));
-                } else {
-                    editor.load(&path);
-                }
+                editor.load(&path);
             }
         });
     }
@@ -487,12 +519,13 @@ impl VariaxEditor {
             name: format!("{stem} - edited.{extension}"),
             extension: extension.into(),
         };
+        let continuation_ctx = ctx.clone();
         services.request_picker::<Self>(ctx, request, move |editor, path, services| {
             if let Some(path) = path
                 && editor.save_copy_to(path)
                 && continue_after_save
             {
-                editor.continue_pending(services);
+                editor.continue_pending(&continuation_ctx, services);
             }
         });
     }
@@ -506,19 +539,60 @@ impl VariaxEditor {
                 Some(pending) => pending.destination(&path)?,
                 None => path,
             };
+            let path = slot_files::with_file_extension(path, document.extension());
             document.save_copy(&path)?;
+            document.source = path.clone();
             Ok(path)
         })();
         match result {
             Ok(path) => {
                 self.error = None;
-                self.status = format!("Saved copy: {}", path.display());
+                self.source_path = Some(path.clone());
+                self.status = format!("Saved {}", path.display());
                 true
             }
             Err(error) => {
                 self.error = Some(error);
                 false
             }
+        }
+    }
+
+    pub(in crate::editor) fn has_document(&self) -> bool {
+        self.document.is_some()
+    }
+
+    pub(in crate::editor) fn save_file(
+        &mut self,
+        ctx: &egui::Context,
+        services: &mut EditorServices<'_>,
+        continue_after_save: bool,
+    ) {
+        if self.is_reading() {
+            return;
+        }
+        let Some(path) = self.source_path.as_ref() else {
+            self.save_dialog(ctx, services, continue_after_save);
+            return;
+        };
+        let Some(document) = &mut self.document else {
+            return;
+        };
+        if let Err(error) = document.save_open_file(path) {
+            self.error = Some(error);
+            return;
+        }
+        self.error = None;
+        self.status = format!("Saved {}", path.display());
+        if continue_after_save {
+            self.continue_pending(ctx, services);
+        }
+    }
+
+    fn return_to_library(&mut self) {
+        if let Some((library, path)) = self.parked_library.take() {
+            self.adopt_document(library, path.as_deref());
+            self.status = "Editing the library.".into();
         }
     }
 
@@ -1052,6 +1126,8 @@ impl VariaxEditor {
         ctx: &egui::Context,
     ) {
         if self.pending.is_some() || self.new_file.is_some() {
+            let save_open =
+                matches!(self.pending, Some(GuitarPending::Open(_))) && self.source_path.is_some();
             let mut discard = false;
             let mut save_continue = false;
             let mut cancel = false;
@@ -1060,13 +1136,28 @@ impl VariaxEditor {
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
                 .show(ctx, |ui| {
-                    ui.label("Save a copy to keep your changes before continuing.");
+                    ui.label("Save or discard your changes before continuing.");
+                    if let Some(error) = &self.error {
+                        ui.label(error);
+                    }
                     ui.horizontal(|ui| {
-                        let response = ui.button("Save copy and continue…");
+                        let response = ui.button(if save_open {
+                            "Save and continue"
+                        } else {
+                            "Save As and continue…"
+                        });
                         #[cfg(test)]
                         services.prompt_buttons.insert("save", response.rect);
                         if response.clicked() {
                             save_continue = true;
+                        }
+                        if save_open {
+                            let save_as = ui.button("Save As…");
+                            #[cfg(test)]
+                            services.prompt_buttons.insert("save-as", save_as.rect);
+                            if save_as.clicked() {
+                                self.save_dialog(ctx, services, true);
+                            }
                         }
                         let response = ui.button("Keep editing");
                         #[cfg(test)]
@@ -1090,21 +1181,28 @@ impl VariaxEditor {
                 self.new_file = None;
             }
             if save_continue {
-                self.save_dialog(ctx, services, true);
+                if save_open {
+                    self.save_file(ctx, services, true);
+                } else {
+                    self.save_dialog(ctx, services, true);
+                }
             }
             if discard {
-                self.continue_pending(services);
+                self.continue_pending(ctx, services);
             }
         }
     }
 
-    fn continue_pending(&mut self, services: &mut EditorServices<'_>) {
+    fn continue_pending(&mut self, ctx: &egui::Context, services: &mut EditorServices<'_>) {
         if self.new_file.is_some() {
             self.create_pending_file();
             return;
         }
         match self.pending.take() {
-            Some(GuitarPending::Open(path)) => self.load(&path),
+            Some(GuitarPending::Open(OpenDestination::File)) => {
+                self.choose_open_file(ctx, services)
+            }
+            Some(GuitarPending::Open(OpenDestination::Library)) => self.return_to_library(),
             #[cfg(test)]
             Some(GuitarPending::ReadCurrent) => self.launch_read(),
             Some(GuitarPending::Quit) => services.finish_close_if(true),
@@ -1125,10 +1223,16 @@ impl Drop for VariaxEditor {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum GuitarPending {
-    Open(PathBuf),
+    Open(OpenDestination),
     #[cfg(test)]
     ReadCurrent,
     Quit,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum OpenDestination {
+    File,
+    Library,
 }
 
 impl FamilyTab for VariaxEditor {
@@ -1218,9 +1322,6 @@ impl FamilyTab for VariaxEditor {
         self.new_file_menu(ui, services);
         #[cfg(feature = "usb")]
         self.refresh_button(ui);
-        if ui.button("Replace file in this tab…").clicked() {
-            self.open_dialog(ui.ctx(), services);
-        }
         self.connection_controls(ui, services);
     }
 }

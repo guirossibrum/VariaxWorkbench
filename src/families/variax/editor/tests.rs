@@ -21,6 +21,9 @@ fn dirty_open_cancel_failed_save_retry_and_discard_follow_actual_prompt_buttons(
     app.variax_mut().change(|p| p.rename("Keep me"));
     let before = app.variax().document.as_ref().unwrap().as_bytes().to_vec();
     app.open_dialog();
+    assert!(matches!(app.test_pending(), Some(Pending::Open)));
+    assert!(!app.picker.is_open());
+    click_prompt(&context, &mut app, "discard"); // Cancelling the picker retains the edits.
     assert!(app.test_pending().is_none());
     assert_eq!(app.variax().document.as_ref().unwrap().as_bytes(), before);
     app.open_dialog();
@@ -30,14 +33,16 @@ fn dirty_open_cancel_failed_save_retry_and_discard_follow_actual_prompt_buttons(
     app.variax_mut().redo();
     assert_eq!(app.variax().document.as_ref().unwrap().as_bytes(), before);
     prompt_frame(&context, &mut app, vec![]);
-    click_prompt(&context, &mut app, "save");
+    click_prompt(&context, &mut app, "save-as");
     assert!(app.test_pending().is_some());
     assert_eq!(app.variax().document.as_ref().unwrap().as_bytes(), before);
-    click_prompt(&context, &mut app, "save"); // Existing destination is refused.
+    click_prompt(&context, &mut app, "save-as"); // Existing destination is refused.
     assert!(app.test_pending().is_some());
     assert!(app.variax().error.is_some());
     assert_eq!(std::fs::read(&next).unwrap(), preset.as_bytes());
-    click_prompt(&context, &mut app, "save");
+    click_prompt(&context, &mut app, "save-as");
+    assert!(app.picker.is_open());
+    app.poll_picker(&context);
     assert!(app.test_pending().is_none());
     assert_eq!(std::fs::read(saved).unwrap(), before);
     assert_eq!(
@@ -54,7 +59,7 @@ fn dirty_open_cancel_failed_save_retry_and_discard_follow_actual_prompt_buttons(
         app.variax().document.as_ref().unwrap().preset().name(),
         "Discard me"
     );
-    app.variax_mut().pending = Some(GuitarPending::Open(next));
+    app.open_dialog();
     prompt_frame(&context, &mut app, vec![]);
     click_prompt(&context, &mut app, "discard");
     assert_eq!(
@@ -267,8 +272,10 @@ fn dragging_either_pickup_follows_the_pointer_and_undoes_in_one_step() {
 
         let second = start + step * 2.0 + Vec2::new(0.0, 10.0);
         frame(&context, &mut app, vec![egui::Event::PointerMoved(second)]);
+        let moved_twice = app.variax().float(slot, 0x200000).unwrap();
         assert!(
-            (app.variax().float(slot, 0x200000).unwrap() - (2.0 * moved - initial)).abs() < 1e-5
+            (moved_twice - (2.0 * moved - initial).clamp(0.1, 9.5)).abs() < 1e-5,
+            "{slot:x}: {initial} -> {moved} -> {moved_twice}"
         );
 
         let end = second + step;
@@ -994,4 +1001,35 @@ fn delayed_save_and_close_waits_for_atomic_publication() {
     assert!(!app.picker.is_open());
     assert!(app.tabs.index(id).is_none());
     assert_eq!(std::fs::read(destination).unwrap(), expected);
+}
+
+#[test]
+fn tuning_off_warns_and_dims_but_keeps_hand_edits_audibly_off() {
+    const NOTICE: &str = "Alternate tuning is off: these offsets are saved but not played.";
+    let (context, mut app) = app();
+    app.variax_mut().open_example();
+    let panel = variax_workbench::ui::theme::PANEL;
+    let [r, g, b, _] = panel.to_array();
+    let dim = Color32::from_rgba_unmultiplied(r, g, b, 96);
+    let rendered = |app: &mut Workbench| {
+        let output = context.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.variax_mut().fretboard(ui, true));
+        });
+        (
+            output.shapes.iter().any(|item| {
+                matches!(&item.shape, egui::Shape::Text(text) if text.galley.text() == NOTICE)
+            }),
+            output.shapes.iter().any(|item| {
+                matches!(&item.shape, egui::Shape::Rect(rect) if rect.fill == dim)
+            }),
+        )
+    };
+    app.variax_mut()
+        .change(|preset| preset.set_enabled(TUNING, false));
+    app.variax_mut().set_tuning([1, -1, 0, 0, 0, 0], false);
+    assert_eq!(rendered(&mut app), (true, true));
+    assert_eq!(app.variax().integer(TUNING, 0x200000), Some(1));
+    assert_eq!(app.variax().integer(TUNING, 0x200001), Some(-1));
+    app.variax_mut().set_tuning([-2, 0, 0, 0, 0, 0], true);
+    assert_eq!(rendered(&mut app), (false, false));
 }
