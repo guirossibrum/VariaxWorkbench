@@ -9,9 +9,9 @@ while the tool is running.
 | --- | --- | --- | --- | --- |
 | 4a | `listen` | 14, Spank 1, MIDI 69 | `Stratocaster - edited.vwm` with Alternate Tuning enabled | **Owner run passed 2026-11-25 (tuning enabled)** |
 | 4b | `store` | 14, Spank 1, MIDI 69 | The same tuning-enabled `.vwm` | **Owner run passed 2026-11-25** |
-| 4c | `restore` | 14, Spank 1, MIDI 69 | #236 `14-Spank-1.bin` | **Approved 2026-11-25 for one owner run** |
-| 3a | `3a` | 50, Reso 5, MIDI 105 | Archive Reso-5 renamed to `Reso-5 T` | **Not approved** |
-| 3b | `3b` | 50, Reso 5, MIDI 105 | Archive Reso-5 | **Not approved** |
+| 4c | `restore` | 14, Spank 1, MIDI 69 | #236 `14-Spank-1.bin` | **Owner run passed 2026-11-25** |
+| 3a | `3a` | 50, Reso 5, MIDI 105 | Archive Reso-5 renamed to `Reso-5 T` | **Not planned: covered by #177 1a/1b/2 and #238 4b/4c** (owner to confirm) |
+| 3b | `3b` | 50, Reso 5, MIDI 105 | Archive Reso-5 | **Not planned: covered by #177 1a/1b/2 and #238 4b/4c** (owner to confirm) |
 
 ## Offline check
 
@@ -25,7 +25,7 @@ cargo run --offline --locked --no-default-features --features owner-reso5-test \
   --bin variax-reso5-test -- --check any-selection MODE FLASH_INDEX FULL_BACKUP ARCHIVE.vxf SOURCE MODELS.tsv LOG_ROOT
 ```
 
-For the approved 4c run, pass the same `Stratocaster - edited.vwm` source
+For 4c offline checks, pass the same `Stratocaster - edited.vwm` source
 and corrected model manifest used for 4b. Quote the source path. The tool
 uses the source to reconstruct the current slot image. The restore bytes
 come from `14-Spank-1.bin` in the verified #236 backup. For 3a and 3b, pass
