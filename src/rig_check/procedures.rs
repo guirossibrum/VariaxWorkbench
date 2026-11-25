@@ -9,6 +9,7 @@ use super::catalogue::StepId;
 use super::practice::{PROGRAM_WORDS, Program};
 use super::record::Mode;
 use super::runner::Ctx;
+use line6_devices::family::podxt::{self, EditBuffer, Location};
 use line6_devices::family::variax::{Preset, procedures as variax};
 use line6_devices::gate::{GatePolicy, Operation};
 use line6_devices::session::{Link, Log, Session};
@@ -54,7 +55,8 @@ pub(super) fn absorb(ctx: &mut Ctx<'_>, lines: Lines) {
     ctx.rec.messages.extend(lines.0);
 }
 
-/// Run `body` on a gated session over the PODxt Live MIDI link.
+/// Run a shared PODxt Live procedure on a gated session. Rig Check owns
+/// the step policy and logs, and the family library owns the device exchange.
 pub fn with_podxt<T>(
     ctx: &mut Ctx<'_>,
     ops: &'static [Operation],
@@ -76,6 +78,19 @@ pub fn with_podxt<T>(
     };
     absorb(ctx, lines);
     result
+}
+
+/// Read an addressed PODxt tone, keeping the step's lost-reply wording.
+pub fn podxt_read_stored<L: Link>(
+    session: &mut Session<L>,
+    location: Location,
+) -> Result<EditBuffer, String> {
+    podxt::read_stored_tone(session, location)?.ok_or_else(|| {
+        format!(
+            "Lost reply: no 168-byte dump for channel {}.",
+            location.label()
+        )
+    })
 }
 
 /// Run `body` on a gated session over the guitar interface.

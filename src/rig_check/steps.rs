@@ -288,13 +288,6 @@ fn computer_usb(ctx: &mut Ctx<'_>) -> Result<(), String> {
     Ok(())
 }
 
-pub fn podxt_verified(identity: &Identity) -> bool {
-    identity.is_line6()
-        && identity.family == podxt::IDENTITY_FAMILY
-        && identity.member == podxt::PODXT_LIVE_MEMBER
-        && identity.version == [0, 3, 0, 1]
-}
-
 pub fn variax_verified(identity: &Identity) -> bool {
     shared_variax::check_identity(identity).is_ok()
 }
@@ -304,7 +297,7 @@ fn podxt_identity(ctx: &mut Ctx<'_>) -> Result<(), String> {
         podxt::listen(session, Duration::ZERO)
     })?;
     let identity = Identity::parse(&reply).ok_or("The PODxt identity reply did not parse.")?;
-    let verified = podxt_verified(&identity);
+    let verified = podxt::check_live_identity(&identity).is_ok();
     let model = podxt::member_name(identity.member);
     ctx.rec.note(format!("Identity reply: {}", hex(&reply)));
     ctx.rec.show(format!(

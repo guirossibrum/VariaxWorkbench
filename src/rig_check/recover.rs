@@ -16,7 +16,7 @@ use super::procedures::{TONE_POSITION_WORDS, variax_read_preset, with_variax};
 use super::record::{Mode, Outcome, RunRecord, StepRecord, sha256_hex, utc_now};
 use super::runner::{Ctx, Decision, Operator, ReportSink, Retry, SKIPPED};
 use super::steps::RunData;
-use line6_devices::family::podxt::{self, BankKind, Location, PodxtRequest};
+use line6_devices::family::podxt::{self, BankKind, Location};
 use line6_devices::family::variax::{Preset, procedures as shared_variax};
 use line6_devices::gate::Operation;
 use line6_devices::midi::Event;
@@ -271,10 +271,7 @@ fn restore(ctx: &mut Ctx<'_>, state: &RigState) -> Result<(), String> {
     let mut problems = Vec::new();
     if let Some(channel) = state.channel() {
         let tone = super::procedures::with_podxt(ctx, RESTORE_OPS, |session| {
-            podxt::identify_podxt_live(session)?;
-            session.send(PodxtRequest::Program(channel))?;
-            session.link.pause(Duration::from_millis(400));
-            podxt::read_current(session).map(|current| current.tone)
+            podxt::restore_channel(session, channel).map(|current| current.tone)
         })?;
         let hash = sha256_hex(&tone.raw);
         if Some(&hash) == state.podxt_tone_sha256.as_ref() {

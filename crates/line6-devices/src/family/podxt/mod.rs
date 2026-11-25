@@ -11,6 +11,7 @@
 pub mod backup;
 pub mod controls;
 pub mod models;
+mod procedures;
 mod store;
 mod store_backup;
 mod transfer;
@@ -24,6 +25,8 @@ pub use live_edit::{
 };
 pub use live_read::{ReadCommand, ReadUpdate, read_live};
 pub use live_settings::{LiveControl, LiveTarget, Setting, SettingMessage};
+pub use procedures::{check_live_identity, identify_podxt_live, read_stored_tone, restore_channel};
+use procedures::{identify_podxt, read_edit_buffer, request_tone, send_control, wait_tone};
 pub use store::{StoreControl, StoreResult, store_tone};
 pub use store_backup::{
     ConfirmedStore, PreparedStore, StoreSource, VerifiedToneBackup, prepare_tone_store,
@@ -854,15 +857,13 @@ fn edit_settings<L: Link>(
     let mut attempted = 0;
     let mut sent_forward = Vec::new();
     let mut send_error = None;
-    'changes: for change in &changes {
+    for change in &changes {
         attempted += 1;
-        for (cc, value, request) in change.control.messages(change.target) {
-            if let Err(error) = session.send(request) {
-                send_error = Some(error);
-                break 'changes;
-            }
+        if let Err(error) = send_control(session, change.control, change.target, |cc, value| {
             sent_forward.push((cc, value));
-            session.link.pause(CC_GAP);
+        }) {
+            send_error = Some(error);
+            break;
         }
         sent += 1;
     }
@@ -1248,13 +1249,8 @@ fn read_stored<L: Link>(
     session: &mut Session<L>,
     location: Location,
 ) -> Result<EditBuffer, String> {
-    session.send(PodxtRequest::Stored(location))?;
-    let result = match session.wait_for(STORED_WINDOW, is_edit_buffer, false)? {
-        Wait::Found(dump) => EditBuffer::parse(dump),
-        _ => Err(format!("No dump for stored tone {}.", location.label())),
-    };
-    session.listen(STORED_GAP)?;
-    result
+    read_stored_tone(session, location)?
+        .ok_or_else(|| format!("No dump for stored tone {}.", location.label()))
 }
 
 /// Which stored tone channel the playing tone is (exactly one match among
@@ -1535,51 +1531,6 @@ pub struct CurrentTone {
     pub tone: EditBuffer,
 }
 
-/// Drain, then identity; errors unless the reply is a PODxt.
-fn identify_podxt<L: Link>(session: &mut Session<L>) -> Result<(Vec<u8>, Identity), String> {
-    let (reply, identity) = request_identity(session)?;
-    if !identity.is_line6() || identity.family != IDENTITY_FAMILY {
-        return Err("The reply is not a PODxt-family identity. Nothing else was sent.".into());
-    }
-    Ok((reply, identity))
-}
-
-/// Verify the attached PODxt Live and its firmware before any device write.
-pub fn identify_podxt_live<L: Link>(session: &mut Session<L>) -> Result<Vec<u8>, String> {
-    let (reply, identity) = request_identity(session)?;
-    check_live_identity(&identity)?;
-    Ok(reply)
-}
-
-fn check_live_identity(identity: &Identity) -> Result<(), String> {
-    if identity.is_line6()
-        && identity.family == IDENTITY_FAMILY
-        && identity.member == PODXT_LIVE_MEMBER
-        && identity.version == [0, 3, 0, 1]
-    {
-        Ok(())
-    } else {
-        Err(format!(
-            "Found firmware {} (family 0x{:04x}, member 0x{:04x}). The verified target is PODxt Live firmware 3.01.",
-            identity.version_text(),
-            identity.family,
-            identity.member,
-        ))
-    }
-}
-
-fn request_identity<L: Link>(session: &mut Session<L>) -> Result<(Vec<u8>, Identity), String> {
-    // Drain anything already queued. Sends nothing.
-    session.listen(Duration::from_millis(200))?;
-    session.send(PodxtRequest::Identity)?;
-    let Wait::Found(reply) = session.wait_for(WINDOW, |m| Identity::parse(m).is_some(), false)?
-    else {
-        return Err("No identity reply from the PODxt. Nothing else was sent.".into());
-    };
-    let identity = Identity::parse(&reply).expect("checked above");
-    Ok((reply, identity))
-}
-
 /// Send Workbench's standalone release after verifying the PODxt Live
 /// identity. The owner checks the EDIT page for the effect on the display.
 pub fn release_variax_control<L: Link>(session: &mut Session<L>) -> Result<Vec<u8>, String> {
@@ -1612,14 +1563,6 @@ pub fn read_current<L: Link>(session: &mut Session<L>) -> Result<CurrentTone, St
         identity,
         tone,
     })
-}
-
-fn read_edit_buffer<L: Link>(session: &mut Session<L>) -> Result<EditBuffer, String> {
-    session.send(PodxtRequest::EditBuffer)?;
-    match session.wait_for(WINDOW, is_edit_buffer, false)? {
-        Wait::Found(dump) => EditBuffer::parse(dump),
-        _ => Err("No 168-byte edit-buffer dump arrived.".into()),
-    }
 }
 
 /// Line 6 Edit waits up to three times 1 s for each stored dump.
@@ -1656,18 +1599,16 @@ pub fn read_library<L: Link>(
     let mut entries = Vec::new();
     let mut stopped = None;
     for location in Location::all(kinds) {
-        session.send(PodxtRequest::Stored(location))?;
-        match session.wait_for(STORED_WINDOW, is_edit_buffer, false)? {
-            Wait::Found(dump) => {
-                let stored = StoredTone {
-                    location,
-                    tone: EditBuffer::parse(dump)?,
-                };
+        match request_tone(Some(location), |request, window| {
+            wait_tone(session, request, window)
+        })? {
+            Some(tone) => {
+                let stored = StoredTone { location, tone };
                 progress(&stored);
                 entries.push(stored);
                 session.listen(STORED_GAP)?;
             }
-            _ => {
+            None => {
                 stopped = Some(format!(
                     "{} {}: no 168-byte dump",
                     location.kind().name(),
@@ -1908,7 +1849,7 @@ mod tests {
         reply
     }
 
-    fn synthetic() -> Vec<u8> {
+    pub(super) fn synthetic() -> Vec<u8> {
         let mut dump = vec![0xf0, 0x00, 0x01, 0x0c, 0x03, 0x74, 0x0a];
         dump.extend(b"Test Tone       ");
         dump.resize(EDIT_BUFFER_LEN - 1, 0);

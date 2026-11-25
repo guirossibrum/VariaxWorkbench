@@ -1,42 +1,14 @@
 //! Steps 2.3 and 2.4 (#254): stored PODxt Live channels by memory location,
 //! and their comparison with the library backup from step 2.5.
 
-use super::procedures::{PODXT_LIBRARY, with_podxt};
+use super::procedures::{PODXT_LIBRARY, podxt_read_stored, with_podxt};
 use super::runner::Ctx;
-use line6_devices::family::podxt::{BankKind, EditBuffer, Location, PodxtRequest};
+use line6_devices::family::podxt::{BankKind, EditBuffer, Location};
 use line6_devices::midi::hex;
-use line6_devices::session::{Link, Session, Wait};
-use std::time::Duration;
-
-/// Line 6 Edit waits up to 3 x 1 s for a stored dump, then pauses 100 ms.
-const STORED_WINDOW: Duration = Duration::from_secs(3);
-const STORED_GAP: Duration = Duration::from_millis(100);
 
 /// The channel read by step 2.3 and the bank read by step 2.4.
 pub const ONE_CHANNEL: u16 = 0; // 1A
 pub const ONE_BANK: u16 = 0; // 1A-1D
-
-fn is_dump(message: &[u8]) -> bool {
-    message.len() == line6_devices::family::podxt::EDIT_BUFFER_LEN
-        && message[..6] == [0xf0, 0x00, 0x01, 0x0c, 0x03, 0x74]
-}
-
-/// One stored location, by address; the playing tone does not change.
-pub fn read_stored<L: Link>(
-    session: &mut Session<L>,
-    location: Location,
-) -> Result<EditBuffer, String> {
-    session.send(PodxtRequest::Stored(location))?;
-    let result = match session.wait_for(STORED_WINDOW, is_dump, false)? {
-        Wait::Found(dump) => EditBuffer::parse(dump),
-        _ => Err(format!(
-            "Lost reply: no 168-byte dump for channel {}.",
-            location.label()
-        )),
-    };
-    session.listen(STORED_GAP)?;
-    result
-}
 
 fn record(ctx: &mut Ctx<'_>, location: Location, result: &Result<EditBuffer, String>) {
     match result {
@@ -70,7 +42,7 @@ fn read_channels(ctx: &mut Ctx<'_>, indices: &[u16]) -> Result<(), String> {
     let results = with_podxt(ctx, PODXT_LIBRARY, |session| {
         Ok(locations
             .iter()
-            .map(|&location| (location, read_stored(session, location)))
+            .map(|&location| (location, podxt_read_stored(session, location)))
             .collect::<Vec<_>>())
     })?;
     let mut failures = Vec::new();
