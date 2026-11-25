@@ -93,7 +93,9 @@ pub struct StepRecord {
     pub duration_ms: Option<u128>,
     /// Questions and the person's answers, in order.
     pub answers: Vec<(String, String)>,
-    /// Result lines in plain language.
+    /// Plain observations selected for the on-screen and terminal result.
+    pub result: Vec<String>,
+    /// Full observations, including byte details, for the report.
     pub evidence: Vec<String>,
     /// Every message sent and received, with link time stamps.
     pub messages: Vec<MessageLine>,
@@ -113,6 +115,7 @@ impl StepRecord {
             started: None,
             duration_ms: None,
             answers: Vec::new(),
+            result: Vec::new(),
             evidence: Vec::new(),
             messages: Vec::new(),
             retries: 0,
@@ -125,11 +128,85 @@ impl StepRecord {
         self.evidence.push(line.into());
     }
 
+    /// Record an observation in both the result and the full report.
+    pub fn show(&mut self, line: impl Into<String>) {
+        let line = line.into();
+        self.result.push(line.clone());
+        self.note(line);
+    }
+
+    pub fn result_lines(&self) -> Vec<String> {
+        let mut lines: Vec<String> = self.result.iter().map(|line| plain_result(line)).collect();
+        if let Some(reason) = self.outcome.reason() {
+            lines.push(plain_result(reason));
+        }
+        lines.extend(
+            self.hints
+                .iter()
+                .map(|hint| format!("Hint: {}", plain_result(hint))),
+        );
+        if self.outcome.passed() {
+            let look = match self.id {
+                StepId(2, 2) => "Does the PODxt Live display show the same current tone name?",
+                StepId(2, 3) => {
+                    "If the PODxt Live is already on this channel, does its display show the same name?"
+                }
+                StepId(4, 1) => "Check that the stomp LED is back to its starting state.",
+                StepId(7, 3) => {
+                    "Check that the PODxt Live display shows the starting channel again."
+                }
+                _ => return lines,
+            };
+            lines.push(look.into());
+        }
+        lines
+    }
+
     pub fn checksum(&mut self, label: impl Into<String>, bytes: &[u8]) -> String {
         let hash = sha256_hex(bytes);
         self.checksums.push((label.into(), hash.clone()));
         hash
     }
+}
+
+/// Keep protocol detail in the report, including when a lower-level error
+/// carries a byte sequence or a command number in its text.
+pub fn plain_result(text: &str) -> String {
+    fn hex(text: &str) -> bool {
+        !text.is_empty() && text.bytes().all(|b| b.is_ascii_hexdigit())
+    }
+    fn clean(word: &str) -> &str {
+        word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != ':')
+            .trim_matches(':')
+    }
+    fn byte(word: &str) -> bool {
+        let word = clean(word);
+        word.len() == 2 && hex(word)
+    }
+    let mut output = Vec::new();
+    let mut words = text.split_whitespace().peekable();
+    while let Some(word) = words.next() {
+        let key = clean(word);
+        if byte(word) && words.clone().take(2).count() == 2 && words.clone().take(2).all(byte) {
+            while words.next_if(|word| byte(word)).is_some() {}
+            output.push("[bytes in report]");
+        } else if key
+            .strip_prefix("0x")
+            .or_else(|| key.strip_prefix("0X"))
+            .is_some_and(hex)
+            || key
+                .split_once(':')
+                .is_some_and(|(a, b)| a.len() == 4 && b.len() == 4 && hex(a) && hex(b))
+            || key.eq_ignore_ascii_case("f7")
+        {
+            output.push("[device code in report]");
+        } else if key.len() > 16 && hex(key) {
+            output.push("[hash in report]");
+        } else {
+            output.push(word);
+        }
+    }
+    output.join(" ")
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {

@@ -42,7 +42,7 @@ fn the_podxt(ctx: &Ctx<'_>) -> Result<UsbDevice, String> {
 pub fn see_podxt(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let device = the_podxt(ctx)?;
     ctx.rec
-        .note(format!("PODxt Live found on port {}.", device.port));
+        .show(format!("PODxt Live found on port {}.", device.port));
     ctx.rec.note(device.describe());
     for (interface, expected) in [(0, EXPECTED_POD_DRIVER), (1, EXPECTED_VARIAX_DRIVER)] {
         match device.driver(interface) {
@@ -94,7 +94,7 @@ pub fn open_and_release(ctx: &mut Ctx<'_>) -> Result<(), String> {
         .map(|_| ())
         .map_err(|error| classify_open_error(&error))?;
     ctx.rec
-        .note("Guitar interface opened (interface 1 claimed). No message was sent.");
+        .show("Guitar interface opened (interface 1 claimed). No message was sent.");
     let released = ctx.port.release_variax();
     let lines = released.map_err(|error| {
         if error.to_ascii_lowercase().contains("driver") {
@@ -104,11 +104,11 @@ pub fn open_and_release(ctx: &mut Ctx<'_>) -> Result<(), String> {
         }
     })?;
     for line in lines {
-        ctx.rec.note(line);
+        ctx.rec.show(line);
     }
     if linux_view {
         let after = guitar_driver(ctx, &device.port);
-        ctx.rec.note(format!(
+        ctx.rec.show(format!(
             "After: interface 1 driver {}.",
             after.as_deref().unwrap_or("(none)")
         ));
@@ -116,6 +116,9 @@ pub fn open_and_release(ctx: &mut Ctx<'_>) -> Result<(), String> {
             return Err(NOT_RETURNED.into());
         }
     }
+    ctx.rec
+        .result
+        .push("Guitar interface opened and given back.".into());
     Ok(())
 }
 

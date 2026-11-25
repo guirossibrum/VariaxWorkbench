@@ -185,7 +185,7 @@ pub fn detect(ctx: &mut Ctx<'_>) -> Result<(), String> {
         ]
     };
     for line in lines {
-        ctx.rec.note(line);
+        ctx.rec.show(line);
     }
     Ok(())
 }

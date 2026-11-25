@@ -159,6 +159,10 @@ pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
         &after_hash[..16],
         preset_label(preset)
     ));
+    ctx.rec.result.push(format!(
+        "Saved and verified {}. The read-back matches the backup.",
+        preset_label(preset)
+    ));
     Ok(())
 }
 

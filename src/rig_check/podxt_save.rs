@@ -95,6 +95,10 @@ pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
                 slot.label(),
                 &hash[..16]
             ));
+            ctx.rec.result.push(format!(
+                "Saved and verified channel {}. The read-back matches the backup.",
+                slot.label()
+            ));
             Ok(())
         }
         StoreResult::SlotStateUnknown { slot, reason } => {

@@ -22,15 +22,26 @@ pub fn podxt_stomp(ctx: &mut Ctx<'_>) -> Result<(), String> {
     ctx.rec
         .checksum("PODxt tone before (168 bytes)", &test.before.raw);
     for (change, applied) in test.applied() {
+        let status = if applied {
+            "read back as sent"
+        } else {
+            "not seen in the read-back"
+        };
         ctx.rec.note(format!(
-            "Stomp {} -> {}: {}",
-            change.original,
-            change.target,
-            if applied {
-                "read back as sent"
+            "Stomp {} -> {}: {status}",
+            change.original, change.target
+        ));
+        let state = |value: u16| {
+            if podxt::Control::StompEnable.is_on(value as u8) {
+                "on"
             } else {
-                "NOT seen in the read-back"
+                "off"
             }
+        };
+        ctx.rec.result.push(format!(
+            "Stomp {} to {}: {status}.",
+            state(change.original),
+            state(change.target)
         ));
     }
     if let Ok(after) = &test.after {
@@ -59,7 +70,7 @@ pub fn podxt_stomp(ctx: &mut Ctx<'_>) -> Result<(), String> {
     }
     if test.exact_undo() {
         ctx.rec
-            .note("The whole tone matches the start byte for byte. Nothing was saved.");
+            .show("The whole tone matches the start byte for byte. Nothing was saved.");
         Ok(())
     } else if test.undone() {
         ctx.rec.note(format!(

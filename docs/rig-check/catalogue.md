@@ -172,6 +172,8 @@ so they can be read from where the guitar is.
   Differences are listed by word, bit and sound part (pickups, body, EQ,
   pitch/tuning, settings, checksum).
 - **You do:** Nothing, or choose a folder with your own reference models.
+- **SEE:** Results for the reference models and a count of the synthetic
+  cases.
 - **Risk:** None.
 - **Evidence:** one line per model, full word/bit detail when different.
 - **Built-in references** are synthetic only (the repository's synthetic
@@ -208,7 +210,8 @@ so they can be read from where the guitar is.
 ### 2.1 PODxt Live identity and firmware
 - **What it does:** Asks the PODxt Live who it is. A lost first reply packet
   is retried once.
-- **SEE:** "PODxt Live, firmware 3.01". **HEAR:** nothing.
+- **HEAR:** nothing.
+- **SEE:** The reported PODxt model and firmware, with verification status.
 - **Risk:** Read.
 - **Evidence:** identity reply in hex, model, firmware, verified/unverified.
 
@@ -233,13 +236,16 @@ so they can be read from where the guitar is.
   2.4 are compared with it: content differences are reported separately
   from lost bytes. The tone you play is read again at the end to show it
   did not change.
+- **SEE:** The number of entries read out of 299.
 - **Risk:** Read. **Evidence:** entry count, SHA-256 per entry and of the
   manifest, before/after current tone.
 
 ### 3.1 Variax identity, model and firmware
 - **What it does:** Asks the guitar who it is, through the PODxt Live. A
   lost first packet or a silent first try is retried once.
-- **SEE:** "Variax 600, firmware 3.10". **HEAR:** nothing.
+- **HEAR:** nothing.
+- **SEE:** The reported Variax model family and firmware, with verification
+  status.
 - **Risk:** Read.
 - **Evidence:** identity reply, model (300/500/600/700), firmware, VDI link
   answering, verified/unverified.
@@ -253,6 +259,7 @@ so they can be read from where the guitar is.
 - **What it does:** Reads all 1,092 words of the sound the guitar is playing
   in 35 small reads of 32 words (the PODxt Live drops replies larger than
   about 256 bytes). A damaged reply is retried up to twice, 100 ms apart.
+- **SEE:** The number of chunks read out of 35 and the checksum result.
 - **Risk:** Read. This is also the rig's starting program for step 6.2.
 - **Evidence:** per read: request, reply, retries, lost bytes; SHA-256 of
   the full program and its checksum word.
@@ -265,6 +272,8 @@ so they can be read from where the guitar is.
   preset switch discards unsaved guitar edits, and an edited sound matches
   no stored preset, so Rig Check could not switch back to it.
 - **HEAR:** the sound changes 60 times, then comes back. About 4 minutes.
+- **SEE:** The number of presets read out of 60 and whether the guitar
+  returned to its starting preset.
 - **Risk:** Read. **Evidence:** 60 SHA-256 values, manifest, the starting
   preset, return check.
 - The full backup comes first (before 3.5 and 3.6) because a single preset
@@ -275,17 +284,23 @@ so they can be read from where the guitar is.
   it, compares it with the backup, switches back to the starting preset and
   checks all 1,092 words.
 - **HEAR:** the sound changes for a few seconds and comes back.
+- **SEE:** Which preset was read, whether it matches the backup, and whether
+  the guitar returned to its starting preset.
 - **Risk:** Read (preset switch and back). **Evidence:** program, backup
   comparison, return check.
 
 ### 3.6 Variax one bank (5 presets), and back
 - Same as 3.5 for the five presets of one bank. **HEAR:** five short changes.
+- **SEE:** The number of presets read out of five and whether the guitar
+  returned to its starting preset.
 
 ### 4.1 PODxt Live: change one control, read back, undo
 - **What it does:** Changes one control of the tone you are playing (the
   stomp on/off), reads the tone back, puts the control back and checks that
   the whole tone matches the start. Nothing is saved.
-- **HEAR:** the stomp switches for a moment. **SEE:** the stomp LED.
+- **HEAR:** the stomp switches for a moment.
+- **SEE:** The stomp setting read back and whether the starting tone was
+  restored.
 - **Risk:** Live. **Evidence:** before, after and restored dumps, differences.
 
 ### 4.2 Variax: send the current preset's own bytes to the working buffer
@@ -301,6 +316,8 @@ so they can be read from where the guitar is.
 - **Listening:** "Play the original first." Then **Yes / No / Not sure**
   plus an optional note, only about obvious differences (body family,
   12-string, tuning, sitar), A/B against the sound just heard.
+- **SEE:** Your answers for each test model and whether the guitar returned
+  to its starting preset.
 - **Risk:** Live. Nothing is saved; no save command is ever sent.
 - **Evidence:** upload and read-back hashes, answers next to byte checks.
 
@@ -332,8 +349,9 @@ so they can be read from where the guitar is.
   until the guitar stops answering, asks you to plug it back, and reads the
   identity again.
 - **You do:** unplug, wait for the screen, plug back in.
-- **SEE:** "Guitar gone" then "Guitar back". **HEAR:** the guitar goes
-  silent while unplugged.
+- **HEAR:** the guitar goes silent while unplugged.
+- **SEE:** The observed disconnect and reconnect, and the guitar firmware
+  after reconnecting.
 - **Risk:** Read. **Evidence:** times of loss and return, identity after.
 
 ### 6.2 Rig back to its starting state, driver given back
@@ -341,6 +359,8 @@ so they can be read from where the guitar is.
   and compares them with the start. If the channel or preset differs, it
   switches back and checks again. Then it gives the guitar interface back
   to the operating system and checks the driver.
+- **SEE:** What matched the starting state, and the guitar driver status if
+  checked.
 - **Risk:** Read (switches back if needed). Always offered last, also after
   **Stop**.
 - **Evidence:** start and end hashes, any switch-back, driver binding.
@@ -349,8 +369,10 @@ so they can be read from where the guitar is.
 - **What it does:** Opens a listening window. Nothing is sent while you
   turn the selector. When the guitar reports the new preset, Rig Check reads
   it and checks it matches the backup.
-- **You do:** turn the selector to the named preset. **SEE:** "Seen: …".
+- **You do:** turn the selector to the named preset.
 - **Timeout:** "Didn't see it: Try again / Skip".
+- **SEE:** The preset the guitar reported and the return to the starting
+  preset.
 - **Risk:** Read. **Evidence:** program change seen, matching read.
 
 ### 7.2 Sweep the Variax volume and tone knobs
@@ -361,6 +383,8 @@ so they can be read from where the guitar is.
 ### 7.3 Switch the PODxt Live to a named channel
 - **You do:** press the footswitch for the named channel. Rig Check checks
   the new tone against the library backup, then asks you to switch back.
+- **SEE:** The channel and tone the PODxt Live reported and the return to
+  the starting channel.
 - **Risk:** Read. **Evidence:** program change seen, tone match.
 
 ### 7.4 Move the PODxt Live pedal
