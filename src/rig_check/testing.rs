@@ -266,7 +266,9 @@ mod tests {
     #[test]
     fn real_mode_refuses_every_device_step_without_touching_anything() {
         let mut person = Script::run_all();
-        let mut port = RealPort::default();
+        let mut port = RealPort::with_system(Box::new(
+            crate::rig_check::computer::linux::synthetic_machine(true, true),
+        ));
         let (run, _) = run_on(&mut port, &mut person, &mut NoReport, RunData::default());
         for step in STEPS {
             let outcome = &run.step(step.id).outcome;

@@ -15,6 +15,7 @@
 pub mod approvals;
 pub mod catalogue;
 pub mod cli;
+pub mod computer;
 pub mod evidence;
 pub mod hints;
 pub mod port;

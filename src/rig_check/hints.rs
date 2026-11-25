@@ -50,7 +50,7 @@ pub const HINTS: &[Hint] = &[
     },
     Hint {
         signs: &["permission denied", "access denied"],
-        text: "Known cause: this user may not open the PODxt Live. Install the Variax Workbench udev rule from the Linux package (or run the packaged launcher) and replug the PODxt Live.",
+        text: "Known cause: this user may not open the PODxt Live. Step 0.2 lists the device node permissions. Give your user access to USB device 0e41:4650 (for example with a udev rule from your distribution's documentation) and replug the PODxt Live.",
     },
     Hint {
         signs: &["busy"],

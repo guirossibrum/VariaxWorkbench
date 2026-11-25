@@ -6,6 +6,7 @@
 
 use super::approvals;
 use super::catalogue::StepId;
+use super::computer::{FileSource, MemFs, RootFs, linux};
 use super::practice::{SimLink, SimRig, UserAction};
 use super::record::Mode;
 use line6_devices::session::Link;
@@ -24,6 +25,12 @@ pub trait RigPort {
     /// Give the guitar interface back to the operating system and report the
     /// driver binding afterwards.
     fn release_variax(&mut self) -> Result<Vec<String>, String>;
+    /// The computer's own files for steps 0.1, 0.2 and 8.1 (read-only).
+    fn system(&self) -> Box<dyn FileSource + '_>;
+    /// The libusb version this build links, if any.
+    fn libusb(&self) -> String {
+        super::computer::libusb_version()
+    }
     /// Practice only: what the simulated person does during a guided step.
     fn user_acts(&mut self, _action: UserAction, _after: Duration) {}
     /// Practice only: the simulated rig.
@@ -99,22 +106,83 @@ impl RigPort for PracticePort {
         self.rig.borrow_mut().user_acts(action, after);
     }
 
+    fn system(&self) -> Box<dyn FileSource + '_> {
+        let rig = self.rig.borrow();
+        Box::new(linux::synthetic_machine(
+            !rig.faults.podxt_absent,
+            rig.driver_bound,
+        ))
+    }
+
+    fn libusb(&self) -> String {
+        "1.0.0 (simulated)".into()
+    }
+
     fn simulation(&self) -> Option<Rc<RefCell<SimRig>>> {
         Some(self.rig.clone())
+    }
+}
+
+struct Borrowed<'a>(&'a dyn FileSource);
+
+impl FileSource for Borrowed<'_> {
+    fn read(&self, path: &str) -> Option<String> {
+        self.0.read(path)
+    }
+    fn link_name(&self, path: &str) -> Option<String> {
+        self.0.link_name(path)
+    }
+    fn list(&self, dir: &str) -> Vec<String> {
+        self.0.list(dir)
+    }
+    fn mode(&self, path: &str) -> Option<(u32, u32, u32)> {
+        self.0.mode(path)
     }
 }
 
 /// The real rig. Every open first checks the step's owner approval and its
 /// hardware gates. All approvals are off in this build, so no link is ever
 /// opened (#267). Test builds never open a device either way.
-#[derive(Default)]
 pub struct RealPort {
+    system: Box<dyn FileSource>,
     #[cfg(target_os = "linux")]
     podxt: Option<line6_devices::transport::rawmidi::RawMidiLink>,
     #[cfg(feature = "usb")]
     variax: Option<line6_devices::transport::usb::UsbInterfaceLink>,
     #[cfg(feature = "usb")]
     lock: Option<line6_devices::device_lock::DeviceLock>,
+}
+
+impl RealPort {
+    /// The real rig and this computer's real files. Test builds get an
+    /// empty tree instead, so they can never read `/proc` or `/sys`.
+    pub fn new() -> Self {
+        let system: Box<dyn FileSource> = if cfg!(test) {
+            Box::new(MemFs::default())
+        } else {
+            Box::new(RootFs { root: "/".into() })
+        };
+        Self::with_system(system)
+    }
+
+    /// The real rig with an injected file tree (tests).
+    pub fn with_system(system: Box<dyn FileSource>) -> Self {
+        Self {
+            system,
+            #[cfg(target_os = "linux")]
+            podxt: None,
+            #[cfg(feature = "usb")]
+            variax: None,
+            #[cfg(feature = "usb")]
+            lock: None,
+        }
+    }
+}
+
+impl Default for RealPort {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 fn refuse_in_tests() -> Result<(), String> {
@@ -170,6 +238,10 @@ impl RigPort for RealPort {
         {
             Err("This build has no USB support (feature `usb`).".into())
         }
+    }
+
+    fn system(&self) -> Box<dyn FileSource + '_> {
+        Box::new(Borrowed(&*self.system))
     }
 
     fn variax_claimed(&self) -> bool {

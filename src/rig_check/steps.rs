@@ -1,6 +1,7 @@
 //! What each step does once the person has chosen Run.
 
 use super::catalogue::StepId;
+use super::computer::{self, UsbView};
 use super::evidence;
 use super::practice::{Program, preset_label};
 use super::procedures::{
@@ -35,6 +36,8 @@ pub struct RunData {
     pub variax_library: Vec<(Preset, Program)>,
     pub touched_podxt: bool,
     pub touched_variax: bool,
+    /// The USB view from step 0.2.
+    pub usb: Option<UsbView>,
 }
 
 impl RunData {
@@ -66,7 +69,8 @@ pub fn execute(ctx: &mut Ctx<'_>) -> Result<(), String> {
     ctx.data.touched_podxt |= podxt;
     ctx.data.touched_variax |= variax;
     match (id.0, id.1) {
-        (0, 1) => computer_basic(ctx),
+        (0, 1) => computer_system(ctx),
+        (0, 2) => computer_usb(ctx),
         (2, 1) => podxt_identity(ctx),
         (2, 2) => podxt_current_tone(ctx),
         (2, 5) => podxt_library(ctx),
@@ -104,15 +108,39 @@ fn placeholder(ctx: &mut Ctx<'_>) -> Result<(), String> {
     Ok(())
 }
 
-fn computer_basic(ctx: &mut Ctx<'_>) -> Result<(), String> {
-    let lines = [
-        ("Operating system", std::env::consts::OS.to_string()),
-        ("Architecture", std::env::consts::ARCH.to_string()),
-    ];
+fn computer_system(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    let lines = if cfg!(target_os = "linux") || ctx.mode == Mode::Practice {
+        let system = ctx.port.system();
+        computer::linux::system(&*system)
+    } else {
+        return Err("This operating system's collector is not in this build yet (#251).".into());
+    };
+    if ctx.mode == Mode::Practice {
+        ctx.rec
+            .note("Practice mode: this is a simulated computer, not this one.");
+    }
     for (name, value) in lines {
         ctx.rec.note(format!("{name}: {value}"));
-        ctx.data.computer.push((name.into(), value));
+        ctx.data.computer.push((name, value));
     }
+    Ok(())
+}
+
+fn computer_usb(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    let view =
+        crate::hardware_gates::run_if_unlocked(crate::hardware_gates::Gate::OsDiscovery, || {
+            if cfg!(target_os = "linux") || ctx.mode == Mode::Practice {
+                let system = ctx.port.system();
+                Ok(computer::linux::usb(&*system, &ctx.port.libusb()))
+            } else {
+                Err("This operating system's collector is not in this build yet (#251).".into())
+            }
+        })?;
+    for (name, value) in &view.lines {
+        ctx.rec.note(format!("{name}: {value}"));
+        ctx.data.computer.push((name.clone(), value.clone()));
+    }
+    ctx.data.usb = Some(view);
     Ok(())
 }
 
