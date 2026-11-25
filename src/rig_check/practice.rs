@@ -45,6 +45,10 @@ pub struct Faults {
     pub unverified_variax: bool,
     /// The guitar interface is not given back to its driver after release.
     pub driver_not_returned: bool,
+    /// Another program holds the guitar interface.
+    pub interface_busy: bool,
+    /// This user may not open the PODxt Live.
+    pub permission_denied: bool,
 }
 
 /// What the simulated person does when a guided step asks.

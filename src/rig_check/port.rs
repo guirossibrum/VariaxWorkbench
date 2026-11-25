@@ -69,8 +69,17 @@ impl RigPort for PracticePort {
     }
 
     fn variax(&mut self, _step: StepId) -> Result<&mut dyn Link, String> {
-        if self.rig.borrow().faults.podxt_absent {
-            return Err("No PODxt Live on USB.".into());
+        {
+            let faults = &self.rig.borrow().faults;
+            if faults.podxt_absent {
+                return Err("Expected one USB device 0e41:4650, found 0.".into());
+            }
+            if faults.interface_busy {
+                return Err("claim interface 1: Resource busy".into());
+            }
+            if faults.permission_denied {
+                return Err("open: Access denied (insufficient permissions)".into());
+            }
         }
         {
             let mut rig = self.rig.borrow_mut();

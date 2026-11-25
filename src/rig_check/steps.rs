@@ -76,6 +76,8 @@ pub fn execute(ctx: &mut Ctx<'_>) -> Result<(), String> {
         (0, 1) => computer_system(ctx),
         (0, 2) => computer_usb(ctx),
         (0, 3) => engine_check(ctx),
+        (1, 1) => super::connection::see_podxt(ctx),
+        (1, 2) => super::connection::open_and_release(ctx),
         (2, 1) => podxt_identity(ctx),
         (2, 2) => podxt_current_tone(ctx),
         (2, 5) => podxt_library(ctx),
