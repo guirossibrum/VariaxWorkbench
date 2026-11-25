@@ -12,6 +12,8 @@ mod live_attachment;
 #[cfg(feature = "usb")]
 mod live_edit;
 mod new_files;
+#[cfg(all(feature = "usb", any(target_os = "linux", test)))]
+mod procedure_device;
 #[cfg(feature = "usb")]
 mod refresh;
 use new_files::{BankRename, NewFile};
@@ -220,7 +222,7 @@ impl VariaxEditor {
             #[cfg(feature = "usb")]
             follow: follow::Follow::default(),
             #[cfg(feature = "usb")]
-            live_edit: live_edit::LiveEdit::default(),
+            live_edit: live_edit::LiveEdit::new(defaults.preferences.as_deref()),
             catalog: load_catalog(),
             artwork,
             textures: HashMap::new(),
