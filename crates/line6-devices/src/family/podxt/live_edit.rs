@@ -348,10 +348,7 @@ fn send_controls<L: Link>(
     for &(control, value) in changes {
         check_stop(cancelled)?;
         // Do not cancel in between the two halves of a logical value.
-        for (_, _, request) in control.messages(value) {
-            session.send(request)?;
-            session.link.pause(CC_GAP);
-        }
+        send_control(session, control, value, |_, _| {})?;
     }
     Ok(())
 }

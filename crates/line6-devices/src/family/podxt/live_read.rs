@@ -2,6 +2,7 @@
 //! automatic identity before opening the port. Each operation also confirms
 //! the identity of the open port before sending a domain request.
 
+use super::procedures::resend_identity;
 use super::*;
 use crate::midi::Event;
 use crate::session::POLL;
@@ -64,6 +65,7 @@ fn notice(event: &Event) -> Option<Notice> {
 const SAVED_SETUP_SETTLE: Duration = Duration::from_millis(2500);
 const CURRENT_SETTLE: Duration = Duration::from_millis(100);
 const IDENTITY_WINDOW: Duration = Duration::from_secs(3);
+const IDENTITY_ORPHAN_QUIET: Duration = Duration::from_millis(300);
 
 /// Run a read through a session with the caller's gate policy. Stop checks
 /// occur before writes and between MIDI polls. A tuner run always attempts
@@ -123,11 +125,29 @@ impl<L: Link> Reader<'_, '_, L> {
         }
         self.check_cancel()?;
         self.session.send(PodxtRequest::Identity)?;
-        let end = self.session.link.elapsed() + IDENTITY_WINDOW;
+        let mut last_packet = self.session.link.elapsed();
+        let mut end = last_packet + IDENTITY_WINDOW;
+        let initial_orphans = self.session.assembler.orphans;
+        let mut resent = false;
         let mut identity = None;
         while let Some(left) = self.remaining(end) {
             self.check_cancel()?;
-            for event in self.session.poll(left.min(POLL))?.into_iter().flatten() {
+            let now = self.session.link.elapsed();
+            if identity.is_none()
+                && !resent
+                && self.session.assembler.orphans > initial_orphans
+                && now - last_packet >= IDENTITY_ORPHAN_QUIET
+            {
+                resend_identity(self.session)?;
+                resent = true;
+                end = self.session.link.elapsed() + IDENTITY_WINDOW;
+                continue;
+            }
+            let Some(events) = self.session.poll(left.min(POLL))? else {
+                continue;
+            };
+            last_packet = self.session.link.elapsed();
+            for event in events {
                 if let Event::Sysex(frame) = event
                     && let Some(reply) = Identity::parse(&frame)
                     && identity.replace(reply).is_some()
@@ -177,32 +197,27 @@ impl<L: Link> Reader<'_, '_, L> {
     }
 
     fn current(&mut self) -> Result<(), String> {
-        let frame = self
-            .request(PodxtRequest::EditBuffer, WINDOW, is_edit_buffer)?
-            .ok_or("No 168-byte edit-buffer dump arrived.")?;
-        (self.publish)(ReadUpdate::Current(EditBuffer::parse(frame)?));
+        let tone = request_tone(None, |request, window| {
+            self.request(request, window, is_edit_buffer)
+        })?
+        .ok_or("No 168-byte edit-buffer dump arrived.")?;
+        (self.publish)(ReadUpdate::Current(tone));
         self.replay_after_reply();
         Ok(())
     }
 
     fn stored(&mut self, location: Location) -> Result<(), String> {
-        let frame = self
-            .request(
-                PodxtRequest::Stored(location),
-                STORED_WINDOW,
-                is_edit_buffer,
-            )?
-            .ok_or_else(|| {
-                format!(
-                    "{} {}: no stored dump.",
-                    location.kind().name(),
-                    location.label()
-                )
-            })?;
-        (self.publish)(ReadUpdate::Stored(StoredTone {
-            location,
-            tone: EditBuffer::parse(frame)?,
-        }));
+        let tone = request_tone(Some(location), |request, window| {
+            self.request(request, window, is_edit_buffer)
+        })?
+        .ok_or_else(|| {
+            format!(
+                "{} {}: no stored dump.",
+                location.kind().name(),
+                location.label()
+            )
+        })?;
+        (self.publish)(ReadUpdate::Stored(StoredTone { location, tone }));
         self.replay_after_reply();
         self.wait(STORED_GAP)
     }
