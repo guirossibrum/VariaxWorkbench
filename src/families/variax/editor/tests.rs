@@ -1033,3 +1033,57 @@ fn tuning_off_warns_and_dims_but_keeps_hand_edits_audibly_off() {
     app.variax_mut().set_tuning([-2, 0, 0, 0, 0, 0], true);
     assert_eq!(rendered(&mut app), (false, false));
 }
+
+#[test]
+fn body_and_inspector_cards_stay_put_when_alternate_tuning_is_toggled() {
+    for width in [960.0, 1440.0] {
+        let (context, mut app) = app();
+        app.variax_mut().open_example();
+        let render = |app: &mut Workbench, events| {
+            let _ = context.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(width, 900.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| app.render(ctx),
+            );
+        };
+        render(&mut app, vec![]);
+        render(&mut app, vec![]);
+        let initial_placement = app.variax().workspace_cards.unwrap();
+        let tuning_enabled = |app: &Workbench| {
+            app.variax()
+                .document
+                .as_ref()
+                .unwrap()
+                .preset()
+                .model(TUNING)
+                .unwrap()
+                .enabled
+        };
+        let was_enabled = tuning_enabled(&app);
+        let pos = app.variax().tuning_toggle.unwrap().center();
+        for pressed in [true, false] {
+            render(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        render(&mut app, vec![]);
+        assert_ne!(tuning_enabled(&app), was_enabled);
+        assert_eq!(
+            app.variax().workspace_cards,
+            Some(initial_placement),
+            "at width {width}"
+        );
+    }
+}

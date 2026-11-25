@@ -88,20 +88,19 @@ impl Drop for Refresh {
 }
 
 impl VariaxEditor {
-    pub(super) fn refresh_button(&mut self, ui: &mut egui::Ui) {
-        if self.refresh.attachment.is_none() {
-            return;
+    pub(super) fn download_button(&mut self, ui: &mut egui::Ui) -> bool {
+        if self.refresh.attachment.is_none() || self.follow.disconnected() {
+            return false;
         }
         let button = ui.add_enabled(
-            cfg!(target_os = "linux")
-                && !self.refresh.busy()
-                && !self.follow.busy()
-                && !self.follow.disconnected(),
-            egui::Button::new("Refresh from guitar…"),
+            cfg!(target_os = "linux") && !self.refresh.busy() && !self.follow.busy(),
+            egui::Button::new("Download from guitar…")
+                .min_size(egui::vec2(0.0, super::theme::TARGET)),
         );
         if button.clicked() {
             self.request_refresh(read_library);
         }
+        true
     }
 
     fn request_refresh(&mut self, read: ReadLibrary) {
@@ -136,10 +135,10 @@ impl VariaxEditor {
         }
         let dialog = egui::Modal::new(egui::Id::new("variax-refresh-confirmation")).show(ctx, |ui| {
             ui.heading("Replace unsaved changes?");
-            ui.label("Refresh reads the stored presets and bank names. It replaces this document only after the full read succeeds.");
+            ui.label("Download reads the stored presets and bank names. It replaces this document only after the full read succeeds.");
             ui.horizontal(|ui| {
                 let cancel = ui.button("Keep editing");
-                let replace = ui.button("Refresh and replace");
+                let replace = ui.button("Download and replace");
                 (cancel.clicked(), replace.clicked())
             }).inner
         });

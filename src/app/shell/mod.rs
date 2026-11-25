@@ -617,8 +617,12 @@ impl Workbench {
                         if let Some(error) = error {
                             status_line(ui, error, theme::DANGER);
                         }
-                        if let Some(device) = &self.tabs.entries[index].device {
-                            connection_chip(ui, &device.status());
+                        let entry = &self.tabs.entries[index];
+                        let variax = entry.family.info().id == "variax";
+                        if let Some(device) = &entry.device {
+                            if !variax {
+                                connection_chip(ui, &device.status());
+                            }
                             if device.connection == tabs::Connection::Present
                                 && device.reconnected_with_edits
                             {
@@ -629,7 +633,8 @@ impl Workbench {
                             {
                                 status_line(ui, warning, theme::AMBER);
                             }
-                            if device.connection == tabs::Connection::Present
+                            if !variax
+                                && device.connection == tabs::Connection::Present
                                 && let Some(status) = device.device.guitar_status.clone()
                             {
                                 let attachment = device
@@ -645,7 +650,7 @@ impl Workbench {
                                     }
                                 });
                             }
-                        } else {
+                        } else if !variax {
                             chrome::status_chip(ui, chrome::LinkState::NoDevice);
                         }
                     } else {

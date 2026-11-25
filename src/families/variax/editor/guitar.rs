@@ -440,9 +440,10 @@ impl VariaxEditor {
             {
                 ui.label("Not sent to guitar");
             }
-            if document.is_dirty() {
-                ui.colored_label(FRET_MARKER, "Unsaved");
-            }
+            ui.add_visible(
+                document.is_dirty(),
+                egui::Label::new(egui::RichText::new("Unsaved").color(FRET_MARKER)),
+            );
         });
 
         let switched = if next != document.selection()
@@ -661,13 +662,12 @@ impl VariaxEditor {
         // Settle the panel's measured height and clipping on the first frame
         // and when a model adds or removes the secondary-string controls.
         let show_off = tuning.is_some() && !enabled;
-        let layout = (twelve_string, show_off);
         let layout_id = ui.id().with("tuning-panel-layout");
         let remeasure = ui.data_mut(|cache| {
-            if cache.get_temp::<(bool, bool)>(layout_id) == Some(layout) {
+            if cache.get_temp::<bool>(layout_id) == Some(twelve_string) {
                 return false;
             }
-            cache.insert_temp(layout_id, layout);
+            cache.insert_temp(layout_id, twelve_string);
             true
         });
         if remeasure {
@@ -708,9 +708,10 @@ impl VariaxEditor {
         if twelve_string {
             panel = panel.twelve_string(&secondary);
         }
-        if show_off {
-            ui.label("Alternate tuning is off: these offsets are saved but not played.");
-        }
+        ui.add_visible(
+            show_off,
+            egui::Label::new("Alternate tuning is off: these offsets are saved but not played."),
+        );
         let output = panel.show(ui);
         if show_off {
             let [r, g, b, _] = theme::PANEL.to_array();

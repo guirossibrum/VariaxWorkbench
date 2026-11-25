@@ -14,12 +14,12 @@ that Follow preserves it.
 3. Record any **Clip**, **DSP overload**, or **MIDI queue overflow** notice
    that occurs during normal playing.
 4. Turn **Follow** off. Further knob movement should leave the editor view
-   alone. Start Follow again and close the tab. The next **Refresh guitar**
-   should be able to use the rig.
+   alone. Start Follow again and close the tab. **Refresh guitar** on the
+   PODxt tab should be able to use the rig.
 5. Unplug the VDI cable while the PODxt stays connected. Record whether the
    editor reports the disconnect and switches Follow off. If the PODxt sends
-   no notice, turn Follow off and use **Refresh guitar** to detect the
-   disconnect. After reconnecting and verifying identity again, check that
+   no notice, turn Follow off and use **Refresh guitar** on the PODxt tab to
+   detect the disconnect. After reconnecting and verifying identity, check that
    the tab still contains the local edits before you restart Follow.
 
 Follow opens the verified attachment for a G3 read session. It sends no

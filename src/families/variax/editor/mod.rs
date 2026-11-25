@@ -44,42 +44,6 @@ fn guitar_panel() -> egui::Frame {
         .stroke(egui::Stroke::new(1.0_f32, GUITAR_EDGE))
 }
 
-fn style_inspector(ui: &mut egui::Ui) {
-    use variax_workbench::ui::theme;
-    let visuals = ui.visuals_mut();
-    visuals.dark_mode = false;
-    visuals.override_text_color = Some(theme::INK);
-    visuals.extreme_bg_color = Color32::from_rgb(245, 242, 234);
-    visuals.faint_bg_color = Color32::from_rgb(214, 209, 197);
-    let edge = Color32::from_rgb(115, 107, 95);
-    for (widget, fill) in [
-        (
-            &mut visuals.widgets.inactive,
-            Color32::from_rgb(242, 238, 228),
-        ),
-        (
-            &mut visuals.widgets.hovered,
-            Color32::from_rgb(250, 245, 231),
-        ),
-        (
-            &mut visuals.widgets.active,
-            Color32::from_rgb(235, 207, 154),
-        ),
-        (&mut visuals.widgets.open, Color32::from_rgb(241, 225, 192)),
-        (
-            &mut visuals.widgets.noninteractive,
-            Color32::from_rgb(202, 197, 186),
-        ),
-    ] {
-        widget.bg_fill = fill;
-        widget.weak_bg_fill = fill;
-        widget.bg_stroke.color = edge;
-        widget.fg_stroke.color = theme::INK;
-    }
-    visuals.selection.bg_fill = Color32::from_rgb(235, 207, 154);
-    visuals.selection.stroke.color = Color32::from_rgb(112, 76, 40);
-}
-
 #[derive(Clone, Deserialize)]
 pub(super) struct ModelArt {
     kind: String,
@@ -190,6 +154,8 @@ pub(super) struct VariaxEditor {
     #[cfg(test)]
     tuning_toggle: Option<Rect>,
     #[cfg(test)]
+    workspace_cards: Option<(Rect, Rect)>,
+    #[cfg(test)]
     pickup_controls: HashMap<(u32, &'static str), Rect>,
     #[cfg(test)]
     name_notice: String,
@@ -265,6 +231,8 @@ impl VariaxEditor {
             pickup_centers: HashMap::new(),
             #[cfg(test)]
             tuning_toggle: None,
+            #[cfg(test)]
+            workspace_cards: None,
             #[cfg(test)]
             pickup_controls: HashMap::new(),
             #[cfg(test)]
@@ -1099,14 +1067,13 @@ impl VariaxEditor {
             .show_inside(ui, |ui| self.fretboard(ui, can_edit));
         let panel_height = (ui.available_height() - 22.0).max(64.0);
         ui.columns(2, |columns| {
-            self.guitar(&mut columns[0], panel_height, can_edit);
-            egui::Frame::new()
+            let _body = self.guitar(&mut columns[0], panel_height, can_edit);
+            let _inspector = egui::Frame::new()
                 .inner_margin(10)
-                .corner_radius(variax_workbench::ui::theme::RADIUS_PANEL)
-                .fill(Color32::from_rgb(202, 197, 186))
-                .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(156, 150, 139)))
+                .corner_radius(theme::RADIUS_PANEL)
+                .fill(theme::PANEL)
+                .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
                 .show(&mut columns[1], |ui| {
-                    style_inspector(ui);
                     ui.set_min_height((panel_height - 20.0).max(0.0));
                     ui.set_min_width(ui.available_width());
                     ui.horizontal_wrapped(|ui| {
@@ -1117,6 +1084,10 @@ impl VariaxEditor {
                         self.controls(ui, (panel_height - 40.0).max(32.0))
                     });
                 });
+            #[cfg(test)]
+            {
+                self.workspace_cards = Some((_body, _inspector.response.rect));
+            }
         });
     }
 
@@ -1321,8 +1292,10 @@ impl FamilyTab for VariaxEditor {
     fn actions(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
         self.new_file_menu(ui, services);
         #[cfg(feature = "usb")]
-        self.refresh_button(ui);
-        self.connection_controls(ui, services);
+        let has_download = self.download_button(ui);
+        #[cfg(not(feature = "usb"))]
+        let has_download = false;
+        self.connection_controls(ui, services, has_download);
     }
 }
 
