@@ -10,8 +10,8 @@ while the tool is running.
 | 4a | `listen` | 14, Spank 1, MIDI 69 | `Stratocaster - edited.vwm` with Alternate Tuning enabled | **Owner run passed 2026-11-25 (tuning enabled)** |
 | 4b | `store` | 14, Spank 1, MIDI 69 | The same tuning-enabled `.vwm` | **Owner run passed 2026-11-25** |
 | 4c | `restore` | 14, Spank 1, MIDI 69 | #236 `14-Spank-1.bin` | **Owner run passed 2026-11-25** |
-| 3a | `3a` | 50, Reso 5, MIDI 105 | Archive Reso-5 renamed to `Reso-5 T` | **Not planned: covered by #177 1a/1b/2 and #238 4b/4c** (owner to confirm) |
-| 3b | `3b` | 50, Reso 5, MIDI 105 | Archive Reso-5 | **Not planned: covered by #177 1a/1b/2 and #238 4b/4c** (owner to confirm) |
+| 3a | `3a` | 50, Reso 5, MIDI 105 | Archive Reso-5 renamed to `Reso-5 T` | **Dropped by the owner 2026-11-25: covered by #177 1a/1b/2 and #238 4b/4c** |
+| 3b | `3b` | 50, Reso 5, MIDI 105 | Archive Reso-5 | **Dropped by the owner 2026-11-25: covered by #177 1a/1b/2 and #238 4b/4c** |
 
 ## Offline check
 
