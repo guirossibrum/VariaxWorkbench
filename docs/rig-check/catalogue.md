@@ -1,6 +1,6 @@
 # Rig Check test catalogue
 
-**Catalogue version: 1.0 (2026-11-25).** Every report quotes this version.
+**Catalogue version: 1.1 (2026-11-25).** Every report quotes this version.
 Epic [#243](https://github.com/guirossibrum/VariaxWorkbench/issues/243) ·
 catalogue [#244](https://github.com/guirossibrum/VariaxWorkbench/issues/244).
 
@@ -114,6 +114,7 @@ owner-rig issue or card that proved the procedure.
 | 3.4 | Variax all 60 presets (backup), and back | 3.3 | G5 | Read (switches preset and back) | #236, [backup card](../variax-backup-test-card.md) |
 | 3.5 | Variax one stored preset, and back | 3.4 | G5 | Read (switches preset and back) | #238, [selection card](../variax-any-selection-test-card.md) |
 | 3.6 | Variax one bank (5 presets), and back | 3.5 | G5 | Read (switches preset and back) | #236 |
+| 3.7 | Variax firmware evidence (unverified 300/600 only) | 3.1 | G2, G3 | Read | #271 |
 | 4.1 | PODxt Live: change one control, read back, undo | 2.2 | G6 | Live | #221, [edit card](../podxt-live-edit-test-card.md) |
 | 4.2 | Variax: send the current preset's own bytes to the working buffer | 3.3 | G6 | Live (no audible change) | #176, [Reso-5 card](../reso5-test-card.md) |
 | 4.3 | Variax: listen to a test model, then return | 4.2, 3.4 | G6 | Live | #238 listen-list, [listen card](../variax-listen-list-test-card.md) |
@@ -135,12 +136,14 @@ owner-rig issue or card that proved the procedure.
 **Run order.** 0.1, 0.2, 0.3, 1.1, 1.2, 2.1, 2.2, 3.1, 3.2, 3.3, 2.3, 2.4,
 2.5, 3.4, 3.5, 3.6, 7.1, 7.2, 7.3, 7.4, 4.1, 4.2, 4.3, 5.1, 5.2, 5.3, 6.1,
 8.1, 8.2, 8.3, 8.4, 8.5, 6.2. Reads come before live changes, live changes
-before saves, and 6.2 always comes last (also after **Stop**).
+before saves, and 6.2 comes last (also after **Stop**). The conditional
+step 3.7 can end the normal sequence right after 3.1.
 
 **Unverified devices.** A Variax other than a 300/600 on firmware 3.10, or a
 PODxt other than a PODxt Live on firmware 3.01, is flagged **unverified
-device**. Only read steps (1.x, 2.1–2.5, 3.1–3.6, 7.x) are offered for it.
-Live and save steps are skipped with that reason.
+device**. For a Variax 300/600 with unverified firmware, Rig Check offers
+step 3.7 after 3.1 and ends the normal sequence. For an unverified PODxt,
+live and save steps are skipped with that reason.
 
 ## Step cards
 
@@ -294,6 +297,17 @@ so they can be read from where the guitar is.
 - **SEE:** The number of presets read out of five and whether the guitar
   returned to its starting preset.
 
+### 3.7 Variax firmware evidence
+
+After 3.1 identifies a Variax 300/600 on firmware other than 3.10, an
+extra risk notice explains the diagnostic read. Accepting it opens the
+regular step card and its Run confirmation. Rig Check captures the
+identity, two settings replies, and 35 current-program replies. The
+report includes raw replies and available comparisons to the 3.10
+message sizes, version bytes and checksum word. The guitar remains on
+the current preset. This branch ends by releasing the USB interface.
+Both the Rig Check and the device-crate evidence approvals are closed.
+
 ### 4.1 PODxt Live: change one control, read back, undo
 - **What it does:** Changes one control of the tone you are playing (the
   stomp on/off), reads the tone back, puts the control back and checks that
@@ -423,4 +437,5 @@ so they can be read from where the guitar is.
 
 ## Changes
 
+- 1.1 (2026-11-25): added the conditional Variax firmware evidence step (#271).
 - 1.0 (2026-11-25): first catalogue.

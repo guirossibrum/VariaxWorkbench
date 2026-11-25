@@ -10,6 +10,8 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] #271 Rig Check offers a separately confirmed evidence branch for unverified Variax 300/600 firmware. Practice tests with 3.09 cover the notice, Run card, raw replies, layout differences and release without a preset change. [Catalogue](rig-check/catalogue.md).
+
 - [x] Rig Check pauses after each executed step and shows the values named on its SEE card. Finished results can be reopened from the sidebar. The terminal uses the same summary, and raw evidence stays in the saved report. Headless practice tests check all 28 runnable steps, keyboard Continue, sidebar replay, and Stop with the closing rig check. [#272](https://github.com/guirossibrum/VariaxWorkbench/issues/272).
 
 - [x] #271 device groundwork adds a separately gated Variax 300/600 current-program read that reports firmware verification status. Fake links cover 3.10, another version, rejected identities, and malformed chunk retry and cleanup. The read uses identity, two settings blocks and 35 current-buffer chunks, with no preset selection. [Shared API](variax-shared-procedures.md).

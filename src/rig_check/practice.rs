@@ -41,7 +41,7 @@ pub struct Faults {
     pub silent_podxt_store: bool,
     /// The person does not perform a guided action in time.
     pub user_does_not_act: bool,
-    /// Report the Variax as firmware 2.00 (unverified).
+    /// Report the Variax as firmware 3.09 (unverified).
     pub unverified_variax: bool,
     /// Report the PODxt Live as firmware 2.00 (unverified).
     pub unverified_podxt: bool,
@@ -240,7 +240,7 @@ impl SimRig {
         }
         let start = Preset::new(2, 0).expect("Spank 1");
         let firmware = if faults.unverified_variax {
-            *b"0200"
+            *b"0309"
         } else {
             *b"0310"
         };
@@ -333,6 +333,29 @@ impl SimRig {
         ]
     }
 
+    pub(super) fn variax_evidence_replies(&self) -> Vec<Vec<u8>> {
+        let mut replies = vec![
+            self.variax_identity(),
+            self.variax_span_reply(851, 32),
+            self.variax_span_reply(883, 32),
+        ];
+        replies.extend(
+            (0..PROGRAM_WORDS)
+                .step_by(32)
+                .map(|start| self.variax_span_reply(start, (PROGRAM_WORDS - start).min(32))),
+        );
+        replies
+    }
+
+    fn variax_span_reply(&self, start: usize, count: usize) -> Vec<u8> {
+        let mut reply = vec![0xf0, 0x00, 0x01, 0x0c, 0x07, 0x04, 0x3c];
+        for word in &self.variax.active[start..start + count] {
+            reply.extend((0..6).map(|i| ((word >> (4 * i)) & 0xf) as u8));
+        }
+        reply.push(0xf7);
+        reply
+    }
+
     fn tone_dump(tone: &[u8; TONE_BYTES]) -> Vec<u8> {
         let mut dump = vec![0xf0, 0x00, 0x01, 0x0c, 0x03, 0x74, 0x0a];
         dump.extend_from_slice(tone);
@@ -417,11 +440,7 @@ impl SimRig {
                 if count == 0 || start + count > PROGRAM_WORDS {
                     return;
                 }
-                let mut reply = vec![0xf0, 0x00, 0x01, 0x0c, 0x07, 0x04, 0x3c];
-                for word in &self.variax.active[start..start + count] {
-                    reply.extend((0..6).map(|i| ((word >> (4 * i)) & 0xf) as u8));
-                }
-                reply.push(0xf7);
+                let mut reply = self.variax_span_reply(start, count);
                 self.span_replies += 1;
                 if self.faults.damage_span_reply == Some(self.span_replies) {
                     self.faults.damage_span_reply = None;

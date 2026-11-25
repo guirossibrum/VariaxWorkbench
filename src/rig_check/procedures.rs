@@ -44,7 +44,7 @@ impl Log for Lines {
 
 pub type DynSession<'s> = Session<'s, &'s mut dyn Link>;
 
-fn absorb(ctx: &mut Ctx<'_>, lines: Lines) {
+pub(super) fn absorb(ctx: &mut Ctx<'_>, lines: Lines) {
     let retries = lines
         .0
         .iter()

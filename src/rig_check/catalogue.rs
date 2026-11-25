@@ -6,7 +6,7 @@
 use crate::hardware_gates::Gate;
 use std::fmt;
 
-pub const CATALOGUE_VERSION: &str = "1.0";
+pub const CATALOGUE_VERSION: &str = "1.1";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StepId(pub u8, pub u8);
@@ -225,6 +225,13 @@ pub static STEPS: &[Step] = &[
         does: "Reads the five presets of one bank the same way, compares them with the backup and switches back.",
         you_do: "Nothing.", see: "The number of presets read out of five and whether the guitar returned to its starting preset.", hear: "Five short sound changes, then the start sound.",
         evidence: "Five SHA-256 values, backup comparison, return check.", proof: "#236"),
+    step!((3, 7), "Variax firmware evidence", Device, [(3, 1)], [G2, G3], Read,
+        does: "Records how this firmware answers identity, current settings and 35 current-program reads. The guitar stays on the same preset.",
+        you_do: "Keep the guitar connected and leave the selector and knobs alone.",
+        see: "The reported firmware and the evidence collected for comparison with 3.10.",
+        hear: "The current sound should stay the same.",
+        evidence: "Raw replies, message sizes, and version and checksum differences.",
+        proof: "#271"),
     step!((4, 1), "PODxt Live: change one control, read back, undo", Device, [(2, 2)], [G6], Live,
         does: "Switches the stomp of the tone you are playing, reads the tone back, switches it back and checks the whole tone matches the start. Nothing is saved.",
         you_do: "Nothing.", see: "The stomp setting read back and whether the starting tone was restored.", hear: "The stomp switches for a moment.",
@@ -309,6 +316,7 @@ pub const RUN_ORDER: &[StepId] = &[
     StepId(2, 1),
     StepId(2, 2),
     StepId(3, 1),
+    VARIAX_EVIDENCE,
     StepId(3, 2),
     StepId(3, 3),
     StepId(2, 3),
@@ -335,6 +343,9 @@ pub const RUN_ORDER: &[StepId] = &[
     StepId(8, 5),
     StepId(6, 2),
 ];
+
+/// Offered only for an unverified Variax 300/600 firmware.
+pub const VARIAX_EVIDENCE: StepId = StepId(3, 7);
 
 /// The step that always closes a run, including after Stop.
 pub const RIG_GUARD: StepId = StepId(6, 2);
