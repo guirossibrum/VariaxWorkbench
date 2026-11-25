@@ -149,17 +149,5 @@ pub fn verify_tone_backup(
     })
 }
 
-pub(super) fn check_live_identity(identity: &Identity) -> Result<(), String> {
-    if identity.is_line6()
-        && identity.family == IDENTITY_FAMILY
-        && identity.member == PODXT_LIVE_MEMBER
-        && identity.version == [0, 3, 0, 1]
-    {
-        Ok(())
-    } else {
-        Err("PODxt Live firmware 3.01 is required for store.".into())
-    }
-}
-
 #[cfg(test)]
 mod tests;

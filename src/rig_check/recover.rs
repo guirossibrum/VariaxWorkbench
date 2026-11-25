@@ -271,6 +271,7 @@ fn restore(ctx: &mut Ctx<'_>, state: &RigState) -> Result<(), String> {
     let mut problems = Vec::new();
     if let Some(channel) = state.channel() {
         let tone = super::procedures::with_podxt(ctx, RESTORE_OPS, |session| {
+            podxt::identify_podxt_live(session)?;
             session.send(PodxtRequest::Program(channel))?;
             session.link.pause(Duration::from_millis(400));
             podxt::read_current(session).map(|current| current.tone)
@@ -423,6 +424,37 @@ mod tests {
         };
         assert_eq!(RigState::parse(&state.text()), Some(state.clone()));
         assert!(state.describe().contains("5B") && state.describe().contains("Spank 1"));
+    }
+
+    #[test]
+    fn crash_restore_refuses_unverified_podxt_firmware_before_program_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("rig-check-1.state");
+        let state = RigState {
+            podxt_channel: Some(1),
+            ..RigState::default()
+        };
+        for (firmware, found) in [([0, 2, 0, 7], "2.07"), ([0, 3, 0, 2], "3.02")] {
+            let rig = SimRig::shared(Faults::default());
+            rig.borrow_mut().podxt.firmware = firmware;
+            let mut port = PracticePort::new(rig.clone());
+            let run = offer_restore(
+                &mut port,
+                &mut Script::run_all(),
+                &mut NoReport,
+                &state_path,
+                &state,
+            );
+            assert!(matches!(
+                &run.step(RIG_GUARD).outcome,
+                Outcome::Failed(error)
+                    if error.contains(found) && error.contains("PODxt Live firmware 3.01")
+            ));
+            let sim = rig.borrow();
+            assert_eq!(sim.written.len(), 1);
+            assert_eq!(sim.written[0].1, line6_devices::identity::REQUEST);
+            assert!(!state_path.exists());
+        }
     }
 
     #[test]

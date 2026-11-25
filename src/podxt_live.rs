@@ -10,14 +10,12 @@ use std::time::Duration;
 
 use line6_devices::family::podxt::{self, models};
 use line6_devices::gate::{GatePolicy, Operation};
-use line6_devices::identity::Identity;
 use line6_devices::session::{Link, Request, Session, Wait};
 
 use crate::hardware_gates::{self, Gate};
 
 include!("podxt_live_packs.rs");
 
-const PODXT_LIVE_MEMBER: u16 = 0x000a;
 const WINDOW: Duration = Duration::from_secs(2);
 const APPLY: Duration = Duration::from_millis(200);
 const CC_GAP: Duration = Duration::from_millis(20);
@@ -831,10 +829,7 @@ fn prepare_changes<L: Link>(
             return Err(format!("{} is listed twice.", target.control().name()));
         }
     }
-    let (_, identity) = identify(session)?;
-    if identity.member != PODXT_LIVE_MEMBER {
-        return Err("This check needs the PODxt Live. Nothing was changed.".into());
-    }
+    podxt::identify_podxt_live(session)?;
     let before = read_edit_buffer(session)?;
     let mut changes: Vec<Change> = targets
         .iter()
@@ -1013,10 +1008,7 @@ fn switch_open<L: Link>(
     if target.kind() != podxt::BankKind::Tones {
         return Err("Only tone channels can be selected.".into());
     }
-    let (_, identity) = identify(session)?;
-    if identity.member != PODXT_LIVE_MEMBER {
-        return Err("This check needs the PODxt Live. Nothing was switched.".into());
-    }
+    podxt::identify_podxt_live(session)?;
     let before = read_edit_buffer(session)?;
     let original = match original {
         Some(location) => {
@@ -1101,21 +1093,6 @@ fn same_tone(a: &podxt::EditBuffer, b: &podxt::EditBuffer) -> bool {
     a.differences(b)
         .iter()
         .all(|(cc, ..)| LIVE_STATE_CCS.contains(cc))
-}
-
-fn identify<L: Link>(session: &mut Session<L>) -> Result<(Vec<u8>, Identity), String> {
-    session.listen(Duration::from_millis(200))?;
-    session.send(podxt::PodxtRequest::Identity)?;
-    let Wait::Found(reply) =
-        session.wait_for(WINDOW, |message| Identity::parse(message).is_some(), false)?
-    else {
-        return Err("No identity reply from the PODxt. Nothing else was sent.".into());
-    };
-    let identity = Identity::parse(&reply).expect("checked above");
-    if !identity.is_line6() || identity.family != podxt::IDENTITY_FAMILY {
-        return Err("The reply is not a PODxt. Nothing else was sent.".into());
-    }
-    Ok((reply, identity))
 }
 
 fn read_edit_buffer<L: Link>(session: &mut Session<L>) -> Result<podxt::EditBuffer, String> {
@@ -1309,8 +1286,8 @@ mod tests {
 
     fn identity() -> Vec<u8> {
         vec![
-            0xf0, 0x7e, 0x7f, 0x06, 0x02, 0x00, 0x01, 0x0c, 0x03, 0x00, 0x0a, 0x00, 0x03, 0x00,
-            0x01, 0x00, 0xf7,
+            0xf0, 0x7e, 0x7f, 0x06, 0x02, 0x00, 0x01, 0x0c, 0x03, 0x00, 0x0a, 0x00, 0x00, 0x03,
+            0x00, 0x01, 0xf7,
         ]
     }
 
@@ -1438,6 +1415,28 @@ mod tests {
             vec![(12, index as u8)]
         );
         assert!(LiveControl::Basic(Control::MOD_PREPOST).describe(127) == "post");
+    }
+
+    #[test]
+    fn device_check_edits_and_channel_switches_refuse_unverified_firmware() {
+        for (version, found) in [([0, 2, 0, 7], "2.07"), ([0, 3, 0, 2], "3.02")] {
+            let mut reply = identity();
+            reply[12..16].copy_from_slice(&version);
+            let request = podxt::PodxtRequest::Identity.bytes();
+            let new_link = || script(vec![(request.clone(), reply.clone())]);
+            let mut log = Quiet;
+            let mut session = Session::new(new_link(), &OpenPolicy, &mut log);
+            let targets = [LiveTarget::Basic(Control::TREBLE, Target::Offset(1))];
+            let edit_error = live_settings_test(&mut session, &targets).unwrap_err();
+            assert_eq!(session.link.writes, std::slice::from_ref(&request));
+
+            let mut session = Session::new(new_link(), &OpenPolicy, &mut log);
+            let channel = parse_channel("1B").unwrap();
+            let switch_error = switch_open(&mut session, channel, None, false, |_| {}).unwrap_err();
+            assert_eq!(session.link.writes, [request]);
+            assert_eq!(edit_error, switch_error);
+            assert!(edit_error.contains(found) && edit_error.contains("PODxt Live firmware 3.01"));
+        }
     }
 
     #[test]

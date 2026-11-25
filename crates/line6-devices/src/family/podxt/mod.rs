@@ -728,7 +728,7 @@ pub fn live_settings_test<L: Link>(
     session: &mut Session<L>,
     targets: &[LiveTarget],
 ) -> Result<LiveEditTest, String> {
-    let attempt = edit_settings(session, targets, false)?;
+    let attempt = edit_settings(session, targets)?;
     Ok(undo_edit_attempt(session, attempt))
 }
 
@@ -744,7 +744,7 @@ pub fn apply_live_settings<L: Link>(
     if !session.allows(Operation::PodxtKeepEditBufferChanges) {
         return Err("Keeping PODxt Live edit-buffer changes is closed in this build.".into());
     }
-    match edit_settings(session, targets, true)? {
+    match edit_settings(session, targets)? {
         EditAttempt {
             identity_reply,
             before,
@@ -773,7 +773,6 @@ pub fn apply_live_settings<L: Link>(
 fn edit_settings<L: Link>(
     session: &mut Session<L>,
     targets: &[LiveTarget],
-    requires_live_member: bool,
 ) -> Result<EditAttempt, String> {
     if targets.is_empty() {
         return Err("No changes requested.".into());
@@ -799,10 +798,7 @@ fn edit_settings<L: Link>(
         }
     }
 
-    let (identity_reply, identity) = identify_podxt(session)?;
-    if (additional || requires_live_member) && identity.member != PODXT_LIVE_MEMBER {
-        return Err("These edits require the PODxt Live identity. No edits were sent.".into());
-    }
+    let identity_reply = identify_podxt_live(session)?;
     let before = read_edit_buffer(session)?;
     let mut changes: Vec<Change> = targets
         .iter()
@@ -1187,7 +1183,7 @@ pub fn tuner<L: Link>(
     window: Duration,
     mut on_reading: impl FnMut(&TunerReading),
 ) -> Result<TunerRun, String> {
-    let (identity_reply, _) = identify_podxt(session)?;
+    let identity_reply = identify_podxt_live(session)?;
     let window = window.min(TUNER_MAX);
     if let Err(error) = session.send(PodxtRequest::TunerMode(true)) {
         let _ = session.send(PodxtRequest::TunerMode(false));
@@ -1332,7 +1328,7 @@ pub fn switch_channel_checked<L: Link>(
     if target.kind() != BankKind::Tones || original.is_some_and(|o| o.kind() != BankKind::Tones) {
         return Err("Only tone channels can be selected.".into());
     }
-    let (identity_reply, _) = identify_podxt(session)?;
+    let identity_reply = identify_podxt_live(session)?;
     let before = read_edit_buffer(session)?;
     let original = match original {
         Some(location) => {
@@ -1541,19 +1537,47 @@ pub struct CurrentTone {
 
 /// Drain, then identity; errors unless the reply is a PODxt.
 fn identify_podxt<L: Link>(session: &mut Session<L>) -> Result<(Vec<u8>, Identity), String> {
-    // Drain anything already queued. Sends nothing.
-    session.listen(Duration::from_millis(200))?;
-    session.send(PodxtRequest::Identity)?;
-    let Wait::Found(identity_reply) =
-        session.wait_for(WINDOW, |m| Identity::parse(m).is_some(), false)?
-    else {
-        return Err("No identity reply from the PODxt. Nothing else was sent.".into());
-    };
-    let identity = Identity::parse(&identity_reply).expect("checked above");
+    let (reply, identity) = request_identity(session)?;
     if !identity.is_line6() || identity.family != IDENTITY_FAMILY {
         return Err("The reply is not a PODxt-family identity. Nothing else was sent.".into());
     }
-    Ok((identity_reply, identity))
+    Ok((reply, identity))
+}
+
+/// Verify the attached PODxt Live and its firmware before any device write.
+pub fn identify_podxt_live<L: Link>(session: &mut Session<L>) -> Result<Vec<u8>, String> {
+    let (reply, identity) = request_identity(session)?;
+    check_live_identity(&identity)?;
+    Ok(reply)
+}
+
+fn check_live_identity(identity: &Identity) -> Result<(), String> {
+    if identity.is_line6()
+        && identity.family == IDENTITY_FAMILY
+        && identity.member == PODXT_LIVE_MEMBER
+        && identity.version == [0, 3, 0, 1]
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "Found firmware {} (family 0x{:04x}, member 0x{:04x}). The verified target is PODxt Live firmware 3.01.",
+            identity.version_text(),
+            identity.family,
+            identity.member,
+        ))
+    }
+}
+
+fn request_identity<L: Link>(session: &mut Session<L>) -> Result<(Vec<u8>, Identity), String> {
+    // Drain anything already queued. Sends nothing.
+    session.listen(Duration::from_millis(200))?;
+    session.send(PodxtRequest::Identity)?;
+    let Wait::Found(reply) = session.wait_for(WINDOW, |m| Identity::parse(m).is_some(), false)?
+    else {
+        return Err("No identity reply from the PODxt. Nothing else was sent.".into());
+    };
+    let identity = Identity::parse(&reply).expect("checked above");
+    Ok((reply, identity))
 }
 
 /// Send Workbench's standalone release after verifying the PODxt Live
@@ -1562,10 +1586,7 @@ pub fn release_variax_control<L: Link>(session: &mut Session<L>) -> Result<Vec<u
     if !session.allows(Operation::PodxtVariaxControlRelease) {
         return Err("PODxt Live Variax control release is closed in this build.".into());
     }
-    let (reply, identity) = identify_podxt(session)?;
-    if identity.member != PODXT_LIVE_MEMBER {
-        return Err("The reply is not from a PODxt Live. No release was sent.".into());
-    }
+    let reply = identify_podxt_live(session)?;
     session.send(PodxtRequest::ReleaseVariaxControl)?;
     Ok(reply)
 }
@@ -1578,10 +1599,7 @@ pub fn set_linked_variax_model<L: Link>(
     if !session.allows(Operation::PodxtLinkedVariaxModelEdit) {
         return Err("PODxt linked Variax model edits are closed in this build.".into());
     }
-    let (_, identity) = identify_podxt(session)?;
-    if identity.member != PODXT_LIVE_MEMBER {
-        return Err("The reply is not from a PODxt Live. No model change was sent.".into());
-    }
+    identify_podxt_live(session)?;
     session.send(PodxtRequest::SetLinkedVariaxModel(model))
 }
 
@@ -1884,6 +1902,12 @@ mod tests {
     use crate::session::Quiet;
     use crate::session::testing::{AllowAll, Fake};
 
+    fn live_identity_reply(version: [u8; 4]) -> Vec<u8> {
+        let mut reply = PODXT_LIVE.to_vec();
+        reply[12..16].copy_from_slice(&version);
+        reply
+    }
+
     fn synthetic() -> Vec<u8> {
         let mut dump = vec![0xf0, 0x00, 0x01, 0x0c, 0x03, 0x74, 0x0a];
         dump.extend(b"Test Tone       ");
@@ -2061,7 +2085,10 @@ mod tests {
             let target = Setting::Mic.parse(&target.to_string()).unwrap();
             let before = with(&[(70, original), (71, 17), (76, 41)]);
             let script = vec![
-                (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+                (
+                    PodxtRequest::Identity,
+                    vec![live_identity_reply([0, 3, 0, 1])],
+                ),
                 (PodxtRequest::EditBuffer, vec![before.clone()]),
                 (setting_message(Setting::Mic, target, 0), vec![]),
                 (
@@ -2092,7 +2119,10 @@ mod tests {
     fn room_testing_changes_cc_76_and_restores_the_full_tone() {
         let before = with(&[(70, 3), (71, 17), (76, 41)]);
         let script = vec![
-            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (
+                PodxtRequest::Identity,
+                vec![live_identity_reply([0, 3, 0, 1])],
+            ),
             (PodxtRequest::EditBuffer, vec![before.clone()]),
             (set(Control::Room, 61), vec![]),
             (
@@ -2117,7 +2147,10 @@ mod tests {
             (4, "outside the supported range"),
         ] {
             let script = vec![
-                (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+                (
+                    PodxtRequest::Identity,
+                    vec![live_identity_reply([0, 3, 0, 1])],
+                ),
                 (PodxtRequest::EditBuffer, vec![with(&[(70, original)])]),
             ];
             let mut log = Quiet;
@@ -2131,6 +2164,105 @@ mod tests {
     }
 
     #[test]
+    fn unverified_firmware_blocks_device_sends_after_identity() {
+        type Send = fn(&mut Session<'_, Fake>) -> Result<(), String>;
+        fn test_editor_buffer() -> EditorBuffer {
+            EditorBuffer {
+                channel: Location::tone_from_label("1B").unwrap(),
+                tone: EditBuffer::parse(synthetic()).unwrap(),
+                packs: Packs(0),
+            }
+        }
+
+        let operations: [(&str, Send); 12] = [
+            ("edit and undo", |session| stomp_test(session).map(|_| ())),
+            ("keep edit", |session| {
+                apply_live_settings(
+                    session,
+                    &[LiveTarget::Basic(Control::Drive, Target::Offset(1))],
+                )
+                .map(|_| ())
+            }),
+            ("additional edit", |session| {
+                live_settings_test(session, &[LiveTarget::Additional(Setting::Tempo, 1200)])
+                    .map(|_| ())
+            }),
+            ("editor edit buffer", |session| {
+                edit_editor_buffer(
+                    session,
+                    &test_editor_buffer(),
+                    EditorEdit::Controls(&[LiveTarget::Basic(Control::Drive, Target::Offset(1))]),
+                    || false,
+                )
+                .map(|_| ())
+            }),
+            ("whole-tone send", |session| {
+                let buffer = test_editor_buffer();
+                let backup = VerifiedToneBackup {
+                    slot: buffer.channel,
+                    original: TonePayload::from_dump(&buffer.tone).unwrap(),
+                };
+                send_whole_tone(session, &buffer, WholeToneSource::Current, &backup, || {
+                    false
+                })
+                .map(|_| ())
+            }),
+            ("store", |session| {
+                let buffer = test_editor_buffer();
+                let candidate = TonePayload::from_dump(&buffer.tone).unwrap();
+                let prepared = PreparedStore {
+                    backup: VerifiedToneBackup {
+                        slot: buffer.channel,
+                        original: candidate.clone(),
+                    },
+                    candidate,
+                };
+                let confirmed = prepared.confirm("STORE PODXT 1B").unwrap();
+                store_tone(session, confirmed, &StoreControl::default()).map(|_| ())
+            }),
+            ("Variax control release", |session| {
+                release_variax_control(session).map(|_| ())
+            }),
+            ("linked Variax model", |session| {
+                set_linked_variax_model(session, LinkedVariaxModel::FactorySpank1)
+            }),
+            ("channel switch", |session| {
+                let slot = Location::tone_from_label("1B").unwrap();
+                switch_channel(session, slot, None, false).map(|_| ())
+            }),
+            ("editor channel recall", |session| {
+                let slot = Location::tone_from_label("1B").unwrap();
+                recall_editor_channel(session, slot, || false).map(|_| ())
+            }),
+            ("tuner", |session| {
+                tuner(session, Duration::ZERO, |_| {}).map(|_| ())
+            }),
+            ("editor tuner", |session| {
+                read_live(session, ReadCommand::Tuner, || false, |_| {})
+            }),
+        ];
+        for (version, found) in [([0, 2, 0, 7], "2.07"), ([0, 3, 0, 2], "3.02")] {
+            for (name, send) in operations {
+                let link = Fake::new(
+                    Path::PodxtMidi,
+                    vec![(PodxtRequest::Identity, vec![live_identity_reply(version)])],
+                );
+                let mut log = Quiet;
+                let mut session = Session::new(link, &AllowAll, &mut log);
+                assert_eq!(
+                    send(&mut session).unwrap_err(),
+                    format!(
+                        "Found firmware {found} (family 0x0003, member 0x000a). The verified target is PODxt Live firmware 3.01."
+                    ),
+                    "{name}",
+                );
+                assert_eq!(session.link.writes, [identity::REQUEST.to_vec()], "{name}");
+                session.link.assert_finished();
+            }
+        }
+    }
+
+    #[test]
     fn linked_variax_model_changes_send_only_the_identified_podxt_the_wrapped_model() {
         for model in [
             LinkedVariaxModel::FactoryTModel1,
@@ -2139,7 +2271,10 @@ mod tests {
             let mut log = Quiet;
             let request = PodxtRequest::SetLinkedVariaxModel(model);
             let script = vec![
-                (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+                (
+                    PodxtRequest::Identity,
+                    vec![live_identity_reply([0, 3, 0, 1])],
+                ),
                 (request, vec![]),
             ];
             let mut session = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
@@ -2167,7 +2302,7 @@ mod tests {
         assert!(release_variax_control(&mut session).is_err());
         assert!(session.link.writes.is_empty());
 
-        let mut other = PODXT_LIVE.to_vec();
+        let mut other = live_identity_reply([0, 3, 0, 1]);
         other[10] = 0x09;
         let script = vec![(PodxtRequest::Identity, vec![other])];
         let mut session = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
@@ -2178,12 +2313,18 @@ mod tests {
     #[test]
     fn variax_control_release_sends_only_identity_and_the_original_workbench_message() {
         let script = vec![
-            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (
+                PodxtRequest::Identity,
+                vec![live_identity_reply([0, 3, 0, 1])],
+            ),
             (PodxtRequest::ReleaseVariaxControl, vec![]),
         ];
         let mut log = Quiet;
         let mut session = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
-        assert_eq!(release_variax_control(&mut session).unwrap(), PODXT_LIVE);
+        assert_eq!(
+            release_variax_control(&mut session).unwrap(),
+            live_identity_reply([0, 3, 0, 1])
+        );
         assert_eq!(
             session.link.writes,
             [
@@ -2198,7 +2339,10 @@ mod tests {
         let before = with(&[(42, 33)]);
         let after = with(&[(42, 53)]);
         let script = vec![
-            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (
+                PodxtRequest::Identity,
+                vec![live_identity_reply([0, 3, 0, 1])],
+            ),
             (PodxtRequest::EditBuffer, vec![before.clone()]),
             (set(Control::EqFreq2, 53), vec![]),
             (PodxtRequest::EditBuffer, vec![after.clone()]),
@@ -2232,7 +2376,10 @@ mod tests {
 
         let before = with(&[(89, 7), (90, 41)]);
         let script = vec![
-            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (
+                PodxtRequest::Identity,
+                vec![live_identity_reply([0, 3, 0, 1])],
+            ),
             (PodxtRequest::EditBuffer, vec![before.clone()]),
             (setting_message(Setting::Tempo, 1135, 0), vec![]),
             (setting_message(Setting::Tempo, 1135, 1), vec![]),
@@ -2265,7 +2412,10 @@ mod tests {
         ] {
             let mut log = Quiet;
             let script = vec![
-                (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+                (
+                    PodxtRequest::Identity,
+                    vec![live_identity_reply([0, 3, 0, 1])],
+                ),
                 (PodxtRequest::EditBuffer, vec![with(&[(12, current as u8)])]),
                 (PodxtRequest::InstalledPacks, reply.into_iter().collect()),
             ];
@@ -2307,7 +2457,7 @@ mod tests {
         );
         assert!(session.link.writes.is_empty());
 
-        let mut other = PODXT_LIVE.to_vec();
+        let mut other = live_identity_reply([0, 3, 0, 1]);
         other[10] = 0x09;
         let script = vec![(PodxtRequest::Identity, vec![other])];
         let mut session = Session::new(Fake::new(Path::PodxtMidi, script), &AllowAll, &mut log);
@@ -2323,7 +2473,7 @@ mod tests {
             live_settings_test(&mut session, &targets)
                 .err()
                 .unwrap()
-                .contains("PODxt Live identity")
+                .contains("member 0x0009")
         );
         assert_eq!(session.link.writes.len(), 1);
     }
@@ -2332,7 +2482,10 @@ mod tests {
     fn undoing_a_wah_model_change_restores_the_original_wah_position() {
         let before = with(&[(4, 63), (91, 0)]);
         let script = vec![
-            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (
+                PodxtRequest::Identity,
+                vec![live_identity_reply([0, 3, 0, 1])],
+            ),
             (PodxtRequest::EditBuffer, vec![before.clone()]),
             (PodxtRequest::InstalledPacks, vec![packs_reply(4)]),
             (setting_message(Setting::WahModel, 1, 0), vec![]),
@@ -2363,7 +2516,10 @@ mod tests {
         let tempo = |value, byte| setting_message(Setting::Tempo, value, byte);
         let stomp = |value| setting_message(Setting::StompModel, value, 0);
         let script = vec![
-            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (
+                PodxtRequest::Identity,
+                vec![live_identity_reply([0, 3, 0, 1])],
+            ),
             (PodxtRequest::EditBuffer, vec![before.clone()]),
             (PodxtRequest::InstalledPacks, vec![packs_reply(4)]),
             (stomp(15), vec![]),
@@ -2417,7 +2573,10 @@ mod tests {
         let before = with(&[(30, 42), (62, 7)]);
         let delay = |value, byte| setting_message(Setting::DelayTime, value, byte);
         let script = vec![
-            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (
+                PodxtRequest::Identity,
+                vec![live_identity_reply([0, 3, 0, 1])],
+            ),
             (PodxtRequest::EditBuffer, vec![before.clone()]),
             (delay(8193, 0), vec![]),
             (delay(8193, 1), vec![]),
@@ -2449,7 +2608,10 @@ mod tests {
         let note = |value| setting_message(Setting::DelayNote, value, 0);
         let time = |value, byte| setting_message(Setting::DelayTime, value, byte);
         let script = vec![
-            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (
+                PodxtRequest::Identity,
+                vec![live_identity_reply([0, 3, 0, 1])],
+            ),
             (PodxtRequest::EditBuffer, vec![before.clone()]),
             (note(0), vec![]),
             (time(8193, 0), vec![]),
@@ -2493,7 +2655,10 @@ mod tests {
     fn stomp_test_flips_reads_and_undoes() {
         let mut log = Quiet;
         let script = vec![
-            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (
+                PodxtRequest::Identity,
+                vec![live_identity_reply([0, 3, 0, 1])],
+            ),
             (PodxtRequest::EditBuffer, vec![with(&[(25, 0)])]),
             (set(Control::StompEnable, 127), vec![]),
             (PodxtRequest::EditBuffer, vec![with(&[(25, 127)])]),
@@ -2511,7 +2676,10 @@ mod tests {
         let before = with(&[(13, 40), (50, 0), (28, 127)]);
         let after = with(&[(13, 100), (50, 127), (28, 0), (17, 81)]); // CC 17 drifted
         let script = vec![
-            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (
+                PodxtRequest::Identity,
+                vec![live_identity_reply([0, 3, 0, 1])],
+            ),
             (PodxtRequest::EditBuffer, vec![before.clone()]),
             (set(Control::Drive, 100), vec![]),
             (set(Control::ModEnable, 127), vec![]),
@@ -2554,7 +2722,10 @@ mod tests {
         let mut log = Quiet;
         let before = with(&[(17, 85), (21, 50)]);
         let script = vec![
-            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (
+                PodxtRequest::Identity,
+                vec![live_identity_reply([0, 3, 0, 1])],
+            ),
             (PodxtRequest::EditBuffer, vec![before.clone()]),
             (
                 set(Control::ChannelVolume, 105),
@@ -2584,7 +2755,10 @@ mod tests {
         let mut log = Quiet;
         let before = with(&[(16, 120), (15, 30)]);
         let script = vec![
-            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (
+                PodxtRequest::Identity,
+                vec![live_identity_reply([0, 3, 0, 1])],
+            ),
             (PodxtRequest::EditBuffer, vec![before.clone()]),
             (set(Control::Treble, 100), vec![]),
             (set(Control::Mid, 50), vec![]),
@@ -2607,7 +2781,10 @@ mod tests {
     fn the_undo_is_sent_even_when_the_check_read_fails() {
         let mut log = Quiet;
         let script = vec![
-            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (
+                PodxtRequest::Identity,
+                vec![live_identity_reply([0, 3, 0, 1])],
+            ),
             (PodxtRequest::EditBuffer, vec![with(&[(25, 127), (36, 0)])]),
             (set(Control::StompEnable, 0), vec![]),
             (set(Control::ReverbEnable, 127), vec![]),
@@ -2684,7 +2861,10 @@ mod tests {
             Location::tone_from_label("3C").unwrap(),
         );
         let script = vec![
-            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (
+                PodxtRequest::Identity,
+                vec![live_identity_reply([0, 3, 0, 1])],
+            ),
             (PodxtRequest::EditBuffer, vec![tone(b"Boutique", 86)]),
             (PodxtRequest::Stored(orig), vec![tone(b"Boutique", 114)]),
             (PodxtRequest::Stored(target), vec![tone(b"Brit J-800", 90)]),
@@ -2708,7 +2888,10 @@ mod tests {
         destination[39 + 120] = 15;
         for accepted in [false, true] {
             let mut script = vec![
-                (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+                (
+                    PodxtRequest::Identity,
+                    vec![live_identity_reply([0, 3, 0, 1])],
+                ),
                 (PodxtRequest::EditBuffer, vec![before.clone()]),
                 (PodxtRequest::Stored(original), vec![before.clone()]),
                 (PodxtRequest::Stored(target), vec![destination.clone()]),
@@ -2752,7 +2935,10 @@ mod tests {
         let mut edited = tone(b"Boutique", 86);
         edited[39 + 13] = 99; // drive changed live, not saved
         let script = vec![
-            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (
+                PodxtRequest::Identity,
+                vec![live_identity_reply([0, 3, 0, 1])],
+            ),
             (PodxtRequest::EditBuffer, vec![edited]),
             (PodxtRequest::Stored(orig), vec![tone(b"Boutique", 114)]),
         ];
@@ -2798,7 +2984,10 @@ mod tests {
         let mut log = Quiet;
         let note = vec![0xf0, 0x00, 0x01, 0x0c, 0x03, 0x56, 22, 0, 0, 0, 5, 0xf7];
         let script = vec![
-            (PodxtRequest::Identity, vec![PODXT_LIVE.to_vec()]),
+            (
+                PodxtRequest::Identity,
+                vec![live_identity_reply([0, 3, 0, 1])],
+            ),
             (PodxtRequest::TunerMode(true), vec![]),
             (PodxtRequest::QueryGlobal(Global::TunerNote), vec![note]),
             (PodxtRequest::QueryGlobal(Global::TunerDeviation), vec![]),

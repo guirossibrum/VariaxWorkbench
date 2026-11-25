@@ -212,10 +212,7 @@ pub(super) fn open_editor<L: Link>(
 ) -> Result<(), String> {
     check_stop(cancelled)?;
     session.require_expected_sysex();
-    let (_, identity) = identify_podxt(session)?;
-    if identity.member != PODXT_LIVE_MEMBER || identity.version != [0, 3, 0, 1] {
-        return Err("This port did not identify as PODxt Live 3.01.".into());
-    }
+    identify_podxt_live(session)?;
     check_stop(cancelled)
 }
 
