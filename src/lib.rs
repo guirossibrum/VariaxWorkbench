@@ -16,6 +16,7 @@ pub mod factory_comparison;
 pub mod factory_reference;
 mod families;
 pub mod firmware;
+pub mod firmware_notice;
 pub mod hardware_gates;
 pub mod host;
 pub mod identity_stage;

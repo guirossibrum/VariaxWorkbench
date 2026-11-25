@@ -6,6 +6,7 @@
 #![cfg(feature = "usb")]
 
 use crate::PresetMetadata;
+use crate::firmware_notice::FirmwareNotice;
 use crate::hardware_gates::{self, Gate};
 
 #[cfg(all(not(test), target_os = "linux"))]
@@ -62,6 +63,7 @@ impl GatePolicy for DeviceCheckPolicy {
 pub struct BothReads {
     pub metadata: PresetMetadata,
     pub summary: String,
+    pub firmware_notice: Option<FirmwareNotice>,
 }
 
 pub fn read_both() -> Result<BothReads, String> {
@@ -126,7 +128,7 @@ fn integer(metadata: &PresetMetadata, key: &str) -> Result<i32, String> {
 }
 
 #[cfg(all(not(test), target_os = "linux"))]
-fn read_podxt() -> Result<String, String> {
+fn read_podxt() -> Result<(String, Option<FirmwareNotice>), String> {
     use line6_devices::{
         family::podxt::transport::PODXT_LIVE_MIDI, transport::rawmidi::RawMidiLink,
     };
@@ -135,6 +137,9 @@ fn read_podxt() -> Result<String, String> {
     let policy = DeviceCheckPolicy;
     let mut session = Session::new(&mut link, &policy, &mut log);
     let tone = podxt::read_current(&mut session)?;
+    if let Some(notice) = FirmwareNotice::podxt(&tone.identity) {
+        return Ok((notice.message(), Some(notice)));
+    }
     let family = family::Family::Podxt;
     let mut lines = vec![format!(
         "PODxt Live: {} firmware {}.",
@@ -142,17 +147,18 @@ fn read_podxt() -> Result<String, String> {
         tone.identity.version_text()
     )];
     lines.extend(tone.tone.describe());
-    Ok(lines.join(" "))
+    Ok((lines.join(" "), None))
 }
 
 #[cfg(all(not(test), target_os = "linux"))]
 fn read_both_live() -> Result<BothReads, String> {
     let (metadata, variax) =
         read_variax().map_err(|error| format!("Variax read stopped: {error}"))?;
-    let podxt =
+    let (podxt, firmware_notice) =
         read_podxt().map_err(|error| format!("{variax} PODxt Live read stopped: {error}"))?;
     Ok(BothReads {
         metadata,
+        firmware_notice,
         summary: format!(
             "{variax} {podxt} This is the current settings, not a backup. Nothing was written. Step 4 stays off."
         ),

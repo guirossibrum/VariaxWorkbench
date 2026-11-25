@@ -689,21 +689,25 @@ fn pod_notices_trigger_identity_and_duplicates_do_not_recheck() {
 }
 
 #[test]
-fn older_guitar_firmware_warns_on_the_pod_without_admitting_a_guitar_tab() {
+fn unverified_guitar_firmware_warns_on_the_pod_without_admitting_a_guitar_tab() {
     let (ctx, mut app, source) = fixture();
     source.usb(true, false);
     tick(&ctx, &mut app);
     let attachment = entries(&app)[0].2.device.key.attachment.clone();
+    let mut reply = variax_workbench::identity_stage::guitar_reply();
+    reply[12..16].copy_from_slice(b"0311");
+    let identity = line6_devices::identity::Identity::parse(&reply).unwrap();
     source.finish(
         attachment.clone(),
-        SimulatedGuitar::OlderFirmware("3.06".into()),
+        SimulatedGuitar::Unverified(FirmwareNotice::variax(&identity).unwrap()),
     );
     tick(&ctx, &mut app);
     assert_eq!(entries(&app).len(), 1);
-    let warning = entries(&app)[0].2.device.guitar_warning.clone().unwrap();
-    assert!(
-        warning.contains("Update Firmware") && warning.contains("3.06") && warning.contains("3.07")
-    );
+    let warning = entries(&app)[0].2.device.guitar_warning.unwrap().message();
+    assert!(warning.contains("3.11") && warning.contains("3.10"));
+    assert!(!warning.to_ascii_lowercase().contains("update"));
+    assert!(app.backup_firmware_blocked(BackupChoice::Variax));
+    assert!(!app.backup_firmware_blocked(BackupChoice::Podxt));
     assert!(has_label(&frame(&ctx, &mut app, vec![]).shapes, &warning));
 
     source.notice(&attachment, SimulatedNotice::Connected);
@@ -711,6 +715,46 @@ fn older_guitar_firmware_warns_on_the_pod_without_admitting_a_guitar_tab() {
     tick(&ctx, &mut app);
     assert_eq!(entries(&app).len(), 2);
     assert!(entries(&app)[0].2.device.guitar_warning.is_none());
+}
+
+#[test]
+fn shell_and_device_check_report_unverified_pod_firmware_and_keep_offline_editing() {
+    let (ctx, mut app, source) = fixture();
+    source.usb(true, false);
+    tick(&ctx, &mut app);
+    let key = entries(&app)[0].2.device.key.attachment.clone();
+    let mut reply = variax_workbench::identity_stage::bridge_reply();
+    reply[15] = 2;
+    let identity = line6_devices::identity::Identity::parse(&reply).unwrap();
+    let notice = FirmwareNotice::podxt(&identity).unwrap();
+    source
+        .0
+        .borrow_mut()
+        .results
+        .insert(key, SimulatedOutcome::UnverifiedPod(notice));
+    tick(&ctx, &mut app);
+    assert_eq!(entries(&app).len(), 1);
+    assert!(entries(&app)[0].2.verified_attachment().is_none());
+    assert!(app.backup_firmware_blocked(BackupChoice::Podxt));
+    assert!(app.backup_firmware_blocked(BackupChoice::Variax));
+    let text = notice.message();
+    assert!(text.contains("3.02") && text.contains("3.01"));
+    assert!(has_label(&frame(&ctx, &mut app, vec![]).shapes, &text));
+
+    app.device_check_open = true;
+    frame(&ctx, &mut app, vec![]);
+    assert!(app.device_check_visible.contains(&text));
+    assert!(!app.device_check_buttons.contains_key("backup-podxt"));
+    assert!(!app.device_check_buttons.contains_key("tone-try"));
+
+    let path = tempfile::tempdir().unwrap();
+    let tone = path.path().join("offline.l6t");
+    std::fs::write(&tone, podxt_panel::tests::sample_pod_tone()).unwrap();
+    app.device_check_open = false;
+    let tab = app.open_file(tone).unwrap();
+    let entry = &app.tabs.entries[app.tabs.index(tab).unwrap()];
+    assert_eq!(entry.family.info().id, "podxt");
+    assert!(entry.device.is_none());
 }
 
 #[test]

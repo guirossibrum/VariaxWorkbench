@@ -7,6 +7,7 @@ use super::ProductFamily;
 use identity::{Guitar, Identify, Job, JobKind, Outcome, Worker};
 use std::collections::BTreeMap;
 use variax_workbench::device_probe::{MetadataError, OsMetadataSource, UsbDevice};
+use variax_workbench::firmware_notice::FirmwareNotice;
 
 #[cfg(test)]
 pub(super) use identity::{
@@ -65,7 +66,8 @@ pub(super) struct DetectedDevice {
     pub model: &'static str,
     pub support: DeviceSupport,
     pub guitar_status: Option<String>,
-    pub guitar_warning: Option<String>,
+    pub guitar_warning: Option<FirmwareNotice>,
+    pub pod_warning: Option<FirmwareNotice>,
     pub refresh_guitar: bool,
 }
 
@@ -124,7 +126,8 @@ struct Bridge {
     guitar: Option<(u64, &'static str)>,
     last_guitar: Option<&'static str>,
     status: String,
-    firmware_warning: Option<String>,
+    firmware_warning: Option<FirmwareNotice>,
+    pod_warning: Option<FirmwareNotice>,
     last_notice: Option<Notice>,
     suspended: bool,
     driver_unbound: bool,
@@ -146,6 +149,7 @@ impl Bridge {
             }
             .into(),
             firmware_warning: None,
+            pod_warning: None,
             last_notice: None,
             suspended: false,
             driver_unbound: false,
@@ -172,6 +176,14 @@ impl Bridge {
                 self.queued = Some(kind);
                 self.waiting_for_other_process = matches!(outcome, Outcome::OtherProcessBusy);
             }
+            Outcome::UnverifiedPod(notice) => {
+                self.running = None;
+                self.waiting_for_other_process = false;
+                self.pod = None;
+                self.pod_warning = Some(notice);
+                self.status = "identity check unavailable on this connection".into();
+                self.guitar = None;
+            }
             Outcome::Finished {
                 pod_firmware,
                 guitar,
@@ -181,6 +193,7 @@ impl Bridge {
                 self.firmware_warning = None;
                 if kind == JobKind::Initial {
                     self.pod = pod_firmware;
+                    self.pod_warning = None;
                 }
                 self.driver_unbound = matches!(guitar, Guitar::DriverUnbound(_));
                 match guitar {
@@ -200,11 +213,9 @@ impl Bridge {
                         self.guitar = None;
                         self.status = match other {
                             Guitar::Silent => "no guitar answered".into(),
-                            Guitar::OlderFirmware(version) => {
-                                self.firmware_warning = Some(format!(
-                                    "Update Firmware · Variax 300/600 firmware {version} is below Workbench’s minimum of 3.07."
-                                ));
-                                format!("Variax 300/600 {version}")
+                            Guitar::Unverified(notice) => {
+                                self.firmware_warning = Some(notice);
+                                "identity unverified".into()
                             }
                             Guitar::Unavailable(reason) | Guitar::DriverUnbound(reason) => reason,
                             Guitar::CleanupFailed => {
@@ -290,6 +301,17 @@ impl DetectionService {
 
     fn usb_id(usb: &UsbDevice) -> UsbId {
         (usb.vendor_id, usb.product_id)
+    }
+
+    pub fn firmware_notices(&self) -> impl Iterator<Item = FirmwareNotice> + '_ {
+        self.attachments
+            .values()
+            .filter_map(|attachment| attachment.bridge.as_ref())
+            .flat_map(|bridge| {
+                [bridge.pod_warning, bridge.firmware_warning]
+                    .into_iter()
+                    .flatten()
+            })
     }
 
     pub fn refresh(
@@ -555,7 +577,7 @@ impl DetectionService {
                     family_id: info.id,
                     linked_generation: None,
                 };
-                let (support, status, warning, refresh) = match profile.discovery {
+                let (support, status, warning, pod_warning, refresh) = match profile.discovery {
                     DeviceDiscovery::Automatic(id) if id == attached_id => {
                         let bridge = bridge.expect("automatic attachment");
                         let support = match bridge.pod {
@@ -566,7 +588,8 @@ impl DetectionService {
                         (
                             support,
                             Some(bridge.label()),
-                            bridge.firmware_warning.clone(),
+                            bridge.firmware_warning,
+                            bridge.pod_warning,
                             bridge.can_refresh(),
                         )
                     }
@@ -574,7 +597,7 @@ impl DetectionService {
                         if (matches!(scan, Scan::Confirmed) || self.known.contains_key(&key))
                             && id == attached_id =>
                     {
-                        (DeviceSupport::FileEditingOnly, None, None, false)
+                        (DeviceSupport::FileEditingOnly, None, None, None, false)
                     }
                     DeviceDiscovery::ViaBridge(id) if id == attached_id => {
                         let Some(bridge) = bridge else { continue };
@@ -587,7 +610,13 @@ impl DetectionService {
                         } else {
                             DeviceSupport::Verified(firmware)
                         };
-                        (support, Some(bridge.label()), None, bridge.can_refresh())
+                        (
+                            support,
+                            Some(bridge.label()),
+                            None,
+                            None,
+                            bridge.can_refresh(),
+                        )
                     }
                     _ => continue,
                 };
@@ -599,6 +628,7 @@ impl DetectionService {
                         support,
                         guitar_status: status,
                         guitar_warning: warning,
+                        pod_warning,
                         refresh_guitar: refresh,
                     },
                 );

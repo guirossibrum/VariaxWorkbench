@@ -631,10 +631,14 @@ impl Workbench {
                             {
                                 status_line(ui, tabs::RECONNECTED_WITH_EDITS, theme::TEXT);
                             }
-                            if device.connection == tabs::Connection::Present
-                                && let Some(warning) = &device.device.guitar_warning
-                            {
-                                status_line(ui, warning, theme::AMBER);
+                            if device.connection == tabs::Connection::Present {
+                                for notice in
+                                    [device.device.pod_warning, device.device.guitar_warning]
+                                        .into_iter()
+                                        .flatten()
+                                {
+                                    status_line(ui, &notice.message(), theme::AMBER);
+                                }
                             }
                             if !variax
                                 && device.connection == tabs::Connection::Present

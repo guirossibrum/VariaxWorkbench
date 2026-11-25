@@ -4,6 +4,7 @@ use super::{AttachmentKey, notice::Notice};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
+use variax_workbench::firmware_notice::FirmwareNotice;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::editor) enum JobKind {
@@ -35,7 +36,7 @@ pub(in crate::editor) enum Guitar {
         not(any(test, all(feature = "usb", target_os = "linux"))),
         allow(dead_code)
     )]
-    OlderFirmware(String),
+    Unverified(FirmwareNotice),
     #[cfg_attr(
         not(any(test, all(feature = "usb", target_os = "linux"))),
         allow(dead_code)
@@ -62,6 +63,11 @@ pub(in crate::editor) enum Outcome {
         allow(dead_code)
     )]
     Notices(Vec<Notice>),
+    #[cfg_attr(
+        not(any(test, all(feature = "usb", target_os = "linux"))),
+        allow(dead_code)
+    )]
+    UnverifiedPod(FirmwareNotice),
     Finished {
         pod_firmware: Option<&'static str>,
         guitar: Guitar,
@@ -244,10 +250,11 @@ mod live {
                 )?;
                 super::pod::identify(&mut link, cancel)
             });
-            if let Err(error) = result {
-                return unavailable(format!("PODxt Live identity: {error}"));
+            match result {
+                Ok(None) => Some(BRIDGE_VERSION),
+                Ok(Some(notice)) => return Outcome::UnverifiedPod(notice),
+                Err(error) => return unavailable(format!("PODxt Live identity: {error}")),
             }
-            Some(BRIDGE_VERSION)
         } else {
             None
         };
@@ -310,7 +317,7 @@ mod live {
         }
         match usb::read_discovery_identity(rig, (path, address), cancel) {
             Ok(DiscoveryIdentity::Verified) => Guitar::Verified(GUITAR_VERSION),
-            Ok(DiscoveryIdentity::OlderFirmware(firmware)) => Guitar::OlderFirmware(firmware),
+            Ok(DiscoveryIdentity::Unverified(notice)) => Guitar::Unverified(notice),
             Err(IdentifyError::Locked) => {
                 Guitar::Unavailable("The guitar identity gate is closed.".into())
             }
@@ -346,7 +353,6 @@ mod pod {
     use line6_devices::session::{Link, POLL, Quiet, Session};
     use std::time::Duration;
     use variax_workbench::hardware_gates::{Gate, is_locked};
-    use variax_workbench::identity_stage::BRIDGE_PRODUCT;
 
     struct IdentityOnly;
     impl GatePolicy for IdentityOnly {
@@ -356,7 +362,10 @@ mod pod {
         }
     }
 
-    pub(super) fn identify(link: impl Link, cancel: &AtomicBool) -> Result<(), String> {
+    pub(super) fn identify(
+        link: impl Link,
+        cancel: &AtomicBool,
+    ) -> Result<Option<FirmwareNotice>, String> {
         identify_with_policy(link, cancel, &IdentityOnly)
     }
 
@@ -364,7 +373,7 @@ mod pod {
         mut link: impl Link,
         cancel: &AtomicBool,
         policy: &dyn GatePolicy,
-    ) -> Result<(), String> {
+    ) -> Result<Option<FirmwareNotice>, String> {
         let mut log = Quiet;
         let mut session = Session::new(&mut link, policy, &mut log);
         session.listen(Duration::from_millis(200))?;
@@ -393,12 +402,7 @@ mod pod {
             }
         }
         let reply = identity.ok_or("No PODxt identity answered.")?;
-        let product = (u32::from(reply.family) << 16) | u32::from(reply.member);
-        if reply.is_line6() && product == BRIDGE_PRODUCT && reply.version == [0, 3, 0, 1] {
-            Ok(())
-        } else {
-            Err("The reply did not match PODxt Live 3.01.".into())
-        }
+        Ok(FirmwareNotice::podxt(&reply))
     }
 
     #[cfg(test)]
@@ -460,7 +464,7 @@ mod pod {
                     ..Default::default()
                 };
                 assert_eq!(
-                    identify(&mut link, &AtomicBool::new(false)).is_ok(),
+                    matches!(identify(&mut link, &AtomicBool::new(false)), Ok(None)),
                     verified
                 );
                 assert_eq!(link.writes, [REQUEST]);

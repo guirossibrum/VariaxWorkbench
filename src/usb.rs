@@ -413,6 +413,7 @@ fn open_stopped(failure: IdentityFailure) -> identity_stage::IdentifyError {
         reattach_failed: false,
         bridge: None,
         guitar: None,
+        firmware_notice: None,
     })
 }
 

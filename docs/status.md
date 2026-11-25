@@ -10,6 +10,8 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] The shell and Device check explain unverified Variax and PODxt Live identities in plain language, including the reported and verified firmware versions when the reply is readable. Unsupported connections keep file editing available. Synthetic tests cover the notice, the verified identity path and the Device check action restrictions. The Variax editor notice is tracked separately under [#270](https://github.com/guirossibrum/VariaxWorkbench/issues/270).
+
 - [x] Rig Check pauses after each executed step and shows the values named on its SEE card. Finished results can be reopened from the sidebar. The terminal uses the same summary, and raw evidence stays in the saved report. Headless practice tests check all 28 runnable steps, keyboard Continue, sidebar replay, and Stop with the closing rig check. [#272](https://github.com/guirossibrum/VariaxWorkbench/issues/272).
 
 - [x] #271 device groundwork adds a separately gated Variax 300/600 current-program read that reports firmware verification status. Fake links cover 3.10, another version, rejected identities, and malformed chunk retry and cleanup. The read uses identity, two settings blocks and 35 current-buffer chunks, with no preset selection. [Shared API](variax-shared-procedures.md).
