@@ -5,6 +5,7 @@
 //! and never read the real `/proc` or `/sys`.
 
 pub mod linux;
+pub mod other;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

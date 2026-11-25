@@ -113,7 +113,11 @@ fn computer_system(ctx: &mut Ctx<'_>) -> Result<(), String> {
         let system = ctx.port.system();
         computer::linux::system(&*system)
     } else {
-        return Err("This operating system's collector is not in this build yet (#251).".into());
+        computer::other::this_os(&computer::other::SystemCommands)
+            .ok_or("No computer collector for this operating system.")?
+            .into_iter()
+            .filter(|(name, _)| !is_device_line(name))
+            .collect()
     };
     if ctx.mode == Mode::Practice {
         ctx.rec
@@ -126,6 +130,13 @@ fn computer_system(ctx: &mut Ctx<'_>) -> Result<(), String> {
     Ok(())
 }
 
+/// Windows/macOS lines that belong to step 0.2 rather than 0.1.
+fn is_device_line(name: &str) -> bool {
+    ["USB", "driver", "MIDI"]
+        .iter()
+        .any(|word| name.contains(word))
+}
+
 fn computer_usb(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let view =
         crate::hardware_gates::run_if_unlocked(crate::hardware_gates::Gate::OsDiscovery, || {
@@ -133,7 +144,15 @@ fn computer_usb(ctx: &mut Ctx<'_>) -> Result<(), String> {
                 let system = ctx.port.system();
                 Ok(computer::linux::usb(&*system, &ctx.port.libusb()))
             } else {
-                Err("This operating system's collector is not in this build yet (#251).".into())
+                let lines = computer::other::this_os(&computer::other::SystemCommands)
+                    .ok_or("No computer collector for this operating system.")?
+                    .into_iter()
+                    .filter(|(name, _)| is_device_line(name) || name == "Collector")
+                    .collect();
+                Ok(UsbView {
+                    devices: Vec::new(),
+                    lines,
+                })
             }
         })?;
     for (name, value) in &view.lines {

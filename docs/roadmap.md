@@ -4,6 +4,8 @@ GitHub issues and the [project board](https://github.com/users/guirossibrum/proj
 
 ## Pending implementation or validation
 
+- [ ] Rig Check Windows and macOS collectors (step 0.1/0.2): parsers for `ver`, `pnputil /enum-drivers`, `pnputil /enum-devices /connected`, `sw_vers`, `uname`, `sysctl`, `system_profiler SPUSBDataType`, `kextstat` and `systemextensionsctl` pass synthetic-output tests; missing fields show "not available on this OS" and every report says "collector not verified on this OS yet". `cargo check --target x86_64-pc-windows-gnu --no-default-features --bin rig-check` passes; macOS was not compiled (no target installed). MIDI ports and USB host controller await the transport research (#262). Verification on Windows and macOS is pending. [#251](https://github.com/guirossibrum/VariaxWorkbench/issues/251).
+
 - [ ] Rig Check catalogue 1.0 lists steps 0.1–8.5 with dependencies, gates, risk levels, step cards and the start and save notices. Owner review of the wording is pending. [Catalogue](rig-check/catalogue.md) · [#244](https://github.com/guirossibrum/VariaxWorkbench/issues/244).
 
 - [ ] #238 listen-list owner audition. Offline checks and fake transports passed. One owner run of models A–D from Spank 1 was approved on 2026-11-25 and is pending. [Approved test card](variax-listen-list-test-card.md).
