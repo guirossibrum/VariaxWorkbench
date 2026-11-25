@@ -126,7 +126,12 @@ public. Commit only the images the app actually uses, under `assets/ui/`, with
 Installers, binaries, decompiled code, firmware, captures and user data stay
 local and ignored.
 
-Preserve originals. New copies must use atomic non-overwriting saves. Validate
+Preserve originals. New copies must use atomic non-overwriting saves. **Editor Save
+exception (owner decision 2026-11-25, #241):** the editors' Save may replace the
+preset file the user opened or created in the editor, by writing a temporary file
+in the same folder and renaming it over the original. Save never writes into
+library backups, test logs, captures, vendor archives or firmware; Save As and
+every other copy stay non-overwriting. Validate
 against original Java/native behavior where practical; label inference, emulated
 behavior, real captures, and unverified behavior distinctly. Report partial
 captures as partial; current-preset metadata is not a full backup.
