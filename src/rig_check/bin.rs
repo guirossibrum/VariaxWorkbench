@@ -13,6 +13,8 @@ use variax_workbench::rig_check::{
 
 const USAGE: &str = "Usage: rig-check [--practice | --real] [--text] [--out DIR] [--evidence] [--engine-folder DIR]
        rig-check --catalogue
+       rig-check --compare A.wav B.wav [BASE1.wav BASE2.wav] [--reports A.txt B.txt]
+                 (offline: compare two clips; two takes from one computer as the baseline)
        rig-check --mockups DIR   (draw the wizard screens to PNG files, headless)
   Without --text, a build with the gui feature opens the wizard window.
   --practice  rehearse every step with simulated devices (nothing is sent to real hardware)
@@ -29,6 +31,49 @@ struct Options {
     out: PathBuf,
     evidence: bool,
     engine_folder: Option<PathBuf>,
+}
+
+fn compare_clips(args: &[String]) -> Result<(), String> {
+    use rig_check::compare;
+    let (clips, reports) = match args.iter().position(|a| a == "--reports") {
+        Some(i) => (&args[..i], &args[i + 1..]),
+        None => (args, &args[args.len()..]),
+    };
+    let read = |path: &String| std::fs::read(path).map_err(|e| format!("{path}: {e}"));
+    let analyse =
+        |path: &String| compare::analyze_wav(&read(path)?).map_err(|e| format!("{path}: {e}"));
+    let (a, b) = match clips {
+        [a, b] | [a, b, _, _] => (analyse(a)?, analyse(b)?),
+        _ => return Err(USAGE.into()),
+    };
+    let baseline = match clips {
+        [_, _, x, y] => Some((analyse(x)?, analyse(y)?)),
+        _ => None,
+    };
+    let engine = |path: Option<&String>| -> Result<Vec<String>, String> {
+        path.map_or(Ok(Vec::new()), |p| {
+            Ok(compare::engine_lines(&String::from_utf8_lossy(&read(p)?)))
+        })
+    };
+    let result = compare::compare(
+        &a,
+        &b,
+        baseline.as_ref().map(|(x, y)| (x, y)),
+        &engine(reports.first())?,
+        &engine(reports.get(1))?,
+    );
+    for line in result.lines {
+        println!("{line}");
+    }
+    println!(
+        "{}",
+        if result.exceeded.is_empty() {
+            "No difference exceeds the tolerance.".to_string()
+        } else {
+            format!("Exceeds the tolerance: {}.", result.exceeded.join(", "))
+        }
+    );
+    Ok(())
 }
 
 fn default_out() -> PathBuf {
@@ -61,6 +106,16 @@ fn options() -> Result<Options, String> {
             }
             "--out" => out = Some(PathBuf::from(args.next().ok_or(USAGE)?)),
             "--engine-folder" => engine_folder = Some(PathBuf::from(args.next().ok_or(USAGE)?)),
+            "--compare" => {
+                let rest: Vec<String> = args.by_ref().collect();
+                std::process::exit(match compare_clips(&rest) {
+                    Ok(()) => 0,
+                    Err(error) => {
+                        eprintln!("{error}");
+                        1
+                    }
+                });
+            }
             "--catalogue" => {
                 for step in rig_check::catalogue::STEPS {
                     println!("{} {} [{}]", step.id, step.title, step.risk.label());

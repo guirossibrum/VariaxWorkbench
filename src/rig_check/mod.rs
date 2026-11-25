@@ -16,6 +16,7 @@ pub mod approvals;
 pub mod audio;
 pub mod catalogue;
 pub mod cli;
+pub mod compare;
 pub mod computer;
 pub mod connection;
 pub mod engine_check;
