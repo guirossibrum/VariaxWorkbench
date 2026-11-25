@@ -251,7 +251,7 @@ fn run_store(
 
 const APPROVED_LISTEN_4A: bool = false;
 const APPROVED_STORE_4B: bool = false;
-const APPROVED_RESTORE_4C: bool = true;
+const APPROVED_RESTORE_4C: bool = false;
 const APPROVED_RENAME_3A: bool = false;
 const APPROVED_FACTORY_3B: bool = false;
 

@@ -336,7 +336,7 @@ fn narrate_from_reso4(prepared: &Prepared) -> Vec<String> {
 
 #[test]
 fn owner_messages_precede_their_wire_actions_and_end_with_a_verified_result() {
-    for mode in [Mode::Listen, Mode::Store] {
+    for mode in [Mode::Listen, Mode::Store, Mode::Restore] {
         let events = narrate_from_reso4(&test_prepared(mode));
         let mut anchors = vec![
             "HEAR: Your current preset stays selected",
@@ -364,9 +364,20 @@ fn owner_messages_precede_their_wire_actions_and_end_with_a_verified_result() {
                 "Prompt: RETURN TO ORIGINAL",
             ]);
         } else {
+            let (instruction, prompt) = if mode == Mode::Restore {
+                (
+                    "SEE: Type RESTORE SLOT 14 Spank 1",
+                    "Prompt: RESTORE SLOT 14 Spank 1",
+                )
+            } else {
+                (
+                    "SEE: Type STORE SLOT 14 Spank 1",
+                    "Prompt: STORE SLOT 14 Spank 1",
+                )
+            };
             anchors.extend([
-                "SEE: Type STORE SLOT 14 Spank 1",
-                "Prompt: STORE SLOT 14 Spank 1",
+                instruction,
+                prompt,
                 "Wire: upload",
                 "Wire: save slot 14",
                 "The guitar confirmed the save to Spank 1.",
@@ -381,6 +392,8 @@ fn owner_messages_precede_their_wire_actions_and_end_with_a_verified_result() {
             "Back on Reso 4, verified.",
             if mode.listens() {
                 "Done. Sent the edited sound to the working buffer. Nothing was saved. The guitar is on Reso 4."
+            } else if mode == Mode::Restore {
+                "Done. Sent the backup program and one save command. Saved and verified Spank 1. The guitar is on Reso 4."
             } else {
                 "Done. Sent the edited program and one save command. Saved and verified Spank 1. The guitar is on Reso 4."
             },

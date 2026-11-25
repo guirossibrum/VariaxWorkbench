@@ -4,7 +4,7 @@ GitHub issues and the [project board](https://github.com/users/guirossibrum/proj
 
 ## Pending implementation or validation
 
-- [ ] #238 owner validation from another selected preset. Rung 4a completed. Any repeat and rungs 4b, 4c, 3a and 3b need separate approval. The card has the offline checks, owner prompts and stop procedure. [Draft owner card](variax-any-selection-test-card.md).
+- [ ] #238 rungs 4a–4c passed. Owner confirmation is pending on omitting rungs 3a and 3b, whose store-and-restore coverage overlaps #177 and #238. [Owner card](variax-any-selection-test-card.md).
 - [ ] Owner verification of normal interface 1 cleanup and recovery when the guitar driver is naturally unbound. [Driver return test card](variax-driver-rebind-test-card.md) · [#239](https://github.com/guirossibrum/VariaxWorkbench/issues/239).
 
 - [ ] Phase 3 closeout and follow-up. [#114](https://github.com/guirossibrum/VariaxWorkbench/issues/114) remains open for the full inventory, and [#112](https://github.com/guirossibrum/VariaxWorkbench/issues/112) retains the open evidence questions. [#126](https://github.com/guirossibrum/VariaxWorkbench/issues/126), [#159](https://github.com/guirossibrum/VariaxWorkbench/issues/159) and [#150](https://github.com/guirossibrum/VariaxWorkbench/issues/150) remain open. The capture interface and firmware handler remain unverified.

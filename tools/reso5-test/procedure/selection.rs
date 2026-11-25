@@ -423,8 +423,13 @@ pub fn attempt<L: Link>(
         verified,
         &mut announce,
     )?;
+    let program = if prepared.mode == Mode::Restore {
+        "the backup program"
+    } else {
+        "the edited program"
+    };
     announce(&format!(
-        "Done. Sent the edited program and one save command. Saved and verified {target_name}. The guitar is on {original_name}."
+        "Done. Sent {program} and one save command. Saved and verified {target_name}. The guitar is on {original_name}."
     ));
     Ok(())
 }
