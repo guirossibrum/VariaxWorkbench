@@ -317,7 +317,8 @@ impl Locker {
             editor_tone,
         } = view;
         let mut action = Actions::default();
-        ui.collapsing("Tone Locker", |ui| {
+        ui.group(|ui| {
+            ui.heading("Tone Locker");
             self.toolbar(
                 ui,
                 services,

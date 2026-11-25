@@ -1,13 +1,10 @@
 use super::*;
-use podxt::{
-    EditorBuffer, EditorEdit, LiveTarget, Target, Value, VerifiedToneBackup, WholeToneSource,
-};
+use podxt::{EditorBuffer, EditorEdit, LiveTarget, Target, VerifiedToneBackup, WholeToneSource};
 
 const EDIT_INTERVAL: Duration = Duration::from_millis(150);
 // #222's full-payload transfer has a separate first-run decision.
 const WHOLE_TONE_SEND_APPROVED: bool = false;
 
-#[derive(Default)]
 pub(super) struct LiveEditor {
     session: Option<ActiveEdit>,
     worker: Option<EditWorker>,
@@ -17,6 +14,21 @@ pub(super) struct LiveEditor {
     needs_get: bool,
     last_dispatch: Option<Instant>,
     message: Option<Result<String, String>>,
+}
+
+impl Default for LiveEditor {
+    fn default() -> Self {
+        Self {
+            session: None,
+            worker: None,
+            pending: Pending::default(),
+            whole_tone_backup: None,
+            stage_only: true,
+            needs_get: false,
+            last_dispatch: None,
+            message: None,
+        }
+    }
 }
 
 struct ActiveEdit {
@@ -58,13 +70,15 @@ enum Action {
     Controls,
     Send,
     ResendWholeTone,
+    Recall(Location),
     Undo,
 }
 
 impl Action {
     fn label(self) -> &'static str {
         match self {
-            Self::Get => "Get edit buffer",
+            Self::Get => "Refresh current tone",
+            Self::Recall(_) => "Select channel",
             Self::Controls => "Apply live controls",
             Self::Send => "Send edit buffer",
             Self::ResendWholeTone => "Resend whole current tone",
@@ -99,14 +113,20 @@ impl GatePolicy for EditPolicy {
             | Operation::PodxtGlobalRead
             | Operation::PodxtPackQuery => !hardware_gates::is_locked(Gate::CurrentSettingsRead),
             Operation::PodxtLibraryRead => {
-                self.0 == Action::ResendWholeTone
+                matches!(self.0, Action::ResendWholeTone | Action::Recall(_))
                     && !hardware_gates::is_locked(Gate::FullBackupRead)
             }
+            Operation::PodxtChannelSwitch => {
+                matches!(self.0, Action::Recall(_))
+                    && !hardware_gates::is_locked(Gate::DeviceCheckChannel)
+            }
             Operation::PodxtEditBufferWrite | Operation::PodxtAdditionalEditBufferWrite => {
-                self.0 != Action::Get && !hardware_gates::is_locked(Gate::EditBufferWrite)
+                !matches!(self.0, Action::Get | Action::Recall(_))
+                    && !hardware_gates::is_locked(Gate::EditBufferWrite)
             }
             Operation::PodxtKeepEditBufferChanges => {
-                self.0 != Action::Get && !hardware_gates::is_locked(Gate::KeepLiveEdit)
+                !matches!(self.0, Action::Get | Action::Recall(_))
+                    && !hardware_gates::is_locked(Gate::KeepLiveEdit)
             }
             _ => false,
         }
@@ -133,6 +153,9 @@ fn edit_transaction<G, L: Link>(
         with_session(stopped, lock, open, &EditPolicy(job.action), |session| {
             let edit = match job.action {
                 Action::Get => return podxt::get_editor_buffer(session, stopped),
+                Action::Recall(slot) => {
+                    return podxt::recall_editor_channel(session, slot, stopped);
+                }
                 Action::ResendWholeTone => {
                     return podxt::send_whole_tone(
                         session,
@@ -156,10 +179,12 @@ fn edit_transaction<G, L: Link>(
             )
         })
     };
-    if job.action == Action::Get {
-        run()
-    } else {
-        hardware_gates::run_if_unlocked(Gate::EditBufferWrite, || {
+    match job.action {
+        Action::Get => run(),
+        Action::Recall(_) => hardware_gates::run_if_unlocked(Gate::DeviceCheckChannel, || {
+            hardware_gates::run_if_unlocked(Gate::FullBackupRead, run)
+        }),
+        _ => hardware_gates::run_if_unlocked(Gate::EditBufferWrite, || {
             hardware_gates::run_if_unlocked(Gate::KeepLiveEdit, || {
                 if job.action == Action::ResendWholeTone {
                     hardware_gates::run_if_unlocked(Gate::FullBackupRead, run)
@@ -167,7 +192,7 @@ fn edit_transaction<G, L: Link>(
                     run()
                 }
             })
-        })
+        }),
     }
 }
 
@@ -237,9 +262,17 @@ impl LiveEditor {
                 || WHOLE_TONE_SEND_APPROVED && !hardware_gates::is_locked(Gate::FullBackupRead))
             && !hardware_gates::is_locked(Gate::OsDiscovery)
             && !hardware_gates::is_locked(Gate::CurrentSettingsRead)
-            && (action == Action::Get
-                || !hardware_gates::is_locked(Gate::EditBufferWrite)
-                    && !hardware_gates::is_locked(Gate::KeepLiveEdit))
+            && match action {
+                Action::Get => true,
+                Action::Recall(_) => {
+                    !hardware_gates::is_locked(Gate::DeviceCheckChannel)
+                        && !hardware_gates::is_locked(Gate::FullBackupRead)
+                }
+                _ => {
+                    !hardware_gates::is_locked(Gate::EditBufferWrite)
+                        && !hardware_gates::is_locked(Gate::KeepLiveEdit)
+                }
+            }
     }
 
     fn start(&mut self, action: Action, device: &detection::DeviceKey, ctx: &egui::Context) {
@@ -252,12 +285,12 @@ impl LiveEditor {
         }
         let targets = match action {
             Action::Send | Action::Controls => std::mem::take(&mut self.pending.0),
-            Action::Get | Action::Undo | Action::ResendWholeTone => {
+            Action::Get | Action::Undo | Action::ResendWholeTone | Action::Recall(_) => {
                 self.pending.0.clear();
                 Vec::new()
             }
         };
-        if action == Action::Get {
+        if matches!(action, Action::Get | Action::Recall(_)) {
             self.whole_tone_backup = None;
         }
         let job = Job {
@@ -324,6 +357,7 @@ impl LiveEditor {
                         format!("Edit buffer read from {}.", active.current.channel.label())
                     }
                     Action::Undo => "Original snapshot verified byte for byte.".into(),
+                    Action::Recall(slot) => format!("Playing {}.", slot.label()),
                     Action::Send => "Edit buffer sent and read back.".into(),
                     Action::ResendWholeTone => "Whole tone sent and read back.".into(),
                     Action::Controls => "Live edit read back.".into(),
@@ -383,6 +417,173 @@ impl LiveEditor {
         None
     }
 
+    pub(super) fn get(&mut self, device: &detection::DeviceKey, ctx: &egui::Context) {
+        self.start(Action::Get, device, ctx);
+    }
+
+    pub(super) fn recall(
+        &mut self,
+        slot: Location,
+        device: &detection::DeviceKey,
+        ctx: &egui::Context,
+    ) {
+        if self.pending.0.is_empty() {
+            self.start(Action::Recall(slot), device, ctx);
+        } else {
+            self.message = Some(Err(
+                "Send or clear staged edits before selecting another channel.".into(),
+            ));
+        }
+    }
+
+    pub(super) fn set_live(&mut self, on: bool) {
+        self.stage_only = !on;
+    }
+
+    pub(super) fn begin_live(&mut self, device: &detection::DeviceKey, ctx: &egui::Context) {
+        self.detach();
+        self.set_live(true);
+        self.get(device, ctx);
+    }
+
+    pub(super) fn can_change(&self, control: LiveControl, block: &str) -> bool {
+        let Some(active) = &self.session else {
+            return false;
+        };
+        if !self.stage_editable() {
+            return false;
+        }
+        let targets = self
+            .worker
+            .as_ref()
+            .map_or(&[][..], |worker| worker.targets.as_slice());
+        let value = |control: LiveControl| {
+            self.pending
+                .overlay(targets, control, control.read(&active.current.tone))
+        };
+        let note = match control {
+            LiveControl::Additional(Setting::ModSpeed) => Some(Setting::ModNote),
+            LiveControl::Additional(Setting::DelayTime) => Some(Setting::DelayNote),
+            _ => None,
+        };
+        if note.is_some_and(|note| value(LiveControl::Additional(note)) != 0) {
+            return false;
+        }
+        if let LiveControl::Additional(setting) = control
+            && setting.model_list().is_some()
+        {
+            return setting
+                .model_list()
+                .and_then(|models| models.get(usize::from(control.read(&active.current.tone))))
+                .is_some_and(|&id| {
+                    podxt::models::required_pack(id)
+                        .is_none_or(|mask| active.current.packs.0 & mask != 0)
+                });
+        }
+        let model = match block {
+            "amp" => Some(Setting::AmpModel),
+            "stomp" => Some(Setting::StompModel),
+            "mod" => Some(Setting::ModModel),
+            "delay" => Some(Setting::DelayModel),
+            "reverb" => Some(Setting::ReverbModel),
+            "wah" => Some(Setting::WahModel),
+            _ => None,
+        };
+        model
+            .map(LiveControl::Additional)
+            .is_none_or(|model| value(model) == model.read(&active.current.tone))
+    }
+
+    pub(super) fn stage_editable(&self) -> bool {
+        self.session.is_some()
+            && !self.needs_get
+            && Self::admitted(Action::Controls)
+            && self
+                .worker
+                .as_ref()
+                .is_none_or(|worker| worker.action == Action::Controls)
+    }
+
+    pub(super) fn queue_stage_target(&mut self, target: LiveTarget, ctx: &egui::Context) {
+        if self.stage_editable() {
+            self.pending.set(target);
+            ctx.request_repaint();
+        }
+    }
+
+    pub(super) fn stage_payload(&self, dump: &EditBuffer) -> Option<[u8; 160]> {
+        let mut payload = *podxt::TonePayload::from_dump(dump).ok()?.as_bytes();
+        let in_flight = self
+            .worker
+            .as_ref()
+            .map_or(&[][..], |worker| worker.targets.as_slice());
+        for &target in in_flight.iter().chain(&self.pending.0) {
+            let control = target.control();
+            let value = match target {
+                LiveTarget::Basic(_, Target::Value(value)) => u16::from(value.get()),
+                LiveTarget::Additional(_, value) => value,
+                _ => continue,
+            };
+            if let Some(low) = control.low_cc() {
+                payload[32 + usize::from(control.cc())] = (value >> 7) as u8;
+                payload[32 + usize::from(low)] = (value & 127) as u8;
+            } else {
+                payload[32 + usize::from(control.cc())] = value as u8;
+            }
+        }
+        Some(payload)
+    }
+
+    pub(super) fn has_pending(&self) -> bool {
+        !self.pending.0.is_empty()
+    }
+
+    pub(super) fn toolbar(
+        &mut self,
+        ui: &mut egui::Ui,
+        device: Option<&detection::DeviceKey>,
+        idle: bool,
+    ) {
+        let ready = idle
+            && device.is_some()
+            && self.worker.is_none()
+            && self.session.is_some()
+            && !self.needs_get;
+        for (action, title, enabled) in [
+            (Action::Send, "Send to POD", self.has_pending()),
+            (Action::Undo, "Undo live edits", !self.has_pending()),
+        ] {
+            if ui
+                .add_enabled(
+                    ready && enabled && Self::admitted(action),
+                    egui::Button::new(title),
+                )
+                .clicked()
+                && let Some(device) = device
+            {
+                self.start(action, device, ui.ctx());
+            }
+        }
+        if self.stage_only && self.has_pending() && ui.button("Clear staged edits").clicked() {
+            self.pending.0.clear();
+        }
+    }
+
+    pub(super) fn status(&self, ui: &mut egui::Ui) {
+        if let Some(worker) = &self.worker {
+            ui.weak(format!("{}…", worker.action.label()));
+        } else if let Some(message) = &self.message {
+            match message {
+                Ok(text) => {
+                    ui.weak(text);
+                }
+                Err(error) => {
+                    ui.colored_label(Color32::LIGHT_RED, error);
+                }
+            }
+        }
+    }
+
     pub(super) fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -396,16 +597,14 @@ impl LiveEditor {
         let idle = device.is_some() && read_idle && self.worker.is_none();
         let mut action = None;
         ui.horizontal_wrapped(|ui| {
-            for candidate in [Action::Get, Action::Send, Action::Undo] {
-                let enabled = idle
-                    && Self::admitted(candidate)
-                    && (candidate == Action::Get || snapshot && !self.needs_get);
-                if ui
-                    .add_enabled(enabled, egui::Button::new(candidate.label()))
-                    .clicked()
-                {
-                    action = Some(candidate);
-                }
+            if ui
+                .add_enabled(
+                    idle && Self::admitted(Action::Get),
+                    egui::Button::new(Action::Get.label()),
+                )
+                .clicked()
+            {
+                action = Some(Action::Get);
             }
             if snapshot
                 && ui
@@ -506,235 +705,7 @@ impl LiveEditor {
             active.original.channel.label(),
             active.original.tone.name()
         ));
-        let editing = device.is_some()
-            && read_idle
-            && !self.needs_get
-            && Self::admitted(Action::Controls)
-            && self
-                .worker
-                .as_ref()
-                .is_none_or(|worker| worker.action == Action::Controls);
-        if !Self::admitted(Action::Controls) && device.is_some() {
-            ui.weak("Live writes are unavailable in this build.");
-        }
-        ui.add_enabled(
-            idle && editing && self.pending.0.is_empty(),
-            egui::Checkbox::new(&mut self.stage_only, "Stage changes for Send edit buffer"),
-        );
-        if self.stage_only && !self.pending.0.is_empty() {
-            ui.label(format!("{} staged controls", self.pending.0.len()));
-            if ui
-                .add_enabled(idle, egui::Button::new("Clear staged changes"))
-                .clicked()
-            {
-                self.pending.0.clear();
-            }
-        }
-        let in_flight = self
-            .worker
-            .as_ref()
-            .filter(|worker| worker.action == Action::Controls)
-            .map_or(&[][..], |worker| worker.targets.as_slice());
-        ui.add_enabled_ui(editing, |ui| {
-            show_controls(ui, &active.current, &mut self.pending, in_flight);
-        });
     }
-}
-
-fn show_controls(
-    ui: &mut egui::Ui,
-    buffer: &EditorBuffer,
-    pending: &mut Pending,
-    in_flight: &[LiveTarget],
-) {
-    use variax_workbench::pod_preset::pod_parameter_table;
-
-    let model = |block: &str| -> Option<u32> {
-        let setting = match block {
-            "stomp" => Setting::StompModel,
-            "mod" => Setting::ModModel,
-            "delay" => Setting::DelayModel,
-            "reverb" => Setting::ReverbModel,
-            _ => return None,
-        };
-        // The instrument's readback defines the layout until the selector
-        // is received. Staged model changes won't relabel the old knobs.
-        let index = LiveControl::Additional(setting).read(&buffer.tone);
-        setting.model_list()?.get(usize::from(index)).copied()
-    };
-    let table = pod_parameter_table();
-    let controls: Vec<_> = Control::ALL
-        .into_iter()
-        .map(LiveControl::Basic)
-        .chain(Setting::ALL.into_iter().map(LiveControl::Additional))
-        .filter_map(|control| Some((control, table.wire_label(control.cc(), model)?)))
-        .collect();
-    for (block, title) in super::super::parameter_panel::GROUPS {
-        if !controls.iter().any(|(_, label)| label.block == block) {
-            continue;
-        }
-        ui.collapsing(title, |ui| {
-            for (control, label) in controls.iter().filter(|(_, label)| label.block == block) {
-                let value = |control: LiveControl| {
-                    pending.overlay(in_flight, control, control.read(&buffer.tone))
-                };
-                let current = value(*control);
-                let model_change_pending = controls.iter().any(|(other, other_label)| {
-                    other_label.block == block
-                        && matches!(other, LiveControl::Additional(setting) if setting.model_list().is_some())
-                        && value(*other) != other.read(&buffer.tone)
-                });
-                let model_control = matches!(control, LiveControl::Additional(setting) if setting.model_list().is_some());
-                let manual_disabled = match control {
-                    LiveControl::Additional(Setting::ModSpeed) => value(LiveControl::Additional(Setting::ModNote)) != 0,
-                    LiveControl::Additional(Setting::DelayTime) => value(LiveControl::Additional(Setting::DelayNote)) != 0,
-                    _ => false,
-                };
-                let changed = ui.push_id(control.cc(), |ui| {
-                    ui.add_enabled_ui(!manual_disabled && (!model_change_pending || model_control), |ui| {
-                        input(ui, *control, label, current, control.read(&buffer.tone), buffer.packs)
-                    }).inner
-                }).inner;
-                if let Some(target) = changed {
-                    pending.set(target);
-                    ui.ctx().request_repaint();
-                }
-            }
-        });
-    }
-}
-
-fn input(
-    ui: &mut egui::Ui,
-    control: LiveControl,
-    label: &variax_workbench::pod_preset::PodWireLabel<'_>,
-    mut value: u16,
-    device_value: u16,
-    packs: Packs,
-) -> Option<LiveTarget> {
-    let old = value;
-    if let LiveControl::Additional(setting) = control
-        && let Some(models) = setting.model_list()
-    {
-        let name = |index: u16| {
-            models
-                .get(usize::from(index))
-                .and_then(|&id| podxt::models::name(id))
-                .unwrap_or("Unknown model")
-        };
-        let available =
-            |id| podxt::models::required_pack(id).is_none_or(|mask| packs.0 & mask != 0);
-        let starting_model_available = models
-            .get(usize::from(device_value))
-            .is_some_and(|&id| available(id));
-        ui.add_enabled_ui(starting_model_available, |ui| {
-            egui::ComboBox::from_label(label.label)
-                .selected_text(name(value))
-                .show_ui(ui, |ui| {
-                    for (index, _) in models.iter().enumerate().filter(|&(_, &id)| available(id)) {
-                        let index = index as u16;
-                        ui.selectable_value(&mut value, index, name(index));
-                    }
-                });
-        })
-        .response
-        .on_disabled_hover_text(
-            "The starting model is unavailable for undo with the installed packs.",
-        );
-    } else {
-        let choices: Vec<_> = match control {
-            LiveControl::Additional(Setting::PedalAssign) => label
-                .choices()
-                .filter_map(|(index, label)| Some((*[0, 64, 127].get(index as usize)?, label)))
-                .collect(),
-            LiveControl::Additional(Setting::TweakParam) => Vec::new(),
-            _ => label
-                .choices()
-                .filter_map(|(index, label)| Some((u16::try_from(index).ok()?, label)))
-                .collect(),
-        };
-        if !choices.is_empty() {
-            let expected = |index: u16| match control {
-                LiveControl::Basic(control) if control.is_switch() => {
-                    u16::from(control.switch_value(index != 0))
-                }
-                _ => index,
-            };
-            let selected = choices
-                .iter()
-                .find(|&&(index, _)| match control {
-                    LiveControl::Basic(control) if control.is_switch() => {
-                        control.is_on(value as u8) == (index != 0)
-                    }
-                    _ => value == expected(index),
-                })
-                .map_or_else(|| control.describe(value), |&(_, label)| label.to_owned());
-            egui::ComboBox::from_label(label.label)
-                .selected_text(selected)
-                .show_ui(ui, |ui| {
-                    for (index, label) in choices {
-                        ui.selectable_value(&mut value, expected(index), label);
-                    }
-                });
-        } else {
-            match control {
-                LiveControl::Basic(control) if control.is_switch() => {
-                    let mut on = control.is_on(value as u8);
-                    if ui.checkbox(&mut on, label.label).changed() {
-                        value = u16::from(control.switch_value(on));
-                    }
-                }
-                LiveControl::Additional(Setting::Tempo) => {
-                    let mut bpm = f64::from(value) / 10.0;
-                    if ui
-                        .add(
-                            egui::Slider::new(&mut bpm, 30.0..=240.0)
-                                .fixed_decimals(1)
-                                .suffix(" BPM")
-                                .text(label.label),
-                        )
-                        .changed()
-                    {
-                        value = (bpm * 10.0).round() as u16;
-                    }
-                }
-                LiveControl::Additional(Setting::GateThreshold) => {
-                    let mut db = -(i32::from(value));
-                    if ui
-                        .add(
-                            egui::Slider::new(&mut db, -96..=0)
-                                .suffix(" dB")
-                                .text(label.label),
-                        )
-                        .changed()
-                    {
-                        value = (-db) as u16;
-                    }
-                }
-                _ => {
-                    let max = match control {
-                        LiveControl::Additional(Setting::ModSpeed | Setting::DelayTime) => 16383,
-                        LiveControl::Additional(Setting::TweakParam) => 13,
-                        _ => 127,
-                    };
-                    let mut slider = egui::Slider::new(&mut value, 0..=max)
-                        .clamping(egui::SliderClamping::Edits)
-                        .text(label.label);
-                    if max == 16383 {
-                        slider = slider.suffix(" raw");
-                    }
-                    ui.add(slider);
-                }
-            }
-        }
-    }
-    (value != old).then(|| match control {
-        LiveControl::Basic(control) => LiveTarget::Basic(
-            control,
-            Target::Value(Value::new(value as u8).expect("7-bit input")),
-        ),
-        LiveControl::Additional(setting) => LiveTarget::Additional(setting, value),
-    })
 }
 
 #[cfg(test)]

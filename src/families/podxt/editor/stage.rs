@@ -1,4 +1,6 @@
 use super::*;
+use line6_devices::backup::LoadedPodxt;
+use line6_devices::family::podxt::{BankKind, EditBuffer, Location, TonePayload};
 use pod_preset::{
     ContainerKind, PodControl, PodModelChange, PodTone, UnknownPodDefaults, pod_parameter_table,
 };
@@ -119,17 +121,50 @@ impl Block {
     }
 }
 
+const CURRENT_STAGE: usize = usize::MAX;
+
+#[derive(Clone, Copy, Default)]
+enum StageSource {
+    #[default]
+    File,
+    Default,
+    Backup(Option<Location>),
+    DeviceCopy(Location),
+}
+
+fn decode_tone(dump: &EditBuffer, kind: BankKind) -> Option<PodTone> {
+    let kind = match kind {
+        BankKind::Tones => ContainerKind::L6pa,
+        BankKind::AmpSetups => ContainerKind::L6as,
+        BankKind::FxSetups => ContainerKind::L6fs,
+    };
+    PodTone::from_podxt_payload(TonePayload::from_dump(dump).ok()?.as_bytes(), kind).ok()
+}
+
 #[derive(Default)]
 pub(super) struct Stage {
     block: Block,
     connection: Option<(tabs::Connection, detection::DeviceSupport)>,
     art: HashMap<&'static str, assets::UiImage>,
     tap: Option<(usize, Instant)>,
+    preferences: Option<PathBuf>,
+    backup: Option<LoadedPodxt>,
+    source: StageSource,
+    bank: usize,
+    #[cfg(feature = "usb")]
+    pub(super) view_current: bool,
+    #[cfg(feature = "usb")]
+    library_highlight: Option<Location>,
 }
 
 impl Stage {
     pub(super) fn observe(&mut self, device: Option<&tabs::DeviceTab>) {
-        self.connection = device.map(|tab| (tab.connection, tab.device.support.clone()));
+        let connection = device.map(|tab| (tab.connection, tab.device.support.clone()));
+        #[cfg(feature = "usb")]
+        if connection != self.connection {
+            self.library_highlight = None;
+        }
+        self.connection = connection;
     }
 }
 
@@ -173,7 +208,57 @@ fn label_for_slot(kind: ContainerKind, preset: usize, collection: bool) -> Strin
 }
 
 impl PodxtEditor {
+    pub(super) fn initialize_stage(&mut self, preferences: Option<PathBuf>) {
+        self.stage.backup = preferences
+            .as_deref()
+            .and_then(pod_preset::latest_podxt_backup);
+        self.stage.preferences = preferences;
+    }
+
+    fn open_fallback_tone(&mut self) {
+        let from_backup = self.stage.backup.as_ref().and_then(|backup| {
+            let last = backup
+                .after
+                .as_ref()
+                .or(backup.before.as_ref())
+                .or_else(|| backup.entries.first().map(|entry| &entry.tone))?;
+            decode_tone(last, BankKind::Tones)
+        });
+        let (tone, source) = if let Some(tone) = from_backup {
+            (tone, StageSource::Backup(None))
+        } else {
+            (
+                PodTone::new_podxt_tone("Default Tone").expect("valid PODxt default"),
+                StageSource::Default,
+            )
+        };
+        self.open_stage_copy(tone, source);
+        self.pod_message.clear();
+    }
+
+    fn open_stage_copy(&mut self, tone: PodTone, source: StageSource) {
+        if self.pod_bundle.is_some() && self.pod_dirty() {
+            self.pod_message = "Save or discard bank edits before opening another tone.".into();
+            return;
+        }
+        self.import_individual_pod_tone(tone.into_bytes());
+        self.stage.source = source;
+        #[cfg(feature = "usb")]
+        {
+            self.stage.view_current = false;
+        }
+    }
+
     pub(super) fn show_stage(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
+        if self.pod_library.is_empty() && self.pod_bundle.is_none() {
+            #[cfg(feature = "usb")]
+            let view_current = self.stage.view_current;
+            self.open_fallback_tone();
+            #[cfg(feature = "usb")]
+            {
+                self.stage.view_current = view_current;
+            }
+        }
         #[cfg(test)]
         {
             self.pod_buttons.clear();
@@ -182,21 +267,29 @@ impl PodxtEditor {
         ui.scope(|ui| {
             ui.set_style(theme::style());
             self.stage_toolbar(ui, services);
-            self.stage_header(ui);
             let selected = self.pod_selected.and_then(|index| {
                 self.pod_library
                     .tone(index)
                     .cloned()
-                    .map(|tone| (index, tone))
+                    .map(|tone| (index, tone, self.parameter_panel.packs))
             });
-            if let Some((index, tone)) = selected {
-                let rows = tone.table_controls(self.parameter_panel.packs);
+            #[cfg(feature = "usb")]
+            let selected = self
+                .stage
+                .view_current
+                .then(|| self.live.stage_tone())
+                .flatten()
+                .map(|(tone, packs)| (CURRENT_STAGE, tone, packs))
+                .or(selected);
+            if let Some((index, tone, packs)) = selected {
+                self.stage_header(ui, index, &tone);
+                let rows = tone.table_controls(packs);
                 self.stage_chain(ui, index, &rows);
                 ui.add_space(theme::SPACE_8);
                 ui.horizontal_top(|ui| {
                     ui.vertical(|ui| {
                         ui.set_width(185.0);
-                        self.stage_library(ui);
+                        self.stage_side_library(ui, index == CURRENT_STAGE);
                     });
                     ui.vertical(|ui| {
                         ui.set_min_width(ui.available_width());
@@ -232,14 +325,48 @@ impl PodxtEditor {
                     |editor, path, _| {
                         if let Some(path) = path {
                             editor.open_stage_file(&path);
+                            editor.show_file_stage();
                         }
                     },
                 );
             }
             ui.menu_button("File actions", |ui| {
+                if ui.button("Open file editor").clicked() {
+                    self.show_file_stage();
+                    ui.close();
+                }
+                if ui.button("Use library backup…").clicked() {
+                    services.request_picker::<Self>(
+                        ui.ctx(),
+                        PickRequest::Folder,
+                        |editor, path, _| {
+                            let Some(path) = path else {
+                                return;
+                            };
+                            match pod_preset::load_complete_podxt_backup(&path) {
+                                Ok(backup) => {
+                                    editor.stage.backup = Some(backup);
+                                    if let Some(preferences) = &editor.stage.preferences
+                                        && let Err(error) =
+                                            pod_preset::remember_podxt_backup(preferences, &path)
+                                    {
+                                        editor.pod_message = error;
+                                        return;
+                                    }
+                                    if !editor.pod_dirty() {
+                                        editor.open_fallback_tone();
+                                    }
+                                }
+                                Err(error) => editor.pod_message = error,
+                            }
+                        },
+                    );
+                    ui.close();
+                }
                 self.show_new_documents(ui, services);
                 if let Some(sample) = self.practice_tone_menu(ui) {
                     self.import_pod_document(sample.bytes());
+                    self.show_file_stage();
                     ui.close();
                 }
                 if self.pod_button_enabled(
@@ -257,11 +384,12 @@ impl PodxtEditor {
                     ui.close();
                 }
             });
+            let file_actions = !self.stage_is_current();
             if self.pod_button_enabled(
                 ui,
                 "pod-undo",
                 "Undo",
-                !self.parameter_panel.undo.is_empty(),
+                file_actions && !self.parameter_panel.undo.is_empty(),
             ) {
                 self.table_history(false);
             }
@@ -269,14 +397,35 @@ impl PodxtEditor {
                 ui,
                 "pod-redo",
                 "Redo",
-                !self.parameter_panel.redo.is_empty(),
+                file_actions && !self.parameter_panel.redo.is_empty(),
             ) {
                 self.table_history(true);
             }
+            #[cfg(feature = "usb")]
+            self.live.toolbar(ui, &mut self.stage.view_current);
+            #[cfg(feature = "usb")]
+            self.live.stage_status(ui);
         });
     }
 
-    fn stage_header(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn show_file_stage(&mut self) {
+        self.stage.source = StageSource::File;
+        #[cfg(feature = "usb")]
+        {
+            self.stage.view_current = false;
+        }
+    }
+
+    fn stage_is_current(&self) -> bool {
+        #[cfg(feature = "usb")]
+        {
+            self.stage.view_current && self.live.has_current()
+        }
+        #[cfg(not(feature = "usb"))]
+        false
+    }
+
+    fn stage_header(&mut self, ui: &mut egui::Ui, index: usize, tone: &PodTone) {
         ui.horizontal_wrapped(|ui| {
             match &self.stage.connection {
                 None => {
@@ -303,12 +452,36 @@ impl PodxtEditor {
                     chrome::status_chip(ui, chrome::LinkState::IdentityPending);
                 }
             }
-            controls::readout(ui, "File editor · nothing is sent");
+            let source = if index == CURRENT_STAGE {
+                #[cfg(feature = "usb")]
+                if self.live.live_editing {
+                    "Live editing · edit buffer"
+                } else {
+                    "Current tone · Send applies staged edits"
+                }
+                #[cfg(not(feature = "usb"))]
+                "Current tone"
+            } else {
+                match self.stage.source {
+                    StageSource::File => "File editor · nothing is sent",
+                    StageSource::Default => "Default tone · offline",
+                    StageSource::Backup(_) => "Library backup · offline",
+                    StageSource::DeviceCopy(_) => "Device library copy · file only",
+                }
+            };
+            controls::readout(ui, source);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 controls::readout(ui, "No live audio");
             });
         });
-        if let Some(tone) = self.pod_selected.and_then(|i| self.pod_library.tone(i)) {
+        if index == CURRENT_STAGE {
+            ui.horizontal_wrapped(|ui| {
+                ui.strong(tone.name());
+                if ui.button("Edit a file copy").clicked() {
+                    self.open_stage_copy(tone.clone(), StageSource::File);
+                }
+            });
+        } else {
             let name_changed = self.pod_name != tone.name();
             let kind = tone.container();
             let context = self
@@ -322,7 +495,12 @@ impl PodxtEditor {
                         label_for_slot(kind, slot, bundle.membership_editable(bank))
                     ))
                 })
-                .unwrap_or_else(|| "No channel · file only".into());
+                .unwrap_or_else(|| match self.stage.source {
+                    StageSource::Backup(Some(slot)) | StageSource::DeviceCopy(slot) => {
+                        slot.slot_name()
+                    }
+                    _ => "No channel · file only".into(),
+                });
             ui.horizontal_wrapped(|ui| {
                 ui.strong("Tone");
                 let response =
@@ -339,6 +517,113 @@ impl PodxtEditor {
             });
         }
         ui.add_space(theme::SPACE_8);
+    }
+
+    fn stage_side_library(&mut self, ui: &mut egui::Ui, current: bool) {
+        let bank = BankKind::ALL[self.stage.bank];
+        let mut rows = Vec::new();
+        #[cfg(feature = "usb")]
+        let on_device = self.live.connected() && self.live.has_library_bank(bank);
+        #[cfg(not(feature = "usb"))]
+        let on_device = false;
+
+        for slot in Location::all(&[bank]) {
+            #[cfg(feature = "usb")]
+            let device = self.live.stored_tone(slot).filter(|_| on_device);
+            #[cfg(not(feature = "usb"))]
+            let device: Option<&EditBuffer> = None;
+            let backup = self
+                .stage
+                .backup
+                .as_ref()
+                .filter(|_| !on_device)
+                .and_then(|backup| {
+                    backup
+                        .entries
+                        .iter()
+                        .find(|entry| entry.location == slot)
+                        .map(|entry| &entry.tone)
+                });
+            if let Some(dump) = device.or(backup) {
+                rows.push((slot, dump.clone()));
+            }
+        }
+        #[cfg(feature = "usb")]
+        let can_show_current = self.live.connected() && self.live.has_current();
+        #[cfg(not(feature = "usb"))]
+        let can_show_current = false;
+        if rows.is_empty() && self.stage.backup.is_none() && !on_device && !can_show_current {
+            self.stage_library(ui);
+            return;
+        }
+        chrome::section_panel(ui, "Library", |ui| {
+            ui.set_min_width(153.0);
+            ui.set_max_width(185.0);
+            if can_show_current && ui.selectable_label(current, "Current POD tone").clicked() {
+                #[cfg(feature = "usb")]
+                {
+                    self.stage.view_current = true;
+                }
+            }
+            ui.weak(if on_device {
+                "On PODxt Live"
+            } else if self.stage.backup.is_some() {
+                "Library backup"
+            } else {
+                "Reading PODxt library"
+            });
+            egui::ComboBox::from_id_salt("stage-saved-bank")
+                .selected_text(bank.name())
+                .show_ui(ui, |ui| {
+                    for (index, kind) in BankKind::ALL.into_iter().enumerate() {
+                        ui.selectable_value(&mut self.stage.bank, index, kind.name());
+                    }
+                });
+            let mut selected = None;
+            egui::ScrollArea::vertical().id_salt("saved-tones").max_height(330.0).show(ui, |ui| {
+                for (slot, dump) in &rows {
+                    #[cfg(feature = "usb")]
+                    let playing = current && self.live.playing_channel() == Some(*slot);
+                    #[cfg(not(feature = "usb"))]
+                    let playing = false;
+                    let browsing = matches!(
+                        self.stage.source, StageSource::Backup(Some(ch)) | StageSource::DeviceCopy(ch) if ch == *slot
+                    ) && !current;
+                    let response = ui.add(
+                        egui::Button::selectable(playing || browsing, format!("{}  {}", slot.slot_name(), dump.name())).truncate()
+                    );
+                    #[cfg(feature = "usb")]
+                    if playing && self.stage.library_highlight != Some(*slot) {
+                        response.scroll_to_me(Some(egui::Align::Center));
+                        self.stage.library_highlight = Some(*slot);
+                    }
+                    if response.clicked() {
+                        selected = Some((*slot, dump));
+                    }
+                }
+            });
+            if let Some((slot, dump)) = selected {
+                #[cfg(feature = "usb")]
+                if on_device && self.live.live_editing && slot.kind() == BankKind::Tones {
+                    self.live.recall(slot, ui.ctx());
+                    self.stage.view_current = true;
+                    return;
+                }
+                if let Some(tone) = decode_tone(dump, slot.kind()) {
+                    self.open_stage_copy(
+                        tone,
+                        if on_device {
+                            StageSource::DeviceCopy(slot)
+                        } else {
+                            StageSource::Backup(Some(slot))
+                        },
+                    );
+                }
+            }
+            if !current && self.pod_library.len() > 1 {
+                ui.collapsing("Open files", |ui| self.stage_library(ui));
+            }
+        });
     }
 
     fn stage_library(&mut self, ui: &mut egui::Ui) {
@@ -522,7 +807,10 @@ impl PodxtEditor {
                 .route()
                 .and_then(|key| get(rows, key))
                 .filter(|row| row.bits.is_some());
-            let interaction = tile.show(ui, bounds, enable.is_some(), route.is_some());
+            let can_edit = |row: Option<&PodControl<'_>>| {
+                row.is_some_and(|row| self.stage_control_enabled(index, row))
+            };
+            let interaction = tile.show(ui, bounds, can_edit(enable), can_edit(route));
             #[cfg(test)]
             self.pod_buttons
                 .insert(block.test_id(), interaction.select.rect);
@@ -532,12 +820,12 @@ impl PodxtEditor {
             if interaction.toggle
                 && let Some(row) = enable
             {
-                self.edit_stage_value(index, row, u32::from(!on));
+                self.edit_stage_value_with_ui(ui, index, row, u32::from(!on));
             }
             if interaction.reorder
                 && let Some(row) = route
             {
-                self.edit_stage_value(index, row, u32::from(is_pre(block)));
+                self.edit_stage_value_with_ui(ui, index, row, u32::from(is_pre(block)));
             }
         }
     }
@@ -655,7 +943,7 @@ impl PodxtEditor {
         if chrome::toolbar_button(
             ui,
             "Reset EQ",
-            tone.podxt_eq_reset_context().is_ok(),
+            index != CURRENT_STAGE && tone.podxt_eq_reset_context().is_ok(),
             "The stored EQ is unavailable.",
         )
         .clicked()
@@ -666,6 +954,24 @@ impl PodxtEditor {
         {
             self.pod_message = error.detail();
         }
+    }
+
+    fn edit_stage_value_with_ui(
+        &mut self,
+        ui: &egui::Ui,
+        index: usize,
+        row: &PodControl<'_>,
+        bits: u32,
+    ) {
+        if index == CURRENT_STAGE {
+            #[cfg(feature = "usb")]
+            if let Some(target) = row.live_target(bits) {
+                self.live.queue_stage_target(target, ui.ctx());
+            }
+            return;
+        }
+        let _ = ui;
+        self.edit_stage_value(index, row, bits);
     }
 
     fn edit_stage_value(&mut self, index: usize, row: &PodControl<'_>, bits: u32) {
@@ -691,6 +997,19 @@ impl PodxtEditor {
         }
     }
 
+    fn stage_control_enabled(&self, index: usize, _row: &PodControl<'_>) -> bool {
+        if index != CURRENT_STAGE {
+            return true;
+        }
+        #[cfg(feature = "usb")]
+        {
+            _row.live_control()
+                .is_some_and(|control| self.live.can_change_control(control, &_row.parameter.block))
+        }
+        #[cfg(not(feature = "usb"))]
+        false
+    }
+
     fn stage_control(&mut self, ui: &mut egui::Ui, index: usize, row: &PodControl<'_>) {
         let selector = row.parameter.selector.expect("editable table control");
         let label = match row.parameter.key.as_str() {
@@ -714,12 +1033,14 @@ impl PodxtEditor {
             .unknown
             .get(&index)
             .is_some_and(|rows| rows.contains(&selector));
+        let enabled = self.stage_control_enabled(index, row);
         let bits = ui
             .push_id((index, selector), |ui| {
                 ui.vertical(|ui| {
                     let bits = if !row.choices.is_empty() {
                         ui.label(label);
-                        stage_selector(ui, row)
+                        ui.add_enabled_ui(enabled, |ui| stage_selector(ui, row))
+                            .inner
                     } else if let (Some([min, max]), Some(format)) =
                         (row.display_range(), row.format)
                         && max > min
@@ -739,6 +1060,7 @@ impl PodxtEditor {
                             .range(min..=max)
                             .decimals(format.decimals.unwrap_or(0).max(0) as usize)
                             .suffix(suffix)
+                            .enabled(enabled)
                             .show(ui);
                         if output.response.dragged() || output.response.drag_started() {
                             self.parameter_panel.slider = Some((index, selector, current));
@@ -753,6 +1075,10 @@ impl PodxtEditor {
                         ui.label(label);
                         None
                     };
+                    #[cfg(feature = "usb")]
+                    if index == CURRENT_STAGE && row.live_control().is_none() {
+                        ui.small("File only");
+                    }
                     if unknown {
                         ui.small("default unknown");
                     } else if row.bits.is_none() && row.parameter.catalog.is_none() {
@@ -764,7 +1090,7 @@ impl PodxtEditor {
             })
             .inner;
         if let Some(bits) = bits {
-            self.edit_stage_value(index, row, bits);
+            self.edit_stage_value_with_ui(ui, index, row, bits);
         }
     }
 
@@ -780,8 +1106,8 @@ impl PodxtEditor {
                 if let Some(bpm) = value(row) {
                     controls::readout(ui, &format!("{bpm:.1} BPM"));
                 }
-                if chrome::toolbar_button(ui, "Tap", true, "")
-                    .on_hover_text("Set file tempo")
+                if chrome::toolbar_button(ui, "Tap", self.stage_control_enabled(index, row), "")
+                    .on_hover_text("Set tone tempo")
                     .clicked()
                 {
                     let now = Instant::now();
@@ -790,44 +1116,50 @@ impl PodxtEditor {
                         && let Some(bits) =
                             row.bits_from_display(60.0 / now.duration_since(prior).as_secs_f64())
                     {
-                        self.edit_stage_value(index, row, bits);
+                        self.edit_stage_value_with_ui(ui, index, row, bits);
                     }
                 }
             }
             controls::readout(ui, linked_label(rows));
             if let Some(row) = get(rows, "TWEAK_PARAM") {
                 ui.label("Tweak");
-                if let Some(bits) = stage_selector(ui, row) {
-                    self.edit_stage_value(index, row, bits);
+                let enabled = self.stage_control_enabled(index, row);
+                if let Some(bits) = ui
+                    .add_enabled_ui(enabled, |ui| stage_selector(ui, row))
+                    .inner
+                {
+                    self.edit_stage_value_with_ui(ui, index, row, bits);
                 }
             }
         });
         ui.collapsing("Tone settings", |ui| {
-            ui.horizontal_wrapped(|ui| {
-                let mut amp_defaults = !self.parameter_panel.keep_amp_settings;
-                if ui
-                    .checkbox(&mut amp_defaults, "Load amp defaults")
-                    .on_hover_text(
-                        "Shared controls keep their settings until defaults are available.",
-                    )
-                    .changed()
-                {
-                    self.parameter_panel.keep_amp_settings = !amp_defaults;
-                }
-                ui.menu_button("Model packs", |ui| {
-                    for (mask, name) in [
-                        (1, "Metal Shop"),
-                        (2, "Collector Classics"),
-                        (4, "FX Junkie"),
-                        (8, "Bass Expansion"),
-                    ] {
-                        let mut set = self.parameter_panel.packs & mask != 0;
-                        if ui.checkbox(&mut set, name).changed() {
-                            self.parameter_panel.packs ^= mask;
-                        }
+            if index != CURRENT_STAGE {
+                ui.horizontal_wrapped(|ui| {
+                    let mut amp_defaults = !self.parameter_panel.keep_amp_settings;
+                    if ui
+                        .checkbox(&mut amp_defaults, "Load amp defaults")
+                        .on_hover_text(
+                            "Shared controls keep their settings until defaults are available.",
+                        )
+                        .changed()
+                    {
+                        self.parameter_panel.keep_amp_settings = !amp_defaults;
                     }
+                    ui.menu_button("Model packs", |ui| {
+                        for (mask, name) in [
+                            (1, "Metal Shop"),
+                            (2, "Collector Classics"),
+                            (4, "FX Junkie"),
+                            (8, "Bass Expansion"),
+                        ] {
+                            let mut set = self.parameter_panel.packs & mask != 0;
+                            if ui.checkbox(&mut set, name).changed() {
+                                self.parameter_panel.packs ^= mask;
+                            }
+                        }
+                    });
                 });
-            });
+            }
             let family = get(rows, "VARIAX_FAMILY").and_then(|row| row.bits);
             ui.horizontal_wrapped(|ui| {
                 for row in rows.iter().filter(|row| {
@@ -843,7 +1175,9 @@ impl PodxtEditor {
                 }
             });
         });
-        self.metadata_panel(ui, index);
+        if index != CURRENT_STAGE {
+            self.metadata_panel(ui, index);
+        }
         ui.collapsing("Details", |ui| {
             if !self.pod_message.is_empty() { ui.label(&self.pod_message); }
             for line in tone.control_lines() { ui.small(line); }

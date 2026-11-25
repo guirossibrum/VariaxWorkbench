@@ -39,6 +39,52 @@ pub fn get_editor_buffer<L: Link>(
     })
 }
 
+/// Recall a stored channel after confirming the currently playing tone is
+/// unedited. This transaction writes a program change only.
+pub fn recall_editor_channel<L: Link>(
+    session: &mut Session<L>,
+    target: Location,
+    cancelled: impl Fn() -> bool,
+) -> Result<EditorBuffer, String> {
+    if target.kind() != BankKind::Tones || !session.allows(Operation::PodxtChannelSwitch) {
+        return Err("PODxt tone-channel recall is unavailable.".into());
+    }
+    open_editor(session, &cancelled)?;
+    let channel = playing_channel(session)?;
+    let before = editor_tone(session)?;
+    if channel == target {
+        return Ok(EditorBuffer {
+            channel,
+            tone: before,
+            packs: query_packs(session)?,
+        });
+    }
+    if !read_stored(session, channel)?.same_tone(&before) {
+        return Err(format!(
+            "The playing tone differs from saved channel {}. Nothing was switched.",
+            channel.label()
+        ));
+    }
+    let target_stored = read_stored(session, target)?;
+    let packs = query_packs(session)?;
+    check_channel(session, channel)?;
+    check_stop(&cancelled)?;
+    session.send(PodxtRequest::Program(target))?;
+    session.link.pause(CHANNEL_LOAD);
+    session.listen(Duration::from_millis(50))?;
+    let tone = read_after_write(session, target)?;
+    if !tone.same_tone(&target_stored) {
+        return Err(
+            "The selected channel differs from the saved tone. Refresh the current tone.".into(),
+        );
+    }
+    Ok(EditorBuffer {
+        channel: target,
+        tone,
+        packs,
+    })
+}
+
 pub fn edit_editor_buffer<L: Link>(
     session: &mut Session<L>,
     expected: &EditorBuffer,

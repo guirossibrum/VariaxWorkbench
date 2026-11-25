@@ -19,7 +19,9 @@ pub mod transport;
 mod live_edit;
 mod live_read;
 mod live_settings;
-pub use live_edit::{EditorBuffer, EditorEdit, edit_editor_buffer, get_editor_buffer};
+pub use live_edit::{
+    EditorBuffer, EditorEdit, edit_editor_buffer, get_editor_buffer, recall_editor_channel,
+};
 pub use live_read::{ReadCommand, ReadUpdate, read_live};
 pub use live_settings::{LiveControl, LiveTarget, Setting, SettingMessage};
 pub use store::{StoreControl, StoreResult, store_tone};

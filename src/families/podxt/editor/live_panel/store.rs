@@ -15,6 +15,13 @@ enum StoreStage {
     Sync,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum StoreView {
+    Original,
+    Current,
+    Sync,
+}
+
 impl StoreStage {
     fn original(bank: BankKind) -> Self {
         match bank {
@@ -160,6 +167,29 @@ impl StorePanel {
         Ok(())
     }
 
+    pub(super) fn prepare_current(
+        &mut self,
+        directory: &std::path::Path,
+        slot: Location,
+        tone: Option<&EditBuffer>,
+    ) {
+        self.clear_preparation();
+        let result = tone
+            .ok_or("Refresh the current tone before storing.".to_owned())
+            .and_then(podxt::TonePayload::from_dump)
+            .and_then(|tone| {
+                podxt::prepare_tone_store(directory, slot, StoreSource::Replacement(tone))
+            });
+        self.status = match result {
+            Ok(prepared) => {
+                // The existing replacement gate is required for current edits too.
+                self.prepared = Some((StoreStage::Sync, prepared));
+                None
+            }
+            Err(error) => Some(error),
+        };
+    }
+
     pub(super) fn detach(&mut self) {
         self.cancel();
         self.clear_preparation();
@@ -256,16 +286,16 @@ impl StorePanel {
         services: &mut EditorServices<'_>,
         device: Option<&detection::DeviceKey>,
         other_idle: bool,
-        sync: bool,
+        view: StoreView,
     ) {
         ui.collapsing(
-            if sync {
-                "Sync slot confirmation"
-            } else {
-                "Store original to slot"
+            match view {
+                StoreView::Original => "Store original to slot",
+                StoreView::Current => "Confirm Store to POD",
+                StoreView::Sync => "Sync slot confirmation",
             },
             |ui| {
-                let stage = if sync {
+                let stage = if view != StoreView::Original {
                     StoreStage::Sync
                 } else {
                     StoreStage::original(BankKind::ALL[self.bank])
@@ -276,7 +306,7 @@ impl StorePanel {
                     );
                 }
                 ui.add_enabled_ui(other_idle && !self.busy(), |ui| {
-                    if !sync {
+                    if view == StoreView::Original {
                         let old_bank = self.bank;
                         egui::ComboBox::from_label("Destination bank")
                             .selected_text(BankKind::ALL[self.bank].name())
@@ -352,10 +382,10 @@ impl StorePanel {
                         if ui
                             .add_enabled(
                                 confirmed && device.is_some(),
-                                egui::Button::new(if sync {
-                                    "Store selected slot"
-                                } else {
-                                    "Store original to slot"
+                                egui::Button::new(match view {
+                                    StoreView::Original => "Store original to slot",
+                                    StoreView::Current => "Store to POD",
+                                    StoreView::Sync => "Store selected slot",
                                 }),
                             )
                             .clicked()

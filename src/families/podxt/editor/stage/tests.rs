@@ -133,3 +133,23 @@ fn selected_editor_draws_amp_or_four_eq_bands() {
     assert_eq!(eq.lines().filter(|&label| label == "Gain").count(), 4);
     assert!(!eq.contains("Band 5") && !eq.contains("Amp model"));
 }
+
+#[cfg(feature = "usb")]
+#[test]
+fn stage_targets_use_verified_live_encoding_and_exclude_variax() {
+    use line6_devices::family::podxt::{LiveTarget, Setting};
+    let tone = PodTone::new_podxt_tone("Live encoding").unwrap();
+    let rows = tone.table_controls(0);
+    let delay = get(&rows, "DELAY_TIME").unwrap();
+    let bits = (1.75_f32 / 16383.0).to_bits();
+    assert_eq!(
+        delay.live_target(bits),
+        Some(LiveTarget::Additional(Setting::DelayTime, 2))
+    );
+    assert!(
+        get(&rows, "VARIAX_FAMILY")
+            .unwrap()
+            .live_target(1)
+            .is_none()
+    );
+}

@@ -38,6 +38,9 @@ pub struct PodParameter {
     applicable_amp_ids: Vec<u32>,
     pub variax_family: Option<u32>,
     tone_encoding: Option<String>,
+    #[cfg(feature = "usb")]
+    #[serde(default)]
+    live_cc: Vec<u8>,
     #[serde(default)]
     pub tone_offsets: Vec<usize>,
 }
@@ -238,6 +241,49 @@ impl PodControl<'_> {
             Some(definition) if definition.format == "HARMONY_1M335" => "Harmony 1m335",
             Some(definition) => &definition.label,
             None => &self.parameter.key,
+        }
+    }
+
+    #[cfg(feature = "usb")]
+    pub fn live_control(&self) -> Option<line6_devices::family::podxt::LiveControl> {
+        use line6_devices::family::podxt::{Control, LiveControl, Setting};
+        let cc = *self.parameter.live_cc.first()?;
+        if self.parameter.availability.as_deref() != Some("Live")
+            || self.parameter.tone_encoding.as_deref() == Some("constant-127")
+        {
+            return None;
+        }
+        Control::ALL
+            .into_iter()
+            .map(LiveControl::Basic)
+            .chain(Setting::ALL.into_iter().map(LiveControl::Additional))
+            .find(|control| control.cc() == cc)
+    }
+
+    #[cfg(feature = "usb")]
+    pub fn live_target(&self, bits: u32) -> Option<line6_devices::family::podxt::LiveTarget> {
+        use line6_devices::family::podxt::{LiveControl, LiveTarget, Target, Value};
+        let control = self.live_control()?;
+        if let LiveControl::Additional(setting) = control
+            && setting.model_list().is_some()
+        {
+            return Some(LiveTarget::Additional(setting, setting.model_index(bits)?));
+        }
+        let bytes = encode_tone_field(pod_parameter_table(), self.parameter, bits, true)?;
+        let &(_, first) = bytes.first()?;
+        match control {
+            LiveControl::Basic(control) => Some(LiveTarget::Basic(
+                control,
+                Target::Value(Value::new(first)?),
+            )),
+            LiveControl::Additional(setting) => {
+                let value = if control.low_cc().is_some() {
+                    (u16::from(first) << 7) | u16::from(bytes.get(1)?.1)
+                } else {
+                    u16::from(first)
+                };
+                Some(LiveTarget::Additional(setting, value))
+            }
         }
     }
 
@@ -983,29 +1029,41 @@ impl PodTone {
         let table = pod_parameter_table();
         let row = table.parameter(key)?;
         let bits = self.table_control(row, 15)?.bits?;
-        let value = f32::from_bits(bits);
-        let split = |raw: u16| vec![(raw >> 7) as u8, (raw & 127) as u8];
-        let bytes = match row.tone_encoding.as_deref()? {
-            "model-index" => vec![
-                table
-                    .catalog
-                    .iter()
-                    .find(|m| Some(m.block.as_str()) == row.catalog.as_deref() && m.id == bits)?
-                    .index,
-            ],
-            "switch" => vec![if bits != 0 { 127 } else { 0 }],
-            "inverted-switch" => vec![if bits != 0 { 0 } else { 127 }],
-            "integer" => vec![bits.min(127) as u8],
-            "float7-nearest" => vec![((value * 127.0 + 0.5) as i32).clamp(0, 127) as u8],
-            "float14-truncate" => split(((value * 16383.0) as u16).min(16383)),
-            "gate-db-ranged" => {
-                vec![((((value + 96.0) / 96.0) * -96.0 + 96.0) as i32).clamp(0, 127) as u8]
-            }
-            "tempo-tenths" => split(((value * 10.0) as u16).min(16383)),
-            "pedal-assignment" => vec![*[0u8, 64, 127].get(bits as usize)?],
-            "constant-127" => vec![127],
-            _ => return None,
-        };
-        Some(row.tone_offsets.iter().copied().zip(bytes).collect())
+        encode_tone_field(table, row, bits, false)
     }
+}
+
+fn encode_tone_field(
+    table: &PodParameterTable,
+    row: &PodParameter,
+    bits: u32,
+    live: bool,
+) -> Option<Vec<(usize, u8)>> {
+    let value = f32::from_bits(bits);
+    let split = |raw: u16| vec![(raw >> 7) as u8, (raw & 127) as u8];
+    let bytes = match row.tone_encoding.as_deref()? {
+        "model-index" => vec![
+            table
+                .catalog
+                .iter()
+                .find(|m| Some(m.block.as_str()) == row.catalog.as_deref() && m.id == bits)?
+                .index,
+        ],
+        "switch" => vec![if bits != 0 { 127 } else { 0 }],
+        "inverted-switch" => vec![if bits != 0 { 0 } else { 127 }],
+        "integer" => vec![bits.min(127) as u8],
+        "float7-nearest" => vec![((value * 127.0 + 0.5) as i32).clamp(0, 127) as u8],
+        "float14-truncate" => {
+            let raw = value * 16383.0;
+            split(((if live { raw.round() } else { raw }) as u16).min(16383))
+        }
+        "gate-db-ranged" => {
+            vec![((((value + 96.0) / 96.0) * -96.0 + 96.0) as i32).clamp(0, 127) as u8]
+        }
+        "tempo-tenths" => split(((value * 10.0) as u16).min(16383)),
+        "pedal-assignment" => vec![*[0u8, 64, 127].get(bits as usize)?],
+        "constant-127" => vec![127],
+        _ => return None,
+    };
+    Some(row.tone_offsets.iter().copied().zip(bytes).collect())
 }

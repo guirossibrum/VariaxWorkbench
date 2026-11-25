@@ -90,7 +90,10 @@ fn shell_passes_verified_attachment_and_disconnect_cancels_the_worker() {
         .device
         .clone()
         .expect("verified by detection");
-    assert!(!app.podxt().live.busy(), "identity alone starts no read");
+    assert!(
+        !app.podxt().live.busy(),
+        "test build starts no native read after identity"
+    );
 
     let cancel = Arc::new(AtomicBool::new(false));
     let (done, finish) = std::sync::mpsc::channel();
@@ -140,7 +143,10 @@ fn shell_passes_verified_attachment_and_disconnect_cancels_the_worker() {
         tab.device.support,
         detection::DeviceSupport::Verified("3.01")
     );
-    assert!(!app.podxt().live.busy(), "reattachment starts no read");
+    assert!(
+        !app.podxt().live.busy(),
+        "test build starts no native read after reattachment"
+    );
 }
 
 pub(super) struct FakeLock<'a>(pub(super) &'a Cell<bool>);
@@ -282,4 +288,214 @@ fn notifications_update_the_current_snapshot_and_saved_preview_independently() {
     assert_eq!(snapshot.channel, Some(slot));
     assert_eq!(snapshot.clip, Some(now + PULSE));
     assert_eq!(snapshot.tap, Some(now + PULSE));
+}
+
+fn stage_frame(ctx: &egui::Context, app: &mut Workbench) -> String {
+    fn collect(shape: &egui::epaint::Shape, text: &mut String) {
+        match shape {
+            egui::epaint::Shape::Text(shape) => {
+                text.push_str(shape.galley.text());
+                text.push('\n');
+            }
+            egui::epaint::Shape::Vec(shapes) => {
+                shapes.iter().for_each(|shape| collect(shape, text))
+            }
+            _ => {}
+        }
+    }
+    let mut output = String::new();
+    for _ in 0..2 {
+        let frame = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 820.0))),
+                ..Default::default()
+            },
+            |ctx| app.render(ctx),
+        );
+        output.clear();
+        for shape in &frame.shapes {
+            collect(&shape.shape, &mut output);
+        }
+    }
+    output
+}
+
+fn valid_dump(name: &str) -> EditBuffer {
+    let mut tone = pod_preset::PodTone::new_podxt_tone(name).unwrap();
+    tone.set_table_model(
+        "AMP_MODEL",
+        131092,
+        0,
+        false,
+        &pod_preset::UnknownPodDefaults,
+    )
+    .unwrap();
+    tone.set_table_model(
+        "CAB_MODEL",
+        0x0102_0007,
+        0,
+        false,
+        &pod_preset::UnknownPodDefaults,
+    )
+    .unwrap();
+    let payload = tone.to_podxt_payload().unwrap();
+    let mut raw = vec![0xf0, 0, 1, 0x0c, 3, 0x74, 0x0a];
+    raw.extend(payload);
+    raw.push(0xf7);
+    EditBuffer::parse(raw).unwrap()
+}
+
+fn complete_backup(root: &std::path::Path, active: &str, saved: &str) -> PathBuf {
+    let mut folder = line6_devices::backup::BackupFolder::create(root, "podxt").unwrap();
+    folder.record("PODxt Live library backup at 2024-01-01 00:00:00 UTC.".into());
+    folder
+        .file(
+            "identity.syx",
+            &variax_workbench::identity_stage::bridge_reply(),
+        )
+        .unwrap();
+    folder
+        .file("current-before.syx", &valid_dump("Before backup").raw)
+        .unwrap();
+    folder
+        .file("current-after.syx", &valid_dump(active).raw)
+        .unwrap();
+    let saved = valid_dump(saved);
+    for slot in Location::all(&BankKind::ALL) {
+        folder
+            .file(&podxt::backup::podxt_entry_name(slot), &saved.raw)
+            .unwrap();
+    }
+    folder.finish(true).unwrap()
+}
+
+fn startup_app(ctx: &egui::Context, preferences: Option<PathBuf>) -> Workbench {
+    let mut app = Workbench::new(
+        ctx,
+        EditorDefaults {
+            artwork: PathBuf::new(),
+            preferences,
+            startup_panel: None,
+        },
+    );
+    app.theme_polled = Instant::now();
+    app.detection = None;
+    app
+}
+
+fn connected_fixture(ctx: &egui::Context) -> (Workbench, Presence) {
+    let mut app = startup_app(ctx, None);
+    let presence = Presence::default();
+    presence.attached.set(true);
+    presence.identified.set(true);
+    app.detection = Some(DetectionService::new(Box::new(presence.clone())));
+    stage_frame(ctx, &mut app);
+    let editor = app.podxt_mut();
+    editor.table_view_in_test = true;
+    assert!(editor.live.connected());
+    let slot = Location::new(BankKind::Tones, 17).unwrap();
+    for update in [
+        ReadUpdate::Channel(slot),
+        ReadUpdate::Current(valid_dump("Stage Current")),
+        ReadUpdate::Stored(StoredTone {
+            location: slot,
+            tone: valid_dump("Saved 5B"),
+        }),
+    ] {
+        editor.live.snapshot.apply(update, Instant::now());
+    }
+    (app, presence)
+}
+
+#[test]
+fn startup_is_scheduled_once_per_verified_attachment_and_cancelled_on_detach() {
+    let ctx = egui::Context::default();
+    let (app, _) = connected_fixture(&ctx);
+    let device = app.tabs.entries[0].device.as_ref();
+    let mut panel = LivePanel::default();
+    assert_eq!(panel.next_startup(), None);
+    assert!(panel.set_device(device));
+    assert_eq!(panel.next_startup(), Some(Startup::Current));
+    assert!(!panel.set_device(device));
+    assert_eq!(panel.next_startup(), Some(Startup::Tones));
+    assert_eq!(panel.next_startup(), None);
+
+    panel.set_device(None);
+    assert!(panel.set_device(device));
+    assert_eq!(panel.next_startup(), Some(Startup::Current));
+    panel.set_device(None);
+    assert_eq!(panel.next_startup(), None);
+}
+
+#[test]
+fn connected_stage_uses_current_tone_channel_and_librarian_and_follows_updates() {
+    let ctx = egui::Context::default();
+    let (mut app, _) = connected_fixture(&ctx);
+    let visible = stage_frame(&ctx, &mut app);
+    for label in [
+        "Connected",
+        "Channel 5B",
+        "Stage Current",
+        "Saved 5B",
+        "Live editing",
+        "Tuner",
+        "Tone Locker",
+        "Advanced",
+    ] {
+        assert!(visible.contains(label), "missing {label}: {visible}");
+    }
+    for hidden in [
+        "Read installed packs",
+        "Read globals",
+        "Resend whole current tone",
+    ] {
+        assert!(!visible.contains(hidden), "{visible}");
+    }
+    assert!(!app.podxt().dirty());
+    let slot = Location::new(BankKind::Tones, 18).unwrap();
+    let now = Instant::now();
+    let snapshot = &mut app.podxt_mut().live.snapshot;
+    snapshot.apply(ReadUpdate::Channel(slot), now);
+    snapshot.apply(ReadUpdate::Current(valid_dump("Followed Tone")), now);
+    let visible = stage_frame(&ctx, &mut app);
+    assert!(
+        visible.contains("Channel 5C") && visible.contains("Followed Tone"),
+        "{visible}"
+    );
+}
+
+#[test]
+fn disconnected_stage_loads_backup_and_no_backup_shows_labelled_default() {
+    let ctx = egui::Context::default();
+    let (mut app, presence) = connected_fixture(&ctx);
+    presence.attached.set(false);
+    app.next_detection = Instant::now();
+    let root = tempfile::tempdir().unwrap();
+    let preferences = root.path().join("preferences.json");
+    let complete = complete_backup(root.path(), "Latest Backup", "Backup Channel");
+    pod_preset::remember_podxt_backup(&preferences, &complete).unwrap();
+    app.podxt_mut().initialize_stage(Some(preferences));
+    let visible = stage_frame(&ctx, &mut app);
+    for label in [
+        "Disconnected",
+        "Latest Backup",
+        "Library backup",
+        "Backup Channel",
+        "Amp ·",
+    ] {
+        assert!(visible.contains(label), "missing {label}: {visible}");
+    }
+    assert!(!visible.contains("Stage Current"));
+    assert!(!app.podxt().dirty());
+
+    let ctx = egui::Context::default();
+    let mut app = startup_app(&ctx, None);
+    app.new_tab(&super::super::FAMILY);
+    app.podxt_mut().table_view_in_test = true;
+    let visible = stage_frame(&ctx, &mut app);
+    for label in ["Default Tone", "offline", "Amp ·", "Library"] {
+        assert!(visible.contains(label), "missing {label}: {visible}");
+    }
+    assert!(!visible.contains("Open a tone or create a new one"));
+    assert!(!app.podxt().dirty());
 }
