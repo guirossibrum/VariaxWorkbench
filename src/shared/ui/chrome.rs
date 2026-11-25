@@ -215,7 +215,15 @@ pub struct TabOutput {
 impl DocumentTab<'_> {
     pub fn show(self, ui: &mut egui::Ui) -> TabOutput {
         ui.horizontal(|ui| {
-            let (rect, response) = ui.allocate_exact_size(vec2(240.0, 40.0), Sense::click());
+            let painter = ui.painter().clone();
+            let title =
+                painter.layout_no_wrap(self.title.into(), egui::FontId::proportional(BODY), TEXT);
+            let marker = self.unsaved.then(|| {
+                painter.layout_no_wrap("Unsaved".into(), egui::FontId::proportional(COMPACT), TEXT)
+            });
+            let marker_width = marker.as_ref().map_or(0.0, |marker| marker.size().x + 8.0);
+            let width = (12.0 + title.size().x + marker_width + 8.0).clamp(240.0, 360.0);
+            let (rect, response) = ui.allocate_exact_size(vec2(width, 40.0), Sense::click());
             let fill = if response.hovered() {
                 Color32::from_rgb(0x2c, 0x31, 0x38)
             } else if self.active {
@@ -223,7 +231,6 @@ impl DocumentTab<'_> {
             } else {
                 BG
             };
-            let painter = ui.painter();
             painter.rect_filled(rect, RADIUS_CONTROL, fill);
             let accent = egui::Rect::from_min_size(rect.min, vec2(4.0, rect.height()));
             painter.rect_filled(
@@ -235,22 +242,43 @@ impl DocumentTab<'_> {
                     LINE
                 },
             );
-            painter.text(
-                rect.left_center() + vec2(12.0, 0.0),
-                egui::Align2::LEFT_CENTER,
-                self.title,
-                egui::FontId::proportional(BODY),
-                TEXT,
-            );
-            if self.unsaved {
-                painter.text(
-                    rect.right_center() - vec2(8.0, 0.0),
-                    egui::Align2::RIGHT_CENTER,
-                    "Unsaved",
-                    egui::FontId::proportional(COMPACT),
+            let title_start = rect.left_center() + vec2(12.0, 0.0);
+            if let Some(marker) = marker {
+                painter.galley(
+                    rect.right_center() - vec2(8.0 + marker.size().x, marker.size().y / 2.0),
+                    marker,
                     TEXT,
                 );
             }
+            let title_width = width - 12.0 - marker_width - 8.0;
+            let title = if title.size().x > title_width {
+                let mut job = egui::text::LayoutJob::simple_singleline(
+                    self.title.into(),
+                    egui::FontId::proportional(BODY),
+                    TEXT,
+                );
+                job.wrap.max_width = title_width;
+                job.wrap.max_rows = 1;
+                job.wrap.break_anywhere = true;
+                painter.layout_job(job)
+            } else {
+                title
+            };
+            let elided = title.elided;
+            painter.galley(title_start - vec2(0.0, title.size().y / 2.0), title, TEXT);
+            response.widget_info(|| {
+                egui::WidgetInfo::selected(
+                    egui::WidgetType::SelectableLabel,
+                    response.enabled(),
+                    self.active,
+                    self.title,
+                )
+            });
+            let response = if elided {
+                response.on_hover_text(self.title)
+            } else {
+                response
+            };
             if response.has_focus() {
                 painter.rect_stroke(
                     rect.expand(FOCUS_RING),

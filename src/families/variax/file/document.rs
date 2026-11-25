@@ -4,7 +4,9 @@ use crate::{
     preset::PresetFile,
 };
 use std::{
+    collections::HashSet,
     fs,
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -27,6 +29,7 @@ struct DocumentState {
     preset: Option<PresetFile>,
     bundle: Option<SelectedBundle>,
     buffers: SlotBuffers,
+    unsent_positions: HashSet<(usize, usize)>,
 }
 impl DocumentState {
     fn bytes(&self) -> &[u8] {
@@ -97,6 +100,7 @@ impl EditorDocument {
                 preset: Some(preset),
                 bundle: None,
                 buffers: SlotBuffers::default(),
+                unsent_positions: HashSet::new(),
             },
             source,
         )
@@ -126,6 +130,7 @@ impl EditorDocument {
                     preset: 0,
                 }),
                 buffers: SlotBuffers::default(),
+                unsent_positions: HashSet::new(),
             },
             source,
         ))
@@ -223,10 +228,31 @@ impl EditorDocument {
     pub fn replace_slot_model(&mut self, replacement: PresetFile) -> Result<(), String> {
         self.validate_slot_replacement(&replacement)?;
         self.end_gesture();
+        let position = self.selection().expect("validated library slot");
+        let changed = replacement.as_bytes() != self.preset().as_bytes();
         self.apply(|preset| {
             *preset = replacement;
             Ok(())
-        })
+        })?;
+        if changed {
+            self.state.unsent_positions.insert(position);
+        }
+        Ok(())
+    }
+
+    pub fn slot_is_unsent(&self, bank: usize, slot: usize) -> bool {
+        self.state.unsent_positions.contains(&(bank, slot))
+    }
+
+    pub fn discard_changes(&mut self) {
+        let selection = self.selection();
+        self.state = self.saved.clone();
+        self.group_base = None;
+        self.undo.clear();
+        self.redo.clear();
+        if let Some((bank, slot)) = selection {
+            let _ = self.select(bank, slot);
+        }
     }
 
     pub fn rename_selected_bank(&mut self, name: &str) -> Result<(), String> {
@@ -327,10 +353,86 @@ impl EditorDocument {
     pub fn save_copy(&mut self, path: &Path) -> Result<(), String> {
         self.end_gesture();
         save_new(path, self.as_bytes())?;
-        self.saved = self.state.clone();
-        self.needs_first_save = false;
+        self.mark_saved();
         Ok(())
     }
+
+    pub fn save_open_file(&mut self, path: &Path) -> Result<(), String> {
+        let path = self.replaceable_source(path)?;
+        let permissions = fs::metadata(&path)
+            .map_err(|e| e.to_string())?
+            .permissions();
+        let parent = path.parent().expect("canonical file has a parent");
+        let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+        temporary
+            .write_all(self.as_bytes())
+            .map_err(|e| e.to_string())?;
+        temporary
+            .as_file()
+            .set_permissions(permissions)
+            .map_err(|e| e.to_string())?;
+        temporary.as_file().sync_all().map_err(|e| e.to_string())?;
+        // Compare just before publishing so an external edit is normally caught.
+        let saved = self.saved.bytes();
+        let mut current = Vec::new();
+        fs::File::open(&path)
+            .and_then(|file| file.take(saved.len() as u64 + 1).read_to_end(&mut current))
+            .map_err(|e| e.to_string())?;
+        if current != saved {
+            return Err("The original changed on disk. Use Save As to keep your edits.".into());
+        }
+        temporary
+            .persist(&path)
+            .map_err(|e| format!("{}: {}", path.display(), e.error))?;
+        self.end_gesture();
+        self.mark_saved();
+        Ok(())
+    }
+
+    fn replaceable_source(&self, path: &Path) -> Result<PathBuf, String> {
+        let protected = "Save can only replace an opened or created Workbench file outside backups, logs, captures, vendor archives and firmware. Use Save As.";
+        if self.needs_first_save
+            || self.source != path
+            || !path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case(self.extension()))
+        {
+            return Err(protected.into());
+        }
+        let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+        if !metadata.is_file() || metadata.permissions().readonly() {
+            return Err(protected.into());
+        }
+        let canonical = path.canonicalize().map_err(|e| e.to_string())?;
+        if [path, canonical.as_path()].into_iter().any(|location| {
+            location.ancestors().skip(1).any(|directory| {
+                directory.join("MANIFEST.sha256").exists()
+                    || directory.file_name().is_some_and(|name| {
+                        matches!(
+                            name.to_ascii_lowercase().to_str(),
+                            Some(
+                                "backup"
+                                    | "backups"
+                                    | "logs"
+                                    | "capture"
+                                    | "captures"
+                                    | "vendor"
+                                    | "firmware"
+                            )
+                        )
+                    })
+            })
+        }) {
+            return Err(protected.into());
+        }
+        Ok(canonical)
+    }
+
+    fn mark_saved(&mut self) {
+        self.saved = self.state.clone();
+        self.needs_first_save = false;
+    }
+
     pub fn begin_gesture(&mut self) {
         if self.group_base.is_none() {
             self.group_base = Some(self.state.clone());
@@ -542,4 +644,49 @@ mod tests {
             Ok(_) => panic!("opened a bank that contains a PODxt Live tone"),
         }
     }
+}
+
+#[cfg(test)]
+#[test]
+fn editor_save_refuses_protected_files_and_external_changes() {
+    let folder = tempfile::tempdir().unwrap();
+    let original = PresetFile::default_legacy_model().unwrap();
+    let path = folder.path().join("open.vwm");
+    save_new(&path, original.as_bytes()).unwrap();
+    let mut document = EditorDocument::open(&path).unwrap();
+    document
+        .apply(|preset| preset.rename("Edited here"))
+        .unwrap();
+    let expected = document.as_bytes().to_vec();
+
+    let mut external = original.clone();
+    external.rename("Edited elsewhere").unwrap();
+    fs::write(&path, external.as_bytes()).unwrap();
+    assert!(
+        document
+            .save_open_file(&path)
+            .unwrap_err()
+            .contains("changed on disk")
+    );
+    assert_eq!(fs::read(&path).unwrap(), external.as_bytes());
+    assert_eq!(document.as_bytes(), expected);
+    assert!(document.is_dirty());
+
+    let backup = folder.path().join("download");
+    fs::create_dir(&backup).unwrap();
+    save_new(&backup.join("MANIFEST.sha256"), b"test backup marker").unwrap();
+    let file = backup.join("preset.vwm");
+    save_new(&file, original.as_bytes()).unwrap();
+    let mut protected = EditorDocument::open(&file).unwrap();
+    protected
+        .apply(|preset| preset.rename("Protected"))
+        .unwrap();
+    assert!(
+        protected
+            .save_open_file(&file)
+            .unwrap_err()
+            .contains("outside backups")
+    );
+    assert_eq!(fs::read(&file).unwrap(), original.as_bytes());
+    assert!(protected.is_dirty());
 }

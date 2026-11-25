@@ -1,6 +1,6 @@
 use super::{
-    EditorServices, FAMILY, PathBuf, PickRequest, PresetFile, ProductFamily, VariaxEditor, egui,
-    tabs,
+    EditorDocument, EditorServices, FAMILY, PathBuf, PickRequest, PresetFile, ProductFamily,
+    VariaxEditor, egui, tabs,
 };
 use variax_workbench::document::save_new;
 
@@ -20,6 +20,10 @@ impl VariaxEditor {
         let Some(document) = &self.document else {
             return;
         };
+        if self.parked_library.is_some() {
+            self.file_mode_actions(ui, available);
+            return;
+        }
         if document.selection().is_none() {
             self.html_export_button(ui, services, available);
             return;
@@ -46,6 +50,98 @@ impl VariaxEditor {
             self.rename_bank_button(ui, available);
             self.html_export_button(ui, services, available);
         });
+    }
+
+    fn file_mode_actions(&mut self, ui: &mut egui::Ui, available: bool) {
+        ui.horizontal_wrapped(|ui| {
+            ui.add_enabled_ui(available, |ui| self.library_position(ui));
+            let enabled = self.parked_library.as_ref().is_some_and(|(library, _)| {
+                self.document
+                    .as_ref()
+                    .and_then(|file| file.selected_preset())
+                    .is_some_and(|model| library.validate_slot_replacement(model).is_ok())
+            });
+            let place = ui
+                .add_enabled(
+                    available && enabled && !self.dirty(),
+                    egui::Button::new("Put this file into the selected position"),
+                )
+                .on_disabled_hover_text(
+                    "Save the model first and select a compatible library slot.",
+                );
+            let back = ui.add_enabled(available, egui::Button::new("Return to library"));
+            #[cfg(test)]
+            {
+                self.slot_file_buttons.insert("place-file", place.rect);
+                self.slot_file_buttons.insert("return-library", back.rect);
+            }
+            if place.clicked() {
+                self.place_open_file();
+            }
+            if back.clicked() {
+                if self.dirty() {
+                    self.pending =
+                        Some(super::GuitarPending::Open(super::OpenDestination::Library));
+                } else {
+                    self.return_to_library();
+                }
+            }
+        });
+    }
+
+    fn library_position(&mut self, ui: &mut egui::Ui) {
+        let Some((library, _)) = &mut self.parked_library else {
+            return;
+        };
+        let mut selection = library.selection();
+        let label = selection.and_then(|(bank, slot)| {
+            Some(format!(
+                "{} · Slot {}",
+                library.banks()?.get(bank)?.name,
+                slot + 1
+            ))
+        });
+        egui::ComboBox::from_id_salt("put-file-position")
+            .selected_text(label.unwrap_or_else(|| "No library positions".into()))
+            .height(250.0)
+            .show_ui(ui, |ui| {
+                for (bank, entry) in library.banks().into_iter().flatten().enumerate() {
+                    for (slot, preset) in entry.presets().iter().enumerate() {
+                        let position = Some((bank, slot));
+                        let label = format!("{} · {} {}", entry.name, slot + 1, preset.name());
+                        if ui.selectable_label(selection == position, label).clicked() {
+                            selection = position;
+                            ui.close();
+                        }
+                    }
+                }
+            });
+        if let Some((bank, slot)) = selection
+            && selection != library.selection()
+            && let Err(error) = library.select(bank, slot)
+        {
+            self.error = Some(error);
+        }
+    }
+
+    fn place_open_file(&mut self) {
+        let Some(model) = self
+            .document
+            .as_ref()
+            .and_then(EditorDocument::selected_preset)
+        else {
+            return;
+        };
+        let Some((library, _)) = &mut self.parked_library else {
+            return;
+        };
+        match library.replace_slot_model(model.clone()) {
+            Ok(()) => {
+                self.return_to_library();
+                self.status = "Model placed in the library. Not sent to guitar.".into();
+            }
+            Err(error) => self.error = Some(error),
+        }
     }
 
     fn save_slot_model(&mut self, ctx: &egui::Context, services: &mut EditorServices<'_>) {
@@ -184,7 +280,7 @@ impl VariaxEditor {
         match document.replace_slot_model(replacement.model) {
             Ok(()) => {
                 self.status = format!(
-                    "Slot {} now contains “{}”.",
+                    "Slot {} now contains “{}”. Not sent to guitar.",
                     slot + 1,
                     document.preset().name()
                 );
@@ -217,9 +313,9 @@ mod tests {
     use crate::editor::tests::{app, click_prompt};
     use crate::editor::{FakeDialogs, Workbench};
     use std::fs;
-    use variax_workbench::{bundle::BundleFile, document::EditorDocument, preset::PresetText};
+    use variax_workbench::{bundle::BundleFile, preset::PresetText};
 
-    fn click_slot_action(ctx: &egui::Context, app: &mut Workbench, id: &'static str) {
+    pub(super) fn click_slot_action(ctx: &egui::Context, app: &mut Workbench, id: &'static str) {
         fn frame(ctx: &egui::Context, app: &mut Workbench, events: Vec<egui::Event>) {
             let _ = ctx.run(
                 egui::RawInput {
@@ -416,4 +512,58 @@ mod tests {
         let active = app.tabs.index(app.tabs.active.unwrap()).unwrap();
         assert_eq!(app.tabs.entries[active].family.info().id, "variax");
     }
+}
+
+#[cfg(test)]
+#[test]
+fn opening_then_placing_a_file_uses_the_existing_position_and_one_undo_step() {
+    use crate::editor::tests::app;
+    let (ctx, mut app) = app();
+    app.variax_mut().open_example();
+    let folder = tempfile::tempdir().unwrap();
+    let library = folder.path().join("library.vwb");
+    let original = app.variax().document.as_ref().unwrap().as_bytes().to_vec();
+    save_new(&library, &original).unwrap();
+    app.variax_mut().load(&library);
+    app.variax_mut()
+        .document
+        .as_mut()
+        .unwrap()
+        .select(1, 2)
+        .unwrap();
+    let mut model = app.variax().document.as_ref().unwrap().preset().clone();
+    model.rename("File mode model").unwrap();
+    let file = folder.path().join("Model from a file.vwm");
+    save_new(&file, model.as_bytes()).unwrap();
+    app.dialogs = Box::new(crate::editor::FakeDialogs {
+        open: [Some(file.clone())].into(),
+        ..Default::default()
+    });
+
+    let old_tab = app.tabs.active;
+    app.open_dialog();
+    assert_eq!(app.tabs.active, old_tab);
+    let editor = app.variax();
+    assert_eq!(editor.source_path.as_deref(), Some(file.as_path()));
+    assert_eq!(editor.document.as_ref().unwrap().selection(), None);
+    let (parked, _) = editor.parked_library.as_ref().unwrap();
+    assert_eq!(parked.as_bytes(), original);
+    assert_eq!(parked.selection(), Some((1, 2)));
+
+    tests::click_slot_action(&ctx, &mut app, "place-file");
+    let editor = app.variax();
+    let document = editor.document.as_ref().unwrap();
+    assert_eq!(editor.source_path.as_deref(), Some(library.as_path()));
+    assert_eq!(document.selection(), Some((1, 2)));
+    assert_eq!(document.preset().as_bytes(), model.as_bytes());
+    assert!(document.slot_is_unsent(1, 2));
+    assert!(editor.status.contains("Not sent to guitar"));
+    assert_eq!(std::fs::read(&library).unwrap(), original);
+    assert_eq!(std::fs::read(&file).unwrap(), model.as_bytes());
+    app.variax_mut().undo();
+    let document = app.variax().document.as_ref().unwrap();
+    assert_eq!(document.as_bytes(), original);
+    assert!(!document.slot_is_unsent(1, 2));
+    app.variax_mut().redo();
+    assert!(app.variax().document.as_ref().unwrap().slot_is_unsent(1, 2));
 }

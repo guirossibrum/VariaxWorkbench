@@ -40,7 +40,7 @@ pub(in crate::editor) fn milestones(ui: &mut egui::Ui) {
     ui.heading("Complete · Offline Variax 600 editing");
     ui.label(
         "Open a preset, bank or collection, or try the built-in example banks. Edit pickups, \
-         controls or tuning, then choose Save copy… to keep your original file.",
+         controls or tuning, then choose Save or Save As….",
     );
     ui.separator();
     ui.heading("Offline PODxt Live tones");
@@ -49,7 +49,7 @@ pub(in crate::editor) fn milestones(ui: &mut egui::Ui) {
          then A, B, C, and D choose a channel. Amp, Stomp, Mod, and Delay open that block. \
          On/Bypass changes only the stored flag for the block you selected. Practice loads \
          Amp and Effects Tone or Stompbox Collection. Load tone or bank… opens your files. \
-         Save copy… writes a new file and leaves the original alone. Revert tells you what \
+         Save As… writes a new file and leaves the original alone. Revert tells you what \
          it will put back before you discard it. Fetch from PODxt Live, Send current bank, \
          and Send all banks stay off.",
     );
@@ -412,6 +412,7 @@ impl VariaxEditor {
                             thumbnail.as_ref(),
                             active,
                             changed,
+                            document.slot_is_unsent(bank_index, index),
                         );
                         #[cfg(test)]
                         self.bank_slots.insert(index, response.rect);
@@ -421,7 +422,23 @@ impl VariaxEditor {
                     }
                 });
             } else {
-                ui.strong("Individual preset");
+                if let Some(path) = &self.source_path
+                    && let Some(filename) = path.file_name()
+                {
+                    ui.strong(format!(
+                        "Editing “{}” [{}]",
+                        document.preset().name(),
+                        filename.to_string_lossy()
+                    ));
+                } else {
+                    ui.strong("Individual preset");
+                }
+            }
+            if document
+                .selection()
+                .is_some_and(|(bank, slot)| document.slot_is_unsent(bank, slot))
+            {
+                ui.label("Not sent to guitar");
             }
             if document.is_dirty() {
                 ui.colored_label(FRET_MARKER, "Unsaved");
@@ -643,12 +660,14 @@ impl VariaxEditor {
         let twelve_string = self.can_edit(TUNING, Some(MIX));
         // Settle the panel's measured height and clipping on the first frame
         // and when a model adds or removes the secondary-string controls.
+        let show_off = tuning.is_some() && !enabled;
+        let layout = (twelve_string, show_off);
         let layout_id = ui.id().with("tuning-panel-layout");
         let remeasure = ui.data_mut(|cache| {
-            if cache.get_temp::<bool>(layout_id) == Some(twelve_string) {
+            if cache.get_temp::<(bool, bool)>(layout_id) == Some(layout) {
                 return false;
             }
-            cache.insert_temp(layout_id, twelve_string);
+            cache.insert_temp(layout_id, layout);
             true
         });
         if remeasure {
@@ -689,7 +708,21 @@ impl VariaxEditor {
         if twelve_string {
             panel = panel.twelve_string(&secondary);
         }
+        if show_off {
+            ui.label("Alternate tuning is off: these offsets are saved but not played.");
+        }
         let output = panel.show(ui);
+        if show_off {
+            let [r, g, b, _] = theme::PANEL.to_array();
+            let dim = Color32::from_rgba_unmultiplied(r, g, b, 96);
+            if let (Some(first), Some(last)) = (output.rows.first(), output.rows.last()) {
+                let band = Rect::from_min_max(
+                    Pos2::new(output.enable.left(), first.lane.top()),
+                    Pos2::new(output.neck.right(), last.lane.bottom()),
+                );
+                ui.painter().rect_filled(band, 0, dim);
+            }
+        }
         paint_missing_tuning_symbols(ui, output.flat, output.sharp, complete_pitch);
         #[cfg(test)]
         {
@@ -961,13 +994,16 @@ fn bank_slot(
     thumbnail: Option<&TextureHandle>,
     active: bool,
     changed: bool,
+    unsent: bool,
 ) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(43.0, theme::TARGET), Sense::click());
-    let description = if changed {
-        format!("Slot {position} · {name} · differs from the last saved file")
-    } else {
-        format!("Slot {position} · {name}")
-    };
+    let mut description = format!("Slot {position} · {name}");
+    if changed {
+        description.push_str(" · differs from the last saved file");
+    }
+    if unsent {
+        description.push_str(" · not sent to guitar");
+    }
     response.widget_info(|| {
         egui::WidgetInfo::selected(
             egui::WidgetType::SelectableLabel,
