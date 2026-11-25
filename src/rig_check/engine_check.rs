@@ -106,6 +106,11 @@ pub fn compare(expected: &[u8], actual: &[u8]) -> Vec<WordDiff> {
 #[derive(Clone, Debug)]
 pub struct ModelResult {
     pub name: String,
+    /// The program built here, for local-folder models only (test models
+    /// for step 4.3 must come from a model that matched its reference).
+    pub program: Option<Vec<u8>>,
+    /// `NAME.listen.txt`: the A/B question for this model in step 4.3.
+    pub question: Option<String>,
     pub diffs: Vec<WordDiff>,
     pub actual_sha256: Option<String>,
     /// Only the expected hash was available (no word detail).
@@ -198,11 +203,15 @@ fn result(name: String, expected: &[u8], actual: Result<Vec<u8>, String>) -> Mod
             diffs: compare(expected, &actual),
             actual_sha256: Some(super::record::sha256_hex(&actual)),
             name,
+            program: None,
+            question: None,
             hash_only: None,
             error: None,
         },
         Ok(_) => ModelResult {
             name,
+            program: None,
+            question: None,
             diffs: Vec::new(),
             actual_sha256: None,
             hash_only: None,
@@ -210,6 +219,8 @@ fn result(name: String, expected: &[u8], actual: Result<Vec<u8>, String>) -> Mod
         },
         Err(error) => ModelResult {
             name,
+            program: None,
+            question: None,
             diffs: Vec::new(),
             actual_sha256: None,
             hash_only: None,
@@ -228,6 +239,8 @@ pub fn builtin() -> &'static [ModelResult] {
             Err(error) => {
                 return vec![ModelResult {
                     name: "Synthetic references".into(),
+                    program: None,
+                    question: None,
                     diffs: Vec::new(),
                     actual_sha256: None,
                     hash_only: None,
@@ -280,6 +293,12 @@ pub fn local_folder(dir: &Path) -> Result<Vec<ModelResult>, String> {
             .map_err(|e| e.to_string())
             .and_then(PresetFile::parse)
             .and_then(|preset| render_preset(&library, &preset));
+        let question = std::fs::read_to_string(dir.join(format!("{name}.listen.txt")))
+            .ok()
+            .map(|text| text.trim().to_owned())
+            .filter(|text| !text.is_empty());
+        let built = actual.as_ref().ok().cloned();
+        let before = results.len();
         if let Ok(expected) = std::fs::read(dir.join(format!("{name}.packed"))) {
             results.push(result(name, &expected, actual));
         } else if let Ok(hash) = std::fs::read_to_string(dir.join(format!("{name}.sha256"))) {
@@ -293,6 +312,8 @@ pub fn local_folder(dir: &Path) -> Result<Vec<ModelResult>, String> {
                     let sha = super::record::sha256_hex(&actual);
                     ModelResult {
                         name,
+                        program: None,
+                        question: None,
                         diffs: Vec::new(),
                         hash_only: Some(sha == expected),
                         actual_sha256: Some(sha),
@@ -301,6 +322,8 @@ pub fn local_folder(dir: &Path) -> Result<Vec<ModelResult>, String> {
                 }
                 Err(error) => ModelResult {
                     name,
+                    program: None,
+                    question: None,
                     diffs: Vec::new(),
                     actual_sha256: None,
                     hash_only: None,
@@ -310,11 +333,17 @@ pub fn local_folder(dir: &Path) -> Result<Vec<ModelResult>, String> {
         } else {
             results.push(ModelResult {
                 name,
+                program: None,
+                question: None,
                 diffs: Vec::new(),
                 actual_sha256: None,
                 hash_only: None,
                 error: Some("no NAME.packed or NAME.sha256 next to the model".into()),
             });
+        }
+        if let Some(last) = results.get_mut(before) {
+            last.program = built;
+            last.question = question;
         }
     }
     Ok(results)

@@ -46,6 +46,9 @@ pub struct RunData {
     pub engine_folder: Option<PathBuf>,
     /// Step 0.3 results, for linking recording differences (#266).
     pub engine_summary: Vec<String>,
+    /// Test models for step 4.3: built here and matching their reference
+    /// in step 0.3 (name, program, optional A/B question).
+    pub test_models: Vec<(String, Program, Option<String>)>,
 }
 
 impl RunData {
@@ -94,6 +97,8 @@ pub fn execute(ctx: &mut Ctx<'_>) -> Result<(), String> {
         (3, 5) => super::variax_reads::one_preset(ctx),
         (3, 6) => super::variax_reads::one_bank(ctx),
         (4, 1) => super::live::podxt_stomp(ctx),
+        (4, 2) => super::variax_live::variax_own_bytes(ctx),
+        (4, 3) => super::variax_live::variax_test_model(ctx),
         (6, 2) => rig_guard(ctx),
         _ => placeholder(ctx),
     }
@@ -195,6 +200,18 @@ fn engine_check(ctx: &mut Ctx<'_>) -> Result<(), String> {
         }
     }
     ctx.data.engine_summary = summary;
+    ctx.data.test_models = results
+        .iter()
+        .filter(|r| r.identical())
+        .filter_map(|r| {
+            let bytes = r.program.as_ref()?;
+            let words: Vec<u32> = bytes
+                .chunks(3)
+                .map(|c| u32::from_be_bytes([0, c[0], c[1], c[2]]))
+                .collect();
+            Some((r.name.clone(), words.try_into().ok()?, r.question.clone()))
+        })
+        .collect();
     let different = results.iter().filter(|r| !r.identical()).count();
     if different == 0 {
         Ok(())
