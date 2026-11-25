@@ -298,6 +298,17 @@ pub fn synthetic_machine(podxt_present: bool, variax_driver_bound: bool) -> MemF
                 );
             }
         }
+        fs.file(
+            "proc/asound/card1/pcm0p/info",
+            "card: 1\ndevice: 0\nid: PODxt Live\nname: PODxt Live\nsubdevices_count: 1\n",
+        )
+        .file("proc/asound/card1/pcm0p/sub0/hw_params", "closed\n")
+        .file(
+            "proc/asound/card1/pcm0c/info",
+            "card: 1\ndevice: 0\nid: PODxt Live\nname: PODxt Live\nsubdevices_count: 1\n",
+        )
+        .file("proc/asound/card1/pcm0c/sub0/hw_params", "closed\n")
+        .node("run/user/1000/pipewire-0", 0o666, 1000, 1000);
         let cards = fs.files["proc/asound/cards"].clone()
             + " 1 [PODxtLive      ]: PODxtLive - PODxt Live\n                      Line 6 PODxt Live at USB 1:5\n";
         fs.file("proc/asound/cards", &cards);

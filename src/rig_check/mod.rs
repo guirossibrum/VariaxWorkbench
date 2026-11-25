@@ -13,6 +13,7 @@
 //! `/sys`.
 
 pub mod approvals;
+pub mod audio;
 pub mod catalogue;
 pub mod cli;
 pub mod computer;

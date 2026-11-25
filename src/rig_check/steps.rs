@@ -112,6 +112,7 @@ pub fn execute(ctx: &mut Ctx<'_>) -> Result<(), String> {
         (7, 2) => super::guided::knobs(ctx),
         (7, 3) => super::guided::footswitch(ctx),
         (7, 4) => super::guided::pedal(ctx),
+        (8, 1) => super::audio::detect(ctx),
         _ => placeholder(ctx),
     }
 }
