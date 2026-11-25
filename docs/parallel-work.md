@@ -20,6 +20,8 @@ directly.
 | **5. Variax device tests** | `crates/line6-devices/src/family/variax/` (read and write messages), `tools/reso5-test/` except its device lock (lane 1) | Done: #225, #177 ladder (1a, 1b, 2), #229, #234, read retry, #202 device side, #203 device API, #238 tool (95bc2a0). Now: #238 rung 4a approved for one owner run (f3c6a46), then 4b → 4c → 3a/3b, each approved separately → #178 |
 | Research | `docs/firmware-*.md`, `research/`, `scripts/` (own files only) | Grok: #231 (handbook Custom comparator, scripts/research only). PODxt research agent: #232 remainder (bounded owner-check design for Variax control ownership and linked audition) |
 
+Cross-lane exception (owner, 2026-11-25, #241): lane 3 may make the minimal shell command routing for Open/Ctrl+O/Save/Save As to the active Variax editor (`src/app/shell/`, lane 1) and the `DocumentTab` title/marker fix (`src/shared/ui/`, lane 2), as separate small commits.
+
 Shared files: `docs/status.md` (one line per delivered item, in your lane's
 section), `Cargo.toml`/`src/lib.rs` (only the wiring your change needs). The
 reviewer reconciles conflicts in shared files during integration.
