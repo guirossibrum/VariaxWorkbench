@@ -84,6 +84,7 @@ fn g6_transaction_holds_the_rig_lock_for_cc_and_readback_and_denies_other_writes
     };
     let job = Job {
         action: Action::Controls,
+        whole_tone_backup: None,
         current: Some(before.clone()),
         original: Some(before.clone()),
         targets: vec![drive(45)],
@@ -175,4 +176,11 @@ fn the_whole_tone_resend_has_its_own_closed_owner_gate() {
         assert!(!WHOLE_TONE_SEND_APPROVED);
     }
     assert!(!LiveEditor::admitted(Action::ResendWholeTone));
+    let policy = EditPolicy(Action::ResendWholeTone);
+    assert_eq!(
+        policy.allows(Operation::PodxtLibraryRead),
+        !hardware_gates::is_locked(Gate::FullBackupRead)
+    );
+    assert!(!policy.allows(Operation::PodxtStoreRestore));
+    assert!(!policy.allows(Operation::PodxtChannelSwitch));
 }

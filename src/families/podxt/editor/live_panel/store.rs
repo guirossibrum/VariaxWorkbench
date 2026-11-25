@@ -305,7 +305,7 @@ impl StorePanel {
                             self.clear_preparation();
                             self.status = None;
                         }
-                        if ui.button("Verify same-day backup").clicked() {
+                        if ui.button("Verify library backup").clicked() {
                             let destination =
                                 Location::new(kind, self.index).expect("valid selection");
                             services.request_picker::<PodxtEditor>(

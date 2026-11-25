@@ -6,7 +6,6 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path as FilePath;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub enum StoreSource {
     /// The first-run candidate. Restores the chosen slot's own backup bytes.
@@ -15,40 +14,51 @@ pub enum StoreSource {
     Replacement(TonePayload),
 }
 
-pub struct PreparedStore {
+/// The selected slot's exact payload from a verified 299-entry backup.
+pub struct VerifiedToneBackup {
     pub(super) slot: Location,
-    pub(super) day: u64,
     pub(super) original: TonePayload,
-    pub(super) candidate: TonePayload,
 }
 
-pub struct ConfirmedStore(pub(super) PreparedStore);
-
-impl ConfirmedStore {
-    /// Check that the verified backup is still current immediately before use.
-    pub fn verify_current_day(&self) -> Result<(), String> {
-        self.verify_day(utc_day()?)
+impl VerifiedToneBackup {
+    pub fn slot(&self) -> Location {
+        self.slot
     }
 
-    pub(super) fn verify_day(&self, today: u64) -> Result<(), String> {
-        if self.0.day != today {
-            return Err("The UTC day changed. Verify a current backup before storing.".into());
+    pub fn tone_name(&self) -> String {
+        self.original.name()
+    }
+
+    pub(super) fn verify_slot<L: Link>(&self, session: &mut Session<L>) -> Result<(), String> {
+        let before = read_stored(session, self.slot)?;
+        if TonePayload::from_dump(&before)? != self.original {
+            return Err(format!(
+                "Slot {} differs from its verified backup. No write was sent.",
+                self.slot.slot_name()
+            ));
         }
         Ok(())
     }
 }
 
+pub struct PreparedStore {
+    pub(super) backup: VerifiedToneBackup,
+    pub(super) candidate: TonePayload,
+}
+
+pub struct ConfirmedStore(pub(super) PreparedStore);
+
 impl PreparedStore {
     pub fn confirmation(&self) -> String {
-        format!("STORE PODXT {}", self.slot.slot_name())
+        format!("STORE PODXT {}", self.backup.slot.slot_name())
     }
 
     pub fn original_matches(&self, tone: &TonePayload) -> bool {
-        &self.original == tone
+        &self.backup.original == tone
     }
 
     pub fn original_name(&self) -> String {
-        self.original.name()
+        self.backup.tone_name()
     }
 
     pub fn candidate_name(&self) -> String {
@@ -63,29 +73,26 @@ impl PreparedStore {
     }
 }
 
-/// Verify all 299 library entries, manifest-covered identity and date, then
-/// snapshot the destination bytes used by the preflight comparison.
+/// Prepare a store from a manifest-verified PODxt Live library backup.
 pub fn prepare_tone_store(
-    backup: &FilePath,
-    slot: Location,
-    source: StoreSource,
-) -> Result<PreparedStore, String> {
-    prepare_at(backup, slot, source, utc_day()?)
-}
-
-pub(super) fn utc_day() -> Result<u64, String> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs() / 86_400)
-        .map_err(|error| format!("Cannot determine the current UTC day: {error}"))
-}
-
-fn prepare_at(
     directory: &FilePath,
     slot: Location,
     source: StoreSource,
-    day: u64,
 ) -> Result<PreparedStore, String> {
+    let backup = verify_tone_backup(directory, slot)?;
+    let candidate = match source {
+        StoreSource::OriginalSlot => backup.original.clone(),
+        StoreSource::Replacement(tone) => tone,
+    };
+    Ok(PreparedStore { backup, candidate })
+}
+
+/// Validate the manifest, identity and all 299 entries. Retain the exact
+/// destination payload for the addressed read inside the write transaction.
+pub fn verify_tone_backup(
+    directory: &FilePath,
+    slot: Location,
+) -> Result<VerifiedToneBackup, String> {
     if directory
         .file_name()
         .and_then(|name| name.to_str())
@@ -118,18 +125,13 @@ fn prepare_at(
     let identity =
         Identity::parse(&entry("identity.syx")?).ok_or("Invalid PODxt backup identity.")?;
     check_live_identity(&identity)?;
-    let stamp = crate::backup::utc(day * 86_400).1;
     let log = entry("log.txt")?;
     if !std::str::from_utf8(&log)
         .ok()
         .and_then(|text| text.lines().next())
-        .and_then(|line| line.strip_prefix("PODxt Live library backup at "))
-        .is_some_and(|line| {
-            line.split_once(' ')
-                .is_some_and(|(date, _)| date == &stamp[..10])
-        })
+        .is_some_and(|line| line.starts_with("PODxt Live library backup at "))
     {
-        return Err("Select a PODxt Live library backup made today (UTC).".into());
+        return Err("Select a completed PODxt Live library backup.".into());
     }
     let mut original = None;
     for location in Location::all(&BankKind::ALL) {
@@ -141,16 +143,9 @@ fn prepare_at(
             original = Some(tone);
         }
     }
-    let original = original.expect("valid tone slot is in the full library");
-    let candidate = match source {
-        StoreSource::OriginalSlot => original.clone(),
-        StoreSource::Replacement(tone) => tone,
-    };
-    Ok(PreparedStore {
+    Ok(VerifiedToneBackup {
         slot,
-        day,
-        original,
-        candidate,
+        original: original.expect("valid tone slot is in the full library"),
     })
 }
 

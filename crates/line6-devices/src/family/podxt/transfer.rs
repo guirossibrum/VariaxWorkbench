@@ -83,11 +83,13 @@ pub enum WholeToneSource<'a> {
 
 /// Send a complete tone to the playing buffer under the G6 policy, using the
 /// snapshot taken by Get as the expected current state. The caller holds the
-/// rig lock and checks the automatic identity of the attachment.
+/// rig lock and checks the automatic identity of the attachment. The saved
+/// channel must still match its verified backup before dispatch.
 pub fn send_whole_tone<L: Link>(
     session: &mut Session<L>,
     expected: &EditorBuffer,
     source: WholeToneSource<'_>,
+    backup: &VerifiedToneBackup,
     cancelled: impl Fn() -> bool,
 ) -> Result<EditorBuffer, String> {
     use live_edit::{
@@ -97,10 +99,14 @@ pub fn send_whole_tone<L: Link>(
     for op in [
         Operation::PodxtEditBufferWrite,
         Operation::PodxtKeepEditBufferChanges,
+        Operation::PodxtLibraryRead,
     ] {
         if !session.allows(op) {
             return Err("Whole-tone send is closed. No edit was sent.".into());
         }
+    }
+    if backup.slot() != expected.channel {
+        return Err("Verify a backup for the playing channel before sending.".into());
     }
     TonePayload::from_dump(&expected.tone)?;
     open_editor(session, &cancelled)?;
@@ -127,6 +133,8 @@ pub fn send_whole_tone<L: Link>(
         setting.check_model(model.read(&before), packs, "original")?;
         setting.check_model(model.read(&candidate), packs, "requested")?;
     }
+    check_stop(&cancelled)?;
+    backup.verify_slot(session)?;
     check_channel(session, expected.channel)?;
     check_stop(&cancelled)?;
     session
