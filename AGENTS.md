@@ -104,6 +104,17 @@ sends no `0x45`, `0x61`, `0x6C` or other write, no program change, and no
 PODxt write. The read results are a prerequisite for the #177 store test.
 This approval covers that read only.
 
+**Editor sends and stores (owner decision 2026-11-25, after the #238 ladder and
+listen-list passed).** The Variax editor may send programs to the guitar's
+working buffer for live editing (#204) and store presets through Write to
+device, Read unmodified from device, Copy/Paste and Sync, copied from Workbench
+1.75 (#205). It must use the shared verified procedures (#245): full upload or
+difference messages for live edits; for stores 0x43, 100 ms, 61, one 0x71 wait,
+a full read-back, no automatic resend, and the silent-timeout stop. Each path
+stays behind its own compile-time switch, closed until its first owner-run test
+on the rig (first live edit, first Write to device, first Sync) passes with the
+owner's approval.
+
 Stored-bank writes (G7) are released for the owner-run bank-write tests. No
 firmware install or reset is planned.
 Firmware downloads, version comparison, static extraction and offline
