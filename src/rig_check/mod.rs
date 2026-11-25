@@ -19,6 +19,8 @@ pub mod computer;
 pub mod connection;
 pub mod engine_check;
 pub mod evidence;
+#[cfg(feature = "gui")]
+pub mod gui;
 pub mod guided;
 pub mod hints;
 pub mod live;
