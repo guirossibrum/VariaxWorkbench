@@ -115,6 +115,25 @@ stays behind its own compile-time switch, closed until its first owner-run test
 on the rig (first live edit, first Write to device, first Sync) passes with the
 owner's approval.
 
+**Rig Check real runs (owner decision 2026-11-25, #267).** Every Rig Check
+device and guided step may be enabled for real runs, including the live and
+save steps, once it has been reviewed and merged. The audio steps stay closed
+because audio is not implemented. Rig Check must cover every kind of device
+message the app sends. Its save steps run only when every earlier step in the
+same run passed; after any failure, the rest of the run is read-only. A passing
+run on the owner's rig is the owner's approval to test the app's matching
+writes. The owner runs each released build first, and it is shared with
+others only when the owner says so.
+
+**Distribution (owner decision 2026-11-25, #273).** Builds are not signed or
+notarized; there is no Apple developer account and none is planned. The
+macOS app carries only an ad-hoc signature, which Apple silicon requires to
+run. The disk image tells users how to authorize the app. Untested builds may
+be published as GitHub alpha pre-releases, labelled untested. On macOS the
+app must not depend on Line 6 or other third-party drivers (the Line 6 driver
+is Intel-only, and none exists for Apple silicon). A direct USB connection,
+built into the app, is allowed, with owner-run tests as for any device path.
+
 Stored-bank writes (G7) are released for the owner-run bank-write tests. No
 firmware install or reset is planned.
 Firmware downloads, version comparison, static extraction and offline
