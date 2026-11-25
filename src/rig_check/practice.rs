@@ -43,6 +43,8 @@ pub struct Faults {
     pub user_does_not_act: bool,
     /// Report the Variax as firmware 2.00 (unverified).
     pub unverified_variax: bool,
+    /// Report the PODxt Live as firmware 2.00 (unverified).
+    pub unverified_podxt: bool,
     /// The guitar interface is not given back to its driver after release.
     pub driver_not_returned: bool,
     /// Another program holds the guitar interface.
@@ -245,7 +247,11 @@ impl SimRig {
         Self {
             clock: Duration::ZERO,
             podxt: PodxtModel {
-                firmware: [0, 3, 0, 1],
+                firmware: if faults.unverified_podxt {
+                    [0, 2, 0, 0]
+                } else {
+                    [0, 3, 0, 1]
+                },
                 playing: stored_tones[start_channel],
                 stored: stored_tones,
                 channel: Some(start_channel as u16),

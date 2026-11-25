@@ -34,6 +34,8 @@ pub struct RunData {
     /// Reads from steps 2.3 and 2.4, compared with the backup in 2.5.
     pub podxt_reads: Vec<(Location, Result<EditBuffer, String>)>,
     pub start_program: Option<Program>,
+    /// The 192 settings bytes from step 3.2.
+    pub start_settings: Option<[u8; 192]>,
     pub start_preset: Option<Preset>,
     pub variax_library: Vec<(Preset, Program)>,
     pub touched_podxt: bool,
@@ -86,8 +88,11 @@ pub fn execute(ctx: &mut Ctx<'_>) -> Result<(), String> {
         (2, 4) => super::podxt_reads::one_bank(ctx),
         (2, 5) => podxt_library(ctx),
         (3, 1) => variax_identity(ctx),
+        (3, 2) => super::variax_reads::current_settings(ctx),
         (3, 3) => variax_current_program(ctx),
         (3, 4) => variax_all_presets(ctx),
+        (3, 5) => super::variax_reads::one_preset(ctx),
+        (3, 6) => super::variax_reads::one_bank(ctx),
         (6, 2) => rig_guard(ctx),
         _ => placeholder(ctx),
     }
@@ -436,11 +441,13 @@ fn variax_current_program(ctx: &mut Ctx<'_>) -> Result<(), String> {
         super::practice::program_name(&read.words),
         read.words[1091]
     ));
+    super::variax_reads::after_full_read(ctx, &read.words);
     ctx.data.start_program = Some(read.words);
     Ok(())
 }
 
 fn variax_all_presets(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    super::variax_reads::flag_unverified(ctx);
     let start = ctx.data.start_program.ok_or("No starting program (3.3).")?;
     let mut library = Vec::new();
     let mut failure = None;
