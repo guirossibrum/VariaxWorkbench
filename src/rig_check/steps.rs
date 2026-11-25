@@ -396,7 +396,7 @@ fn podxt_version_comparison(ctx: &mut Ctx<'_>) -> Result<(), String> {
         .podxt_identity
         .as_ref()
         .ok_or("No PODxt Live identity from step 2.1.")?;
-    let details = [0u8, 3, 0, 1].into_iter().zip(identity.version).enumerate()
+    let details = podxt::PODXT_LIVE_VERSION.into_iter().zip(identity.version).enumerate()
         .filter(|(_, (expected, actual))| expected != actual)
         .map(|(offset, (expected, actual))| {
             let xor = expected ^ actual;

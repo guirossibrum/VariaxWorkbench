@@ -6,7 +6,7 @@ GitHub issues and the [project board](https://github.com/users/guirossibrum/proj
 
 - [ ] [#278](https://github.com/guirossibrum/VariaxWorkbench/issues/278) native macOS and Windows CI runs of the bundled model and portable render checksum checks. Linux rendering and embedded asset bytes in the cross-built macOS and Windows libraries are verified.
 
-- [ ] #271 owner verification for the Variax 300/600 evidence branch and later PODxt evidence integration. The Variax evidence approvals are open for the first owner run.
+- [ ] #271 owner verification for the Variax 300/600 evidence branch remains pending with its approvals open. The separate PODxt 299-entry diagnostic remains closed pending owner approval. Rig Check step 2.7 compares the identity captured in 2.1 offline.
 
 - [ ] #245 first owner run of the 0x3B difference audition. Live approval is closed. Editor sends and stores in #204/#205 use their own compile-time switches and require separately approved owner runs. [Difference audition card](variax-diff-listen-test-card.md).
 

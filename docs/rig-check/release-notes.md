@@ -14,8 +14,10 @@ explained, confirmed step at a time and writes a text report. Catalogue:
   earlier steps must pass before a save is offered, and every save requires
   its exact typed confirmation. A silent save waits two minutes following
   the protocol cleanup and ends with USB release.
-- Audio streams (8.2–8.5) are unavailable. PODxt firmware evidence and a
-  physical action for Variax CC 84 are pending.
+- Audio streams (8.2–8.5) remain closed. PODxt step 2.7 compares the
+  identity captured in 2.1 offline. The device crate's separate addressed
+  evidence sweep remains closed pending owner approval. A physical action
+  for Variax CC 84 is pending.
 - Real runs capture evidence automatically. In practice, use `--evidence`
   to save the verified backups used by the write checks.
 - Start with the preset and channel you are playing. Rig Check reads the

@@ -17,6 +17,7 @@ pub const APPROVED_STEP_2_3: bool = true;
 pub const APPROVED_STEP_2_4: bool = true;
 pub const APPROVED_STEP_2_5: bool = true;
 pub const APPROVED_STEP_2_6: bool = true;
+pub const APPROVED_PODXT_EVIDENCE: bool = true;
 pub const APPROVED_STEP_3_1: bool = true;
 pub const APPROVED_STEP_3_2: bool = true;
 pub const APPROVED_STEP_3_3: bool = true;
@@ -62,6 +63,7 @@ pub const fn approved(id: StepId) -> bool {
         (2, 4) => APPROVED_STEP_2_4,
         (2, 5) => APPROVED_STEP_2_5,
         (2, 6) => APPROVED_STEP_2_6,
+        (2, 7) => APPROVED_PODXT_EVIDENCE,
         (3, 1) => APPROVED_STEP_3_1,
         (3, 2) => APPROVED_STEP_3_2,
         (3, 3) => APPROVED_STEP_3_3,
@@ -95,12 +97,16 @@ pub const fn approved(id: StepId) -> bool {
     }
 }
 
-/// Whether a step may touch real devices on this build. `Ok` for computer
-/// steps; otherwise the step's approval and every gate it names must be open.
+/// Whether a step can run in real mode. Device steps require their
+/// approval and every gate they name. The offline PODxt comparison also
+/// has its own approval, separate from the library's addressed read.
 pub fn real_device_check(id: StepId) -> Result<(), String> {
     let Some(step) = catalogue::step(id) else {
         return Err(format!("Step {id} is not in the catalogue."));
     };
+    if id == catalogue::PODXT_COMPATIBILITY && !approved(id) {
+        return Err(format!("Step {id} is {NOT_AUTHORIZED}."));
+    }
     if !step.needs_device_approval() {
         return Ok(());
     }
@@ -150,6 +156,14 @@ mod tests {
                 assert!(result.is_ok(), "{}", step.id);
             }
         }
+    }
+
+    #[test]
+    fn the_offline_podxt_comparison_has_its_own_enabled_approval() {
+        let id = catalogue::PODXT_COMPATIBILITY;
+        assert!(approved(id));
+        assert!(!catalogue::step(id).unwrap().needs_device_approval());
+        assert!(real_device_check(id).is_ok());
     }
 
     #[test]
