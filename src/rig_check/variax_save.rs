@@ -12,9 +12,12 @@ use super::catalogue::{SaveNotice, StepId};
 use super::practice::{Program, flash_index, packed, preset_label, program_name};
 use super::procedures::{program_bytes, same_program, variax_read_preset, with_variax};
 use super::runner::{Ctx, SKIPPED};
-use line6_devices::family::variax::{Preset, write};
+use line6_devices::family::variax::{
+    Preset,
+    procedures::{self as shared_variax, SILENT_STORE_WAIT, VerifiedStoreError},
+    write,
+};
 use line6_devices::gate::Operation;
-use std::time::Duration;
 
 pub const VARIAX_SAVE: &[Operation] = &[
     Operation::VariaxIdentity,
@@ -22,8 +25,6 @@ pub const VARIAX_SAVE: &[Operation] = &[
     Operation::VariaxPresetSwitch,
     Operation::VariaxStoreRestore,
 ];
-/// After a silent 15-second wait, keep the rig untouched this long (#177).
-pub const AFTER_TIMEOUT: Duration = Duration::from_secs(120);
 pub const SPARE_WARNING: &str =
     "Do not save any slot in flash 40-59 until spare sector 62 is known blank (#177).";
 
@@ -106,30 +107,27 @@ pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
     }
     let bytes = packed(&backup);
     let name = program_name(&backup);
-    let mut committed_at = None;
-    let outcome = with_variax(ctx, VARIAX_SAVE, |session, stopping| {
+    let acknowledged = with_variax(ctx, VARIAX_SAVE, |session, stopping| {
         let program = write::Program::new(&name, &bytes)?;
-        let result = write::store_observing_commit(session, preset, &program, stopping, || {
-            committed_at = Some(());
-        });
+        let timeout_notice = format!(
+            "No 0x71. Keeping the rig untouched for {} s; no more MIDI is sent. {SPARE_WARNING}",
+            SILENT_STORE_WAIT.as_secs()
+        );
+        let result =
+            shared_variax::store_once(session, preset, &program, stopping, &timeout_notice, || {});
         match result {
-            Ok(()) => Ok(Ok(session.link.elapsed())),
-            Err(write::StoreError::NoConfirmation) => {
-                session.note(format!(
-                    "No 0x71. Keeping the rig untouched for {} s; no more MIDI is sent. {SPARE_WARNING}",
-                    AFTER_TIMEOUT.as_secs()
-                ));
-                session.link.pause(AFTER_TIMEOUT);
-                Ok(Err(()))
-            }
-            Err(write::StoreError::Other(error)) => Err(error),
+            Ok(()) => Ok(true),
+            Err(VerifiedStoreError::SilentTimeout) => Ok(false),
+            Err(
+                VerifiedStoreError::BeforeCommit(error)
+                | VerifiedStoreError::Unknown(error)
+                | VerifiedStoreError::Verification(error),
+            ) => Err(error),
         }
     })?;
-    if committed_at.is_some() {
-        ctx.rec
-            .note("The store command (0x61) was sent once. It is never repeated.");
-    }
-    if outcome.is_err() {
+    ctx.rec
+        .note("The store command (0x61) was sent once. It is never repeated.");
+    if !acknowledged {
         ctx.op.instruct(
             ctx.rec.id,
             "Keep the rig powered and untouched. Rig Check waited 2 minutes.",
@@ -228,7 +226,7 @@ mod tests {
                 .any(|l| l.contains("Keeping the rig untouched for 120 s"))
         );
         assert_eq!(rig.borrow().variax.stores, 1, "sent once, never repeated");
-        assert!(rig.borrow().clock >= AFTER_TIMEOUT);
+        assert!(rig.borrow().clock >= SILENT_STORE_WAIT);
     }
 
     #[test]

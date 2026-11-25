@@ -12,6 +12,10 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 - [x] Rig Check pauses after each executed step and shows the values named on its SEE card. Finished results can be reopened from the sidebar. The terminal uses the same summary, and raw evidence stays in the saved report. Headless practice tests check all 28 runnable steps, keyboard Continue, sidebar replay, and Stop with the closing rig check. [#272](https://github.com/guirossibrum/VariaxWorkbench/issues/272).
 
+- [x] #271 device groundwork adds a separately gated Variax 300/600 current-program read that reports firmware verification status. Fake links cover 3.10, another version, rejected identities, and malformed chunk retry and cleanup. The read uses identity, two settings blocks and 35 current-buffer chunks, with no preset selection. [Shared API](variax-shared-procedures.md).
+
+- [x] Rig Check uses the shared #245 Variax identity, buffer read, preset reload, audition and store exchanges. Practice-mode comparison rules and per-step approval switches are preserved. [#243](https://github.com/guirossibrum/VariaxWorkbench/issues/243) · [Shared API](variax-shared-procedures.md).
+
 - [x] #245 moves the verified Variax wire procedures into the device crate. Existing owner-tool fake transports still assert the original bytes, including the store and switch-back sequences. The difference audition covers the exact 0x3B send, the retained checksum word, the full read-back and the return. [Shared API](variax-shared-procedures.md).
 
 - [x] Rig Check recording comparison (`rig-check --compare A.wav B.wav [BASE1 BASE2] [--reports A.txt B.txt]`, offline): peak and RMS level, a ten-band spectrum, the strongest frequency within ±60 cents of each open string, and the onset time, compared against twice the take-to-take variation of a same-computer baseline or fixed tolerances; engine-check lines from both reports are shown and a pitch difference is linked to differing pitch/tuning words. Tests use synthetic WAVs (strums detuned by 20 cents, quieter or later) and a synthetic report. No audio device is used. [#266](https://github.com/guirossibrum/VariaxWorkbench/issues/266).

@@ -8,6 +8,7 @@
 
 pub mod backup;
 pub mod driver;
+pub mod firmware_read;
 mod follow;
 pub mod procedures;
 pub use follow::{FollowUpdate, follow};

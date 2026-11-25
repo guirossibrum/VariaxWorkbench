@@ -3,11 +3,10 @@
 
 use super::practice::{Program, preset_label};
 use super::procedures::{
-    self, IDENTITY_RETRY_DELAY, VARIAX_READ, VARIAX_SELECT, program_bytes, same_program,
-    variax_read_preset, with_variax,
+    self, VARIAX_READ, VARIAX_SELECT, program_bytes, same_program, variax_read_preset, with_variax,
 };
 use super::runner::Ctx;
-use line6_devices::family::variax::{self, ParameterValue, Preset};
+use line6_devices::family::variax::{ParameterValue, Preset, procedures as shared_variax};
 use line6_devices::midi::hex;
 
 /// Bytes missing from damaged `0x3C` replies that were retried, from the
@@ -44,7 +43,7 @@ fn describe(value: &ParameterValue) -> String {
 pub fn current_settings(ctx: &mut Ctx<'_>) -> Result<(), String> {
     flag_unverified(ctx);
     let current = with_variax(ctx, VARIAX_READ, |session, _| {
-        variax::read_current_checked_retrying_silence(session, IDENTITY_RETRY_DELAY, |_| Ok(()))
+        shared_variax::read_settings_checked(session, |_| Ok(()))
     })?;
     let metadata = current.metadata;
     ctx.rec.show(format!("Preset name: {:?}", metadata.name));

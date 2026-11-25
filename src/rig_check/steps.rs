@@ -11,7 +11,7 @@ use super::procedures::{
 use super::record::Mode;
 use super::runner::Ctx;
 use line6_devices::family::podxt::{self, BankKind, EditBuffer, Location};
-use line6_devices::family::variax::{self, Preset};
+use line6_devices::family::variax::{self, Preset, procedures as shared_variax};
 use line6_devices::identity::Identity;
 use line6_devices::midi::hex;
 use std::path::PathBuf;
@@ -295,10 +295,7 @@ pub fn podxt_verified(identity: &Identity) -> bool {
 }
 
 pub fn variax_verified(identity: &Identity) -> bool {
-    identity.is_line6()
-        && identity.family == variax::IDENTITY_FAMILY
-        && identity.member == 4
-        && identity.version == *b"0310"
+    shared_variax::check_identity(identity).is_ok()
 }
 
 fn podxt_identity(ctx: &mut Ctx<'_>) -> Result<(), String> {
@@ -445,7 +442,7 @@ fn podxt_library(ctx: &mut Ctx<'_>) -> Result<(), String> {
 
 fn variax_identity(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let identified = with_variax(ctx, VARIAX_IDENTITY, |session, _| {
-        variax::identify_retrying_silence(session, procedures::IDENTITY_RETRY_DELAY)
+        shared_variax::identify_reported(session)
     })?;
     let identity = identified.identity;
     if !identity.is_line6() || identity.family != variax::IDENTITY_FAMILY {

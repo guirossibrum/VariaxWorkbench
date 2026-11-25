@@ -2,27 +2,18 @@
 //!
 //! Each wrapper opens a gated, logged session for one step and calls the
 //! library's public procedures, so a pass exercises the same code as the
-//! editor. The shared procedure work in #245 (Variax) and #246 (PODxt) will
-//! replace these wrappers; until then this is the only file that knows the
-//! library's procedure names.
+//! editor. Rig Check keeps its step policy, evidence and comparison rules here.
 
 use super::approvals;
 use super::catalogue::StepId;
 use super::practice::{PROGRAM_WORDS, Program};
 use super::record::Mode;
 use super::runner::Ctx;
-use line6_devices::family::variax::span_read::{
-    BUFFER_WORDS, PresetSpan, read_selected_spans, read_spans,
-};
-use line6_devices::family::variax::{self, Preset};
+use line6_devices::family::variax::{Preset, procedures as variax};
 use line6_devices::gate::{GatePolicy, Operation};
 use line6_devices::session::{Link, Log, Session};
 use std::time::Duration;
 
-pub const CHUNK_WORDS: u16 = 32;
-pub const CHUNK_COUNT: usize = BUFFER_WORDS.div_ceil(CHUNK_WORDS) as usize;
-/// The owner tool waits two seconds after a silent identity timeout (#177).
-pub const IDENTITY_RETRY_DELAY: Duration = Duration::from_secs(2);
 /// Words 871 and 872 follow the tone knob even with saved tone on (#181,
 /// #234); the checksum word follows them.
 pub const TONE_POSITION_WORDS: [usize; 3] = [871, 872, 1091];
@@ -122,34 +113,10 @@ pub fn drain<L: Link>(session: &mut Session<L>) -> Result<(), String> {
     session.listen(DRAIN).map(|_| ())
 }
 
-pub fn chunks() -> [PresetSpan; CHUNK_COUNT] {
-    std::array::from_fn(|index| {
-        let start = index as u16 * CHUNK_WORDS;
-        let count = (BUFFER_WORDS - start).min(CHUNK_WORDS);
-        PresetSpan::new(start, count).expect("chunk is in bounds")
-    })
-}
-
 /// The result of a 35-chunk read.
 pub struct FullRead {
     pub words: Program,
     pub raw_replies: Vec<Vec<u8>>,
-}
-
-fn collect(replies: Vec<variax::span_read::SpanReply>) -> Result<FullRead, String> {
-    let mut words = Vec::with_capacity(PROGRAM_WORDS);
-    let mut raw = Vec::with_capacity(replies.len());
-    for reply in replies {
-        words.extend(reply.words);
-        raw.push(reply.raw);
-    }
-    let words: Program = words
-        .try_into()
-        .map_err(|_| "Incomplete full program read.".to_string())?;
-    Ok(FullRead {
-        words,
-        raw_replies: raw,
-    })
 }
 
 /// Read all 1,092 active words in 35 chunks (#234).
@@ -158,11 +125,14 @@ pub fn variax_full_read<L: Link>(
     stopping: &dyn Fn() -> bool,
 ) -> Result<FullRead, String> {
     let mut replies = Vec::new();
-    read_spans(session, &chunks(), stopping, |reply| {
-        replies.push(reply);
+    let words = variax::read_buffer(session, stopping, |reply| {
+        replies.push(reply.raw);
         Ok(())
     })?;
-    collect(replies)
+    Ok(FullRead {
+        words,
+        raw_replies: replies,
+    })
 }
 
 /// Select a stored preset (program change), then read its 1,092 words.
@@ -172,11 +142,14 @@ pub fn variax_read_preset<L: Link>(
     stopping: &dyn Fn() -> bool,
 ) -> Result<FullRead, String> {
     let mut replies = Vec::new();
-    read_selected_spans(session, preset, &chunks(), stopping, |reply| {
-        replies.push(reply);
+    let words = variax::read_unmodified(session, preset, stopping, |reply| {
+        replies.push(reply.raw);
         Ok(())
     })?;
-    collect(replies)
+    Ok(FullRead {
+        words,
+        raw_replies: replies,
+    })
 }
 
 /// Same stored program, ignoring the tone-position words.
@@ -188,10 +161,7 @@ pub fn same_program(a: &Program, b: &Program) -> bool {
 }
 
 pub fn program_bytes(words: &Program) -> Vec<u8> {
-    words
-        .iter()
-        .flat_map(|w| w.to_be_bytes()[1..].to_vec())
-        .collect()
+    variax::pack(words).to_vec()
 }
 
 /// Positions of differing words.
@@ -201,11 +171,9 @@ pub fn word_differences(a: &Program, b: &Program) -> Vec<usize> {
 
 /// The 192 settings bytes carried by words 851..915.
 pub fn settings_of(words: &Program) -> [u8; 192] {
-    let mut out = [0u8; 192];
-    for (i, word) in words[851..915].iter().enumerate() {
-        out[i * 3..i * 3 + 3].copy_from_slice(&word.to_be_bytes()[1..]);
-    }
-    out
+    variax::pack(words)[variax::METADATA]
+        .try_into()
+        .expect("fixed Variax settings range")
 }
 
 pub const PODXT_IDENTITY: &[Operation] = &[Operation::PodxtIdentity];
