@@ -902,3 +902,90 @@ fn follow_notice_for_another_attachment_or_tab_is_ignored() {
     assert_eq!(entries(&app)[1].2.device.key, current);
     assert_eq!(source.0.borrow().completed.len(), 2);
 }
+
+#[test]
+fn unbound_driver_at_start_requires_consent_before_repair_and_identity() {
+    use super::super::detection::SimulatedJobKind;
+
+    let (ctx, mut app, source) = fixture();
+    source.usb(true, false);
+    tick(&ctx, &mut app);
+    let parent = entries(&app)[0].2.device.key.attachment.clone();
+    source.finish(
+        parent.clone(),
+        SimulatedGuitar::DriverUnbound("driver unbound".into()),
+    );
+    tick(&ctx, &mut app);
+    assert_eq!(entries(&app).len(), 1);
+    assert_eq!(
+        entries(&app)[0].2.device.guitar_status.as_deref(),
+        Some("Guitar: driver unbound")
+    );
+
+    // A passive notice cannot grant consent or send identity on the unbound bridge.
+    source.notice(&parent, SimulatedNotice::Connected);
+    source.guitar(parent.clone());
+    tick(&ctx, &mut app);
+    assert_eq!(source.0.borrow().completed.len(), 1);
+
+    detection_button(&ctx, &mut app, "refresh-guitar");
+    assert!(matches!(
+        app.detect_confirmation,
+        Some(DetectConfirmation::Reattach { .. })
+    ));
+    frame(
+        &ctx,
+        &mut app,
+        vec![egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        }],
+    );
+    assert!(app.detect_confirmation.is_none());
+    assert_eq!(source.0.borrow().completed.len(), 1);
+    assert_eq!(entries(&app).len(), 1);
+
+    detection_button(&ctx, &mut app, "refresh-guitar");
+    detection_button(&ctx, &mut app, "yes");
+    assert!(app.detect_confirmation.is_none());
+    let completed = &source.0.borrow().completed;
+    assert_eq!(completed.len(), 2);
+    assert_eq!(completed[1].kind, SimulatedJobKind::ReattachGuitarDriver);
+    assert_eq!(completed[1].attachment, parent);
+    assert_eq!(entries(&app)[1].0, "variax");
+}
+
+#[test]
+fn driver_repair_consent_does_not_carry_over_to_a_new_usb_address() {
+    use super::super::detection::SimulatedJobKind;
+
+    let (ctx, mut app, source) = fixture();
+    source.usb(true, false);
+    tick(&ctx, &mut app);
+    let parent = entries(&app)[0].2.device.key.attachment.clone();
+    source.finish(
+        parent.clone(),
+        SimulatedGuitar::DriverUnbound("driver unbound".into()),
+    );
+    tick(&ctx, &mut app);
+    detection_button(&ctx, &mut app, "refresh-guitar");
+
+    source.0.borrow_mut().address = Some(11);
+    source.guitar(parent);
+    detection_button(&ctx, &mut app, "yes");
+    assert_eq!(source.0.borrow().completed.len(), 1);
+    let replacement = app.detection.as_ref().unwrap().attachment_key("8-2.1");
+    source.finish(
+        replacement,
+        SimulatedGuitar::DriverUnbound("replacement driver unbound".into()),
+    );
+    tick(&ctx, &mut app);
+    assert_eq!(entries(&app).len(), 1);
+    assert_eq!(
+        source.0.borrow().completed[1].kind,
+        SimulatedJobKind::Initial
+    );
+}

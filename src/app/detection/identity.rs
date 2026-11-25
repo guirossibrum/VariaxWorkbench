@@ -9,6 +9,7 @@ use std::thread::JoinHandle;
 pub(in crate::editor) enum JobKind {
     Initial,
     RefreshGuitar,
+    ReattachGuitarDriver,
     Listen,
 }
 
@@ -35,6 +36,11 @@ pub(in crate::editor) enum Guitar {
         allow(dead_code)
     )]
     OlderFirmware(String),
+    #[cfg_attr(
+        not(any(test, all(feature = "usb", target_os = "linux"))),
+        allow(dead_code)
+    )]
+    DriverUnbound(String),
     Unavailable(String),
     CleanupFailed,
 }
@@ -126,6 +132,9 @@ mod live {
     use super::*;
     use line6_devices::device_lock::{DeviceLock, LockError, PassiveDeviceLock};
     use line6_devices::transport::rawmidi::RawMidiInput;
+    use line6_devices::transport::usb::{
+        VariaxDriverBinding, reattach_variax_driver, variax_driver_binding,
+    };
     use line6_devices::{
         family::podxt::transport::PODXT_LIVE_MIDI, transport::rawmidi::RawMidiLink,
     };
@@ -245,30 +254,77 @@ mod live {
         if metadata.usb_device_address(path) != Some(address) {
             return Outcome::Deferred;
         }
+        Outcome::Finished {
+            pod_firmware,
+            guitar: identify_guitar(rig, job.kind, (path, address), cancel),
+        }
+    }
+
+    fn identify_guitar(
+        rig: &DeviceLock,
+        kind: JobKind,
+        (path, address): (&str, u8),
+        cancel: &AtomicBool,
+    ) -> Guitar {
+        if is_locked(Gate::IdentityRequest) {
+            return Guitar::Unavailable("The guitar identity gate is closed.".into());
+        }
+        if cancel.load(Ordering::Relaxed) {
+            return Guitar::Unavailable("Identification cancelled.".into());
+        }
+        let binding = || variax_driver_binding(path, address);
+        match binding() {
+            Ok(VariaxDriverBinding::Expected) => {}
+            Ok(VariaxDriverBinding::Unbound) if kind != JobKind::ReattachGuitarDriver => {
+                return Guitar::DriverUnbound(
+                    "The expected guitar interface driver is unavailable. Use Refresh guitar to reattach it.".into(),
+                );
+            }
+            Ok(VariaxDriverBinding::Unbound) => {
+                if let Err(error) = run_if_unlocked(Gate::IdentityRequest, || {
+                    reattach_variax_driver(rig, path, address)
+                }) {
+                    let error = format!("Could not restore the guitar interface driver: {error}");
+                    return if matches!(binding(), Ok(VariaxDriverBinding::Unbound)) {
+                        Guitar::DriverUnbound(error)
+                    } else {
+                        Guitar::Unavailable(error)
+                    };
+                }
+            }
+            Ok(VariaxDriverBinding::Other(driver)) => {
+                return Guitar::Unavailable(format!(
+                    "Unexpected guitar interface driver {driver}."
+                ));
+            }
+            Err(error) => return Guitar::Unavailable(error),
+        }
+        let metadata = LinuxSysfs::new();
         let guitar_ready = matches!(recognise(&metadata), Recognition::Recognised { device, .. }
             if device.sysfs_name == path && expected_driver_binding(&device)
                 && metadata.usb_device_address(path) == Some(address));
-        let guitar = if !guitar_ready {
-            Guitar::Unavailable("The expected guitar interface driver is unavailable.".into())
-        } else {
-            match usb::read_discovery_identity(rig, (path, address), cancel) {
-                Ok(DiscoveryIdentity::Verified) => Guitar::Verified(GUITAR_VERSION),
-                Ok(DiscoveryIdentity::OlderFirmware(firmware)) => Guitar::OlderFirmware(firmware),
-                Err(IdentifyError::Locked) => {
-                    Guitar::Unavailable("The guitar identity gate is closed.".into())
-                }
-                Err(IdentifyError::Failed(stop)) if stop.cleanup.is_some() => Guitar::CleanupFailed,
-                Err(IdentifyError::Failed(stop)) if stop.failure == IdentityFailure::TimedOut => {
-                    Guitar::Silent
-                }
-                Err(IdentifyError::Failed(stop)) => {
-                    Guitar::Unavailable(stop.failure.sentence().into())
+        if !guitar_ready {
+            return Guitar::Unavailable(
+                "The expected guitar interface driver is unavailable.".into(),
+            );
+        }
+        match usb::read_discovery_identity(rig, (path, address), cancel) {
+            Ok(DiscoveryIdentity::Verified) => Guitar::Verified(GUITAR_VERSION),
+            Ok(DiscoveryIdentity::OlderFirmware(firmware)) => Guitar::OlderFirmware(firmware),
+            Err(IdentifyError::Locked) => {
+                Guitar::Unavailable("The guitar identity gate is closed.".into())
+            }
+            Err(IdentifyError::Failed(stop)) if stop.cleanup.is_some() => {
+                if matches!(binding(), Ok(VariaxDriverBinding::Unbound)) {
+                    Guitar::DriverUnbound("USB cleanup left the guitar interface driver unbound. Use Refresh guitar to reattach it, or replug PODxt Live USB as a last resort.".into())
+                } else {
+                    Guitar::CleanupFailed
                 }
             }
-        };
-        Outcome::Finished {
-            pod_firmware,
-            guitar,
+            Err(IdentifyError::Failed(stop)) if stop.failure == IdentityFailure::TimedOut => {
+                Guitar::Silent
+            }
+            Err(IdentifyError::Failed(stop)) => Guitar::Unavailable(stop.failure.sentence().into()),
         }
     }
 
