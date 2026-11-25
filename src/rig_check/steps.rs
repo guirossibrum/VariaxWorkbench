@@ -31,6 +31,8 @@ pub struct RunData {
     pub start_tone: Option<EditBuffer>,
     pub start_channel: Option<Location>,
     pub podxt_library: Vec<(Location, EditBuffer)>,
+    /// Reads from steps 2.3 and 2.4, compared with the backup in 2.5.
+    pub podxt_reads: Vec<(Location, Result<EditBuffer, String>)>,
     pub start_program: Option<Program>,
     pub start_preset: Option<Preset>,
     pub variax_library: Vec<(Preset, Program)>,
@@ -80,6 +82,8 @@ pub fn execute(ctx: &mut Ctx<'_>) -> Result<(), String> {
         (1, 2) => super::connection::open_and_release(ctx),
         (2, 1) => podxt_identity(ctx),
         (2, 2) => podxt_current_tone(ctx),
+        (2, 3) => super::podxt_reads::one_channel(ctx),
+        (2, 4) => super::podxt_reads::one_bank(ctx),
         (2, 5) => podxt_library(ctx),
         (3, 1) => variax_identity(ctx),
         (3, 3) => variax_current_program(ctx),
@@ -341,6 +345,12 @@ fn podxt_library(ctx: &mut Ctx<'_>) -> Result<(), String> {
         .iter()
         .map(|entry| (entry.location, entry.tone.clone()))
         .collect();
+    let content = super::podxt_reads::compare_with_backup(ctx);
+    if content > 0 {
+        return Err(format!(
+            "{content} earlier channel read(s) differ in content from the backup."
+        ));
+    }
     if let Some(start) = &ctx.data.start_tone {
         let matches: Vec<Location> = ctx
             .data
