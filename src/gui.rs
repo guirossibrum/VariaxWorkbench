@@ -10,6 +10,7 @@ use std::{
 use variax_workbench::device_probe::{
     self, Consent, HostRig, LinuxSysfs, ProbeMode, ProbeSession, RigBackend, Stage, StageStatus,
 };
+use variax_workbench::firmware_notice::{Device as FirmwareDevice, FirmwareNotice};
 use variax_workbench::hardware_gates::{self, Gate};
 use variax_workbench::pod_preset;
 use variax_workbench::recording;
@@ -489,6 +490,23 @@ impl Workbench {
         }
     }
 
+    fn firmware_notices(&self) -> impl Iterator<Item = FirmwareNotice> + '_ {
+        self.detection
+            .iter()
+            .flat_map(DetectionService::firmware_notices)
+            .chain(self.device_check.firmware_notice())
+    }
+
+    fn firmware_unverified(&self, device: FirmwareDevice) -> bool {
+        self.firmware_notices()
+            .any(|notice| notice.device() == device)
+    }
+
+    fn backup_firmware_blocked(&self, choice: BackupChoice) -> bool {
+        self.firmware_unverified(FirmwareDevice::Podxt)
+            || (choice != BackupChoice::Podxt && self.firmware_unverified(FirmwareDevice::Variax))
+    }
+
     fn verified_backup_guitar(&self) -> Option<&detection::DeviceKey> {
         let mut guitars = self.tabs.entries.iter().filter_map(|entry| {
             let tab = entry.device.as_ref()?;
@@ -502,6 +520,9 @@ impl Workbench {
     }
 
     fn start_backup(&mut self, ctx: &egui::Context, choice: BackupChoice) {
+        if self.backup_firmware_blocked(choice) {
+            return;
+        }
         let target = if choice == BackupChoice::VariaxFull {
             let Some(guitar) = self.verified_backup_guitar() else {
                 self.device_check_notice = "Wait for a verified Variax connection.".into();
@@ -526,6 +547,9 @@ impl Workbench {
         target: Option<detection::DeviceKey>,
         root: Option<PathBuf>,
     ) {
+        if self.backup_firmware_blocked(choice) {
+            return;
+        }
         let Some(root) = root else {
             self.device_check_notice = "No folder chosen. Nothing was sent.".into();
             return;
@@ -638,6 +662,9 @@ impl Workbench {
 
     fn start_tone(&mut self, choice: ToneChoice) {
         self.tone_choice = None;
+        if self.firmware_unverified(FirmwareDevice::Podxt) {
+            return;
+        }
         if self.backup_rx.is_some() || self.tone_rx.is_some() {
             self.device_check_notice = "Wait until the current check finishes.".into();
             return;
@@ -689,6 +716,20 @@ impl Workbench {
             self.device_check_buttons.retain(|id, _| *id == "open");
             self.device_check_button_ids.clear();
         }
+        let pod_unverified = self.firmware_unverified(FirmwareDevice::Podxt);
+        let variax_backup_blocked = self.backup_firmware_blocked(BackupChoice::Variax);
+        let mut notices: Vec<_> = self.firmware_notices().collect();
+        let staged_notice = self.device_check.firmware_notice();
+        notices.retain(|notice| Some(*notice) != staged_notice);
+        if self
+            .backup_choice
+            .is_some_and(|choice| self.backup_firmware_blocked(choice))
+        {
+            self.backup_choice = None;
+        }
+        if pod_unverified {
+            self.tone_choice = None;
+        }
         let mut open = true;
         let mut answer = None;
         let mut restart = false;
@@ -717,6 +758,11 @@ impl Workbench {
                 device_probe::STEP_TWO_PREFLIGHT,
                 device_probe::CANCEL_LIMIT
             ));
+            for notice in &notices {
+                let text = notice.message();
+                ui.colored_label(theme::AMBER, &text);
+                visible.push_str(&format!("\n{text}"));
+            }
             restart = self
                 .device_check_button(ui, "restart", "Start over")
                 .clicked();
@@ -799,9 +845,12 @@ impl Workbench {
                     }
                     let yes = device_probe::consent_yes_label(ProbeMode::ThisComputer, stage);
                     visible.push_str(yes);
-                    if self.device_check_button(ui, "yes", yes).clicked() {
-                        answer = Some(Consent::Yes);
-                    }
+                    let enabled = stage != Stage::SettingsRead || !variax_backup_blocked;
+                    ui.add_enabled_ui(enabled, |ui| {
+                        if self.device_check_button(ui, "yes", yes).clicked() {
+                            answer = Some(Consent::Yes);
+                        }
+                    });
                 });
             } else if self.device_check.status(Stage::UsbRecognition) != StageStatus::NotRun {
                 let outcome = match self.device_check.stopped() {
@@ -857,22 +906,26 @@ impl Workbench {
                     visible.push_str(yes);
                 } else {
                     ui.horizontal(|ui| {
-                        if self
-                            .device_check_button(ui, "backup-variax", BACKUP_VARIAX)
-                            .clicked()
-                        {
-                            self.backup_choice = Some(BackupChoice::Variax);
+                        if !variax_backup_blocked {
+                            visible.push_str(BACKUP_VARIAX);
+                            if self
+                                .device_check_button(ui, "backup-variax", BACKUP_VARIAX)
+                                .clicked()
+                            {
+                                self.backup_choice = Some(BackupChoice::Variax);
+                            }
                         }
-                        if self
-                            .device_check_button(ui, "backup-podxt", BACKUP_PODXT)
-                            .clicked()
-                        {
-                            self.backup_choice = Some(BackupChoice::Podxt);
+                        if !pod_unverified {
+                            visible.push_str(BACKUP_PODXT);
+                            if self
+                                .device_check_button(ui, "backup-podxt", BACKUP_PODXT)
+                                .clicked()
+                            {
+                                self.backup_choice = Some(BackupChoice::Podxt);
+                            }
                         }
                     });
-                    visible.push_str(BACKUP_VARIAX);
-                    visible.push_str(BACKUP_PODXT);
-                    if self.verified_backup_guitar().is_some() {
+                    if !variax_backup_blocked && self.verified_backup_guitar().is_some() {
                         if self
                             .device_check_button(ui, "backup-variax-full", BACKUP_VARIAX_FULL)
                             .clicked()
@@ -883,7 +936,7 @@ impl Workbench {
                     }
                 }
             }
-            if tone_offered() {
+            if tone_offered() && (!pod_unverified || self.tone_rx.is_some()) {
                 ui.separator();
                 ui.heading("PODxt Live tone");
                 ui.label(TONE_INTRO);

@@ -13,6 +13,7 @@
 //! Its tests use a fake connection. The normal app can send the request when
 //! a user runs the card in `docs/hardware-gates/g2.md`. Agents do not.
 
+use crate::firmware_notice::FirmwareNotice;
 use crate::midi::Identity;
 use crate::read_session::IDENTITY_REQUEST;
 use std::collections::VecDeque;
@@ -58,11 +59,11 @@ pub struct IdentityPair {
     pub guitar: Identity,
 }
 
-/// An automatic identity can report outdated firmware without approving it
+/// An automatic identity can report unverified firmware without approving it
 /// for a live tab or any settings operation.
 pub enum DiscoveryIdentity {
     Verified,
-    OlderFirmware(String),
+    Unverified(FirmwareNotice),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -162,6 +163,7 @@ pub struct IdentifyStop {
     pub bridge: Option<CanonicalIdentity>,
     /// Guitar identity actually decoded before the exchange stopped, if any.
     pub guitar: Option<CanonicalIdentity>,
+    pub firmware_notice: Option<FirmwareNotice>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -178,7 +180,7 @@ pub struct IdentityExchange {
     /// not pass, and kept here so a report can name what was decoded.
     pub bridge: Option<CanonicalIdentity>,
     pub guitar: Option<CanonicalIdentity>,
-    older_guitar: Option<String>,
+    firmware_notice: Option<FirmwareNotice>,
     pub requests_sent: usize,
     pub release_attempted: bool,
     pub reattach_attempted: bool,
@@ -573,14 +575,9 @@ fn read_window(
     let Some(frame) = first else {
         return Err(IdentityFailure::TimedOut);
     };
-    if let Ok(identity) = Identity::parse(&frame)
-        && identity.product_id() == GUITAR_PRODUCT
-        && identity
-            .version
-            .is_some_and(|version| version < 0x0307_0000)
-    {
-        exchange.older_guitar = Some(identity.version_string());
-    }
+    exchange.firmware_notice = line6_devices::identity::Identity::parse(&frame)
+        .as_ref()
+        .and_then(FirmwareNotice::variax);
     match classify(&frame)? {
         (identity, parsed) if identity.role == IdentityRole::Guitar => {
             remember(exchange, identity);
@@ -681,7 +678,7 @@ fn run_exchange(
         pair: None,
         bridge: None,
         guitar: None,
-        older_guitar: None,
+        firmware_notice: None,
         requests_sent: 0,
         release_attempted: false,
         reattach_attempted: false,
@@ -700,13 +697,13 @@ fn run_exchange(
 
 #[cfg(any(test, all(target_os = "linux", feature = "usb")))]
 pub(crate) fn discovery_result(
-    mut exchange: IdentityExchange,
+    exchange: IdentityExchange,
 ) -> Result<DiscoveryIdentity, IdentifyError> {
     if exchange.cleanup_failure.is_none()
-        && exchange.failure == Some(IdentityFailure::Inconsistent)
-        && let Some(firmware) = exchange.older_guitar.take()
+        && exchange.pair.is_none()
+        && let Some(notice) = exchange.firmware_notice
     {
-        return Ok(DiscoveryIdentity::OlderFirmware(firmware));
+        return Ok(DiscoveryIdentity::Unverified(notice));
     }
     exchange_result(exchange).map(|_| DiscoveryIdentity::Verified)
 }
@@ -726,6 +723,7 @@ pub(crate) fn exchange_result(exchange: IdentityExchange) -> Result<IdentityPair
         reattach_failed: exchange.reattach_failed,
         bridge: exchange.bridge,
         guitar: exchange.guitar,
+        firmware_notice: exchange.firmware_notice,
     }))
 }
 
@@ -786,8 +784,13 @@ mod tests {
     }
 
     #[test]
-    fn an_old_guitar_reply_warns_without_passing_the_manual_or_automatic_identity() {
-        for (revision, warned) in [(b"0306", true), (b"0307", false), (b"030X", false)] {
+    fn an_unverified_guitar_reply_warns_without_passing_the_manual_or_automatic_identity() {
+        for (revision, reported) in [
+            (b"0306", "3.06"),
+            (b"0307", "3.07"),
+            (b"0311", "3.11"),
+            (b"030X", "readable firmware"),
+        ] {
             let mut reply = guitar_reply();
             reply[12..16].copy_from_slice(revision);
             let (manual, _) = run(ScriptedIdentity::new([reply.clone()]));
@@ -803,18 +806,16 @@ mod tests {
             assert_eq!(transport.sent(), &[IDENTITY_REQUEST]);
             assert_full_cleanup(&exchange, &transport);
             assert!(exchange.pair.is_none());
-            if warned {
-                assert!(
-                    matches!(discovery_result(exchange), Ok(DiscoveryIdentity::OlderFirmware(version)) if version == "3.06")
-                );
-            } else {
-                assert!(discovery_result(exchange).is_err());
-            }
+            let Ok(DiscoveryIdentity::Unverified(notice)) = discovery_result(exchange) else {
+                panic!("expected unverified identity for {revision:?}");
+            };
+            let notice = notice.message();
+            assert!(notice.contains(reported) && notice.contains("3.10"));
         }
     }
 
     #[test]
-    fn an_old_reply_cannot_mask_ambiguity_or_cleanup_failure() {
+    fn an_unverified_reply_cannot_mask_ambiguity_or_cleanup_failure() {
         let mut reply = guitar_reply();
         reply[12..16].copy_from_slice(b"0306");
         for mut transport in [

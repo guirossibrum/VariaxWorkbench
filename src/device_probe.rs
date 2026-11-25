@@ -14,6 +14,7 @@
 //! leaves step 4 unavailable. The simulated backend uses injected sources
 //! for all four steps. See `docs/device-check.md`.
 
+use crate::firmware_notice::FirmwareNotice;
 use crate::hardware_gates::{self, Gate};
 use crate::identity_stage::{
     self, CanonicalIdentity, IdentifyError, IdentifyStop, IdentityFailure, IdentityPair,
@@ -785,6 +786,9 @@ pub trait ProbeBackend {
     fn identify(&mut self) -> Result<IdentityPair, IdentifyError>;
     fn read_settings(&mut self, pass: ReadPass) -> Result<PresetMetadata, String>;
     /// Extra words for a live settings read. Simulation leaves this empty.
+    fn firmware_notice(&self) -> Option<FirmwareNotice> {
+        None
+    }
     fn settings_note(&self) -> Option<&str> {
         None
     }
@@ -989,6 +993,7 @@ pub struct HostRig<S: OsMetadataSource> {
     calls: BackendCalls,
     /// Plain text from the last live settings read, when one finished.
     settings_note: Option<String>,
+    firmware_notice: Option<FirmwareNotice>,
 }
 
 impl<S: OsMetadataSource> HostRig<S> {
@@ -997,6 +1002,7 @@ impl<S: OsMetadataSource> HostRig<S> {
             reader,
             calls: BackendCalls::default(),
             settings_note: None,
+            firmware_notice: None,
         }
     }
 
@@ -1052,6 +1058,10 @@ impl<S: OsMetadataSource> ProbeBackend for HostRig<S> {
         #[cfg(feature = "usb")]
         {
             let both = crate::live_families::read_both()?;
+            self.firmware_notice = both.firmware_notice;
+            if let Some(notice) = both.firmware_notice {
+                return Err(notice.message());
+            }
             self.settings_note = Some(both.summary);
             Ok(both.metadata)
         }
@@ -1059,6 +1069,10 @@ impl<S: OsMetadataSource> ProbeBackend for HostRig<S> {
         {
             Err("this build does not open a device for step 3; nothing was sent".into())
         }
+    }
+
+    fn firmware_notice(&self) -> Option<FirmwareNotice> {
+        self.firmware_notice
     }
 
     fn settings_note(&self) -> Option<&str> {
@@ -1117,6 +1131,13 @@ impl ProbeBackend for RigBackend {
         }
     }
 
+    fn firmware_notice(&self) -> Option<FirmwareNotice> {
+        match self {
+            Self::Simulated(rig) => rig.firmware_notice(),
+            Self::ThisComputer(rig) => rig.firmware_notice(),
+        }
+    }
+
     fn settings_note(&self) -> Option<&str> {
         match self {
             Self::Simulated(rig) => rig.settings_note(),
@@ -1151,6 +1172,11 @@ fn observed_guitar(identity: &crate::midi::Identity) -> Option<CanonicalIdentity
 }
 
 fn identity_detail(stop: &IdentifyStop) -> String {
+    if let Some(notice) = stop.firmware_notice
+        && stop.cleanup.is_none()
+    {
+        return notice.message();
+    }
     let mut text = match stop.cleanup {
         Some(cleanup) if cleanup != stop.failure => {
             format!("{} {}", stop.failure.sentence(), cleanup.sentence())
@@ -1162,6 +1188,10 @@ fn identity_detail(stop: &IdentifyStop) -> String {
     }
     if stop.reattach_failed {
         text.push_str(" If the guitar driver stays unbound, use Refresh guitar to reattach it. Replug PODxt Live USB as a last resort.");
+    }
+    if let Some(notice) = stop.firmware_notice {
+        text.push(' ');
+        text.push_str(&notice.message());
     }
     text
 }
@@ -1193,6 +1223,7 @@ pub struct ProbeSession<B: ProbeBackend> {
     stop: Option<(Stage, StopReason)>,
     first_read: Option<Reading>,
     identity_failure: Option<IdentityFailure>,
+    firmware_notice: Option<FirmwareNotice>,
     cleanup_failure: Option<IdentityFailure>,
     /// True only after the fake identity exchange has run release/reattach.
     cleanup_ran: bool,
@@ -1215,6 +1246,7 @@ impl<B: ProbeBackend> ProbeSession<B> {
             stop: None,
             first_read: None,
             identity_failure: None,
+            firmware_notice: None,
             cleanup_failure: None,
             cleanup_ran: false,
             decoded_bridge: None,
@@ -1231,6 +1263,11 @@ impl<B: ProbeBackend> ProbeSession<B> {
     /// "This computer" mode): shown as locked and never offered.
     pub fn locked(&self, stage: Stage) -> bool {
         !self.backend.can_run(stage)
+    }
+
+    pub fn firmware_notice(&self) -> Option<FirmwareNotice> {
+        self.firmware_notice
+            .or_else(|| self.backend.firmware_notice())
     }
 
     pub fn backend(&self) -> &B {
@@ -1461,6 +1498,7 @@ impl<B: ProbeBackend> ProbeSession<B> {
         self.cleanup_ran = true;
         if let Some(stop) = stop {
             self.identity_failure = Some(stop.failure);
+            self.firmware_notice = stop.firmware_notice;
             self.cleanup_failure = stop.cleanup;
             self.cleanup_ran = stop.cleanup_ran;
         }
@@ -2588,6 +2626,7 @@ mod tests {
                 reattach_failed: false,
                 bridge: None,
                 guitar: None,
+                firmware_notice: None,
             }))
         }
         fn read_settings(&mut self, _: ReadPass) -> Result<PresetMetadata, String> {
@@ -2661,6 +2700,27 @@ mod tests {
 
     fn scripted(script: identity_stage::ScriptedIdentity) -> ProbeSession<SimulatedRig> {
         ProbeSession::new(SimulatedRig::with_identity(Scenario::Connected, script))
+    }
+
+    #[test]
+    fn device_check_reports_unverified_guitar_firmware_and_model_without_offering_settings() {
+        for member in [4, 9] {
+            let mut reply = identity_stage::guitar_reply();
+            reply[10] = member;
+            reply[12..16].copy_from_slice(b"0311");
+            let mut probe = scripted(identity_stage::ScriptedIdentity::new([reply]));
+            probe.answer(Consent::Yes);
+            probe.answer(Consent::Yes);
+
+            assert_eq!(probe.status(Stage::Identification), StageStatus::Stopped);
+            assert!(probe.awaiting().is_none());
+            assert_eq!(probe.backend().calls().settings_reads, 0);
+            let text = probe.detail(Stage::Identification).unwrap();
+            assert!(text.contains("3.11") && text.contains("3.10"));
+            assert!(text.contains("open, edit and save files"));
+            assert_eq!(text.contains("model could not be verified"), member != 4);
+            assert!(!text.to_ascii_lowercase().contains("update"));
+        }
     }
 
     #[test]
