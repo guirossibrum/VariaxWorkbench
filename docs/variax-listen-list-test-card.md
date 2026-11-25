@@ -1,8 +1,8 @@
 # Variax listen-list audition (#238 follow-up)
 
-**Approved 2026-11-25 for one owner run.** This run uses the four test
-models in order A–D. The list uses temporary working-buffer uploads and
-returns the guitar to its verified starting preset.
+**Owner run passed 2026-11-25.** All four working-buffer read-backs and
+the return to Spank 1 were verified. The live switch is closed. Owner log
+`reso5-listen-list-20261125T063032Z-dL6eQA`.
 
 ## Offline check
 

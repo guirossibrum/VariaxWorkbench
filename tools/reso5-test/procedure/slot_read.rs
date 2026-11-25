@@ -1,10 +1,7 @@
 use super::{METADATA, PreparedStore, prepare_store};
 use line6_devices::{
     backup,
-    family::variax::{
-        self,
-        slot_read::{SlotIndex, SlotReply, read_slots},
-    },
+    family::variax::slot_read::{SlotIndex, SlotReply, read_slots},
     gate::{GatePolicy, Operation},
     identity::Identity,
     session::{Link, Log, Session},
@@ -100,8 +97,7 @@ pub fn capture<L: Link>(
     }
     let mut session = Session::new(link, &SlotReadPolicy, log);
     session.require_expected_sysex();
-    let identified = variax::identify_retrying_silence(&mut session, super::IDENTITY_RETRY_DELAY)?;
-    super::variax_identity(&identified.identity)?;
+    line6_devices::family::variax::procedures::identify(&mut session)?;
     session.note("Verified Variax 300/600 firmware 3.10.");
 
     let mut replies = Vec::with_capacity(INDICES.len());

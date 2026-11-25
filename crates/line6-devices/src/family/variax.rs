@@ -7,9 +7,10 @@
 //! backup.
 
 pub mod backup;
-mod follow;
-pub use follow::{FollowUpdate, follow};
 pub mod driver;
+mod follow;
+pub mod procedures;
+pub use follow::{FollowUpdate, follow};
 pub mod slot_read;
 pub mod span_read;
 pub mod transport;

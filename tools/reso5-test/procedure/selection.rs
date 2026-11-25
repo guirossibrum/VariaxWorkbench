@@ -1,14 +1,21 @@
 //! Owner-only #238 procedure. The live adapter keeps each rung separately closed.
+pub mod diff_listen;
 pub mod listen_list;
 mod sources;
 
-use super::{IDENTITY_RETRY_DELAY, METADATA, compare_settings, full_read, store, variax_identity};
+use super::{METADATA, compare_settings, full_read};
 use line6_devices::{
-    family::variax::{self, Preset, write},
+    family::variax::{
+        Preset,
+        procedures::{self, BufferEdit, VerifiedStoreError, compare_image, pack, spare_warning},
+        write,
+    },
     gate::{GatePolicy, Operation},
     session::{Link, Session},
 };
-use std::{cell::Cell, path::Path};
+#[cfg(test)]
+use std::cell::Cell;
+use std::path::Path;
 use variax_workbench::hardware_gates::{Gate, is_locked};
 
 pub(super) type Image = [u8; variax_workbench::factory_reference::PROGRAM_BYTES];
@@ -59,16 +66,6 @@ pub fn target(index: u8) -> Result<Preset, String> {
 
 fn index(preset: Preset) -> u8 {
     preset.bank() * 5 + 4 - preset.slot()
-}
-
-fn spare_warning(preset: Preset) -> String {
-    let group = index(preset) / 20;
-    let start = group * 20;
-    format!(
-        "Do not store any slot in {start}–{} until spare {} is known blank.",
-        start + 19,
-        60 + group
-    )
 }
 
 fn preset_name(preset: Preset) -> String {
@@ -155,20 +152,17 @@ fn capture<L: Link>(
     selected: Option<Preset>,
     stopping: impl FnMut() -> bool,
 ) -> Result<full_read::FullBuffer, String> {
-    let dir = root.join(stage);
-    std::fs::create_dir(&dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+    let dir = capture_dir(root, stage)?;
     if let Some(preset) = selected {
         session.note(format!("Selecting {} for {stage}.", slot_label(preset)));
     }
     full_read::read_chunks_selecting(session, &dir, selected, stopping)
 }
 
-fn pack(words: &full_read::FullBuffer) -> Image {
-    let mut image = [0; std::mem::size_of::<Image>()];
-    for (&word, bytes) in words.iter().zip(image.as_chunks_mut::<3>().0) {
-        bytes.copy_from_slice(&word.to_be_bytes()[1..]);
-    }
-    image
+fn capture_dir(root: &Path, stage: &str) -> Result<std::path::PathBuf, String> {
+    let dir = root.join(stage);
+    std::fs::create_dir(&dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+    Ok(dir)
 }
 
 fn returned<L: Link>(
@@ -188,8 +182,10 @@ fn returned<L: Link>(
             "Wait {READ_TIME} for the tool to verify {name}. Retries can take longer. Nothing to type."
         ),
     );
-    let restored = capture(session, root, stage, Some(original), || false)
-        .and_then(|words| store::compare_image(&words, snapshot, "Original preset switch-back"));
+    let restored = capture_dir(root, stage).and_then(|dir| {
+        session.note(format!("Selecting {} for {stage}.", slot_label(original)));
+        procedures::return_to_preset(session, original, snapshot, full_read::save_chunks(&dir))
+    });
     if restored.is_ok() {
         announce(&format!("Back on {name}, verified."));
     } else {
@@ -223,8 +219,7 @@ fn snapshot<L: Link>(
         &format!("Your current preset stays selected while the tool identifies it in {READ_TIME}."),
         "Wait for the tool to name your starting preset. Retries can take longer. Nothing to type.",
     );
-    let device = variax::identify_retrying_silence(session, IDENTITY_RETRY_DELAY)?;
-    variax_identity(&device.identity)?;
+    procedures::identify(session)?;
     let snapshot = pack(&capture(session, root, "snapshot", None, stopping)?);
     let original = identify(&snapshot, current)?;
     session.note(format!("Identified current {}.", slot_label(original)));
@@ -275,7 +270,7 @@ pub fn attempt<L: Link>(
         Some(target),
         &mut stopping,
     )
-    .and_then(|words| store::compare_image(&words, baseline, "Target preflight"));
+    .and_then(|words| compare_image(&words, baseline, "Target preflight"));
     if preflight.is_ok() {
         announce(&format!(
             "{target_name} matches the expected current program."
@@ -327,18 +322,22 @@ pub fn attempt<L: Link>(
     let program = write::Program::new(&name, &prepared.program)?;
 
     if prepared.mode.listens() {
-        let result = write::audition(session, &program, &mut stopping)
-            .and_then(|()| {
+        let result = procedures::send_buffer_verified(
+            session,
+            BufferEdit::Full(&program),
+            "Audition read-back",
+            &mut stopping,
+            || {
                 announce("Edited sound uploaded to the working buffer.");
                 step(
                     &mut announce,
                     &format!("The edited sound stays loaded during the check, which takes {READ_TIME}."),
                     "Wait for Play now. Retries can take longer. Nothing to type yet.",
                 );
-                capture(session, root, "listen-readback", None, &mut stopping)
-            })
-            .and_then(|words| store::compare_image(&words, &prepared.program, "Audition read-back"))
-            .and_then(|()| {
+                capture_dir(root, "listen-readback").map(full_read::save_chunks)
+            },
+        )
+            .and_then(|_| {
                 announce("The working buffer matches the edited program.");
                 let sound = sources::audition_sound(&snapshot, &prepared.program)?;
                 step(
@@ -363,70 +362,69 @@ pub fn attempt<L: Link>(
         return Ok(());
     }
 
-    let committing = Cell::new(false);
-    match write::store_observing_commit(session, target, &program, &mut stopping, || {
-        committing.set(true)
-    }) {
-        Ok(()) => {}
-        Err(write::StoreError::NoConfirmation) => {
-            let warning = spare_warning(target);
-            let notice =
-                format!("No 0x71. Keep the rig powered and untouched for 2 minutes. {warning}");
-            session.note(&notice);
+    let warning = spare_warning(target);
+    let announcer = std::cell::RefCell::new(&mut announce);
+    let verified = procedures::store_verified(
+        session,
+        target,
+        &program,
+        "Stored target read-back",
+        &mut stopping,
+        |_| {
             step(
-                &mut announce,
+                &mut **announcer.borrow_mut(),
                 "The edited sound may remain loaded. Leave the guitar powered and untouched for two minutes.",
                 &format!(
                     "No save reply arrived. Wait for the stop message, then check the guitar and follow the backup instructions. {warning}"
                 ),
             );
-            session.link.pause(store::AFTER_TIMEOUT);
+        },
+        |session| {
+            (announcer.borrow_mut())(&format!("The guitar confirmed the save to {target_name}."));
+            step(
+                &mut **announcer.borrow_mut(),
+                &format!(
+                    "Reloading {target_name}. You will hear that preset for {READ_TIME}, plus a settings check, then {original_name} again."
+                ),
+                &format!(
+                    "The full read takes {READ_TIME}, followed by a settings check. Retries can take longer. Nothing to type."
+                ),
+            );
+            capture(session, root, "stored-readback", Some(target), || false)
+        },
+    );
+    let verified = match verified {
+        Ok(()) => Ok(()),
+        Err(VerifiedStoreError::SilentTimeout) => {
             announce(
                 "Stopped. One save command was sent. Whether it saved and which sound is loaded are unknown.",
             );
             return Err(format!(
-                "Slot state is unknown. Check the guitar, take a Device check backup if it responds, and report with the log. {}",
-                warning
+                "Slot state is unknown. Check the guitar, take a Device check backup if it responds, and report with the log. {warning}",
             ));
         }
-        Err(error) if committing.get() => return Err(format!("{error} {}", spare_warning(target))),
-        Err(error) => {
+        Err(VerifiedStoreError::Unknown(error)) => return Err(format!("{error} {warning}")),
+        Err(VerifiedStoreError::BeforeCommit(error)) => {
             return returned(
                 session,
                 root,
                 "cancel-return",
                 original,
                 &snapshot,
-                Err(error.to_string()),
+                Err(error),
                 &mut announce,
             );
         }
-    }
-
-    announce(&format!("The guitar confirmed the save to {target_name}."));
-    step(
-        &mut announce,
-        &format!(
-            "Reloading {target_name}. You will hear that preset for {READ_TIME}, plus a settings check, then {original_name} again."
-        ),
-        &format!(
-            "The full read takes {READ_TIME}, followed by a settings check. Retries can take longer. Nothing to type."
-        ),
-    );
-    let verified = (|| {
-        let words = capture(session, root, "stored-readback", Some(target), || false)?;
-        store::compare_image(&words, &prepared.expected, "Stored target read-back")?;
-        let settings = variax::read_current_checked_retrying_silence(
-            session,
-            IDENTITY_RETRY_DELAY,
-            variax_identity,
-        )?;
+        Err(VerifiedStoreError::Verification(error)) => Err(error),
+    };
+    let verified = verified.and_then(|()| {
+        let settings = procedures::read_settings(session)?;
         compare_settings(
             &settings.metadata.raw,
             &prepared.expected[METADATA],
             "Stored target settings",
         )
-    })();
+    });
     if verified.is_ok() {
         announce(&format!(
             "{target_name} matches the expected saved sound and settings."

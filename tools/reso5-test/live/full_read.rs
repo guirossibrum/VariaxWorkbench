@@ -32,7 +32,7 @@ pub(super) fn run(offline: bool, archive: &Path, log_root: &Path) -> Result<(), 
         Ok(()) if offline => "PASS: factory reference verified offline.".into(),
         Ok(()) => format!(
             "Captured all {} active-buffer chunks.",
-            full_read::CHUNK_COUNT
+            line6_devices::family::variax::procedures::CHUNK_COUNT
         ),
     });
     println!("Log folder: {}", trace.path.display());

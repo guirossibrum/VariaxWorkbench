@@ -4,7 +4,7 @@ GitHub issues and the [project board](https://github.com/users/guirossibrum/proj
 
 ## Pending implementation or validation
 
-- [ ] #238 listen-list owner audition. Offline checks and fake transports passed. One owner run of models A–D from Spank 1 was approved on 2026-11-25 and is pending. [Approved test card](variax-listen-list-test-card.md).
+- [ ] #245 first owner run of the 0x3B difference audition. Live approval is closed. Editor sends and stores in #204/#205 use their own compile-time switches and require separately approved owner runs. [Difference audition card](variax-diff-listen-test-card.md).
 
 - [ ] #238 rungs 4a–4c passed. Owner confirmation is pending on omitting rungs 3a and 3b, whose store-and-restore coverage overlaps #177 and #238. [Owner card](variax-any-selection-test-card.md).
 - [ ] Owner verification of normal interface 1 cleanup and recovery when the guitar driver is naturally unbound. [Driver return test card](variax-driver-rebind-test-card.md) · [#239](https://github.com/guirossibrum/VariaxWorkbench/issues/239).

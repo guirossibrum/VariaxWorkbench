@@ -112,7 +112,7 @@ pub(super) fn render_file(path: &Path, models: &ModelLibrary) -> Result<Image, S
     render(&PresetFile::parse(read(path)?)?, models)
 }
 
-fn render(preset: &PresetFile, models: &ModelLibrary) -> Result<Image, String> {
+pub(super) fn render(preset: &PresetFile, models: &ModelLibrary) -> Result<Image, String> {
     if !matches!(preset.device_id(), 0x70000 | 0x70004) || &preset.as_bytes()[8..12] != b"L6PA" {
         return Err("Expected a first-generation Variax FORM/L6PA .vwm preset.".into());
     }

@@ -3,6 +3,10 @@ pub mod selection;
 pub mod slot_read;
 pub mod store;
 
+use line6_devices::family::variax::procedures::{
+    METADATA, check_identity as variax_identity, expected_stored_image, read_settings,
+    set_firmware_checksum,
+};
 use line6_devices::{
     backup,
     family::{podxt, variax, variax::write},
@@ -21,8 +25,6 @@ use variax_workbench::{
     preset::PresetFile,
 };
 
-// Give the reattached kernel driver time to finish its identity traffic.
-const IDENTITY_RETRY_DELAY: Duration = Duration::from_secs(2);
 const NAME: &str = "Reso-5";
 const SETTINGS_HASH: &str = "13f8a99828851153eebff71b2fa644bf390cf144f9da6b73b9ee6c66f502aaf7";
 const OWN_HASH: &str = "7a245957b3263a9dc225633cdabdd2e94ce65d1ad3a6c0eb2cab23ef4e01e6a1";
@@ -30,7 +32,6 @@ const STORE_HASH: &str = "f8694ec3353c4d112bef4b171c7c91110f5a23f53082a1560addfd
 /// Expected firmware-stamped image for a future direct-interface readback.
 const STORED_HASH: &str = "90d79131f7909639aa2d0793cb3f617fbd95a95a1ada7a54f90ec84de4e28164";
 const TRIM_HASH: &str = "ad38b28c0390afced301367ea1cc9b2c0a5242cd1a4fb9a3250843c31f82175d";
-const METADATA: std::ops::Range<usize> = 2553..2745;
 const SYSTEM_SLOT: u32 = 0x02010000;
 const TRIM_PARAM: u32 = 0x200000;
 const TRIM_DB: f32 = -6.0;
@@ -88,18 +89,6 @@ struct PodxtIdentityOnly;
 impl GatePolicy for PodxtIdentityOnly {
     fn allows(&self, operation: Operation) -> bool {
         operation == Operation::PodxtIdentity && !is_locked(Gate::IdentityRequest)
-    }
-}
-
-fn variax_identity(identity: &Identity) -> Result<(), String> {
-    if identity.is_line6()
-        && (identity.family, identity.member, identity.version) == (7, 4, *b"0310")
-    {
-        Ok(())
-    } else {
-        Err(format!(
-            "Expected Variax 300/600 MIDI identity and firmware 3.10, got {identity:?}."
-        ))
     }
 }
 
@@ -297,30 +286,6 @@ fn canonical_store_program(raw: &[u8], hash: &str) -> Result<[u8; PROGRAM_BYTES]
     Ok(program)
 }
 
-fn expected_stored_image(program: &[u8; PROGRAM_BYTES]) -> [u8; PROGRAM_BYTES] {
-    let mut image = *program;
-    for (word, &byte) in image.as_chunks_mut::<3>().0[767..771]
-        .iter_mut()
-        .zip(b"0310")
-    {
-        *word = [0, 0, byte];
-    }
-    set_firmware_checksum(&mut image);
-    image
-}
-
-fn set_firmware_checksum(image: &mut [u8; PROGRAM_BYTES]) {
-    let (checksum, data) = image
-        .as_chunks_mut::<3>()
-        .0
-        .split_last_mut()
-        .expect("program words");
-    let sum = data.iter().fold(0u32, |sum, &[a, b, c]| {
-        sum.wrapping_add(u32::from_be_bytes([0, a, b, c]))
-    });
-    checksum.copy_from_slice(&sum.to_be_bytes()[1..]);
-}
-
 fn check_rendered_settings(preset: &PresetFile, raw: [u8; 192]) -> Result<(), String> {
     let decoded = PresetFile::from_metadata(
         &PresetMetadata::from_bytes(raw)?,
@@ -375,11 +340,7 @@ pub fn attempt<L: Link>(
     if cancelled() {
         return Err("Cancelled before reading the guitar.".into());
     }
-    let current = variax::read_current_checked_retrying_silence(
-        session,
-        IDENTITY_RETRY_DELAY,
-        variax_identity,
-    )?;
+    let current = read_settings(session)?;
     compare_settings(
         &current.metadata.raw,
         &prepared.start,
@@ -397,11 +358,7 @@ pub fn attempt<L: Link>(
             "Cancelled after the edit. Reselect the stored preset per the test card.".into(),
         );
     }
-    let readback = variax::read_current_checked_retrying_silence(
-        session,
-        IDENTITY_RETRY_DELAY,
-        variax_identity,
-    )?;
+    let readback = read_settings(session)?;
     if readback.metadata.name != NAME || readback.metadata.raw != prepared.end {
         return Err(
             "Settings read-back differs from the expected edit. Follow the stop rules.".into(),

@@ -1,7 +1,7 @@
 mod full_read;
 mod slot_read;
 
-use super::procedure::selection::listen_list;
+use super::procedure::selection::{diff_listen, listen_list};
 use super::procedure::{
     self, Stage, StorePolicy, VariaxPolicy, selection,
     store::{self, Mode, Prompt},
@@ -27,13 +27,14 @@ use std::{
 use variax_workbench::hardware_gates::{Gate, run_if_unlocked};
 
 const USAGE: &str =
-    "Usage: variax-reso5-test --card | --store-card | --slot-read-card | --full-read-card | --any-selection-card | --listen-list-card
+    "Usage: variax-reso5-test --card | --store-card | --slot-read-card | --full-read-card | --any-selection-card | --listen-list-card | --diff-listen-card
        variax-reso5-test [--check] stage-1|stage-2 BACKUP_DIR ARCHIVE.vxf MODELS.tsv LOG_ROOT
        variax-reso5-test [--check] store rename|restore|factory BACKUP_DIR ARCHIVE.vxf CAPTURE_DIR LOG_ROOT
        variax-reso5-test [--check] slot-read VARIAX_BACKUP PODXT_BACKUP ARCHIVE.vxf LOG_ROOT
        variax-reso5-test [--check] full-read ARCHIVE.vxf LOG_ROOT
        variax-reso5-test [--check] any-selection MODE FLASH_INDEX FULL_BACKUP ARCHIVE.vxf SOURCE MODELS.tsv LOG_ROOT
-       variax-reso5-test [--check] listen-list FULL_BACKUP ARCHIVE.vxf MODELS.tsv LOG_ROOT INPUT.vwm [INPUT.vwm ...]";
+       variax-reso5-test [--check] listen-list FULL_BACKUP ARCHIVE.vxf MODELS.tsv LOG_ROOT INPUT.vwm [INPUT.vwm ...]
+       variax-reso5-test [--check] diff-listen FLASH_INDEX FULL_BACKUP ARCHIVE.vxf MODELS.tsv LOG_ROOT";
 
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 
@@ -65,6 +66,15 @@ pub fn run(args: &[OsString]) -> Result<(), String> {
         [option, remaining @ ..] if option == "--check" => (true, remaining),
         _ => (false, args),
     };
+    if let [stage, slot, backup, archive, models, log] = args
+        && stage == "diff-listen"
+    {
+        let slot = slot
+            .to_str()
+            .and_then(|text| text.parse::<u8>().ok())
+            .ok_or(USAGE)?;
+        return run_diff_listen(offline, slot, [backup, archive, models, log].map(Path::new));
+    }
     if let [stage, backup, archive, models, log, files @ ..] = args
         && stage == "listen-list"
     {
@@ -261,7 +271,8 @@ fn run_store(
     Ok(())
 }
 
-const APPROVED_LISTEN_LIST: bool = true;
+const APPROVED_LISTEN_LIST: bool = false;
+const APPROVED_DIFF_LISTEN: bool = false;
 const APPROVED_LISTEN_4A: bool = false;
 const APPROVED_STORE_4B: bool = false;
 const APPROVED_RESTORE_4C: bool = false;
@@ -348,6 +359,37 @@ fn run_listen_list(offline: bool, paths: [&Path; 4], files: &[&Path]) -> Result<
     combine(result, trace.finish())
 }
 
+fn run_diff_listen(offline: bool, slot: u8, paths: [&Path; 4]) -> Result<(), String> {
+    if !offline && !APPROVED_DIFF_LISTEN {
+        return Err("The diff-listen audition has no owner approval for a live run.".into());
+    }
+    let [backup, archive, models, log] = paths;
+    let trace = Trace::create(log, "diff-listen")?;
+    let result = (|| {
+        let prepared = diff_listen::prepare(slot, backup, archive, models)?;
+        for line in prepared.description()? {
+            println!("{line}");
+            trace.record(line);
+        }
+        if offline {
+            return Ok(());
+        }
+        print!("{}", super::DIFF_LISTEN_CARD);
+        run_selection_device(
+            Gate::EditBufferWrite,
+            DeviceTask::DiffListen(&prepared),
+            &trace,
+        )
+    })();
+    trace.record(match &result {
+        Err(error) => format!("STOPPED: {error}"),
+        Ok(()) if offline => "PASS: offline check. No device was opened.".into(),
+        Ok(()) => "PASS: difference and original selection verified.".into(),
+    });
+    println!("Log folder: {}", trace.path.display());
+    combine(result, trace.finish())
+}
+
 fn run_selection_device(
     write_gate: Gate,
     task: DeviceTask<'_>,
@@ -373,6 +415,7 @@ enum DeviceTask<'a> {
     Store(&'a store::Prepared, &'a [u8; 192]),
     Selection(&'a selection::Prepared),
     ListenList(&'a listen_list::Prepared),
+    DiffListen(&'a diff_listen::Prepared),
 }
 
 fn prompt_store(prompt: Prompt, stopping: impl Fn() -> bool) -> Result<(), String> {
@@ -408,7 +451,10 @@ fn run_device(task: DeviceTask<'_>, trace: &Trace) -> Result<(), String> {
             &mut log,
         )?;
     }
-    if matches!(&task, DeviceTask::Selection(_) | DeviceTask::ListenList(_)) {
+    if matches!(
+        &task,
+        DeviceTask::Selection(_) | DeviceTask::ListenList(_) | DeviceTask::DiffListen(_)
+    ) {
         println!("PODxt Live verified.");
     }
     if stopping() {
@@ -458,6 +504,21 @@ fn run_device(task: DeviceTask<'_>, trace: &Trace) -> Result<(), String> {
                 let policy = selection::Policy(selection::Mode::Listen);
                 let mut session = Session::new(link, &policy, &mut log);
                 listen_list::attempt(
+                    &mut session,
+                    prepared,
+                    &trace.path,
+                    || super::confirmation::confirm("", stopping),
+                    |line| {
+                        println!("{line}");
+                        trace.record(line.to_owned());
+                    },
+                    stopping,
+                )
+            }
+            DeviceTask::DiffListen(prepared) => {
+                let policy = selection::Policy(selection::Mode::Listen);
+                let mut session = Session::new(link, &policy, &mut log);
+                diff_listen::attempt(
                     &mut session,
                     prepared,
                     &trace.path,

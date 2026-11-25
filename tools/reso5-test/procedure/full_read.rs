@@ -1,8 +1,8 @@
-use super::{STORE_HASH, canonical_store_program, read, variax_identity};
+use super::{STORE_HASH, canonical_store_program, read};
 use line6_devices::{
     family::variax::{
-        self,
-        span_read::{BUFFER_WORDS, PresetSpan, read_selected_spans, read_spans},
+        Preset, procedures,
+        span_read::{BUFFER_WORDS, PresetSpan, SpanReply},
     },
     gate::{GatePolicy, Operation},
     session::{Link, Log, Session},
@@ -14,9 +14,7 @@ use variax_workbench::{
     hardware_gates::{Gate, is_locked},
 };
 
-const CHUNK_WORDS: u16 = 32;
-pub const CHUNK_COUNT: usize = BUFFER_WORDS.div_ceil(CHUNK_WORDS) as usize;
-pub type FullBuffer = [u32; BUFFER_WORDS as usize];
+pub use procedures::{FullBuffer, chunks};
 
 struct FullReadPolicy;
 
@@ -47,20 +45,10 @@ pub fn capture<L: Link>(
         return Err("Cancelled or log unavailable before Variax identity.".into());
     }
     let mut session = Session::new(link, &FullReadPolicy, log);
-    session.require_expected_sysex();
-    let identified = variax::identify_retrying_silence(&mut session, super::IDENTITY_RETRY_DELAY)?;
-    variax_identity(&identified.identity)?;
+    procedures::identify(&mut session)?;
     session.note("Verified Variax 300/600 firmware 3.10.");
 
     read_chunks(&mut session, dir, stopping)
-}
-
-pub(super) fn chunks() -> [PresetSpan; CHUNK_COUNT] {
-    std::array::from_fn(|index| {
-        let start = index as u16 * CHUNK_WORDS;
-        let count = (BUFFER_WORDS - start).min(CHUNK_WORDS);
-        PresetSpan::new(start, count).expect("chunk is in bounds")
-    })
 }
 
 pub(super) fn chunk_path(dir: &Path, span: PresetSpan) -> std::path::PathBuf {
@@ -78,22 +66,19 @@ pub(super) fn read_chunks<L: Link>(
 pub(super) fn read_chunks_selecting<L: Link>(
     session: &mut Session<L>,
     dir: &Path,
-    selected: Option<line6_devices::family::variax::Preset>,
+    selected: Option<Preset>,
     stopping: impl FnMut() -> bool,
 ) -> Result<FullBuffer, String> {
-    let mut full = Vec::with_capacity(usize::from(BUFFER_WORDS));
-    let save = |reply: line6_devices::family::variax::span_read::SpanReply| {
-        save_new(&chunk_path(dir, reply.span), &reply.raw)?;
-        full.extend(reply.words);
-        Ok(())
-    };
+    let save = save_chunks(dir);
     if let Some(preset) = selected {
-        read_selected_spans(session, preset, &chunks(), stopping, save)?;
+        procedures::read_unmodified(session, preset, stopping, save)
     } else {
-        read_spans(session, &chunks(), stopping, save)?;
+        procedures::read_buffer(session, stopping, save)
     }
-    full.try_into()
-        .map_err(|_| "Incomplete full buffer.".into())
+}
+
+pub(super) fn save_chunks(dir: impl AsRef<Path>) -> impl FnMut(SpanReply) -> Result<(), String> {
+    move |reply| save_new(&chunk_path(dir.as_ref(), reply.span), &reply.raw)
 }
 
 /// Compare all words, reporting the two words with unresolved tone-position
