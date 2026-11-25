@@ -198,10 +198,7 @@ fn cli_startup_routes_hd_files_and_keeps_the_explicit_variax_view_option() {
     let app = Workbench::from_options(&ctx, options);
     assert_eq!(app.tabs.entries.len(), 1);
     assert_eq!(app.variax().tab, Tab::Controls);
-    assert_eq!(
-        app.variax().document.as_ref().unwrap().preset().name(),
-        "Spank example"
-    );
+    assert!(!app.variax().has_document());
 }
 
 #[test]

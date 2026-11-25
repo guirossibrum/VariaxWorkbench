@@ -158,6 +158,10 @@ impl VariaxEditor {
             if ui.button("Artwork folder…").clicked() {
                 self.artwork_dialog(ctx, services);
             }
+            if self.preferences_path.is_some() && ui.button("Choose factory firmware…").clicked()
+            {
+                self.choose_factory_archive(ctx, services);
+            }
             ui.label("Default author for new models");
             let field = ui.text_edit_singleline(&mut draft.value);
             if std::mem::take(&mut draft.focus) {

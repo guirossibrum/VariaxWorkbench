@@ -15,8 +15,10 @@ mod refresh;
 use new_files::{BankRename, NewFile};
 mod slot_files;
 mod slot_transfers;
+mod startup_library;
 use slot_files::SlotReplacement;
 use slot_transfers::SlotTransfer;
+use startup_library::LibraryOrigin;
 mod preferences;
 mod tuning_presets;
 use tuning_presets::TuningDialog;
@@ -103,10 +105,17 @@ fn save_auto_select(path: &Path, enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
+struct ParkedLibrary {
+    document: EditorDocument,
+    path: Option<PathBuf>,
+    origin: Option<LibraryOrigin>,
+}
+
 pub(super) struct VariaxEditor {
     pub(super) document: Option<EditorDocument>,
     source_path: Option<PathBuf>,
-    parked_library: Option<(EditorDocument, Option<PathBuf>)>,
+    parked_library: Option<ParkedLibrary>,
+    library_origin: Option<LibraryOrigin>,
     connection_status: Option<String>,
     #[cfg(feature = "usb")]
     refresh: refresh::Refresh,
@@ -192,6 +201,7 @@ impl VariaxEditor {
             document: None,
             source_path: None,
             parked_library: None,
+            library_origin: None,
             connection_status: None,
             #[cfg(feature = "usb")]
             refresh: refresh::Refresh::default(),
@@ -277,7 +287,11 @@ impl VariaxEditor {
                             if library.is_dirty() {
                                 library.discard_changes();
                             }
-                            (library, self.source_path.take())
+                            ParkedLibrary {
+                                document: library,
+                                path: self.source_path.take(),
+                                origin: self.library_origin.take(),
+                            }
                         })
                     } else {
                         self.parked_library.take()
@@ -297,6 +311,7 @@ impl VariaxEditor {
         self.document = Some(document);
         self.source_path = path.map(Path::to_owned);
         self.parked_library = None;
+        self.library_origin = None;
         self.drag_origin = None;
         self.clear_text_drafts();
         self.error = None;
@@ -558,8 +573,9 @@ impl VariaxEditor {
     }
 
     fn return_to_library(&mut self) {
-        if let Some((library, path)) = self.parked_library.take() {
-            self.adopt_document(library, path.as_deref());
+        if let Some(library) = self.parked_library.take() {
+            self.adopt_document(library.document, library.path.as_deref());
+            self.library_origin = library.origin;
             self.status = "Editing the library.".into();
         }
     }
@@ -1017,14 +1033,17 @@ impl VariaxEditor {
         self.follow_panel(ui);
         if self.document.is_none() {
             guitar_panel().show(ui, |ui| {
-                ui.heading("Open a Variax preset, bank or collection");
+                ui.heading("No Variax library is available");
+                ui.label("Connect a verified Variax to download its library, or open a file.");
                 ui.horizontal_wrapped(|ui| {
                     ui.add_enabled_ui(!self.is_reading() && self.pending.is_none(), |ui| {
                         if ui.button("Open file…").clicked() {
                             self.open_dialog(ui.ctx(), services);
                         }
-                        if ui.button("Try example banks").clicked() && self.document.is_none() {
-                            self.open_example();
+                        if self.preferences_path.is_some()
+                            && ui.button("Choose factory firmware…").clicked()
+                        {
+                            self.choose_factory_archive(ui.ctx(), services);
                         }
                         self.preference_button(ui);
                     });
@@ -1295,7 +1314,14 @@ impl FamilyTab for VariaxEditor {
         let has_download = self.download_button(ui);
         #[cfg(not(feature = "usb"))]
         let has_download = false;
-        self.connection_controls(ui, services, has_download);
+        let recovery = self.connection_controls(ui, services, has_download);
+        if !has_download && recovery.is_none() && self.document.is_none() {
+            ui.add_enabled(
+                false,
+                egui::Button::new("Download from guitar…").min_size(egui::vec2(0.0, theme::TARGET)),
+            )
+            .on_disabled_hover_text("Connect a verified Variax to download its library.");
+        }
     }
 }
 
@@ -1308,7 +1334,7 @@ impl ProductFamily for Family {
         FamilyInfo {
             id: "variax",
             title: "Variax Workbench",
-            new_label: "Variax (example banks)",
+            new_label: "Variax",
             extensions: &["vwm", "vwb", "l6c"],
             ceiling: 16_777_216,
         }
@@ -1340,7 +1366,7 @@ impl ProductFamily for Family {
     ) -> Result<Box<dyn FamilyTab>, String> {
         let mut editor = VariaxEditor::new(defaults);
         match source {
-            TabSource::New => editor.open_example(),
+            TabSource::New => editor.load_initial_library(defaults),
             TabSource::File(path, bytes) => {
                 editor.adopt_document(EditorDocument::from_file_bytes(bytes, &path)?, Some(&path));
                 editor.status = format!("Opened {}", path.display());

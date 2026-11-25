@@ -1,11 +1,14 @@
 use super::tuning_presets::{DETUNE, MIX, PITCH, TUNINGS, TuningDialog, set_tuning_values};
 use super::{
-    BODY, Color32, EditorDocument, FRET_MARKER, GUITAR_SURFACE, PICKUP1, PICKUP2, Pos2, PresetFile,
-    Rect, SYSTEM, Sense, TUNING, Tab, TextureHandle, ValueFormat, VariaxEditor, WIRING, egui,
+    BODY, Color32, FRET_MARKER, GUITAR_SURFACE, Pos2, Rect, SYSTEM, Sense, TUNING, TextureHandle,
+    ValueFormat, VariaxEditor, egui,
 };
+#[cfg(test)]
+use super::{EditorDocument, PICKUP1, PICKUP2, PresetFile, Tab, WIRING};
 use std::{collections::HashSet, path::Path, process::Command};
+#[cfg(test)]
+use variax_workbench::bundle::BundleFile;
 use variax_workbench::{
-    bundle::BundleFile,
     preset::PresetText,
     ui::{
         theme,
@@ -293,10 +296,11 @@ fn readable_origin(origin: &str) -> String {
 }
 
 impl VariaxEditor {
+    #[cfg(test)]
     pub(in crate::editor) fn open_example(&mut self) {
         match example_document() {
             Ok(document) => {
-                self.document = Some(document);
+                self.adopt_document(document, None);
                 self.drag_origin = None;
                 self.clear_text_drafts();
                 self.tab = Tab::Pickups;
@@ -316,6 +320,9 @@ impl VariaxEditor {
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 ui.spacing_mut().item_spacing.y = 3.0;
+                if let Some(origin) = self.library_origin {
+                    ui.label(origin.label());
+                }
                 self.bank_strip(ui, available);
                 self.model_details(ui, available);
             });
@@ -346,7 +353,7 @@ impl VariaxEditor {
             .document
             .as_ref()
             .expect("guitar header requires a document");
-        let example = document.source.as_os_str().is_empty();
+        let example = cfg!(test) && document.source.as_os_str().is_empty();
         let suffix = if example { " (example)" } else { "" };
         let mut next = document.selection();
         ui.horizontal_wrapped(|ui| {
@@ -1083,6 +1090,7 @@ fn bank_slot(
     response.on_hover_text(description)
 }
 
+#[cfg(test)]
 fn example_document() -> Result<EditorDocument, String> {
     fn chunk(output: &mut Vec<u8>, tag: &[u8; 4], data: &[u8]) {
         output.extend(tag);

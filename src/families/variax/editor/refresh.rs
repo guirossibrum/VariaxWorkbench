@@ -7,7 +7,7 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 use variax_workbench::bundle::BundleFile;
 
@@ -188,7 +188,16 @@ impl VariaxEditor {
             Ok((document, capture.restore, capture.release_error))
         }) {
             Ok((document, restore, release_error)) => {
+                let time = SystemTime::now();
+                let snapshot_error = self.preferences_path.as_deref().and_then(|preferences| {
+                    super::startup_library::save_download(preferences, &document, time)
+                        .err()
+                        .map(|error| {
+                            format!("Could not remember the downloaded Variax library: {error}")
+                        })
+                });
                 self.adopt_document(document, None);
+                self.library_origin = Some(super::LibraryOrigin::Download(time));
                 self.status =
                     "Read 60 guitar presets and 12 bank names. Use Save As to keep this library."
                         .into();
@@ -196,6 +205,9 @@ impl VariaxEditor {
                     Restore::Switched { verified: true, .. } => release_error,
                     other => Some(with_release_error(restore_notice(&other), release_error)),
                 };
+                if let Some(error) = snapshot_error {
+                    self.error = Some(with_release_error(error, self.error.take()));
+                }
             }
             Err(error) => {
                 self.error = Some(error);
@@ -415,7 +427,14 @@ pub(super) mod tests {
     #[test]
     fn verified_refresh_confirms_dirty_replacement_and_loads_an_unsaved_bundle() {
         let (ctx, mut app) = app();
+        let directory = tempfile::tempdir().unwrap();
+        let defaults = super::super::EditorDefaults {
+            artwork: directory.path().join("artwork"),
+            preferences: Some(directory.path().join("editor-preferences.txt")),
+            startup_panel: None,
+        };
         let editor = app.variax_mut();
+        editor.preferences_path.clone_from(&defaults.preferences);
         editor.change(|preset| preset.rename("Unsaved edit"));
         let old = editor.document.as_ref().unwrap().as_bytes().to_vec();
         editor.request_refresh(complete_capture);
@@ -439,7 +458,18 @@ pub(super) mod tests {
         assert!(!document.slot_is_dirty(3, 2));
         assert!(editor.source_path().is_none());
 
-        let directory = tempfile::tempdir().unwrap();
+        let mut reopened = VariaxEditor::new(&defaults);
+        reopened.load_initial_library(&defaults);
+        assert_eq!(
+            reopened.document.as_ref().unwrap().as_bytes(),
+            document.as_bytes()
+        );
+        assert!(matches!(
+            reopened.library_origin,
+            Some(super::super::LibraryOrigin::Download(_))
+        ));
+        assert!(!reopened.dirty());
+
         let target = directory.path().join("Guitar.vwb");
         std::fs::write(&target, b"original").unwrap();
         assert!(!editor.save_copy_to(target.clone()));

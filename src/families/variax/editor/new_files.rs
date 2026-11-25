@@ -7,7 +7,7 @@ use variax_workbench::{bundle::BundleFile, document::save_new};
 
 #[cfg(all(test, feature = "usb"))]
 #[path = "../file/bundle/synthetic_backup.rs"]
-mod synthetic_backup;
+pub(super) mod synthetic_backup;
 
 #[derive(Clone, Copy)]
 enum FileKind {

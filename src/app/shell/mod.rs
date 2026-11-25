@@ -875,7 +875,7 @@ fn card_icon(id: &str) -> Option<&'static str> {
 
 fn card_blurb(id: &str) -> &'static str {
     match id {
-        "variax" => "Custom 1 and Custom 2, with the Spank example open on Pickups.",
+        "variax" => "Open a Variax file or start with your saved library.",
         "podxt" => "Example tone. Nothing is sent, and no preset is switched.",
         _ => "File editor. Live connection not supported yet.",
     }

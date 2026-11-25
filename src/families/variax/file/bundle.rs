@@ -2,9 +2,9 @@
 use crate::preset::{PresetFile, chunks, container, legacy_text_issue, unique, word};
 use std::ops::Range;
 
-#[cfg(feature = "usb")]
+#[cfg(any(feature = "usb", feature = "gui"))]
 mod backup_import;
-#[cfg(feature = "usb")]
+#[cfg(any(feature = "usb", feature = "gui"))]
 pub use backup_import::BackupBundle;
 
 #[derive(Clone, Debug)]
@@ -64,6 +64,34 @@ impl BundleFile {
         let model = PresetFile::default_legacy_model_with_author(author)?;
         let models = [&model; 5];
         Self::create(true, DEFAULT_BANKS.map(|name| (name, models)))
+    }
+
+    #[cfg(feature = "gui")]
+    pub fn from_variax_factory(
+        reference: &crate::factory_reference::FactoryReference,
+    ) -> Result<Self, String> {
+        let models = reference
+            .slots()
+            .iter()
+            .map(|slot| slot.settings_file())
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::from_factory_slots(&models)
+    }
+
+    #[cfg(feature = "gui")]
+    fn from_factory_slots(models: &[PresetFile]) -> Result<Self, String> {
+        let (banks, remainder) = models.as_chunks::<5>();
+        if !remainder.is_empty() || banks.len() != DEFAULT_BANKS.len() {
+            return Err("The Variax factory archive must contain all 60 presets.".into());
+        }
+        // The physical selector runs from flash slot 4 to 0 in each bank.
+        // Workbench and the backup picker show the selector order.
+        Self::create(
+            true,
+            DEFAULT_BANKS
+                .into_iter()
+                .zip(banks.iter().map(|bank| bank.iter().rev())),
+        )
     }
 
     /// An editable collection begins with Workbench's empty "New Folder".
@@ -296,6 +324,25 @@ impl BundleFile {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "gui")]
+    #[test]
+    fn factory_slots_use_workbench_selector_order() {
+        let models = (0..60)
+            .map(|index| {
+                let mut preset = PresetFile::default_legacy_model().unwrap();
+                preset.rename(&format!("Flash {index}")).unwrap();
+                preset
+            })
+            .collect::<Vec<_>>();
+        assert!(BundleFile::from_factory_slots(&models[..59]).is_err());
+        let factory = BundleFile::from_factory_slots(&models).unwrap();
+        assert_eq!(factory.banks()[0].name, "Custom 1");
+        assert_eq!(factory.banks()[0].presets()[0].name(), "Flash 4");
+        assert_eq!(factory.banks()[10].name, "Reso");
+        assert_eq!(factory.banks()[10].presets()[4].name(), "Flash 50");
+        assert_eq!(factory.banks()[11].presets()[0].name(), "Flash 59");
+    }
+
     use super::*;
     fn chunk(id: &[u8; 4], payload: &[u8]) -> Vec<u8> {
         let mut b = id.to_vec();
