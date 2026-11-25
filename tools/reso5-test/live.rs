@@ -261,7 +261,7 @@ fn run_store(
     Ok(())
 }
 
-const APPROVED_LISTEN_LIST: bool = false;
+const APPROVED_LISTEN_LIST: bool = true;
 const APPROVED_LISTEN_4A: bool = false;
 const APPROVED_STORE_4B: bool = false;
 const APPROVED_RESTORE_4C: bool = false;
