@@ -15,6 +15,7 @@ use crate::{
 use std::time::Duration;
 
 const IDENTITY_RETRY_DELAY: Duration = Duration::from_secs(2);
+pub const SILENT_STORE_WAIT: Duration = Duration::from_secs(120);
 const CHUNK_WORDS: u16 = 32;
 pub const CHUNK_COUNT: usize = BUFFER_WORDS.div_ceil(CHUNK_WORDS) as usize;
 pub const PROGRAM_BYTES: usize = BUFFER_WORDS as usize * 3;
@@ -37,16 +38,30 @@ pub fn check_identity(identity: &Identity) -> Result<(), String> {
 /// Verify the guitar on this link. Retry an orphan tail immediately or a
 /// wholly silent exchange after two seconds, at most once in either case.
 pub fn identify<L: Link>(session: &mut Session<L>) -> Result<Identified, String> {
-    session.require_expected_sysex();
-    let device = identify_retrying_silence(session, IDENTITY_RETRY_DELAY)?;
+    let device = identify_reported(session)?;
     check_identity(&device.identity)?;
     Ok(device)
 }
 
+/// Read the reported identity with the same retry policy for diagnostic display.
+/// Call check_identity before admitting any edit or store.
+pub fn identify_reported<L: Link>(session: &mut Session<L>) -> Result<Identified, String> {
+    session.require_expected_sysex();
+    identify_retrying_silence(session, IDENTITY_RETRY_DELAY)
+}
+
 /// Verify identity with the same retry policy, then read the two settings blocks.
 pub fn read_settings<L: Link>(session: &mut Session<L>) -> Result<CurrentPreset, String> {
+    read_settings_checked(session, check_identity)
+}
+
+/// Read diagnostic settings with the caller's existing read-only identity policy.
+pub fn read_settings_checked<L: Link>(
+    session: &mut Session<L>,
+    check: impl FnOnce(&Identity) -> Result<(), String>,
+) -> Result<CurrentPreset, String> {
     session.require_expected_sysex();
-    read_current_checked_retrying_silence(session, IDENTITY_RETRY_DELAY, check_identity)
+    read_current_checked_retrying_silence(session, IDENTITY_RETRY_DELAY, check)
 }
 
 pub fn chunks() -> [PresetSpan; CHUNK_COUNT] {
@@ -294,21 +309,36 @@ pub fn store_verified<L: Link>(
             "Variax store verification requires VariaxRead.".into(),
         ));
     }
+    let notice = format!(
+        "No 0x71. Keep the rig powered and untouched for 2 minutes. {}",
+        spare_warning(preset)
+    );
+    store_once(session, preset, program, stopping, &notice, || {
+        silent(&notice)
+    })?;
+    let expected = expected_stored_image(program.bytes());
+    let actual = readback(session).map_err(VerifiedStoreError::Verification)?;
+    compare_image(&actual, &expected, phase).map_err(VerifiedStoreError::Verification)
+}
+
+/// Run the store and its silent-timeout wait. A caller with its own comparison
+/// rules must verify the reloaded target after acknowledgement.
+/// On silence the observer can record instructions before the wait begins.
+pub fn store_once<L: Link>(
+    session: &mut Session<L>,
+    preset: Preset,
+    program: &Program<'_>,
+    stopping: impl FnMut() -> bool,
+    timeout_notice: &str,
+    on_silent: impl FnOnce(),
+) -> Result<(), VerifiedStoreError> {
     let mut committing = false;
     match write::store_observing_commit(session, preset, program, stopping, || committing = true) {
-        Ok(()) => {
-            let expected = expected_stored_image(program.bytes());
-            let actual = readback(session).map_err(VerifiedStoreError::Verification)?;
-            compare_image(&actual, &expected, phase).map_err(VerifiedStoreError::Verification)
-        }
+        Ok(()) => Ok(()),
         Err(write::StoreError::NoConfirmation) => {
-            let notice = format!(
-                "No 0x71. Keep the rig powered and untouched for 2 minutes. {}",
-                spare_warning(preset)
-            );
-            session.note(&notice);
-            silent(&notice);
-            session.link.pause(Duration::from_secs(120));
+            session.note(timeout_notice);
+            on_silent();
+            session.link.pause(SILENT_STORE_WAIT);
             Err(VerifiedStoreError::SilentTimeout)
         }
         Err(error) if committing => Err(VerifiedStoreError::Unknown(error.to_string())),

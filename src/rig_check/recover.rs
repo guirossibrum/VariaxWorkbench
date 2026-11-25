@@ -12,14 +12,12 @@
 use super::catalogue::{self, RIG_GUARD};
 use super::guided::{WINDOW, watch_variax};
 use super::practice::{Program, UserAction, preset_label};
-use super::procedures::{
-    IDENTITY_RETRY_DELAY, TONE_POSITION_WORDS, variax_read_preset, with_variax,
-};
+use super::procedures::{TONE_POSITION_WORDS, variax_read_preset, with_variax};
 use super::record::{Mode, Outcome, RunRecord, StepRecord, sha256_hex, utc_now};
 use super::runner::{Ctx, Decision, Operator, ReportSink, Retry, SKIPPED};
 use super::steps::RunData;
 use line6_devices::family::podxt::{self, BankKind, Location, PodxtRequest};
-use line6_devices::family::variax::{self, Preset};
+use line6_devices::family::variax::{Preset, procedures as shared_variax};
 use line6_devices::gate::Operation;
 use line6_devices::midi::Event;
 use std::path::{Path, PathBuf};
@@ -106,7 +104,7 @@ pub fn vdi_replug(ctx: &mut Ctx<'_>) -> Result<(), String> {
     ));
     let identified = with_variax(ctx, VDI_OPS, |session, _| {
         super::procedures::drain(session)?;
-        variax::identify_retrying_silence(session, IDENTITY_RETRY_DELAY)
+        shared_variax::identify_reported(session)
     })?;
     let same = ctx
         .data

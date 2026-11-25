@@ -14,7 +14,10 @@ use super::procedures::{
     word_differences,
 };
 use super::runner::{Answer, Ctx, Question};
-use line6_devices::family::variax::write;
+use line6_devices::family::variax::{
+    procedures::{self as shared_variax, BufferEdit},
+    write,
+};
 use line6_devices::gate::Operation;
 
 pub const VARIAX_LIVE: &[Operation] = &[
@@ -29,7 +32,7 @@ fn audition(ctx: &mut Ctx<'_>, words: &Program, label: &str) -> Result<Program, 
     let bytes = packed(words);
     let read = with_variax(ctx, VARIAX_LIVE, |session, stopping| {
         let program = write::Program::new(&name, &bytes)?;
-        write::audition(session, &program, stopping)?;
+        shared_variax::send_buffer(session, BufferEdit::Full(&program), stopping)?;
         variax_full_read(session, stopping)
     })?;
     let sent = ctx.rec.checksum(
