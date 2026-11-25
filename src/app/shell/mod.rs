@@ -1,4 +1,5 @@
 //! Application navigation, tab lifecycle, and shared commands.
+use super::variax_panel::VariaxEditor;
 use super::*;
 use variax_workbench::ui::{assets, chrome, theme};
 
@@ -121,6 +122,24 @@ impl Workbench {
         }
         self.tabs
             .open(family, &self.defaults, TabSource::File(path, bytes))
+    }
+
+    fn request_editor_open(&mut self, ctx: &egui::Context) {
+        let mut handled = false;
+        self.with_active(|entry, services| {
+            let Some(editor) =
+                (&mut *entry.editor as &mut dyn std::any::Any).downcast_mut::<VariaxEditor>()
+            else {
+                return;
+            };
+            handled = true;
+            if !services.picker.is_open() && !editor.busy() && !editor.blocking_prompt() {
+                editor.open_dialog(ctx, services);
+            }
+        });
+        if !handled {
+            self.request_open_file(ctx);
+        }
     }
 
     pub(super) fn request_open_file(&mut self, ctx: &egui::Context) {
@@ -437,10 +456,11 @@ impl Workbench {
                 }
             }
         }
-        let (open, save, undo, redo, quit, help) = ctx.input(|i| {
+        let (open, save, save_as, undo, redo, quit, help) = ctx.input(|i| {
             (
                 i.key_pressed(egui::Key::O) && i.modifiers.command,
                 i.key_pressed(egui::Key::S) && i.modifiers.command,
+                i.modifiers.shift,
                 i.key_pressed(egui::Key::Z) && i.modifiers.command && !i.modifiers.shift,
                 i.key_pressed(egui::Key::Z) && i.modifiers.command && i.modifiers.shift,
                 i.key_pressed(egui::Key::Q) && i.modifiers.matches_exact(egui::Modifiers::CTRL),
@@ -449,7 +469,7 @@ impl Workbench {
         });
         if !self.has_prompt() {
             if open {
-                self.request_open_file(ctx);
+                self.request_editor_open(ctx);
             }
             self.with_active(|entry, services| {
                 if services.picker.is_open()
@@ -459,7 +479,14 @@ impl Workbench {
                     return;
                 }
                 if save {
-                    entry.editor.save_copy(ctx, services);
+                    if !save_as
+                        && let Some(editor) = (&mut *entry.editor as &mut dyn std::any::Any)
+                            .downcast_mut::<VariaxEditor>()
+                    {
+                        editor.save_file(ctx, services, false);
+                    } else {
+                        entry.editor.save_copy(ctx, services);
+                    }
                 }
                 if undo {
                     entry.editor.undo();
@@ -492,12 +519,47 @@ impl Workbench {
                             .color(theme::TEXT),
                     );
                     ui.add_enabled_ui(!self.has_prompt(), |ui| {
+                        let variax_active = self
+                            .tabs
+                            .active
+                            .and_then(|id| self.tabs.index(id))
+                            .is_some_and(|index| {
+                                self.tabs.entries[index].family.info().id == "variax"
+                            });
+                        if variax_active {
+                            self.with_active(|entry, services| {
+                                let editor = (&mut *entry.editor as &mut dyn std::any::Any)
+                                    .downcast_mut::<VariaxEditor>()
+                                    .expect("Variax tab has a Variax editor");
+                                let enabled = !services.picker.is_open()
+                                    && !editor.busy()
+                                    && !editor.blocking_prompt();
+                                ui.group(|ui| {
+                                    ui.horizontal(|ui| {
+                                        if command_button(ui, "Open…", enabled).clicked() {
+                                            editor.open_dialog(ctx, services);
+                                        }
+                                        let can_save = enabled && editor.has_document();
+                                        if command_button(ui, "Save", can_save).clicked() {
+                                            editor.save_file(ctx, services, false);
+                                        }
+                                        if command_button(ui, "Save As…", can_save).clicked() {
+                                            editor.save_copy(ctx, services);
+                                        }
+                                    });
+                                });
+                            });
+                        } else if command_button(ui, "Open file…", !self.picker.is_open()).clicked()
+                        {
+                            self.request_open_file(ctx);
+                        }
                         self.open_commands(ui, false);
                         self.with_active(|entry, services| {
                             let enabled = !services.picker.is_open()
                                 && !entry.editor.busy()
                                 && !entry.editor.blocking_prompt();
-                            if command_button(ui, "Save copy…", enabled).clicked() {
+                            if !variax_active && command_button(ui, "Save copy…", enabled).clicked()
+                            {
                                 entry.editor.save_copy(ctx, services);
                             }
                             ui.add_enabled_ui(enabled, |ui| entry.editor.actions(ui, services));
@@ -666,9 +728,6 @@ impl Workbench {
     }
 
     fn open_commands(&mut self, ui: &mut egui::Ui, start_panel: bool) {
-        if command_button(ui, "Open file…", !self.picker.is_open()).clicked() {
-            self.request_open_file(ui.ctx());
-        }
         ui.menu_button(
             egui::RichText::new("New offline tab").size(theme::BODY),
             |ui| {

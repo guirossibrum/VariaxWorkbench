@@ -350,3 +350,90 @@ fn wrapped_status_does_not_grow_over_successive_frames() {
         "editor heights: {editor_heights:?}"
     );
 }
+
+#[test]
+fn variax_file_commands_keep_the_active_tab_and_use_save_as_destination_afterward() {
+    fn shortcut(ctx: &egui::Context, app: &mut Workbench, key: egui::Key, shift: bool) {
+        let modifiers = egui::Modifiers {
+            command: true,
+            shift,
+            ..Default::default()
+        };
+        let _ = ctx.run(
+            egui::RawInput {
+                modifiers,
+                events: vec![
+                    egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers,
+                    },
+                    egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: false,
+                        repeat: false,
+                        modifiers,
+                    },
+                ],
+                ..Default::default()
+            },
+            |ctx| app.render(ctx),
+        );
+    }
+
+    let ctx = egui::Context::default();
+    let mut app = empty_shell(&ctx);
+    let directory = tempfile::tempdir().unwrap();
+    let first = directory.path().join("first.vwm");
+    let other = directory.path().join("next.vwm");
+    let copy = directory.path().join("copy.vwm");
+    for path in [&first, &other] {
+        variax_workbench::document::save_new(path, GUITAR).unwrap();
+    }
+    app.dialogs = Box::new(FakeDialogs {
+        open: [Some(first.clone())].into(),
+        ..Default::default()
+    });
+    app.request_open_file(&ctx);
+    app.poll_picker(&ctx);
+    let id = app.tabs.active.unwrap();
+    guitar_editor(&mut app, id, "Saved before open");
+    app.dialogs = Box::new(FakeDialogs {
+        open: [Some(other.clone())].into(),
+        save: [Some(copy.clone())].into(),
+        ..Default::default()
+    });
+
+    shortcut(&ctx, &mut app, egui::Key::O, false);
+    assert!(app.has_prompt());
+    prompt_frame(&ctx, &mut app, vec![]);
+    click_prompt(&ctx, &mut app, "save");
+    assert!(!app.has_prompt());
+    assert_eq!(app.tabs.active, Some(id));
+    assert_eq!(app.tabs.entries.len(), 1);
+    assert!(app.tabs.entries[0].title().ends_with("next.vwm"));
+    assert_eq!(
+        EditorDocument::open(&first).unwrap().preset().name(),
+        "Saved before open"
+    );
+    assert_eq!(fs::read(&other).unwrap(), GUITAR);
+
+    guitar_editor(&mut app, id, "Saved as copy");
+    shortcut(&ctx, &mut app, egui::Key::S, true);
+    assert!(app.tabs.entries[0].title().ends_with("copy.vwm"));
+    assert_eq!(
+        EditorDocument::open(&copy).unwrap().preset().name(),
+        "Saved as copy"
+    );
+    assert_eq!(fs::read(&other).unwrap(), GUITAR);
+    guitar_editor(&mut app, id, "Saved to copy");
+    shortcut(&ctx, &mut app, egui::Key::S, false);
+    assert_eq!(
+        EditorDocument::open(&copy).unwrap().preset().name(),
+        "Saved to copy"
+    );
+    assert!(!app.tabs.entries[0].editor.dirty());
+}
