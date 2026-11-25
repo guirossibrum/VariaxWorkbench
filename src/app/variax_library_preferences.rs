@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 
 /// Startup choices stored beside the app's editor preferences. Each update
@@ -38,11 +38,37 @@ impl LibraryPreferences {
         path.is_file().then_some(path)
     }
 
+    /// Copy the verified files into app data and publish a startup receipt
+    /// only after the independent copy passes the same checks.
     pub fn remember_backup(&self, backup: &CompletedVariaxBackup) -> Result<(), String> {
-        if !backup.verify_again() {
-            return Err("The completed Variax backup no longer matches its manifest.".into());
+        let source = backup.folder();
+        let entries = backup.verified_entries()?;
+        let snapshots = std::path::absolute(self.directory.join("snapshots"))
+            .map_err(|error| error.to_string())?;
+        fs::create_dir_all(&snapshots).map_err(|error| error.to_string())?;
+        let snapshot = tempfile::Builder::new()
+            .prefix("backup-")
+            .tempdir_in(snapshots)
+            .map_err(|error| error.to_string())?;
+        let staged = snapshot.path().join("staging");
+        for name in entries
+            .iter()
+            .map(String::as_str)
+            .chain(["MANIFEST.sha256"])
+        {
+            copy_snapshot_file(source, &staged, Path::new(name))?;
         }
-        self.record("backup", backup)
+        let mut receipt = backup.clone();
+        // This destination belongs to a newly reserved directory. Nothing in
+        // app data becomes a startup candidate until record() publishes it.
+        receipt.folder = snapshot.path().join("library");
+        fs::rename(&staged, &receipt.folder).map_err(|error| error.to_string())?;
+        if !receipt.verify_again() {
+            return Err("The Variax library snapshot failed manifest verification.".into());
+        }
+        self.record("backup", &receipt)?;
+        let _ = snapshot.keep();
+        Ok(())
     }
 
     /// Validate the owner's .vxf through the existing file-only factory
@@ -117,6 +143,40 @@ impl LibraryPreferences {
             .map_err(|error| error.error.to_string())?;
         Ok(())
     }
+}
+
+fn copy_snapshot_file(source: &Path, staged: &Path, relative: &Path) -> Result<(), String> {
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|part| !matches!(part, Component::Normal(_)))
+    {
+        return Err(format!(
+            "Invalid backup manifest path {}.",
+            relative.display()
+        ));
+    }
+    let input = source.join(relative);
+    let output = staged.join(relative);
+    let copy = || -> std::io::Result<()> {
+        if !input.is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "expected a regular file",
+            ));
+        }
+        let mut input = crate::open_regular_file(&input)?;
+        fs::create_dir_all(output.parent().expect("snapshot file has a parent"))?;
+        let mut output = fs::File::create_new(&output)?;
+        std::io::copy(&mut input, &mut output)?;
+        output.sync_all()
+    };
+    copy().map_err(|error| {
+        format!(
+            "Could not copy {} into the Variax library snapshot: {error}",
+            relative.display()
+        )
+    })
 }
 
 fn validate_factory_archive(path: &Path) -> Result<(), String> {
@@ -275,11 +335,19 @@ mod tests {
         assert!(preferences.latest_variax_library().is_none());
         preferences.remember_backup(&newest).unwrap();
         preferences.remember_backup(&first).unwrap();
-        assert_eq!(fs::read_dir(&preferences.directory).unwrap().count(), 2);
         assert_eq!(
-            LibraryPreferences::new(&settings).latest_variax_library(),
-            Some(newest)
+            preferences
+                .records::<CompletedVariaxBackup>("backup")
+                .count(),
+            2
         );
+        let saved = LibraryPreferences::new(&settings)
+            .latest_variax_library()
+            .unwrap();
+        assert_eq!(saved.completed_at, newest.completed_at);
+        assert_eq!(saved.source, newest.source);
+        assert_eq!(saved.identity, newest.identity);
+        assert_ne!(saved.folder(), newest.folder());
     }
 
     #[test]
@@ -313,9 +381,13 @@ mod tests {
         )
         .unwrap();
         preferences.remember_backup(&newest).unwrap();
+        let snapshot = preferences.latest_variax_library().unwrap();
+        fs::remove_file(snapshot.folder().join("identity.syx")).unwrap();
         fs::remove_file(newest.folder().join("identity.syx")).unwrap();
         assert!(preferences.remember_backup(&newest).is_err());
-        assert_eq!(preferences.latest_variax_library(), Some(first));
+        let fallback = preferences.latest_variax_library().unwrap();
+        assert_eq!(fallback.completed_at, first.completed_at);
+        assert_ne!(fallback.folder(), first.folder());
     }
 
     #[test]
@@ -359,7 +431,93 @@ mod tests {
         preferences.remember_backup(&backup).unwrap();
         let reopened = LibraryPreferences::new(&settings);
         assert_eq!(reopened.factory_archive(), Some(archive));
-        assert_eq!(reopened.latest_variax_library(), Some(backup));
-        assert_eq!(fs::read_dir(&preferences.directory).unwrap().count(), 2);
+        assert_eq!(
+            reopened.latest_variax_library().unwrap().completed_at,
+            backup.completed_at
+        );
+        assert_eq!(
+            preferences
+                .records::<CompletedVariaxBackup>("backup")
+                .count(),
+            1
+        );
+        assert_eq!(preferences.records::<ArchiveChoice>("archive").count(), 1);
+    }
+
+    #[test]
+    fn snapshot_keeps_full_backup_bytes_after_the_original_is_moved() {
+        let data = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        let settings = data.path().join("editor-preferences.txt");
+        let preferences = LibraryPreferences::new(&settings);
+        let backup = receipt(
+            capture(source.path(), "full", true, false, true),
+            1,
+            BackupSource::FullBackup,
+        )
+        .unwrap();
+        let original_manifest = fs::read(backup.folder().join("MANIFEST.sha256")).unwrap();
+        preferences.remember_backup(&backup).unwrap();
+        preferences.remember_backup(&backup).unwrap();
+        let snapshots: Vec<CompletedVariaxBackup> = preferences.records("backup").collect();
+        assert_eq!(snapshots.len(), 2);
+        assert_ne!(snapshots[0].folder(), snapshots[1].folder());
+        assert!(backup.verify_again());
+        assert_eq!(
+            fs::read(backup.folder().join("MANIFEST.sha256")).unwrap(),
+            original_manifest
+        );
+
+        fs::rename(backup.folder(), source.path().join("moved")).unwrap();
+        let saved = LibraryPreferences::new(&settings)
+            .latest_variax_library()
+            .unwrap();
+        assert!(saved.folder().starts_with(data.path()));
+        assert_eq!(
+            saved.manifest_verified_files(),
+            backup.manifest_verified_files()
+        );
+        assert_eq!(
+            fs::read(saved.folder().join("MANIFEST.sha256")).unwrap(),
+            original_manifest
+        );
+        assert_eq!(
+            fs::read(saved.folder().join("identity.syx")).unwrap(),
+            crate::identity_stage::guitar_reply()
+        );
+        for program in 0..60 {
+            assert_eq!(
+                fs::read(saved.folder().join(format!("programs/{program:02}.bin"))).unwrap(),
+                b"synthetic"
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_failure_does_not_publish_a_startup_receipt() {
+        let dir = tempfile::tempdir().unwrap();
+        let preferences = LibraryPreferences::new(&dir.path().join("editor-preferences.txt"));
+        let backup = receipt(
+            capture(dir.path(), "backup", true, false, false),
+            1,
+            BackupSource::DeviceCheck,
+        )
+        .unwrap();
+        fs::create_dir_all(&preferences.directory).unwrap();
+        fs::write(
+            preferences.directory.join("snapshots"),
+            b"blocks the snapshot directory",
+        )
+        .unwrap();
+
+        assert!(preferences.remember_backup(&backup).is_err());
+        assert_eq!(
+            preferences
+                .records::<CompletedVariaxBackup>("backup")
+                .count(),
+            0
+        );
+        assert!(preferences.latest_variax_library().is_none());
+        assert!(backup.verify_again());
     }
 }
