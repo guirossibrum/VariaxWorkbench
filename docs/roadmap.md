@@ -4,6 +4,8 @@ GitHub issues and the [project board](https://github.com/users/guirossibrum/proj
 
 ## Pending implementation or validation
 
+- [ ] Rig Check catalogue 1.0 lists steps 0.1–8.5 with dependencies, gates, risk levels, step cards and the start and save notices. Owner review of the wording is pending. [Catalogue](rig-check/catalogue.md) · [#244](https://github.com/guirossibrum/VariaxWorkbench/issues/244).
+
 - [ ] #238 listen-list owner audition. Offline checks and fake transports passed. One owner run of models A–D from Spank 1 was approved on 2026-11-25 and is pending. [Approved test card](variax-listen-list-test-card.md).
 
 - [ ] #238 rungs 4a–4c passed. Owner confirmation is pending on omitting rungs 3a and 3b, whose store-and-restore coverage overlaps #177 and #238. [Owner card](variax-any-selection-test-card.md).
