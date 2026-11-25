@@ -1,0 +1,306 @@
+//! Variax read steps 3.2, 3.5 and 3.6 (#255), plus byte-loss accounting for
+//! the 35-chunk reads. Steps 3.1, 3.3 and 3.4 are in `steps.rs`.
+
+use super::practice::{Program, preset_label};
+use super::procedures::{
+    self, IDENTITY_RETRY_DELAY, VARIAX_READ, VARIAX_SELECT, program_bytes, same_program,
+    variax_read_preset, with_variax,
+};
+use super::runner::Ctx;
+use line6_devices::family::variax::{self, ParameterValue, Preset};
+use line6_devices::midi::hex;
+
+/// Bytes missing from damaged `0x3C` replies that were retried, from the
+/// session log ("... reply has N bytes, expected M").
+pub fn lost_bytes(messages: &[String]) -> usize {
+    messages
+        .iter()
+        .filter(|line| line.contains("Retrying"))
+        .filter_map(|line| {
+            let has = line.split("reply has ").nth(1)?;
+            let (n, rest) = has.split_once(" bytes, expected ")?;
+            let m: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            Some(m.parse::<usize>().ok()?.saturating_sub(n.parse().ok()?))
+        })
+        .sum()
+}
+
+pub fn flag_unverified(ctx: &mut Ctx<'_>) {
+    if ctx.data.variax_verified == Some(false) {
+        ctx.rec.note(
+            "Flagged: unverified device. Read-only steps run; live and save steps are skipped.",
+        );
+    }
+}
+
+fn describe(value: &ParameterValue) -> String {
+    match value {
+        ParameterValue::Integer(v) => v.to_string(),
+        ParameterValue::Boolean(v) => v.to_string(),
+        ParameterValue::Float(v) => format!("{v:.4}"),
+    }
+}
+
+pub fn current_settings(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    flag_unverified(ctx);
+    let current = with_variax(ctx, VARIAX_READ, |session, _| {
+        variax::read_current_checked_retrying_silence(session, IDENTITY_RETRY_DELAY, |_| Ok(()))
+    })?;
+    let metadata = current.metadata;
+    ctx.rec.note(format!("Preset name: {:?}", metadata.name));
+    for (index, reply) in current.replies.iter().enumerate() {
+        ctx.rec.note(format!(
+            "Reply {} ({} bytes): {}",
+            index + 1,
+            reply.len(),
+            hex(reply)
+        ));
+    }
+    for (key, value) in &metadata.parameters {
+        ctx.rec.note(format!("  {key} = {}", describe(value)));
+    }
+    ctx.rec
+        .checksum("Variax current settings (192 bytes)", &metadata.raw);
+    ctx.data.start_settings = Some(metadata.raw);
+    Ok(())
+}
+
+/// Extra evidence for step 3.3: lost bytes and the settings cross-check.
+pub fn after_full_read(ctx: &mut Ctx<'_>, words: &Program) {
+    flag_unverified(ctx);
+    let lost = lost_bytes(&ctx.rec.messages);
+    ctx.rec.note(format!(
+        "Damaged replies retried: {}; bytes lost in them: {lost}.",
+        ctx.rec.retries
+    ));
+    if let Some(settings) = ctx.data.start_settings {
+        let from_program = procedures::settings_of(words);
+        let same = settings[..61] == from_program[..61] && settings[64..] == from_program[64..];
+        ctx.rec.note(if same {
+            "Words 851-914 match the settings read in 3.2 (tone-position bytes 61-63 excepted)."
+        } else {
+            "Words 851-914 DIFFER from the settings read in 3.2: the preset changed between the two reads."
+        });
+    }
+}
+
+fn backup_of(ctx: &Ctx<'_>, preset: Preset) -> Option<Program> {
+    ctx.data
+        .variax_library
+        .iter()
+        .find(|(p, _)| *p == preset)
+        .map(|(_, w)| *w)
+}
+
+/// Read presets, compare each with the backup, then return to the start.
+fn read_and_return(ctx: &mut Ctx<'_>, presets: &[Preset]) -> Result<(), String> {
+    flag_unverified(ctx);
+    let start = ctx
+        .data
+        .start_preset
+        .ok_or("The starting preset is unknown (3.4).")?;
+    let start_program = ctx.data.start_program.ok_or("No starting program (3.3).")?;
+    let mut problems = Vec::new();
+    for &preset in presets {
+        if ctx.stopping() {
+            problems.push("Stopped by you.".to_string());
+            break;
+        }
+        let read = with_variax(ctx, VARIAX_SELECT, |session, stopping| {
+            variax_read_preset(session, preset, stopping)
+        });
+        match read {
+            Ok(read) => {
+                let hash = ctx.rec.checksum(
+                    format!("Variax {} (1,092 words)", preset_label(preset)),
+                    &program_bytes(&read.words),
+                );
+                let matches = backup_of(ctx, preset).is_some_and(|b| b == read.words);
+                ctx.rec.note(format!(
+                    "{}: SHA-256 {}, {}",
+                    preset_label(preset),
+                    &hash[..16],
+                    if matches {
+                        "matches the backup word for word"
+                    } else {
+                        "DIFFERS from the backup"
+                    }
+                ));
+                if !matches {
+                    problems.push(format!("{} differs from the backup.", preset_label(preset)));
+                }
+            }
+            Err(error) => {
+                problems.push(format!("{}: {error}", preset_label(preset)));
+                break;
+            }
+        }
+    }
+    let back = with_variax(ctx, VARIAX_SELECT, |session, stopping| {
+        variax_read_preset(session, start, stopping)
+    });
+    match back {
+        Ok(back) if same_program(&back.words, &start_program) => ctx.rec.note(format!(
+            "Back on {}: all 1,092 words match the start.",
+            preset_label(start)
+        )),
+        Ok(_) => problems.push(format!(
+            "Switched back to {}, but the program differs from the start.",
+            preset_label(start)
+        )),
+        Err(error) => problems.push(format!(
+            "Could not switch back to {}: {error}",
+            preset_label(start)
+        )),
+    }
+    let lost = lost_bytes(&ctx.rec.messages);
+    ctx.rec.note(format!(
+        "Damaged replies retried: {}; bytes lost in them: {lost}.",
+        ctx.rec.retries
+    ));
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems.join(" "))
+    }
+}
+
+/// The preset read by 3.5: the next one in the starting preset's bank.
+pub fn other_preset(start: Preset) -> Preset {
+    Preset::new(start.bank(), (start.slot() + 1) % 5).expect("valid slot")
+}
+
+pub fn one_preset(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    let start = ctx
+        .data
+        .start_preset
+        .ok_or("The starting preset is unknown (3.4).")?;
+    read_and_return(ctx, &[other_preset(start)])
+}
+
+pub fn one_bank(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    let start = ctx
+        .data
+        .start_preset
+        .ok_or("The starting preset is unknown (3.4).")?;
+    let bank: Vec<Preset> = (0..5)
+        .map(|slot| Preset::new(start.bank(), slot).expect("valid slot"))
+        .collect();
+    read_and_return(ctx, &bank)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rig_check::catalogue::StepId;
+    use crate::rig_check::practice::Faults;
+    use crate::rig_check::record::Outcome;
+    use crate::rig_check::run_practice;
+    use crate::rig_check::runner::NoReport;
+    use crate::rig_check::steps::RunData;
+    use crate::rig_check::testing::Script;
+
+    #[test]
+    fn lost_bytes_come_from_the_retry_lines() {
+        let lines = vec![
+            "  1.0s Retrying Variax 0x3C start 64, count 32 (attempt 2/3): Variax 0x3C reply has 199 bytes, expected 200.".to_string(),
+            "  2.0s OUT f0".to_string(),
+        ];
+        assert_eq!(lost_bytes(&lines), 1);
+    }
+
+    #[test]
+    fn variax_reads_compare_with_the_backup_and_return() {
+        let mut person = Script::run_all();
+        let faults = Faults {
+            damage_span_reply: Some(40),
+            ..Faults::default()
+        };
+        let (run, _, _) = run_practice(faults, &mut person, &mut NoReport, RunData::default());
+        let settings = run.step(StepId(3, 2));
+        assert!(
+            settings
+                .evidence
+                .iter()
+                .any(|l| l == "Preset name: \"Spank 1\"")
+        );
+        let full = run.step(StepId(3, 3));
+        assert!(
+            full.evidence
+                .iter()
+                .any(|l| l.starts_with("Words 851-914 match"))
+        );
+        let one = run.step(StepId(3, 5));
+        assert!(
+            one.evidence
+                .iter()
+                .any(|l| l.starts_with("Spank 2: SHA-256")
+                    && l.ends_with("matches the backup word for word"))
+        );
+        assert!(
+            one.evidence
+                .iter()
+                .any(|l| l == "Back on Spank 1: all 1,092 words match the start.")
+        );
+        let bank = run.step(StepId(3, 6));
+        assert_eq!(bank.checksums.len(), 5);
+        let all = run.step(StepId(3, 4));
+        assert!(
+            all.retries >= 1,
+            "the damaged reply was retried during the backup"
+        );
+        assert!(all.outcome.passed());
+    }
+
+    #[test]
+    fn unverified_devices_run_read_steps_only() {
+        let mut person = Script::run_all();
+        let faults = Faults {
+            unverified_variax: true,
+            unverified_podxt: true,
+            ..Faults::default()
+        };
+        let (run, _, _) = run_practice(faults, &mut person, &mut NoReport, RunData::default());
+        for id in [
+            StepId(3, 1),
+            StepId(3, 2),
+            StepId(3, 3),
+            StepId(3, 4),
+            StepId(3, 5),
+            StepId(2, 5),
+        ] {
+            assert!(
+                run.step(id).outcome.passed(),
+                "{id}: {:?}",
+                run.step(id).outcome
+            );
+        }
+        assert!(
+            run.step(StepId(3, 3))
+                .evidence
+                .iter()
+                .any(|l| l.starts_with("Flagged: unverified device"))
+        );
+        for id in [
+            StepId(4, 1),
+            StepId(4, 2),
+            StepId(4, 3),
+            StepId(5, 1),
+            StepId(5, 2),
+        ] {
+            assert!(
+                matches!(
+                    run.step(id).outcome,
+                    Outcome::UnverifiedDevice(_) | Outcome::SkippedNeeds(_)
+                ),
+                "{id}"
+            );
+            assert!(!person.cards.contains(&id), "{id} was not offered");
+        }
+        assert!(
+            run.devices
+                .iter()
+                .any(|(_, v)| v.contains("firmware 2.00, unverified"))
+        );
+    }
+}

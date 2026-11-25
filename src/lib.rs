@@ -50,6 +50,7 @@ pub mod provenance;
 pub mod read_session;
 pub mod recording;
 pub mod rig;
+pub mod rig_check;
 mod shared;
 #[cfg(feature = "gui")]
 pub use shared::ui;

@@ -1,0 +1,230 @@
+//! Rig Check's adapter onto the shared device library (`line6-devices`).
+//!
+//! Each wrapper opens a gated, logged session for one step and calls the
+//! library's public procedures, so a pass exercises the same code as the
+//! editor. The shared procedure work in #245 (Variax) and #246 (PODxt) will
+//! replace these wrappers; until then this is the only file that knows the
+//! library's procedure names.
+
+use super::approvals;
+use super::catalogue::StepId;
+use super::practice::{PROGRAM_WORDS, Program};
+use super::record::Mode;
+use super::runner::Ctx;
+use line6_devices::family::variax::span_read::{
+    BUFFER_WORDS, PresetSpan, read_selected_spans, read_spans,
+};
+use line6_devices::family::variax::{self, Preset};
+use line6_devices::gate::{GatePolicy, Operation};
+use line6_devices::session::{Link, Log, Session};
+use std::time::Duration;
+
+pub const CHUNK_WORDS: u16 = 32;
+pub const CHUNK_COUNT: usize = BUFFER_WORDS.div_ceil(CHUNK_WORDS) as usize;
+/// The owner tool waits two seconds after a silent identity timeout (#177).
+pub const IDENTITY_RETRY_DELAY: Duration = Duration::from_secs(2);
+/// Words 871 and 872 follow the tone knob even with saved tone on (#181,
+/// #234); the checksum word follows them.
+pub const TONE_POSITION_WORDS: [usize; 3] = [871, 872, 1091];
+
+/// The operations one step may use. In real mode the step's owner approval
+/// and gates must also be open (they are all closed in this build).
+pub struct StepPolicy {
+    pub step: StepId,
+    pub mode: Mode,
+    pub ops: &'static [Operation],
+}
+
+impl GatePolicy for StepPolicy {
+    fn allows(&self, operation: Operation) -> bool {
+        self.ops.contains(&operation)
+            && (self.mode == Mode::Practice || approvals::real_device_check(self.step).is_ok())
+    }
+}
+
+#[derive(Default)]
+pub struct Lines(pub Vec<String>);
+
+impl Log for Lines {
+    fn line(&mut self, text: String) {
+        self.0.push(text);
+    }
+}
+
+pub type DynSession<'s> = Session<'s, &'s mut dyn Link>;
+
+fn absorb(ctx: &mut Ctx<'_>, lines: Lines) {
+    let retries = lines
+        .0
+        .iter()
+        .filter(|line| line.contains("Retrying") || line.contains("once more"))
+        .count();
+    ctx.rec.retries += retries as u32;
+    ctx.rec.messages.extend(lines.0);
+}
+
+/// Run `body` on a gated session over the PODxt Live MIDI link.
+pub fn with_podxt<T>(
+    ctx: &mut Ctx<'_>,
+    ops: &'static [Operation],
+    body: impl FnOnce(&mut Session<&mut dyn Link>) -> Result<T, String>,
+) -> Result<T, String> {
+    let policy = StepPolicy {
+        step: ctx.step(),
+        mode: ctx.mode,
+        ops,
+    };
+    let mut lines = Lines::default();
+    let step = ctx.step();
+    let result = match ctx.port.podxt(step) {
+        Ok(link) => {
+            let mut session = Session::new(link, &policy, &mut lines);
+            body(&mut session)
+        }
+        Err(error) => Err(error),
+    };
+    absorb(ctx, lines);
+    result
+}
+
+/// Run `body` on a gated session over the guitar interface.
+pub fn with_variax<T>(
+    ctx: &mut Ctx<'_>,
+    ops: &'static [Operation],
+    body: impl FnOnce(&mut Session<&mut dyn Link>, &dyn Fn() -> bool) -> Result<T, String>,
+) -> Result<T, String> {
+    let policy = StepPolicy {
+        step: ctx.step(),
+        mode: ctx.mode,
+        ops,
+    };
+    let mut lines = Lines::default();
+    let step = ctx.step();
+    let op = &*ctx.op;
+    let stopping = || op.stop_requested();
+    let result = match ctx.port.variax(step) {
+        Ok(link) => {
+            let mut session = Session::new(link, &policy, &mut lines);
+            session.require_expected_sysex();
+            body(&mut session, &stopping)
+        }
+        Err(error) => Err(error),
+    };
+    absorb(ctx, lines);
+    result
+}
+
+/// Listen briefly (sending nothing) so stale input is logged and does not
+/// interrupt the next read.
+pub const DRAIN: Duration = Duration::from_millis(300);
+
+pub fn drain<L: Link>(session: &mut Session<L>) -> Result<(), String> {
+    session.listen(DRAIN).map(|_| ())
+}
+
+pub fn chunks() -> [PresetSpan; CHUNK_COUNT] {
+    std::array::from_fn(|index| {
+        let start = index as u16 * CHUNK_WORDS;
+        let count = (BUFFER_WORDS - start).min(CHUNK_WORDS);
+        PresetSpan::new(start, count).expect("chunk is in bounds")
+    })
+}
+
+/// The result of a 35-chunk read.
+pub struct FullRead {
+    pub words: Program,
+    pub raw_replies: Vec<Vec<u8>>,
+}
+
+fn collect(replies: Vec<variax::span_read::SpanReply>) -> Result<FullRead, String> {
+    let mut words = Vec::with_capacity(PROGRAM_WORDS);
+    let mut raw = Vec::with_capacity(replies.len());
+    for reply in replies {
+        words.extend(reply.words);
+        raw.push(reply.raw);
+    }
+    let words: Program = words
+        .try_into()
+        .map_err(|_| "Incomplete full program read.".to_string())?;
+    Ok(FullRead {
+        words,
+        raw_replies: raw,
+    })
+}
+
+/// Read all 1,092 active words in 35 chunks (#234).
+pub fn variax_full_read<L: Link>(
+    session: &mut Session<L>,
+    stopping: &dyn Fn() -> bool,
+) -> Result<FullRead, String> {
+    let mut replies = Vec::new();
+    read_spans(session, &chunks(), stopping, |reply| {
+        replies.push(reply);
+        Ok(())
+    })?;
+    collect(replies)
+}
+
+/// Select a stored preset (program change), then read its 1,092 words.
+pub fn variax_read_preset<L: Link>(
+    session: &mut Session<L>,
+    preset: Preset,
+    stopping: &dyn Fn() -> bool,
+) -> Result<FullRead, String> {
+    let mut replies = Vec::new();
+    read_selected_spans(session, preset, &chunks(), stopping, |reply| {
+        replies.push(reply);
+        Ok(())
+    })?;
+    collect(replies)
+}
+
+/// Same stored program, ignoring the tone-position words.
+pub fn same_program(a: &Program, b: &Program) -> bool {
+    a.iter()
+        .zip(b.iter())
+        .enumerate()
+        .all(|(i, (x, y))| x == y || TONE_POSITION_WORDS.contains(&i))
+}
+
+pub fn program_bytes(words: &Program) -> Vec<u8> {
+    words
+        .iter()
+        .flat_map(|w| w.to_be_bytes()[1..].to_vec())
+        .collect()
+}
+
+/// Positions of differing words.
+pub fn word_differences(a: &Program, b: &Program) -> Vec<usize> {
+    (0..PROGRAM_WORDS).filter(|&i| a[i] != b[i]).collect()
+}
+
+/// The 192 settings bytes carried by words 851..915.
+pub fn settings_of(words: &Program) -> [u8; 192] {
+    let mut out = [0u8; 192];
+    for (i, word) in words[851..915].iter().enumerate() {
+        out[i * 3..i * 3 + 3].copy_from_slice(&word.to_be_bytes()[1..]);
+    }
+    out
+}
+
+pub const PODXT_IDENTITY: &[Operation] = &[Operation::PodxtIdentity];
+pub const PODXT_READ: &[Operation] = &[Operation::PodxtIdentity, Operation::PodxtRead];
+pub const PODXT_LIBRARY: &[Operation] = &[
+    Operation::PodxtIdentity,
+    Operation::PodxtRead,
+    Operation::PodxtLibraryRead,
+];
+pub const VARIAX_IDENTITY: &[Operation] = &[Operation::VariaxIdentity];
+pub const VARIAX_READ: &[Operation] = &[Operation::VariaxIdentity, Operation::VariaxRead];
+pub const VARIAX_SELECT: &[Operation] = &[
+    Operation::VariaxIdentity,
+    Operation::VariaxRead,
+    Operation::VariaxPresetSwitch,
+];
+pub const GUARD: &[Operation] = &[
+    Operation::PodxtIdentity,
+    Operation::PodxtRead,
+    Operation::PodxtLibraryRead,
+    Operation::PodxtChannelSwitch,
+];
