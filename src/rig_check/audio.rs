@@ -8,6 +8,7 @@
 //! `docs/rig-check/audio-steps.md`; their code paths exist but stop before
 //! any stream is opened until the owner approves audio streams (AGENTS.md).
 
+use super::approvals::AUDIO_STREAMS_APPROVED;
 use super::computer::FileSource;
 use super::runner::Ctx;
 use crate::pod_audio::{BYTES_PER_CHANNEL, DECLARED_CHANNELS, RATE_DENOMINATOR, RATE_NUMERATOR};
@@ -189,10 +190,27 @@ pub fn detect(ctx: &mut Ctx<'_>) -> Result<(), String> {
     Ok(())
 }
 
+/// Steps 8.2-8.5: the code path a future approved build takes. It stops
+/// before any stream is opened while audio streams are not approved.
+pub fn record_or_play(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    if !AUDIO_STREAMS_APPROVED {
+        return Err("Not available in this version — needs the owner's audio approval (AGENTS.md, #265). No audio stream was opened.".into());
+    }
+    let _ = ctx;
+    Err("Audio streams are approved, but the recorder integration (#265) is not built yet.".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rig_check::catalogue::StepId;
     use crate::rig_check::computer::linux::synthetic_machine;
+    use crate::rig_check::practice::Faults;
+    use crate::rig_check::record::Outcome;
+    use crate::rig_check::run_practice;
+    use crate::rig_check::runner::NoReport;
+    use crate::rig_check::steps::RunData;
+    use crate::rig_check::testing::Script;
 
     #[test]
     fn the_podxt_audio_device_is_listed_without_a_stream() {
@@ -230,5 +248,23 @@ mod tests {
         let parsed = parse_stream(stream);
         assert_eq!(parsed[0], ("Playback Format".into(), "S24_3LE".into()));
         assert_eq!(parsed[5], ("Capture Rates".into(), "44100, 48000".into()));
+    }
+
+    #[test]
+    fn audio_steps_stay_off_without_the_owner_approval() {
+        let mut person = Script::run_all();
+        let (run, _, _) = run_practice(
+            Faults::default(),
+            &mut person,
+            &mut NoReport,
+            RunData::default(),
+        );
+        assert!(run.step(StepId(8, 1)).outcome.passed());
+        for id in [StepId(8, 2), StepId(8, 3), StepId(8, 4), StepId(8, 5)] {
+            assert!(
+                matches!(&run.step(id).outcome, Outcome::NotAvailable(r) if r.contains("audio approval")),
+                "{id}"
+            );
+        }
     }
 }
