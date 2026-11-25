@@ -7,7 +7,7 @@ while the tool is running.
 
 | Rung | Mode | Flash slot and MIDI program | Source | Approval |
 | --- | --- | --- | --- | --- |
-| 4a | `listen` | 14, Spank 1, MIDI 69 | Edited `Stratocaster.vwm` | **Approved 2026-11-25 for one owner run** |
+| 4a | `listen` | 14, Spank 1, MIDI 69 | Edited `Stratocaster.vwm` | **Completed. Any repeat needs separate approval.** |
 | 4b | `store` | 14, Spank 1, MIDI 69 | The same `Stratocaster.vwm` | **Not approved** |
 | 4c | `restore` | 14, Spank 1, MIDI 69 | #236 `14-Spank-1.bin` | **Not approved** |
 | 3a | `3a` | 50, Reso 5, MIDI 105 | Archive Reso-5 renamed to `Reso-5 T` | **Not approved** |
@@ -36,24 +36,39 @@ listen and store modes, use `archive` for the target's factory program,
 
 ## Run after separate approval
 
-1. Start on a different unedited preset for a store. The tool verifies both
-   identities and matches a 35-chunk active-buffer read against all 60
-   expected images. It stops if the match is missing or ambiguous. Slot 50
-   uses the verified post-#177 factory image `90d79131…8164`. Rung 3b
-   expects the renamed factory image from 3a. Rung 4c expects the stamped
-   image from 4b in its target slot.
-2. The tool switches to the target, compares its full program, then switches
-   back and verifies the original snapshot byte for byte. Review the
-   printed diff and type the displayed mode and slot confirmation.
-3. For 4a, the tool uploads the working buffer with `0x43` and compares all
-   1,092 words. Play after verification. Type `RETURN TO ORIGINAL` to reload
-   and verify the original preset.
-4. A store uploads with `0x43`, waits 100 ms, sends `0x61` once, and waits up
-   to 15 seconds for `0x71`. Cancellation is honored before `0x61`. After
-   confirmation, the tool reloads the target, compares the full stamped
-   image and all 192 settings bytes, then reloads and checks the original.
-   The restore must reproduce the backup file byte for byte. For Spank 1,
-   the expected restore SHA-256 begins `4e6b812d`.
+Start on a different unedited preset for a store. The following example
+uses **Reso 4** as the starting preset and **Spank 1** as the target.
+The tool prints your actual preset names. A clean full read takes about
+seven seconds. Retries can lengthen any wait.
+
+| Step | HEAR before the step | SEE before the step | Result after the step |
+| --- | --- | --- | --- |
+| Check the PODxt Live | Your current preset stays selected while the tool checks the rig. | Wait for the PODxt Live check. Nothing to type. | PODxt Live verified. |
+| Identify | Your current sound stays selected during the Variax identity and full-buffer checks. | Wait for the starting preset's name. Nothing to type. | Starting preset is Reso 4, verified. |
+| Check target | Spank 1 replaces Reso 4 while the tool reads it, then Reso 4 returns. | Wait for the Spank 1 result and the return to Reso 4. Nothing to type. | Spank 1 matches the expected current program. |
+| Return before upload | Reso 4 returns and stays selected. | Wait for verification. Nothing to type. | Back on Reso 4, verified. |
+| 4a confirm and verify | Reso 4 stays selected until you confirm. The edit then plays while the tool checks it and while you audition it. | Type `LISTEN SLOT 14 Spank 1` to load the edit temporarily. Wait for **Play now**. | The working buffer matches the edited program. |
+| 4a play and return | The prompt compares the edit's body, pickups and tuning with Reso 4. The edit stays loaded until you finish. | Play strings only. Leave the knobs and selector alone. Type `RETURN TO ORIGINAL` when finished to reload and verify Reso 4. | Back on Reso 4, verified. The summary says the edit was sent and nothing was saved. |
+| Store confirm | Reso 4 stays selected until you confirm. The sound may change during upload and the save wait. The tool then checks the target and returns to your starting preset. | For 4b, type `STORE SLOT 14 Spank 1`. For another rung, use the displayed mode and target. Wait up to 15 seconds for the save reply, then wait for verification. Leave the guitar controls alone. | The guitar confirmed the save to Spank 1. |
+| Verify saved target | The tool reloads Spank 1 for a full read and settings check, followed by Reso 4. | Wait for the saved-image and settings checks. Nothing to type. | Spank 1 matches the expected saved sound and settings. |
+| Return after store | Reso 4 returns and stays selected. | Wait for verification and the final summary. Nothing to type. | Back on Reso 4, verified. The summary names what was sent, saved and selected. |
+
+The tool refuses a missing or ambiguous starting-image match. Slot 50
+uses the verified post-#177 factory image `90d79131…8164`. Rung 3b
+expects the renamed factory image from 3a. Rung 4c expects the stamped
+image from 4b and must reproduce the backup file byte for byte
+(`4e6b812d…` for Spank 1).
+
+The 4a source used in the owner run had alternate tuning off. Its six
+semitone offsets were saved in the settings, with pitch shifting disabled
+in the compiled sound. Reloading a 4b store of that file should give the
+edited tone without the six programmed pitch offsets.
+
+The 4a audition checks all 1,092 words after the temporary `0x43` upload.
+A store uploads with `0x43`, waits 100 ms, sends `0x61` once, and waits up
+to 15 seconds for `0x71`. Cancellation is honored before `0x61`. After
+confirmation, the verification checks the full stamped image and all 192
+settings bytes, followed by a byte-for-byte check of the starting preset.
 
 ## Stop and report
 
@@ -62,8 +77,9 @@ sound outside the audition. Keep the log and completed chunks. The tool
 attempts to return to the identified snapshot after a failed preflight,
 audition, or cancelled upload. It will not retry a store.
 
-If `0x71` is silent, keep the rig powered and untouched for two more
-minutes. The tool sends no further selection or read requests. Then check
+If `0x71` is silent, **HEAR:** the edit may remain loaded. Keep the rig
+powered and untouched for two more minutes. **SEE:** wait for the stop
+message, then follow the guitar check and backup instructions. The tool sends no further selection or read requests. Then check
 whether the guitar responds, take a Device check backup if it responds,
 and report with the log. If it does not respond, report before powering off.
 The tool names the affected 20-slot group and its spare. For slot 14,

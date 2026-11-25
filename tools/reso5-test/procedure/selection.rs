@@ -70,6 +70,17 @@ fn spare_warning(preset: Preset) -> String {
     )
 }
 
+fn preset_name(preset: Preset) -> String {
+    format!("{} {}", preset.bank_name(), preset.slot() + 1)
+}
+
+fn step(announce: &mut impl FnMut(&str), hear: &str, see: &str) {
+    announce(&format!("HEAR: {hear}"));
+    announce(&format!("SEE: {see}"));
+}
+
+const READ_TIME: &str = "about 7 seconds on a clean read";
+
 fn slot_label(preset: Preset) -> String {
     format!(
         "slot {} ({} {}, MIDI program {})",
@@ -166,9 +177,23 @@ fn returned<L: Link>(
     original: Preset,
     snapshot: &Image,
     result: Result<(), String>,
+    announce: &mut impl FnMut(&str),
 ) -> Result<(), String> {
+    let name = preset_name(original);
+    step(
+        announce,
+        &format!("Switching back to {name}. It will stay selected after the check."),
+        &format!(
+            "Wait {READ_TIME} for the tool to verify {name}. Retries can take longer. Nothing to type."
+        ),
+    );
     let restored = capture(session, root, stage, Some(original), || false)
         .and_then(|words| store::compare_image(&words, snapshot, "Original preset switch-back"));
+    if restored.is_ok() {
+        announce(&format!("Back on {name}, verified."));
+    } else {
+        announce(&format!("Could not verify the return to {name}."));
+    }
     match (result, restored) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) => Err(format!(
@@ -193,11 +218,19 @@ pub fn attempt<L: Link>(
     if stopping() {
         return Err("Cancelled before Variax identity.".into());
     }
+    step(
+        &mut announce,
+        &format!("Your current preset stays selected while the tool identifies it in {READ_TIME}."),
+        "Wait for the tool to name your starting preset. Retries can take longer. Nothing to type.",
+    );
     let device = variax::identify_retrying_silence(session, IDENTITY_RETRY_DELAY)?;
     variax_identity(&device.identity)?;
     let snapshot = pack(&capture(session, root, "snapshot", None, &mut stopping)?);
     let original = identify(&snapshot, &prepared.current)?;
     session.note(format!("Identified current {}.", slot_label(original)));
+    let original_name = preset_name(original);
+    let target_name = preset_name(prepared.target);
+    announce(&format!("Starting preset is {original_name}, verified."));
     if original == prepared.target && !prepared.mode.listens() {
         return Err("Select a different starting preset. Overwriting the original slot prevents a verified switch-back.".into());
     }
@@ -206,6 +239,15 @@ pub fn attempt<L: Link>(
     }
     let target = prepared.target;
     let baseline = &prepared.current[usize::from(index(target))];
+    step(
+        &mut announce,
+        &format!(
+            "Switching to {target_name} to check it. You will hear it for {READ_TIME}, then {original_name} again."
+        ),
+        &format!(
+            "Wait for the {target_name} check and the return to {original_name}. Nothing to type."
+        ),
+    );
     let preflight = capture(
         session,
         root,
@@ -214,6 +256,15 @@ pub fn attempt<L: Link>(
         &mut stopping,
     )
     .and_then(|words| store::compare_image(&words, baseline, "Target preflight"));
+    if preflight.is_ok() {
+        announce(&format!(
+            "{target_name} matches the expected current program."
+        ));
+    } else {
+        announce(&format!(
+            "Could not verify {target_name}. No upload will be sent."
+        ));
+    }
     returned(
         session,
         root,
@@ -221,11 +272,34 @@ pub fn attempt<L: Link>(
         original,
         &snapshot,
         preflight,
+        &mut announce,
     )?;
     if stopping() {
         return Err("Cancelled before uploading.".into());
     }
-    prompt(&prepared.confirmation())?;
+    let phrase = prepared.confirmation();
+    if prepared.mode.listens() {
+        step(
+            &mut announce,
+            &format!(
+                "{original_name} stays selected until you confirm. Then the edited sound replaces it while the tool checks the upload and while you play."
+            ),
+            &format!(
+                "Type {phrase} to load the edit temporarily. Wait for Play now before playing. Nothing will be saved."
+            ),
+        );
+    } else {
+        step(
+            &mut announce,
+            &format!(
+                "{original_name} stays selected until you confirm. Then the sound may change during upload and the save wait of up to 15 seconds. The tool will check {target_name} and return to {original_name}."
+            ),
+            &format!(
+                "Type {phrase} to save to {target_name}. Wait up to 15 seconds for the save reply, then wait for verification. Do not play or touch the knobs during the store."
+            ),
+        );
+    }
+    prompt(&phrase)?;
     if stopping() {
         return Err("Cancelled before uploading.".into());
     }
@@ -234,13 +308,39 @@ pub fn attempt<L: Link>(
 
     if prepared.mode.listens() {
         let result = write::audition(session, &program, &mut stopping)
-            .and_then(|()| capture(session, root, "listen-readback", None, &mut stopping))
+            .and_then(|()| {
+                announce("Edited sound uploaded to the working buffer.");
+                step(
+                    &mut announce,
+                    &format!("The edited sound stays loaded during the check, which takes {READ_TIME}."),
+                    "Wait for Play now. Retries can take longer. Nothing to type yet.",
+                );
+                capture(session, root, "listen-readback", None, &mut stopping)
+            })
             .and_then(|words| store::compare_image(&words, &prepared.program, "Audition read-back"))
             .and_then(|()| {
-                announce("Working buffer verified. Play now, then type RETURN TO ORIGINAL.");
+                announce("The working buffer matches the edited program.");
+                let sound = sources::audition_sound(&snapshot, &prepared.program)?;
+                step(
+                    &mut announce,
+                    &format!("{sound} The edit stays loaded until you finish."),
+                    &format!("Play now. Play strings only and do not touch the knobs. When finished, type RETURN TO ORIGINAL to reload and verify {original_name}."),
+                );
                 prompt("RETURN TO ORIGINAL")
             });
-        return returned(session, root, "listen-return", original, &snapshot, result);
+        returned(
+            session,
+            root,
+            "listen-return",
+            original,
+            &snapshot,
+            result,
+            &mut announce,
+        )?;
+        announce(&format!(
+            "Done. Sent the edited sound to the working buffer. Nothing was saved. The guitar is on {original_name}."
+        ));
+        return Ok(());
     }
 
     let committing = Cell::new(false);
@@ -253,8 +353,17 @@ pub fn attempt<L: Link>(
             let notice =
                 format!("No 0x71. Keep the rig powered and untouched for 2 minutes. {warning}");
             session.note(&notice);
-            announce(&notice);
+            step(
+                &mut announce,
+                "The edited sound may remain loaded. Leave the guitar powered and untouched for two minutes.",
+                &format!(
+                    "No save reply arrived. Wait for the stop message, then check the guitar and follow the backup instructions. {warning}"
+                ),
+            );
             session.link.pause(store::AFTER_TIMEOUT);
+            announce(
+                "Stopped. One save command was sent. Whether it saved and which sound is loaded are unknown.",
+            );
             return Err(format!(
                 "Slot state is unknown. Check the guitar, take a Device check backup if it responds, and report with the log. {}",
                 warning
@@ -269,10 +378,21 @@ pub fn attempt<L: Link>(
                 original,
                 &snapshot,
                 Err(error.to_string()),
+                &mut announce,
             );
         }
     }
 
+    announce(&format!("The guitar confirmed the save to {target_name}."));
+    step(
+        &mut announce,
+        &format!(
+            "Reloading {target_name}. You will hear that preset for {READ_TIME}, plus a settings check, then {original_name} again."
+        ),
+        &format!(
+            "The full read takes {READ_TIME}, followed by a settings check. Retries can take longer. Nothing to type."
+        ),
+    );
     let verified = (|| {
         let words = capture(session, root, "stored-readback", Some(target), || false)?;
         store::compare_image(&words, &prepared.expected, "Stored target read-back")?;
@@ -287,6 +407,13 @@ pub fn attempt<L: Link>(
             "Stored target settings",
         )
     })();
+    if verified.is_ok() {
+        announce(&format!(
+            "{target_name} matches the expected saved sound and settings."
+        ));
+    } else {
+        announce(&format!("Could not verify the saved {target_name}."));
+    }
     returned(
         session,
         root,
@@ -294,7 +421,12 @@ pub fn attempt<L: Link>(
         original,
         &snapshot,
         verified,
-    )
+        &mut announce,
+    )?;
+    announce(&format!(
+        "Done. Sent the edited program and one save command. Saved and verified {target_name}. The guitar is on {original_name}."
+    ));
+    Ok(())
 }
 
 #[cfg(test)]

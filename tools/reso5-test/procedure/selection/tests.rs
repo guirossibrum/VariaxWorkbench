@@ -4,7 +4,7 @@ use line6_devices::{
     identity::REQUEST,
     session::{Path as DevicePath, Quiet},
 };
-use std::{collections::VecDeque, rc::Rc, time::Duration};
+use std::{cell::RefCell, collections::VecDeque, rc::Rc, time::Duration};
 
 const IDENTITY: [u8; 17] = [
     0xf0, 0x7e, 0x7f, 6, 2, 0, 1, 0xc, 7, 0, 4, 0, b'0', b'3', b'1', b'0', 0xf7,
@@ -173,6 +173,7 @@ struct Fake {
     store_at: Option<Duration>,
     cancel: Cancel,
     stopped: Rc<Cell<bool>>,
+    events: Rc<RefCell<Vec<String>>>,
 }
 
 impl Fake {
@@ -185,6 +186,7 @@ impl Fake {
             store_at: None,
             cancel,
             stopped: Rc::new(Cell::new(false)),
+            events: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
@@ -206,6 +208,20 @@ impl Link for Fake {
     fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
         let (expected, incoming) = self.writes.pop_front().expect("Unexpected request");
         assert_eq!(bytes, expected);
+        match bytes {
+            [0xc0, program] => self
+                .events
+                .borrow_mut()
+                .push(format!("Wire: MIDI program {program}")),
+            [0xf0, 0, 1, 0xc, 7, 0, 0x43, ..] => {
+                self.events.borrow_mut().push("Wire: upload".into())
+            }
+            [0x61, slot] => self
+                .events
+                .borrow_mut()
+                .push(format!("Wire: save slot {slot}")),
+            _ => {}
+        }
         if bytes.starts_with(&[0xf0, 0, 1, 0xc, 7, 0, 0x43]) || bytes.len() > 100 {
             self.upload_at = Some(self.time);
         }
@@ -249,6 +265,15 @@ fn run(
     prepared: &Prepared,
     prompt: impl FnMut(&str) -> Result<(), String>,
 ) -> Result<(), String> {
+    run_with_messages(fake, prepared, prompt, |_| {})
+}
+
+fn run_with_messages(
+    fake: &mut Fake,
+    prepared: &Prepared,
+    prompt: impl FnMut(&str) -> Result<(), String>,
+    announce: impl FnMut(&str),
+) -> Result<(), String> {
     let root = tempfile::tempdir().unwrap();
     let cancel = Rc::clone(&fake.stopped);
     let policy = Policy(prepared.mode);
@@ -259,11 +284,115 @@ fn run(
         prepared,
         root.path(),
         prompt,
-        |_| {},
+        announce,
         || cancel.get(),
     );
     fake.assert_finished();
     result
+}
+
+fn narrate_from_reso4(prepared: &Prepared) -> Vec<String> {
+    let original = target(51).unwrap();
+    let snapshot = &prepared.current[51];
+    let mut script = vec![];
+    reply(&mut script, &REQUEST, &IDENTITY);
+    read_chunks(&mut script, None, snapshot);
+    read_chunks(
+        &mut script,
+        Some(prepared.target.program_number()),
+        &prepared.current[usize::from(index(prepared.target))],
+    );
+    read_chunks(&mut script, Some(original.program_number()), snapshot);
+    upload(
+        &mut script,
+        prepared,
+        (!prepared.mode.listens()).then_some(ACK),
+    );
+    if prepared.mode.listens() {
+        read_chunks(&mut script, None, &prepared.program);
+    } else {
+        read_chunks(
+            &mut script,
+            Some(prepared.target.program_number()),
+            &prepared.expected,
+        );
+        read_settings(&mut script, &prepared.expected);
+    }
+    read_chunks(&mut script, Some(original.program_number()), snapshot);
+    let mut fake = Fake::new(script, Cancel::Never);
+    let events = Rc::clone(&fake.events);
+    run_with_messages(
+        &mut fake,
+        prepared,
+        |phrase| {
+            events.borrow_mut().push(format!("Prompt: {phrase}"));
+            Ok(())
+        },
+        |text| events.borrow_mut().push(text.into()),
+    )
+    .unwrap();
+    fake.events.take()
+}
+
+#[test]
+fn owner_messages_precede_their_wire_actions_and_end_with_a_verified_result() {
+    for mode in [Mode::Listen, Mode::Store] {
+        let events = narrate_from_reso4(&test_prepared(mode));
+        let mut anchors = vec![
+            "HEAR: Your current preset stays selected",
+            "SEE: Wait for the tool to name your starting preset.",
+            "Starting preset is Reso 4, verified.",
+            "HEAR: Switching to Spank 1",
+            "SEE: Wait for the Spank 1 check",
+            "Wire: MIDI program 69",
+            "Spank 1 matches the expected current program.",
+            "HEAR: Switching back to Reso 4.",
+            "Wire: MIDI program 106",
+            "Back on Reso 4, verified.",
+            "HEAR: Reso 4 stays selected until you confirm.",
+        ];
+        if mode.listens() {
+            anchors.extend([
+                "SEE: Type LISTEN SLOT 14 Spank 1",
+                "Prompt: LISTEN SLOT 14 Spank 1",
+                "Wire: upload",
+                "Edited sound uploaded",
+                "HEAR: The edited sound stays loaded",
+                "The working buffer matches",
+                "HEAR: Expect the edited sound:",
+                "SEE: Play now. Play strings only and do not touch the knobs.",
+                "Prompt: RETURN TO ORIGINAL",
+            ]);
+        } else {
+            anchors.extend([
+                "SEE: Type STORE SLOT 14 Spank 1",
+                "Prompt: STORE SLOT 14 Spank 1",
+                "Wire: upload",
+                "Wire: save slot 14",
+                "The guitar confirmed the save to Spank 1.",
+                "HEAR: Reloading Spank 1.",
+                "Wire: MIDI program 69",
+                "Spank 1 matches the expected saved sound and settings.",
+            ]);
+        }
+        anchors.extend([
+            "HEAR: Switching back to Reso 4.",
+            "Wire: MIDI program 106",
+            "Back on Reso 4, verified.",
+            if mode.listens() {
+                "Done. Sent the edited sound to the working buffer. Nothing was saved. The guitar is on Reso 4."
+            } else {
+                "Done. Sent the edited program and one save command. Saved and verified Spank 1. The guitar is on Reso 4."
+            },
+        ]);
+        let mut actual = events.iter();
+        for anchor in anchors {
+            assert!(
+                actual.any(|line| line.starts_with(anchor)),
+                "missing {anchor:?} in {events:#?}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -527,6 +656,18 @@ fn private_source_files_build_and_verify_each_ladder_image() {
     let listen = prepare(Mode::Listen, 14, backup, archive, vwm, manifest).unwrap();
     let store = prepare(Mode::Store, 14, backup, archive, vwm, manifest).unwrap();
     let restore = prepare(Mode::Restore, 14, backup, archive, vwm, manifest).unwrap();
+    for prepared in [&listen, &store] {
+        let events = narrate_from_reso4(prepared);
+        if prepared.mode.listens() {
+            assert!(events.iter().any(|line| line.contains(
+                "T-Model body, T-Model Bridge and Lester Custom Bridge, alternate tuning off"
+            )));
+        }
+        println!("# {} dry run", prepared.mode.label());
+        for line in events.iter().filter(|line| !line.starts_with("Wire: ")) {
+            println!("{line}");
+        }
+    }
     assert_eq!(listen.program, store.program);
     assert_eq!(store.expected, restore.current[14]);
     assert_eq!(restore.expected, backup_source.program);

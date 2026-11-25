@@ -249,7 +249,7 @@ fn run_store(
     Ok(())
 }
 
-const APPROVED_LISTEN_4A: bool = true;
+const APPROVED_LISTEN_4A: bool = false;
 const APPROVED_STORE_4B: bool = false;
 const APPROVED_RESTORE_4C: bool = false;
 const APPROVED_RENAME_3A: bool = false;
@@ -286,6 +286,8 @@ fn run_selection(
             return Ok(());
         }
         print!("{}", super::SELECTION_CARD);
+        println!("HEAR: Your starting preset stays selected while the tool checks the rig.");
+        println!("SEE: Wait while the tool checks the PODxt Live. Nothing to type.");
         install_cancellation()?;
         let write_gate = if mode.listens() {
             Gate::EditBufferWrite
@@ -395,6 +397,9 @@ fn run_device(task: DeviceTask<'_>, trace: &Trace) -> Result<(), String> {
             &mut log,
         )?;
     }
+    if matches!(&task, DeviceTask::Selection(_)) {
+        println!("PODxt Live verified.");
+    }
     if stopping() {
         return Err(
             "Cancelled or unable to write the log before opening the Variax interface.".into(),
@@ -437,7 +442,10 @@ fn run_device(task: DeviceTask<'_>, trace: &Trace) -> Result<(), String> {
                         }
                         Ok(())
                     },
-                    |line| println!("{line}"),
+                    |line| {
+                        println!("{line}");
+                        trace.record(line.to_owned());
+                    },
                     stopping,
                 )
             }
