@@ -101,6 +101,13 @@ mod tests {
             "CC 25 was sent"
         );
         let rig = rig.borrow();
-        assert_eq!(rig.podxt.stores, 0, "nothing stored");
+        assert_eq!(rig.podxt.stores, 1, "only the save step 5.2 stores");
+        assert!(
+            !step
+                .messages
+                .iter()
+                .any(|l| l.contains("OUT f0 00 01 0c 03 71")),
+            "4.1 sends no store frame"
+        );
     }
 }

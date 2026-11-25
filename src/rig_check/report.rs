@@ -468,7 +468,12 @@ mod tests {
                 .count()
         };
         assert_eq!(count("variax-library"), 61);
-        assert_eq!(count("podxt-library"), 300);
+        assert_eq!(count("podxt-library/tones"), 128);
+        assert!(
+            dir.path()
+                .join("evidence/podxt-library/MANIFEST.sha256")
+                .exists()
+        );
         let text = std::fs::read_to_string(&sink.path).unwrap();
         assert!(text.contains("Saved 60 programs to the evidence folder"));
         assert!(

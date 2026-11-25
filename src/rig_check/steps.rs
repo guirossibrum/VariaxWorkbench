@@ -42,6 +42,11 @@ pub struct RunData {
     pub touched_variax: bool,
     /// The USB view from step 0.2.
     pub usb: Option<UsbView>,
+    /// The 2.5 backup folder in the shared library's format (used by 5.2).
+    pub podxt_backup_dir: Option<PathBuf>,
+    /// Practice mode only: a temporary folder for the 2.5 backup when no
+    /// evidence folder was chosen. Removed when the run ends.
+    pub practice_scratch: Option<tempfile::TempDir>,
     /// A private folder of reference models for step 0.3 (optional).
     pub engine_folder: Option<PathBuf>,
     /// Step 0.3 results, for linking recording differences (#266).
@@ -100,6 +105,7 @@ pub fn execute(ctx: &mut Ctx<'_>) -> Result<(), String> {
         (4, 2) => super::variax_live::variax_own_bytes(ctx),
         (4, 3) => super::variax_live::variax_test_model(ctx),
         (5, 1) => super::variax_save::save_own_bytes(ctx),
+        (5, 2) => super::podxt_save::save_own_bytes(ctx),
         (6, 2) => rig_guard(ctx),
         _ => placeholder(ctx),
     }
@@ -344,25 +350,39 @@ fn podxt_library(ctx: &mut Ctx<'_>) -> Result<(), String> {
         Ok(_) => return Err("The playing tone changed during the library read.".into()),
         Err(error) => return Err(format!("The closing current-tone read failed: {error}")),
     }
-    if let Some(root) = ctx.data.evidence_dir.clone() {
-        let files: Vec<(String, Vec<u8>)> = library
-            .entries
-            .iter()
-            .map(|entry| {
-                (
-                    format!(
-                        "{}-{}.syx",
-                        entry.location.kind().slug(),
-                        evidence::file_name(&entry.location.label())
-                    ),
-                    entry.tone.raw.clone(),
-                )
-            })
-            .collect();
-        let manifest = evidence::save_folder(&root, "podxt-library", &files)?;
-        ctx.rec.note(format!(
-            "Saved 299 dumps to the evidence folder podxt-library (manifest SHA-256 {manifest})."
+    // The backup in the shared library's own format, so step 5.2 can verify
+    // it with the same code as the editor. Practice mode without an evidence
+    // folder uses a private temporary folder.
+    let root = match ctx.data.evidence_dir.clone() {
+        Some(root) => Some(root),
+        None if ctx.mode == Mode::Practice => {
+            let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
+            let path = scratch.path().to_owned();
+            ctx.data.practice_scratch = Some(scratch);
+            Some(path)
+        }
+        None => None,
+    };
+    if let Some(root) = root {
+        use line6_devices::backup::BackupFolder;
+        let mut folder = BackupFolder::create(&root, "podxt-library")?;
+        folder.record(format!(
+            "PODxt Live library backup at {} (Rig Check step 2.5)",
+            super::record::utc_now()
         ));
+        podxt::backup::save_podxt_library(&mut folder, &library)?;
+        let path = folder.finish(true)?;
+        let manifest = std::fs::read(path.join("MANIFEST.sha256")).map_err(|e| e.to_string())?;
+        ctx.rec.note(format!(
+            "Saved the 299-entry backup to {} (manifest SHA-256 {}).",
+            if ctx.data.evidence_dir.is_some() {
+                "the evidence folder podxt-library"
+            } else {
+                "a temporary practice folder"
+            },
+            &super::record::sha256_hex(&manifest)[..16]
+        ));
+        ctx.data.podxt_backup_dir = Some(path);
     }
     ctx.data.podxt_library = library
         .entries
