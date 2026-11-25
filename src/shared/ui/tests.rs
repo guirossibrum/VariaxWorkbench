@@ -1394,3 +1394,33 @@ fn tuning_twelve_string_mode_shows_optional_values_and_reports_edits() {
         }
     );
 }
+
+#[test]
+fn document_tab_reserves_a_gap_for_the_unsaved_marker() {
+    let mut harness = Harness::new();
+    let title =
+        "Variax Workbench · Stratocaster with a very long filename and a long version number.vwm";
+    let output = harness.run(vec![], Default::default(), |_, ui| {
+        chrome::DocumentTab {
+            title,
+            family: Family::Variax,
+            active: true,
+            unsaved: true,
+        }
+        .show(ui);
+    });
+    let mut parts = output.shapes.iter().filter_map(|shape| match &shape.shape {
+        egui::Shape::Text(text)
+            if text.galley.text() == title || text.galley.text() == "Unsaved" =>
+        {
+            Some(text)
+        }
+        _ => None,
+    });
+    let marker = parts.next().unwrap();
+    let file = parts.next().unwrap();
+    assert_eq!(marker.galley.text(), "Unsaved");
+    assert_eq!(file.galley.text(), title);
+    assert!(file.galley.elided);
+    assert!(file.pos.x + file.galley.size().x + 6.0 <= marker.pos.x);
+}
