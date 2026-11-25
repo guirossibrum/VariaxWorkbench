@@ -10,7 +10,8 @@
 
 use super::approvals;
 use super::catalogue::{
-    self, Kind, RIG_GUARD, RUN_ORDER, Risk, START_NOTICE, SaveNotice, Step, StepId, VARIAX_EVIDENCE,
+    self, Kind, MAC_START_NOTICE, RIG_GUARD, RUN_ORDER, Risk, START_NOTICE, SaveNotice, Step,
+    StepId, VARIAX_EVIDENCE,
 };
 use super::port::RigPort;
 use super::record::{Mode, Outcome, RunRecord, StepRecord, utc_now};
@@ -168,7 +169,12 @@ impl<'a> Runner<'a> {
     /// Run the catalogue. Returns the record of the whole run.
     pub fn run(mut self) -> (RunRecord, RunData) {
         self.write_report();
-        if !self.op.accept_start(START_NOTICE) {
+        let start_notice = if cfg!(target_os = "macos") && self.run.mode == Mode::Real {
+            MAC_START_NOTICE
+        } else {
+            START_NOTICE
+        };
+        if !self.op.accept_start(start_notice) {
             self.run.rig_state =
                 "The start notice was not accepted. Nothing ran and no device was touched.".into();
             self.run.finished = true;
@@ -242,6 +248,9 @@ impl<'a> Runner<'a> {
     fn step(&mut self, id: StepId) -> bool {
         let step = catalogue::step(id).expect("run order uses catalogue IDs");
         if let Some(outcome) = self.precheck(step) {
+            if cfg!(target_os = "macos") && id == RIG_GUARD && self.run.mode == Mode::Real {
+                self.run.rig_state = crate::MAC_CONNECTION_UNAVAILABLE.into();
+            }
             self.finish(id, outcome, None, None);
             return false;
         }
@@ -318,6 +327,12 @@ impl<'a> Runner<'a> {
 
     /// Why a step cannot be offered, without asking.
     fn precheck(&self, step: &Step) -> Option<Outcome> {
+        if cfg!(target_os = "macos") && self.run.mode == Mode::Real && step.needs_device_approval()
+        {
+            return Some(Outcome::NotAvailable(
+                crate::MAC_CONNECTION_UNAVAILABLE.into(),
+            ));
+        }
         if step.id == VARIAX_EVIDENCE && !self.variax_evidence_applicable() {
             return Some(Outcome::NotAvailable(
                 "Available only for unverified Variax 300/600 firmware.".into(),

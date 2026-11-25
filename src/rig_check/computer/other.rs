@@ -209,7 +209,7 @@ pub fn mac_line6_usb(profiler: &str) -> Vec<MacUsbDevice> {
         .collect()
 }
 
-pub fn mac(commands: &dyn CommandRunner) -> Vec<Line> {
+pub fn mac_system(commands: &dyn CommandRunner) -> Vec<Line> {
     let version = commands.run("sw_vers", &[]);
     let get = |key: &str| version.as_deref().and_then(|v| field(v, key));
     let mut lines = vec![
@@ -230,6 +230,12 @@ pub fn mac(commands: &dyn CommandRunner) -> Vec<Line> {
             ),
         ),
     ];
+    lines.extend(super::build_lines());
+    lines
+}
+
+pub fn mac_devices(commands: &dyn CommandRunner) -> Vec<Line> {
+    let mut lines = vec![line("Collector", NOT_VERIFIED)];
     match commands.run("system_profiler", &["SPUSBDataType"]) {
         Some(text) => {
             let devices = mac_line6_usb(&text);
@@ -276,11 +282,17 @@ pub fn mac(commands: &dyn CommandRunner) -> Vec<Line> {
             extensions.join("; ")
         },
     ));
-    lines.push(line(
-        "CoreMIDI ports",
-        "listed by the transport adapter once #262 is implemented",
-    ));
-    lines.extend(super::build_lines());
+    lines.push(line("CoreMIDI ports", crate::MAC_CONNECTION_UNAVAILABLE));
+    lines
+}
+
+pub fn mac(commands: &dyn CommandRunner) -> Vec<Line> {
+    let mut lines = mac_system(commands);
+    lines.extend(
+        mac_devices(commands)
+            .into_iter()
+            .filter(|(name, _)| name != "Collector"),
+    );
     lines
 }
 

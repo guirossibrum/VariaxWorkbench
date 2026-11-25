@@ -11,7 +11,9 @@ use variax_workbench::device_probe::{
     self, Consent, HostRig, LinuxSysfs, ProbeMode, ProbeSession, RigBackend, Stage, StageStatus,
 };
 use variax_workbench::firmware_notice::{Device as FirmwareDevice, FirmwareNotice};
-use variax_workbench::hardware_gates::{self, Gate};
+use variax_workbench::hardware_gates;
+#[cfg(any(test, all(feature = "usb", target_os = "linux")))]
+use variax_workbench::hardware_gates::Gate;
 use variax_workbench::pod_preset;
 use variax_workbench::recording;
 use variax_workbench::rig::{ProductProfile, Rejection, RoleKind, Session};
@@ -83,9 +85,15 @@ impl FileDialogs for NativeDialogs {
     }
 
     fn open_pod_tone(&mut self) -> Option<PathBuf> {
+        #[cfg(target_os = "macos")]
+        return variax_workbench::macos_dialog::Dialog::Open.select();
+        #[cfg(not(target_os = "macos"))]
         rfd::FileDialog::new().pick_file()
     }
     fn save_pod_tone(&mut self, suggested: &str) -> Option<PathBuf> {
+        #[cfg(target_os = "macos")]
+        return variax_workbench::macos_dialog::Dialog::Save(suggested.to_owned()).select();
+        #[cfg(not(target_os = "macos"))]
         rfd::FileDialog::new().set_file_name(suggested).save_file()
     }
 }
@@ -192,6 +200,7 @@ enum BackupChoice {
 }
 
 #[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(not(feature = "usb"), allow(dead_code))]
 enum DeviceOperationEvent<T> {
     Progress(String),
     Finished(Result<T, String>),
@@ -739,6 +748,10 @@ impl Workbench {
         let draw = |ui: &mut egui::Ui| {
             if self.has_prompt() || self.picker.is_open() {
                 ui.disable();
+            }
+            if cfg!(all(target_os = "macos", not(test))) {
+                ui.label(variax_workbench::MAC_CONNECTION_UNAVAILABLE);
+                return;
             }
             let mut visible = String::new();
             let banner = device_probe::availability_banner();
@@ -1302,7 +1315,10 @@ fn platform_data_root(absolute_env: impl Fn(&str) -> Option<PathBuf>) -> PathBuf
 }
 
 pub(crate) fn run(title: &str) -> eframe::Result {
-    let arguments: Vec<_> = std::env::args().skip(1).collect();
+    let arguments: Vec<_> = std::env::args()
+        .skip(1)
+        .filter(|arg| !cfg!(target_os = "macos") || !arg.starts_with("-psn_"))
+        .collect();
     if arguments == ["--version"] {
         println!("{title}");
         return Ok(());
@@ -1330,6 +1346,8 @@ pub(crate) fn run(title: &str) -> eframe::Result {
         viewport = window.apply(viewport);
     }
     let options = eframe::NativeOptions {
+        #[cfg(target_os = "macos")]
+        renderer: eframe::Renderer::Glow,
         viewport,
         ..Default::default()
     };

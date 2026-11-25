@@ -10,13 +10,14 @@ use std::task::{Context, Poll, Wake, Waker};
 pub(super) type PickFuture = Pin<Box<dyn Future<Output = Option<PathBuf>>>>;
 
 #[derive(Clone)]
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub(super) struct FileFilter {
     pub name: &'static str,
     pub extensions: &'static [&'static str],
 }
 
 pub(super) enum PickRequest {
-    OpenEditorFile(Vec<FileFilter>),
+    OpenEditorFile(#[cfg_attr(target_os = "macos", allow(dead_code))] Vec<FileFilter>),
     #[allow(dead_code)] // Editor-lane migration, see docs/non-blocking-pickers.md.
     OpenWorkbenchFile,
     SaveWorkbenchFile {
@@ -39,7 +40,7 @@ pub(super) enum PickRequest {
     Folder,
 }
 
-#[cfg(not(test))]
+#[cfg(all(not(test), not(target_os = "macos")))]
 impl PickRequest {
     pub fn native(self) -> PickFuture {
         let dialog = rfd::AsyncFileDialog::new();
@@ -91,9 +92,67 @@ impl PickRequest {
     }
 }
 
-#[cfg(not(test))]
+#[cfg(all(not(test), not(target_os = "macos")))]
 fn file_path(pick: impl Future<Output = Option<rfd::FileHandle>> + 'static) -> PickFuture {
     Box::pin(async move { pick.await.map(|file| file.path().to_path_buf()) })
+}
+
+#[cfg(all(not(test), target_os = "macos"))]
+impl PickRequest {
+    pub fn native(self) -> PickFuture {
+        use variax_workbench::macos_dialog::Dialog;
+
+        let dialog = match self {
+            Self::Artwork | Self::Folder => Dialog::Folder,
+            Self::SaveWorkbenchFile { name, extension } => {
+                Dialog::Save(name_with_extension(name, &extension))
+            }
+            Self::SaveAudio { name, aiff } => {
+                Dialog::Save(name_with_extension(name, if aiff { "aiff" } else { "wav" }))
+            }
+            Self::SaveTone { name } => Dialog::Save(name_with_extension(name, "l6t")),
+            Self::OpenEditorFile(_) | Self::OpenWorkbenchFile | Self::OpenWav | Self::OpenTone => {
+                Dialog::Open
+            }
+        };
+        let shared = Arc::new(std::sync::Mutex::new((None, None::<Waker>)));
+        let worker = Arc::clone(&shared);
+        if std::thread::Builder::new()
+            .name("mac-file-dialog".into())
+            .spawn(move || {
+                let path = dialog.select();
+                let waker = {
+                    let mut state = worker.lock().expect("file dialog state");
+                    state.0 = Some(path);
+                    state.1.take()
+                };
+                if let Some(waker) = waker {
+                    waker.wake();
+                }
+            })
+            .is_err()
+        {
+            return Box::pin(std::future::ready(None));
+        }
+        Box::pin(std::future::poll_fn(move |ctx| {
+            let mut state = shared.lock().expect("file dialog state");
+            if let Some(path) = state.0.take() {
+                Poll::Ready(path)
+            } else {
+                state.1 = Some(ctx.waker().clone());
+                Poll::Pending
+            }
+        }))
+    }
+}
+
+#[cfg(all(not(test), target_os = "macos"))]
+fn name_with_extension(name: String, extension: &str) -> String {
+    if std::path::Path::new(&name).extension().is_some() {
+        name
+    } else {
+        format!("{name}.{extension}")
+    }
 }
 
 pub(super) struct Picker<A> {

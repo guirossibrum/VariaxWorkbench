@@ -121,6 +121,7 @@ impl Worker {
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
 pub(super) fn platform() -> Option<Identify> {
     #[cfg(all(feature = "usb", target_os = "linux", not(test)))]
     {

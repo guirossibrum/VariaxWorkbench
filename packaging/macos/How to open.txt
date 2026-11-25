@@ -1,0 +1,18 @@
+Variax Workbench and Rig Check — untested macOS alpha
+
+Drag both apps onto the Applications shortcut. Open each app from Applications.
+These builds use an ad-hoc signature and have not been notarized.
+
+macOS Catalina
+Right-click the app, choose Open, then confirm Open.
+
+Current macOS
+Try to open the app once. Go to System Settings → Privacy & Security and choose
+Open Anyway for that app.
+
+Fallback for a copy you trust
+In Terminal, use the app's actual name in place of <app>:
+  xattr -dr com.apple.quarantine "/Applications/<app>.app"
+
+The Mac connection isn't available in this version yet. Variax Workbench edits
+files offline. Rig Check offers practice mode and computer-only checks.

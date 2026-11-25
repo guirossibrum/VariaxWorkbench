@@ -169,6 +169,47 @@ pub fn detect_linux(source: &dyn FileSource) -> Result<Vec<String>, String> {
     Ok(lines)
 }
 
+fn detect_macos(commands: &dyn super::computer::other::CommandRunner) -> Vec<String> {
+    let mut lines = vec!["Audio system: Core Audio".into()];
+    if let Some(profile) = commands.run("system_profiler", &["SPAudioDataType"]) {
+        let mut podxt_indent = None;
+        for raw in profile.lines().filter(|line| !line.trim().is_empty()) {
+            let text = raw.trim();
+            let indent = raw.len() - raw.trim_start().len();
+            if podxt_indent.is_some_and(|device_indent| indent <= device_indent) {
+                podxt_indent = None;
+            }
+            if let Some(name) = text.strip_suffix(':')
+                && name.to_ascii_lowercase().contains("podxt")
+            {
+                lines.push(format!("PODxt audio device: {name}"));
+                podxt_indent = Some(indent);
+            } else if podxt_indent.is_some()
+                && let Some((key, value)) = text.split_once(':')
+                && matches!(
+                    key,
+                    "Input Channels"
+                        | "Output Channels"
+                        | "Current SampleRate"
+                        | "Format"
+                        | "Default Input Device"
+                        | "Default Output Device"
+                        | "Default System Output Device"
+                )
+            {
+                lines.push(format!("{key}: {}", value.trim()));
+            }
+        }
+        if lines.len() == 1 {
+            lines.push("PODxt audio device: none reported by macOS.".into());
+        }
+    } else {
+        lines.push("Core Audio device listing unavailable.".into());
+    }
+    lines.push("No audio stream was opened.".into());
+    lines
+}
+
 pub fn detect(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let lines = if cfg!(target_os = "linux") || ctx.mode == super::record::Mode::Practice {
         let system = ctx.port.system();
@@ -179,10 +220,7 @@ pub fn detect(ctx: &mut Ctx<'_>) -> Result<(), String> {
             "Device formats: not available on this OS yet (needs the #262 adapter); no stream was opened.".into(),
         ]
     } else {
-        vec![
-            "Audio system: Core Audio".into(),
-            "Device formats: not available on this OS yet (needs the #262 adapter); no stream was opened.".into(),
-        ]
+        detect_macos(&super::computer::other::SystemCommands)
     };
     for line in lines {
         ctx.rec.show(line);
@@ -240,6 +278,33 @@ mod tests {
                 .unwrap_err()
                 .contains("No PODxt Live sound card")
         );
+    }
+
+    #[test]
+    fn macos_audio_check_lists_only_podxt_metadata_and_never_opens_a_stream() {
+        struct Profiler(Option<&'static str>);
+        impl crate::rig_check::computer::other::CommandRunner for Profiler {
+            fn run(&self, program: &str, args: &[&str]) -> Option<String> {
+                assert_eq!(
+                    (program, args),
+                    ("system_profiler", &["SPAudioDataType"][..])
+                );
+                self.0.map(str::to_owned)
+            }
+        }
+        let profile = concat!(
+            "Audio:\n    Devices:\n        PODxt Live:\n",
+            "          Input Channels: 2\n          Current SampleRate: 39062.5\n",
+            "        Mac Speakers:\n          Output Channels: 8\n",
+        );
+        let text = detect_macos(&Profiler(Some(profile))).join("\n");
+        assert!(text.contains("PODxt audio device: PODxt Live"));
+        assert!(text.contains("Input Channels: 2"));
+        assert!(text.contains("Current SampleRate: 39062.5"));
+        assert!(!text.contains("Mac Speakers") && !text.contains("Output Channels: 8"));
+        assert!(text.ends_with("No audio stream was opened."));
+        assert!(detect_macos(&Profiler(Some("")))[1].contains("none reported"));
+        assert!(detect_macos(&Profiler(None))[1].contains("unavailable"));
     }
 
     #[test]

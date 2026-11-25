@@ -101,7 +101,11 @@ impl Workbench {
                     ui.disable();
                 }
                 ui.label(recording::OFFLINE_BANNER);
-                ui.label(recording::DEVICE_CAPTURE_LOCKED);
+                ui.label(if cfg!(all(target_os = "macos", not(test))) {
+                    variax_workbench::MAC_CONNECTION_UNAVAILABLE
+                } else {
+                    recording::DEVICE_CAPTURE_LOCKED
+                });
                 ui.label(recording::NO_AUTO_START);
                 ui.label(self.recorder.phase_label());
                 ui.label(self.recorder.meter_line());

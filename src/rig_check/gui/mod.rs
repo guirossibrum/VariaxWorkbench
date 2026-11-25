@@ -328,12 +328,18 @@ impl Wizard {
             });
     }
 
+    const REAL_MODE_TITLE: &str = if cfg!(target_os = "macos") {
+        "This Mac"
+    } else {
+        "Real rig"
+    };
+
     fn progress_panel(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new("Rig Check").size(TITLE).strong().color(TEXT));
         ui.label(
             RichText::new(match self.mode {
                 Some(Mode::Practice) => "Practice: simulated devices",
-                Some(Mode::Real) => "Real rig",
+                Some(Mode::Real) => Self::REAL_MODE_TITLE,
                 None => "Choose a mode",
             })
             .size(BODY)
@@ -388,7 +394,15 @@ impl Wizard {
                     .strong()
                     .color(TEXT),
             );
-            ui.label(RichText::new("Choose how to run. Practice uses simulated devices and sends nothing to your rig. Real rig uses the connected PODxt Live and Variax; each device step needs the owner's approval in this version.").size(BODY).color(TEXT));
+            let description = if cfg!(target_os = "macos") {
+                concat!(
+                    "Practice uses simulated devices. This Mac runs computer-only checks. ",
+                    "The Mac connection isn't available in this version yet"
+                )
+            } else {
+                "Choose how to run. Practice uses simulated devices and sends nothing to your rig. Real rig uses the connected PODxt Live and Variax; each device step needs the owner's approval in this version."
+            };
+            ui.label(RichText::new(description).size(BODY).color(TEXT));
             ui.add_space(SPACE_16);
             ui.horizontal(|ui| {
                 let practice = button(ui, "Practice", true);
@@ -396,7 +410,7 @@ impl Wizard {
                 if practice.clicked() {
                     self.mode = Some(Mode::Practice);
                 }
-                if button(ui, "Real rig", true).clicked() {
+                if button(ui, Self::REAL_MODE_TITLE, true).clicked() {
                     self.mode = Some(Mode::Real);
                 }
             });
@@ -823,10 +837,13 @@ fn save_dialog(report: &str) -> String {
     if cfg!(test) {
         return "Saving is not available in tests.".into();
     }
-    match rfd::FileDialog::new()
+    #[cfg(target_os = "macos")]
+    let path = crate::macos_dialog::Dialog::Save("rig-check-report.txt".into()).select();
+    #[cfg(not(target_os = "macos"))]
+    let path = rfd::FileDialog::new()
         .set_file_name("rig-check-report.txt")
-        .save_file()
-    {
+        .save_file();
+    match path {
         Some(path) => match super::report::save_copy(report, &path) {
             Ok(()) => format!("Saved {}.", path.display()),
             Err(error) => format!("Not saved: {error}"),
