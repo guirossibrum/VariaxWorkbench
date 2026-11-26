@@ -137,13 +137,13 @@ pub(super) struct VariaxEditor {
     device_sync: device_sync::DeviceSync,
     catalog: Vec<ModelArt>,
     artwork: PathBuf,
-    pub(super) textures: HashMap<String, TextureHandle>,
+    pub(super) textures: HashMap<String, body_scene::ArtworkTexture>,
     bundled_artwork: body_scene::BundledArtwork,
     missing_textures: HashSet<String>,
     pub(super) error: Option<String>,
     pub(super) status: String,
     pub(super) tab: Tab,
-    drag_origin: Option<body_scene::BodyDrag>,
+    drag_origin: Option<u32>,
     /// Which pickup is painted last. Pickup 1 starts in front, matching the
     /// original panel's first child. This is view state, not a file field.
     pickup_front: u32,
@@ -886,6 +886,15 @@ impl VariaxEditor {
     }
 
     pub(super) fn texture(&mut self, ctx: &egui::Context, relative: &str) -> Option<TextureHandle> {
+        self.artwork_texture(ctx, relative)
+            .map(|artwork| artwork.handle)
+    }
+
+    fn artwork_texture(
+        &mut self,
+        ctx: &egui::Context,
+        relative: &str,
+    ) -> Option<body_scene::ArtworkTexture> {
         if let Some(texture) = self.textures.get(relative) {
             return Some(texture.clone());
         }
@@ -895,10 +904,12 @@ impl VariaxEditor {
         let path = self.artwork.join(relative);
         match image::open(&path) {
             Ok(image) => {
-                let rgba = image.to_rgba8();
-                let size = [rgba.width() as usize, rgba.height() as usize];
-                let pixels = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
-                let texture = ctx.load_texture(relative, pixels, egui::TextureOptions::LINEAR);
+                let texture = body_scene::ArtworkTexture::new(
+                    ctx,
+                    relative,
+                    image.into_rgba8(),
+                    relative.starts_with("pickups/"),
+                );
                 self.textures.insert(relative.to_owned(), texture.clone());
                 Some(texture)
             }
