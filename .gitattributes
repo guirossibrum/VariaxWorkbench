@@ -1,2 +1,5 @@
 # This byte-pinned public inventory projection is identical on every checkout.
 research/audio-inventory-schema2.tsv text eol=lf
+
+# The PODxt wire fixture tests match scenario headers with a literal LF.
+crates/line6-devices/src/family/podxt/fixtures/line6-edit-3.06-transfer.txt text eol=lf
