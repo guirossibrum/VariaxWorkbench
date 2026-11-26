@@ -10,6 +10,8 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] #274 native macOS arm64 and x86_64 builds verified the vendored static libusb archive, deployment targets and system-only dynamic dependencies with the USB and audio approvals closed. [Build-only verification](https://github.com/guirossibrum/VariaxWorkbench/actions/runs/45767046149).
+
 - [x] #281 offline design checkpoint identifies which approved Variax and PODxt Live captures can populate an offline cache and specifies validation, publication, and fake-transport acceptance for implementation. No cache or device behavior changed. [Design and Lane 3 handoff](first-connection-cache.md).
 - [x] [#273](https://github.com/guirossibrum/VariaxWorkbench/issues/273) packages ten approved runtime PNGs and a SHA-256 manifest with the offline Mac Workbench bundle. Six Python packaging tests verify bundle metadata and checksums, including a relocated resource tree and refusal of incomplete or changed artwork. Two headless Rust tests cover bundle-path resolution and decoding the three home images. Native DMG and desktop verification of this change are pending. [Build and verify](macos-package.md).
 
