@@ -13,6 +13,7 @@ use std::{cell::Cell, time::Duration};
 #[derive(Default)]
 struct Trace {
     held: Cell<bool>,
+    cancelled: Cell<bool>,
     opens: Cell<usize>,
     writes: Cell<usize>,
     reads: Cell<usize>,
@@ -76,6 +77,9 @@ impl Link for ScopedFake<'_> {
     fn read(&mut self, wait: Duration) -> Result<Option<Vec<u8>>, String> {
         assert!(self.lock.0.held.get());
         self.lock.0.reads.set(self.lock.0.reads.get() + 1);
+        if self.lock.0.cancelled.get() {
+            return Err("synthetic capture cancelled".into());
+        }
         self.fake.read(wait)
     }
 
@@ -228,6 +232,38 @@ fn failed_read_still_finalizes_and_preserves_both_errors() {
     assert_eq!(trace.writes.get(), 1);
     assert_eq!(trace.finalized.get(), 1);
     assert!(!trace.held.get());
+}
+
+#[test]
+fn cancellation_still_finalizes_under_lock_and_issues_no_proof() {
+    let library = capture();
+    for (cancel_after, fail_finish) in [(1, false), (1, true), (library.entries.len(), false)] {
+        let trace = Trace::default();
+        let mut replies = script(&library);
+        replies.truncate(cancel_after + 2); // Identity, opening tone, then addressed reads.
+        let mut slots_read = 0;
+        let result = capture_fresh_usb(
+            || Ok(()),
+            || Ok(ScopedFake::open(&trace, replies, fail_finish)),
+            ScopedFake::finish,
+            &ReadsOnly,
+            &mut Quiet,
+            |_| {
+                slots_read += 1;
+                if slots_read == cancel_after {
+                    trace.cancelled.set(true);
+                }
+            },
+        );
+
+        let error = result.err().unwrap();
+        assert!(error.contains("synthetic capture cancelled"), "{error}");
+        assert_eq!(error.contains("synthetic release failure"), fail_finish);
+        assert_eq!(slots_read, cancel_after);
+        assert_eq!(trace.writes.get(), cancel_after + 2);
+        assert_eq!(trace.finalized.get(), 1);
+        assert!(!trace.held.get());
+    }
 }
 
 #[test]
