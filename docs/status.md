@@ -10,6 +10,8 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] Rig Check 4.7 handles the optional PODxt Live block-end after a valid addressed tone in the existing read window. Four fake-link tests cover split and coalesced replies, recall and return, unchanged wait budgets, and rejection of malformed or out-of-context frames. Owner Mac verification is pending. [#300](https://github.com/guirossibrum/VariaxWorkbench/issues/300).
+
 - [x] [#274](https://github.com/guirossibrum/VariaxWorkbench/issues/274) shares passive macOS PODxt Live inventory between Workbench and Rig Check. Offline fixtures cover direct and populated hub paths, missing interfaces, refused access, unrelated neighbor changes and replaced or ambiguous attachments. Device-level presence does not grant interface access. Native runtime verification is pending.
 - [x] [#274](https://github.com/guirossibrum/VariaxWorkbench/issues/274) stages the ordinary macOS USB transport and an owner-only universal DMG build for Workbench and Rig Check. Offline tests cover attachment matching, driver conflict and cleanup, the one-request Device Check exchange, and the static-symbol verifier for all four executable slices. Native USB packaging and owner parity verification require the reviewed integration of both consumers. [Integration contract](podxt-macos-usb-integration.md) · [Owner parity card](podxt-macos-usb-test-card.md).
 

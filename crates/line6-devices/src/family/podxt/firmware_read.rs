@@ -1,7 +1,8 @@
 //! Read-only compatibility evidence from a PODxt Live reporting any valid version.
 
 use super::{
-    BankKind, EditBuffer, IDENTITY_FAMILY, Location, PODXT_LIVE_MEMBER, STORED_GAP, TonePayload,
+    BankKind, EditBuffer, IDENTITY_FAMILY, Location, PODXT_LIVE_MEMBER, STORED_GAP,
+    STORED_READ_END, TonePayload,
     procedures::{identify_podxt, request_tone},
 };
 use crate::{
@@ -121,7 +122,7 @@ fn settle_stored_read<L: Link>(
         check_stop(stopping)?;
         for event in session.poll(left)?.into_iter().flatten() {
             match event {
-                Event::Sysex(frame) if frame != [0xf0, 0, 1, 0x0c, 3, 0x72, 0xf7] => {
+                Event::Sysex(frame) if frame != STORED_READ_END => {
                     return Err("Unexpected SysEx after a stored PODxt tone.".into());
                 }
                 Event::Short(message) if message[0] & 0xf0 == 0xc0 => {

@@ -3,12 +3,13 @@
 
 use super::{
     BankKind, CC_GAP, CurrentTone, EditBuffer, IDENTITY_FAMILY, LiveControl, Location,
-    PODXT_LIVE_MEMBER, PODXT_LIVE_VERSION, PodxtRequest, STORED_GAP, STORED_WINDOW, WINDOW,
-    is_edit_buffer, read_current,
+    PODXT_LIVE_MEMBER, PODXT_LIVE_VERSION, PodxtRequest, STORED_GAP, STORED_READ_END,
+    STORED_WINDOW, WINDOW, is_edit_buffer, read_current,
 };
 use crate::{
     identity::Identity,
-    session::{Link, Session, Wait},
+    midi::{Event, hex},
+    session::{Link, POLL, Session, Wait},
 };
 use std::time::Duration;
 
@@ -77,10 +78,68 @@ pub fn read_stored_tone<L: Link>(
     session: &mut Session<L>,
     location: Location,
 ) -> Result<Option<EditBuffer>, String> {
-    let tone = request_tone(Some(location), |request, window| {
-        wait_tone(session, request, window)
-    })?;
-    session.listen(STORED_GAP)?;
+    session.send(PodxtRequest::Stored(location))?;
+    let reply_end = session.link.elapsed() + STORED_WINDOW;
+    let mut end = reply_end + STORED_GAP;
+    // Keep the dump and its settle period in one exchange. The packet
+    // containing the dump's F7 can also contain the block-end frame.
+    let mut tone = None;
+    let mut saw_marker = false;
+    let mut in_sysex = false;
+    let orphans = session.assembler.orphans;
+    loop {
+        let now = session.link.elapsed();
+        if now >= end {
+            break;
+        }
+        let next_deadline = if tone.is_none() && now < reply_end {
+            reply_end
+        } else {
+            end
+        };
+        let Some(events) = session.poll_with((next_deadline - now).min(POLL), |packet| {
+            // The assembler keeps partial SysEx across packets. Detect a frame
+            // that is abandoned or still unfinished when this read ends.
+            for status in packet.iter().copied().filter(|b| (0x80..0xf8).contains(b)) {
+                if in_sysex && status != 0xf7 {
+                    return Err("Interrupted SysEx during a stored PODxt read.".into());
+                }
+                in_sysex = status == 0xf0;
+            }
+            Ok(())
+        })?
+        else {
+            continue;
+        };
+        if session.assembler.orphans != orphans {
+            return Err("Unexpected orphan MIDI bytes during a stored PODxt read.".into());
+        }
+        for event in events {
+            match event {
+                Event::Sysex(frame)
+                    if tone.is_none() && now < reply_end && is_edit_buffer(&frame) =>
+                {
+                    tone = Some(EditBuffer::parse(frame)?);
+                    end = session.link.elapsed() + STORED_GAP;
+                }
+                Event::Sysex(frame)
+                    if tone.is_some() && !saw_marker && frame == STORED_READ_END =>
+                {
+                    saw_marker = true;
+                }
+                Event::Sysex(frame) => {
+                    return Err(format!("Unexpected SysEx reply: {}", hex(&frame)));
+                }
+                Event::Short(message) if message[0] & 0xf0 == 0xc0 => {
+                    return Err(format!("Unexpected program change: {}", hex(&message)));
+                }
+                Event::Short(_) => {}
+            }
+        }
+    }
+    if in_sysex {
+        return Err("Unfinished SysEx during a stored PODxt read.".into());
+    }
     Ok(tone)
 }
 
@@ -222,5 +281,105 @@ mod tests {
                 session.link.assert_finished();
             }
         }
+    }
+
+    #[test]
+    fn addressed_end_marker_is_optional_and_does_not_change_read_budgets() {
+        let slot = Location::tone_from_label("1B").unwrap();
+        let dump = super::super::tests::synthetic();
+        for (reply, expected_elapsed) in [
+            (vec![], STORED_WINDOW + STORED_GAP),
+            (vec![dump.clone()], Duration::from_millis(4) + STORED_GAP),
+            (
+                vec![dump.clone(), STORED_READ_END.to_vec()],
+                Duration::from_millis(4) + STORED_GAP,
+            ),
+        ] {
+            let has_dump = !reply.is_empty();
+            let mut log = Quiet;
+            let mut session = Session::new(
+                Fake::new(Path::PodxtMidi, vec![(PodxtRequest::Stored(slot), reply)]),
+                &AllowAll,
+                &mut log,
+            );
+            let actual = read_stored_tone(&mut session, slot).unwrap();
+            assert_eq!(
+                actual.as_ref().map(|tone| &tone.raw),
+                has_dump.then_some(&dump)
+            );
+            assert_eq!(session.link.elapsed(), expected_elapsed);
+            session.link.assert_finished();
+        }
+    }
+
+    #[test]
+    fn addressed_read_rejects_malformed_or_unrelated_frames() {
+        let slot = Location::tone_from_label("1B").unwrap();
+        let dump = super::super::tests::synthetic();
+        let marker = STORED_READ_END.to_vec();
+        let marker_prefix = marker[..marker.len() - 1].to_vec();
+        let malformed_marker = [marker_prefix.clone(), vec![0x01, 0xf7]].concat();
+        let unrelated = vec![0xf0, 0, 1, 0x0c, 3, 0x50, 0xf7];
+        for (reply, error) in [
+            (vec![marker.clone()], "Unexpected SysEx"),
+            (
+                vec![[marker.clone(), dump.clone()].concat()],
+                "Unexpected SysEx",
+            ),
+            (
+                vec![[dump.clone(), malformed_marker.clone()].concat()],
+                "Unexpected SysEx",
+            ),
+            (vec![dump.clone(), malformed_marker], "Unexpected SysEx"),
+            (vec![dump.clone(), unrelated], "Unexpected SysEx"),
+            (
+                vec![dump.clone(), marker.clone(), marker],
+                "Unexpected SysEx",
+            ),
+            (
+                vec![dump.clone(), marker_prefix.clone()],
+                "Unfinished SysEx",
+            ),
+            (
+                vec![[dump.clone(), marker_prefix].concat(), dump.clone()],
+                "Interrupted SysEx",
+            ),
+            (
+                vec![[dump.clone(), vec![0xf7]].concat()],
+                "Unexpected orphan",
+            ),
+            (vec![dump, vec![0xc0, 2]], "Unexpected program change"),
+        ] {
+            let mut log = Quiet;
+            let mut session = Session::new(
+                Fake::new(Path::PodxtMidi, vec![(PodxtRequest::Stored(slot), reply)]),
+                &AllowAll,
+                &mut log,
+            );
+            let observed = read_stored_tone(&mut session, slot).unwrap_err();
+            assert!(observed.contains(error), "{observed}");
+            session.link.assert_finished();
+        }
+    }
+
+    #[test]
+    fn strict_current_tone_read_does_not_accept_the_addressed_end_marker() {
+        let dump = [super::super::tests::synthetic(), STORED_READ_END.to_vec()].concat();
+        let mut log = Quiet;
+        let mut session = Session::new(
+            Fake::new(
+                Path::PodxtMidi,
+                vec![(PodxtRequest::EditBuffer, vec![dump])],
+            ),
+            &AllowAll,
+            &mut log,
+        );
+        session.require_expected_sysex();
+        assert!(
+            read_edit_buffer(&mut session)
+                .unwrap_err()
+                .contains("Unexpected SysEx")
+        );
+        session.link.assert_finished();
     }
 }

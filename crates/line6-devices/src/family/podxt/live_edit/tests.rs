@@ -449,3 +449,75 @@ fn librarian_recall_refuses_edited_tones_and_verified_recall_only_changes_progra
     assert_eq!(recalled.tone, saved_target);
     session.link.assert_finished();
 }
+
+fn addressed_reply(tone: &EditBuffer, split_marker: bool) -> Vec<Vec<u8>> {
+    let mut packets = crate::session::testing::packets(&tone.raw[..EDIT_BUFFER_LEN - 1]);
+    let tail = vec![0xf7, 0xf0, 0, 1, 0x0c, 3, 0x72];
+    if split_marker {
+        packets.extend([tail, vec![0xf7]]);
+    } else {
+        packets.push([tail, vec![0xf7]].concat());
+    }
+    packets
+}
+
+#[test]
+fn recall_and_return_accept_split_and_coalesced_addressed_read_end_markers() {
+    let start = buffer(&[(13, 42)]);
+    let target = Location::new(BankKind::Tones, 18).unwrap();
+    let saved_target = frame(&[(13, 77)]);
+
+    for start_split in [false, true] {
+        let mut script = begin(&start.tone);
+        script.extend([
+            (
+                PodxtRequest::Stored(start.channel).bytes(),
+                addressed_reply(&start.tone, start_split),
+            ),
+            (
+                PodxtRequest::Stored(target).bytes(),
+                addressed_reply(&saved_target, false),
+            ),
+            packs(4),
+            channel(17),
+            (PodxtRequest::Program(target).bytes(), vec![]),
+            dump(&saved_target),
+            channel(18),
+        ]);
+        script.extend([
+            identity(PODXT_LIVE_VERSION),
+            channel(18),
+            dump(&saved_target),
+            (
+                PodxtRequest::Stored(target).bytes(),
+                addressed_reply(&saved_target, true),
+            ),
+            (
+                PodxtRequest::Stored(start.channel).bytes(),
+                addressed_reply(&start.tone, false),
+            ),
+            packs(4),
+            channel(18),
+            (PodxtRequest::Program(start.channel).bytes(), vec![]),
+            dump(&start.tone),
+            channel(17),
+        ]);
+        let mut log = Quiet;
+        let mut session = Session::new(
+            Fake::from_bytes(Path::PodxtMidi, script),
+            &AllowAll,
+            &mut log,
+        );
+        let selected = recall_editor_channel(&mut session, target, || false).unwrap();
+        assert_eq!(
+            (selected.channel, selected.tone),
+            (target, saved_target.clone())
+        );
+        let returned = recall_editor_channel(&mut session, start.channel, || false).unwrap();
+        assert_eq!(
+            (returned.channel, returned.tone),
+            (start.channel, start.tone.clone())
+        );
+        session.link.assert_finished();
+    }
+}
