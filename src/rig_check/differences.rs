@@ -58,29 +58,84 @@ pub fn program(
     severity: Severity,
     allow_live_position: bool,
 ) -> bool {
+    let mut tolerance = None;
+    let mut checksum_failed = false;
+    if allow_live_position {
+        let a = procedures::neutral_program(expected);
+        let b = procedures::neutral_program(actual);
+        for (side, words, normalized) in [("expected", expected, &a), ("actual", actual, &b)] {
+            if let Err(computed) = normalized {
+                checksum_failed = true;
+                let check = checksum_line(*computed, words[procedures::CHECKSUM_WORD]);
+                record.difference(
+                    Severity::Stop,
+                    format!("{label}: {side} firmware checksum is invalid"),
+                    vec![check],
+                );
+            }
+        }
+        if let (Ok(a), Ok(b)) = (a, b) {
+            tolerance = Some(a == b);
+        }
+    }
     let differences = engine_check::compare(
         &procedures::program_bytes(expected),
         &procedures::program_bytes(actual),
     );
-    let (live, content): (Vec<_>, Vec<_>) = differences.into_iter().partition(|diff| {
-        allow_live_position && procedures::TONE_POSITION_WORDS.contains(&diff.word)
-    });
+    let (live, content): (Vec<_>, Vec<_>) = differences
+        .into_iter()
+        .filter(|diff| !checksum_failed || diff.word != procedures::CHECKSUM_WORD)
+        .partition(|diff| {
+            tolerance.is_some_and(|only_live| {
+                diff.xor & !procedures::tone_position_mask(diff.word) == 0
+                    || (only_live && diff.word == procedures::CHECKSUM_WORD)
+            })
+        });
     if !live.is_empty() {
         record.difference(
             Severity::Info,
             format!("{label}: live tone position and dependent checksum"),
-            live.iter().map(word_line).collect(),
+            live.iter().map(variax_word_line).collect(),
         );
     }
     if !content.is_empty() {
         let fields = field_summary(content.iter().map(|diff| diff.part));
         record.difference(
-            severity,
+            if checksum_failed {
+                Severity::Stop
+            } else {
+                severity
+            },
             format!("{label}: {} words differ ({fields})", content.len()),
-            content.iter().map(word_line).collect(),
+            content.iter().map(variax_word_line).collect(),
         );
     }
-    content.is_empty()
+    !checksum_failed && content.is_empty()
+}
+
+pub(super) fn checksum_line(expected: u32, actual: u32) -> String {
+    let xor = expected ^ actual;
+    format!(
+        "word {} (firmware checksum) · expected 0x{expected:06X} · actual 0x{actual:06X} · XOR 0x{xor:06X} · {} bit(s)",
+        procedures::CHECKSUM_WORD,
+        xor.count_ones(),
+    )
+}
+
+fn variax_word_line(diff: &engine_check::WordDiff) -> String {
+    if procedures::tone_position_mask(diff.word) == 0 {
+        return word_line(diff);
+    }
+    use line6_devices::family::variax::{PresetMetadata, procedures::METADATA};
+    let start = diff.word * 3 - METADATA.start;
+    let fields = field_summary(
+        diff.xor.to_be_bytes()[1..]
+            .iter()
+            .enumerate()
+            .filter(|&(_, &byte)| byte != 0)
+            .filter_map(|(offset, _)| PresetMetadata::field_at(start + offset)),
+    );
+    format!("{} · changed settings: {fields}", word_line(diff))
 }
 
 pub fn word_line(diff: &engine_check::WordDiff) -> String {

@@ -355,9 +355,7 @@ fn crash_restore_cleans_up_both_interfaces_and_keeps_state_pending_if_release_fa
                 podxt_channel: initial.podxt.channel,
                 podxt_tone_sha256: Some(sha256_hex(&initial.podxt.playing)),
                 variax_preset: Some((preset.bank(), preset.slot())),
-                variax_match_sha256: Some(crate::rig_check::recover::match_hash(
-                    &initial.variax.active,
-                )),
+                variax_match_sha256: crate::rig_check::recover::match_hash(&initial.variax.active),
                 ..RigState::default()
             }
         };

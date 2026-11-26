@@ -88,7 +88,7 @@ pub fn after_full_read(ctx: &mut Ctx<'_>, words: &Program) -> Result<(), String>
                 851 + index / 3,
                 xor.count_ones()
             );
-            if (61..64).contains(&index) {
+            if procedures::TONE_POSITION_BYTES.contains(&index) {
                 live.push(line);
             } else {
                 content.push(line);

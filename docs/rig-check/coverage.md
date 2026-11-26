@@ -72,10 +72,28 @@ Real runs save raw evidence by default in the report's companion folder.
   can edit and save, and step 6.2 verifies the restored starting edit.
   The existing 0.3 reference test separately verifies that a renderer
   REPORT permits a later save.
-- **Current limit:** Variax full-program comparisons that allow live tone
-  position exclude whole words 871, 872 and 1,091. Word 872 also contains
-  the saved-tone flag and the first trim byte. The PODxt INFO rehearsal
-  does not verify a byte-level Variax classifier for those shared words.
+- **Variax position exception:** In full-program checks that allow a
+  moving knob, only metadata bytes 61–63 are eligible for INFO. In the
+  big-endian program these are word 871 bits 15–0 and word 872 bits 23–16.
+  The saved-tone flag and first trim byte in word 872 still participate
+  in the comparison. A word with both live and other changes retains its
+  full expected value, actual value, XOR and field names in the content
+  result. Before allowing a position exception, Rig Check verifies word
+  1,091 of each input against the low 24 bits of the firmware sum of
+  words 0–1,090. A bad checksum is STOP. A changed, valid checksum is
+  INFO only when the rest of the difference is live position. Exact
+  `0x3B` edit read-backs still compare the known retained checksum.
+  [Firmware layout and evidence](../firmware-variax-dispatch.md#full-buffer-0x3c-read)
+- **Variax practice and recovery:** A valid position change in a guided
+  recall permits later writes. The simulated mixed position, saved-mode
+  and trim mismatch keeps its bit details in the report and blocks later
+  edits and saves. The same checksum and position rules apply to
+  program matching and crash-recovery hashes. Older Variax recovery
+  hashes discarded neighboring fields and cannot verify recovery. Rig
+  Check leaves the old state file available and refuses automatic recovery
+  from it before selecting a preset. The historical #236 files confirm
+  the layout and checksum on 60 programs. They do not establish whether
+  the firmware refreshes the checksum during physical knob movement.
 - **Owner evidence still needed:** A report and companion evidence from
   the current build on the rig, showing restored starting edits at 6.2
   and live-position changes that did not prevent otherwise eligible

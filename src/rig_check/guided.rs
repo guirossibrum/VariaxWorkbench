@@ -317,6 +317,20 @@ fn already_on_variax(
             "Checking the guitar's current program",
         )
     })?;
+    let observed_checksum = read.words[super::procedures::CHECKSUM_WORD];
+    let computed_checksum = super::procedures::firmware_checksum(&read.words);
+    if observed_checksum != computed_checksum {
+        let reason = "The Variax selector preflight failed the firmware checksum.";
+        ctx.rec.difference(
+            Severity::Stop,
+            reason,
+            vec![differences::checksum_line(
+                computed_checksum,
+                observed_checksum,
+            )],
+        );
+        return Err(reason.into());
+    }
     let matches = ctx
         .data
         .variax_library

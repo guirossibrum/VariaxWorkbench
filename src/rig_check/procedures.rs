@@ -16,9 +16,18 @@ use line6_devices::session::{Link, Log, Session};
 use std::cell::RefCell;
 use std::time::Duration;
 
-/// Words 871 and 872 follow the tone knob even with saved tone on (#181,
-/// #234); the checksum word follows them.
-pub const TONE_POSITION_WORDS: [usize; 3] = [871, 872, 1091];
+pub(super) const CHECKSUM_WORD: usize = PROGRAM_WORDS - 1;
+pub(super) const TONE_POSITION_BYTES: std::ops::Range<usize> = 61..64;
+
+/// Settings bytes 61–63 are the high 24 bits of the tone-position float.
+/// Settings start at word 851 and each word holds three big-endian bytes.
+pub(super) const fn tone_position_mask(word: usize) -> u32 {
+    match word {
+        871 => 0x00_ffff,
+        872 => 0xff_0000,
+        _ => 0,
+    }
+}
 
 /// The operations one step may use. In real mode the step's owner approval
 /// and gates must also be open.
@@ -228,12 +237,36 @@ pub fn variax_read_preset<L: Link>(
     })
 }
 
-/// Same stored program, ignoring the tone-position words.
+/// The firmware 3.10 sum over words 0–1,090, reduced to 24 bits.
+pub(super) fn firmware_checksum(words: &Program) -> u32 {
+    words[..CHECKSUM_WORD]
+        .iter()
+        .copied()
+        .fold(0, u32::wrapping_add)
+        & 0xff_ffff
+}
+
+/// Check the original checksum before removing the live-position bits and
+/// checksum for matching. An error carries the computed checksum.
+pub(super) fn neutral_program(words: &Program) -> Result<Program, u32> {
+    let checksum = firmware_checksum(words);
+    if words[CHECKSUM_WORD] != checksum {
+        return Err(checksum);
+    }
+    let mut neutral = *words;
+    for (index, word) in neutral.iter_mut().enumerate() {
+        *word &= !tone_position_mask(index);
+    }
+    neutral[CHECKSUM_WORD] = 0;
+    Ok(neutral)
+}
+
+/// Same checksum-verified program apart from the live tone position.
 pub fn same_program(a: &Program, b: &Program) -> bool {
-    a.iter()
-        .zip(b.iter())
-        .enumerate()
-        .all(|(i, (x, y))| x == y || TONE_POSITION_WORDS.contains(&i))
+    match (neutral_program(a), neutral_program(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 pub fn unpack_program(bytes: &variax::Image) -> Program {
