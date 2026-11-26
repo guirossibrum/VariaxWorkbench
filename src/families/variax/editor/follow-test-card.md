@@ -1,8 +1,15 @@
 # Variax Follow owner test card
 
-Use the verified Variax 600 3.10 tab through the supported PODxt Live. Open a
-12-bank guitar library in the tab and make a local edit so you can verify
-that Follow preserves it.
+Owner acceptance for [#202](https://github.com/guirossibrum/VariaxWorkbench/issues/202)
+is pending. Use the verified Variax 600 3.10 tab through the supported PODxt Live.
+
+**Refresh prerequisite.** Before checking slot selection, use **Download from
+guitar…** on the Variax tab (the library Refresh) and wait for the full 12-bank
+download. If the tab already shows **Downloaded on this connection**, use that
+download. A **Saved guitar download** or imported backup is a historical copy
+that you can browse and edit offline. Save any edits you want to keep before
+replacing it with a fresh download. Make a local edit in the current download
+to verify that Follow preserves it.
 
 1. After identity verification, confirm **Follow** starts automatically.
    Move the model knob and pickup selector. Compare the
@@ -14,20 +21,28 @@ that Follow preserves it.
    **Save tone-knob position** setting, and local edit remain as before.
 3. Record any **Clip**, **DSP overload**, or **MIDI queue overflow** notice
    that occurs during normal playing.
-4. Turn **Follow** off. Further knob movement should leave the editor view
-   alone. Start Follow again and close the tab. **Refresh guitar** on the
-   PODxt tab should be able to use the rig.
-5. Unplug the VDI cable while the PODxt stays connected. Record whether the
-   editor reports the disconnect and switches Follow off. If the PODxt sends
-   no notice, turn Follow off and use **Refresh guitar** on the PODxt tab to
-   detect the disconnect. After reconnecting and verifying identity, check that
-   the tab still contains the local edits. Follow should resume if its
-   checkbox was left on.
+4. Turn **Follow** off and check that further knob movements leave the editor
+   view alone. Turn Follow back on before the disconnect check.
+5. Note the selected slot, then unplug the VDI cable while the PODxt stays
+   connected. Record whether the editor reports the disconnect and stops
+   Follow. If the PODxt sends no notice, turn Follow off and use **Refresh
+   guitar** on the PODxt tab to detect the disconnect. Reconnect and let
+   identity verification finish. Follow should resume if its checkbox was
+   left on. If you turned it off, turn it back on after verification.
+   Confirm that the earlier library is labelled **Saved guitar download**,
+   with the same selected slot and local edit. Move the selector and then the
+   tone knob after the preset settles. The guitar preset indicator and
+   **Live tone** should report the new guitar values while the historical
+   library keeps its offline selection and saved tone settings. Save any
+   edits you want to keep, then use **Download from guitar…** again. Confirm
+   **Downloaded on this connection** and repeat steps 1 and 2 with this download.
 6. With Follow on, run Device Check. Check that it can use the rig and
    that Follow resumes after the operation gives the interface back. In
    separate builds approved for live editing and stores, check the same
    handoff for those operations. An unknown store outcome must leave
    Follow stopped.
+7. With Follow on, close the Variax tab. **Refresh guitar** on the PODxt tab
+   should be able to use the rig.
 
 Follow opens the verified attachment for a G3 read session. It sends no
 preset changes, preset edits or store commands.
