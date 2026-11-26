@@ -6,6 +6,8 @@ use notice::Notice;
 use super::ProductFamily;
 use identity::{Guitar, Identify, Job, JobKind, Outcome, Worker};
 use std::collections::BTreeMap;
+#[cfg(feature = "usb")]
+use std::sync::{Arc, atomic::AtomicBool};
 use variax_workbench::device_probe::{MetadataError, UsbDevice};
 use variax_workbench::firmware_notice::FirmwareNotice;
 
@@ -62,9 +64,11 @@ pub(super) enum DeviceSupport {
     FileEditingOnly,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub(super) struct DetectedDevice {
     pub key: DeviceKey,
+    #[cfg(feature = "usb")]
+    pub podxt_reply_pending: Arc<AtomicBool>,
     pub model: &'static str,
     pub support: DeviceSupport,
     pub guitar_status: Option<String>,
@@ -198,6 +202,10 @@ pub(super) enum Scan {
 
 struct Attachment {
     key: AttachmentKey,
+    // Keep unresolved PODxt replies with the physical generation, even
+    // when no device tab is open.
+    #[cfg(feature = "usb")]
+    podxt_reply_pending: Arc<AtomicBool>,
     usb: UsbDevice,
     bridge: Option<Bridge>,
     open_candidate: bool,
@@ -533,6 +541,8 @@ impl DetectionService {
                     };
                     Attachment {
                         key,
+                        #[cfg(feature = "usb")]
+                        podxt_reply_pending: Arc::default(),
                         usb,
                         bridge: make_bridge(false),
                         open_candidate,
@@ -802,6 +812,8 @@ impl DetectionService {
                     key.clone(),
                     DetectedDevice {
                         key,
+                        #[cfg(feature = "usb")]
+                        podxt_reply_pending: Arc::clone(&attachment.podxt_reply_pending),
                         model: info.title,
                         support,
                         guitar_status: status,

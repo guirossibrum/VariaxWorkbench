@@ -91,6 +91,7 @@ fn store_holds_the_rig_lock_and_cancellation_ends_before_the_first_write() {
     let result = store_transaction(
         plan,
         &control,
+        &AtomicBool::new(false),
         || {
             assert!(!held.replace(true));
             Ok(FakeLock(&held))
@@ -145,4 +146,17 @@ fn offline_build_denies_native_store_and_store_policy_denies_other_writes() {
     ] {
         assert!(!StorePolicy.allows(denied));
     }
+}
+
+pub(in crate::editor::podxt_panel::live_panel) fn assert_store_blocked(pending: &AtomicBool) {
+    let root = tempfile::tempdir().unwrap();
+    let (plan, _, _) = fixture(root.path());
+    let result = store_transaction(
+        plan,
+        &StoreControl::default(),
+        pending,
+        || panic!("quarantined store must not acquire the rig lock"),
+        |_: &(), _| panic!("quarantined store must not open MIDI"),
+    );
+    assert_eq!(result.unwrap_err(), PENDING_REPLY);
 }

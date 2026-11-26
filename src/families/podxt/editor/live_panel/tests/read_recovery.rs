@@ -409,3 +409,109 @@ fn follow_refuses_a_stale_dump_between_reads_without_suppressing_notifications()
     assert_eq!(publications, 3);
     assert!(pending.load(Ordering::Acquire));
 }
+
+#[test]
+fn tab_close_and_reopen_keep_quarantine_until_a_new_verified_attachment() {
+    let ctx = egui::Context::default();
+    let (mut app, presence) = connected_fixture(&ctx);
+    let key = app.podxt().live.device.clone().unwrap();
+    let pending = Arc::clone(&app.podxt().live.editor.reply_pending);
+
+    let (result, writes) = read(
+        ReadCommand::Current,
+        vec![identity_reply(), (PodxtRequest::EditBuffer, vec![])],
+        at(3300),
+        &pending,
+        |_, _| panic!("a cancelled read cannot publish a tone"),
+    );
+    assert_eq!(result, Err("PODxt read cancelled.".into()));
+    assert_eq!(writes, 2);
+    assert!(pending.load(Ordering::Acquire));
+
+    let id = app.tabs.active.unwrap();
+    app.close_tab(id, &ctx);
+    assert!(app.tabs.entries.is_empty());
+    app.next_detection = Instant::now();
+    stage_frame(&ctx, &mut app);
+    assert!(app.tabs.entries.is_empty(), "a dismissed tab stays closed");
+
+    // Model opening a fresh editor view. Reset only the shell's dismissed-tab
+    // list with a fresh tab container, retaining the running detection service.
+    app.tabs = tabs::Tabs::default();
+    app.next_detection = Instant::now();
+    stage_frame(&ctx, &mut app);
+    app.podxt_mut().table_view_in_test = true;
+    let text = stage_frame(&ctx, &mut app);
+    let live = &mut app.podxt_mut().live;
+    assert_eq!(live.device.as_ref(), Some(&key));
+    assert!(Arc::ptr_eq(&live.editor.reply_pending, &pending));
+    assert!(!live.device_ready());
+    assert_eq!(live.next_startup(), None);
+    assert!(text.contains(PENDING_REPLY));
+    assert!(!text.contains("Reading the playing tone…"));
+
+    let reopened = Arc::clone(&live.editor.reply_pending);
+    let (result, writes) = read(
+        ReadCommand::Current,
+        Vec::new(),
+        Duration::MAX,
+        &reopened,
+        |_, _| panic!("quarantined read must not publish"),
+    );
+    assert_eq!(result, Err(PENDING_REPLY.into()));
+    assert_eq!(writes, 0);
+    edit::tests::assert_recall_and_edit_blocked(&reopened);
+    store::tests::assert_store_blocked(&reopened);
+
+    presence.attached.set(false);
+    presence.identified.set(false);
+    app.next_detection = Instant::now();
+    stage_frame(&ctx, &mut app);
+    presence.attached.set(true);
+    app.next_detection = Instant::now();
+    stage_frame(&ctx, &mut app);
+    assert!(!app.podxt().live.device_ready());
+    assert!(Arc::ptr_eq(
+        &app.podxt().live.editor.reply_pending,
+        &pending
+    ));
+
+    presence.identified.set(true);
+    app.next_detection = Instant::now();
+    stage_frame(&ctx, &mut app);
+    let live = &app.podxt().live;
+    assert_ne!(live.device.as_ref(), Some(&key));
+    assert!(live.device_ready());
+    assert!(!Arc::ptr_eq(&live.editor.reply_pending, &pending));
+    assert!(pending.load(Ordering::Acquire));
+    let fresh = tone(b"Fresh device");
+    let (result, writes) = read(
+        ReadCommand::Current,
+        vec![
+            identity_reply(),
+            (PodxtRequest::EditBuffer, vec![(1, fresh.raw.clone())]),
+        ],
+        Duration::MAX,
+        &live.editor.reply_pending,
+        |update, _| assert!(matches!(update, ReadUpdate::Current(tone) if tone == fresh)),
+    );
+    assert_eq!(result, Ok(()));
+    assert_eq!(writes, 2);
+}
+
+#[test]
+fn a_reply_quarantined_while_acquiring_the_rig_lock_prevents_open() {
+    let pending = AtomicBool::new(false);
+    let result = transaction(
+        ReadCommand::Current,
+        &AtomicBool::new(false),
+        &pending,
+        || {
+            pending.store(true, Ordering::Release);
+            Ok(())
+        },
+        |_, _| panic!("recheck quarantine under the rig lock before opening"),
+        |_| panic!("quarantined read must not publish"),
+    );
+    assert_eq!(result, Err(PENDING_REPLY.into()));
+}

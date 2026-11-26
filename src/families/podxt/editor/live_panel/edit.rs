@@ -153,13 +153,11 @@ fn edit_transaction<'a, G>(
     lock: impl FnOnce() -> Result<G, String>,
     with_link: impl FnOnce(&G, RunOnLink<'a, EditorBuffer>) -> Result<EditorBuffer, String>,
 ) -> Result<EditorBuffer, String> {
-    if job.reply_pending.load(Ordering::Acquire) {
-        return Err(PENDING_REPLY.into());
-    }
     let run = || {
         let stopped = || stop.load(Ordering::Acquire);
         with_session(
             stopped,
+            &job.reply_pending,
             lock,
             with_link,
             EditPolicy(job.action),
@@ -746,4 +744,4 @@ impl LiveEditor {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

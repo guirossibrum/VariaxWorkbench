@@ -281,3 +281,26 @@ fn stage_get_recovers_but_recall_keeps_its_original_read_and_selection_count() {
         assert_eq!(result.tone, expected.tone);
     }
 }
+
+pub(in crate::editor::podxt_panel::live_panel) fn assert_recall_and_edit_blocked(
+    pending: &Arc<AtomicBool>,
+) {
+    let current = sample(20, 17);
+    let target = Location::new(BankKind::Tones, 18).unwrap();
+    for action in [Action::Recall(target), Action::Controls] {
+        let result = edit_transaction(
+            &Job {
+                reply_pending: Arc::clone(pending),
+                action,
+                whole_tone_backup: None,
+                current: Some(current.clone()),
+                original: Some(current.clone()),
+                targets: vec![drive(45)],
+            },
+            &AtomicBool::new(false),
+            || panic!("quarantined recall/edit must not acquire the rig lock"),
+            |_: &(), _| panic!("quarantined recall/edit must not open MIDI"),
+        );
+        assert_eq!(result.unwrap_err(), PENDING_REPLY);
+    }
+}

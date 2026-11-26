@@ -26,7 +26,6 @@ const REPAINT_WHILE_READING: Duration = Duration::from_millis(80);
 #[derive(Default)]
 pub(super) struct LivePanel {
     device: Option<detection::DeviceKey>,
-    reply_attachment: Option<detection::AttachmentKey>,
     device_tab: bool,
     worker: Option<Worker>,
     editor: edit::LiveEditor,
@@ -173,6 +172,7 @@ type RunOnLink<'a, T> = Box<dyn FnOnce(&mut dyn Link) -> Result<T, String> + 'a>
 #[cfg(any(test, target_os = "linux", target_os = "macos"))]
 fn with_session<'a, G, T>(
     cancelled: impl Fn() -> bool,
+    reply_pending: &AtomicBool,
     lock: impl FnOnce() -> Result<G, String>,
     with_link: impl FnOnce(&G, RunOnLink<'a, T>) -> Result<T, String>,
     policy: impl GatePolicy + 'a,
@@ -180,16 +180,18 @@ fn with_session<'a, G, T>(
 ) -> Result<T, String> {
     hardware_gates::run_if_unlocked(Gate::OsDiscovery, || {
         hardware_gates::run_if_unlocked(Gate::CurrentSettingsRead, || {
-            let check_stop = || {
-                if cancelled() {
+            let check_admission = || {
+                if reply_pending.load(Ordering::Acquire) {
+                    Err(PENDING_REPLY.into())
+                } else if cancelled() {
                     Err("PODxt Live operation cancelled.".into())
                 } else {
                     Ok::<(), String>(())
                 }
             };
-            check_stop()?;
+            check_admission()?;
             let rig = lock()?;
-            check_stop()?;
+            check_admission()?;
             with_link(
                 &rig,
                 Box::new(move |link| {
@@ -212,13 +214,11 @@ fn transaction<'a, G>(
     with_link: impl FnOnce(&G, RunOnLink<'a, ()>) -> Result<(), String>,
     publish: impl FnMut(ReadUpdate) + 'a,
 ) -> Result<(), String> {
-    if reply_pending.load(Ordering::Acquire) {
-        return Err(PENDING_REPLY.into());
-    }
     let operation = || {
         let cancelled = || stop.load(Ordering::Acquire);
         with_session(
             cancelled,
+            reply_pending,
             lock,
             with_link,
             ReadPolicy(command),
@@ -356,27 +356,23 @@ impl LivePanel {
     /// True when a new verified attachment should take over the stage.
     pub(super) fn set_device(&mut self, device: Option<&tabs::DeviceTab>) -> bool {
         self.device_tab = device.is_some();
-        let verified = device
-            .filter(|tab| {
-                tab.connection == tabs::Connection::Present
-                    && tab.device.key.family_id == "podxt"
-                    && tab.device.support == detection::DeviceSupport::Verified("3.01")
-            })
-            .map(|tab| &tab.device.key);
-        if self.device.as_ref() == verified {
+        let verified = device.filter(|tab| {
+            tab.connection == tabs::Connection::Present
+                && tab.device.key.family_id == "podxt"
+                && tab.device.support == detection::DeviceSupport::Verified("3.01")
+        });
+        let key = verified.map(|tab| &tab.device.key);
+        if self.device.as_ref() == key {
             return false;
         }
         self.cancel();
         self.editor.detach();
         self.store.detach();
         self.locker.detach(&mut self.store);
-        if let Some(device) = verified
-            && self.reply_attachment.as_ref() != Some(&device.attachment)
-        {
-            self.reply_attachment = Some(device.attachment.clone());
-            self.editor.reply_pending = Arc::default();
+        if let Some(tab) = verified {
+            self.editor.reply_pending = Arc::clone(&tab.device.podxt_reply_pending);
         }
-        self.device = verified.cloned();
+        self.device = key.cloned();
         self.startup = self.device.as_ref().map(|_| Startup::Current);
         self.live_editing = false;
         if self.panel == Some(StagePanel::Store) {
@@ -581,7 +577,12 @@ impl LivePanel {
     }
 
     fn device_ready(&self) -> bool {
-        self.connected() && !self.editor.reply_pending.load(Ordering::Acquire)
+        self.connected() && self.pending_reply_message().is_none()
+    }
+
+    pub(super) fn pending_reply_message(&self) -> Option<&'static str> {
+        (self.connected() && self.editor.reply_pending.load(Ordering::Acquire))
+            .then_some(PENDING_REPLY)
     }
 
     pub(super) fn has_current(&self) -> bool {
@@ -801,8 +802,8 @@ impl LivePanel {
             }
         }
         self.editor.status(ui);
-        if self.editor.reply_pending.load(Ordering::Acquire) {
-            ui.weak(PENDING_REPLY);
+        if let Some(message) = self.pending_reply_message() {
+            ui.weak(message);
         }
         if let Some(message) = &self.message {
             ui.weak(message);
@@ -841,6 +842,7 @@ impl LivePanel {
                         ui,
                         services,
                         self.device.as_ref().filter(|_| ready),
+                        &self.editor.reply_pending,
                         idle,
                         store::StoreView::Sync,
                     );
@@ -897,6 +899,7 @@ impl LivePanel {
                 ui,
                 services,
                 self.device.as_ref().filter(|_| ready),
+                &self.editor.reply_pending,
                 idle,
                 store::StoreView::Current,
             );
@@ -916,6 +919,7 @@ impl LivePanel {
                     ui,
                     services,
                     self.device.as_ref().filter(|_| ready),
+                    &self.editor.reply_pending,
                     self.worker.is_none() && !self.editor.busy() && !self.editor.has_pending(),
                     store::StoreView::Original,
                 );
@@ -957,8 +961,8 @@ impl LivePanel {
                 }
             }
         });
-        if self.editor.reply_pending.load(Ordering::Acquire) {
-            ui.weak(PENDING_REPLY);
+        if let Some(message) = self.pending_reply_message() {
+            ui.weak(message);
         } else if self.device.is_none() {
             ui.weak("Live reads require automatic PODxt Live 3.01 identity.");
         } else if !platform_available() {
