@@ -92,6 +92,12 @@ commit, branch, and worktree and apply the repository's normal offline
 review checks. All GitHub, Git, and hardware decisions remain with the
 authorized reviewers and owner.
 
+For VariaxWorkbench, complete the
+[Gatekeeper handoff checklist](parallel-work.md#herdr-handoffs-for-gatekeepers)
+in the same coordination cycle as each verified merge. The checklist covers
+worktree cleanup, Dispatcher release, and verified receipt of the next
+assignment or a reported blocker and next action.
+
 ## Owner decisions and operational pauses
 
 Use the production **Owner Inbox** for requests and replies. Stop the
