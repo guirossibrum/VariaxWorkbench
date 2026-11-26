@@ -1010,7 +1010,7 @@ mod tests {
                 .snapshot
                 .receive(FollowUpdate::TuningOverride(enabled), Instant::now());
             let output = ctx.run(egui::RawInput::default(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| editor.fretboard(ui, true));
+                egui::CentralPanel::default().show(ctx, |ui| editor.test_fretboard(ui, true));
             });
             assert_eq!(
                 output

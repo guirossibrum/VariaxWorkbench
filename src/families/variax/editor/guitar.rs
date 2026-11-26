@@ -791,7 +791,18 @@ impl VariaxEditor {
         }
     }
 
-    pub(super) fn fretboard(&mut self, ui: &mut egui::Ui, can_edit: bool) {
+    pub(super) fn has_twelve_string(&self) -> bool {
+        self.can_edit(TUNING, Some(MIX))
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_fretboard(&mut self, ui: &mut egui::Ui, can_edit: bool) {
+        let width =
+            variax_workbench::ui::editor_layout::twelve_string_column(self.has_twelve_string());
+        self.fretboard(ui, can_edit, width);
+    }
+
+    pub(super) fn fretboard(&mut self, ui: &mut egui::Ui, can_edit: bool, twelve_width: f32) {
         let tuning = self
             .document
             .as_ref()
@@ -799,7 +810,7 @@ impl VariaxEditor {
         let enabled = tuning.is_some_and(|model| model.enabled);
         let can_edit = can_edit && tuning.is_some() && self.can_edit(TUNING, None);
         let complete_pitch = can_edit && (PITCH..PITCH + 6).all(|id| self.tuning_parameter(id, 0));
-        let twelve_string = self.can_edit(TUNING, Some(MIX));
+        let twelve_string = twelve_width > 0.0;
         // Settle the panel's measured height and clipping on the first frame
         // and when a model adds or removes the secondary-string controls.
         let show_off = tuning.is_some() && !enabled;
@@ -857,12 +868,18 @@ impl VariaxEditor {
                 );
             }
         }
+        #[cfg(test)]
+        self.tuning_widgets.clear();
         let output = ui
             .horizontal_top(|ui| {
                 let left = ui.available_rect_before_wrap().left();
-                ui.add_space(super::twelve_string::WIDTH);
+                if twelve_string {
+                    ui.add_space(twelve_width);
+                }
                 let output = panel.show(ui);
-                self.twelve_string_panel(ui, left, &output, twelve_string, can_edit, complete_mix);
+                if twelve_string {
+                    self.twelve_string_panel(ui, left, &output, can_edit, complete_mix);
+                }
                 output
             })
             .inner;
@@ -881,6 +898,7 @@ impl VariaxEditor {
         #[cfg(test)]
         {
             self.tuning_toggle = Some(output.enable);
+            self.tuning_widgets.insert("Neck", output.neck);
             for (label, rect) in [
                 ("Presets", output.presets),
                 ("Flat", output.flat),
@@ -1383,7 +1401,7 @@ mod tests {
                 },
                 |ctx| {
                     egui::CentralPanel::default()
-                        .show(ctx, |ui| app.variax_mut().fretboard(ui, true));
+                        .show(ctx, |ui| app.variax_mut().test_fretboard(ui, true));
                 },
             )
         };
@@ -1452,7 +1470,7 @@ mod tests {
                 },
                 |ctx| {
                     egui::CentralPanel::default()
-                        .show(ctx, |ui| app.variax_mut().fretboard(ui, true))
+                        .show(ctx, |ui| app.variax_mut().test_fretboard(ui, true))
                         .inner
                 },
             );

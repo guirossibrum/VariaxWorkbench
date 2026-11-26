@@ -1002,7 +1002,7 @@ fn tuning_off_warns_and_dims_but_keeps_hand_edits_audibly_off() {
     let dim = Color32::from_rgba_unmultiplied(r, g, b, 96);
     let rendered = |app: &mut Workbench| {
         let output = context.run(egui::RawInput::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.variax_mut().fretboard(ui, true));
+            egui::CentralPanel::default().show(ctx, |ui| app.variax_mut().test_fretboard(ui, true));
         });
         (
             output.shapes.iter().any(|item| {
@@ -1120,6 +1120,6 @@ fn acoustic_body_hides_pickup_sprites_and_disables_electrics_with_workbench_labe
     assert!(app.variax().pickup_centers.is_empty());
     app.variax_mut().tab = Tab::Controls;
     expect(render(&mut app), "Param not available");
-    expect(render(&mut app), "No 12-String available");
+    assert!(!app.variax().tuning_widgets.contains_key("Low E mix"));
     assert!(!app.variax().can_edit(WIRING, None));
 }

@@ -530,7 +530,7 @@ mod tests {
                 },
                 |ctx| {
                     egui::CentralPanel::default()
-                        .show(ctx, |ui| app.variax_mut().fretboard(ui, true));
+                        .show(ctx, |ui| app.variax_mut().test_fretboard(ui, true));
                     app.pending_dialog(ctx);
                 },
             );
