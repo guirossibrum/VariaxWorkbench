@@ -15,6 +15,7 @@ struct Trace {
     held: Cell<bool>,
     opens: Cell<usize>,
     writes: Cell<usize>,
+    reads: Cell<usize>,
     finalized: Cell<usize>,
 }
 
@@ -74,6 +75,7 @@ impl Link for ScopedFake<'_> {
 
     fn read(&mut self, wait: Duration) -> Result<Option<Vec<u8>>, String> {
         assert!(self.lock.0.held.get());
+        self.lock.0.reads.set(self.lock.0.reads.get() + 1);
         self.fake.read(wait)
     }
 
@@ -123,9 +125,18 @@ fn complete_capture_finalizes_its_link_under_lock_and_binds_one_manifest() {
     let root = FixtureRoot::new();
     let library = capture();
     let trace = Trace::default();
+    let verified = Cell::new(false);
     let mut slots = Vec::new();
     let finalized = capture_fresh_usb(
-        || Ok(ScopedFake::open(&trace, script(&library), false)),
+        || {
+            assert_eq!(trace.opens.get(), 0);
+            verified.set(true);
+            Ok(())
+        },
+        || {
+            assert!(verified.get());
+            Ok(ScopedFake::open(&trace, script(&library), false))
+        },
         ScopedFake::finish,
         &ReadsOnly,
         &mut Quiet,
@@ -161,6 +172,7 @@ fn successful_cleanup_from_a_different_capture_cannot_bind_a_mismatched_report()
 
     let trace = Trace::default();
     let finalized = capture_fresh_usb(
+        || Ok(()),
         || Ok(ScopedFake::open(&trace, script(&second), false)),
         ScopedFake::finish,
         &ReadsOnly,
@@ -182,6 +194,7 @@ fn successful_cleanup_from_a_different_capture_cannot_bind_a_mismatched_report()
 fn failed_finalization_issues_no_proof_for_a_complete_sweep() {
     let trace = Trace::default();
     let result = capture_fresh_usb(
+        || Ok(()),
         || Ok(ScopedFake::open(&trace, script(&capture()), true)),
         ScopedFake::finish,
         &ReadsOnly,
@@ -198,6 +211,7 @@ fn failed_finalization_issues_no_proof_for_a_complete_sweep() {
 fn failed_read_still_finalizes_and_preserves_both_errors() {
     let trace = Trace::default();
     let result = capture_fresh_usb(
+        || Ok(()),
         || {
             let mut link = ScopedFake::open(&trace, vec![(PodxtRequest::Identity, vec![])], true);
             link.fake.fail_at.push(0);
@@ -222,6 +236,7 @@ fn closing_read_failure_with_successful_cleanup_issues_no_proof() {
     let mut library = capture();
     library.after = Err("missing closing dump".into());
     let result = capture_fresh_usb(
+        || Ok(()),
         || Ok(ScopedFake::open(&trace, script(&library), false)),
         ScopedFake::finish,
         &ReadsOnly,
@@ -250,6 +265,7 @@ fn any_denied_sweep_operation_prevents_open() {
         Operation::PodxtLibraryRead,
     ] {
         let result = capture_fresh_usb(
+            || panic!("a denied capture must not check the registry"),
             || panic!("a denied capture must not open a link"),
             ScopedFake::finish,
             &Denied(operation),
@@ -265,6 +281,7 @@ fn any_denied_sweep_operation_prevents_open() {
 #[test]
 fn failed_open_issues_no_proof() {
     let result = capture_fresh_usb(
+        || Ok(()),
         || Err("synthetic attachment changed".into()),
         ScopedFake::finish,
         &ReadsOnly,
@@ -275,4 +292,31 @@ fn failed_open_issues_no_proof() {
         result.err().as_deref(),
         Some("synthetic attachment changed")
     );
+}
+
+#[test]
+fn replaced_registry_generation_refuses_open_at_reused_path_and_address() {
+    let trace = Trace::default();
+    let selected = ("1-4.3", 3, 11);
+    let replacement = ("1-4.3", 3, 12);
+    let changed = "synthetic registry generation changed";
+    let result = capture_fresh_usb(
+        || {
+            if replacement == selected {
+                Ok(())
+            } else {
+                Err(changed.into())
+            }
+        },
+        || Ok(ScopedFake::open(&trace, script(&capture()), false)),
+        ScopedFake::finish,
+        &ReadsOnly,
+        &mut Quiet,
+        |_| panic!("a replaced attachment cannot read a slot"),
+    );
+    assert_eq!(result.err().as_deref(), Some(changed));
+    assert_eq!(trace.opens.get(), 0);
+    assert_eq!(trace.writes.get(), 0);
+    assert_eq!(trace.reads.get(), 0);
+    assert_eq!(trace.finalized.get(), 0);
 }
