@@ -101,6 +101,13 @@ struct Queued {
     packet: Vec<u8>,
 }
 
+#[cfg(test)]
+pub(super) enum TestPodxtDump {
+    Missing,
+    Delayed(Duration),
+    Interrupted { channel: u8, delay: Duration },
+}
+
 pub struct SimRig {
     pub clock: Duration,
     pub podxt: PodxtModel,
@@ -112,6 +119,8 @@ pub struct SimRig {
     span_replies: usize,
     /// Every message written by the host, with its path name.
     pub written: Vec<(&'static str, Vec<u8>)>,
+    #[cfg(test)]
+    pub(super) next_podxt_dump: Option<TestPodxtDump>,
     pub variax_claimed: bool,
     pub driver_bound: bool,
 }
@@ -299,6 +308,8 @@ impl SimRig {
             variax_out: VecDeque::new(),
             variax_pending: Vec::new(),
             span_replies: 0,
+            #[cfg(test)]
+            next_podxt_dump: None,
             written: Vec::new(),
             variax_claimed: false,
             driver_bound: true,
@@ -384,6 +395,19 @@ impl SimRig {
         dump
     }
 
+    #[cfg(test)]
+    fn script_podxt_dump(&mut self, dump: &[u8], reply: TestPodxtDump) {
+        let delay = match reply {
+            TestPodxtDump::Missing => return,
+            TestPodxtDump::Delayed(delay) => delay,
+            TestPodxtDump::Interrupted { channel, delay } => {
+                Self::queue(&mut self.podxt_out, self.clock + LATENCY, &[0xc0, channel]);
+                delay
+            }
+        };
+        Self::queue(&mut self.podxt_out, self.clock + delay, dump);
+    }
+
     fn podxt_write(&mut self, bytes: &[u8]) {
         self.written.push(("PodxtMidi", bytes.to_vec()));
         match bytes {
@@ -395,6 +419,11 @@ impl SimRig {
             }
             [0xf0, 0x00, 0x01, 0x0c, 0x03, 0x75, 0xf7] => {
                 let dump = Self::tone_dump(&self.podxt.playing);
+                #[cfg(test)]
+                if let Some(reply) = self.next_podxt_dump.take() {
+                    self.script_podxt_dump(&dump, reply);
+                    return;
+                }
                 self.reply_podxt(&dump);
             }
             [0xf0, 0x00, 0x01, 0x0c, 0x03, 0x73, hi, lo, 0, 0, 0xf7] => {

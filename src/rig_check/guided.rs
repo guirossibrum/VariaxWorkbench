@@ -9,8 +9,8 @@
 use super::differences::{self, Severity};
 use super::practice::{UserAction, preset_label};
 use super::procedures::{
-    same_program, variax_full_read, with_podxt, with_podxt_stopping, with_variax,
-    with_variax_progress,
+    PODXT_CHANNEL, PodxtReplyQuarantine, same_program, variax_full_read, with_podxt,
+    with_podxt_stopping, with_variax, with_variax_progress,
 };
 use super::runner::{Ctx, Decision, Progress, Retry, SKIPPED, STOPPED};
 use super::variax_reads::other_preset;
@@ -525,42 +525,29 @@ fn podxt_window(
     advance: &ActiveAction,
     mut accepts: impl FnMut(podxt::ReadUpdate) -> bool,
 ) -> Result<bool, String> {
-    let op = &*ctx.op;
-    let step = ctx.rec.id;
-    let mut lines = super::procedures::Lines::default();
     let seen = Cell::new(false);
-    let policy = super::procedures::StepPolicy {
-        step,
-        mode: ctx.mode,
-        ops: PODXT_LISTEN,
-    };
-    let result = match ctx.port.podxt(step) {
-        Ok(link) => {
-            let mut session = Session::new(link, &policy, &mut lines);
-            podxt::follow_action(
-                &mut session,
-                || op.stop_requested() || seen.get() || advance.done(),
-                |update| {
-                    match &update {
-                        podxt::ReadUpdate::Channel(location) => advance
-                            .clock
-                            .observe(format!("PODxt channel {}", location.label())),
-                        podxt::ReadUpdate::Controller { number, value } => {
-                            let name = match *number {
-                                4 | 7 => "pedal",
-                                _ => "control",
-                            };
-                            advance.clock.observe(format!("PODxt {name} {value}"));
-                        }
-                        _ => {}
+    let result = with_podxt_stopping(ctx, PODXT_LISTEN, |session, stopping| {
+        podxt::follow_action(
+            session,
+            || stopping() || seen.get() || advance.done(),
+            |update| {
+                match &update {
+                    podxt::ReadUpdate::Channel(location) => advance
+                        .clock
+                        .observe(format!("PODxt channel {}", location.label())),
+                    podxt::ReadUpdate::Controller { number, value } => {
+                        let name = match number {
+                            4 | 7 => "pedal",
+                            _ => "control",
+                        };
+                        advance.clock.observe(format!("PODxt {name} {value}"));
                     }
-                    seen.set(accepts(update));
-                },
-            )
-        }
-        Err(error) => Err(error),
-    };
-    super::procedures::absorb(ctx, lines);
+                    _ => {}
+                }
+                seen.set(accepts(update));
+            },
+        )
+    });
     match result {
         Ok(()) => Ok(seen.get()),
         Err(error) if error == "PODxt read cancelled." && !ctx.stopping() => Ok(seen.get()),
@@ -573,12 +560,12 @@ fn already_on_podxt(
     target: Location,
     expected: &podxt::EditBuffer,
 ) -> Result<Option<podxt::EditBuffer>, String> {
-    const CHANNEL: &[Operation] = &[
-        Operation::PodxtIdentity,
-        Operation::PodxtRead,
-        Operation::PodxtGlobalRead,
-    ];
-    with_podxt(ctx, CHANNEL, |session| {
+    with_podxt_stopping(ctx, PODXT_CHANNEL, |session, stopping| {
+        if stopping() {
+            return Err(format!(
+                "{STOPPED}Stopped before checking the PODxt channel."
+            ));
+        }
         let playing = podxt::read_current(session)?.tone;
         let channel = podxt::playing_channel(session)?;
         Ok((channel == target && playing.same_tone(expected)).then_some(playing))
@@ -588,35 +575,41 @@ fn already_on_podxt(
 fn channel_window(
     ctx: &mut Ctx<'_>,
     target: Location,
-    expected_name: &str,
     advance: &ActiveAction,
 ) -> Result<Option<podxt::EditBuffer>, String> {
-    let mut primed = false;
-    let mut matching_channel = false;
-    let mut readback = None;
-    podxt_window(ctx, advance, |update| match update {
-        podxt::ReadUpdate::Channel(location) if primed => {
-            matching_channel = location == target;
-            false
+    let mut pending = None;
+    let result = with_podxt_stopping(ctx, PODXT_LISTEN, |session, stopping| {
+        session.note("Listening window open for a physical PODxt channel change.");
+        // ActiveAction supplies the deadline, including countdown extensions.
+        // The family listener separately bounds its single readback.
+        let result = podxt::listen_channel_recall(
+            session,
+            target,
+            Duration::MAX,
+            || stopping() || advance.done(),
+            |location| {
+                advance
+                    .clock
+                    .observe(format!("PODxt channel {}", location.label()))
+            },
+        );
+        if let Err(error) = &result
+            && (!session.sent.is_empty() || error != "PODxt read cancelled.")
+        {
+            // Keep any partial dump. A failed transport write can also have
+            // reached the device, even when Session::sent is empty.
+            pending = Some(PodxtReplyQuarantine::Pending(std::mem::take(
+                &mut session.assembler,
+            )));
         }
-        podxt::ReadUpdate::Current(tone) => {
-            if primed && matching_channel {
-                readback = Some(tone);
-                true
-            } else {
-                primed = true;
-                false
-            }
-        }
-        _ => false,
-    })?;
-    match readback {
-        Some(tone) if tone.name() != expected_name => Err(format!(
-            "Follow re-read channel {} as {:?}, expected {expected_name:?}.",
-            target.label(),
-            tone.name()
-        )),
-        result => Ok(result),
+        result
+    });
+    if let Some(pending) = pending {
+        ctx.data.podxt_reply_quarantine = Some(pending);
+    }
+    match result {
+        Err(error) if error == "PODxt read cancelled." && !ctx.stopping() => Ok(None),
+        result => result,
     }
 }
 
@@ -656,7 +649,7 @@ pub fn footswitch(ctx: &mut Ctx<'_>) -> Result<(), String> {
         &format!("channel change to {}", target.label()),
         &[UserAction::PodxtFootswitch(target.index())],
         |ctx| already_on_podxt(ctx, target, &stored),
-        |ctx, advance| channel_window(ctx, target, &stored.name(), advance),
+        |ctx, advance| channel_window(ctx, target, advance),
     )?;
     if super::differences::tone(
         ctx.rec,
@@ -687,7 +680,7 @@ pub fn footswitch(ctx: &mut Ctx<'_>) -> Result<(), String> {
         &format!("channel change back to {}", start.label()),
         &[UserAction::PodxtFootswitch(start.index())],
         |ctx| already_on_podxt(ctx, start, &start_tone),
-        |ctx, advance| channel_window(ctx, start, &start_tone.name(), advance),
+        |ctx, advance| channel_window(ctx, start, advance),
     )?;
     if super::differences::tone(
         ctx.rec,
@@ -841,6 +834,8 @@ pub fn podxt_knobs(ctx: &mut Ctx<'_>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    mod footswitch;
+
     use crate::rig_check::catalogue::StepId;
     use crate::rig_check::practice::Faults;
     use crate::rig_check::record::Outcome;
