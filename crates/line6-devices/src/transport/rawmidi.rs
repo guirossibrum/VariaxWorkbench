@@ -10,6 +10,11 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+mod attachment;
+pub use attachment::{
+    RawMidiAttachment, RawMidiCloseError, RawMidiOpenError, RawMidiOpenFailure, ScopedRawMidiLink,
+};
+
 // Compatibility export for callers of the original raw MIDI adapter API (#214).
 pub use crate::family::podxt::transport::PODXT_LIVE_CARD;
 
@@ -55,12 +60,7 @@ impl RawMidiLink {
     }
 
     pub fn open_device(device: PathBuf, path: Path) -> Result<Self, String> {
-        let port = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .custom_flags(libc::O_NONBLOCK)
-            .open(&device)
-            .map_err(|e| format!("{}: {e}", device.display()))?;
+        let port = open_port(&device, 0).map_err(|e| format!("{}: {e}", device.display()))?;
         Ok(Self {
             port,
             opened: Instant::now(),
@@ -68,6 +68,14 @@ impl RawMidiLink {
             device,
         })
     }
+}
+
+fn open_port(device: &std::path::Path, flags: i32) -> std::io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NONBLOCK | flags)
+        .open(device)
 }
 
 impl Link for RawMidiLink {

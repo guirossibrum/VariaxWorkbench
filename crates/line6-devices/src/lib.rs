@@ -18,7 +18,8 @@
 //! product-family APIs. Variax write transactions require a caller-supplied
 //! link and G6/G7 policy. The crate has no firmware-install API.
 
-#![forbid(unsafe_code)]
+// Linux checked close has a local exception for its single libc call.
+#![deny(unsafe_code)]
 
 pub mod backup;
 pub mod device_lock;
