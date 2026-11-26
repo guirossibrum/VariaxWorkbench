@@ -26,6 +26,17 @@ pub(crate) fn make_backup_with_names(
     member: u8,
     names: &[(usize, &str)],
 ) -> PathBuf {
+    make_backup_with_files(root, name, count, member, names, |_| {})
+}
+
+pub(crate) fn make_backup_with_files(
+    root: &Path,
+    name: &str,
+    count: usize,
+    member: u8,
+    names: &[(usize, &str)],
+    add_files: impl FnOnce(&mut BackupFolder),
+) -> PathBuf {
     let mut folder = BackupFolder::create(root, name).unwrap();
     let mut identity = vec![0xf0, 0x7e, 0x7f, 6, 2, 0, 1, 12, 7, 0, member, 0];
     identity.extend_from_slice(b"0310");
@@ -71,6 +82,7 @@ pub(crate) fn make_backup_with_names(
             .file(&format!("bank-names/{bank:02}.syx"), &bank_reply)
             .unwrap();
     }
+    add_files(&mut folder);
     folder.finish(count == Preset::all().count()).unwrap()
 }
 

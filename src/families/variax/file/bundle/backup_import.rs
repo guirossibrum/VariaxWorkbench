@@ -3,7 +3,7 @@ use super::{BundleFile, PresetFile};
 use crate::{ParameterValue, PresetMetadata, midi::Identity};
 use line6_devices::family::variax::{
     self,
-    backup::{LoadedVariax, load_variax_library},
+    backup::{LoadedVariax, ValidatedSnapshot, load_variax_library},
 };
 use std::{
     fs,
@@ -26,7 +26,7 @@ impl BackupBundle {
         let identity = backup_identity(&directory)?;
         let captured_bank_names = loaded.bank_names.len();
         let bundle = library_bundle(
-            loaded,
+            &loaded,
             identity.product_id(),
             identity.version.unwrap_or_default(),
             false,
@@ -67,6 +67,13 @@ impl BackupBundle {
 }
 
 impl BundleFile {
+    /// Convert the settings already decoded by strict snapshot validation.
+    /// Full program files remain part of the source snapshot.
+    pub fn from_validated_variax_snapshot(snapshot: &ValidatedSnapshot) -> Result<Self, String> {
+        // Strict validation currently admits only the legacy 300/600 at 3.10.
+        library_bundle(snapshot.library(), 0x0007_0004, 0x0310_0000, true)
+    }
+
     /// Build a complete editor bank from a live sweep. The backup importer
     /// alone may supply Workbench defaults for missing bank names.
     pub fn from_refreshed_variax(
@@ -78,7 +85,7 @@ impl BundleFile {
             return Err("Variax Refresh requires Variax 300/600 firmware 3.10.".into());
         }
         library_bundle(
-            loaded,
+            &loaded,
             identity.product_id(),
             identity.version.unwrap_or_default(),
             true,
@@ -87,7 +94,7 @@ impl BundleFile {
 }
 
 fn library_bundle(
-    loaded: LoadedVariax,
+    loaded: &LoadedVariax,
     product_id: u32,
     version: u32,
     require_all_names: bool,
@@ -107,15 +114,15 @@ fn library_bundle(
 
     let mut names = variax::BANKS.map(str::to_owned);
     let mut captured = [false; variax::BANKS.len()];
-    for (bank, name) in loaded.bank_names {
-        let bank = usize::from(bank);
+    for (bank, name) in &loaded.bank_names {
+        let bank = usize::from(*bank);
         let seen = captured
             .get_mut(bank)
             .ok_or("Variax bank name index is out of range.")?;
         if std::mem::replace(seen, true) {
             return Err("Duplicate Variax bank name reply.".into());
         }
-        names[bank] = name.name;
+        names[bank].clone_from(&name.name);
     }
     if require_all_names && captured.contains(&false) {
         return Err("Variax Refresh did not return all 12 bank names.".into());
@@ -125,7 +132,7 @@ fn library_bundle(
     // live knob. Keep the saved-tone flag and all distinct bank locations.
     let models = loaded
         .presets
-        .into_iter()
+        .iter()
         .map(|(_, metadata)| {
             PresetFile::from_metadata(&editor_metadata(metadata), product_id, version)
         })
@@ -158,16 +165,16 @@ fn backup_identity(directory: &Path) -> Result<Identity, String> {
     Ok(identity)
 }
 
-fn editor_metadata(metadata: variax::PresetMetadata) -> PresetMetadata {
+fn editor_metadata(metadata: &variax::PresetMetadata) -> PresetMetadata {
     use variax::ParameterValue as Captured;
     PresetMetadata {
-        name: metadata.name,
+        name: metadata.name.clone(),
         raw: metadata.raw,
         parameters: metadata
             .parameters
-            .into_iter()
-            .map(|(key, value)| {
-                let value = match value {
+            .iter()
+            .map(|(&key, value)| {
+                let value = match *value {
                     Captured::Integer(value) => ParameterValue::Integer(value),
                     Captured::Boolean(value) => ParameterValue::Boolean(value),
                     Captured::Float(value) => ParameterValue::Float(value),

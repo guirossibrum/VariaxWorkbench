@@ -20,6 +20,11 @@ use variax_workbench::{
     variax_library::{BackupSource, CompletedVariaxBackup, LibraryPreferences},
 };
 
+// Compile the consumer checkpoint only for headless tests until the shared
+// cache can supply reviewed publication receipts.
+#[cfg(test)]
+mod startup_cache;
+
 pub(super) enum LibraryOrigin {
     Download(SystemTime),
     // The detection key identifies a live attachment within this process.
@@ -27,6 +32,12 @@ pub(super) enum LibraryOrigin {
     #[cfg(feature = "usb")]
     AttachedDownload(SystemTime, DeviceKey),
     Backup(BackupSource, SystemTime),
+    #[cfg(test)]
+    Cached(
+        BackupSource,
+        SystemTime,
+        line6_devices::family::variax::backup::SnapshotCoverage,
+    ),
     Factory,
 }
 
@@ -50,20 +61,43 @@ impl LibraryOrigin {
             }
             #[cfg(feature = "usb")]
             Self::AttachedDownload(time, _) => ("Saved guitar download", time),
-            Self::Backup(BackupSource::DeviceCheck, time) => ("Device check backup", time),
-            Self::Backup(BackupSource::FullBackup, time) => ("Full Variax backup", time),
-            Self::Backup(BackupSource::ImportedBackup, time) => ("Imported backup", time),
+            Self::Backup(source, time) => (backup_source_label(*source), time),
+            #[cfg(test)]
+            Self::Cached(source, time, coverage) => {
+                use line6_devices::family::variax::backup::SnapshotCoverage;
+                let source = backup_source_label(*source);
+                let coverage = match coverage {
+                    SnapshotCoverage::Metadata => "Settings only",
+                    SnapshotCoverage::FullPrograms => "Full program capture",
+                };
+                let date = library_date(*time);
+                return format!(
+                    "Cached {source} · {date} · {coverage}{}",
+                    historical_provenance(attachment)
+                );
+            }
             Self::Factory => {
                 return "Factory presets from your Variax 3.10 firmware archive".into();
             }
         };
         let date = library_date(*completed_at);
-        let provenance = if attachment.is_some() {
-            " · Source guitar unverified for this connection"
-        } else {
-            ""
-        };
-        format!("{source} · {date}{provenance}")
+        format!("{source} · {date}{}", historical_provenance(attachment))
+    }
+}
+
+fn backup_source_label(source: BackupSource) -> &'static str {
+    match source {
+        BackupSource::DeviceCheck => "Device check backup",
+        BackupSource::FullBackup => "Full Variax backup",
+        BackupSource::ImportedBackup => "Imported backup",
+    }
+}
+
+fn historical_provenance(attachment: Option<&DeviceKey>) -> &'static str {
+    if attachment.is_some() {
+        " · Source guitar unverified for this connection"
+    } else {
+        ""
     }
 }
 
@@ -362,7 +396,7 @@ impl VariaxEditor {
     }
 }
 
-#[cfg(all(test, feature = "usb"))]
+#[cfg(test)]
 use super::new_files::synthetic_backup;
 
 #[cfg(test)]
@@ -370,7 +404,7 @@ mod tests {
     use super::*;
     use crate::editor::{FakeDialogs, tests::app};
 
-    fn defaults(directory: &Path) -> EditorDefaults {
+    pub(super) fn defaults(directory: &Path) -> EditorDefaults {
         EditorDefaults {
             artwork: directory.join("artwork"),
             preferences: Some(directory.join("editor-preferences.txt")),
@@ -378,7 +412,7 @@ mod tests {
         }
     }
 
-    fn record_unchecked_archive(preferences: &Path, archive: &Path) {
+    pub(super) fn record_unchecked_archive(preferences: &Path, archive: &Path) {
         let choices = preferences.with_file_name("variax-library-preferences");
         fs::create_dir_all(&choices).unwrap();
         let record = serde_json::json!({
