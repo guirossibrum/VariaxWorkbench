@@ -1,0 +1,89 @@
+name: Windows package
+
+on:
+  workflow_dispatch:
+    inputs:
+      alpha_number:
+        description: "Publish untested alpha number N (leave blank for artifact only)"
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    outputs:
+      alpha_tag: ${{ steps.alpha.outputs.tag }}
+    env:
+      RUSTUP_TOOLCHAIN: "1.99.1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate optional alpha number
+        id: alpha
+        env:
+          ALPHA_NUMBER: ${{ inputs.alpha_number }}
+        run: |
+          if ($env:ALPHA_NUMBER) {
+              if ($env:ALPHA_NUMBER -cnotmatch '\A[1-9][0-9]*\z') { throw 'Supply a positive alpha number.' }
+              $match = Select-String -Path Cargo.toml -Pattern '^version = "(\d+\.\d+\.\d+)"$' | Select-Object -First 1
+              if (-not $match) { throw 'No package version found in Cargo.toml.' }
+              $version = $match.Matches[0].Groups[1].Value
+              "tag=v$version-alpha.$env:ALPHA_NUMBER" >> $env:GITHUB_OUTPUT
+          }
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
+        with:
+          toolchain: "1.99.1"
+      - name: Offline app and device library tests
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $data = Join-Path $env:RUNNER_TEMP ("variax-data-" + [guid]::NewGuid())
+          New-Item -ItemType Directory $data | Out-Null
+          $env:XDG_DATA_HOME = $data
+          $env:VARIAX_WORKBENCH_DATA_DIR = $data
+          $target = "x86_64-pc-windows-msvc"
+          cargo fetch --locked --target $target
+          cargo test --offline --locked --target $target --no-default-features --features gui,portable-math
+          cargo test --offline --locked --target $target --manifest-path crates/line6-devices/Cargo.toml --no-default-features
+          python packaging/windows/test_package.py
+      - name: Build and verify the Windows x64 package
+        run: python packaging/windows/build.py (Join-Path $env:RUNNER_TEMP "windows-package")
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-x64
+          path: |
+            ${{ runner.temp }}/windows-package/*/*.zip
+            ${{ runner.temp }}/windows-package/*/*.zip.sha256
+            ${{ runner.temp }}/windows-package/*/verification.txt
+          if-no-files-found: error
+
+  publish-alpha:
+    needs: package
+    if: needs.package.outputs.alpha_tag != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: windows-x64
+          path: package
+      - name: Publish untested alpha
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.package.outputs.alpha_tag }}
+        run: |
+          mapfile -d '' archives < <(find package -name '*.zip' -print0)
+          mapfile -d '' sums < <(find package -name '*.zip.sha256' -print0)
+          mapfile -d '' reports < <(find package -name verification.txt -print0)
+          [[ ${#archives[@]} == 1 && ${#sums[@]} == 1 && ${#reports[@]} == 1 ]]
+          gh release create "$TAG" "${archives[0]}" "${sums[0]}" "${reports[0]}" --target "$GITHUB_SHA" --prerelease \
+            --title "Variax Workbench $TAG — untested alpha (Windows x64)" \
+            --notes "Untested Windows x64 alpha. Includes unsigned Variax Workbench and Rig Check. Offline editing, Practice, and computer checks only. See How to open.txt inside the ZIP."

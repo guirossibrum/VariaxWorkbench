@@ -5,8 +5,8 @@ and POD processors. The goal is to bring preset editing, libraries, backups,
 recording, and device maintenance into one app that can work offline.
 
 The first target is a Variax 600 connected by VDI to a PODxt Live on Linux.
-An offline macOS alpha can be built from source. Broader device support and
-live connections on Windows and macOS are longer-term goals. [Product vision](docs/product-vision.md)
+Offline alpha packages are available to build for Windows and macOS. Broader
+device support and live connections on those systems are longer-term goals. [Product vision](docs/product-vision.md)
 
 ## Screenshots
 
@@ -59,7 +59,7 @@ Earlier captures from floating windows using test presets with device discovery 
   smaller reads.
 - Reads through the PODxt Live occasionally lose a byte. The app rejects the
   damaged reply and retries it.
-- Native Windows and macOS apps and hardware connections remain untested. [macOS packaging](docs/macos-package.md)
+- Native Windows and macOS apps and hardware connections remain untested. [macOS packaging](docs/macos-package.md) · [Windows packaging](docs/windows-package.md)
 - Live audio and firmware installation are unavailable.
 
 ## Safety
