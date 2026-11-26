@@ -1576,6 +1576,7 @@ const STORED_WINDOW: Duration = Duration::from_secs(3);
 /// Line 6 Edit pauses 100 ms after each stored dump (and may see a short
 /// `03 72` block-end message in that time).
 const STORED_GAP: Duration = Duration::from_millis(100);
+const STORED_READ_END: [u8; 7] = [0xf0, 0, 1, 0x0c, 3, 0x72, 0xf7];
 
 pub struct StoredTone {
     pub location: Location,
