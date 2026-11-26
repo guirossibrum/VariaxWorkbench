@@ -118,6 +118,24 @@ impl LookCheck {
     }
 }
 
+/// Only 5.1 currently records a send boundary. The possible-send phase must
+/// be persisted before the first full program upload, even if it later fails.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SavePhase {
+    PreSend,
+    SendPossible,
+}
+
+impl SavePhase {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::PreSend => "pre_send",
+            Self::SendPossible => "send_possible",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct StepRecord {
     pub id: StepId,
@@ -128,6 +146,7 @@ pub struct StepRecord {
     pub started: Option<String>,
     pub attempt: Option<usize>,
     pub duration_ms: Option<u128>,
+    pub save_phase: Option<SavePhase>,
     /// Questions and the person's answers, in order.
     pub answers: Vec<(String, String)>,
     pub look: Option<LookCheck>,
@@ -137,6 +156,7 @@ pub struct StepRecord {
     pub evidence: Vec<String>,
     pub comparisons: Vec<super::differences::Comparison>,
     pub imported_technical: Vec<String>,
+    pub imported_message_count: Option<usize>,
     /// Every message sent and received, with link time stamps.
     pub messages: Vec<MessageLine>,
     pub retries: u32,
@@ -156,12 +176,14 @@ impl StepRecord {
             started: None,
             attempt: None,
             duration_ms: None,
+            save_phase: None,
             answers: Vec::new(),
             look: None,
             result: Vec::new(),
             evidence: Vec::new(),
             comparisons: Vec::new(),
             imported_technical: Vec::new(),
+            imported_message_count: None,
             messages: Vec::new(),
             retries: 0,
             checksums: Vec::new(),
@@ -220,6 +242,10 @@ impl StepRecord {
         }
     }
 
+    pub fn message_count(&self) -> usize {
+        self.imported_message_count.unwrap_or(self.messages.len())
+    }
+
     pub fn technical_lines(&self) -> impl Iterator<Item = String> + '_ {
         self.imported_technical
             .iter()
@@ -227,7 +253,7 @@ impl StepRecord {
             .chain(self.imported_technical.is_empty().then(|| {
                 format!(
                     "Messages: {} · Retries: {} · Missing bytes in retried replies: {}",
-                    self.messages.len(),
+                    self.message_count(),
                     self.retries,
                     super::variax_reads::lost_bytes(&self.messages)
                 )

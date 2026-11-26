@@ -12,15 +12,20 @@ use super::catalogue::{SaveNotice, StepId};
 use super::differences::{self, Severity};
 use super::practice::{Program, flash_index, packed, preset_label, program_name};
 use super::procedures::{
-    program_bytes, program_progress, variax_read_preset, with_variax_progress,
+    VARIAX_IDENTITY, VARIAX_SELECT, program_bytes, program_progress, variax_read_preset,
+    with_variax_progress,
 };
 use super::runner::{Ctx, NOT_APPLICABLE, Progress, SKIPPED};
 use line6_devices::family::variax::{
     Preset,
-    procedures::{self as shared_variax, SILENT_STORE_WAIT, StoreWait, VerifiedStoreError},
+    procedures::{
+        self as shared_variax, SILENT_STORE_WAIT, SaveIdentity, StoreWait, VerifiedStoreError,
+    },
     write,
 };
 use line6_devices::gate::Operation;
+
+pub(super) const OWN_BYTES_STEP: StepId = StepId(5, 1);
 
 pub const VARIAX_SAVE: &[Operation] = &[
     Operation::VariaxIdentity,
@@ -61,6 +66,31 @@ fn store_progress(progress: &dyn Fn(Progress), wait: StoreWait<'_>) {
     ));
 }
 
+fn check_save_identity(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    let identity = with_variax_progress(ctx, VARIAX_IDENTITY, |session, stopping, _| {
+        shared_variax::identify_for_save_preflight(session, stopping)
+    })?;
+    if identity == SaveIdentity::Verified {
+        return Ok(());
+    }
+    const DAMAGED: &str =
+        "The second Variax identity request received only an orphan F7 after initial silence.";
+    ctx.rec.note(DAMAGED);
+    if !ctx.port.direct_usb() || !ctx.port.variax_claimed() || ctx.stopping() {
+        return Err(DAMAGED.into());
+    }
+    let cleanup = ctx.port.release_variax()?;
+    if ctx.port.variax_claimed() || ctx.port.direct_usb_release_failed() {
+        return Err("The Variax USB interface could not be verified released.".into());
+    }
+    for line in cleanup {
+        ctx.rec.note(line);
+    }
+    with_variax_progress(ctx, VARIAX_IDENTITY, |session, stopping, _| {
+        shared_variax::identify_after_save_preflight_reopen(session, stopping)
+    })
+}
+
 pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
     require_evidence(ctx)?;
     let start = ctx
@@ -84,8 +114,8 @@ pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
     }
     let backup_hash = super::record::sha256_hex(&program_bytes(&backup));
     // Pre-check: the slot still holds what the backup says.
-    let before = with_variax_progress(ctx, VARIAX_SAVE, |session, stopping, progress| {
-        shared_variax::identify(session)?;
+    check_save_identity(ctx)?;
+    let before = with_variax_progress(ctx, VARIAX_SELECT, |session, stopping, progress| {
         variax_read_preset(
             session,
             preset,
@@ -146,10 +176,23 @@ pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
         None => return Err(format!("{SKIPPED}You skipped the save. Nothing was saved.")),
     }
     let name = program_name(&backup);
+    let program = write::Program::new(&name, &bytes)?;
+    // Recheck after the typed notice. The one reclaim budget belongs only to
+    // the earlier read-only preflight.
+    with_variax_progress(ctx, VARIAX_IDENTITY, |session, stopping, _| {
+        match shared_variax::identify_for_save_preflight(session, stopping)? {
+            SaveIdentity::Verified => Ok(()),
+            SaveIdentity::SilenceThenOrphan => {
+                Err("Could not verify Variax identity after the save confirmation.".into())
+            }
+        }
+    })?;
+    if ctx.stopping() {
+        return Err("Stopped before uploading the Variax program.".into());
+    }
+    ctx.record_possible_save_send()?;
     let mut unknown = false;
     let acknowledged = with_variax_progress(ctx, VARIAX_SAVE, |session, stopping, progress| {
-        shared_variax::identify(session)?;
-        let program = write::Program::new(&name, &bytes)?;
         let timeout_notice = format!(
             "No 0x71. Keeping the rig untouched for {} s; no more MIDI is sent. {SPARE_WARNING}",
             SILENT_STORE_WAIT.as_secs()
@@ -499,7 +542,7 @@ fn save_image(
 mod tests {
     use super::*;
     use crate::rig_check::practice::{Faults, SimRig};
-    use crate::rig_check::record::Outcome;
+    use crate::rig_check::record::{Outcome, SavePhase};
     use crate::rig_check::run_practice;
     use crate::rig_check::runner::NoReport;
     use crate::rig_check::steps::RunData;
@@ -547,6 +590,7 @@ mod tests {
         };
         let (run, _, rig) = run_practice(faults, &mut person, &mut NoReport, RunData::default());
         let step = run.step(STEP);
+        assert_eq!(step.save_phase, Some(SavePhase::SendPossible));
         match &step.outcome {
             Outcome::Failed(reason) => assert!(reason.contains("Slot state is unknown")),
             other => panic!("{other:?}"),
@@ -572,6 +616,7 @@ mod tests {
                 RunData::default(),
             );
             assert_eq!(run.step(STEP).outcome, Outcome::SkippedByPerson);
+            assert_eq!(run.step(STEP).save_phase, Some(SavePhase::PreSend));
             assert_eq!(rig.borrow().variax.stores, 0);
         }
     }
