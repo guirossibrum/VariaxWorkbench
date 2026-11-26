@@ -2333,6 +2333,36 @@ fn editor_regions_keep_a_useful_body_and_a_contained_neck_on_the_laptop() {
 }
 
 #[test]
+fn stacked_twelve_string_body_uses_the_short_960_workspace() {
+    let art = body_canvas::DEFAULT_ART;
+    // Lane 3 measured this workspace under a 960×680 window with the
+    // twelve-string bank selected: tuning width 944 and an even split of
+    // 140.5, so the page is 944×297. The 426×412 photo fitted to 145×141.
+    let workspace = Rect::from_min_size(Pos2::ZERO, egui::vec2(944.0, 297.0));
+    let regions = editor_layout::editor_regions(workspace, art, true);
+    assert_regions_fit(workspace, art, regions);
+    assert_eq!(
+        regions.twelve_string_width,
+        editor_layout::TWELVE_STRING_COLUMN
+    );
+    assert!(regions.tuning.top() + 0.1 >= regions.body.bottom());
+    let scale = regions.body_art.x / art.x;
+    assert!(
+        (regions.body_art.x - 180.1).abs() < 1.0 && (regions.body_art.y - 174.2).abs() < 1.0,
+        "narrow twelve-string art {:?} scale {scale}",
+        regions.body_art
+    );
+    assert!(scale > 0.40, "narrow twelve-string scale {scale}");
+    assert!(
+        art.y * editor_layout::SIDE_MIN_SCALE > workspace.height(),
+        "a 0.75-scale body would fit a {}-point workspace",
+        workspace.height()
+    );
+    let laptop = editor_layout::editor_regions(editor_layout::laptop_workspace(), art, true);
+    assert!(laptop.tuning.left() + 0.1 >= laptop.body.right());
+}
+
+#[test]
 fn editor_regions_preserve_pickup_mapping_and_hit_testing_at_both_densities() {
     let art = body_canvas::DEFAULT_ART;
     let placement = PickupPlacement::default();

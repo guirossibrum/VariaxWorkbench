@@ -43,6 +43,11 @@ pub const NECK_MAX: f32 = 420.0;
 pub const COLUMN_GAP: f32 = 16.0;
 /// Design height of the six-string tuning block.
 pub const TUNING_BLOCK_HEIGHT: f32 = 300.0;
+/// Share of a stacked page given to the scrolling tuning band.
+///
+/// The body keeps the rest. An even split of the short twelve-string workspace
+/// (944×297 under a 960×680 window) fitted the 426×412 photo to 145×141.
+const STACK_TUNING_SHARE: f32 = 0.38;
 /// Inspector keeps at least this much width when the page can spare it.
 pub const INSPECTOR_MIN_WIDTH: f32 = 320.0;
 /// Side-by-side layout is used only when the body can keep this scale.
@@ -202,7 +207,7 @@ fn stacked_heights(height: f32) -> (f32, f32) {
         return (half, half);
     }
     let inner = height - COLUMN_GAP;
-    let tuning = TUNING_BLOCK_HEIGHT.min(inner * 0.5).max(1.0);
+    let tuning = TUNING_BLOCK_HEIGHT.min(inner * STACK_TUNING_SHARE).max(1.0);
     let top = (inner - tuning).max(1.0);
     (top, tuning)
 }

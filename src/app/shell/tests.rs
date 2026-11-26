@@ -603,30 +603,66 @@ fn layout_input(width: f32, height: f32, pixels_per_point: f32) -> egui::RawInpu
     input
 }
 
-fn painted_text(output: &egui::FullOutput) -> Vec<(String, egui::Rect)> {
-    fn visible_rect(text: &egui::epaint::TextShape) -> egui::Rect {
-        let bounds = text.galley.mesh_bounds;
-        if bounds.width() > 0.0 && bounds.height() > 0.0 {
-            bounds.translate(text.pos.to_vec2())
-        } else {
-            text.galley.rect.translate(text.pos.to_vec2())
-        }
+fn glyph_rect(text: &egui::epaint::TextShape) -> egui::Rect {
+    let bounds = text.galley.mesh_bounds;
+    if bounds.width() > 0.0 && bounds.height() > 0.0 {
+        bounds.translate(text.pos.to_vec2())
+    } else {
+        text.galley.rect.translate(text.pos.to_vec2())
     }
+}
 
-    fn walk(shape: &egui::Shape, found: &mut Vec<(String, egui::Rect)>) {
+/// Glyph bounds that survive `clip`. A scroll area records the whole galley
+/// and clips it at tessellation, so the unclipped rect can reach the footer
+/// after the glyphs have been cut off.
+fn visible_glyph_rect(text: &egui::epaint::TextShape, clip: egui::Rect) -> Option<egui::Rect> {
+    let visible = glyph_rect(text).intersect(clip);
+    (visible.width() > 0.5 && visible.height() > 0.5).then_some(visible)
+}
+
+fn painted_text(output: &egui::FullOutput) -> Vec<(String, egui::Rect)> {
+    fn walk(shape: &egui::Shape, clip: egui::Rect, found: &mut Vec<(String, egui::Rect)>) {
         match shape {
             egui::Shape::Text(text) => {
-                found.push((text.galley.text().to_owned(), visible_rect(text)));
+                if let Some(visible) = visible_glyph_rect(text, clip) {
+                    found.push((text.galley.text().to_owned(), visible));
+                }
             }
-            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| walk(shape, found)),
+            egui::Shape::Vec(shapes) => {
+                shapes.iter().for_each(|shape| walk(shape, clip, found));
+            }
             _ => {}
         }
     }
     let mut found = Vec::new();
-    output
-        .shapes
-        .iter()
-        .for_each(|shape| walk(&shape.shape, &mut found));
+    for clipped in &output.shapes {
+        walk(&clipped.shape, clipped.clip_rect, &mut found);
+    }
+    found
+}
+
+struct RawGlyph {
+    text: String,
+    raw: egui::Rect,
+    clip: egui::Rect,
+}
+
+fn raw_glyphs(output: &egui::FullOutput) -> Vec<RawGlyph> {
+    fn walk(shape: &egui::Shape, clip: egui::Rect, found: &mut Vec<RawGlyph>) {
+        match shape {
+            egui::Shape::Text(text) => found.push(RawGlyph {
+                text: text.galley.text().to_owned(),
+                raw: glyph_rect(text),
+                clip,
+            }),
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| walk(shape, clip, found)),
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    for clipped in &output.shapes {
+        walk(&clipped.shape, clipped.clip_rect, &mut found);
+    }
     found
 }
 
@@ -667,15 +703,23 @@ fn assert_build_number(
         rect.right(),
         footer.right()
     );
-    for (text, other) in texts {
-        if text == &caption || !footer.contains(other.center()) {
-            continue;
-        }
-        assert!(
-            !text_overlaps(rect, *other),
-            "{where_} build overlaps {text} at {other:?}"
-        );
+    if let Some(text) = footer_overlap(&caption, rect, footer, texts) {
+        panic!("{where_} build overlaps {text}");
     }
+}
+
+fn footer_overlap<'a>(
+    caption: &str,
+    build: egui::Rect,
+    footer: egui::Rect,
+    texts: &'a [(String, egui::Rect)],
+) -> Option<&'a str> {
+    texts.iter().find_map(|(text, other)| {
+        if text == caption || !footer.contains(other.center()) {
+            return None;
+        }
+        text_overlaps(build, *other).then_some(text.as_str())
+    })
 }
 
 fn text_inside(screen: egui::Rect, rect: egui::Rect) -> bool {
@@ -899,6 +943,59 @@ fn shell_layout_stays_readable_at_laptop_and_narrow_widths() {
             }
         }
     }
+}
+
+#[test]
+fn clipped_tuning_scale_does_not_count_as_a_footer_overlap() {
+    let (ctx, output) = shell_at(true, false, false, 1120.0, 760.0, 1.0);
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1120.0, 760.0));
+    let footer = egui::containers::panel::PanelState::load(&ctx, egui::Id::new("status"))
+        .expect("footer")
+        .rect;
+    let visible = painted_text(&output);
+    assert_build_number("1120x760 ppp=1", screen, footer, &visible);
+
+    let caption = format!("Build {}", crate::BUILD_NUMBER);
+    let build = visible
+        .iter()
+        .find(|(text, _)| text == &caption)
+        .expect("build caption")
+        .1;
+    let overlapping: Vec<_> = raw_glyphs(&output)
+        .into_iter()
+        .filter(|glyph| {
+            glyph.text != caption
+                && text_overlaps(build, glyph.raw)
+                && footer.contains(glyph.raw.center())
+        })
+        .collect();
+    assert!(
+        overlapping.iter().any(|glyph| glyph.text == "+12"),
+        "unclipped scale label did not reach the build caption: {:?}",
+        overlapping
+            .iter()
+            .map(|glyph| glyph.text.as_str())
+            .collect::<Vec<_>>()
+    );
+    for glyph in &overlapping {
+        let visible_part = glyph.raw.intersect(glyph.clip);
+        let still_visible = visible_part.width() > 0.5
+            && visible_part.height() > 0.5
+            && text_overlaps(build, visible_part);
+        assert!(
+            !still_visible,
+            "{} remains painted over the build caption: raw {:?} clip {:?} visible {:?}",
+            glyph.text, glyph.raw, glyph.clip, visible_part
+        );
+    }
+
+    let mut canary = visible;
+    let collision = egui::Rect::from_center_size(build.center(), egui::vec2(12.0, 8.0));
+    canary.push(("CANARY".to_owned(), collision));
+    assert_eq!(
+        footer_overlap(&caption, build, footer, &canary),
+        Some("CANARY")
+    );
 }
 
 #[test]
