@@ -8,8 +8,8 @@
 //! #189 hits a pickup only where the transformed pixel's alpha is above 204,
 //! measures the move circle on the padded image buffer, drags from the press
 //! point, rebases rotation when Ctrl changes, and selects on mouse press.
-//! #190 passes a per-body [`PickupPlacement`]. #191 passes the wireframe
-//! through [`BodyCanvas::outline`].
+//! #190 places a pickup from that body's `UpdateBodyImage` limits. #191
+//! passes the wireframe through [`BodyCanvas::outline`].
 
 use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, Vec2, vec2};
 
@@ -43,10 +43,80 @@ pub const FINE_ROTATE: f32 = 0.1;
 /// 120 / 426 is the Spank pickup on the Spank body.
 pub const FALLBACK_SPRITE_WIDTH: f32 = 120.0 / 426.0;
 
+/// Body photo origin on the Workbench panel, in parent pixels.
+pub const BODY_IMAGE_X: i32 = 12;
+pub const BODY_IMAGE_Y: i32 = 132;
+/// Pickup row added at y = 267 with height 160. Its center is art y = 215.
+pub const PICKUP_ROW_Y: i32 = 267;
+pub const PICKUP_ROW_HEIGHT: i32 = 160;
+/// `L6PickupControl.Update` places the picture in a fixed 120px slot.
+pub const PICKUP_SLOT_PX: i32 = 120;
+
+const _: () = assert!(PICKUP_ROW_Y + PICKUP_ROW_HEIGHT / 2 - BODY_IMAGE_Y == 215);
+
+/// `UpdateBodyImage` component bounds, in parent pixels.
+///
+/// `setBounds(left, y, right − left, height)` keeps the pickup row's y and
+/// height. An id missing from that switch uses 20…458.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PickupLimits {
+    pub left: i32,
+    pub right: i32,
+}
+
+impl PickupLimits {
+    /// Art centers for these bounds.
+    ///
+    /// The image center is `left − 12 + (int)((right − left − 120) * t) + 60`
+    /// at art y = 215. `t` is inches normalized from 0.1…9.5.
+    pub fn placement(self) -> PickupPlacement {
+        let travel = (self.right - self.left - PICKUP_SLOT_PX) as f32;
+        let x_min = (self.left - BODY_IMAGE_X + PICKUP_SLOT_PX / 2) as f32;
+        PickupPlacement {
+            art: DEFAULT_ART,
+            x_min,
+            x_max: x_min + travel,
+            y: DEFAULT_Y,
+        }
+    }
+}
+
+/// The seventeen `UpdateBodyImage` ranges. Any other id uses 20…458.
+pub fn pickup_limits(model_id: u32) -> PickupLimits {
+    let (left, right) = match model_id {
+        0x0310_0000..=0x0310_0002 => (-5, 458),
+        0x0310_0003 => (-15, 483),
+        0x0310_0004 => (-8, 503),
+        0x0310_0005 => (-10, 488),
+        0x0310_0006 => (-25, 547),
+        0x0310_0007 => (-74, 546),
+        0x0310_0008 => (-28, 457),
+        0x0310_0009 => (40, 458),
+        0x0310_000A => (8, 499),
+        0x0310_000B => (0, 458),
+        0x0310_000C..=0x0310_000D => (-5, 458),
+        0x0310_000E => (17, 503),
+        0x0310_000F => (10, 458),
+        0x0310_0010 => (0, 477),
+        0x0310_0011 => (8, 428),
+        0x0310_0018 => (27, 415),
+        0x0310_0019 => (20, 458),
+        _ => (20, 458),
+    };
+    PickupLimits { left, right }
+}
+
+/// Placement for one body model. The editor passes this to [`BodyCanvas::placement`].
+pub fn placement_for_body(model_id: u32) -> PickupPlacement {
+    pickup_limits(model_id).placement()
+}
+
 /// Where inches land on one body's artwork.
 ///
-/// The default is the approved Spank map: `68 + 318 * (inches − 0.1) / 9.4`
-/// at `y = 215`. #190 substitutes the range for another body.
+/// `x_min` and `x_max` are the art-pixel centers at 0.1 and 9.5 inches.
+/// The default is Workbench's unmatched-body limits (20…458), which is
+/// `68 + (int)(318 * t)` at `y = 215`. Spank (`0x03100003`) has its own
+/// limits; use [`placement_for_body`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PickupPlacement {
     pub art: Vec2,
@@ -68,6 +138,9 @@ impl Default for PickupPlacement {
 
 impl PickupPlacement {
     /// Art-pixel center for `inches`, clamped to 0.1…9.5.
+    ///
+    /// The horizontal pixel is `x_min + (int)((x_max − x_min) * t)`, the same
+    /// truncating cast as `L6PickupControl.Update`. The endpoints are exact.
     pub fn position_to_art(self, inches: f32) -> Pos2 {
         let inches = if inches.is_finite() {
             inches.clamp(POSITION_MIN, POSITION_MAX)
@@ -76,10 +149,16 @@ impl PickupPlacement {
         };
         let span = POSITION_MAX - POSITION_MIN;
         let t = (inches - POSITION_MIN) / span;
-        Pos2::new(self.x_min + (self.x_max - self.x_min) * t, self.y)
+        let travel = self.x_max - self.x_min;
+        let dx = if travel.is_finite() {
+            trunc_toward_zero(travel * t)
+        } else {
+            0.0
+        };
+        Pos2::new(self.x_min + dx, self.y)
     }
 
-    /// Inverse of [`Self::position_to_art`] for a horizontal art pixel.
+    /// Continuous inverse of the endpoint map, before the truncating cast.
     pub fn art_x_to_position(self, x: f32) -> f32 {
         let span = self.x_max - self.x_min;
         if !span.is_finite() || span == 0.0 || !x.is_finite() {
@@ -103,7 +182,19 @@ impl PickupPlacement {
     }
 }
 
+/// Java `(int)` cast: truncate toward zero.
+fn trunc_toward_zero(value: f32) -> f32 {
+    if !value.is_finite() {
+        return 0.0;
+    }
+    (value as i32) as f32
+}
+
 /// New position after a horizontal drag of `art_dx` art pixels.
+///
+/// The divisor is the drawn travel, `x_max − x_min`, which is
+/// `right − left − 120`. Workbench's drag divisor is
+/// `component width − padded image width` instead.
 pub fn move_inches(origin: f32, art_dx: f32, placement: PickupPlacement) -> f32 {
     let span = placement.x_max - placement.x_min;
     if !origin.is_finite() || !art_dx.is_finite() || !span.is_finite() || span == 0.0 {
