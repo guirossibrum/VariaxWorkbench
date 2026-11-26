@@ -24,6 +24,7 @@
 /.git-worktrees/
 
 # Build products, local credentials and caches.
+/dist/
 /target/
 /crates/line6-devices/target/
 __pycache__/

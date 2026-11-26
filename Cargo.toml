@@ -59,6 +59,9 @@ owner-reso5-test = ["usb", "dep:libc", "dep:serde", "dep:serde_json"]
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = { version = "0.2", optional = true }
 
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+rfd = { version = "0.18", optional = true }
+
 [dependencies]
 libm = { version = "=0.2.16", optional = true, default-features = false, features = ["force-soft-floats"] }
 tempfile = "3"
@@ -67,7 +70,6 @@ line6-devices = { path = "crates/line6-devices", default-features = false }
 eframe = { version = "=0.33.3", optional = true, default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 winit = { version = "=0.30.13", optional = true, default-features = false, features = ["wayland", "x11"] }
 image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
-rfd = { version = "0.18", optional = true }
 serde = { version = "1", optional = true, features = ["derive"] }
 serde_json = { version = "1", optional = true }
 flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }

@@ -300,6 +300,12 @@ mod tests {
         assert_eq!(operator.notices.len(), 1);
         assert!(!operator.cards.contains(&VARIAX_EVIDENCE));
         assert!(run.step(StepId(3, 3)).outcome.passed());
-        assert!(approvals::real_device_check(VARIAX_EVIDENCE).is_ok());
+        assert!(approvals::approved(VARIAX_EVIDENCE));
+        let availability = approvals::real_device_check(VARIAX_EVIDENCE);
+        if cfg!(target_os = "macos") {
+            assert_eq!(availability, Err(crate::MAC_CONNECTION_UNAVAILABLE.into()));
+        } else {
+            assert!(availability.is_ok());
+        }
     }
 }

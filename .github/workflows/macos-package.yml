@@ -1,0 +1,83 @@
+name: macOS package
+
+on:
+  workflow_dispatch:
+    inputs:
+      alpha_number:
+        description: "Publish untested alpha number N (leave blank for artifact only)"
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: macos-15
+    timeout-minutes: 45
+    outputs:
+      alpha_tag: ${{ steps.alpha.outputs.tag }}
+    env:
+      RUSTUP_TOOLCHAIN: "1.99.1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate optional alpha number
+        id: alpha
+        env:
+          ALPHA_NUMBER: ${{ inputs.alpha_number }}
+        run: |
+          if [[ -n "$ALPHA_NUMBER" ]]; then
+            [[ "$ALPHA_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo "Supply a positive alpha number."; exit 1; }
+            version="$(sed -n 's/^version = "\([0-9][0-9.]*\)"$/\1/p' Cargo.toml | head -n 1)"
+            [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            echo "tag=v$version-alpha.$ALPHA_NUMBER" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
+        with:
+          toolchain: "1.99.1"
+      - name: Offline app and device library tests
+        run: |
+          export XDG_DATA_HOME="$(mktemp -d "$RUNNER_TEMP/variax-data.XXXXXX")"
+          export VARIAX_WORKBENCH_DATA_DIR="$XDG_DATA_HOME"
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          cargo fetch --locked --target "$host"
+          cargo test --offline --locked --no-default-features --features gui,portable-math
+          (cd crates/line6-devices && cargo test --offline --locked --no-default-features)
+          python3 packaging/macos/test_package.py
+      - name: Build and verify universal package
+        run: packaging/macos/build.sh "$RUNNER_TEMP/macos-package"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: macos-universal
+          path: |
+            ${{ runner.temp }}/macos-package/*/*.dmg
+            ${{ runner.temp }}/macos-package/*/verification.txt
+          if-no-files-found: error
+
+  publish-alpha:
+    needs: package
+    if: needs.package.outputs.alpha_tag != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: macos-universal
+          path: package
+      - name: Publish untested alpha
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.package.outputs.alpha_tag }}
+        run: |
+          mapfile -d '' images < <(find package -name '*.dmg' -print0)
+          mapfile -d '' reports < <(find package -name verification.txt -print0)
+          [[ ${#images[@]} == 1 && ${#reports[@]} == 1 ]]
+          gh release create "$TAG" "${images[0]}" "${reports[0]}" --target "$GITHUB_SHA" --prerelease \
+            --title "Variax Workbench $TAG — untested alpha (macOS)" \
+            --notes "Untested alpha for macOS. Includes universal Variax Workbench and Rig Check apps for Intel and Apple silicon. Offline editing, practice and computer checks only. See How to open.txt inside the disk image."

@@ -194,6 +194,24 @@ mod tests {
     }
 
     #[test]
+    fn the_engine_report_records_the_built_byte_hash_for_every_case() {
+        let (run, _, _) = run_practice(
+            Faults::default(),
+            &mut Script::run_all(),
+            &mut NoReport,
+            RunData::default(),
+        );
+        let report = crate::rig_check::report::render_plain(&run, "test time");
+        let expected = crate::rig_check::engine_check::builtin();
+        let step = run.step(StepId(0, 3));
+        assert_eq!(step.checksums.len(), expected.len());
+        for case in expected {
+            let hash = case.actual_sha256.as_deref().expect("built reference case");
+            assert!(report.contains(&format!("{hash}  {} (built here)", case.name)));
+        }
+    }
+
+    #[test]
     fn nothing_runs_without_an_explicit_run() {
         let mut person = Script::run_all();
         person.default = Decision::Skip;
@@ -295,6 +313,29 @@ mod tests {
             assert!(matches!(run.step(id).outcome, Outcome::NotAvailable(_)));
             assert!(!person.cards.contains(&id));
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn real_mode_on_mac_only_offers_computer_checks() {
+        let mut person = Script::run_all();
+        let mut port = RealPort::with_system(Box::new(
+            crate::rig_check::computer::linux::synthetic_machine(true, true),
+        ));
+        let (run, _) = run_on(&mut port, &mut person, &mut NoReport, RunData::default());
+        for step in STEPS.iter().filter(|step| step.needs_device_approval()) {
+            assert_eq!(
+                run.step(step.id).outcome,
+                Outcome::NotAvailable(crate::MAC_CONNECTION_UNAVAILABLE.into()),
+                "{}",
+                step.id
+            );
+        }
+        assert_eq!(
+            person.cards,
+            [StepId(0, 1), StepId(0, 2), StepId(0, 3), StepId(8, 1)]
+        );
+        assert!(person.cards.iter().all(|id| run.step(*id).outcome.passed()));
     }
 
     #[test]

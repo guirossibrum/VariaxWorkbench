@@ -163,6 +163,8 @@ fn computer_system(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let lines = if cfg!(target_os = "linux") || ctx.mode == Mode::Practice {
         let system = ctx.port.system();
         computer::linux::system(&*system)
+    } else if cfg!(target_os = "macos") {
+        computer::other::mac_system(&computer::other::SystemCommands)
     } else {
         computer::other::this_os(&computer::other::SystemCommands)
             .ok_or("No computer collector for this operating system.")?
@@ -214,9 +216,7 @@ fn engine_check(ctx: &mut Ctx<'_>) -> Result<(), String> {
         ctx.rec.show(line.clone());
     }
     for result in &results {
-        if let Some(hash) = &result.actual_sha256
-            && !result.name.starts_with("Synthetic engine case")
-        {
+        if let Some(hash) = &result.actual_sha256 {
             ctx.rec
                 .checksums
                 .push((format!("{} (built here)", result.name), hash.clone()));
@@ -265,11 +265,16 @@ fn computer_usb(ctx: &mut Ctx<'_>) -> Result<(), String> {
                 let system = ctx.port.system();
                 Ok(computer::linux::usb(&*system, &ctx.port.libusb()))
             } else {
-                let lines = computer::other::this_os(&computer::other::SystemCommands)
-                    .ok_or("No computer collector for this operating system.")?
-                    .into_iter()
-                    .filter(|(name, _)| is_device_line(name) || name == "Collector")
-                    .collect();
+                let commands = &computer::other::SystemCommands;
+                let lines = if cfg!(target_os = "macos") {
+                    computer::other::mac_devices(commands)
+                } else {
+                    computer::other::this_os(commands)
+                        .ok_or("No computer collector for this operating system.")?
+                        .into_iter()
+                        .filter(|(name, _)| is_device_line(name) || name == "Collector")
+                        .collect()
+                };
                 Ok(UsbView {
                     devices: Vec::new(),
                     lines,

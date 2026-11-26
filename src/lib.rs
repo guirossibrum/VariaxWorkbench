@@ -18,6 +18,12 @@ mod families;
 pub mod firmware;
 pub mod firmware_notice;
 pub mod hardware_gates;
+#[cfg(all(target_os = "macos", feature = "gui"))]
+pub mod macos_dialog;
+
+pub const MAC_CONNECTION_UNAVAILABLE: &str =
+    "The Mac connection isn't available in this version yet.";
+
 pub mod host;
 pub mod identity_stage;
 #[cfg(feature = "usb")]

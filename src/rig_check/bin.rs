@@ -76,6 +76,12 @@ fn compare_clips(args: &[String]) -> Result<(), String> {
 }
 
 fn default_out() -> PathBuf {
+    if cfg!(target_os = "macos") {
+        return std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join("Library/Application Support/Rig Check/reports"))
+            .unwrap_or_else(|| std::env::temp_dir().join("rig-check-output"));
+    }
     std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join("rig-check-output")))
@@ -83,7 +89,9 @@ fn default_out() -> PathBuf {
 }
 
 fn options() -> Result<Options, String> {
-    let mut args = std::env::args().skip(1);
+    let mut args = std::env::args()
+        .skip(1)
+        .filter(|arg| !cfg!(target_os = "macos") || !arg.starts_with("-psn_"));
     let mut practice = None;
     let mut out = None;
     let mut evidence = false;
@@ -168,6 +176,8 @@ fn window(options: Options) {
         }
         let run = if mode == Mode::Practice {
             rig_check::run_practice(Faults::default(), &mut op, &mut sink, data).0
+        } else if cfg!(target_os = "macos") {
+            rig_check::run_on(&mut RealPort::default(), &mut op, &mut sink, data).0
         } else {
             let mut port = RealPort::default();
             for (path, state) in rig_check::recover::pending(&out).into_iter().take(1) {
@@ -197,6 +207,8 @@ fn window(options: Options) {
         .practice
         .map(|p| if p { Mode::Practice } else { Mode::Real });
     let native = eframe::NativeOptions {
+        #[cfg(target_os = "macos")]
+        renderer: eframe::Renderer::Glow,
         viewport: egui::ViewportBuilder::default().with_inner_size([1180.0, 800.0]),
         ..Default::default()
     };
@@ -252,6 +264,8 @@ fn main() {
     let mut person = Terminal::new(BufReader::new(stdin.lock()), io::stdout());
     let run = if options.practice == Some(true) {
         rig_check::run_practice(Faults::default(), &mut person, &mut sink, data).0
+    } else if cfg!(target_os = "macos") {
+        rig_check::run_on(&mut RealPort::default(), &mut person, &mut sink, data).0
     } else {
         let mut port = RealPort::default();
         // An earlier run that did not finish: offer to put the rig back first.
