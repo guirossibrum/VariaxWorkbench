@@ -78,6 +78,12 @@ fn default_startup_renders_an_empty_shell_with_offline_entry_points() {
             .all(|label| !label.starts_with("New offline tab · "))
     );
     assert!(labels.iter().all(|label| !label.starts_with("build ")));
+    assert!(
+        labels
+            .iter()
+            .any(|label| label == &format!("Build {}", crate::BUILD_NUMBER)),
+        "missing build number"
+    );
     for family in registry::FAMILIES {
         assert!(
             labels
@@ -336,6 +342,68 @@ fn control_q_uses_the_existing_quit_prompt_and_plain_q_does_nothing() {
 }
 
 #[test]
+fn build_number_stays_bottom_right_with_status_error_and_a_long_name() {
+    let caption = format!("Build {}", crate::BUILD_NUMBER);
+    let long_name = format!(
+        "Saved in /{}New Collection.l6c.",
+        "project-directory/".repeat(9)
+    );
+    for editor in [false, true] {
+        for &(width, height) in &[(1120.0_f32, 760.0_f32), (720.0, 640.0)] {
+            for pixels_per_point in [1.0_f32, 2.0] {
+                let where_ = format!("editor={editor} {width}x{height} ppp={pixels_per_point}");
+                let ctx = egui::Context::default();
+                let mut app = empty_shell(&ctx);
+                if editor {
+                    app.new_tab(registry::LEGACY_STARTUP);
+                }
+                app.shell_status = long_name.clone();
+                app.shell_error = Some("Could not write the file.".into());
+                app.detection_status = Some("Guitar offline".into());
+                let input = layout_input(width, height, pixels_per_point);
+                let _ = ctx.run(input.clone(), |ctx| app.render(ctx));
+                let output = ctx.run(input, |ctx| app.render(ctx));
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
+                let footer =
+                    egui::containers::panel::PanelState::load(&ctx, egui::Id::new("status"))
+                        .expect("footer")
+                        .rect;
+                let texts = painted_text(&output);
+                for required in [
+                    long_name.as_str(),
+                    "Could not write the file.",
+                    "Guitar offline",
+                ] {
+                    let rect = texts
+                        .iter()
+                        .filter(|(text, _)| text == required)
+                        .map(|(_, rect)| *rect)
+                        .find(|rect| footer.contains(rect.center()))
+                        .unwrap_or_else(|| panic!("{where_} missing {required} in the footer"));
+                    assert!(
+                        text_inside(screen, rect),
+                        "{where_} {required} at {rect:?} leaves {screen:?}"
+                    );
+                }
+                assert_build_number(&where_, screen, footer, &texts);
+                assert!(
+                    texts.iter().any(|(text, _)| text == &caption),
+                    "{where_} missing {caption}"
+                );
+                // The long name, device line, and error wrap to a few rows.
+                // The bound is high enough for 720 points and still rejects a
+                // footer that grows without limit.
+                assert!(
+                    footer.height() <= 120.0,
+                    "{where_} footer {}",
+                    footer.height()
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn wrapped_status_does_not_grow_over_successive_frames() {
     let ctx = egui::Context::default();
     let mut app = empty_shell(&ctx);
@@ -363,8 +431,10 @@ fn wrapped_status_does_not_grow_over_successive_frames() {
     }
 
     assert!(heights[0] > 29.0, "the status should wrap: {heights:?}");
+    // The build number keeps the right side, and the long filename is on
+    // its own row so it cannot slide off the window. The height stays put.
     assert!(
-        heights.iter().all(|height| *height <= 47.0),
+        heights.iter().all(|height| *height <= 58.0),
         "footer heights: {heights:?}"
     );
     assert!(
@@ -565,6 +635,49 @@ fn text_overlaps(left: egui::Rect, right: egui::Rect) -> bool {
     shared.width() > 1.0 && shared.height() > 1.0
 }
 
+fn assert_build_number(
+    where_: &str,
+    screen: egui::Rect,
+    footer: egui::Rect,
+    texts: &[(String, egui::Rect)],
+) {
+    let caption = format!("Build {}", crate::BUILD_NUMBER);
+    let rect = texts
+        .iter()
+        .find(|(text, _)| text == &caption)
+        .unwrap_or_else(|| panic!("{where_} missing {caption}"))
+        .1;
+    assert!(
+        text_inside(screen, rect),
+        "{where_} build {rect:?} leaves {screen:?}"
+    );
+    assert!(
+        footer.contains(rect.center()),
+        "{where_} build {rect:?} is outside footer {footer:?}"
+    );
+    assert!(
+        (footer.bottom() - rect.bottom()).abs() < 14.0,
+        "{where_} build bottom {} footer {}",
+        rect.bottom(),
+        footer.bottom()
+    );
+    assert!(
+        rect.right() > footer.right() - 28.0 && rect.right() <= footer.right() - 8.0,
+        "{where_} build right {} footer {}",
+        rect.right(),
+        footer.right()
+    );
+    for (text, other) in texts {
+        if text == &caption || !footer.contains(other.center()) {
+            continue;
+        }
+        assert!(
+            !text_overlaps(rect, *other),
+            "{where_} build overlaps {text} at {other:?}"
+        );
+    }
+}
+
 fn text_inside(screen: egui::Rect, rect: egui::Rect) -> bool {
     rect.left() >= screen.left() - 0.5
         && rect.right() <= screen.right() + 0.5
@@ -632,6 +745,12 @@ fn shell_layout_stays_readable_at_laptop_and_narrow_widths() {
                             egui::Id::new("header"),
                         )
                         .expect("header")
+                        .rect;
+                        let footer = egui::containers::panel::PanelState::load(
+                            &ctx,
+                            egui::Id::new("status"),
+                        )
+                        .expect("footer")
                         .rect;
                         let title = texts
                             .iter()
@@ -774,6 +893,7 @@ fn shell_layout_stays_readable_at_laptop_and_narrow_widths() {
                         } else {
                             assert!(texts.iter().all(|(text, _)| text != "WB"));
                         }
+                        assert_build_number(&where_, screen, footer, &texts);
                     }
                 }
             }

@@ -627,86 +627,141 @@ impl Workbench {
         egui::TopBottomPanel::bottom("status")
             .resizable(false)
             .show_separator_line(false)
+            // A one-line footer is 29 points. A taller first frame would
+            // shrink on the next redraw and move an editor scroll offset.
+            .default_height(29.0)
             .frame(shell_bar(0, false))
             .show(ctx, |ui| {
                 let mut guitar_refresh = None;
                 let allow_refresh = !self.has_prompt();
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(theme::SPACE_16, theme::SPACE_4);
-                    self.with_active(|entry, _| {
-                        if entry.editor.busy() {
-                            ui.spinner();
-                            status_line(ui, "Reading model settings…", theme::TEXT);
-                            if command_button(ui, "Cancel read", true).clicked() {
-                                entry.editor.cancel_operation();
-                            }
-                        }
-                    });
-                    if let Some(index) = self.tabs.active.and_then(|id| self.tabs.index(id)) {
-                        let (status, error) = self.tabs.entries[index].editor.status();
-                        if !status.is_empty() {
-                            status_line(ui, status, theme::MUTED);
-                        }
-                        if let Some(error) = error {
-                            status_line(ui, error, theme::DANGER);
-                        }
-                        let entry = &self.tabs.entries[index];
-                        let variax = entry.family.info().id == "variax";
-                        if let Some(device) = &entry.device {
-                            if !variax {
-                                connection_chip(ui, &device.status());
-                            }
-                            if device.connection == tabs::Connection::Present
-                                && device.reconnected_with_edits
-                            {
-                                status_line(ui, tabs::RECONNECTED_WITH_EDITS, theme::TEXT);
-                            }
-                            if device.connection == tabs::Connection::Present {
-                                for notice in
-                                    [device.device.pod_warning, device.device.guitar_warning]
-                                        .into_iter()
-                                        .flatten()
-                                {
-                                    status_line(ui, &notice.message(), theme::AMBER);
+                // The build number stays at the bottom-right. Status text
+                // wraps in the width that remains, so a device line, an
+                // error, or a long filename cannot cover it. A right-to-left
+                // row hides later wrapped lines, so the caption is reserved
+                // and painted on its own.
+                let caption_galley = ui.painter().layout_no_wrap(
+                    build_caption(),
+                    egui::FontId::proportional(theme::STATUS),
+                    theme::MUTED,
+                );
+                let caption_size = caption_galley.size();
+                let bounds = ui.available_rect_before_wrap();
+                let status_width = (bounds.width() - caption_size.x - theme::SPACE_16).max(1.0);
+                // A tall max rect makes the first wrapped row as tall as the
+                // panel, so the footer grows past the window. Keep the row
+                // at one control high and let the text wrap downward.
+                let status = ui.allocate_ui_with_layout(
+                    egui::vec2(status_width, ui.spacing().interact_size.y),
+                    egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
+                    |ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(theme::SPACE_16, theme::SPACE_4);
+                        self.with_active(|entry, _| {
+                            if entry.editor.busy() {
+                                ui.spinner();
+                                status_line(ui, "Reading model settings…", theme::TEXT);
+                                if command_button(ui, "Cancel read", true).clicked() {
+                                    entry.editor.cancel_operation();
                                 }
                             }
-                            if !variax
-                                && device.connection == tabs::Connection::Present
-                                && let Some(status) = device.device.guitar_status.clone()
-                            {
-                                let attachment = device
-                                    .device
-                                    .refresh_guitar
-                                    .then(|| device.device.key.attachment.clone());
-                                ui.horizontal(|ui| {
-                                    status_line(ui, &status, theme::MUTED);
-                                    if let Some(attachment) = attachment
-                                        && self.refresh_guitar_button(ui, allow_refresh)
-                                    {
-                                        guitar_refresh = Some(attachment);
-                                    }
-                                });
+                        });
+                        if let Some(index) = self.tabs.active.and_then(|id| self.tabs.index(id)) {
+                            let (status, error) = self.tabs.entries[index].editor.status();
+                            if !status.is_empty() {
+                                status_line(ui, status, theme::MUTED);
                             }
-                        } else if !variax {
+                            if let Some(error) = error {
+                                status_line(ui, error, theme::DANGER);
+                            }
+                            let entry = &self.tabs.entries[index];
+                            let variax = entry.family.info().id == "variax";
+                            if let Some(device) = &entry.device {
+                                if !variax {
+                                    connection_chip(ui, &device.status());
+                                }
+                                if device.connection == tabs::Connection::Present
+                                    && device.reconnected_with_edits
+                                {
+                                    status_line(ui, tabs::RECONNECTED_WITH_EDITS, theme::TEXT);
+                                }
+                                if device.connection == tabs::Connection::Present {
+                                    for notice in
+                                        [device.device.pod_warning, device.device.guitar_warning]
+                                            .into_iter()
+                                            .flatten()
+                                    {
+                                        status_line(ui, &notice.message(), theme::AMBER);
+                                    }
+                                }
+                                if !variax
+                                    && device.connection == tabs::Connection::Present
+                                    && let Some(status) = device.device.guitar_status.clone()
+                                {
+                                    let attachment = device
+                                        .device
+                                        .refresh_guitar
+                                        .then(|| device.device.key.attachment.clone());
+                                    ui.horizontal(|ui| {
+                                        status_line(ui, &status, theme::MUTED);
+                                        if let Some(attachment) = attachment
+                                            && self.refresh_guitar_button(ui, allow_refresh)
+                                        {
+                                            guitar_refresh = Some(attachment);
+                                        }
+                                    });
+                                }
+                            } else if !variax {
+                                chrome::status_chip(ui, chrome::LinkState::NoDevice);
+                            }
+                        } else {
+                            status_line(ui, "No file open", theme::MUTED);
                             chrome::status_chip(ui, chrome::LinkState::NoDevice);
                         }
-                    } else {
-                        status_line(ui, "No file open", theme::MUTED);
-                        chrome::status_chip(ui, chrome::LinkState::NoDevice);
-                    }
-                    if let Some(notice) = variax_workbench::offline_device_notice() {
-                        status_line(ui, notice, theme::MUTED);
-                    }
-                    if let Some(error) = &self.detection_status {
-                        status_line(ui, error, theme::DANGER);
-                    }
-                    if !self.shell_status.is_empty() {
-                        status_line(ui, &self.shell_status, theme::MUTED);
-                    }
-                    if let Some(error) = &self.shell_error {
-                        status_line(ui, error, theme::DANGER);
-                    }
-                });
+                        if let Some(notice) = variax_workbench::offline_device_notice() {
+                            status_line(ui, notice, theme::MUTED);
+                        }
+                        if let Some(error) = &self.detection_status {
+                            status_line(ui, error, theme::DANGER);
+                        }
+                    },
+                );
+                // A long filename in the wrapped row is indented from the
+                // first row and can start left of the window. Keep the
+                // filename and the shell error in their own rows, clear of
+                // the build number.
+                let mut block_bottom = status
+                    .response
+                    .rect
+                    .bottom()
+                    .max(bounds.top() + caption_size.y);
+                if !self.shell_status.is_empty() {
+                    let saved = ui.allocate_ui_with_layout(
+                        egui::vec2(status_width, 1.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.set_min_width(status_width);
+                            status_line(ui, &self.shell_status, theme::MUTED);
+                        },
+                    );
+                    block_bottom = block_bottom.max(saved.response.rect.bottom());
+                }
+                if let Some(error) = &self.shell_error {
+                    let error_row = ui.allocate_ui_with_layout(
+                        egui::vec2(status_width, 1.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.set_min_width(status_width);
+                            status_line(ui, error, theme::DANGER);
+                        },
+                    );
+                    block_bottom = block_bottom.max(error_row.response.rect.bottom());
+                }
+                let caption_pos = egui::pos2(
+                    bounds.right() - caption_size.x,
+                    block_bottom - caption_size.y,
+                );
+                ui.painter()
+                    .galley(caption_pos, caption_galley, theme::MUTED);
+                ui.expand_to_include_rect(egui::Rect::from_min_size(caption_pos, caption_size));
                 if let Some(attachment) = guitar_refresh {
                     self.refresh_guitar(&attachment);
                 }
@@ -739,7 +794,7 @@ impl Workbench {
                             .color(theme::TEXT),
                     );
                     ui.label(
-                        egui::RichText::new(format!("Build {}", crate::BUILD_NUMBER))
+                        egui::RichText::new(build_caption())
                             .size(theme::BODY)
                             .color(theme::TEXT),
                     );
@@ -897,6 +952,10 @@ fn command_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Respon
         egui::Button::new(egui::RichText::new(label).size(theme::BODY))
             .min_size(egui::vec2(theme::TARGET, theme::TARGET)),
     )
+}
+
+fn build_caption() -> String {
+    format!("Build {}", crate::BUILD_NUMBER)
 }
 
 fn status_line(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
