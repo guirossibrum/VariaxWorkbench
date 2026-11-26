@@ -296,7 +296,7 @@ fn main() {
         "\nRig Check finished: {} passed, {} failed, {} skipped. {}\nWorking report: {}",
         run.count("passed"),
         run.count("failed"),
-        run.count("skipped") + run.count("skipped_needs"),
+        run.count("skipped") + run.count("skipped_verified_firmware") + run.count("skipped_needs"),
         rig_check::record::plain_result(&run.rig_state),
         sink.path.display()
     );

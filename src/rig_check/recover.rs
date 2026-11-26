@@ -279,6 +279,11 @@ fn restore(ctx: &mut Ctx<'_>, state: &RigState) -> Result<(), String> {
         }
     }
     if let Some(preset) = state.preset() {
+        if state.channel().is_none() {
+            super::procedures::with_podxt(ctx, RESTORE_OPS, |session| {
+                podxt::identify_podxt_live(session).map(|_| ())
+            })?;
+        }
         let read = with_variax(ctx, RESTORE_OPS, |session, _| {
             super::procedures::drain(session)?;
             variax_read_preset(session, preset, &|| false)

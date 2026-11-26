@@ -692,7 +692,9 @@ fn rig_guard(ctx: &mut Ctx<'_>) -> Result<(), String> {
         ctx.rec
             .show("Rig: the PODxt Live starting tone was not recorded (2.2 did not pass).");
     }
-    if let Some(start) = ctx.data.start_program {
+    if ctx.data.podxt_verified == Some(true)
+        && let Some(start) = ctx.data.start_program
+    {
         let now = with_variax(ctx, VARIAX_SELECT, |session, stopping| {
             // Let anything the guitar sent meanwhile (a selector turn after
             // Stop) arrive and be logged before the read starts.

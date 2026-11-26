@@ -288,7 +288,7 @@ mod tests {
         }
 
         let mut commands = vec!["accept", "b", "c"];
-        for _ in 0..5 {
+        for _ in 0..4 {
             commands.extend(["r", "c"]);
         }
         commands.push("r"); // 2.1 actually sends an identity request.
@@ -309,8 +309,8 @@ mod tests {
         let output = String::from_utf8(terminal.into_output()).unwrap();
         assert!(output.contains("Start notice (accepted)") && output.contains("[b] Back"));
         assert!(output.contains("Return to current step"));
-        assert_eq!(output.matches("=== Step 2.2:").count(), 2);
-        assert_eq!(run.stopped_at, Some(StepId(2, 2)));
+        assert_eq!(output.matches("=== Step 1.2:").count(), 2);
+        assert_eq!(run.stopped_at, Some(StepId(1, 2)));
         assert!(run.step(StepId(2, 1)).outcome.passed());
         assert_eq!(counts.len(), commands.len());
         assert!(counts[start_history] > 0);

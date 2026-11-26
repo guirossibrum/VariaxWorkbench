@@ -25,6 +25,7 @@ pub enum Outcome {
     Passed,
     Failed(String),
     SkippedByPerson,
+    SkippedVerifiedFirmware(String),
     /// A step it needs did not pass.
     SkippedNeeds(String),
     NotAuthorized(String),
@@ -35,12 +36,24 @@ pub enum Outcome {
 }
 
 impl Outcome {
+    pub fn verified_firmware_skip(device: &str, version: &str) -> Self {
+        Self::SkippedVerifiedFirmware(format!(
+            "Skipped: your {device} reports firmware {version}, the tested version. This check is only for other versions."
+        ))
+    }
+
+    pub fn technical_note(&self) -> Option<&'static str> {
+        matches!(self, Self::SkippedVerifiedFirmware(_))
+            .then_some("evidence mode not entered: firmware verified")
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             Outcome::NotReached => "NOT REACHED",
             Outcome::Passed => "PASSED",
             Outcome::Failed(_) => "FAILED",
             Outcome::SkippedByPerson => "SKIPPED (by you)",
+            Outcome::SkippedVerifiedFirmware(_) => "SKIPPED",
             Outcome::SkippedNeeds(_) => "SKIPPED (needs an earlier step)",
             Outcome::NotAuthorized(_) => "NOT AUTHORIZED",
             Outcome::NotAvailable(_) => "NOT AVAILABLE",
@@ -55,6 +68,7 @@ impl Outcome {
             Outcome::Passed => "passed",
             Outcome::Failed(_) => "failed",
             Outcome::SkippedByPerson => "skipped",
+            Outcome::SkippedVerifiedFirmware(_) => "skipped_verified_firmware",
             Outcome::SkippedNeeds(_) => "skipped_needs",
             Outcome::NotAuthorized(_) => "not_authorized",
             Outcome::NotAvailable(_) => "not_available",
@@ -67,6 +81,7 @@ impl Outcome {
         match self {
             Outcome::Failed(reason)
             | Outcome::SkippedNeeds(reason)
+            | Outcome::SkippedVerifiedFirmware(reason)
             | Outcome::NotAuthorized(reason)
             | Outcome::NotAvailable(reason)
             | Outcome::UnverifiedDevice(reason)

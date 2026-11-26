@@ -10,6 +10,8 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] Rig Check requires PODxt identity before Variax checks. Practice covers a failed 2.1 blocking every Variax step and an unverified PODxt Live offering only the Variax evidence read. [#276](https://github.com/guirossibrum/VariaxWorkbench/issues/276).
+
 - [x] Rig Check Back reviews recorded results and the accepted start notice in the wizard and terminal. Returning resumes the pending prompt. Practice covers unchanged simulated MIDI counts while reviewing. [#276](https://github.com/guirossibrum/VariaxWorkbench/issues/276) · [Design](rig-check/design.md).
 
 - [x] The owner released Rig Check device and guided approvals on 2026-11-25 (#267), including Variax firmware evidence. Offline tests verify the per-step approval matrix and continued audio refusal. The first real owner run is pending. [Release notes](rig-check/release-notes.md).

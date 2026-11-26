@@ -70,7 +70,12 @@ impl Script {
 impl Operator for Script {
     fn accept_start(&mut self, notice: &str) -> bool {
         self.notices.push(notice.to_owned());
-        if notice == super::variax_evidence::NOTICE {
+        if [
+            super::variax_evidence::NOTICE,
+            super::variax_evidence::RELAY_NOTICE,
+        ]
+        .contains(&notice)
+        {
             self.accept_evidence
         } else {
             self.accept
@@ -164,7 +169,19 @@ mod tests {
         assert!(run.finished && run.start_notice_accepted);
         for step in STEPS {
             let outcome = &run.step(step.id).outcome;
-            if step.id == VARIAX_EVIDENCE || step.not_in_this_version.is_some() {
+            if step.id == VARIAX_EVIDENCE {
+                assert_eq!(
+                    outcome.reason(),
+                    Some(
+                        "Skipped: your Variax reports firmware 3.10, the tested version. This check is only for other versions."
+                    )
+                );
+                assert_eq!(outcome.code(), "skipped_verified_firmware");
+                assert_eq!(
+                    outcome.technical_note(),
+                    Some("evidence mode not entered: firmware verified")
+                );
+            } else if step.not_in_this_version.is_some() {
                 assert!(matches!(outcome, Outcome::NotAvailable(_)), "{}", step.id);
             } else {
                 assert_eq!(

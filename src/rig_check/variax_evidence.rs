@@ -17,6 +17,9 @@ use line6_devices::{
 
 pub const NOTICE: &str = "Variax firmware evidence mode. This guitar reports firmware other than 3.10. Its response to the diagnostic reads has not been verified. Keep the rig powered and connected, and leave the selector and knobs alone. Rig Check will only read the current sound. Choose Run on the evidence card to collect replies. The regular rig checks end here.";
 
+pub const RELAY_REASON: &str = "The Variax relay was verified with PODxt Live firmware 3.01. Only the Variax evidence read is offered on an unverified PODxt Live relay.";
+pub const RELAY_NOTICE: &str = "Variax firmware evidence mode. The PODxt Live reports firmware other than 3.01, so its Variax relay has not been verified. Keep both devices powered and connected. Leave the selector and knobs alone. The evidence step will ask before reading the current sound. The regular rig checks end here.";
+
 pub fn applicable(identity: Option<&Identity>) -> bool {
     identity.is_some_and(|identity| {
         identity.is_line6()
@@ -27,6 +30,14 @@ pub fn applicable(identity: Option<&Identity>) -> bool {
 }
 
 pub fn read(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    if ctx.data.podxt_verified == Some(false)
+        && let Some(identity) = ctx.data.podxt_identity.as_ref()
+    {
+        ctx.rec.show(format!(
+            "PODxt Live firmware {}. {RELAY_REASON}",
+            identity.version_text()
+        ));
+    }
     let mut chunks = Vec::new();
     let received = |reply| {
         chunks.push(reply);

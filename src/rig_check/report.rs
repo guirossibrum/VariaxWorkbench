@@ -53,10 +53,11 @@ pub fn render_plain(run: &RunRecord, written: &str) -> String {
     section(&mut out, "SUMMARY");
     let _ = writeln!(
         out,
-        "Passed {} · Failed {} · Skipped by you {} · Skipped (needs) {} · Not authorized {} · Not available {} · Unverified device {} · Stopped {} · Not reached {}",
+        "Passed {} · Failed {} · Skipped by you {} · Skipped (tested firmware) {} · Skipped (needs) {} · Not authorized {} · Not available {} · Unverified device {} · Stopped {} · Not reached {}",
         run.count("passed"),
         run.count("failed"),
         run.count("skipped"),
+        run.count("skipped_verified_firmware"),
         run.count("skipped_needs"),
         run.count("not_authorized"),
         run.count("not_available"),
@@ -81,6 +82,9 @@ pub fn render_plain(run: &RunRecord, written: &str) -> String {
             step.title,
             step.outcome.label()
         );
+        if let Some(note) = step.outcome.technical_note() {
+            let _ = writeln!(out, "       {note}");
+        }
     }
 
     section(&mut out, "COMPUTER");
@@ -211,11 +215,12 @@ pub fn json(run: &RunRecord, written: &str) -> String {
         .iter()
         .map(|step| {
             format!(
-                "{{\"id\":{},\"title\":{},\"outcome\":{},\"reason\":{},\"started\":{},\"duration_ms\":{},\"retries\":{},\"messages\":{},\"answers\":{},\"checksums\":{},\"results\":{},\"hints\":{}}}",
+                "{{\"id\":{},\"title\":{},\"outcome\":{},\"reason\":{},\"technical_note\":{},\"started\":{},\"duration_ms\":{},\"retries\":{},\"messages\":{},\"answers\":{},\"checksums\":{},\"results\":{},\"hints\":{}}}",
                 json_string(&step.id.to_string()),
                 json_string(step.title),
                 json_string(step.outcome.code()),
                 step.outcome.reason().map_or("null".into(), json_string),
+                step.outcome.technical_note().map_or("null".into(), json_string),
                 step.started.as_deref().map_or("null".into(), json_string),
                 step.duration_ms.map_or("null".into(), |d| d.to_string()),
                 step.retries,

@@ -45,6 +45,8 @@ pub struct Faults {
     pub unverified_variax: bool,
     /// Report the PODxt Live as firmware 2.00 (unverified).
     pub unverified_podxt: bool,
+    /// Suppress the PODxt identity reply without removing it from USB.
+    pub podxt_identity_silent: bool,
     /// The guitar interface is not given back to its driver after release.
     pub driver_not_returned: bool,
     /// Another program holds the guitar interface.
@@ -377,7 +379,9 @@ impl SimRig {
         match bytes {
             [0xf0, 0x7e, 0x7f, 0x06, 0x01, 0xf7] => {
                 let reply = self.podxt_identity();
-                self.reply_podxt(&reply);
+                if !self.faults.podxt_identity_silent {
+                    self.reply_podxt(&reply);
+                }
             }
             [0xf0, 0x00, 0x01, 0x0c, 0x03, 0x75, 0xf7] => {
                 let dump = Self::tone_dump(&self.podxt.playing);

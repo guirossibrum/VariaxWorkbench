@@ -105,19 +105,19 @@ owner-rig issue or card that proved the procedure.
 | 0.2 | USB devices and drivers on this computer | – | G1 | None | #239, g1.md |
 | 0.3 | Engine check (no device) | – | – | None | #238 sweep, host fixtures |
 | 1.1 | See the PODxt Live on USB | 0.2 | G1 | None | #213 |
-| 1.2 | Open and give back the guitar interface | 1.1 | G1, G2 | Read | #239, [rebind card](../variax-driver-rebind-test-card.md) |
+| 1.2 | Open and give back the guitar interface | 1.1, 2.1 | G1, G2 | Read | #239, [rebind card](../variax-driver-rebind-test-card.md) |
 | 2.1 | PODxt Live identity and firmware | 1.1 | G2 | Read | #213, [identity card](../automatic-identity-owner-test-card.md) |
 | 2.2 | PODxt Live current tone | 2.1 | G3 | Read | #220, [reads card](../podxt-live-reads-test-card.md) |
 | 2.3 | PODxt Live one stored channel | 2.2 | G5 | Read | #220 |
 | 2.4 | PODxt Live one bank (A–D) | 2.3 | G5 | Read | #220 |
 | 2.5 | PODxt Live full library backup | 2.2 | G5 | Read | #220, #222 |
-| 3.1 | Variax identity, model and firmware | 1.2 | G2 | Read | #213 |
+| 3.1 | Variax identity, model and firmware | 1.2, 2.1 | G2 | Read | #213 |
 | 3.2 | Variax current settings | 3.1 | G3 | Read | #176, #225 |
 | 3.3 | Variax full current program (35 reads) | 3.1 | G3 | Read | #234, [full-read card](../reso5-full-read-test-card.md) |
 | 3.4 | Variax all 60 presets (backup), and back | 3.3 | G5 | Read (switches preset and back) | #236, [backup card](../variax-backup-test-card.md) |
 | 3.5 | Variax one stored preset, and back | 3.4 | G5 | Read (switches preset and back) | #238, [selection card](../variax-any-selection-test-card.md) |
 | 3.6 | Variax one bank (5 presets), and back | 3.5 | G5 | Read (switches preset and back) | #236 |
-| 3.7 | Variax firmware evidence (unverified 300/600 only) | 3.1 | G2, G3 | Read | #271 |
+| 3.7 | Compatibility check for other firmware versions (Variax) | 2.1 | G1, G2, G3 | Read | #271 |
 | 4.1 | PODxt Live: change one control, read back, undo | 2.2 | G6 | Live | #221, [edit card](../podxt-live-edit-test-card.md) |
 | 4.2 | Variax: send the current preset's own bytes to the working buffer | 3.3 | G6 | Live (no audible change) | #176, [Reso-5 card](../reso5-test-card.md) |
 | 4.3 | Variax: listen to a test model, then return | 4.2, 3.4 | G6 | Live | #238 listen-list, [listen card](../variax-listen-list-test-card.md) |
@@ -136,7 +136,8 @@ owner-rig issue or card that proved the procedure.
 | 8.4 | Measure latency (not in this version) | 8.2 | G4 | Live | #265 |
 | 8.5 | Record each test model (not in this version) | 4.3, 8.3 | G4 | Live | #265 |
 
-**Run order.** Computer, identity, reads and guided checks come first. These
+**Run order.** Computer, identity, reads and guided checks come first.
+Step 2.1 precedes the guitar interface check and every Variax step. These
 are followed by live steps 4.1–4.8, saves 5.1–5.4, then the closing guard 6.2.
 The conditional evidence branch 3.7 can end the normal sequence after 3.1.
 Every applicable earlier step must pass before a save is offered. A failure
@@ -145,8 +146,12 @@ also closes any remaining live edits. See [coverage](coverage.md).
 **Unverified devices.** A Variax other than a 300/600 on firmware 3.10, or a
 PODxt other than a PODxt Live on firmware 3.01, is flagged **unverified
 device**. For a Variax 300/600 with unverified firmware, Rig Check offers
-step 3.7 after 3.1 and ends the normal sequence. For an unverified PODxt,
-live and save steps are skipped with that reason.
+step 3.7 after 3.1 and ends the normal sequence. If 2.1 fails, all Variax
+steps are skipped. If a PODxt Live reports unverified firmware, the only
+Variax step offered is 3.7 because the relay was verified on PODxt 3.01.
+The PODxt read checks may still run before the evidence branch. When the
+guitar and relay report the tested firmware, the compatibility check shows
+SKIP. This automatic skip permits live edits and saves to continue.
 
 ## Additional coverage (1.2)
 
@@ -322,10 +327,11 @@ firmware, and step 3.1 checks the Variax firmware.
 - **SEE:** The number of presets read out of five and whether the guitar
   returned to its starting preset.
 
-### 3.7 Variax firmware evidence
+### 3.7 Compatibility check for other firmware versions
 
-After 3.1 identifies a Variax 300/600 on firmware other than 3.10, an
-extra risk notice explains the diagnostic read. Accepting it opens the
+After 3.1 identifies a Variax 300/600 on firmware other than 3.10, or
+2.1 identifies a PODxt Live on firmware other than 3.01, an extra risk
+notice explains the diagnostic read. Accepting it opens the
 regular step card and its Run confirmation. Rig Check captures the
 identity, two settings replies, and 35 current-program replies. The
 report includes raw replies and available comparisons to the 3.10

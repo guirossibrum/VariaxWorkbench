@@ -240,9 +240,10 @@ fn outcome_tag(outcome: &Outcome) -> (&'static str, Color32) {
         Outcome::Passed => ("PASS", OK),
         Outcome::Failed(_) => ("FAIL", DANGER),
         Outcome::Stopped(_) => ("STOP", DANGER),
-        Outcome::SkippedByPerson | Outcome::SkippedNeeds(_) | Outcome::UnverifiedDevice(_) => {
-            ("SKIP", MUTED)
-        }
+        Outcome::SkippedByPerson
+        | Outcome::SkippedVerifiedFirmware(_)
+        | Outcome::SkippedNeeds(_)
+        | Outcome::UnverifiedDevice(_) => ("SKIP", MUTED),
         Outcome::NotAuthorized(_) | Outcome::NotAvailable(_) => ("N/A", DIM),
         Outcome::NotReached => ("-", DIM),
     }
@@ -833,7 +834,10 @@ impl Wizard {
                 "{} passed · {} failed · {} skipped · {} not authorized or not available",
                 run.count("passed"),
                 run.count("failed"),
-                run.count("skipped") + run.count("skipped_needs") + run.count("unverified_device"),
+                run.count("skipped")
+                    + run.count("skipped_verified_firmware")
+                    + run.count("skipped_needs")
+                    + run.count("unverified_device"),
                 run.count("not_authorized") + run.count("not_available")
             ))
             .size(SECTION)

@@ -266,25 +266,80 @@ mod tests {
     }
 
     #[test]
-    fn an_unverified_podxt_still_runs_its_read_steps_only() {
+    fn a_failed_podxt_identity_skips_every_variax_step() {
+        use crate::rig_check::catalogue::{STEPS, is_variax_step};
+        let mut person = Script::run_all();
+        let faults = Faults {
+            podxt_identity_silent: true,
+            ..Faults::default()
+        };
+        let (run, _, rig) = run_practice(faults, &mut person, &mut NoReport, RunData::default());
+        assert!(matches!(run.step(StepId(2, 1)).outcome, Outcome::Failed(_)));
+        for step in STEPS.iter().filter(|step| is_variax_step(step.id)) {
+            assert!(step.needs.contains(&StepId(2, 1)), "{}", step.id);
+            assert!(
+                matches!(&run.step(step.id).outcome,
+                Outcome::SkippedNeeds(reason) if reason.contains("2.1")),
+                "{}",
+                step.id
+            );
+            assert!(!person.cards.contains(&step.id), "{}", step.id);
+        }
+        assert!(
+            !rig.borrow()
+                .written
+                .iter()
+                .any(|(path, _)| *path == "VariaxViaPodxt")
+        );
+    }
+
+    #[test]
+    fn an_unverified_podxt_allows_only_read_only_variax_evidence() {
+        use crate::rig_check::catalogue::{STEPS, VARIAX_EVIDENCE, is_variax_step};
         let mut person = Script::run_all();
         let faults = Faults {
             unverified_podxt: true,
             ..Faults::default()
         };
-        let (run, _, _) = run_practice(faults, &mut person, &mut NoReport, RunData::default());
+        let (run, _, rig) = run_practice(faults, &mut person, &mut NoReport, RunData::default());
+        assert!(run.step(StepId(2, 1)).outcome.passed());
         assert!(run.step(StepId(2, 5)).outcome.passed());
-        for id in [StepId(4, 1), StepId(5, 2)] {
+        let evidence = run.step(VARIAX_EVIDENCE);
+        assert!(evidence.outcome.passed(), "{:?}", evidence.outcome);
+        assert!(
+            person
+                .notices
+                .iter()
+                .any(|notice| notice == super::super::variax_evidence::RELAY_NOTICE)
+        );
+        assert!(
+            evidence
+                .evidence
+                .iter()
+                .any(|line| line.contains("PODxt Live firmware 2.00") && line.contains("3.01"))
+        );
+        assert!(
+            evidence
+                .messages
+                .iter()
+                .any(|line| line.contains("OUT f0 00 01 0c 07 00 3c"))
+        );
+        for step in STEPS
+            .iter()
+            .filter(|step| is_variax_step(step.id) && step.id != VARIAX_EVIDENCE)
+        {
             assert!(matches!(
-                run.step(id).outcome,
+                run.step(step.id).outcome,
                 Outcome::UnverifiedDevice(_) | Outcome::SkippedNeeds(_)
             ));
-            assert!(!person.cards.contains(&id), "{id} was not offered");
+            assert!(!person.cards.contains(&step.id));
         }
         assert!(
-            run.devices
+            !rig.borrow()
+                .written
                 .iter()
-                .any(|(_, v)| v.contains("firmware 2.00, unverified"))
+                .any(|(path, _)| *path == "VariaxViaPodxt")
         );
+        assert_eq!(rig.borrow().variax.stores, 0);
     }
 }

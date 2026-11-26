@@ -208,16 +208,50 @@ impl<'a> Runner<'a> {
         (self.run, self.data)
     }
 
+    fn unverified_podxt_relay(&self) -> bool {
+        use line6_devices::family::podxt::{IDENTITY_FAMILY, PODXT_LIVE_MEMBER};
+        self.run.step(StepId(2, 1)).outcome.passed()
+            && self.data.podxt_identity.as_ref().is_some_and(|identity| {
+                identity.is_line6()
+                    && identity.family == IDENTITY_FAMILY
+                    && identity.member == PODXT_LIVE_MEMBER
+                    && self.data.podxt_verified == Some(false)
+            })
+    }
+
     fn variax_evidence_applicable(&self) -> bool {
-        self.run.step(StepId(3, 1)).outcome.passed()
-            && super::variax_evidence::applicable(self.data.variax_identity.as_ref())
+        self.unverified_podxt_relay()
+            || (self.data.podxt_verified == Some(true)
+                && self.run.step(StepId(3, 1)).outcome.passed()
+                && super::variax_evidence::applicable(self.data.variax_identity.as_ref()))
     }
 
     fn run_variax_evidence(&mut self) {
-        if self.op.accept_start(super::variax_evidence::NOTICE) {
+        let relay = self.unverified_podxt_relay();
+        let notice = if relay {
+            super::variax_evidence::RELAY_NOTICE
+        } else {
+            super::variax_evidence::NOTICE
+        };
+        if self.op.accept_start(notice) {
             self.step(VARIAX_EVIDENCE);
         } else {
             self.finish(VARIAX_EVIDENCE, Outcome::SkippedByPerson, None, None);
+        }
+        if relay {
+            for &id in RUN_ORDER
+                .iter()
+                .filter(|&&id| catalogue::is_variax_step(id) && id != VARIAX_EVIDENCE)
+            {
+                if matches!(self.run.step(id).outcome, Outcome::NotReached) {
+                    self.finish(
+                        id,
+                        Outcome::UnverifiedDevice(super::variax_evidence::RELAY_REASON.into()),
+                        None,
+                        None,
+                    );
+                }
+            }
         }
     }
 
@@ -333,11 +367,6 @@ impl<'a> Runner<'a> {
                 crate::MAC_CONNECTION_UNAVAILABLE.into(),
             ));
         }
-        if step.id == VARIAX_EVIDENCE && !self.variax_evidence_applicable() {
-            return Some(Outcome::NotAvailable(
-                "Available only for unverified Variax 300/600 firmware.".into(),
-            ));
-        }
         if let Some(reason) = step.not_in_this_version {
             return Some(Outcome::NotAvailable(reason.into()));
         }
@@ -346,7 +375,12 @@ impl<'a> Runner<'a> {
                 .iter()
                 .copied()
                 .take_while(|&id| id != step.id)
-                .filter(|&id| id != VARIAX_EVIDENCE || self.variax_evidence_applicable())
+                .filter(|&id| {
+                    !matches!(
+                        self.run.step(id).outcome,
+                        Outcome::SkippedVerifiedFirmware(_)
+                    )
+                })
         };
         if matches!(step.risk, Risk::Live | Risk::Save)
             && let Some(id) =
@@ -374,6 +408,20 @@ impl<'a> Runner<'a> {
                 "Needs {}, which did not pass.",
                 missing.join(", ")
             )));
+        }
+        if step.id == VARIAX_EVIDENCE {
+            if self.data.podxt_verified == Some(true) && self.data.variax_verified == Some(true) {
+                return Some(Outcome::verified_firmware_skip("Variax", "3.10"));
+            }
+            if !self.variax_evidence_applicable() {
+                return Some(Outcome::NotAvailable(
+                    "Available for unverified Variax 300/600 firmware or an unverified PODxt Live relay.".into(),
+                ));
+            }
+        } else if catalogue::is_variax_step(step.id) && self.data.podxt_verified != Some(true) {
+            return Some(Outcome::UnverifiedDevice(
+                super::variax_evidence::RELAY_REASON.into(),
+            ));
         }
         if self.run.mode == Mode::Real
             && let Err(reason) = approvals::real_device_check(step.id)
