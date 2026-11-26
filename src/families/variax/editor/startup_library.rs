@@ -2,6 +2,7 @@ use super::{
     EditorDefaults, EditorDocument, EditorServices, FAMILY, FileFilter, GuitarPending,
     OpenDestination, Path, PathBuf, PickRequest, ProductFamily, VariaxEditor, egui, tabs,
 };
+use crate::editor::detection::DeviceKey;
 use line6_devices::{
     backup::utc,
     family::variax::{BANKS, PRESETS_PER_BANK},
@@ -19,17 +20,31 @@ use variax_workbench::{
     variax_library::{BackupSource, CompletedVariaxBackup, LibraryPreferences},
 };
 
-#[derive(Clone, Copy)]
 pub(super) enum LibraryOrigin {
     Download(SystemTime),
+    // The detection key identifies a live attachment within this process.
+    // Saving the bundle preserves its historical source and time only.
+    #[cfg(feature = "usb")]
+    AttachedDownload(SystemTime, DeviceKey),
     Backup(BackupSource, SystemTime),
     Factory,
 }
 
 impl LibraryOrigin {
-    pub(super) fn label(self) -> String {
+    pub(super) fn is_guitar_library(&self) -> bool {
+        !matches!(self, Self::Factory)
+    }
+
+    fn label(&self, attachment: Option<&DeviceKey>) -> String {
         let (source, completed_at) = match self {
-            Self::Download(time) => ("Downloaded from guitar", time),
+            Self::Download(time) => ("Saved guitar download", time),
+            #[cfg(feature = "usb")]
+            Self::AttachedDownload(time, key) if Some(key) == attachment => {
+                let date = library_date(*time);
+                return format!("Downloaded on this connection · {date}");
+            }
+            #[cfg(feature = "usb")]
+            Self::AttachedDownload(time, _) => ("Saved guitar download", time),
             Self::Backup(BackupSource::DeviceCheck, time) => ("Device check backup", time),
             Self::Backup(BackupSource::FullBackup, time) => ("Full Variax backup", time),
             Self::Backup(BackupSource::ImportedBackup, time) => ("Imported backup", time),
@@ -37,11 +52,20 @@ impl LibraryOrigin {
                 return "Factory presets from your Variax 3.10 firmware archive".into();
             }
         };
-        let date = completed_at
-            .duration_since(UNIX_EPOCH)
-            .map_or_else(|_| "before 1970 UTC".into(), |time| utc(time.as_secs()).1);
-        format!("{source} · {date}")
+        let date = library_date(*completed_at);
+        let provenance = if attachment.is_some() {
+            " · Source guitar unverified for this connection"
+        } else {
+            ""
+        };
+        format!("{source} · {date}{provenance}")
     }
+}
+
+fn library_date(completed_at: SystemTime) -> String {
+    completed_at
+        .duration_since(UNIX_EPOCH)
+        .map_or_else(|_| "before 1970 UTC".into(), |time| utc(time.as_secs()).1)
 }
 
 fn snapshots(preferences: &Path) -> PathBuf {
@@ -169,6 +193,16 @@ impl LibraryImport {
 }
 
 impl VariaxEditor {
+    pub(super) fn library_label(&self) -> Option<String> {
+        #[cfg(feature = "usb")]
+        let attachment = self.connected_library_attachment();
+        #[cfg(not(feature = "usb"))]
+        let attachment = None;
+        self.library_origin
+            .as_ref()
+            .map(|origin| origin.label(attachment))
+    }
+
     pub(super) fn load_initial_library(&mut self, defaults: &EditorDefaults) {
         #[cfg(test)]
         if defaults.preferences.is_none() {
@@ -492,6 +526,10 @@ mod tests {
         assert_eq!(receipt.identity.firmware, "3.10");
         assert_eq!(receipt.identity.product_id, 0x0007_0004);
         assert_eq!(receipt.source, BackupSource::ImportedBackup);
+        super::super::refresh::tests::attach(app.variax_mut());
+        let label = app.variax().library_label().unwrap();
+        assert!(label.starts_with("Imported backup · "));
+        assert!(label.ends_with("Source guitar unverified for this connection"));
         let mut reopened = VariaxEditor::new(&defaults);
         reopened.load_initial_library(&defaults);
         assert_eq!(
@@ -550,7 +588,7 @@ mod tests {
             "completed_at": backup_time,
             "identity": BackupIdentity {
                 device: "Synthetic Variax".into(), firmware: "3.10".into(),
-                usb_path: "test port".into(), product_id: 0x0007_0004,
+                usb_path: "8-2.1".into(), product_id: 0x0007_0004,
             },
             "manifest_verified_files": verified_manifest_entries(&folder).unwrap().len(),
         }))
@@ -564,6 +602,14 @@ mod tests {
             matches!(editor.library_origin, Some(LibraryOrigin::Backup(BackupSource::DeviceCheck, time)) if time == backup_time)
         );
         assert_eq!(editor.document.as_ref().unwrap().preset().name(), "Twin");
+        use crate::editor::FamilyTab;
+        let matching_port = super::super::refresh::tests::verified_tab();
+        editor.observe_device(Some(&matching_port));
+        assert_eq!(
+            editor.library_label().unwrap(),
+            "Device check backup · 1970-01-01 00:00:20 UTC · Source guitar unverified for this connection"
+        );
+        editor.observe_device(None);
 
         snapshot
             .apply(|preset| preset.rename("Newer download"))
@@ -588,8 +634,8 @@ mod tests {
             "Newer download"
         );
         assert_eq!(
-            editor.library_origin.unwrap().label(),
-            "Downloaded from guitar · 1970-01-01 00:00:30 UTC"
+            editor.library_label().unwrap(),
+            "Saved guitar download · 1970-01-01 00:00:30 UTC"
         );
         assert_eq!(fs::read_dir(snapshots(preferences)).unwrap().count(), 3);
         assert_eq!(synthetic_backup::snapshot(&folder), before);

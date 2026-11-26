@@ -332,8 +332,8 @@ impl VariaxEditor {
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 ui.spacing_mut().item_spacing.y = 3.0;
-                if let Some(origin) = self.library_origin {
-                    ui.label(origin.label());
+                if let Some(label) = self.library_label() {
+                    ui.label(label);
                 }
                 let import = self.bank_strip(ui, available);
                 self.model_details(ui, available);
@@ -574,10 +574,10 @@ impl VariaxEditor {
                     ui.memory_mut(|memory| memory.request_focus(egui::Id::new("variax-model-name")))
                 }
                 SlotCommand::Copy | SlotCommand::Paste => {
-                    let guitar_library = matches!(
-                        self.library_origin,
-                        Some(super::LibraryOrigin::Backup(..) | super::LibraryOrigin::Download(..))
-                    );
+                    let guitar_library = self
+                        .library_origin
+                        .as_ref()
+                        .is_some_and(super::LibraryOrigin::is_guitar_library);
                     let document = self.document.as_mut().expect("open library");
                     let (bank, slot) = document.selection().expect("selected model");
                     let result = document.select(position.0, position.1).and_then(|()| {
