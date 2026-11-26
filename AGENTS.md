@@ -193,12 +193,15 @@ Update it only when user-visible capability changes.
 GitHub issues and the VariaxWorkbench project are the work-tracking source of
 truth. Do not recreate or use TODO.md. The README summarizes user-visible
 capabilities. The linked documentation records verification and pending work.
-Respect native dependencies and keep at most one implementation issue In Progress
+Respect native dependencies and keep at most one active implementation assignment
 per lane. Aim for one disposable checkout per active lane, about five for this
 project. Add a checkout only while there is a specific task or an owner-run
 procedure that needs it. Once reviewed and tested, integrate durable source
-changes into `origin/master`. An open issue does not reserve an old checkout
-whose implementation has already merged.
+changes into `origin/master`. Once that assigned implementation has been
+reviewed, merged and verified, remove its disposable worktree and free the lane
+immediately. Owner acceptance still tracked on that open issue, in GitHub or
+Owner Inbox, does not reserve that checkout or that lane. Incomplete or
+unmerged implementation still reserves its lane.
 Read `docs/parallel-work.md` for current issue ownership, the delivery and
 cleanup procedure, and the free-lane rule. Do not duplicate another agent's
 reserved issues.
@@ -252,12 +255,22 @@ A Gatekeeper reviews the exact head against each acceptance criterion and this
 file. It then merges the branch onto current `origin/master` in a throwaway
 worktree, runs the checks listed under Implementation (plus the crate and probe
 checks when touched), and pushes that tested result to `origin/master`. It also
-updates the issues and the ledgers. Assign a different issue only after
-the lane's current assignment is complete and its reviewed delivery has
-merged and been verified on `origin/master`. If work is blocked or partial,
-keep it assigned and tell the owner what remains and what will resume it.
-Use the free-lane rule in `docs/parallel-work.md`. A Herdr idle or completion
-badge asks the Gatekeeper to verify the delivery.
+updates the issues and the ledgers. **Lane release (owner decision 2026-11-26,
+#299; clarifies #296).** Once the assigned implementation itself has been
+reviewed, merged and verified, remove its disposable worktree and free the lane
+immediately, even if GitHub or Owner Inbox still tracks acceptance. Owner
+tests, package acceptance and later feedback may keep the issue open.
+Incomplete or unmerged implementation stays assigned. Tell the owner what
+remains and what will resume it. The next implementation starts from current
+`origin/master` in a new worktree on any eligible free lane, through the
+installed Herdr Dispatcher and a fresh chat with `/new`. One lane has one
+active implementation assignment. Owner acceptance and runtime decisions belong
+on the issue and in Owner Inbox. They are not a reservation on a completed
+delivery. Exact-head review, the merge checks above, the hardware boundary and
+the publication rules in this file stay in force. Use the free-lane rule in
+`docs/parallel-work.md`. A Herdr idle or completion badge asks the Gatekeeper
+to verify the delivery. This does not change the completion watcher, and it
+does not revive the retired agent-coordinator dispatcher.
 
 After committing and checking the worktree, the lane agent leaves it. Its final
 report must give the absolute worktree path and explicitly confirm the agent has
@@ -266,16 +279,24 @@ files to keep, and any shared build path in use. If the agent cannot leave safel
 it reports the reason and the worktree stays in place.
 
 If review needs changes, the Gatekeeper sends the agent back to the same
-worktree. After verifying the delivery is on `origin/master`, the Gatekeeper
-removes that individual worktree with `git worktree remove` without force,
-once the lane has left and no process is using it. Move evidence and other
-durable local files into the main checkout's ignored `backups/` area and report
-their new paths. Discard verified disposable build output and checkout-only
-scratch work. Shared build caches belong under the main checkout's ignored
-`target/shared-builds/` directory. Move an older borrowed cache only after its
-users have stopped and can switch to the new path.
+worktree. After the assigned implementation is reviewed, merged and verified
+on `origin/master`, and the lane has left and no process is using the worktree,
+the Gatekeeper removes that disposable worktree immediately with
+`git worktree remove` without force. Acceptance still open in GitHub or Owner
+Inbox does not keep it. Move evidence and other durable local files into the
+main checkout's ignored `backups/` area and report their new paths. Discard
+verified disposable build output and checkout-only scratch work. Shared build
+caches belong under the main checkout's ignored `target/shared-builds/`
+directory. Move an older borrowed cache only after its users have stopped and
+can switch to the new path.
 
-Keep active, dirty, genuinely unfinished, and protected owner-test worktrees.
+Keep a worktree whose implementation is incomplete or unmerged. Also keep
+active, genuinely unfinished, and protected owner-test worktrees. A protected
+owner-test checkout is the separate checkout for that owner-run procedure.
+Removing the disposable worktree of a reviewed, merged and verified
+implementation leaves that procedure checkout in place and frees the lane.
+Sort private evidence out of a dirty completed worktree before removing it,
+as `docs/parallel-work.md` describes.
 For a historical checkout, check the associated GitHub issue, merge ancestry,
 unique changes, and conflicts with current work. A clean, obsolete experiment
 may be retired after confirming it has no remaining purpose and retaining its
