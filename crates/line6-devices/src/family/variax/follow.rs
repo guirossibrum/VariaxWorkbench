@@ -17,6 +17,8 @@ pub enum FollowUpdate {
     Volume(u8),
     /// Live CC 79 value (0–127). This carries no saved-tone mode change.
     TonePosition(u8),
+    /// Live CC 84 tuning override. This carries no preset change.
+    TuningOverride(bool),
     /// The bank and selector position decoded from the incoming program.
     ProgramChange(Preset),
     Clip,
@@ -144,6 +146,9 @@ fn decode(event: &Event) -> Option<FollowUpdate> {
             [status, 7, value] if status & 0xf0 == 0xb0 => Some(FollowUpdate::Volume(*value)),
             [status, 79, value] if status & 0xf0 == 0xb0 => {
                 Some(FollowUpdate::TonePosition(*value))
+            }
+            [status, 84, value] if status & 0xf0 == 0xb0 => {
+                Some(FollowUpdate::TuningOverride(*value != 0))
             }
             [status, program] if status & 0xf0 == 0xc0 => Preset::all()
                 .find(|preset| preset.program_number() == *program)

@@ -845,6 +845,18 @@ impl VariaxEditor {
             show_off,
             egui::Label::new("Alternate tuning is off: these offsets are saved but not played."),
         );
+        #[cfg(feature = "usb")]
+        {
+            let label = self.follow.tuning_label();
+            if self.follow.active() || label.is_some() {
+                ui.add_visible(
+                    label.is_some(),
+                    egui::Label::new(
+                        egui::RichText::new(label.unwrap_or("Guitar: alternate tuning off")).weak(),
+                    ),
+                );
+            }
+        }
         let output = ui
             .horizontal_top(|ui| {
                 let left = ui.available_rect_before_wrap().left();

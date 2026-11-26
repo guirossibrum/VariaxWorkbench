@@ -26,6 +26,7 @@ struct Snapshot {
     program: Option<(Preset, Instant)>,
     volume: Option<u8>,
     tone: Option<u8>,
+    tuning_override: Option<bool>,
     clip_until: Option<Instant>,
     dsp_overload: bool,
     queue_overflow: bool,
@@ -45,6 +46,7 @@ impl Snapshot {
             FollowUpdate::Volume(value) if accept_controller => self.volume = Some(value),
             FollowUpdate::TonePosition(value) if accept_controller => self.tone = Some(value),
             FollowUpdate::Volume(_) | FollowUpdate::TonePosition(_) => {}
+            FollowUpdate::TuningOverride(enabled) => self.tuning_override = Some(enabled),
             FollowUpdate::Clip => self.clip_until = Some(now + CLIP_PULSE),
             FollowUpdate::DspOverload => self.dsp_overload = true,
             FollowUpdate::MidiQueueOverflow => self.queue_overflow = true,
@@ -95,6 +97,22 @@ impl Follow {
 
     pub(super) fn busy(&self) -> bool {
         self.worker.is_some()
+    }
+
+    pub(super) fn tuning_label(&self) -> Option<&'static str> {
+        self.snapshot.tuning_override.map(|enabled| {
+            if enabled {
+                "Guitar: alternate tuning on"
+            } else {
+                "Guitar: alternate tuning off"
+            }
+        })
+    }
+
+    pub(super) fn active(&self) -> bool {
+        self.worker
+            .as_ref()
+            .is_some_and(|worker| !worker.stop.load(Ordering::Relaxed))
     }
 
     pub(super) fn take_device_event(&mut self) -> Option<DeviceEvent> {
@@ -222,7 +240,7 @@ impl Follow {
             self.consumed_program = Some(program);
             return None;
         }
-        let delay = if document.slot_is_dirty(bank, slot) {
+        let delay = if document.slot_is_unsent(bank, slot) {
             EDITED_SLOT_SETTLE
         } else {
             SLOT_SETTLE
@@ -244,7 +262,7 @@ impl Follow {
             .worker
             .as_ref()
             .is_some_and(|worker| worker.stop.load(Ordering::Relaxed));
-        let mut following = self.busy() && !stopping;
+        let mut following = self.active();
         ui.horizontal_wrapped(|ui| {
             let enabled = following
                 || (!stopping
@@ -611,6 +629,12 @@ mod tests {
             .apply(|preset| preset.rename("Edited target"))
             .unwrap();
         document.select(0, 0).unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        document
+            .save_copy(&folder.path().join("edited.vwb"))
+            .unwrap();
+        assert!(!document.slot_is_dirty(2, 2));
+        assert!(document.slot_is_unsent(2, 2));
         let next = now + Duration::from_secs(2);
         follow.snapshot.receive(
             FollowUpdate::ProgramChange(Preset::new(2, 2).unwrap()),
@@ -624,5 +648,49 @@ mod tests {
             follow.take_settled_slot(&document, next + EDITED_SLOT_SETTLE, &ctx),
             Some((2, 2))
         );
+    }
+
+    #[test]
+    fn tuning_override_renders_both_states_without_changing_the_saved_tuning() {
+        let (ctx, mut app) = app();
+        let editor = app.variax_mut();
+        let document = editor.document.as_ref().unwrap();
+        let before = document.as_bytes().to_vec();
+        let undo = document.can_undo();
+
+        fn count(shape: &egui::Shape, label: &str) -> usize {
+            match shape {
+                egui::Shape::Text(text) => usize::from(text.galley.text() == label),
+                egui::Shape::Vec(shapes) => shapes.iter().map(|shape| count(shape, label)).sum(),
+                _ => 0,
+            }
+        }
+
+        for (enabled, expected) in [
+            (true, "Guitar: alternate tuning on"),
+            (false, "Guitar: alternate tuning off"),
+        ] {
+            editor
+                .follow
+                .snapshot
+                .receive(FollowUpdate::TuningOverride(enabled), Instant::now());
+            let output = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| editor.fretboard(ui, true));
+            });
+            assert_eq!(
+                output
+                    .shapes
+                    .iter()
+                    .map(|item| count(&item.shape, expected))
+                    .sum::<usize>(),
+                1,
+            );
+            let document = editor.document.as_ref().unwrap();
+            assert_eq!(document.as_bytes(), before);
+            assert_eq!(document.can_undo(), undo);
+        }
+
+        editor.follow.stop();
+        assert_eq!(editor.follow.tuning_label(), None);
     }
 }

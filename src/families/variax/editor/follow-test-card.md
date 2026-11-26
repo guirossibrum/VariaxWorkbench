@@ -24,3 +24,25 @@ that Follow preserves it.
 
 Follow opens the verified attachment for a G3 read session. It sends no
 preset changes, preset edits or store commands.
+
+## Tuning override evidence
+
+- **Static fact.** Workbench 1.75 `L6VariaxMIDITranscoder.DecodeCCParamChange`
+  passes CC 84 to `HandleTuningOverride(value != 0)`. The
+  `L6VariaxPatchManager.OnSysex` handler for `03 07 0D 02` defines subtype 0
+  for program and subtype 1 for tone. It provides no tuning-override subtype.
+- **Observed.** The existing Variax 600 knob captures contain CC 7 and CC 79.
+  They contain no confirmed guitar-side CC 84. The PODxt Live's own CC 84
+  is assigned to AMP/COMP in the PODxt controller map.
+- **Static fact.** The traced callers of the 3.10 controller-send helper
+  at `P:0x14A1D` pass 7 or 79. The legacy image returns without acting on
+  the override query, and its supported tuning path is per-preset.
+- **Inference.** No ordinary Variax 600 control is expected to emit tuning
+  override over this route. **Unknown.** The physical source, if any, of a
+  tuning-override CC 84 on the Variax 600/PODxt Live rig remains unidentified.
+- **Offline check.** Fake Follow input with CC 84 value 127 and then 0
+  displays “Guitar: alternate tuning on” and then “…off.” The saved
+  tuning, file bytes and undo history stay unchanged.
+
+See the [Variax 300/600 capability audit](../../../../docs/variax-300-600-capabilities.md)
+for the traced legacy tuning path.

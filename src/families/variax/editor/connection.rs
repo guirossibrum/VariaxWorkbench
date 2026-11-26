@@ -29,6 +29,10 @@ impl VariaxEditor {
         has_download: bool,
     ) -> Option<egui::Response> {
         ui.weak(self.guitar_connection_status());
+        #[cfg(feature = "usb")]
+        if self.follow.active() {
+            ui.weak("Following the guitar");
+        }
         if has_download || self.connection_status.is_none() {
             return None;
         }

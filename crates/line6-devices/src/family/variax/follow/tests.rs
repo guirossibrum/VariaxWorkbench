@@ -416,3 +416,39 @@ fn malformed_lengths_and_unknown_frames_are_logged_and_ignored() {
         unknown.iter().map(|frame| hex(frame)).collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn follows_cc84_on_and_off_without_guessing_a_relay_subtype() {
+    let frames = vec![
+        vec![0xb0, 84, 127, 84, 0],
+        vec![0xf0, 0, 1, 0x0c, 3, 7, 13, 2, 2, 0, 0, 0, 1, 0xf7],
+        notice(4, 0x74),
+    ];
+
+    let stopped = Cell::new(false);
+    let mut received = Vec::new();
+    let mut quiet = Quiet;
+    let mut session = Session::new(script(frames), &READS, &mut quiet);
+    follow_on(
+        &mut session,
+        None,
+        || stopped.get(),
+        |update| {
+            received.push(update);
+            if update == FollowUpdate::MidiQueueOverflow {
+                stopped.set(true);
+            }
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        received,
+        [
+            FollowUpdate::TuningOverride(true),
+            FollowUpdate::TuningOverride(false),
+            FollowUpdate::MidiQueueOverflow,
+        ]
+    );
+    assert_eq!(session.link.writes, WRITES);
+    session.link.assert_finished();
+}
