@@ -90,7 +90,8 @@ procedure. A completion signal or pane report is evidence for review and
 cannot grant permission for a hardware run, release, or skipped check.
 A Herdr idle or completion badge is the signal to verify that delivery.
 Merge and approval come from review of the exact head. After the verified
-merge, or when that checkpoint is blocked, follow [Free lanes](#free-lanes).
+merge, follow [Free lanes](#free-lanes). At a blocked checkpoint, report
+what remains and keep the issue with its lane.
 If a decision or milestone needs the owner, use production Owner Inbox and
 pause the dependent action. Continue unrelated authorized reviews. Record
 the outcome where appropriate before resuming the dependent work. When
@@ -101,28 +102,24 @@ Keep only one active Gatekeeper route per project. See the
 
 ## Free lanes
 
-The Gatekeeper checks for a free lane at every verified delivery or merge,
-and at every blocked checkpoint. A lane is free when its delivery is
-reviewed, merged, and verified on `origin/master`. A lane is also free when
-a completed research checkpoint or an owner decision blocks the dependent
-work and the lane can take an independent issue. A Herdr idle or completion
-badge asks the Gatekeeper to read the report and verify that delivery. The
-badge leaves merge, approval, hardware, release, and review boundaries as
-they stand. It does not assign the next issue.
+Check the lane after each delivery. A lane is free for a different job only
+when its current assignment is complete and its reviewed delivery has
+merged and been verified on `origin/master`. A Herdr idle or completion
+badge is a signal to verify the delivery.
 
-At each of those checkpoints, select one current open issue the lane can
-act on and assign it promptly. Read the live GitHub description, acceptance
-criteria, recent decisions, current `origin/master`, dependencies, file
-ownership, and active assignments. Correct stale criteria on the issue
-before sending the task. Prefer existing open work that moves an issue
-toward completion and fits that lane's ownership in the table above.
+If the assignment is partial or blocked, keep it with the lane. Record what
+remains, the specific blocker, and what will resume work on its GitHub issue
+and in the Gatekeeper handoff. Tell the owner before leaving it pending.
+Use Owner Inbox when the owner needs to decide, approve, review, or run a
+test. Continue work that can advance the assigned issue within its scope.
 
-Keep one active implementation issue per lane. The lane's other open issues
-stay unassigned while that issue is in progress. When no ready issue fits,
-record the concrete blocker on the current issue or in the handoff and
-wait. Owner decisions, missing dependencies, and the hardware, release, and
-review boundaries stay in force. This check adds no branch, merge, push, or
-Herdr completion-watcher change.
+For a free lane, select one current open issue that fits its ownership and
+assign it promptly. Check the live description, acceptance criteria, recent
+decisions, current `origin/master`, dependencies, and active assignments.
+Correct stale criteria on GitHub before sending the task. Prefer existing
+open work ready for implementation. Keep one active implementation issue
+per lane. If no ready issue fits, record the concrete blocker. Preserve
+the existing review, hardware, and release boundaries.
 
 ## Lane reply template
 

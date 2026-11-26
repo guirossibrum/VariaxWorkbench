@@ -252,12 +252,12 @@ A Gatekeeper reviews the exact head against each acceptance criterion and this
 file. It then merges the branch onto current `origin/master` in a throwaway
 worktree, runs the checks listed under Implementation (plus the crate and probe
 checks when touched), and pushes that tested result to `origin/master`. It also
-updates the issues and the ledgers. When that verification is done, or when a
-completed research checkpoint or an owner decision blocks the work that lane
-was doing, the lane is free. Select its next ready issue and assign it
-promptly, using the free-lane rule in `docs/parallel-work.md`. A Herdr idle
-or completion badge asks the Gatekeeper to verify the delivery. Merge and
-approval remain the review of the exact head.
+updates the issues and the ledgers. Assign a different issue only after
+the lane's current assignment is complete and its reviewed delivery has
+merged and been verified on `origin/master`. If work is blocked or partial,
+keep it assigned and tell the owner what remains and what will resume it.
+Use the free-lane rule in `docs/parallel-work.md`. A Herdr idle or completion
+badge asks the Gatekeeper to verify the delivery.
 
 After committing and checking the worktree, the lane agent leaves it. Its final
 report must give the absolute worktree path and explicitly confirm the agent has
