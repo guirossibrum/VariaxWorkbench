@@ -10,6 +10,7 @@ type GuidanceObserver = Box<dyn FnMut(StepId, &str)>;
 /// Answers every card with `default`, except listed steps.
 pub struct Script {
     pub accept: bool,
+    pub start_decisions: std::collections::VecDeque<bool>,
     pub default: Decision,
     pub overrides: Vec<(StepId, Decision)>,
     /// Ask to stop while this step runs.
@@ -51,6 +52,7 @@ impl Script {
     pub fn run_all() -> Self {
         Self {
             accept: true,
+            start_decisions: Default::default(),
             default: Decision::Run,
             overrides: Vec::new(),
             stop_during: None,
@@ -102,7 +104,7 @@ impl Operator for Script {
         {
             self.accept_evidence
         } else {
-            self.accept
+            self.start_decisions.pop_front().unwrap_or(self.accept)
         }
     }
 

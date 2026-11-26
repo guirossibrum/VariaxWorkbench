@@ -128,19 +128,50 @@ impl SavedStep {
 
 /// The most recently saved local report with its original companion filename.
 pub fn last_report(dir: &Path) -> Option<PathBuf> {
+    report_candidates(dir, false).max().map(|(_, path)| path)
+}
+
+fn report_candidates(
+    dir: &Path,
+    allow_collected: bool,
+) -> impl Iterator<Item = (Option<std::time::SystemTime>, PathBuf)> {
     std::fs::read_dir(dir)
-        .ok()?
+        .into_iter()
+        .flatten()
         .filter_map(Result::ok)
-        .filter_map(|entry| {
+        .filter_map(move |entry| {
             let path = entry.path();
             let name = path.file_name()?.to_str()?;
-            (name.starts_with("rig-check-")
+            ((name.starts_with("rig-check-") || (allow_collected && name == "latest.txt"))
                 && path.extension().is_some_and(|ext| ext == "txt")
+                && path.is_file()
                 && path.with_extension("state").is_file())
             .then(|| (entry.metadata().ok().and_then(|m| m.modified().ok()), path))
         })
-        .max()
-        .map(|(_, path)| path)
+}
+
+/// Find the newest compatible run across both Mac locations. Keep the newest
+/// candidate available for its preview diagnostic if none can be continued.
+pub fn last_mac_report(dir: &Path, legacy: &Path, mode: Option<Mode>) -> Option<PathBuf> {
+    let mut candidates: Vec<_> = mac_report_candidates(dir, legacy).collect();
+    candidates.sort_unstable_by(|a, b| b.cmp(a));
+    candidates
+        .iter()
+        .find(|(_, path)| open(path).is_ok_and(|plan| mode.is_none_or(|mode| mode == plan.mode)))
+        .or_else(|| candidates.first())
+        .map(|(_, path)| path.clone())
+}
+
+#[cfg(feature = "gui")]
+pub(super) fn has_mac_reports(dir: &Path, legacy: &Path) -> bool {
+    mac_report_candidates(dir, legacy).next().is_some()
+}
+
+fn mac_report_candidates(
+    dir: &Path,
+    legacy: &Path,
+) -> impl Iterator<Item = (Option<std::time::SystemTime>, PathBuf)> {
+    report_candidates(dir, true).chain(report_candidates(legacy, true))
 }
 
 pub struct Plan {
@@ -219,6 +250,38 @@ impl Plan {
             );
         }
         Ok(lock)
+    }
+
+    pub(super) fn is_selected_checkpoint(&self, checkpoint: &Path) -> Result<bool, String> {
+        let Ok(checkpoint) = checkpoint.canonicalize() else {
+            return Ok(false);
+        };
+        let is_checkpoint_for = |report: &Path| {
+            report
+                .with_extension("state")
+                .canonicalize()
+                .is_ok_and(|path| path == checkpoint)
+        };
+        if is_checkpoint_for(&self.source) {
+            return Ok(true);
+        }
+        // A collected report can share the original basename's lock. Skip its
+        // original companion only when it contains the same checkpoint.
+        if self.original_path != self.source && is_checkpoint_for(&self.original_path) {
+            if std::fs::read(checkpoint)
+                .is_ok_and(|bytes| sha256_hex(&bytes) == self.checkpoint_sha256)
+            {
+                return Ok(true);
+            }
+            return Err("The collected report's checkpoint differs from the original. Verify the interrupted run using the original report.".into());
+        }
+        let alias = self.source.with_file_name("latest.txt");
+        Ok(is_checkpoint_for(&alias)
+            && open(&alias).is_ok_and(|plan| {
+                plan.original_path == self.original_path
+                    && plan.report_sha256 == self.report_sha256
+                    && plan.checkpoint_sha256 == self.checkpoint_sha256
+            }))
     }
 
     pub(super) fn restore_ready(&self, state: &RigState) -> Result<(), String> {

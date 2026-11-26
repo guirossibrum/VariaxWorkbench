@@ -1303,6 +1303,7 @@ fn save_dialog(report: &str) -> String {
 
 struct Launch {
     dir: PathBuf,
+    legacy_dir: Option<PathBuf>,
     requested_mode: Option<Mode>,
     show_modes: bool,
     report: Option<PathBuf>,
@@ -1338,11 +1339,18 @@ impl Launch {
                 self.show_modes = true;
                 mode = self.requested_mode;
             }
+            let legacy = self.legacy_dir.as_deref();
             let last = resume::last_report(&self.dir);
-            if button(ui, "Open last report", last.is_some()).clicked()
-                && let Some(last) = last
-            {
-                self.open(last);
+            let has_report =
+                last.is_some() || legacy.is_some_and(|dir| resume::has_mac_reports(&self.dir, dir));
+            if button(ui, "Open last report", has_report).clicked() {
+                let selected = match legacy {
+                    Some(dir) => resume::last_mac_report(&self.dir, dir, self.requested_mode),
+                    None => last,
+                };
+                if let Some(path) = selected {
+                    self.open(path);
+                }
             }
             if button(ui, "Choose report…", true).clicked()
                 && let Some(path) = open_report_dialog(&self.dir)
@@ -1350,6 +1358,12 @@ impl Launch {
                 self.open(path);
             }
         });
+        if let Some(dir) = self.legacy_dir.as_deref().filter(|dir| dir.is_dir())
+            && button(ui, "Browse Application Support…", true).clicked()
+            && let Some(path) = open_report_dialog(dir)
+        {
+            self.open(path);
+        }
         if let Some(path) = &self.report {
             ui.add_space(SPACE_16);
             ui.label(path.display().to_string());
@@ -1412,8 +1426,13 @@ fn open_report_dialog(dir: &Path) -> Option<PathBuf> {
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = dir;
-        crate::macos_dialog::Dialog::Open.select()
+        use crate::macos_dialog::Dialog;
+        if std::fs::create_dir_all(dir).is_ok()
+            && let Ok(dir) = dir.canonicalize()
+        {
+            return Dialog::OpenIn(dir).select();
+        }
+        Dialog::Open.select()
     }
     #[cfg(not(target_os = "macos"))]
     rfd::FileDialog::new()
@@ -1433,6 +1452,7 @@ pub struct App {
 impl App {
     pub fn new(
         dir: PathBuf,
+        legacy_dir: Option<PathBuf>,
         requested_mode: Option<Mode>,
         start: impl FnOnce(Mode, Option<Plan>, ChannelOperator) + Send + 'static,
     ) -> Self {
@@ -1440,6 +1460,7 @@ impl App {
             wizard: Wizard {
                 launch: Some(Launch {
                     dir,
+                    legacy_dir,
                     requested_mode,
                     show_modes: false,
                     report: None,

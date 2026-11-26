@@ -208,7 +208,7 @@ fn confirm_manual_recovery(
         Ok(())
     } else {
         Err(format!(
-            "Start new ended before the pending rig recovery was confirmed. {reason}"
+            "The pending rig recovery was not confirmed. {reason}"
         ))
     }
 }
@@ -217,7 +217,15 @@ pub(super) fn before_new_run(
     port: &mut dyn super::port::RigPort,
     op: &mut dyn Operator,
     dir: &Path,
+    legacy_dir: Option<&Path>,
 ) -> Result<(), String> {
+    // The old Mac location stays in place. Require manual verification there
+    // without running a restore that would rewrite its original checkpoint.
+    if let Some(legacy_dir) = legacy_dir
+        && legacy_dir.canonicalize().ok() != dir.canonicalize().ok()
+    {
+        confirm_pending(op, legacy_dir, port.mode(), None)?;
+    }
     for (path, state) in pending(dir) {
         let report = path.with_extension("txt");
         if super::report::saved_mode(&report).is_some_and(|mode| mode != port.mode()) {
@@ -231,12 +239,7 @@ pub(super) fn before_new_run(
             Err(reason) => return confirm_manual_recovery(op, &report, &reason),
         };
         let _lock = plan.lock_source()?;
-        let current = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|text| RigState::parse(&text));
-        if current.as_ref() != Some(&state) {
-            return Err("The pending recovery checkpoint changed. Open the latest report before trying again.".into());
-        }
+        verify_pending_state(&path, &state)?;
         let mut sink =
             super::report::ReportFile::create(dir, super::redact::Redactor::from_environment())?;
         let run = offer_restore_checked(port, op, &mut sink, &path, &state, Some(plan));
@@ -251,6 +254,67 @@ pub(super) fn before_new_run(
             .reason()
             .unwrap_or("Start new ended before the pending rig recovery was confirmed.")
             .into());
+    }
+    Ok(())
+}
+
+/// Check both Mac locations for interrupted runs. The selected checkpoint
+/// is already locked and validated by the resume plan.
+pub(super) fn before_continuation(
+    op: &mut dyn Operator,
+    mode: Mode,
+    plan: &super::resume::Plan,
+    output_dir: &Path,
+    legacy_dir: &Path,
+) -> Result<(), String> {
+    let output = output_dir.canonicalize().ok();
+    let legacy = legacy_dir.canonicalize().ok();
+    for dir in [
+        output.as_deref(),
+        legacy
+            .as_deref()
+            .filter(|dir| Some(*dir) != output.as_deref()),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        confirm_pending(op, dir, mode, Some(plan))?;
+    }
+    Ok(())
+}
+
+fn confirm_pending(
+    op: &mut dyn Operator,
+    dir: &Path,
+    mode: Mode,
+    selected: Option<&super::resume::Plan>,
+) -> Result<(), String> {
+    for (path, state) in pending(dir) {
+        let report = path.with_extension("txt");
+        if super::report::saved_mode(&report).is_some_and(|saved| saved != mode) {
+            continue;
+        }
+        if let Some(plan) = selected
+            && plan.is_selected_checkpoint(&path)?
+        {
+            continue;
+        }
+        let _lock = lock_checkpoint(&path)?;
+        verify_pending_state(&path, &state)?;
+        confirm_manual_recovery(op, &report, "Another Rig Check was interrupted.")?;
+    }
+    Ok(())
+}
+
+fn verify_pending_state(path: &Path, state: &RigState) -> Result<(), String> {
+    let current = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| RigState::parse(&text));
+    if current.as_ref() != Some(state) {
+        return Err(
+            "The pending recovery checkpoint changed. Open the latest report before trying again."
+                .into(),
+        );
     }
     Ok(())
 }

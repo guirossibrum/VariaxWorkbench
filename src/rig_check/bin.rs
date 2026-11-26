@@ -5,7 +5,7 @@
 //! The person confirms each step.
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use variax_workbench::rig_check::{
     self,
     cli::Terminal,
@@ -24,7 +24,8 @@ const USAGE: &str = "Usage: rig-check [--practice | --real] [--text] [--out DIR]
   Without --text, a build with the gui feature opens the wizard window.
   --practice  rehearse every step with simulated devices (nothing is sent to real hardware)
   --real      use the connected PODxt Live and Variax (device steps need the owner's approval)
-  --out DIR   folder for the report (default: rig-check-output next to this program)
+  --out DIR   report folder (macOS: ~/Documents/Rig Check, Windows: Local AppData,
+              other platforms: rig-check-output next to this program)
   --evidence  save raw evidence in practice (always saved for real runs)
   --engine-folder DIR  use local Variax models and reference programs instead of the bundle (models.tsv, NAME.vwm, NAME.packed or NAME.sha256)";
 
@@ -34,6 +35,7 @@ struct Options {
     #[cfg_attr(not(feature = "gui"), allow(dead_code))]
     text: bool,
     out: PathBuf,
+    legacy_reports: Option<PathBuf>,
     evidence: bool,
     engine_folder: Option<PathBuf>,
 }
@@ -81,6 +83,29 @@ fn compare_clips(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn report_locations(explicit: Option<PathBuf>) -> (PathBuf, Option<PathBuf>) {
+    if cfg!(target_os = "macos") {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        return mac_report_locations(explicit, home.as_deref(), &std::env::temp_dir());
+    }
+    (explicit.unwrap_or_else(default_out), None)
+}
+
+fn mac_report_locations(
+    explicit: Option<PathBuf>,
+    home: Option<&Path>,
+    temp: &Path,
+) -> (PathBuf, Option<PathBuf>) {
+    let out = explicit.unwrap_or_else(|| {
+        home.map(|home| home.join("Documents/Rig Check"))
+            .unwrap_or_else(|| temp.join("rig-check-output"))
+    });
+    let legacy = home
+        .map(|home| home.join("Library/Application Support/Rig Check/reports"))
+        .filter(|legacy| legacy != &out);
+    (out, legacy)
+}
+
 fn default_out() -> PathBuf {
     if cfg!(target_os = "windows") {
         return std::env::var_os("LOCALAPPDATA")
@@ -89,12 +114,6 @@ fn default_out() -> PathBuf {
             .unwrap_or_else(std::env::temp_dir)
             .join("Rig Check")
             .join("reports");
-    }
-    if cfg!(target_os = "macos") {
-        return std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .map(|home| home.join("Library/Application Support/Rig Check/reports"))
-            .unwrap_or_else(|| std::env::temp_dir().join("rig-check-output"));
     }
     std::env::current_exe()
         .ok()
@@ -149,10 +168,12 @@ fn options() -> Result<Options, String> {
     if practice.is_none() && (text || !cfg!(feature = "gui")) {
         return Err(USAGE.into());
     }
+    let (out, legacy_reports) = report_locations(out);
     Ok(Options {
         practice,
         text,
-        out: out.unwrap_or_else(default_out),
+        out,
+        legacy_reports,
         evidence,
         engine_folder,
     })
@@ -165,8 +186,10 @@ fn window(options: Options) {
     use rig_check::gui::{App, ChannelOperator, Prompt};
     use rig_check::record::Mode;
     use rig_check::resume::Plan;
-    let out = options.out.clone();
-    let report_dir = out.clone();
+    let report_dir = options.out;
+    let legacy_reports = options.legacy_reports;
+    let out = report_dir.clone();
+    let recovery_dir = legacy_reports.clone();
     let evidence = options.evidence;
     let engine_folder = options.engine_folder.clone();
     let start = move |mode: Mode, plan: Option<Plan>, mut op: ChannelOperator| {
@@ -205,9 +228,21 @@ fn window(options: Options) {
         };
         let run = match plan {
             Some(plan) => {
-                rig_check::continue_on(port, &mut op, &mut sink, data, state_file, plan).0
+                rig_check::continue_on(
+                    port,
+                    &mut op,
+                    &mut sink,
+                    data,
+                    state_file,
+                    plan,
+                    recovery_dir,
+                )
+                .0
             }
-            None => rig_check::run_with_state(port, &mut op, &mut sink, data, state_file).0,
+            None => {
+                rig_check::run_with_state(port, &mut op, &mut sink, data, state_file, recovery_dir)
+                    .0
+            }
         };
         op.send(Prompt::Done {
             run: Box::new(run),
@@ -229,7 +264,12 @@ fn window(options: Options) {
         native,
         Box::new(move |cc| {
             rig_check::gui::apply_theme(&cc.egui_ctx);
-            Ok(Box::new(App::new(report_dir, requested_mode, start)))
+            Ok(Box::new(App::new(
+                report_dir,
+                legacy_reports,
+                requested_mode,
+                start,
+            )))
         }),
     );
     if let Err(error) = result {
@@ -278,7 +318,15 @@ fn main() {
     } else {
         let mut port = RealPort::new(&scope);
         let state_file = sink.path.with_extension("state");
-        rig_check::run_with_state(&mut port, &mut person, &mut sink, data, state_file).0
+        rig_check::run_with_state(
+            &mut port,
+            &mut person,
+            &mut sink,
+            data,
+            state_file,
+            options.legacy_reports,
+        )
+        .0
     };
     println!("{}", run.rig_description);
     for difference in run.report_differences() {
@@ -303,6 +351,47 @@ fn main() {
         match report::save_copy(&sink.last, std::path::Path::new(&target)) {
             Ok(()) => println!("Saved {target}."),
             Err(error) => println!("Not saved: {error}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mac_output_defaults_to_documents_and_keeps_the_legacy_search_root() {
+        let home = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let (out, legacy) = mac_report_locations(None, Some(home.path()), temp.path());
+        assert_eq!(out, home.path().join("Documents/Rig Check"));
+        assert_eq!(
+            legacy.unwrap(),
+            home.path()
+                .join("Library/Application Support/Rig Check/reports")
+        );
+        assert!(!out.exists(), "path selection does not create folders");
+        assert_eq!(
+            mac_report_locations(None, None, temp.path()),
+            (temp.path().join("rig-check-output"), None)
+        );
+    }
+
+    #[test]
+    fn explicit_output_still_controls_where_reports_are_written() {
+        let home = tempfile::tempdir().unwrap();
+        let explicit = PathBuf::from("custom-reports");
+        let (out, legacy) =
+            mac_report_locations(Some(explicit.clone()), Some(home.path()), home.path());
+        assert_eq!(out, explicit);
+        assert_eq!(report_locations(Some(explicit.clone())).0, explicit);
+        let legacy = legacy.unwrap();
+        assert_eq!(
+            mac_report_locations(Some(legacy.clone()), Some(home.path()), home.path()),
+            (legacy, None)
+        );
+        if !cfg!(target_os = "macos") {
+            assert_eq!(report_locations(None), (default_out(), None));
         }
     }
 }

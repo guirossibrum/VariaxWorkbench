@@ -203,6 +203,7 @@ pub struct Runner<'a> {
     pub run: RunRecord,
     /// Where to keep the crash-restore state (#261), if anywhere.
     pub state_file: Option<std::path::PathBuf>,
+    pub(super) legacy_report_dir: Option<std::path::PathBuf>,
     persistence_failed: bool,
 }
 
@@ -221,6 +222,7 @@ impl<'a> Runner<'a> {
             data,
             run: RunRecord::new(mode, utc_now()),
             state_file: None,
+            legacy_report_dir: None,
             persistence_failed: false,
         }
     }
@@ -296,6 +298,18 @@ impl<'a> Runner<'a> {
                 Err("The continuation checkpoint could not be saved.".into())
             } else {
                 plan.lock_source().and_then(|lock| {
+                    if let Some(legacy_dir) = &self.legacy_report_dir
+                        && let Some(output_dir) =
+                            self.state_file.as_deref().and_then(std::path::Path::parent)
+                    {
+                        super::recover::before_continuation(
+                            self.op,
+                            self.run.mode,
+                            plan,
+                            output_dir,
+                            legacy_dir,
+                        )?;
+                    }
                     plan.revalidate(self.port, self.op, &mut self.run, &mut self.data)?;
                     Ok(lock)
                 })
@@ -327,7 +341,12 @@ impl<'a> Runner<'a> {
             && self.run.mode == Mode::Real
             && crate::offline_device_notice().is_none()
             && let Some(dir) = self.state_file.as_deref().and_then(std::path::Path::parent)
-            && let Err(error) = super::recover::before_new_run(self.port, self.op, dir)
+            && let Err(error) = super::recover::before_new_run(
+                self.port,
+                self.op,
+                dir,
+                self.legacy_report_dir.as_deref(),
+            )
         {
             self.run.rig_state = error;
             self.run.finished = true;

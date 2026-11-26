@@ -76,9 +76,11 @@ pub fn run_with_state(
     sink: &mut dyn ReportSink,
     data: RunData,
     state_file: std::path::PathBuf,
+    legacy_report_dir: Option<std::path::PathBuf>,
 ) -> (record::RunRecord, RunData) {
     let mut runner = Runner::new(port, op, sink, data);
     runner.state_file = Some(state_file);
+    runner.legacy_report_dir = legacy_report_dir;
     runner.run()
 }
 
@@ -90,9 +92,11 @@ pub fn continue_on(
     data: RunData,
     state_file: std::path::PathBuf,
     plan: resume::Plan,
+    legacy_report_dir: Option<std::path::PathBuf>,
 ) -> (record::RunRecord, RunData) {
     let mut runner = Runner::new(port, op, sink, data);
     runner.state_file = Some(state_file);
+    runner.legacy_report_dir = legacy_report_dir;
     runner.run_from(Some(plan))
 }
 

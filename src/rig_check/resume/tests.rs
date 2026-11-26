@@ -134,20 +134,31 @@ impl Fixture {
         rig: &Rc<RefCell<SimRig>>,
         person: &mut Script,
     ) -> (RunRecord, ReportFile) {
-        let mut sink = ReportFile::create(self.dir.path(), Redactor::default()).unwrap();
-        let data = report_data(&sink);
-        let path = sink.path.with_extension("state");
-        let run = crate::rig_check::continue_on(
-            &mut PracticePort::new(rig.clone()),
-            person,
-            &mut sink,
-            data,
-            path,
-            plan,
-        )
-        .0;
-        (run, sink)
+        continue_in(self.dir.path(), None, plan, rig, person)
     }
+}
+
+fn continue_in(
+    out: &Path,
+    legacy: Option<PathBuf>,
+    plan: Plan,
+    rig: &Rc<RefCell<SimRig>>,
+    person: &mut Script,
+) -> (RunRecord, ReportFile) {
+    let mut sink = ReportFile::create(out, Redactor::default()).unwrap();
+    let data = report_data(&sink);
+    let path = sink.path.with_extension("state");
+    let run = crate::rig_check::continue_on(
+        &mut PracticePort::new(rig.clone()),
+        person,
+        &mut sink,
+        data,
+        path,
+        plan,
+        legacy,
+    )
+    .0;
+    (run, sink)
 }
 
 fn report_data(sink: &ReportFile) -> RunData {
@@ -187,11 +198,22 @@ fn only_reads(rig: &Rc<RefCell<SimRig>>) {
 fn migrated_mac_75_retries_the_sweep_without_repeating_either_library_backup() {
     let fixture = Fixture::legacy_failure();
     let source = std::fs::read(&fixture.sink.path).unwrap();
+    let checkpoint = fixture.sink.path.with_extension("state");
+    let original_checkpoint = std::fs::read(&checkpoint).unwrap();
+    let legacy_evidence = fixture.data.evidence_dir.as_ref().unwrap();
+    let manifests = || {
+        ["podxt-library", "variax-library"].map(|library| {
+            std::fs::read(legacy_evidence.join(library).join("MANIFEST.sha256")).unwrap()
+        })
+    };
+    let original_manifests = manifests();
+    let visible = tempfile::tempdir().unwrap();
     assert_eq!(
         last_report(fixture.dir.path()).as_ref(),
         Some(&fixture.sink.path)
     );
-    let plan = open(&fixture.sink.path).unwrap();
+    let selected = last_mac_report(visible.path(), fixture.dir.path(), Some(Mode::Practice));
+    let plan = open(&selected.unwrap()).unwrap();
     assert_eq!(plan.target, KNOBS);
     for id in [POD_BACKUP, GUITAR_BACKUP, PEDAL] {
         assert!(plan.skips(id));
@@ -201,7 +223,18 @@ fn migrated_mac_75_retries_the_sweep_without_repeating_either_library_backup() {
     // Stop on the first store card, after checking downstream eligibility.
     person.overrides.push((FIRST_SAVE, Decision::Stop));
     let rig = SimRig::shared(Faults::default());
-    let (run, sink) = fixture.continue_run(plan, &rig, &mut person);
+    let (run, sink) = continue_in(
+        visible.path(),
+        Some(fixture.dir.path().to_owned()),
+        plan,
+        &rig,
+        &mut person,
+    );
+    assert_eq!(sink.path.parent(), Some(visible.path()));
+    assert!(sink.path.with_extension("state").is_file());
+    assert!(report_data(&sink).evidence_dir.unwrap().is_dir());
+    assert_eq!(std::fs::read(&checkpoint).unwrap(), original_checkpoint);
+    assert_eq!(manifests(), original_manifests);
     assert!(run.step(KNOBS).outcome.passed(), "{:?}", run.continuation);
     assert_eq!(run.step(KNOBS).attempt, Some(3));
     assert_eq!(person.cards.first(), Some(&KNOBS));
@@ -241,6 +274,162 @@ fn migrated_mac_75_retries_the_sweep_without_repeating_either_library_backup() {
     let next = open(&sink.path).unwrap();
     assert_eq!(next.target, FIRST_SAVE);
     assert!(next.skips(POD_BACKUP) && next.skips(GUITAR_BACKUP));
+}
+
+#[test]
+fn mac_discovery_uses_both_roots_and_checks_each_local_companion() {
+    let legacy = Fixture::legacy_failure();
+    let mut visible = Fixture::new();
+    visible.stop_after(KNOBS, false);
+    visible.save(false);
+
+    let set_modified = |path: &Path, second| {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(second)),
+            )
+            .unwrap();
+    };
+    set_modified(&legacy.sink.path, 10);
+    set_modified(&visible.sink.path, 20);
+    let find = || last_mac_report(visible.dir.path(), legacy.dir.path(), Some(Mode::Practice));
+    assert_eq!(find(), Some(visible.sink.path.clone()));
+    set_modified(&legacy.sink.path, 30);
+    assert_eq!(find(), Some(legacy.sink.path.clone()));
+    set_modified(&legacy.sink.path, 10);
+
+    // A newer report paired with a checkpoint from another root must still
+    // fail #297 validation, even if both files have the same basename.
+    std::fs::copy(
+        legacy.sink.path.with_extension("state"),
+        visible.sink.path.with_extension("state"),
+    )
+    .unwrap();
+    assert!(open(&visible.sink.path).is_err());
+    assert_eq!(find(), Some(legacy.sink.path.clone()));
+    assert_eq!(
+        last_mac_report(visible.dir.path(), &legacy.dir.path().join("missing"), None),
+        Some(visible.sink.path.clone()),
+        "retain the diagnostic when no compatible report is found"
+    );
+}
+
+#[test]
+fn another_mac_root_with_an_uncertain_store_requires_manual_verification() {
+    let mut legacy = Fixture::new();
+    legacy.stop_after(FIRST_SAVE, false);
+    legacy.run.finished = false;
+    legacy.run.current = Some(FIRST_SAVE);
+    *legacy.run.step_mut(FIRST_SAVE) = StepRecord::new(FIRST_SAVE);
+    *legacy.run.step_mut(RIG_GUARD) = StepRecord::new(RIG_GUARD);
+    legacy.save(false);
+    assert!(error(&legacy.sink.path).contains("interrupted during a live edit or store"));
+    let state = legacy.sink.path.with_extension("state");
+    let original = std::fs::read(&state).unwrap();
+    let visible = tempfile::tempdir().unwrap();
+    let rig = SimRig::shared(Faults::default());
+    let mut person = Script::run_all();
+    person.accept = false;
+    let result = recover::before_new_run(
+        &mut PracticePort::new(rig.clone()),
+        &mut person,
+        visible.path(),
+        Some(legacy.dir.path()),
+    );
+    assert!(result.is_err());
+    assert!(person.notices[0].contains("verify the affected slot"));
+    assert!(person.notices[0].contains(&*legacy.sink.path.to_string_lossy()));
+
+    let selected = Fixture::legacy_failure();
+    let plan = open(&selected.sink.path).unwrap();
+    let result = recover::before_continuation(
+        &mut person,
+        Mode::Practice,
+        &plan,
+        selected.dir.path(),
+        legacy.dir.path(),
+    );
+    assert!(result.is_err());
+    assert_eq!(std::fs::read(state).unwrap(), original);
+    assert!(rig.borrow().written.is_empty());
+}
+
+#[test]
+fn same_root_interrupted_store_blocks_resume_before_revalidation() {
+    let mut source = Fixture::new();
+    source.stop_after(KNOBS, false);
+    source.run.finished = false;
+    source.run.current = Some(KNOBS);
+    *source.run.step_mut(KNOBS) = StepRecord::new(KNOBS);
+    *source.run.step_mut(RIG_GUARD) = StepRecord::new(RIG_GUARD);
+    source.save(false);
+    let source_state = source.sink.path.with_extension("state");
+    let source_bytes = std::fs::read(&source_state).unwrap();
+    let plan = open(&source.sink.path).unwrap();
+    assert_eq!(plan.target, KNOBS);
+
+    let mut interrupted = ReportFile::create(source.dir.path(), Redactor::default()).unwrap();
+    let mut run = source.run.clone();
+    run.current = Some(FIRST_SAVE);
+    interrupted.update(&run).unwrap();
+    let path = interrupted.path.with_extension("state");
+    let name = interrupted.path.file_name().unwrap().to_str().unwrap();
+    let mut state = RigState::from_run(&run, &source.data, name);
+    state.report_sha256 = interrupted.report_digest();
+    recover::write_state(&path, &state).unwrap();
+    let state_bytes = std::fs::read(&path).unwrap();
+    assert!(error(&interrupted.path).contains("interrupted during a live edit or store"));
+    assert_eq!(recover::pending(source.dir.path()).len(), 2);
+
+    let output = tempfile::tempdir().unwrap();
+    let rig = SimRig::shared(Faults::default());
+    let mut person = Script::run_all();
+    person.start_decisions = [true, false].into();
+    let (run, _) = continue_in(
+        output.path(),
+        Some(source.dir.path().to_owned()),
+        plan,
+        &rig,
+        &mut person,
+    );
+    assert!(run.rig_state.contains("pending rig recovery"));
+    assert_eq!(person.notices.len(), 2);
+    assert!(person.notices[1].contains(&*interrupted.path.to_string_lossy()));
+    assert!(person.notices[1].contains("verify the affected slot"));
+    assert!(person.cards.is_empty());
+    assert!(rig.borrow().written.is_empty());
+    assert!(!source.sink.path.with_extension("continuation").exists());
+    assert_eq!(std::fs::read(&source_state).unwrap(), source_bytes);
+    assert_eq!(std::fs::read(&path).unwrap(), state_bytes);
+    assert_eq!(
+        std::fs::read_to_string(&interrupted.path).unwrap(),
+        interrupted.last
+    );
+
+    // With only the harmless interrupted source present, the held source
+    // lock is sufficient and revalidation can go ahead.
+    std::fs::remove_file(path).unwrap();
+    let mut person = Script::run_all();
+    person.overrides.push((FIRST_SAVE, Decision::Stop));
+    let (run, _) = continue_in(
+        output.path(),
+        Some(source.dir.path().to_owned()),
+        open(&source.sink.path).unwrap(),
+        &rig,
+        &mut person,
+    );
+    assert!(run.step(KNOBS).outcome.passed(), "{}", run.rig_state);
+    assert_eq!(person.cards.first(), Some(&KNOBS));
+    assert!(source.sink.path.with_extension("continuation").is_file());
+    assert_eq!(std::fs::read(source_state).unwrap(), source_bytes);
+    assert_eq!(
+        std::fs::read_to_string(&source.sink.path).unwrap(),
+        source.sink.last
+    );
 }
 
 #[test]
@@ -423,13 +612,24 @@ fn collected_legacy_report_with_stopped_guard_runs_only_guided_checks_and_a_fres
     rig.borrow_mut().podxt.playing[32 + 21] = presence;
     let fixture = Fixture::stopped_owner_pattern(&rig);
     let alias = fixture.dir.path().join("latest.txt");
-    std::fs::rename(&fixture.sink.path, &alias).unwrap();
-    std::fs::rename(
-        fixture.sink.path.with_extension("state"),
-        alias.with_extension("state"),
+    std::fs::copy(&fixture.sink.path, &alias).unwrap();
+    let original_state = fixture.sink.path.with_extension("state");
+    let alias_state = alias.with_extension("state");
+    std::fs::copy(&original_state, &alias_state).unwrap();
+    let original_plan = open(&fixture.sink.path).unwrap();
+    assert!(original_plan.is_selected_checkpoint(&alias_state).unwrap());
+    let plan = open(&alias).unwrap();
+    assert!(plan.is_selected_checkpoint(&original_state).unwrap());
+    // A different original checkpoint still needs its own safety check.
+    let bytes = std::fs::read(&original_state).unwrap();
+    std::fs::write(
+        &original_state,
+        [bytes.as_slice(), b"finished=false\n"].concat(),
     )
     .unwrap();
-    let plan = open(&alias).unwrap();
+    assert!(plan.is_selected_checkpoint(&original_state).is_err());
+    std::fs::remove_file(&original_state).unwrap();
+    std::fs::remove_file(&fixture.sink.path).unwrap();
     assert_eq!(plan.target, KNOBS);
     assert!(plan.pre_write_recovery && plan.skips(POD_BACKUP) && plan.skips(GUITAR_BACKUP));
     assert!(plan.restored.podxt_unsaved);
@@ -539,7 +739,8 @@ fn start_new_offers_safe_pending_recovery_and_requires_manual_confirmation_for_a
         recover::before_new_run(
             &mut PracticePort::new(rig.clone()),
             &mut person,
-            fixture.dir.path()
+            fixture.dir.path(),
+            None,
         )
         .is_err()
     );
@@ -550,6 +751,7 @@ fn start_new_offers_safe_pending_recovery_and_requires_manual_confirmation_for_a
         &mut PracticePort::new(rig.clone()),
         &mut person,
         fixture.dir.path(),
+        None,
     );
     assert!(result.is_ok(), "{result:?}");
     assert_eq!(person.cards, [RIG_GUARD]);
@@ -569,7 +771,8 @@ fn start_new_offers_safe_pending_recovery_and_requires_manual_confirmation_for_a
         recover::before_new_run(
             &mut PracticePort::new(rig.clone()),
             &mut person,
-            fixture.dir.path()
+            fixture.dir.path(),
+            None,
         )
         .is_err()
     );

@@ -35,7 +35,9 @@ Earlier captures from floating windows using test presets with device discovery 
   the Variax 600 and PODxt Live. Offline tabs work with the rig disconnected.
 - **Rig Check.** Rehearse the checks in Practice or run the guided checks on a
   supported rig. Open a saved report at launch to continue a compatible run
-  after verifying its starting state and backup evidence.
+  after verifying its starting state and backup evidence. On Mac, new reports
+  and evidence go to `Documents/Rig Check` by default. Earlier reports in
+  Application Support are available from the launch screen.
 - **Backups.** Full Variax 600 backups (all 60 presets, byte for byte) and
   PODxt Live library backups have been tested on hardware.
 - **Live reads and edits.** Device check has read current settings on both
