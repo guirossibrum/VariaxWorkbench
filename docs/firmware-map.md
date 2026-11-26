@@ -193,7 +193,7 @@ copy of the firmware. The additional component verifiers, result logs and
 checksum index are retained locally under the ignored
 `backups/podxt-301-audit/` area. See its `SHA256SUMS` entries for the Room
 graph, panel data and flash geometry checkpoints. The Room sample-path,
-second-child and third-child checkpoints each have a private checksum index
+second-child, third-child and routing checkpoints each have a private checksum index
 in the same area.
 
 #### Room sample path
@@ -216,12 +216,10 @@ The second child takes that output block and rewrites it in place. The third
 child reads the two adjacent blocks and writes its mix into the original
 input block. That last relationship comes from the decoded reads and stores.
 
-The next runtime evidence needed is a route-labelled interrupt-entry
-snapshot for Live 3.01, or matching code that reconstructs it. It must
-identify the interrupt source and buffer phase, the enabled callback rows
-and order, and the producer of the first child's input block for the
-selected analog, Variax or USB route. Matching input, state and output
-vectors are needed to check DSP arithmetic and audio equivalence.
+The [routing checkpoint](#room-input-and-downstream-routing) follows the
+static producer and downstream callbacks. Runtime route attribution and
+audio parity still need route-labelled interrupt state and matching
+input, state and output vectors.
 
 #### Room second child
 
@@ -261,9 +259,52 @@ Room row active in the main dispatch table.
 Separate archived control-table entries reach a helper that selects either
 Room buffer as the output pointer for other graph rows and copies the new
 pointer into the dispatch table. Their archived callbacks are zero. The
-control path establishes that those pointers can change. The identity of the
-live input producer, active downstream consumer, route-labelled interrupt
-state, DSP precision and matching input/output vectors remain open.
+control path establishes that those pointers can change. Reset-time
+registration and tone control add further conditions.
+
+#### Room input and downstream routing
+
+The reset path's fixed component table installs row 0 with a callback
+that reads phase-offset sample pairs from a primary block and an auxiliary
+block. It writes four 16-word spans, including both Room buffers, before
+row `0x25`. The dispatcher derives the phase from the low six bits of the
+word at DM `0x60` with bit 5 inverted. The callback uses two separate
+controls for its primary and auxiliary contributions. The primary sample
+reads and all four stores still execute when those controls suppress
+contributions. This establishes a static writer for the original Room
+input span. Another fixed callback, row 4, reads the same span before Room
+and can overwrite either buffer according to the pointer selector.
+
+The same helper applies after Room on row `0x26`. That row reads a
+different span and overwrites the selected Room buffer. Its wrapper also
+selects between rows `0x29` and `0x2A`, which both read and write the
+original input span. A clear selector bit 6 selects the adjacent buffer
+for row `0x26`, requests registration of rows `0x2C` and `0x29`, and
+clears or reloads row `0x2A`. A set bit selects the original input span
+and reverses those requests. The interlock selects direct callback clearing
+or a parameter reload. Registration copies the slot's callback, which can
+be zero. The interrupt calls a main-table row only when the graph flag
+and that row's callback are nonzero.
+
+The fixed table also installs later callbacks that read the original
+input span, and callbacks whose read footprint covers both Room buffers.
+A later read can see an intervening overwrite. For example, row `0x2D`
+can copy the original input across four spans including the adjacent
+buffer before the callback at row `0x30` reads both. The reset table and
+bounded Room load establish candidate writers and readers. The final
+tone and route state determine their order and which version of each
+block reaches a reader.
+
+The archive and service drawings take the trace to the callback's
+phase-selected source buffers. The drawings explain clock selection for
+analog, Variax and USB. A route-labelled Live 3.01 interrupt-entry state
+or equivalent producer and setup code is still needed to tie the upstream
+buffers to a live route. That evidence must identify the interrupt source,
+the phase word, the serial or DMA channel and buffer producer, the callback
+controls, and the final callback rows and pointers through the first
+downstream read, including any intervening writer. DSP precision and audio
+equivalence need matching input, state and output vectors. The bounded
+static checks stop at that evidence boundary. Region 5 remains on hold.
 
 ### PODxt Live 3.01 factory channels
 
