@@ -86,7 +86,7 @@ outer region tag meanings:
 | File range or region | Observed role | Remaining limit |
 | --- | --- | --- |
 | Regions 1/2, 0x4000/0x6000, 8,192 bytes each | Similar settings/name-bearing data | Persistence, calibration and redundancy rules unverified |
-| Region 3, 0x8000, 32,768 bytes | Repeated bit patterns consistent with display data | Not classified as executable; exact format unverified |
+| Region 3, 0x8000, 32,768 bytes | 28 startup display frames followed by padding | Frame format verified offline. Runtime selection and LCD transfer remain unverified. |
 | Region 4, 0x10000 | Length/checksum wrapper and four complete load records | Loader implementation and hardware behavior unverified |
 | Region 5, 0x20000 | Length/checksum wrapper, 65,528-byte opaque payload | Payload ISA/encoding unverified; high entropy is not proof of encryption |
 | Regions 6–11, 0x30000–0x90000 | Resource directory, named records and padding | Record bodies, licensing and execution semantics unverified |
@@ -168,6 +168,31 @@ resource relationship, not a proven DSP/flash memory mapping or license grant.
 No USB-component firmware, installed component version, calibration-safe update,
 or recovery sequence is established by this map. These unknowns remain on #20,
 #14, #16 and the later safety/readiness issues.
+
+### PODxt Live 3.01 component checkpoint
+
+[#282](https://github.com/guirossibrum/VariaxWorkbench/issues/282) remains open.
+The following findings come from the archived 3.01 image, static SHARC
+analysis, bounded memory models, and the Live service drawing. The stock image
+spans all 19 mapped regions.
+
+| Area | Established offline | Still unknown |
+| --- | --- | --- |
+| DSP resources | A bounded model of the stock loading path reconstructs four base resources with the expected end marker. The Room record and resident tables account for three subcomponents and all 38 trailing parameter halfwords. The model follows initialization, parameter copying and event registration to the return from the loading path. | The active processing path during a sample interrupt, exact live memory state, and audio equivalence. Other resource groups need independent verification. |
+| Display | Region 3 encodes 28 bitmapped frames in 512-byte records on a 128 × 32 canvas. They contain the startup logo sequence, the standard model-set screen and 15 pack-status combinations. The Live drawing specifies a 122 × 32 visible LCD. | The code that selects and sends each frame, its visible crop, and the source of the reported pack state. The graphics establish which states can be displayed. |
+| Board interfaces | The Live drawing puts the LCD and switch matrix on the MCU side and sends potentiometer and pedal readings to the MCU through a separate ADC. Variax digital audio reaches a dedicated receiver, and Variax MIDI has its own MCU serial channel. The service theory describes clock selection for internal, Variax and USB audio operation. | Firmware routing and ownership rules, panel scan and debounce behavior, and the persistent calibration fields. |
+| Flash and persistence | For the documented bottom-boot flash option in word mode, the settings pair aligns with two independent 8 KiB sectors and the preset pair aligns with two independent 64 KiB sectors. A model of the load-time decision logic distinguishes the two bank selectors using archived inputs and 10 synthetic cases. | The populated flash part on a given unit, behavior during an interrupted write or erase, calibration and pack preservation, and end-to-end recovery. |
+
+The device-side producer and storage of the installed-pack status remain
+unassigned. The first-stage bootstrap and Region 5 execution remain open.
+The flash and graph models establish behavior for their stated inputs.
+They provide no hardware, update safety or recovery verification.
+
+The tracked archive checks below can be rerun against an authorized local
+copy of the firmware. The additional component verifiers, result logs and
+checksum index are retained locally under the ignored
+`backups/podxt-301-audit/` area. See its `SHA256SUMS` entries for the Room
+graph, panel data and flash geometry checkpoints.
 
 ### PODxt Live 3.01 factory channels
 
