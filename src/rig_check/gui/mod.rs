@@ -1644,16 +1644,15 @@ pub fn mockup_states() -> Vec<(&'static str, Wizard)> {
         backup_sha256: "4e6b812d0c9a5e7f13b2d6a8c0f1e2d3b4a5968778695a4b3c2d1e0f9a8b33d5".into(),
         confirmation: "STORE VARIAX Spank 1".into(),
     };
-    states.push((
-        "09-save-notice",
-        with_progress(
-            practice(Some(Prompt::Save {
-                text: notice.text(),
-                confirmation: notice.confirmation.clone(),
-            })),
-            10,
-        ),
-    ));
+    let mut save = practice_mockup_at(
+        StepId(5, 1),
+        Prompt::Save {
+            text: notice.text(),
+            confirmation: notice.confirmation,
+        },
+    );
+    save.running = Some(StepId(5, 1));
+    states.push(("09-save-notice", save));
     let mut record = StepRecord::new(StepId(2, 3));
     record.started = Some("2026-11-25 22:02:00 UTC".into());
     record.attempt = Some(1);
@@ -1713,12 +1712,66 @@ pub fn mockup_states() -> Vec<(&'static str, Wizard)> {
     states
 }
 
+fn practice_mockup_at(id: StepId, prompt: Prompt) -> Wizard {
+    let progress = catalogue::RUN_ORDER
+        .iter()
+        .copied()
+        .take_while(|&candidate| candidate != id)
+        .filter(|&candidate| {
+            catalogue::step(candidate)
+                .unwrap()
+                .not_in_this_version
+                .is_none()
+        })
+        .map(|candidate| {
+            let mut record = StepRecord::new(candidate);
+            record.outcome = match candidate {
+                catalogue::PODXT_COMPATIBILITY => {
+                    Outcome::verified_firmware_skip("PODxt Live", "3.01")
+                }
+                catalogue::VARIAX_EVIDENCE => Outcome::verified_firmware_skip("Variax", "3.10"),
+                _ => Outcome::Passed,
+            };
+            record
+        })
+        .collect();
+    Wizard {
+        mode: Some(Mode::Practice),
+        prompt: Some(prompt),
+        start_accepted: Some(catalogue::START_NOTICE),
+        progress,
+        ..Wizard::default()
+    }
+}
+
+const LAPTOP_MOCKUP_SIZE: (u32, u32) = (1120, 760);
+const LAPTOP_MOCKUP_SCALES: [(&str, u32); 2] = [("laptop", 1), ("retina", 2)];
+
+fn laptop_mockup_states() -> [(&'static str, Wizard); 4] {
+    let vdi = StepId(6, 1);
+    let card = |id| practice_mockup_at(id, Prompt::Card(id, Mode::Practice, None));
+    let mut ready = practice_mockup_at(
+        vdi,
+        Prompt::PrepareAction {
+            step: vdi,
+            see: "Wait for the countdown before unplugging the VDI cable from the guitar.".into(),
+            hear: "After unplugging, the guitar goes silent.".into(),
+        },
+    );
+    ready.running = Some(vdi);
+    [
+        ("vdi-card", card(vdi)),
+        ("vdi-get-ready", ready),
+        ("expression-pedal", card(StepId(7, 4))),
+        ("podxt-channel-recall", card(StepId(4, 7))),
+    ]
+}
+
 /// Render every mockup screen into `dir` as PNG (new files only).
 pub fn write_mockups(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let mut written = Vec::new();
-    for (name, mut wizard) in mockup_states() {
-        let image = raster::render(1180, 800, |ctx| wizard.show(ctx));
+    let mut save = |name: &str, image: image::RgbaImage| -> Result<(), String> {
         let mut png = Vec::new();
         image
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
@@ -1726,6 +1779,26 @@ pub fn write_mockups(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>, S
         let path = dir.join(format!("{name}.png"));
         crate::shared::document::save_new(&path, &png)?;
         written.push(path);
+        Ok(())
+    };
+    for (name, mut wizard) in mockup_states() {
+        // Draw both running states at the start of their demo clocks.
+        if let Some(start) = &mut wizard.step_start {
+            *start = Instant::now();
+        }
+        if let Some((_, clock)) = &mut wizard.guided_action {
+            *clock = Arc::new(super::guided::ActionClock::default());
+        }
+        save(name, raster::render(1180, 800, |ctx| wizard.show(ctx)))?;
+    }
+    let (width, height) = LAPTOP_MOCKUP_SIZE;
+    for (prefix, scale) in LAPTOP_MOCKUP_SCALES {
+        for (name, mut wizard) in laptop_mockup_states() {
+            save(
+                &format!("{prefix}-{name}"),
+                raster::render_scaled(width, height, scale, |ctx| wizard.show(ctx)),
+            )?;
+        }
     }
     Ok(written)
 }

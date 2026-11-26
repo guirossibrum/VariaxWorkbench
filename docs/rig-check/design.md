@@ -4,13 +4,14 @@
 **Owner approval of this design is pending.** The screens below were drawn
 headless from the running code (`rig-check --mockups DIR`, a software
 renderer: no window, display server, GPU or device). They use the shared UI
-theme (`src/shared/ui/theme.rs`) and `section_panel`. No Line 6 art is used.
-The sidebar follows catalogue 1.5, which goes from the stored channel read
-(2.3) to the full PODxt library backup (2.5).
+theme (`src/shared/ui/theme.rs`) and `section_panel`. The examples use
+generated demo data from the wizard's headless fixtures. The [owner review
+checklist](../design/rig-check-wizard-review.md) records the source revision
+and the remaining review gaps.
 
 | Screen | File |
 | --- | --- |
-| Choose Practice or Real rig (no default mode) | [01-choose-mode.png](mockups/01-choose-mode.png) |
+| Choose Practice or Real rig | [01-choose-mode.png](mockups/01-choose-mode.png) |
 | Start risk notice: Quit (focused) / Accept and continue | [02-start-notice.png](mockups/02-start-notice.png) |
 | Step card, read step: What it does / What you'll see and hear / Risk | [03-step-card-read.png](mockups/03-step-card-read.png) |
 | Step card, live step (real rig) | [04-step-card-live.png](mockups/04-step-card-live.png) |
@@ -24,6 +25,33 @@ The sidebar follows catalogue 1.5, which goes from the stored channel read
 | Reviewing an earlier result | [12-review-result.png](mockups/12-review-result.png) |
 | Reviewing the accepted start notice | [13-review-start.png](mockups/13-review-start.png) |
 | Recording a display mismatch | [14-display-difference.png](mockups/14-display-difference.png) |
+
+## Laptop and Retina views
+
+The screen index above uses 1180×800 logical points at 1×. These Practice
+examples use the same narrower 1120×760 logical viewport at both scales.
+The Retina PNGs are rendered at 2 pixels per point (2240×1520 pixels).
+
+| Practice screen | Run heading | Catalogue reference | Laptop 1× | Retina 2× |
+| --- | --- | --- | --- | --- |
+| VDI disconnect and reconnect card | Step 16 of 35 | Catalogue ID 6.1 | [Laptop](mockups/laptop-vdi-card.png) | [Retina](mockups/retina-vdi-card.png) |
+| VDI Get ready before unplugging | Step 16 of 35 | Catalogue ID 6.1 | [Laptop](mockups/laptop-vdi-get-ready.png) | [Retina](mockups/retina-vdi-get-ready.png) |
+| PODxt expression-pedal sweep | Step 21 of 35 | Catalogue ID 7.4 | [Laptop](mockups/laptop-expression-pedal.png) | [Retina](mockups/retina-expression-pedal.png) |
+| PODxt channel recall and return | Step 29 of 35 | Catalogue ID 4.7 | [Laptop](mockups/laptop-podxt-channel-recall.png) | [Retina](mockups/retina-podxt-channel-recall.png) |
+
+**Step X of Y** follows the runner's visit order. The sidebar follows that
+same order and prefixes each row with its catalogue ID. The catalogue ID is
+the stable reference used in the report and by Resume. The examples show
+catalogue ID 7.4 at Step 21, then catalogue ID 4.7 later at Step 29.
+The fixture includes the expected firmware skips for PODxt Live
+3.01 (2.7) and Variax 3.10 (3.7), which do not take run positions.
+
+The 6.1 card describes listening for disconnect and reconnect through the
+PODxt Live and verifying the returning identity against 3.1. Get ready
+asks the player to wait for the countdown before unplugging the guitar end
+of the VDI cable. The action cue says to leave the PODxt Live USB cable
+connected. The reconnect phase gives its own countdown and cue. Identity
+checks may run between listening windows with the VDI cable held still.
 
 ## Owner release
 
@@ -63,15 +91,15 @@ testing the app's matching writes.
   silent-timeout hold and guided windows show time left. During device work,
   leave the guitar selector, volume and tone knobs, and PODxt footswitches and
   knobs alone. Playing is fine.
-- Guided cards say **Start**. Before each action, Rig Check checks the
-  current state, names the movement and waits for **OK**. You have 10 seconds
+- Guided cards say **Start**. Rig Check waits for **OK** before an action
+  countdown. You have 10 seconds
   to get to the device, with **+10 seconds** available. The action screen shows
   what to do, the remaining time and any decoded movement. Rig Check accepts
   a detected movement early and gives the action 60 seconds after the
   countdown. **Continue** checks the evidence so far. If the requested change
-  is missing, **Try again** checks the current state again, **Skip** records a
-  skip, and **Stop** ends the run. Listening comparisons use the same prompts
-  and the player presses Continue after playing.
+  is missing, **Try again** repeats the action with its existing checks,
+  **Skip** records a skip, and **Stop** ends the run. Listening comparisons
+  use the same prompts and the player presses Continue after playing.
 - **Back** or **Backspace** opens the previous recorded result from a step
   card or result. At the beginning, Back opens the accepted start notice
   for review. The sidebar also opens recorded results.
@@ -82,7 +110,8 @@ testing the app's matching writes.
 - The terminal offers **[b] Back** and **[c] Continue / Return to current
   step**, and uses the same result text. Raw bytes and full hashes stay
   in the saved report. The summary preview shows the plain step results.
-- **HEAR / SEE** are 34 px, readable from where the guitar is.
+- **HEAR / SEE** are 34 logical points. Readability from the playing
+  position is part of owner review.
 - Status is never colour alone: the progress list shows PASS / FAIL / SKIP /
   STOP / N/A / RUN as words.
 - Risk is coloured by level (read green, live amber, save red) and always
