@@ -55,12 +55,15 @@ usb = ["dep:rusb", "line6-devices/usb"]
 
 # The bounded owner-run probe is built separately from the normal application.
 owner-reso5-test = ["usb", "dep:libc"]
+# Inactive prepared-PCM adapter. No discovery, open, or production initializer.
+linux-alsa-native = ["dep:libloading"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 rusb = { version = "=0.9.4", path = "third_party/usb/rusb-0.9.4", optional = true, features = ["vendored"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = { version = "0.2", optional = true }
+libloading = { version = "=0.8.9", optional = true }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 rfd = { version = "0.18", optional = true }

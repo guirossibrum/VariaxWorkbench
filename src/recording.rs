@@ -1,4 +1,4 @@
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 //! Offline test recorder for synthetic and file-backed audio.
 //!
 //! This is not device capture. Nothing here opens ALSA, PipeWire, PulseAudio,
@@ -402,6 +402,17 @@ impl Take {
     }
 
     pub fn push(&mut self, chunk: &[u8]) -> Result<Levels, TakeError> {
+        self.push_chunk(chunk, true)
+    }
+
+    /// The PCM period capacity was checked before reading. The returned
+    /// prefix can be shorter than the minimum configured period.
+    #[cfg(target_os = "linux")]
+    fn push_capture_read(&mut self, frames: &[u8]) -> Result<Levels, TakeError> {
+        self.push_chunk(frames, false)
+    }
+
+    fn push_chunk(&mut self, chunk: &[u8], check_period: bool) -> Result<Levels, TakeError> {
         if self.phase != Phase::Recording {
             return Err(TakeError::NotRecording);
         }
@@ -418,10 +429,8 @@ impl Take {
                 frame_bytes,
             });
         }
-        // Integer PCM uses the offline ceiling above. Native frames also have
-        // to pass the declared period window as one period. That does not mean
-        // a 44100 stream was measured against the device buffer.
-        if self.format == FrameFormat::PodS24_3Le {
+        // Direct PODxt pushes still model whole periods.
+        if check_period && self.format == FrameFormat::PodS24_3Le {
             plan_buffer(chunk.len() as u32, 1).map_err(TakeError::ChunkRejected)?;
         }
         let added = self.pcm.len().saturating_add(chunk.len()) as u64;

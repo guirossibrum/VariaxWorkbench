@@ -2476,6 +2476,7 @@ dependencies = [
  "flate2",
  "image",
  "libc",
+ "libloading",
  "libm",
  "line6-devices",
  "md-5",

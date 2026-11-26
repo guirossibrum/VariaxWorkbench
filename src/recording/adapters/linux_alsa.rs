@@ -2,10 +2,12 @@
 //! Linux PODxt Live declaration.
 //!
 //! This consumes values returned by ALSA negotiation and interleaved capture
-//! periods supplied by a caller. It intentionally contains no ALSA FFI, PCM
-//! handle, endpoint discovery, stream initialization, or production start
-//! route. Native numeric values are pinned to the installed ALSA 1.2.16.1
+//! periods supplied by a caller. The inactive stream lifecycle accepts an
+//! injected platform PCM. An optional libasound module can adopt an already
+//! prepared handle. Discovery, open and production start remain unavailable. Native numeric values match the ALSA 1.2.16.1
 //! header contract documented in `docs/audio-capture-session.md`.
+
+pub mod stream;
 
 use crate::recording::capture::{
     CaptureBackend, CaptureError, CaptureSession, ChannelMap, InterfaceIdentity,
@@ -221,7 +223,14 @@ pub fn translate_read_result_for_session(
     let Some(captured_bytes) = captured_frames.checked_mul(PODXT_FRAME_BYTES) else {
         return session.adapter_failure(generation, i32::MIN);
     };
-    session.callback_chunk(generation, &buffer[..captured_bytes])
+    let captured = &buffer[..captured_bytes];
+    if captured_frames < requested_frames
+        && expected_buffer_bytes >= crate::pod_audio::PERIOD_BYTES_MIN as usize
+    {
+        session.callback_capture_read(generation, captured)
+    } else {
+        session.callback_chunk(generation, captured)
+    }
 }
 
 #[cfg(test)]
@@ -245,7 +254,7 @@ mod tests {
         source_with_capacity(instrument, 1024)
     }
 
-    fn source_with_capacity(
+    pub(super) fn source_with_capacity(
         instrument: Option<ProductProfile>,
         max_take_bytes: u64,
     ) -> ValidatedPlan {
