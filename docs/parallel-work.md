@@ -35,10 +35,11 @@ Component changes are requested from lane 2. Lane 2 never edits family editors.
   GitHub issue or update the existing issue with the agreed scope and
   acceptance criteria. The Gatekeeper records the issue before assigning
   work and gives its number to the lane.
-- Before assigning or reassigning an issue, read its live GitHub description,
-  acceptance criteria, and relevant follow-up decisions. Compare them with
-  current master, prior deliveries, and dependencies. Update stale issue text
-  and record the agreed criteria on GitHub before sending the lane prompt.
+- Before assigning or reassigning an issue, follow
+  [Free lanes](#free-lanes). Read its live GitHub description, acceptance
+  criteria, and relevant follow-up decisions. Compare them with current
+  master, prior deliveries, and dependencies. Update stale issue text and
+  record the agreed criteria on GitHub before sending the lane prompt.
 - Reference the issue in the branch, delivery, and relevant commits. The
   Gatekeeper records the merged revision, verification evidence, and any
   outstanding deliverables on the issue. Close it only after every
@@ -87,6 +88,9 @@ Read the full report, verify the assigned issue and exact commit, and follow
 the same review, offline checks, merge, issue update, and worktree handoff
 procedure. A completion signal or pane report is evidence for review and
 cannot grant permission for a hardware run, release, or skipped check.
+A Herdr idle or completion badge is the signal to verify that delivery.
+Merge and approval come from review of the exact head. After the verified
+merge, or when that checkpoint is blocked, follow [Free lanes](#free-lanes).
 If a decision or milestone needs the owner, use production Owner Inbox and
 pause the dependent action. Continue unrelated authorized reviews. Record
 the outcome where appropriate before resuming the dependent work. When
@@ -94,6 +98,31 @@ replacing the planning agent, rebind the existing route and preserve its
 handoff state.
 Keep only one active Gatekeeper route per project. See the
 [Herdr completion watcher runbook](herdr-handoff.md) for setup and recovery.
+
+## Free lanes
+
+The Gatekeeper checks for a free lane at every verified delivery or merge,
+and at every blocked checkpoint. A lane is free when its delivery is
+reviewed, merged, and verified on `origin/master`. A lane is also free when
+a completed research checkpoint or an owner decision blocks the dependent
+work and the lane can take an independent issue. A Herdr idle or completion
+badge asks the Gatekeeper to read the report and verify that delivery. The
+badge leaves merge, approval, hardware, release, and review boundaries as
+they stand. It does not assign the next issue.
+
+At each of those checkpoints, select one current open issue the lane can
+act on and assign it promptly. Read the live GitHub description, acceptance
+criteria, recent decisions, current `origin/master`, dependencies, file
+ownership, and active assignments. Correct stale criteria on the issue
+before sending the task. Prefer existing open work that moves an issue
+toward completion and fits that lane's ownership in the table above.
+
+Keep one active implementation issue per lane. The lane's other open issues
+stay unassigned while that issue is in progress. When no ready issue fits,
+record the concrete blocker on the current issue or in the handoff and
+wait. Owner decisions, missing dependencies, and the hardware, release, and
+review boundaries stay in force. This check adds no branch, merge, push, or
+Herdr completion-watcher change.
 
 ## Lane reply template
 
