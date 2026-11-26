@@ -373,9 +373,6 @@ impl<Rig> Link for UsbInterfaceLink<Rig> {
     }
 
     fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
-        #[cfg(target_os = "macos")]
-        return macos::write_identity(bytes, |bytes| self.write_usb_packets(bytes));
-        #[cfg(not(target_os = "macos"))]
         self.write_usb_packets(bytes)
     }
 

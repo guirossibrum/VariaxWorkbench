@@ -2,8 +2,6 @@
 
 use super::{InterfaceSpec, VARIAX_VIA_PODXT_LIVE, attachment_path, podxt::SPEC};
 
-/// The macOS transport awaits a separate owner test.
-pub const DIRECT_USB_APPROVED: bool = false;
 pub const PODXT_MIDI: InterfaceSpec = SPEC;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,14 +32,18 @@ pub fn attachments() -> Result<Vec<Attachment>, String> {
 }
 
 fn check_available() -> Result<(), String> {
-    if !DIRECT_USB_APPROVED || cfg!(test) {
-        return Err("The Mac USB connection is closed pending the owner's test.".into());
+    if cfg!(test) {
+        return Err("Test builds do not open or enumerate USB devices.".into());
     }
     Ok(())
 }
 
 pub(super) fn check_open(spec: InterfaceSpec, locked: bool) -> Result<(), String> {
     check_available()?;
+    check_attachment_profile(spec, locked)
+}
+
+fn check_attachment_profile(spec: InterfaceSpec, locked: bool) -> Result<(), String> {
     if !locked {
         return Err("Mac USB requires the rig lock and the selected attachment.".into());
     }
@@ -64,18 +66,6 @@ pub(super) fn check_interfaces(
     Ok(())
 }
 
-/// Both interfaces use the same universal identity request. Accept exactly
-/// one complete frame, before packetization or any USB transfer.
-pub(super) fn write_identity(
-    bytes: &[u8],
-    write: impl FnOnce(&[u8]) -> Result<(), String>,
-) -> Result<(), String> {
-    if bytes != crate::identity::REQUEST {
-        return Err("The Mac USB test permits only a complete MIDI identity request.".into());
-    }
-    write(bytes)
-}
-
 pub(super) fn open_error(error: rusb::Error) -> String {
     match error {
         rusb::Error::Busy => "The PODxt Live is held by a driver or another application. If the legacy Line 6 driver is installed, resolve that conflict before using direct USB.".into(),
@@ -89,48 +79,39 @@ mod tests {
     use std::cell::RefCell;
 
     #[test]
-    fn closed_darwin_inventory_refuses_before_usb() {
-        assert!(attachments().unwrap_err().contains("closed"));
-        assert!(check_open(PODXT_MIDI, true).unwrap_err().contains("closed"));
+    fn test_build_refuses_mac_inventory_and_open_before_usb() {
+        assert!(attachments().unwrap_err().contains("Test builds"));
+        assert!(
+            check_open(PODXT_MIDI, true)
+                .unwrap_err()
+                .contains("Test builds")
+        );
         assert!(
             check_open(VARIAX_VIA_PODXT_LIVE, true)
                 .unwrap_err()
-                .contains("closed")
+                .contains("Test builds")
         );
     }
 
     #[test]
-    fn only_an_exact_identity_frame_reaches_the_fake_usb_writer() {
-        use crate::family::{podxt::PodxtRequest, variax::VariaxRequest};
-        use crate::session::Request;
-
-        let identity = crate::identity::REQUEST;
-        for request in [
-            PodxtRequest::Identity.bytes(),
-            VariaxRequest::Identity.bytes(),
-        ] {
-            let mut wire = Vec::new();
-            write_identity(&request, |bytes| {
-                wire.extend_from_slice(bytes);
-                Ok(())
-            })
-            .unwrap();
-            assert_eq!(wire, identity);
+    fn only_podxt_and_its_relay_can_open_with_a_locked_attachment() {
+        for spec in [PODXT_MIDI, VARIAX_VIA_PODXT_LIVE] {
+            assert!(check_attachment_profile(spec, true).is_ok());
+            assert!(
+                check_attachment_profile(spec, false)
+                    .unwrap_err()
+                    .contains("rig lock")
+            );
         }
-        for frame in [
-            Vec::new(),
-            identity[..identity.len() - 1].to_vec(),
-            identity.repeat(2),
-            [identity.as_slice(), &[0xc0, 0]].concat(),
-            vec![0xc0, 0],
-            vec![0xb0, 69, 1],
-            vec![0xf0, 0, 1, 0x0c, 3, 0x23, 1, 0xf7],
-            vec![0xf0, 0, 1, 0x0c, 3, 0x71, 0, 0xf7],
-            VariaxRequest::SessionOn.bytes(),
-            VariaxRequest::Metadata1.bytes(),
-        ] {
-            assert!(write_identity(&frame, |_| panic!("refused frame reached USB")).is_err());
-        }
+        let other = InterfaceSpec {
+            product: 0xffff,
+            ..PODXT_MIDI
+        };
+        assert!(
+            check_attachment_profile(other, true)
+                .unwrap_err()
+                .contains("PODxt Live")
+        );
     }
 
     #[test]
