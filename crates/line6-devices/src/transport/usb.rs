@@ -14,6 +14,8 @@ pub use crate::family::variax::transport::VARIAX_VIA_PODXT_LIVE;
 
 #[cfg(any(target_os = "macos", test))]
 pub mod macos;
+#[cfg(any(target_os = "macos", test))]
+pub mod macos_inventory;
 mod podxt;
 pub use podxt::PODXT_DIRECT_USB_APPROVED;
 

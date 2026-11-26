@@ -21,6 +21,8 @@ struct FakeSnapshot {
     fail: bool,
     reads: usize,
     address: Option<u8>,
+    registry_id: Option<u64>,
+    interfaces_unavailable: bool,
 }
 
 #[derive(Clone, Default)]
@@ -49,6 +51,14 @@ impl PresenceSource for FakePresence {
 
     fn usb_address(&self, _: &str) -> Option<u8> {
         self.0.borrow().address.or(Some(10))
+    }
+
+    fn usb_registry_id(&self, _: &str) -> Option<u64> {
+        self.0.borrow().registry_id
+    }
+
+    fn usb_open_candidate(&self, _: &str) -> bool {
+        !self.0.borrow().interfaces_unavailable
     }
 
     fn simulated_identity(&self, job: &SimulatedJob) -> Option<SimulatedOutcome> {
@@ -184,6 +194,72 @@ fn has_label(shapes: &[egui::epaint::ClippedShape], expected: &str) -> bool {
         }
     }
     shapes.iter().any(|shape| matches(&shape.shape, expected))
+}
+
+#[test]
+fn passive_pod_inventory_stays_visible_without_interfaces_or_access() {
+    let (ctx, mut app, source) = fixture();
+    source.usb(true, false);
+    source.0.borrow_mut().registry_id = Some(30);
+    source.0.borrow_mut().interfaces_unavailable = true;
+    tick(&ctx, &mut app);
+    let tabs = entries(&app);
+    assert_eq!(tabs.len(), 1);
+    let (family, tab, device) = tabs[0];
+    assert_eq!(family, "podxt");
+    assert_eq!(device.device.support, DeviceSupport::UsbOnly);
+    assert!(device.verified_attachment().is_none());
+    let key = device.device.key.attachment.clone();
+    source.0.borrow_mut().results.insert(
+        key.clone(),
+        SimulatedOutcome::Finished {
+            pod_firmware: None,
+            guitar: SimulatedGuitar::Unavailable("macOS reports the device is busy".into()),
+        },
+    );
+
+    tick(&ctx, &mut app);
+    assert!(source.0.borrow().completed.is_empty());
+    source.0.borrow_mut().interfaces_unavailable = false;
+    tick(&ctx, &mut app);
+    let (_, same_tab, busy_device) = entries(&app)[0];
+    assert_eq!(same_tab, tab);
+    assert_eq!(busy_device.device.key.attachment, key);
+    assert_eq!(busy_device.device.support, DeviceSupport::UsbOnly);
+    assert!(busy_device.verified_attachment().is_none());
+    assert_eq!(source.0.borrow().completed.len(), 1);
+    source.0.borrow_mut().interfaces_unavailable = true;
+    tick(&ctx, &mut app);
+    source.guitar(key);
+    source.0.borrow_mut().interfaces_unavailable = false;
+    tick(&ctx, &mut app);
+    assert_eq!(source.0.borrow().completed.len(), 1);
+    assert!(entries(&app)[0].2.verified_attachment().is_none());
+}
+
+#[test]
+fn passive_inventory_replacement_drops_stale_identity_at_the_same_path_and_address() {
+    let (ctx, mut app, source) = fixture();
+    source.usb(true, false);
+    source.0.borrow_mut().registry_id = Some(30);
+    tick(&ctx, &mut app);
+    let old = app.detection.as_ref().unwrap().attachment_key("8-2.1");
+    source.guitar(old.clone());
+
+    source.0.borrow_mut().registry_id = Some(31);
+    tick(&ctx, &mut app);
+    let new = app.detection.as_ref().unwrap().attachment_key("8-2.1");
+    assert_ne!(new, old);
+    assert_eq!(new.usb_location(), old.usb_location());
+    assert!(source.0.borrow().completed.is_empty());
+    assert_eq!(entries(&app).len(), 1);
+    assert!(entries(&app)[0].2.verified_attachment().is_none());
+    assert_eq!(entries(&app)[0].2.connection, Connection::Disconnected);
+    let visible = frame(&ctx, &mut app, vec![]);
+    assert!(has_label(
+        &visible.shapes,
+        "PODxt Live detected on 8-2.1 · identity unverified"
+    ));
 }
 
 #[test]

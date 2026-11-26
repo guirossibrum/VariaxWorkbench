@@ -164,7 +164,7 @@ mod macos {
         family::variax,
         gate::{GatePolicy, Operation},
         session::{Quiet, Session},
-        transport::usb::{UsbInterfaceLink, VARIAX_VIA_PODXT_LIVE},
+        transport::usb::{UsbInterfaceLink, VARIAX_VIA_PODXT_LIVE, macos, macos_inventory},
     };
     use variax_workbench::{
         hardware_gates::{Gate, run_if_unlocked},
@@ -182,10 +182,17 @@ mod macos {
         let Some((path, address)) = job.attachment.usb_location() else {
             return Outcome::Deferred;
         };
+        let Some(registry_id) = job.attachment.registry_id else {
+            return Outcome::Deferred;
+        };
         let result = run_if_unlocked(Gate::OsDiscovery, || {
             run_if_unlocked(Gate::IdentityRequest, || {
                 run_if_unlocked(Gate::DeviceCheckCurrentSettingsRead, || {
-                    identify_on(job.kind, path, address, cancel)
+                    let attachment = macos::Attachment {
+                        path: path.into(),
+                        address,
+                    };
+                    identify_on(job.kind, registry_id, &attachment, cancel)
                 })
             })
         });
@@ -197,8 +204,8 @@ mod macos {
 
     fn identify_on(
         kind: JobKind,
-        path: &str,
-        address: u8,
+        registry_id: u64,
+        attachment: &macos::Attachment,
         cancel: &AtomicBool,
     ) -> Result<Outcome, String> {
         let rig = match DeviceLock::acquire() {
@@ -211,10 +218,11 @@ mod macos {
             return Ok(Outcome::Deferred);
         }
         let pod_firmware = if kind == JobKind::Initial {
+            macos_inventory::verify_candidate(&rig, registry_id, attachment)?;
             let mut link = UsbInterfaceLink::open_attachment_borrowed(
-                line6_devices::transport::usb::macos::PODXT_MIDI,
-                path,
-                address,
+                macos::PODXT_MIDI,
+                &attachment.path,
+                attachment.address,
                 &rig,
             )?;
             let pod = super::pod::identify(&mut link, cancel);
@@ -230,10 +238,11 @@ mod macos {
             return Ok(Outcome::Deferred);
         }
         let result = (|| {
+            macos_inventory::verify_candidate(&rig, registry_id, attachment)?;
             let mut link = UsbInterfaceLink::open_attachment_borrowed(
                 VARIAX_VIA_PODXT_LIVE,
-                path,
-                address,
+                &attachment.path,
+                attachment.address,
                 &rig,
             )?;
             let mut quiet = Quiet;

@@ -36,6 +36,7 @@ pub(super) struct AttachmentKey {
     pub path: String,
     address: Option<u8>,
     generation: u64,
+    registry_id: Option<u64>,
 }
 
 impl AttachmentKey {
@@ -91,6 +92,14 @@ pub(super) trait PresenceSource {
         None
     }
 
+    fn usb_registry_id(&self, _path: &str) -> Option<u64> {
+        None
+    }
+
+    fn usb_open_candidate(&self, _path: &str) -> bool {
+        true
+    }
+
     #[cfg(test)]
     fn simulated_identity(&self, _job: &Job) -> Option<Outcome> {
         None
@@ -117,26 +126,44 @@ impl PresenceSource for CachedUsbPresence {
 }
 
 #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
+use line6_devices::transport::usb::macos_inventory::{ObservedPodxt, inventory};
+
+#[cfg(all(target_os = "macos", feature = "usb", not(test)))]
 #[derive(Default)]
-struct MacUsbPresence(std::cell::RefCell<BTreeMap<String, u8>>);
+struct MacUsbPresence(std::cell::RefCell<BTreeMap<String, (ObservedPodxt, bool)>>);
 
 #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
 impl PresenceSource for MacUsbPresence {
     fn usb_devices(&self) -> Result<Vec<UsbDevice>, MetadataError> {
         use variax_workbench::hardware_gates::{Gate, run_if_unlocked};
-        let attachments = run_if_unlocked(
-            Gate::OsDiscovery,
-            line6_devices::transport::usb::macos::attachments,
-        )
-        .map_err(MetadataError::Unreadable)?;
-        let mut addresses = self.0.borrow_mut();
-        addresses.clear();
-        Ok(attachments
-            .into_iter()
-            .map(|attachment| {
-                addresses.insert(attachment.path.clone(), attachment.address);
+        let records =
+            run_if_unlocked(Gate::OsDiscovery, inventory).map_err(MetadataError::Unreadable)?;
+        let mut snapshot = self.0.borrow_mut();
+        snapshot.clear();
+        Ok(records
+            .iter()
+            .map(|record| {
+                // A row without a unique physical route remains visible. It
+                // cannot supply a path to the existing USB opener.
+                let path = record
+                    .route()
+                    .filter(|route| {
+                        records
+                            .iter()
+                            .filter(|other| other.route() == Some(route))
+                            .count()
+                            == 1
+                    })
+                    .map_or_else(
+                        || format!("macOS USB entry {}", record.registry_id),
+                        str::to_owned,
+                    );
+                snapshot.insert(
+                    path.clone(),
+                    (record.clone(), record.attachment(&records).is_some()),
+                );
                 UsbDevice {
-                    sysfs_name: attachment.path,
+                    sysfs_name: path,
                     vendor_id: 0x0e41,
                     product_id: 0x4650,
                     product: Some("PODxt Live".into()),
@@ -148,7 +175,18 @@ impl PresenceSource for MacUsbPresence {
     }
 
     fn usb_address(&self, path: &str) -> Option<u8> {
-        self.0.borrow().get(path).copied()
+        self.0.borrow().get(path)?.0.address
+    }
+
+    fn usb_registry_id(&self, path: &str) -> Option<u64> {
+        Some(self.0.borrow().get(path)?.0.registry_id)
+    }
+
+    fn usb_open_candidate(&self, path: &str) -> bool {
+        self.0
+            .borrow()
+            .get(path)
+            .is_some_and(|(_, eligible)| *eligible)
     }
 }
 
@@ -162,6 +200,8 @@ struct Attachment {
     key: AttachmentKey,
     usb: UsbDevice,
     bridge: Option<Bridge>,
+    open_candidate: bool,
+    identity_started: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -377,6 +417,12 @@ impl DetectionService {
         (usb.vendor_id, usb.product_id)
     }
 
+    pub fn passive_pods(&self) -> impl Iterator<Item = &DetectedDevice> {
+        self.known.values().filter(|device| {
+            device.key.attachment.registry_id.is_some() && device.key.linked_generation.is_none()
+        })
+    }
+
     pub fn firmware_notices(&self) -> impl Iterator<Item = FirmwareNotice> + '_ {
         self.attachments
             .values()
@@ -429,8 +475,8 @@ impl DetectionService {
             }
         }
 
-        // An absence, changed USB product or changed address starts a new
-        // generation. Detaching and restoring the driver leaves it in place.
+        // An absence or changed attachment identity starts a new generation.
+        // Published interface availability is independent of that identity.
         let mut previous = std::mem::take(&mut self.attachments);
         for (path, usb) in listed {
             let id = Self::usb_id(&usb);
@@ -442,11 +488,40 @@ impl DetectionService {
             } else {
                 None
             };
+            let registry_id = self.source.usb_registry_id(&path);
+            let open_candidate = self.source.usb_open_candidate(&path);
+            let make_bridge = |identity_started: bool| {
+                automatic.then(|| {
+                    let mut bridge = Bridge::new(
+                        open_candidate
+                            && !identity_started
+                            && (self.identify.is_some() || cfg!(test)),
+                    );
+                    if !open_candidate {
+                        bridge.status = "PODxt Live USB interfaces unavailable".into();
+                    } else if identity_started {
+                        bridge.status = "PODxt Live USB identity unverified".into();
+                    }
+                    bridge
+                })
+            };
             let attachment = match previous.remove(&path) {
                 Some(existing)
-                    if Self::usb_id(&existing.usb) == id && existing.key.address == address =>
+                    if Self::usb_id(&existing.usb) == id
+                        && existing.key.address == address
+                        && existing.key.registry_id == registry_id =>
                 {
-                    Attachment { usb, ..existing }
+                    let bridge = if existing.open_candidate == open_candidate {
+                        existing.bridge
+                    } else {
+                        make_bridge(existing.identity_started)
+                    };
+                    Attachment {
+                        usb,
+                        bridge,
+                        open_candidate,
+                        ..existing
+                    }
                 }
                 _ => {
                     self.generation += 1;
@@ -454,10 +529,15 @@ impl DetectionService {
                         path: path.clone(),
                         address,
                         generation: self.generation,
+                        registry_id,
                     };
-                    let bridge =
-                        automatic.then(|| Bridge::new(self.identify.is_some() || cfg!(test)));
-                    Attachment { key, usb, bridge }
+                    Attachment {
+                        key,
+                        usb,
+                        bridge: make_bridge(false),
+                        open_candidate,
+                        identity_started: false,
+                    }
                 }
             };
             self.attachments.insert(path, attachment);
@@ -466,7 +546,9 @@ impl DetectionService {
             let same_attachment = self
                 .attachments
                 .get(&worker.job.attachment.path)
-                .is_some_and(|attachment| attachment.key == worker.job.attachment);
+                .is_some_and(|attachment| {
+                    attachment.key == worker.job.attachment && attachment.open_candidate
+                });
             let ambiguous_bridge = worker.job.kind == JobKind::Listen
                 && self
                     .attachments
@@ -550,7 +632,7 @@ impl DetectionService {
         let Some(attachment) = self
             .attachments
             .get_mut(&job.attachment.path)
-            .filter(|attachment| attachment.key == job.attachment)
+            .filter(|attachment| attachment.key == job.attachment && attachment.open_candidate)
         else {
             return;
         };
@@ -564,6 +646,14 @@ impl DetectionService {
             return false;
         }
         let (job, outcome) = self.worker.take().expect("finished worker").finish();
+        if job.attachment.registry_id.is_some()
+            && !self
+                .bridge_mut(&job.attachment)
+                .is_some_and(|bridge| bridge.running == Some(job.kind))
+        {
+            // Interface services disappeared while this worker was running.
+            return false;
+        }
         let waiting_for_other_process = matches!(outcome, Outcome::OtherProcessBusy);
         self.apply_outcome(job, outcome);
         waiting_for_other_process
@@ -577,6 +667,14 @@ impl DetectionService {
             return true;
         }
         false
+    }
+
+    fn note_identity_started(&mut self, job: &Job) {
+        if job.kind == JobKind::Initial
+            && let Some(attachment) = self.attachments.get_mut(&job.attachment.path)
+        {
+            attachment.identity_started = true;
+        }
     }
 
     fn start_queued(&mut self) {
@@ -595,6 +693,7 @@ impl DetectionService {
             if let Some(job) = queued
                 && let Some(outcome) = self.source.simulated_identity(&job)
             {
+                self.note_identity_started(&job);
                 self.bridge_mut(&job.attachment)
                     .expect("queued bridge")
                     .queued = None;
@@ -623,6 +722,7 @@ impl DetectionService {
         });
         let Some(job) = job else { return };
         if job.kind != JobKind::Listen {
+            self.note_identity_started(&job);
             let bridge = self.bridge_mut(&job.attachment).expect("queued bridge");
             bridge.queued = None;
             bridge.waiting_for_other_process = false;

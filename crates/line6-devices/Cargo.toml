@@ -8,7 +8,7 @@ description = "Per-product-family Line 6 device protocols, decoders and gated tr
 [features]
 # Live USB interface links (libusb). Off by default: decoders and the ALSA
 # MIDI link need no native library.
-usb = ["dep:rusb"]
+usb = ["dep:rusb", "dep:macos-usb-inventory"]
 
 [dependencies]
 rusb = { version = "=0.9.4", path = "../../third_party/usb/rusb-0.9.4", optional = true }
@@ -16,6 +16,7 @@ rusb = { version = "=0.9.4", path = "../../third_party/usb/rusb-0.9.4", optional
 sha2 = "0.10"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+macos-usb-inventory = { path = "../macos-usb-inventory", optional = true }
 rusb = { version = "=0.9.4", path = "../../third_party/usb/rusb-0.9.4", optional = true, features = ["vendored"] }
 
 [target.'cfg(unix)'.dependencies]

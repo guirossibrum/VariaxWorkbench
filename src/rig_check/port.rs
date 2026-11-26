@@ -186,7 +186,7 @@ impl FileSource for Borrowed<'_> {
 #[cfg(all(target_os = "macos", feature = "usb"))]
 use line6_devices::{
     device_lock::DeviceLock,
-    transport::usb::{UsbInterfaceLink, macos},
+    transport::usb::{UsbInterfaceLink, macos, macos_inventory},
 };
 
 #[cfg(any(test, all(target_os = "macos", feature = "usb")))]
@@ -279,6 +279,7 @@ pub struct RigScope {
 struct LockedAttachment {
     lock: DeviceLock,
     attachment: macos::Attachment,
+    observed: macos_inventory::ObservedPodxt,
 }
 
 #[cfg(any(test, all(target_os = "macos", feature = "usb")))]
@@ -308,7 +309,7 @@ pub struct RealPort<'rig> {
     #[cfg(all(target_os = "macos", feature = "usb"))]
     mac_usb: DirectUsb<UsbInterfaceLink<&'rig DeviceLock>>,
     #[cfg(all(target_os = "macos", feature = "usb"))]
-    mac_inventory_match: Option<macos::Attachment>,
+    mac_inventory: Option<Vec<macos_inventory::ObservedPodxt>>,
     #[cfg(all(feature = "usb", not(target_os = "macos")))]
     variax: Option<line6_devices::transport::usb::UsbInterfaceLink>,
     #[cfg(all(feature = "usb", not(target_os = "macos")))]
@@ -337,7 +338,7 @@ impl<'rig> RealPort<'rig> {
             #[cfg(all(target_os = "macos", feature = "usb"))]
             mac_usb: DirectUsb::default(),
             #[cfg(all(target_os = "macos", feature = "usb"))]
-            mac_inventory_match: None,
+            mac_inventory: None,
             #[cfg(all(feature = "usb", not(target_os = "macos")))]
             variax: None,
             #[cfg(all(feature = "usb", not(target_os = "macos")))]
@@ -349,11 +350,23 @@ impl<'rig> RealPort<'rig> {
         let scope = self._scope;
         if scope.matched.get().is_none() {
             let lock = DeviceLock::acquire().map_err(|error| error.to_string())?;
+            let devices = macos_inventory::inventory()?;
+            let observed = select_attachment(&devices, None)?;
+            if let Some(previous) = &self.mac_inventory {
+                let expected = select_attachment(previous, None)?;
+                if !expected.matches_generation(observed) {
+                    return Err("The PODxt Live USB attachment changed. Start a new run.".into());
+                }
+            }
+            let candidate = observed
+                .attachment(&devices)
+                .ok_or("PODxt Live detected, but its USB interfaces are unavailable.")?;
             let attachments = macos::attachments()?;
-            let attachment = select_attachment(&attachments, self.mac_inventory_match.as_ref())?;
+            let attachment = select_attachment(&attachments, Some(&candidate))?;
             let _ = scope.matched.set(LockedAttachment {
                 lock,
                 attachment: attachment.clone(),
+                observed: observed.clone(),
             });
         }
         let matched = scope
@@ -367,6 +380,11 @@ impl<'rig> RealPort<'rig> {
         Ok(self.mac_usb.link(
             side,
             || {
+                macos_inventory::verify_candidate(
+                    &matched.lock,
+                    matched.observed.registry_id,
+                    &matched.attachment,
+                )?;
                 UsbInterfaceLink::open_attachment_borrowed(
                     spec,
                     &matched.attachment.path,
@@ -465,19 +483,16 @@ impl RigPort for RealPort<'_> {
     #[cfg(all(target_os = "macos", feature = "usb"))]
     fn direct_usb_inventory(&mut self) -> Result<Vec<super::computer::UsbDevice>, String> {
         refuse_in_tests()?;
-        let attachments = macos::attachments()?;
-        if let Some(matched) = self._scope.matched.get() {
-            select_attachment(&attachments, Some(&matched.attachment))?;
-        }
-        self.mac_inventory_match = match attachments.as_slice() {
-            [only] => Some(only.clone()),
-            _ => None,
-        };
-        Ok(attachments
+        let devices = macos_inventory::inventory()?;
+        self.mac_inventory = Some(devices.clone());
+        Ok(devices
             .into_iter()
-            .map(|attachment| super::computer::UsbDevice {
-                port: attachment.path,
-                address: Some(attachment.address),
+            .map(|device| super::computer::UsbDevice {
+                port: device
+                    .route()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| device.label()),
+                address: device.address,
                 vendor: 0x0e41,
                 product: 0x4650,
                 name: Some("PODxt Live".into()),

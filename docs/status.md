@@ -10,6 +10,7 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] [#274](https://github.com/guirossibrum/VariaxWorkbench/issues/274) shares passive macOS PODxt Live inventory between Workbench and Rig Check. Offline fixtures cover direct and populated hub paths, missing interfaces, refused access, unrelated neighbor changes and replaced or ambiguous attachments. Device-level presence does not grant interface access. Native runtime verification is pending.
 - [x] [#274](https://github.com/guirossibrum/VariaxWorkbench/issues/274) stages the ordinary macOS USB transport and an owner-only universal DMG build for Workbench and Rig Check. Offline tests cover attachment matching, driver conflict and cleanup, the one-request Device Check exchange, and the static-symbol verifier for all four executable slices. Native USB packaging and owner parity verification require the reviewed integration of both consumers. [Integration contract](podxt-macos-usb-integration.md) · [Owner parity card](podxt-macos-usb-test-card.md).
 
 - [x] #284 validates complete Variax 3.10 metadata and full-program snapshots for the offline cache. It checks identity, the manifest, all 60 slots and 12 bank names, and firmware checksums for full programs. Automatic cache eligibility requires same-capture evidence, verified switch-back, and successful cleanup. Fake transport and file tests cover both coverage modes and rejection cases. Explicit imports retain their existing compatibility rules. [Cache design](first-connection-cache.md).
