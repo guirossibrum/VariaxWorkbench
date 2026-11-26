@@ -3,9 +3,11 @@
 [#248](https://github.com/guirossibrum/VariaxWorkbench/issues/248).
 Design checkpoint for the owner. The common guided chrome cited here
 is the text on `dac532129971e18571bc2b4065ffcbbe76caf985`. That chrome
-is unchanged through `28534593902ab0c61e0d05a7d463f50369d57ce8`, the
-branch base, except the 6.1 cable sentences, which Lane 1 replaced on
-this base. It maps that wizard and terminal, and proposes four changes
+is unchanged through `c5cdc3f323f801d5ac90dabc1c5994f668912975`, the
+branch base, except the 6.1 cable sentences, which Lane 1 replaced
+before this base. #249 on this base changes where Mac reports are
+stored. It does not change these prompts, the resume target, or the
+6.1 countdown. It maps that wizard and terminal, and proposes four changes
 for a later implementation: when the act-now sentence appears, how
 step 7.3 names a footswitch and step 7.4 names the expression pedal,
 how an accidental Skip is retried from review, and how a continuation
