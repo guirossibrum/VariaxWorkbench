@@ -10,14 +10,16 @@
 //! guard.
 
 use super::catalogue::{self, RIG_GUARD};
-use super::guided::{WINDOW, watch_variax};
+use super::guided::{begin_action, missed, watch_variax};
 use super::practice::{Program, UserAction, preset_label};
-use super::procedures::{TONE_POSITION_WORDS, variax_read_preset, with_variax};
+use super::procedures::{
+    TONE_POSITION_WORDS, variax_read_preset, with_variax, with_variax_progress,
+};
 use super::record::{Mode, Outcome, RunRecord, StepRecord, sha256_hex, utc_now};
-use super::runner::{Ctx, Decision, Operator, ReportSink, Retry, SKIPPED};
+use super::runner::{Ctx, Decision, Operator, Progress, ReportSink};
 use super::steps::RunData;
 use line6_devices::family::podxt::{self, BankKind, Location};
-use line6_devices::family::variax::{FollowUpdate, Preset, procedures as shared_variax};
+use line6_devices::family::variax::{self, FollowUpdate, Preset, procedures as shared_variax};
 use line6_devices::gate::Operation;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -26,31 +28,56 @@ use std::time::Duration;
 
 const VDI_OPS: &[Operation] = &[Operation::VariaxIdentity, Operation::VariaxRead];
 
-fn vdi_window(
-    ctx: &mut Ctx<'_>,
-    connected: bool,
-    see: &str,
-    action: UserAction,
-) -> Result<Duration, String> {
+fn vdi_state(ctx: &mut Ctx<'_>) -> Result<Option<Duration>, String> {
+    let prior = ctx
+        .data
+        .variax_identity
+        .clone()
+        .ok_or("No verified guitar identity from 3.1.")?;
+    with_variax(ctx, VDI_OPS, |session, _| {
+        super::procedures::drain(session)?;
+        let Some(reported) = variax::identify_if_present(session)? else {
+            return Ok(None);
+        };
+        if reported.identity != prior {
+            return Err("The guitar answered with a different identity than in step 3.1.".into());
+        }
+        Ok(Some(session.link.elapsed()))
+    })
+}
+
+fn vdi_window(ctx: &mut Ctx<'_>, connected: bool, action: UserAction) -> Result<(), String> {
     let what = if connected {
-        "the guitar coming back"
+        "the guitar to connect"
     } else {
-        "the guitar going away"
+        "the guitar to disconnect"
     };
     loop {
-        if ctx.stopping() {
-            return Err("Stopped by you.".into());
+        let current = vdi_state(ctx)?.is_some();
+        if current == connected {
+            if current {
+                ctx.rec.show(
+                    "The guitar is already connected and answers with its starting identity.",
+                );
+            } else {
+                ctx.rec.show("The guitar is already unplugged or not answering. Plug it back in at the next prompt.");
+            }
+            return Ok(());
         }
-        let hear = if connected {
-            "Your guitar again."
+        let (see, hear) = if connected {
+            (
+                "The guitar is not answering. Plug the VDI cable back in, then press Continue if the screen is still waiting.",
+                "Your guitar again.",
+            )
         } else {
-            "Silence from the guitar."
+            (
+                "Unplug the VDI cable from the guitar after OK.",
+                "Silence from the guitar.",
+            )
         };
-        ctx.op.instruct(ctx.rec.id, see, hear);
-        ctx.port
-            .user_acts(action.clone(), super::guided::PRACTICE_DELAY);
+        let advance = begin_action(ctx, see, hear, what, std::slice::from_ref(&action))?;
         let (seen, at) = with_variax(ctx, VDI_OPS, |session, stopping| {
-            let seen = watch_variax(session, connected, stopping, |update| {
+            let seen = watch_variax(session, stopping, &advance, |update| {
                 matches!(
                     (connected, update),
                     (true, FollowUpdate::Connected) | (false, FollowUpdate::Disconnected)
@@ -59,40 +86,45 @@ fn vdi_window(
             Ok((seen, session.link.elapsed()))
         })?;
         if seen {
-            return Ok(at);
+            let state = if connected {
+                "connected again"
+            } else {
+                "disconnected"
+            };
+            ctx.rec.show(format!(
+                "The PODxt Live reported the guitar {state} (link time {:.3} s).",
+                at.as_secs_f64()
+            ));
+            return Ok(());
         }
-        ctx.rec
-            .note(format!("Not seen within {} s: {what}.", WINDOW.as_secs()));
-        match ctx.op.not_seen(ctx.rec.id, what) {
-            Retry::TryAgain => continue,
-            Retry::Skip => return Err(format!("{SKIPPED}Didn't see {what}; you chose Skip.")),
+        let answering = vdi_state(ctx)?.is_some();
+        if answering == connected {
+            let state = if connected {
+                "The guitar answered with its starting identity."
+            } else {
+                "The guitar stopped answering."
+            };
+            ctx.rec
+                .show(format!("{state} No connection notice was decoded."));
+            return Ok(());
         }
+        missed(
+            ctx,
+            what,
+            if answering {
+                "the guitar still answering"
+            } else {
+                "no guitar identity reply"
+            },
+        )?;
     }
 }
 
 /// 6.1: the person unplugs the VDI cable and plugs it back; the identity is
 /// read again afterwards.
 pub fn vdi_replug(ctx: &mut Ctx<'_>) -> Result<(), String> {
-    let gone = vdi_window(
-        ctx,
-        false,
-        "Unplug the VDI cable from the guitar now.",
-        UserAction::UnplugVdi,
-    )?;
-    ctx.rec.show(format!(
-        "The PODxt Live reported the guitar disconnected (link time {:.3} s).",
-        gone.as_secs_f64()
-    ));
-    let back = vdi_window(
-        ctx,
-        true,
-        "Plug the VDI cable back into the guitar.",
-        UserAction::ReplugVdi,
-    )?;
-    ctx.rec.show(format!(
-        "The PODxt Live reported the guitar connected again (link time {:.3} s).",
-        back.as_secs_f64()
-    ));
+    vdi_window(ctx, false, UserAction::UnplugVdi)?;
+    vdi_window(ctx, true, UserAction::ReplugVdi)?;
     let identified = with_variax(ctx, VDI_OPS, |session, _| {
         super::procedures::drain(session)?;
         shared_variax::identify_reported(session)
@@ -279,9 +311,20 @@ fn restore(ctx: &mut Ctx<'_>, state: &RigState) -> Result<(), String> {
         }
     }
     if let Some(preset) = state.preset() {
-        let read = with_variax(ctx, RESTORE_OPS, |session, _| {
+        if state.channel().is_none() {
+            super::procedures::with_podxt(ctx, RESTORE_OPS, |session| {
+                podxt::identify_podxt_live(session).map(|_| ())
+            })?;
+        }
+        let read = with_variax_progress(ctx, RESTORE_OPS, |session, _, progress| {
             super::procedures::drain(session)?;
-            variax_read_preset(session, preset, &|| false)
+            variax_read_preset(
+                session,
+                preset,
+                &|| false,
+                progress,
+                "Verifying the return to your starting preset",
+            )
         })?;
         if Some(match_hash(&read.words)) == state.variax_match_sha256 {
             ctx.rec.show(format!(
@@ -321,7 +364,7 @@ pub fn offer_restore(
     let mode = port.mode();
     let mut run = RunRecord::new(mode, utc_now());
     run.start_notice_accepted = true;
-    op.progress(&state.describe());
+    op.progress(Progress::action(state.describe()));
     let step = catalogue::step(RIG_GUARD).expect("guard step");
     let mut rec = StepRecord::new(RIG_GUARD);
     rec.note(format!("Crash restore: {}", state.describe()));
@@ -379,6 +422,106 @@ mod tests {
     use crate::rig_check::practice::{Faults, SimRig};
     use crate::rig_check::runner::{NoReport, Runner};
     use crate::rig_check::testing::Script;
+
+    #[test]
+    fn a_late_unplug_and_an_already_unplugged_cable_both_allow_replug() {
+        use crate::rig_check::run_on;
+        for already_out in [false, true] {
+            let rig = SimRig::shared(Faults {
+                guided_action_delay: Some(Duration::from_secs(48)),
+                ..Faults::default()
+            });
+            let mut port = PracticePort::new(rig.clone());
+            let mut script = Script::run_all();
+            if already_out {
+                let rig = rig.clone();
+                script.on_card = Some(Box::new(move |id| {
+                    if id == StepId(6, 1) {
+                        rig.borrow_mut().variax.connected = false;
+                    }
+                }));
+            }
+            let (run, _) = run_on(&mut port, &mut script, &mut NoReport, RunData::default());
+            let step = run.step(StepId(6, 1));
+            assert!(step.outcome.passed(), "{step:?}");
+            assert!(
+                step.evidence
+                    .iter()
+                    .any(|line| line.contains("already unplugged"))
+                    == already_out
+            );
+            assert!(rig.borrow().variax.connected);
+        }
+    }
+
+    #[test]
+    fn trying_again_rechecks_the_cable_from_either_state() {
+        use crate::rig_check::{run_on, runner::Retry};
+        for already_out in [false, true] {
+            let rig = SimRig::shared(Faults::default());
+            let mut port = PracticePort::new(rig.clone());
+            let mut script = Script::run_all();
+            let on_card = rig.clone();
+            script.on_card = Some(Box::new(move |id| {
+                if id == StepId(6, 1) {
+                    let mut model = on_card.borrow_mut();
+                    model.variax.connected = !already_out;
+                    model.faults.user_does_not_act = true;
+                }
+            }));
+            let on_missed = rig.clone();
+            script.on_missed = Some(Box::new(move |id| {
+                assert_eq!(id, StepId(6, 1));
+                on_missed.borrow_mut().faults.user_does_not_act = false;
+            }));
+            script.retry_choices.push_back(Retry::TryAgain);
+            let (run, _) = run_on(&mut port, &mut script, &mut NoReport, RunData::default());
+            let step = run.step(StepId(6, 1));
+            assert!(step.outcome.passed(), "{step:?}");
+            assert!(
+                step.evidence
+                    .iter()
+                    .any(|line| line.contains("You chose Try again"))
+            );
+            assert!(rig.borrow().variax.connected);
+        }
+    }
+
+    #[test]
+    fn a_failed_vdi_attempt_can_be_repeated_and_the_pass_unblocks_saves() {
+        use crate::rig_check::run_on;
+        let id = StepId(6, 1);
+        let rig = SimRig::shared(Faults::default());
+        let mut port = PracticePort::new(rig.clone());
+        let mut script = Script::run_all();
+        script.repeat_once = Some(id);
+        let attempt = std::rc::Rc::new(std::cell::Cell::new(0));
+        let card_attempt = attempt.clone();
+        let on_card = rig.clone();
+        script.on_card = Some(Box::new(move |step| {
+            if step == id {
+                card_attempt.set(card_attempt.get() + 1);
+                on_card.borrow_mut().variax.firmware = *b"0310";
+            }
+        }));
+        let on_prepare = rig.clone();
+        script.on_prepare = Some(Box::new(move |step| {
+            if step == id && attempt.get() == 1 && !on_prepare.borrow().variax.connected {
+                on_prepare.borrow_mut().variax.firmware = *b"0309";
+            }
+        }));
+        let (run, _) = run_on(&mut port, &mut script, &mut NoReport, RunData::default());
+        assert_eq!(run.prior_attempts.len(), 1);
+        assert_eq!(run.prior_attempts[0].id, id);
+        assert_eq!(run.prior_attempts[0].attempt, Some(1));
+        assert!(matches!(run.prior_attempts[0].outcome, Outcome::Failed(_)));
+        assert!(run.step(id).outcome.passed());
+        assert_eq!(run.step(id).attempt, Some(2));
+        assert!(run.step(StepId(5, 1)).outcome.passed());
+        assert!(
+            crate::rig_check::report::render_plain(&run, "practice").contains("EARLIER ATTEMPTS")
+        );
+    }
 
     #[test]
     fn the_vdi_replug_is_noticed_and_the_identity_read_again() {

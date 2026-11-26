@@ -10,7 +10,7 @@
 
 use super::practice::{Program, packed, preset_label, program_name, seal};
 use super::procedures::{
-    program_bytes, same_program, variax_full_read, variax_read_preset, with_variax,
+    program_bytes, same_program, variax_full_read, variax_read_preset, with_variax_progress,
     word_differences,
 };
 use super::runner::{Answer, Ctx, Question};
@@ -30,11 +30,11 @@ pub const VARIAX_LIVE: &[Operation] = &[
 fn audition(ctx: &mut Ctx<'_>, words: &Program, label: &str) -> Result<Program, String> {
     let name = program_name(words);
     let bytes = packed(words);
-    let read = with_variax(ctx, VARIAX_LIVE, |session, stopping| {
+    let read = with_variax_progress(ctx, VARIAX_LIVE, |session, stopping, progress| {
         shared_variax::identify(session)?;
         let program = write::Program::new(&name, &bytes)?;
         shared_variax::send_buffer(session, BufferEdit::Full(&program), stopping)?;
-        variax_full_read(session, stopping)
+        variax_full_read(session, stopping, progress, label)
     })?;
     let sent = ctx.rec.checksum(
         format!("{label}: sent (1,092 words)"),
@@ -134,17 +134,17 @@ pub fn variax_test_model(ctx: &mut Ctx<'_>) -> Result<(), String> {
     if models.is_empty() {
         return Err("No verified test model: add your reference folder to step 0.3 (--engine-folder) so test models are built and checked on this computer first.".into());
     }
+    super::guided::play_phrase(
+        ctx,
+        "Strum all six strings on your starting sound (A). Then press Continue.",
+        "Your starting sound.",
+    )?;
     let mut result = Ok(());
     for (name, model, question_text) in models {
         if ctx.stopping() {
             result = Err("Stopped by you.".to_string());
             break;
         }
-        ctx.op.instruct(
-            ctx.rec.id,
-            "Play your own sound now (A): strum all six strings.",
-            "Your own sound, unchanged.",
-        );
         let back = match audition(ctx, &model, &name) {
             Ok(back) => back,
             Err(error) => {
@@ -156,6 +156,14 @@ pub fn variax_test_model(ctx: &mut Ctx<'_>) -> Result<(), String> {
             result = Err(format!(
                 "{name}: the working buffer differs from the program that was sent."
             ));
+            break;
+        }
+        if let Err(error) = super::guided::play_phrase(
+            ctx,
+            "Strum all six strings the same way with the test sound (B). Then press Continue.",
+            &format!("{name}, the temporary test sound."),
+        ) {
+            result = Err(error);
             break;
         }
         let question = Question {
@@ -186,8 +194,14 @@ pub fn variax_test_model(ctx: &mut Ctx<'_>) -> Result<(), String> {
         }
     }
     // Always switch back, also after a failure or Stop.
-    let returned = with_variax(ctx, VARIAX_LIVE, |session, _| {
-        variax_read_preset(session, preset, &|| false)
+    let returned = with_variax_progress(ctx, VARIAX_LIVE, |session, _, progress| {
+        variax_read_preset(
+            session,
+            preset,
+            &|| false,
+            progress,
+            "Verifying the return to your starting preset",
+        )
     });
     no_store_sent(ctx)?;
     match returned {
@@ -375,15 +389,16 @@ fn variant(ctx: &mut Ctx<'_>, edit: AuditionEdit, question: &str) -> Result<(), 
         .as_ref()
         .map(|bytes| write::Program::new(&name, bytes))
         .transpose()?;
-    ctx.op.instruct(
-        ctx.rec.id,
-        "Listen for the change, then play when asked.",
-        "The starting sound changes temporarily.",
-    );
+    let phrase = match edit {
+        AuditionEdit::Trim => "Play a short phrase, then press Continue.",
+        AuditionEdit::Tuning => "Pluck the low E string, then press Continue.",
+    };
+    super::guided::play_phrase(ctx, phrase, "Your starting sound.")?;
     let mut attempted = false;
-    let sent = with_variax(ctx, VARIAX_LIVE, |session, stopping| {
+    let mut sent = with_variax_progress(ctx, VARIAX_LIVE, |session, stopping, progress| {
         shared_variax::identify(session)?;
-        let baseline = variax_full_read(session, stopping)?.words;
+        let baseline =
+            variax_full_read(session, stopping, progress, "Checking the starting program")?.words;
         shared_variax::compare_image(&baseline, &packed(&start), "Starting program")?;
         let previous = packed(&baseline);
         let edit = match &transition {
@@ -399,12 +414,20 @@ fn variant(ctx: &mut Ctx<'_>, edit: AuditionEdit, question: &str) -> Result<(), 
         };
         attempted = true;
         shared_variax::send_buffer_verified(session, edit, "Audition read-back", stopping, || {
-            Ok(|_| Ok(()))
+            let mut advance =
+                super::procedures::program_progress(progress, "Verifying the temporary edit");
+            Ok(move |_| {
+                advance();
+                Ok(())
+            })
         })?;
         Ok(())
     });
     if sent.is_ok() {
         ctx.rec.show("The edited working buffer was verified.");
+        sent = super::guided::play_phrase(ctx, phrase, "Your temporary edited sound.");
+    }
+    if sent.is_ok() {
         let (answer, note) = ctx.op.ask(&Question {
             step: ctx.rec.id,
             text: question.into(),
@@ -427,8 +450,15 @@ fn variant(ctx: &mut Ctx<'_>, edit: AuditionEdit, question: &str) -> Result<(), 
         ));
     }
     if attempted {
-        let returned = with_variax(ctx, VARIAX_LIVE, |session, _| {
-            shared_variax::return_to_preset(session, preset, &packed(&start), |_| Ok(()))
+        let returned = with_variax_progress(ctx, VARIAX_LIVE, |session, _, progress| {
+            let mut advance = super::procedures::program_progress(
+                progress,
+                "Verifying the return to your starting preset",
+            );
+            shared_variax::return_to_preset(session, preset, &packed(&start), |_| {
+                advance();
+                Ok(())
+            })
         });
         match (sent, returned) {
             (Ok(()), Ok(())) => ctx.rec.show(format!(

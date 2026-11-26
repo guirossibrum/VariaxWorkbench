@@ -25,6 +25,7 @@ pub enum Outcome {
     Passed,
     Failed(String),
     SkippedByPerson,
+    SkippedVerifiedFirmware(String),
     /// A step it needs did not pass.
     SkippedNeeds(String),
     NotAuthorized(String),
@@ -35,12 +36,24 @@ pub enum Outcome {
 }
 
 impl Outcome {
+    pub fn verified_firmware_skip(device: &str, version: &str) -> Self {
+        Self::SkippedVerifiedFirmware(format!(
+            "Skipped: your {device} reports firmware {version}, the tested version. This check is only for other versions."
+        ))
+    }
+
+    pub fn technical_note(&self) -> Option<&'static str> {
+        matches!(self, Self::SkippedVerifiedFirmware(_))
+            .then_some("evidence mode not entered: firmware verified")
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             Outcome::NotReached => "NOT REACHED",
             Outcome::Passed => "PASSED",
             Outcome::Failed(_) => "FAILED",
             Outcome::SkippedByPerson => "SKIPPED (by you)",
+            Outcome::SkippedVerifiedFirmware(_) => "SKIPPED",
             Outcome::SkippedNeeds(_) => "SKIPPED (needs an earlier step)",
             Outcome::NotAuthorized(_) => "NOT AUTHORIZED",
             Outcome::NotAvailable(_) => "NOT AVAILABLE",
@@ -55,6 +68,7 @@ impl Outcome {
             Outcome::Passed => "passed",
             Outcome::Failed(_) => "failed",
             Outcome::SkippedByPerson => "skipped",
+            Outcome::SkippedVerifiedFirmware(_) => "skipped_verified_firmware",
             Outcome::SkippedNeeds(_) => "skipped_needs",
             Outcome::NotAuthorized(_) => "not_authorized",
             Outcome::NotAvailable(_) => "not_available",
@@ -67,6 +81,7 @@ impl Outcome {
         match self {
             Outcome::Failed(reason)
             | Outcome::SkippedNeeds(reason)
+            | Outcome::SkippedVerifiedFirmware(reason)
             | Outcome::NotAuthorized(reason)
             | Outcome::NotAvailable(reason)
             | Outcome::UnverifiedDevice(reason)
@@ -84,15 +99,34 @@ impl Outcome {
 pub type MessageLine = String;
 
 #[derive(Clone, Debug)]
+pub struct LookCheck {
+    pub prompt: &'static str,
+    pub expected: String,
+    pub different: Option<String>,
+}
+
+impl LookCheck {
+    pub fn report_line(&self) -> String {
+        let reported = self.different.as_ref().map_or_else(
+            || "not reported different".to_string(),
+            |value| format!("{value:?}"),
+        );
+        format!("Expected {:?} · On the device: {reported}", self.expected)
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct StepRecord {
     pub id: StepId,
     pub title: &'static str,
     pub outcome: Outcome,
     /// UTC start, `YYYY-MM-DD HH:MM:SS UTC`.
     pub started: Option<String>,
+    pub attempt: Option<usize>,
     pub duration_ms: Option<u128>,
     /// Questions and the person's answers, in order.
     pub answers: Vec<(String, String)>,
+    pub look: Option<LookCheck>,
     /// Plain observations selected for the on-screen and terminal result.
     pub result: Vec<String>,
     /// Full observations, including byte details, for the report.
@@ -113,8 +147,10 @@ impl StepRecord {
             title: catalogue::step(id).map_or("?", |s| s.title),
             outcome: Outcome::NotReached,
             started: None,
+            attempt: None,
             duration_ms: None,
             answers: Vec::new(),
+            look: None,
             result: Vec::new(),
             evidence: Vec::new(),
             messages: Vec::new(),
@@ -145,21 +181,40 @@ impl StepRecord {
                 .iter()
                 .map(|hint| format!("Hint: {}", plain_result(hint))),
         );
-        if self.outcome.passed() {
-            let look = match self.id {
-                StepId(2, 2) => "Does the PODxt Live display show the same current tone name?",
-                StepId(2, 3) => {
-                    "If the PODxt Live is already on this channel, does its display show the same name?"
-                }
-                StepId(4, 1) => "Check that the stomp LED is back to its starting state.",
-                StepId(7, 3) => {
-                    "Check that the PODxt Live display shows the starting channel again."
-                }
-                _ => return lines,
-            };
-            lines.push(look.into());
+        if let Some(look) = &self.look {
+            if look.different.is_some() {
+                lines.push(look.report_line());
+            } else if self.outcome.passed() {
+                lines.push(format!("{} Expected: {:?}.", look.prompt, look.expected));
+            }
         }
         lines
+    }
+
+    pub fn evidence_folder(&self, base: &str) -> String {
+        match self.attempt {
+            Some(number) if number > 1 => format!("{base}-attempt-{number}"),
+            _ => base.into(),
+        }
+    }
+
+    pub fn can_repeat(&self) -> bool {
+        if self.attempt.is_none() || self.started.is_none() {
+            return false;
+        }
+        catalogue::step(self.id).is_some_and(|step| step.risk != catalogue::Risk::Save)
+            && matches!(
+                self.outcome,
+                Outcome::Passed | Outcome::Failed(_) | Outcome::SkippedByPerson
+            )
+    }
+
+    pub fn look_at(&mut self, prompt: &'static str, expected: impl Into<String>) {
+        self.look = Some(LookCheck {
+            prompt,
+            expected: expected.into(),
+            different: None,
+        });
     }
 
     pub fn checksum(&mut self, label: impl Into<String>, bytes: &[u8]) -> String {
@@ -226,6 +281,7 @@ pub struct RunRecord {
     pub computer: Vec<(String, String)>,
     pub devices: Vec<(String, String)>,
     pub steps: Vec<StepRecord>,
+    pub prior_attempts: Vec<StepRecord>,
     /// Final statement about the rig's state (from step 6.2).
     pub rig_state: String,
     pub finished: bool,
@@ -253,6 +309,7 @@ impl RunRecord {
                 .iter()
                 .map(|id| StepRecord::new(*id))
                 .collect(),
+            prior_attempts: Vec::new(),
             rig_state: "Not checked yet.".into(),
             finished: false,
             stopped_at: None,
@@ -272,6 +329,14 @@ impl RunRecord {
             .iter_mut()
             .find(|s| s.id == id)
             .expect("every catalogue step has a record")
+    }
+
+    pub fn look_mismatches(&self) -> impl Iterator<Item = String> + '_ {
+        self.steps.iter().filter_map(|step| {
+            let look = step.look.as_ref()?;
+            look.different.as_ref()?;
+            Some(format!("Step {} — {}", step.id, look.report_line()))
+        })
     }
 
     pub fn count(&self, code: &str) -> usize {

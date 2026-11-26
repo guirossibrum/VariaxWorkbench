@@ -10,6 +10,12 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] Rig Check displays work counts, device confirmation waits and the silent-timeout hold. Physical actions use an OK prompt, an extendable ready countdown and a 60-second action window with decoded feedback. Current read, guided and live results can be repeated, with earlier attempts preserved and saves gated by the latest outcomes. Practice tests cover early and late movement, unplug/replug retries, display mismatches, guided and listening repeats, evidence preservation, and the absence of save repeat. [#276](https://github.com/guirossibrum/VariaxWorkbench/issues/276).
+
+- [x] Rig Check requires PODxt identity before Variax checks. Practice covers a failed 2.1 blocking every Variax step and an unverified PODxt Live offering only the Variax evidence read. [#276](https://github.com/guirossibrum/VariaxWorkbench/issues/276).
+
+- [x] Rig Check Back reviews recorded results and the accepted start notice in the wizard and terminal. Returning resumes the pending prompt. Practice covers unchanged simulated MIDI counts while reviewing. [#276](https://github.com/guirossibrum/VariaxWorkbench/issues/276) · [Design](rig-check/design.md).
+
 - [x] The owner released Rig Check device and guided approvals on 2026-11-25 (#267), including Variax firmware evidence. Offline tests verify the per-step approval matrix and continued audio refusal. The first real owner run is pending. [Release notes](rig-check/release-notes.md).
 
 - [x] Rig Check maps app device-message paths to practice-tested steps. New coverage includes Variax differences, tuning transition, two-slot Sync and edit/restore, PODxt editor Get, whole-tone send, recall and tuner, and decoded Follow including Drive read-back. Any unpassed earlier step prevents saves. [Coverage](rig-check/coverage.md).

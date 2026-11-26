@@ -2,7 +2,7 @@
 
 use super::catalogue::{SaveNotice, Step, StepId};
 use super::record::{Mode, Outcome, StepRecord};
-use super::runner::{Answer, Decision, Operator, Question, Retry};
+use super::runner::{Answer, Decision, Operator, Progress, Question, ResultDecision, Retry};
 use std::cell::Cell;
 
 /// Answers every card with `default`, except listed steps.
@@ -15,14 +15,21 @@ pub struct Script {
     pub save_typing: SaveTyping,
     pub save_overrides: Vec<(StepId, SaveTyping)>,
     pub retry: Retry,
+    pub retry_choices: std::collections::VecDeque<Retry>,
+    pub repeat_once: Option<StepId>,
+    pub on_card: Option<Box<dyn FnMut(StepId)>>,
+    pub on_prepare: Option<Box<dyn FnMut(StepId)>>,
+    pub on_missed: Option<Box<dyn FnMut(StepId)>>,
     pub answer: Answer,
     pub cards: Vec<StepId>,
     pub notices: Vec<String>,
+    pub progress: Vec<(StepId, Progress)>,
     pub accept_evidence: bool,
     pub instructions: Vec<(StepId, String)>,
     pub questions: Vec<Question>,
     pub saves: Vec<String>,
     pub finished: Vec<(StepId, Outcome)>,
+    pub different: Option<(StepId, String)>,
     current: Cell<Option<StepId>>,
 }
 
@@ -44,14 +51,21 @@ impl Script {
             save_typing: SaveTyping::Exact,
             save_overrides: Vec::new(),
             retry: Retry::Skip,
+            retry_choices: std::collections::VecDeque::new(),
+            repeat_once: None,
+            on_card: None,
+            on_prepare: None,
+            on_missed: None,
             answer: Answer::Yes,
             cards: Vec::new(),
             notices: Vec::new(),
+            progress: Vec::new(),
             accept_evidence: true,
             instructions: Vec::new(),
             questions: Vec::new(),
             saves: Vec::new(),
             finished: Vec::new(),
+            different: None,
             current: Cell::new(None),
         }
     }
@@ -70,7 +84,12 @@ impl Script {
 impl Operator for Script {
     fn accept_start(&mut self, notice: &str) -> bool {
         self.notices.push(notice.to_owned());
-        if notice == super::variax_evidence::NOTICE {
+        if [
+            super::variax_evidence::NOTICE,
+            super::variax_evidence::RELAY_NOTICE,
+        ]
+        .contains(&notice)
+        {
             self.accept_evidence
         } else {
             self.accept
@@ -79,6 +98,9 @@ impl Operator for Script {
 
     fn confirm(&mut self, step: &Step, _: Mode) -> Decision {
         self.cards.push(step.id);
+        if let Some(callback) = &mut self.on_card {
+            callback(step.id);
+        }
         self.current.set(Some(step.id));
         self.overrides
             .iter()
@@ -105,8 +127,27 @@ impl Operator for Script {
             .push((step, format!("SEE {see} HEAR {hear}")));
     }
 
-    fn not_seen(&mut self, _: StepId, _: &str) -> Retry {
-        self.retry
+    fn not_seen(&mut self, step: StepId, _: &str) -> Retry {
+        if let Some(callback) = &mut self.on_missed {
+            callback(step);
+        }
+        self.retry_choices.pop_front().unwrap_or(self.retry)
+    }
+
+    fn prepare_action(&mut self, step: StepId, _: &str, _: &str) -> Decision {
+        if let Some(callback) = &mut self.on_prepare {
+            callback(step);
+        }
+        Decision::Run
+    }
+
+    fn watch_action(
+        &mut self,
+        _: StepId,
+        _: &str,
+        _: std::sync::Arc<super::guided::ActionClock>,
+    ) -> Box<dyn Fn() -> bool> {
+        Box::new(|| false)
     }
 
     fn ask(&mut self, question: &Question) -> (Answer, String) {
@@ -114,11 +155,29 @@ impl Operator for Script {
         (self.answer, "scripted".into())
     }
 
-    fn progress(&mut self, _: &str) {}
+    fn progress(&mut self, progress: Progress) {
+        if let Some(step) = self.current.get() {
+            self.progress.push((step, progress));
+        }
+    }
 
-    fn finished(&mut self, record: &StepRecord) -> bool {
+    fn finished(&mut self, record: &StepRecord) -> ResultDecision {
+        self.finished.retain(|(id, _)| *id != record.id);
         self.finished.push((record.id, record.outcome.clone()));
-        true
+        if self.repeat_once == Some(record.id) && record.can_repeat() {
+            self.repeat_once = None;
+            return ResultDecision::Repeat;
+        }
+        if self
+            .different
+            .as_ref()
+            .is_some_and(|(id, _)| *id == record.id)
+            && record.outcome.passed()
+        {
+            let (_, value) = self.different.take().expect("display response was present");
+            return ResultDecision::Different(value);
+        }
+        ResultDecision::Continue
     }
 
     fn stop_requested(&self) -> bool {
@@ -164,7 +223,19 @@ mod tests {
         assert!(run.finished && run.start_notice_accepted);
         for step in STEPS {
             let outcome = &run.step(step.id).outcome;
-            if step.id == VARIAX_EVIDENCE || step.not_in_this_version.is_some() {
+            if step.id == VARIAX_EVIDENCE {
+                assert_eq!(
+                    outcome.reason(),
+                    Some(
+                        "Skipped: your Variax reports firmware 3.10, the tested version. This check is only for other versions."
+                    )
+                );
+                assert_eq!(outcome.code(), "skipped_verified_firmware");
+                assert_eq!(
+                    outcome.technical_note(),
+                    Some("evidence mode not entered: firmware verified")
+                );
+            } else if step.not_in_this_version.is_some() {
                 assert!(matches!(outcome, Outcome::NotAvailable(_)), "{}", step.id);
             } else {
                 assert_eq!(
@@ -209,6 +280,234 @@ mod tests {
             let hash = case.actual_sha256.as_deref().expect("built reference case");
             assert!(report.contains(&format!("{hash}  {} (built here)", case.name)));
         }
+    }
+
+    #[test]
+    fn look_checks_pass_on_continue_and_block_live_edits_and_saves_on_a_difference() {
+        let look_step = StepId(2, 2);
+        for different in [None, Some("  Other tone  ")] {
+            let mut person = Script::run_all();
+            person.different = different.map(|value| (look_step, value.into()));
+            let (run, _, rig) = run_practice(
+                Faults::default(),
+                &mut person,
+                &mut NoReport,
+                RunData::default(),
+            );
+            let look = run.step(look_step).look.as_ref().unwrap();
+            assert_eq!(look.expected, "Practice 5B");
+            assert_eq!(look.different.as_deref(), different);
+            let report = super::super::report::render_plain(&run, "practice");
+            if let Some(value) = different {
+                assert!(matches!(person.outcome(look_step), Outcome::Failed(_)));
+                let expected =
+                    format!("Step 2.2 — Expected \"Practice 5B\" · On the device: {value:?}");
+                assert!(report.find(&expected).unwrap() < report.find("Passed ").unwrap());
+                for id in [StepId(4, 1), StepId(4, 2), StepId(5, 1), StepId(5, 2)] {
+                    assert!(
+                        matches!(&run.step(id).outcome, Outcome::SkippedNeeds(reason) if reason == "read-only from here: step 2.2 failed")
+                    );
+                    assert!(!person.cards.contains(&id));
+                }
+                assert!(person.saves.is_empty());
+                assert_eq!(rig.borrow().variax.stores, 0);
+            } else {
+                assert!(person.outcome(look_step).passed());
+                for id in [StepId(2, 3), StepId(4, 1), StepId(7, 3)] {
+                    let step = run.step(id);
+                    assert!(step.outcome.passed() && step.look.is_some());
+                }
+                assert!(run.step(StepId(5, 1)).outcome.passed());
+                assert!(report.contains("On the device: not reported different"));
+            }
+        }
+    }
+
+    fn assert_progress(script: &Script, id: StepId, units: &str, total: usize) {
+        let seen: Vec<_> = script
+            .progress
+            .iter()
+            .filter_map(|(step, progress)| {
+                let (done, limit, measure) = progress.count?;
+                if *step != id || measure != units {
+                    return None;
+                }
+                assert_eq!(limit, total, "{id}");
+                assert!(!progress.action.is_empty());
+                Some(done)
+            })
+            .collect();
+        assert!(!seen.is_empty(), "{id}: no {units} progress");
+        assert_eq!(seen.len() % (total + 1), 0, "{id}: {seen:?}");
+        for group in seen.chunks_exact(total + 1) {
+            assert!(group.iter().copied().eq(0..=total), "{id}: {group:?}");
+        }
+    }
+
+    #[test]
+    fn repeated_work_reports_completed_counts_and_guided_waits_have_a_limit() {
+        let mut person = Script::run_all();
+        run_practice(
+            Faults::default(),
+            &mut person,
+            &mut NoReport,
+            RunData::default(),
+        );
+        for (id, units, total) in [
+            (StepId(2, 4), "channels", 4),
+            (StepId(2, 5), "entries", 299),
+            (StepId(3, 4), "presets", 60),
+            (StepId(3, 5), "presets", 1),
+            (StepId(5, 4), "slots", 2),
+        ] {
+            assert_progress(&person, id, units, total);
+        }
+        for id in [
+            StepId(3, 3),
+            StepId(3, 4),
+            StepId(3, 5),
+            StepId(4, 2),
+            StepId(4, 3),
+            StepId(4, 4),
+            StepId(4, 5),
+            StepId(5, 1),
+            StepId(5, 3),
+            StepId(5, 4),
+            StepId(7, 1),
+        ] {
+            assert_progress(&person, id, "reads", 35);
+        }
+        for id in [
+            StepId(6, 1),
+            StepId(7, 1),
+            StepId(7, 2),
+            StepId(7, 3),
+            StepId(7, 4),
+            StepId(7, 5),
+        ] {
+            assert!(
+                person.progress.iter().any(|(step, progress)| {
+                    *step == id && progress.guided && progress.action.starts_with("Watching for")
+                }),
+                "{id}"
+            );
+        }
+        for fault in [
+            Faults {
+                unverified_variax: true,
+                ..Faults::default()
+            },
+            Faults {
+                unverified_podxt: true,
+                ..Faults::default()
+            },
+        ] {
+            let mut person = Script::run_all();
+            run_practice(fault, &mut person, &mut NoReport, RunData::default());
+            assert_progress(&person, VARIAX_EVIDENCE, "reads", 35);
+        }
+    }
+
+    #[test]
+    fn silent_stores_report_the_confirmation_limit_then_the_two_minute_hold() {
+        use std::time::Duration;
+        for (id, receipt, faults) in [
+            (
+                StepId(5, 1),
+                15,
+                Faults {
+                    silent_variax_store: true,
+                    ..Faults::default()
+                },
+            ),
+            (
+                StepId(5, 2),
+                7,
+                Faults {
+                    silent_podxt_store: true,
+                    ..Faults::default()
+                },
+            ),
+        ] {
+            let mut person = Script::run_all();
+            run_practice(faults, &mut person, &mut NoReport, RunData::default());
+            let waits: Vec<_> = person
+                .progress
+                .iter()
+                .filter_map(|(step, progress)| {
+                    (*step == id)
+                        .then_some(progress.wait?)
+                        .map(|wait| wait.as_secs())
+                })
+                .collect();
+            assert_eq!(waits, [receipt, Duration::from_mins(2).as_secs()]);
+        }
+    }
+
+    #[test]
+    fn repeating_a_listening_step_sends_and_returns_again_without_repeating_saves() {
+        let id = StepId(4, 3);
+        let mut person = Script::run_all();
+        person.repeat_once = Some(id);
+        let (run, _, rig) = run_practice(
+            Faults::default(),
+            &mut person,
+            &mut NoReport,
+            RunData::default(),
+        );
+        assert_eq!(run.prior_attempts.len(), 1);
+        for step in [&run.prior_attempts[0], run.step(id)] {
+            assert_eq!(step.id, id);
+            assert!(step.outcome.passed());
+            assert!(
+                step.messages
+                    .iter()
+                    .any(|line| line.contains("OUT f0 00 01 0c 07 00 43"))
+            );
+            assert!(
+                !step
+                    .messages
+                    .iter()
+                    .any(|line| line.contains("OUT f0 00 01 0c 07 00 61"))
+            );
+            assert!(
+                step.result
+                    .iter()
+                    .any(|line| line.contains("all 1,092 words match the start"))
+            );
+        }
+        assert!(!run.step(StepId(5, 1)).can_repeat());
+        assert!(at_start(&rig));
+        assert!(
+            super::super::report::json(&run, "practice")
+                .contains(r#""prior_attempts":[{"id":"4.3""#)
+        );
+    }
+
+    #[test]
+    fn repeating_a_library_read_keeps_both_backups_and_uses_the_latest_for_save() {
+        let mut person = Script::run_all();
+        person.repeat_once = Some(StepId(3, 4));
+        let folder = tempfile::tempdir().unwrap();
+        let (run, _, _) = run_practice(
+            Faults::default(),
+            &mut person,
+            &mut NoReport,
+            RunData {
+                evidence_dir: Some(folder.path().into()),
+                ..RunData::default()
+            },
+        );
+        for name in ["variax-library", "variax-library-attempt-2"] {
+            line6_devices::backup::verify_manifest(&folder.path().join(name)).unwrap();
+        }
+        assert!(run.step(StepId(5, 1)).outcome.passed());
+        assert!(
+            person
+                .saves
+                .iter()
+                .any(|notice| notice.contains("variax-library-attempt-2/14-Spank-1.bin"))
+        );
     }
 
     #[test]

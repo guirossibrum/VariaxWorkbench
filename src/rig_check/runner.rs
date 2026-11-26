@@ -31,11 +31,13 @@ pub const DEFAULT_DECISION: Decision = Decision::Skip;
 /// A step returns an error starting with this when the person declined
 /// inside the step (for example the typed save confirmation). Nothing ran.
 pub const SKIPPED: &str = "SKIPPED: ";
+pub const STOPPED: &str = "STOPPED: ";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Retry {
     TryAgain,
     Skip,
+    Stop,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +66,62 @@ pub struct Question {
     pub verified_by_bytes: Vec<String>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum ResultDecision {
+    Continue,
+    Stop,
+    Different(String),
+    Repeat,
+}
+
+pub const CONTROLS_NOTICE: &str = "Leave the guitar selector, the volume and tone knobs, and the PODxt footswitches and knobs alone until this finishes. Playing is fine.";
+
+#[derive(Clone, Debug)]
+pub struct Progress {
+    pub action: String,
+    pub count: Option<(usize, usize, &'static str)>,
+    pub wait: Option<std::time::Duration>,
+    pub guided: bool,
+}
+
+impl Progress {
+    pub fn action(action: impl Into<String>) -> Self {
+        Self {
+            action: action.into(),
+            count: None,
+            wait: None,
+            guided: false,
+        }
+    }
+
+    pub fn counted(
+        action: impl Into<String>,
+        done: usize,
+        total: usize,
+        units: &'static str,
+    ) -> Self {
+        Self {
+            count: Some((done, total, units)),
+            ..Self::action(action)
+        }
+    }
+
+    pub fn watching(action: impl Into<String>) -> Self {
+        Self {
+            guided: true,
+            ..Self::action(action)
+        }
+    }
+
+    pub fn waiting(action: impl Into<String>, limit: std::time::Duration, guided: bool) -> Self {
+        Self {
+            wait: Some(limit),
+            guided,
+            ..Self::action(action)
+        }
+    }
+}
+
 /// The person at the rig, through the GUI, the terminal or a test script.
 pub trait Operator {
     /// The start notice. `false` (the default) quits before any step.
@@ -77,13 +135,21 @@ pub trait Operator {
     fn instruct(&mut self, step: StepId, see: &str, hear: &str);
     /// A guided action was not seen in time.
     fn not_seen(&mut self, step: StepId, what: &str) -> Retry;
+    /// Confirm the specific movement before opening the listener.
+    fn prepare_action(&mut self, step: StepId, see: &str, hear: &str) -> Decision;
+    /// Start watching. The returned check lets the person end this action.
+    fn watch_action(
+        &mut self,
+        step: StepId,
+        description: &str,
+        clock: std::sync::Arc<super::guided::ActionClock>,
+    ) -> Box<dyn Fn() -> bool>;
     /// A listening question with Yes / No / Not sure and an optional note.
     fn ask(&mut self, question: &Question) -> (Answer, String);
-    /// A short progress line.
-    fn progress(&mut self, text: &str);
+    /// The latest action, with optional completed work or time limit.
+    fn progress(&mut self, progress: Progress);
     /// Publish any outcome. If the step ran, wait for the person to read it.
-    /// Return false when they choose Stop or leave the session.
-    fn finished(&mut self, record: &StepRecord) -> bool;
+    fn finished(&mut self, record: &StepRecord) -> ResultDecision;
     /// The person asked to stop the running step.
     fn stop_requested(&self) -> bool;
 }
@@ -156,13 +222,15 @@ impl<'a> Runner<'a> {
                 .map_or(String::new(), |n| n.to_string_lossy().into_owned());
             let state = super::recover::RigState::from_run(&self.run, &self.data, &report);
             if let Err(error) = super::recover::write_state(path, &state) {
-                self.op
-                    .progress(&format!("Could not write the restore state: {error}"));
+                self.op.progress(Progress::action(format!(
+                    "Could not write the restore state: {error}"
+                )));
             }
         }
         if let Err(error) = self.sink.update(&self.run) {
-            self.op
-                .progress(&format!("Could not write the report: {error}"));
+            self.op.progress(Progress::action(format!(
+                "Could not write the report: {error}"
+            )));
         }
     }
 
@@ -208,16 +276,50 @@ impl<'a> Runner<'a> {
         (self.run, self.data)
     }
 
+    fn unverified_podxt_relay(&self) -> bool {
+        use line6_devices::family::podxt::{IDENTITY_FAMILY, PODXT_LIVE_MEMBER};
+        self.run.step(StepId(2, 1)).outcome.passed()
+            && self.data.podxt_identity.as_ref().is_some_and(|identity| {
+                identity.is_line6()
+                    && identity.family == IDENTITY_FAMILY
+                    && identity.member == PODXT_LIVE_MEMBER
+                    && self.data.podxt_verified == Some(false)
+            })
+    }
+
     fn variax_evidence_applicable(&self) -> bool {
-        self.run.step(StepId(3, 1)).outcome.passed()
-            && super::variax_evidence::applicable(self.data.variax_identity.as_ref())
+        self.unverified_podxt_relay()
+            || (self.data.podxt_verified == Some(true)
+                && self.run.step(StepId(3, 1)).outcome.passed()
+                && super::variax_evidence::applicable(self.data.variax_identity.as_ref()))
     }
 
     fn run_variax_evidence(&mut self) {
-        if self.op.accept_start(super::variax_evidence::NOTICE) {
+        let relay = self.unverified_podxt_relay();
+        let notice = if relay {
+            super::variax_evidence::RELAY_NOTICE
+        } else {
+            super::variax_evidence::NOTICE
+        };
+        if self.op.accept_start(notice) {
             self.step(VARIAX_EVIDENCE);
         } else {
             self.finish(VARIAX_EVIDENCE, Outcome::SkippedByPerson, None, None);
+        }
+        if relay {
+            for &id in RUN_ORDER
+                .iter()
+                .filter(|&&id| catalogue::is_variax_step(id) && id != VARIAX_EVIDENCE)
+            {
+                if matches!(self.run.step(id).outcome, Outcome::NotReached) {
+                    self.finish(
+                        id,
+                        Outcome::UnverifiedDevice(super::variax_evidence::RELAY_REASON.into()),
+                        None,
+                        None,
+                    );
+                }
+            }
         }
     }
 
@@ -254,73 +356,93 @@ impl<'a> Runner<'a> {
             self.finish(id, outcome, None, None);
             return false;
         }
-        match self.op.confirm(step, self.run.mode) {
-            Decision::Skip => {
-                self.finish(id, Outcome::SkippedByPerson, None, None);
-                false
-            }
-            Decision::Stop => {
-                self.run.stopped_at = Some(id);
-                self.finish(
-                    id,
-                    Outcome::Stopped("You chose Stop before this step.".into()),
-                    None,
-                    None,
-                );
-                id != RIG_GUARD
-            }
-            Decision::Run => {
-                self.run.current = Some(id);
-                self.write_report();
-                let started = utc_now();
-                let clock = Instant::now();
-                let mut rec = std::mem::replace(self.run.step_mut(id), StepRecord::new(id));
-                let result = {
-                    let mut ctx = Ctx {
-                        mode: self.run.mode,
-                        port: &mut *self.port,
-                        op: &mut *self.op,
-                        data: &mut self.data,
-                        rec: &mut rec,
-                    };
-                    steps::execute(&mut ctx)
-                };
-                let stopped_now = self.op.stop_requested();
-                let outcome = match result {
-                    Ok(()) => Outcome::Passed,
-                    Err(reason) if reason.starts_with(SKIPPED) => {
-                        rec.show(reason.trim_start_matches(SKIPPED));
-                        Outcome::SkippedByPerson
-                    }
-                    Err(error) if stopped_now => Outcome::Stopped(error),
-                    Err(error) => Outcome::Failed(error),
-                };
-                self.data.read_only |= matches!(outcome, Outcome::Failed(_));
-                if id == RIG_GUARD {
-                    self.run.rig_state = rec
-                        .evidence
-                        .iter()
-                        .filter_map(|line| line.strip_prefix("Rig: "))
-                        .map(str::to_owned)
-                        .collect::<Vec<_>>()
-                        .join(" ");
+        let mut attempt_number = 1;
+        loop {
+            match self.op.confirm(step, self.run.mode) {
+                Decision::Skip => {
+                    self.finish(id, Outcome::SkippedByPerson, None, None);
+                    return false;
                 }
-                self.run.current = None;
-                super::hints::attach(&mut rec, &outcome);
-                *self.run.step_mut(id) = rec;
-                self.run.computer = self.data.computer.clone();
-                self.run.devices = self.data.devices.clone();
-                let continuing = self.finish(
-                    id,
-                    outcome,
-                    Some(started),
-                    Some(clock.elapsed().as_millis()),
-                );
-                if (stopped_now || !continuing) && id != RIG_GUARD {
+                Decision::Stop => {
                     self.run.stopped_at = Some(id);
-                    return true;
+                    self.finish(
+                        id,
+                        Outcome::Stopped("You chose Stop before this step.".into()),
+                        None,
+                        None,
+                    );
+                    return id != RIG_GUARD;
                 }
-                false
+                Decision::Run => {
+                    self.run.current = Some(id);
+                    self.write_report();
+                    let started = utc_now();
+                    let clock = Instant::now();
+                    let mut rec = std::mem::replace(self.run.step_mut(id), StepRecord::new(id));
+                    rec.attempt = Some(attempt_number);
+                    let result = {
+                        let mut ctx = Ctx {
+                            mode: self.run.mode,
+                            port: &mut *self.port,
+                            op: &mut *self.op,
+                            data: &mut self.data,
+                            rec: &mut rec,
+                        };
+                        ctx.op.progress(Progress::action(step.title));
+                        steps::execute(&mut ctx)
+                    };
+                    let stopped_now = self.op.stop_requested()
+                        || result
+                            .as_ref()
+                            .is_err_and(|reason| reason.starts_with(STOPPED));
+                    let outcome = match result {
+                        Ok(()) => Outcome::Passed,
+                        Err(reason) if reason.starts_with(SKIPPED) => {
+                            rec.show(reason.trim_start_matches(SKIPPED));
+                            Outcome::SkippedByPerson
+                        }
+                        Err(error) if stopped_now => {
+                            Outcome::Stopped(error.trim_start_matches(STOPPED).into())
+                        }
+                        Err(error) => Outcome::Failed(error),
+                    };
+                    if id == RIG_GUARD {
+                        self.run.rig_state = rec
+                            .evidence
+                            .iter()
+                            .filter_map(|line| line.strip_prefix("Rig: "))
+                            .map(str::to_owned)
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                    }
+                    self.run.current = None;
+                    super::hints::attach(&mut rec, &outcome);
+                    *self.run.step_mut(id) = rec;
+                    self.run.computer = self.data.computer.clone();
+                    self.run.devices = self.data.devices.clone();
+                    let decision = self.finish(
+                        id,
+                        outcome,
+                        Some(started),
+                        Some(clock.elapsed().as_millis()),
+                    );
+                    if !stopped_now
+                        && decision == ResultDecision::Repeat
+                        && self.run.step(id).can_repeat()
+                    {
+                        let attempt = std::mem::replace(self.run.step_mut(id), StepRecord::new(id));
+                        self.run.prior_attempts.push(attempt);
+                        attempt_number += 1;
+                        self.write_report();
+                        continue;
+                    }
+                    self.data.read_only |= matches!(self.run.step(id).outcome, Outcome::Failed(_));
+                    if (stopped_now || decision == ResultDecision::Stop) && id != RIG_GUARD {
+                        self.run.stopped_at = Some(id);
+                        return true;
+                    }
+                    return false;
+                }
             }
         }
     }
@@ -333,11 +455,6 @@ impl<'a> Runner<'a> {
                 crate::MAC_CONNECTION_UNAVAILABLE.into(),
             ));
         }
-        if step.id == VARIAX_EVIDENCE && !self.variax_evidence_applicable() {
-            return Some(Outcome::NotAvailable(
-                "Available only for unverified Variax 300/600 firmware.".into(),
-            ));
-        }
         if let Some(reason) = step.not_in_this_version {
             return Some(Outcome::NotAvailable(reason.into()));
         }
@@ -346,7 +463,12 @@ impl<'a> Runner<'a> {
                 .iter()
                 .copied()
                 .take_while(|&id| id != step.id)
-                .filter(|&id| id != VARIAX_EVIDENCE || self.variax_evidence_applicable())
+                .filter(|&id| {
+                    !matches!(
+                        self.run.step(id).outcome,
+                        Outcome::SkippedVerifiedFirmware(_)
+                    )
+                })
         };
         if matches!(step.risk, Risk::Live | Risk::Save)
             && let Some(id) =
@@ -375,6 +497,20 @@ impl<'a> Runner<'a> {
                 missing.join(", ")
             )));
         }
+        if step.id == VARIAX_EVIDENCE {
+            if self.data.podxt_verified == Some(true) && self.data.variax_verified == Some(true) {
+                return Some(Outcome::verified_firmware_skip("Variax", "3.10"));
+            }
+            if !self.variax_evidence_applicable() {
+                return Some(Outcome::NotAvailable(
+                    "Available for unverified Variax 300/600 firmware or an unverified PODxt Live relay.".into(),
+                ));
+            }
+        } else if catalogue::is_variax_step(step.id) && self.data.podxt_verified != Some(true) {
+            return Some(Outcome::UnverifiedDevice(
+                super::variax_evidence::RELAY_REASON.into(),
+            ));
+        }
         if self.run.mode == Mode::Real
             && let Err(reason) = approvals::real_device_check(step.id)
         {
@@ -395,7 +531,7 @@ impl<'a> Runner<'a> {
         outcome: Outcome,
         started: Option<String>,
         duration: Option<u128>,
-    ) -> bool {
+    ) -> ResultDecision {
         let rec = self.run.step_mut(id);
         rec.outcome = outcome;
         if started.is_some() {
@@ -404,6 +540,23 @@ impl<'a> Runner<'a> {
         }
         let rec = rec.clone();
         self.write_report();
-        self.op.finished(&rec)
+        match self.op.finished(&rec) {
+            ResultDecision::Different(value) => {
+                let rec = self.run.step_mut(id);
+                if rec.outcome.passed()
+                    && let Some(look) = &mut rec.look
+                {
+                    look.different = Some(value);
+                    rec.outcome = Outcome::Failed(
+                        "The device display differed from the expected result.".into(),
+                    );
+                    let rec = rec.clone();
+                    self.write_report();
+                    return self.op.finished(&rec);
+                }
+                ResultDecision::Continue
+            }
+            decision => decision,
+        }
     }
 }

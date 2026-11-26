@@ -11,7 +11,7 @@ pub mod driver;
 pub mod firmware_read;
 mod follow;
 pub mod procedures;
-pub use follow::{FollowUpdate, follow, follow_window};
+pub use follow::{FollowUpdate, follow, follow_action, follow_window};
 pub mod slot_read;
 pub mod span_read;
 pub mod transport;

@@ -76,7 +76,7 @@ pub fn read_live<L: Link>(
     cancelled: impl Fn() -> bool,
     mut publish: impl FnMut(ReadUpdate),
 ) -> Result<(), String> {
-    read_live_on(session, command, None, cancelled, &mut publish)
+    read_live_on(session, command, None, true, cancelled, &mut publish)
 }
 
 /// Run the editor Follow reader for a bounded interval on the caller's locked link.
@@ -90,6 +90,7 @@ pub fn follow_window<L: Link>(
         session,
         ReadCommand::Follow,
         Some(window),
+        true,
         cancelled,
         &mut publish,
     )
@@ -106,6 +107,31 @@ pub fn tuner_window<L: Link>(
         session,
         ReadCommand::Tuner,
         Some(window),
+        true,
+        cancelled,
+        &mut publish,
+    )
+}
+
+/// Use Follow on the same already-verified, locked PODxt Live link.
+pub fn follow_action<L: Link>(
+    session: &mut Session<L>,
+    cancelled: impl Fn() -> bool,
+    mut publish: impl FnMut(ReadUpdate),
+) -> Result<(), String> {
+    if session.link.path() != crate::session::Path::PodxtMidi
+        || !session.allows(crate::gate::Operation::PodxtIdentity)
+        || !session.allows(crate::gate::Operation::PodxtRead)
+    {
+        return Err(
+            "PODxt Follow requires a PODxt MIDI link and identity and read permissions.".into(),
+        );
+    }
+    read_live_on(
+        session,
+        ReadCommand::Follow,
+        None,
+        false,
         cancelled,
         &mut publish,
     )
@@ -115,6 +141,7 @@ fn read_live_on<L: Link>(
     session: &mut Session<L>,
     command: ReadCommand,
     window: Option<Duration>,
+    verify: bool,
     cancelled: impl Fn() -> bool,
     publish: &mut dyn FnMut(ReadUpdate),
 ) -> Result<(), String> {
@@ -127,7 +154,9 @@ fn read_live_on<L: Link>(
         current_due: None,
         after_reply: Vec::new(),
     };
-    reader.identify(command == ReadCommand::Tuner)?;
+    if verify {
+        reader.identify(command == ReadCommand::Tuner)?;
+    }
     match command {
         ReadCommand::Current => reader.current(),
         ReadCommand::Library => reader.library(&BankKind::ALL),

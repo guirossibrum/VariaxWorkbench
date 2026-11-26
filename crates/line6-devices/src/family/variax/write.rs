@@ -20,7 +20,7 @@ const WORD_MASK: u64 = 0xff_ffff;
 const NAME_OFFSET: usize = 2553;
 const STORE_SETTLE: Duration = Duration::from_millis(100);
 const DIFFERENCE_ACK: Duration = Duration::from_secs(1);
-const STORE_ACK: Duration = Duration::from_secs(15);
+pub(super) const STORE_ACK: Duration = Duration::from_secs(15);
 const BANK_SELECT_SETTLE: Duration = Duration::from_millis(200);
 const BANK_WRITE_SETTLE: Duration = Duration::from_millis(700);
 

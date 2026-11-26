@@ -4,7 +4,7 @@
 //! `rig-check --real` uses the connected rig under the released step approvals.
 //! The person confirms each step.
 
-use std::io::{self, BufRead, BufReader, Write};
+use std::io;
 use std::path::PathBuf;
 use variax_workbench::rig_check::{
     self, cli::Terminal, port::RealPort, practice::Faults, redact::Redactor, report, steps::RunData,
@@ -157,8 +157,8 @@ fn window(options: Options) {
         let mut sink = match report::ReportFile::create(&out, Redactor::from_environment()) {
             Ok(sink) => sink,
             Err(error) => {
-                op.send(Prompt::Progress(format!(
-                    "Cannot create the report: {error}"
+                op.send(Prompt::Progress(rig_check::runner::Progress::action(
+                    format!("Cannot create the report: {error}"),
                 )));
                 return;
             }
@@ -260,8 +260,7 @@ fn main() {
             .map_or("rig-check".into(), |s| s.to_string_lossy().into_owned());
         data.evidence_dir = Some(options.out.join(format!("{stem}-evidence")));
     }
-    let stdin = io::stdin();
-    let mut person = Terminal::new(BufReader::new(stdin.lock()), io::stdout());
+    let mut person = Terminal::from_stdin(io::stdout());
     let run = if options.practice == Some(true) {
         rig_check::run_practice(Faults::default(), &mut person, &mut sink, data).0
     } else if cfg!(target_os = "macos") {
@@ -292,23 +291,18 @@ fn main() {
         let state_file = sink.path.with_extension("state");
         rig_check::run_with_state(&mut port, &mut person, &mut sink, data, state_file).0
     };
+    for mismatch in run.look_mismatches() {
+        println!("{mismatch}");
+    }
     println!(
         "\nRig Check finished: {} passed, {} failed, {} skipped. {}\nWorking report: {}",
         run.count("passed"),
         run.count("failed"),
-        run.count("skipped") + run.count("skipped_needs"),
+        run.count("skipped") + run.count("skipped_verified_firmware") + run.count("skipped_needs"),
         rig_check::record::plain_result(&run.rig_state),
         sink.path.display()
     );
-    let mut input = BufReader::new(io::stdin().lock());
-    let mut ask = |question: &str| -> String {
-        print!("{question} ");
-        let _ = io::stdout().flush();
-        let mut line = String::new();
-        let _ = input.read_line(&mut line);
-        line.trim().to_owned()
-    };
-    let target = ask("Save a copy of the report to (file path, Enter to skip):");
+    let target = person.prompt_for_report_copy();
     if !target.is_empty() {
         match report::save_copy(&sink.last, std::path::Path::new(&target)) {
             Ok(()) => println!("Saved {target}."),

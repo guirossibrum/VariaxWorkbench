@@ -7,9 +7,10 @@ use super::practice::{Program, preset_label};
 use super::procedures::{
     self, GUARD, PODXT_IDENTITY, PODXT_LIBRARY, PODXT_READ, VARIAX_IDENTITY, VARIAX_SELECT,
     program_bytes, same_program, variax_full_read, variax_read_preset, with_podxt, with_variax,
+    with_variax_progress,
 };
 use super::record::Mode;
-use super::runner::Ctx;
+use super::runner::{Ctx, Progress};
 use line6_devices::family::podxt::{self, BankKind, EditBuffer, Location};
 use line6_devices::family::variax::{self, Preset, procedures as shared_variax};
 use line6_devices::identity::Identity;
@@ -32,12 +33,13 @@ pub struct RunData {
     pub start_channel: Option<Location>,
     pub podxt_library: Vec<(Location, EditBuffer)>,
     /// Reads from steps 2.3 and 2.4, compared with the backup in 2.5.
-    pub podxt_reads: Vec<(Location, Result<EditBuffer, String>)>,
+    pub podxt_reads: Vec<super::podxt_reads::ChannelRead>,
     pub start_program: Option<Program>,
     /// The 192 settings bytes from step 3.2.
     pub start_settings: Option<[u8; 192]>,
     pub start_preset: Option<Preset>,
     pub variax_library: Vec<(Preset, Program)>,
+    pub variax_backup_folder: Option<String>,
     pub touched_podxt: bool,
     pub touched_variax: bool,
     pub store_state_unknown: bool,
@@ -106,7 +108,6 @@ pub fn execute(ctx: &mut Ctx<'_>) -> Result<(), String> {
         (3, 3) => variax_current_program(ctx),
         (3, 4) => variax_all_presets(ctx),
         (3, 5) => super::variax_reads::one_preset(ctx),
-        (3, 6) => super::variax_reads::one_bank(ctx),
         (3, 7) => super::variax_evidence::read(ctx),
         (4, 1) => super::live::podxt_stomp(ctx),
         (4, 2) => super::variax_live::variax_own_bytes(ctx),
@@ -347,6 +348,10 @@ fn podxt_current_tone(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let current = with_podxt(ctx, PODXT_READ, |session| podxt::read_current(session))?;
     let tone = current.tone;
     ctx.rec.show(format!("Current tone: {}", tone.name()));
+    ctx.rec.look_at(
+        "Does the PODxt Live display show the same current tone name?",
+        tone.name(),
+    );
     for line in tone.describe() {
         ctx.rec.note(format!("  {line}"));
     }
@@ -360,9 +365,22 @@ fn podxt_current_tone(ctx: &mut Ctx<'_>) -> Result<(), String> {
 }
 
 fn podxt_library(ctx: &mut Ctx<'_>) -> Result<(), String> {
-    let library = with_podxt(ctx, PODXT_LIBRARY, |session| {
+    let library = procedures::with_podxt_progress(ctx, PODXT_LIBRARY, |session, _, progress| {
         session.log_packets = false;
-        podxt::read_library(session, &BankKind::ALL, |_| {})
+        let mut locations = Location::all(&BankKind::ALL);
+        let mut advance = |done| {
+            let action = locations.next().map_or_else(
+                || "Checking the playing tone again".into(),
+                |location| format!("Reading {} {}", location.kind().name(), location.label()),
+            );
+            progress(Progress::counted(action, done, 299, "entries"));
+        };
+        let mut completed = 0;
+        advance(completed);
+        podxt::read_library(session, &BankKind::ALL, |_| {
+            completed += 1;
+            advance(completed);
+        })
     })?;
     ctx.rec
         .show(format!("Read {} of 299 entries.", library.entries.len()));
@@ -388,6 +406,7 @@ fn podxt_library(ctx: &mut Ctx<'_>) -> Result<(), String> {
     // The backup in the shared library's own format, so step 5.2 can verify
     // it with the same code as the editor. Practice mode without an evidence
     // folder uses a private temporary folder.
+    let folder_name = ctx.rec.evidence_folder("podxt-library");
     let root = match ctx.data.evidence_dir.clone() {
         Some(root) => Some(root),
         None if ctx.mode == Mode::Practice => {
@@ -400,7 +419,7 @@ fn podxt_library(ctx: &mut Ctx<'_>) -> Result<(), String> {
     };
     if let Some(root) = root {
         use line6_devices::backup::BackupFolder;
-        let mut folder = BackupFolder::create(&root, "podxt-library")?;
+        let mut folder = BackupFolder::create(&root, &folder_name)?;
         folder.record(format!(
             "PODxt Live library backup at {} (Rig Check step 2.5)",
             super::record::utc_now()
@@ -411,7 +430,7 @@ fn podxt_library(ctx: &mut Ctx<'_>) -> Result<(), String> {
         ctx.rec.note(format!(
             "Saved the 299-entry backup to {} (manifest SHA-256 {}).",
             if ctx.data.evidence_dir.is_some() {
-                "the evidence folder podxt-library"
+                &folder_name
             } else {
                 "a temporary practice folder"
             },
@@ -430,6 +449,7 @@ fn podxt_library(ctx: &mut Ctx<'_>) -> Result<(), String> {
             "{content} earlier channel read(s) differ in content from the backup."
         ));
     }
+    ctx.data.start_channel = None;
     if let Some(start) = &ctx.data.start_tone {
         let matches: Vec<Location> = ctx
             .data
@@ -500,8 +520,8 @@ fn variax_identity(ctx: &mut Ctx<'_>) -> Result<(), String> {
 }
 
 fn variax_current_program(ctx: &mut Ctx<'_>) -> Result<(), String> {
-    let read = with_variax(ctx, VARIAX_SELECT, |session, stopping| {
-        variax_full_read(session, stopping)
+    let read = with_variax_progress(ctx, VARIAX_SELECT, |session, stopping, progress| {
+        variax_full_read(session, stopping, progress, "Current program")
     })?;
     let image = shared_variax::pack(&read.words);
     let mut checked = image;
@@ -543,9 +563,22 @@ fn variax_all_presets(ctx: &mut Ctx<'_>) -> Result<(), String> {
         Operation::VariaxLibraryBridge,
         Operation::VariaxBankNameRead,
     ];
-    let read = with_variax(ctx, BACKUP, |session, stopping| {
+    let read = with_variax_progress(ctx, BACKUP, |session, stopping, progress| {
         session.log_packets = false;
-        variax::backup::read_full_library_in_session(session, stopping, |_| {})
+        let mut presets = Preset::all();
+        let mut advance = |done| {
+            let action = presets.next().map_or_else(
+                || "Finishing the backup and preparing to return to your starting preset".into(),
+                |preset| format!("Reading {}", preset_label(preset)),
+            );
+            progress(Progress::counted(action, done, 60, "presets"));
+        };
+        let mut completed = 0;
+        advance(completed);
+        variax::backup::read_full_library_in_session(session, stopping, |_| {
+            completed += 1;
+            advance(completed);
+        })
     })?;
     let library: Vec<(Preset, Program)> = read
         .verified_programs()
@@ -597,8 +630,14 @@ fn variax_all_presets(ctx: &mut Ctx<'_>) -> Result<(), String> {
             ctx.rec
                 .show(format!("Starting preset: {}", preset_label(preset)));
             ctx.data.start_preset = Some(preset);
-            let read = with_variax(ctx, VARIAX_SELECT, |session, stopping| {
-                variax_read_preset(session, preset, stopping)
+            let read = with_variax_progress(ctx, VARIAX_SELECT, |session, stopping, progress| {
+                variax_read_preset(
+                    session,
+                    preset,
+                    stopping,
+                    progress,
+                    &format!("Verifying return to {}", preset_label(preset)),
+                )
             })?;
             if same_program(&read.words, &start) {
                 ctx.rec.show(format!(
@@ -632,9 +671,11 @@ fn variax_all_presets(ctx: &mut Ctx<'_>) -> Result<(), String> {
                 )
             })
             .collect();
-        let manifest = evidence::save_folder(&root, "variax-library", &files)?;
+        let folder = ctx.rec.evidence_folder("variax-library");
+        let manifest = evidence::save_folder(&root, &folder, &files)?;
+        ctx.data.variax_backup_folder = Some(folder.clone());
         ctx.rec.note(format!(
-            "Saved {} programs to the evidence folder variax-library (manifest SHA-256 {manifest}).",
+            "Saved {} programs to the evidence folder {folder} (manifest SHA-256 {manifest}).",
             files.len()
         ));
     }
@@ -692,19 +733,27 @@ fn rig_guard(ctx: &mut Ctx<'_>) -> Result<(), String> {
         ctx.rec
             .show("Rig: the PODxt Live starting tone was not recorded (2.2 did not pass).");
     }
-    if let Some(start) = ctx.data.start_program {
-        let now = with_variax(ctx, VARIAX_SELECT, |session, stopping| {
+    if ctx.data.podxt_verified == Some(true)
+        && let Some(start) = ctx.data.start_program
+    {
+        let now = with_variax_progress(ctx, VARIAX_SELECT, |session, stopping, progress| {
             // Let anything the guitar sent meanwhile (a selector turn after
             // Stop) arrive and be logged before the read starts.
             procedures::drain(session)?;
-            variax_full_read(session, stopping)
+            variax_full_read(session, stopping, progress, "Checking the starting program")
         })?;
         if same_program(&now.words, &start) {
             ctx.rec
                 .show("Rig: the Variax plays the starting program (1,092 words).");
         } else if let Some(preset) = ctx.data.start_preset.filter(|_| !ctx.data.read_only) {
-            let back = with_variax(ctx, VARIAX_SELECT, |session, stopping| {
-                variax_read_preset(session, preset, stopping)
+            let back = with_variax_progress(ctx, VARIAX_SELECT, |session, stopping, progress| {
+                variax_read_preset(
+                    session,
+                    preset,
+                    stopping,
+                    progress,
+                    &format!("Verifying return to {}", preset_label(preset)),
+                )
             })?;
             if same_program(&back.words, &start) {
                 ctx.rec.show(format!(

@@ -155,6 +155,7 @@ fn the_channel_operator_runs_practice_mode_from_another_thread() {
                 Reply::Decision(Decision::Run)
             }
             Prompt::Save { confirmation, .. } => Reply::Typed(Some(confirmation)),
+            Prompt::PrepareAction { .. } => Reply::Decision(Decision::Run),
             Prompt::NotSeen { .. } => Reply::Retry(Retry::Skip),
             Prompt::Ask(_) => Reply::Answer(Answer::Yes, String::new()),
             Prompt::Finished(record) if record.started.is_some() => {
@@ -192,7 +193,6 @@ fn the_channel_operator_runs_practice_mode_from_another_thread() {
                     StepId(3, 3) => &["Progress 35 of 35 chunks", "checksum OK"],
                     StepId(3, 4) => &["Read 60 of 60 presets", "Back on Spank 1"],
                     StepId(3, 5) => &["Read Spank 2: matches the backup", "Back on Spank 1"],
-                    StepId(3, 6) => &["Read 5 of 5 presets", "Back on Spank 1"],
                     StepId(4, 1) => &[
                         "Stomp off to on: read back as sent",
                         "The whole tone matches the start",
@@ -268,15 +268,105 @@ fn the_channel_operator_runs_practice_mode_from_another_thread() {
     }
     drop(to_runner);
     let passed = worker.join().unwrap();
-    assert_eq!(passed, 37);
-    assert_eq!(cards, 37);
-    assert_eq!(results, 37);
+    assert_eq!(passed, 36);
+    assert_eq!(cards, 36);
+    assert_eq!(results, 36);
+}
+
+#[test]
+fn different_opens_a_field_and_enter_records_exact_text() {
+    let ctx = egui::Context::default();
+    let mut record = StepRecord::new(StepId(2, 2));
+    record.started = Some("practice".into());
+    record.outcome = Outcome::Passed;
+    record.look_at("Compare the display.", "Practice 5B");
+    let (mut wizard, replies) = wired(Prompt::Finished(Box::new(record)));
+    let output = ctx.run(
+        RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1180.0, 800.0))),
+            ..Default::default()
+        },
+        |ctx| wizard.show(ctx),
+    );
+    let position = labels(&output)
+        .into_iter()
+        .find(|(label, _)| label == "Different…")
+        .unwrap()
+        .1;
+    let pointer = |pressed| Event::PointerButton {
+        pos: position,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    frame(
+        &ctx,
+        &mut wizard,
+        vec![Event::PointerMoved(position), pointer(true)],
+    );
+    frame(&ctx, &mut wizard, vec![pointer(false)]);
+    let texts = frame(&ctx, &mut wizard, Vec::new());
+    assert!(
+        texts
+            .iter()
+            .any(|s| s == "Type exactly what the device shows.")
+    );
+    assert!(replies.try_recv().is_err());
+    frame(
+        &ctx,
+        &mut wizard,
+        vec![Event::Text("  A different tone  ".into())],
+    );
+    frame(&ctx, &mut wizard, vec![key(Key::Enter)]);
+    assert!(
+        matches!(replies.try_recv(), Ok(Reply::Different(value)) if value == "  A different tone  ")
+    );
+}
+
+#[test]
+fn running_shows_latest_action_count_time_and_playing_notice() {
+    let ctx = egui::Context::default();
+    let (tx, rx) = channel();
+    let mut wizard = Wizard {
+        mode: Some(Mode::Practice),
+        running: Some(StepId(3, 3)),
+        step_start: Some(Instant::now() - Duration::from_secs(10)),
+        from_runner: Some(rx),
+        ..Wizard::default()
+    };
+    tx.send(Prompt::Progress(Progress::action(
+        "Checking the connection",
+    )))
+    .unwrap();
+    tx.send(Prompt::Progress(Progress::counted(
+        "Reading words 384–415",
+        12,
+        35,
+        "reads",
+    )))
+    .unwrap();
+    let texts = frame(&ctx, &mut wizard, Vec::new());
+    assert!(texts.iter().any(|line| line == "Reading words 384–415"));
+    assert!(texts.iter().any(|line| line == "12 of 35 reads"));
+    assert!(texts.iter().any(|line| line.starts_with("Elapsed 00:")));
+    assert!(texts.iter().any(|line| line == CONTROLS_NOTICE));
+    assert!(!texts.iter().any(|line| line == "Checking the connection"));
+    wizard.activity = Some((
+        Progress::waiting(
+            "Waiting for the guitar to confirm, up to 15 s",
+            Duration::from_secs(15),
+            false,
+        ),
+        Instant::now() - Duration::from_secs(9),
+    ));
+    let texts = frame(&ctx, &mut wizard, Vec::new());
+    assert!(texts.iter().any(|line| line == "6 s left"));
 }
 
 #[test]
 fn mockups_render_headless() {
     let states = mockup_states();
-    assert_eq!(states.len(), 11);
+    assert_eq!(states.len(), 14);
     let (_, mut wizard) = mockup_states().into_iter().nth(2).unwrap();
     let image = raster::render(400, 300, |ctx| wizard.show(ctx));
     let mut colours = std::collections::BTreeSet::new();
@@ -298,7 +388,7 @@ fn clicking_a_finished_step_replays_it_without_continuing_the_active_result() {
     current.started = Some("practice".into());
     current.outcome = Outcome::Passed;
     current.show("Channel 1A: Practice 1A");
-    let (mut wizard, rx) = wired(Prompt::Finished(current.clone()));
+    let (mut wizard, rx) = wired(Prompt::Finished(Box::new(current.clone())));
     let mut previous = StepRecord::new(StepId(2, 1));
     previous.outcome = Outcome::Passed;
     previous.show("PODxt Live, firmware 3.01 (verified device)");
@@ -332,7 +422,7 @@ fn clicking_a_finished_step_replays_it_without_continuing_the_active_result() {
             .iter()
             .any(|line| line == "PODxt Live, firmware 3.01 (verified device)")
     );
-    assert!(replay.iter().any(|line| line == "Back"));
+    assert!(replay.iter().any(|line| line == "Return to current step"));
     assert!(rx.try_recv().is_err());
 
     frame(&ctx, &mut wizard, vec![key(Key::Enter)]);
@@ -369,6 +459,7 @@ fn stop_at_a_result_offers_the_guard_without_offering_another_step() {
     to_runner.send(Reply::Accept(true)).unwrap();
     assert!(matches!(next(), Prompt::Card(StepId(0, 1), _)));
     to_runner.send(Reply::Decision(Decision::Run)).unwrap();
+    assert!(matches!(next(), Prompt::Progress(progress) if !progress.action.is_empty()));
     assert!(matches!(next(), Prompt::Finished(record) if record.id == StepId(0, 1)));
     to_runner.send(Reply::Continue(false)).unwrap();
     assert!(matches!(next(), Prompt::Card(catalogue::RIG_GUARD, _)));
@@ -376,4 +467,68 @@ fn stop_at_a_result_offers_the_guard_without_offering_another_step() {
     let run = worker.join().unwrap();
     assert_eq!(run.stopped_at, Some(StepId(0, 1)));
     assert_eq!(run.step(StepId(0, 2)).outcome, Outcome::NotReached);
+}
+
+#[test]
+fn backspace_reviews_previous_results_and_c_resumes_the_same_card() {
+    let ctx = egui::Context::default();
+    let pending = StepId(2, 2);
+    let (mut wizard, replies) = wired(Prompt::Card(pending, Mode::Practice));
+    wizard.start_accepted = Some(catalogue::START_NOTICE);
+    for id in [StepId(1, 2), StepId(2, 1)] {
+        let mut record = StepRecord::new(id);
+        record.outcome = Outcome::Passed;
+        wizard.progress.push(record);
+    }
+    frame(&ctx, &mut wizard, Vec::new());
+    let lines = frame(&ctx, &mut wizard, vec![key(Key::Backspace)]);
+    assert!(lines.iter().any(|line| line == "Step 2.1 result"));
+    assert!(lines.iter().any(|line| line == "Return to current step"));
+    assert!(!lines.iter().any(|line| line == "Run  (R)"));
+    frame(&ctx, &mut wizard, Vec::new());
+    let lines = frame(&ctx, &mut wizard, vec![key(Key::Backspace)]);
+    assert!(lines.iter().any(|line| line == "Step 1.2 result"));
+    frame(&ctx, &mut wizard, vec![key(Key::R)]);
+    assert!(replies.try_recv().is_err());
+    frame(&ctx, &mut wizard, vec![key(Key::C)]);
+    let lines = frame(&ctx, &mut wizard, Vec::new());
+    assert!(lines.iter().any(|line| line == "Step 2.2"));
+    assert!(matches!(wizard.prompt, Some(Prompt::Card(id, _)) if id == pending));
+    assert_eq!(wizard.progress.len(), 2);
+    assert!(wizard.progress.iter().all(|record| record.outcome.passed()));
+    assert!(replies.try_recv().is_err());
+}
+
+#[test]
+fn first_card_back_shows_the_already_accepted_start_notice() {
+    let ctx = egui::Context::default();
+    let (mut wizard, replies) = wired(Prompt::Start(catalogue::START_NOTICE.into()));
+    wizard.reply(Reply::Accept(true));
+    assert!(matches!(replies.try_recv(), Ok(Reply::Accept(true))));
+    wizard.prompt = Some(Prompt::Card(StepId(0, 1), Mode::Practice));
+    frame(&ctx, &mut wizard, Vec::new());
+    let lines = frame(&ctx, &mut wizard, vec![key(Key::Backspace)]);
+    assert!(lines.iter().any(|line| line == "Start notice (accepted)"));
+    assert!(
+        !lines
+            .iter()
+            .any(|line| line == "Accept and continue" || line == "Quit")
+    );
+    assert!(replies.try_recv().is_err());
+}
+
+#[test]
+fn review_shows_the_start_notice_accepted_for_this_mac() {
+    let ctx = egui::Context::default();
+    let (mut wizard, _) = wired(Prompt::Start(catalogue::MAC_START_NOTICE.into()));
+    wizard.reply(Reply::Accept(true));
+    wizard.prompt = Some(Prompt::Card(StepId(0, 1), Mode::Real));
+    wizard.go_back();
+    assert_eq!(wizard.reviewing, Some(Review::Start));
+    let texts = frame(&ctx, &mut wizard, Vec::new());
+    assert!(
+        texts
+            .iter()
+            .any(|line| line.contains("Rig Check can check this Mac"))
+    );
 }

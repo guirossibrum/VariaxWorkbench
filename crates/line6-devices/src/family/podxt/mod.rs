@@ -21,13 +21,16 @@ mod live_edit;
 mod live_read;
 mod live_settings;
 pub use live_edit::{
-    EditorBuffer, EditorEdit, edit_editor_buffer, get_editor_buffer, recall_editor_channel,
+    EditorBuffer, EditorEdit, edit_editor_buffer, get_editor_buffer, playing_channel,
+    recall_editor_channel,
 };
-pub use live_read::{ReadCommand, ReadUpdate, follow_window, read_live, tuner_window};
+pub use live_read::{
+    ReadCommand, ReadUpdate, follow_action, follow_window, read_live, tuner_window,
+};
 pub use live_settings::{LiveControl, LiveTarget, Setting, SettingMessage};
 pub use procedures::{check_live_identity, identify_podxt_live, read_stored_tone, restore_channel};
 use procedures::{identify_podxt, read_edit_buffer, request_tone, send_control, wait_tone};
-pub use store::{StoreControl, StoreResult, store_tone};
+pub use store::{StoreControl, StoreResult, store_tone, store_tone_observing_wait};
 pub use store_backup::{
     ConfirmedStore, PreparedStore, StoreSource, VerifiedToneBackup, prepare_tone_store,
     verify_tone_backup,

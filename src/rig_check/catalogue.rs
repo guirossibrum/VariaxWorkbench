@@ -6,7 +6,7 @@
 use crate::hardware_gates::Gate;
 use std::fmt;
 
-pub const CATALOGUE_VERSION: &str = "1.2";
+pub const CATALOGUE_VERSION: &str = "1.4";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StepId(pub u8, pub u8);
@@ -58,6 +58,10 @@ pub enum Kind {
     Guided,
     /// Audio/DAW.
     Audio,
+}
+
+pub fn asks_for_action(id: StepId) -> bool {
+    step(id).is_some_and(|step| step.kind == Kind::Guided)
 }
 
 pub struct Step {
@@ -167,11 +171,11 @@ pub static STEPS: &[Step] = &[
         evidence: "Per model: words compared, differences with position, expected/actual hex, XOR mask and sound part.",
         proof: "#238 sweep, synthetic host fixtures"),
     step!((1, 1), "See the PODxt Live on USB", Device, [(0, 2)], [G1], None,
-        does: "Looks for exactly one PODxt Live in the USB list and notes its port and speed.",
+        does: "Looks for exactly one PODxt Live in the USB list and notes its port and speed. USB discovery cannot show the firmware. Step 2.1 checks the PODxt Live firmware and step 3.1 checks the Variax firmware.",
         you_do: "Make sure the PODxt Live is on and connected by USB.", see: "PODxt Live found on port ...", hear: "Nothing.",
         evidence: "Vendor/product ID, port path, speed, address, interface drivers.",
         proof: "#213"),
-    step!((1, 2), "Open and give back the guitar interface", Device, [(1, 1)], [G1, G2], Read,
+    step!((1, 2), "Open and give back the guitar interface", Device, [(1, 1), (2, 1)], [G1, G2], Read,
         does: "Opens the PODxt Live's guitar interface (interface 1), closes it again and checks that the operating system gave it back to its driver (snd-usb-variax). If not, it waits and retries once.",
         you_do: "Nothing.", see: "Guitar interface opened and given back.", hear: "Nothing.",
         evidence: "Open/release result, driver binding before and after.",
@@ -203,34 +207,30 @@ pub static STEPS: &[Step] = &[
         does: "Uses the editor Get procedure and reads installed packs and global values.",
         you_do: "Leave the footswitches and controls alone.", see: "The current channel, tone name and returned globals.", hear: "Your current tone.",
         evidence: "Channel, tone and global replies.", proof: "#246", verified_only: true),
-    step!((3, 1), "Variax identity, model and firmware", Device, [(1, 2)], [G2], Read,
+    step!((3, 1), "Variax identity, model and firmware", Device, [(1, 2), (2, 1)], [G2], Read,
         does: "Asks the guitar who it is, through the PODxt Live. A lost first packet or a silent first try is retried once.",
         you_do: "Nothing.", see: "The reported Variax model family and firmware, with verification status.", hear: "Nothing.",
         evidence: "Identity reply, model (300/500/600/700), firmware, VDI link answering, verified or unverified.",
         proof: "#213, G2 owner run (build 12)"),
-    step!((3, 2), "Variax current settings", Device, [(3, 1)], [G3], Read,
+    step!((3, 2), "Variax current settings", Device, [(3, 1), (2, 1)], [G3], Read,
         does: "Reads the 192 bytes of settings of the preset you are playing (name, pickups, tuning, controls).",
         you_do: "Nothing.", see: "The preset name.", hear: "Nothing.",
         evidence: "Both replies in hex, decoded settings.", proof: "#176, #225"),
-    step!((3, 3), "Variax full current program (35 reads)", Device, [(3, 1)], [G3], Read,
+    step!((3, 3), "Variax full current program (35 reads)", Device, [(3, 1), (2, 1)], [G3], Read,
         does: "Reads all 1,092 words of the sound the guitar is playing in 35 reads of 32 words (the PODxt Live drops larger replies). A damaged reply is retried up to twice, 100 ms apart.",
         you_do: "Nothing.", see: "The number of chunks read out of 35 and the checksum result.", hear: "Nothing.",
         evidence: "Per read: request, reply, retries, lost bytes; SHA-256 and checksum word of the program.",
         proof: "#234, reso5-full-read-test-card.md"),
-    step!((3, 4), "Variax all 60 presets (backup), and back", Device, [(3, 3)], [G5], Read,
+    step!((3, 4), "Variax all 60 presets (backup), and back", Device, [(3, 3), (2, 1)], [G5], Read,
         does: "Reads all 60 stored presets (1,092 words each) into the evidence folder, finds the one you started on, switches back to it and checks all words. Start on a saved preset without unsaved changes: the first preset switch discards unsaved guitar edits.",
         you_do: "Nothing. Takes about 4 minutes.", see: "The number of presets read out of 60 and whether the guitar returned to its starting preset.", hear: "The sound changes 60 times, then comes back.",
         evidence: "60 SHA-256 values, manifest, the starting preset, return check.", proof: "#236, variax-backup-test-card.md"),
-    step!((3, 5), "Variax one stored preset, and back", Device, [(3, 4)], [G5], Read,
-        does: "Switches the guitar to one other stored preset, reads it, compares it with the backup from 3.4, switches back to the starting preset and checks all 1,092 words.",
+    step!((3, 5), "Editor: Read unmodified from device", Device, [(3, 4), (2, 1)], [G5], Read,
+        does: "Tests the same read the Variax editor uses for Read unmodified from device and Sync revert. It selects one other stored preset, compares all 1,092 words with the backup from 3.4, then returns to your starting preset and verifies it.",
         you_do: "Nothing.", see: "Which preset was read, whether it matches the backup, and whether the guitar returned to its starting preset.", hear: "The sound changes for a few seconds and comes back.",
         evidence: "Program SHA-256, backup comparison, return check.", proof: "#238, variax-any-selection-test-card.md"),
-    step!((3, 6), "Variax one bank (5 presets), and back", Device, [(3, 5)], [G5], Read,
-        does: "Reads the five presets of one bank the same way, compares them with the backup and switches back.",
-        you_do: "Nothing.", see: "The number of presets read out of five and whether the guitar returned to its starting preset.", hear: "Five short sound changes, then the start sound.",
-        evidence: "Five SHA-256 values, backup comparison, return check.", proof: "#236"),
-    step!((3, 7), "Variax firmware evidence", Device, [(3, 1)], [G2, G3], Read,
-        does: "Records how this firmware answers identity, current settings and 35 current-program reads. The guitar stays on the same preset.",
+    step!((3, 7), "Compatibility check for other firmware versions", Device, [(2, 1)], [G1, G2, G3], Read,
+        does: "Records identity, current settings and 35 current-program replies. The guitar stays on the same preset. If the PODxt Live firmware is unverified, this is the only Variax step offered because the relay was verified on 3.01.",
         you_do: "Keep the guitar connected and leave the selector and knobs alone.",
         see: "The reported firmware and the evidence collected for comparison with 3.10.",
         hear: "The current sound should stay the same.",
@@ -241,21 +241,21 @@ pub static STEPS: &[Step] = &[
         you_do: "Nothing.", see: "The stomp setting read back and whether the starting tone was restored.", hear: "The stomp switches for a moment.",
         evidence: "Before, after and restored dumps, differences.", proof: "#221, podxt-live-edit-test-card.md",
         verified_only: true),
-    step!((4, 2), "Variax: send the current preset's own bytes to the working buffer", Device, [(3, 3)], [G6], Live,
+    step!((4, 2), "Variax: send the current preset's own bytes to the working buffer", Device, [(3, 3), (2, 1)], [G6], Live,
         does: "Sends the 1,092 words read in 3.3 back to the guitar's working sound and reads them back. Nothing is saved and no save command is sent.",
         you_do: "Nothing.", see: "Sent and read back: identical.", hear: "No change (a very short drop-out is possible).",
         evidence: "Upload SHA-256, read-back SHA-256, word differences.", proof: "#176, reso5-test-card.md",
         verified_only: true),
-    step!((4, 3), "Variax: listen to a test model, then return", Device, [(4, 2), (3, 4)], [G6], Live,
+    step!((4, 3), "Variax: listen to a test model, then return", Device, [(4, 2), (3, 4), (2, 1)], [G6], Live,
         does: "Plays a test model in the working buffer, asks what you hear against the sound you just played, then switches back to the starting preset and checks all words. Nothing is saved.",
         you_do: "Play the original first, then play the test model and answer.", see: "Your answers for each test model and whether the guitar returned to its starting preset.", hear: "The test model, then your own sound again.",
         evidence: "Upload and read-back SHA-256, answers next to the byte checks.", proof: "#238 listen-list, variax-listen-list-test-card.md",
         verified_only: true),
-    step!((4, 4), "Variax: lower output trim and return", Device, [(4, 2), (3, 4)], [G6], Live,
+    step!((4, 4), "Variax: lower output trim and return", Device, [(4, 2), (3, 4), (2, 1)], [G6], Live,
         does: "Lowers the starting preset's output trim by 6 dB with one difference message, reads the working buffer and reloads your starting preset.",
         you_do: "Play the same short passage before and after the prompt. Leave the knobs alone.", see: "The quieter program read back and the original verified.", hear: "The same sound, quieter, then the starting level again.",
         evidence: "Full read-back, including the retained checksum, and verified return.", proof: "#245", verified_only: true),
-    step!((4, 5), "Variax: change alternate tuning and return", Device, [(4, 2), (3, 4)], [G6], Live,
+    step!((4, 5), "Variax: change alternate tuning and return", Device, [(4, 2), (3, 4), (2, 1)], [G6], Live,
         does: "Sends the Workbench muted transition and then the unmuted alternate-tuning program. Reads it back and reloads your starting preset.",
         you_do: "Play the low E string before and after the prompt. Leave the knobs alone.", see: "The test tuning read back and the original verified.", hear: "A short mute, then the low string at a different pitch, then your original tuning.",
         evidence: "Transition and full upload, read-back and verified return.", proof: "#245", verified_only: true),
@@ -271,7 +271,7 @@ pub static STEPS: &[Step] = &[
         does: "Opens the POD tuner briefly, polls note and tuning deviation, then switches the tuner off.",
         you_do: "Pluck one open string when asked.", see: "Whether tuner values arrived and the tuner was switched off.", hear: "The tuner may mute the sound briefly, then your current tone returns.",
         evidence: "Tuner mode and note/deviation messages.", proof: "#246", verified_only: true),
-    step!((5, 1), "Variax: save a preset's own bytes back to its slot", Device, [(3, 4), (4, 2)], [G7], Save,
+    step!((5, 1), "Variax: save a preset's own bytes back to its slot", Device, [(3, 4), (4, 2), (2, 1)], [G7], Save,
         does: "Checks the slot still matches the backup, sends its own program, waits 100 ms, sends one save command, waits up to 15 s for one confirmation, then reads the slot back and compares it with the backup. Never repeats the save.",
         you_do: "Read the save notice and type the confirmation.", see: "Saved and verified.", hear: "A short drop-out, then the same sound.",
         evidence: "Pre-check, store messages, confirmation time, read-back comparison.", proof: "#177, #238 4c, reso5-store-test-card.md",
@@ -281,15 +281,15 @@ pub static STEPS: &[Step] = &[
         you_do: "Read the save notice and type the confirmation.", see: "Saved and verified.", hear: "Nothing changes.",
         evidence: "Pre-check, store messages, receipt, read-back.", proof: "#222 stage B (owner run pending), podxt-store-test-card.md",
         verified_only: true),
-    step!((5, 3), "Variax: save a quieter preset and restore it", Device, [(5, 1), (4, 4)], [G7], Save,
+    step!((5, 3), "Variax: save a quieter preset and restore it", Device, [(5, 1), (4, 4), (2, 1)], [G7], Save,
         does: "Saves the quieter variant to the starting slot, reads it back, then restores and verifies the backup.",
         you_do: "Read the save notice and type the confirmation.", see: "The quieter save and the verified restoration.", hear: "The sound becomes quieter and then returns to the original level.",
         evidence: "Both store receipts, read-backs and return.", proof: "#238 4b/4c", verified_only: true),
-    step!((5, 4), "Variax: Sync two presets' own bytes", Device, [(5, 1), (3, 4)], [G7], Save,
+    step!((5, 4), "Variax: Sync two presets' own bytes", Device, [(5, 1), (3, 4), (2, 1)], [G7], Save,
         does: "Checks two saved presets against the backup, saves each one's own program once, then reloads and verifies your starting preset.",
         you_do: "Read the save notice for both slots and type the confirmation.", see: "Each slot verified, then the verified return.", hear: "The two saved sounds as they are checked, then your original sound.",
         evidence: "Both stored-image checks and the return.", proof: "#205", verified_only: true),
-    step!((6, 1), "VDI cable unplug and replug noticed", Guided, [(3, 1)], [G2], Read,
+    step!((6, 1), "VDI cable unplug and replug noticed", Guided, [(3, 1), (2, 1)], [G2], Read,
         does: "Asks you to unplug the VDI cable, waits until the guitar stops answering, asks you to plug it back, and reads the identity again. Nothing is sent while you handle the cable.",
         you_do: "Unplug the VDI cable, wait for the screen, plug it back in.", see: "The observed disconnect and reconnect, and the guitar firmware after reconnecting.", hear: "The guitar goes silent while unplugged.",
         evidence: "Times of loss and return, identity after.", proof: "#235", verified_only: true),
@@ -297,11 +297,11 @@ pub static STEPS: &[Step] = &[
         does: "Reads the PODxt Live tone and the Variax program again and compares them with the start. If the channel or preset differs it switches back and checks again. Then it gives the guitar interface back to the operating system and checks the driver.",
         you_do: "Nothing.", see: "What matched the starting state, and the guitar driver status if checked.", hear: "Your starting sound.",
         evidence: "Start and end SHA-256, any switch-back, driver binding.", proof: "#239, #238"),
-    step!((7, 1), "Turn the Variax selector to a named preset", Guided, [(3, 4)], [G3], Read,
+    step!((7, 1), "Turn the Variax selector to a named preset", Guided, [(3, 4), (2, 1)], [G3], Read,
         does: "Opens a listening window; nothing is sent while you turn the selector. When the guitar reports the new preset, Rig Check checks it against the backup and asks you to turn back.",
         you_do: "Turn the selector to the named preset, then back.", see: "The preset the guitar reported and the return to the starting preset.", hear: "The named preset, then your start sound.",
         evidence: "Program change seen, preset matched, return seen.", proof: "#202 Follow, #238", verified_only: true),
-    step!((7, 2), "Sweep the Variax volume and tone knobs", Guided, [(3, 1)], [G3], Read,
+    step!((7, 2), "Sweep the Variax volume and tone knobs", Guided, [(3, 1), (2, 1)], [G3], Read,
         does: "Opens a listening window and watches the volume (CC 7) and tone (CC 79) knobs.",
         you_do: "Turn the volume knob down and up, then the tone knob down and up. Leave them where they were.", see: "Volume and tone ranges.", hear: "The volume and tone change while you turn.",
         evidence: "Lowest and highest value seen per knob.", proof: "live-control-midi (CC 7, CC 79)", verified_only: true),
@@ -344,20 +344,19 @@ pub const RUN_ORDER: &[StepId] = &[
     StepId(0, 2),
     StepId(0, 3),
     StepId(1, 1),
-    StepId(1, 2),
     StepId(2, 1),
+    StepId(1, 2),
     StepId(2, 2),
-    StepId(3, 1),
-    VARIAX_EVIDENCE,
-    StepId(3, 2),
-    StepId(3, 3),
     StepId(2, 3),
     StepId(2, 4),
     StepId(2, 5),
     StepId(2, 6),
+    StepId(3, 1),
+    VARIAX_EVIDENCE,
+    StepId(3, 2),
+    StepId(3, 3),
     StepId(3, 4),
     StepId(3, 5),
-    StepId(3, 6),
     StepId(6, 1),
     StepId(7, 1),
     StepId(7, 2),
@@ -384,7 +383,15 @@ pub const RUN_ORDER: &[StepId] = &[
     StepId(6, 2),
 ];
 
-/// Offered only for an unverified Variax 300/600 firmware.
+/// Variax-directed checks, excluding the mixed final cleanup step.
+pub const fn is_variax_step(id: StepId) -> bool {
+    matches!(
+        (id.0, id.1),
+        (1, 2) | (3, _) | (4, 2..=5) | (5, 1 | 3 | 4) | (6, 1) | (7, 1 | 2)
+    )
+}
+
+/// Evidence branch for an unverified Variax 300/600 or PODxt Live relay.
 pub const VARIAX_EVIDENCE: StepId = StepId(3, 7);
 
 /// The step that always closes a run, including after Stop.
@@ -397,6 +404,13 @@ pub fn step(id: StepId) -> Option<&'static Step> {
 pub const MAC_START_NOTICE: &str = "Before you start. Rig Check can check this Mac and run the offline engine comparison. The Mac connection isn't available in this version yet. The audio check lists devices and opens no stream. Each check waits for you to choose Run.\n\nRig Check writes a text report on this computer. It does not use the internet. Your user name, computer name and serial numbers are removed from the report.";
 
 pub const START_NOTICE: &str = "Before you start. Rig Check tests your PODxt Live and Variax with the same code the editor uses. Each step tells you what it will do and waits for you. Nothing runs until you choose Run.\n\nMost steps only ask the devices questions. Some steps briefly change the sound you hear and put it back. Saving steps come later and have their own warning.\n\nYour PODxt Live and Variax are old and cannot be replaced. Keep both powered and connected until Rig Check says it has finished. Do not touch the selector, knobs or footswitches unless a step asks you to.\n\nRig Check writes a text report on this computer. It does not use the internet. Your user name, computer name and serial numbers are removed from the report.";
+
+/// Only the run-start notices can be reopened from the first card.
+pub fn accepted_start_notice(notice: &str) -> Option<&'static str> {
+    [START_NOTICE, MAC_START_NOTICE]
+        .into_iter()
+        .find(|text| *text == notice)
+}
 
 /// The second notice, before any save step.
 pub struct SaveNotice {

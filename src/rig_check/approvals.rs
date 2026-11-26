@@ -22,7 +22,6 @@ pub const APPROVED_STEP_3_2: bool = true;
 pub const APPROVED_STEP_3_3: bool = true;
 pub const APPROVED_STEP_3_4: bool = true;
 pub const APPROVED_STEP_3_5: bool = true;
-pub const APPROVED_STEP_3_6: bool = true;
 pub const APPROVED_VARIAX_EVIDENCE: bool = true;
 pub const APPROVED_STEP_4_1: bool = true;
 pub const APPROVED_STEP_4_2: bool = true;
@@ -68,7 +67,6 @@ pub const fn approved(id: StepId) -> bool {
         (3, 3) => APPROVED_STEP_3_3,
         (3, 4) => APPROVED_STEP_3_4,
         (3, 5) => APPROVED_STEP_3_5,
-        (3, 6) => APPROVED_STEP_3_6,
         (3, 7) => APPROVED_VARIAX_EVIDENCE,
         (4, 1) => APPROVED_STEP_4_1,
         (4, 2) => APPROVED_STEP_4_2,
