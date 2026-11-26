@@ -89,9 +89,13 @@ tag format. [GitHub-hosted runners](https://docs.github.com/en/actions/reference
 ## Native verification
 
 The workflow exercises Workbench version output, Rig Check's catalogue,
-a simulated Practice step, and the native Windows version and offline
-engine report. It skips native USB and audio inventory in the packaged
-smoke test. Their parsers and command selection have offline unit coverage.
+a simulated Practice step, and the offline engine report. The packaged
+smoke test records the Windows version, matching build number, and
+recognized processor architecture from Rig Check step 0.1 in
+`verification.txt`. It checks that native USB and audio inventory steps
+were skipped, device steps reported the Windows connection notice, and
+This computer recorded zero device messages. The inventory parsers and
+command selection have offline unit coverage.
 On the owner's Windows system, verify SmartScreen, both graphical launches,
 opening and saving a synthetic preset, and the USB and audio inventory
 screens without connecting the rig. Live transport and audio streams remain

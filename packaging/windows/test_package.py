@@ -77,62 +77,96 @@ class PackageTests(unittest.TestCase):
                 verify_zip(archive, detached)
 
 
-    def test_smoke_uses_simulated_usb_and_skips_native_usb_and_audio_inventory(self):
+    def smoke_with_report(self, system_results, *, device_outcome="not_available",
+                          reason="The Windows connection isn't available in this version yet.",
+                          usb_outcome="skipped", audio_outcome="skipped", messages=0):
         with tempfile.TemporaryDirectory() as tmp:
             scratch = Path(tmp)
-            for device_outcome, inventory_outcome, error in (
-                ("not_available", "skipped", None),
-                ("passed", "skipped", "Unexpected device outcomes"),
-                ("not_available", "passed", "Unexpected computer outcomes"),
-            ):
-                def fake_run(*args, env, cwd, input_text=None):
-                    self.assertEqual(cwd, scratch / "extracted")
-                    self.assertEqual(env["XDG_DATA_HOME"], str(scratch / "xdg-data"))
-                    if args[1] == "--version":
-                        return "Variax Workbench 0.09"
-                    if args[1] == "--catalogue":
-                        return "0.1 Computer and operating system\n8.1 Audio device inventory"
-                    destination = Path(args[-1])
-                    destination.mkdir(exist_ok=True)
-                    if args[1] == "--practice":
-                        self.assertEqual(input_text, "accept\nr\nc\nr\nc\nr\nc\nr\nc\nq\n")
-                        contents = (
-                            "Mode: practice (simulated devices)\nsimulated computer\n"
-                            "[1.1] See the PODxt Live on USB — PASSED\n"
-                        )
-                    else:
-                        self.assertEqual(args[1], "--real")
-                        self.assertEqual(input_text, "accept\nr\nc\ns\nr\nc\ns\n")
-                        notice = "The Windows connection isn't available in this version yet."
-                        steps = [
-                            {"id": "0.1", "outcome": "passed"},
-                            {"id": "0.2", "outcome": inventory_outcome},
-                            {"id": "0.3", "outcome": "passed"},
-                            {"id": "1.1", "outcome": device_outcome, "reason": notice, "messages": 0},
-                            {"id": "2.7", "outcome": "skipped_needs"},
-                            {"id": "8.1", "outcome": "skipped"},
-                        ]
-                        # Only steps that ran have detailed headings. Skips
-                        # and refusals are still present in the JSON report.
-                        contents = (
-                            "Operating system: Windows\nWindows version: 10.0.26100\n"
-                            "[0.3] Engine check (no device) — PASSED\n"
-                            "Synthetic preset (full pipeline): all 1,092 words identical\n"
-                            f"{notice}\n"
-                            "BEGIN RIG CHECK JSON\n"
-                            f"{json.dumps({'finished': True, 'steps': steps})}\n"
-                            "END RIG CHECK JSON\n"
-                        )
-                    (destination / "run.txt").write_text(contents, encoding="utf-8")
-                    return ""
 
-                with self.subTest(device_outcome=device_outcome, inventory_outcome=inventory_outcome), \
-                        patch("build.run", side_effect=fake_run):
-                    if error is None:
-                        self.assertIn("audio inventories were skipped", smoke(scratch / "extracted", scratch, {}))
-                    else:
-                        with self.assertRaisesRegex(ValueError, error):
-                            smoke(scratch / "extracted", scratch, {})
+            def fake_run(*args, env, cwd, input_text=None):
+                self.assertEqual(cwd, scratch / "extracted")
+                self.assertEqual(env["XDG_DATA_HOME"], str(scratch / "xdg-data"))
+                if args[1] == "--version":
+                    return "Variax Workbench 0.09"
+                if args[1] == "--catalogue":
+                    return "0.1 Computer and operating system\n8.1 Audio device inventory"
+                destination = Path(args[-1])
+                destination.mkdir()
+                if args[1] == "--practice":
+                    self.assertEqual(input_text, "accept\nr\nc\nr\nc\nr\nc\nr\nc\nq\n")
+                    contents = (
+                        "Mode: practice (simulated devices)\nsimulated computer\n"
+                        "[1.1] See the PODxt Live on USB — PASSED\n"
+                    )
+                else:
+                    self.assertEqual(args[1], "--real")
+                    self.assertEqual(input_text, "accept\nr\nc\ns\nr\nc\ns\n")
+                    steps = [
+                        {"id": "0.1", "outcome": "passed", "results": system_results, "messages": 0},
+                        {"id": "0.2", "outcome": usb_outcome, "messages": 0},
+                        {"id": "0.3", "outcome": "passed", "messages": 0},
+                        {"id": "1.1", "outcome": device_outcome, "reason": reason, "messages": messages},
+                        {"id": "2.7", "outcome": "skipped_needs", "messages": 0},
+                        {"id": "8.1", "outcome": audio_outcome, "messages": 0},
+                    ]
+                    # A version in the report summary cannot satisfy the step check.
+                    contents = (
+                        "Operating system: Windows\nWindows version: 10.0.26100\n"
+                        "[0.3] Engine check (no device) — PASSED\n"
+                        "Synthetic preset (full pipeline): all 1,092 words identical\n"
+                        "The Windows connection isn't available in this version yet.\n"
+                        "BEGIN RIG CHECK JSON\n"
+                        f"{json.dumps({'finished': True, 'steps': steps})}\n"
+                        "END RIG CHECK JSON\n"
+                    )
+                (destination / "run.txt").write_text(contents, encoding="utf-8")
+                return ""
+
+            with patch("build.run", side_effect=fake_run):
+                return smoke(scratch / "extracted", scratch, {})
+
+    def test_smoke_records_step_01_version_build_and_recognized_architecture(self):
+        for version, architecture in (
+            ("10.0.26100", "x86_64"), ("10.0.26100.1742", "aarch64"),
+            ("10.0.26100", "x86"), ("10.0.26100.1742", "arm"),
+        ):
+            with self.subTest(version=version, architecture=architecture):
+                fields = [f"Windows version: {version}", "Windows build: 26100", f"Architecture: {architecture}"]
+                verification = self.smoke_with_report(fields)
+                self.assertIn("\n".join(fields), verification)
+                self.assertIn("audio inventories were skipped", verification)
+                self.assertIn("Zero device messages recorded", verification)
+
+    def test_smoke_refuses_missing_unavailable_or_invalid_step_01_fields(self):
+        for index, invalid, error in (
+            (0, None, "Expected one Windows version"),
+            (0, "Windows version: not available on this OS", "Invalid Windows version"),
+            (0, "Windows version: 10.0.26100.1742.1", "Invalid Windows version"),
+            (1, None, "Expected one Windows build"),
+            (1, "Windows build: not available on this OS", "Windows build.*does not match"),
+            (1, "Windows build: 1742", "Windows build.*does not match"),
+            (2, None, "Expected one Architecture"),
+            (2, "Architecture: not available on this OS", "Unrecognized Windows architecture"),
+            (2, "Architecture: AMD64", "Unrecognized Windows architecture"),
+        ):
+            with self.subTest(field=index, invalid=invalid), self.assertRaisesRegex(ValueError, error):
+                fields = ["Windows version: 10.0.26100.1742", "Windows build: 26100", "Architecture: x86_64"]
+                fields[index:index + 1] = [] if invalid is None else [invalid]
+                self.smoke_with_report(fields)
+
+    def test_smoke_refuses_native_inventory_or_device_activity(self):
+        for options, error in (
+            ({"device_outcome": "passed"}, "Unexpected device outcomes"),
+            ({"reason": "other notice"}, "Unexpected device outcomes"),
+            ({"messages": 1}, "Expected zero device messages"),
+            ({"usb_outcome": "passed"}, "Unexpected computer outcomes"),
+            ({"audio_outcome": "passed"}, "Unexpected computer outcomes"),
+        ):
+            with self.subTest(options=options), self.assertRaisesRegex(ValueError, error):
+                self.smoke_with_report(
+                    ["Windows version: 10.0.26100", "Windows build: 26100", "Architecture: x86_64"],
+                    **options,
+                )
 
 
 if __name__ == "__main__":
