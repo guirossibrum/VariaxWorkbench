@@ -12,6 +12,9 @@ use std::time::{Duration, Instant};
 pub use super::InterfaceSpec;
 pub use crate::family::variax::transport::VARIAX_VIA_PODXT_LIVE;
 
+mod podxt;
+pub use podxt::PODXT_DIRECT_USB_APPROVED;
+
 const WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub struct UsbInterfaceLink<Rig = Option<DeviceLock>> {
@@ -26,6 +29,7 @@ pub struct UsbInterfaceLink<Rig = Option<DeviceLock>> {
 
 impl UsbInterfaceLink {
     pub fn open(spec: InterfaceSpec) -> Result<Self, String> {
+        podxt::check_open(spec, false)?;
         let devices = rusb::devices().map_err(|e| format!("USB list: {e}"))?;
         let found: Vec<_> = devices
             .iter()
@@ -43,6 +47,12 @@ impl UsbInterfaceLink {
             ));
         }
         Self::open_device(spec, &found[0], None)
+    }
+
+    /// Open direct MIDI on PODxt Live interface 0 of the named attachment.
+    /// The lock is retained through release and verification of driver return.
+    pub fn open_podxt_midi(path: &str, address: u8, rig: DeviceLock) -> Result<Self, String> {
+        Self::open_attachment(podxt::SPEC, path, address, rig)
     }
 
     /// Select the verified attachment before opening or detaching anything.
@@ -89,6 +99,9 @@ impl<Rig> UsbInterfaceLink<Rig> {
         device: &rusb::Device<rusb::GlobalContext>,
         rig: Rig,
     ) -> Result<Self, String> {
+        if podxt::targets_interface(spec) {
+            podxt::verify_descriptor(device)?;
+        }
         let handle = device
             .open()
             .map_err(|e| format!("Cannot open the USB device: {e}"))?;
@@ -112,11 +125,18 @@ impl<Rig> UsbInterfaceLink<Rig> {
 
     fn prepare(&mut self) -> Result<(), String> {
         let interface = self.spec.interface;
-        if self
+        let driver_active = self
             .handle
             .kernel_driver_active(interface)
-            .map_err(|e| format!("Kernel driver check: {e}"))?
-        {
+            .map_err(|e| format!("Kernel driver check: {e}"))?;
+        #[cfg(target_os = "linux")]
+        if podxt::targets_interface(self.spec) {
+            if !driver_active {
+                return Err("PODxt Live interface 0 has no active kernel driver.".into());
+            }
+            podxt::require_driver(&self.handle)?;
+        }
+        if driver_active {
             self.handle
                 .detach_kernel_driver(interface)
                 .map_err(|e| format!("Detach interface {interface}: {e}"))?;
@@ -150,6 +170,16 @@ impl<Rig> UsbInterfaceLink<Rig> {
         (self.detached, self.claimed)
     }
 
+    fn return_detached_driver(&self) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        if podxt::targets_interface(self.spec) {
+            return podxt::return_driver(&self.handle);
+        }
+        self.handle
+            .attach_kernel_driver(self.spec.interface)
+            .map_err(|error| error.to_string())
+    }
+
     /// Release the interface and give it back to the kernel driver.
     pub fn finish(&mut self) -> Result<(), String> {
         if self.finished {
@@ -169,9 +199,7 @@ impl<Rig> UsbInterfaceLink<Rig> {
             let result = if self.spec.path == Path::VariaxViaPodxt {
                 return_variax_driver(&self.handle, self.detached)
             } else if self.detached {
-                self.handle
-                    .attach_kernel_driver(interface)
-                    .map_err(|e| e.to_string())
+                self.return_detached_driver()
             } else {
                 Ok(())
             };
@@ -258,6 +286,7 @@ pub fn with_attachment<T>(
     address: u8,
     open: impl FnOnce(rusb::Device<rusb::GlobalContext>) -> Result<T, String>,
 ) -> Result<T, String> {
+    podxt::check_open(spec, true)?;
     let devices = rusb::devices().map_err(|e| format!("USB list: {e}"))?;
     with_matching_device(
         devices.iter(),
@@ -316,34 +345,18 @@ impl<Rig> Link for UsbInterfaceLink<Rig> {
     }
 
     fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
-        for chunk in bytes.chunks(self.spec.packet) {
-            let sent = self
-                .handle
-                .write_interrupt(self.spec.endpoint_out, chunk, WRITE_TIMEOUT)
-                .map_err(|e| format!("USB write: {e}"))?;
-            if sent != chunk.len() {
-                return Err("Short USB write.".into());
-            }
-            std::thread::sleep(self.spec.chunk_gap);
-        }
-        Ok(())
+        write_packets(
+            self.spec,
+            bytes,
+            |endpoint, chunk, timeout| self.handle.write_interrupt(endpoint, chunk, timeout),
+            std::thread::sleep,
+        )
     }
 
     fn read(&mut self, wait: Duration) -> Result<Option<Vec<u8>>, String> {
-        let mut packet = vec![0; self.spec.packet];
-        // A zero timeout would mean "wait forever" in libusb.
-        match self.handle.read_interrupt(
-            self.spec.endpoint_in,
-            &mut packet,
-            wait.max(Duration::from_millis(1)),
-        ) {
-            Ok(length) => {
-                packet.truncate(length);
-                Ok(Some(packet))
-            }
-            Err(rusb::Error::Timeout) => Ok(None),
-            Err(e) => Err(format!("USB read: {e}")),
-        }
+        read_packet(self.spec, wait, |endpoint, packet, timeout| {
+            self.handle.read_interrupt(endpoint, packet, timeout)
+        })
     }
 
     fn elapsed(&self) -> Duration {
@@ -352,6 +365,47 @@ impl<Rig> Link for UsbInterfaceLink<Rig> {
 
     fn pause(&mut self, duration: Duration) {
         std::thread::sleep(duration);
+    }
+}
+
+fn write_packets(
+    spec: InterfaceSpec,
+    bytes: &[u8],
+    mut write: impl FnMut(u8, &[u8], Duration) -> rusb::Result<usize>,
+    mut pause: impl FnMut(Duration),
+) -> Result<(), String> {
+    for chunk in bytes.chunks(spec.packet) {
+        let sent = write(spec.endpoint_out, chunk, WRITE_TIMEOUT)
+            .map_err(|error| format!("USB write: {error}"))?;
+        if sent != chunk.len() {
+            return Err("Short USB write.".into());
+        }
+        pause(spec.chunk_gap);
+    }
+    Ok(())
+}
+
+fn read_packet(
+    spec: InterfaceSpec,
+    wait: Duration,
+    read: impl FnOnce(u8, &mut [u8], Duration) -> rusb::Result<usize>,
+) -> Result<Option<Vec<u8>>, String> {
+    let mut packet = vec![0; spec.packet];
+    // A zero timeout would mean "wait forever" in libusb.
+    match read(
+        spec.endpoint_in,
+        &mut packet,
+        wait.max(Duration::from_millis(1)),
+    ) {
+        Ok(length) => {
+            packet.truncate(length);
+            if podxt::targets_interface(spec) {
+                podxt::normalize_received(&mut packet);
+            }
+            Ok(Some(packet))
+        }
+        Err(rusb::Error::Timeout) => Ok(None),
+        Err(error) => Err(format!("USB read: {error}")),
     }
 }
 
