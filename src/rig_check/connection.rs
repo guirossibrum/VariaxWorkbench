@@ -56,7 +56,7 @@ pub fn see_podxt(ctx: &mut Ctx<'_>) -> Result<(), String> {
     ctx.rec
         .show(format!("PODxt Live found on port {}.", device.port));
     ctx.rec.note(device.describe());
-    if ctx.port.macos_owner_test() {
+    if ctx.port.direct_usb() {
         ctx.rec
             .note("Direct USB checks interface ownership before making a claim.");
     } else {
@@ -98,7 +98,7 @@ fn guitar_driver(ctx: &Ctx<'_>, port: &str) -> Option<String> {
 pub fn open_and_release(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let device = the_podxt(ctx)?;
     let linux_view =
-        !ctx.port.macos_owner_test() && (cfg!(target_os = "linux") || ctx.mode == Mode::Practice);
+        !ctx.port.direct_usb() && (cfg!(target_os = "linux") || ctx.mode == Mode::Practice);
     if linux_view {
         let before = guitar_driver(ctx, &device.port);
         ctx.rec.note(format!(

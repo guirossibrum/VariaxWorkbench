@@ -126,7 +126,6 @@ pub struct StepRecord {
     /// UTC start, `YYYY-MM-DD HH:MM:SS UTC`.
     pub started: Option<String>,
     pub attempt: Option<usize>,
-    pub(crate) single_attempt: bool,
     pub duration_ms: Option<u128>,
     /// Questions and the person's answers, in order.
     pub answers: Vec<(String, String)>,
@@ -153,7 +152,6 @@ impl StepRecord {
             outcome: Outcome::NotReached,
             started: None,
             attempt: None,
-            single_attempt: false,
             duration_ms: None,
             answers: Vec::new(),
             look: None,
@@ -236,7 +234,7 @@ impl StepRecord {
     }
 
     pub fn can_repeat(&self) -> bool {
-        if self.single_attempt || self.attempt.is_none() || self.started.is_none() {
+        if self.attempt.is_none() || self.started.is_none() {
             return false;
         }
         catalogue::step(self.id).is_some_and(|step| step.risk != catalogue::Risk::Save)

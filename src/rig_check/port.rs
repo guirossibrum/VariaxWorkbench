@@ -1,8 +1,7 @@
 //! Where device links come from: the practice rig or the real rig.
 //!
-//! This is Rig Check's small internal adapter. The shared procedures from
-//! #245 (Variax) and #246 (PODxt) will replace the procedure wrappers in
-//! `procedures.rs`; the links here stay.
+//! The shared family procedures use these links through the same sessions
+//! on both platforms.
 
 use super::approvals;
 use super::catalogue::StepId;
@@ -25,13 +24,16 @@ pub trait RigPort {
     /// Give the guitar interface back to the operating system and report the
     /// driver binding afterwards.
     fn release_variax(&mut self) -> Result<Vec<String>, String>;
-    fn macos_owner_test(&self) -> bool {
+    fn direct_usb(&self) -> bool {
         false
     }
-    fn finish_macos_owner_test(&mut self) -> Result<Vec<String>, String> {
-        self.release_variax()
+    fn direct_usb_release_failed(&self) -> bool {
+        false
     }
-    fn macos_inventory(&mut self) -> Result<Vec<super::computer::UsbDevice>, String> {
+    fn finish_direct_usb(&mut self) -> Result<Vec<String>, String> {
+        Ok(Vec::new())
+    }
+    fn direct_usb_inventory(&mut self) -> Result<Vec<super::computer::UsbDevice>, String> {
         Err("No macOS USB inventory for this port.".into())
     }
     /// The computer's own files for steps 0.1, 0.2 and 8.1 (read-only).
@@ -45,6 +47,29 @@ pub trait RigPort {
     /// Practice only: the simulated rig.
     fn simulation(&self) -> Option<Rc<RefCell<SimRig>>> {
         None
+    }
+}
+
+/// Finish the last claimed interface even if the return procedure failed.
+pub(super) fn finish_direct_usb(
+    port: &mut dyn RigPort,
+    rec: &mut super::record::StepRecord,
+    result: Result<(), String>,
+) -> Result<(), String> {
+    match port.finish_direct_usb() {
+        Ok(lines) => {
+            for line in lines {
+                rec.show(format!("Rig: {line}"));
+            }
+            result
+        }
+        Err(error) => {
+            rec.show(format!("Rig: USB cleanup failed: {error}"));
+            Err(result.err().map_or_else(
+                || error.clone(),
+                |previous| format!("{previous} USB cleanup failed: {error}"),
+            ))
+        }
     }
 }
 
@@ -158,55 +183,199 @@ impl FileSource for Borrowed<'_> {
     }
 }
 
+#[cfg(all(target_os = "macos", feature = "usb"))]
+use line6_devices::{
+    device_lock::DeviceLock,
+    transport::usb::{UsbInterfaceLink, macos},
+};
+
+#[cfg(any(test, all(target_os = "macos", feature = "usb")))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Interface {
+    Podxt,
+    Variax,
+}
+
+#[cfg(any(test, all(target_os = "macos", feature = "usb")))]
+impl Interface {
+    fn number(self) -> u8 {
+        match self {
+            Self::Podxt => 0,
+            Self::Variax => 1,
+        }
+    }
+}
+
+/// Keep only one live handle. A release error leaves interface ownership
+/// uncertain, so the rest of this run cannot reopen either interface.
+#[cfg(any(test, all(target_os = "macos", feature = "usb")))]
+pub(super) struct DirectUsb<L> {
+    active: Option<(Interface, L)>,
+    release_error: Option<String>,
+}
+
+#[cfg(any(test, all(target_os = "macos", feature = "usb")))]
+impl<L> Default for DirectUsb<L> {
+    fn default() -> Self {
+        Self {
+            active: None,
+            release_error: None,
+        }
+    }
+}
+
+#[cfg(any(test, all(target_os = "macos", feature = "usb")))]
+impl<L> DirectUsb<L> {
+    pub(super) fn active(&self) -> Option<Interface> {
+        self.active.as_ref().map(|(side, _)| *side)
+    }
+
+    pub(super) fn release_failed(&self) -> bool {
+        self.release_error.is_some()
+    }
+
+    pub(super) fn link(
+        &mut self,
+        side: Interface,
+        open: impl FnOnce() -> Result<L, String>,
+        finish: impl FnOnce(&mut L) -> Result<(), String>,
+    ) -> Result<&mut L, String> {
+        if self.active() != Some(side) {
+            self.release(finish)?;
+            self.active = Some((side, open()?));
+        }
+        Ok(&mut self.active.as_mut().expect("link opened").1)
+    }
+
+    pub(super) fn release(
+        &mut self,
+        finish: impl FnOnce(&mut L) -> Result<(), String>,
+    ) -> Result<Vec<String>, String> {
+        if let Some(error) = &self.release_error {
+            return Err(error.clone());
+        }
+        let Some((side, mut link)) = self.active.take() else {
+            return Ok(Vec::new());
+        };
+        let number = side.number();
+        if let Err(error) = finish(&mut link) {
+            let error = format!("PODxt Live interface {number} release failed: {error}");
+            self.release_error = Some(error.clone());
+            return Err(error);
+        }
+        Ok(vec![format!("PODxt Live interface {number} released.")])
+    }
+}
+
+/// Owns the macOS lock outside the port, so its link can borrow that lock.
+/// The scope lives through an ordinary run and any restore offered first.
+#[derive(Default)]
+pub struct RigScope {
+    #[cfg(all(target_os = "macos", feature = "usb"))]
+    matched: std::cell::OnceCell<LockedAttachment>,
+}
+
+#[cfg(all(target_os = "macos", feature = "usb"))]
+struct LockedAttachment {
+    lock: DeviceLock,
+    attachment: macos::Attachment,
+}
+
+#[cfg(any(test, all(target_os = "macos", feature = "usb")))]
+fn select_attachment<'a, A: Eq>(
+    attachments: &'a [A],
+    expected: Option<&A>,
+) -> Result<&'a A, String> {
+    let [attachment] = attachments else {
+        return Err(format!(
+            "Expected one PODxt Live on USB, found {}.",
+            attachments.len()
+        ));
+    };
+    if expected.is_some_and(|observed| observed != attachment) {
+        return Err("The PODxt Live USB attachment changed. Start a new run.".into());
+    }
+    Ok(attachment)
+}
+
 /// The real rig. Every open first checks the step's owner approval and its
 /// hardware gates. Test builds return before opening a device.
-pub struct RealPort {
+pub struct RealPort<'rig> {
+    _scope: &'rig RigScope,
     system: Box<dyn FileSource>,
     #[cfg(target_os = "linux")]
     podxt: Option<line6_devices::transport::rawmidi::RawMidiLink>,
     #[cfg(all(target_os = "macos", feature = "usb"))]
-    mac_podxt: Option<line6_devices::transport::usb::UsbInterfaceLink>,
+    mac_usb: DirectUsb<UsbInterfaceLink<&'rig DeviceLock>>,
     #[cfg(all(target_os = "macos", feature = "usb"))]
-    mac_attachment: Option<line6_devices::transport::usb::macos::Attachment>,
-    #[cfg(feature = "usb")]
+    mac_inventory_match: Option<macos::Attachment>,
+    #[cfg(all(feature = "usb", not(target_os = "macos")))]
     variax: Option<line6_devices::transport::usb::UsbInterfaceLink>,
     #[cfg(all(feature = "usb", not(target_os = "macos")))]
     lock: Option<line6_devices::device_lock::DeviceLock>,
 }
 
-impl RealPort {
+impl<'rig> RealPort<'rig> {
     /// The real rig and this computer's real files. Test builds get an
     /// empty tree instead, so they can never read `/proc` or `/sys`.
-    pub fn new() -> Self {
+    pub fn new(scope: &'rig RigScope) -> Self {
         let system: Box<dyn FileSource> = if cfg!(test) {
             Box::new(MemFs::default())
         } else {
             Box::new(RootFs { root: "/".into() })
         };
-        Self::with_system(system)
+        Self::with_system(scope, system)
     }
 
     /// The real rig with an injected file tree (tests).
-    pub fn with_system(system: Box<dyn FileSource>) -> Self {
+    pub fn with_system(scope: &'rig RigScope, system: Box<dyn FileSource>) -> Self {
         Self {
+            _scope: scope,
             system,
             #[cfg(target_os = "linux")]
             podxt: None,
             #[cfg(all(target_os = "macos", feature = "usb"))]
-            mac_podxt: None,
+            mac_usb: DirectUsb::default(),
             #[cfg(all(target_os = "macos", feature = "usb"))]
-            mac_attachment: None,
-            #[cfg(feature = "usb")]
+            mac_inventory_match: None,
+            #[cfg(all(feature = "usb", not(target_os = "macos")))]
             variax: None,
             #[cfg(all(feature = "usb", not(target_os = "macos")))]
             lock: None,
         }
     }
-}
-
-impl Default for RealPort {
-    fn default() -> Self {
-        Self::new()
+    #[cfg(all(target_os = "macos", feature = "usb"))]
+    fn open_direct_usb(&mut self, side: Interface) -> Result<&mut dyn Link, String> {
+        let scope = self._scope;
+        if scope.matched.get().is_none() {
+            let lock = DeviceLock::acquire().map_err(|error| error.to_string())?;
+            let attachments = macos::attachments()?;
+            let attachment = select_attachment(&attachments, self.mac_inventory_match.as_ref())?;
+            let _ = scope.matched.set(LockedAttachment {
+                lock,
+                attachment: attachment.clone(),
+            });
+        }
+        let matched = scope
+            .matched
+            .get()
+            .expect("rig lock and attachment selected");
+        let spec = match side {
+            Interface::Podxt => macos::PODXT_MIDI,
+            Interface::Variax => line6_devices::transport::usb::VARIAX_VIA_PODXT_LIVE,
+        };
+        Ok(self.mac_usb.link(
+            side,
+            || {
+                UsbInterfaceLink::open_attachment_borrowed(
+                    spec,
+                    &matched.attachment.path,
+                    matched.attachment.address,
+                    &matched.lock,
+                )
+            },
+            UsbInterfaceLink::finish,
+        )?)
     }
 }
 
@@ -217,7 +386,7 @@ fn refuse_in_tests() -> Result<(), String> {
     Ok(())
 }
 
-impl RigPort for RealPort {
+impl RigPort for RealPort<'_> {
     fn mode(&self) -> Mode {
         Mode::Real
     }
@@ -237,24 +406,7 @@ impl RigPort for RealPort {
         }
         #[cfg(all(target_os = "macos", feature = "usb"))]
         {
-            if step != StepId(2, 1) {
-                return Err("This Mac test only opens PODxt MIDI for step 2.1.".into());
-            }
-            if self.mac_podxt.is_none() {
-                self.release_variax()?;
-                let at = self
-                    .mac_attachment
-                    .as_ref()
-                    .ok_or("No single PODxt Live attachment from step 0.2.")?;
-                let rig = line6_devices::device_lock::DeviceLock::acquire()
-                    .map_err(|error| error.to_string())?;
-                self.mac_podxt = Some(
-                    line6_devices::transport::usb::UsbInterfaceLink::open_podxt_midi(
-                        &at.path, at.address, rig,
-                    )?,
-                );
-            }
-            Ok(self.mac_podxt.as_mut().expect("opened above"))
+            self.open_direct_usb(Interface::Podxt)
         }
         #[cfg(not(any(target_os = "linux", all(target_os = "macos", feature = "usb"))))]
         {
@@ -282,30 +434,7 @@ impl RigPort for RealPort {
         }
         #[cfg(all(target_os = "macos", feature = "usb"))]
         {
-            use line6_devices::transport::usb::{UsbInterfaceLink, VARIAX_VIA_PODXT_LIVE};
-            if !matches!(step, StepId(1, 2) | StepId(3, 1)) {
-                return Err(
-                    "This Mac test only opens the guitar interface for steps 1.2 and 3.1.".into(),
-                );
-            }
-            if self.variax.is_none() {
-                if let Some(mut link) = self.mac_podxt.take() {
-                    link.finish()?;
-                }
-                let at = self
-                    .mac_attachment
-                    .as_ref()
-                    .ok_or("No single PODxt Live attachment from step 0.2.")?;
-                let rig = line6_devices::device_lock::DeviceLock::acquire()
-                    .map_err(|error| error.to_string())?;
-                self.variax = Some(UsbInterfaceLink::open_attachment(
-                    VARIAX_VIA_PODXT_LIVE,
-                    &at.path,
-                    at.address,
-                    rig,
-                )?);
-            }
-            Ok(self.variax.as_mut().expect("opened above"))
+            self.open_direct_usb(Interface::Variax)
         }
         #[cfg(not(feature = "usb"))]
         {
@@ -313,24 +442,34 @@ impl RigPort for RealPort {
         }
     }
 
-    fn macos_owner_test(&self) -> bool {
-        crate::macos_owner_test_enabled()
-    }
-
-    fn finish_macos_owner_test(&mut self) -> Result<Vec<String>, String> {
-        #[cfg(all(target_os = "macos", feature = "usb"))]
-        if let Some(mut link) = self.mac_podxt.take() {
-            link.finish()?;
-            return Ok(vec!["PODxt Live interface 0 released.".into()]);
-        }
-        self.release_variax()
+    fn direct_usb(&self) -> bool {
+        crate::macos_usb_available()
     }
 
     #[cfg(all(target_os = "macos", feature = "usb"))]
-    fn macos_inventory(&mut self) -> Result<Vec<super::computer::UsbDevice>, String> {
+    fn direct_usb_release_failed(&self) -> bool {
+        self.mac_usb.release_failed()
+    }
+
+    fn finish_direct_usb(&mut self) -> Result<Vec<String>, String> {
+        #[cfg(all(target_os = "macos", feature = "usb"))]
+        {
+            self.mac_usb.release(UsbInterfaceLink::finish)
+        }
+        #[cfg(not(all(target_os = "macos", feature = "usb")))]
+        {
+            Ok(Vec::new())
+        }
+    }
+
+    #[cfg(all(target_os = "macos", feature = "usb"))]
+    fn direct_usb_inventory(&mut self) -> Result<Vec<super::computer::UsbDevice>, String> {
         refuse_in_tests()?;
-        let attachments = line6_devices::transport::usb::macos::attachments()?;
-        self.mac_attachment = match attachments.as_slice() {
+        let attachments = macos::attachments()?;
+        if let Some(matched) = self._scope.matched.get() {
+            select_attachment(&attachments, Some(&matched.attachment))?;
+        }
+        self.mac_inventory_match = match attachments.as_slice() {
             [only] => Some(only.clone()),
             _ => None,
         };
@@ -357,7 +496,11 @@ impl RigPort for RealPort {
     }
 
     fn variax_claimed(&self) -> bool {
-        #[cfg(feature = "usb")]
+        #[cfg(all(target_os = "macos", feature = "usb"))]
+        {
+            self.mac_usb.active() == Some(Interface::Variax)
+        }
+        #[cfg(all(feature = "usb", not(target_os = "macos")))]
         {
             self.variax.is_some()
         }
@@ -368,16 +511,52 @@ impl RigPort for RealPort {
     }
 
     fn release_variax(&mut self) -> Result<Vec<String>, String> {
-        #[cfg(feature = "usb")]
+        #[cfg(all(target_os = "macos", feature = "usb"))]
+        if self.variax_claimed() {
+            return self.finish_direct_usb();
+        }
+        #[cfg(all(feature = "usb", not(target_os = "macos")))]
         if let Some(mut link) = self.variax.take() {
             link.finish()?;
-            #[cfg(target_os = "macos")]
-            return Ok(vec!["PODxt Live interface 1 released.".into()]);
-            #[cfg(not(target_os = "macos"))]
             return Ok(vec![
                 "Guitar interface released; the driver binding was verified by the shared release (#239).".into(),
             ]);
         }
         Ok(vec!["The guitar interface was not open.".into()])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::select_attachment;
+
+    #[test]
+    fn attachment_selection_rejects_missing_ambiguous_or_changed_path_and_address() {
+        let original = ("4-2", 17);
+        let new_path = ("4-3", 17);
+        let new_address = ("4-2", 18);
+
+        assert_eq!(select_attachment(&[original], None), Ok(&original));
+        assert_eq!(
+            select_attachment(&[original], Some(&original)),
+            Ok(&original)
+        );
+        assert!(
+            select_attachment(&[], Some(&original))
+                .unwrap_err()
+                .contains("found 0")
+        );
+        assert!(
+            select_attachment(&[original, new_path], Some(&original))
+                .unwrap_err()
+                .contains("found 2")
+        );
+        for changed in [new_path, new_address] {
+            assert!(
+                select_attachment(&[changed], Some(&original))
+                    .unwrap_err()
+                    .contains("attachment changed")
+            );
+        }
     }
 }
