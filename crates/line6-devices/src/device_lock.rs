@@ -63,7 +63,7 @@ impl DeviceLock {
         Ok(guard)
     }
 
-    #[cfg(all(test, feature = "usb", target_os = "linux"))]
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn acquire_test_lock(path: &Path) -> Result<Self, LockError> {
         acquire_at(path)
     }
