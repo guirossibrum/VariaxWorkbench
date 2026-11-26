@@ -2,7 +2,7 @@ use super::{BODY, PICKUP1, PICKUP2, Tab, VariaxEditor, egui};
 use std::sync::Arc;
 use variax_workbench::ui::{
     assets::UiImage,
-    body_canvas::{BodyCanvas, BodyEvent, DragKind, PickupSprite},
+    body_canvas::{BodyCanvas, BodyEvent, DragKind, PickupSprite, placement_for_body},
 };
 
 const SPANK_BODY: &[u8] = include_bytes!("../../../../assets/ui/variax/spank-body.png");
@@ -120,11 +120,16 @@ impl VariaxEditor {
             .iter()
             .map(|(_, (_, rgba))| rgba.as_deref())
             .collect::<Vec<_>>();
+        let placement = self
+            .model_id(BODY)
+            .map(placement_for_body)
+            .unwrap_or_default();
         let canvas = ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), height),
             egui::Layout::top_down(egui::Align::Min),
             |ui| {
                 BodyCanvas::new(&body, &sprites)
+                    .placement(placement)
                     .alphas(&alphas)
                     .interactive(editable && ui.is_enabled())
                     .show(ui)
@@ -133,8 +138,6 @@ impl VariaxEditor {
         let output = canvas.inner;
         #[cfg(test)]
         {
-            use variax_workbench::ui::body_canvas::PickupPlacement;
-            let placement = PickupPlacement::default();
             self.pickup_centers.clear();
             for ((slot, _), sprite) in images.iter().zip(&sprites) {
                 self.pickup_centers.insert(
@@ -204,6 +207,112 @@ mod tests {
     use super::*;
     use crate::editor::{PathBuf, Workbench};
     use variax_workbench::ui::body_canvas::{PickupPlacement, rotate_degrees};
+
+    #[test]
+    fn catalog_bodies_use_their_pickup_placement_for_rendering_and_dragging() {
+        const HEIGHT: f32 = 220.0;
+        const DRAG_ART_PIXELS: f32 = 100.0;
+        let ctx = egui::Context::default();
+        let mut app = Workbench::with_context(&ctx, None, PathBuf::new(), Some("pickups"));
+        app.variax_mut().install_pickup_fixture(&ctx);
+        let pickup_texture = app.variax().textures["pickups/strat.png"].handle.id();
+        let frame = |app: &mut Workbench, events| {
+            let mut stage = egui::Rect::NOTHING;
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(750.0, 400.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        stage = egui::Rect::from_min_size(
+                            ui.next_widget_position(),
+                            egui::vec2(ui.available_width(), HEIGHT),
+                        );
+                        app.variax_mut().guitar(ui, HEIGHT, true);
+                    });
+                },
+            );
+            (stage, output.shapes)
+        };
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+
+        let ids: Vec<_> = app
+            .variax()
+            .catalog
+            .iter()
+            .filter(|model| model.kind == "body")
+            .map(|model| model.id)
+            .collect();
+        let position = app.variax().float(PICKUP1, 0x200000).unwrap();
+        let second_position = app.variax().float(PICKUP2, 0x200000).unwrap();
+        for id in ids {
+            app.variax_mut()
+                .change(|preset| preset.select_model(BODY, id));
+            let (stage, shapes) = frame(&mut app, vec![]);
+            let mut centers: Vec<_> = shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Mesh(mesh) if mesh.texture_id == pickup_texture => {
+                        Some(mesh.calc_bounds().center())
+                    }
+                    _ => None,
+                })
+                .collect();
+            if variax_workbench::edit::is_acoustic(id) {
+                assert!(centers.is_empty(), "{id:#x} painted pickups");
+                continue;
+            }
+            let placement = placement_for_body(id);
+            let scale = HEIGHT / placement.art.y;
+            let art_rect = egui::Rect::from_center_size(stage.center(), placement.art * scale);
+            let start = placement.screen_point(art_rect, position);
+            let second = placement.screen_point(art_rect, second_position);
+            centers.sort_by(|a, b| a.x.total_cmp(&b.x));
+            assert_eq!(centers.len(), 2, "{id:#x}");
+            assert!(
+                centers[0].distance(start) < 1e-3,
+                "{id:#x}: {centers:?} vs {start}"
+            );
+            assert!(
+                centers[1].distance(second) < 1e-3,
+                "{id:#x}: {centers:?} vs {second}"
+            );
+
+            let end = start + egui::vec2(DRAG_ART_PIXELS * scale, 0.0);
+            frame(
+                &mut app,
+                vec![egui::Event::PointerMoved(start), button(start, true)],
+            );
+            frame(&mut app, vec![egui::Event::PointerMoved(end)]);
+            frame(&mut app, vec![button(end, false)]);
+            let expected = variax_workbench::ui::body_canvas::move_inches(
+                position,
+                DRAG_ART_PIXELS,
+                placement,
+            );
+            let actual = app.variax().float(PICKUP1, 0x200000).unwrap();
+            assert!(
+                (actual - expected).abs() < 1e-4,
+                "{id:#x}: {actual} vs {expected}"
+            );
+            app.variax_mut().undo();
+            assert_eq!(
+                app.variax().float(PICKUP1, 0x200000),
+                Some(position),
+                "{id:#x}"
+            );
+        }
+    }
 
     #[test]
     fn outer_pickup_drag_rotates_in_fine_steps_and_undoes_once() {
