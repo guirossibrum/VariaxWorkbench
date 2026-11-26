@@ -830,6 +830,10 @@ impl Wizard {
     }
 
     fn live_progress(&self, ui: &mut egui::Ui) {
+        self.live_progress_at(ui, Instant::now());
+    }
+
+    fn live_progress_at(&self, ui: &mut egui::Ui, now: Instant) {
         if let Some((progress, updated)) = &self.activity {
             ui.label(
                 RichText::new(plain_result(&progress.action))
@@ -851,7 +855,7 @@ impl Wizard {
                 ui.label(format!("{done} of {total} slots verified"));
             }
             if let Some(limit) = progress.wait {
-                let left = limit.saturating_sub(updated.elapsed());
+                let left = limit.saturating_sub(now.saturating_duration_since(*updated));
                 let seconds = left.as_secs() + u64::from(left.subsec_nanos() > 0);
                 ui.label(
                     RichText::new(format!("{seconds} s left"))
@@ -863,7 +867,7 @@ impl Wizard {
             ui.spinner();
         }
         if let Some(started) = self.step_start {
-            let elapsed = started.elapsed().as_secs();
+            let elapsed = now.saturating_duration_since(started).as_secs();
             ui.label(format!("Elapsed {:02}:{:02}", elapsed / 60, elapsed % 60));
         }
         ui.ctx().request_repaint_after(Duration::from_millis(250));
