@@ -2,7 +2,8 @@ use eframe::egui::{self, Color32, Modifiers, Pos2, Rect, Vec2};
 
 use super::assets::{self, UiImage};
 use super::body_canvas::{
-    self, BodyCanvas, BodyEvent, DragKind, PickupPlacement, PickupSprite, PickupZone, SpriteHit,
+    self, BodyCanvas, BodyEvent, DragKind, PickupLimits, PickupPlacement, PickupSprite, PickupZone,
+    SpriteHit,
 };
 use super::chrome::{self, DialogButton, DialogEvent, Family, LinkState};
 use super::controls::{Selector, Switch};
@@ -742,9 +743,11 @@ fn pickup_placement_and_hit_testing_follow_the_approved_map() {
     let placement = PickupPlacement::default();
     assert_eq!(placement.position_to_art(0.1).x, placement.x_min);
     assert_eq!(placement.position_to_art(9.5).x, placement.x_max);
-    let at_one_eight = placement.position_to_art(1.8).x;
-    assert!((at_one_eight - 125.5106).abs() < 1.0e-3, "{at_one_eight}");
-    assert!((placement.art_x_to_position(at_one_eight) - 1.8).abs() < 1.0e-4);
+    // `(int)(318 * 1.7 / 9.4)` is 57, so 1.8 inches paints at 125, not 125.51.
+    assert_eq!(placement.position_to_art(1.8).x, 125.0);
+    let continuous = 68.0_f32 + 318.0 * (1.8 - 0.1) / (9.5 - 0.1);
+    assert!((continuous - 125.5106).abs() < 1.0e-3, "{continuous}");
+    assert!((placement.art_x_to_position(continuous) - 1.8).abs() < 1.0e-4);
 
     let lester = PickupPlacement {
         art: egui::vec2(426.0, 412.0),
@@ -823,6 +826,120 @@ fn pickup_placement_and_hit_testing_follow_the_approved_map() {
         marker + egui::vec2(16.1, 0.0),
         marker
     ));
+}
+
+#[test]
+fn workbench_body_limits_place_and_drag_per_body() {
+    // `UpdateBodyImage` bounds. Ids absent from the switch stay 20…458.
+    const RANGES: &[(u32, i32, i32)] = &[
+        (0x0310_0000, -5, 458),
+        (0x0310_0001, -5, 458),
+        (0x0310_0002, -5, 458),
+        (0x0310_0003, -15, 483),
+        (0x0310_0004, -8, 503),
+        (0x0310_0005, -10, 488),
+        (0x0310_0006, -25, 547),
+        (0x0310_0007, -74, 546),
+        (0x0310_0008, -28, 457),
+        (0x0310_0009, 40, 458),
+        (0x0310_000A, 8, 499),
+        (0x0310_000B, 0, 458),
+        (0x0310_000C, -5, 458),
+        (0x0310_000D, -5, 458),
+        (0x0310_000E, 17, 503),
+        (0x0310_000F, 10, 458),
+        (0x0310_0010, 0, 477),
+        (0x0310_0011, 8, 428),
+        (0x0310_0018, 27, 415),
+        (0x0310_0019, 20, 458),
+    ];
+    for &(id, left, right) in RANGES {
+        assert_eq!(
+            body_canvas::pickup_limits(id),
+            PickupLimits { left, right },
+            "{id:#x}"
+        );
+        let placement = body_canvas::placement_for_body(id);
+        let x_at_min = (left - 12 + 60) as f32;
+        let travel = (right - left - 120) as f32;
+        assert_eq!(placement.position_to_art(0.1), egui::pos2(x_at_min, 215.0));
+        assert_eq!(
+            placement.position_to_art(9.5),
+            egui::pos2(x_at_min + travel, 215.0)
+        );
+    }
+    assert_eq!(
+        body_canvas::pickup_limits(0x0310_0017),
+        PickupLimits {
+            left: 20,
+            right: 458
+        }
+    );
+    assert_eq!(
+        body_canvas::placement_for_body(0),
+        PickupPlacement::default()
+    );
+    assert_ne!(
+        body_canvas::placement_for_body(0x0310_0003).x_min,
+        PickupPlacement::default().x_min
+    );
+
+    let lester = body_canvas::placement_for_body(0x0310_0004);
+    assert_eq!(lester.position_to_art(0.1).x, 40.0);
+    assert_eq!(lester.position_to_art(9.5).x, 431.0);
+    assert_eq!(lester.position_to_art(1.8).x, 110.0);
+    let firebird = body_canvas::placement_for_body(0x0310_0009);
+    let lester_step = body_canvas::move_inches(1.8, 100.0, lester);
+    let firebird_step = body_canvas::move_inches(1.8, 100.0, firebird);
+    assert!(
+        (lester_step - firebird_step).abs() > 0.1,
+        "{lester_step} vs {firebird_step}"
+    );
+
+    let body = missing_image("variax/lester.png", [426, 412]);
+    let pickup = missing_image("variax/lester-pickup.png", [120, 120]);
+    let mut harness = Harness::new();
+    let show = |harness: &mut Harness, events| {
+        let mut reported = Vec::new();
+        let mut art = Rect::NOTHING;
+        harness.run(events, Default::default(), |_, ui| {
+            let sprites = [PickupSprite {
+                position_inches: 1.8,
+                angle_degrees: 0.0,
+                enabled: true,
+                selected: true,
+                image: &pickup,
+            }];
+            let output = BodyCanvas::new(&body, &sprites).placement(lester).show(ui);
+            reported = output.events;
+            art = output.art_rect;
+        });
+        (reported, art)
+    };
+    let (_, art) = show(&mut harness, vec![]);
+    let scale = lester.screen_scale(art);
+    let center = lester.screen_point(art, 1.8);
+    let (pressed, _) = show(
+        &mut harness,
+        vec![egui::Event::PointerMoved(center), pointer(center, true)],
+    );
+    assert_eq!(pressed, vec![BodyEvent::PickupClicked { index: 0 }]);
+    let (dragged, _) = show(
+        &mut harness,
+        vec![egui::Event::PointerMoved(center + egui::vec2(100.0, 0.0))],
+    );
+    let inches = dragged.iter().find_map(|event| match event {
+        BodyEvent::Moved { index: 0, inches } => Some(*inches),
+        _ => None,
+    });
+    let expected = body_canvas::move_inches(1.8, 100.0 / scale, lester);
+    let on_default = body_canvas::move_inches(1.8, 100.0 / scale, PickupPlacement::default());
+    let inches = inches.expect("lester drag");
+    assert!((inches - expected).abs() < 1.0e-3, "{inches} vs {expected}");
+    assert!(
+        (inches - on_default).abs() > 0.05,
+        "{inches} vs {on_default}"
+    );
 }
 
 #[test]
