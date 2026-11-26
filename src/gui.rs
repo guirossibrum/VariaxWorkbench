@@ -347,6 +347,10 @@ struct Workbench {
     recording_close_pending: bool,
     #[cfg(test)]
     tab_buttons: HashMap<&'static str, Rect>,
+    /// When set, the header uses the macOS traffic-light inset. Production
+    /// macOS always does; Linux tests turn this on to measure that inset.
+    #[cfg(test)]
+    clear_window_controls: bool,
 }
 
 impl Workbench {

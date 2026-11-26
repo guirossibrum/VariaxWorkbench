@@ -13,6 +13,8 @@
 //! #190 places a pickup from that body's `UpdateBodyImage` limits. #191 paints
 //! each body's wireframe on the Body tab at its native size ([`paint_body_outline`]).
 //! That drawing is not stretched over the guitar photo.
+//! [`fitted_stage`] is the uniform size of the photo in a well. The caller
+//! chooses the well; this canvas does not change pickup placement.
 
 use eframe::egui::{self, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, Vec2, vec2};
 
@@ -466,6 +468,18 @@ pub struct BodyCanvas<'a> {
     interactive: bool,
 }
 
+/// Size of `art` fitted inside `available` with one scale, capped at 64.
+///
+/// The tighter side wins, so the picture is not stretched. A non-positive
+/// art side is treated as 1.
+pub fn fitted_stage(art: Vec2, available: Vec2) -> Vec2 {
+    let art = art.max(vec2(1.0, 1.0));
+    let scale = (available.x / art.x)
+        .min(available.y / art.y)
+        .clamp(0.0, 64.0);
+    art * scale
+}
+
 impl<'a> BodyCanvas<'a> {
     pub fn new(body: &'a UiImage, pickups: &'a [PickupSprite<'a>]) -> Self {
         Self {
@@ -497,12 +511,8 @@ impl<'a> BodyCanvas<'a> {
 
     pub fn show(self, ui: &mut egui::Ui) -> BodyOutput {
         let placement = self.placement;
-        let art = placement.art.max(vec2(1.0, 1.0));
         let available = ui.available_size();
-        let scale = (available.x / art.x)
-            .min(available.y / art.y)
-            .clamp(0.0, 64.0);
-        let size = art * scale;
+        let size = fitted_stage(placement.art, available);
         let (stage, _) = ui.allocate_exact_size(
             vec2(available.x.max(size.x), size.y.max(1.0)),
             Sense::hover(),

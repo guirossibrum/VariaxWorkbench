@@ -78,6 +78,12 @@ fn default_startup_renders_an_empty_shell_with_offline_entry_points() {
             .all(|label| !label.starts_with("New offline tab · "))
     );
     assert!(labels.iter().all(|label| !label.starts_with("build ")));
+    assert!(
+        labels
+            .iter()
+            .any(|label| label == &format!("Build {}", crate::BUILD_NUMBER)),
+        "missing build number"
+    );
     for family in registry::FAMILIES {
         assert!(
             labels
@@ -336,6 +342,68 @@ fn control_q_uses_the_existing_quit_prompt_and_plain_q_does_nothing() {
 }
 
 #[test]
+fn build_number_stays_bottom_right_with_status_error_and_a_long_name() {
+    let caption = format!("Build {}", crate::BUILD_NUMBER);
+    let long_name = format!(
+        "Saved in /{}New Collection.l6c.",
+        "project-directory/".repeat(9)
+    );
+    for editor in [false, true] {
+        for &(width, height) in &[(1120.0_f32, 760.0_f32), (720.0, 640.0)] {
+            for pixels_per_point in [1.0_f32, 2.0] {
+                let where_ = format!("editor={editor} {width}x{height} ppp={pixels_per_point}");
+                let ctx = egui::Context::default();
+                let mut app = empty_shell(&ctx);
+                if editor {
+                    app.new_tab(registry::LEGACY_STARTUP);
+                }
+                app.shell_status = long_name.clone();
+                app.shell_error = Some("Could not write the file.".into());
+                app.detection_status = Some("Guitar offline".into());
+                let input = layout_input(width, height, pixels_per_point);
+                let _ = ctx.run(input.clone(), |ctx| app.render(ctx));
+                let output = ctx.run(input, |ctx| app.render(ctx));
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
+                let footer =
+                    egui::containers::panel::PanelState::load(&ctx, egui::Id::new("status"))
+                        .expect("footer")
+                        .rect;
+                let texts = painted_text(&output);
+                for required in [
+                    long_name.as_str(),
+                    "Could not write the file.",
+                    "Guitar offline",
+                ] {
+                    let rect = texts
+                        .iter()
+                        .filter(|(text, _)| text == required)
+                        .map(|(_, rect)| *rect)
+                        .find(|rect| footer.contains(rect.center()))
+                        .unwrap_or_else(|| panic!("{where_} missing {required} in the footer"));
+                    assert!(
+                        text_inside(screen, rect),
+                        "{where_} {required} at {rect:?} leaves {screen:?}"
+                    );
+                }
+                assert_build_number(&where_, screen, footer, &texts);
+                assert!(
+                    texts.iter().any(|(text, _)| text == &caption),
+                    "{where_} missing {caption}"
+                );
+                // The long name, device line, and error wrap to a few rows.
+                // The bound is high enough for 720 points and still rejects a
+                // footer that grows without limit.
+                assert!(
+                    footer.height() <= 120.0,
+                    "{where_} footer {}",
+                    footer.height()
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn wrapped_status_does_not_grow_over_successive_frames() {
     let ctx = egui::Context::default();
     let mut app = empty_shell(&ctx);
@@ -363,8 +431,10 @@ fn wrapped_status_does_not_grow_over_successive_frames() {
     }
 
     assert!(heights[0] > 29.0, "the status should wrap: {heights:?}");
+    // The build number keeps the right side, and the long filename is on
+    // its own row so it cannot slide off the window. The height stays put.
     assert!(
-        heights.iter().all(|height| *height <= 47.0),
+        heights.iter().all(|height| *height <= 58.0),
         "footer heights: {heights:?}"
     );
     assert!(
@@ -500,4 +570,412 @@ fn podxt_open_command_replaces_the_document_in_the_same_tab() {
         Some(path.as_path())
     );
     assert!(app.tabs.entries[0].title().ends_with("Replacement.l6t"));
+}
+
+const SHELL_COMMANDS: &[&str] = &[
+    "Open file…",
+    "Open…",
+    "Save",
+    "Save As…",
+    "Save copy…",
+    "New offline tab",
+    "Detect devices",
+    "Device check…",
+    "Test recording…",
+    "Help",
+    "New Variax file",
+    "Guitar offline",
+];
+
+fn layout_input(width: f32, height: f32, pixels_per_point: f32) -> egui::RawInput {
+    let mut input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(width, height),
+        )),
+        ..Default::default()
+    };
+    input
+        .viewports
+        .get_mut(&egui::ViewportId::ROOT)
+        .unwrap()
+        .native_pixels_per_point = Some(pixels_per_point);
+    input
+}
+
+fn painted_text(output: &egui::FullOutput) -> Vec<(String, egui::Rect)> {
+    fn visible_rect(text: &egui::epaint::TextShape) -> egui::Rect {
+        let bounds = text.galley.mesh_bounds;
+        if bounds.width() > 0.0 && bounds.height() > 0.0 {
+            bounds.translate(text.pos.to_vec2())
+        } else {
+            text.galley.rect.translate(text.pos.to_vec2())
+        }
+    }
+
+    fn walk(shape: &egui::Shape, found: &mut Vec<(String, egui::Rect)>) {
+        match shape {
+            egui::Shape::Text(text) => {
+                found.push((text.galley.text().to_owned(), visible_rect(text)));
+            }
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| walk(shape, found)),
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    output
+        .shapes
+        .iter()
+        .for_each(|shape| walk(&shape.shape, &mut found));
+    found
+}
+
+fn text_overlaps(left: egui::Rect, right: egui::Rect) -> bool {
+    let shared = left.intersect(right);
+    shared.width() > 1.0 && shared.height() > 1.0
+}
+
+fn assert_build_number(
+    where_: &str,
+    screen: egui::Rect,
+    footer: egui::Rect,
+    texts: &[(String, egui::Rect)],
+) {
+    let caption = format!("Build {}", crate::BUILD_NUMBER);
+    let rect = texts
+        .iter()
+        .find(|(text, _)| text == &caption)
+        .unwrap_or_else(|| panic!("{where_} missing {caption}"))
+        .1;
+    assert!(
+        text_inside(screen, rect),
+        "{where_} build {rect:?} leaves {screen:?}"
+    );
+    assert!(
+        footer.contains(rect.center()),
+        "{where_} build {rect:?} is outside footer {footer:?}"
+    );
+    assert!(
+        (footer.bottom() - rect.bottom()).abs() < 14.0,
+        "{where_} build bottom {} footer {}",
+        rect.bottom(),
+        footer.bottom()
+    );
+    assert!(
+        rect.right() > footer.right() - 28.0 && rect.right() <= footer.right() - 8.0,
+        "{where_} build right {} footer {}",
+        rect.right(),
+        footer.right()
+    );
+    for (text, other) in texts {
+        if text == &caption || !footer.contains(other.center()) {
+            continue;
+        }
+        assert!(
+            !text_overlaps(rect, *other),
+            "{where_} build overlaps {text} at {other:?}"
+        );
+    }
+}
+
+fn text_inside(screen: egui::Rect, rect: egui::Rect) -> bool {
+    rect.left() >= screen.left() - 0.5
+        && rect.right() <= screen.right() + 0.5
+        && rect.top() >= screen.top() - 0.5
+        && rect.bottom() <= screen.bottom() + 0.5
+}
+
+fn shell_at(
+    editor: bool,
+    missing_art: bool,
+    clear_window_controls: bool,
+    width: f32,
+    height: f32,
+    pixels_per_point: f32,
+) -> (egui::Context, egui::FullOutput) {
+    let ctx = egui::Context::default();
+    let mut app = empty_shell(&ctx);
+    if editor {
+        app.new_tab(registry::LEGACY_STARTUP);
+    }
+    app.clear_window_controls = clear_window_controls;
+    if missing_art {
+        super::shell::force_missing_shell_art(&ctx, true);
+    }
+    let output = ctx.run(layout_input(width, height, pixels_per_point), |ctx| {
+        app.render(ctx)
+    });
+    (ctx, output)
+}
+
+#[test]
+fn shell_layout_stays_readable_at_laptop_and_narrow_widths() {
+    let screens = [(1120.0_f32, 760.0_f32), (960.0, 680.0), (720.0, 640.0)];
+    for editor in [false, true] {
+        for missing_art in [false, true] {
+            for &(width, height) in &screens {
+                for clear_window_controls in [false, true] {
+                    let mut title_height: Option<f32> = None;
+                    for pixels_per_point in [1.0_f32, 2.0] {
+                        let where_ = format!(
+                            "editor={editor} missing={missing_art} inset={clear_window_controls} {width}x{height} ppp={pixels_per_point}"
+                        );
+                        let (ctx, output) = shell_at(
+                            editor,
+                            missing_art,
+                            clear_window_controls,
+                            width,
+                            height,
+                            pixels_per_point,
+                        );
+                        assert!(
+                            (output.pixels_per_point - pixels_per_point).abs() < 0.01,
+                            "{where_} density {}",
+                            output.pixels_per_point
+                        );
+                        let screen =
+                            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
+                        let texts = painted_text(&output);
+                        assert!(
+                            texts.iter().all(|(text, _)| !text.contains("shell/")),
+                            "{where_} painted an asset path"
+                        );
+                        let header = egui::containers::panel::PanelState::load(
+                            &ctx,
+                            egui::Id::new("header"),
+                        )
+                        .expect("header")
+                        .rect;
+                        let footer = egui::containers::panel::PanelState::load(
+                            &ctx,
+                            egui::Id::new("status"),
+                        )
+                        .expect("footer")
+                        .rect;
+                        let title = texts
+                            .iter()
+                            .filter(|(text, _)| text == "Variax Workbench")
+                            .min_by(|left, right| left.1.top().total_cmp(&right.1.top()))
+                            .unwrap_or_else(|| panic!("missing title at {where_}"))
+                            .1;
+                        assert!(text_inside(screen, title), "{where_} title {title:?}");
+                        if clear_window_controls {
+                            assert!(
+                                title.left() >= 78.0 - 0.5,
+                                "{where_} title starts at {}",
+                                title.left()
+                            );
+                        }
+                        if let Some(previous) = title_height {
+                            assert!(
+                                (previous - title.height()).abs() < 1.0,
+                                "{where_} title height {previous} vs {}",
+                                title.height()
+                            );
+                        }
+                        title_height = Some(title.height());
+
+                        let required: &[&str] = if editor {
+                            &[
+                                "Open…",
+                                "Save",
+                                "Save As…",
+                                "New offline tab",
+                                "Detect devices",
+                                "New Variax file",
+                                "Guitar offline",
+                                "Device check…",
+                                "Test recording…",
+                                "Help",
+                            ]
+                        } else {
+                            &[
+                                "Open file…",
+                                "New offline tab",
+                                "Detect devices",
+                                "Device check…",
+                                "Test recording…",
+                                "Help",
+                                "Open a file or start an offline tab",
+                            ]
+                        };
+                        for label in required {
+                            assert!(
+                                texts.iter().any(|(text, _)| text == label),
+                                "{where_} missing {label}"
+                            );
+                        }
+
+                        let mut commands = Vec::new();
+                        for (text, rect) in &texts {
+                            if !header.contains(rect.center()) {
+                                continue;
+                            }
+                            assert!(
+                                text_inside(screen, *rect),
+                                "{where_} header text {text:?} at {rect:?}"
+                            );
+                            if clear_window_controls {
+                                assert!(
+                                    rect.left() >= 78.0 - 0.5,
+                                    "{where_} {text:?} starts at {}",
+                                    rect.left()
+                                );
+                            }
+                            if SHELL_COMMANDS.contains(&text.as_str()) {
+                                assert!(
+                                    rect.top() >= title.bottom() - 1.0,
+                                    "{where_} {text:?} overlaps the title"
+                                );
+                                commands.push((text.clone(), *rect));
+                            }
+                        }
+                        for (index, (left_text, left_rect)) in commands.iter().enumerate() {
+                            for (right_text, right_rect) in commands.iter().skip(index + 1) {
+                                assert!(
+                                    !text_overlaps(*left_rect, *right_rect),
+                                    "{where_} {left_text:?} {left_rect:?} overlaps {right_text:?} {right_rect:?}"
+                                );
+                            }
+                        }
+                        if !editor {
+                            let mut family_titles = Vec::new();
+                            for family in registry::FAMILIES {
+                                let label = family.info().new_label;
+                                let rect = texts
+                                    .iter()
+                                    .filter(|(text, _)| text == label)
+                                    .map(|(_, rect)| *rect)
+                                    .max_by(|left, right| left.top().total_cmp(&right.top()))
+                                    .unwrap_or_else(|| panic!("{where_} missing {label}"));
+                                assert!(text_inside(screen, rect), "{where_} {label} {rect:?}");
+                                family_titles.push(rect);
+                            }
+                            for (index, left) in family_titles.iter().enumerate() {
+                                for right in family_titles.iter().skip(index + 1) {
+                                    assert!(
+                                        !text_overlaps(*left, *right),
+                                        "{where_} family titles overlap"
+                                    );
+                                }
+                            }
+                            let min_top = family_titles
+                                .iter()
+                                .map(|rect| rect.top())
+                                .fold(f32::MAX, f32::min);
+                            let max_top = family_titles
+                                .iter()
+                                .map(|rect| rect.top())
+                                .fold(f32::MIN, f32::max);
+                            if width >= 960.0 {
+                                assert!(
+                                    max_top - min_top < 4.0,
+                                    "{where_} family cards wrapped ({min_top}..{max_top})"
+                                );
+                            } else {
+                                assert!(
+                                    max_top - min_top > 40.0,
+                                    "{where_} family cards stayed on one row"
+                                );
+                            }
+                        }
+
+                        if missing_art {
+                            let mark = texts
+                                .iter()
+                                .find(|(text, _)| text == "WB")
+                                .unwrap_or_else(|| panic!("{where_} missing product mark"));
+                            assert!(mark.1.width() <= 28.0 && mark.1.height() <= 28.0);
+                            if !editor {
+                                assert!(texts.iter().any(|(text, _)| text == "PODxt"));
+                                assert!(texts.iter().any(|(text, _)| text == "HD"));
+                            }
+                        } else {
+                            assert!(texts.iter().all(|(text, _)| text != "WB"));
+                        }
+                        assert_build_number(&where_, screen, footer, &texts);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn shell_icon_keeps_aspect_and_a_missing_file_stays_in_its_slot() {
+    let ctx = egui::Context::default();
+    let texture = ctx.load_texture(
+        "wide-shell-mark",
+        egui::ColorImage::filled([80, 40], egui::Color32::WHITE),
+        egui::TextureOptions::LINEAR,
+    );
+    let loaded = variax_workbench::ui::assets::UiImage {
+        name: "shell/wide.png".into(),
+        pixels: [80, 40],
+        texture: Some(texture),
+        missing: false,
+    };
+    let mut slot = egui::Rect::NOTHING;
+    let output = ctx.run(layout_input(200.0, 160.0, 2.0), |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(64.0, 64.0), egui::Sense::hover());
+            slot = rect;
+            super::shell::paint_shell_icon(ui, &loaded, rect, "WB");
+        });
+    });
+    let mut meshes = Vec::new();
+    fn walk(shape: &egui::Shape, meshes: &mut Vec<egui::Rect>) {
+        match shape {
+            egui::Shape::Mesh(mesh) => {
+                let mut rect = egui::Rect::NOTHING;
+                for vertex in &mesh.vertices {
+                    rect.extend_with(vertex.pos);
+                }
+                if rect.width() > 0.0 && rect.height() > 0.0 {
+                    meshes.push(rect);
+                }
+            }
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| walk(shape, meshes)),
+            _ => {}
+        }
+    }
+    output
+        .shapes
+        .iter()
+        .for_each(|shape| walk(&shape.shape, &mut meshes));
+    assert_eq!(meshes.len(), 1, "{meshes:?}");
+    let image = meshes[0];
+    assert!((image.width() / image.height() - 2.0).abs() < 0.05);
+    assert!(
+        image.left() >= slot.left() - 0.5
+            && image.right() <= slot.right() + 0.5
+            && image.top() >= slot.top() - 0.5
+            && image.bottom() <= slot.bottom() + 0.5,
+        "{image:?} outside {slot:?}"
+    );
+    assert!((output.pixels_per_point - 2.0).abs() < 0.01);
+
+    let missing = variax_workbench::ui::assets::UiImage::missing("shell/variax.png");
+    let mut missing_slot = egui::Rect::NOTHING;
+    let output = ctx.run(layout_input(200.0, 160.0, 1.0), |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(64.0, 64.0), egui::Sense::hover());
+            missing_slot = rect;
+            super::shell::paint_shell_icon(ui, &missing, rect, "Variax");
+        });
+    });
+    let texts = painted_text(&output);
+    assert!(texts.iter().all(|(text, _)| !text.contains("shell/")));
+    let mark = texts
+        .iter()
+        .find(|(text, _)| text == "Variax")
+        .expect("missing mark");
+    assert!(
+        mark.1.left() >= missing_slot.left() - 0.5
+            && mark.1.right() <= missing_slot.right() + 0.5
+            && mark.1.top() >= missing_slot.top() - 0.5
+            && mark.1.bottom() <= missing_slot.bottom() + 0.5,
+        "{:?} outside {missing_slot:?}",
+        mark.1
+    );
 }
