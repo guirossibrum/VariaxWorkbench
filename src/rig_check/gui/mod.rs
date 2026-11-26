@@ -1845,8 +1845,24 @@ fn practice_mockup_at(id: StepId, prompt: Prompt) -> Wizard {
 const LAPTOP_MOCKUP_SIZE: (u32, u32) = (1120, 760);
 const LAPTOP_MOCKUP_SCALES: [(&str, u32); 2] = [("laptop", 1), ("retina", 2)];
 
-fn laptop_mockup_states() -> [(&'static str, Wizard); 4] {
+fn practice_result_mockup(id: StepId, observations: &[&str]) -> Wizard {
+    let mut record = StepRecord::new(id);
+    record.outcome = Outcome::Passed;
+    record.started = Some("2026-11-25 22:02:00 UTC".into());
+    record.attempt = Some(1);
+    for &line in observations {
+        record.show(line);
+    }
+    let mut wizard = practice_mockup_at(id, Prompt::Finished(Box::new(record.clone())));
+    wizard.progress.push(record);
+    wizard
+}
+
+fn laptop_mockup_states() -> [(&'static str, Wizard); 10] {
     let vdi = StepId(6, 1);
+    let usb = StepId(0, 2);
+    let guitar_interface = StepId(1, 2);
+    let rig_guard = catalogue::RIG_GUARD;
     let card = |id| practice_mockup_at(id, Prompt::Card(id, Mode::Practice, None));
     let mut ready = practice_mockup_at(
         vdi,
@@ -1862,6 +1878,45 @@ fn laptop_mockup_states() -> [(&'static str, Wizard); 4] {
         ("vdi-get-ready", ready),
         ("expression-pedal", card(StepId(7, 4))),
         ("podxt-channel-recall", card(StepId(4, 7))),
+        ("usb-inventory-card", card(usb)),
+        (
+            "usb-inventory-result",
+            practice_result_mockup(
+                usb,
+                &[
+                    "USB devices: 2",
+                    "Port 1-1: Practice hub",
+                    "Port 1-2: PODxt Live",
+                ],
+            ),
+        ),
+        ("guitar-interface-card", card(guitar_interface)),
+        (
+            "guitar-interface-result",
+            practice_result_mockup(
+                guitar_interface,
+                &[
+                    "Guitar interface opened (interface 1 claimed). No message was sent.",
+                    "Guitar interface released.",
+                    "Interface 1 driver: snd-usb-variax (expected).",
+                    "After: interface 1 driver snd-usb-variax.",
+                    "Guitar interface opened and given back.",
+                ],
+            ),
+        ),
+        ("rig-guard-card", card(rig_guard)),
+        (
+            "rig-guard-result",
+            practice_result_mockup(
+                rig_guard,
+                &[
+                    "Rig: the PODxt Live tone is the starting tone (all 168 bytes).",
+                    "Rig: the Variax plays the starting program (1,092 words).",
+                    "Rig: Guitar interface released.",
+                    "Rig: Interface 1 driver: snd-usb-variax (expected).",
+                ],
+            ),
+        ),
     ]
 }
 

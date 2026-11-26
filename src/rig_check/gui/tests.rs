@@ -476,6 +476,12 @@ fn laptop_mockups_show_run_position_and_catalogue_id_at_both_scales() {
                 ("Step 16 of 35", "Catalogue ID 6.1", "OK"),
                 ("Step 21 of 35", "Catalogue ID 7.4", "Start  (R)"),
                 ("Step 29 of 35", "Catalogue ID 4.7", "Run  (R)"),
+                ("Step 2 of 37", "Catalogue ID 0.2", "Run  (R)"),
+                ("Step 2 of 37", "Catalogue ID 0.2", "Continue"),
+                ("Step 6 of 36", "Catalogue ID 1.2", "Run  (R)"),
+                ("Step 6 of 36", "Catalogue ID 1.2", "Continue"),
+                ("Step 35 of 35", "Catalogue ID 6.2", "Run  (R)"),
+                ("Step 35 of 35", "Catalogue ID 6.2", "Continue"),
             ])
         {
             let ctx = egui::Context::default();
@@ -508,6 +514,62 @@ fn laptop_mockups_show_run_position_and_catalogue_id_at_both_scales() {
         wizard.show(ctx);
     });
     assert_eq!(retina.dimensions(), (width * 2, height * 2));
+}
+
+#[test]
+fn inventory_interface_and_guard_mockups_have_evidence_and_safe_defaults() {
+    let (width, height) = LAPTOP_MOCKUP_SIZE;
+    let screen = Rect::from_min_size(Pos2::ZERO, vec2(width as f32, height as f32));
+    for (_, scale) in LAPTOP_MOCKUP_SCALES {
+        for (name, mut wizard) in laptop_mockup_states().into_iter().skip(4) {
+            let (evidence, is_card) = match name {
+                "usb-inventory-card" => ("Records: Device list", true),
+                "usb-inventory-result" => ("Port 1-2: PODxt Live", false),
+                "guitar-interface-card" => ("Records: Open/release result", true),
+                "guitar-interface-result" => ("After: interface 1 driver snd-usb-variax.", false),
+                "rig-guard-card" => ("Records: Start and end SHA-256", true),
+                "rig-guard-result" => ("Rig: the Variax plays the starting program", false),
+                _ => panic!("Unexpected review fixture {name}"),
+            };
+            let (tx, rx) = channel();
+            wizard.to_runner = Some(tx);
+            let ctx = egui::Context::default();
+            apply_theme(&ctx);
+            let mut input = RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            input
+                .viewports
+                .get_mut(&egui::ViewportId::ROOT)
+                .unwrap()
+                .native_pixels_per_point = Some(scale as f32);
+            let mut output = ctx.run(input.clone(), |ctx| wizard.show(ctx));
+            for _ in 1..4 {
+                output = ctx.run(input.clone(), |ctx| wizard.show(ctx));
+            }
+            let labels = labels(&output);
+            for expected in [evidence, if is_card { "Skip  (S)" } else { "Continue" }] {
+                assert!(
+                    labels.iter().any(|(text, position)| {
+                        text.starts_with(expected) && screen.contains(*position)
+                    }),
+                    "{name} at {scale}× should show {expected:?}"
+                );
+            }
+            input.events.push(key(Key::Enter));
+            let _ = ctx.run(input, |ctx| wizard.show(ctx));
+            let reply = rx.try_recv();
+            assert!(
+                if is_card {
+                    matches!(reply, Ok(Reply::Decision(Decision::Skip)))
+                } else {
+                    matches!(reply, Ok(Reply::Continue(true)))
+                },
+                "{name} at {scale}× took the wrong default: {reply:?}"
+            );
+        }
+    }
 }
 
 #[test]
