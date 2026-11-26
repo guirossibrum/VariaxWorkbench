@@ -89,7 +89,7 @@ fn current_fixture(ctx: &egui::Context) -> (Workbench, Presence) {
                     writes: &writes,
                     script,
                     reply: None,
-                    time: Duration::ZERO,
+                    time: &Cell::new(Duration::ZERO),
                 })
             },
             |update| panel.snapshot.apply(update, Instant::now()),
@@ -244,4 +244,184 @@ fn offline_startup_imports_and_browses_all_three_backup_banks_without_device_req
         std::fs::read(backup.join("MANIFEST.sha256")).unwrap(),
         manifest
     );
+}
+
+#[test]
+fn follow_renders_tuner_and_fx_updates_without_replacing_an_edited_file_preview() {
+    let ctx = egui::Context::default();
+    let (mut app, _) = connected_fixture(&ctx);
+    let playing_slot = Location::tone_from_label("5B").unwrap();
+    let saved_fx = Location::new(BankKind::FxSetups, 11).unwrap();
+    let neighbor_fx = Location::new(BankKind::FxSetups, 12).unwrap();
+    let playing = valid_dump("Stage Current");
+    let mut recalled = playing.clone();
+    let delay_mix = Control::DelayMix.cc();
+    recalled.raw[39 + usize::from(delay_mix)] = 82;
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = local_tone(directory.path());
+    let disk_bytes = fs::read(&path).unwrap();
+    app.dialogs = Box::new(FakeDialogs {
+        pod_open: [Some(path.clone())].into(),
+        ..Default::default()
+    });
+    click_text(&ctx, &mut app, "Open tone or bank…");
+    let editor = app.podxt_mut();
+    editor.pod_name = "Edited File".into();
+    editor.apply_pod_name();
+    let edited_bytes = editor.pod_library.tone(0).unwrap().as_bytes().to_vec();
+    assert!(editor.dirty());
+    assert_ne!(edited_bytes, disk_bytes);
+
+    let panel = &mut editor.live;
+    for (slot, name) in [(saved_fx, b"Old FX".as_slice()), (neighbor_fx, b"Other FX")] {
+        panel.snapshot.apply(
+            ReadUpdate::Stored(StoredTone {
+                location: slot,
+                tone: tone(name),
+            }),
+            Instant::now(),
+        );
+    }
+    let library_before = panel.snapshot.library.clone();
+    click_text(&ctx, &mut app, "Tones");
+    click_text(&ctx, &mut app, "FX Setups");
+    rendered(&ctx, &mut app, &["Edited File", "Unsaved", "FX 12  Old FX"]);
+    click_text(&ctx, &mut app, "Current POD tone");
+
+    // Keep the worker present while each publication goes through the real
+    // editor poll. The test drives its transaction synchronously for exact
+    // assertions between notifications, without racing egui against a reader.
+    let panel = &mut app.podxt_mut().live;
+    let snapshot = Arc::new(Mutex::new(panel.snapshot.clone()));
+    let stop = Arc::new(AtomicBool::new(false));
+    let (finish, wait) = std::sync::mpsc::channel();
+    panel.worker = Some(Worker {
+        command: ReadCommand::Follow,
+        device: panel.device.clone().unwrap(),
+        stop: Arc::clone(&stop),
+        snapshot: Arc::clone(&snapshot),
+        thread: Some(std::thread::spawn(move || {
+            wait.recv().map_err(|error| error.to_string())
+        })),
+    });
+    let requests = panel.device_requests;
+
+    let mut first_reply = playing.raw.clone();
+    first_reply.extend([0xb4, 69, 127, 0xb4, 69, 0]);
+    first_reply.extend([0xf0, 0, 1, 0x0c, 3, 0x10, 4, 19, 11, 0xf7]);
+    first_reply.extend([0xf0, 0, 1, 0x0c, 3, 0x24, 3, 11, 0xf7]);
+    let saved = valid_dump("New FX");
+    let held = Cell::new(false);
+    let writes = Cell::new(0);
+    let clock = Cell::new(Duration::ZERO);
+    let mut notice_time = None;
+    let mut publications = VecDeque::from(["initial", "tuner on", "tuner off", "recall", "save"]);
+    let result = transaction(
+        ReadCommand::Follow,
+        &stop,
+        || {
+            assert!(!held.replace(true));
+            Ok(FakeLock(&held))
+        },
+        |_, run| {
+            run(&mut FakeLink {
+                held: &held,
+                script: VecDeque::from([
+                    (
+                        PodxtRequest::Identity,
+                        variax_workbench::identity_stage::bridge_reply(),
+                    ),
+                    (PodxtRequest::EditBuffer, first_reply),
+                    (PodxtRequest::EditBuffer, recalled.raw.clone()),
+                    (PodxtRequest::Stored(saved_fx), saved.raw.clone()),
+                ]),
+                reply: None,
+                time: &clock,
+                writes: &writes,
+            })
+        },
+        |update| {
+            let phase = publications
+                .pop_front()
+                .expect("unexpected Follow publication");
+            snapshot.lock().unwrap().apply(update, Instant::now());
+            match phase {
+                "initial" => {
+                    let visible = rendered(&ctx, &mut app, &["Stage Current", "FX 12  Old FX"]);
+                    assert!(!visible.contains("Tuner active on POD"));
+                }
+                "tuner on" => {
+                    rendered(&ctx, &mut app, &["Tuner active on POD", "Stage Current"]);
+                    assert_eq!(app.podxt().live.snapshot.tone.as_ref(), Some(&playing));
+                }
+                "tuner off" => {
+                    // Recall and save notifications follow in this same MIDI packet.
+                    notice_time = Some(clock.get());
+                    let visible = rendered(&ctx, &mut app, &["Stage Current"]);
+                    assert!(!visible.contains("Tuner active on POD"));
+                    assert_eq!(app.podxt().live.snapshot.tone.as_ref(), Some(&playing));
+                    click_text(&ctx, &mut app, "File actions");
+                    click_text(&ctx, &mut app, "Open file editor");
+                }
+                "recall" => {
+                    rendered(&ctx, &mut app, &["Edited File", "Unsaved", "FX 12  Old FX"]);
+                    assert!(!app.podxt().stage_is_current());
+                    let panel = &app.podxt().live;
+                    assert_eq!(panel.snapshot.tone.as_ref(), Some(&recalled));
+                    assert_eq!(panel.snapshot.library, library_before);
+                    assert_eq!(writes.get(), 3);
+                }
+                "save" => {
+                    // FakeLink advances one poll when returning the stored dump.
+                    let request_time = clock.get() - line6_devices::session::POLL;
+                    assert_eq!(
+                        request_time - notice_time.unwrap(),
+                        Duration::from_millis(2500)
+                    );
+                    let visible = rendered(
+                        &ctx,
+                        &mut app,
+                        &["Edited File", "Unsaved", "FX 12  New FX", "FX 13  Other FX"],
+                    );
+                    assert!(!visible.contains("Old FX"));
+                    let editor = app.podxt();
+                    assert!(!editor.stage_is_current());
+                    assert_eq!(editor.pod_library.tone(0).unwrap().as_bytes(), edited_bytes);
+                    assert_eq!(editor.stage.path.as_ref(), Some(&path));
+                    assert_eq!(editor.live.snapshot.tone.as_ref(), Some(&recalled));
+                    let mut library_after = library_before.clone();
+                    library_after.insert(saved_fx.address(), saved.clone());
+                    assert_eq!(editor.live.snapshot.library, library_after);
+                    stop.store(true, Ordering::Release);
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(app.podxt().live.playing_channel(), Some(playing_slot));
+        },
+    );
+    assert_eq!(result, Err("PODxt read cancelled.".into()));
+    assert!(publications.is_empty());
+    assert_eq!(writes.get(), 4);
+    assert!(!held.get());
+    assert_eq!(fs::read(path).unwrap(), disk_bytes);
+
+    click_text(&ctx, &mut app, "Current POD tone");
+    rendered(
+        &ctx,
+        &mut app,
+        &["Stage Current", "Channel 5B", "FX 12  New FX"],
+    );
+    let editor = app.podxt_mut();
+    assert!(editor.stage_is_current());
+    let (displayed, _) = editor.live.stage_tone().unwrap().unwrap();
+    assert_eq!(
+        displayed.to_podxt_payload().unwrap()[32 + usize::from(delay_mix)],
+        82
+    );
+    assert!(editor.dirty());
+    assert_eq!(editor.live.device_requests, requests);
+    finish.send(()).unwrap();
+    let mut worker = editor.live.worker.take().unwrap();
+    worker.thread.take().unwrap().join().unwrap().unwrap();
 }

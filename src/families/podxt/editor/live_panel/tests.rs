@@ -161,7 +161,7 @@ pub(super) struct FakeLink<'a> {
     pub(super) held: &'a Cell<bool>,
     pub(super) script: VecDeque<(PodxtRequest, Vec<u8>)>,
     pub(super) reply: Option<Vec<u8>>,
-    pub(super) time: Duration,
+    pub(super) time: &'a Cell<Duration>,
     pub(super) writes: &'a Cell<usize>,
 }
 
@@ -181,23 +181,25 @@ impl Link for FakeLink<'_> {
 
     fn read(&mut self, duration: Duration) -> Result<Option<Vec<u8>>, String> {
         assert!(self.held.get(), "read without the rig lock");
-        self.time += duration;
+        self.time.set(self.time.get() + duration);
         Ok(self.reply.take())
     }
 
     fn elapsed(&self) -> Duration {
-        self.time
+        self.time.get()
     }
 
     fn pause(&mut self, duration: Duration) {
-        self.time += duration;
+        self.time.set(self.time.get() + duration);
     }
 }
 
 impl Drop for FakeLink<'_> {
     fn drop(&mut self) {
-        assert!(self.held.get(), "port closed after releasing the rig lock");
-        assert!(self.script.is_empty());
+        if !std::thread::panicking() {
+            assert!(self.held.get(), "port closed after releasing the rig lock");
+            assert!(self.script.is_empty());
+        }
     }
 }
 
@@ -226,7 +228,7 @@ fn transaction_locks_before_open_through_reply_and_port_close() {
                     (PodxtRequest::EditBuffer, tone(b"Offline fixture").raw),
                 ]),
                 reply: None,
-                time: Duration::ZERO,
+                time: &Cell::new(Duration::ZERO),
             })
         },
         |update| {
