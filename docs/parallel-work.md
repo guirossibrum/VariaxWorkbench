@@ -31,11 +31,12 @@ Component changes are requested from lane 2. Lane 2 never edits family editors.
 
 ## Worktrees and delivery
 
-- Every lane prompt must explicitly ask the agent to reread `AGENTS.md` and
-  `docs/parallel-work.md` from current `origin/master` before starting and must
-  repeat the final report requirements below. This includes review follow-ups.
-  Read the integration copies with `git show origin/master:AGENTS.md` and
+- On a lane's first assignment, ask it to read `AGENTS.md` and
+  `docs/parallel-work.md` from current `origin/master`. After that, request a
+  reread when a relevant rule changes and name the changed file and commit.
+  Use `git show origin/master:AGENTS.md` and
   `git show origin/master:docs/parallel-work.md` when the lane branch is older.
+  Repeat the final report requirements in delivery and review follow-up prompts.
 - One worktree and branch per issue, created from `origin/master` under the
   ignored `.worktrees/` (for example
   `git worktree add .worktrees/212-detection -b lane1/212-detection origin/master`).

@@ -237,10 +237,11 @@ where they disagree with this section, this section applies.
 
 Lane agents work as described in `docs/parallel-work.md`: one worktree per issue
 from `origin/master`, local commits, no push, no PR, and a report when done.
-Every Gatekeeper prompt to a lane, including a review follow-up, explicitly
-instructs the agent to reread `AGENTS.md` and `docs/parallel-work.md` from current
-`origin/master` before starting. Each prompt also repeats the worktree
-requirements for the final report.
+At lane startup, the Gatekeeper asks the agent to read `AGENTS.md` and
+`docs/parallel-work.md` from current `origin/master`. For an existing lane,
+ask it to reread the relevant file when its rules have changed since that
+lane read it. Name the change and the commit that contains it. Each delivery
+prompt repeats the worktree requirements for the final report.
 
 A Gatekeeper reviews the exact head against each acceptance criterion and this
 file. It then merges the branch onto current `origin/master` in a throwaway
