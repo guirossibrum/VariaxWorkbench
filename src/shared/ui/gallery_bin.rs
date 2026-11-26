@@ -28,10 +28,7 @@ fn main() -> eframe::Result {
             if !body.missing {
                 state.body = body;
             }
-            let pickup = ui::assets::load(&cc.egui_ctx, &root, "variax/spank-pickup.png");
-            if !pickup.missing {
-                state.pickup = pickup;
-            }
+            state.load_pickup(&cc.egui_ctx, &root);
             Ok(Box::new(GalleryApp { state }))
         }),
     )

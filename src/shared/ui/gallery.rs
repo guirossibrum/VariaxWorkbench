@@ -21,7 +21,9 @@ pub struct GalleryState {
     pub wide: UiImage,
     pub stomp: UiImage,
     pub body: UiImage,
-    pub pickup: UiImage,
+    pickup: UiImage,
+    /// Unmultiplied RGBA of `pickup`, shared by both gallery sprites.
+    pickup_rgba: Option<Vec<u8>>,
     pub outline: UiImage,
     pub show_outline: bool,
     pub pickup_position: [f32; 2],
@@ -56,6 +58,7 @@ impl Default for GalleryState {
             stomp,
             body,
             pickup,
+            pickup_rgba: None,
             outline: UiImage::missing("variax/outline.png"),
             show_outline: false,
             pickup_position: [1.8, 3.88],
@@ -73,6 +76,28 @@ impl Default for GalleryState {
 }
 
 impl GalleryState {
+    /// Load `variax/spank-pickup.png` and keep the unmultiplied pixels the
+    /// canvas uses for hits. A missing file leaves the placeholder and no buffer.
+    pub fn load_pickup(&mut self, ctx: &egui::Context, root: &std::path::Path) {
+        let name = "variax/spank-pickup.png";
+        let Ok(decoded) = image::open(root.join(name)) else {
+            return;
+        };
+        let rgba = decoded.into_rgba8();
+        let pixels = [rgba.width() as usize, rgba.height() as usize];
+        if pixels[0] == 0 || pixels[1] == 0 {
+            return;
+        }
+        let color = egui::ColorImage::from_rgba_unmultiplied(pixels, rgba.as_raw());
+        self.pickup = UiImage {
+            name: name.into(),
+            pixels,
+            texture: Some(ctx.load_texture(name, color, egui::TextureOptions::LINEAR)),
+            missing: false,
+        };
+        self.pickup_rgba = Some(rgba.into_raw());
+    }
+
     pub fn show(&mut self, ctx: &egui::Context) {
         theme::apply(ctx);
         egui::CentralPanel::default().show(ctx, |ui| self.page(ui));
@@ -200,7 +225,8 @@ impl GalleryState {
                 image: &self.pickup,
             },
         ];
-        let mut canvas = BodyCanvas::new(&self.body, &pickups);
+        let alphas = [self.pickup_rgba.as_deref(); 2];
+        let mut canvas = BodyCanvas::new(&self.body, &pickups).alphas(&alphas);
         if self.show_outline {
             canvas = canvas.outline(Some(&self.outline));
         }
@@ -329,4 +355,37 @@ fn note_name(id: usize, shift: i32) -> &'static str {
 
 fn caption(ui: &mut egui::Ui, name: &str) {
     ui.label(RichText::new(name).size(SECTION).strong().color(TEXT));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GalleryState;
+
+    #[test]
+    fn load_pickup_keeps_unmultiplied_rgba_for_both_sprites() {
+        let directory = tempfile::tempdir().unwrap();
+        let variax = directory.path().join("variax");
+        std::fs::create_dir(&variax).unwrap();
+        let mut image = image::RgbaImage::new(2, 2);
+        image.put_pixel(0, 0, image::Rgba([1, 2, 3, 204]));
+        image.put_pixel(1, 0, image::Rgba([4, 5, 6, 255]));
+        image.put_pixel(0, 1, image::Rgba([7, 8, 9, 0]));
+        image.put_pixel(1, 1, image::Rgba([10, 11, 12, 205]));
+        image.save(variax.join("spank-pickup.png")).unwrap();
+
+        let ctx = eframe::egui::Context::default();
+        let mut missing = GalleryState::default();
+        missing.load_pickup(&ctx, &directory.path().join("absent"));
+        assert!(missing.pickup.missing);
+        assert!(missing.pickup_rgba.is_none());
+
+        let mut state = GalleryState::default();
+        state.load_pickup(&ctx, directory.path());
+        assert!(!state.pickup.missing);
+        assert_eq!(state.pickup.pixels, [2, 2]);
+        assert_eq!(
+            state.pickup_rgba.as_deref(),
+            Some(&[1, 2, 3, 204, 4, 5, 6, 255, 7, 8, 9, 0, 10, 11, 12, 205][..])
+        );
+    }
 }
