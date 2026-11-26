@@ -1,4 +1,4 @@
-//! Guided physical actions 7.1-7.4 (#260).
+//! Guided physical actions 7.1–7.5 (#260).
 //!
 //! Each action opens a listener: nothing is sent while the person
 //! acts (a selector message during a read stopped a #238 run). Detection
@@ -9,7 +9,8 @@
 use super::differences::{self, Severity};
 use super::practice::{UserAction, preset_label};
 use super::procedures::{
-    same_program, variax_full_read, with_podxt, with_variax, with_variax_progress,
+    same_program, variax_full_read, with_podxt, with_podxt_stopping, with_variax,
+    with_variax_progress,
 };
 use super::runner::{Ctx, Decision, Progress, Retry, SKIPPED, STOPPED};
 use super::variax_reads::other_preset;
@@ -442,6 +443,9 @@ struct Range {
     max: Option<u8>,
 }
 
+const SWEEP_LOW: u8 = 20;
+const SWEEP_HIGH: u8 = 107;
+
 impl Range {
     fn add(&mut self, value: u8) {
         self.min = Some(self.min.map_or(value, |m| m.min(value)));
@@ -454,7 +458,7 @@ impl Range {
 
     /// Swept far enough to count as a sweep.
     fn swept(self) -> bool {
-        self.min.is_some_and(|m| m <= 20) && self.max.is_some_and(|m| m >= 107)
+        self.min.is_some_and(|m| m <= SWEEP_LOW) && self.max.is_some_and(|m| m >= SWEEP_HIGH)
     }
 
     fn text(self) -> String {
@@ -536,7 +540,6 @@ fn podxt_window(
                         podxt::ReadUpdate::Controller { number, value } => {
                             let name = match *number {
                                 4 | 7 => "pedal",
-                                n if n == podxt::Control::Drive.cc() => "Drive",
                                 _ => "control",
                             };
                             advance.clock.observe(format!("PODxt {name} {value}"));
@@ -740,75 +743,92 @@ pub fn pedal(ctx: &mut Ctx<'_>) -> Result<(), String> {
     Ok(())
 }
 
-/// 7.5: confirm the editor's decoded controller update against the tone dump.
-pub fn podxt_knob(ctx: &mut Ctx<'_>) -> Result<(), String> {
-    let cc = podxt::Control::Drive.cc();
-    let start = with_podxt(ctx, PODXT_LISTEN, |session| {
-        podxt::read_current(session).map(|current| current.tone)
-    })?;
-    let before = start.cc(cc);
-    let trial = if before > 64 {
-        before - 20
-    } else {
-        before + 20
-    };
-    let observe = |want_original: bool, ctx: &mut Ctx<'_>, advance: &ActiveAction| {
-        let mut value = None;
-        podxt_window(ctx, advance, |update| {
-            if let podxt::ReadUpdate::Controller {
-                number,
-                value: observed,
-            } = update
-                && number == cc
-                && (observed == before) == want_original
-            {
-                value = Some(observed);
-            }
-            value.is_some()
-        })?;
-        if let Some(value) = value {
-            let current = with_podxt(ctx, PODXT_LISTEN, |session| {
-                podxt::read_current(session).map(|current| current.tone)
-            })?;
-            let actual = current.cc(cc);
-            if actual != value {
-                let xor = actual ^ value;
-                ctx.rec.difference(Severity::Stop, "The Drive value read back differs from the Follow update.", vec![format!("Drive (CC {cc}) · expected 0x{value:02X} · actual 0x{actual:02X} · XOR 0x{xor:02X} · {} bit(s)", xor.count_ones())]);
-                return Err("The Drive value read back differs from the Follow update.".into());
-            }
+pub(super) const PODXT_KNOBS: [(u8, &str); 6] = [
+    (13, "Drive"),
+    (14, "Bass"),
+    (15, "Mid"),
+    (16, "Treble"),
+    (21, "Presence"),
+    (17, "Channel Volume"),
+];
+
+fn knob_result((cc, name): (u8, &str), range: Range) -> String {
+    let missing = match (range.min, range.max) {
+        (None, _) => " · no movement detected",
+        (Some(low), Some(high)) if low > SWEEP_LOW && high < SWEEP_HIGH => {
+            " · both near-ends missing (≤20 and ≥107)"
         }
-        Ok(value)
+        (Some(low), _) if low > SWEEP_LOW => " · low near-end missing (≤20)",
+        (_, Some(high)) if high < SWEEP_HIGH => " · high near-end missing (≥107)",
+        _ => "",
     };
-    let current_drive = |ctx: &mut Ctx<'_>, original: bool| {
-        let current = with_podxt(ctx, PODXT_LISTEN, |session| {
-            podxt::read_current(session).map(|current| current.tone.cc(cc))
-        })?;
-        Ok(((current == before) == original).then_some(current))
-    };
-    let changed = guided(
-        ctx,
-        &format!("Turn the PODxt Live Drive knob away from its starting value of {before}."),
-        "The drive setting changes.",
-        "a new Drive value",
-        &[UserAction::PodxtKnob(trial)],
-        |ctx| current_drive(ctx, false),
-        |ctx, advance| observe(false, ctx, advance),
-    )?;
-    ctx.rec.show(format!(
-        "Drive changed from {before} to {changed}, verified in the tone."
-    ));
+    let answer = |seen| if seen { "yes" } else { "no" };
+    format!(
+        "{name} (CC {cc}): {} · reached 0: {} · reached 127: {}{missing}",
+        range.text(),
+        answer(range.min == Some(0)),
+        answer(range.max == Some(127))
+    )
+}
+
+/// 7.5: one passive listening window for the six physical tone knobs.
+pub fn podxt_knobs(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    let step = super::catalogue::step(ctx.rec.id).expect("knob sweep catalogue entry");
     guided(
         ctx,
-        &format!("Turn the PODxt Live Drive knob back to {before}."),
-        "Your starting Drive setting.",
-        "the starting Drive value",
-        &[UserAction::PodxtKnob(before)],
-        |ctx| current_drive(ctx, true),
-        |ctx, advance| observe(true, ctx, advance),
-    )?;
-    ctx.rec
-        .show(format!("Drive is back at {before}, verified in the tone."));
-    Ok(())
+        step.you_do,
+        step.hear,
+        "all six PODxt Live tone knobs",
+        &[UserAction::SweepPodxtKnobs],
+        |_| Ok(None),
+        |ctx, action| {
+            let mut ranges = [Range::default(); PODXT_KNOBS.len()];
+            with_podxt_stopping(ctx, PODXT_LISTEN, |session, stopping| {
+                session.note("Listening window open for the PODxt tone knobs.");
+                while !stopping() && !action.done() && !ranges.iter().all(|r| r.full_range()) {
+                    for event in session
+                        .poll(line6_devices::session::POLL)?
+                        .into_iter()
+                        .flatten()
+                    {
+                        if let Some((number, value @ 0..=127)) =
+                            podxt::controller_notification(&event)
+                            && let Some(index) =
+                                PODXT_KNOBS.iter().position(|(cc, _)| *cc == number)
+                        {
+                            ranges[index].add(value);
+                            let mut seen = vec![format!("{} now {value}", PODXT_KNOBS[index].1)];
+                            seen.extend(
+                                PODXT_KNOBS
+                                    .into_iter()
+                                    .zip(ranges)
+                                    .map(|(knob, range)| knob_result(knob, range)),
+                            );
+                            action.clock.observe(seen.join("\n"));
+                        }
+                    }
+                }
+                if stopping() {
+                    return Err(format!("{STOPPED}Stopped by you."));
+                }
+                Ok(())
+            })?;
+            let lines: Vec<_> = PODXT_KNOBS
+                .into_iter()
+                .zip(ranges)
+                .map(|(knob, range)| knob_result(knob, range))
+                .collect();
+            for line in &lines {
+                ctx.rec.show(line);
+            }
+            if ranges.iter().all(|r| r.swept()) {
+                Ok(Some(()))
+            } else {
+                ctx.rec.note(lines.join("\n"));
+                Ok(None)
+            }
+        },
+    )
 }
 
 #[cfg(test)]
@@ -872,13 +892,86 @@ mod tests {
             .collect();
         assert_eq!(
             instructions.len(),
-            8,
-            "two windows each for selector, footswitch and Drive; one for knobs and pedal"
+            7,
+            "two windows each for selector and footswitch; one for each sweep"
         );
         // The next step still showed its own card after each detection.
         for id in GUIDED {
             assert!(person.cards.contains(&id));
         }
+    }
+
+    #[test]
+    fn the_six_knob_window_records_exact_and_near_end_sweeps_without_sends() {
+        for (low, high) in [(0, 127), (20, 107)] {
+            let mut events: Vec<_> = [low, 64, high]
+                .into_iter()
+                .flat_map(|value| super::PODXT_KNOBS.map(|(cc, _)| (cc, value)))
+                .collect();
+            events.extend([(7, 0), (7, 127), (64, 127)]);
+            let mut person = Script::run_all();
+            let (run, _, _) = run_practice(
+                Faults {
+                    podxt_knob_events: Some(events),
+                    ..Faults::default()
+                },
+                &mut person,
+                &mut NoReport,
+                RunData::default(),
+            );
+            let step = run.step(StepId(7, 5));
+            assert!(step.outcome.passed(), "{step:?}");
+            for (cc, name) in super::PODXT_KNOBS {
+                assert!(step.result.iter().any(|line| line
+                    == &format!(
+                        "{name} (CC {cc}): {low}-{high} · reached 0: {} · reached 127: {}",
+                        if low == 0 { "yes" } else { "no" },
+                        if high == 127 { "yes" } else { "no" },
+                    )));
+            }
+            assert!(!step.messages.iter().any(|line| line.contains(" OUT ")));
+        }
+    }
+
+    #[test]
+    fn incomplete_sweeps_name_missing_knobs_and_each_missing_end() {
+        let mut person = Script::run_all();
+        person.retry = Retry::Skip;
+        let (run, _, _) = run_practice(
+            Faults {
+                podxt_knob_events: Some(vec![
+                    (13, 0),
+                    (13, 106),
+                    (14, 21),
+                    (14, 127),
+                    (15, 60),
+                    (16, 0),
+                    (16, 127),
+                    (21, 0),
+                    (21, 127),
+                    (7, 0),
+                    (7, 127),
+                ]),
+                ..Faults::default()
+            },
+            &mut person,
+            &mut NoReport,
+            RunData::default(),
+        );
+        let step = run.step(StepId(7, 5));
+        assert_eq!(step.outcome, Outcome::SkippedByPerson);
+        for expected in [
+            "Drive (CC 13): 0-106 · reached 0: yes · reached 127: no · high near-end missing",
+            "Bass (CC 14): 21-127 · reached 0: no · reached 127: yes · low near-end missing",
+            "Mid (CC 15): 60-60 · reached 0: no · reached 127: no · both near-ends missing",
+            "Channel Volume (CC 17): not seen · reached 0: no · reached 127: no · no movement detected",
+        ] {
+            assert!(
+                step.result.iter().any(|line| line.starts_with(expected)),
+                "{step:?}"
+            );
+        }
+        assert!(!run.step(StepId(5, 2)).outcome.passed());
     }
 
     #[test]

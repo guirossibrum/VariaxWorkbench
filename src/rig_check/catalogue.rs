@@ -6,7 +6,7 @@
 use crate::hardware_gates::Gate;
 use std::fmt;
 
-pub const CATALOGUE_VERSION: &str = "1.5";
+pub const CATALOGUE_VERSION: &str = "1.6";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StepId(pub u8, pub u8);
@@ -325,12 +325,13 @@ pub static STEPS: &[Step] = &[
         does: "Opens a listening window and watches the pedal (CC 7, or CC 4 in wah mode).",
         you_do: "Rock the pedal from heel to toe and back, then leave it where it was.", see: "Pedal range.", hear: "The volume or wah follows the pedal.",
         evidence: "Lowest and highest value seen.", proof: "#220", verified_only: true),
-    step!((7, 5), "Turn the PODxt Live Drive knob", Guided, [(2, 2)], [G3], Read,
-        does: "Watches the decoded Drive knob change and reads the value from the playing tone. Then it checks that the original value is back.",
-        you_do: "Turn Drive to a different setting. Then return it to the starting value shown on screen.",
-        see: "The new Drive value and the original value verified after the return.",
-        hear: "The drive changes when you turn the knob, then returns to its starting setting.",
-        evidence: "Decoded Drive value and both tone read-backs.", proof: "#246", verified_only: true),
+    step!((7, 5), "Sweep the six PODxt Live tone knobs", Guided, [(2, 5)], [G3], Read,
+        does: "Listens for decoded values from Drive, Bass, Mid, Treble, Presence and Channel Volume in one session.",
+        you_do: "Turn each of the six PODxt Live tone knobs all the way up and down. Choose Continue when you finish.",
+        see: "The measured range for each knob and whether it reached 0 and 127.",
+        hear: "The tone and level change as you turn the knobs.",
+        evidence: "Per-knob minimum, maximum, exact endpoints and any missing near-end (≤20 or ≥107).",
+        proof: "#275", verified_only: true),
     step!((8, 1), "Audio device and formats (no sound)", Computer, [(0, 1)], [], None,
         does: "Lists what the operating system says about the PODxt Live's audio device: channels, sample rates, formats, the audio system and the default devices. No audio stream is opened.",
         you_do: "Nothing.", see: "The audio device listing.", hear: "Nothing.",
@@ -372,9 +373,9 @@ pub const RUN_ORDER: &[StepId] = &[
     StepId(6, 1),
     StepId(7, 1),
     StepId(7, 2),
+    StepId(7, 5),
     StepId(7, 3),
     StepId(7, 4),
-    StepId(7, 5),
     StepId(8, 1),
     StepId(4, 1),
     StepId(4, 2),

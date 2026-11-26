@@ -1,6 +1,6 @@
 # Rig Check test catalogue
 
-**Catalogue version: 1.5 (2026-11-25).** Every report quotes this version.
+**Catalogue version: 1.6 (2026-11-25).** Every report quotes this version.
 Epic [#243](https://github.com/guirossibrum/VariaxWorkbench/issues/243) ·
 catalogue [#244](https://github.com/guirossibrum/VariaxWorkbench/issues/244).
 
@@ -164,12 +164,12 @@ SKIP. This automatic skip permits live edits and saves to continue.
 | 4.8 | PODxt tuner | Pluck an open string. See tuner readings and the tuner turn off. |
 | 5.3 | Variax temporary save and restore | Confirm the named slot. See both stores verified. |
 | 5.4 | Variax two-slot Sync | Confirm both named slots. See each verified, then the original preset. |
-| 7.5 | PODxt Drive knob | Turn Drive and return it to the displayed starting value. See each value checked against a tone read-back. |
+| 7.5 | Six PODxt Live tone knobs | Turn Drive, Bass, Mid, Treble, Presence and Channel Volume all the way up and down in one listening window. |
 
 The Follow checks use the editor's listeners. 6.1 follows disconnect and
 reconnect. 7.1 and 7.2 check the named preset and both full knob sweeps.
 7.3 waits for a matching channel update and checks the tone Follow reads back.
-7.4 checks pedal movement. 7.5 reports the Drive value after read-back.
+7.4 checks pedal movement. 7.5 reports each measured range, whether the endpoints 0 and 127 arrived, and whether the sweep reached ≤20 and ≥107. Run 7.5 before 7.3 so the footswitch check can return the PODxt to its starting tone before live and save steps. The final rig guard remains a separate check.
 
 ## Step cards
 

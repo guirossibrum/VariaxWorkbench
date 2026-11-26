@@ -235,7 +235,7 @@ fn the_channel_operator_runs_practice_mode_from_another_thread() {
                     StepId(7, 2) => &["volume 0-127, tone 0-127"],
                     StepId(7, 3) => &["Practice 5C", "Back on channel 5B"],
                     StepId(7, 4) => &["Pedal range seen: 0-127"],
-                    StepId(7, 5) => &["Drive changed", "verified in the tone"],
+                    StepId(7, 5) => &["Drive (CC 13): 0-127", "Channel Volume (CC 17): 0-127"],
                     StepId(8, 1) => &[
                         "Audio system: ALSA",
                         "PODxt Live audio device: card 1",
