@@ -176,12 +176,15 @@ impl<R: BufRead, W: Write> Operator for Terminal<R, W> {
         accepted
     }
 
-    fn confirm(&mut self, step: &Step, mode: Mode) -> Decision {
+    fn confirm(&mut self, step: &Step, mode: Mode, note: Option<String>) -> Decision {
         self.stop.set(false);
         let card = card_text(step, mode);
         let back = history::back(&self.results, None, self.start_accepted.is_some());
         loop {
             self.say(&card);
+            if let Some(note) = &note {
+                self.say(note);
+            }
             let label = if back.is_some() { "[b] Back   " } else { "" };
             let start = if super::catalogue::asks_for_action(step.id) {
                 "Start"

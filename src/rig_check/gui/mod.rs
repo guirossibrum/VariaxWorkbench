@@ -35,7 +35,7 @@ pub const BIG: f32 = 34.0;
 #[derive(Clone, Debug)]
 pub enum Prompt {
     Start(String),
-    Card(StepId, Mode),
+    Card(StepId, Mode, Option<String>),
     Save {
         text: String,
         confirmation: String,
@@ -124,9 +124,9 @@ impl Operator for ChannelOperator {
         )
     }
 
-    fn confirm(&mut self, step: &Step, mode: Mode) -> Decision {
+    fn confirm(&mut self, step: &Step, mode: Mode, note: Option<String>) -> Decision {
         self.stop.store(false, Ordering::Relaxed);
-        match self.request(Prompt::Card(step.id, mode)) {
+        match self.request(Prompt::Card(step.id, mode, note)) {
             Some(Reply::Decision(decision)) => decision,
             _ => Decision::Skip,
         }
@@ -337,7 +337,7 @@ impl Wizard {
         {
             self.start_accepted = Some(notice);
         }
-        if let (Some(Prompt::Card(step, _)), Reply::Decision(Decision::Run)) =
+        if let (Some(Prompt::Card(step, ..)), Reply::Decision(Decision::Run)) =
             (&self.prompt, &reply)
         {
             self.running = Some(*step);
@@ -628,7 +628,7 @@ impl Wizard {
         match self.prompt.clone() {
             None => self.waiting(ui),
             Some(Prompt::Start(notice)) => self.start_notice(ui, &notice),
-            Some(Prompt::Card(id, mode)) => self.card(ui, id, mode),
+            Some(Prompt::Card(id, mode, note)) => self.card(ui, id, mode, note.as_deref()),
             Some(Prompt::Save { text, confirmation }) => self.save(ui, &text, &confirmation),
             Some(Prompt::PrepareAction { step, see, hear }) => {
                 self.prepare_action(ui, step, &see, &hear)
@@ -890,7 +890,7 @@ impl Wizard {
         });
     }
 
-    fn card(&mut self, ui: &mut egui::Ui, id: StepId, mode: Mode) {
+    fn card(&mut self, ui: &mut egui::Ui, id: StepId, mode: Mode, note: Option<&str>) {
         let step = catalogue::step(id).expect("catalogue step");
         ui.label(
             RichText::new(format!("Step {id}"))
@@ -911,6 +911,9 @@ impl Wizard {
                     .size(BODY)
                     .color(MUTED),
             );
+            if let Some(note) = note {
+                ui.label(RichText::new(note).size(SECTION).color(TEXT));
+            }
             if let Some(note) = step.starting_buffer_note() {
                 ui.label(RichText::new(note).size(BODY).color(TEXT));
             }
@@ -1325,11 +1328,11 @@ pub fn mockup_states() -> Vec<(&'static str, Wizard)> {
         ("02-start-notice", practice(Some(Prompt::Start(START_NOTICE.into())))),
         (
             "03-step-card-read",
-            with_progress(practice(Some(Prompt::Card(StepId(1, 1), Mode::Practice))), 3),
+            with_progress(practice(Some(Prompt::Card(StepId(1, 1), Mode::Practice, None))), 3),
         ),
         (
             "04-step-card-live",
-            with_progress(practice(Some(Prompt::Card(StepId(4, 3), Mode::Real))), 10),
+            with_progress(practice(Some(Prompt::Card(StepId(4, 3), Mode::Real, None))), 10),
         ),
         ("05-running", {
             let mut w = with_progress(practice(None), 9);
@@ -1437,7 +1440,7 @@ pub fn mockup_states() -> Vec<(&'static str, Wizard)> {
     result.focus_armed = true;
     states.push(("11-step-result", result));
     let mut history = with_progress(
-        practice(Some(Prompt::Card(StepId(2, 2), Mode::Practice))),
+        practice(Some(Prompt::Card(StepId(2, 2), Mode::Practice, None))),
         6,
     );
     history
@@ -1447,7 +1450,7 @@ pub fn mockup_states() -> Vec<(&'static str, Wizard)> {
         .show("PODxt Live, firmware 3.01 (verified device)");
     history.go_back();
     states.push(("12-review-result", history));
-    let mut start = practice(Some(Prompt::Card(StepId(0, 1), Mode::Practice)));
+    let mut start = practice(Some(Prompt::Card(StepId(0, 1), Mode::Practice, None)));
     start.start_accepted = Some(catalogue::START_NOTICE);
     start.go_back();
     states.push(("13-review-start", start));

@@ -123,7 +123,7 @@ owner-rig issue or card that proved the procedure.
 | 4.3 | Variax: listen to a test model, then return | 4.2, 3.4 | G6 | Live | #238 listen-list, [listen card](../variax-listen-list-test-card.md) |
 | 5.1 | Variax: save a preset's own bytes back to its slot | 3.4, 4.2 | G7 | Save | #177, #238 4c, [store card](../reso5-store-test-card.md) |
 | 5.2 | PODxt Live: save a channel's own bytes back to it | 2.5, 4.1 | G7 | Save | #222 stage B (owner run pending), [store card](../podxt-store-test-card.md) |
-| 5.3 | Variax: save a quieter preset and restore it | 5.1 | G7 | Save | #238 4b/4c |
+| 5.3 | Variax: save a temporary output trim and restore it | 5.1 | G7 | Save | #238 4b/4c |
 | 6.1 | VDI cable unplug and replug noticed | 3.1 | G2 | Read | #235 |
 | 6.2 | Rig back to its starting state, driver given back | – | G1–G3, G6 | Read (switches back if needed) | #239, #238 |
 | 7.1 | Turn the Variax selector to a named preset | 3.4 | G3 | Read | #202 Follow, #238 |
@@ -158,7 +158,7 @@ SKIP. This automatic skip permits live edits and saves to continue.
 | Step | Action | Player cue |
 | --- | --- | --- |
 | 2.6 | PODxt editor Get, packs and globals | Leave the controls alone. See the current channel, tone and available globals. |
-| 4.4 | Variax trim difference and return | Play the same passage. Hear the quieter sound and then the original level. |
+| 4.4 | Variax trim difference and return | Play the same passage. The card names the louder or quieter test level. Hear the original again afterwards. |
 | 4.5 | Variax alternate-tuning transition and return | Play the low E string. Hear a lower pitch and then the original tuning. |
 | 4.6 | PODxt whole-tone send | The current sound stays loaded. See a verified whole-tone read-back. |
 | 4.7 | PODxt recall and return | Hear the next saved channel, then the starting tone. |
@@ -391,9 +391,9 @@ The Rig Check and device-crate Variax evidence approvals are open for the owner.
   then reads the slot back.
 - **Risk:** Save. **Evidence:** pre-check, store messages, receipt, read-back.
 
-### 5.3 Variax: save a quieter preset and restore it
+### 5.3 Variax: save a temporary output trim and restore it
 
-After the exact save confirmation, store the quieter variant and verify the
+After the exact save confirmation, store the temporary trim variant and verify the
 slot. Restore the original verified backup and confirm it reads back.
 
 ### 5.4 Variax: Sync two presets' own bytes

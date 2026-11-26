@@ -391,22 +391,25 @@ fn podxt_editor_controls(ctx: &mut Ctx<'_>) -> Result<(), String> {
         return Err("Stopped before editor control edits.".into());
     }
     let mut before_raw = None;
+    let mut tempo_available = false;
     let result = with_podxt_stopping(ctx, PODXT_EDITOR, |session, stopping| {
         let before = podxt::get_editor_buffer(session, stopping)?;
         before_raw = Some(before.tone.raw.clone());
         let tempo = LiveControl::Additional(Setting::Tempo).read(&before.tone);
         // The compound tempo path emits two CC messages. Use a nearby value
         // within the supported range and keep the original available for Undo.
-        if !(300..=2400).contains(&tempo) {
-            return Err("The starting tempo is outside the editor's supported range. No editor controls were sent.".into());
-        }
-        let targets = [
-            LiveTarget::Basic(Control::Drive, Target::Offset(1)),
-            LiveTarget::Additional(
+        let drive = before.tone.cc(Control::Drive.cc());
+        let mut targets = vec![LiveTarget::Basic(
+            Control::Drive,
+            Target::Offset(if drive == 127 { -1 } else { 1 }),
+        )];
+        tempo_available = (300..=2400).contains(&tempo);
+        if tempo_available {
+            targets.push(LiveTarget::Additional(
                 Setting::Tempo,
                 if tempo == 2400 { tempo - 1 } else { tempo + 1 },
-            ),
-        ];
+            ));
+        }
         let edited =
             podxt::edit_editor_buffer(session, &before, EditorEdit::Controls(&targets), stopping);
         let current = match edited.as_ref() {
@@ -436,9 +439,11 @@ fn podxt_editor_controls(ctx: &mut Ctx<'_>) -> Result<(), String> {
         }
         return Err(reason);
     }
-    ctx.rec.note(
-        "Editor Drive and compound tempo edits read back. Editor Undo restored the complete tone.",
-    );
+    if tempo_available {
+        ctx.rec.note("Editor Drive and compound tempo edits read back. Editor Undo restored the complete tone.");
+    } else {
+        ctx.rec.show("Drive read back and restored. Tempo was outside the editable range, so its check was not applicable.");
+    }
     Ok(())
 }
 

@@ -43,6 +43,7 @@ pub struct Faults {
     /// The person does not perform a guided action in time.
     pub user_does_not_act: bool,
     pub guided_action_delay: Option<Duration>,
+    pub missing_model_data: bool,
     /// Report the Variax as firmware 3.09 (unverified).
     pub unverified_variax: bool,
     /// Report the PODxt Live as firmware 2.07 (unverified).
@@ -149,6 +150,8 @@ pub fn synthetic_program(name: &str, seed: u64) -> Program {
     let mut field = [b' '; 18];
     field[..name.len().min(18)].copy_from_slice(&name.as_bytes()[..name.len().min(18)]);
     metadata[..18].copy_from_slice(&field);
+    metadata[18..22].copy_from_slice(&0x0310_0000u32.to_be_bytes());
+    metadata[65..75].fill(0);
     for (i, chunk) in metadata.chunks(3).enumerate() {
         words[851 + i] = u32::from_be_bytes([0, chunk[0], chunk[1], chunk[2]]);
     }

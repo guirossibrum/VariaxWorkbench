@@ -58,3 +58,17 @@ store outcome is unknown, Rig Check ends with USB release only.
 **Show technical details** displays expected and actual hex, the XOR, the number
 of differing bits, retries, missing bytes in retried replies and message counts.
 Real runs save raw evidence by default in the report's companion folder.
+
+
+## Starting-state preconditions
+
+| Checks | Starting state and outcome |
+| --- | --- |
+| 0.3, 4.3–4.5, 5.3 | Model-dependent checks skip when model data is missing. The own-byte upload and saves remain available. A local test model must match its reference before audition. |
+| 4.4, 5.3 | Lower trim by 6 dB when it fits. Raise it by 6 dB near the minimum. A preset whose affected words cannot be reproduced skips the edit. |
+| 4.5 | Test a different low-string tuning when tuning is already on. Acoustic presets and sitar skip. |
+| 4.1 | Stomp toggles from either state. Drive moves away from the upper limit. Tempo outside the editable range skips only the tempo comparison. |
+| 2.3, 2.4 | Use fixed read addresses as test targets, independently of the playing channel. |
+| 2.2, 2.5, 3.3–3.5, 4.6–4.7, 6.2, 7.1, 7.3 | Use the reported or identified starting state and verified backups. Other selections are derived from the starting slot. Captured unsaved edits are restored and verified. |
+| 5.1, 5.3, 5.4 | Flash 40–59 skips while spare 62 cannot be verified. A store that would change the backup when the firmware stamps it also skips. |
+| All device paths | Keep the verified attachment, firmware, gate and backup requirements. Checksum violations, bad read-backs and uncertain stores still stop writes. |

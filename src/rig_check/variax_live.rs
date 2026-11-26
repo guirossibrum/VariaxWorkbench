@@ -13,12 +13,14 @@ use super::practice::{Program, packed, preset_label, program_name, seal};
 use super::procedures::{
     program_bytes, variax_full_read, variax_read_preset, with_variax_progress, word_differences,
 };
-use super::runner::{Answer, Ctx, Question};
+use super::runner::{Answer, Ctx, NOT_APPLICABLE, Question};
 use line6_devices::family::variax::{
     procedures::{self as shared_variax, BufferEdit},
     write,
 };
 use line6_devices::gate::Operation;
+
+pub const MODEL_DATA_NEEDED: &str = "needs Variax model data on this computer";
 
 pub const VARIAX_LIVE: &[Operation] = &[
     Operation::VariaxIdentity,
@@ -146,7 +148,9 @@ pub fn variax_test_model(ctx: &mut Ctx<'_>) -> Result<(), String> {
         .ok_or("The starting preset is unknown (3.4).")?;
     let models = test_models(ctx, &start);
     if models.is_empty() {
-        return Err("No verified test model: add your reference folder to step 0.3 (--engine-folder) so test models are built and checked on this computer first.".into());
+        return Err(format!(
+            "{NOT_APPLICABLE}No test model matched the references in step 0.3."
+        ));
     }
     super::guided::play_phrase(
         ctx,
@@ -263,6 +267,79 @@ pub(super) enum AuditionEdit {
     Tuning,
 }
 
+#[derive(Clone, Copy)]
+enum Target {
+    Trim { before: f32, after: f32 },
+    Tuning([i8; 6]),
+}
+
+fn edit_target(original: &Program, edit: AuditionEdit) -> Result<Target, String> {
+    use crate::{ParameterValue, PresetMetadata, edit as field};
+    let metadata = PresetMetadata::from_bytes(super::procedures::settings_of(original))?;
+    match edit {
+        AuditionEdit::Trim => {
+            let Some(ParameterValue::Float(before)) = metadata.parameters.get("trim") else {
+                return Err("The starting preset has no output trim.".into());
+            };
+            const MIN: f32 = -20.0;
+            const MAX: f32 = 6.0;
+            if !before.is_finite() {
+                return Err(format!(
+                    "{NOT_APPLICABLE}The preset does not report an adjustable output trim."
+                ));
+            }
+            let after = if *before >= MIN + 6.0 {
+                before - 6.0
+            } else {
+                before + 6.0
+            };
+            Ok(Target::Trim {
+                before: *before,
+                after: after.clamp(MIN, MAX),
+            })
+        }
+        AuditionEdit::Tuning => {
+            let Some(ParameterValue::Integer(body)) = metadata.parameters.get("body_model") else {
+                return Err("The starting preset has no body model.".into());
+            };
+            let body = *body as u32;
+            if field::is_acoustic(body)
+                || field::availability(Some(body), field::TUNING, None).is_err()
+            {
+                return Err(format!(
+                    "{NOT_APPLICABLE}This preset does not support the alternate-tuning check."
+                ));
+            }
+            let enabled = metadata.parameters.get("alternate_tuning_enabled")
+                == Some(&ParameterValue::Boolean(true));
+            let mut offsets = [0; 6];
+            if enabled {
+                for (index, offset) in offsets.iter_mut().enumerate() {
+                    let key = format!("string{}_tuning", index + 1);
+                    let Some(ParameterValue::Integer(value)) =
+                        metadata.parameters.get(key.as_str())
+                    else {
+                        return Err("A string's tuning is missing from the starting preset.".into());
+                    };
+                    *offset = *value as i8;
+                }
+            }
+            offsets[0] = if offsets[0] == -2 { 0 } else { -2 };
+            Ok(Target::Tuning(offsets))
+        }
+    }
+}
+
+pub fn trim_note(original: &Program) -> Result<String, String> {
+    let Target::Trim { before, after } = edit_target(original, AuditionEdit::Trim)? else {
+        unreachable!()
+    };
+    let direction = if after > before { "raises" } else { "lowers" };
+    Ok(format!(
+        "This check {direction} output trim from {before:.2} dB to {after:.2} dB."
+    ))
+}
+
 /// Build a selective edit of the captured program. Real candidates are rendered
 /// with the same host options as the editor. Only words verified against the
 /// unmodified render are carried over from the edited render.
@@ -273,25 +350,38 @@ pub(super) fn edit_images(
 ) -> Result<(shared_variax::Image, Option<shared_variax::Image>), String> {
     if ctx.mode == super::record::Mode::Practice {
         let mut next = *original;
-        return Ok(match edit {
-            AuditionEdit::Trim => {
+        let mut settings = super::procedures::settings_of(original);
+        let tuning = match edit_target(original, edit)? {
+            Target::Trim { after, .. } => {
+                settings[65..68].copy_from_slice(&after.to_bits().to_be_bytes()[..3]);
                 next[10] ^= 0x1000;
-                seal(&mut next);
-                (packed(&next), None)
+                false
             }
-            AuditionEdit::Tuning => {
-                next = test_model(original);
-                let mut muted = next;
-                muted[10] = 0;
-                seal(&mut muted);
-                (packed(&next), Some(packed(&muted)))
+            Target::Tuning(offsets) => {
+                settings[68] = 1;
+                settings[69..75].copy_from_slice(&offsets.map(|offset| offset as u8));
+                next[680] ^= 0x10_0000;
+                true
             }
+        };
+        for (i, [a, b, c]) in settings.as_chunks::<3>().0.iter().enumerate() {
+            next[851 + i] = u32::from_be_bytes([0, *a, *b, *c]);
+        }
+        seal(&mut next);
+        let muted = tuning.then(|| {
+            let mut muted = next;
+            muted[10] = 0;
+            seal(&mut muted);
+            packed(&muted)
         });
+        return Ok((packed(&next), muted));
     }
 
-    let root = ctx.data.engine_folder.as_deref().ok_or(
-        "Supply --engine-folder with a verified local models.tsv for the Variax edit checks.",
-    )?;
+    let root = ctx
+        .data
+        .engine_folder
+        .as_deref()
+        .ok_or_else(|| format!("{NOT_APPLICABLE}{MODEL_DATA_NEEDED}"))?;
     render_edits(root, original, edit)
 }
 
@@ -301,10 +391,11 @@ fn render_edits(
     edit: AuditionEdit,
 ) -> Result<(shared_variax::Image, Option<shared_variax::Image>), String> {
     use crate::{
-        ParameterValue, PresetMetadata, edit as field,
+        PresetMetadata, edit as field,
         host::{HostEngine, HostOptions, HostParameters, ModelLibrary},
         preset::PresetFile,
     };
+    let target = edit_target(original, edit)?;
     let original = packed(original);
     let metadata = PresetMetadata::from_bytes(
         original[shared_variax::METADATA]
@@ -312,7 +403,8 @@ fn render_edits(
             .expect("settings size"),
     )?;
     let mut preset = PresetFile::from_metadata(&metadata, 0x0007_0004, 0x0310_0000)?;
-    let models = ModelLibrary::load_manifest(&root.join("models.tsv"))?;
+    let models = ModelLibrary::load_manifest(&root.join("models.tsv"))
+        .map_err(|error| format!("{NOT_APPLICABLE}{MODEL_DATA_NEEDED}. {error}"))?;
     let render = |preset: &PresetFile, muted| -> Result<shared_variax::Image, String> {
         let parameters = HostParameters::from_preset(preset)?;
         let settings = parameters.map(HostOptions {
@@ -323,22 +415,18 @@ fn render_edits(
         Ok(parameters.finish(preset.name(), &settings, result.packed()))
     };
     let before = render(&preset, false)?;
-    match edit {
-        AuditionEdit::Trim => {
-            let Some(ParameterValue::Float(trim)) = metadata.parameters.get("trim") else {
-                return Err("The starting preset has no output trim.".into());
-            };
-            preset.set_parameter(field::SYSTEM, 0x200000, 1, (trim - 6.0).to_bits())?;
+    match target {
+        Target::Trim { after, .. } => {
+            preset.set_parameter(field::SYSTEM, 0x200000, 1, after.to_bits())?;
         }
-        AuditionEdit::Tuning => {
-            if metadata.parameters.get("alternate_tuning_enabled")
-                != Some(&ParameterValue::Boolean(false))
-            {
-                return Err("Start on an electric preset with alternate tuning disabled.".into());
-            }
-            for string in 0..6 {
-                let semitones = if string == 0 { -2i32 } else { 0 };
-                preset.set_parameter(field::TUNING, 0x200000 + string, 0, semitones as u32)?;
+        Target::Tuning(offsets) => {
+            for (string, semitones) in offsets.into_iter().enumerate() {
+                preset.set_parameter(
+                    field::TUNING,
+                    0x200000 + string as u32,
+                    0,
+                    i32::from(semitones) as u32,
+                )?;
             }
             preset.set_enabled(field::TUNING, true)?;
         }
@@ -379,14 +467,16 @@ fn merge_rendered_words(
         if old != new {
             if word != old {
                 return Err(format!(
-                    "The starting program and its Workbench render differ at affected word {index}. Nothing was sent."
+                    "{NOT_APPLICABLE}The starting program could not be reproduced at affected word {index}. Nothing was sent."
                 ));
             }
             *word = *new;
         }
     }
     if candidate[..shared_variax::METADATA.start] == original[..shared_variax::METADATA.start] {
-        return Err("The edit did not change any DSP words. Nothing was sent.".into());
+        return Err(format!(
+            "{NOT_APPLICABLE}This edit does not change the starting program’s sound."
+        ));
     }
     shared_variax::set_firmware_checksum(&mut candidate);
     Ok(candidate)
@@ -396,7 +486,7 @@ pub fn trim(ctx: &mut Ctx<'_>) -> Result<(), String> {
     variant(
         ctx,
         AuditionEdit::Trim,
-        "Play the same short passage. Does it sound quieter?",
+        "Play the same short passage. Does the level change as shown on the card?",
     )
 }
 
@@ -404,7 +494,7 @@ pub fn tuning(ctx: &mut Ctx<'_>) -> Result<(), String> {
     variant(
         ctx,
         AuditionEdit::Tuning,
-        "Play the low E string. Does it sound lower than before?",
+        "Play the low E string. Does its pitch change?",
     )
 }
 
@@ -566,6 +656,115 @@ mod tests {
             changed.iter().all(|&w| matches!(w, 680 | 851..=914 | 1091)),
             "{changed:?}"
         );
+    }
+
+    fn practice_with_settings(
+        edit: impl FnOnce(&mut [u8; 192]),
+    ) -> (crate::rig_check::record::RunRecord, Script) {
+        let rig = super::super::practice::SimRig::shared(Faults::default());
+        {
+            let mut rig = rig.borrow_mut();
+            let mut settings = super::super::procedures::settings_of(&rig.variax.active);
+            edit(&mut settings);
+            for (index, [a, b, c]) in settings.as_chunks::<3>().0.iter().enumerate() {
+                rig.variax.active[851 + index] = u32::from_be_bytes([0, *a, *b, *c]);
+            }
+            seal(&mut rig.variax.active);
+            let slot = super::super::practice::flash_index(rig.variax.selected.unwrap());
+            rig.variax.stored[slot] = rig.variax.active;
+        }
+        let mut script = Script::run_all();
+        let (run, _) = crate::rig_check::run_on(
+            &mut super::super::port::PracticePort::new(rig),
+            &mut script,
+            &mut NoReport,
+            RunData::default(),
+        );
+        (run, script)
+    }
+
+    #[test]
+    fn near_minimum_trim_raises_the_level_and_the_card_says_so() {
+        let id = StepId(4, 4);
+        let (run, script) = practice_with_settings(|bytes| {
+            bytes[65..68].copy_from_slice(&(-19_f32).to_bits().to_be_bytes()[..3]);
+        });
+        assert!(run.step(id).outcome.passed());
+        assert!(script.card_notes.iter().any(|(step, text)| *step == id
+            && text.contains("raises output trim from -19.00 dB to -13.00 dB")));
+        assert!(run.step(StepId(5, 3)).outcome.passed());
+    }
+
+    #[test]
+    fn active_tuning_uses_a_different_offset_and_restores_the_start() {
+        let (run, _) = practice_with_settings(|bytes| {
+            bytes[68] = 1;
+            bytes[69] = 0xfe;
+            bytes[70] = 3;
+        });
+        let step = run.step(StepId(4, 5));
+        assert!(step.outcome.passed());
+        assert!(
+            step.result
+                .iter()
+                .any(|line| line.contains("original program verified"))
+        );
+        assert!(
+            step.messages
+                .iter()
+                .any(|line| line.contains("OUT f0 00 01 0c 07 00 3b"))
+        );
+        let mut source = synthetic_program("Practice", 8);
+        source[874] = 0xfe0300;
+        source[873] = 0x000001;
+        assert!(matches!(
+            edit_target(&source, AuditionEdit::Tuning),
+            Ok(Target::Tuning([0, 3, 0, 0, 0, 0]))
+        ));
+    }
+
+    #[test]
+    fn acoustic_and_sitar_skip_the_tuning_send_without_blocking_saves() {
+        for body in [0x0310_0012u32, 0x0310_0018] {
+            let (run, _) = practice_with_settings(|bytes| {
+                bytes[18..22].copy_from_slice(&body.to_be_bytes());
+            });
+            let step = run.step(StepId(4, 5));
+            assert!(
+                matches!(&step.outcome, crate::rig_check::record::Outcome::SkippedNotApplicable(reason) if reason.contains("does not support"))
+            );
+            assert!(step.messages.is_empty());
+            assert!(run.step(StepId(5, 1)).outcome.passed());
+        }
+    }
+
+    #[test]
+    fn missing_models_skip_every_render_and_never_block_own_byte_saves() {
+        let mut script = Script::run_all();
+        let (run, _, rig) = run_practice(
+            Faults {
+                missing_model_data: true,
+                ..Faults::default()
+            },
+            &mut script,
+            &mut NoReport,
+            RunData::default(),
+        );
+        for id in [
+            StepId(0, 3),
+            StepId(4, 3),
+            StepId(4, 4),
+            StepId(4, 5),
+            StepId(5, 3),
+        ] {
+            assert_eq!(run.step(id).outcome.reason(), Some(MODEL_DATA_NEEDED));
+            assert!(!script.cards.contains(&id));
+            assert!(run.step(id).messages.is_empty());
+        }
+        for id in [StepId(5, 1), StepId(5, 2), StepId(5, 4)] {
+            assert!(run.step(id).outcome.passed());
+        }
+        assert_eq!(rig.borrow().variax.stores, 3);
     }
 
     #[test]

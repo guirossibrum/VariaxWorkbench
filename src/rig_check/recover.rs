@@ -373,7 +373,7 @@ pub fn offer_restore(
     {
         Outcome::NotAuthorized(reason)
     } else {
-        match op.confirm(step, mode) {
+        match op.confirm(step, mode, None) {
             Decision::Run => {
                 let mut data = RunData::default();
                 rec.started = Some(utc_now());
