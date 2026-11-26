@@ -25,6 +25,15 @@ pub trait RigPort {
     /// Give the guitar interface back to the operating system and report the
     /// driver binding afterwards.
     fn release_variax(&mut self) -> Result<Vec<String>, String>;
+    fn macos_owner_test(&self) -> bool {
+        false
+    }
+    fn finish_macos_owner_test(&mut self) -> Result<Vec<String>, String> {
+        self.release_variax()
+    }
+    fn macos_inventory(&mut self) -> Result<Vec<super::computer::UsbDevice>, String> {
+        Err("No macOS USB inventory for this port.".into())
+    }
     /// The computer's own files for steps 0.1, 0.2 and 8.1 (read-only).
     fn system(&self) -> Box<dyn FileSource + '_>;
     /// The libusb version this build links, if any.
@@ -155,9 +164,13 @@ pub struct RealPort {
     system: Box<dyn FileSource>,
     #[cfg(target_os = "linux")]
     podxt: Option<line6_devices::transport::rawmidi::RawMidiLink>,
+    #[cfg(all(target_os = "macos", feature = "usb"))]
+    mac_podxt: Option<line6_devices::transport::usb::UsbInterfaceLink>,
+    #[cfg(all(target_os = "macos", feature = "usb"))]
+    mac_attachment: Option<line6_devices::transport::usb::macos::Attachment>,
     #[cfg(feature = "usb")]
     variax: Option<line6_devices::transport::usb::UsbInterfaceLink>,
-    #[cfg(feature = "usb")]
+    #[cfg(all(feature = "usb", not(target_os = "macos")))]
     lock: Option<line6_devices::device_lock::DeviceLock>,
 }
 
@@ -179,9 +192,13 @@ impl RealPort {
             system,
             #[cfg(target_os = "linux")]
             podxt: None,
+            #[cfg(all(target_os = "macos", feature = "usb"))]
+            mac_podxt: None,
+            #[cfg(all(target_os = "macos", feature = "usb"))]
+            mac_attachment: None,
             #[cfg(feature = "usb")]
             variax: None,
-            #[cfg(feature = "usb")]
+            #[cfg(all(feature = "usb", not(target_os = "macos")))]
             lock: None,
         }
     }
@@ -218,7 +235,28 @@ impl RigPort for RealPort {
             }
             Ok(self.podxt.as_mut().expect("opened above"))
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(all(target_os = "macos", feature = "usb"))]
+        {
+            if step != StepId(2, 1) {
+                return Err("This Mac test only opens PODxt MIDI for step 2.1.".into());
+            }
+            if self.mac_podxt.is_none() {
+                self.release_variax()?;
+                let at = self
+                    .mac_attachment
+                    .as_ref()
+                    .ok_or("No single PODxt Live attachment from step 0.2.")?;
+                let rig = line6_devices::device_lock::DeviceLock::acquire()
+                    .map_err(|error| error.to_string())?;
+                self.mac_podxt = Some(
+                    line6_devices::transport::usb::UsbInterfaceLink::open_podxt_midi(
+                        &at.path, at.address, rig,
+                    )?,
+                );
+            }
+            Ok(self.mac_podxt.as_mut().expect("opened above"))
+        }
+        #[cfg(not(any(target_os = "linux", all(target_os = "macos", feature = "usb"))))]
         {
             Err(
                 "The PODxt Live MIDI link is not available on this operating system yet (#262)."
@@ -230,7 +268,7 @@ impl RigPort for RealPort {
     fn variax(&mut self, step: StepId) -> Result<&mut dyn Link, String> {
         approvals::real_device_check(step)?;
         refuse_in_tests()?;
-        #[cfg(feature = "usb")]
+        #[cfg(all(feature = "usb", not(target_os = "macos")))]
         {
             use line6_devices::device_lock::DeviceLock;
             use line6_devices::transport::usb::{UsbInterfaceLink, VARIAX_VIA_PODXT_LIVE};
@@ -242,10 +280,76 @@ impl RigPort for RealPort {
             }
             Ok(self.variax.as_mut().expect("opened above"))
         }
+        #[cfg(all(target_os = "macos", feature = "usb"))]
+        {
+            use line6_devices::transport::usb::{UsbInterfaceLink, VARIAX_VIA_PODXT_LIVE};
+            if !matches!(step, StepId(1, 2) | StepId(3, 1)) {
+                return Err(
+                    "This Mac test only opens the guitar interface for steps 1.2 and 3.1.".into(),
+                );
+            }
+            if self.variax.is_none() {
+                if let Some(mut link) = self.mac_podxt.take() {
+                    link.finish()?;
+                }
+                let at = self
+                    .mac_attachment
+                    .as_ref()
+                    .ok_or("No single PODxt Live attachment from step 0.2.")?;
+                let rig = line6_devices::device_lock::DeviceLock::acquire()
+                    .map_err(|error| error.to_string())?;
+                self.variax = Some(UsbInterfaceLink::open_attachment(
+                    VARIAX_VIA_PODXT_LIVE,
+                    &at.path,
+                    at.address,
+                    rig,
+                )?);
+            }
+            Ok(self.variax.as_mut().expect("opened above"))
+        }
         #[cfg(not(feature = "usb"))]
         {
             Err("This build has no USB support (feature `usb`).".into())
         }
+    }
+
+    fn macos_owner_test(&self) -> bool {
+        crate::macos_owner_test_enabled()
+    }
+
+    fn finish_macos_owner_test(&mut self) -> Result<Vec<String>, String> {
+        #[cfg(all(target_os = "macos", feature = "usb"))]
+        if let Some(mut link) = self.mac_podxt.take() {
+            link.finish()?;
+            return Ok(vec!["PODxt Live interface 0 released.".into()]);
+        }
+        self.release_variax()
+    }
+
+    #[cfg(all(target_os = "macos", feature = "usb"))]
+    fn macos_inventory(&mut self) -> Result<Vec<super::computer::UsbDevice>, String> {
+        refuse_in_tests()?;
+        let attachments = line6_devices::transport::usb::macos::attachments()?;
+        self.mac_attachment = match attachments.as_slice() {
+            [only] => Some(only.clone()),
+            _ => None,
+        };
+        Ok(attachments
+            .into_iter()
+            .map(|attachment| super::computer::UsbDevice {
+                port: attachment.path,
+                address: Some(attachment.address),
+                vendor: 0x0e41,
+                product: 0x4650,
+                name: Some("PODxt Live".into()),
+                manufacturer: None,
+                serial: None,
+                speed: None,
+                bus: None,
+                interfaces: vec![],
+                node: None,
+            })
+            .collect())
     }
 
     fn system(&self) -> Box<dyn FileSource + '_> {
@@ -267,6 +371,9 @@ impl RigPort for RealPort {
         #[cfg(feature = "usb")]
         if let Some(mut link) = self.variax.take() {
             link.finish()?;
+            #[cfg(target_os = "macos")]
+            return Ok(vec!["PODxt Live interface 1 released.".into()]);
+            #[cfg(not(target_os = "macos"))]
             return Ok(vec![
                 "Guitar interface released; the driver binding was verified by the shared release (#239).".into(),
             ]);

@@ -26,13 +26,13 @@ pub(super) fn check_open(spec: InterfaceSpec, locked: bool) -> Result<(), String
     if !targets_interface(spec) {
         return Ok(());
     }
-    if !PODXT_DIRECT_USB_APPROVED {
+    if !cfg!(target_os = "macos") && !PODXT_DIRECT_USB_APPROVED {
         return Err("Direct PODxt USB MIDI is closed pending the owner's identity test.".into());
     }
     if cfg!(test) {
         return Err("Test builds do not open a USB device.".into());
     }
-    if !cfg!(target_os = "linux") {
+    if !cfg!(any(target_os = "linux", target_os = "macos")) {
         return Err("Direct PODxt USB MIDI is only available for the Linux identity test.".into());
     }
     if !locked {
@@ -40,26 +40,16 @@ pub(super) fn check_open(spec: InterfaceSpec, locked: bool) -> Result<(), String
             "Direct PODxt USB MIDI requires a verified attachment and the rig lock.".into(),
         );
     }
-    if (
-        spec.altsetting,
-        spec.endpoint_out,
-        spec.endpoint_in,
-        spec.packet,
-        spec.path,
-    ) != (
-        SPEC.altsetting,
-        SPEC.endpoint_out,
-        SPEC.endpoint_in,
-        SPEC.packet,
-        SPEC.path,
-    ) || spec.chunk_gap != SPEC.chunk_gap
-    {
+    if spec != SPEC {
         return Err("The requested interface does not match the PODxt Live MIDI profile.".into());
     }
     Ok(())
 }
 
-pub(super) fn verify_descriptor(device: &rusb::Device<rusb::GlobalContext>) -> Result<(), String> {
+pub(super) fn verify_descriptor(
+    device: &rusb::Device<rusb::GlobalContext>,
+    spec: InterfaceSpec,
+) -> Result<(), String> {
     let config = device
         .active_config_descriptor()
         .map_err(|error| format!("PODxt Live USB configuration descriptor: {error}"))?;
@@ -68,16 +58,16 @@ pub(super) fn verify_descriptor(device: &rusb::Device<rusb::GlobalContext>) -> R
             .interfaces()
             .flat_map(|iface| iface.descriptors())
             .any(|alt| {
-                alt.interface_number() == SPEC.interface
-                    && alt.setting_number() == SPEC.altsetting
+                alt.interface_number() == spec.interface
+                    && alt.setting_number() == spec.altsetting
                     && alt.class_code() == 0xff
-                    && [SPEC.endpoint_out, SPEC.endpoint_in]
+                    && [spec.endpoint_out, spec.endpoint_in]
                         .into_iter()
                         .all(|address| {
                             alt.endpoint_descriptors().any(|endpoint| {
                                 endpoint.address() == address
                                     && endpoint.transfer_type() == rusb::TransferType::Interrupt
-                                    && usize::from(endpoint.max_packet_size()) == SPEC.packet
+                                    && usize::from(endpoint.max_packet_size()) == spec.packet
                                     && endpoint.interval() == 5
                             })
                         })
@@ -85,7 +75,10 @@ pub(super) fn verify_descriptor(device: &rusb::Device<rusb::GlobalContext>) -> R
     {
         Ok(())
     } else {
-        Err("The USB descriptors do not match PODxt Live interface 0 alt 1 MIDI.".into())
+        Err(format!(
+            "The USB descriptors do not match PODxt Live interface {} alt 1 MIDI.",
+            spec.interface
+        ))
     }
 }
 

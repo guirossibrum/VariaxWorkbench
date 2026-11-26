@@ -11,8 +11,8 @@
 use super::approvals;
 use super::catalogue::WINDOWS_START_NOTICE;
 use super::catalogue::{
-    self, Kind, MAC_START_NOTICE, PODXT_COMPATIBILITY, RIG_GUARD, RUN_ORDER, Risk, START_NOTICE,
-    SaveNotice, Step, StepId, VARIAX_EVIDENCE,
+    self, Kind, MAC_OWNER_START_NOTICE, MAC_START_NOTICE, PODXT_COMPATIBILITY, RIG_GUARD,
+    RUN_ORDER, Risk, START_NOTICE, SaveNotice, Step, StepId, VARIAX_EVIDENCE,
 };
 use super::port::RigPort;
 use super::record::{Mode, Outcome, RunRecord, StepRecord, utc_now};
@@ -218,7 +218,9 @@ impl<'a> Runner<'a> {
     }
 
     fn write_report(&mut self) {
-        if let Some(path) = &self.state_file {
+        if !self.port.macos_owner_test()
+            && let Some(path) = &self.state_file
+        {
             let report = path.with_extension("txt");
             let report = report
                 .file_name()
@@ -240,7 +242,9 @@ impl<'a> Runner<'a> {
     /// Run the catalogue. Returns the record of the whole run.
     pub fn run(mut self) -> (RunRecord, RunData) {
         self.write_report();
-        let start_notice = if cfg!(target_os = "windows") && self.run.mode == Mode::Real {
+        let start_notice = if self.port.macos_owner_test() {
+            MAC_OWNER_START_NOTICE
+        } else if cfg!(target_os = "windows") && self.run.mode == Mode::Real {
             WINDOWS_START_NOTICE
         } else if cfg!(target_os = "macos") && self.run.mode == Mode::Real {
             MAC_START_NOTICE
@@ -256,6 +260,12 @@ impl<'a> Runner<'a> {
         }
         self.run.start_notice_accepted = true;
         self.write_report();
+        if self.port.macos_owner_test() {
+            self.run_macos_owner_test();
+            self.run.finished = true;
+            self.write_report();
+            return (self.run, self.data);
+        }
         let mut stopped = false;
         for &id in RUN_ORDER.iter().filter(|id| **id != RIG_GUARD) {
             if stopped {
@@ -279,6 +289,26 @@ impl<'a> Runner<'a> {
         self.run.finished = true;
         self.write_report();
         (self.run, self.data)
+    }
+
+    fn run_macos_owner_test(&mut self) {
+        let mut end = "Mac USB identity test finished.".to_owned();
+        for id in approvals::MAC_OWNER_STEPS {
+            if self.step(id) || !self.run.step(id).outcome.passed() {
+                end = format!("Mac USB identity test ended at step {id}.");
+                break;
+            }
+            if id == StepId(2, 1) && self.data.podxt_verified != Some(true) {
+                end = "Mac USB identity test stopped at 2.1. The PODxt Live did not report firmware 3.01.".into();
+                break;
+            }
+        }
+        let release = self
+            .port
+            .finish_macos_owner_test()
+            .map(|lines| lines.join(" "))
+            .unwrap_or_else(|error| format!("USB release failed: {error}"));
+        self.run.rig_state = format!("{end} {release}");
     }
 
     fn unverified_podxt_relay(&self) -> bool {
@@ -380,6 +410,7 @@ impl<'a> Runner<'a> {
                     let clock = Instant::now();
                     let mut rec = std::mem::replace(self.run.step_mut(id), StepRecord::new(id));
                     rec.attempt = Some(attempt_number);
+                    rec.single_attempt = self.port.macos_owner_test();
                     let result = {
                         let mut ctx = Ctx {
                             mode: self.run.mode,
@@ -466,6 +497,7 @@ impl<'a> Runner<'a> {
     /// Why a step cannot be offered, without asking.
     fn precheck(&self, step: &Step) -> Option<Outcome> {
         if self.run.mode == Mode::Real
+            && !self.port.macos_owner_test()
             && step.needs_device_approval()
             && let Some(notice) = crate::offline_device_notice()
         {

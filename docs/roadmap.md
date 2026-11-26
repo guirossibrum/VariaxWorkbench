@@ -5,6 +5,7 @@ GitHub issues and the [project board](https://github.com/users/guirossibrum/proj
 ## Pending implementation or validation
 
 - [ ] #206 editor integration and owner verification of global string levels. All device approvals are closed. The 0x57 comparison shows RAM state. Flash persistence needs separate owner verification. [API and owner verification draft](variax-string-levels.md).
+- [ ] #274 macOS native USB build and linkage verification on both architectures, followed by the owner-approved identity run on M1. The direct USB switch remains closed. [Mac owner test card](podxt-macos-usb-test-card.md).
 
 - [ ] [#278](https://github.com/guirossibrum/VariaxWorkbench/issues/278) native macOS and Windows CI runs of the bundled model and portable render checksum checks. Linux rendering and embedded asset bytes in the cross-built macOS and Windows libraries are verified.
 

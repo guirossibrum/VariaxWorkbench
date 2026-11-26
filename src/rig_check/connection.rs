@@ -56,17 +56,22 @@ pub fn see_podxt(ctx: &mut Ctx<'_>) -> Result<(), String> {
     ctx.rec
         .show(format!("PODxt Live found on port {}.", device.port));
     ctx.rec.note(device.describe());
-    for (interface, expected) in [(0, EXPECTED_POD_DRIVER), (1, EXPECTED_VARIAX_DRIVER)] {
-        match device.driver(interface) {
-            Some(driver) if driver.replace('_', "-") == expected => ctx
-                .rec
-                .note(format!("Interface {interface}: {driver} (expected).")),
-            Some(driver) => ctx.rec.note(format!(
-                "Interface {interface}: {driver}, expected {expected}. Another driver holds it."
-            )),
-            None => ctx.rec.note(format!(
-                "Interface {interface}: no driver, expected {expected}."
-            )),
+    if ctx.port.macos_owner_test() {
+        ctx.rec
+            .note("Direct USB checks interface ownership before making a claim.");
+    } else {
+        for (interface, expected) in [(0, EXPECTED_POD_DRIVER), (1, EXPECTED_VARIAX_DRIVER)] {
+            match device.driver(interface) {
+                Some(driver) if driver.replace('_', "-") == expected => ctx
+                    .rec
+                    .note(format!("Interface {interface}: {driver} (expected).")),
+                Some(driver) => ctx.rec.note(format!(
+                    "Interface {interface}: {driver}, expected {expected}. Another driver holds it."
+                )),
+                None => ctx.rec.note(format!(
+                    "Interface {interface}: no driver, expected {expected}."
+                )),
+            }
         }
     }
     if let Some(node) = &device.node {
@@ -92,7 +97,8 @@ fn guitar_driver(ctx: &Ctx<'_>, port: &str) -> Option<String> {
 
 pub fn open_and_release(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let device = the_podxt(ctx)?;
-    let linux_view = cfg!(target_os = "linux") || ctx.mode == Mode::Practice;
+    let linux_view =
+        !ctx.port.macos_owner_test() && (cfg!(target_os = "linux") || ctx.mode == Mode::Practice);
     if linux_view {
         let before = guitar_driver(ctx, &device.port);
         ctx.rec.note(format!(

@@ -1,5 +1,7 @@
 use super::*;
-use podxt::{EditorBuffer, EditorEdit, LiveTarget, Target, VerifiedToneBackup, WholeToneSource};
+use podxt::{EditorBuffer, LiveTarget, Target, VerifiedToneBackup};
+#[cfg(any(test, target_os = "linux"))]
+use podxt::{EditorEdit, WholeToneSource};
 
 const EDIT_INTERVAL: Duration = Duration::from_millis(150);
 // #222's full-payload transfer has a separate first-run decision.

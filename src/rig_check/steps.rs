@@ -301,7 +301,12 @@ fn engine_check(ctx: &mut Ctx<'_>) -> Result<(), String> {
 fn computer_usb(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let view =
         crate::hardware_gates::run_if_unlocked(crate::hardware_gates::Gate::OsDiscovery, || {
-            if cfg!(target_os = "linux") || ctx.mode == Mode::Practice {
+            if ctx.port.macos_owner_test() {
+                Ok(UsbView {
+                    devices: ctx.port.macos_inventory()?,
+                    lines: Vec::new(),
+                })
+            } else if cfg!(target_os = "linux") || ctx.mode == Mode::Practice {
                 let system = ctx.port.system();
                 Ok(computer::linux::usb(&*system, &ctx.port.libusb()))
             } else {
@@ -323,7 +328,7 @@ fn computer_usb(ctx: &mut Ctx<'_>) -> Result<(), String> {
         ctx.rec.note(format!("{name}: {value}"));
         ctx.data.computer.push((name.clone(), value.clone()));
     }
-    if cfg!(target_os = "linux") || ctx.mode == Mode::Practice {
+    if cfg!(target_os = "linux") || ctx.port.macos_owner_test() || ctx.mode == Mode::Practice {
         ctx.rec
             .result
             .push(format!("USB devices: {}", view.devices.len()));
@@ -372,6 +377,8 @@ fn podxt_identity(ctx: &mut Ctx<'_>) -> Result<(), String> {
         identity.version_text(),
         if verified {
             " (verified device)"
+        } else if ctx.port.macos_owner_test() {
+            " (unverified firmware: Mac test stops here)"
         } else {
             " (unverified device: read-only steps only)"
         }
@@ -570,6 +577,9 @@ fn variax_identity(ctx: &mut Ctx<'_>) -> Result<(), String> {
         if let Some(identified) = attempt {
             break identified;
         }
+        if ctx.port.macos_owner_test() {
+            return Err("No Variax identity reply in the Mac USB identity test.".into());
+        }
         if !ctx.op.variax_connected() {
             ctx.data.no_variax = true;
             return Err(format!(
@@ -603,6 +613,8 @@ fn variax_identity(ctx: &mut Ctx<'_>) -> Result<(), String> {
         identity.version_text(),
         if verified {
             " (verified device)"
+        } else if ctx.port.macos_owner_test() {
+            " (unverified device)"
         } else if super::variax_evidence::applicable(Some(&identity)) {
             " (unverified firmware: evidence mode available)"
         } else {

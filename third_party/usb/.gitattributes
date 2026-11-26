@@ -1,0 +1,2 @@
+# Preserve the whitespace from the upstream source archives.
+* whitespace=-blank-at-eol,-blank-at-eof,-space-before-tab

@@ -41,6 +41,12 @@ impl Session {
         hardware_gates::run_if_unlocked(Gate::OsDiscovery, Self::open_unlocked)
     }
 
+    #[cfg(target_os = "macos")]
+    fn open_handle(_: Option<(&DeviceLock, &str, u8)>) -> Result<Self, String> {
+        Err("The legacy USB session is unavailable on macOS.".into())
+    }
+
+    #[cfg(not(target_os = "macos"))]
     fn open_handle(expected: Option<(&DeviceLock, &str, u8)>) -> Result<Self, String> {
         let open = |device: rusb::Device<rusb::GlobalContext>| {
             device.open().map_err(|e| format!("Cannot open PODxt Live USB control: {e}. USB device access permission may be required."))
@@ -514,6 +520,9 @@ pub fn open_variax_bridge_borrowed<'rig>(
 }
 
 fn with_variax_bridge_gates<T>(open: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    if cfg!(target_os = "macos") {
+        return Err(crate::MAC_CONNECTION_UNAVAILABLE.into());
+    }
     if cfg!(test) {
         return Err("test builds do not open a USB device".into());
     }
