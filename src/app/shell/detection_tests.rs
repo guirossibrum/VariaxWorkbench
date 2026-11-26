@@ -741,6 +741,9 @@ fn shell_and_device_check_report_unverified_pod_firmware_and_keep_offline_editin
     assert!(text.contains("3.02") && text.contains("3.01"));
     assert!(has_label(&frame(&ctx, &mut app, vec![]).shapes, &text));
 
+    app.device_check = ProbeSession::new(RigBackend::Simulated(device_probe::SimulatedRig::new(
+        device_probe::Scenario::Connected,
+    )));
     app.device_check_open = true;
     frame(&ctx, &mut app, vec![]);
     assert!(app.device_check_visible.contains(&text));

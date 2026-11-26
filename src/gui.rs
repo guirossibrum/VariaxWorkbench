@@ -749,8 +749,13 @@ impl Workbench {
             if self.has_prompt() || self.picker.is_open() {
                 ui.disable();
             }
-            if cfg!(all(target_os = "macos", not(test))) {
-                ui.label(variax_workbench::MAC_CONNECTION_UNAVAILABLE);
+            if cfg!(target_os = "macos") && self.device_check.mode() == ProbeMode::ThisComputer {
+                let notice = variax_workbench::MAC_CONNECTION_UNAVAILABLE;
+                ui.label(notice);
+                #[cfg(test)]
+                {
+                    self.device_check_visible = notice.into();
+                }
                 return;
             }
             let mut visible = String::new();
@@ -1717,6 +1722,9 @@ mod tests {
             device_probe::SimulatedRig::new(scenario),
         ));
         app.device_check_focus = None;
+        // Let the injected session draw its consent buttons and focus No
+        // before sending the first keyboard event.
+        recording_frame(&context, &mut app, vec![]);
         (context, app)
     }
 
@@ -1752,6 +1760,17 @@ mod tests {
     fn device_check_window_opens_on_this_computer_and_declines_by_default() {
         let (context, mut app) = device_check_app();
         assert_eq!(app.device_check.mode(), ProbeMode::ThisComputer);
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                app.device_check_visible,
+                variax_workbench::MAC_CONNECTION_UNAVAILABLE
+            );
+            assert!(app.device_check.finished());
+            assert!(!app.device_check_buttons.contains_key("yes"));
+            assert!(!app.device_check_buttons.contains_key("no"));
+            assert_eq!(app.device_check.backend().calls(), Default::default());
+            return;
+        }
         assert!(
             app.device_check_visible
                 .contains(device_probe::this_computer_label())
@@ -1810,6 +1829,19 @@ mod tests {
 
     #[test]
     fn device_check_defaults_to_no_on_each_new_consent() {
+        if cfg!(target_os = "macos") {
+            let (context, mut app) = device_check_app();
+            press_device_check_enter(&context, &mut app);
+            assert_eq!(
+                app.device_check_visible,
+                variax_workbench::MAC_CONNECTION_UNAVAILABLE
+            );
+            for stage in Stage::LADDER {
+                assert_eq!(app.device_check.status(stage), StageStatus::NotRun);
+            }
+            assert_eq!(app.device_check.backend().calls(), Default::default());
+        }
+
         for index in 0..3 {
             let (context, mut app) = scripted_device_check_app(device_probe::Scenario::Connected);
             for _ in 0..index {
@@ -1830,7 +1862,7 @@ mod tests {
 
     #[test]
     fn device_check_scrolls_to_the_report_on_a_short_viewport() {
-        let (context, mut app) = device_check_app();
+        let (context, mut app) = scripted_device_check_app(device_probe::Scenario::Connected);
         let frame = |app: &mut Workbench, height, events| {
             let _ = context.run(
                 egui::RawInput {
@@ -2158,7 +2190,7 @@ mod tests {
 
     #[test]
     fn device_check_cancelled_or_discarded_picker_never_starts_backup() {
-        let (context, mut app) = device_check_app();
+        let (context, mut app) = scripted_device_check_app(device_probe::Scenario::Connected);
         app.dialogs = Box::new(FakeDialogs {
             folder: [None, Some(PathBuf::from("ignored-root"))].into(),
             ..FakeDialogs::default()
