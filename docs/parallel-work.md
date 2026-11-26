@@ -67,6 +67,35 @@ Component changes are requested from lane 2. Lane 2 never edits family editors.
 - Keep one issue in progress per agent. Target 30–60 minutes of agent time per
   issue; after two review rounds, propose a split.
 
+## Lane reply template
+
+Use these exact Markdown headings in this order for every lane reply. Keep
+each heading even if a section is empty. Write `None` or `Not applicable` as
+appropriate. Use bullets, tables, and fenced command blocks within sections
+when they help. Put recommendations under Remaining work.
+
+```markdown
+Lane #<number>
+
+## Result
+
+- Issue, branch, commit, and what changed or what is blocked.
+
+## Verification
+
+- Checks performed, results and test counts, and any device activity.
+
+## Remaining work
+
+- Pending verification, blockers, or recommendations.
+
+## Worktree handoff
+
+- Absolute worktree path.
+- Confirmation that you left it and stopped worktree-local jobs, or why you could not.
+- Local files to keep and any shared build paths in use.
+```
+
 ## Worktree cleanup after merge
 
 Aim for about five implementation worktrees, one per active lane. A temporary
