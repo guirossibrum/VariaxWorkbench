@@ -4,7 +4,15 @@ set -euo pipefail
 die() { printf '%s\n' "$*" >&2; exit 1; }
 
 [[ "$(uname -s)" == Darwin ]] || die "Run this script on macOS with Rust and Xcode command-line tools."
-[[ $# -le 1 ]] || die "Usage: $0 [output-directory]"
+profile=offline
+features=gui,portable-math
+if [[ "${1:-}" == --owner-usb ]]; then
+    [[ $# -eq 2 ]] || die "Usage: $0 --owner-usb <private-output-directory>"
+    profile=owner-usb
+    features+=,usb
+    shift
+fi
+[[ $# -le 1 ]] || die "Usage: $0 [output-directory] or $0 --owner-usb <private-output-directory>"
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/../.." && pwd)"
 mkdir -p "${1:-$repo/dist/macos}"
@@ -41,24 +49,34 @@ version="$(sed -n 's/^version = "\([0-9][0-9.]*\)"$/\1/p' Cargo.toml | head -n 1
 revision="$(git rev-parse HEAD)"
 {
     printf 'Commit %s\n' "$revision"
+    printf 'Profile %s (%s)\n' "$profile" "$features"
     rustc -vV
     xcrun --sdk macosx --show-sdk-version
 } | tee "$report"
 
 build_slice() {
-    local target="$1" minimum="$2" reported
+    local target="$1" arch="$2" minimum="$3" reported
+    local -a cargo_options=(--locked --release --no-default-features --features "$features"
+        --target "$target" --bin variax-workbench-gui --bin rig-check)
     export MACOSX_DEPLOYMENT_TARGET="$minimum"
     reported="$(rustc --print deployment-target --target "$target")"
     printf '%s %s\n' "$target" "$reported" | tee -a "$report"
     [[ "$reported" == "MACOSX_DEPLOYMENT_TARGET=$minimum" ]] ||
         die "$RUSTUP_TOOLCHAIN cannot target macOS $minimum on $target."
-    RIG_CHECK_GIT_COMMIT="$revision" RIG_CHECK_RUSTC_VERSION="$(rustc --version)" \
-        RIG_CHECK_TARGET="$target" cargo build --locked --release \
-        --no-default-features --features gui,portable-math --target "$target" \
-        --bin variax-workbench-gui --bin rig-check
+    export RIG_CHECK_GIT_COMMIT="$revision" RIG_CHECK_RUSTC_VERSION="$(rustc --version)" \
+        RIG_CHECK_TARGET="$target"
+    if [[ "$profile" == owner-usb ]]; then
+        local cargo_log="$scratch/$arch-cargo.jsonl"
+        cargo build "${cargo_options[@]}" --offline --message-format=json-render-diagnostics \
+            > "$cargo_log"
+        python3 "$here/package.py" verify-usb-archive "$arch" "$cargo_log" \
+            "$CARGO_TARGET_DIR/$target/release" | tee -a "$report"
+    else
+        cargo build "${cargo_options[@]}"
+    fi
 }
-build_slice x86_64-apple-darwin 10.15
-build_slice aarch64-apple-darwin 11.0
+build_slice x86_64-apple-darwin x86_64 10.15
+build_slice aarch64-apple-darwin arm64 11.0
 
 make_icon() {
     local source="$1" dest="$2" points
@@ -117,6 +135,9 @@ if python3 -c 'import sys; sys.exit(sys.version_info >= (3, 9))'; then
 fi
 
 image="$scratch/Variax Workbench.dmg"
+if [[ "$profile" == owner-usb ]]; then
+    image="$scratch/Variax Workbench - Owner USB.dmg"
+fi
 PYTHONPATH="$scratch/python" python3 "$here/package.py" image "$image" "$stage" "$here/background.png"
 hdiutil verify "$image"
 hdiutil attach -readonly -nobrowse -mountpoint "$mount" "$image"
@@ -127,16 +148,21 @@ cmp "$here/background.png" "$mount/.background.png"
 [[ -s "$mount/.DS_Store" ]]
 codesign --verify --deep --strict "$mount/Variax Workbench.app"
 codesign --verify --deep --strict "$mount/Rig Check.app"
-python3 "$here/package.py" verify "$mount" "$scratch" "$image" | tee -a "$report"
-"$mount/Variax Workbench.app/Contents/MacOS/variax-workbench-gui" --version | tee -a "$report"
-"$mount/Rig Check.app/Contents/MacOS/rig-check" --catalogue > "$scratch/catalogue.txt"
-grep -q '^0\.1 ' "$scratch/catalogue.txt"
-printf 'Command-line startup checks passed on %s\n' "$(uname -m)" | tee -a "$report"
+python3 "$here/package.py" verify "$mount" "$scratch" "$image" "$profile" | tee -a "$report"
+if [[ "$profile" == offline ]]; then
+    "$mount/Variax Workbench.app/Contents/MacOS/variax-workbench-gui" --version | tee -a "$report"
+    "$mount/Rig Check.app/Contents/MacOS/rig-check" --catalogue > "$scratch/catalogue.txt"
+    grep -q '^0\.1 ' "$scratch/catalogue.txt"
+    printf 'Command-line startup checks passed on %s\n' "$(uname -m)" | tee -a "$report"
+fi
 hdiutil detach "$mount"
 mounted=no
 
 # Publish only fully verified output, atomically and without overwriting prior builds.
 release="$output/Variax-Workbench-$version-${revision:0:8}-${scratch##*.}"
+if [[ "$profile" == owner-usb ]]; then
+    release="$output/Owner-USB-$version-${revision:0:8}-${scratch##*.}"
+fi
 [[ ! -e "$release" ]] || die "The output directory already exists: $release"
 mkdir "$scratch/package"
 mv "$report" "$image" "$scratch/package/"

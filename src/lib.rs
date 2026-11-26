@@ -26,18 +26,21 @@ pub const MAC_CONNECTION_UNAVAILABLE: &str =
 pub const WINDOWS_CONNECTION_UNAVAILABLE: &str =
     "The Windows connection isn't available in this version yet.";
 
-/// The Mac USB approval enables only the bounded Rig Check identity test.
+/// The ordinary USB profile on macOS. Test builds use injected transports.
+pub const fn macos_usb_available() -> bool {
+    cfg!(all(target_os = "macos", feature = "usb", not(test)))
+}
+
+/// The superseded identity-only Rig Check path stays disabled while its
+/// consumer switches to the ordinary USB profile.
 pub const fn macos_owner_test_enabled() -> bool {
-    #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
-    return line6_devices::transport::usb::macos::DIRECT_USB_APPROVED;
-    #[cfg(not(all(target_os = "macos", feature = "usb", not(test))))]
     false
 }
 
 pub const fn offline_device_notice() -> Option<&'static str> {
     if cfg!(target_os = "windows") {
         Some(WINDOWS_CONNECTION_UNAVAILABLE)
-    } else if cfg!(target_os = "macos") {
+    } else if cfg!(target_os = "macos") && !macos_usb_available() {
         Some(MAC_CONNECTION_UNAVAILABLE)
     } else {
         None

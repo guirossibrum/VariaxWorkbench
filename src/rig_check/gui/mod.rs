@@ -431,7 +431,7 @@ impl Wizard {
 
     const REAL_MODE_TITLE: &str = if cfg!(target_os = "windows") {
         "This computer"
-    } else if cfg!(target_os = "macos") {
+    } else if cfg!(target_os = "macos") && !crate::macos_usb_available() {
         "This Mac"
     } else {
         "Real rig"
@@ -546,13 +546,13 @@ impl Wizard {
                     "Practice uses simulated devices. This computer runs computer-only checks. ",
                     "The Windows connection isn't available in this version yet."
                 )
-            } else if cfg!(target_os = "macos") {
+            } else if cfg!(target_os = "macos") && !crate::macos_usb_available() {
                 concat!(
                     "Practice uses simulated devices. This Mac runs computer-only checks. ",
                     "The Mac connection isn't available in this version yet"
                 )
             } else {
-                "Choose how to run. Practice uses simulated devices and sends nothing to your rig. Real rig uses the connected PODxt Live and Variax; each device step needs the owner's approval in this version."
+                "Practice uses simulated devices. Real rig uses the connected PODxt Live and Variax. Each device step waits for you to choose Run."
             };
             ui.label(RichText::new(description).size(BODY).color(TEXT));
             ui.add_space(SPACE_16);

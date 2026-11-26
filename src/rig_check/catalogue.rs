@@ -173,7 +173,7 @@ pub static STEPS: &[Step] = &[
         evidence: "OS, kernel, architecture, CPU model and flags, build target, compiler, maths profile.",
         proof: "-"),
     step!((0, 2), "USB devices and drivers on this computer", Computer, [], [G1], None,
-        does: "Reads what the operating system already knows about connected USB devices: IDs, port, speed, the driver holding each PODxt Live interface, and permissions. No device is opened.",
+        does: "Lists USB attachments without opening a device. On macOS with USB support it lists matching PODxt Live attachments. On Linux it also shows speed, drivers and permissions.",
         you_do: "Nothing.", see: "The USB device list.", hear: "Nothing.",
         evidence: "Device list (serial numbers hashed), interface drivers, permissions, libusb version.",
         proof: "#239, g1.md"),
@@ -188,7 +188,7 @@ pub static STEPS: &[Step] = &[
         evidence: "Vendor/product ID, port path, speed, address, interface drivers.",
         proof: "#213"),
     step!((1, 2), "Open and give back the guitar interface", Device, [(1, 1), (2, 1)], [G1, G2], Read,
-        does: "Opens the PODxt Live's guitar interface (interface 1), closes it again and checks that the operating system gave it back to its driver (snd-usb-variax). If not, it waits and retries once.",
+        does: "Opens and releases the PODxt Live guitar interface (interface 1). On Linux it also verifies that snd-usb-variax reattached.",
         you_do: "Nothing.", see: "Guitar interface opened and given back.", hear: "Nothing.",
         evidence: "Open/release result, driver binding before and after.",
         proof: "#239, variax-driver-rebind-test-card.md"),
@@ -305,9 +305,9 @@ pub static STEPS: &[Step] = &[
         does: "Asks you to unplug the VDI cable, waits until the guitar stops answering, asks you to plug it back, and reads the identity again. Nothing is sent while you handle the cable.",
         you_do: "Unplug the VDI cable, wait for the screen, plug it back in.", see: "The observed disconnect and reconnect, and the guitar firmware after reconnecting.", hear: "The guitar goes silent while unplugged.",
         evidence: "Times of loss and return, identity after.", proof: "#235", verified_only: true),
-    step!((6, 2), "Rig back to its starting state, driver given back", Device, [], [G1, G3, G6], Read,
-        does: "Reads the PODxt Live tone and the Variax program again and compares them with the start. If the channel or preset differs it switches back and checks again. It restores captured unsaved edits to the working buffers, then gives the guitar interface back to the operating system and checks the driver.",
-        you_do: "Nothing.", see: "What matched the starting state, and the guitar driver status if checked.", hear: "Your starting sound.",
+    step!((6, 2), "Rig back to its starting state and connections released", Device, [], [G1, G3, G6], Read,
+        does: "Reads the PODxt Live tone and the Variax program again and compares them with the start. If the channel or preset differs it switches back and checks again. It restores captured unsaved edits to the working buffers, then releases the USB interface. On Linux it also checks the guitar driver.",
+        you_do: "Nothing.", see: "What matched the starting state and whether the USB interface was released.", hear: "Your starting sound.",
         evidence: "Start and end SHA-256, any switch-back, driver binding.", proof: "#239, #238"),
     step!((7, 1), "Turn the Variax selector to a named preset", Guided, [(3, 4), (2, 1)], [G3], Read,
         does: "Opens a listening window; nothing is sent while you turn the selector. When the guitar reports the new preset, Rig Check checks it against the backup and asks you to turn back.",
@@ -417,22 +417,15 @@ pub fn step(id: StepId) -> Option<&'static Step> {
 
 pub const MAC_START_NOTICE: &str = "Before you start. Rig Check can check this Mac and run the offline engine comparison. The Mac connection isn't available in this version yet. The audio check lists devices and opens no stream. Each check waits for you to choose Run.\n\nRig Check writes a text report on this computer. It does not use the internet. Your user name, computer name and serial numbers are removed from the report.";
 
-pub const MAC_OWNER_START_NOTICE: &str = "This Mac owner test checks the USB attachment and asks the PODxt Live and Variax for their identities. Each step waits for you to choose Run. A failure or an unverified PODxt Live ends the test. Rig Check writes a local report.";
-
 pub const WINDOWS_START_NOTICE: &str = "Before you start. Rig Check can check this Windows computer and run the offline engine comparison. The Windows connection isn't available in this version yet. The audio check lists devices and opens no stream. Each check waits for you to choose Run.\n\nRig Check writes a text report on this computer. It does not use the internet. Your user name, computer name and serial numbers are removed from the report.";
 
 pub const START_NOTICE: &str = "Before you start. Rig Check tests your PODxt Live and Variax with the same code the editor uses. Each step tells you what it will do and waits for you. Nothing runs until you choose Run.\n\nMost steps only ask the devices questions. Some steps briefly change the sound you hear and put it back. Saving steps come later and have their own warning.\n\nYour PODxt Live and Variax are old and cannot be replaced. Keep both powered and connected until Rig Check says it has finished. Do not touch the selector, knobs or footswitches unless a step asks you to.\n\nRig Check writes a text report on this computer. It does not use the internet. Your user name, computer name and serial numbers are removed from the report.";
 
 /// Only the run-start notices can be reopened from the first card.
 pub fn accepted_start_notice(notice: &str) -> Option<&'static str> {
-    [
-        START_NOTICE,
-        MAC_START_NOTICE,
-        MAC_OWNER_START_NOTICE,
-        WINDOWS_START_NOTICE,
-    ]
-    .into_iter()
-    .find(|text| *text == notice)
+    [START_NOTICE, MAC_START_NOTICE, WINDOWS_START_NOTICE]
+        .into_iter()
+        .find(|text| *text == notice)
 }
 
 /// The second notice, before any save step.

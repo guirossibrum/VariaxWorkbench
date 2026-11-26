@@ -322,12 +322,13 @@ fn with_matching_attachment<T>(
             device.device_descriptor().is_ok_and(|descriptor| {
                 descriptor.vendor_id() == spec.vendor && descriptor.product_id() == spec.product
             }) && device.port_numbers().is_ok_and(|ports| {
-                matches_attachment(
-                    (path, address),
-                    device.bus_number(),
-                    &ports,
-                    device.address(),
-                )
+                (!cfg!(target_os = "macos") || !ports.is_empty())
+                    && matches_attachment(
+                        (path, address),
+                        device.bus_number(),
+                        &ports,
+                        device.address(),
+                    )
             })
         },
         open,
@@ -373,9 +374,6 @@ impl<Rig> Link for UsbInterfaceLink<Rig> {
     }
 
     fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
-        #[cfg(target_os = "macos")]
-        return macos::write_identity(bytes, |bytes| self.write_usb_packets(bytes));
-        #[cfg(not(target_os = "macos"))]
         self.write_usb_packets(bytes)
     }
 

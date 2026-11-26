@@ -100,9 +100,9 @@ fn g6_transaction_holds_the_rig_lock_for_cc_and_readback_and_denies_other_writes
             assert!(!held.replace(true));
             Ok(FakeLock(&held))
         },
-        |_| {
+        |_, run| {
             assert!(held.get(), "the lock must cover opening the port");
-            Ok(FakeLink {
+            run(&mut FakeLink {
                 held: &held,
                 script: VecDeque::from([
                     (
@@ -134,7 +134,7 @@ fn g6_transaction_holds_the_rig_lock_for_cc_and_readback_and_denies_other_writes
         &job,
         &stop,
         || Err::<(), _>("Rig busy".into()),
-        |_| -> Result<FakeLink<'_>, _> { panic!("busy rig must prevent port open") },
+        |_, _| panic!("busy rig must prevent port open"),
     );
     assert_eq!(busy.unwrap_err(), "Rig busy");
     for denied in [

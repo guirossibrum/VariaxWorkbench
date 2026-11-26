@@ -95,9 +95,9 @@ fn store_holds_the_rig_lock_and_cancellation_ends_before_the_first_write() {
             assert!(!held.replace(true));
             Ok(FakeLock(&held))
         },
-        |_| {
+        |_, run| {
             assert!(held.get());
-            Ok(ScriptedLink {
+            run(&mut ScriptedLink {
                 held: &held,
                 control: &control,
                 reply: None,

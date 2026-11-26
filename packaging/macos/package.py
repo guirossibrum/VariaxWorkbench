@@ -1,6 +1,7 @@
 """Generate bundle metadata, lay out the disk image, and inspect its contents."""
 
 import hashlib
+import json
 import plistlib
 import re
 import subprocess
@@ -10,6 +11,7 @@ from pathlib import Path
 
 ARCHITECTURES = {"x86_64": (10, 15), "arm64": (11, 0)}
 APPS = {"Variax Workbench": "variax-workbench-gui", "Rig Check": "rig-check"}
+USB_SYMBOLS = ("libusb_open", "libusb_claim_interface", "libusb_interrupt_transfer")
 ARTWORK_SOURCE = Path(__file__).resolve().parents[2] / "assets" / "ui"
 BUNDLE_ARTWORK = Path("Contents/Resources/assets/ui")
 ARTWORK_MANIFEST = "SHA256SUMS"
@@ -157,7 +159,50 @@ def verify_load_commands(arch, vtool, otool):
             raise ValueError(f"{arch}: framework is unavailable on Catalina: {path}")
 
 
-def verify(mount, scratch, dmg):
+def build_usb_outputs(cargo_log):
+    """Find the archive and both executables emitted by this Cargo invocation."""
+    archives = set()
+    binaries = {}
+    for line in cargo_log.splitlines():
+        row = json.loads(line)
+        if row["reason"] == "build-script-executed":
+            if "static=usb-vendored" in row["linked_libs"] and "libusb1-sys" in row["package_id"]:
+                archives.add(Path(row["out_dir"], "libusb-vendored.a"))
+        if row["reason"] == "compiler-artifact" and row["executable"]:
+            target = row["target"]
+            if "bin" in target["kind"] and target["name"] in APPS.values():
+                binaries[target["name"]] = Path(row["executable"])
+    if len(archives) != 1 or set(binaries) != set(APPS.values()):
+        raise ValueError("Cargo must report one static libusb archive and both binaries")
+    return archives.pop(), binaries
+
+
+def require_defined_symbols(output, symbols):
+    for symbol in symbols:
+        if not re.search(rf"^\s*[0-9a-fA-F]+\s+[Tt]\s+_{symbol}\s*$", output, re.M):
+            raise ValueError(f"missing defined Mach-O symbol _{symbol}")
+
+
+def verify_usb_binary(arch, vtool, otool):
+    verify_load_commands(arch, vtool, otool)
+    for line in otool.splitlines()[1:]:
+        path = line.strip().split(" (", 1)[0]
+        if "libusb" in Path(path).name.lower():
+            raise ValueError(f"{arch}: dynamically linked libusb {path}")
+
+
+def verify_usb_archive(arch, log, release_dir):
+    archive, binaries = build_usb_outputs(Path(log).read_text(encoding="utf-8"))
+    for name, executable in binaries.items():
+        if executable.resolve() != (Path(release_dir) / name).resolve():
+            raise ValueError(f"{arch}: unexpected Cargo executable {executable}")
+    if xcrun("lipo", "-archs", archive).split() != [arch]:
+        raise ValueError(f"{archive}: expected one {arch} slice")
+    require_defined_symbols(xcrun("nm", "-gU", archive), USB_SYMBOLS)
+    print(f"{arch}: verified the Cargo-built static libusb archive and both output paths")
+
+
+def verify(mount, scratch, dmg, profile="offline"):
     for title, binary in APPS.items():
         bundle = Path(mount, f"{title}.app")
         if binary == APPS["Variax Workbench"]:
@@ -175,10 +220,16 @@ def verify(mount, scratch, dmg):
             otool = xcrun("otool", "-L", thin)
             print(f"\n{title} ({arch}): {thin.stat().st_size} bytes")
             print(f"vtool -show-build\n{vtool}\notool -L\n{otool}", flush=True)
-            verify_load_commands(arch, vtool, otool)
+            if profile == "owner-usb":
+                verify_usb_binary(arch, vtool, otool)
+                require_defined_symbols(xcrun("nm", "-gU", thin), USB_SYMBOLS)
+                print(f"{title} ({arch}): required libusb symbols are statically linked")
+            else:
+                verify_load_commands(arch, vtool, otool)
     print(f"\nDisk image: {Path(dmg).stat().st_size} bytes")
 
 
 if __name__ == "__main__":
-    commands = {"plist": plist, "artwork": stage_artwork, "image": image, "verify": verify}
+    commands = {"plist": plist, "artwork": stage_artwork, "image": image, "verify": verify,
+                "verify-usb-archive": verify_usb_archive}
     commands[sys.argv[1]](*sys.argv[2:])

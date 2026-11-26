@@ -11,8 +11,8 @@
 use super::approvals;
 use super::catalogue::WINDOWS_START_NOTICE;
 use super::catalogue::{
-    self, Kind, MAC_OWNER_START_NOTICE, MAC_START_NOTICE, PODXT_COMPATIBILITY, RIG_GUARD,
-    RUN_ORDER, Risk, START_NOTICE, SaveNotice, Step, StepId, VARIAX_EVIDENCE,
+    self, Kind, MAC_START_NOTICE, PODXT_COMPATIBILITY, RIG_GUARD, RUN_ORDER, Risk, START_NOTICE,
+    SaveNotice, Step, StepId, VARIAX_EVIDENCE,
 };
 use super::port::RigPort;
 use super::record::{Mode, Outcome, RunRecord, StepRecord, utc_now};
@@ -218,9 +218,7 @@ impl<'a> Runner<'a> {
     }
 
     fn write_report(&mut self) {
-        if !self.port.macos_owner_test()
-            && let Some(path) = &self.state_file
-        {
+        if let Some(path) = &self.state_file {
             let report = path.with_extension("txt");
             let report = report
                 .file_name()
@@ -242,11 +240,12 @@ impl<'a> Runner<'a> {
     /// Run the catalogue. Returns the record of the whole run.
     pub fn run(mut self) -> (RunRecord, RunData) {
         self.write_report();
-        let start_notice = if self.port.macos_owner_test() {
-            MAC_OWNER_START_NOTICE
-        } else if cfg!(target_os = "windows") && self.run.mode == Mode::Real {
+        let start_notice = if cfg!(target_os = "windows") && self.run.mode == Mode::Real {
             WINDOWS_START_NOTICE
-        } else if cfg!(target_os = "macos") && self.run.mode == Mode::Real {
+        } else if cfg!(target_os = "macos")
+            && self.run.mode == Mode::Real
+            && !self.port.direct_usb()
+        {
             MAC_START_NOTICE
         } else {
             START_NOTICE
@@ -260,15 +259,9 @@ impl<'a> Runner<'a> {
         }
         self.run.start_notice_accepted = true;
         self.write_report();
-        if self.port.macos_owner_test() {
-            self.run_macos_owner_test();
-            self.run.finished = true;
-            self.write_report();
-            return (self.run, self.data);
-        }
         let mut stopped = false;
         for &id in RUN_ORDER.iter().filter(|id| **id != RIG_GUARD) {
-            if stopped {
+            if stopped || self.port.direct_usb_release_failed() {
                 break;
             }
             if id == VARIAX_EVIDENCE && self.variax_evidence_applicable() {
@@ -280,35 +273,39 @@ impl<'a> Runner<'a> {
                 self.write_report();
             }
         }
-        if self.unverified_podxt_relay() || self.data.store_state_unknown {
+        if self.unverified_podxt_relay()
+            || self.data.store_state_unknown
+            || self.port.direct_usb_release_failed()
+        {
             self.release_without_midi();
         } else {
             // The usual guard is offered last, also after Stop.
             self.step(RIG_GUARD);
+            if self.port.direct_usb() && self.run.step(RIG_GUARD).started.is_none() {
+                let result = self.port.finish_direct_usb();
+                self.note_direct_usb_release(result);
+            }
         }
         self.run.finished = true;
         self.write_report();
         (self.run, self.data)
     }
 
-    fn run_macos_owner_test(&mut self) {
-        let mut end = "Mac USB identity test finished.".to_owned();
-        for id in approvals::MAC_OWNER_STEPS {
-            if self.step(id) || !self.run.step(id).outcome.passed() {
-                end = format!("Mac USB identity test ended at step {id}.");
-                break;
+    fn note_direct_usb_release(&mut self, result: Result<Vec<String>, String>) {
+        let text = match result {
+            Ok(lines) => lines.join(" "),
+            Err(error) => {
+                let text = format!("USB cleanup failed: {error}");
+                self.op.progress(Progress::action(text.clone()));
+                text
             }
-            if id == StepId(2, 1) && self.data.podxt_verified != Some(true) {
-                end = "Mac USB identity test stopped at 2.1. The PODxt Live did not report firmware 3.01.".into();
-                break;
+        };
+        if !text.is_empty() {
+            if !self.run.rig_state.is_empty() {
+                self.run.rig_state.push(' ');
             }
+            self.run.rig_state.push_str(&text);
         }
-        let release = self
-            .port
-            .finish_macos_owner_test()
-            .map(|lines| lines.join(" "))
-            .unwrap_or_else(|error| format!("USB release failed: {error}"));
-        self.run.rig_state = format!("{end} {release}");
     }
 
     fn unverified_podxt_relay(&self) -> bool {
@@ -344,18 +341,26 @@ impl<'a> Runner<'a> {
     }
 
     fn release_without_midi(&mut self) {
-        let release = if self.port.variax_claimed() {
-            self.port.release_variax().map(|lines| lines.join(" "))
+        let cleanup_failed = self.port.direct_usb_release_failed();
+        if self.port.direct_usb() {
+            let result = self.port.finish_direct_usb();
+            self.note_direct_usb_release(result);
+        } else if self.port.variax_claimed() {
+            self.run.rig_state = self
+                .port
+                .release_variax()
+                .map(|lines| lines.join(" "))
+                .unwrap_or_else(|error| format!("Guitar interface release failed: {error}"));
         } else {
-            Ok("The guitar interface was already released.".into())
-        };
-        self.run.rig_state =
-            release.unwrap_or_else(|error| format!("Guitar interface release failed: {error}"));
+            self.run.rig_state = "The guitar interface was already released.".into();
+        }
         self.finish(
             RIG_GUARD,
             Outcome::NotAvailable(
                 if self.data.store_state_unknown {
                     "The store outcome is unknown. USB release only."
+                } else if cleanup_failed {
+                    "USB cleanup failed. No further device messages were sent."
                 } else {
                     "Evidence mode ends with USB release only."
                 }
@@ -410,7 +415,6 @@ impl<'a> Runner<'a> {
                     let clock = Instant::now();
                     let mut rec = std::mem::replace(self.run.step_mut(id), StepRecord::new(id));
                     rec.attempt = Some(attempt_number);
-                    rec.single_attempt = self.port.macos_owner_test();
                     let result = {
                         let mut ctx = Ctx {
                             mode: self.run.mode,
@@ -420,7 +424,12 @@ impl<'a> Runner<'a> {
                             rec: &mut rec,
                         };
                         ctx.op.progress(Progress::action(step.title));
-                        steps::execute(&mut ctx)
+                        let result = steps::execute(&mut ctx);
+                        if id == RIG_GUARD && ctx.port.direct_usb() {
+                            super::port::finish_direct_usb(ctx.port, ctx.rec, result)
+                        } else {
+                            result
+                        }
                     };
                     let stopped_now = self.op.stop_requested()
                         || result
@@ -464,6 +473,7 @@ impl<'a> Runner<'a> {
                         Some(clock.elapsed().as_millis()),
                     );
                     if !stopped_now
+                        && !self.port.direct_usb_release_failed()
                         && decision == ResultDecision::Repeat
                         && self.run.step(id).can_repeat()
                     {
@@ -497,7 +507,6 @@ impl<'a> Runner<'a> {
     /// Why a step cannot be offered, without asking.
     fn precheck(&self, step: &Step) -> Option<Outcome> {
         if self.run.mode == Mode::Real
-            && !self.port.macos_owner_test()
             && step.needs_device_approval()
             && let Some(notice) = crate::offline_device_notice()
         {

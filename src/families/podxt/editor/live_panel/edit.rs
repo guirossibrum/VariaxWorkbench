@@ -1,6 +1,6 @@
 use super::*;
 use podxt::{EditorBuffer, LiveTarget, Target, VerifiedToneBackup};
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 use podxt::{EditorEdit, WholeToneSource};
 
 const EDIT_INTERVAL: Duration = Duration::from_millis(150);
@@ -103,10 +103,10 @@ impl Drop for EditWorker {
     }
 }
 
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 struct EditPolicy(Action);
 
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 impl GatePolicy for EditPolicy {
     fn allows(&self, operation: Operation) -> bool {
         match operation {
@@ -143,43 +143,51 @@ struct Job {
     targets: Vec<LiveTarget>,
 }
 
-#[cfg(any(test, target_os = "linux"))]
-fn edit_transaction<G, L: Link>(
-    job: &Job,
-    stop: &AtomicBool,
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
+fn edit_transaction<'a, G>(
+    job: &'a Job,
+    stop: &'a AtomicBool,
     lock: impl FnOnce() -> Result<G, String>,
-    open: impl FnOnce(&G) -> Result<L, String>,
+    with_link: impl FnOnce(&G, RunOnLink<'a, EditorBuffer>) -> Result<EditorBuffer, String>,
 ) -> Result<EditorBuffer, String> {
     let run = || {
         let stopped = || stop.load(Ordering::Acquire);
-        with_session(stopped, lock, open, &EditPolicy(job.action), |session| {
-            let edit = match job.action {
-                Action::Get => return podxt::get_editor_buffer(session, stopped),
-                Action::Recall(slot) => {
-                    return podxt::recall_editor_channel(session, slot, stopped);
-                }
-                Action::ResendWholeTone => {
-                    return podxt::send_whole_tone(
-                        session,
-                        job.current.as_ref().expect("whole-tone send has snapshot"),
-                        WholeToneSource::Current,
-                        job.whole_tone_backup
-                            .as_ref()
-                            .ok_or("Verify a backup for the playing channel first.")?,
-                        stopped,
-                    );
-                }
-                Action::Controls => EditorEdit::Controls(&job.targets),
-                Action::Send => EditorEdit::Send(&job.targets),
-                Action::Undo => EditorEdit::Undo(job.original.as_ref().expect("undo has snapshot")),
-            };
-            podxt::edit_editor_buffer(
-                session,
-                job.current.as_ref().expect("editing has snapshot"),
-                edit,
-                stopped,
-            )
-        })
+        with_session(
+            stopped,
+            lock,
+            with_link,
+            EditPolicy(job.action),
+            move |session| {
+                let edit = match job.action {
+                    Action::Get => return podxt::get_editor_buffer(session, stopped),
+                    Action::Recall(slot) => {
+                        return podxt::recall_editor_channel(session, slot, stopped);
+                    }
+                    Action::ResendWholeTone => {
+                        return podxt::send_whole_tone(
+                            session,
+                            job.current.as_ref().expect("whole-tone send has snapshot"),
+                            WholeToneSource::Current,
+                            job.whole_tone_backup
+                                .as_ref()
+                                .ok_or("Verify a backup for the playing channel first.")?,
+                            stopped,
+                        );
+                    }
+                    Action::Controls => EditorEdit::Controls(&job.targets),
+                    Action::Send => EditorEdit::Send(&job.targets),
+                    Action::Undo => {
+                        EditorEdit::Undo(job.original.as_ref().expect("undo has snapshot"))
+                    }
+                };
+                podxt::edit_editor_buffer(
+                    session,
+                    job.current.as_ref().expect("editing has snapshot"),
+                    edit,
+                    stopped,
+                )
+            },
+        )
     };
     match job.action {
         Action::Get => run(),
@@ -198,7 +206,7 @@ fn edit_transaction<G, L: Link>(
     }
 }
 
-#[cfg(all(target_os = "linux", not(test)))]
+#[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
 fn platform_edit(
     device: &detection::DeviceKey,
     job: &Job,
@@ -211,11 +219,11 @@ fn platform_edit(
         job,
         stop,
         || line6_devices::device_lock::DeviceLock::acquire().map_err(|error| error.to_string()),
-        |_| open_platform(device),
+        |rig, run| with_platform_link(device, rig, run),
     )
 }
 
-#[cfg(any(test, not(target_os = "linux")))]
+#[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
 fn platform_edit(
     _device: &detection::DeviceKey,
     job: &Job,
@@ -259,7 +267,7 @@ impl LiveEditor {
     }
 
     fn admitted(action: Action) -> bool {
-        cfg!(all(target_os = "linux", not(test)))
+        platform_available()
             && (action != Action::ResendWholeTone
                 || WHOLE_TONE_SEND_APPROVED && !hardware_gates::is_locked(Gate::FullBackupRead))
             && !hardware_gates::is_locked(Gate::OsDiscovery)

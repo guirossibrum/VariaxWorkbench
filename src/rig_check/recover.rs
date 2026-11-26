@@ -338,7 +338,7 @@ fn restore(ctx: &mut Ctx<'_>, state: &RigState) -> Result<(), String> {
             ));
         }
     }
-    if ctx.port.variax_claimed() {
+    if !ctx.port.direct_usb() && ctx.port.variax_claimed() {
         match ctx.port.release_variax() {
             Ok(lines) => lines
                 .into_iter()
@@ -385,7 +385,12 @@ pub fn offer_restore(
                         data: &mut data,
                         rec: &mut rec,
                     };
-                    restore(&mut ctx, state)
+                    let result = restore(&mut ctx, state);
+                    if ctx.port.direct_usb() {
+                        super::port::finish_direct_usb(ctx.port, ctx.rec, result)
+                    } else {
+                        result
+                    }
                 };
                 match result {
                     Ok(()) => {

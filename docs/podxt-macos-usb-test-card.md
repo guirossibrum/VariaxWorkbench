@@ -1,60 +1,51 @@
-# First PODxt Live direct USB test on macOS
+# Owner-run PODxt Live USB parity on macOS (#274)
 
-**Status: awaiting the owner's approval.** The Mac USB switch is closed.
+The regular offline DMG still uses `gui,portable-math`. The private owner DMG
+builds both Workbench and Rig Check with `gui,portable-math,usb` on the same
+reviewed revision. The earlier five-card, identity-only trial was a separate
+milestone.
 
-## Verify native linkage
+## Build and verify the private DMG
 
-The normal package still uses `gui,portable-math` and opens offline. On a Mac
-runner with Xcode command-line tools, Rust 1.99.1, both Darwin Rust targets and a
-populated Cargo cache, run the verifier from the checkout with the switch closed:
-
-```sh
-python3 scripts/verify_podxt_macos_linkage.py /path/to/new-linkage-evidence
-```
-
-The verifier builds the USB profile (`gui,portable-math,usb`) for both Darwin
-targets without launching either app. It records the exact static archive
-reported by Cargo and checks the archive architecture and defined libusb
-symbols. It uses the production package checks for the four executable slices:
-macOS 11.0 on arm64 and 10.15 on x86_64, with dynamic dependencies limited to
-Apple system paths. It also rejects a dynamic libusb dependency and Catalina's
-unsupported `UniformTypeIdentifiers.framework`. Keep the native verifier
-logs. [Package verification](../packaging/macos/package.py)
-
-## Owner-run sequence on M1
-
-After the owner approves the test, use a dedicated Mac owner worktree. Set
-only `DIRECT_USB_APPROVED` in
-`crates/line6-devices/src/transport/usb/macos.rs` to `true`. Keep audio closed
-and leave the Linux owner-test worktree as it is. Build and verify the owner
-binaries using a **new** evidence directory:
+After Gatekeeper review of both consumers, run this on a Mac with Xcode
+command-line tools, Rust 1.99.1, both Darwin Rust targets and a populated Cargo
+cache:
 
 ```sh
-python3 scripts/verify_podxt_macos_linkage.py --expect-owner-link /path/to/new-owner-linkage-evidence
+packaging/macos/build.sh --owner-usb /path/to/private-owner-output
 ```
 
-The additional check requires the USB functions to be defined in each
-Rig Check executable. Close Line 6 Edit, Workbench, DAWs and other clients of
-the rig before the owner run. Open the arm64 Rig Check in real mode. It
-offers exactly these five cards in order:
+Keep `Variax Workbench - Owner USB.dmg` and `verification.txt` in the
+private output directory. The build verifies the exact static libusb archive
+reported by Cargo for each target and requires its implementation symbols in
+both apps on each mounted slice. It checks macOS 10.15 on Intel and 11.0 on
+Apple silicon, Apple system-only dynamic dependencies, ad-hoc signatures
+and bundle contents. The USB packaging mode does not launch either binary.
+This local build mode is independent of the public offline artifact workflow.
 
-1. **0.2** checks the USB attachment list, and **1.1** requires exactly one
-   PODxt Live attachment.
-2. **2.1** asks the PODxt Live for its identity over interface 0. Expect
-   **PODxt Live, firmware 3.01**.
-3. **1.2** claims and releases interface 1 without sending MIDI. On macOS
-   there is no Linux driver binding to restore.
-4. **3.1** asks the Variax for its identity over interface 1. Expect the
-   guitar's actual model family and firmware. Rig Check releases USB and ends.
-5. Keep the report, exact build revision and native linkage logs locally.
+## Owner verification
 
-A skipped or failed card or an unverified PODxt identity ends the run. An
-identity exchange can retry once under its existing timeout rules. Both links
-permit only the universal MIDI identity request. The owner build has no
-recovery prompt or MIDI cleanup, and the editor stays offline. If macOS
-reports that a driver or another application holds the device, record the
-error and stop. The transport refuses the claim without unloading the driver.
+Record the revision, Mac model and OS, and the results before sharing a build.
+Keep Rig Check reports and backup evidence locally. Follow the existing
+consent prompts and gate sequence.
 
-The M1 test covers claiming, identity and release on that Mac. Behavior with
-an Intel Line 6 kext still needs separate verification.
-[Protocol research](podxt-usb-direct.md)
+- Close other clients of the rig. In Workbench, confirm that the PODxt Live
+  3.01 tab opens on its verified attachment. If the supported Variax answers
+  through the relay, confirm its identity and tab status.
+- Run Device Check in order. Confirm the Mac USB attachment, the guitar
+  identity and the current-settings read. Check the PODxt library backup and
+  its manifest before any operation that requires that backup.
+- Walk the approved PODxt workflows in Workbench using the existing prompts
+  and verified backup requirements. Record which workflows passed and any
+  recovery or verification the app reported.
+- Run Rig Check in real mode through the same applicable non-audio steps as
+  on Linux. Confirm the report covers PODxt Live and the supported relay.
+  An unexpected identity, failed prerequisite, or cleanup error follows the
+  existing stop and recovery behavior.
+- If the OS or a competing application holds the interface, retain the
+  reported conflict. The app must leave the driver in place. If the device
+  re-enumerates during the run, the stored port/address selection must refuse
+  the reopen and a new check must select the attachment.
+
+Record these as owner observations separately from the native build report
+and simulated tests. [Attachment contract](podxt-macos-usb-integration.md)

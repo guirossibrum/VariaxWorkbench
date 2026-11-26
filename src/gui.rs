@@ -206,13 +206,18 @@ enum DeviceOperationEvent<T> {
     Finished(Result<T, String>),
 }
 
-fn backup_offered() -> bool {
+fn backup_offered(choice: BackupChoice) -> bool {
     #[cfg(feature = "usb")]
     {
-        variax_workbench::library_backup::offered()
+        use variax_workbench::library_backup::{Which, offered_for};
+        offered_for(match choice {
+            BackupChoice::Podxt => Which::Podxt,
+            BackupChoice::Variax | BackupChoice::VariaxFull => Which::Variax,
+        })
     }
     #[cfg(not(feature = "usb"))]
     {
+        let _ = choice;
         false
     }
 }
@@ -225,6 +230,14 @@ fn tone_offered() -> bool {
     #[cfg(not(feature = "usb"))]
     {
         false
+    }
+}
+
+fn device_check_platform_notice() -> Option<&'static str> {
+    if cfg!(all(test, target_os = "macos")) {
+        Some(variax_workbench::MAC_CONNECTION_UNAVAILABLE)
+    } else {
+        variax_workbench::offline_device_notice()
     }
 }
 
@@ -434,6 +447,8 @@ impl Workbench {
         let rig = HostRig::new(reader);
         #[cfg(all(target_os = "linux", feature = "usb", not(test)))]
         let rig = rig.with_recognition_lock();
+        #[cfg(all(target_os = "macos", feature = "usb", not(test)))]
+        let rig = rig.with_macos_usb();
         ProbeSession::new(RigBackend::ThisComputer(rig))
     }
 
@@ -753,7 +768,7 @@ impl Workbench {
                 ui.disable();
             }
             if self.device_check.mode() == ProbeMode::ThisComputer
-                && let Some(notice) = variax_workbench::offline_device_notice()
+                && let Some(notice) = device_check_platform_notice()
             {
                 ui.label(notice);
                 #[cfg(test)]
@@ -773,11 +788,11 @@ impl Workbench {
                 "Each step asks first, the answer is No unless you choose Yes, and a passed \
                      step never starts the next one.",
             );
-            ui.label(device_probe::STEP_TWO_PREFLIGHT);
+            ui.label(device_probe::step_two_preflight());
             ui.label(device_probe::CANCEL_LIMIT);
             visible.push_str(&format!(
                 "\n{}\n{}",
-                device_probe::STEP_TWO_PREFLIGHT,
+                device_probe::step_two_preflight(),
                 device_probe::CANCEL_LIMIT
             ));
             for notice in &notices {
@@ -885,7 +900,7 @@ impl Workbench {
                 ui.label(&outcome);
                 visible.push_str(&format!("\n{outcome}"));
             }
-            if backup_offered() {
+            if backup_offered(BackupChoice::Podxt) || backup_offered(BackupChoice::Variax) {
                 ui.separator();
                 ui.heading("Backup");
                 ui.label(BACKUP_INTRO);
@@ -928,7 +943,7 @@ impl Workbench {
                     visible.push_str(yes);
                 } else {
                     ui.horizontal(|ui| {
-                        if !variax_backup_blocked {
+                        if backup_offered(BackupChoice::Variax) && !variax_backup_blocked {
                             visible.push_str(BACKUP_VARIAX);
                             if self
                                 .device_check_button(ui, "backup-variax", BACKUP_VARIAX)
@@ -937,7 +952,7 @@ impl Workbench {
                                 self.backup_choice = Some(BackupChoice::Variax);
                             }
                         }
-                        if !pod_unverified {
+                        if backup_offered(BackupChoice::Podxt) && !pod_unverified {
                             visible.push_str(BACKUP_PODXT);
                             if self
                                 .device_check_button(ui, "backup-podxt", BACKUP_PODXT)
@@ -947,7 +962,10 @@ impl Workbench {
                             }
                         }
                     });
-                    if !variax_backup_blocked && self.verified_backup_guitar().is_some() {
+                    if backup_offered(BackupChoice::VariaxFull)
+                        && !variax_backup_blocked
+                        && self.verified_backup_guitar().is_some()
+                    {
                         if self
                             .device_check_button(ui, "backup-variax-full", BACKUP_VARIAX_FULL)
                             .clicked()
@@ -1764,7 +1782,7 @@ mod tests {
     fn device_check_window_opens_on_this_computer_and_declines_by_default() {
         let (context, mut app) = device_check_app();
         assert_eq!(app.device_check.mode(), ProbeMode::ThisComputer);
-        if let Some(notice) = variax_workbench::offline_device_notice() {
+        if let Some(notice) = device_check_platform_notice() {
             assert_eq!(app.device_check_visible, notice);
             assert!(app.device_check.finished());
             assert!(!app.device_check_buttons.contains_key("yes"));
@@ -1830,7 +1848,7 @@ mod tests {
 
     #[test]
     fn device_check_defaults_to_no_on_each_new_consent() {
-        if let Some(notice) = variax_workbench::offline_device_notice() {
+        if let Some(notice) = device_check_platform_notice() {
             let (context, mut app) = device_check_app();
             press_device_check_enter(&context, &mut app);
             assert_eq!(app.device_check_visible, notice);

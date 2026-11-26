@@ -9,7 +9,7 @@
 use std::time::Duration;
 
 use line6_devices::family::podxt::{self, models};
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 use line6_devices::gate::GatePolicy;
 use line6_devices::gate::Operation;
 use line6_devices::session::{Link, Request, Session, Wait};
@@ -554,12 +554,12 @@ impl Request for ToneRequest {
     }
 }
 
-#[cfg(all(not(test), target_os = "linux"))]
+#[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
 struct TonePolicy {
     gate: Gate,
 }
 
-#[cfg(all(not(test), target_os = "linux"))]
+#[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
 impl GatePolicy for TonePolicy {
     fn allows(&self, operation: Operation) -> bool {
         if hardware_gates::is_locked(self.gate) {
@@ -656,9 +656,17 @@ pub enum LiveApply {
     UndoAttempted(LiveEditTest),
 }
 
-/// Linux builds where the tone try or the saved-tone switch is open.
-pub fn offered() -> bool {
+/// Whether this build can open the PODxt Live control path.
+pub const fn workbench_link_available() -> bool {
+    #[cfg(target_os = "macos")]
+    return crate::macos_usb_available();
+    #[cfg(not(target_os = "macos"))]
     cfg!(target_os = "linux")
+}
+
+/// Builds where tone Try or saved-tone switching is open.
+pub fn offered() -> bool {
+    workbench_link_available()
         && (!hardware_gates::is_locked(Gate::DeviceCheckLiveTest)
             || !hardware_gates::is_locked(Gate::DeviceCheckChannel))
 }
@@ -685,17 +693,20 @@ pub fn run_try(progress: impl FnMut(&str)) -> Result<String, String> {
     hardware_gates::run_if_unlocked(Gate::DeviceCheckLiveTest, || run_try_supported(progress))
 }
 
-fn run_try_supported(progress: impl FnMut(&str)) -> Result<String, String> {
-    #[cfg(any(test, not(target_os = "linux")))]
+fn run_try_supported(mut progress: impl FnMut(&str)) -> Result<String, String> {
+    #[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
     {
-        let _ = progress;
+        let _ = &mut progress;
         Err("this build does not open a device for a tone check; nothing was sent".into())
     }
-    #[cfg(all(not(test), target_os = "linux"))]
+    #[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
     {
-        let _rig =
-            line6_devices::device_lock::DeviceLock::acquire().map_err(|error| error.to_string())?;
-        try_live(progress)
+        hardware_gates::run_if_unlocked(Gate::OsDiscovery, || {
+            let rig = line6_devices::device_lock::DeviceLock::acquire()
+                .map_err(|error| error.to_string())?;
+            progress("Opening the PODxt Live.");
+            with_workbench_link(&rig, None, |link, _| try_live(link, progress))
+        })
     }
 }
 
@@ -708,18 +719,21 @@ pub fn run_channel(text: &str, progress: impl FnMut(&str)) -> Result<String, Str
 
 fn run_channel_supported(
     location: podxt::Location,
-    progress: impl FnMut(&str),
+    mut progress: impl FnMut(&str),
 ) -> Result<String, String> {
-    #[cfg(any(test, not(target_os = "linux")))]
+    #[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
     {
-        let _ = (location, progress);
+        let _ = (location, &mut progress);
         Err("this build does not open a device for a tone check; nothing was sent".into())
     }
-    #[cfg(all(not(test), target_os = "linux"))]
+    #[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
     {
-        let _rig =
-            line6_devices::device_lock::DeviceLock::acquire().map_err(|error| error.to_string())?;
-        switch_live(location, progress)
+        hardware_gates::run_if_unlocked(Gate::OsDiscovery, || {
+            let rig = line6_devices::device_lock::DeviceLock::acquire()
+                .map_err(|error| error.to_string())?;
+            progress("Opening the PODxt Live.");
+            with_workbench_link(&rig, None, |link, _| switch_live(link, location, progress))
+        })
     }
 }
 
@@ -1134,7 +1148,7 @@ fn is_packs(message: &[u8]) -> bool {
     message.len() == 9 && message[..6] == [0xf0, 0x00, 0x01, 0x0c, 0x03, 0x0e]
 }
 
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 fn test_summary(test: &LiveEditTest) -> String {
     let name = test.before.name();
     if test.undone() && test.stuck() {
@@ -1150,7 +1164,7 @@ fn test_summary(test: &LiveEditTest) -> String {
     }
 }
 
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 fn channel_summary(result: &ChannelSwitch) -> String {
     if result.switched() {
         let name = result
@@ -1170,42 +1184,96 @@ fn channel_summary(result: &ChannelSwitch) -> String {
     }
 }
 
-#[cfg(all(not(test), target_os = "linux"))]
-fn open_podxt() -> Result<line6_devices::transport::rawmidi::RawMidiLink, String> {
-    use line6_devices::{
-        family::podxt::transport::PODXT_LIVE_MIDI, transport::rawmidi::RawMidiLink,
-    };
-    RawMidiLink::open_spec(PODXT_LIVE_MIDI)
+/// Open the PODxt Live while the caller holds the rig lock. macOS callers
+/// with a verified tab must pass its exact attachment; standalone checks may
+/// select one device under the same lock. The path passed to the operation is
+/// a display location for backup metadata.
+#[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
+pub fn with_workbench_link<T>(
+    rig: &line6_devices::device_lock::DeviceLock,
+    attachment: Option<(&str, u8)>,
+    run: impl FnOnce(&mut dyn Link, &std::path::Path) -> Result<T, String>,
+) -> Result<T, String> {
+    #[cfg(target_os = "macos")]
+    {
+        use line6_devices::transport::usb::{UsbInterfaceLink, macos};
+        if !workbench_link_available() {
+            return Err("PODxt USB is unavailable in this build.".into());
+        }
+        let selected;
+        let (path, address) = match attachment {
+            Some(attachment) => attachment,
+            None => {
+                let mut devices = macos::attachments()?;
+                if devices.len() != 1 {
+                    return Err(format!(
+                        "Expected exactly one PODxt Live USB attachment, found {}.",
+                        devices.len()
+                    ));
+                }
+                selected = devices.pop().expect("one attachment");
+                (selected.path.as_str(), selected.address)
+            }
+        };
+        let mut link =
+            UsbInterfaceLink::open_attachment_borrowed(macos::PODXT_MIDI, path, address, rig)?;
+        let label = std::path::PathBuf::from(format!("usb/{path}/{address}/interface-0"));
+        finish_workbench_link(
+            &mut link,
+            |link| run(link, &label),
+            UsbInterfaceLink::finish,
+        )
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use line6_devices::{
+            family::podxt::transport::PODXT_LIVE_MIDI, transport::rawmidi::RawMidiLink,
+        };
+        let _ = rig;
+        if attachment.is_some() {
+            return Err("An attached Linux editor must use its verified ALSA endpoint.".into());
+        }
+        let mut link = RawMidiLink::open_spec(PODXT_LIVE_MIDI)?;
+        let path = link.device.clone();
+        run(&mut link, &path)
+    }
 }
 
-#[cfg(all(not(test), target_os = "linux"))]
-fn try_live(mut progress: impl FnMut(&str)) -> Result<String, String> {
+#[cfg(any(test, target_os = "macos"))]
+fn finish_workbench_link<L: Link, T>(
+    link: &mut L,
+    run: impl FnOnce(&mut L) -> Result<T, String>,
+    finish: impl FnOnce(&mut L) -> Result<(), String>,
+) -> Result<T, String> {
+    let result = run(link);
+    crate::live_families::after_release(result, finish(link))
+}
+
+#[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
+fn try_live(link: &mut dyn Link, mut progress: impl FnMut(&str)) -> Result<String, String> {
     use line6_devices::session::{Quiet, Session};
-    progress("Opening the PODxt Live.");
-    let mut link = open_podxt()?;
     let mut log = Quiet;
     let policy = TonePolicy {
         gate: Gate::DeviceCheckLiveTest,
     };
-    let mut session = Session::new(&mut link, &policy, &mut log);
+    let mut session = Session::new(link, &policy, &mut log);
     progress("Reading the current tone, then changing it and putting it back.");
     let test = live_settings_test(&mut session, &device_check_targets())?;
     Ok(test_summary(&test))
 }
 
-#[cfg(all(not(test), target_os = "linux"))]
+#[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
 fn switch_live(
+    link: &mut dyn Link,
     location: podxt::Location,
     mut progress: impl FnMut(&str),
 ) -> Result<String, String> {
     use line6_devices::session::{Quiet, Session};
-    progress("Opening the PODxt Live.");
-    let mut link = open_podxt()?;
     let mut log = Quiet;
     let policy = TonePolicy {
         gate: Gate::DeviceCheckChannel,
     };
-    let mut session = Session::new(&mut link, &policy, &mut log);
+    let mut session = Session::new(link, &policy, &mut log);
     let result = switch_channel(&mut session, location, None, false, &mut progress)?;
     Ok(channel_summary(&result))
 }
@@ -1215,6 +1283,23 @@ mod tests {
     use super::*;
     use line6_devices::session::{Path, Quiet, Session};
     use std::collections::VecDeque;
+
+    #[test]
+    fn scoped_link_finishes_after_a_failed_operation_and_preserves_both_errors() {
+        let mut link = Fake::new(vec![]);
+        let result = finish_workbench_link::<_, ()>(
+            &mut link,
+            |_| Err("Device read failed.".into()),
+            |link| {
+                assert!(link.writes.is_empty());
+                Err("Interface release failed.".into())
+            },
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "Device read failed. Cleanup also failed: Interface release failed."
+        );
+    }
 
     struct OpenPolicy;
 

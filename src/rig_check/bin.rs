@@ -7,7 +7,13 @@
 use std::io;
 use std::path::PathBuf;
 use variax_workbench::rig_check::{
-    self, cli::Terminal, port::RealPort, practice::Faults, redact::Redactor, report, steps::RunData,
+    self,
+    cli::Terminal,
+    port::{RealPort, RigScope},
+    practice::Faults,
+    redact::Redactor,
+    report,
+    steps::RunData,
 };
 
 const USAGE: &str = "Usage: rig-check [--practice | --real] [--text] [--out DIR] [--evidence] [--engine-folder DIR]
@@ -182,12 +188,13 @@ fn window(options: Options) {
                 .map_or("rig-check".into(), |s| s.to_string_lossy().into_owned());
             data.evidence_dir = Some(out.join(format!("{stem}-evidence")));
         }
+        let scope = RigScope::default();
         let run = if mode == Mode::Practice {
             rig_check::run_practice(Faults::default(), &mut op, &mut sink, data).0
         } else if variax_workbench::offline_device_notice().is_some() {
-            rig_check::run_on(&mut RealPort::default(), &mut op, &mut sink, data).0
+            rig_check::run_on(&mut RealPort::new(&scope), &mut op, &mut sink, data).0
         } else {
-            let mut port = RealPort::default();
+            let mut port = RealPort::new(&scope);
             for (path, state) in rig_check::recover::pending(&out).into_iter().take(1) {
                 if let Ok(mut restore_sink) =
                     report::ReportFile::create(&out, Redactor::from_environment())
@@ -269,12 +276,13 @@ fn main() {
         data.evidence_dir = Some(options.out.join(format!("{stem}-evidence")));
     }
     let mut person = Terminal::from_stdin(io::stdout());
+    let scope = RigScope::default();
     let run = if options.practice == Some(true) {
         rig_check::run_practice(Faults::default(), &mut person, &mut sink, data).0
     } else if variax_workbench::offline_device_notice().is_some() {
-        rig_check::run_on(&mut RealPort::default(), &mut person, &mut sink, data).0
+        rig_check::run_on(&mut RealPort::new(&scope), &mut person, &mut sink, data).0
     } else {
-        let mut port = RealPort::default();
+        let mut port = RealPort::new(&scope);
         // An earlier run that did not finish: offer to put the rig back first.
         for (path, state) in rig_check::recover::pending(&options.out)
             .into_iter()

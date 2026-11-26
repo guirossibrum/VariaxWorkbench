@@ -95,36 +95,24 @@ pub const fn approved(id: StepId) -> bool {
     }
 }
 
-/// The first Mac owner test has a fixed sequence ending at guitar identity.
-pub const MAC_OWNER_STEPS: [StepId; 5] = [
-    StepId(0, 2),
-    StepId(1, 1),
-    StepId(2, 1),
-    StepId(1, 2),
-    StepId(3, 1),
-];
-
 /// Whether a step can run in real mode. Device steps require their
 /// approval and every gate they name. The offline PODxt comparison also
 /// has its own approval, separate from the library's addressed read.
 pub fn real_device_check(id: StepId) -> Result<(), String> {
-    device_check(id, crate::macos_owner_test_enabled())
+    device_check(id, crate::offline_device_notice())
 }
 
-fn device_check(id: StepId, mac_owner: bool) -> Result<(), String> {
+fn device_check(id: StepId, offline_notice: Option<&str>) -> Result<(), String> {
     let Some(step) = catalogue::step(id) else {
         return Err(format!("Step {id} is not in the catalogue."));
     };
-    if mac_owner && !MAC_OWNER_STEPS.contains(&id) {
-        return Err(format!("Step {id} is outside the Mac USB identity test."));
-    }
     if id == catalogue::PODXT_COMPATIBILITY && !approved(id) {
         return Err(format!("Step {id} is {NOT_AUTHORIZED}."));
     }
     if !step.needs_device_approval() {
         return Ok(());
     }
-    if !mac_owner && let Some(notice) = crate::offline_device_notice() {
+    if let Some(notice) = offline_notice {
         return Err(notice.into());
     }
     if !approved(id) {
@@ -181,22 +169,11 @@ mod tests {
     }
 
     #[test]
-    fn mac_owner_test_approves_only_the_five_card_steps() {
-        let allowed: Vec<_> = STEPS
-            .iter()
-            .filter(|step| device_check(step.id, true).is_ok())
-            .map(|step| step.id)
-            .collect();
-        assert_eq!(
-            allowed,
-            [
-                StepId(0, 2),
-                StepId(1, 1),
-                StepId(1, 2),
-                StepId(2, 1),
-                StepId(3, 1)
-            ]
-        );
+    fn connected_build_uses_the_same_approvals_for_the_entire_catalogue() {
+        for step in STEPS {
+            let admitted = !step.needs_device_approval() || approved(step.id);
+            assert_eq!(device_check(step.id, None).is_ok(), admitted, "{}", step.id);
+        }
     }
 
     #[test]

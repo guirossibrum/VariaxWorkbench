@@ -9,9 +9,9 @@ use line6_devices::family::podxt::{
     self, BankKind, Control, EditBuffer, GlobalValues, LiveControl, Location, Packs, ReadCommand,
     ReadUpdate, Setting, TunerReading,
 };
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 use line6_devices::gate::{GatePolicy, Operation};
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 use line6_devices::session::{Link, Quiet, Session as MidiSession};
 use std::sync::{
     Arc, Mutex,
@@ -117,10 +117,10 @@ impl Snapshot {
     }
 }
 
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 struct ReadPolicy(ReadCommand);
 
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 impl GatePolicy for ReadPolicy {
     fn allows(&self, operation: Operation) -> bool {
         match operation {
@@ -156,14 +156,21 @@ fn requires_library(command: ReadCommand) -> bool {
     matches!(command, ReadCommand::Library | ReadCommand::ToneBank)
 }
 
-/// The guard outlives the link, including cleanup on errors.
-#[cfg(any(test, target_os = "linux"))]
-fn with_session<G, L: Link, T>(
+fn platform_available() -> bool {
+    !cfg!(test) && variax_workbench::podxt_live::workbench_link_available()
+}
+
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
+type RunOnLink<'a, T> = Box<dyn FnOnce(&mut dyn Link) -> Result<T, String> + 'a>;
+
+/// The guard outlives the scoped link, including cleanup on errors.
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
+fn with_session<'a, G, T>(
     cancelled: impl Fn() -> bool,
     lock: impl FnOnce() -> Result<G, String>,
-    open: impl FnOnce(&G) -> Result<L, String>,
-    policy: &dyn GatePolicy,
-    run: impl FnOnce(&mut MidiSession<'_, L>) -> Result<T, String>,
+    with_link: impl FnOnce(&G, RunOnLink<'a, T>) -> Result<T, String>,
+    policy: impl GatePolicy + 'a,
+    run: impl FnOnce(&mut MidiSession<'_, &mut dyn Link>) -> Result<T, String> + 'a,
 ) -> Result<T, String> {
     hardware_gates::run_if_unlocked(Gate::OsDiscovery, || {
         hardware_gates::run_if_unlocked(Gate::CurrentSettingsRead, || {
@@ -177,28 +184,36 @@ fn with_session<G, L: Link, T>(
             check_stop()?;
             let rig = lock()?;
             check_stop()?;
-            let link = open(&rig)?;
-            let mut quiet = Quiet;
-            let mut session = MidiSession::new(link, policy, &mut quiet);
-            session.log_packets = false;
-            run(&mut session)
+            with_link(
+                &rig,
+                Box::new(move |link| {
+                    let mut quiet = Quiet;
+                    let mut session = MidiSession::new(link, &policy, &mut quiet);
+                    session.log_packets = false;
+                    run(&mut session)
+                }),
+            )
         })
     })
 }
 
-#[cfg(any(test, target_os = "linux"))]
-fn transaction<G, L: Link>(
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
+fn transaction<'a, G>(
     command: ReadCommand,
-    stop: &AtomicBool,
+    stop: &'a AtomicBool,
     lock: impl FnOnce() -> Result<G, String>,
-    open: impl FnOnce(&G) -> Result<L, String>,
-    publish: impl FnMut(ReadUpdate),
+    with_link: impl FnOnce(&G, RunOnLink<'a, ()>) -> Result<(), String>,
+    publish: impl FnMut(ReadUpdate) + 'a,
 ) -> Result<(), String> {
     let operation = || {
         let cancelled = || stop.load(Ordering::Acquire);
-        with_session(cancelled, lock, open, &ReadPolicy(command), |session| {
-            podxt::read_live(session, command, cancelled, publish)
-        })
+        with_session(
+            cancelled,
+            lock,
+            with_link,
+            ReadPolicy(command),
+            move |session| podxt::read_live(session, command, cancelled, publish),
+        )
     };
     if requires_library(command)
         || command == ReadCommand::Follow && !hardware_gates::is_locked(Gate::FullBackupRead)
@@ -240,7 +255,30 @@ fn open_platform(
     )
 }
 
-#[cfg(all(target_os = "linux", not(test)))]
+#[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
+fn with_platform_link<T>(
+    device: &detection::DeviceKey,
+    rig: &line6_devices::device_lock::DeviceLock,
+    run: RunOnLink<'_, T>,
+) -> Result<T, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = rig;
+        run(&mut open_platform(device)?)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let attachment = device
+            .attachment
+            .usb_location()
+            .ok_or("The verified PODxt Live attachment is no longer available.")?;
+        variax_workbench::podxt_live::with_workbench_link(rig, Some(attachment), |link, _| {
+            run(link)
+        })
+    }
+}
+
+#[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
 fn platform_read(
     device: &detection::DeviceKey,
     command: ReadCommand,
@@ -251,12 +289,12 @@ fn platform_read(
         command,
         stop,
         || line6_devices::device_lock::DeviceLock::acquire().map_err(|error| error.to_string()),
-        |_| open_platform(device),
+        |rig, run| with_platform_link(device, rig, run),
         publish,
     )
 }
 
-#[cfg(any(test, not(all(target_os = "linux", feature = "usb"))))]
+#[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
 fn platform_read(
     _device: &detection::DeviceKey,
     _command: ReadCommand,
@@ -385,7 +423,7 @@ impl LivePanel {
     }
 
     fn admitted(command: ReadCommand) -> bool {
-        cfg!(all(target_os = "linux", feature = "usb", not(test)))
+        platform_available()
             && !hardware_gates::is_locked(Gate::OsDiscovery)
             && !hardware_gates::is_locked(Gate::CurrentSettingsRead)
             && (!requires_library(command) || !hardware_gates::is_locked(Gate::FullBackupRead))
@@ -844,7 +882,7 @@ impl LivePanel {
         });
         if self.device.is_none() {
             ui.weak("Live reads require automatic PODxt Live 3.01 identity.");
-        } else if !cfg!(all(target_os = "linux", feature = "usb", not(test))) {
+        } else if !platform_available() {
             ui.weak("Live reads are unavailable in this build.");
         }
         if let Some(worker) = &self.worker {

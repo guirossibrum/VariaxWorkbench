@@ -62,10 +62,10 @@ impl Drop for StoreWorker {
     }
 }
 
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 struct StorePolicy;
 
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 impl GatePolicy for StorePolicy {
     fn allows(&self, operation: Operation) -> bool {
         match operation {
@@ -77,27 +77,27 @@ impl GatePolicy for StorePolicy {
     }
 }
 
-#[cfg(any(test, target_os = "linux"))]
-fn store_transaction<G, L: Link>(
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
+fn store_transaction<'a, G>(
     confirmation: ConfirmedStore,
-    control: &StoreControl,
+    control: &'a StoreControl,
     lock: impl FnOnce() -> Result<G, String>,
-    open: impl FnOnce(&G) -> Result<L, String>,
+    with_link: impl FnOnce(&G, RunOnLink<'a, StoreResult>) -> Result<StoreResult, String>,
 ) -> Result<StoreResult, String> {
     hardware_gates::run_if_unlocked(Gate::StoreRestore, || {
         hardware_gates::run_if_unlocked(Gate::FullBackupRead, || {
             with_session(
                 || control.cancelled(),
                 lock,
-                open,
-                &StorePolicy,
-                |session| podxt::store_tone(session, confirmation, control),
+                with_link,
+                StorePolicy,
+                move |session| podxt::store_tone(session, confirmation, control),
             )
         })
     })
 }
 
-#[cfg(all(target_os = "linux", not(test)))]
+#[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
 fn platform_store(
     device: &detection::DeviceKey,
     stage: StoreStage,
@@ -111,11 +111,11 @@ fn platform_store(
         confirmation,
         control,
         || line6_devices::device_lock::DeviceLock::acquire().map_err(|error| error.to_string()),
-        |_| open_platform(device),
+        |rig, run| with_platform_link(device, rig, run),
     )
 }
 
-#[cfg(any(test, not(target_os = "linux")))]
+#[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
 fn platform_store(
     _device: &detection::DeviceKey,
     _stage: StoreStage,
@@ -127,7 +127,7 @@ fn platform_store(
 
 fn admitted(stage: StoreStage) -> bool {
     stage.approved()
-        && cfg!(all(target_os = "linux", not(test)))
+        && platform_available()
         && !hardware_gates::is_locked(Gate::StoreRestore)
         && !hardware_gates::is_locked(Gate::FullBackupRead)
         && !hardware_gates::is_locked(Gate::CurrentSettingsRead)
@@ -263,6 +263,9 @@ impl StorePanel {
             ),
             Ok(Ok(StoreResult::SlotStateUnknown { slot, reason })) => {
                 format!("Slot {} state unknown. {reason}", slot.slot_name())
+            }
+            Ok(Err(error)) if worker.control.started() => {
+                format!("Slot state unknown. {error}")
             }
             Ok(Err(error)) => error.clone(),
             Err(_) if worker.control.started() => {
