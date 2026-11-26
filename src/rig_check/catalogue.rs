@@ -173,7 +173,7 @@ pub static STEPS: &[Step] = &[
         evidence: "OS, kernel, architecture, CPU model and flags, build target, compiler, maths profile.",
         proof: "-"),
     step!((0, 2), "USB devices and drivers on this computer", Computer, [], [G1], None,
-        does: "Lists USB attachments without opening a device. On macOS with USB support it lists matching PODxt Live attachments. On Linux it also shows speed, drivers and permissions.",
+        does: "Lists USB attachments without opening a device. On macOS with USB support it shows the PODxt Live location ID, port path and address when available. On Linux it also shows speed, drivers and permissions.",
         you_do: "Nothing.", see: "The USB device list.", hear: "Nothing.",
         evidence: "Device list (serial numbers hashed), interface drivers, permissions, libusb version.",
         proof: "#239, g1.md"),

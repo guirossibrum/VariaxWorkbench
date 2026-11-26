@@ -1,9 +1,8 @@
 //! Windows and macOS collectors (#251). Read-only.
 //!
-//! The parsers are plain functions over command output, compiled and tested
-//! on every platform with synthetic text. Only the command runner differs per
-//! OS. **Not verified on Windows or macOS**: the report says so on every line
-//! group until an owner run confirms the fields (#251, after #262).
+//! The report accepts synthetic command output and USB observations. The
+//! live macOS USB build gets its PODxt Live observations from the same passive
+//! IOKit inventory as the transport. Windows collector verification is pending.
 
 use super::Line;
 
@@ -244,7 +243,6 @@ pub fn mac_system(commands: &dyn CommandRunner) -> Vec<Line> {
     let get = |key: &str| version.as_deref().and_then(|v| field(v, key));
     let mut lines = vec![
         line("Operating system", "macOS"),
-        line("Collector", NOT_VERIFIED),
         line("macOS version", or_missing(get("ProductVersion"))),
         line("macOS build", or_missing(get("BuildVersion"))),
         line(
@@ -264,13 +262,152 @@ pub fn mac_system(commands: &dyn CommandRunner) -> Vec<Line> {
     lines
 }
 
+#[cfg(any(test, all(target_os = "macos", feature = "usb")))]
+pub(in crate::rig_check) struct MacUsbAttachment<'a> {
+    pub route: Option<&'a str>,
+    pub location_id: Option<u32>,
+    pub address: Option<u8>,
+    pub midi_interfaces_present: bool,
+}
+
+#[cfg(any(test, all(target_os = "macos", feature = "usb")))]
+pub(in crate::rig_check) fn mac_usb_view<'a>(
+    attachments: impl IntoIterator<Item = MacUsbAttachment<'a>>,
+) -> super::UsbView {
+    use super::{UsbDevice, UsbView};
+
+    let mut view = UsbView::default();
+    let (vendor, product) = crate::device_probe::PODXT_LIVE_USB;
+    for attachment in attachments {
+        let location = attachment.location_id.map(|id| format!("0x{id:08x}"));
+        let port = attachment.route.map_or_else(
+            || {
+                location
+                    .as_ref()
+                    .map_or_else(|| "unavailable".into(), |id| format!("USB location {id}"))
+            },
+            str::to_owned,
+        );
+        view.lines.push(line(
+            "PODxt Live USB",
+            format!(
+                "{vendor:04x}:{product:04x}, location ID {}, port {}, address {}, MIDI interface services {}",
+                location.as_deref().unwrap_or(NOT_AVAILABLE),
+                attachment.route.unwrap_or(NOT_AVAILABLE),
+                attachment.address.map_or_else(|| NOT_AVAILABLE.into(), |id| id.to_string()),
+                if attachment.midi_interfaces_present {
+                    "published"
+                } else {
+                    "not both published"
+                },
+            ),
+        ));
+        view.devices.push(UsbDevice {
+            port,
+            vendor,
+            product,
+            name: Some("PODxt Live".into()),
+            manufacturer: None,
+            serial: None,
+            speed: None,
+            bus: None,
+            address: attachment.address,
+            interfaces: Vec::new(),
+            node: None,
+        });
+    }
+    if view.devices.is_empty() {
+        view.lines.push(line("PODxt Live USB", "none detected"));
+    }
+    view
+}
+
+fn mac_driver_status(commands: &dyn CommandRunner) -> String {
+    let kexts = commands
+        .run("kextstat", &["-l"])
+        .filter(|text| !text.trim().is_empty());
+    let extensions = commands
+        .run("systemextensionsctl", &["list"])
+        .filter(|text| !text.trim().is_empty());
+    let matches = kexts
+        .iter()
+        .chain(&extensions)
+        .flat_map(|text| text.lines())
+        .filter(|row| row.to_ascii_lowercase().contains("line6"))
+        .map(|row| row.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect::<Vec<_>>();
+    match (kexts.is_some(), extensions.is_some(), matches.is_empty()) {
+        (false, false, _) => NOT_AVAILABLE.into(),
+        (true, true, true) => {
+            "none reported among loaded kernel or listed system extensions".into()
+        }
+        (true, true, false) => matches.join("; "),
+        (true, false, _) | (false, true, _) => {
+            let (checked, unavailable) = if kexts.is_some() {
+                ("loaded kernel extensions", "system extensions")
+            } else {
+                ("listed system extensions", "loaded kernel extensions")
+            };
+            let result = if matches.is_empty() {
+                format!("none reported among {checked}")
+            } else {
+                matches.join("; ")
+            };
+            format!("{result}; {unavailable} query unavailable")
+        }
+    }
+}
+
+pub(in crate::rig_check) fn mac_host_devices(
+    commands: &dyn CommandRunner,
+    direct_usb: bool,
+) -> Vec<Line> {
+    let mut lines = vec![
+        line(
+            "Device transport",
+            if direct_usb {
+                "Direct USB for PODxt Live and its Variax connection. No Line 6 driver required."
+            } else {
+                "Direct USB unavailable in this build."
+            },
+        ),
+        line("Line 6 driver or extension", mac_driver_status(commands)),
+        line(
+            "CoreMIDI ports",
+            "not available on this OS (passive inventory does not query the MIDI server)",
+        ),
+        line("USB host controller", NOT_AVAILABLE),
+        line("USB interface driver binding", NOT_AVAILABLE),
+        line("USB device node permissions", NOT_AVAILABLE),
+        line(
+            "Device firmware",
+            if direct_usb {
+                "USB inventory does not read firmware. Step 2.1 reads PODxt Live firmware and step 3.1 reads Variax firmware."
+            } else {
+                "Not available in this build. Firmware reads require a build with direct USB support."
+            },
+        ),
+        line(
+            "PODxt Live USB-component firmware",
+            "unavailable (no verified version query)",
+        ),
+        line("Firmware installation", "unsupported"),
+    ];
+    if direct_usb {
+        lines.push(line("USB link speed", NOT_AVAILABLE));
+    }
+    lines
+}
+
+/// The command-only macOS profile. USB-enabled Rig Check uses passive IOKit
+/// observations for the PODxt Live instead of parsing profiler output.
 pub fn mac_devices(commands: &dyn CommandRunner) -> Vec<Line> {
-    let mut lines = vec![line("Collector", NOT_VERIFIED)];
+    let mut lines = mac_host_devices(commands, false);
     match commands.run("system_profiler", &["SPUSBDataType"]) {
-        Some(text) => {
+        Some(text) if !text.trim().is_empty() => {
             let devices = mac_line6_usb(&text);
             if devices.is_empty() {
-                lines.push(line("Line 6 USB device", "none connected"));
+                lines.push(line("Line 6 USB device", "none detected"));
             }
             for d in devices {
                 lines.push(line(
@@ -278,9 +415,9 @@ pub fn mac_devices(commands: &dyn CommandRunner) -> Vec<Line> {
                     format!(
                         "{} product {} location {} speed {}{}",
                         d.name,
-                        d.product_id.as_deref().unwrap_or("?"),
-                        d.location.as_deref().unwrap_or("?"),
-                        d.speed.as_deref().unwrap_or("?"),
+                        d.product_id.as_deref().unwrap_or(NOT_AVAILABLE),
+                        d.location.as_deref().unwrap_or(NOT_AVAILABLE),
+                        d.speed.as_deref().unwrap_or(NOT_AVAILABLE),
                         d.serial.as_deref().map_or(String::new(), |s| format!(
                             " serial {}",
                             crate::rig_check::redact::Redactor::serial_tag(s)
@@ -289,44 +426,18 @@ pub fn mac_devices(commands: &dyn CommandRunner) -> Vec<Line> {
                 ));
             }
         }
-        None => lines.push(line("Line 6 USB device", NOT_AVAILABLE)),
+        _ => lines.push(line("Line 6 USB device", NOT_AVAILABLE)),
     }
-    let extensions = commands
-        .run("kextstat", &["-l"])
-        .unwrap_or_default()
-        .lines()
-        .chain(
-            commands
-                .run("systemextensionsctl", &["list"])
-                .unwrap_or_default()
-                .lines(),
-        )
-        .filter(|l| l.to_ascii_lowercase().contains("line6"))
-        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
-        .collect::<Vec<_>>();
-    lines.push(line(
-        "Line 6 driver or extension",
-        if extensions.is_empty() {
-            "none found".to_string()
-        } else {
-            extensions.join("; ")
-        },
-    ));
-    lines.push(line("CoreMIDI ports", crate::MAC_CONNECTION_UNAVAILABLE));
     lines
 }
 
 pub fn mac(commands: &dyn CommandRunner) -> Vec<Line> {
     let mut lines = mac_system(commands);
-    lines.extend(
-        mac_devices(commands)
-            .into_iter()
-            .filter(|(name, _)| name != "Collector"),
-    );
+    lines.extend(mac_devices(commands));
     lines
 }
 
-/// The collector for the OS this build runs on.
+/// Command-only report for the OS this build runs on.
 pub fn this_os(commands: &dyn CommandRunner) -> Option<Vec<Line>> {
     if cfg!(target_os = "windows") {
         Some(windows(commands))
@@ -409,8 +520,98 @@ mod tests {
         assert!(usb[0].starts_with("PODxt Live product 0x4650 location 0x01100000 / 2"));
         assert!(!usb[0].contains("ABC123456"), "serial is hashed");
         assert!(value(&lines, "Line 6 driver or extension")[0].contains("com.line6.driver"));
-        let empty = mac(&Canned(BTreeMap::new()));
-        assert_eq!(value(&empty, "macOS version"), [NOT_AVAILABLE]);
+        assert!(value(&lines, "Collector").is_empty());
+        assert_eq!(
+            value(&lines, "Device transport"),
+            ["Direct USB unavailable in this build."]
+        );
+        assert!(value(&lines, "Device firmware")[0].contains("require a build with direct USB"));
+    }
+
+    #[test]
+    fn mac_passive_usb_formats_the_location_separately_from_address_and_route() {
+        let view = mac_usb_view([
+            MacUsbAttachment {
+                route: Some("1-4.3"),
+                location_id: Some(0x01430000),
+                address: Some(15),
+                midi_interfaces_present: true,
+            },
+            MacUsbAttachment {
+                route: None,
+                location_id: Some(0x01200000),
+                address: None,
+                midi_interfaces_present: false,
+            },
+            MacUsbAttachment {
+                route: None,
+                location_id: None,
+                address: Some(12),
+                midi_interfaces_present: false,
+            },
+        ]);
+        let rows = value(&view.lines, "PODxt Live USB");
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            rows[0],
+            "0e41:4650, location ID 0x01430000, port 1-4.3, address 15, MIDI interface services published"
+        );
+        assert!(rows[1].contains("location ID 0x01200000, port not available on this OS"));
+        assert!(rows[1].ends_with(
+            "address not available on this OS, MIDI interface services not both published"
+        ));
+        assert!(rows[2].contains("location ID not available on this OS"));
+        assert_eq!(view.podxt_lives().len(), 3);
+        assert_eq!(view.devices[0].port, "1-4.3");
+        assert_eq!(view.devices[1].port, "USB location 0x01200000");
+        assert_eq!(view.devices[2].port, "unavailable");
+    }
+
+    #[test]
+    fn mac_report_distinguishes_absent_unavailable_and_unsupported() {
+        let commands = Canned(BTreeMap::from([
+            ("kextstat -l".into(), "com.apple.driver.usb\n".into()),
+            ("systemextensionsctl list".into(), "0 extension(s)\n".into()),
+            ("system_profiler SPUSBDataType".into(), "USB:\n".into()),
+        ]));
+        let offline = mac_devices(&commands);
+        assert_eq!(value(&offline, "Line 6 USB device"), ["none detected"]);
+        assert_eq!(
+            value(&offline, "Line 6 driver or extension"),
+            ["none reported among loaded kernel or listed system extensions"]
+        );
+        let view = mac_usb_view([]);
+        assert_eq!(value(&view.lines, "PODxt Live USB"), ["none detected"]);
+        assert!(view.podxt_lives().is_empty());
+
+        let unavailable = Canned(BTreeMap::new());
+        let live = mac_host_devices(&unavailable, true);
+        assert!(value(&live, "Device transport")[0].starts_with("Direct USB for PODxt Live"));
+        assert!(value(&live, "CoreMIDI ports")[0].contains("does not query the MIDI server"));
+        assert_eq!(value(&live, "USB host controller"), [NOT_AVAILABLE]);
+        assert_eq!(value(&live, "Line 6 driver or extension"), [NOT_AVAILABLE]);
+        assert!(value(&live, "Device firmware")[0].contains("Step 2.1 reads PODxt Live firmware"));
+        assert!(value(&live, "Device firmware")[0].contains("step 3.1 reads Variax firmware"));
+        assert_eq!(
+            value(&live, "PODxt Live USB-component firmware"),
+            ["unavailable (no verified version query)"]
+        );
+        assert_eq!(value(&live, "Firmware installation"), ["unsupported"]);
+        let offline = mac(&unavailable);
+        assert_eq!(value(&offline, "macOS version"), [NOT_AVAILABLE]);
+        assert_eq!(value(&offline, "Line 6 USB device"), [NOT_AVAILABLE]);
+    }
+
+    #[test]
+    fn mac_driver_query_only_claims_what_was_checked() {
+        let commands = Canned(BTreeMap::from([(
+            "systemextensionsctl list".into(),
+            "0 extension(s)\n".into(),
+        )]));
+        assert_eq!(
+            mac_driver_status(&commands),
+            "none reported among listed system extensions; loaded kernel extensions query unavailable"
+        );
     }
 
     #[test]

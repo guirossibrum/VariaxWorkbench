@@ -315,36 +315,62 @@ fn engine_check(ctx: &mut Ctx<'_>) -> Result<(), String> {
 }
 
 fn computer_usb(ctx: &mut Ctx<'_>) -> Result<(), String> {
-    let view =
-        crate::hardware_gates::run_if_unlocked(crate::hardware_gates::Gate::OsDiscovery, || {
-            if ctx.port.direct_usb() {
-                Ok(UsbView {
-                    devices: ctx.port.direct_usb_inventory()?,
-                    lines: vec![("libusb".into(), ctx.port.libusb())],
-                })
-            } else if cfg!(target_os = "linux") || ctx.mode == Mode::Practice {
-                let system = ctx.port.system();
-                Ok(computer::linux::usb(&*system, &ctx.port.libusb()))
-            } else {
-                let commands = &computer::other::SystemCommands;
-                let lines = if cfg!(target_os = "macos") {
-                    computer::other::mac_devices(commands)
-                } else if cfg!(target_os = "windows") {
-                    computer::other::windows_devices(commands)
-                } else {
-                    return Err("No computer collector for this operating system.".into());
-                };
-                Ok(UsbView {
-                    devices: Vec::new(),
-                    lines,
-                })
-            }
-        })?;
+    crate::hardware_gates::run_if_unlocked(crate::hardware_gates::Gate::OsDiscovery, || {
+        if ctx.port.direct_usb() {
+            computer_direct_usb(ctx)
+        } else {
+            computer_os_usb(ctx)
+        }
+    })
+}
+
+fn computer_direct_usb(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    use computer::other::{NOT_AVAILABLE, SystemCommands, mac_host_devices};
+
+    let mut lines = mac_host_devices(&SystemCommands, true);
+    lines.push(("libusb".into(), ctx.port.libusb()));
+    let inventory = ctx.port.direct_usb_inventory();
+    match &inventory {
+        Ok(view) => lines.extend(view.lines.iter().cloned()),
+        Err(_) => lines.push(("PODxt Live USB".into(), NOT_AVAILABLE.into())),
+    }
+    // A repeated step replaces the current computer summary. The runner
+    // already retains the previous attempt with its original evidence.
+    ctx.data
+        .computer
+        .retain(|(name, _)| !lines.iter().any(|(field, _)| field == name));
+    for (name, value) in lines {
+        ctx.rec.show(format!("{name}: {value}"));
+        ctx.data.computer.push((name, value));
+    }
+    ctx.data.usb = None;
+    inventory.map(|view| ctx.data.usb = Some(view))
+}
+
+fn computer_os_usb(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    let local_usb = cfg!(target_os = "linux") || ctx.mode == Mode::Practice;
+    let view = if local_usb {
+        let system = ctx.port.system();
+        computer::linux::usb(&*system, &ctx.port.libusb())
+    } else {
+        let commands = &computer::other::SystemCommands;
+        let lines = if cfg!(target_os = "macos") {
+            computer::other::mac_devices(commands)
+        } else if cfg!(target_os = "windows") {
+            computer::other::windows_devices(commands)
+        } else {
+            return Err("No computer collector for this operating system.".into());
+        };
+        UsbView {
+            devices: Vec::new(),
+            lines,
+        }
+    };
     for (name, value) in &view.lines {
         ctx.rec.note(format!("{name}: {value}"));
         ctx.data.computer.push((name.clone(), value.clone()));
     }
-    if cfg!(target_os = "linux") || ctx.port.direct_usb() || ctx.mode == Mode::Practice {
+    if local_usb {
         ctx.rec
             .result
             .push(format!("USB devices: {}", view.devices.len()));

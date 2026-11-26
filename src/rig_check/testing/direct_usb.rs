@@ -1,7 +1,10 @@
 use super::*;
 use crate::rig_check::{
     catalogue::{RIG_GUARD, START_NOTICE, VARIAX_EVIDENCE},
-    computer::{FileSource, UsbDevice},
+    computer::{
+        FileSource, UsbView,
+        other::{MacUsbAttachment, mac_usb_view},
+    },
     port::{DirectUsb, Interface, PracticePort, RigPort},
     practice::{Faults, SimLink, SimRig, UserAction},
     run_on, run_practice,
@@ -58,6 +61,7 @@ struct Port {
     rig: Rc<RefCell<SimRig>>,
     bus: Rc<RefCell<Bus>>,
     usb: DirectUsb<FakeHandle>,
+    inventory_errors: usize,
 }
 
 impl Port {
@@ -68,6 +72,7 @@ impl Port {
             rig,
             bus: Rc::default(),
             usb: DirectUsb::default(),
+            inventory_errors: 0,
         }
     }
 
@@ -116,23 +121,18 @@ impl RigPort for Port {
         true
     }
 
-    fn direct_usb_inventory(&mut self) -> Result<Vec<UsbDevice>, String> {
-        if self.rig.borrow().faults.podxt_absent {
-            return Ok(Vec::new());
+    fn direct_usb_inventory(&mut self) -> Result<UsbView, String> {
+        if self.inventory_errors > 0 {
+            self.inventory_errors -= 1;
+            return Err("simulated IOKit inventory unavailable".into());
         }
-        Ok(vec![UsbDevice {
-            port: "1-2".into(),
+        let attached = (!self.rig.borrow().faults.podxt_absent).then_some(MacUsbAttachment {
+            route: Some("1-2"),
+            location_id: Some(0x01200000),
             address: Some(5),
-            vendor: 0x0e41,
-            product: 0x4650,
-            name: Some("PODxt Live".into()),
-            manufacturer: None,
-            serial: None,
-            speed: None,
-            bus: None,
-            interfaces: Vec::new(),
-            node: None,
-        }])
+            midi_interfaces_present: true,
+        });
+        Ok(mac_usb_view(attached))
     }
 
     fn podxt(&mut self, _step: StepId) -> Result<&mut dyn Link, String> {
@@ -225,6 +225,58 @@ fn normal_catalogue_uses_the_same_cards_and_device_transcript() {
         [Interface::Podxt, Interface::Variax, Interface::Podxt]
     );
     assert_eq!(sides.last(), Some(&Interface::Variax));
+}
+
+#[test]
+fn computer_report_preserves_passive_usb_evidence_and_inventory_errors() {
+    let location = "location ID 0x01200000, port 1-2, address 5";
+    for (connected, inventory_errors, repeat, expected) in [
+        (true, 0, false, location),
+        (false, 0, false, "none detected"),
+        (true, 1, false, "not available on this OS"),
+        (true, 1, true, location),
+    ] {
+        let mut port = Port::new(Faults {
+            podxt_absent: !connected,
+            ..Faults::default()
+        });
+        port.inventory_errors = inventory_errors;
+        let mut person = Script::run_all();
+        person.default = Decision::Skip;
+        person.overrides = vec![(StepId(0, 2), Decision::Run)];
+        person.repeat_once = repeat.then_some(StepId(0, 2));
+        let (run, _) = run_on(&mut port, &mut person, &mut NoReport, RunData::default());
+        let inventory = run.step(StepId(0, 2));
+        let inventory_failed = inventory_errors > 0 && !repeat;
+        assert_eq!(inventory.outcome.passed(), !inventory_failed);
+        if repeat {
+            assert_eq!(run.prior_attempts.len(), 1);
+            assert_eq!(
+                run.prior_attempts[0].outcome.reason(),
+                Some("simulated IOKit inventory unavailable")
+            );
+        }
+        if inventory_failed {
+            assert_eq!(
+                inventory.outcome.reason(),
+                Some("simulated IOKit inventory unavailable")
+            );
+        }
+        let mut rows = run
+            .computer
+            .iter()
+            .filter(|(name, _)| name == "PODxt Live USB");
+        let usb = rows.next().unwrap();
+        assert!(rows.next().is_none());
+        assert!(usb.1.contains(expected));
+        assert!(inventory.result.iter().any(|line| line.contains(expected)));
+        let plain = crate::rig_check::report::render_plain(&run, "fixture");
+        assert!(plain.contains(&format!("PODxt Live USB: {}", usb.1)));
+        assert!(plain.contains("Device transport: Direct USB"));
+        assert!(plain.contains("Firmware installation: unsupported"));
+        assert!(inventory.messages.is_empty());
+        assert!(port.bus.borrow().events.is_empty());
+    }
 }
 
 #[test]
