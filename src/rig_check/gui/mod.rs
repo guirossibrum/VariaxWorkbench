@@ -12,6 +12,7 @@
 pub mod raster;
 
 use super::catalogue::{self, Risk, SaveNotice, Step, StepId};
+use super::history::{self, Review};
 use super::record::{Mode, Outcome, RunRecord, StepRecord, plain_result};
 use super::runner::{Answer, Decision, Operator, Question, Retry};
 use crate::ui::chrome::section_panel;
@@ -171,14 +172,15 @@ impl Operator for ChannelOperator {
     }
 }
 
-/// The window's state. `prompt` is what is on screen now.
+/// The pending runner prompt and the optional read-only history view.
 pub struct Wizard {
     pub mode: Option<Mode>,
     pub prompt: Option<Prompt>,
     pub instruction: Option<(StepId, String, String)>,
     pub running: Option<StepId>,
     pub progress: Vec<StepRecord>,
-    reviewing: Option<StepId>,
+    reviewing: Option<Review>,
+    start_accepted: bool,
     pub messages: Vec<String>,
     pub typed: String,
     pub note: String,
@@ -199,6 +201,7 @@ impl Default for Wizard {
             running: None,
             progress: Vec::new(),
             reviewing: None,
+            start_accepted: false,
             messages: Vec::new(),
             typed: String::new(),
             note: String::new(),
@@ -269,6 +272,11 @@ fn button(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
 
 impl Wizard {
     fn reply(&mut self, reply: Reply) {
+        if matches!(reply, Reply::Accept(true))
+            && matches!(&self.prompt, Some(Prompt::Start(notice)) if notice == catalogue::START_NOTICE)
+        {
+            self.start_accepted = true;
+        }
         if let Some(tx) = &self.to_runner {
             let _ = tx.send(reply);
         }
@@ -346,6 +354,7 @@ impl Wizard {
             .color(MUTED),
         );
         ui.add_space(SPACE_8);
+        let can_review = self.can_review();
         egui::ScrollArea::vertical().show(ui, |ui| {
             for id in catalogue::RUN_ORDER {
                 let step = catalogue::step(*id).expect("catalogue step");
@@ -363,12 +372,12 @@ impl Wizard {
                     let title = RichText::new(format!("{} {}", id, step.title))
                         .size(12.0)
                         .color(if tag.is_empty() { DIM } else { TEXT });
-                    if finished.is_some() {
+                    if finished.is_some() && can_review {
                         let active = matches!(&self.prompt, Some(Prompt::Finished(record)) if record.id == *id);
                         if ui.add(egui::Button::new(title).truncate().selected(
-                            self.reviewing == Some(*id) || (self.reviewing.is_none() && active)
+                            self.reviewing == Some(Review::Result(*id)) || (self.reviewing.is_none() && active)
                         )).clicked() {
-                            self.reviewing = (!active).then_some(*id);
+                            self.reviewing = (!active).then_some(Review::Result(*id));
                             self.focus_armed = true;
                         }
                     } else {
@@ -384,6 +393,49 @@ impl Wizard {
             response.request_focus();
             self.focus_armed = false;
         }
+    }
+
+    fn can_review(&self) -> bool {
+        matches!(
+            self.prompt,
+            Some(Prompt::Card(..) | Prompt::Finished(_) | Prompt::Done { .. })
+        )
+    }
+
+    fn back_target(&self) -> Option<Review> {
+        let anchor = match self.reviewing {
+            Some(Review::Start) => return None,
+            Some(Review::Result(id)) => Some(id),
+            None => match &self.prompt {
+                Some(Prompt::Finished(record)) => Some(record.id),
+                Some(Prompt::Card(..)) => None,
+                _ => return None,
+            },
+        };
+        history::back(&self.progress, anchor, self.start_accepted)
+    }
+
+    fn go_back(&mut self) {
+        if let Some(target) = self.back_target() {
+            self.reviewing = Some(target);
+            self.focus_armed = true;
+        }
+    }
+
+    fn review_navigation(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            let resume = button(ui, "Return to current step", true).on_hover_text("Continue (C)");
+            self.focus_once(&resume);
+            let back = button(ui, "Back", self.back_target().is_some());
+            if resume.clicked()
+                || ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::C))
+            {
+                self.reviewing = None;
+                self.focus_armed = true;
+            } else if back.clicked() {
+                self.go_back();
+            }
+        });
     }
 
     fn central(&mut self, ui: &mut egui::Ui) {
@@ -416,11 +468,31 @@ impl Wizard {
             });
             return;
         }
-        if let Some(id) = self.reviewing
-            && let Some(record) = self.progress.iter().find(|record| record.id == id).cloned()
+        if self.back_target().is_some()
+            && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Backspace))
         {
-            self.result(ui, &record, false);
-            return;
+            self.go_back();
+        }
+        match self.reviewing {
+            Some(Review::Start) => {
+                section_panel(ui, "Start notice (accepted)", |ui| {
+                    ui.label(
+                        RichText::new(catalogue::START_NOTICE)
+                            .size(BODY + 1.0)
+                            .color(TEXT),
+                    );
+                });
+                ui.add_space(SPACE_16);
+                self.review_navigation(ui);
+                return;
+            }
+            Some(Review::Result(id)) => {
+                if let Some(record) = self.progress.iter().find(|record| record.id == id).cloned() {
+                    self.result(ui, &record, false);
+                    return;
+                }
+            }
+            None => {}
         }
         if let Some((step, see, hear)) = self.instruction.clone()
             && self.prompt.is_none()
@@ -483,25 +555,23 @@ impl Wizard {
             });
         }
         ui.add_space(SPACE_16);
-        ui.horizontal(|ui| {
-            if awaiting {
+        if awaiting {
+            ui.horizontal(|ui| {
                 let next = button(ui, "Continue", true);
                 self.focus_once(&next);
                 let stop = button(ui, "Stop", true);
-                if next.clicked() {
+                let back = button(ui, "Back", self.back_target().is_some());
+                if back.clicked() {
+                    self.go_back();
+                } else if next.clicked() {
                     self.reply(Reply::Continue(true));
                 } else if stop.clicked() {
                     self.reply(Reply::Continue(false));
                 }
-            } else {
-                let back = button(ui, "Back", true);
-                self.focus_once(&back);
-                if back.clicked() {
-                    self.reviewing = None;
-                    self.focus_armed = true;
-                }
-            }
-        });
+            });
+        } else {
+            self.review_navigation(ui);
+        }
     }
 
     fn waiting(&mut self, ui: &mut egui::Ui) {
@@ -612,6 +682,7 @@ impl Wizard {
             self.focus_once(&skip);
             let run = button(ui, "Run  (R)", true);
             let stop = button(ui, "Stop the run  (Q)", true);
+            let back = button(ui, "Back", self.back_target().is_some());
             let keys = ui.input(|i| {
                 (
                     i.key_pressed(egui::Key::R),
@@ -619,7 +690,9 @@ impl Wizard {
                     i.key_pressed(egui::Key::Q),
                 )
             });
-            if skip.clicked() || keys.1 {
+            if back.clicked() {
+                self.go_back();
+            } else if skip.clicked() || keys.1 {
                 self.reply(Reply::Decision(Decision::Skip));
             } else if run.clicked() || keys.0 {
                 self.reply(Reply::Decision(Decision::Run));
@@ -904,6 +977,7 @@ pub fn mockup_states() -> Vec<(&'static str, Wizard)> {
     }
     let with_progress = |mut wizard: Wizard, upto: usize| {
         wizard.progress = done[..upto].to_vec();
+        wizard.start_accepted = true;
         wizard
     };
     let mut states = vec![
@@ -917,7 +991,7 @@ pub fn mockup_states() -> Vec<(&'static str, Wizard)> {
         ("02-start-notice", practice(Some(Prompt::Start(START_NOTICE.into())))),
         (
             "03-step-card-read",
-            with_progress(practice(Some(Prompt::Card(StepId(2, 1), Mode::Practice))), 5),
+            with_progress(practice(Some(Prompt::Card(StepId(1, 1), Mode::Practice))), 3),
         ),
         (
             "04-step-card-live",
@@ -1007,6 +1081,21 @@ pub fn mockup_states() -> Vec<(&'static str, Wizard)> {
     result.progress.push(record);
     result.focus_armed = true;
     states.push(("11-step-result", result));
+    let mut history = with_progress(
+        practice(Some(Prompt::Card(StepId(2, 2), Mode::Practice))),
+        6,
+    );
+    history
+        .progress
+        .last_mut()
+        .unwrap()
+        .show("PODxt Live, firmware 3.01 (verified device)");
+    history.go_back();
+    states.push(("12-review-result", history));
+    let mut start = practice(Some(Prompt::Card(StepId(0, 1), Mode::Practice)));
+    start.start_accepted = true;
+    start.go_back();
+    states.push(("13-review-start", start));
     states
 }
 

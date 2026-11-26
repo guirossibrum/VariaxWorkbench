@@ -1,6 +1,7 @@
 //! Terminal front end. Every answer defaults to "do not run".
 
-use super::catalogue::{SaveNotice, Step, StepId};
+use super::catalogue::{START_NOTICE, SaveNotice, Step, StepId};
+use super::history::{self, Review};
 use super::record::{Mode, StepRecord, plain_result};
 use super::runner::{Answer, Decision, Operator, Question, Retry};
 use std::io::{BufRead, Write};
@@ -8,11 +9,18 @@ use std::io::{BufRead, Write};
 pub struct Terminal<R, W> {
     input: R,
     output: W,
+    results: Vec<StepRecord>,
+    start_accepted: bool,
 }
 
 impl<R: BufRead, W: Write> Terminal<R, W> {
     pub fn new(input: R, output: W) -> Self {
-        Self { input, output }
+        Self {
+            input,
+            output,
+            results: Vec::new(),
+            start_accepted: false,
+        }
     }
 
     fn say(&mut self, text: &str) {
@@ -20,13 +28,60 @@ impl<R: BufRead, W: Write> Terminal<R, W> {
         let _ = self.output.flush();
     }
 
+    fn response(&mut self) -> Option<String> {
+        let mut text = String::new();
+        (self.input.read_line(&mut text).unwrap_or(0) != 0).then(|| text.trim().to_owned())
+    }
+
     /// One trimmed line; end of input counts as an empty answer (the default).
     fn line(&mut self) -> String {
-        let mut text = String::new();
-        if self.input.read_line(&mut text).unwrap_or(0) == 0 {
-            return String::new();
+        self.response().unwrap_or_default()
+    }
+
+    fn show_result(&mut self, record: &StepRecord) {
+        self.say(&format!(
+            "--- {} {} — {}",
+            record.id,
+            record.title,
+            record.outcome.label()
+        ));
+        for line in record.result_lines() {
+            self.say(&format!("    {line}"));
         }
-        text.trim().to_owned()
+    }
+
+    fn review(&mut self, mut view: Review) {
+        loop {
+            let previous = match view {
+                Review::Start => {
+                    self.say("Start notice (accepted)");
+                    self.say(START_NOTICE);
+                    None
+                }
+                Review::Result(id) => {
+                    let Some(record) = self.results.iter().find(|record| record.id == id).cloned()
+                    else {
+                        break;
+                    };
+                    self.show_result(&record);
+                    history::back(&self.results, Some(id), self.start_accepted)
+                }
+            };
+            if previous.is_some() {
+                self.say("[b] Back   [c] Continue / Return to current step.   Enter = Return");
+            } else {
+                self.say("[c] Continue / Return to current step.   Enter = Return");
+            }
+            match self.line().to_ascii_lowercase().as_str() {
+                "b" | "back" => {
+                    if let Some(previous) = previous {
+                        view = previous;
+                    }
+                }
+                "" | "c" | "continue" | "return" => break,
+                _ => {}
+            }
+        }
     }
 
     pub fn into_output(self) -> W {
@@ -63,17 +118,30 @@ impl<R: BufRead, W: Write> Operator for Terminal<R, W> {
     fn accept_start(&mut self, notice: &str) -> bool {
         self.say(notice);
         self.say("\nType accept to start. Anything else quits. [Quit]");
-        matches!(self.line().to_ascii_lowercase().as_str(), "accept" | "a")
+        let accepted = matches!(self.line().to_ascii_lowercase().as_str(), "accept" | "a");
+        self.start_accepted |= accepted && notice == START_NOTICE;
+        accepted
     }
 
     fn confirm(&mut self, step: &Step, mode: Mode) -> Decision {
         let card = card_text(step, mode);
-        self.say(&card);
-        self.say("[r] Run   [s] Skip   [q] Stop the run.   Enter = Skip (do not run)");
-        match self.line().to_ascii_lowercase().as_str() {
-            "r" | "run" => Decision::Run,
-            "q" | "stop" => Decision::Stop,
-            _ => Decision::Skip,
+        let back = history::back(&self.results, None, self.start_accepted);
+        loop {
+            self.say(&card);
+            let label = if back.is_some() { "[b] Back   " } else { "" };
+            self.say(&format!(
+                "{label}[r] Run   [s] Skip   [q] Stop the run.   Enter = Skip (do not run)"
+            ));
+            match self.line().to_ascii_lowercase().as_str() {
+                "r" | "run" => return Decision::Run,
+                "q" | "stop" => return Decision::Stop,
+                "b" | "back" => {
+                    if let Some(back) = back {
+                        self.review(back);
+                    }
+                }
+                _ => return Decision::Skip,
+            }
         }
     }
 
@@ -122,27 +190,30 @@ impl<R: BufRead, W: Write> Operator for Terminal<R, W> {
     }
 
     fn finished(&mut self, record: &StepRecord) -> bool {
-        self.say(&format!(
-            "--- {} {} — {}",
-            record.id,
-            record.title,
-            record.outcome.label()
-        ));
-        for line in record.result_lines() {
-            self.say(&format!("    {line}"));
-        }
+        self.show_result(record);
+        self.results.retain(|previous| previous.id != record.id);
+        self.results.push(record.clone());
         if record.started.is_none() {
             return true;
         }
+        let back = history::back(&self.results, Some(record.id), self.start_accepted);
         loop {
-            self.say("[c] Continue   [q] Stop.   Enter = Continue");
-            let mut response = String::new();
-            if self.input.read_line(&mut response).unwrap_or(0) == 0 {
+            let label = if back.is_some() { "[b] Back   " } else { "" };
+            self.say(&format!(
+                "{label}[c] Continue   [q] Stop.   Enter = Continue"
+            ));
+            let Some(response) = self.response() else {
                 return false;
-            }
-            match response.trim().to_ascii_lowercase().as_str() {
+            };
+            match response.to_ascii_lowercase().as_str() {
                 "" | "c" | "continue" => return true,
                 "q" | "stop" => return false,
+                "b" | "back" => {
+                    if let Some(back) = back {
+                        self.review(back);
+                        self.show_result(record);
+                    }
+                }
                 _ => {}
             }
         }
@@ -177,5 +248,76 @@ mod tests {
         assert!(text.contains("FAILED") && text.contains("Hint: Check the cable."));
         assert!(!text.contains("0x3C") && !text.contains("f0 00 01") && !text.contains("F7"));
         assert_eq!(text.matches("[c] Continue").count(), 3);
+    }
+    #[test]
+    fn terminal_back_replays_history_without_sending_messages_and_resumes_the_same_prompt() {
+        use crate::rig_check::{
+            port::PracticePort,
+            practice::{Faults, SimRig},
+            run_on,
+            runner::NoReport,
+            steps::RunData,
+        };
+        use std::{
+            cell::RefCell,
+            io::{Cursor, Read},
+            rc::Rc,
+        };
+
+        struct CountedInput<'a> {
+            input: Cursor<Vec<u8>>,
+            rig: Rc<RefCell<SimRig>>,
+            counts: &'a mut Vec<usize>,
+        }
+        impl Read for CountedInput<'_> {
+            fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                self.input.read(out)
+            }
+        }
+        impl BufRead for CountedInput<'_> {
+            fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+                self.input.fill_buf()
+            }
+            fn consume(&mut self, amount: usize) {
+                self.input.consume(amount);
+            }
+            fn read_line(&mut self, line: &mut String) -> std::io::Result<usize> {
+                self.counts.push(self.rig.borrow().written.len());
+                self.input.read_line(line)
+            }
+        }
+
+        let mut commands = vec!["accept", "b", "c"];
+        for _ in 0..5 {
+            commands.extend(["r", "c"]);
+        }
+        commands.push("r"); // 2.1 actually sends an identity request.
+        let start_history = commands.len();
+        commands.extend(["b", "b", "c", "c", "b", "c", "q", "s"]);
+        let rig = SimRig::shared(Faults::default());
+        let mut counts = Vec::new();
+        let mut port = PracticePort::new(rig.clone());
+        let mut terminal = Terminal::new(
+            CountedInput {
+                input: Cursor::new((commands.join("\n") + "\n").into_bytes()),
+                rig,
+                counts: &mut counts,
+            },
+            Vec::new(),
+        );
+        let (run, _) = run_on(&mut port, &mut terminal, &mut NoReport, RunData::default());
+        let output = String::from_utf8(terminal.into_output()).unwrap();
+        assert!(output.contains("Start notice (accepted)") && output.contains("[b] Back"));
+        assert!(output.contains("Return to current step"));
+        assert_eq!(output.matches("=== Step 2.2:").count(), 2);
+        assert_eq!(run.stopped_at, Some(StepId(2, 2)));
+        assert!(run.step(StepId(2, 1)).outcome.passed());
+        assert_eq!(counts.len(), commands.len());
+        assert!(counts[start_history] > 0);
+        assert!(
+            counts[start_history..]
+                .iter()
+                .all(|&count| count == counts[start_history])
+        );
     }
 }

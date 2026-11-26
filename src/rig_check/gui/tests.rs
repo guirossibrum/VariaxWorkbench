@@ -276,7 +276,7 @@ fn the_channel_operator_runs_practice_mode_from_another_thread() {
 #[test]
 fn mockups_render_headless() {
     let states = mockup_states();
-    assert_eq!(states.len(), 11);
+    assert_eq!(states.len(), 13);
     let (_, mut wizard) = mockup_states().into_iter().nth(2).unwrap();
     let image = raster::render(400, 300, |ctx| wizard.show(ctx));
     let mut colours = std::collections::BTreeSet::new();
@@ -332,7 +332,7 @@ fn clicking_a_finished_step_replays_it_without_continuing_the_active_result() {
             .iter()
             .any(|line| line == "PODxt Live, firmware 3.01 (verified device)")
     );
-    assert!(replay.iter().any(|line| line == "Back"));
+    assert!(replay.iter().any(|line| line == "Return to current step"));
     assert!(rx.try_recv().is_err());
 
     frame(&ctx, &mut wizard, vec![key(Key::Enter)]);
@@ -376,4 +376,52 @@ fn stop_at_a_result_offers_the_guard_without_offering_another_step() {
     let run = worker.join().unwrap();
     assert_eq!(run.stopped_at, Some(StepId(0, 1)));
     assert_eq!(run.step(StepId(0, 2)).outcome, Outcome::NotReached);
+}
+
+#[test]
+fn backspace_reviews_previous_results_and_c_resumes_the_same_card() {
+    let ctx = egui::Context::default();
+    let pending = StepId(2, 2);
+    let (mut wizard, replies) = wired(Prompt::Card(pending, Mode::Practice));
+    wizard.start_accepted = true;
+    for id in [StepId(1, 2), StepId(2, 1)] {
+        let mut record = StepRecord::new(id);
+        record.outcome = Outcome::Passed;
+        wizard.progress.push(record);
+    }
+    frame(&ctx, &mut wizard, Vec::new());
+    let lines = frame(&ctx, &mut wizard, vec![key(Key::Backspace)]);
+    assert!(lines.iter().any(|line| line == "Step 2.1 result"));
+    assert!(lines.iter().any(|line| line == "Return to current step"));
+    assert!(!lines.iter().any(|line| line == "Run  (R)"));
+    frame(&ctx, &mut wizard, Vec::new());
+    let lines = frame(&ctx, &mut wizard, vec![key(Key::Backspace)]);
+    assert!(lines.iter().any(|line| line == "Step 1.2 result"));
+    frame(&ctx, &mut wizard, vec![key(Key::R)]);
+    assert!(replies.try_recv().is_err());
+    frame(&ctx, &mut wizard, vec![key(Key::C)]);
+    let lines = frame(&ctx, &mut wizard, Vec::new());
+    assert!(lines.iter().any(|line| line == "Step 2.2"));
+    assert!(matches!(wizard.prompt, Some(Prompt::Card(id, _)) if id == pending));
+    assert_eq!(wizard.progress.len(), 2);
+    assert!(wizard.progress.iter().all(|record| record.outcome.passed()));
+    assert!(replies.try_recv().is_err());
+}
+
+#[test]
+fn first_card_back_shows_the_already_accepted_start_notice() {
+    let ctx = egui::Context::default();
+    let (mut wizard, replies) = wired(Prompt::Start(catalogue::START_NOTICE.into()));
+    wizard.reply(Reply::Accept(true));
+    assert!(matches!(replies.try_recv(), Ok(Reply::Accept(true))));
+    wizard.prompt = Some(Prompt::Card(StepId(0, 1), Mode::Practice));
+    frame(&ctx, &mut wizard, Vec::new());
+    let lines = frame(&ctx, &mut wizard, vec![key(Key::Backspace)]);
+    assert!(lines.iter().any(|line| line == "Start notice (accepted)"));
+    assert!(
+        !lines
+            .iter()
+            .any(|line| line == "Accept and continue" || line == "Quit")
+    );
+    assert!(replies.try_recv().is_err());
 }

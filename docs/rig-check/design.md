@@ -19,6 +19,8 @@ theme (`src/shared/ui/theme.rs`) and `section_panel`. No Line 6 art is used.
 | Save notice naming the slot and the backup; Save stays disabled until the confirmation is typed exactly | [09-save-notice.png](mockups/09-save-notice.png) |
 | Summary with rig state, results preview and Save report | [10-summary-preview.png](mockups/10-summary-preview.png) |
 | Step result with the channel name, a display check, Continue and Stop | [11-step-result.png](mockups/11-step-result.png) |
+| Reviewing an earlier result | [12-review-result.png](mockups/12-review-result.png) |
+| Reviewing the accepted start notice | [13-review-start.png](mockups/13-review-start.png) |
 
 ## Owner release
 
@@ -43,9 +45,15 @@ testing the app's matching writes.
 - **Continue** starts with focus on the result screen. It returns to the next
   card, which still requires its own Run choice. **Stop** ends the run and
   offers the closing rig check in a normal run.
-- Selecting a finished step in the left list reopens its result. **Back**
-  returns to the pending screen without continuing the run.
-- The terminal uses the same result text. Raw bytes and full hashes stay
+- **Back** or **Backspace** opens the previous recorded result from a step
+  card or result. At the beginning, Back opens the accepted start notice
+  for review. The sidebar also opens recorded results.
+- **Return to current step** resumes the pending card or result. Press
+  **C** to return while reviewing, or Enter when the Return button has focus.
+  History navigation preserves the original outcomes and sends no device
+  messages. The save prerequisites stay in effect.
+- The terminal offers **[b] Back** and **[c] Continue / Return to current
+  step**, and uses the same result text. Raw bytes and full hashes stay
   in the saved report. The summary preview shows the plain step results.
 - **HEAR / SEE** are 34 px, readable from where the guitar is.
 - Status is never colour alone: the progress list shows PASS / FAIL / SKIP /

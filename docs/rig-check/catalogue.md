@@ -1,6 +1,6 @@
 # Rig Check test catalogue
 
-**Catalogue version: 1.2 (2026-11-25).** Every report quotes this version.
+**Catalogue version: 1.3 (2026-11-25).** Every report quotes this version.
 Epic [#243](https://github.com/guirossibrum/VariaxWorkbench/issues/243) ·
 catalogue [#244](https://github.com/guirossibrum/VariaxWorkbench/issues/244).
 
@@ -220,6 +220,9 @@ so they can be read from where the guitar is.
 - **Risk:** None. Failure texts: device absent, more than one PODxt Live,
   permission denied.
 - **Evidence:** vendor/product ID, port path, speed, address.
+
+The USB list cannot show firmware. Step 2.1 checks the PODxt Live
+firmware, and step 3.1 checks the Variax firmware.
 
 ### 1.2 Open and give back the guitar interface
 - **What it does:** Opens the PODxt Live's guitar interface (interface 1),
@@ -466,6 +469,7 @@ return to your starting preset.
 
 ## Changes
 
+- 1.3 (2026-11-25): clarified where firmware is checked and added result navigation (#276).
 - 1.2 (2026-11-25): added app-message and Follow coverage and strict save prerequisites.
 - 1.1 (2026-11-25): added the conditional Variax firmware evidence step (#271).
 - 1.0 (2026-11-25): first catalogue.

@@ -25,6 +25,7 @@ pub mod evidence;
 pub mod gui;
 pub mod guided;
 pub mod hints;
+mod history;
 pub mod live;
 pub mod podxt_reads;
 pub mod podxt_save;

@@ -6,7 +6,7 @@
 use crate::hardware_gates::Gate;
 use std::fmt;
 
-pub const CATALOGUE_VERSION: &str = "1.2";
+pub const CATALOGUE_VERSION: &str = "1.3";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StepId(pub u8, pub u8);
@@ -167,7 +167,7 @@ pub static STEPS: &[Step] = &[
         evidence: "Per model: words compared, differences with position, expected/actual hex, XOR mask and sound part.",
         proof: "#238 sweep, synthetic host fixtures"),
     step!((1, 1), "See the PODxt Live on USB", Device, [(0, 2)], [G1], None,
-        does: "Looks for exactly one PODxt Live in the USB list and notes its port and speed.",
+        does: "Looks for exactly one PODxt Live in the USB list and notes its port and speed. USB discovery cannot show the firmware. Step 2.1 checks the PODxt Live firmware and step 3.1 checks the Variax firmware.",
         you_do: "Make sure the PODxt Live is on and connected by USB.", see: "PODxt Live found on port ...", hear: "Nothing.",
         evidence: "Vendor/product ID, port path, speed, address, interface drivers.",
         proof: "#213"),
