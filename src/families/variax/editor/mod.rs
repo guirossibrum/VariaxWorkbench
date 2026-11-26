@@ -22,6 +22,8 @@ use new_files::{BankRename, NewFile};
 mod slot_files;
 mod slot_transfers;
 mod startup_library;
+#[cfg(all(feature = "usb", any(target_os = "linux", test)))]
+mod string_volume;
 use slot_files::SlotReplacement;
 use slot_transfers::SlotTransfer;
 use startup_library::{LibraryImport, LibraryOrigin};
@@ -136,6 +138,8 @@ pub(super) struct VariaxEditor {
     live_edit: live_edit::LiveEdit,
     #[cfg(feature = "usb")]
     device_sync: device_sync::DeviceSync,
+    #[cfg(all(feature = "usb", any(target_os = "linux", test)))]
+    string_volume: string_volume::Setup,
     catalog: Vec<ModelArt>,
     artwork: PathBuf,
     pub(super) textures: HashMap<String, body_scene::ArtworkTexture>,
@@ -231,6 +235,8 @@ impl VariaxEditor {
             live_edit: live_edit::LiveEdit::new(defaults.preferences.as_deref()),
             #[cfg(feature = "usb")]
             device_sync: Default::default(),
+            #[cfg(all(feature = "usb", any(target_os = "linux", test)))]
+            string_volume: Default::default(),
             catalog: load_catalog(),
             artwork,
             textures: HashMap::new(),
@@ -360,6 +366,10 @@ impl VariaxEditor {
     pub(super) fn is_reading(&self) -> bool {
         #[cfg(test)]
         if self.read_receiver.is_some() {
+            return true;
+        }
+        #[cfg(all(feature = "usb", any(target_os = "linux", test)))]
+        if self.string_volume.active() {
             return true;
         }
         #[cfg(feature = "usb")]
@@ -1378,6 +1388,8 @@ impl FamilyTab for VariaxEditor {
             self.follow.observe(device);
             let attachment = device.and_then(live_attachment::Attachment::verified);
             self.live_edit.observe(attachment.clone());
+            #[cfg(all(feature = "usb", any(target_os = "linux", test)))]
+            self.string_volume.observe(attachment.clone());
             self.device_sync.observe(attachment);
         }
     }
@@ -1390,6 +1402,8 @@ impl FamilyTab for VariaxEditor {
             self.poll_follow(ctx);
             self.poll_edit_buffer(ctx);
         }
+        #[cfg(all(feature = "usb", any(target_os = "linux", test)))]
+        self.poll_string_volume(ctx);
         #[cfg(test)]
         self.poll_read();
         if self.is_reading() {
@@ -1413,6 +1427,8 @@ impl FamilyTab for VariaxEditor {
             self.refresh_confirmation(ctx);
             self.sync_dialog(ctx);
         }
+        #[cfg(all(feature = "usb", any(target_os = "linux", test)))]
+        self.string_volume_dialog(ctx);
     }
     fn busy(&self) -> bool {
         #[cfg(feature = "usb")]
@@ -1425,10 +1441,16 @@ impl FamilyTab for VariaxEditor {
         self.cancel_read();
         #[cfg(feature = "usb")]
         self.live_edit.stop();
+        #[cfg(all(feature = "usb", any(target_os = "linux", test)))]
+        self.string_volume.cancel();
     }
     fn blocking_prompt(&self) -> bool {
         #[cfg(feature = "usb")]
         if self.refresh.confirming() || self.device_sync.prompting() {
+            return true;
+        }
+        #[cfg(all(feature = "usb", any(target_os = "linux", test)))]
+        if self.string_volume.active() {
             return true;
         }
         self.pending.is_some()
@@ -1444,6 +1466,8 @@ impl FamilyTab for VariaxEditor {
         self.new_file_menu(ui, services);
         #[cfg(feature = "usb")]
         self.sync_button(ui);
+        #[cfg(all(feature = "usb", any(target_os = "linux", test)))]
+        self.string_volume_button(ui);
         #[cfg(feature = "usb")]
         let has_download = {
             let ready = self.download_target_ready();
