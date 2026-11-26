@@ -3,14 +3,13 @@
 //! Platform integration contract
 //!
 //! - The caller enters through the existing gated workflow and selects the
-//!   verified attachment under its rig lock. The macOS adapter borrows that
-//!   lock from open through release and handle drop.
+//!   verified attachment under its rig lock. Both adapters borrow that
+//!   lock through checked finalization and handle drop.
 //! - On macOS use a fresh borrowed interface-0 USB handle and call its
 //!   fallible `finish()` exactly once before dropping it. Do not wrap an
 //!   already-finalized handle because repeated `finish()` can return success.
-//! - On Linux the existing ALSA link closes through `Drop` with no observable
-//!   result. The transport owner must define and implement a checked close
-//!   boundary on that exact handle before adding a Linux adapter.
+//! - On Linux retain the raw MIDI attachment token from selection, open a
+//!   fresh scoped link against that token, and consume it with checked close.
 //! - Capture with the existing read-only policy. Stage from the immutable
 //!   `FinalizedCapture::library`, validate the staged directory, then call
 //!   `bind`. A receipt proves that this finalized sweep agrees with the
@@ -100,18 +99,27 @@ pub fn capture_library<L: CaptureLink>(
     } else {
         Err("PODxt capture requires the PODxt MIDI link.".into())
     };
-    let library = match (read, link.finish_capture()) {
-        (Ok(library), Ok(())) => library,
-        (Err(error), Ok(())) => return Err(error),
-        (Ok(_), Err(error)) => return Err(format!("PODxt capture link cleanup failed: {error}")),
-        (Err(read), Err(finish)) => {
-            return Err(format!(
-                "{read} PODxt capture link cleanup also failed: {finish}"
-            ));
-        }
-    };
+    let checked = read.and_then(|library| {
+        check_complete(&library)?;
+        Ok(library)
+    });
+    match (checked, link.finish_capture()) {
+        (Ok(library), Ok(())) => Ok(FinalizedCapture { library }),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(format!("PODxt capture link cleanup failed: {error}")),
+        (Err(read), Err(finish)) => Err(format!(
+            "{read} PODxt capture link cleanup also failed: {finish}"
+        )),
+    }
+}
 
-    if library.stopped.is_some() || library.entries.len() != Location::all(&BankKind::ALL).count() {
+fn check_complete(library: &Library) -> Result<(), String> {
+    if let Some(reason) = &library.stopped {
+        return Err(format!(
+            "The PODxt capture stopped before completion: {reason}."
+        ));
+    }
+    if library.entries.len() != Location::all(&BankKind::ALL).count() {
         return Err("The PODxt capture stopped before completion.".into());
     }
     let identity =
@@ -124,5 +132,5 @@ pub fn capture_library<L: CaptureLink>(
     if !library.before.same_tone(after) {
         return Err("The PODxt playing tone changed during the capture.".into());
     }
-    Ok(FinalizedCapture { library })
+    Ok(())
 }

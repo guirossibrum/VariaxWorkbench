@@ -1,4 +1,4 @@
-use super::super::macos_usb::capture_fresh_usb;
+use super::super::{fresh::capture_fresh, macos_usb::capture_fresh_usb};
 use super::*;
 use crate::{
     family::podxt::PodxtRequest,
@@ -77,9 +77,6 @@ impl Link for ScopedFake<'_> {
     fn read(&mut self, wait: Duration) -> Result<Option<Vec<u8>>, String> {
         assert!(self.lock.0.held.get());
         self.lock.0.reads.set(self.lock.0.reads.get() + 1);
-        if self.lock.0.cancelled.get() {
-            return Err("synthetic capture cancelled".into());
-        }
         self.fake.read(wait)
     }
 
@@ -242,10 +239,10 @@ fn cancellation_still_finalizes_under_lock_and_issues_no_proof() {
         let mut replies = script(&library);
         replies.truncate(cancel_after + 2); // Identity, opening tone, then addressed reads.
         let mut slots_read = 0;
-        let result = capture_fresh_usb(
-            || Ok(()),
+        let result = capture_fresh(
             || Ok(ScopedFake::open(&trace, replies, fail_finish)),
-            ScopedFake::finish,
+            |mut link| link.finish(),
+            &|| trace.cancelled.get(),
             &ReadsOnly,
             &mut Quiet,
             |_| {
@@ -257,7 +254,7 @@ fn cancellation_still_finalizes_under_lock_and_issues_no_proof() {
         );
 
         let error = result.err().unwrap();
-        assert!(error.contains("synthetic capture cancelled"), "{error}");
+        assert!(error.contains("PODxt capture cancelled"), "{error}");
         assert_eq!(error.contains("synthetic release failure"), fail_finish);
         assert_eq!(slots_read, cancel_after);
         assert_eq!(trace.writes.get(), cancel_after + 2);
@@ -267,20 +264,79 @@ fn cancellation_still_finalizes_under_lock_and_issues_no_proof() {
 }
 
 #[test]
-fn closing_read_failure_with_successful_cleanup_issues_no_proof() {
+fn cancelled_before_open_or_during_successful_close_issues_no_proof() {
+    let result = capture_fresh(
+        || panic!("a cancelled capture must not open a link"),
+        |_: ScopedFake<'_>| panic!("there is no link to close"),
+        &|| true,
+        &ReadsOnly,
+        &mut Quiet,
+        |_| panic!("a cancelled capture cannot read a slot"),
+    );
+    assert_eq!(result.err().as_deref(), Some("PODxt capture cancelled."));
+
     let trace = Trace::default();
-    let mut library = capture();
-    library.after = Err("missing closing dump".into());
-    let result = capture_fresh_usb(
-        || Ok(()),
-        || Ok(ScopedFake::open(&trace, script(&library), false)),
-        ScopedFake::finish,
+    let result = capture_fresh(
+        || Ok(ScopedFake::open(&trace, script(&capture()), false)),
+        |mut link| {
+            let result = link.finish();
+            trace.cancelled.set(true);
+            result
+        },
+        &|| trace.cancelled.get(),
         &ReadsOnly,
         &mut Quiet,
         |_| {},
     );
-    assert!(result.err().unwrap().contains("closing read failed"));
+    assert_eq!(result.err().as_deref(), Some("PODxt capture cancelled."));
     assert_eq!(trace.writes.get(), 302);
+    assert_eq!(trace.finalized.get(), 1);
+    assert!(!trace.held.get());
+}
+
+#[test]
+fn closing_read_failure_issues_no_proof_and_preserves_a_close_error() {
+    let mut library = capture();
+    library.after = Err("missing closing dump".into());
+    for fail_finish in [false, true] {
+        let trace = Trace::default();
+        let result = capture_fresh(
+            || Ok(ScopedFake::open(&trace, script(&library), fail_finish)),
+            |mut link| link.finish(),
+            &|| false,
+            &ReadsOnly,
+            &mut Quiet,
+            |_| {},
+        );
+        let error = result.err().unwrap();
+        assert!(error.contains("closing read failed"), "{error}");
+        assert_eq!(error.contains("synthetic release failure"), fail_finish);
+        assert_eq!(trace.writes.get(), 302);
+        assert_eq!(trace.finalized.get(), 1);
+        assert!(!trace.held.get());
+    }
+}
+
+#[test]
+fn missing_stored_dump_issues_no_proof_and_preserves_a_close_error() {
+    let trace = Trace::default();
+    let mut library = capture();
+    library.entries.truncate(1);
+    let mut replies = script(&library);
+    replies[2].1.clear();
+    let result = capture_fresh(
+        || Ok(ScopedFake::open(&trace, replies, true)),
+        |mut link| link.finish(),
+        &|| false,
+        &ReadsOnly,
+        &mut Quiet,
+        |_| panic!("the stored dump is missing"),
+    );
+    let error = result.err().unwrap();
+    assert!(error.contains("stopped before completion"), "{error}");
+    assert!(error.contains("no 168-byte dump"), "{error}");
+    assert!(error.contains("synthetic release failure"), "{error}");
+    assert_eq!(trace.writes.get(), 4);
     assert_eq!(trace.finalized.get(), 1);
     assert!(!trace.held.get());
 }

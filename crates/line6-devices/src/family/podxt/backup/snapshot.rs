@@ -5,9 +5,15 @@
 //! The family sweep returns before transport release. Workbench drops the
 //! Linux ALSA handle and checks the Mac USB release outside the family sweep.
 //! The provenance seam binds the sweep and its finalization to the same
-//! scoped link. The macOS USB adapter uses the transport's checked release.
+//! scoped link. The Linux ALSA and macOS USB adapters use checked finalization.
 //! Existing explicit backup imports use the legacy loader.
 
+#[cfg(any(test, target_os = "linux", all(feature = "usb", target_os = "macos")))]
+mod fresh;
+#[cfg(target_os = "linux")]
+mod linux_raw_midi;
+#[cfg(target_os = "linux")]
+pub use linux_raw_midi::LinuxSnapshotAttachment;
 #[cfg(any(test, all(feature = "usb", target_os = "macos")))]
 mod macos_usb;
 mod provenance;
