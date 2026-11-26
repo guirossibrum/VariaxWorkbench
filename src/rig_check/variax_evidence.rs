@@ -200,16 +200,17 @@ mod tests {
     use super::*;
     use crate::rig_check::{
         approvals,
-        catalogue::{RIG_GUARD, StepId, VARIAX_EVIDENCE},
+        catalogue::{self, Kind, RIG_GUARD, RUN_ORDER, Risk, StepId, VARIAX_EVIDENCE},
         port::PracticePort,
         practice::{Faults, SimRig},
-        record::Outcome,
+        record::{Outcome, sha256_hex},
         report::render_plain,
         run_on, run_practice,
         runner::{Decision, NoReport},
         steps::RunData,
         testing::Script,
     };
+    use line6_devices::{family::variax::span_read::PresetSpan, session::Request};
     use std::{cell::RefCell, rc::Rc};
 
     fn unverified() -> Faults {
@@ -334,6 +335,126 @@ mod tests {
         );
         assert!(step.messages.is_empty());
         assert!(rig.borrow().driver_bound && !rig.borrow().variax_claimed);
+    }
+
+    #[test]
+    fn mid_read_failure_saves_partial_evidence_and_leaves_the_run_read_only() {
+        let malformed = vec![0xf0, 0, 1, 0x0c, 7, 4, 0x3c, 0, 0xf7];
+        let span = |start| hex(&PresetSpan::new(start, 32).unwrap().bytes());
+        for (bad_replies, retries, reason) in [
+            (
+                vec![],
+                0,
+                "Timed out waiting for a complete 200-byte 0x3C reply ending in F7.",
+            ),
+            (
+                vec![malformed.clone(); 3],
+                2,
+                "Variax 0x3C reply has 9 bytes, expected 200. Failed after 3 attempts.",
+            ),
+        ] {
+            let mut model = SimRig::new(unverified());
+            let mut replies = model.variax_evidence_replies();
+            // Keep identity, both settings blocks and the first program span.
+            replies.truncate(4);
+            let first_program_reply = replies[3].clone();
+            replies.extend(bad_replies);
+            model.variax_evidence_replay = Some(replies);
+            let original = model.variax.active;
+            let selected = model.variax.selected;
+            let rig = Rc::new(RefCell::new(model));
+            let mut port = PracticePort::new(rig.clone());
+            let mut operator = Script::run_all();
+            let root = tempfile::tempdir().unwrap();
+            let (run, data) = run_on(
+                &mut port,
+                &mut operator,
+                &mut NoReport,
+                RunData {
+                    evidence_dir: Some(root.path().into()),
+                    ..RunData::default()
+                },
+            );
+
+            let step = run.step(VARIAX_EVIDENCE);
+            let reason = format!("Start 32, count 32: {reason}");
+            assert_eq!(step.outcome, Outcome::Failed(reason.clone()));
+            assert_eq!(step.retries, retries);
+            let report = render_plain(&run, "test");
+            assert!(report.contains(&reason));
+            assert!(report.contains("Partial evidence: received 1 of 35 complete program replies"));
+            assert!(report.contains(&format!("Raw: {}", hex(&first_program_reply))));
+            let folder = root
+                .path()
+                .join(step.evidence_folder("variax-compatibility"));
+            assert_eq!(
+                std::fs::read(folder.join("reply-0000.bin")).unwrap(),
+                first_program_reply
+            );
+            assert_eq!(
+                std::fs::read_to_string(folder.join("MANIFEST.sha256")).unwrap(),
+                format!("{}  reply-0000.bin\n", sha256_hex(&first_program_reply))
+            );
+            let malformed_hex = hex(&malformed);
+            assert_eq!(
+                step.messages
+                    .iter()
+                    .filter_map(|line| line.split_once("IN  ").map(|(_, bytes)| bytes))
+                    .filter(|bytes| *bytes == malformed_hex)
+                    .count(),
+                if retries == 0 { 0 } else { 3 }
+            );
+
+            let (settings1, settings2, first, failed) = (span(851), span(883), span(0), span(32));
+            let mut expected = vec![
+                "f0 7e 7f 06 01 f7",
+                "f0 00 01 0c 07 00 2a 01 f7",
+                &settings1,
+                &settings2,
+                "f0 00 01 0c 07 00 2a 00 f7",
+                "f0 00 01 0c 03 23 01 f7",
+                "f0 00 01 0c 07 00 2a 01 f7",
+                &first,
+            ];
+            expected.extend(std::iter::repeat_n(failed.as_str(), retries as usize + 1));
+            expected.extend(["f0 00 01 0c 07 00 2a 00 f7", "f0 00 01 0c 03 23 00 f7"]);
+            let outbound: Vec<_> = step
+                .messages
+                .iter()
+                .filter_map(|line| line.split_once("OUT ").map(|(_, bytes)| bytes))
+                .collect();
+            assert_eq!(outbound, expected);
+
+            assert!(data.read_only && data.start_program.is_none());
+            for &id in RUN_ORDER {
+                let card = catalogue::step(id).unwrap();
+                if card.kind == Kind::Device && matches!(card.risk, Risk::Live | Risk::Save) {
+                    assert!(!operator.cards.contains(&id), "{id} was offered");
+                    assert!(run.step(id).messages.is_empty(), "{id} sent messages");
+                }
+            }
+            for id in [StepId(4, 1), StepId(5, 2)] {
+                assert_eq!(
+                    run.step(id).outcome,
+                    Outcome::SkippedNeeds("read-only from here: step 3.7 failed".into())
+                );
+            }
+            assert!(operator.saves.is_empty());
+            assert!(run.finished && run.step(RIG_GUARD).outcome.passed());
+            assert!(run.rig_state.contains("Guitar interface released."));
+            let rig = rig.borrow();
+            assert!(rig.driver_bound && !rig.variax_claimed && !rig.variax.session_on);
+            assert_eq!(rig.variax.active, original);
+            assert_eq!(rig.variax.selected, selected);
+            assert_eq!(
+                (
+                    rig.variax.stores,
+                    rig.variax.working_uploads,
+                    rig.podxt.stores
+                ),
+                (0, 0, 0)
+            );
+        }
     }
 
     #[test]
