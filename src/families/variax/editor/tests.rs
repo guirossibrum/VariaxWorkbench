@@ -1128,3 +1128,207 @@ fn acoustic_body_hides_pickup_sprites_and_describes_the_knobs() {
     assert!(!app.variax().tuning_widgets.contains_key("Low E mix"));
     assert!(!app.variax().can_edit(WIRING, None));
 }
+
+#[cfg(feature = "usb")]
+mod close_library {
+    use super::*;
+    use std::time::SystemTime;
+    use variax_workbench::{bundle::BundleFile, document::SlotBuffer};
+
+    fn attach_library(app: &mut Workbench, same_attachment: bool) {
+        let tab = refresh::tests::verified_tab();
+        let origin = if same_attachment {
+            LibraryOrigin::AttachedDownload(SystemTime::UNIX_EPOCH, tab.device.key.clone())
+        } else {
+            LibraryOrigin::Download(SystemTime::UNIX_EPOCH)
+        };
+        let editor = app.variax_mut();
+        editor.observe_device(Some(&tab));
+        editor
+            .adopt_startup_library(BundleFile::new_default_bundle().unwrap(), origin)
+            .unwrap();
+        assert_eq!(editor.has_current_guitar_library(), same_attachment);
+        assert_eq!(editor.has_historical_guitar_library(), !same_attachment);
+        let id = app.test_editor_id::<VariaxEditor>();
+        let index = app.tabs.index(id).unwrap();
+        app.tabs.entries[index].device = Some(tab);
+    }
+
+    fn request_close(ctx: &egui::Context, app: &mut Workbench, quit: bool) {
+        if quit {
+            app.request_close(ctx);
+        } else {
+            app.close_tab(app.test_editor_id::<VariaxEditor>(), ctx);
+        }
+    }
+
+    fn warning(ctx: &egui::Context, app: &mut Workbench) -> Option<String> {
+        fn find(shape: &egui::Shape) -> Option<&str> {
+            match shape {
+                egui::Shape::Text(text)
+                    if text
+                        .galley
+                        .text()
+                        .contains("Closing the library discards pending changes") =>
+                {
+                    Some(text.galley.text())
+                }
+                egui::Shape::Vec(shapes) => shapes.iter().find_map(find),
+                _ => None,
+            }
+        }
+        prompt_frame(ctx, app, vec![]);
+        ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1120., 760.))),
+                ..Default::default()
+            },
+            |ctx| app.pending_dialog(ctx),
+        )
+        .shapes
+        .iter()
+        .find_map(|item| find(&item.shape))
+        .map(str::to_owned)
+    }
+
+    fn assert_attached_and_idle(app: &Workbench) {
+        let index = app
+            .tabs
+            .index(app.test_editor_id::<VariaxEditor>())
+            .unwrap();
+        assert_eq!(
+            app.tabs.entries[index]
+                .device
+                .as_ref()
+                .unwrap()
+                .verified_attachment(),
+            Some(("8-2.1", 10))
+        );
+        let editor = app.variax();
+        assert!(!editor.device_sync.prompting());
+        assert!(!editor.device_sync.busy());
+        assert!(!editor.live_edit.busy());
+        assert!(editor.error.is_none());
+    }
+
+    #[test]
+    fn pending_guitar_positions_require_discard_after_saving_a_copy() {
+        for quit in [false, true] {
+            let (ctx, mut app) = app();
+            ctx.style_mut(|style| style.animation_time = 0.0);
+            attach_library(&mut app, true);
+            let id = app.test_editor_id::<VariaxEditor>();
+
+            let doc = app.variax_mut().document.as_mut().unwrap();
+            doc.copy_to_slot_buffer(SlotBuffer::ModelClipboard).unwrap();
+            doc.paste_into_guitar_position().unwrap();
+            assert!(!doc.is_dirty());
+            assert_eq!(app.variax().modified_guitar_positions(), [(0, 0)]);
+
+            request_close(&ctx, &mut app, quit);
+            assert_eq!(app.closing_tab, Some(id));
+            assert!(
+                warning(&ctx, &mut app)
+                    .unwrap()
+                    .contains("1 guitar position")
+            );
+            click_prompt(&ctx, &mut app, "cancel");
+            assert!(!app.permit_close);
+            assert!(app.close_request.is_none());
+            assert_eq!(app.variax().modified_guitar_positions(), [(0, 0)]);
+            assert_attached_and_idle(&app);
+
+            app.variax_mut()
+                .document
+                .as_mut()
+                .unwrap()
+                .select(0, 1)
+                .unwrap();
+            app.variax_mut()
+                .change(|preset| preset.rename("Keep this edit"));
+            let expected = app.variax().document.as_ref().unwrap().as_bytes().to_vec();
+            let dir = tempfile::tempdir().unwrap();
+            let copy = dir.path().join("copy.vwb");
+            app.dialogs = Box::new(FakeDialogs {
+                save: [Some(copy.clone())].into(),
+                ..Default::default()
+            });
+
+            request_close(&ctx, &mut app, quit);
+            assert!(
+                warning(&ctx, &mut app)
+                    .unwrap()
+                    .contains("2 guitar positions")
+            );
+            click_prompt(&ctx, &mut app, "save");
+            assert_eq!(std::fs::read(copy).unwrap(), expected);
+            assert_eq!(
+                app.closing_tab,
+                Some(id),
+                "a file copy leaves pending guitar positions"
+            );
+            assert!(!app.permit_close);
+            assert_eq!(app.variax().modified_guitar_positions(), [(0, 0), (0, 1)]);
+            assert_attached_and_idle(&app);
+
+            click_prompt(&ctx, &mut app, "cancel");
+            assert!(app.close_request.is_none());
+            assert_eq!(app.variax().document.as_ref().unwrap().as_bytes(), expected);
+            assert_eq!(app.variax().modified_guitar_positions(), [(0, 0), (0, 1)]);
+            assert_attached_and_idle(&app);
+
+            request_close(&ctx, &mut app, quit);
+            click_prompt(&ctx, &mut app, "discard");
+            assert_eq!(app.permit_close, quit);
+            assert_eq!(app.tabs.index(id).is_some(), quit);
+            if quit {
+                assert_attached_and_idle(&app);
+            }
+        }
+    }
+
+    #[test]
+    fn historical_edits_use_the_file_prompt_and_clean_documents_close_directly() {
+        for quit in [false, true] {
+            let (ctx, mut app) = app();
+            ctx.style_mut(|style| style.animation_time = 0.0);
+            attach_library(&mut app, false);
+            let id = app.test_editor_id::<VariaxEditor>();
+            app.variax_mut()
+                .change(|preset| preset.rename("Historical edit"));
+            let expected = app.variax().document.as_ref().unwrap().as_bytes().to_vec();
+            assert!(app.variax().dirty());
+            assert!(app.variax().modified_guitar_positions().is_empty());
+
+            request_close(&ctx, &mut app, quit);
+            assert_eq!(app.closing_tab, Some(id));
+            assert_eq!(warning(&ctx, &mut app), None);
+            click_prompt(&ctx, &mut app, "cancel");
+            assert!(!app.permit_close);
+            assert!(app.close_request.is_none());
+            assert_eq!(app.variax().document.as_ref().unwrap().as_bytes(), expected);
+            assert_attached_and_idle(&app);
+
+            request_close(&ctx, &mut app, quit);
+            click_prompt(&ctx, &mut app, "discard");
+            assert_eq!(app.permit_close, quit);
+            assert_eq!(app.tabs.index(id).is_some(), quit);
+            if quit {
+                assert_attached_and_idle(&app);
+            }
+
+            for library_attachment in [None, Some(false), Some(true)] {
+                let (ctx, mut app) = super::app();
+                if let Some(same_attachment) = library_attachment {
+                    attach_library(&mut app, same_attachment);
+                }
+                let id = app.test_editor_id::<VariaxEditor>();
+                request_close(&ctx, &mut app, quit);
+                assert!(app.closing_tab.is_none());
+                assert!(app.close_request.is_none());
+                assert_eq!(app.permit_close, quit);
+                assert_eq!(app.tabs.index(id).is_some(), quit);
+            }
+        }
+    }
+}
