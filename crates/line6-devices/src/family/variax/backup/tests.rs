@@ -13,6 +13,7 @@ use variax::{
     tests::{bank_reply, encode_reply},
 };
 
+mod compact_buffer;
 mod custom_restore;
 mod snapshot;
 
@@ -326,21 +327,30 @@ fn full_word(program: u8, index: u16) -> u32 {
 
 fn program_chunk(program: u8, start: u16, corrupt: bool) -> (Vec<u8>, Vec<Vec<u8>>) {
     let count = (1092 - start).min(32);
-    let append = |bytes: &mut Vec<u8>, word: u32| {
-        bytes.extend((0..6).map(|i| ((word >> (4 * i)) & 15) as u8));
-    };
-    let mut request = [HEADER, &[0x3c]].concat();
-    append(&mut request, u32::from(count));
-    append(&mut request, u32::from(start));
-    request.push(0xf7);
-    let mut reply = [HEADER, &[0x3c]].concat();
-    for i in start..start + count {
-        let word = if i == 1091 {
+    let words = (start..start + count).map(|i| {
+        if i == 1091 {
             let sum: u64 = (0..1091).map(|n| u64::from(full_word(program, n))).sum();
             (sum as u32 & 0xff_ffff) ^ u32::from(corrupt)
         } else {
             full_word(program, i)
-        };
+        }
+    });
+    program_exchange(start, words)
+}
+
+fn program_exchange(
+    start: u16,
+    words: impl ExactSizeIterator<Item = u32>,
+) -> (Vec<u8>, Vec<Vec<u8>>) {
+    let append = |bytes: &mut Vec<u8>, word: u32| {
+        bytes.extend((0..6).map(|i| ((word >> (4 * i)) & 15) as u8));
+    };
+    let mut request = [HEADER, &[0x3c]].concat();
+    append(&mut request, words.len() as u32);
+    append(&mut request, u32::from(start));
+    request.push(0xf7);
+    let mut reply = [HEADER, &[0x3c]].concat();
+    for word in words {
         append(&mut reply, word);
     }
     reply.push(0xf7);
