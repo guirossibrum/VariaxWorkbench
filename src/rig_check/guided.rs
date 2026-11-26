@@ -8,8 +8,10 @@
 //! Skip".
 
 use super::practice::{UserAction, preset_label};
-use super::procedures::{same_program, variax_full_read, with_podxt, with_variax};
-use super::runner::{Ctx, Retry, SKIPPED};
+use super::procedures::{
+    same_program, variax_full_read, with_podxt, with_variax, with_variax_progress,
+};
+use super::runner::{Ctx, Progress, Retry, SKIPPED};
 use super::variax_reads::other_preset;
 use line6_devices::family::podxt::{self, BankKind, Location};
 use line6_devices::family::variax::{self, FollowUpdate, Preset};
@@ -61,6 +63,11 @@ fn guided<T>(
             return Err("Stopped by you before the listening window opened.".into());
         }
         ctx.op.instruct(ctx.rec.id, see, hear);
+        ctx.op.progress(Progress::waiting(
+            format!("Waiting for {what}"),
+            WINDOW,
+            true,
+        ));
         // Practice mode: the simulated person acts a few seconds later.
         for action in practice {
             ctx.port.user_acts(action.clone(), PRACTICE_DELAY);
@@ -106,9 +113,9 @@ pub fn selector(ctx: &mut Ctx<'_>) -> Result<(), String> {
         &[UserAction::TurnSelector(target)],
         |ctx| variax_program_window(ctx, target),
     )?;
-    let read = with_variax(ctx, VARIAX_LISTEN, |session, stopping| {
+    let read = with_variax_progress(ctx, VARIAX_LISTEN, |session, stopping, progress| {
         super::procedures::drain(session)?;
-        variax_full_read(session, stopping)
+        variax_full_read(session, stopping, progress, &format!("Checking {name}"))
     })?;
     let backup = ctx
         .data
@@ -132,9 +139,14 @@ pub fn selector(ctx: &mut Ctx<'_>) -> Result<(), String> {
         &[UserAction::TurnSelector(start)],
         |ctx| variax_program_window(ctx, start),
     )?;
-    let back = with_variax(ctx, VARIAX_LISTEN, |session, stopping| {
+    let back = with_variax_progress(ctx, VARIAX_LISTEN, |session, stopping, progress| {
         super::procedures::drain(session)?;
-        variax_full_read(session, stopping)
+        variax_full_read(
+            session,
+            stopping,
+            progress,
+            &format!("Verifying return to {start_name}"),
+        )
     })?;
     if !same_program(&back.words, &start_program) {
         return Err(format!(

@@ -3,7 +3,7 @@
 use super::catalogue::{START_NOTICE, SaveNotice, Step, StepId};
 use super::history::{self, Review};
 use super::record::{Mode, StepRecord, plain_result};
-use super::runner::{Answer, Decision, Operator, Question, ResultDecision, Retry};
+use super::runner::{Answer, Decision, Operator, Progress, Question, ResultDecision, Retry};
 use std::io::{BufRead, Write};
 
 pub struct Terminal<R, W> {
@@ -198,8 +198,13 @@ impl<R: BufRead, W: Write> Operator for Terminal<R, W> {
         (answer, self.line())
     }
 
-    fn progress(&mut self, text: &str) {
-        self.say(&plain_result(text));
+    fn progress(&mut self, progress: Progress) {
+        let action = plain_result(&progress.action);
+        if let Some((completed, total, units)) = progress.count {
+            self.say(&format!("{completed} of {total} {units} · {action}"));
+        } else {
+            self.say(&action);
+        }
     }
 
     fn finished(&mut self, record: &StepRecord) -> ResultDecision {

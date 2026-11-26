@@ -1,8 +1,8 @@
 //! Steps 2.3 and 2.4 (#254): stored PODxt Live channels by memory location,
 //! and their comparison with the library backup from step 2.5.
 
-use super::procedures::{PODXT_LIBRARY, podxt_read_stored, with_podxt};
-use super::runner::Ctx;
+use super::procedures::{PODXT_LIBRARY, podxt_read_stored, with_podxt_progress};
+use super::runner::{Ctx, Progress};
 use line6_devices::family::podxt::{BankKind, EditBuffer, Location};
 use line6_devices::midi::hex;
 
@@ -39,11 +39,30 @@ fn read_channels(ctx: &mut Ctx<'_>, indices: &[u16]) -> Result<(), String> {
         .iter()
         .map(|&i| Location::new(BankKind::Tones, i).expect("tone index"))
         .collect();
-    let results = with_podxt(ctx, PODXT_LIBRARY, |session| {
-        Ok(locations
+    let results = with_podxt_progress(ctx, PODXT_LIBRARY, |session, _, progress| {
+        let total = locations.len();
+        let results = locations
             .iter()
-            .map(|&location| (location, podxt_read_stored(session, location)))
-            .collect::<Vec<_>>())
+            .enumerate()
+            .map(|(index, &location)| {
+                progress(Progress::counted(
+                    format!("Reading channel {}", location.label()),
+                    index,
+                    total,
+                    "channels",
+                ));
+                (location, podxt_read_stored(session, location))
+            })
+            .collect::<Vec<_>>();
+        if results.iter().all(|(_, read)| read.is_ok()) {
+            progress(Progress::counted(
+                "Channel reads complete",
+                total,
+                total,
+                "channels",
+            ));
+        }
+        Ok(results)
     })?;
     let mut failures = Vec::new();
     for (location, result) in &results {

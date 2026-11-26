@@ -71,6 +71,47 @@ pub enum ResultDecision {
     Different(String),
 }
 
+pub const CONTROLS_NOTICE: &str = "Leave the guitar selector, the volume and tone knobs, and the PODxt footswitches and knobs alone until this finishes. Playing is fine.";
+
+#[derive(Clone, Debug)]
+pub struct Progress {
+    pub action: String,
+    pub count: Option<(usize, usize, &'static str)>,
+    pub wait: Option<std::time::Duration>,
+    pub guided: bool,
+}
+
+impl Progress {
+    pub fn action(action: impl Into<String>) -> Self {
+        Self {
+            action: action.into(),
+            count: None,
+            wait: None,
+            guided: false,
+        }
+    }
+
+    pub fn counted(
+        action: impl Into<String>,
+        done: usize,
+        total: usize,
+        units: &'static str,
+    ) -> Self {
+        Self {
+            count: Some((done, total, units)),
+            ..Self::action(action)
+        }
+    }
+
+    pub fn waiting(action: impl Into<String>, limit: std::time::Duration, guided: bool) -> Self {
+        Self {
+            wait: Some(limit),
+            guided,
+            ..Self::action(action)
+        }
+    }
+}
+
 /// The person at the rig, through the GUI, the terminal or a test script.
 pub trait Operator {
     /// The start notice. `false` (the default) quits before any step.
@@ -86,8 +127,8 @@ pub trait Operator {
     fn not_seen(&mut self, step: StepId, what: &str) -> Retry;
     /// A listening question with Yes / No / Not sure and an optional note.
     fn ask(&mut self, question: &Question) -> (Answer, String);
-    /// A short progress line.
-    fn progress(&mut self, text: &str);
+    /// The latest action, with optional completed work or time limit.
+    fn progress(&mut self, progress: Progress);
     /// Publish any outcome. If the step ran, wait for the person to read it.
     fn finished(&mut self, record: &StepRecord) -> ResultDecision;
     /// Update the result after a reported display mismatch.
@@ -164,13 +205,15 @@ impl<'a> Runner<'a> {
                 .map_or(String::new(), |n| n.to_string_lossy().into_owned());
             let state = super::recover::RigState::from_run(&self.run, &self.data, &report);
             if let Err(error) = super::recover::write_state(path, &state) {
-                self.op
-                    .progress(&format!("Could not write the restore state: {error}"));
+                self.op.progress(Progress::action(format!(
+                    "Could not write the restore state: {error}"
+                )));
             }
         }
         if let Err(error) = self.sink.update(&self.run) {
-            self.op
-                .progress(&format!("Could not write the report: {error}"));
+            self.op.progress(Progress::action(format!(
+                "Could not write the report: {error}"
+            )));
         }
     }
 
@@ -325,6 +368,7 @@ impl<'a> Runner<'a> {
                         data: &mut self.data,
                         rec: &mut rec,
                     };
+                    ctx.op.progress(Progress::action(step.title));
                     steps::execute(&mut ctx)
                 };
                 let stopped_now = self.op.stop_requested();

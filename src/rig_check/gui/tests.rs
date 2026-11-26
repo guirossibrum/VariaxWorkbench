@@ -324,6 +324,46 @@ fn different_opens_a_field_and_enter_records_exact_text() {
 }
 
 #[test]
+fn running_shows_latest_action_count_time_and_playing_notice() {
+    let ctx = egui::Context::default();
+    let (tx, rx) = channel();
+    let mut wizard = Wizard {
+        mode: Some(Mode::Practice),
+        running: Some(StepId(3, 3)),
+        step_start: Some(Instant::now() - Duration::from_secs(10)),
+        from_runner: Some(rx),
+        ..Wizard::default()
+    };
+    tx.send(Prompt::Progress(Progress::action(
+        "Checking the connection",
+    )))
+    .unwrap();
+    tx.send(Prompt::Progress(Progress::counted(
+        "Reading words 384–415",
+        12,
+        35,
+        "reads",
+    )))
+    .unwrap();
+    let texts = frame(&ctx, &mut wizard, Vec::new());
+    assert!(texts.iter().any(|line| line == "Reading words 384–415"));
+    assert!(texts.iter().any(|line| line == "12 of 35 reads"));
+    assert!(texts.iter().any(|line| line.starts_with("Elapsed 00:")));
+    assert!(texts.iter().any(|line| line == CONTROLS_NOTICE));
+    assert!(!texts.iter().any(|line| line == "Checking the connection"));
+    wizard.activity = Some((
+        Progress::waiting(
+            "Waiting for the guitar to confirm, up to 15 s",
+            Duration::from_secs(15),
+            false,
+        ),
+        Instant::now() - Duration::from_secs(9),
+    ));
+    let texts = frame(&ctx, &mut wizard, Vec::new());
+    assert!(texts.iter().any(|line| line == "6 s left"));
+}
+
+#[test]
 fn mockups_render_headless() {
     let states = mockup_states();
     assert_eq!(states.len(), 14);
@@ -419,6 +459,7 @@ fn stop_at_a_result_offers_the_guard_without_offering_another_step() {
     to_runner.send(Reply::Accept(true)).unwrap();
     assert!(matches!(next(), Prompt::Card(StepId(0, 1), _)));
     to_runner.send(Reply::Decision(Decision::Run)).unwrap();
+    assert!(matches!(next(), Prompt::Progress(progress) if !progress.action.is_empty()));
     assert!(matches!(next(), Prompt::Finished(record) if record.id == StepId(0, 1)));
     to_runner.send(Reply::Continue(false)).unwrap();
     assert!(matches!(next(), Prompt::Card(catalogue::RIG_GUARD, _)));

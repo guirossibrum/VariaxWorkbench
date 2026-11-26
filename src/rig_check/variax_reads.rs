@@ -4,8 +4,9 @@
 use super::practice::{Program, preset_label};
 use super::procedures::{
     self, VARIAX_READ, VARIAX_SELECT, program_bytes, same_program, variax_read_preset, with_variax,
+    with_variax_progress,
 };
-use super::runner::Ctx;
+use super::runner::{Ctx, Progress};
 use line6_devices::family::variax::{ParameterValue, Preset, procedures as shared_variax};
 use line6_devices::midi::hex;
 
@@ -101,22 +102,28 @@ fn read_and_return(ctx: &mut Ctx<'_>, presets: &[Preset]) -> Result<(), String> 
     let start_program = ctx.data.start_program.ok_or("No starting program (3.3).")?;
     let mut problems = Vec::new();
     let mut read_count = 0;
-    for &preset in presets {
+    for (index, &preset) in presets.iter().enumerate() {
         if ctx.stopping() {
             problems.push("Stopped by you.".to_string());
             break;
         }
+        ctx.op.progress(Progress::counted(
+            format!("Reading {}", preset_label(preset)),
+            index,
+            presets.len(),
+            "presets",
+        ));
         let read = with_variax(ctx, VARIAX_SELECT, |session, stopping| {
-            variax_read_preset(session, preset, stopping)
+            shared_variax::read_unmodified(session, preset, stopping, |_| Ok(()))
         });
         match read {
-            Ok(read) => {
+            Ok(words) => {
                 read_count += 1;
                 let hash = ctx.rec.checksum(
                     format!("Variax {} (1,092 words)", preset_label(preset)),
-                    &program_bytes(&read.words),
+                    &program_bytes(&words),
                 );
-                let matches = backup_of(ctx, preset).is_some_and(|b| b == read.words);
+                let matches = backup_of(ctx, preset).is_some_and(|b| b == words);
                 ctx.rec.result.push(format!(
                     "Read {}: {}.",
                     preset_label(preset),
@@ -149,8 +156,20 @@ fn read_and_return(ctx: &mut Ctx<'_>, presets: &[Preset]) -> Result<(), String> 
     ctx.rec
         .result
         .push(format!("Read {read_count} of {} presets.", presets.len()));
-    let back = with_variax(ctx, VARIAX_SELECT, |session, stopping| {
-        variax_read_preset(session, start, stopping)
+    ctx.op.progress(Progress::counted(
+        format!("Returning to {}", preset_label(start)),
+        read_count,
+        presets.len(),
+        "presets",
+    ));
+    let back = with_variax_progress(ctx, VARIAX_SELECT, |session, stopping, progress| {
+        variax_read_preset(
+            session,
+            start,
+            stopping,
+            progress,
+            &format!("Verifying return to {}", preset_label(start)),
+        )
     });
     match back {
         Ok(back) if same_program(&back.words, &start_program) => ctx.rec.show(format!(

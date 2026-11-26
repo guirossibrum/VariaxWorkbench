@@ -1,7 +1,7 @@
 //! Step 3.7 (#271): evidence for a Variax 300/600 reporting unverified firmware.
 
 use super::{
-    procedures::{Lines, VARIAX_READ, absorb, with_variax},
+    procedures::{Lines, VARIAX_READ, absorb, program_progress, with_variax_progress},
     record::Mode,
     runner::Ctx,
 };
@@ -39,24 +39,34 @@ pub fn read(ctx: &mut Ctx<'_>) -> Result<(), String> {
         ));
     }
     let mut chunks = Vec::new();
-    let received = |reply| {
-        chunks.push(reply);
-        Ok(())
-    };
+    let action = "Compatibility check";
     let read = match ctx.mode {
-        Mode::Real => with_variax(ctx, VARIAX_READ, |session, stopping| {
-            firmware_read::read_current_program(session, stopping, received)
+        Mode::Real => with_variax_progress(ctx, VARIAX_READ, |session, stopping, progress| {
+            let mut advance = program_progress(progress, action);
+            firmware_read::read_current_program(session, stopping, |reply| {
+                chunks.push(reply);
+                advance();
+                Ok(())
+            })
         }),
         Mode::Practice => {
             let rig = ctx.port.simulation().ok_or("No practice rig.")?;
             let replies = rig.borrow().variax_evidence_replies();
             let mut log = Lines::default();
+            let op = std::cell::RefCell::new(&mut *ctx.op);
+            let notify = |progress| op.borrow_mut().progress(progress);
+            let mut advance = program_progress(&notify, action);
             let read = firmware_read::replay_current_program(
                 replies,
                 &mut log,
-                || ctx.stopping(),
-                received,
+                || op.borrow().stop_requested(),
+                |reply| {
+                    chunks.push(reply);
+                    advance();
+                    Ok(())
+                },
             );
+            drop(advance);
             absorb(ctx, log);
             read
         }

@@ -12,9 +12,11 @@
 use super::catalogue::{self, RIG_GUARD};
 use super::guided::{WINDOW, watch_variax};
 use super::practice::{Program, UserAction, preset_label};
-use super::procedures::{TONE_POSITION_WORDS, variax_read_preset, with_variax};
+use super::procedures::{
+    TONE_POSITION_WORDS, variax_read_preset, with_variax, with_variax_progress,
+};
 use super::record::{Mode, Outcome, RunRecord, StepRecord, sha256_hex, utc_now};
-use super::runner::{Ctx, Decision, Operator, ReportSink, Retry, SKIPPED};
+use super::runner::{Ctx, Decision, Operator, Progress, ReportSink, Retry, SKIPPED};
 use super::steps::RunData;
 use line6_devices::family::podxt::{self, BankKind, Location};
 use line6_devices::family::variax::{FollowUpdate, Preset, procedures as shared_variax};
@@ -47,6 +49,11 @@ fn vdi_window(
             "Silence from the guitar."
         };
         ctx.op.instruct(ctx.rec.id, see, hear);
+        ctx.op.progress(Progress::waiting(
+            format!("Waiting for {what}"),
+            WINDOW,
+            true,
+        ));
         ctx.port
             .user_acts(action.clone(), super::guided::PRACTICE_DELAY);
         let (seen, at) = with_variax(ctx, VDI_OPS, |session, stopping| {
@@ -284,9 +291,15 @@ fn restore(ctx: &mut Ctx<'_>, state: &RigState) -> Result<(), String> {
                 podxt::identify_podxt_live(session).map(|_| ())
             })?;
         }
-        let read = with_variax(ctx, RESTORE_OPS, |session, _| {
+        let read = with_variax_progress(ctx, RESTORE_OPS, |session, _, progress| {
             super::procedures::drain(session)?;
-            variax_read_preset(session, preset, &|| false)
+            variax_read_preset(
+                session,
+                preset,
+                &|| false,
+                progress,
+                "Verifying the return to your starting preset",
+            )
         })?;
         if Some(match_hash(&read.words)) == state.variax_match_sha256 {
             ctx.rec.show(format!(
@@ -326,7 +339,7 @@ pub fn offer_restore(
     let mode = port.mode();
     let mut run = RunRecord::new(mode, utc_now());
     run.start_notice_accepted = true;
-    op.progress(&state.describe());
+    op.progress(Progress::action(state.describe()));
     let step = catalogue::step(RIG_GUARD).expect("guard step");
     let mut rec = StepRecord::new(RIG_GUARD);
     rec.note(format!("Crash restore: {}", state.describe()));

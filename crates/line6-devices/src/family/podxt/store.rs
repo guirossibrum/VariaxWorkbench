@@ -83,6 +83,16 @@ pub fn store_tone<L: Link>(
     confirmation: ConfirmedStore,
     control: &StoreControl,
 ) -> Result<StoreResult, String> {
+    store_tone_observing_wait(session, confirmation, control, |_| {})
+}
+
+/// Report the start and limit of the receipt wait, after sending the commit.
+pub fn store_tone_observing_wait<L: Link>(
+    session: &mut Session<L>,
+    confirmation: ConfirmedStore,
+    control: &StoreControl,
+    waiting: impl FnOnce(Duration),
+) -> Result<StoreResult, String> {
     let slot = confirmation.0.backup.slot();
     if !session.allows(Operation::PodxtStoreRestore) {
         return Err("PODxt Live store is closed. No store was sent.".into());
@@ -97,6 +107,7 @@ pub fn store_tone<L: Link>(
     let outcome = (|| {
         session.send(StoreFrame::Tone(slot, &candidate))?;
         session.send(StoreFrame::Commit)?;
+        waiting(STORE_WAIT);
         wait_for_store(session)?;
         let tone = read_stored(session, slot)?;
         if TonePayload::from_dump(&tone)? != candidate {

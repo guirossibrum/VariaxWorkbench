@@ -12,8 +12,8 @@ theme (`src/shared/ui/theme.rs`) and `section_panel`. No Line 6 art is used.
 | Start risk notice: Quit (focused) / Accept and continue | [02-start-notice.png](mockups/02-start-notice.png) |
 | Step card, read step: What it does / What you'll see and hear / Risk | [03-step-card-read.png](mockups/03-step-card-read.png) |
 | Step card, live step (real rig) | [04-step-card-live.png](mockups/04-step-card-live.png) |
-| Running, with Stop | [05-running.png](mockups/05-running.png) |
-| Listening window: large SEE / HEAR | [06-listening.png](mockups/06-listening.png) |
+| Running, with the current read, progress bar, elapsed time and Stop | [05-running.png](mockups/05-running.png) |
+| Listening window: large SEE / HEAR and time left | [06-listening.png](mockups/06-listening.png) |
 | Didn't see it: Skip (focused) / Try again | [07-not-seen.png](mockups/07-not-seen.png) |
 | Listening question: Yes / No / Not sure (focused) and a note, with what the byte checks proved | [08-listening-question.png](mockups/08-listening-question.png) |
 | Save notice naming the slot and the backup; Save stays disabled until the confirmation is typed exactly | [09-save-notice.png](mockups/09-save-notice.png) |
@@ -51,6 +51,11 @@ testing the app's matching writes.
 - **Continue** starts with focus on the result screen. It returns to the next
   card, which still requires its own Run choice. **Stop** ends the run and
   offers the closing rig check in a normal run.
+- The running screen puts the current action and elapsed time up front.
+  Repeated work shows completed and total counts. Confirmation waits, the
+  silent-timeout hold and guided windows show time left. During device work,
+  leave the guitar selector, volume and tone knobs, and PODxt footswitches and
+  knobs alone. Playing is fine. Guided instructions name the control to use.
 - **Back** or **Backspace** opens the previous recorded result from a step
   card or result. At the beginning, Back opens the accepted start notice
   for review. The sidebar also opens recorded results.

@@ -8,9 +8,9 @@
 //! save is never repeated; a missing receipt follows the 2-minute procedure.
 
 use super::catalogue::{SaveNotice, StepId};
-use super::procedures::with_podxt;
+use super::procedures::with_podxt_progress;
 use super::record::sha256_hex;
-use super::runner::{Ctx, SKIPPED};
+use super::runner::{Ctx, Progress, SKIPPED};
 use line6_devices::family::podxt::{
     self, StoreControl, StoreResult, StoreSource, backup::podxt_entry_name,
 };
@@ -61,14 +61,28 @@ pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
         }
     };
     let control = StoreControl::default();
-    let result = with_podxt(ctx, PODXT_SAVE, |session| {
-        let result = podxt::store_tone(session, confirmed, &control)?;
+    let result = with_podxt_progress(ctx, PODXT_SAVE, |session, _, progress| {
+        progress(Progress::action(
+            "Checking the PODxt channel and sending its saved tone",
+        ));
+        let result = podxt::store_tone_observing_wait(session, confirmed, &control, |limit| {
+            progress(Progress::waiting(
+                "Waiting for the PODxt Live to confirm, up to 7 s",
+                limit,
+                false,
+            ));
+        })?;
         if let StoreResult::SlotStateUnknown { reason, .. } = &result
             && reason.contains("No PODxt store reply")
         {
             session.note(format!(
                 "No store receipt. Keeping the rig untouched for {} s; no more MIDI is sent.",
                 AFTER_TIMEOUT.as_secs()
+            ));
+            progress(Progress::waiting(
+                "The PODxt Live did not confirm. Leave the rig powered and connected. Rig Check is waiting two more minutes before you check the channel.",
+                AFTER_TIMEOUT,
+                false,
             ));
             session.link.pause(AFTER_TIMEOUT);
         }

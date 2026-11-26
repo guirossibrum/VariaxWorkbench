@@ -3,7 +3,7 @@
 //! the step's policy does not include the PODxt store operation.
 
 use super::procedures::{with_podxt, with_podxt_stopping};
-use super::runner::Ctx;
+use super::runner::{Ctx, Progress};
 use line6_devices::family::podxt;
 use line6_devices::gate::Operation;
 use line6_devices::midi::hex;
@@ -227,21 +227,22 @@ pub fn podxt_tune(ctx: &mut Ctx<'_>) -> Result<(), String> {
         "Pluck one open string now.",
         "The tuner may mute the sound briefly.",
     );
+    let limit = std::time::Duration::from_secs(5);
+    ctx.op.progress(Progress::waiting(
+        "Waiting for the PODxt tuner",
+        limit,
+        true,
+    ));
     let count = with_podxt_stopping(ctx, PODXT_EDITOR, |session, stopping| {
         let mut count = 0;
-        podxt::tuner_window(
-            session,
-            std::time::Duration::from_secs(5),
-            stopping,
-            |update| {
-                if let podxt::ReadUpdate::Tuner(reading) = update
-                    && reading.note.is_some()
-                    && reading.deviation.is_some()
-                {
-                    count += 1;
-                }
-            },
-        )?;
+        podxt::tuner_window(session, limit, stopping, |update| {
+            if let podxt::ReadUpdate::Tuner(reading) = update
+                && reading.note.is_some()
+                && reading.deviation.is_some()
+            {
+                count += 1;
+            }
+        })?;
         Ok(count)
     })?;
     if count == 0 {

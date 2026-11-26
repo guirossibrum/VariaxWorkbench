@@ -27,7 +27,7 @@ pub use live_read::{ReadCommand, ReadUpdate, follow_window, read_live, tuner_win
 pub use live_settings::{LiveControl, LiveTarget, Setting, SettingMessage};
 pub use procedures::{check_live_identity, identify_podxt_live, read_stored_tone, restore_channel};
 use procedures::{identify_podxt, read_edit_buffer, request_tone, send_control, wait_tone};
-pub use store::{StoreControl, StoreResult, store_tone};
+pub use store::{StoreControl, StoreResult, store_tone, store_tone_observing_wait};
 pub use store_backup::{
     ConfirmedStore, PreparedStore, StoreSource, VerifiedToneBackup, prepare_tone_store,
     verify_tone_backup,

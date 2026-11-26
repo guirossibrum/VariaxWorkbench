@@ -304,6 +304,37 @@ pub fn store_verified<L: Link>(
     silent: impl FnOnce(&str),
     readback: impl FnOnce(&mut Session<L>) -> Result<FullBuffer, String>,
 ) -> Result<(), VerifiedStoreError> {
+    store_verified_observing(
+        session,
+        preset,
+        program,
+        phase,
+        stopping,
+        only_silent(silent),
+        readback,
+    )
+}
+
+fn only_silent(silent: impl FnOnce(&str)) -> impl FnMut(StoreWait) {
+    let mut silent = Some(silent);
+    move |wait| {
+        if let StoreWait::Silent { notice } = wait
+            && let Some(silent) = silent.take()
+        {
+            silent(notice);
+        }
+    }
+}
+
+fn store_verified_observing<L: Link>(
+    session: &mut Session<L>,
+    preset: Preset,
+    program: &Program<'_>,
+    phase: &str,
+    stopping: impl FnMut() -> bool,
+    mut waiting: impl FnMut(StoreWait<'_>),
+    readback: impl FnOnce(&mut Session<L>) -> Result<FullBuffer, String>,
+) -> Result<(), VerifiedStoreError> {
     if !session.allows(Operation::VariaxRead) {
         return Err(VerifiedStoreError::BeforeCommit(
             "Variax store verification requires VariaxRead.".into(),
@@ -313,9 +344,8 @@ pub fn store_verified<L: Link>(
         "No 0x71. Keep the rig powered and untouched for 2 minutes. {}",
         spare_warning(preset)
     );
-    store_once(session, preset, program, stopping, &notice, || {
-        silent(&notice)
-    })?;
+    store_once_observing(session, preset, program, stopping, &notice, &mut waiting)?;
+    waiting(StoreWait::ReadBack);
     let expected = expected_stored_image(program.bytes());
     let actual = readback(session).map_err(VerifiedStoreError::Verification)?;
     compare_image(&actual, &expected, phase).map_err(VerifiedStoreError::Verification)
@@ -332,12 +362,54 @@ pub fn store_once<L: Link>(
     timeout_notice: &str,
     on_silent: impl FnOnce(),
 ) -> Result<(), VerifiedStoreError> {
+    store_once_observing(
+        session,
+        preset,
+        program,
+        stopping,
+        timeout_notice,
+        only_silent(|_| on_silent()),
+    )
+}
+
+/// Store confirmation, the silent hold, or the subsequent read-back.
+#[derive(Clone, Copy, Debug)]
+pub enum StoreWait<'a> {
+    Confirmation,
+    Silent { notice: &'a str },
+    ReadBack,
+}
+
+impl StoreWait<'_> {
+    pub fn limit(self) -> Option<Duration> {
+        match self {
+            Self::Confirmation => Some(write::STORE_ACK),
+            Self::Silent { .. } => Some(SILENT_STORE_WAIT),
+            Self::ReadBack => None,
+        }
+    }
+}
+
+/// Run the shared store and report the start of each bounded wait.
+pub fn store_once_observing<L: Link>(
+    session: &mut Session<L>,
+    preset: Preset,
+    program: &Program<'_>,
+    stopping: impl FnMut() -> bool,
+    timeout_notice: &str,
+    mut waiting: impl FnMut(StoreWait<'_>),
+) -> Result<(), VerifiedStoreError> {
     let mut committing = false;
-    match write::store_observing_commit(session, preset, program, stopping, || committing = true) {
+    match write::store_observing_commit(session, preset, program, stopping, || {
+        committing = true;
+        waiting(StoreWait::Confirmation);
+    }) {
         Ok(()) => Ok(()),
         Err(write::StoreError::NoConfirmation) => {
             session.note(timeout_notice);
-            on_silent();
+            waiting(StoreWait::Silent {
+                notice: timeout_notice,
+            });
             session.link.pause(SILENT_STORE_WAIT);
             Err(VerifiedStoreError::SilentTimeout)
         }
@@ -369,18 +441,37 @@ pub fn store_and_reload<L: Link>(
     silent: impl FnOnce(&str),
     received: impl FnMut(SpanReply) -> Result<(), String>,
 ) -> Result<(), VerifiedStoreError> {
+    store_and_reload_observing(
+        session,
+        preset,
+        program,
+        stopping,
+        only_silent(silent),
+        received,
+    )
+}
+
+/// Verified store with notifications when either bounded wait starts.
+pub fn store_and_reload_observing<L: Link>(
+    session: &mut Session<L>,
+    preset: Preset,
+    program: &Program<'_>,
+    stopping: impl FnMut() -> bool,
+    waiting: impl FnMut(StoreWait<'_>),
+    received: impl FnMut(SpanReply) -> Result<(), String>,
+) -> Result<(), VerifiedStoreError> {
     if !session.allows(Operation::VariaxPresetSwitch) {
         return Err(VerifiedStoreError::BeforeCommit(
             "Variax store verification requires VariaxPresetSwitch.".into(),
         ));
     }
-    store_verified(
+    store_verified_observing(
         session,
         preset,
         program,
         "Stored target read-back",
         stopping,
-        silent,
+        waiting,
         |session| read_unmodified(session, preset, || false, received),
     )
 }

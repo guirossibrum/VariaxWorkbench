@@ -8,11 +8,12 @@ use super::approvals;
 use super::catalogue::StepId;
 use super::practice::{PROGRAM_WORDS, Program};
 use super::record::Mode;
-use super::runner::Ctx;
+use super::runner::{Ctx, Progress};
 use line6_devices::family::podxt::{self, EditBuffer, Location};
 use line6_devices::family::variax::{Preset, procedures as variax};
 use line6_devices::gate::{GatePolicy, Operation};
 use line6_devices::session::{Link, Log, Session};
+use std::cell::RefCell;
 use std::time::Duration;
 
 /// Words 871 and 872 follow the tone knob even with saved tone on (#181,
@@ -70,6 +71,14 @@ pub fn with_podxt_stopping<T>(
     ops: &'static [Operation],
     body: impl FnOnce(&mut Session<&mut dyn Link>, &dyn Fn() -> bool) -> Result<T, String>,
 ) -> Result<T, String> {
+    with_podxt_progress(ctx, ops, |session, stopping, _| body(session, stopping))
+}
+
+pub fn with_podxt_progress<T>(
+    ctx: &mut Ctx<'_>,
+    ops: &'static [Operation],
+    body: impl FnOnce(&mut DynSession<'_>, &dyn Fn() -> bool, &dyn Fn(Progress)) -> Result<T, String>,
+) -> Result<T, String> {
     let policy = StepPolicy {
         step: ctx.step(),
         mode: ctx.mode,
@@ -77,12 +86,13 @@ pub fn with_podxt_stopping<T>(
     };
     let mut lines = Lines::default();
     let step = ctx.step();
-    let op = &*ctx.op;
-    let stopping = || op.stop_requested();
+    let op = RefCell::new(&mut *ctx.op);
+    let stopping = || op.borrow().stop_requested();
+    let progress = |update| op.borrow_mut().progress(update);
     let result = match ctx.port.podxt(step) {
         Ok(link) => {
             let mut session = Session::new(link, &policy, &mut lines);
-            body(&mut session, &stopping)
+            body(&mut session, &stopping, &progress)
         }
         Err(error) => Err(error),
     };
@@ -109,6 +119,14 @@ pub fn with_variax<T>(
     ops: &'static [Operation],
     body: impl FnOnce(&mut Session<&mut dyn Link>, &dyn Fn() -> bool) -> Result<T, String>,
 ) -> Result<T, String> {
+    with_variax_progress(ctx, ops, |session, stopping, _| body(session, stopping))
+}
+
+pub fn with_variax_progress<T>(
+    ctx: &mut Ctx<'_>,
+    ops: &'static [Operation],
+    body: impl FnOnce(&mut DynSession<'_>, &dyn Fn() -> bool, &dyn Fn(Progress)) -> Result<T, String>,
+) -> Result<T, String> {
     let policy = StepPolicy {
         step: ctx.step(),
         mode: ctx.mode,
@@ -116,13 +134,14 @@ pub fn with_variax<T>(
     };
     let mut lines = Lines::default();
     let step = ctx.step();
-    let op = &*ctx.op;
-    let stopping = || op.stop_requested();
+    let op = RefCell::new(&mut *ctx.op);
+    let stopping = || op.borrow().stop_requested();
+    let progress = |update| op.borrow_mut().progress(update);
     let result = match ctx.port.variax(step) {
         Ok(link) => {
             let mut session = Session::new(link, &policy, &mut lines);
             session.require_expected_sysex();
-            body(&mut session, &stopping)
+            body(&mut session, &stopping, &progress)
         }
         Err(error) => Err(error),
     };
@@ -138,6 +157,30 @@ pub fn drain<L: Link>(session: &mut Session<L>) -> Result<(), String> {
     session.listen(DRAIN).map(|_| ())
 }
 
+/// Report the next chunk as soon as the previous reply was validated.
+pub fn program_progress<'a>(progress: &'a dyn Fn(Progress), action: &'a str) -> impl FnMut() + 'a {
+    let mut chunks = variax::chunks().into_iter();
+    let mut completed = 0;
+    let mut advance = move |done| {
+        let label = chunks.next().map_or_else(
+            || format!("{action}: all replies received"),
+            |span| {
+                format!(
+                    "{action}: reading words {}–{}",
+                    span.start(),
+                    span.start() + span.count() - 1
+                )
+            },
+        );
+        progress(Progress::counted(label, done, variax::CHUNK_COUNT, "reads"));
+    };
+    advance(0);
+    move || {
+        completed += 1;
+        advance(completed);
+    }
+}
+
 /// The result of a 35-chunk read.
 pub struct FullRead {
     pub words: Program,
@@ -148,9 +191,13 @@ pub struct FullRead {
 pub fn variax_full_read<L: Link>(
     session: &mut Session<L>,
     stopping: &dyn Fn() -> bool,
+    progress: &dyn Fn(Progress),
+    action: &str,
 ) -> Result<FullRead, String> {
     let mut replies = Vec::new();
+    let mut update = program_progress(progress, action);
     let words = variax::read_buffer(session, stopping, |reply| {
+        update();
         replies.push(reply.raw);
         Ok(())
     })?;
@@ -165,9 +212,13 @@ pub fn variax_read_preset<L: Link>(
     session: &mut Session<L>,
     preset: Preset,
     stopping: &dyn Fn() -> bool,
+    progress: &dyn Fn(Progress),
+    action: &str,
 ) -> Result<FullRead, String> {
     let mut replies = Vec::new();
+    let mut update = program_progress(progress, action);
     let words = variax::read_unmodified(session, preset, stopping, |reply| {
+        update();
         replies.push(reply.raw);
         Ok(())
     })?;

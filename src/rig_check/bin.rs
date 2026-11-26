@@ -157,8 +157,8 @@ fn window(options: Options) {
         let mut sink = match report::ReportFile::create(&out, Redactor::from_environment()) {
             Ok(sink) => sink,
             Err(error) => {
-                op.send(Prompt::Progress(format!(
-                    "Cannot create the report: {error}"
+                op.send(Prompt::Progress(rig_check::runner::Progress::action(
+                    format!("Cannot create the report: {error}"),
                 )));
                 return;
             }

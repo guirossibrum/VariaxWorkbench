@@ -2,7 +2,7 @@
 
 use super::catalogue::{SaveNotice, Step, StepId};
 use super::record::{Mode, Outcome, StepRecord};
-use super::runner::{Answer, Decision, Operator, Question, ResultDecision, Retry};
+use super::runner::{Answer, Decision, Operator, Progress, Question, ResultDecision, Retry};
 use std::cell::Cell;
 
 /// Answers every card with `default`, except listed steps.
@@ -18,6 +18,7 @@ pub struct Script {
     pub answer: Answer,
     pub cards: Vec<StepId>,
     pub notices: Vec<String>,
+    pub progress: Vec<(StepId, Progress)>,
     pub accept_evidence: bool,
     pub instructions: Vec<(StepId, String)>,
     pub questions: Vec<Question>,
@@ -48,6 +49,7 @@ impl Script {
             answer: Answer::Yes,
             cards: Vec::new(),
             notices: Vec::new(),
+            progress: Vec::new(),
             accept_evidence: true,
             instructions: Vec::new(),
             questions: Vec::new(),
@@ -121,7 +123,11 @@ impl Operator for Script {
         (self.answer, "scripted".into())
     }
 
-    fn progress(&mut self, _: &str) {}
+    fn progress(&mut self, progress: Progress) {
+        if let Some(step) = self.current.get() {
+            self.progress.push((step, progress));
+        }
+    }
 
     fn finished(&mut self, record: &StepRecord) -> ResultDecision {
         self.finished.push((record.id, record.outcome.clone()));
@@ -277,6 +283,129 @@ mod tests {
                 assert!(run.step(StepId(5, 1)).outcome.passed());
                 assert!(report.contains("On the device: not reported different"));
             }
+        }
+    }
+
+    fn assert_progress(script: &Script, id: StepId, units: &str, total: usize) {
+        let seen: Vec<_> = script
+            .progress
+            .iter()
+            .filter_map(|(step, progress)| {
+                let (done, limit, measure) = progress.count?;
+                if *step != id || measure != units {
+                    return None;
+                }
+                assert_eq!(limit, total, "{id}");
+                assert!(!progress.action.is_empty());
+                Some(done)
+            })
+            .collect();
+        assert!(!seen.is_empty(), "{id}: no {units} progress");
+        assert_eq!(seen.len() % (total + 1), 0, "{id}: {seen:?}");
+        for group in seen.chunks_exact(total + 1) {
+            assert!(group.iter().copied().eq(0..=total), "{id}: {group:?}");
+        }
+    }
+
+    #[test]
+    fn repeated_work_reports_completed_counts_and_guided_waits_have_a_limit() {
+        let mut person = Script::run_all();
+        run_practice(
+            Faults::default(),
+            &mut person,
+            &mut NoReport,
+            RunData::default(),
+        );
+        for (id, units, total) in [
+            (StepId(2, 4), "channels", 4),
+            (StepId(2, 5), "entries", 299),
+            (StepId(3, 4), "presets", 60),
+            (StepId(3, 5), "presets", 1),
+            (StepId(3, 6), "presets", 5),
+            (StepId(5, 4), "slots", 2),
+        ] {
+            assert_progress(&person, id, units, total);
+        }
+        for id in [
+            StepId(3, 3),
+            StepId(3, 4),
+            StepId(4, 2),
+            StepId(4, 3),
+            StepId(4, 4),
+            StepId(4, 5),
+            StepId(5, 1),
+            StepId(5, 3),
+            StepId(5, 4),
+            StepId(7, 1),
+        ] {
+            assert_progress(&person, id, "reads", 35);
+        }
+        for id in [
+            StepId(6, 1),
+            StepId(7, 1),
+            StepId(7, 2),
+            StepId(7, 3),
+            StepId(7, 4),
+            StepId(7, 5),
+        ] {
+            assert!(
+                person.progress.iter().any(|(step, progress)| {
+                    *step == id
+                        && progress.guided
+                        && progress.wait == Some(super::super::guided::WINDOW)
+                }),
+                "{id}"
+            );
+        }
+        for fault in [
+            Faults {
+                unverified_variax: true,
+                ..Faults::default()
+            },
+            Faults {
+                unverified_podxt: true,
+                ..Faults::default()
+            },
+        ] {
+            let mut person = Script::run_all();
+            run_practice(fault, &mut person, &mut NoReport, RunData::default());
+            assert_progress(&person, VARIAX_EVIDENCE, "reads", 35);
+        }
+    }
+
+    #[test]
+    fn silent_stores_report_the_confirmation_limit_then_the_two_minute_hold() {
+        use std::time::Duration;
+        for (id, receipt, faults) in [
+            (
+                StepId(5, 1),
+                15,
+                Faults {
+                    silent_variax_store: true,
+                    ..Faults::default()
+                },
+            ),
+            (
+                StepId(5, 2),
+                7,
+                Faults {
+                    silent_podxt_store: true,
+                    ..Faults::default()
+                },
+            ),
+        ] {
+            let mut person = Script::run_all();
+            run_practice(faults, &mut person, &mut NoReport, RunData::default());
+            let waits: Vec<_> = person
+                .progress
+                .iter()
+                .filter_map(|(step, progress)| {
+                    (*step == id)
+                        .then_some(progress.wait?)
+                        .map(|wait| wait.as_secs())
+                })
+                .collect();
+            assert_eq!(waits, [receipt, Duration::from_mins(2).as_secs()]);
         }
     }
 

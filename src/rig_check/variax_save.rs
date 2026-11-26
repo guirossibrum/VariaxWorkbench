@@ -10,11 +10,13 @@
 
 use super::catalogue::{SaveNotice, StepId};
 use super::practice::{Program, flash_index, packed, preset_label, program_name};
-use super::procedures::{program_bytes, same_program, variax_read_preset, with_variax};
-use super::runner::{Ctx, SKIPPED};
+use super::procedures::{
+    program_bytes, program_progress, same_program, variax_read_preset, with_variax_progress,
+};
+use super::runner::{Ctx, Progress, SKIPPED};
 use line6_devices::family::variax::{
     Preset,
-    procedures::{self as shared_variax, SILENT_STORE_WAIT, VerifiedStoreError},
+    procedures::{self as shared_variax, SILENT_STORE_WAIT, StoreWait, VerifiedStoreError},
     write,
 };
 use line6_devices::gate::Operation;
@@ -44,6 +46,20 @@ pub fn slot(start: Preset) -> Result<Preset, String> {
     Ok(start)
 }
 
+fn store_progress(progress: &dyn Fn(Progress), wait: StoreWait<'_>) {
+    let text = match wait {
+        StoreWait::Confirmation => "Waiting for the guitar to confirm, up to 15 s",
+        StoreWait::Silent { .. } => {
+            "The guitar did not confirm. Leave the rig powered and connected. Rig Check is waiting two more minutes before you check the guitar."
+        }
+        StoreWait::ReadBack => "Reading back the saved program",
+    };
+    progress(wait.limit().map_or_else(
+        || Progress::action(text),
+        |limit| Progress::waiting(text, limit, false),
+    ));
+}
+
 pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
     require_evidence(ctx)?;
     let start = ctx
@@ -60,9 +76,15 @@ pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
         .ok_or("The slot is not in the 3.4 backup.")?;
     let backup_hash = super::record::sha256_hex(&program_bytes(&backup));
     // Pre-check: the slot still holds what the backup says.
-    let before = with_variax(ctx, VARIAX_SAVE, |session, stopping| {
+    let before = with_variax_progress(ctx, VARIAX_SAVE, |session, stopping, progress| {
         shared_variax::identify(session)?;
-        variax_read_preset(session, preset, stopping)
+        variax_read_preset(
+            session,
+            preset,
+            stopping,
+            progress,
+            "Checking the save target",
+        )
     })?;
     if !same_program(&before.words, &backup) {
         return Err(format!(
@@ -110,15 +132,25 @@ pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let bytes = packed(&backup);
     let name = program_name(&backup);
     let mut unknown = false;
-    let acknowledged = with_variax(ctx, VARIAX_SAVE, |session, stopping| {
+    let acknowledged = with_variax_progress(ctx, VARIAX_SAVE, |session, stopping, progress| {
         shared_variax::identify(session)?;
         let program = write::Program::new(&name, &bytes)?;
         let timeout_notice = format!(
             "No 0x71. Keeping the rig untouched for {} s; no more MIDI is sent. {SPARE_WARNING}",
             SILENT_STORE_WAIT.as_secs()
         );
-        let result =
-            shared_variax::store_once(session, preset, &program, stopping, &timeout_notice, || {});
+        progress(Progress::action(format!(
+            "Sending {} to the guitar",
+            preset_label(preset)
+        )));
+        let result = shared_variax::store_once_observing(
+            session,
+            preset,
+            &program,
+            stopping,
+            &timeout_notice,
+            |wait| store_progress(progress, wait),
+        );
         match result {
             Ok(()) => Ok(true),
             Err(VerifiedStoreError::SilentTimeout) => {
@@ -148,8 +180,14 @@ pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
     }
     ctx.rec.note("Received the store confirmation (0x71).");
     // Verification is not interrupted by Stop once the store was sent.
-    let after = with_variax(ctx, VARIAX_SAVE, |session, _| {
-        variax_read_preset(session, preset, &|| false)
+    let after = with_variax_progress(ctx, VARIAX_SAVE, |session, _, progress| {
+        variax_read_preset(
+            session,
+            preset,
+            &|| false,
+            progress,
+            "Verifying the saved program",
+        )
     })?;
     let after_hash = ctx.rec.checksum(
         "Variax slot after save (read back)",
@@ -213,7 +251,13 @@ pub fn sync_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let targets = [(start, original), (other, saved_program(ctx, other)?)];
     confirm_batch(ctx, &targets, "SYNC VARIAX")?;
     let result = (|| {
-        for (preset, words) in targets {
+        for (index, (preset, words)) in targets.into_iter().enumerate() {
+            ctx.op.progress(Progress::counted(
+                format!("Checking and saving {}", preset_label(preset)),
+                index,
+                targets.len(),
+                "slots",
+            ));
             preflight(ctx, preset, &words)?;
             save_image(ctx, preset, &program_name(&words), &packed(&words), true)?;
             ctx.rec
@@ -224,8 +268,21 @@ pub fn sync_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
     if ctx.data.store_state_unknown {
         return result;
     }
-    let returned = with_variax(ctx, VARIAX_SAVE, |session, _| {
-        shared_variax::return_to_preset(session, start, &packed(&original), |_| Ok(()))
+    if result.is_ok() {
+        ctx.op.progress(Progress::counted(
+            format!("Returning to {}", preset_label(start)),
+            targets.len(),
+            targets.len(),
+            "slots",
+        ));
+    }
+    let returned = with_variax_progress(ctx, VARIAX_SAVE, |session, _, progress| {
+        let mut advance =
+            program_progress(progress, "Verifying the return to your starting preset");
+        shared_variax::return_to_preset(session, start, &packed(&original), |_| {
+            advance();
+            Ok(())
+        })
     });
     match (result, returned) {
         (Ok(()), Ok(())) => {
@@ -270,9 +327,14 @@ fn saved_program(ctx: &Ctx<'_>, preset: Preset) -> Result<Program, String> {
 }
 
 fn preflight(ctx: &mut Ctx<'_>, preset: Preset, expected: &Program) -> Result<(), String> {
-    with_variax(ctx, VARIAX_SAVE, |session, stopping| {
+    with_variax_progress(ctx, VARIAX_SAVE, |session, stopping, progress| {
         shared_variax::identify(session)?;
-        let actual = shared_variax::read_unmodified(session, preset, stopping, |_| Ok(()))?;
+        let action = format!("Checking {} against its backup", preset_label(preset));
+        let mut advance = program_progress(progress, &action);
+        let actual = shared_variax::read_unmodified(session, preset, stopping, |_| {
+            advance();
+            Ok(())
+        })?;
         shared_variax::compare_image(
             &actual,
             &packed(expected),
@@ -328,15 +390,24 @@ fn save_image(
 ) -> Result<(), String> {
     let warning = shared_variax::spare_warning(target);
     let program = write::Program::new(name, bytes)?;
-    let outcome = with_variax(ctx, VARIAX_SAVE, |session, stopping| {
+    let outcome = with_variax_progress(ctx, VARIAX_SAVE, |session, stopping, progress| {
         shared_variax::identify(session)?;
-        Ok(shared_variax::store_and_reload(
+        progress(Progress::action(format!(
+            "Sending {} to the guitar",
+            preset_label(target)
+        )));
+        let action = format!("Verifying saved {}", preset_label(target));
+        let mut advance = None;
+        Ok(shared_variax::store_and_reload_observing(
             session,
             target,
             &program,
             || allow_stop && stopping(),
-            |_| {},
-            |_| Ok(()),
+            |wait| store_progress(progress, wait),
+            |_| {
+                advance.get_or_insert_with(|| program_progress(progress, &action))();
+                Ok(())
+            },
         ))
     })?;
     match outcome {

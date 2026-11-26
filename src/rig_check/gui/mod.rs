@@ -14,7 +14,9 @@ pub mod raster;
 use super::catalogue::{self, Risk, SaveNotice, Step, StepId};
 use super::history::{self, Review};
 use super::record::{Mode, Outcome, RunRecord, StepRecord, plain_result};
-use super::runner::{Answer, Decision, Operator, Question, ResultDecision, Retry};
+use super::runner::{
+    Answer, CONTROLS_NOTICE, Decision, Operator, Progress, Question, ResultDecision, Retry,
+};
 use crate::ui::chrome::section_panel;
 use crate::ui::theme::{
     self, AMBER, BG, BODY, DANGER, DIM, LINE, MUTED, OK, PANEL, RAISED, SECTION, SPACE_8, SPACE_12,
@@ -24,6 +26,7 @@ use eframe::egui::{self, Color32, RichText, vec2};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::time::{Duration, Instant};
 
 /// Text size for HEAR / SEE, readable from where the guitar is.
 pub const BIG: f32 = 34.0;
@@ -47,7 +50,7 @@ pub enum Prompt {
         what: String,
     },
     Ask(Question),
-    Progress(String),
+    Progress(Progress),
     Finished(StepRecord),
     Recorded(StepRecord),
     Done {
@@ -155,8 +158,8 @@ impl Operator for ChannelOperator {
         }
     }
 
-    fn progress(&mut self, text: &str) {
-        self.send(Prompt::Progress(text.into()));
+    fn progress(&mut self, progress: Progress) {
+        self.send(Prompt::Progress(progress));
     }
 
     fn finished(&mut self, record: &StepRecord) -> ResultDecision {
@@ -191,7 +194,9 @@ pub struct Wizard {
     reviewing: Option<Review>,
     start_accepted: bool,
     different_open: bool,
-    pub messages: Vec<String>,
+    activity: Option<(Progress, Instant)>,
+    slots: Option<(usize, usize)>,
+    step_start: Option<Instant>,
     pub typed: String,
     pub note: String,
     pub preview: bool,
@@ -213,7 +218,9 @@ impl Default for Wizard {
             reviewing: None,
             start_accepted: false,
             different_open: false,
-            messages: Vec::new(),
+            activity: None,
+            slots: None,
+            step_start: None,
             typed: String::new(),
             note: String::new(),
             preview: false,
@@ -289,11 +296,16 @@ impl Wizard {
         {
             self.start_accepted = true;
         }
+        if let (Some(Prompt::Card(step, _)), Reply::Decision(Decision::Run)) =
+            (&self.prompt, &reply)
+        {
+            self.running = Some(*step);
+            self.activity = None;
+            self.slots = None;
+            self.step_start = Some(Instant::now());
+        }
         if let Some(tx) = &self.to_runner {
             let _ = tx.send(reply);
-        }
-        if let Some(Prompt::Card(step, _)) = &self.prompt {
-            self.running = Some(*step);
         }
         self.prompt = None;
         self.typed.clear();
@@ -313,7 +325,20 @@ impl Wizard {
         }
         for prompt in incoming {
             match prompt {
-                Prompt::Progress(text) => self.messages.push(text),
+                Prompt::Progress(progress) => {
+                    if !progress.guided
+                        && self
+                            .activity
+                            .as_ref()
+                            .is_some_and(|(previous, _)| previous.guided)
+                    {
+                        self.instruction = None;
+                    }
+                    if let Some((done, total, "slots")) = progress.count {
+                        self.slots = Some((done, total));
+                    }
+                    self.activity = Some((progress, Instant::now()));
+                }
                 Prompt::Recorded(record) => {
                     if let Some(previous) = self
                         .progress
@@ -325,6 +350,9 @@ impl Wizard {
                 }
                 Prompt::Finished(record) => {
                     self.running = None;
+                    self.activity = None;
+                    self.step_start = None;
+                    self.slots = None;
                     self.instruction = None;
                     self.progress.retain(|r| r.id != record.id);
                     if record.started.is_some() {
@@ -521,7 +549,7 @@ impl Wizard {
             && self.prompt.is_none()
         {
             ui.label(
-                RichText::new(format!("Step {step}: listening"))
+                RichText::new(format!("Step {step}: in progress"))
                     .size(SECTION)
                     .color(MUTED),
             );
@@ -530,7 +558,14 @@ impl Wizard {
             ui.add_space(SPACE_12);
             big(ui, "HEAR ", &hear);
             ui.add_space(SPACE_16);
-            ui.label(RichText::new("Nothing is sent to your rig while Rig Check listens. When it sees your action, the result appears and waits for you to continue.").size(BODY).color(MUTED));
+            self.live_progress(ui);
+            ui.label(
+                RichText::new(
+                    "When Rig Check sees your action, it checks the result. You can keep playing.",
+                )
+                .size(BODY)
+                .color(MUTED),
+            );
             if button(ui, "Stop", true).clicked() {
                 self.stop.store(true, Ordering::Relaxed);
             }
@@ -628,19 +663,67 @@ impl Wizard {
                         .size(TITLE)
                         .color(TEXT),
                 );
-                ui.spinner();
+                self.live_progress(ui);
+                if !catalogue::step(step).is_some_and(|s| s.kind == catalogue::Kind::Computer) {
+                    ui.label(RichText::new(CONTROLS_NOTICE).size(BODY).color(TEXT));
+                }
                 ui.label(RichText::new("Stop asks the step to finish its current read and put the rig back. A save that has started is always completed and checked.").size(BODY).color(MUTED));
                 if button(ui, "Stop", true).clicked() {
                     self.stop.store(true, Ordering::Relaxed);
                 }
             }
             None => {
-                ui.label(RichText::new("Preparing…").size(TITLE).color(MUTED));
+                if let Some((progress, _)) = &self.activity {
+                    ui.label(
+                        RichText::new(plain_result(&progress.action))
+                            .size(SECTION)
+                            .color(TEXT),
+                    );
+                } else {
+                    ui.label(RichText::new("Preparing…").size(TITLE).color(MUTED));
+                }
             }
         }
-        for line in self.messages.iter().rev().take(5) {
-            ui.label(RichText::new(plain_result(line)).size(BODY).color(MUTED));
+    }
+
+    fn live_progress(&self, ui: &mut egui::Ui) {
+        if let Some((progress, updated)) = &self.activity {
+            ui.label(
+                RichText::new(plain_result(&progress.action))
+                    .size(SECTION)
+                    .strong()
+                    .color(TEXT),
+            );
+            if let Some((done, total, units)) = progress.count {
+                ui.add(
+                    egui::ProgressBar::new(done as f32 / total as f32)
+                        .text(format!("{done} of {total} {units}")),
+                );
+            } else {
+                ui.spinner();
+            }
+            if let Some((done, total)) = self.slots
+                && !matches!(progress.count, Some((_, _, "slots")))
+            {
+                ui.label(format!("{done} of {total} slots verified"));
+            }
+            if let Some(limit) = progress.wait {
+                let left = limit.saturating_sub(updated.elapsed());
+                let seconds = left.as_secs() + u64::from(left.subsec_nanos() > 0);
+                ui.label(
+                    RichText::new(format!("{seconds} s left"))
+                        .size(SECTION)
+                        .color(TEXT),
+                );
+            }
+        } else {
+            ui.spinner();
         }
+        if let Some(started) = self.step_start {
+            let elapsed = started.elapsed().as_secs();
+            ui.label(format!("Elapsed {:02}:{:02}", elapsed / 60, elapsed % 60));
+        }
+        ui.ctx().request_repaint_after(Duration::from_millis(250));
     }
 
     fn start_notice(&mut self, ui: &mut egui::Ui, notice: &str) {
@@ -1056,11 +1139,17 @@ pub fn mockup_states() -> Vec<(&'static str, Wizard)> {
         ("05-running", {
             let mut w = with_progress(practice(None), 9);
             w.running = Some(StepId(3, 3));
+            let now = Instant::now();
+            w.step_start = Some(now);
+            w.activity = Some((Progress::counted("Current program: reading words 384–415", 12, 35, "reads"), now));
             w
         }),
         ("06-listening", {
             let mut w = with_progress(practice(None), 10);
             w.running = Some(StepId(7, 1));
+            let now = Instant::now();
+            w.step_start = Some(now);
+            w.activity = Some((Progress::waiting("Waiting for the selector", super::guided::WINDOW, true), now));
             w.instruction = Some((
                 StepId(7, 1),
                 "Turn the selector to Spank 2.".into(),

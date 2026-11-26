@@ -10,7 +10,7 @@
 
 use super::practice::{Program, packed, preset_label, program_name, seal};
 use super::procedures::{
-    program_bytes, same_program, variax_full_read, variax_read_preset, with_variax,
+    program_bytes, same_program, variax_full_read, variax_read_preset, with_variax_progress,
     word_differences,
 };
 use super::runner::{Answer, Ctx, Question};
@@ -30,11 +30,11 @@ pub const VARIAX_LIVE: &[Operation] = &[
 fn audition(ctx: &mut Ctx<'_>, words: &Program, label: &str) -> Result<Program, String> {
     let name = program_name(words);
     let bytes = packed(words);
-    let read = with_variax(ctx, VARIAX_LIVE, |session, stopping| {
+    let read = with_variax_progress(ctx, VARIAX_LIVE, |session, stopping, progress| {
         shared_variax::identify(session)?;
         let program = write::Program::new(&name, &bytes)?;
         shared_variax::send_buffer(session, BufferEdit::Full(&program), stopping)?;
-        variax_full_read(session, stopping)
+        variax_full_read(session, stopping, progress, label)
     })?;
     let sent = ctx.rec.checksum(
         format!("{label}: sent (1,092 words)"),
@@ -186,8 +186,14 @@ pub fn variax_test_model(ctx: &mut Ctx<'_>) -> Result<(), String> {
         }
     }
     // Always switch back, also after a failure or Stop.
-    let returned = with_variax(ctx, VARIAX_LIVE, |session, _| {
-        variax_read_preset(session, preset, &|| false)
+    let returned = with_variax_progress(ctx, VARIAX_LIVE, |session, _, progress| {
+        variax_read_preset(
+            session,
+            preset,
+            &|| false,
+            progress,
+            "Verifying the return to your starting preset",
+        )
     });
     no_store_sent(ctx)?;
     match returned {
@@ -381,9 +387,10 @@ fn variant(ctx: &mut Ctx<'_>, edit: AuditionEdit, question: &str) -> Result<(), 
         "The starting sound changes temporarily.",
     );
     let mut attempted = false;
-    let sent = with_variax(ctx, VARIAX_LIVE, |session, stopping| {
+    let sent = with_variax_progress(ctx, VARIAX_LIVE, |session, stopping, progress| {
         shared_variax::identify(session)?;
-        let baseline = variax_full_read(session, stopping)?.words;
+        let baseline =
+            variax_full_read(session, stopping, progress, "Checking the starting program")?.words;
         shared_variax::compare_image(&baseline, &packed(&start), "Starting program")?;
         let previous = packed(&baseline);
         let edit = match &transition {
@@ -399,7 +406,12 @@ fn variant(ctx: &mut Ctx<'_>, edit: AuditionEdit, question: &str) -> Result<(), 
         };
         attempted = true;
         shared_variax::send_buffer_verified(session, edit, "Audition read-back", stopping, || {
-            Ok(|_| Ok(()))
+            let mut advance =
+                super::procedures::program_progress(progress, "Verifying the temporary edit");
+            Ok(move |_| {
+                advance();
+                Ok(())
+            })
         })?;
         Ok(())
     });
@@ -427,8 +439,15 @@ fn variant(ctx: &mut Ctx<'_>, edit: AuditionEdit, question: &str) -> Result<(), 
         ));
     }
     if attempted {
-        let returned = with_variax(ctx, VARIAX_LIVE, |session, _| {
-            shared_variax::return_to_preset(session, preset, &packed(&start), |_| Ok(()))
+        let returned = with_variax_progress(ctx, VARIAX_LIVE, |session, _, progress| {
+            let mut advance = super::procedures::program_progress(
+                progress,
+                "Verifying the return to your starting preset",
+            );
+            shared_variax::return_to_preset(session, preset, &packed(&start), |_| {
+                advance();
+                Ok(())
+            })
         });
         match (sent, returned) {
             (Ok(()), Ok(())) => ctx.rec.show(format!(
