@@ -305,7 +305,7 @@ impl<'a> Runner<'a> {
                         super::recover::before_continuation(
                             self.op,
                             self.run.mode,
-                            &plan.source,
+                            plan,
                             output_dir,
                             legacy_dir,
                         )?;

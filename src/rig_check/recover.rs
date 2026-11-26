@@ -224,7 +224,7 @@ pub(super) fn before_new_run(
     if let Some(legacy_dir) = legacy_dir
         && legacy_dir.canonicalize().ok() != dir.canonicalize().ok()
     {
-        confirm_other_folder(op, legacy_dir, port.mode())?;
+        confirm_pending(op, legacy_dir, port.mode(), None)?;
     }
     for (path, state) in pending(dir) {
         let report = path.with_extension("txt");
@@ -258,12 +258,12 @@ pub(super) fn before_new_run(
     Ok(())
 }
 
-/// Before resuming across the Mac locations, check for interrupted runs outside
-/// the selected source folder. The resume plan handles its own checkpoint.
+/// Check both Mac locations for interrupted runs. The selected checkpoint
+/// is already locked and validated by the resume plan.
 pub(super) fn before_continuation(
     op: &mut dyn Operator,
     mode: Mode,
-    source: &Path,
+    plan: &super::resume::Plan,
     output_dir: &Path,
     legacy_dir: &Path,
 ) -> Result<(), String> {
@@ -277,22 +277,31 @@ pub(super) fn before_continuation(
     ]
     .into_iter()
     .flatten()
-    .filter(|dir| Some(*dir) != source.parent())
     {
-        confirm_other_folder(op, dir, mode)?;
+        confirm_pending(op, dir, mode, Some(plan))?;
     }
     Ok(())
 }
 
-fn confirm_other_folder(op: &mut dyn Operator, dir: &Path, mode: Mode) -> Result<(), String> {
+fn confirm_pending(
+    op: &mut dyn Operator,
+    dir: &Path,
+    mode: Mode,
+    selected: Option<&super::resume::Plan>,
+) -> Result<(), String> {
     for (path, state) in pending(dir) {
         let report = path.with_extension("txt");
         if super::report::saved_mode(&report).is_some_and(|saved| saved != mode) {
             continue;
         }
+        if let Some(plan) = selected
+            && plan.is_selected_checkpoint(&path)?
+        {
+            continue;
+        }
         let _lock = lock_checkpoint(&path)?;
         verify_pending_state(&path, &state)?;
-        confirm_manual_recovery(op, &report, "This run is saved in another report folder.")?;
+        confirm_manual_recovery(op, &report, "Another Rig Check was interrupted.")?;
     }
     Ok(())
 }

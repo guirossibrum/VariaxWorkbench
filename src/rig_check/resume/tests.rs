@@ -344,25 +344,92 @@ fn another_mac_root_with_an_uncertain_store_requires_manual_verification() {
     assert!(person.notices[0].contains("verify the affected slot"));
     assert!(person.notices[0].contains(&*legacy.sink.path.to_string_lossy()));
 
-    let chosen = visible.path().join("selected.txt");
+    let selected = Fixture::legacy_failure();
+    let plan = open(&selected.sink.path).unwrap();
     let result = recover::before_continuation(
         &mut person,
         Mode::Practice,
-        &chosen,
-        visible.path(),
+        &plan,
+        selected.dir.path(),
         legacy.dir.path(),
     );
     assert!(result.is_err());
-    let result = recover::before_continuation(
-        &mut person,
-        Mode::Practice,
-        &legacy.sink.path,
-        legacy.dir.path(),
-        visible.path(),
-    );
-    assert!(result.is_ok(), "the selected source has its own validation");
     assert_eq!(std::fs::read(state).unwrap(), original);
     assert!(rig.borrow().written.is_empty());
+}
+
+#[test]
+fn same_root_interrupted_store_blocks_resume_before_revalidation() {
+    let mut source = Fixture::new();
+    source.stop_after(KNOBS, false);
+    source.run.finished = false;
+    source.run.current = Some(KNOBS);
+    *source.run.step_mut(KNOBS) = StepRecord::new(KNOBS);
+    *source.run.step_mut(RIG_GUARD) = StepRecord::new(RIG_GUARD);
+    source.save(false);
+    let source_state = source.sink.path.with_extension("state");
+    let source_bytes = std::fs::read(&source_state).unwrap();
+    let plan = open(&source.sink.path).unwrap();
+    assert_eq!(plan.target, KNOBS);
+
+    let mut interrupted = ReportFile::create(source.dir.path(), Redactor::default()).unwrap();
+    let mut run = source.run.clone();
+    run.current = Some(FIRST_SAVE);
+    interrupted.update(&run).unwrap();
+    let path = interrupted.path.with_extension("state");
+    let name = interrupted.path.file_name().unwrap().to_str().unwrap();
+    let mut state = RigState::from_run(&run, &source.data, name);
+    state.report_sha256 = interrupted.report_digest();
+    recover::write_state(&path, &state).unwrap();
+    let state_bytes = std::fs::read(&path).unwrap();
+    assert!(error(&interrupted.path).contains("interrupted during a live edit or store"));
+    assert_eq!(recover::pending(source.dir.path()).len(), 2);
+
+    let output = tempfile::tempdir().unwrap();
+    let rig = SimRig::shared(Faults::default());
+    let mut person = Script::run_all();
+    person.start_decisions = [true, false].into();
+    let (run, _) = continue_in(
+        output.path(),
+        Some(source.dir.path().to_owned()),
+        plan,
+        &rig,
+        &mut person,
+    );
+    assert!(run.rig_state.contains("pending rig recovery"));
+    assert_eq!(person.notices.len(), 2);
+    assert!(person.notices[1].contains(&*interrupted.path.to_string_lossy()));
+    assert!(person.notices[1].contains("verify the affected slot"));
+    assert!(person.cards.is_empty());
+    assert!(rig.borrow().written.is_empty());
+    assert!(!source.sink.path.with_extension("continuation").exists());
+    assert_eq!(std::fs::read(&source_state).unwrap(), source_bytes);
+    assert_eq!(std::fs::read(&path).unwrap(), state_bytes);
+    assert_eq!(
+        std::fs::read_to_string(&interrupted.path).unwrap(),
+        interrupted.last
+    );
+
+    // With only the harmless interrupted source present, the held source
+    // lock is sufficient and revalidation can go ahead.
+    std::fs::remove_file(path).unwrap();
+    let mut person = Script::run_all();
+    person.overrides.push((FIRST_SAVE, Decision::Stop));
+    let (run, _) = continue_in(
+        output.path(),
+        Some(source.dir.path().to_owned()),
+        open(&source.sink.path).unwrap(),
+        &rig,
+        &mut person,
+    );
+    assert!(run.step(KNOBS).outcome.passed(), "{}", run.rig_state);
+    assert_eq!(person.cards.first(), Some(&KNOBS));
+    assert!(source.sink.path.with_extension("continuation").is_file());
+    assert_eq!(std::fs::read(source_state).unwrap(), source_bytes);
+    assert_eq!(
+        std::fs::read_to_string(&source.sink.path).unwrap(),
+        source.sink.last
+    );
 }
 
 #[test]
@@ -545,13 +612,24 @@ fn collected_legacy_report_with_stopped_guard_runs_only_guided_checks_and_a_fres
     rig.borrow_mut().podxt.playing[32 + 21] = presence;
     let fixture = Fixture::stopped_owner_pattern(&rig);
     let alias = fixture.dir.path().join("latest.txt");
-    std::fs::rename(&fixture.sink.path, &alias).unwrap();
-    std::fs::rename(
-        fixture.sink.path.with_extension("state"),
-        alias.with_extension("state"),
+    std::fs::copy(&fixture.sink.path, &alias).unwrap();
+    let original_state = fixture.sink.path.with_extension("state");
+    let alias_state = alias.with_extension("state");
+    std::fs::copy(&original_state, &alias_state).unwrap();
+    let original_plan = open(&fixture.sink.path).unwrap();
+    assert!(original_plan.is_selected_checkpoint(&alias_state).unwrap());
+    let plan = open(&alias).unwrap();
+    assert!(plan.is_selected_checkpoint(&original_state).unwrap());
+    // A different original checkpoint still needs its own safety check.
+    let bytes = std::fs::read(&original_state).unwrap();
+    std::fs::write(
+        &original_state,
+        [bytes.as_slice(), b"finished=false\n"].concat(),
     )
     .unwrap();
-    let plan = open(&alias).unwrap();
+    assert!(plan.is_selected_checkpoint(&original_state).is_err());
+    std::fs::remove_file(&original_state).unwrap();
+    std::fs::remove_file(&fixture.sink.path).unwrap();
     assert_eq!(plan.target, KNOBS);
     assert!(plan.pre_write_recovery && plan.skips(POD_BACKUP) && plan.skips(GUITAR_BACKUP));
     assert!(plan.restored.podxt_unsaved);

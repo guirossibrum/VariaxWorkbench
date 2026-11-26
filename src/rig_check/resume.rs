@@ -252,6 +252,38 @@ impl Plan {
         Ok(lock)
     }
 
+    pub(super) fn is_selected_checkpoint(&self, checkpoint: &Path) -> Result<bool, String> {
+        let Ok(checkpoint) = checkpoint.canonicalize() else {
+            return Ok(false);
+        };
+        let is_checkpoint_for = |report: &Path| {
+            report
+                .with_extension("state")
+                .canonicalize()
+                .is_ok_and(|path| path == checkpoint)
+        };
+        if is_checkpoint_for(&self.source) {
+            return Ok(true);
+        }
+        // A collected report can share the original basename's lock. Skip its
+        // original companion only when it contains the same checkpoint.
+        if self.original_path != self.source && is_checkpoint_for(&self.original_path) {
+            if std::fs::read(checkpoint)
+                .is_ok_and(|bytes| sha256_hex(&bytes) == self.checkpoint_sha256)
+            {
+                return Ok(true);
+            }
+            return Err("The collected report's checkpoint differs from the original. Verify the interrupted run using the original report.".into());
+        }
+        let alias = self.source.with_file_name("latest.txt");
+        Ok(is_checkpoint_for(&alias)
+            && open(&alias).is_ok_and(|plan| {
+                plan.original_path == self.original_path
+                    && plan.report_sha256 == self.report_sha256
+                    && plan.checkpoint_sha256 == self.checkpoint_sha256
+            }))
+    }
+
     pub(super) fn restore_ready(&self, state: &RigState) -> Result<(), String> {
         if self.restored.podxt_identity.is_none()
             || (state.channel().is_some() && self.restored.start_tone.is_none())
