@@ -8,6 +8,8 @@
 //! #189 hits a pickup only where the transformed pixel's alpha is above 204,
 //! measures the move circle on the padded image buffer, drags from the press
 //! point, rebases rotation when Ctrl changes, and selects on mouse press.
+//! A rotate drag starts with precision off. The first sample that sees Ctrl
+//! held rebases the offset and adds no angle. Later samples use fine rotation.
 //! #190 places a pickup from that body's `UpdateBodyImage` limits. #191 paints
 //! each body's wireframe on the Body tab at its native size ([`paint_body_outline`]).
 //! That drawing is not stretched over the guitar photo.
@@ -890,7 +892,9 @@ fn interact(ui: &mut egui::Ui, gesture: &Gesture<'_>, events: &mut Vec<BodyEvent
                 origin_inches: inches,
                 angle_origin: degrees,
                 dy_origin: 0.0,
-                fine,
+                // Workbench's `m_precision_mode` starts false for a drag.
+                // The first sample latches Ctrl below.
+                fine: false,
                 reported_inches: inches,
                 reported_degrees: degrees,
                 scale,
@@ -939,9 +943,10 @@ fn step_drag(drag: &mut ActiveDrag, now: Pos2, fine: bool) -> Option<BodyEvent> 
             }
         }
         DragKind::Rotate => {
-            // Ctrl at drag start is the initial precision. A later change
-            // keeps the current angle and measures the next pixels from here.
-            // Position is not rebased and does not use this flag.
+            // Precision starts false. Ctrl on this sample, including the first
+            // sample of a drag that already has Ctrl held, keeps the current
+            // angle and measures the next pixels from here. That sample adds
+            // no angle. Position is not rebased and does not use this flag.
             if fine != drag.fine {
                 drag.angle_origin = drag.reported_degrees;
                 drag.dy_origin = total.y;

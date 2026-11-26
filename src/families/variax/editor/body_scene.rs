@@ -205,10 +205,6 @@ mod tests {
     use crate::editor::{PathBuf, Workbench};
     use variax_workbench::ui::body_canvas::{PickupPlacement, rotate_degrees};
 
-    // Ctrl is already down, so the shared canvas applies fine rotation from the
-    // press and this 8px sample moves the angle. Workbench's `m_precision_mode`
-    // starts false: the first `OnMouseDrag` rebases `m_saved_offset_y` and
-    // contributes no angle. Lane 2 owns that first-sample difference.
     #[test]
     fn outer_pickup_drag_rotates_in_fine_steps_and_undoes_once() {
         let ctx = egui::Context::default();
@@ -256,9 +252,15 @@ mod tests {
             &mut app,
             vec![egui::Event::PointerMoved(start - egui::vec2(0.0, 8.0))],
         );
+        // Workbench rebases on the first Ctrl-held move.
+        assert_eq!(app.variax().float(PICKUP1, 0x200001), Some(angle));
+        frame(
+            &mut app,
+            vec![egui::Event::PointerMoved(start - egui::vec2(0.0, 16.0))],
+        );
         let rotated = app.variax().float(PICKUP1, 0x200001).unwrap();
         assert!((rotated - rotate_degrees(angle, -8.0, true)).abs() < 1e-5);
-        frame(&mut app, vec![button(start - egui::vec2(0.0, 12.0), false)]);
+        frame(&mut app, vec![button(start - egui::vec2(0.0, 20.0), false)]);
         assert_eq!(app.variax().float(PICKUP1, 0x200001), Some(rotated));
         assert_eq!(app.variax().float(PICKUP1, 0x200000), Some(position));
         app.variax_mut().undo();
