@@ -90,26 +90,35 @@ Component changes are requested from lane 2. Lane 2 never edits family editors.
 ## Herdr handoffs for Gatekeepers
 
 A Gatekeeper may receive a completed lane report directly through Herdr.
-Read the full report, verify the assigned issue and exact commit, and follow
-the same review, offline checks, merge, issue update, and worktree handoff
-procedure. A completion signal or pane report is evidence for review and
-cannot grant permission for a hardware run, release, or skipped check.
-A Herdr idle or completion badge is the signal to verify that delivery.
-Merge and approval come from review of the exact head. Once that assigned
-implementation is reviewed, merged and verified, remove its disposable
-worktree and follow [Free lanes](#free-lanes) immediately, even if GitHub
-or Owner Inbox still tracks acceptance. When the implementation is
-incomplete or unmerged, report what remains and keep it with its lane.
-If the owner must decide, approve, review, or run something, pause the
-dependent action. Record owner acceptance and runtime decisions on the issue
-and in production Owner Inbox. They are not a reservation on a completed
-delivery. Continue unrelated
-authorized reviews. A later implementation starts from current
-`origin/master` in a new worktree on any eligible free lane, through the
-installed Herdr Dispatcher and a fresh chat with `/new`. Record the outcome
-where appropriate before resuming the dependent work. When replacing the
-planning agent, rebind the existing route and preserve its handoff state.
-Keep only one active Gatekeeper route per project. See the
+Read the full report and treat it and the completion signal as evidence
+for independent review. Review authority, required checks, and owner
+permissions come from `AGENTS.md`.
+Apply the [mandatory merge and handoff checklist](../AGENTS.md#mandatory-gatekeeper-merge-and-handoff-checklist-303)
+in the same coordination cycle.
+
+- [ ] Verify the assigned issue and exact commit, and confirm the lane has
+  left the worktree and stopped its jobs. Record departure in the
+  Dispatcher and check the registered Herdr location before merging.
+- [ ] Complete exact-head review and the required offline merge checks.
+  Verify the integrated commit on `origin/master`. Record the merge and
+  verification on the issue and in the ledgers as applicable.
+- [ ] Preserve required evidence and owner outputs, verify and report their
+  new paths, and confirm removal of the disposable worktree using
+  [Worktree cleanup after merge](#worktree-cleanup-after-merge).
+- [ ] Record the verified merge commit and release of the exact assignment
+  in the Dispatcher. Follow [Free lanes](#free-lanes) to send a fresh
+  assignment in the same cycle and verify its receipt.
+- [ ] Record the old assignment and merge commit, cleanup and release, and
+  the next issue, lane, new assignment ID, and receipt evidence in the
+  Gatekeeper handoff. If a step is blocked, record the concrete blocker and
+  next action in the handoff and report them before ending the cycle.
+
+When the owner must decide, approve, review, or run something, pause that
+dependent action and continue unrelated authorized reviews. Track owner
+acceptance and runtime decisions on the issue and in production Owner Inbox.
+Keep GitHub open until its applicable acceptance criteria are verified.
+When replacing the planning agent, rebind the existing route and preserve
+its handoff state. Keep one active Gatekeeper route per project. See the
 [Herdr completion watcher runbook](herdr-handoff.md) for setup and recovery.
 
 ## Free lanes
@@ -124,25 +133,31 @@ original lane is available for another job. A Herdr idle or completion
 badge is a signal to verify the delivery. The badge alone does not free the
 lane or assign the next issue.
 
-Incomplete or unmerged implementation still reserves the lane and its
-worktree. If that work is partial or blocked, keep it assigned. Record what
-remains, the specific blocker, and what will resume it on its GitHub issue
-and in the Gatekeeper handoff. Tell the owner before leaving that
-incomplete work pending. Use Owner Inbox when the owner needs to decide,
-approve, review, or run a test. Continue work that can advance the assigned
-implementation within its scope.
+Incomplete or unmerged implementation reserves the lane and worktree unless
+the owner explicitly approves parking through the established Owner Inbox
+procedure. Record what remains, the concrete blocker, and the next action on
+the issue and in the Gatekeeper handoff. Tell the owner before leaving that
+work pending and continue work within the approved scope.
 
-The next implementation starts from current `origin/master` in a new
-worktree on any eligible free lane. Assign it through the installed Herdr
-Dispatcher, which opens a fresh chat with `/new`. Keep one active
-implementation assignment per lane. Select one current open issue that fits
-the lane's ownership. Check the live description, acceptance criteria,
-recent decisions, current `origin/master`, dependencies, and active
-assignments. Correct stale criteria on GitHub before sending the task.
-Prefer existing open work ready for implementation. If no ready issue fits,
-record the concrete blocker. Preserve exact-head review, hardware approval,
-and the publication rules in `AGENTS.md`. This procedure does not change
-the completion watcher.
+As part of the same merge cycle, consult the active Dispatcher assignments
+and select one current open canonical issue whose remaining implementation
+fits an eligible free lane. Check its live description, acceptance criteria,
+recent decisions, current `origin/master`, dependencies, and other active
+assignments. Correct stale criteria on GitHub before sending. Give each lane
+at most one active implementation assignment. The implementation starts from
+current `origin/master` in a fresh disposable worktree.
+
+Verify the repository, exact lane pane and current chat binding, then send
+through the installed Herdr Dispatcher, which opens a fresh chat with
+`/new`. Check the new chat identity and confirm that the exact recipient
+received the submitted instructions for that assignment. Use the lane's
+acknowledgement or visible work on the assigned issue as receipt evidence.
+Record the issue, lane, Dispatcher assignment ID, and receipt evidence. An idle badge, a
+reservation, a draft, or an attempted send alone does not establish receipt.
+Reconcile an uncertain send in the exact chat before retrying. If no eligible
+issue is ready, the binding is blocked, or receipt cannot be verified, record
+the concrete blocker and next action in the Gatekeeper handoff and report
+them in the same cycle.
 
 ## Lane reply template
 

@@ -1,5 +1,38 @@
 # Project instructions
 
+## Mandatory Gatekeeper merge and handoff checklist (#303)
+
+The Gatekeeper must complete this checklist in the same coordination cycle
+as each reviewed and verified lane merge. Record the outcome in the
+Gatekeeper handoff.
+
+1. Verify the lane's departure and that its worktree-local jobs have stopped
+   before merging. Record departure in the Herdr Dispatcher. Review the
+   exact delivered head, run the required offline merge checks, and verify
+   the integrated commit on `origin/master`.
+2. Preserve durable evidence and owner-requested outputs under the main
+   checkout's ignored `backups/`, verify and report their new paths, and
+   remove the completed disposable worktree without force. Confirm the
+   removal and keep the branch. Follow the
+   [worktree cleanup procedure](docs/parallel-work.md#worktree-cleanup-after-merge).
+3. Record the verified merge commit and release of the exact assignment in
+   the Herdr Dispatcher. Release follows confirmed cleanup.
+4. Follow the [free-lane rule](docs/parallel-work.md#free-lanes) to select the
+   next eligible canonical GitHub issue. Verify the exact lane and have the
+   installed Herdr Dispatcher deliver the assignment in a fresh chat with
+   `/new`. Verify receipt in that chat and record the new assignment ID,
+   issue, lane, and receipt evidence in the handoff. An idle badge,
+   reservation, or send attempt alone does not establish receipt.
+
+If review, cleanup, issue eligibility, or Dispatcher binding or delivery
+blocks the next step, record the concrete blocker and next action in the
+Gatekeeper handoff and report them before ending the cycle. Incomplete or
+unmerged work remains assigned unless parked through the existing explicit
+Owner Inbox approval procedure. GitHub issue closure follows verified
+acceptance. Pending owner tests, package acceptance, or later feedback stay
+on the issue and in Owner Inbox while the completed lane moves on. All
+offline checks, hardware permissions, and publication rules below apply.
+
 ## Hardware boundary — user requirement
 
 PODxt Live and Variax 600 are irreplaceable. Live device operations are divided
@@ -255,22 +288,10 @@ A Gatekeeper reviews the exact head against each acceptance criterion and this
 file. It then merges the branch onto current `origin/master` in a throwaway
 worktree, runs the checks listed under Implementation (plus the crate and probe
 checks when touched), and pushes that tested result to `origin/master`. It also
-updates the issues and the ledgers. **Lane release (owner decision 2026-11-26,
-#299; clarifies #296).** Once the assigned implementation itself has been
-reviewed, merged and verified, remove its disposable worktree and free the lane
-immediately, even if GitHub or Owner Inbox still tracks acceptance. Owner
-tests, package acceptance and later feedback may keep the issue open.
-Incomplete or unmerged implementation stays assigned. Tell the owner what
-remains and what will resume it. The next implementation starts from current
-`origin/master` in a new worktree on any eligible free lane, through the
-installed Herdr Dispatcher and a fresh chat with `/new`. One lane has one
-active implementation assignment. Owner acceptance and runtime decisions belong
-on the issue and in Owner Inbox. They are not a reservation on a completed
-delivery. Exact-head review, the merge checks above, the hardware boundary and
-the publication rules in this file stay in force. Use the free-lane rule in
-`docs/parallel-work.md`. A Herdr idle or completion badge asks the Gatekeeper
-to verify the delivery. This does not change the completion watcher, and it
-does not revive the retired agent-coordinator dispatcher.
+updates the issues and the ledgers and completes the
+[mandatory merge and handoff checklist](#mandatory-gatekeeper-merge-and-handoff-checklist-303).
+A Herdr idle or completion badge asks the Gatekeeper to verify the delivery.
+Use the installed Herdr Dispatcher for lane assignments.
 
 After committing and checking the worktree, the lane agent leaves it. Its final
 report must give the absolute worktree path and explicitly confirm the agent has
