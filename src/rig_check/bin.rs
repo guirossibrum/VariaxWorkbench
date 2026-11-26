@@ -162,12 +162,14 @@ fn options() -> Result<Options, String> {
 #[cfg(feature = "gui")]
 fn window(options: Options) {
     use eframe::egui;
-    use rig_check::gui::{App, ChannelOperator, Prompt, Wizard};
+    use rig_check::gui::{App, ChannelOperator, Prompt};
     use rig_check::record::Mode;
+    use rig_check::resume::Plan;
     let out = options.out.clone();
+    let report_dir = out.clone();
     let evidence = options.evidence;
     let engine_folder = options.engine_folder.clone();
-    let start = move |mode: Mode, mut op: ChannelOperator| {
+    let start = move |mode: Mode, plan: Option<Plan>, mut op: ChannelOperator| {
         let mut sink = match report::ReportFile::create(&out, Redactor::from_environment()) {
             Ok(sink) => sink,
             Err(error) => {
@@ -181,7 +183,7 @@ fn window(options: Options) {
             engine_folder,
             ..RunData::default()
         };
-        if evidence || mode == Mode::Real {
+        if evidence || mode == Mode::Real || plan.is_some() {
             let stem = sink
                 .path
                 .file_stem()
@@ -189,27 +191,23 @@ fn window(options: Options) {
             data.evidence_dir = Some(out.join(format!("{stem}-evidence")));
         }
         let scope = RigScope::default();
-        let run = if mode == Mode::Practice {
-            rig_check::run_practice(Faults::default(), &mut op, &mut sink, data).0
-        } else if variax_workbench::offline_device_notice().is_some() {
-            rig_check::run_on(&mut RealPort::new(&scope), &mut op, &mut sink, data).0
+        let state_file = sink.path.with_extension("state");
+        let mut practice_port;
+        let mut real_port;
+        let port: &mut dyn rig_check::port::RigPort = if mode == Mode::Practice {
+            practice_port = rig_check::port::PracticePort::new(
+                rig_check::practice::SimRig::shared(Faults::default()),
+            );
+            &mut practice_port
         } else {
-            let mut port = RealPort::new(&scope);
-            for (path, state) in rig_check::recover::pending(&out).into_iter().take(1) {
-                if let Ok(mut restore_sink) =
-                    report::ReportFile::create(&out, Redactor::from_environment())
-                {
-                    rig_check::recover::offer_restore(
-                        &mut port,
-                        &mut op,
-                        &mut restore_sink,
-                        &path,
-                        &state,
-                    );
-                }
+            real_port = RealPort::new(&scope);
+            &mut real_port
+        };
+        let run = match plan {
+            Some(plan) => {
+                rig_check::continue_on(port, &mut op, &mut sink, data, state_file, plan).0
             }
-            let state_file = sink.path.with_extension("state");
-            rig_check::run_with_state(&mut port, &mut op, &mut sink, data, state_file).0
+            None => rig_check::run_with_state(port, &mut op, &mut sink, data, state_file).0,
         };
         op.send(Prompt::Done {
             run: Box::new(run),
@@ -217,8 +215,7 @@ fn window(options: Options) {
             path: sink.path.display().to_string(),
         });
     };
-    let mut wizard = Wizard::default();
-    wizard.mode = options
+    let requested_mode = options
         .practice
         .map(|p| if p { Mode::Practice } else { Mode::Real });
     let native = eframe::NativeOptions {
@@ -232,10 +229,7 @@ fn window(options: Options) {
         native,
         Box::new(move |cc| {
             rig_check::gui::apply_theme(&cc.egui_ctx);
-            Ok(Box::new(App {
-                wizard,
-                start: Some(Box::new(start)),
-            }))
+            Ok(Box::new(App::new(report_dir, requested_mode, start)))
         }),
     );
     if let Err(error) = result {
@@ -283,27 +277,6 @@ fn main() {
         rig_check::run_on(&mut RealPort::new(&scope), &mut person, &mut sink, data).0
     } else {
         let mut port = RealPort::new(&scope);
-        // An earlier run that did not finish: offer to put the rig back first.
-        for (path, state) in rig_check::recover::pending(&options.out)
-            .into_iter()
-            .take(1)
-        {
-            let mut restore_sink =
-                match report::ReportFile::create(&options.out, Redactor::from_environment()) {
-                    Ok(sink) => sink,
-                    Err(error) => {
-                        eprintln!("Cannot create the restore report: {error}");
-                        break;
-                    }
-                };
-            rig_check::recover::offer_restore(
-                &mut port,
-                &mut person,
-                &mut restore_sink,
-                &path,
-                &state,
-            );
-        }
         let state_file = sink.path.with_extension("state");
         rig_check::run_with_state(&mut port, &mut person, &mut sink, data, state_file).0
     };

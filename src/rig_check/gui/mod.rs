@@ -14,6 +14,7 @@ pub mod raster;
 use super::catalogue::{self, Risk, SaveNotice, Step, StepId};
 use super::history::{self, Review};
 use super::record::{Mode, Outcome, RunRecord, StepRecord, plain_result};
+use super::resume::{self, Plan};
 use super::runner::{
     Answer, CONTROLS_NOTICE, Decision, Operator, Progress, Question, ResultDecision, Retry,
 };
@@ -23,6 +24,7 @@ use crate::ui::theme::{
     SPACE_16, TARGET, TEXT, TITLE,
 };
 use eframe::egui::{self, Color32, RichText, vec2};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -59,6 +61,7 @@ pub enum Prompt {
     Ask(Question),
     Progress(Progress),
     Finished(Box<StepRecord>),
+    Reused(Box<StepRecord>),
     Done {
         run: Box<RunRecord>,
         report: String,
@@ -214,6 +217,10 @@ impl Operator for ChannelOperator {
         }
     }
 
+    fn reused(&mut self, record: &StepRecord) {
+        self.send(Prompt::Reused(Box::new(record.clone())));
+    }
+
     fn stop_requested(&self) -> bool {
         self.stop.load(Ordering::Relaxed)
     }
@@ -222,6 +229,7 @@ impl Operator for ChannelOperator {
 /// The pending runner prompt and the optional read-only history view.
 pub struct Wizard {
     pub mode: Option<Mode>,
+    launch: Option<Launch>,
     pub prompt: Option<Prompt>,
     pub instruction: Option<(StepId, String, String)>,
     pub running: Option<StepId>,
@@ -248,6 +256,7 @@ impl Default for Wizard {
     fn default() -> Self {
         Self {
             mode: None,
+            launch: None,
             prompt: None,
             instruction: None,
             running: None,
@@ -404,6 +413,10 @@ impl Wizard {
                     }
                     self.progress.push(*record);
                 }
+                Prompt::Reused(record) => {
+                    self.progress.retain(|previous| previous.id != record.id);
+                    self.progress.push(*record);
+                }
                 Prompt::Instruct { step, see, hear } => self.instruction = Some((step, see, hear)),
                 other => {
                     if other.needs_reply() {
@@ -455,6 +468,7 @@ impl Wizard {
                 let step = catalogue::step(*id).expect("catalogue step");
                 let finished = self.progress.iter().find(|r| r.id == *id);
                 let (tag, colour) = match finished {
+                    Some(record) if record.reused && record.outcome.passed() => ("REUSED", OK),
                     Some(record) => outcome_tag(&record.outcome),
                     None if self.running == Some(*id) => ("RUN", AMBER),
                     None => ("", DIM),
@@ -535,6 +549,12 @@ impl Wizard {
 
     fn central(&mut self, ui: &mut egui::Ui) {
         if self.mode.is_none() {
+            if let Some(launch) = &mut self.launch
+                && !launch.show_modes
+            {
+                self.mode = launch.show(ui);
+                return;
+            }
             ui.label(
                 RichText::new("Welcome to Rig Check")
                     .size(TITLE)
@@ -678,16 +698,20 @@ impl Wizard {
             .color(MUTED),
         );
         ui.label(
-            RichText::new(record.title)
+            RichText::new(&record.title)
                 .size(TITLE + 6.0)
                 .strong()
                 .color(TEXT),
         );
         ui.label(
-            RichText::new(record.outcome.label())
-                .size(SECTION)
-                .strong()
-                .color(colour),
+            RichText::new(if record.reused {
+                "Reused from the source report"
+            } else {
+                record.outcome.label()
+            })
+            .size(SECTION)
+            .strong()
+            .color(colour),
         );
         let lines = record.result_lines();
         if !lines.is_empty() {
@@ -1160,6 +1184,14 @@ impl Wizard {
             .size(SECTION)
             .color(TEXT),
         );
+        if let Some(source) = &run.continued_from {
+            section_panel(ui, "Continuation", |ui| {
+                ui.label(format!("Source report: {source}"));
+                for line in &run.continuation {
+                    ui.label(line);
+                }
+            });
+        }
         let mismatches: Vec<_> = run.look_mismatches().collect();
         if !mismatches.is_empty() {
             section_panel(ui, "Display mismatches", |ui| {
@@ -1269,20 +1301,173 @@ fn save_dialog(report: &str) -> String {
     }
 }
 
+struct Launch {
+    dir: PathBuf,
+    requested_mode: Option<Mode>,
+    show_modes: bool,
+    report: Option<PathBuf>,
+    preview: Option<Plan>,
+    selected: Option<Plan>,
+    error: Option<String>,
+    text: Option<String>,
+}
+
+impl Launch {
+    fn open(&mut self, path: PathBuf) {
+        self.text = None;
+        match resume::open(&path) {
+            Ok(plan) if self.requested_mode.is_none_or(|mode| mode == plan.mode) => {
+                self.preview = Some(plan);
+                self.error = None;
+            }
+            result => {
+                self.preview = None;
+                self.error = Some(result.err().unwrap_or_else(|| {
+                    "This report uses a different mode from the one selected at launch.".into()
+                }));
+            }
+        }
+        self.report = Some(path);
+    }
+
+    fn show(&mut self, ui: &mut egui::Ui) -> Option<Mode> {
+        ui.label(RichText::new("Welcome to Rig Check").size(TITLE).strong());
+        let mut mode = None;
+        ui.horizontal(|ui| {
+            if button(ui, "Start new", true).clicked() {
+                self.show_modes = true;
+                mode = self.requested_mode;
+            }
+            let last = resume::last_report(&self.dir);
+            if button(ui, "Open last report", last.is_some()).clicked()
+                && let Some(last) = last
+            {
+                self.open(last);
+            }
+            if button(ui, "Choose report…", true).clicked()
+                && let Some(path) = open_report_dialog(&self.dir)
+            {
+                self.open(path);
+            }
+        });
+        if let Some(path) = &self.report {
+            ui.add_space(SPACE_16);
+            ui.label(path.display().to_string());
+            if let Some(error) = &self.error {
+                ui.label(RichText::new(error).color(DANGER));
+            }
+            if let Some(plan) = &self.preview {
+                let title = catalogue::step(plan.target)
+                    .expect("validated resume step")
+                    .title;
+                ui.label(format!("{} · {}", plan.mode.label(), plan.rig));
+                ui.label(RichText::new(format!("Continue at {} {title}", plan.target)).strong());
+                for note in &plan.notes {
+                    ui.label(note);
+                }
+                let reusable = plan.reused_steps();
+                if !reusable.is_empty() {
+                    ui.label(format!("Passed checks eligible for reuse: {reusable}"));
+                }
+                ui.label("Rig Check will revalidate the prerequisites before continuing.");
+                if button(ui, "Resume…", true).clicked() {
+                    self.selected = self.preview.take();
+                    return self.selected.as_ref().map(|plan| plan.mode);
+                }
+            }
+            if button(
+                ui,
+                if self.text.is_some() {
+                    "Hide report"
+                } else {
+                    "Preview report"
+                },
+                true,
+            )
+            .clicked()
+            {
+                if self.text.is_some() {
+                    self.text = None;
+                } else {
+                    let result = std::fs::read_to_string(path);
+                    self.text = Some(result.unwrap_or_else(|error| error.to_string()));
+                }
+            }
+            if let Some(text) = &self.text {
+                egui::ScrollArea::vertical()
+                    .max_height(300.0)
+                    .show(ui, |ui| {
+                        // The full file may contain thousands of message lines.
+                        ui.monospace(text.split("\nSTEPS\n").next().unwrap_or(text));
+                    });
+            }
+        }
+        mode
+    }
+}
+
+fn open_report_dialog(dir: &Path) -> Option<PathBuf> {
+    if cfg!(test) {
+        return None;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = dir;
+        crate::macos_dialog::Dialog::Open.select()
+    }
+    #[cfg(not(target_os = "macos"))]
+    rfd::FileDialog::new()
+        .set_directory(dir)
+        .add_filter("Rig Check reports", &["txt"])
+        .pick_file()
+}
+
+type StartRun = Box<dyn FnOnce(Mode, Option<Plan>, ChannelOperator) + Send>;
+
 /// The eframe application.
 pub struct App {
-    pub wizard: Wizard,
-    pub start: Option<Box<dyn FnOnce(Mode, ChannelOperator) + Send>>,
+    wizard: Wizard,
+    start: Option<StartRun>,
+}
+
+impl App {
+    pub fn new(
+        dir: PathBuf,
+        requested_mode: Option<Mode>,
+        start: impl FnOnce(Mode, Option<Plan>, ChannelOperator) + Send + 'static,
+    ) -> Self {
+        Self {
+            wizard: Wizard {
+                launch: Some(Launch {
+                    dir,
+                    requested_mode,
+                    show_modes: false,
+                    report: None,
+                    preview: None,
+                    selected: None,
+                    error: None,
+                    text: None,
+                }),
+                ..Wizard::default()
+            },
+            start: Some(Box::new(start)),
+        }
+    }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.wizard.show(ctx);
         if let (Some(mode), true) = (self.wizard.mode, self.wizard.to_runner.is_none())
             && let Some(start) = self.start.take()
         {
-            spawn(&mut self.wizard, ctx, move |op| start(mode, op));
+            let plan = self
+                .wizard
+                .launch
+                .as_mut()
+                .and_then(|launch| launch.selected.take());
+            spawn(&mut self.wizard, ctx, move |op| start(mode, plan, op));
         }
-        self.wizard.show(ctx);
     }
 }
 

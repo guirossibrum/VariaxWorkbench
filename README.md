@@ -33,6 +33,9 @@ Earlier captures from floating windows using test presets with device discovery 
   rest is kept as is. There is no HD editor page or device support yet.
 - **Device connection.** Linux detection and device tabs have been tested on
   the Variax 600 and PODxt Live. Offline tabs work with the rig disconnected.
+- **Rig Check.** Rehearse the checks in Practice or run the guided checks on a
+  supported rig. Open a saved report at launch to continue a compatible run
+  after verifying its starting state and backup evidence.
 - **Backups.** Full Variax 600 backups (all 60 presets, byte for byte) and
   PODxt Live library backups have been tested on hardware.
 - **Live reads and edits.** Device check has read current settings on both

@@ -121,7 +121,8 @@ impl LookCheck {
 #[derive(Clone, Debug)]
 pub struct StepRecord {
     pub id: StepId,
-    pub title: &'static str,
+    pub title: String,
+    pub reused: bool,
     pub outcome: Outcome,
     /// UTC start, `YYYY-MM-DD HH:MM:SS UTC`.
     pub started: Option<String>,
@@ -135,6 +136,7 @@ pub struct StepRecord {
     /// Full observations, including byte details, for the report.
     pub evidence: Vec<String>,
     pub comparisons: Vec<super::differences::Comparison>,
+    pub imported_technical: Vec<String>,
     /// Every message sent and received, with link time stamps.
     pub messages: Vec<MessageLine>,
     pub retries: u32,
@@ -148,7 +150,8 @@ impl StepRecord {
     pub fn new(id: StepId) -> Self {
         Self {
             id,
-            title: catalogue::step(id).map_or("?", |s| s.title),
+            title: catalogue::step(id).map_or("?", |s| s.title).into(),
+            reused: false,
             outcome: Outcome::NotReached,
             started: None,
             attempt: None,
@@ -158,6 +161,7 @@ impl StepRecord {
             result: Vec::new(),
             evidence: Vec::new(),
             comparisons: Vec::new(),
+            imported_technical: Vec::new(),
             messages: Vec::new(),
             retries: 0,
             checksums: Vec::new(),
@@ -217,24 +221,29 @@ impl StepRecord {
     }
 
     pub fn technical_lines(&self) -> impl Iterator<Item = String> + '_ {
-        std::iter::once(format!(
-            "Messages: {} · Retries: {} · Missing bytes in retried replies: {}",
-            self.messages.len(),
-            self.retries,
-            super::variax_reads::lost_bytes(&self.messages)
-        ))
-        .chain(self.comparisons.iter().flat_map(|comparison| {
-            std::iter::once(format!(
-                "{} · {}",
-                comparison.severity.code(),
-                comparison.summary
-            ))
-            .chain(comparison.details.iter().cloned())
-        }))
+        self.imported_technical
+            .iter()
+            .cloned()
+            .chain(self.imported_technical.is_empty().then(|| {
+                format!(
+                    "Messages: {} · Retries: {} · Missing bytes in retried replies: {}",
+                    self.messages.len(),
+                    self.retries,
+                    super::variax_reads::lost_bytes(&self.messages)
+                )
+            }))
+            .chain(self.comparisons.iter().flat_map(|comparison| {
+                std::iter::once(format!(
+                    "{} · {}",
+                    comparison.severity.code(),
+                    comparison.summary
+                ))
+                .chain(comparison.details.iter().cloned())
+            }))
     }
 
     pub fn can_repeat(&self) -> bool {
-        if self.attempt.is_none() || self.started.is_none() {
+        if self.reused || self.attempt.is_none() || self.started.is_none() {
             return false;
         }
         catalogue::step(self.id).is_some_and(|step| step.risk != catalogue::Risk::Save)
@@ -317,6 +326,10 @@ pub struct RunRecord {
     pub devices: Vec<(String, String)>,
     pub steps: Vec<StepRecord>,
     pub prior_attempts: Vec<StepRecord>,
+    pub continued_from: Option<String>,
+    pub continuation: Vec<String>,
+    pub pre_write_recovery: bool,
+    pub continuation_pending: bool,
     /// Final statement about the rig's state (from step 6.2).
     pub rig_state: String,
     pub rig_description: String,
@@ -346,6 +359,10 @@ impl RunRecord {
                 .map(|id| StepRecord::new(*id))
                 .collect(),
             prior_attempts: Vec::new(),
+            continued_from: None,
+            continuation: Vec::new(),
+            pre_write_recovery: false,
+            continuation_pending: false,
             rig_state: "Not checked yet.".into(),
             rig_description: "Rig not identified yet".into(),
             finished: false,

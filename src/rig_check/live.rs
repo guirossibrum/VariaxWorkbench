@@ -254,7 +254,7 @@ pub(super) fn restore_podxt_playing(ctx: &mut Ctx<'_>) -> Result<(), String> {
         super::differences::Severity::Stop,
         true,
     ) == 0;
-    if same {
+    if same && ctx.data.same_starting_pod_tone(&start, &actual.tone) {
         ctx.rec.show(format!(
             "Rig: the PODxt Live is back on {} with your unsaved edits restored.",
             channel.label()

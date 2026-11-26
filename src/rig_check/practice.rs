@@ -42,6 +42,7 @@ pub struct Faults {
     pub silent_podxt_store: bool,
     /// The person does not perform a guided action in time.
     pub user_does_not_act: bool,
+    pub podxt_knob_events: Option<Vec<(u8, u8)>>,
     pub guided_action_delay: Option<Duration>,
     pub missing_model_data: bool,
     /// Report the Variax as firmware 3.09 (unverified).
@@ -65,7 +66,7 @@ pub enum UserAction {
     SweepVariaxKnobs,
     PodxtFootswitch(u16),
     MovePedal,
-    PodxtKnob(u8),
+    SweepPodxtKnobs,
     UnplugVdi,
     ReplugVdi,
 }
@@ -591,9 +592,24 @@ impl SimRig {
                     time += Duration::from_millis(100);
                 }
             }
-            UserAction::PodxtKnob(value) => {
-                let cc = line6_devices::family::podxt::Control::Drive.cc();
-                Self::queue(&mut self.podxt_out, at, &[0xb0, cc, value]);
+            UserAction::SweepPodxtKnobs => {
+                let sweep = || {
+                    [0, 126, 127]
+                        .into_iter()
+                        .flat_map(|value| super::guided::PODXT_KNOBS.map(|(cc, _)| (cc, value)))
+                };
+                let events = self
+                    .faults
+                    .podxt_knob_events
+                    .clone()
+                    .unwrap_or_else(|| sweep().collect());
+                for (index, (cc, value)) in events.into_iter().enumerate() {
+                    Self::queue(
+                        &mut self.podxt_out,
+                        at + Duration::from_millis(index as u64),
+                        &[0xb0, cc, value],
+                    );
+                }
             }
             UserAction::UnplugVdi => {
                 self.variax_out.clear();
@@ -630,7 +646,9 @@ impl SimRig {
                         self.podxt.channel = Some(u16::from(*index));
                     }
                     (true, [0xb0, cc, value])
-                        if *cc == line6_devices::family::podxt::Control::Drive.cc() =>
+                        if super::guided::PODXT_KNOBS
+                            .iter()
+                            .any(|(knob, _)| knob == cc) =>
                     {
                         self.podxt.playing[32 + usize::from(*cc)] = *value;
                     }

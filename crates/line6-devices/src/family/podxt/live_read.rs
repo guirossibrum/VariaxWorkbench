@@ -67,6 +67,14 @@ fn notice(event: &Event) -> Option<Notice> {
     }
 }
 
+/// Decode a physical controller notification using the editor's Follow parser.
+pub fn controller_notification(event: &Event) -> Option<(u8, u8)> {
+    match notice(event) {
+        Some(Notice::Controller(number, value)) => Some((number, value)),
+        _ => None,
+    }
+}
+
 const DEVICE_SAVE_SETTLE: Duration = Duration::from_millis(2500);
 const CURRENT_SETTLE: Duration = Duration::from_millis(100);
 const IDENTITY_WINDOW: Duration = Duration::from_secs(3);

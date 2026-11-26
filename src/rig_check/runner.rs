@@ -155,11 +155,17 @@ pub trait Operator {
     fn finished(&mut self, record: &StepRecord) -> ResultDecision;
     /// The person asked to stop the running step.
     fn stop_requested(&self) -> bool;
+    /// Display a reused result without pausing or offering Repeat.
+    fn reused(&mut self, _record: &StepRecord) {}
 }
 
 /// Called after every step with the whole run so far.
 pub trait ReportSink {
     fn update(&mut self, run: &RunRecord) -> Result<(), String>;
+
+    fn report_digest(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Discards updates (tests that do not check the file).
@@ -197,6 +203,7 @@ pub struct Runner<'a> {
     pub run: RunRecord,
     /// Where to keep the crash-restore state (#261), if anywhere.
     pub state_file: Option<std::path::PathBuf>,
+    persistence_failed: bool,
 }
 
 impl<'a> Runner<'a> {
@@ -214,31 +221,56 @@ impl<'a> Runner<'a> {
             data,
             run: RunRecord::new(mode, utc_now()),
             state_file: None,
+            persistence_failed: false,
         }
     }
 
     fn write_report(&mut self) {
-        if let Some(path) = &self.state_file {
-            let report = path.with_extension("txt");
-            let report = report
-                .file_name()
-                .map_or(String::new(), |n| n.to_string_lossy().into_owned());
-            let state = super::recover::RigState::from_run(&self.run, &self.data, &report);
-            if let Err(error) = super::recover::write_state(path, &state) {
-                self.op.progress(Progress::action(format!(
-                    "Could not write the restore state: {error}"
-                )));
+        let result = self.sink.update(&self.run).and_then(|()| {
+            if let Some(path) = &self.state_file {
+                let report = path.with_extension("txt");
+                let report = report
+                    .file_name()
+                    .map_or(String::new(), |n| n.to_string_lossy().into_owned());
+                let mut state = super::recover::RigState::from_run(&self.run, &self.data, &report);
+                state.report_sha256 = self.sink.report_digest();
+                super::recover::write_state(path, &state)?;
             }
-        }
-        if let Err(error) = self.sink.update(&self.run) {
+            Ok(())
+        });
+        if let Err(error) = result {
+            self.persistence_failed |= self.state_file.is_some();
             self.op.progress(Progress::action(format!(
-                "Could not write the report: {error}"
+                "Could not save the Rig Check checkpoint: {error}"
             )));
         }
     }
 
     /// Run the catalogue. Returns the record of the whole run.
-    pub fn run(mut self) -> (RunRecord, RunData) {
+    pub fn run(self) -> (RunRecord, RunData) {
+        self.run_from(None)
+    }
+
+    pub(super) fn run_from(
+        mut self,
+        mut plan: Option<super::resume::Plan>,
+    ) -> (RunRecord, RunData) {
+        let _checkpoint_lock = match self
+            .state_file
+            .as_deref()
+            .map(super::recover::lock_checkpoint)
+            .transpose()
+        {
+            Ok(lock) => lock,
+            Err(error) => {
+                self.run.rig_state = error;
+                self.run.finished = true;
+                return (self.run, self.data);
+            }
+        };
+        if let Some(plan) = &mut plan {
+            plan.seed(&mut self.run);
+        }
         self.write_report();
         let start_notice = if cfg!(target_os = "windows") && self.run.mode == Mode::Real {
             WINDOWS_START_NOTICE
@@ -259,10 +291,59 @@ impl<'a> Runner<'a> {
         }
         self.run.start_notice_accepted = true;
         self.write_report();
+        if let Some(plan) = &mut plan {
+            let result = if self.persistence_failed || self.state_file.is_none() {
+                Err("The continuation checkpoint could not be saved.".into())
+            } else {
+                plan.lock_source().and_then(|lock| {
+                    plan.revalidate(self.port, self.op, &mut self.run, &mut self.data)?;
+                    Ok(lock)
+                })
+            };
+            let result = result.and_then(|_source_lock| {
+                self.write_report();
+                if self.persistence_failed {
+                    return Err("The verified continuation checkpoint could not be saved.".into());
+                }
+                plan.reserve_successor(self.state_file.as_deref().expect("checkpoint path"))?;
+                plan.commit_reuse(&mut self.run);
+                self.write_report();
+                if self.persistence_failed {
+                    return Err("Could not record the validated continuation. Verify the rig by hand before choosing Start new.".into());
+                }
+                Ok(())
+            });
+            if let Err(error) = result {
+                self.run.continuation.push(error.clone());
+                self.run.rig_state = error;
+                self.release_without_midi("Continuation ended during read-only revalidation.");
+                self.run.finished = true;
+                self.write_report();
+                return (self.run, self.data);
+            }
+        }
+        if plan.is_none()
+            && !self.persistence_failed
+            && self.run.mode == Mode::Real
+            && crate::offline_device_notice().is_none()
+            && let Some(dir) = self.state_file.as_deref().and_then(std::path::Path::parent)
+            && let Err(error) = super::recover::before_new_run(self.port, self.op, dir)
+        {
+            self.run.rig_state = error;
+            self.run.finished = true;
+            self.write_report();
+            return (self.run, self.data);
+        }
         let mut stopped = false;
         for &id in RUN_ORDER.iter().filter(|id| **id != RIG_GUARD) {
-            if stopped || self.port.direct_usb_release_failed() {
+            if stopped || self.persistence_failed || self.port.direct_usb_release_failed() {
                 break;
+            }
+            if let Some(plan) = &plan
+                && plan.skips(id)
+            {
+                self.op.reused(self.run.step(id));
+                continue;
             }
             if id == VARIAX_EVIDENCE && self.variax_evidence_applicable() {
                 stopped = self.run_variax_evidence();
@@ -276,8 +357,18 @@ impl<'a> Runner<'a> {
         if self.unverified_podxt_relay()
             || self.data.store_state_unknown
             || self.port.direct_usb_release_failed()
+            || self.persistence_failed
         {
-            self.release_without_midi();
+            let reason = if self.data.store_state_unknown {
+                "The store outcome is unknown. USB release only."
+            } else if self.persistence_failed {
+                "The checkpoint could not be saved. USB release only."
+            } else if self.port.direct_usb_release_failed() {
+                "USB cleanup failed. No further device messages were sent."
+            } else {
+                "Evidence mode ends with USB release only."
+            };
+            self.release_without_midi(reason);
         } else {
             // The usual guard is offered last, also after Stop.
             self.step(RIG_GUARD);
@@ -340,35 +431,19 @@ impl<'a> Runner<'a> {
         }
     }
 
-    fn release_without_midi(&mut self) {
-        let cleanup_failed = self.port.direct_usb_release_failed();
+    fn release_without_midi(&mut self, reason: &str) {
         if self.port.direct_usb() {
             let result = self.port.finish_direct_usb();
             self.note_direct_usb_release(result);
         } else if self.port.variax_claimed() {
-            self.run.rig_state = self
-                .port
-                .release_variax()
-                .map(|lines| lines.join(" "))
-                .unwrap_or_else(|error| format!("Guitar interface release failed: {error}"));
+            let result = self.port.release_variax();
+            self.note_direct_usb_release(result);
         } else {
-            self.run.rig_state = "The guitar interface was already released.".into();
+            self.note_direct_usb_release(Ok(vec![
+                "The guitar interface was already released.".into(),
+            ]));
         }
-        self.finish(
-            RIG_GUARD,
-            Outcome::NotAvailable(
-                if self.data.store_state_unknown {
-                    "The store outcome is unknown. USB release only."
-                } else if cleanup_failed {
-                    "USB cleanup failed. No further device messages were sent."
-                } else {
-                    "Evidence mode ends with USB release only."
-                }
-                .into(),
-            ),
-            None,
-            None,
-        );
+        self.finish(RIG_GUARD, Outcome::NotAvailable(reason.into()), None, None);
     }
 
     /// Run or skip one step. Returns `true` when the person stopped the run.
@@ -384,7 +459,7 @@ impl<'a> Runner<'a> {
             self.finish(id, outcome, None, None);
             return false;
         }
-        let mut attempt_number = 1;
+        let mut attempt_number = super::resume::next_attempt(&self.run, id);
         loop {
             let note = if matches!(id, StepId(4, 4) | StepId(5, 3)) {
                 self.data
@@ -411,6 +486,16 @@ impl<'a> Runner<'a> {
                 Decision::Run => {
                     self.run.current = Some(id);
                     self.write_report();
+                    if self.persistence_failed {
+                        self.run.current = None;
+                        self.finish(id, Outcome::NotAvailable("No device action was attempted because the checkpoint could not be saved.".into()), None, None);
+                        if id == RIG_GUARD {
+                            self.release_without_midi(
+                                "The checkpoint could not be saved. USB release only.",
+                            );
+                        }
+                        return true;
+                    }
                     let started = utc_now();
                     let clock = Instant::now();
                     let mut rec = std::mem::replace(self.run.step_mut(id), StepRecord::new(id));
@@ -514,6 +599,11 @@ impl<'a> Runner<'a> {
         }
         if let Some(reason) = step.not_in_this_version {
             return Some(Outcome::NotAvailable(reason.into()));
+        }
+        if self.run.pre_write_recovery && matches!(step.risk, Risk::Live | Risk::Save) {
+            return Some(Outcome::NotAuthorized(
+                "Live edit checks and stores are unavailable in the stopped-guard recovery.".into(),
+            ));
         }
         if step.id == PODXT_COMPATIBILITY {
             if self.data.no_podxt {

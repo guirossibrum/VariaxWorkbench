@@ -166,6 +166,7 @@ pub fn match_hash(words: &Program) -> Option<String> {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RigState {
     pub report: String,
+    pub report_sha256: Option<String>,
     pub started: String,
     pub podxt_channel: Option<u16>,
     pub podxt_tone_sha256: Option<String>,
@@ -173,25 +174,29 @@ pub struct RigState {
     pub variax_preset: Option<(u8, u8)>,
     pub variax_match_sha256: Option<String>,
     pub finished: bool,
+    /// A separate restore completed. The source report still records its original interruption.
+    pub recovery_completed: bool,
 }
 
 impl RigState {
     pub fn from_run(run: &RunRecord, data: &RunData, report: &str) -> Self {
         Self {
             report: report.into(),
+            report_sha256: None,
             started: run.started.clone(),
             podxt_channel: data.start_channel.map(|c| c.index()),
             podxt_tone_sha256: data.start_tone.as_ref().map(|t| sha256_hex(&t.raw)),
             variax_preset: data.start_preset.map(|p| (p.bank(), p.slot())),
             variax_match_sha256: data.start_program.as_ref().and_then(match_hash),
             finished: run.finished,
+            recovery_completed: false,
         }
     }
 
     pub fn text(&self) -> String {
         let opt = |v: &Option<String>| v.clone().unwrap_or_default();
         format!(
-            "rig-check-state 1\nreport={}\nstarted={}\npodxt_channel={}\npodxt_tone_sha256={}\nvariax_preset={}\nvariax_match_sha256={}\nfinished={}\n",
+            "rig-check-state 1\nreport={}\nstarted={}\npodxt_channel={}\npodxt_tone_sha256={}\nvariax_preset={}\nvariax_match_sha256={}\nfinished={}\nreport_sha256={}\nrecovery_completed={}\n",
             self.report,
             self.started,
             self.podxt_channel.map_or(String::new(), |c| c.to_string()),
@@ -199,7 +204,9 @@ impl RigState {
             self.variax_preset
                 .map_or(String::new(), |(b, s)| format!("{b}.{s}")),
             opt(&self.variax_match_sha256),
-            self.finished
+            self.finished,
+            opt(&self.report_sha256),
+            self.recovery_completed
         )
     }
 
@@ -223,6 +230,8 @@ impl RigState {
                         .and_then(|(b, s)| Some((b.parse().ok()?, s.parse().ok()?)))
                 }
                 "variax_match_sha256" => state.variax_match_sha256 = some(value),
+                "report_sha256" => state.report_sha256 = some(value),
+                "recovery_completed" => state.recovery_completed = value == "true",
                 "finished" => state.finished = value == "true",
                 _ => {}
             }
@@ -250,6 +259,31 @@ impl RigState {
     }
 }
 
+pub(super) struct CheckpointLock(std::fs::File);
+
+impl Drop for CheckpointLock {
+    fn drop(&mut self) {
+        // Release the advisory lock even if a child briefly inherited the descriptor.
+        let _ = self.0.unlock();
+    }
+}
+
+/// Lock a checkpoint for its writer's lifetime. The stable sidecar stays in
+/// place while the report and state files are replaced. The OS releases the
+/// lock if the app exits or crashes.
+pub(super) fn lock_checkpoint(path: &Path) -> Result<CheckpointLock, String> {
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path.with_extension("run-lock"))
+        .map_err(|error| format!("Cannot open the checkpoint lock: {error}"))?;
+    file.try_lock().map_err(|error| {
+        format!("Cannot lock the checkpoint. Another Rig Check may be using it: {error}")
+    })?;
+    Ok(CheckpointLock(file))
+}
+
 /// Write the state file next to the report (atomic replace of our own file).
 pub fn write_state(path: &Path, state: &RigState) -> Result<(), String> {
     use std::io::Write;
@@ -273,14 +307,76 @@ pub fn pending(dir: &Path) -> Vec<(PathBuf, RigState)> {
                 .filter(|p| p.extension().is_some_and(|x| x == "state"))
                 .filter_map(|p| {
                     let state = RigState::parse(&std::fs::read_to_string(&p).ok()?)?;
-                    (!state.finished && (state.channel().is_some() || state.preset().is_some()))
-                        .then_some((p, state))
+                    (!state.finished
+                        && !state.recovery_completed
+                        && (state.channel().is_some() || state.preset().is_some()))
+                    .then_some((p, state))
                 })
                 .collect()
         })
         .unwrap_or_default();
     found.sort_by(|a, b| b.1.started.cmp(&a.1.started));
     found
+}
+
+fn confirm_manual_recovery(
+    op: &mut dyn Operator,
+    report: &Path,
+    reason: &str,
+) -> Result<(), String> {
+    let notice = format!(
+        "An unfinished Rig Check needs attention. {reason} Review {} and verify the channel, tone and guitar preset by hand. If any store was interrupted, verify the affected slot before proceeding. Continue only after that manual verification, or choose Quit.",
+        report.display()
+    );
+    if op.accept_start(&notice) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Start new ended before the pending rig recovery was confirmed. {reason}"
+        ))
+    }
+}
+
+pub(super) fn before_new_run(
+    port: &mut dyn super::port::RigPort,
+    op: &mut dyn Operator,
+    dir: &Path,
+) -> Result<(), String> {
+    for (path, state) in pending(dir) {
+        let report = path.with_extension("txt");
+        if super::report::saved_mode(&report).is_some_and(|mode| mode != port.mode()) {
+            continue;
+        }
+        let plan = match super::resume::open(&report).and_then(|plan| {
+            plan.restore_ready(&state)?;
+            Ok(plan)
+        }) {
+            Ok(plan) => plan,
+            Err(reason) => return confirm_manual_recovery(op, &report, &reason),
+        };
+        let _lock = plan.lock_source()?;
+        let current = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| RigState::parse(&text));
+        if current.as_ref() != Some(&state) {
+            return Err("The pending recovery checkpoint changed. Open the latest report before trying again.".into());
+        }
+        let mut sink =
+            super::report::ReportFile::create(dir, super::redact::Redactor::from_environment())?;
+        let run = offer_restore_checked(port, op, &mut sink, &path, &state, Some(plan));
+        let outcome = &run.step(RIG_GUARD).outcome;
+        if outcome.passed() {
+            return Ok(());
+        }
+        if matches!(outcome, Outcome::SkippedByPerson) {
+            return confirm_manual_recovery(op, &report, "You skipped automatic recovery.");
+        }
+        return Err(outcome
+            .reason()
+            .unwrap_or("Start new ended before the pending rig recovery was confirmed.")
+            .into());
+    }
+    Ok(())
 }
 
 const RESTORE_OPS: &[Operation] = &[
@@ -292,15 +388,19 @@ const RESTORE_OPS: &[Operation] = &[
     Operation::VariaxPresetSwitch,
 ];
 
-fn restore(ctx: &mut Ctx<'_>, state: &RigState) -> Result<(), String> {
+pub(super) fn usable_variax_hash(state: &RigState) -> Option<&str> {
+    state.variax_match_sha256.as_deref().filter(|hash| {
+        hash.strip_prefix(VARIAX_HASH_SCHEME).is_some_and(|digest| {
+            digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit())
+        })
+    })
+}
+
+fn restore(ctx: &mut Ctx<'_>, state: &RigState, exact_tone: bool) -> Result<(), String> {
     let variax = state
         .preset()
         .map(|preset| {
-            let hash = state.variax_match_sha256.as_deref().filter(|hash| {
-                hash.strip_prefix(VARIAX_HASH_SCHEME).is_some_and(|digest| {
-                    digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit())
-                })
-            });
+            let hash = usable_variax_hash(state);
             hash.map(|hash| (preset, hash))
                 .ok_or("This state file has no usable Variax recovery hash. Keep the earlier report and verify the rig manually before continuing.")
         })
@@ -316,6 +416,8 @@ fn restore(ctx: &mut Ctx<'_>, state: &RigState) -> Result<(), String> {
                 "Rig: the PODxt Live is back on channel {} and its tone matches the start.",
                 channel.label()
             ));
+        } else if exact_tone {
+            problems.push(format!("The PODxt Live returned to {}, but the tone differs from the starting capture. Check its original settings by hand.", channel.label()));
         } else {
             ctx.rec.note(format!(
                 "Rig: the PODxt Live is on channel {}; its tone hash {} differs from the start (pedal or knob values can differ).",
@@ -363,14 +465,6 @@ fn restore(ctx: &mut Ctx<'_>, state: &RigState) -> Result<(), String> {
             }
         }
     }
-    if !ctx.port.direct_usb() && ctx.port.variax_claimed() {
-        match ctx.port.release_variax() {
-            Ok(lines) => lines
-                .into_iter()
-                .for_each(|l| ctx.rec.show(format!("Rig: {l}"))),
-            Err(error) => problems.push(error),
-        }
-    }
     if problems.is_empty() {
         Ok(())
     } else {
@@ -386,6 +480,17 @@ pub fn offer_restore(
     state_path: &Path,
     state: &RigState,
 ) -> RunRecord {
+    offer_restore_checked(port, op, sink, state_path, state, None)
+}
+
+fn offer_restore_checked(
+    port: &mut dyn super::port::RigPort,
+    op: &mut dyn Operator,
+    sink: &mut dyn ReportSink,
+    state_path: &Path,
+    state: &RigState,
+    plan: Option<super::resume::Plan>,
+) -> RunRecord {
     let mode = port.mode();
     let mut run = RunRecord::new(mode, utc_now());
     run.start_notice_accepted = true;
@@ -398,7 +503,7 @@ pub fn offer_restore(
     {
         Outcome::NotAuthorized(reason)
     } else {
-        match op.confirm(step, mode, None) {
+        match op.confirm(step, mode, Some(state.describe())) {
             Decision::Run => {
                 let mut data = RunData::default();
                 rec.started = Some(utc_now());
@@ -410,9 +515,26 @@ pub fn offer_restore(
                         data: &mut data,
                         rec: &mut rec,
                     };
-                    let result = restore(&mut ctx, state);
+                    let result = match plan.as_ref() {
+                        Some(plan) => plan
+                            .verify_restore_identity(&mut ctx, state)
+                            .and_then(|()| restore(&mut ctx, state, true)),
+                        None => restore(&mut ctx, state, false),
+                    };
                     if ctx.port.direct_usb() {
                         super::port::finish_direct_usb(ctx.port, ctx.rec, result)
+                    } else if ctx.port.variax_claimed() {
+                        match ctx.port.release_variax() {
+                            Ok(lines) => {
+                                for line in lines {
+                                    ctx.rec.show(format!("Rig: {line}"));
+                                }
+                                result
+                            }
+                            Err(error) => Err(result
+                                .err()
+                                .map_or(error.clone(), |prior| format!("{prior} {error}"))),
+                        }
                     } else {
                         result
                     }
@@ -420,9 +542,13 @@ pub fn offer_restore(
                 match result {
                     Ok(()) => {
                         let mut done = state.clone();
-                        done.finished = true;
-                        let _ = write_state(state_path, &done);
-                        Outcome::Passed
+                        done.recovery_completed = true;
+                        match write_state(state_path, &done) {
+                            Ok(()) => Outcome::Passed,
+                            Err(error) => Outcome::Failed(format!(
+                                "Could not record completed crash recovery: {error}"
+                            )),
+                        }
                     }
                     Err(error) => Outcome::Failed(error),
                 }
@@ -576,12 +702,14 @@ mod tests {
     fn state_files_round_trip() {
         let state = RigState {
             report: "rig-check-x.txt".into(),
+            report_sha256: None,
             started: "2026-11-25 01:00:00 UTC".into(),
             podxt_channel: Some(17),
             podxt_tone_sha256: Some("aa".into()),
             variax_preset: Some((2, 0)),
             variax_match_sha256: Some("bb".into()),
             finished: false,
+            recovery_completed: false,
         };
         assert_eq!(RigState::parse(&state.text()), Some(state.clone()));
         assert!(state.describe().contains("5B") && state.describe().contains("Spank 1"));

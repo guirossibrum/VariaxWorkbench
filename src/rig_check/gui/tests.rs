@@ -235,7 +235,7 @@ fn the_channel_operator_runs_practice_mode_from_another_thread() {
                     StepId(7, 2) => &["volume 0-127, tone 0-127"],
                     StepId(7, 3) => &["Practice 5C", "Back on channel 5B"],
                     StepId(7, 4) => &["Pedal range seen: 0-127"],
-                    StepId(7, 5) => &["Drive changed", "verified in the tone"],
+                    StepId(7, 5) => &["Drive (CC 13): 0-127", "Channel Volume (CC 17): 0-127"],
                     StepId(8, 1) => &[
                         "Audio system: ALSA",
                         "PODxt Live audio device: card 1",
@@ -565,4 +565,28 @@ fn technical_details_are_hidden_until_opened() {
     wizard.technical = true;
     let shown = frame(&ctx, &mut wizard, Vec::new());
     assert!(shown.iter().any(|text| text.contains("XOR 0x000001")));
+}
+
+#[test]
+fn startup_opens_saved_reports_without_starting_a_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rig-check-invalid.txt");
+    std::fs::write(&path, "Incomplete report").unwrap();
+    std::fs::write(path.with_extension("state"), "Incomplete checkpoint").unwrap();
+    let mut app = App::new(dir.path().to_owned(), Some(Mode::Real), |_, _, _| {
+        panic!("preview must not start the runner");
+    });
+    let ctx = egui::Context::default();
+    let text = frame(&ctx, &mut app.wizard, Vec::new());
+    for label in ["Start new", "Open last report", "Choose report…"] {
+        assert!(text.iter().any(|line| line == label), "{text:?}");
+    }
+    app.wizard.launch.as_mut().unwrap().open(path);
+    let text = frame(&ctx, &mut app.wizard, Vec::new());
+    assert!(
+        text.iter()
+            .any(|line| line.contains("No complete Rig Check report"))
+    );
+    assert!(!text.iter().any(|line| line == "Resume…"));
+    assert_eq!(app.wizard.mode, None);
 }

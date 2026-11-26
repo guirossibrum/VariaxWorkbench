@@ -1,6 +1,6 @@
 # Rig Check test catalogue
 
-**Catalogue version: 1.5 (2026-11-25).** Every report quotes this version.
+**Catalogue version: 1.6 (2026-11-25).** Every report quotes this version.
 Epic [#243](https://github.com/guirossibrum/VariaxWorkbench/issues/243) ·
 catalogue [#244](https://github.com/guirossibrum/VariaxWorkbench/issues/244).
 
@@ -48,6 +48,41 @@ These are the owner's requirements from #243 (2026-11-25).
 8. **The report is written after every step** so a crash still leaves
    evidence. No network access. Personal data is redacted. Backups go in a
    separate, optional evidence folder.
+
+## Continue a saved run
+
+Choose **Open last report** or **Choose report…** on launch. Use the original
+report alongside its companion `.state` file and `-evidence` folder. The
+preview shows the first failed or unfinished check, the prior results eligible
+for reuse and any backup check that needs to run again. Choose **Resume…** and
+confirm the start and revalidation notices. A continuation gets a new report
+with its source, reused results and earlier attempts.
+
+Rig Check compares the supported identities and the required starting tone,
+channel and guitar program with the saved run. A changed tone or program stops
+continuation before live or save checks. Return to the starting settings using
+the original report, then reopen it. Rig Check generally refuses a stopped
+final guard. An interrupted guard, failed cleanup or unresolved prior edit or
+store requires manual verification before a new run. A completed store is reused and its
+command is never replayed. New saves still require the usual approvals,
+prerequisite checks and typed confirmations.
+
+The f13eaf7 Mac build used catalogue 1.5 and checked Drive alone. A
+finished report with both historical 7.5 failures, no live or store test started,
+and a clean USB release after Stop before 6.2 can preview that specific
+recovery. The stopped guard and both failures stay in Earlier Attempts.
+After explicit confirmation, Rig Check checks the original PODxt channel
+and knob settings, the Variax program and both identities. It then retries
+7.5, runs the footswitch return and offers a fresh final guard. The approved
+return can restore the captured PODxt working buffer. Live edit checks and
+all stores are blocked throughout that continuation. Keep both original
+backups because this recovery requires their complete, verified evidence.
+
+**Start new** checks for a pending crash report before the first card.
+A compatible checkpoint can offer separately confirmed recovery after
+checking the rig identities. If the checkpoint, cleanup or an earlier write
+is uncertain, the app asks for manual verification before starting a fresh
+run.
 
 ## Risk levels
 
@@ -164,12 +199,12 @@ SKIP. This automatic skip permits live edits and saves to continue.
 | 4.8 | PODxt tuner | Pluck an open string. See tuner readings and the tuner turn off. |
 | 5.3 | Variax temporary save and restore | Confirm the named slot. See both stores verified. |
 | 5.4 | Variax two-slot Sync | Confirm both named slots. See each verified, then the original preset. |
-| 7.5 | PODxt Drive knob | Turn Drive and return it to the displayed starting value. See each value checked against a tone read-back. |
+| 7.5 | Six PODxt Live tone knobs | Turn Drive, Bass, Mid, Treble, Presence and Channel Volume all the way up and down in one listening window. |
 
 The Follow checks use the editor's listeners. 6.1 follows disconnect and
 reconnect. 7.1 and 7.2 check the named preset and both full knob sweeps.
 7.3 waits for a matching channel update and checks the tone Follow reads back.
-7.4 checks pedal movement. 7.5 reports the Drive value after read-back.
+7.4 checks pedal movement. 7.5 reports each measured range, whether the endpoints 0 and 127 arrived, and whether the sweep reached ≤20 and ≥107. Run 7.5 before 7.3 so the footswitch check can return the PODxt to its starting tone before live and save steps. The final rig guard remains a separate check.
 
 ## Step cards
 

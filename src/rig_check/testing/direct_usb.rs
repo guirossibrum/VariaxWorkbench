@@ -385,7 +385,8 @@ fn crash_restore_cleans_up_both_interfaces_and_keeps_state_pending_if_release_fa
             ]
         );
         let recorded = RigState::parse(&std::fs::read_to_string(state_path).unwrap()).unwrap();
-        assert_eq!(recorded.finished, !fail);
+        assert_eq!(recorded.recovery_completed, !fail);
+        assert_eq!(recorded.finished, state.finished);
     }
 }
 

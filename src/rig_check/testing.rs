@@ -882,7 +882,7 @@ mod tests {
                 StepId(5, 4),
                 &["OUT f0 00 01 0c 07 00 61 0e", "OUT f0 00 01 0c 07 00 61 0d"][..],
             ),
-            (StepId(7, 5), &["IN  b0", "OUT f0 00 01 0c 03 75"][..]),
+            (StepId(7, 5), &["IN  b0"][..]),
         ] {
             let step = run.step(id);
             assert!(step.outcome.passed(), "{id}: {:?}", step.outcome);
