@@ -28,6 +28,31 @@ and opens no audio stream. Rig Check saves reports to
 Device actions show “The Windows connection isn't available in this version
 yet.” The build omits the USB feature.
 
+## Rig Check inventory
+
+Step 0.1 reads the dotted version from `cmd /c ver` and reports its third
+component as the Windows build. The architecture comes from the Windows
+process environment, preferring `PROCESSOR_ARCHITEW6432` when Windows
+supplies it for an emulated process.
+
+Step 0.2 reads the third-party driver store and connected PnP records with
+`pnputil /enum-drivers` and `pnputil /enum-devices /connected`. It recognizes
+English structural fields in UTF-8-compatible output and reports package
+INF names and numeric versions, plus USB vendor/product IDs, OS-reported
+device status and the listed driver INF. The USB instance suffix is omitted.
+An absence means the collector parsed records and found no matching Line 6
+provider or USB vendor ID. Failed, localized or unrecognized results,
+including banner-only output, are reported as unavailable. Optional values
+missing from a recognized Line 6 record are unavailable individually.
+
+A driver-store package does not establish driver loading or MIDI
+availability. The connected records show individual PnP status and driver
+names. They supply no verified mapping from a Line 6 USB record to its host
+controller or to WinMM endpoints, so both report fields remain unavailable.
+The collector uses no MIDI endpoint query. Native validation of the command
+output and the Windows desktop report remains pending. See the
+[Windows transport findings](driver-windows-podxt.md).
+
 ## Build locally or download an artifact
 
 On x64 Windows, use Rust via rustup, Git, Python 3.9 or newer, and Visual
