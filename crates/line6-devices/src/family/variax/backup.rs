@@ -10,7 +10,12 @@ use crate::{
 };
 use std::{fmt, path::Path};
 
+mod provenance;
 mod snapshot;
+pub use provenance::{
+    AttachmentIdentity, CaptureAttachment, CaptureLink, CaptureReceipt, CleanPosition,
+    FinalizedCapture, SelectedCapture, StagedCapture, capture_library,
+};
 pub use snapshot::{
     SnapshotCapture, SnapshotCoverage, SnapshotPrograms, ValidatedSnapshot, validate_snapshot,
 };

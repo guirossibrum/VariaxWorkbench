@@ -45,9 +45,9 @@ impl GatePolicy for Policy {
     }
 }
 
-type Script = Vec<(Vec<u8>, Vec<Vec<u8>>)>;
+pub(super) type Script = Vec<(Vec<u8>, Vec<Vec<u8>>)>;
 
-fn metadata(program: u8) -> [u8; 192] {
+pub(super) fn metadata(program: u8) -> [u8; 192] {
     let mut raw = [0; 192];
     let name = format!("Preset {program}");
     raw[..name.len()].copy_from_slice(name.as_bytes());
@@ -56,7 +56,7 @@ fn metadata(program: u8) -> [u8; 192] {
     raw
 }
 
-fn blocks(script: &mut Script, data: &[u8; 192]) {
+pub(super) fn blocks(script: &mut Script, data: &[u8; 192]) {
     script.extend([
         (
             BLOCK_1.into(),
@@ -69,7 +69,7 @@ fn blocks(script: &mut Script, data: &[u8; 192]) {
     ]);
 }
 
-fn start(original: u8) -> Script {
+pub(super) fn start(original: u8) -> Script {
     let mut script = vec![
         (IDENTITY.into(), packets(&VARIAX_600)),
         (BRIDGE_ON.into(), vec![]),
@@ -79,12 +79,12 @@ fn start(original: u8) -> Script {
     script
 }
 
-fn select(script: &mut Script, program: u8, data: u8) {
+pub(super) fn select(script: &mut Script, program: u8, data: u8) {
     script.push((vec![0xc0, program], vec![]));
     blocks(script, &metadata(data));
 }
 
-fn bank(script: &mut Script, reply: Vec<Vec<u8>>) {
+pub(super) fn bank(script: &mut Script, reply: Vec<Vec<u8>>) {
     script.extend([
         (HEADER.into(), vec![]),
         (vec![0x6d], vec![]),
@@ -92,7 +92,7 @@ fn bank(script: &mut Script, reply: Vec<Vec<u8>>) {
     ]);
 }
 
-fn end(script: &mut Script) {
+pub(super) fn end(script: &mut Script) {
     script.extend([(SESSION_OFF.into(), vec![]), (BRIDGE_OFF.into(), vec![])]);
 }
 
