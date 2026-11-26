@@ -44,7 +44,10 @@ Component changes are requested from lane 2. Lane 2 never edits family editors.
   Gatekeeper records the merged revision, verification evidence, and any
   outstanding deliverables on the issue. Close it only after every
   applicable deliverable is complete and verified. Keep it open after a
-  partial merge or while required owner testing is pending.
+  partial merge or while owner testing, package acceptance, or later
+  feedback is pending. An issue left open for that acceptance does not
+  reserve the lane once the assigned implementation has been reviewed,
+  merged and verified. See [Free lanes](#free-lanes).
 - On a lane's first assignment, ask it to read `AGENTS.md` and
   `docs/parallel-work.md` from current `origin/master`. After that, request a
   reread when a relevant rule changes and name the changed file and commit.
@@ -57,7 +60,8 @@ Component changes are requested from lane 2. Lane 2 never edits family editors.
   ignored `.worktrees/` (for example
   `git worktree add .worktrees/212-detection -b lane1/212-detection origin/master`).
   Use the issue worktree for changes. Leave other agents' worktrees alone.
-  The Gatekeeper handles cleanup after integration.
+  Once the assigned implementation is reviewed, merged and verified, the
+  Gatekeeper removes that disposable worktree and frees the lane immediately.
 - Rebase onto `origin/master` before delivering.
 - Run `cargo fmt --all -- --check`, `cargo clippy --offline --all-features
   --all-targets -- -D warnings` and `cargo test --offline --all-features`, plus
@@ -78,7 +82,9 @@ Component changes are requested from lane 2. Lane 2 never edits family editors.
   the Gatekeeper can keep the worktree.
 - For review changes, return to the same worktree named by the Gatekeeper,
   then repeat the delivery check and report.
-- Keep one issue in progress per agent. Target 30–60 minutes of agent time per
+- Keep one active implementation assignment per lane. An issue left open for
+  owner acceptance is not that assignment once its implementation has been
+  reviewed, merged and verified. Target 30–60 minutes of agent time per
   issue; after two review rounds, propose a split.
 
 ## Herdr handoffs for Gatekeepers
@@ -89,37 +95,54 @@ the same review, offline checks, merge, issue update, and worktree handoff
 procedure. A completion signal or pane report is evidence for review and
 cannot grant permission for a hardware run, release, or skipped check.
 A Herdr idle or completion badge is the signal to verify that delivery.
-Merge and approval come from review of the exact head. After the verified
-merge, follow [Free lanes](#free-lanes). At a blocked checkpoint, report
-what remains and keep the issue with its lane.
-If a decision or milestone needs the owner, use production Owner Inbox and
-pause the dependent action. Continue unrelated authorized reviews. Record
-the outcome where appropriate before resuming the dependent work. When
-replacing the planning agent, rebind the existing route and preserve its
-handoff state.
+Merge and approval come from review of the exact head. Once that assigned
+implementation is reviewed, merged and verified, remove its disposable
+worktree and follow [Free lanes](#free-lanes) immediately, even if GitHub
+or Owner Inbox still tracks acceptance. When the implementation is
+incomplete or unmerged, report what remains and keep it with its lane.
+If the owner must decide, approve, review, or run something, pause the
+dependent action. Record owner acceptance and runtime decisions on the issue
+and in production Owner Inbox. They are not a reservation on a completed
+delivery. Continue unrelated
+authorized reviews. A later implementation starts from current
+`origin/master` in a new worktree on any eligible free lane, through the
+installed Herdr Dispatcher and a fresh chat with `/new`. Record the outcome
+where appropriate before resuming the dependent work. When replacing the
+planning agent, rebind the existing route and preserve its handoff state.
 Keep only one active Gatekeeper route per project. See the
 [Herdr completion watcher runbook](herdr-handoff.md) for setup and recovery.
 
 ## Free lanes
 
-Check the lane after each delivery. A lane is free for a different job only
-when its current assignment is complete and its reviewed delivery has
-merged and been verified on `origin/master`. A Herdr idle or completion
-badge is a signal to verify the delivery.
+Check the lane when a delivery is reviewed. The lane is free, and its
+disposable worktree is removed, as soon as the assigned implementation has
+been reviewed, merged and verified on `origin/master`. Free the lane
+immediately even if GitHub or Owner Inbox still tracks owner acceptance,
+package acceptance, or later feedback. Those items stay on the issue and in
+Owner Inbox. They are the acceptance record for that delivery, and the
+original lane is available for another job. A Herdr idle or completion
+badge is a signal to verify the delivery. The badge alone does not free the
+lane or assign the next issue.
 
-If the assignment is partial or blocked, keep it with the lane. Record what
-remains, the specific blocker, and what will resume work on its GitHub issue
-and in the Gatekeeper handoff. Tell the owner before leaving it pending.
-Use Owner Inbox when the owner needs to decide, approve, review, or run a
-test. Continue work that can advance the assigned issue within its scope.
+Incomplete or unmerged implementation still reserves the lane and its
+worktree. If that work is partial or blocked, keep it assigned. Record what
+remains, the specific blocker, and what will resume it on its GitHub issue
+and in the Gatekeeper handoff. Tell the owner before leaving that
+incomplete work pending. Use Owner Inbox when the owner needs to decide,
+approve, review, or run a test. Continue work that can advance the assigned
+implementation within its scope.
 
-For a free lane, select one current open issue that fits its ownership and
-assign it promptly. Check the live description, acceptance criteria, recent
-decisions, current `origin/master`, dependencies, and active assignments.
-Correct stale criteria on GitHub before sending the task. Prefer existing
-open work ready for implementation. Keep one active implementation issue
-per lane. If no ready issue fits, record the concrete blocker. Preserve
-the existing review, hardware, and release boundaries.
+The next implementation starts from current `origin/master` in a new
+worktree on any eligible free lane. Assign it through the installed Herdr
+Dispatcher, which opens a fresh chat with `/new`. Keep one active
+implementation assignment per lane. Select one current open issue that fits
+the lane's ownership. Check the live description, acceptance criteria,
+recent decisions, current `origin/master`, dependencies, and active
+assignments. Correct stale criteria on GitHub before sending the task.
+Prefer existing open work ready for implementation. If no ready issue fits,
+record the concrete blocker. Preserve exact-head review, hardware approval,
+and the publication rules in `AGENTS.md`. This procedure does not change
+the completion watcher.
 
 ## Lane reply template
 
@@ -159,24 +182,34 @@ whether the delivered commit is on verified `origin/master`. For a branch that
 has not merged, compare its unique changes and source conflicts with current
 work. Keep meaningful work for review. Retire a clean, superseded experiment
 only after confirming it has no remaining purpose and preserving its branch.
-An open issue awaiting feedback or an owner test does not by itself need an
-implementation checkout.
+An open issue awaiting feedback, package acceptance, or an owner test does
+not by itself need an implementation checkout. Once the assigned
+implementation is on verified `origin/master`, remove that disposable
+worktree and free its lane immediately. Acceptance still tracked on the
+issue or in Owner Inbox leaves the lane free. Incomplete or unmerged
+implementation still reserves its lane and worktree.
 
 Confirm the lane has left and no shell, build, watcher or other process is
 using the worktree or its build path. Review tracked, untracked, and ignored
-files. Keep active, dirty, genuinely unfinished and protected owner-test
-checkouts. Otherwise move required private evidence and owner-requested
-outputs to a stable, ignored directory under `backups/` in the main checkout.
-Verify the files and report their new paths. Discard rebuildable output,
-obsolete test binaries and checkout-only scratch files. Shared build caches
-belong under the main checkout's ignored `target/shared-builds/` directory.
+files. Keep a checkout whose implementation is incomplete or unmerged. Also
+keep active, genuinely unfinished and protected owner-test checkouts. Before
+removing any other checkout, including the disposable worktree of a reviewed,
+merged and verified implementation, sort a dirty tree. Move required private
+evidence and owner-requested outputs to a stable, ignored directory under
+`backups/` in the main checkout. Verify the files and report their new paths.
+Discard rebuildable output, obsolete test binaries and checkout-only scratch
+files. Shared build caches belong under the main checkout's ignored
+`target/shared-builds/` directory.
 For an old borrowed cache, stop its users, move only the cache they still
 need, and tell them the new path before retiring the old checkout.
 
 From outside the worktree, remove one verified worktree at a time with
-`git worktree remove <validated-worktree-path>`, without force. If Git refuses,
-investigate the reason and retry only after resolving it. Keep the branch and
-confirm the worktree is gone from `git worktree list`.
+`git worktree remove <validated-worktree-path>`, without force. For the
+disposable worktree of an implementation that has been reviewed, merged and
+verified, do this as soon as the lane has left and nothing is using it, even
+if GitHub or Owner Inbox still tracks acceptance. If Git refuses, investigate
+the reason and retry only after resolving it. Keep the branch and confirm the
+worktree is gone from `git worktree list`.
 
 ## Boundaries
 
