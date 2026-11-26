@@ -138,6 +138,8 @@ impl IoObject {
     }
 
     fn usb_parent(&self) -> Option<Self> {
+        // The vendored get_device_parent_sessionID calls kIOUSBPlane.
+        // IOService is used only for the separate parent port-data fallback.
         let mut next = self.parent(c"IOUSB");
         while let Some(parent) = next {
             if parent.number(c"sessionID").is_some() {

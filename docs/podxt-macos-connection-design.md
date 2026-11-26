@@ -61,6 +61,30 @@ Current source: [Mac attachment scan](../crates/line6-devices/src/transport/usb/
 [Workbench attachment reconciliation](../src/app/detection/mod.rs),
 [Rig Check inventory and direct port](../src/rig_check/port.rs).
 
+### Passive route parity
+
+The pinned Darwin backend uses the USB registry plane to find each parent with
+a `sessionID`. Its adjacent comment names the Service plane, but the call
+passes `kIOUSBPlane` (`IOUSB`). The separate `get_device_port` function uses
+`PortNum` first and consults the immediate Service-plane parent's `port` data
+as a fallback. Passive inventory follows those same two lookups. The planes
+can expose different ancestry, as Apple's device path example shows.
+[Vendored parent and port lookups](https://github.com/guirossibrum/VariaxWorkbench/blob/f0d255e0111191bb499c6635644653e76703de14/third_party/usb/libusb1-sys-0.7.0/libusb/libusb/os/darwin_usb.c#L1151-L1185) ·
+[Apple's registry plane example](https://developer.apple.com/library/archive/documentation/DeviceDrivers/Conceptual/AccessingHardware/AH_IOKitLib_API/AH_IOKitLib_API.html)
+
+The backend takes the bus from the top byte of `locationID` and emits the
+nonzero port chain from root to leaf. With complete topology, the direct
+fixture uses bus 1 and leaf port 2 (`1-2`), and the populated-hub fixture uses
+bus 1, hub port 4 and leaf port 3 (`1-4.3`). A neighbor contributes no port to
+the selected device's ancestry. If a leaf port or known intermediate hop is missing, the
+device remains listed and the passive record supplies no candidate. A
+candidate must still pass the existing exact libusb selection and open checks.
+The fixtures cover route formatting and candidate selection from observed
+metadata. They leave real registry-to-libusb parity on both Mac architectures
+for native owner verification.
+[Vendored bus and parent assignment](https://github.com/guirossibrum/VariaxWorkbench/blob/f0d255e0111191bb499c6635644653e76703de14/third_party/usb/libusb1-sys-0.7.0/libusb/libusb/os/darwin_usb.c#L1327-L1350) ·
+[Vendored port-chain construction](https://github.com/guirossibrum/VariaxWorkbench/blob/f0d255e0111191bb499c6635644653e76703de14/third_party/usb/libusb1-sys-0.7.0/libusb/libusb/core.c#L948-L968)
+
 ## Direct connection when configured
 
 1. Run each action through its existing operation gate. Obtain the existing

@@ -168,6 +168,13 @@ mod tests {
             panic!("both PODxts should be listed");
         };
         assert!(unconfigured.attachment(&inventory).is_none());
+        assert_eq!(unconfigured.route(), Some("1-2"));
+        let configured_direct = record(10, 0x01200000, 2, &[2], true).podxt().unwrap();
+        let direct_candidate = configured_direct
+            .attachment(std::slice::from_ref(&configured_direct))
+            .unwrap();
+        assert_eq!(direct_candidate.path, "1-2");
+        assert_eq!(direct_candidate.address, 2);
         let candidate = behind_hub.attachment(&inventory).unwrap();
         assert_eq!(candidate.path, "1-4.3");
         assert_eq!(candidate.address, 3);
