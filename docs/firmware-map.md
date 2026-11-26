@@ -178,7 +178,7 @@ spans all 19 mapped regions.
 
 | Area | Established offline | Still unknown |
 | --- | --- | --- |
-| DSP resources | A bounded model of the stock loading path reconstructs four base resources with the expected end marker. The Room record and resident tables account for three subcomponents and all 38 trailing parameter halfwords. The model follows initialization, parameter copying and event registration to the return from the loading path. | The active processing path during a sample interrupt, exact live memory state, and audio equivalence. Other resource groups need independent verification. |
+| DSP resources | A bounded model of the stock loading path reconstructs four base resources with the expected end marker. The Room record and resident tables account for three subcomponents and all 38 trailing parameter halfwords. The model follows initialization, parameter copying and event registration. The interrupt dispatcher can reach the registered Room graph under the conditions below. | The route and interrupt state in a running unit, whole-graph output, and audio equivalence. Other resource groups need independent verification. |
 | Display | Region 3 encodes 28 bitmapped frames in 512-byte records on a 128 × 32 canvas. They contain the startup logo sequence, the standard model-set screen and 15 pack-status combinations. The Live drawing specifies a 122 × 32 visible LCD. | The code that selects and sends each frame, its visible crop, and the source of the reported pack state. The graphics establish which states can be displayed. |
 | Board interfaces | The Live drawing puts the LCD and switch matrix on the MCU side and sends potentiometer and pedal readings to the MCU through a separate ADC. Variax digital audio reaches a dedicated receiver, and Variax MIDI has its own MCU serial channel. The service theory describes clock selection for internal, Variax and USB audio operation. | Firmware routing and ownership rules, panel scan and debounce behavior, and the persistent calibration fields. |
 | Flash and persistence | For the documented bottom-boot flash option in word mode, the settings pair aligns with two independent 8 KiB sectors and the preset pair aligns with two independent 64 KiB sectors. A model of the load-time decision logic distinguishes the two bank selectors using archived inputs and 10 synthetic cases. | The populated flash part on a given unit, behavior during an interrupted write or erase, calibration and pack preservation, and end-to-end recovery. |
@@ -192,7 +192,35 @@ The tracked archive checks below can be rerun against an authorized local
 copy of the firmware. The additional component verifiers, result logs and
 checksum index are retained locally under the ignored
 `backups/podxt-301-audit/` area. See its `SHA256SUMS` entries for the Room
-graph, panel data and flash geometry checkpoints.
+graph, panel data and flash geometry checkpoints. The Room sample-path
+checkpoint has its own private checksum index in the same area.
+
+#### Room sample path
+
+The archived interrupt vector targets a handler that walks a table of
+registered callbacks when its global graph flag is set. The stock Room
+load fills one row in that table. Its callback walks a second table with
+three child processing callbacks. Each child template supplies distinct
+parameter, initialization and processing entries. Earlier private notes
+reversed the parameter and processing labels. The archived table before
+registration has no Room callback, and the alternate dispatch with the
+global flag cleared skips the Room row in the checked fixture.
+
+The first child reads 16 samples, takes its filter coefficients from the
+loaded Room state, and writes a 16-sample block and four history values.
+A bounded interpretation of its decoded instructions matched an
+independent scalar calculation for silence, an impulse and an alternating
+input with seeded history, using synthetic memory and binary32 arithmetic.
+The next child uses the first child's output buffer and its own delay
+state. The third reads and writes the first child's input buffer in the
+stock fixture. Their sample arithmetic was outside the replay.
+
+The next runtime evidence needed is a route-labelled interrupt-entry
+snapshot for Live 3.01, or matching code that reconstructs it. It must
+identify the interrupt source and buffer phase, the enabled callback rows
+and order, and the producer of the first child's input block for the
+selected analog, Variax or USB route. Matching input, state and output
+vectors are needed to check DSP arithmetic and audio equivalence.
 
 ### PODxt Live 3.01 factory channels
 
