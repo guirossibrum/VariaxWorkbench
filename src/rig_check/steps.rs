@@ -36,8 +36,8 @@ pub struct RunData {
     pub start_channel: Option<Location>,
     pub podxt_unsaved: bool,
     pub podxt_library: Vec<(Location, EditBuffer)>,
-    /// Reads from steps 2.3 and 2.4, compared with the backup in 2.5.
-    pub podxt_reads: Vec<super::podxt_reads::ChannelRead>,
+    /// The independent channel 1A read from 2.3, compared with the backup in 2.5.
+    pub podxt_channel_read: Option<Result<EditBuffer, String>>,
     pub start_program: Option<Program>,
     /// The 192 settings bytes from step 3.2.
     pub start_settings: Option<[u8; 192]>,
@@ -152,7 +152,6 @@ pub fn execute(ctx: &mut Ctx<'_>) -> Result<(), String> {
         (2, 1) => podxt_identity(ctx),
         (2, 2) => podxt_current_tone(ctx),
         (2, 3) => super::podxt_reads::one_channel(ctx),
-        (2, 4) => super::podxt_reads::one_bank(ctx),
         (2, 5) => podxt_library(ctx),
         (2, 6) => super::live::podxt_editor_get(ctx),
         (2, 7) => podxt_version_comparison(ctx),
@@ -541,12 +540,7 @@ fn podxt_library(ctx: &mut Ctx<'_>) -> Result<(), String> {
         .iter()
         .map(|entry| (entry.location, entry.tone.clone()))
         .collect();
-    let content = super::podxt_reads::compare_with_backup(ctx);
-    if content > 0 {
-        return Err(format!(
-            "{content} earlier channel read(s) differ in content from the backup."
-        ));
-    }
+    super::podxt_reads::compare_with_backup(ctx)?;
     if let (Some(channel), Some(start)) = (ctx.data.start_channel, &ctx.data.start_tone) {
         let saved = ctx
             .data

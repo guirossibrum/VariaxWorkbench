@@ -6,7 +6,7 @@
 use crate::hardware_gates::Gate;
 use std::fmt;
 
-pub const CATALOGUE_VERSION: &str = "1.4";
+pub const CATALOGUE_VERSION: &str = "1.5";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StepId(pub u8, pub u8);
@@ -206,12 +206,8 @@ pub static STEPS: &[Step] = &[
         does: "Reads one saved channel by memory location. The tone you are playing does not change.",
         you_do: "Nothing.", see: "The channel name.", hear: "Nothing changes.",
         evidence: "Dump in hex, SHA-256, shape check.", proof: "#220"),
-    step!((2, 4), "PODxt Live one bank (A-D)", Device, [(2, 3)], [G5], Read,
-        does: "Reads the four saved channels A-D of one bank.",
-        you_do: "Nothing.", see: "Four channel names.", hear: "Nothing changes.",
-        evidence: "Four dumps, SHA-256 each.", proof: "#220"),
     step!((2, 5), "PODxt Live full library backup", Device, [(2, 2)], [G5], Read,
-        does: "Reads all 128 tones, 107 amp setups and 64 FX setups (299 entries) into the evidence folder, compares the reads from 2.3 and 2.4 with it, and reads the playing tone again to show it did not change.",
+        does: "Reads all 128 tones, 107 amp setups and 64 FX setups (299 entries) into the evidence folder, compares channel 1A against the earlier read in 2.3, and reads the playing tone again to show it did not change.",
         you_do: "Nothing. Takes about a minute.", see: "The number of entries read out of 299.", hear: "Nothing changes.",
         evidence: "Entry count, SHA-256 per entry and manifest, before/after current tone.",
         proof: "#220, #222"),
@@ -365,7 +361,6 @@ pub const RUN_ORDER: &[StepId] = &[
     StepId(1, 2),
     StepId(2, 2),
     StepId(2, 3),
-    StepId(2, 4),
     StepId(2, 5),
     StepId(2, 6),
     StepId(3, 1),

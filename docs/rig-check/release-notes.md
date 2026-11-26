@@ -2,9 +2,9 @@
 
 Rig Check walks you through tests of a PODxt Live and Variax rig one
 explained, confirmed step at a time and writes a text report. Catalogue:
-[catalogue](catalogue.md) (version 1.2) and [device-message coverage](coverage.md).
+[catalogue](catalogue.md) (version 1.5) and [device-message coverage](coverage.md).
 
-## Owner release (0.9.0, catalogue 1.2)
+## Owner release (0.9.0, catalogue 1.5)
 
 - Practice exercises the steps on simulated devices.
 - Real rig mode is released for the owner's first PODxt Live and Variax
@@ -14,6 +14,9 @@ explained, confirmed step at a time and writes a text report. Catalogue:
   earlier steps must pass before a save is offered, and every save requires
   its exact typed confirmation. A silent save waits two minutes following
   the protocol cleanup and ends with USB release.
+- The full PODxt library backup (2.5) covers the standalone bank read
+  (formerly 2.4). It still compares channel 1A with step 2.3, verifies the
+  playing tone, and supplies the backup required by the PODxt save.
 - Audio streams (8.2–8.5) remain closed. PODxt step 2.7 compares the
   identity captured in 2.1 offline. The device crate's separate addressed
   evidence sweep remains closed pending owner approval. A physical action
