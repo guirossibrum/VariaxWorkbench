@@ -11,6 +11,7 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 ## Verified and passing
 
 - [x] #281 offline design checkpoint identifies which approved Variax and PODxt Live captures can populate an offline cache and specifies validation, publication, and fake-transport acceptance for implementation. No cache or device behavior changed. [Design and Lane 3 handoff](first-connection-cache.md).
+- [x] [#273](https://github.com/guirossibrum/VariaxWorkbench/issues/273) packages ten approved runtime PNGs and a SHA-256 manifest with the offline Mac Workbench bundle. Six Python packaging tests verify bundle metadata and checksums, including a relocated resource tree and refusal of incomplete or changed artwork. Two headless Rust tests cover bundle-path resolution and decoding the three home images. Native DMG and desktop verification of this change are pending. [Build and verify](macos-package.md).
 
 - [x] #206 device prerequisite adds a gated six-word global string-level RAM read, backup, temporary set and verified restoration, plus a separately gated single store request. Twelve new offline tests verify the transactions. [Lane 3 API and owner verification draft](variax-string-levels.md).
 

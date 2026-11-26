@@ -61,6 +61,14 @@ bundle's architecture, size and the raw `vtool -show-build` and `otool -L`
 output for each slice. The build fails on an unexpected deployment target,
 a non-system dylib, a broken signature or missing disk image contents.
 
+Workbench loads its home screen and PODxt stage artwork from
+`Variax Workbench.app/Contents/Resources/assets/ui`. The package includes a
+`SHA256SUMS` file for those PNGs. The build checks each image against
+[the approved artwork inventory](../assets/ui/SOURCES.md) before signing
+and verifies the manifest and every image again on the mounted disk image.
+Workbench can load this artwork from Applications or another folder without
+a source checkout.
+
 ## Build from Linux using GitHub Actions
 
 From the repository checkout with the GitHub CLI authenticated, run:

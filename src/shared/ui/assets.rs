@@ -25,9 +25,40 @@ impl UiImage {
     }
 }
 
-/// `CARGO_MANIFEST_DIR/assets/ui`. Present after the design art is on this branch.
+/// The running macOS bundle's artwork directory, or the source tree for development.
 pub fn workspace_root() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        ROOT.get_or_init(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|exe| macos_bundle_artwork(&exe))
+                .unwrap_or_else(source_artwork)
+        })
+        .clone()
+    }
+    #[cfg(not(target_os = "macos"))]
+    source_artwork()
+}
+
+fn source_artwork() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/ui")
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_bundle_artwork(exe: &Path) -> Option<PathBuf> {
+    let bin = exe.parent()?;
+    let contents = bin.parent()?;
+    let app = contents.parent()?;
+    if bin.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && app.extension()? == "app"
+    {
+        Some(contents.join("Resources/assets/ui"))
+    } else {
+        None
+    }
 }
 
 /// Load `relative` from `root`. `..` and absolute paths are treated as missing.
@@ -116,5 +147,56 @@ pub fn fitted_size(pixels: [usize; 2], bounds: Vec2) -> Vec2 {
         vec2(bounds.x, bounds.x / aspect)
     } else {
         vec2(bounds.y * aspect, bounds.y)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loads_home_artwork_from_a_relocated_app_bundle() {
+        let scratch = tempfile::tempdir().unwrap();
+        let contents = scratch.path().join("Moved Variax Workbench.app/Contents");
+        let exe = contents.join("MacOS/variax-workbench-gui");
+        let resources = contents.join("Resources/assets/ui");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::write(&exe, []).unwrap();
+        std::fs::create_dir_all(resources.join("shell")).unwrap();
+        for name in [
+            "shell/workbench-mark.png",
+            "shell/variax.png",
+            "shell/podxt-live.png",
+        ] {
+            std::fs::copy(source_artwork().join(name), resources.join(name)).unwrap();
+        }
+
+        let root = macos_bundle_artwork(&exe).unwrap();
+        assert_eq!(root, resources);
+        let ctx = egui::Context::default();
+        for (name, size) in [
+            ("shell/workbench-mark.png", [128, 128]),
+            ("shell/variax.png", [64, 64]),
+            ("shell/podxt-live.png", [64, 64]),
+        ] {
+            let artwork = load(&ctx, &root, name);
+            assert!(!artwork.missing, "{name}");
+            assert_eq!(artwork.pixels, size, "{name}");
+            assert!(artwork.texture.is_some(), "{name}");
+        }
+        std::fs::remove_file(resources.join("shell/workbench-mark.png")).unwrap();
+        assert_eq!(macos_bundle_artwork(&exe).unwrap(), resources);
+        assert!(load(&ctx, &root, "shell/workbench-mark.png").missing);
+    }
+
+    #[test]
+    fn standalone_development_executable_has_no_bundle_artwork() {
+        for exe in [
+            "/build/target/debug/variax-workbench-gui",
+            "/build/target/Contents/MacOS/variax-workbench-gui",
+            "/build/Moved Workbench.app/MacOS/variax-workbench-gui",
+        ] {
+            assert!(macos_bundle_artwork(Path::new(exe)).is_none(), "{exe}");
+        }
     }
 }
