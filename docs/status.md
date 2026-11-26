@@ -10,6 +10,8 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] #274 adds a closed Linux direct PODxt Live MIDI link for interface 0. Five offline tests cover the gate, raw transfers, status normalization, the attachment binding check and bounded driver return. The Linux identity and driver-return test awaits the owner's separate approval. [Owner test card](podxt-usb-direct-test-card.md).
+
 - [x] Rig Check displays work counts, device confirmation waits and the silent-timeout hold. Physical actions use an OK prompt, an extendable ready countdown and a 60-second action window with decoded feedback. Current read, guided and live results can be repeated, with earlier attempts preserved and saves gated by the latest outcomes. Practice tests cover early and late movement, unplug/replug retries, display mismatches, guided and listening repeats, evidence preservation, and the absence of save repeat. [#276](https://github.com/guirossibrum/VariaxWorkbench/issues/276).
 
 - [x] Rig Check requires PODxt identity before Variax checks. Practice covers a failed 2.1 blocking every Variax step and an unverified PODxt Live offering only the Variax evidence read. [#276](https://github.com/guirossibrum/VariaxWorkbench/issues/276).
