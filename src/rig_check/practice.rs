@@ -104,6 +104,7 @@ struct Queued {
 #[cfg(test)]
 pub(super) enum TestPodxtDump {
     Missing,
+    MissingRepeated(usize),
     Delayed(Duration),
     Interrupted { channel: u8, delay: Duration },
 }
@@ -399,6 +400,12 @@ impl SimRig {
     fn script_podxt_dump(&mut self, dump: &[u8], reply: TestPodxtDump) {
         let delay = match reply {
             TestPodxtDump::Missing => return,
+            TestPodxtDump::MissingRepeated(remaining) => {
+                if remaining > 1 {
+                    self.next_podxt_dump = Some(TestPodxtDump::MissingRepeated(remaining - 1));
+                }
+                return;
+            }
             TestPodxtDump::Delayed(delay) => delay,
             TestPodxtDump::Interrupted { channel, delay } => {
                 Self::queue(&mut self.podxt_out, self.clock + LATENCY, &[0xc0, channel]);

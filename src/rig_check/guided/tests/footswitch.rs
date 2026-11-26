@@ -261,3 +261,105 @@ fn guard_describes_an_accepted_live_position_change_without_claiming_byte_equali
             .any(|line| line.contains("all 168 bytes"))
     );
 }
+
+#[test]
+fn pedal_preflight_retries_before_arming_and_the_gesture_sends_nothing() {
+    let rig = SimRig::shared(Faults::default());
+    let mut port = PracticePort::new(rig.clone());
+    let mut person = Script::run_all();
+    let writes_at_arm = Rc::new(Cell::new(0));
+    let armed = writes_at_arm.clone();
+    let model = rig.clone();
+    person.on_prepare = Some(Box::new(move |step| {
+        if step == PEDAL {
+            assert_eq!(armed.replace(model.borrow().written.len()), 0);
+        }
+    }));
+    let writes_at_result = Rc::new(Cell::new(0));
+    let finished = writes_at_result.clone();
+    let model = rig.clone();
+    person.on_card = Some(Box::new(move |step| {
+        if step == PEDAL {
+            model.borrow_mut().next_podxt_dump = Some(TestPodxtDump::Missing);
+        }
+        if step == StepId(8, 1) {
+            finished.set(model.borrow().written.len());
+        }
+    }));
+    let (run, _) = run_on(&mut port, &mut person, &mut NoReport, RunData::default());
+    let record = run.step(PEDAL);
+    assert!(record.outcome.passed(), "{record:?}");
+    assert_eq!(record.retries, 1);
+    assert!(record.technical_lines().any(|line| {
+        line.contains("attempt 2/3") && line.contains("No 168-byte edit-buffer dump")
+    }));
+    assert_eq!(writes_at_arm.get(), writes_at_result.get());
+    let sends: Vec<_> = record
+        .messages
+        .iter()
+        .filter_map(|line| line.split_once("s OUT ").map(|(_, bytes)| bytes))
+        .collect();
+    assert_eq!(
+        sends,
+        [
+            hex(&PodxtRequest::Identity.bytes()),
+            hex(&PodxtRequest::EditBuffer.bytes()),
+            hex(&PodxtRequest::EditBuffer.bytes()),
+        ]
+    );
+}
+
+#[test]
+fn exhausted_pedal_read_keeps_later_live_and_save_steps_blocked() {
+    let rig = SimRig::shared(Faults::default());
+    let mut port = PracticePort::new(rig.clone());
+    let mut person = Script::run_all();
+    let model = rig.clone();
+    person.on_card = Some(Box::new(move |step| {
+        if step == PEDAL {
+            model.borrow_mut().next_podxt_dump = Some(TestPodxtDump::MissingRepeated(3));
+        }
+    }));
+    let (run, _) = run_on(&mut port, &mut person, &mut NoReport, RunData::default());
+    let pedal = run.step(PEDAL);
+    assert_eq!(pedal.retries, 2);
+    assert!(matches!(
+        &pedal.outcome,
+        Outcome::Failed(reason) if reason.contains("used all 3 attempts")
+    ));
+    assert!(!person.instructions.iter().any(|(step, _)| *step == PEDAL));
+    for step in [StepId(4, 1), StepId(4, 2), StepId(4, 7), StepId(5, 2)] {
+        assert_eq!(
+            run.step(step).outcome,
+            Outcome::SkippedNeeds("read-only from here: step 7.4 failed".into())
+        );
+        assert!(run.step(step).messages.is_empty());
+    }
+    assert_eq!(rig.borrow().podxt.stores, 0);
+    assert_eq!(rig.borrow().variax.stores, 0);
+}
+
+#[test]
+fn changed_identity_at_pedal_preflight_sends_no_tone_requests() {
+    let rig = SimRig::shared(Faults::default());
+    let mut port = PracticePort::new(rig.clone());
+    let mut person = Script::run_all();
+    person.on_card = Some(Box::new(move |step| {
+        if step == PEDAL {
+            rig.borrow_mut().podxt.firmware[3] ^= 1;
+        }
+    }));
+    let (run, _) = run_on(&mut port, &mut person, &mut NoReport, RunData::default());
+    let pedal = run.step(PEDAL);
+    assert_eq!(pedal.retries, 0);
+    assert!(matches!(
+        &pedal.outcome,
+        Outcome::Failed(reason) if reason.contains("identity changed since step 2.1")
+    ));
+    let requests: Vec<_> = pedal
+        .messages
+        .iter()
+        .filter_map(|line| line.split_once("s OUT ").map(|(_, bytes)| bytes))
+        .collect();
+    assert_eq!(requests, [hex(&PodxtRequest::Identity.bytes())]);
+}

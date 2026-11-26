@@ -232,6 +232,10 @@ impl StepRecord {
                     super::variax_reads::lost_bytes(&self.messages)
                 )
             }))
+            .chain(self.messages.iter().filter_map(|line| {
+                line.split_once("s Retrying PODxt ")
+                    .map(|(_, reason)| format!("Retrying PODxt {reason}"))
+            }))
             .chain(self.comparisons.iter().flat_map(|comparison| {
                 std::iter::once(format!(
                     "{} · {}",

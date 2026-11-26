@@ -4,6 +4,7 @@ use super::catalogue::StepId;
 use super::computer::{self, UsbView};
 use super::differences::{self, Severity};
 use super::evidence;
+use super::podxt_reads::{ToneRead, read_tone, with_verified_tone_link};
 use super::practice::{Program, preset_label};
 use super::procedures::{
     self, GUARD, PODXT_IDENTITY, PODXT_LIBRARY, VARIAX_IDENTITY, VARIAX_SELECT, program_bytes,
@@ -438,10 +439,11 @@ fn podxt_version_comparison(ctx: &mut Ctx<'_>) -> Result<(), String> {
 }
 
 fn podxt_current_tone(ctx: &mut Ctx<'_>) -> Result<(), String> {
-    let (tone, channel) = with_podxt(ctx, procedures::PODXT_CHANNEL, |session| {
-        let tone = podxt::read_current(session)?.tone;
-        Ok((tone, podxt::playing_channel(session)?))
-    })?;
+    let (tone, channel) =
+        with_verified_tone_link(ctx, procedures::PODXT_CHANNEL, |session, stopping, _| {
+            let tone = read_tone(session, stopping, ToneRead::Current)?;
+            Ok((tone, podxt::playing_channel(session)?))
+        })?;
     ctx.data.start_channel = Some(channel);
     ctx.rec.show(format!(
         "Starting channel reported by the PODxt Live: {}",

@@ -60,7 +60,11 @@ pub const HINTS: &[Hint] = &[
 
 /// Add every hint whose signs appear in a failed step's reason or log.
 pub fn attach(record: &mut StepRecord, outcome: &Outcome) {
-    if record.retries > 0 {
+    if record
+        .messages
+        .iter()
+        .any(|line| line.contains("Retrying Variax 0x3C"))
+    {
         let retry = HINTS
             .iter()
             .find(|hint| hint.signs.contains(&"retrying variax 0x3c"))

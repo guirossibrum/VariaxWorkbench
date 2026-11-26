@@ -1,11 +1,180 @@
-//! Step 2.3 (#254): read stored PODxt Live channel 1A and compare it with
-//! the library backup from step 2.5.
+//! Bounded PODxt reads for 2.2, 2.3 and 7.4, and the independent
+//! comparison of 2.3's channel 1A with the library backup from 2.5.
 
 use super::differences::{self, Severity};
-use super::procedures::{PODXT_LIBRARY, podxt_read_stored, with_podxt_progress};
-use super::runner::{Ctx, Progress};
-use line6_devices::family::podxt::{BankKind, EditBuffer, Location};
-use line6_devices::midi::hex;
+use super::procedures::{DRAIN, DynSession, PODXT_LIBRARY, with_podxt_progress};
+use super::runner::{Ctx, Progress, STOPPED};
+use line6_devices::family::podxt::{self, BankKind, EditBuffer, Location, PodxtRequest};
+use line6_devices::gate::Operation;
+use line6_devices::identity::Identity;
+use line6_devices::midi::{Event, hex};
+use line6_devices::session::POLL;
+use std::time::Duration;
+
+const TONE_ATTEMPTS: usize = 3;
+const TONE_HEADER: &[u8] = &[0xf0, 0, 1, 0x0c, 3, 0x74];
+const STORED_BLOCK_END: &[u8] = &[0xf0, 0, 1, 0x0c, 3, 0x72, 0xf7];
+
+fn check_stop(stopping: &dyn Fn() -> bool) -> Result<(), String> {
+    if stopping() {
+        return Err(format!("{STOPPED}Stopped during the PODxt tone read."));
+    }
+    Ok(())
+}
+
+/// Keep the original family read windows for each request. Every attempt
+/// stays on the established link and asks for the same tone.
+#[derive(Clone, Copy)]
+pub(super) enum ToneRead {
+    Current,
+    Stored(Location),
+}
+
+impl ToneRead {
+    fn request(self) -> PodxtRequest {
+        match self {
+            Self::Current => PodxtRequest::EditBuffer,
+            Self::Stored(location) => PodxtRequest::Stored(location),
+        }
+    }
+
+    fn window(self) -> Duration {
+        Duration::from_secs(match self {
+            Self::Current => 2,
+            Self::Stored(_) => 3,
+        })
+    }
+
+    fn missing(self) -> String {
+        match self {
+            Self::Current => "No 168-byte edit-buffer dump arrived.".into(),
+            Self::Stored(location) => {
+                format!(
+                    "Lost reply: no 168-byte dump for channel {}.",
+                    location.label()
+                )
+            }
+        }
+    }
+}
+
+pub(super) fn with_verified_tone_link<T>(
+    ctx: &mut Ctx<'_>,
+    ops: &'static [Operation],
+    body: impl FnOnce(&mut DynSession<'_>, &dyn Fn() -> bool, &dyn Fn(Progress)) -> Result<T, String>,
+) -> Result<T, String> {
+    let expected = ctx
+        .data
+        .podxt_identity
+        .clone()
+        .ok_or("No PODxt Live identity from step 2.1.")?;
+    with_podxt_progress(ctx, ops, |session, stopping, progress| {
+        check_stop(stopping)?;
+        // Keep the shared identity exchange and its one orphan-tail retry.
+        let (reply, _) = podxt::listen(session, Duration::ZERO)?;
+        check_stop(stopping)?;
+        if Identity::parse(&reply).as_ref() != Some(&expected) {
+            return Err("PODxt Live identity changed since step 2.1. Start a new run.".into());
+        }
+        session.assembler = Default::default();
+        body(session, stopping, progress)
+    })
+}
+
+/// Discard frames and tails arriving after an abandoned attempt. The final
+/// reset also prevents a frame started during the drain finishing on retry.
+/// Tone dumps have no request ID, so the drain is limited to the same
+/// read on the same link and never carries a reply over to a different read.
+fn discard_reply(session: &mut DynSession<'_>, stopping: &dyn Fn() -> bool) -> Result<(), String> {
+    let end = session.link.elapsed() + DRAIN;
+    session.note("Discarding pending PODxt input after an incomplete read.");
+    while let Some(left) = end
+        .checked_sub(session.link.elapsed())
+        .filter(|left| !left.is_zero())
+    {
+        check_stop(stopping)?;
+        session.poll(left.min(POLL))?;
+    }
+    session.assembler = Default::default();
+    check_stop(stopping)
+}
+
+pub(super) fn read_tone(
+    session: &mut DynSession<'_>,
+    stopping: &dyn Fn() -> bool,
+    read: ToneRead,
+) -> Result<EditBuffer, String> {
+    for attempt in 1..=TONE_ATTEMPTS {
+        check_stop(stopping)?;
+        session.send(read.request())?;
+        let end = session.link.elapsed() + read.window();
+        let mut reason = read.missing();
+        while let Some(left) = end
+            .checked_sub(session.link.elapsed())
+            .filter(|left| !left.is_zero())
+        {
+            check_stop(stopping)?;
+            let events = session.poll(left.min(POLL))?;
+            check_stop(stopping)?;
+            let mut reply = None;
+            for event in events.into_iter().flatten() {
+                match event {
+                    Event::Sysex(frame)
+                        if matches!(read, ToneRead::Stored(_)) && frame == STORED_BLOCK_END => {}
+                    Event::Sysex(frame)
+                        if frame.starts_with(TONE_HEADER)
+                            && frame.len() < podxt::EDIT_BUFFER_LEN
+                            && (frame.len() == TONE_HEADER.len() + 1
+                                || frame[6] == podxt::PODXT_LIVE_MEMBER as u8) =>
+                    {
+                        reason = format!(
+                            "Incomplete PODxt tone reply has {} bytes, expected {}.",
+                            frame.len(),
+                            podxt::EDIT_BUFFER_LEN
+                        );
+                    }
+                    Event::Sysex(frame) => {
+                        if !frame.starts_with(TONE_HEADER)
+                            || frame.get(6) != Some(&(podxt::PODXT_LIVE_MEMBER as u8))
+                        {
+                            return Err(format!("Unexpected PODxt tone reply: {}", hex(&frame)));
+                        }
+                        let tone = EditBuffer::parse(frame)?;
+                        if reply.replace(tone).is_some() {
+                            return Err(
+                                "More than one PODxt tone reply arrived in a packet.".into()
+                            );
+                        }
+                    }
+                    Event::Short(message) if message[0] & 0xf0 == 0xc0 => {
+                        return Err("The PODxt channel changed during the tone read.".into());
+                    }
+                    Event::Short(_) => {}
+                }
+            }
+            if let Some(tone) = reply {
+                if matches!(read, ToneRead::Stored(_)) {
+                    // Keep the shared stored-read settle period for a trailing block end.
+                    session.listen(Duration::from_millis(100))?;
+                    check_stop(stopping)?;
+                }
+                return Ok(tone);
+            }
+        }
+        discard_reply(session, stopping)?;
+        if attempt == TONE_ATTEMPTS {
+            return Err(format!(
+                "{reason} The PODxt tone read used all {TONE_ATTEMPTS} attempts."
+            ));
+        }
+        session.note(format!(
+            "Retrying PODxt {:?} (attempt {}/{TONE_ATTEMPTS}): {reason}",
+            read.request(),
+            attempt + 1
+        ));
+    }
+    unreachable!("the final attempt returns")
+}
 
 fn channel() -> Location {
     Location::new(BankKind::Tones, 0).expect("1A tone index")
@@ -38,9 +207,9 @@ fn record(ctx: &mut Ctx<'_>, location: Location, result: &Result<EditBuffer, Str
 pub fn one_channel(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let location = channel();
     ctx.data.podxt_channel_read = None;
-    let read = with_podxt_progress(ctx, PODXT_LIBRARY, |session, _, progress| {
+    let read = with_verified_tone_link(ctx, PODXT_LIBRARY, |session, stopping, progress| {
         progress(Progress::counted("Reading channel 1A", 0, 1, "channels"));
-        let read = podxt_read_stored(session, location);
+        let read = read_tone(session, stopping, ToneRead::Stored(location));
         if read.is_ok() {
             progress(Progress::counted("Channel read complete", 1, 1, "channels"));
         }
@@ -71,9 +240,9 @@ pub fn compare_with_backup(ctx: &mut Ctx<'_>) -> Result<(), String> {
         .find(|(location, _)| *location == channel())
         .map(|(_, tone)| tone);
     match (read, backup) {
-        (Err(_), _) => ctx
-            .rec
-            .note("Channel 1A: the earlier read lost its reply (not a content difference)."),
+        (Err(error), _) => ctx.rec.note(format!(
+            "Channel 1A: the earlier read failed before comparison. {error}"
+        )),
         (Ok(_), None) => ctx.rec.note("Channel 1A: not in the backup."),
         (Ok(read), Some(backup)) if read.raw == backup.raw => {
             ctx.rec
@@ -97,6 +266,9 @@ pub fn compare_with_backup(ctx: &mut Ctx<'_>) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod retry_tests;
 
 #[cfg(test)]
 mod tests {
