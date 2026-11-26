@@ -10,6 +10,8 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] [#279](https://github.com/guirossibrum/VariaxWorkbench/issues/279) pins the PODxt transfer test fixture to LF. [Windows artifact run 45767518187](https://github.com/guirossibrum/VariaxWorkbench/actions/runs/45767518187) on `691ab0e` passed 940 app tests, then stopped when four device-library tests could not find transcript case headers. A synthetic checkout with Git's Windows line-ending setting reproduced the same lookup failure and passed with the fixture rule. The run produced no ZIP or verification report. Native packaging and owner desktop checks remain pending.
+
 - [x] #274 native macOS arm64 and x86_64 builds verified the vendored static libusb archive, deployment targets and system-only dynamic dependencies with the USB and audio approvals closed. [Build-only verification](https://github.com/guirossibrum/VariaxWorkbench/actions/runs/45767046149).
 
 - [x] #281 offline design checkpoint identifies which approved Variax and PODxt Live captures can populate an offline cache and specifies validation, publication, and fake-transport acceptance for implementation. No cache or device behavior changed. [Design and Lane 3 handoff](first-connection-cache.md).
