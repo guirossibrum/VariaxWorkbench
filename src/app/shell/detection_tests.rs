@@ -688,33 +688,163 @@ fn pod_notices_trigger_identity_and_duplicates_do_not_recheck() {
     assert_eq!(source.0.borrow().completed.len(), 5);
 }
 
+fn unverified_guitar(revision: &[u8; 4]) -> SimulatedGuitar {
+    let mut reply = variax_workbench::identity_stage::guitar_reply();
+    reply[12..16].copy_from_slice(revision);
+    let identity = line6_devices::identity::Identity::parse(&reply).unwrap();
+    SimulatedGuitar::Unverified(
+        variax_workbench::identity_stage::UnverifiedGuitarReply::from_identity(&identity).unwrap(),
+    )
+}
+
 #[test]
-fn unverified_guitar_firmware_warns_on_the_pod_without_admitting_a_guitar_tab() {
+fn unverified_guitar_firmware_warns_on_the_pod_and_opens_an_offline_guitar_tab() {
     let (ctx, mut app, source) = fixture();
     source.usb(true, false);
     tick(&ctx, &mut app);
-    let attachment = entries(&app)[0].2.device.key.attachment.clone();
-    let mut reply = variax_workbench::identity_stage::guitar_reply();
-    reply[12..16].copy_from_slice(b"0311");
-    let identity = line6_devices::identity::Identity::parse(&reply).unwrap();
-    source.finish(
-        attachment.clone(),
-        SimulatedGuitar::Unverified(FirmwareNotice::variax(&identity).unwrap()),
+    assert_eq!(
+        entries(&app).len(),
+        1,
+        "presence alone must not open a guitar tab"
     );
+    let attachment = entries(&app)[0].2.device.key.attachment.clone();
+    source.finish(attachment.clone(), unverified_guitar(b"0311"));
     tick(&ctx, &mut app);
-    assert_eq!(entries(&app).len(), 1);
-    let warning = entries(&app)[0].2.device.guitar_warning.unwrap().message();
-    assert!(warning.contains("3.11") && warning.contains("3.10"));
-    assert!(!warning.to_ascii_lowercase().contains("update"));
+    let connected = entries(&app);
+    assert_eq!(connected.len(), 2);
+    let guitar = connected[1].1;
+    let offline = connected[1].2;
+    let warning = offline.guitar_firmware_notice().unwrap();
+    let text = warning.message();
+    assert!(text.contains("3.11") && text.contains("3.10"));
+    assert!(!text.to_ascii_lowercase().contains("update"));
+    assert_eq!(connected[0].2.device.guitar_warning, Some(warning));
+    assert!(connected[0].2.guitar_firmware_notice().is_none());
+    assert!(offline.verified_attachment().is_none());
+    assert!(offline.guitar_refresh_attachment().is_none());
+    assert!(app.verified_backup_guitar().is_none());
     assert!(app.backup_firmware_blocked(BackupChoice::Variax));
     assert!(!app.backup_firmware_blocked(BackupChoice::Podxt));
-    assert!(has_label(&frame(&ctx, &mut app, vec![]).shapes, &warning));
+    assert!(
+        app.tabs.entries[app.tabs.index(guitar).unwrap()]
+            .title()
+            .ends_with("offline only")
+    );
+    assert!(has_label(&frame(&ctx, &mut app, vec![]).shapes, &text));
+
+    let input = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/editor-preset.vwm");
+    let folder = tempfile::tempdir().unwrap();
+    let output = folder.path().join("edited.vwm");
+    app.dialogs = Box::new(FakeDialogs {
+        save: [Some(output.clone())].into(),
+        ..Default::default()
+    });
+    app.with_tab(guitar, |entry, services| {
+        let editor = entry.editor.as_mut() as &mut dyn std::any::Any;
+        let editor = editor.downcast_mut::<VariaxEditor>().unwrap();
+        editor.load(&input);
+        editor.change(|preset| preset.rename("Offline edit"));
+        assert!(editor.dirty());
+        editor.save_copy(&ctx, services);
+    });
+    app.poll_picker(&ctx);
+    assert_eq!(
+        EditorDocument::open(&output).unwrap().preset().name(),
+        "Offline edit"
+    );
+    app.variax_mut()
+        .change(|preset| preset.rename("Unsaved edit"));
+    assert!(app.variax().dirty());
+    assert_eq!(source.0.borrow().completed.len(), 1);
 
     source.notice(&attachment, SimulatedNotice::Connected);
     source.guitar(attachment);
     tick(&ctx, &mut app);
-    assert_eq!(entries(&app).len(), 2);
-    assert!(entries(&app)[0].2.device.guitar_warning.is_none());
+    let rechecked = entries(&app);
+    assert_eq!(rechecked.len(), 2);
+    assert!(rechecked[0].2.device.guitar_warning.is_none());
+    assert_eq!(rechecked[1].1, guitar);
+    assert!(rechecked[1].2.guitar_firmware_notice().is_none());
+    assert_eq!(rechecked[1].2.verified_attachment(), Some(("8-2.1", 10)));
+    assert!(app.variax().dirty());
+    assert_eq!(source.0.borrow().completed.len(), 2);
+}
+
+#[test]
+fn only_the_attachment_that_reported_unverified_firmware_has_the_notice() {
+    let (ctx, mut app, source) = fixture();
+    source.usb_paths(&["8-2.1", "8-2.2"], false);
+    tick(&ctx, &mut app);
+    let detection = app.detection.as_ref().unwrap();
+    let first = detection.attachment_key("8-2.1");
+    let second = detection.attachment_key("8-2.2");
+    source.finish(first, unverified_guitar(b"0309"));
+    source.guitar(second);
+    tick(&ctx, &mut app);
+    tick(&ctx, &mut app);
+    assert_eq!(source.0.borrow().completed.len(), 2);
+    let connected = entries(&app);
+    let (_, unverified_tab, unverified) = connected
+        .iter()
+        .find(|(family, _, device)| {
+            *family == "variax" && device.device.key.attachment.path == "8-2.1"
+        })
+        .unwrap();
+    assert!(unverified.guitar_firmware_notice().is_some());
+    assert!(unverified.verified_attachment().is_none());
+    let unverified_tab = *unverified_tab;
+    let (_, verified_tab, verified) = connected
+        .iter()
+        .find(|(family, _, device)| {
+            *family == "variax" && device.device.key.attachment.path == "8-2.2"
+        })
+        .unwrap();
+    assert!(verified.guitar_firmware_notice().is_none());
+    assert_eq!(verified.verified_attachment(), Some(("8-2.2", 10)));
+    let verified_tab = *verified_tab;
+
+    source.usb_paths(&["8-2.2"], false);
+    tick(&ctx, &mut app);
+    let offline = app.tabs.entries[app.tabs.index(unverified_tab).unwrap()]
+        .device
+        .as_ref()
+        .unwrap();
+    assert_eq!(offline.connection, Connection::Disconnected);
+    assert!(offline.guitar_firmware_notice().is_none());
+    assert!(offline.verified_attachment().is_none());
+    let still_verified = app.tabs.entries[app.tabs.index(verified_tab).unwrap()]
+        .device
+        .as_ref()
+        .unwrap();
+    assert_eq!(still_verified.verified_attachment(), Some(("8-2.2", 10)));
+
+    source.usb_paths(&["8-2.1", "8-2.2"], false);
+    tick(&ctx, &mut app);
+    let replacement = app.detection.as_ref().unwrap().attachment_key("8-2.1");
+    source.guitar(replacement);
+    tick(&ctx, &mut app);
+    let reattached = app.tabs.entries[app.tabs.index(unverified_tab).unwrap()]
+        .device
+        .as_ref()
+        .unwrap();
+    assert!(reattached.guitar_firmware_notice().is_none());
+    assert_eq!(reattached.verified_attachment(), Some(("8-2.1", 10)));
+}
+
+#[test]
+fn a_pod_reply_on_the_guitar_link_cannot_open_an_offline_guitar_tab() {
+    let (ctx, mut app, source) = fixture();
+    source.usb(true, false);
+    tick(&ctx, &mut app);
+    let attachment = entries(&app)[0].2.device.key.attachment.clone();
+    let reply = variax_workbench::identity_stage::bridge_reply();
+    let identity = line6_devices::identity::Identity::parse(&reply).unwrap();
+    let assessment =
+        variax_workbench::identity_stage::UnverifiedGuitarReply::from_identity(&identity).unwrap();
+    source.finish(attachment, SimulatedGuitar::Unverified(assessment));
+    tick(&ctx, &mut app);
+    assert_eq!(entries(&app).len(), 1);
+    assert!(entries(&app)[0].2.device.guitar_warning.is_some());
 }
 
 #[test]

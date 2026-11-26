@@ -57,6 +57,7 @@ pub(super) enum DeviceSupport {
     UsbOnly,
     Verified(&'static str),
     Refreshing(&'static str),
+    UnverifiedGuitarFirmware(FirmwareNotice),
     FileEditingOnly,
 }
 
@@ -118,12 +119,18 @@ struct Attachment {
     bridge: Option<Bridge>,
 }
 
+#[derive(Clone, Copy)]
+enum GuitarIdentity {
+    Verified(&'static str),
+    Unverified(FirmwareNotice),
+}
+
 struct Bridge {
     queued: Option<JobKind>,
     running: Option<JobKind>,
     waiting_for_other_process: bool,
     pod: Option<&'static str>,
-    guitar: Option<(u64, &'static str)>,
+    guitar: Option<(u64, GuitarIdentity)>,
     last_guitar: Option<&'static str>,
     status: String,
     firmware_warning: Option<FirmwareNotice>,
@@ -181,6 +188,7 @@ impl Bridge {
                 self.waiting_for_other_process = false;
                 self.pod = None;
                 self.pod_warning = Some(notice);
+                self.firmware_warning = None;
                 self.status = "identity check unavailable on this connection".into();
                 self.guitar = None;
             }
@@ -198,36 +206,49 @@ impl Bridge {
                 self.driver_unbound = matches!(guitar, Guitar::DriverUnbound(_));
                 match guitar {
                     Guitar::Verified(firmware) => {
-                        let key = self.guitar.map_or_else(
-                            || {
-                                *generation += 1;
-                                *generation
-                            },
-                            |(key, _)| key,
-                        );
-                        self.guitar = Some((key, firmware));
+                        self.remember_guitar(GuitarIdentity::Verified(firmware), generation);
                         self.last_guitar = Some(firmware);
                         self.status = format!("Variax 600 {firmware}");
+                    }
+                    Guitar::Unverified(reply) => {
+                        if reply.is_variax {
+                            self.remember_guitar(
+                                GuitarIdentity::Unverified(reply.notice),
+                                generation,
+                            );
+                        } else {
+                            self.guitar = None;
+                        }
+                        self.firmware_warning = Some(reply.notice);
+                        self.status = "identity unverified".into();
                     }
                     other => {
                         self.guitar = None;
                         self.status = match other {
                             Guitar::Silent => "no guitar answered".into(),
-                            Guitar::Unverified(notice) => {
-                                self.firmware_warning = Some(notice);
-                                "identity unverified".into()
-                            }
                             Guitar::Unavailable(reason) | Guitar::DriverUnbound(reason) => reason,
                             Guitar::CleanupFailed => {
                                 self.suspended = true;
                                 "USB cleanup failed. Guitar identity is suspended until USB reconnects.".into()
                             }
-                            Guitar::Verified(_) => unreachable!(),
+                            Guitar::Verified(_) | Guitar::Unverified(_) => unreachable!(),
                         };
                     }
                 }
             }
         }
+    }
+
+    fn remember_guitar(&mut self, identity: GuitarIdentity, generation: &mut u64) {
+        // A new assessment of the same attachment updates its existing tab.
+        let linked = self.guitar.map_or_else(
+            || {
+                *generation += 1;
+                *generation
+            },
+            |(linked, _)| linked,
+        );
+        self.guitar = Some((linked, identity));
     }
 
     fn observe_notice(&mut self, notice: Notice) {
@@ -251,7 +272,7 @@ impl Bridge {
         };
         let mut label = format!("Guitar: {status}");
         if let Some(firmware) = self.last_guitar
-            && (self.pending() || self.guitar.is_none())
+            && (self.pending() || !matches!(self.guitar, Some((_, GuitarIdentity::Verified(_)))))
         {
             label.push_str(&format!(" · last verified Variax 600 {firmware}"));
         }
@@ -432,7 +453,8 @@ impl DetectionService {
         }
         let generation = key.linked_generation?;
         let bridge = self.bridge_mut(&key.attachment)?;
-        if bridge.guitar?.0 != generation {
+        if !matches!(bridge.guitar, Some((linked, GuitarIdentity::Verified(_))) if linked == generation)
+        {
             return None;
         }
         bridge.guitar = None;
@@ -601,22 +623,22 @@ impl DetectionService {
                     }
                     DeviceDiscovery::ViaBridge(id) if id == attached_id => {
                         let Some(bridge) = bridge else { continue };
-                        let Some((generation, firmware)) = bridge.guitar else {
+                        let Some((generation, identity)) = bridge.guitar else {
                             continue;
                         };
                         key.linked_generation = Some(generation);
-                        let support = if bridge.pending() {
-                            DeviceSupport::Refreshing(firmware)
-                        } else {
-                            DeviceSupport::Verified(firmware)
+                        let (support, refresh) = match identity {
+                            GuitarIdentity::Verified(firmware) if bridge.pending() => {
+                                (DeviceSupport::Refreshing(firmware), false)
+                            }
+                            GuitarIdentity::Verified(firmware) => {
+                                (DeviceSupport::Verified(firmware), bridge.can_refresh())
+                            }
+                            GuitarIdentity::Unverified(notice) => {
+                                (DeviceSupport::UnverifiedGuitarFirmware(notice), false)
+                            }
                         };
-                        (
-                            support,
-                            Some(bridge.label()),
-                            None,
-                            None,
-                            bridge.can_refresh(),
-                        )
+                        (support, Some(bridge.label()), None, None, refresh)
                     }
                     _ => continue,
                 };
