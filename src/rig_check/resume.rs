@@ -128,19 +128,50 @@ impl SavedStep {
 
 /// The most recently saved local report with its original companion filename.
 pub fn last_report(dir: &Path) -> Option<PathBuf> {
+    report_candidates(dir, false).max().map(|(_, path)| path)
+}
+
+fn report_candidates(
+    dir: &Path,
+    allow_collected: bool,
+) -> impl Iterator<Item = (Option<std::time::SystemTime>, PathBuf)> {
     std::fs::read_dir(dir)
-        .ok()?
+        .into_iter()
+        .flatten()
         .filter_map(Result::ok)
-        .filter_map(|entry| {
+        .filter_map(move |entry| {
             let path = entry.path();
             let name = path.file_name()?.to_str()?;
-            (name.starts_with("rig-check-")
+            ((name.starts_with("rig-check-") || (allow_collected && name == "latest.txt"))
                 && path.extension().is_some_and(|ext| ext == "txt")
+                && path.is_file()
                 && path.with_extension("state").is_file())
             .then(|| (entry.metadata().ok().and_then(|m| m.modified().ok()), path))
         })
-        .max()
-        .map(|(_, path)| path)
+}
+
+/// Find the newest compatible run across both Mac locations. Keep the newest
+/// candidate available for its preview diagnostic if none can be continued.
+pub fn last_mac_report(dir: &Path, legacy: &Path, mode: Option<Mode>) -> Option<PathBuf> {
+    let mut candidates: Vec<_> = mac_report_candidates(dir, legacy).collect();
+    candidates.sort_unstable_by(|a, b| b.cmp(a));
+    candidates
+        .iter()
+        .find(|(_, path)| open(path).is_ok_and(|plan| mode.is_none_or(|mode| mode == plan.mode)))
+        .or_else(|| candidates.first())
+        .map(|(_, path)| path.clone())
+}
+
+#[cfg(feature = "gui")]
+pub(super) fn has_mac_reports(dir: &Path, legacy: &Path) -> bool {
+    mac_report_candidates(dir, legacy).next().is_some()
+}
+
+fn mac_report_candidates(
+    dir: &Path,
+    legacy: &Path,
+) -> impl Iterator<Item = (Option<std::time::SystemTime>, PathBuf)> {
+    report_candidates(dir, true).chain(report_candidates(legacy, true))
 }
 
 pub struct Plan {

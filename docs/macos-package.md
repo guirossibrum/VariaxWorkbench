@@ -39,8 +39,12 @@ Rig Check still offers **Practice**. Choose **This Mac** for steps 0.1
 `system_profiler`, `kextstat` and `systemextensionsctl`), 0.3 (offline engine
 comparison, with the built byte hashes and any differences in the report)
 and 8.1 (Core Audio device listing from `system_profiler`). It sends no device
-commands and starts no audio stream. Reports default to
-`~/Library/Application Support/Rig Check/reports`.
+commands and starts no audio stream. New reports, companion checkpoints and
+evidence default to `~/Documents/Rig Check`. At launch, **Choose report…**
+starts in the output folder. **Browse Application Support…** opens
+`~/Library/Application Support/Rig Check/reports` when the earlier folder
+exists. Compatible earlier reports can be resumed in place, with the
+continuation saved to the current output folder.
 
 ## Build on a Mac
 

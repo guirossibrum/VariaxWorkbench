@@ -570,15 +570,25 @@ fn technical_details_are_hidden_until_opened() {
 #[test]
 fn startup_opens_saved_reports_without_starting_a_run() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("rig-check-invalid.txt");
+    let legacy = dir.path().join("Application Support");
+    std::fs::create_dir(&legacy).unwrap();
+    let path = legacy.join("rig-check-invalid.txt");
     std::fs::write(&path, "Incomplete report").unwrap();
     std::fs::write(path.with_extension("state"), "Incomplete checkpoint").unwrap();
-    let mut app = App::new(dir.path().to_owned(), Some(Mode::Real), |_, _, _| {
-        panic!("preview must not start the runner");
-    });
+    let mut app = App::new(
+        dir.path().join("Documents/Rig Check"),
+        Some(legacy),
+        Some(Mode::Real),
+        |_, _, _| panic!("preview must not start the runner"),
+    );
     let ctx = egui::Context::default();
     let text = frame(&ctx, &mut app.wizard, Vec::new());
-    for label in ["Start new", "Open last report", "Choose report…"] {
+    for label in [
+        "Start new",
+        "Open last report",
+        "Choose report…",
+        "Browse Application Support…",
+    ] {
         assert!(text.iter().any(|line| line == label), "{text:?}");
     }
     app.wizard.launch.as_mut().unwrap().open(path);
