@@ -59,6 +59,10 @@ impl EditSession for FakeEdit {
     }
     fn request_store(&mut self) -> Result<StoreRequestSent, String> {
         let ram_before_request = self.link.read_ram();
+        assert_eq!(
+            std::fs::read(store_evidence_path(&self.backup)).unwrap(),
+            ram_before_request.backup_bytes(),
+        );
         self.link.trace.send(Traffic::Store).unwrap();
         Ok(StoreRequestSent { ram_before_request })
     }
@@ -173,7 +177,7 @@ fn backup_precedes_sliders_and_cancel_restores_exact_ram_through_the_fake_link()
 }
 
 #[test]
-fn confirmed_ok_sends_one_request_and_saves_only_ram_evidence() {
+fn confirmed_ok_publishes_ram_evidence_before_sending_one_request() {
     let root = tempfile::tempdir().unwrap();
     let (mut worker, traffic) = fake_worker(root.path(), true);
     until(&mut worker, |worker| worker.draft.is_some());
@@ -185,7 +189,7 @@ fn confirmed_ok_sends_one_request_and_saves_only_ram_evidence() {
     worker.store();
     worker.cancel();
     finish(&mut worker).unwrap();
-    assert_eq!(worker.store_sent, Some(edited));
+    assert!(matches!(worker.store, StoreProgress::Sent(levels) if levels == edited));
     let draft = worker.draft.as_ref().unwrap();
     assert_eq!(
         std::fs::read(store_evidence_path(&draft.backup)).unwrap(),
@@ -203,6 +207,37 @@ fn confirmed_ok_sends_one_request_and_saves_only_ram_evidence() {
             Traffic::ReadRam(edited),
             Traffic::ReadRam(edited),
             Traffic::Store,
+        ],
+    );
+}
+
+#[test]
+fn failed_store_evidence_publication_refuses_the_request() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut worker, traffic) = fake_worker(root.path(), true);
+    until(&mut worker, |worker| worker.draft.is_some());
+    let edited = preview(&mut worker, 0.579);
+    let backup = worker.draft.as_ref().unwrap().backup.clone();
+    let evidence = store_evidence_path(&backup);
+    std::fs::write(&evidence, b"existing evidence").unwrap();
+
+    worker.confirm_store = true;
+    worker.store();
+    let error = finish(&mut worker).unwrap_err();
+    assert!(error.contains("Store request not sent"));
+    assert!(error.contains("Could not save pre-store RAM evidence"));
+    assert!(matches!(worker.store, StoreProgress::None));
+    assert_eq!(std::fs::read(evidence).unwrap(), b"existing evidence");
+    assert_eq!(
+        std::fs::read(backup.join(string_levels::BACKUP_FILE)).unwrap(),
+        original().backup_bytes()
+    );
+    assert_eq!(
+        traffic.try_iter().collect::<Vec<_>>(),
+        [
+            Traffic::ReadRam(original()),
+            Traffic::SetRam(edited),
+            Traffic::ReadRam(edited)
         ],
     );
 }

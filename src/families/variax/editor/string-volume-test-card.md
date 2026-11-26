@@ -33,14 +33,17 @@ model. A preset-library backup does not contain this calibration-like data.
 1. Start a fresh setup, preserve its initial RAM backup, change one
    level, and let the preview verify. **OK** opens a second confirmation.
    **Send store request** requires the store approval and G7.
-2. The shared API reads `0x57` just before the store and compares all six
-   verified RAM words. It sends one `0x56` request. Keep the original
-   backup and its sibling `*.before-store-ram.bin`, which records the
-   exact six words observed before the request. The editor reports
-   **Store request sent** after transport delivery. A failed or uncertain
-   send ends the session without an automatic resend or RAM restore after
-   the attempted store. Preserve any evidence and stop.
-3. Verify persistence only under a separately reviewed owner procedure
+2. The editor first saves the exact six verified RAM words to the backup's
+   sibling `*.before-store-ram.bin`. If saving the evidence fails, the
+   editor refuses to send a store request. Keep both the original backup
+   and the evidence file when it exists.
+3. The shared API reads `0x57` again and only sends one `0x56` if all six
+   words match the saved comparator. **Store request sent** means transport
+   delivery. The presence of an evidence file alone cannot establish
+   delivery. If delivery is uncertain, preserve the evidence and stop.
+   After attempting a store, the editor sends no automatic retry or RAM
+   restore in that session.
+4. Verify persistence only under a separately reviewed owner procedure
    that reloads the six words from flash and compares them with the
    pre-store file. The editor's `0x57` read-back is RAM evidence.
    The persistence and recovery procedure must be agreed before the

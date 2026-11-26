@@ -41,7 +41,13 @@ enum Command {
 enum Update {
     Ready(Levels, PathBuf),
     Verified,
-    StoreSent(Levels),
+    Store(StoreProgress),
+}
+
+enum StoreProgress {
+    None,
+    EvidenceSaved,
+    Sent(Levels),
 }
 
 struct WorkerIo {
@@ -117,14 +123,24 @@ fn run_dialog(edit: &mut impl EditSession, io: &WorkerIo, can_store: bool) -> Re
                 let _ = io.updates.send(Update::Verified);
             }
             Command::Store if can_store => {
+                // This is the same verified value the device API will compare
+                // against a fresh 0x57 read before sending the store request.
+                let evidence = store_evidence_path(&backup);
+                variax_workbench::document::save_new(&evidence, &verified.backup_bytes())
+                    .map_err(|error| {
+                        format!(
+                            "Store request not sent. Could not save pre-store RAM evidence at {}: {error}",
+                            evidence.display()
+                        )
+                    })?;
+                let _ = io.updates.send(Update::Store(StoreProgress::EvidenceSaved));
+                if io.cancelled() {
+                    break;
+                }
                 let StoreRequestSent { ram_before_request } = edit.request_store()?;
-                let _ = io.updates.send(Update::StoreSent(ram_before_request));
-                // Store evidence is separate from the sealed starting backup.
-                variax_workbench::document::save_new(
-                    &store_evidence_path(&backup),
-                    &ram_before_request.backup_bytes(),
-                )
-                .map_err(|error| format!("Could not write pre-store RAM evidence: {error}"))?;
+                let _ = io
+                    .updates
+                    .send(Update::Store(StoreProgress::Sent(ram_before_request)));
                 return Ok(());
             }
             Command::Store => return Err("String-level storage awaits separate approval.".into()),
@@ -154,7 +170,7 @@ struct Worker {
     can_store: bool,
     confirm_store: bool,
     finishing: bool,
-    store_sent: Option<Levels>,
+    store: StoreProgress,
 }
 
 impl Worker {
@@ -183,7 +199,7 @@ impl Worker {
             can_store,
             confirm_store: false,
             finishing: false,
-            store_sent: None,
+            store: StoreProgress::None,
         })
     }
 
@@ -251,7 +267,7 @@ impl Worker {
                         draft.awaiting_ram = false;
                     }
                 }
-                Update::StoreSent(levels) => self.store_sent = Some(levels),
+                Update::Store(progress) => self.store = progress,
             }
         }
         if finished {
@@ -354,10 +370,21 @@ impl VariaxEditor {
         if let Some(worker) = &mut self.string_volume.worker
             && let Some(result) = worker.poll()
         {
-            self.status = match (worker.store_sent, &worker.draft) {
-                (Some(levels), Some(draft)) => format!(
-                    "Store request sent. Flash persistence is unverified. RAM before request: {:06X?}. Starting backup: {}",
+            self.status = match (&worker.store, &worker.draft) {
+                (StoreProgress::Sent(levels), Some(draft)) => format!(
+                    "Store request sent. Flash persistence is unverified. RAM before request: {:06X?}. Evidence: {}. Starting backup: {}",
                     levels.wire_words(),
+                    store_evidence_path(&draft.backup).display(),
+                    draft.backup.display()
+                ),
+                (StoreProgress::EvidenceSaved, Some(draft)) => format!(
+                    "{}Pre-store RAM evidence: {}. Starting backup: {}",
+                    if result.is_ok() {
+                        "Store request not sent. "
+                    } else {
+                        ""
+                    },
+                    store_evidence_path(&draft.backup).display(),
                     draft.backup.display()
                 ),
                 (_, Some(draft)) if result.is_ok() => format!(
@@ -398,7 +425,7 @@ impl VariaxEditor {
                 return ui.button("Cancel").clicked();
             };
             if worker.confirm_store {
-                ui.label("Send one request to store these global levels? Flash persistence is checked separately.");
+                ui.label("Save the verified RAM evidence and send one request to store these global levels? Flash persistence is checked separately.");
                 if ui.button("Send store request").clicked() {
                     worker.store();
                 }
