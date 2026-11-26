@@ -470,9 +470,19 @@ impl PresetFile {
         Ok(())
     }
 
+    /// A negative capacitance freezes the calculated electric tone response.
+    pub fn has_tone_bypass_marker(&self) -> bool {
+        self.parameter(crate::edit::WIRING, 0x200003)
+            .is_some_and(|parameter| {
+                let value = f32::from_bits(parameter.bits);
+                parameter.value_type == 1 && value.is_finite() && value < 0.0
+            })
+    }
+
     /// Original `L6VariaxEditor.UpdateControlValuesFromPickupModels`.
     /// Either humbucker pickup selects 500 kΩ, 500 kΩ and 0.047 µF.
     /// Otherwise the values are 250 kΩ, 250 kΩ and 0.022 µF.
+    /// Retains the exact capacitance bits when the tone bypass is stored.
     /// Volume taper and the saved tone-knob position stay as they are.
     pub fn apply_pickup_control_values(&mut self) -> Result<(), String> {
         let humbucker = [crate::edit::PICKUP1, crate::edit::PICKUP2]
@@ -488,7 +498,9 @@ impl PresetFile {
         };
         self.set_parameter(crate::edit::WIRING, 0x200000, 1, volume.to_bits())?;
         self.set_parameter(crate::edit::WIRING, 0x200002, 1, tone.to_bits())?;
-        self.set_parameter(crate::edit::WIRING, 0x200003, 1, capacitance.to_bits())?;
+        if !self.has_tone_bypass_marker() {
+            self.set_parameter(crate::edit::WIRING, 0x200003, 1, capacitance.to_bits())?;
+        }
         Ok(())
     }
 
@@ -1036,6 +1048,35 @@ mod tests {
         forced.set_enabled(PICKUP2, false).unwrap();
         assert!(forced.model(PICKUP1).unwrap().enabled);
         assert!(!forced.model(PICKUP2).unwrap().enabled);
+    }
+
+    #[test]
+    fn unrelated_edits_and_pickup_defaults_keep_the_exact_stored_tone_bypass() {
+        use crate::edit::{BODY, PICKUP1, WIRING};
+
+        let preset = host_preset();
+        let offset = preset.parameter(WIRING, 0x200003).unwrap().value_offset;
+        let mut bytes = preset.as_bytes().to_vec();
+        // Device metadata holds just the high 24 bits of the stored float.
+        let marker = (-0.047_f32).to_bits() & 0xffff_ff00;
+        bytes[offset..offset + 4].copy_from_slice(&marker.to_be_bytes());
+        let mut preset = PresetFile::parse(bytes).unwrap();
+        assert!(preset.has_tone_bypass_marker());
+
+        preset.rename("Edited model").unwrap();
+        preset.select_model(BODY, 0x0310_0003).unwrap();
+        preset.select_model(PICKUP1, 0x0311_8000).unwrap();
+        preset.apply_pickup_control_values().unwrap();
+
+        let reopened = PresetFile::parse(preset.as_bytes().to_vec()).unwrap();
+        assert_eq!(reopened.parameter(WIRING, 0x200003).unwrap().bits, marker);
+        assert!(reopened.has_tone_bypass_marker());
+        for resistance in [0x200000, 0x200002] {
+            assert_eq!(
+                reopened.parameter(WIRING, resistance).unwrap().bits,
+                500.0_f32.to_bits()
+            );
+        }
     }
 
     #[test]

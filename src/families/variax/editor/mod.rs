@@ -9,6 +9,7 @@ mod device_sync;
 mod follow;
 mod guitar;
 mod html_export;
+mod knobs;
 #[cfg(feature = "usb")]
 mod live_attachment;
 #[cfg(feature = "usb")]
@@ -983,6 +984,11 @@ impl VariaxEditor {
     }
 
     fn tab_controls(&mut self, ui: &mut egui::Ui, services: &mut EditorServices<'_>) {
+        #[cfg(test)]
+        {
+            self.pickup_controls.clear();
+            self.auto_select_checkbox = None;
+        }
         let slot = match self.tab {
             Tab::Body => BODY,
             Tab::Pickups => PICKUP1,
@@ -997,15 +1003,15 @@ impl VariaxEditor {
             ui.strong("No pickups available");
             ui.label("Pickup models are not available when using an acoustic body model.");
         } else if acoustic && self.tab == Tab::Controls {
-            ui.strong("Param not available");
+            ui.strong("Volume knob");
+            ui.label("Controls output level.");
+            ui.strong("Tone knob");
+            ui.label("Changes the modeled microphone position.");
+            ui.label("Electrical controls are unavailable for this body.");
+            return;
         } else if let Some(Err(reason)) = &availability {
             ui.label("These controls are unavailable for this model.")
                 .on_hover_text(reason);
-        }
-        #[cfg(test)]
-        {
-            self.pickup_controls.clear();
-            self.auto_select_checkbox = None;
         }
         ui.add_enabled_ui(availability.is_some_and(|a| a.is_ok()), |ui| {
             match self.tab {
@@ -1056,67 +1062,6 @@ impl VariaxEditor {
         ] {
             ui.label(label);
             self.float_control(ui, slot, parameter, "", format);
-        }
-    }
-
-    fn electrical_controls(&mut self, ui: &mut egui::Ui) {
-        let resistances = [
-            (25.0, "25k Ω"),
-            (50.0, "50k Ω"),
-            (100.0, "100k Ω"),
-            (250.0, "250k Ω"),
-            (470.0, "470k Ω"),
-            (500.0, "500k Ω"),
-            (1000.0, "1M Ω"),
-        ];
-        ui.strong("Volume knob");
-        ui.columns(2, |columns| {
-            self.float_choices(&mut columns[0], 0x200000, "Resistance", &resistances);
-            self.taper_control(&mut columns[1]);
-        });
-        ui.separator();
-        ui.strong("Tone knob");
-        ui.columns(2, |columns| {
-            self.float_choices(&mut columns[0], 0x200002, "Resistance", &resistances);
-            self.float_choices(
-                &mut columns[1],
-                0x200003,
-                "Capacitance",
-                &[
-                    (0.0011, "1.1 nF"),
-                    (0.0022, "2.2 nF"),
-                    (0.0047, "4.7 nF"),
-                    (0.011, "11 nF"),
-                    (0.022, "22 nF"),
-                    (0.047, "47 nF"),
-                    (0.1, "0.1 µF"),
-                    (-0.047, "Filter"),
-                ],
-            );
-        });
-        self.float_control(
-            ui,
-            WIRING,
-            0x200004,
-            "Tone position",
-            ValueFormat::Percent(1.0),
-        );
-        self.boolean_control(ui, WIRING, 0x200005, "Save tone-knob position");
-        let mut auto = self.auto_select_controls;
-        let response = ui
-            .checkbox(
-                &mut auto,
-                "Auto-select Tone/Volume defaults when selecting pickup types",
-            )
-            .on_hover_text(
-                "If this is checked, the control component values will be selected based on the pickup types.",
-            );
-        #[cfg(test)]
-        {
-            self.auto_select_checkbox = Some(response.rect);
-        }
-        if response.changed() {
-            self.set_auto_select_controls(auto);
         }
     }
 
