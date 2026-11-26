@@ -14,6 +14,11 @@ use crate::{
 };
 use std::time::Duration;
 
+mod save_identity;
+pub use save_identity::{
+    SaveIdentity, identify_after_save_preflight_reopen, identify_for_save_preflight,
+};
+
 const IDENTITY_RETRY_DELAY: Duration = Duration::from_secs(2);
 pub const SILENT_STORE_WAIT: Duration = Duration::from_secs(120);
 const CHUNK_WORDS: u16 = 32;

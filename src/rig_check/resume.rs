@@ -3,10 +3,11 @@
 
 use super::catalogue::{self, CATALOGUE_VERSION, RIG_GUARD, RUN_ORDER, Risk, StepId};
 use super::procedures::{self, with_podxt, with_variax_progress};
-use super::record::{Mode, Outcome, RunRecord, StepRecord, sha256_hex, utc_now};
+use super::record::{Mode, Outcome, RunRecord, SavePhase, StepRecord, sha256_hex, utc_now};
 use super::recover::{self, RigState};
 use super::runner::{Ctx, Operator, Progress};
 use super::steps::RunData;
+use super::variax_save::OWN_BYTES_STEP;
 use line6_devices::family::podxt::{self, EditBuffer};
 use line6_devices::family::variax::procedures as variax;
 use line6_devices::identity::Identity;
@@ -61,11 +62,14 @@ struct SavedReport {
 struct SavedStep {
     id: String,
     title: String,
+    #[serde(default)]
+    reused: bool,
     outcome: String,
     reason: Option<String>,
     started: Option<String>,
     attempt: Option<usize>,
     duration_ms: Option<u128>,
+    save_phase: Option<SavePhase>,
     retries: u32,
     messages: usize,
     answers: Vec<(String, String)>,
@@ -110,10 +114,13 @@ impl SavedStep {
         Ok(StepRecord {
             id,
             title: self.title,
+            reused: self.reused,
             outcome,
             started: self.started,
             attempt: self.attempt,
             duration_ms: self.duration_ms,
+            save_phase: self.save_phase,
+            imported_message_count: Some(self.messages),
             retries: self.retries,
             answers: self.answers,
             checksums: self.checksums,
@@ -359,6 +366,7 @@ impl Plan {
                 op,
                 data: &mut self.restored,
                 rec: &mut record,
+                save_checkpoint: None,
             };
             let result = if ctx.stopping() {
                 Err("Continuation stopped before revalidation.".into())
@@ -415,6 +423,7 @@ impl Plan {
                 op,
                 data,
                 rec: &mut rec,
+                save_checkpoint: None,
             };
             super::steps::execute(&mut ctx)?;
         }
@@ -603,10 +612,34 @@ fn stopped_before_legacy_guard(saved: &SavedReport) -> bool {
             })
 }
 
+fn proven_pre_send(step: &StepRecord, current: Option<StepId>, legacy: bool) -> bool {
+    !legacy
+        && step.id == OWN_BYTES_STEP
+        && step.save_phase == Some(SavePhase::PreSend)
+        && step.started.is_some()
+        && step.attempt.is_some_and(|attempt| attempt > 0)
+        && if current == Some(step.id) {
+            !step.reused && step.outcome == Outcome::NotReached && step.duration_ms.is_none()
+        } else {
+            // An interrupted preflight can be retained as a stopped result in
+            // a successor, without inventing a duration for it.
+            (step.reused && matches!(step.outcome, Outcome::Stopped(_)))
+                || (step.duration_ms.is_some()
+                    && matches!(
+                        step.outcome,
+                        Outcome::Failed(_)
+                            | Outcome::Stopped(_)
+                            | Outcome::SkippedByPerson
+                            | Outcome::SkippedNotApplicable(_)
+                    ))
+        }
+}
+
 fn check_prior_actions(
     run: &RunRecord,
     current: Option<StepId>,
     stopped_before_guard: bool,
+    legacy: bool,
 ) -> Result<(), String> {
     if run.rig_state.contains("USB cleanup failed")
         || run.rig_state.contains("Driver not returned")
@@ -615,13 +648,28 @@ fn check_prior_actions(
         return Err("The earlier run could not release the rig. Follow the original report's cleanup instructions and verify the rig before starting a new run.".into());
     }
     let risk = |id| catalogue::step(id).expect("saved step definition").risk;
-    if current.is_some_and(|id| matches!(risk(id), Risk::Live | Risk::Save)) {
+    if current.is_some_and(|id| {
+        matches!(risk(id), Risk::Live | Risk::Save)
+            && !proven_pre_send(run.step(id), current, legacy)
+    }) {
         return Err("The report was interrupted during a live edit or store. Verify the rig and any affected slots manually.".into());
     }
-    for step in run.steps.iter().chain(&run.prior_attempts) {
+    for (step, final_record) in run
+        .steps
+        .iter()
+        .map(|step| (step, true))
+        .chain(run.prior_attempts.iter().map(|step| (step, false)))
+    {
+        let attempted = step.started.is_some()
+            || step.attempt.is_some()
+            || step.duration_ms.is_some()
+            || step.message_count() != 0
+            || step.save_phase.is_some();
         if risk(step.id) == Risk::Save
-            && (step.started.is_some() || step.attempt.is_some())
-            && !step.outcome.passed()
+            && attempted
+            && ((!step.outcome.passed()
+                && !(final_record && proven_pre_send(step, current, legacy)))
+                || (step.outcome.passed() && step.save_phase == Some(SavePhase::PreSend)))
         {
             return Err(format!(
                 "Store {} has an unresolved outcome. Verify the saved slot manually. The store will not be retried.",
@@ -773,7 +821,11 @@ pub fn open(path: &Path) -> Result<Plan, String> {
         .into_iter()
         .map(SavedStep::record)
         .collect::<Result<_, _>>()?;
-    check_prior_actions(&run, current, stopped_before_guard)?;
+    if saved.finished && current.is_some() {
+        return Err("The finished report still records an active step.".into());
+    }
+    check_prior_actions(&run, current, stopped_before_guard, legacy)?;
+    let pre_send_5_1 = proven_pre_send(run.step(OWN_BYTES_STEP), current, legacy);
     if saved.pre_write_recovery && current == Some(StepId(7, 3)) {
         return Err("The continuation closed during the footswitch return. Verify the PODxt channel and working tone by hand before starting a new run.".into());
     }
@@ -783,14 +835,24 @@ pub fn open(path: &Path) -> Result<Plan, String> {
         .copied()
         .find(|&id| {
             id != RIG_GUARD
+                && !(pre_send_5_1
+                    && catalogue::step(id).is_some_and(|step| step.risk == Risk::Save))
                 && !(saved.pre_write_recovery
                     && catalogue::step(id)
                         .is_some_and(|step| matches!(step.risk, Risk::Live | Risk::Save)))
                 && (legacy && id == KNOBS
                     || applicable(run.step(id)) && !run.step(id).outcome.passed())
         })
-        .or_else(|| (run.step(RIG_GUARD).outcome != Outcome::Passed).then_some(RIG_GUARD))
-        .ok_or("Every applicable step in this run already passed.")?;
+        .or_else(|| {
+            (run.step(RIG_GUARD).outcome != Outcome::Passed
+                || (pre_send_5_1 && !run.step(OWN_BYTES_STEP).reused))
+                .then_some(RIG_GUARD)
+        })
+        .ok_or(if pre_send_5_1 {
+            "The final rig guard passed and no further checks are available for this continuation."
+        } else {
+            "Every applicable step in this run already passed."
+        })?;
     if stopped_before_guard && target != KNOBS {
         return Err("An earlier prerequisite did not pass before the final guard was stopped. Verify the starting rig manually, then choose Start new.".into());
     }
@@ -817,8 +879,16 @@ pub fn open(path: &Path) -> Result<Plan, String> {
     if legacy {
         plan.notes.push("Migrating catalogue 1.5 from f13eaf7. The old Drive result stays in Earlier Attempts. The six-knob sweep and footswitch return use the current procedure.".into());
     }
-    plan.notes
-        .push(format!("First failed or unfinished check: {target}."));
+    if target == RIG_GUARD && run.step(RIG_GUARD).outcome.passed() {
+        plan.notes
+            .push("Continuation target: a fresh 6.2 final rig guard.".into());
+    } else {
+        plan.notes
+            .push(format!("First failed or unfinished check: {target}."));
+    }
+    if pre_send_5_1 {
+        plan.notes.push("Step 5.1 ended before uploading a program. The earlier result is retained, and preset stores are unavailable for this continuation.".into());
+    }
     if plan.pre_write_recovery {
         plan.notes.push("The earlier final guard was stopped before it ran. Fresh read-only checks must confirm the starting state before the retry. This continuation runs a fresh guard and blocks live edit checks and all stores.".into());
     }
@@ -1005,6 +1075,11 @@ pub fn open(path: &Path) -> Result<Plan, String> {
             }
         }
         let id = step.id;
+        let no_send_save = pre_send_5_1 && id == OWN_BYTES_STEP;
+        if no_send_save && interrupted == Some(id) {
+            interrupted = None;
+            step.outcome = Outcome::Stopped("The app closed before uploading a program.".into());
+        }
         let done_write = step.outcome.passed()
             && matches!(
                 catalogue::step(id).expect("saved step").risk,
@@ -1013,6 +1088,7 @@ pub fn open(path: &Path) -> Result<Plan, String> {
         let retain = id != RIG_GUARD
             && !plan.rebuild.contains(&id)
             && (done_write
+                || no_send_save
                 || (before_target(id) && (step.outcome.passed() || !applicable(&step)))
                 || (legacy && target == KNOBS && id == PEDAL && step.outcome.passed()));
         if retain {

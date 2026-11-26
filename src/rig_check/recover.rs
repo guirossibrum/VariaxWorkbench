@@ -454,6 +454,7 @@ fn offer_restore_checked(
                         op,
                         data: &mut data,
                         rec: &mut rec,
+                        save_checkpoint: None,
                     };
                     let result = match plan.as_ref() {
                         Some(plan) => plan

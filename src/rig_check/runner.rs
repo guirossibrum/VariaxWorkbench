@@ -15,7 +15,7 @@ use super::catalogue::{
     SaveNotice, Step, StepId, VARIAX_EVIDENCE,
 };
 use super::port::RigPort;
-use super::record::{Mode, Outcome, RunRecord, StepRecord, utc_now};
+use super::record::{Mode, Outcome, RunRecord, SavePhase, StepRecord, utc_now};
 use super::steps::{self, RunData};
 use std::time::Instant;
 
@@ -177,17 +177,35 @@ impl ReportSink for NoReport {
     }
 }
 
+type SaveCheckpoint<'a> = dyn FnMut(&StepRecord) -> Result<(), String> + 'a;
+
 pub struct Ctx<'a> {
     pub mode: Mode,
     pub port: &'a mut dyn RigPort,
     pub op: &'a mut dyn Operator,
     pub data: &'a mut RunData,
     pub rec: &'a mut StepRecord,
+    pub(super) save_checkpoint: Option<&'a mut SaveCheckpoint<'a>>,
 }
 
 impl Ctx<'_> {
     pub fn step(&self) -> StepId {
         self.rec.id
+    }
+
+    pub(super) fn record_possible_save_send(&mut self) -> Result<(), String> {
+        let checkpoint = self
+            .save_checkpoint
+            .as_mut()
+            .ok_or("The save checkpoint is unavailable.")?;
+        self.rec.save_phase = Some(SavePhase::SendPossible);
+        let result = checkpoint(self.rec);
+        if result.is_err() {
+            // This invocation cannot send an upload when persistence fails.
+            // Any in-flight checkpoint still left on disk remains conservative.
+            self.rec.save_phase = Some(SavePhase::PreSend);
+        }
+        result
     }
 
     pub fn stopping(&self) -> bool {
@@ -205,6 +223,56 @@ pub struct Runner<'a> {
     pub state_file: Option<std::path::PathBuf>,
     pub(super) legacy_report_dir: Option<std::path::PathBuf>,
     persistence_failed: bool,
+}
+
+fn checkpoint_state<'p>(
+    path: Option<&'p std::path::Path>,
+    run: &RunRecord,
+    data: &RunData,
+) -> Option<(&'p std::path::Path, super::recover::RigState)> {
+    path.map(|path| {
+        let report = path.with_extension("txt");
+        let report = report
+            .file_name()
+            .map_or(String::new(), |n| n.to_string_lossy().into_owned());
+        (path, super::recover::RigState::from_run(run, data, &report))
+    })
+}
+
+fn persist_checkpoint(
+    sink: &mut dyn ReportSink,
+    run: &RunRecord,
+    state: Option<(&std::path::Path, super::recover::RigState)>,
+) -> Result<(), String> {
+    sink.update(run)?;
+    if let Some((path, mut state)) = state {
+        state.report_sha256 = sink.report_digest();
+        super::recover::write_state(path, &state)?;
+    }
+    Ok(())
+}
+
+fn persist_save_checkpoint(
+    sink: &mut dyn ReportSink,
+    run: &RunRecord,
+    state: Option<(&std::path::Path, super::recover::RigState)>,
+) -> Result<(), String> {
+    if run.mode == Mode::Real && state.is_none() {
+        return Err("The real run has no companion checkpoint.".into());
+    }
+    let path = state.as_ref().map(|(path, _)| *path);
+    persist_checkpoint(sink, run, state)?;
+    if path.is_some() && sink.report_digest().is_none() {
+        return Err("The checkpoint is missing the report digest.".into());
+    }
+    // Make both atomic replacements durable before allowing transport I/O.
+    #[cfg(unix)]
+    if let Some(path) = path {
+        std::fs::File::open(path.parent().unwrap_or(std::path::Path::new(".")))
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 impl<'a> Runner<'a> {
@@ -228,18 +296,8 @@ impl<'a> Runner<'a> {
     }
 
     fn write_report(&mut self) {
-        let result = self.sink.update(&self.run).and_then(|()| {
-            if let Some(path) = &self.state_file {
-                let report = path.with_extension("txt");
-                let report = report
-                    .file_name()
-                    .map_or(String::new(), |n| n.to_string_lossy().into_owned());
-                let mut state = super::recover::RigState::from_run(&self.run, &self.data, &report);
-                state.report_sha256 = self.sink.report_digest();
-                super::recover::write_state(path, &state)?;
-            }
-            Ok(())
-        });
+        let state = checkpoint_state(self.state_file.as_deref(), &self.run, &self.data);
+        let result = persist_checkpoint(self.sink, &self.run, state);
         if let Err(error) = result {
             self.persistence_failed |= self.state_file.is_some();
             self.op.progress(Progress::action(format!(
@@ -503,7 +561,15 @@ impl<'a> Runner<'a> {
                     return id != RIG_GUARD;
                 }
                 Decision::Run => {
+                    let started = utc_now();
+                    let tracks_save = id == super::variax_save::OWN_BYTES_STEP;
                     self.run.current = Some(id);
+                    if tracks_save {
+                        let rec = self.run.step_mut(id);
+                        rec.started = Some(started.clone());
+                        rec.attempt = Some(attempt_number);
+                        rec.save_phase = Some(SavePhase::PreSend);
+                    }
                     self.write_report();
                     if self.persistence_failed {
                         self.run.current = None;
@@ -515,17 +581,38 @@ impl<'a> Runner<'a> {
                         }
                         return true;
                     }
-                    let started = utc_now();
                     let clock = Instant::now();
                     let mut rec = std::mem::replace(self.run.step_mut(id), StepRecord::new(id));
                     rec.attempt = Some(attempt_number);
                     let result = {
+                        // Step 5.1 never changes the starting snapshots. Capture their
+                        // state before lending RunData to the step.
+                        let state = tracks_save
+                            .then(|| {
+                                checkpoint_state(self.state_file.as_deref(), &self.run, &self.data)
+                            })
+                            .flatten();
+                        let mode = self.run.mode;
+                        let mut save_checkpoint = |rec: &StepRecord| {
+                            *self.run.step_mut(id) = rec.clone();
+                            let result =
+                                persist_save_checkpoint(self.sink, &self.run, state.clone());
+                            self.persistence_failed |= result.is_err();
+                            result.map_err(|error| {
+                                format!("Could not persist the Variax save send boundary: {error}")
+                            })
+                        };
                         let mut ctx = Ctx {
-                            mode: self.run.mode,
+                            mode,
                             port: &mut *self.port,
                             op: &mut *self.op,
                             data: &mut self.data,
                             rec: &mut rec,
+                            save_checkpoint: if tracks_save {
+                                Some(&mut save_checkpoint)
+                            } else {
+                                None
+                            },
                         };
                         ctx.op.progress(Progress::action(step.title));
                         let result = steps::execute(&mut ctx);
@@ -563,6 +650,11 @@ impl<'a> Runner<'a> {
                             .map(str::to_owned)
                             .collect::<Vec<_>>()
                             .join(" ");
+                    } else if tracks_save && self.port.direct_usb_release_failed() {
+                        // Persist the known cleanup failure with the step result,
+                        // including if the app closes before the final guard.
+                        self.run.rig_state =
+                            "USB cleanup failed during the Variax save preflight.".into();
                     }
                     self.run.current = None;
                     super::hints::attach(&mut rec, &outcome);
@@ -623,6 +715,14 @@ impl<'a> Runner<'a> {
             return Some(Outcome::NotAuthorized(
                 "Live edit checks and stores are unavailable in the stopped-guard recovery.".into(),
             ));
+        }
+        if step.risk == Risk::Save {
+            let own_bytes = self.run.step(super::variax_save::OWN_BYTES_STEP);
+            if own_bytes.reused && own_bytes.save_phase == Some(SavePhase::PreSend) {
+                return Some(Outcome::SkippedNeeds(
+                    "read-only continuation after step 5.1 ended before uploading a program".into(),
+                ));
+            }
         }
         if step.id == PODXT_COMPATIBILITY {
             if self.data.no_podxt {

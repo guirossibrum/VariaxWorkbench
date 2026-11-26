@@ -11,8 +11,14 @@ use crate::rig_check::{
     runner::NoReport,
     steps::RunData,
 };
-use line6_devices::{identity::REQUEST, session::Link};
+use line6_devices::{
+    identity::REQUEST,
+    session::{Link, Path},
+};
 use std::{cell::RefCell, rc::Rc, time::Duration};
+
+mod save_preflight;
+use save_preflight::SaveTrace;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Event {
@@ -27,11 +33,14 @@ struct Bus {
     claimed: Option<Interface>,
     fail_release: Option<Interface>,
     incompatible: Option<Interface>,
+    save: SaveTrace,
 }
 
 struct FakeHandle {
     link: SimLink,
     side: Interface,
+    step: StepId,
+    scripted_reply: Option<Option<Vec<u8>>>,
     bus: Rc<RefCell<Bus>>,
 }
 
@@ -40,10 +49,54 @@ impl FakeHandle {
         let mut bus = self.bus.borrow_mut();
         assert_eq!(bus.claimed, Some(self.side));
         bus.events.push(Event::Finish(self.side));
-        if bus.fail_release == Some(self.side) {
+        let save_preflight = self.side == Interface::Variax
+            && self.step == crate::rig_check::variax_save::OWN_BYTES_STEP;
+        if save_preflight {
+            bus.save.releases += 1;
+        }
+        if bus.fail_release == Some(self.side) || (save_preflight && bus.save.fail_release) {
             return Err("simulated USB release error".into());
         }
         Ok(())
+    }
+}
+
+impl Link for FakeHandle {
+    fn path(&self) -> Path {
+        self.link.path()
+    }
+
+    fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
+        if self.step == crate::rig_check::variax_save::OWN_BYTES_STEP
+            && self.side == Interface::Variax
+        {
+            let mut bus = self.bus.borrow_mut();
+            self.scripted_reply = bus.save.before_write(bytes)?;
+            if self.scripted_reply.is_some() {
+                return Ok(());
+            }
+        }
+        self.link.write(bytes)
+    }
+
+    fn read(&mut self, wait: Duration) -> Result<Option<Vec<u8>>, String> {
+        match &mut self.scripted_reply {
+            Some(reply) => {
+                if reply.is_none() {
+                    self.link.pause(wait);
+                }
+                Ok(reply.take())
+            }
+            None => self.link.read(wait),
+        }
+    }
+
+    fn elapsed(&self) -> Duration {
+        self.link.elapsed()
+    }
+
+    fn pause(&mut self, duration: Duration) {
+        self.link.pause(duration);
     }
 }
 
@@ -76,7 +129,7 @@ impl Port {
         }
     }
 
-    fn link(&mut self, side: Interface) -> Result<&mut dyn Link, String> {
+    fn link(&mut self, side: Interface, step: StepId) -> Result<&mut dyn Link, String> {
         let handle = self.usb.link(
             side,
             || {
@@ -103,12 +156,18 @@ impl Port {
                 Ok(FakeHandle {
                     link,
                     side,
+                    step,
+                    scripted_reply: None,
                     bus: self.bus.clone(),
                 })
             },
             FakeHandle::finish,
         )?;
-        Ok(&mut handle.link)
+        if handle.step != step {
+            handle.step = step;
+            handle.scripted_reply = None;
+        }
+        Ok(handle)
     }
 }
 
@@ -135,12 +194,12 @@ impl RigPort for Port {
         Ok(mac_usb_view(attached))
     }
 
-    fn podxt(&mut self, _step: StepId) -> Result<&mut dyn Link, String> {
-        self.link(Interface::Podxt)
+    fn podxt(&mut self, step: StepId) -> Result<&mut dyn Link, String> {
+        self.link(Interface::Podxt, step)
     }
 
-    fn variax(&mut self, _step: StepId) -> Result<&mut dyn Link, String> {
-        self.link(Interface::Variax)
+    fn variax(&mut self, step: StepId) -> Result<&mut dyn Link, String> {
+        self.link(Interface::Variax, step)
     }
 
     fn variax_claimed(&self) -> bool {

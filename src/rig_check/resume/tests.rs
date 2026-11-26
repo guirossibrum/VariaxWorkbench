@@ -528,6 +528,33 @@ fn incompatible_checkpoint_stopped_guard_and_uncertain_stores_are_refused_offlin
 }
 
 #[test]
+fn preflight_error_text_and_ambiguous_pre_send_records_do_not_clear_a_store() {
+    let mut fixture = Fixture::new();
+    fixture.stop_after(FIRST_SAVE, false);
+    let step = fixture.run.step_mut(FIRST_SAVE);
+    step.outcome = Outcome::Failed("No complete Variax identity reply. Nothing was saved.".into());
+    step.save_phase = None;
+    fixture.save(false);
+    assert!(error(&fixture.sink.path).contains("unresolved outcome"));
+
+    let step = fixture.run.step_mut(FIRST_SAVE);
+    step.save_phase = Some(SavePhase::PreSend);
+    step.duration_ms = None;
+    fixture.save(false);
+    assert!(error(&fixture.sink.path).contains("unresolved outcome"));
+
+    let step = fixture.run.step_mut(FIRST_SAVE);
+    step.duration_ms = Some(3000);
+    fixture.save(true);
+    assert!(error(&fixture.sink.path).contains("unresolved outcome"));
+
+    let conflicting_attempt = fixture.run.step(FIRST_SAVE).clone();
+    fixture.run.prior_attempts.push(conflicting_attempt);
+    fixture.save(false);
+    assert!(error(&fixture.sink.path).contains("unresolved outcome"));
+}
+
+#[test]
 fn completed_stores_are_reused_without_a_store_card_or_duplicate_command() {
     let mut fixture = Fixture::new();
     fixture.stop_after(FIRST_SAVE, false);

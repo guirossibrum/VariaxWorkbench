@@ -279,7 +279,7 @@ pub fn json(run: &RunRecord, written: &str) -> String {
 
 fn json_step(step: &StepRecord) -> String {
     format!(
-        "{{\"id\":{},\"title\":{},\"reused\":{},\"outcome\":{},\"reason\":{},\"technical_note\":{},\"started\":{},\"attempt\":{},\"duration_ms\":{},\"retries\":{},\"messages\":{},\"answers\":{},\"look_check\":{},\"checksums\":{},\"results\":{},\"display_results\":{},\"technical\":{},\"hints\":{}}}",
+        "{{\"id\":{},\"title\":{},\"reused\":{},\"outcome\":{},\"reason\":{},\"technical_note\":{},\"started\":{},\"attempt\":{},\"duration_ms\":{},\"save_phase\":{},\"retries\":{},\"messages\":{},\"answers\":{},\"look_check\":{},\"checksums\":{},\"results\":{},\"display_results\":{},\"technical\":{},\"hints\":{}}}",
         json_string(&step.id.to_string()),
         json_string(&step.title),
         step.reused,
@@ -292,8 +292,10 @@ fn json_step(step: &StepRecord) -> String {
         step.attempt
             .map_or("null".into(), |number| number.to_string()),
         step.duration_ms.map_or("null".into(), |d| d.to_string()),
+        step.save_phase
+            .map_or("null".into(), |phase| json_string(phase.code())),
         step.retries,
-        step.messages.len(),
+        step.message_count(),
         json_pairs(&step.answers),
         step.look.as_ref().map_or("null".into(), |look| format!(
             "{{\"expected\":{},\"different\":{}}}",
