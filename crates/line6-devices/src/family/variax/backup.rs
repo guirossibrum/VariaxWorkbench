@@ -10,6 +10,11 @@ use crate::{
 };
 use std::{fmt, path::Path};
 
+mod snapshot;
+pub use snapshot::{
+    SnapshotCapture, SnapshotCoverage, SnapshotPrograms, ValidatedSnapshot, validate_snapshot,
+};
+
 pub(crate) const STORED_FOLDERS: &[&str] = &["presets"];
 
 pub const VARIAX_RESTORE: &str =
@@ -134,12 +139,7 @@ impl ProgramCaptures {
     fn save(&self, folder: &mut BackupFolder, index: &mut String) -> Result<(), String> {
         use fmt::Write as _;
         for preset in variax::Preset::all() {
-            let name = format!(
-                "programs/{:02}-{}-{}.bin",
-                (preset.bank() + 1) * variax::PRESETS_PER_BANK - 1 - preset.slot(),
-                preset.bank_name().replace(' ', "_"),
-                preset.slot() + 1
-            );
+            let name = program_file(preset);
             match self.programs.iter().find(|(slot, _)| *slot == preset) {
                 Some((_, Ok(program))) => {
                     folder.file(&name, program)?;
@@ -153,6 +153,15 @@ impl ProgramCaptures {
         }
         Ok(())
     }
+}
+
+fn program_file(preset: variax::Preset) -> String {
+    format!(
+        "programs/{:02}-{}-{}.bin",
+        (preset.bank() + 1) * variax::PRESETS_PER_BANK - 1 - preset.slot(),
+        preset.bank_name().replace(' ', "_"),
+        preset.slot() + 1
+    )
 }
 
 fn read_program<L: Link>(
@@ -177,6 +186,11 @@ fn read_program<L: Link>(
         }
         Ok(())
     })?;
+    check_program_checksum(&program)?;
+    Ok(program)
+}
+
+fn check_program_checksum(program: &[u8; PROGRAM_BYTES]) -> Result<(), String> {
     let word = |&[a, b, c]: &[u8; 3]| u32::from_be_bytes([0, a, b, c]);
     let (checksum, words) = program
         .as_chunks::<3>()
@@ -190,7 +204,7 @@ fn read_program<L: Link>(
             "Firmware checksum mismatch (stored {stored:06X}, computed {expected:06X})."
         ));
     }
-    Ok(program)
+    Ok(())
 }
 
 pub struct FullLibrary {

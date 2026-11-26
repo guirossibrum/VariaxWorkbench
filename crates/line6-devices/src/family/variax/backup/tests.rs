@@ -13,6 +13,8 @@ use variax::{
     tests::{bank_reply, encode_reply},
 };
 
+mod snapshot;
+
 const BRIDGE_ON: &[u8] = &[0xf0, 0, 1, 0x0c, 3, 0x23, 1, 0xf7];
 const BRIDGE_OFF: &[u8] = &[0xf0, 0, 1, 0x0c, 3, 0x23, 0, 0xf7];
 const SESSION_ON: &[u8] = &[0xf0, 0, 1, 0x0c, 7, 0, 0x2a, 1, 0xf7];
@@ -424,6 +426,26 @@ fn full_library_reads_exact_order_and_saves_big_endian_programs_with_settings() 
     let manifest = std::fs::read_to_string(path.join("MANIFEST.sha256")).unwrap();
     assert!(manifest.contains(name));
     assert_eq!(load_variax_library(&path).unwrap().presets.len(), 60);
+    let snapshot = validate_snapshot(
+        &path,
+        &backup.settings.identified.identity,
+        SnapshotCoverage::FullPrograms,
+    )
+    .unwrap();
+    let SnapshotPrograms::Full(programs) = snapshot.programs() else {
+        panic!("expected complete programs");
+    };
+    assert_eq!(programs.len(), 60);
+    assert!(
+        programs
+            .iter()
+            .any(|(preset, program)| *preset == Preset::new(10, 4).unwrap()
+                && program.as_slice() == reso)
+    );
+    snapshot
+        .check_cache_eligibility(SnapshotCapture::Full(&backup), Some(&Ok(())))
+        .unwrap();
+
     std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
 
