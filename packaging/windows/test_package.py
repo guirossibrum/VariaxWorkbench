@@ -1,3 +1,4 @@
+import json
 import struct
 import tempfile
 import unittest
@@ -79,7 +80,11 @@ class PackageTests(unittest.TestCase):
     def test_smoke_uses_simulated_usb_and_skips_native_usb_and_audio_inventory(self):
         with tempfile.TemporaryDirectory() as tmp:
             scratch = Path(tmp)
-            for device_outcome in ("NOT AVAILABLE", "PASSED"):
+            for device_outcome, inventory_outcome, error in (
+                ("not_available", "skipped", None),
+                ("passed", "skipped", "Unexpected device outcomes"),
+                ("not_available", "passed", "Unexpected computer outcomes"),
+            ):
                 def fake_run(*args, env, cwd, input_text=None):
                     self.assertEqual(cwd, scratch / "extracted")
                     self.assertEqual(env["XDG_DATA_HOME"], str(scratch / "xdg-data"))
@@ -98,20 +103,35 @@ class PackageTests(unittest.TestCase):
                     else:
                         self.assertEqual(args[1], "--real")
                         self.assertEqual(input_text, "accept\nr\nc\ns\nr\nc\ns\n")
+                        notice = "The Windows connection isn't available in this version yet."
+                        steps = [
+                            {"id": "0.1", "outcome": "passed"},
+                            {"id": "0.2", "outcome": inventory_outcome},
+                            {"id": "0.3", "outcome": "passed"},
+                            {"id": "1.1", "outcome": device_outcome, "reason": notice, "messages": 0},
+                            {"id": "2.7", "outcome": "skipped_needs"},
+                            {"id": "8.1", "outcome": "skipped"},
+                        ]
+                        # Only steps that ran have detailed headings. Skips
+                        # and refusals are still present in the JSON report.
                         contents = (
                             "Operating system: Windows\nWindows version: 10.0.26100\n"
-                            "Synthetic preset (full pipeline)\n"
-                            "The Windows connection isn't available in this version yet.\n"
-                            f"[1.1] See the PODxt Live on USB — {device_outcome}\n"
+                            "[0.3] Engine check (no device) — PASSED\n"
+                            "Synthetic preset (full pipeline): all 1,092 words identical\n"
+                            f"{notice}\n"
+                            "BEGIN RIG CHECK JSON\n"
+                            f"{json.dumps({'finished': True, 'steps': steps})}\n"
+                            "END RIG CHECK JSON\n"
                         )
                     (destination / "run.txt").write_text(contents, encoding="utf-8")
                     return ""
 
-                with patch("build.run", side_effect=fake_run):
-                    if device_outcome == "NOT AVAILABLE":
+                with self.subTest(device_outcome=device_outcome, inventory_outcome=inventory_outcome), \
+                        patch("build.run", side_effect=fake_run):
+                    if error is None:
                         self.assertIn("audio inventories were skipped", smoke(scratch / "extracted", scratch, {}))
                     else:
-                        with self.assertRaisesRegex(ValueError, "Unexpected device outcomes"):
+                        with self.assertRaisesRegex(ValueError, error):
                             smoke(scratch / "extracted", scratch, {})
 
 
