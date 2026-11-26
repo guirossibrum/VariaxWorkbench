@@ -550,6 +550,7 @@ pub(super) mod tests {
         let downloaded = editor.document.as_ref().unwrap().as_bytes().to_vec();
         let connected_label = editor.library_label().unwrap();
         assert!(connected_label.starts_with("Downloaded on this connection · "));
+        assert!(editor.has_current_guitar_library());
 
         // The same bridge and model/firmware answer after a guitar disconnect.
         let profiles = crate::editor::registry::DEVICE_PROFILES;
@@ -561,10 +562,24 @@ pub(super) mod tests {
         assert_eq!(first.device.support, second.device.support);
         assert_ne!(first.device.key, second.device.key);
 
+        editor.change(|preset| preset.rename("Keep this edit"));
+        let edited = editor.document.as_ref().unwrap().as_bytes().to_vec();
         editor.observe_device(Some(&second));
         let historical = editor.library_label().unwrap();
         assert!(historical.starts_with("Saved guitar download · "));
         assert!(historical.ends_with("Source guitar unverified for this connection"));
+        assert_eq!(editor.document.as_ref().unwrap().as_bytes(), edited);
+        assert!(editor.dirty());
+        assert!(!editor.has_current_guitar_library());
+        assert!(!editor.sync_ready(super::super::device_sync::Action::ReadUnmodified));
+        assert!(editor.download_target_ready());
+        editor.refresh.auto_source = Some(complete_capture);
+        editor.poll(&ctx);
+        assert!(!editor.refresh.busy());
+
+        editor.undo();
+        editor.poll(&ctx);
+        assert!(!editor.refresh.busy());
         assert_eq!(editor.document.as_ref().unwrap().as_bytes(), downloaded);
 
         let mut reopened = VariaxEditor::new(&defaults);
@@ -584,9 +599,15 @@ pub(super) mod tests {
         );
         reopened.observe_device(Some(&first));
         assert_eq!(reopened.library_label(), Some(historical));
+        assert!(reopened.has_historical_guitar_library());
+        assert!(!reopened.sync_ready(super::super::device_sync::Action::ReadUnmodified));
 
         editor.request_refresh(complete_capture);
         wait_for_completion(&mut editor, &ctx);
+        assert!(editor.has_current_guitar_library());
+        if cfg!(target_os = "linux") {
+            assert!(editor.sync_ready(super::super::device_sync::Action::ReadUnmodified));
+        }
         assert!(
             editor
                 .library_label()

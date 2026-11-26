@@ -276,11 +276,12 @@ impl VariaxEditor {
             && !self.is_reading()
             && !self.follow.disconnected()
             && !self.blocking_prompt();
-        let has_model = self
-            .document
-            .as_ref()
-            .and_then(|doc| doc.selected_preset())
-            .is_some_and(PresetFile::is_legacy_electric);
+        let has_model = !self.has_historical_guitar_library()
+            && self
+                .document
+                .as_ref()
+                .and_then(|doc| doc.selected_preset())
+                .is_some_and(PresetFile::is_legacy_electric);
         ui.horizontal_wrapped(|ui| {
             let mut enabled = self.live_edit.enabled();
             if ui
@@ -335,6 +336,9 @@ impl VariaxEditor {
     }
 
     fn start_edit_buffer(&mut self, action: Action, model: Option<Model>) {
+        if !matches!(action, Action::Get) && self.has_historical_guitar_library() {
+            return;
+        }
         match self.live_edit.start(action, model) {
             Ok(()) => {
                 self.error = None;
@@ -398,6 +402,7 @@ impl VariaxEditor {
             self.live_edit.stop();
         }
         if !self.live_edit.enabled()
+            || self.has_historical_guitar_library()
             || self.is_reading()
             || self.opening_file
             || self.blocking_prompt()
@@ -698,6 +703,37 @@ mod tests {
         );
         assert!(!editor.dirty());
         assert!(!editor.live_edit.enabled);
+    }
+
+    #[test]
+    fn historical_library_cannot_supply_the_working_buffer_send() {
+        use super::super::LibraryOrigin;
+        use std::time::SystemTime;
+
+        let (_, mut app) = app();
+        let editor = app.variax_mut();
+        editor
+            .adopt_startup_library(
+                variax_workbench::bundle::BundleFile::new_default_bundle().unwrap(),
+                LibraryOrigin::Download(SystemTime::UNIX_EPOCH),
+            )
+            .unwrap();
+        let device = connect(editor, None);
+        editor.live_edit.fake_unlocked = true;
+        editor.live_edit.enabled = true;
+        let now = Instant::now();
+        editor.start_edit_buffer(Action::Send, editor.live_model());
+        editor.advance_edit_buffer(now);
+        editor.advance_edit_buffer(now + DEBOUNCE);
+        assert!(!editor.live_edit.busy());
+        assert!(editor.live_edit.queued.is_none());
+        assert!(device.calls.lock().unwrap().is_empty());
+
+        editor.get_edit_buffer();
+        complete(editor, now);
+        assert_eq!(*device.calls.lock().unwrap(), [Call::Get]);
+        editor.return_to_library();
+        assert!(editor.has_historical_guitar_library());
     }
 
     #[test]

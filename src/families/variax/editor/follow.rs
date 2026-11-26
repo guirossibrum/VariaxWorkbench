@@ -436,6 +436,7 @@ impl VariaxEditor {
             self.follow.start_if_ready(ctx, Instant::now());
         }
         if self.is_reading()
+            || self.has_historical_guitar_library()
             // A guitar-side program change must not trigger an automatic
             // edit-buffer send through the local selection.
             || self.live_edit.enabled()
@@ -722,6 +723,38 @@ mod tests {
         super::super::refresh::tests::attach(editor);
         assert!(editor.follow.attachment.is_some());
         assert!(!editor.follow.busy());
+    }
+
+    #[test]
+    fn follow_keeps_the_selection_in_a_historical_library() {
+        use super::super::LibraryOrigin;
+        use std::time::SystemTime;
+
+        let (ctx, mut app) = app();
+        let editor = app.variax_mut();
+        let tab = super::super::refresh::tests::verified_tab();
+        editor.observe_device(Some(&tab));
+        editor
+            .adopt_startup_library(
+                BundleFile::new_default_bundle().unwrap(),
+                LibraryOrigin::Download(SystemTime::UNIX_EPOCH),
+            )
+            .unwrap();
+        editor.follow.snapshot.receive(
+            FollowUpdate::ProgramChange(Preset::new(4, 2).unwrap()),
+            Instant::now() - SLOT_SETTLE,
+        );
+        let selected = editor.document.as_ref().unwrap().selection();
+        assert_ne!(selected, Some((4, 2)));
+        editor.poll_follow(&ctx);
+        assert_eq!(editor.document.as_ref().unwrap().selection(), selected);
+
+        editor.library_origin = Some(LibraryOrigin::AttachedDownload(
+            SystemTime::UNIX_EPOCH,
+            tab.device.key,
+        ));
+        editor.poll_follow(&ctx);
+        assert_eq!(editor.document.as_ref().unwrap().selection(), Some((4, 2)));
     }
 
     #[test]

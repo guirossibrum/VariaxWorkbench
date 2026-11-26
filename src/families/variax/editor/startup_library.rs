@@ -35,11 +35,16 @@ impl LibraryOrigin {
         !matches!(self, Self::Factory)
     }
 
+    #[cfg(feature = "usb")]
+    fn belongs_to(&self, attachment: Option<&DeviceKey>) -> bool {
+        matches!(self, Self::AttachedDownload(_, key) if Some(key) == attachment)
+    }
+
     fn label(&self, attachment: Option<&DeviceKey>) -> String {
         let (source, completed_at) = match self {
             Self::Download(time) => ("Saved guitar download", time),
             #[cfg(feature = "usb")]
-            Self::AttachedDownload(time, key) if Some(key) == attachment => {
+            Self::AttachedDownload(time, _) if self.belongs_to(attachment) => {
                 let date = library_date(*time);
                 return format!("Downloaded on this connection · {date}");
             }
@@ -193,6 +198,21 @@ impl LibraryImport {
 }
 
 impl VariaxEditor {
+    #[cfg(feature = "usb")]
+    pub(super) fn has_current_guitar_library(&self) -> bool {
+        self.library_origin
+            .as_ref()
+            .is_some_and(|origin| origin.belongs_to(self.connected_library_attachment()))
+    }
+
+    #[cfg(feature = "usb")]
+    pub(super) fn has_historical_guitar_library(&self) -> bool {
+        self.library_origin
+            .as_ref()
+            .is_some_and(LibraryOrigin::is_guitar_library)
+            && !self.has_current_guitar_library()
+    }
+
     pub(super) fn library_label(&self) -> Option<String> {
         #[cfg(feature = "usb")]
         let attachment = self.connected_library_attachment();
@@ -530,6 +550,11 @@ mod tests {
         let label = app.variax().library_label().unwrap();
         assert!(label.starts_with("Imported backup · "));
         assert!(label.ends_with("Source guitar unverified for this connection"));
+        assert!(app.variax().has_historical_guitar_library());
+        assert!(
+            !app.variax()
+                .sync_ready(super::super::device_sync::Action::ReadUnmodified)
+        );
         let mut reopened = VariaxEditor::new(&defaults);
         reopened.load_initial_library(&defaults);
         assert_eq!(
