@@ -371,3 +371,5 @@ fn rejects_symlinked_files_and_bank_directories() {
     symlink(&relocated, &bank).unwrap();
     assert!(validation_error(&dir).contains("plain PODxt snapshot directory"));
 }
+
+mod capture_proof;
