@@ -18,6 +18,8 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+const PENDING_REPLY: &str =
+    "A PODxt reply may still be pending. Reconnect the PODxt Live before using device actions.";
 const PULSE: Duration = Duration::from_millis(850);
 const REPAINT_WHILE_READING: Duration = Duration::from_millis(80);
 
@@ -170,6 +172,7 @@ type RunOnLink<'a, T> = Box<dyn FnOnce(&mut dyn Link) -> Result<T, String> + 'a>
 #[cfg(any(test, target_os = "linux", target_os = "macos"))]
 fn with_session<'a, G, T>(
     cancelled: impl Fn() -> bool,
+    reply_pending: &AtomicBool,
     lock: impl FnOnce() -> Result<G, String>,
     with_link: impl FnOnce(&G, RunOnLink<'a, T>) -> Result<T, String>,
     policy: impl GatePolicy + 'a,
@@ -177,16 +180,18 @@ fn with_session<'a, G, T>(
 ) -> Result<T, String> {
     hardware_gates::run_if_unlocked(Gate::OsDiscovery, || {
         hardware_gates::run_if_unlocked(Gate::CurrentSettingsRead, || {
-            let check_stop = || {
-                if cancelled() {
+            let check_admission = || {
+                if reply_pending.load(Ordering::Acquire) {
+                    Err(PENDING_REPLY.into())
+                } else if cancelled() {
                     Err("PODxt Live operation cancelled.".into())
                 } else {
                     Ok::<(), String>(())
                 }
             };
-            check_stop()?;
+            check_admission()?;
             let rig = lock()?;
-            check_stop()?;
+            check_admission()?;
             with_link(
                 &rig,
                 Box::new(move |link| {
@@ -204,6 +209,7 @@ fn with_session<'a, G, T>(
 fn transaction<'a, G>(
     command: ReadCommand,
     stop: &'a AtomicBool,
+    reply_pending: &'a AtomicBool,
     lock: impl FnOnce() -> Result<G, String>,
     with_link: impl FnOnce(&G, RunOnLink<'a, ()>) -> Result<(), String>,
     publish: impl FnMut(ReadUpdate) + 'a,
@@ -212,10 +218,21 @@ fn transaction<'a, G>(
         let cancelled = || stop.load(Ordering::Acquire);
         with_session(
             cancelled,
+            reply_pending,
             lock,
             with_link,
             ReadPolicy(command),
-            move |session| podxt::read_live(session, command, cancelled, publish),
+            move |session| {
+                track_reply(reply_pending, |outstanding| {
+                    podxt::read_live_tracking_reply(
+                        session,
+                        command,
+                        cancelled,
+                        outstanding,
+                        publish,
+                    )
+                })
+            },
         )
     };
     if requires_library(command)
@@ -225,6 +242,19 @@ fn transaction<'a, G>(
     } else {
         operation()
     }
+}
+
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
+fn track_reply<T>(
+    reply_pending: &AtomicBool,
+    run: impl FnOnce(&mut bool) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut outstanding = false;
+    let result = run(&mut outstanding);
+    if outstanding {
+        reply_pending.store(true, Ordering::Release);
+    }
+    result
 }
 
 #[cfg(all(target_os = "linux", not(test)))]
@@ -286,11 +316,13 @@ fn platform_read(
     device: &detection::DeviceKey,
     command: ReadCommand,
     stop: &AtomicBool,
+    reply_pending: &AtomicBool,
     publish: impl FnMut(ReadUpdate),
 ) -> Result<(), String> {
     transaction(
         command,
         stop,
+        reply_pending,
         || line6_devices::device_lock::DeviceLock::acquire().map_err(|error| error.to_string()),
         |rig, run| with_platform_link(device, rig, run),
         publish,
@@ -302,6 +334,7 @@ fn platform_read(
     _device: &detection::DeviceKey,
     _command: ReadCommand,
     _stop: &AtomicBool,
+    _reply_pending: &AtomicBool,
     _publish: impl FnMut(ReadUpdate),
 ) -> Result<(), String> {
     Err("PODxt Live reads are unavailable in this build.".into())
@@ -323,21 +356,23 @@ impl LivePanel {
     /// True when a new verified attachment should take over the stage.
     pub(super) fn set_device(&mut self, device: Option<&tabs::DeviceTab>) -> bool {
         self.device_tab = device.is_some();
-        let verified = device
-            .filter(|tab| {
-                tab.connection == tabs::Connection::Present
-                    && tab.device.key.family_id == "podxt"
-                    && tab.device.support == detection::DeviceSupport::Verified("3.01")
-            })
-            .map(|tab| &tab.device.key);
-        if self.device.as_ref() == verified {
+        let verified = device.filter(|tab| {
+            tab.connection == tabs::Connection::Present
+                && tab.device.key.family_id == "podxt"
+                && tab.device.support == detection::DeviceSupport::Verified("3.01")
+        });
+        let key = verified.map(|tab| &tab.device.key);
+        if self.device.as_ref() == key {
             return false;
         }
         self.cancel();
         self.editor.detach();
         self.store.detach();
         self.locker.detach(&mut self.store);
-        self.device = verified.cloned();
+        if let Some(tab) = verified {
+            self.editor.reply_pending = Arc::clone(&tab.device.podxt_reply_pending);
+        }
+        self.device = key.cloned();
         self.startup = self.device.as_ref().map(|_| Startup::Current);
         self.live_editing = false;
         if self.panel == Some(StagePanel::Store) {
@@ -378,11 +413,12 @@ impl LivePanel {
         let Some(device) = self.device.clone() else {
             return;
         };
-        if self.busy() || !Self::admitted(command) {
+        if self.busy() || !self.device_ready() || !Self::admitted(command) {
             return;
         }
         if command == ReadCommand::Follow {
             self.store.clear_preparation();
+            self.editor.detach();
             self.editor.set_live(false);
             self.live_editing = false;
         }
@@ -401,10 +437,11 @@ impl LivePanel {
         let worker_snapshot = Arc::clone(&snapshot);
         let repaint = ctx.clone();
         let endpoint = device.clone();
+        let reply_pending = Arc::clone(&self.editor.reply_pending);
         let thread = std::thread::Builder::new()
             .name("podxt-read".into())
             .spawn(move || {
-                platform_read(&endpoint, command, &worker_stop, |update| {
+                platform_read(&endpoint, command, &worker_stop, &reply_pending, |update| {
                     if !worker_stop.load(Ordering::Acquire) {
                         worker_snapshot
                             .lock()
@@ -437,7 +474,7 @@ impl LivePanel {
     }
 
     fn next_startup(&mut self) -> Option<Startup> {
-        if self.busy() {
+        if self.busy() || !self.device_ready() {
             return None;
         }
         let request = self.startup.take()?;
@@ -457,9 +494,10 @@ impl LivePanel {
             self.locker
                 .result(result, &mut self.snapshot, &mut self.store);
         }
+        let ready = self.device_ready();
         if let Some(buffer) = self.editor.poll(
             self.device.as_ref(),
-            self.worker.is_none() && !self.store.busy(),
+            self.worker.is_none() && !self.store.busy() && ready,
             ctx,
         ) {
             if self.panel == Some(StagePanel::Store)
@@ -523,14 +561,28 @@ impl LivePanel {
             }
             Err(error) => error,
         });
+        if !self.device_ready() {
+            self.startup = None;
+        }
         if command == ReadCommand::Follow {
             self.snapshot.tuner_mode = false;
-            self.refresh_current(ctx);
+            if !stopped {
+                self.refresh_current(ctx);
+            }
         }
     }
 
     pub(super) fn connected(&self) -> bool {
         self.device.is_some()
+    }
+
+    fn device_ready(&self) -> bool {
+        self.connected() && self.pending_reply_message().is_none()
+    }
+
+    pub(super) fn pending_reply_message(&self) -> Option<&'static str> {
+        (self.connected() && self.editor.reply_pending.load(Ordering::Acquire))
+            .then_some(PENDING_REPLY)
     }
 
     pub(super) fn has_current(&self) -> bool {
@@ -587,6 +639,7 @@ impl LivePanel {
             self.device_requests += 1;
         }
         if !self.busy()
+            && self.device_ready()
             && let Some(device) = &self.device
         {
             self.editor.get(device, ctx);
@@ -594,13 +647,13 @@ impl LivePanel {
     }
 
     pub(super) fn queue_stage_target(&mut self, target: podxt::LiveTarget, ctx: &egui::Context) {
-        if self.device.is_some() && self.worker.is_none() && !self.store.busy() {
+        if self.device_ready() && self.worker.is_none() && !self.store.busy() {
             self.editor.queue_stage_target(target, ctx);
         }
     }
 
     pub(super) fn can_change_control(&self, control: LiveControl, block: &str) -> bool {
-        self.device.is_some()
+        self.device_ready()
             && self.worker.is_none()
             && !self.store.busy()
             && self.editor.can_change(control, block)
@@ -612,6 +665,7 @@ impl LivePanel {
             self.device_requests += 1;
         }
         if self.live_editing
+            && self.device_ready()
             && !self.busy()
             && let Some(device) = &self.device
         {
@@ -630,11 +684,11 @@ impl LivePanel {
     pub(super) fn toolbar(&mut self, ui: &mut egui::Ui, current: &mut bool) {
         let command_running = self.worker.as_ref().map(|worker| worker.command);
         let idle = !self.busy();
-        let connected = self.connected();
+        let connected = self.device_ready();
         if *current
             && ui
                 .add_enabled(
-                    connected && idle && !self.editor.has_pending() && self.editor.stage_editable(),
+                    connected && idle && !self.editor.has_pending() && self.snapshot.tone.is_some(),
                     egui::Checkbox::new(&mut self.live_editing, "Live editing"),
                 )
                 .changed()
@@ -649,7 +703,7 @@ impl LivePanel {
             self.editor.toolbar(
                 ui,
                 self.device.as_ref(),
-                self.worker.is_none() && !self.store.busy(),
+                connected && self.worker.is_none() && !self.store.busy(),
             );
         }
         for (command, idle_label, active_label) in [
@@ -685,6 +739,7 @@ impl LivePanel {
                 StagePanel::Store,
                 "Store to POD…",
                 *current
+                    && connected
                     && idle
                     && !self.locker.syncing()
                     && !self.editor.has_pending()
@@ -747,6 +802,9 @@ impl LivePanel {
             }
         }
         self.editor.status(ui);
+        if let Some(message) = self.pending_reply_message() {
+            ui.weak(message);
+        }
         if let Some(message) = &self.message {
             ui.weak(message);
         }
@@ -759,6 +817,7 @@ impl LivePanel {
         file_tone: Option<&pod_preset::PodTone>,
     ) -> Option<Vec<u8>> {
         let panel = self.panel?;
+        let ready = self.device_ready();
         let view = ui.scope(|ui| match panel {
             StagePanel::Locker => {
                 let idle = !self.busy() && !self.editor.has_pending();
@@ -768,7 +827,9 @@ impl LivePanel {
                     locker::View {
                         snapshot: &self.snapshot,
                         idle,
-                        can_get: idle && self.connected() && Self::admitted(ReadCommand::Library),
+                        can_get: idle
+                            && self.device_ready()
+                            && Self::admitted(ReadCommand::Library),
                         editor_tone: file_tone,
                     },
                     &mut self.store,
@@ -780,7 +841,8 @@ impl LivePanel {
                     self.store.show(
                         ui,
                         services,
-                        self.device.as_ref(),
+                        self.device.as_ref().filter(|_| ready),
+                        &self.editor.reply_pending,
                         idle,
                         store::StoreView::Sync,
                     );
@@ -803,6 +865,7 @@ impl LivePanel {
             return;
         };
         let idle = !self.busy() && !self.editor.has_pending();
+        let ready = self.device_ready();
         ui.group(|ui| {
             ui.strong(format!("Store to POD · {}", slot.slot_name()));
             if ui
@@ -835,7 +898,8 @@ impl LivePanel {
             self.store.show(
                 ui,
                 services,
-                self.device.as_ref(),
+                self.device.as_ref().filter(|_| ready),
+                &self.editor.reply_pending,
                 idle,
                 store::StoreView::Current,
             );
@@ -850,10 +914,12 @@ impl LivePanel {
         ui.collapsing("PODxt Live diagnostics", |ui| {
             self.show_advanced(ui, services);
             if !self.locker.syncing() && self.panel != Some(StagePanel::Store) {
+                let ready = self.device_ready();
                 self.store.show(
                     ui,
                     services,
-                    self.device.as_ref(),
+                    self.device.as_ref().filter(|_| ready),
+                    &self.editor.reply_pending,
                     self.worker.is_none() && !self.editor.busy() && !self.editor.has_pending(),
                     store::StoreView::Original,
                 );
@@ -870,7 +936,7 @@ impl LivePanel {
                 ReadCommand::Packs,
                 ReadCommand::Globals,
             ] {
-                let enabled = self.device.is_some() && !self.busy() && Self::admitted(command);
+                let enabled = self.device_ready() && !self.busy() && Self::admitted(command);
                 if ui
                     .add_enabled(enabled, egui::Button::new(title(command)))
                     .clicked()
@@ -895,7 +961,9 @@ impl LivePanel {
                 }
             }
         });
-        if self.device.is_none() {
+        if let Some(message) = self.pending_reply_message() {
+            ui.weak(message);
+        } else if self.device.is_none() {
             ui.weak("Live reads require automatic PODxt Live 3.01 identity.");
         } else if !platform_available() {
             ui.weak("Live reads are unavailable in this build.");
@@ -975,11 +1043,12 @@ impl LivePanel {
         if let Some(tone) = &self.snapshot.tone {
             tone_panel(ui, "Current tone", tone, &mut self.show_values);
         }
+        let ready = self.device_ready();
         self.editor.show(
             ui,
             services,
             self.device.as_ref(),
-            self.worker.is_none() && !self.store.busy(),
+            ready && self.worker.is_none() && !self.store.busy(),
         );
     }
 }

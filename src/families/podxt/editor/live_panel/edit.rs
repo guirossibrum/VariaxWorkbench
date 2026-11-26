@@ -8,6 +8,7 @@ const EDIT_INTERVAL: Duration = Duration::from_millis(150);
 const WHOLE_TONE_SEND_APPROVED: bool = false;
 
 pub(super) struct LiveEditor {
+    pub(super) reply_pending: Arc<AtomicBool>,
     session: Option<ActiveEdit>,
     worker: Option<EditWorker>,
     pending: Pending,
@@ -21,6 +22,7 @@ pub(super) struct LiveEditor {
 impl Default for LiveEditor {
     fn default() -> Self {
         Self {
+            reply_pending: Arc::default(),
             session: None,
             worker: None,
             pending: Pending::default(),
@@ -136,6 +138,7 @@ impl GatePolicy for EditPolicy {
 }
 
 struct Job {
+    reply_pending: Arc<AtomicBool>,
     action: Action,
     whole_tone_backup: Option<VerifiedToneBackup>,
     current: Option<EditorBuffer>,
@@ -154,12 +157,17 @@ fn edit_transaction<'a, G>(
         let stopped = || stop.load(Ordering::Acquire);
         with_session(
             stopped,
+            &job.reply_pending,
             lock,
             with_link,
             EditPolicy(job.action),
             move |session| {
                 let edit = match job.action {
-                    Action::Get => return podxt::get_editor_buffer(session, stopped),
+                    Action::Get => {
+                        return track_reply(&job.reply_pending, |outstanding| {
+                            podxt::get_editor_buffer_tracking_reply(session, stopped, outstanding)
+                        });
+                    }
                     Action::Recall(slot) => {
                         return podxt::recall_editor_channel(session, slot, stopped);
                     }
@@ -287,6 +295,7 @@ impl LiveEditor {
 
     fn start(&mut self, action: Action, device: &detection::DeviceKey, ctx: &egui::Context) {
         if self.worker.is_some()
+            || self.reply_pending.load(Ordering::Acquire)
             || !Self::admitted(action)
             || action == Action::ResendWholeTone && self.whole_tone_backup.is_none()
             || action != Action::Get && (self.session.is_none() || self.needs_get)
@@ -304,6 +313,7 @@ impl LiveEditor {
             self.whole_tone_backup = None;
         }
         let job = Job {
+            reply_pending: Arc::clone(&self.reply_pending),
             action,
             whole_tone_backup: if action == Action::ResendWholeTone {
                 self.whole_tone_backup.take()
@@ -504,10 +514,14 @@ impl LiveEditor {
             .is_none_or(|model| value(model) == model.read(&active.current.tone))
     }
 
+    pub(super) fn live_edit_admitted() -> bool {
+        Self::admitted(Action::Controls)
+    }
+
     pub(super) fn stage_editable(&self) -> bool {
         self.session.is_some()
             && !self.needs_get
-            && Self::admitted(Action::Controls)
+            && Self::live_edit_admitted()
             && self
                 .worker
                 .as_ref()
@@ -730,4 +744,4 @@ impl LiveEditor {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

@@ -408,7 +408,11 @@ impl PodxtEditor {
                     Ok(Some((tone, packs))) => Some((CURRENT_STAGE, tone, packs)),
                     Ok(None) => {
                         self.stage_connection(ui, true);
-                        ui.label("Reading the playing tone…");
+                        ui.label(
+                            self.live
+                                .pending_reply_message()
+                                .unwrap_or("Reading the playing tone…"),
+                        );
                         return;
                     }
                     Err(error) => {

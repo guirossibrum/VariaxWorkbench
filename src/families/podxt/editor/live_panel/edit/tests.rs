@@ -84,6 +84,7 @@ fn g6_transaction_holds_the_rig_lock_for_cc_and_readback_and_denies_other_writes
         )
     };
     let job = Job {
+        reply_pending: Arc::default(),
         action: Action::Controls,
         whole_tone_backup: None,
         current: Some(before.clone()),
@@ -184,4 +185,122 @@ fn the_whole_tone_resend_has_its_own_closed_owner_gate() {
     );
     assert!(!policy.allows(Operation::PodxtStoreRestore));
     assert!(!policy.allows(Operation::PodxtChannelSwitch));
+}
+
+#[test]
+fn stage_get_recovers_but_recall_keeps_its_original_read_and_selection_count() {
+    use super::super::tests::read_recovery::{TimedLink, identity_reply};
+
+    let before = sample(20, 17);
+    let target = sample(45, 18);
+    let pending = Arc::new(AtomicBool::new(false));
+    let held = Cell::new(false);
+    let stop = AtomicBool::new(false);
+    let channel = |index| {
+        (
+            PodxtRequest::QueryGlobal(Global::CurrentChannel),
+            vec![(1, vec![0xf0, 0, 1, 0x0c, 3, 0x56, 17, 0, 0, 1, index, 0xf7])],
+        )
+    };
+    let packs = (
+        PodxtRequest::InstalledPacks,
+        vec![(1, vec![0xf0, 0, 1, 0x0c, 3, 0x0e, 0, 4, 0xf7])],
+    );
+    let current = (PodxtRequest::EditBuffer, vec![(1, before.tone.raw.clone())]);
+    for (action, script, count, expected) in [
+        (
+            Action::Get,
+            vec![
+                identity_reply(),
+                channel(1),
+                (PodxtRequest::EditBuffer, vec![]),
+                current.clone(),
+                packs.clone(),
+                channel(1),
+            ],
+            6,
+            &before,
+        ),
+        (
+            Action::Recall(target.channel),
+            vec![
+                identity_reply(),
+                channel(1),
+                current,
+                (
+                    PodxtRequest::Stored(before.channel),
+                    vec![(1, before.tone.raw.clone())],
+                ),
+                (
+                    PodxtRequest::Stored(target.channel),
+                    vec![(1, target.tone.raw.clone())],
+                ),
+                packs,
+                channel(1),
+                (PodxtRequest::Program(target.channel), vec![]),
+                (PodxtRequest::EditBuffer, vec![(1, target.tone.raw.clone())]),
+                channel(2),
+            ],
+            10,
+            &target,
+        ),
+    ] {
+        let writes = Cell::new(0);
+        let result = edit_transaction(
+            &Job {
+                reply_pending: Arc::clone(&pending),
+                action,
+                whole_tone_backup: None,
+                current: None,
+                original: None,
+                targets: Vec::new(),
+            },
+            &stop,
+            || {
+                assert!(!held.replace(true));
+                Ok(FakeLock(&held))
+            },
+            |_, run| {
+                run(&mut TimedLink {
+                    held: &held,
+                    writes: &writes,
+                    script: script.into(),
+                    queue: Vec::new(),
+                    now: Duration::ZERO,
+                    stop: &stop,
+                    stop_at: Duration::MAX,
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(writes.get(), count);
+        assert!(!held.get());
+        assert!(!pending.load(Ordering::Acquire));
+        assert_eq!(result.channel, expected.channel);
+        assert_eq!(result.packs, expected.packs);
+        assert_eq!(result.tone, expected.tone);
+    }
+}
+
+pub(in crate::editor::podxt_panel::live_panel) fn assert_recall_and_edit_blocked(
+    pending: &Arc<AtomicBool>,
+) {
+    let current = sample(20, 17);
+    let target = Location::new(BankKind::Tones, 18).unwrap();
+    for action in [Action::Recall(target), Action::Controls] {
+        let result = edit_transaction(
+            &Job {
+                reply_pending: Arc::clone(pending),
+                action,
+                whole_tone_backup: None,
+                current: Some(current.clone()),
+                original: Some(current.clone()),
+                targets: vec![drive(45)],
+            },
+            &AtomicBool::new(false),
+            || panic!("quarantined recall/edit must not acquire the rig lock"),
+            |_: &(), _| panic!("quarantined recall/edit must not open MIDI"),
+        );
+        assert_eq!(result.unwrap_err(), PENDING_REPLY);
+    }
 }

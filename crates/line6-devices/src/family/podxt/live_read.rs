@@ -2,7 +2,8 @@
 //! automatic identity before opening the port. Each operation also confirms
 //! the identity of the open port before sending a domain request.
 
-use super::procedures::resend_identity;
+use super::current_read::TONE_HEADER;
+use super::procedures::{read_stored_tone_observing, resend_identity};
 use super::*;
 use crate::midi::Event;
 use crate::session::POLL;
@@ -89,7 +90,27 @@ pub fn read_live<L: Link>(
     cancelled: impl Fn() -> bool,
     mut publish: impl FnMut(ReadUpdate),
 ) -> Result<(), String> {
-    read_live_on(session, command, None, true, cancelled, &mut publish)
+    read_live_tracking_reply(session, command, cancelled, &mut false, &mut publish)
+}
+
+/// The Workbench reader keeps this reply state across a failed session. The
+/// same attachment must not be used again if a late dump could still arrive.
+pub fn read_live_tracking_reply<L: Link>(
+    session: &mut Session<L>,
+    command: ReadCommand,
+    cancelled: impl Fn() -> bool,
+    outstanding: &mut bool,
+    mut publish: impl FnMut(ReadUpdate),
+) -> Result<(), String> {
+    read_live_on(
+        session,
+        command,
+        None,
+        true,
+        cancelled,
+        outstanding,
+        &mut publish,
+    )
 }
 
 /// Run the editor Follow reader for a bounded interval on the caller's locked link.
@@ -105,6 +126,7 @@ pub fn follow_window<L: Link>(
         Some(window),
         true,
         cancelled,
+        &mut false,
         &mut publish,
     )
 }
@@ -207,11 +229,6 @@ fn check_cancel(cancelled: &dyn Fn() -> bool) -> Result<(), String> {
     }
 }
 
-fn remaining<L: Link>(session: &Session<L>, end: Duration) -> Option<Duration> {
-    end.checked_sub(session.link.elapsed())
-        .filter(|duration| !duration.is_zero())
-}
-
 /// Run the editor tuner with a shorter diagnostic window, including cleanup.
 pub fn tuner_window<L: Link>(
     session: &mut Session<L>,
@@ -225,6 +242,7 @@ pub fn tuner_window<L: Link>(
         Some(window),
         true,
         cancelled,
+        &mut false,
         &mut publish,
     )
 }
@@ -249,6 +267,7 @@ pub fn follow_action<L: Link>(
         None,
         false,
         cancelled,
+        &mut false,
         &mut publish,
     )
 }
@@ -259,22 +278,31 @@ fn read_live_on<L: Link>(
     window: Option<Duration>,
     verify: bool,
     cancelled: impl Fn() -> bool,
+    outstanding: &mut bool,
     publish: &mut dyn FnMut(ReadUpdate),
 ) -> Result<(), String> {
+    if *outstanding {
+        return Err(
+            "An earlier PODxt reply may still be pending. Reconnect the PODxt Live.".into(),
+        );
+    }
     let mut reader = Reader {
         session,
         cancelled: &cancelled,
-        publish,
-        follow: command == ReadCommand::Follow,
-        saves: VecDeque::new(),
-        current_due: None,
-        after_reply: Vec::new(),
+        outstanding,
+        recover: verify,
+        updates: Updates {
+            publish,
+            follow: command == ReadCommand::Follow,
+            saves: VecDeque::new(),
+            current_due: None,
+        },
     };
     if verify {
         reader.identify(command == ReadCommand::Tuner)?;
     }
     match command {
-        ReadCommand::Current => reader.current(),
+        ReadCommand::Current => reader.current(None),
         ReadCommand::Library => reader.library(&BankKind::ALL),
         ReadCommand::ToneBank => reader.library(&[BankKind::Tones]),
         ReadCommand::Packs => reader.packs(),
@@ -287,11 +315,16 @@ fn read_live_on<L: Link>(
 struct Reader<'a, 's, L: Link> {
     session: &'a mut Session<'s, L>,
     cancelled: &'a dyn Fn() -> bool,
+    outstanding: &'a mut bool,
+    recover: bool,
+    updates: Updates<'a>,
+}
+
+struct Updates<'a> {
     publish: &'a mut dyn FnMut(ReadUpdate),
     follow: bool,
     saves: VecDeque<(Location, Duration)>,
     current_due: Option<Duration>,
-    after_reply: Vec<Event>,
 }
 
 impl<L: Link> Reader<'_, '_, L> {
@@ -313,6 +346,7 @@ impl<L: Link> Reader<'_, '_, L> {
         let initial_orphans = self.session.assembler.orphans;
         let mut resent = false;
         let mut identity = None;
+        let mut stale_tone = false;
         while let Some(left) = self.remaining(end) {
             self.check_cancel()?;
             let now = self.session.link.elapsed();
@@ -331,17 +365,25 @@ impl<L: Link> Reader<'_, '_, L> {
             };
             last_packet = self.session.link.elapsed();
             for event in events {
-                if let Event::Sysex(frame) = event
-                    && let Some(reply) = Identity::parse(&frame)
-                    && identity.replace(reply).is_some()
-                {
-                    return Err("More than one MIDI identity answered.".into());
+                if let Event::Sysex(frame) = event {
+                    stale_tone |= frame.starts_with(TONE_HEADER) || frame == STORED_READ_END;
+                    if let Some(reply) = Identity::parse(&frame)
+                        && identity.replace(reply).is_some()
+                    {
+                        return Err("More than one MIDI identity answered.".into());
+                    }
                 }
             }
         }
         self.check_cancel()?;
         let missing = "The open MIDI port did not verify as PODxt Live 3.01.";
         let identity = identity.ok_or(missing)?;
+        if stale_tone {
+            *self.outstanding = true;
+            return Err(
+                "An unsolicited PODxt tone reply arrived during identity verification.".into(),
+            );
+        }
         check_live_identity(&identity).map_err(|error| if tuner { error } else { missing.into() })
     }
 
@@ -362,12 +404,11 @@ impl<L: Link> Reader<'_, '_, L> {
             self.check_cancel()?;
             let mut answer = None;
             for event in self.session.poll(left.min(POLL))?.into_iter().flatten() {
-                match event {
-                    Event::Sysex(frame) if answer.is_none() && matches(&frame) => {
-                        answer = Some(frame);
-                    }
-                    other if answer.is_some() && self.follow => self.after_reply.push(other),
-                    other => self.incoming(&other),
+                if let Event::Sysex(frame) = event
+                    && answer.is_none()
+                    && matches(&frame)
+                {
+                    answer = Some(frame);
                 }
             }
             self.check_cancel()?;
@@ -378,20 +419,79 @@ impl<L: Link> Reader<'_, '_, L> {
         Ok(None)
     }
 
-    fn current(&mut self) -> Result<(), String> {
-        let tone = request_tone(None, |request, window| {
-            self.request(request, window, is_edit_buffer)
-        })?
-        .ok_or("No 168-byte edit-buffer dump arrived.")?;
-        (self.publish)(ReadUpdate::Current(tone));
-        self.replay_after_reply();
-        Ok(())
+    fn current(&mut self, deadline: Option<Duration>) -> Result<(), String> {
+        let mut after_reply = Vec::new();
+        let cancelled = self.cancelled;
+        let updates = &mut self.updates;
+        let tone = if self.recover {
+            read_verified_current_tone(
+                self.session,
+                || check_cancel(cancelled),
+                deadline,
+                self.outstanding,
+                |event, now, after| {
+                    let disposition = tone_event(event);
+                    if after && updates.follow {
+                        if matches!(event, Event::Sysex(frame) if frame == &STORED_READ_END) {
+                            return Ok(ToneReadEvent::Unexpected);
+                        }
+                        after_reply.push((event.clone(), now));
+                        // A first-attempt dump precedes these notifications.
+                        // Keep Follow's existing tolerance of other traffic after it.
+                        return Ok(ToneReadEvent::Ignore);
+                    }
+                    updates.incoming(event, now);
+                    Ok(disposition)
+                },
+            )
+        } else {
+            // This entry point borrows an existing session from an orchestrator.
+            // Its prior request history is unknown, so use one request only.
+            check_cancel(cancelled)?;
+            self.session.send(PodxtRequest::EditBuffer)?;
+            let end = self.session.link.elapsed() + WINDOW;
+            let mut reply = None;
+            while let Some(left) = remaining(self.session, end) {
+                check_cancel(cancelled)?;
+                let events = self.session.poll(left.min(POLL))?;
+                check_cancel(cancelled)?;
+                let now = self.session.link.elapsed();
+                for event in events.into_iter().flatten() {
+                    match event {
+                        Event::Sysex(frame) if reply.is_none() && is_edit_buffer(&frame) => {
+                            reply = Some(frame);
+                        }
+                        event if reply.is_some() => after_reply.push((event, now)),
+                        event => {
+                            updates.incoming(&event, now);
+                        }
+                    }
+                }
+                if reply.is_some() {
+                    break;
+                }
+            }
+            reply
+                .ok_or_else(|| "No 168-byte edit-buffer dump arrived.".to_owned())
+                .and_then(EditBuffer::parse)
+        };
+        let result = tone.map(|tone| (updates.publish)(ReadUpdate::Current(tone)));
+        for (event, now) in after_reply {
+            updates.incoming(&event, now);
+        }
+        result
     }
 
-    fn stored(&mut self, location: Location) -> Result<(), String> {
-        let tone = request_tone(Some(location), |request, window| {
-            self.request(request, window, is_edit_buffer)
-        })?
+    fn stored(&mut self, location: Location, deadline: Option<Duration>) -> Result<(), String> {
+        let cancelled = self.cancelled;
+        let tone = read_stored_tone_observing(
+            self.session,
+            location,
+            || check_cancel(cancelled),
+            deadline,
+            self.outstanding,
+            |event, now| self.updates.incoming(event, now),
+        )?
         .ok_or_else(|| {
             format!(
                 "{} {}: no stored dump.",
@@ -399,15 +499,12 @@ impl<L: Link> Reader<'_, '_, L> {
                 location.label()
             )
         })?;
-        (self.publish)(ReadUpdate::Stored(StoredTone { location, tone }));
-        self.replay_after_reply();
-        self.wait(STORED_GAP)
-    }
-
-    fn replay_after_reply(&mut self) {
-        for event in std::mem::take(&mut self.after_reply) {
-            self.incoming(&event);
+        if tone.raw[6] != PODXT_LIVE_MEMBER as u8 {
+            return Err("The stored reply is from an unexpected PODxt family member.".into());
         }
+        *self.outstanding = false;
+        (self.updates.publish)(ReadUpdate::Stored(StoredTone { location, tone }));
+        self.check_cancel()
     }
 
     fn wait(&mut self, duration: Duration) -> Result<(), String> {
@@ -415,7 +512,7 @@ impl<L: Link> Reader<'_, '_, L> {
         while let Some(left) = self.remaining(end) {
             self.check_cancel()?;
             for event in self.session.poll(left.min(POLL))?.into_iter().flatten() {
-                self.incoming(&event);
+                self.updates.incoming(&event, self.session.link.elapsed());
             }
         }
         self.check_cancel()
@@ -423,9 +520,9 @@ impl<L: Link> Reader<'_, '_, L> {
 
     fn library(&mut self, banks: &[BankKind]) -> Result<(), String> {
         self.check_cancel()?;
-        (self.publish)(ReadUpdate::LibraryStarted);
+        (self.updates.publish)(ReadUpdate::LibraryStarted);
         for location in Location::all(banks) {
-            self.stored(location)?;
+            self.stored(location, None)?;
         }
         Ok(())
     }
@@ -434,7 +531,7 @@ impl<L: Link> Reader<'_, '_, L> {
         let frame = self
             .request(PodxtRequest::InstalledPacks, WINDOW, is_packs_reply)?
             .ok_or("No installed-pack reply arrived.")?;
-        (self.publish)(ReadUpdate::Packs(Packs(frame[7])));
+        (self.updates.publish)(ReadUpdate::Packs(Packs(frame[7])));
         Ok(())
     }
 
@@ -452,7 +549,7 @@ impl<L: Link> Reader<'_, '_, L> {
             .into_iter()
             .map(|field| self.global(field).map(|value| (field, value)))
             .collect::<Result<Vec<_>, _>>()?;
-        (self.publish)(ReadUpdate::Globals(values));
+        (self.updates.publish)(ReadUpdate::Globals(values));
         Ok(())
     }
 
@@ -464,7 +561,7 @@ impl<L: Link> Reader<'_, '_, L> {
             while self.remaining(start + window).is_some() {
                 let note = self.global(Global::TunerNote)?;
                 let deviation = self.global(Global::TunerDeviation)?;
-                (self.publish)(ReadUpdate::Tuner(TunerReading {
+                (self.updates.publish)(ReadUpdate::Tuner(TunerReading {
                     at: self.session.link.elapsed().saturating_sub(start),
                     note,
                     deviation,
@@ -480,48 +577,8 @@ impl<L: Link> Reader<'_, '_, L> {
         }
     }
 
-    fn incoming(&mut self, event: &Event) {
-        if !self.follow {
-            return;
-        }
-        let now = self.session.link.elapsed();
-        match notice(event) {
-            Some(Notice::Controller(64, _)) => {
-                (self.publish)(ReadUpdate::Tap);
-                self.current_due = Some(now + CURRENT_SETTLE);
-            }
-            Some(Notice::Controller(TUNER_CC, value)) => {
-                (self.publish)(ReadUpdate::TunerMode(value > 63));
-            }
-            Some(Notice::Controller(19, _)) => {
-                // Line 6 Edit refreshes the edit buffer after an FX setup recall.
-                self.current_due = Some(now + CURRENT_SETTLE);
-            }
-            Some(Notice::Controller(number, value)) => {
-                (self.publish)(ReadUpdate::Controller { number, value });
-                if matches!(number, 11 | 12 | 37 | 58 | 71 | 75 | 88 | 91) {
-                    // Model selection can change companion controls without
-                    // sending separate controller feedback for every value.
-                    self.current_due = Some(now + CURRENT_SETTLE);
-                }
-            }
-            Some(Notice::Channel(location)) => {
-                (self.publish)(ReadUpdate::Channel(location));
-                self.current_due = Some(now + CURRENT_SETTLE);
-            }
-            Some(Notice::Clip) => (self.publish)(ReadUpdate::Clip),
-            // Line 6 Edit does not request a stored dump for an amp-setup save.
-            Some(Notice::Save(location)) if location.kind() != BankKind::AmpSetups => {
-                // Repeated saves to one slot refresh its latest value once.
-                self.saves.retain(|(pending, _)| *pending != location);
-                self.saves.push_back((location, now + DEVICE_SAVE_SETTLE));
-            }
-            _ => {}
-        }
-    }
-
     fn follow(&mut self, window: Option<Duration>) -> Result<(), String> {
-        self.current()?;
+        self.current(None)?;
         let end = window.map(|window| self.session.link.elapsed() + window);
         loop {
             let now = self.session.link.elapsed();
@@ -529,38 +586,105 @@ impl<L: Link> Reader<'_, '_, L> {
                 return Ok(());
             }
             self.check_cancel()?;
-            if self.current_due.is_some_and(|due| due <= now) {
-                self.current_due = None;
-                self.current()?;
+            if self.updates.current_due.is_some_and(|due| due <= now) {
+                self.updates.current_due = None;
+                self.current(end)?;
             }
-            if let Some(&(location, due)) = self.saves.front()
+            if let Some(&(location, due)) = self.updates.saves.front()
                 && due <= now
             {
-                self.saves.pop_front();
+                self.updates.saves.pop_front();
                 if self.session.allows(Operation::PodxtLibraryRead) {
-                    self.stored(location)?;
+                    self.stored(location, end)?;
                 } else {
-                    (self.publish)(ReadUpdate::FollowWarning(
+                    (self.updates.publish)(ReadUpdate::FollowWarning(
                         "A PODxt save was detected. The library read gate is closed.".into(),
                     ));
                 }
             }
             let now = self.session.link.elapsed();
             let wait = self
+                .updates
                 .saves
                 .front()
                 .map(|&(_, due)| due)
                 .into_iter()
-                .chain(self.current_due)
+                .chain(self.updates.current_due)
                 .chain(end)
                 .min()
                 .map_or(POLL, |due| due.saturating_sub(now).min(POLL));
             if !wait.is_zero() {
                 for event in self.session.poll(wait)?.into_iter().flatten() {
-                    self.incoming(&event);
+                    if matches!(&event, Event::Sysex(frame)
+                        if frame.starts_with(TONE_HEADER) || frame == &STORED_READ_END)
+                    {
+                        *self.outstanding = true;
+                    } else {
+                        self.updates.incoming(&event, self.session.link.elapsed());
+                    }
+                }
+                if *self.outstanding {
+                    return Err("An unsolicited PODxt tone reply arrived while following. The next read is ambiguous.".into());
                 }
             }
         }
+    }
+}
+
+impl Updates<'_> {
+    fn incoming(&mut self, event: &Event, now: Duration) -> bool {
+        let Some(notice) = notice(event).filter(|_| self.follow) else {
+            return false;
+        };
+        match notice {
+            Notice::Controller(64, _) => {
+                (self.publish)(ReadUpdate::Tap);
+                self.current_due = Some(now + CURRENT_SETTLE);
+            }
+            Notice::Controller(TUNER_CC, value) => {
+                (self.publish)(ReadUpdate::TunerMode(value > 63));
+            }
+            Notice::Controller(19, _) => {
+                // Line 6 Edit refreshes the edit buffer after an FX setup recall.
+                self.current_due = Some(now + CURRENT_SETTLE);
+            }
+            Notice::Controller(number, value) => {
+                (self.publish)(ReadUpdate::Controller { number, value });
+                if matches!(number, 11 | 12 | 37 | 58 | 71 | 75 | 88 | 91) {
+                    // Model selection can change companion controls without
+                    // sending separate controller feedback for every value.
+                    self.current_due = Some(now + CURRENT_SETTLE);
+                }
+            }
+            Notice::Channel(location) => {
+                (self.publish)(ReadUpdate::Channel(location));
+                self.current_due = Some(now + CURRENT_SETTLE);
+            }
+            Notice::Clip => (self.publish)(ReadUpdate::Clip),
+            // Line 6 Edit does not request a stored dump for an amp-setup save.
+            Notice::Save(location) if location.kind() != BankKind::AmpSetups => {
+                // Repeated saves to one slot refresh its latest value once.
+                self.saves.retain(|(pending, _)| *pending != location);
+                self.saves.push_back((location, now + DEVICE_SAVE_SETTLE));
+            }
+            _ => {}
+        }
+        true
+    }
+}
+
+/// Tuner mode, clip and save notices carry no edit-buffer change by themselves.
+pub(super) fn tone_event(event: &Event) -> ToneReadEvent {
+    match notice(event) {
+        Some(Notice::Controller(TUNER_CC, _) | Notice::Clip | Notice::Save(_)) => {
+            ToneReadEvent::Ignore
+        }
+        Some(Notice::Channel(_) | Notice::Controller(..)) => ToneReadEvent::StateChanged,
+        None => match event {
+            Event::Sysex(_) => ToneReadEvent::Unexpected,
+            Event::Short(message) if message[0] & 0xf0 == 0xc0 => ToneReadEvent::StateChanged,
+            Event::Short(_) => ToneReadEvent::Ignore,
+        },
     }
 }
 
@@ -885,6 +1009,34 @@ mod tests {
             assert_eq!(fake.fake.writes.last().unwrap(), &[0xb0, 69, 0]);
             fake.fake.assert_finished();
         }
+    }
+
+    #[test]
+    fn bounded_follow_refresh_does_not_borrow_time_for_a_retry() {
+        let initial = [tone(b"Before"), vec![0xc0, 41]].concat();
+        let mut fake = Fake::new(
+            Path::PodxtMidi,
+            vec![
+                (PodxtRequest::Identity, packets(&identity())),
+                (PodxtRequest::EditBuffer, vec![initial]),
+                (PodxtRequest::EditBuffer, vec![]),
+            ],
+        );
+        let mut log = Quiet;
+        let mut session = Session::new(&mut fake, &ReadsOnly { stored: false }, &mut log);
+        let mut updates = Vec::new();
+        let result = follow_window(
+            &mut session,
+            Duration::from_secs(3),
+            || false,
+            |update| updates.push(update),
+        );
+        assert!(result.unwrap_err().contains("time limit"));
+        assert!(matches!(
+            updates.as_slice(),
+            [ReadUpdate::Current(_), ReadUpdate::Channel(_)]
+        ));
+        fake.assert_finished();
     }
 
     #[test]

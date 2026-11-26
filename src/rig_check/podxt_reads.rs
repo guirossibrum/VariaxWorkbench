@@ -3,19 +3,20 @@
 
 use super::differences::{self, Severity};
 use super::procedures::{
-    DRAIN, DynSession, PODXT_LIBRARY, PodxtReplyQuarantine, podxt_read_stored, with_podxt_progress,
+    DynSession, PODXT_LIBRARY, PodxtReplyQuarantine, podxt_read_stored, with_podxt_progress,
 };
 use super::runner::{Ctx, Progress, STOPPED};
-use line6_devices::family::podxt::{self, BankKind, EditBuffer, Location, PodxtRequest};
+use line6_devices::family::podxt::{self, BankKind, EditBuffer, Location};
 use line6_devices::gate::Operation;
 use line6_devices::identity::Identity;
 use line6_devices::midi::{Event, hex};
-use line6_devices::session::POLL;
 use std::time::Duration;
 
-const TONE_ATTEMPTS: usize = 3;
+#[cfg(test)]
+use line6_devices::family::podxt::PodxtRequest;
+
+#[cfg(test)]
 const TONE_HEADER: &[u8] = &[0xf0, 0, 1, 0x0c, 3, 0x74];
-const TONE_WINDOW: Duration = Duration::from_secs(2);
 
 fn check_stop(stopping: &dyn Fn() -> bool) -> Result<(), String> {
     if stopping() {
@@ -56,138 +57,26 @@ pub(super) fn with_current_tone<T>(
     result
 }
 
-/// Discard frames and tails arriving after an abandoned attempt. The final
-/// reset also prevents a frame started during the drain finishing on retry.
-/// A quiet drain only prepares a retry of this request on this link.
-fn discard_reply(session: &mut DynSession<'_>, stopping: &dyn Fn() -> bool) -> Result<(), String> {
-    let end = session.link.elapsed() + DRAIN;
-    session.note("Discarding pending PODxt input after an incomplete read.");
-    while let Some(left) = end
-        .checked_sub(session.link.elapsed())
-        .filter(|left| !left.is_zero())
-    {
-        check_stop(stopping)?;
-        session.poll(left.min(POLL))?;
-    }
-    session.assembler = Default::default();
-    check_stop(stopping)
-}
-
-/// Allow one original reply window for a second dump to arrive after a retry.
-/// Even an identical second dump makes it ambiguous which request answered.
-/// The wire cannot identify an intact untagged dump arriving after the window.
-fn settle_retried_tone(
-    session: &mut DynSession<'_>,
-    stopping: &dyn Fn() -> bool,
-) -> Result<(), String> {
-    session.note("Checking for an extra PODxt dump before using the retried tone.");
-    let end = session.link.elapsed() + TONE_WINDOW;
-    while let Some(left) = end
-        .checked_sub(session.link.elapsed())
-        .filter(|left| !left.is_zero())
-    {
-        check_stop(stopping)?;
-        let events = session.poll(left.min(POLL))?;
-        check_stop(stopping)?;
-        for event in events.into_iter().flatten() {
-            match event {
-                Event::Sysex(frame) if frame.starts_with(TONE_HEADER) => {
-                    return Err(
-                        "An extra PODxt tone reply arrived after the retry. The tone is ambiguous."
-                            .into(),
-                    );
-                }
-                Event::Sysex(frame) => {
-                    return Err(format!(
-                        "Unexpected PODxt reply after the tone retry: {}",
-                        hex(&frame)
-                    ));
-                }
-                Event::Short(message) if message[0] & 0xf0 == 0xc0 => {
-                    return Err("The PODxt channel changed after the tone retry.".into());
-                }
-                Event::Short(_) => {}
-            }
-        }
-    }
-    // An unfinished frame must never be completed by input from the next read.
-    session.assembler = Default::default();
-    check_stop(stopping)
-}
-
 fn read_current_tone(
     session: &mut DynSession<'_>,
     stopping: &dyn Fn() -> bool,
     outstanding: &mut bool,
 ) -> Result<EditBuffer, String> {
-    for attempt in 1..=TONE_ATTEMPTS {
-        check_stop(stopping)?;
-        // A transport write can fail after the request reached the device.
-        *outstanding = true;
-        session.send(PodxtRequest::EditBuffer)?;
-        let end = session.link.elapsed() + TONE_WINDOW;
-        let mut reason = "No 168-byte edit-buffer dump arrived.".to_owned();
-        while let Some(left) = end
-            .checked_sub(session.link.elapsed())
-            .filter(|left| !left.is_zero())
-        {
-            check_stop(stopping)?;
-            let events = session.poll(left.min(POLL))?;
-            check_stop(stopping)?;
-            let mut reply = None;
-            for event in events.into_iter().flatten() {
-                match event {
-                    Event::Sysex(frame)
-                        if frame.starts_with(TONE_HEADER)
-                            && frame.len() < podxt::EDIT_BUFFER_LEN
-                            && (frame.len() == TONE_HEADER.len() + 1
-                                || frame[6] == podxt::PODXT_LIVE_MEMBER as u8) =>
-                    {
-                        reason = format!(
-                            "Incomplete PODxt tone reply has {} bytes, expected {}.",
-                            frame.len(),
-                            podxt::EDIT_BUFFER_LEN
-                        );
-                    }
-                    Event::Sysex(frame) => {
-                        if !frame.starts_with(TONE_HEADER)
-                            || frame.get(6) != Some(&(podxt::PODXT_LIVE_MEMBER as u8))
-                        {
-                            return Err(format!("Unexpected PODxt tone reply: {}", hex(&frame)));
-                        }
-                        let tone = EditBuffer::parse(frame)?;
-                        if reply.replace(tone).is_some() {
-                            return Err(
-                                "More than one PODxt tone reply arrived in a packet.".into()
-                            );
-                        }
-                    }
-                    Event::Short(message) if message[0] & 0xf0 == 0xc0 => {
-                        return Err("The PODxt channel changed during the tone read.".into());
-                    }
-                    Event::Short(_) => {}
-                }
+    use podxt::ToneReadEvent;
+
+    podxt::read_verified_current_tone(
+        session,
+        || check_stop(stopping),
+        None,
+        outstanding,
+        |event, _, _| match event {
+            Event::Short(message) if message[0] & 0xf0 == 0xc0 => {
+                Err("The PODxt channel changed during the tone read.".into())
             }
-            if let Some(tone) = reply {
-                if attempt > 1 {
-                    settle_retried_tone(session, stopping)?;
-                }
-                *outstanding = false;
-                return Ok(tone);
-            }
-        }
-        if attempt == TONE_ATTEMPTS {
-            return Err(format!(
-                "{reason} The PODxt tone read used all {TONE_ATTEMPTS} attempts."
-            ));
-        }
-        discard_reply(session, stopping)?;
-        session.note(format!(
-            "Retrying PODxt EditBuffer (attempt {}/{TONE_ATTEMPTS}): {reason}",
-            attempt + 1
-        ));
-    }
-    unreachable!("the final attempt returns")
+            Event::Short(_) => Ok(ToneReadEvent::Ignore),
+            Event::Sysex(_) => Ok(ToneReadEvent::Unexpected),
+        },
+    )
 }
 
 fn channel() -> Location {

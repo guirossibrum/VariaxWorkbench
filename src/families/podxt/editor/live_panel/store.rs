@@ -81,6 +81,7 @@ impl GatePolicy for StorePolicy {
 fn store_transaction<'a, G>(
     confirmation: ConfirmedStore,
     control: &'a StoreControl,
+    reply_pending: &AtomicBool,
     lock: impl FnOnce() -> Result<G, String>,
     with_link: impl FnOnce(&G, RunOnLink<'a, StoreResult>) -> Result<StoreResult, String>,
 ) -> Result<StoreResult, String> {
@@ -88,6 +89,7 @@ fn store_transaction<'a, G>(
         hardware_gates::run_if_unlocked(Gate::FullBackupRead, || {
             with_session(
                 || control.cancelled(),
+                reply_pending,
                 lock,
                 with_link,
                 StorePolicy,
@@ -103,6 +105,7 @@ fn platform_store(
     stage: StoreStage,
     confirmation: ConfirmedStore,
     control: &StoreControl,
+    reply_pending: &AtomicBool,
 ) -> Result<StoreResult, String> {
     if !stage.approved() {
         return Err("This PODxt store stage awaits separate owner approval.".into());
@@ -110,6 +113,7 @@ fn platform_store(
     store_transaction(
         confirmation,
         control,
+        reply_pending,
         || line6_devices::device_lock::DeviceLock::acquire().map_err(|error| error.to_string()),
         |rig, run| with_platform_link(device, rig, run),
     )
@@ -121,6 +125,7 @@ fn platform_store(
     _stage: StoreStage,
     _confirmation: ConfirmedStore,
     _control: &StoreControl,
+    _reply_pending: &AtomicBool,
 ) -> Result<StoreResult, String> {
     Err("PODxt store is unavailable in this build.".into())
 }
@@ -195,8 +200,14 @@ impl StorePanel {
         self.clear_preparation();
     }
 
-    fn start(&mut self, device: &detection::DeviceKey, ctx: &egui::Context) {
+    fn start(
+        &mut self,
+        device: &detection::DeviceKey,
+        reply_pending: &Arc<AtomicBool>,
+        ctx: &egui::Context,
+    ) {
         if self.busy()
+            || reply_pending.load(Ordering::Acquire)
             || !self
                 .prepared
                 .as_ref()
@@ -220,11 +231,18 @@ impl StorePanel {
         let endpoint = device.clone();
         let control = Arc::new(StoreControl::default());
         let thread_control = Arc::clone(&control);
+        let reply_pending = Arc::clone(reply_pending);
         let repaint = ctx.clone();
         let thread = std::thread::Builder::new()
             .name("podxt-store".into())
             .spawn(move || {
-                let result = platform_store(&endpoint, stage, confirmation, &thread_control);
+                let result = platform_store(
+                    &endpoint,
+                    stage,
+                    confirmation,
+                    &thread_control,
+                    &reply_pending,
+                );
                 repaint.request_repaint();
                 result
             });
@@ -288,6 +306,7 @@ impl StorePanel {
         ui: &mut egui::Ui,
         services: &mut EditorServices<'_>,
         device: Option<&detection::DeviceKey>,
+        reply_pending: &Arc<AtomicBool>,
         other_idle: bool,
         view: StoreView,
     ) {
@@ -394,7 +413,7 @@ impl StorePanel {
                             .clicked()
                             && let Some(device) = device
                         {
-                            self.start(device, ui.ctx());
+                            self.start(device, reply_pending, ui.ctx());
                         }
                     }
                 });
@@ -420,4 +439,4 @@ impl StorePanel {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

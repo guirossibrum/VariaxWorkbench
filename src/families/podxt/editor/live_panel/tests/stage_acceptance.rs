@@ -79,6 +79,7 @@ fn current_fixture(ctx: &egui::Context) -> (Workbench, Presence) {
         transaction(
             command,
             &AtomicBool::new(false),
+            &AtomicBool::new(false),
             || {
                 assert!(!held.replace(true));
                 Ok(FakeLock(&held))
@@ -320,6 +321,7 @@ fn follow_renders_tuner_and_fx_updates_without_replacing_an_edited_file_preview(
     let result = transaction(
         ReadCommand::Follow,
         &stop,
+        &AtomicBool::new(false),
         || {
             assert!(!held.replace(true));
             Ok(FakeLock(&held))
@@ -334,7 +336,10 @@ fn follow_renders_tuner_and_fx_updates_without_replacing_an_edited_file_preview(
                     ),
                     (PodxtRequest::EditBuffer, first_reply),
                     (PodxtRequest::EditBuffer, recalled.raw.clone()),
-                    (PodxtRequest::Stored(saved_fx), saved.raw.clone()),
+                    (
+                        PodxtRequest::Stored(saved_fx),
+                        [saved.raw.clone(), vec![0xf0, 0, 1, 0x0c, 3, 0x72, 0xf7]].concat(),
+                    ),
                 ]),
                 reply: None,
                 time: &clock,
@@ -373,8 +378,9 @@ fn follow_renders_tuner_and_fx_updates_without_replacing_an_edited_file_preview(
                     assert_eq!(writes.get(), 3);
                 }
                 "save" => {
-                    // FakeLink advances one poll when returning the stored dump.
-                    let request_time = clock.get() - line6_devices::session::POLL;
+                    // The dump poll and the shared 100 ms marker window precede publication.
+                    let request_time =
+                        clock.get() - line6_devices::session::POLL - Duration::from_millis(100);
                     assert_eq!(
                         request_time - notice_time.unwrap(),
                         Duration::from_millis(2500)
