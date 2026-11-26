@@ -1,9 +1,5 @@
 use super::*;
-#[cfg(all(
-    not(any(target_os = "linux", target_os = "macos")),
-    not(test),
-    feature = "usb"
-))]
+#[cfg(all(not(target_os = "linux"), not(test), feature = "usb"))]
 use variax_workbench::hardware_gates::Gate;
 
 mod edit;

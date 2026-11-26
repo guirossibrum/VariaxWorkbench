@@ -66,16 +66,19 @@ pub struct BothReads {
     pub firmware_notice: Option<FirmwareNotice>,
 }
 
+#[cfg(any(test, not(target_os = "macos")))]
 pub fn read_both() -> Result<BothReads, String> {
     hardware_gates::run_if_unlocked(Gate::DeviceCheckCurrentSettingsRead, read_both_gated)
 }
 
+#[cfg(any(test, not(target_os = "macos")))]
 fn read_both_gated() -> Result<BothReads, String> {
     hardware_gates::run_if_unlocked(Gate::IdentityRequest, || {
         hardware_gates::run_if_unlocked(Gate::OsDiscovery, read_both_supported)
     })
 }
 
+#[cfg(any(test, not(target_os = "macos")))]
 fn read_both_supported() -> Result<BothReads, String> {
     #[cfg(any(test, not(target_os = "linux")))]
     {

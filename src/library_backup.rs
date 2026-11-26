@@ -16,7 +16,7 @@ use crate::variax_library::BackupResult;
 #[cfg(all(not(test), target_os = "linux"))]
 use crate::variax_library::{BackupIdentity, BackupSource, CompletedVariaxBackup};
 
-#[cfg(all(not(test), target_os = "linux"))]
+#[cfg(all(not(test), any(target_os = "linux", target_os = "macos")))]
 use line6_devices::session::Log;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
