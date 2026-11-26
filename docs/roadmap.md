@@ -4,6 +4,8 @@ GitHub issues and the [project board](https://github.com/users/guirossibrum/proj
 
 ## Pending implementation or validation
 
+- [ ] #281 first-connection library cache. The offline checkpoint maps existing captures and defines receipt publication, startup, and fake-transport acceptance. Editor and connection integration await review of the offer policy. [Design and Lane 3 handoff](first-connection-cache.md).
+
 - [ ] #206 editor integration and owner verification of global string levels. All device approvals are closed. The 0x57 comparison shows RAM state. Flash persistence needs separate owner verification. [API and owner verification draft](variax-string-levels.md).
 - [ ] #274 macOS native USB build and linkage verification on both architectures, followed by the owner-approved identity run on M1. The direct USB switch remains closed. [Mac owner test card](podxt-macos-usb-test-card.md).
 

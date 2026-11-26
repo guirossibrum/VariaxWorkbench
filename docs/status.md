@@ -10,6 +10,8 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] #281 offline design checkpoint identifies which approved Variax and PODxt Live captures can populate an offline cache and specifies validation, publication, and fake-transport acceptance for implementation. No cache or device behavior changed. [Design and Lane 3 handoff](first-connection-cache.md).
+
 - [x] #206 device prerequisite adds a gated six-word global string-level RAM read, backup, temporary set and verified restoration, plus a separately gated single store request. Twelve new offline tests verify the transactions. [Lane 3 API and owner verification draft](variax-string-levels.md).
 
 - [x] Rig Check catalogue 1.5 removes the standalone PODxt bank read (2.4). The 299-entry backup in 2.5 still verifies the separate 1A read and protects the PODxt save. Practice runs prove that later checks and the save proceed after a verified backup, and a mismatch keeps the run read-only. Offline tests passed (1,099 app, 207 device, 72 owner-tool). [Coverage](rig-check/coverage.md).
