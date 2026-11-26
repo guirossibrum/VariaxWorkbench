@@ -4,9 +4,12 @@
 //! cleanup result, capture identifier or stable physical-unit identifier.
 //! The family sweep returns before transport release. Workbench drops the
 //! Linux ALSA handle and checks the Mac USB release outside the family sweep.
-//! A future publisher needs the locked capture orchestration to produce a
-//! receipt, constructible only there after that capture's link finalization
-//! succeeds. Existing explicit backup imports use the legacy loader.
+//! The provenance seam binds the sweep and its finalization to the same
+//! scoped link. Only the offline fake implements the sealed link contract
+//! here. Existing explicit backup imports use the legacy loader.
+
+mod provenance;
+pub use provenance::{CaptureLink, CaptureReceipt, FinalizedCapture, capture_library};
 
 use super::{STORED_FOLDERS, podxt_entry_name};
 use crate::{
