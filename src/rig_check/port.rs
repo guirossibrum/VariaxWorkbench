@@ -150,8 +150,7 @@ impl FileSource for Borrowed<'_> {
 }
 
 /// The real rig. Every open first checks the step's owner approval and its
-/// hardware gates. All approvals are off in this build, so no link is ever
-/// opened (#267). Test builds never open a device either way.
+/// hardware gates. Test builds return before opening a device.
 pub struct RealPort {
     system: Box<dyn FileSource>,
     #[cfg(target_os = "linux")]

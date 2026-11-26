@@ -7,69 +7,44 @@
 //! and waits. A window that sees nothing asks "Didn't see it: Try again /
 //! Skip".
 
-use super::practice::{UserAction, preset_for_program_number, preset_label};
+use super::practice::{UserAction, preset_label};
 use super::procedures::{same_program, variax_full_read, with_podxt, with_variax};
 use super::runner::{Ctx, Retry, SKIPPED};
 use super::variax_reads::other_preset;
 use line6_devices::family::podxt::{self, BankKind, Location};
-use line6_devices::family::variax::{self, Preset, VariaxRequest};
+use line6_devices::family::variax::{self, FollowUpdate, Preset};
 use line6_devices::gate::Operation;
-use line6_devices::midi::Event;
-use line6_devices::session::{Link, POLL, Session};
+use line6_devices::session::{Link, Session};
+use std::cell::Cell;
 use std::time::Duration;
 
 /// How long one listening window stays open.
 pub const WINDOW: Duration = Duration::from_secs(30);
 /// When the simulated person acts after the window opens (practice mode).
-pub const PRACTICE_DELAY: Duration = Duration::from_secs(3);
+pub const PRACTICE_DELAY: Duration = Duration::from_secs(5);
 
 const VARIAX_LISTEN: &[Operation] = &[Operation::VariaxIdentity, Operation::VariaxRead];
 const PODXT_LISTEN: &[Operation] = &[Operation::PodxtIdentity, Operation::PodxtRead];
 
-/// Poll only, until `seen` accepts an event or the window ends.
-pub fn watch<L: Link>(
-    session: &mut Session<L>,
-    window: Duration,
-    stopping: &dyn Fn() -> bool,
-    mut seen: impl FnMut(&Event) -> bool,
-) -> Result<bool, String> {
-    let end = session.link.elapsed() + window;
-    while session.link.elapsed() < end {
-        if stopping() {
-            return Err("Stopped by you.".into());
-        }
-        let left = end.saturating_sub(session.link.elapsed());
-        if let Some(events) = session.poll(left.min(POLL))? {
-            for event in &events {
-                if seen(event) {
-                    return Ok(true);
-                }
-            }
-        }
-    }
-    Ok(false)
-}
-
-/// Open the Variax listening session (bridge and MIDI session on), watch,
-/// then close it again. Nothing is sent while the window is open.
+/// Use the editor's decoded Variax Follow stream until the action is observed.
 pub fn watch_variax<L: Link>(
     session: &mut Session<L>,
-    window: Duration,
+    waiting_for_replug: bool,
     stopping: &dyn Fn() -> bool,
-    seen: impl FnMut(&Event) -> bool,
+    mut accepts: impl FnMut(FollowUpdate) -> bool,
 ) -> Result<bool, String> {
-    variax::set_bridge_for_read(session, true)?;
-    session.link.pause(Duration::from_secs(1));
-    let result = session.send(VariaxRequest::SessionOn).and_then(|()| {
-        session.note("Listening window open: nothing is sent until it closes.");
-        watch(session, window, stopping, seen)
-    });
-    let off = session.send(VariaxRequest::SessionOff);
-    let release = variax::set_bridge_for_read(session, false);
-    let seen = result?;
-    off?;
-    release?;
-    Ok(seen)
+    let seen = Cell::new(false);
+    variax::follow_window(
+        session,
+        WINDOW,
+        waiting_for_replug,
+        || stopping() || seen.get(),
+        |update| seen.set(accepts(update)),
+    )?;
+    if stopping() {
+        return Err("Stopped by you.".into());
+    }
+    Ok(seen.get())
 }
 
 /// One guided window with retries on the person's request.
@@ -105,13 +80,11 @@ fn guided<T>(
     }
 }
 
-fn program_seen(target: Preset) -> impl FnMut(&Event) -> bool {
-    move |event| matches!(event, Event::Short(m) if m.len() == 2 && m[0] & 0xf0 == 0xc0 && preset_for_program_number(m[1]) == Some(target))
-}
-
 fn variax_program_window(ctx: &mut Ctx<'_>, target: Preset) -> Result<Option<()>, String> {
     let seen = with_variax(ctx, VARIAX_LISTEN, |session, stopping| {
-        watch_variax(session, WINDOW, stopping, program_seen(target))
+        watch_variax(session, false, stopping, |update| {
+            update == FollowUpdate::ProgramChange(target)
+        })
     })?;
     Ok(seen.then_some(()))
 }
@@ -186,6 +159,10 @@ impl Range {
         self.max = Some(self.max.map_or(value, |m| m.max(value)));
     }
 
+    fn full_range(self) -> bool {
+        self.min == Some(0) && self.max == Some(127)
+    }
+
     /// Swept far enough to count as a sweep.
     fn swept(self) -> bool {
         self.min.is_some_and(|m| m <= 20) && self.max.is_some_and(|m| m >= 107)
@@ -211,18 +188,13 @@ pub fn knobs(ctx: &mut Ctx<'_>) -> Result<(), String> {
             let mut volume = Range::default();
             let mut tone = Range::default();
             let seen = with_variax(ctx, VARIAX_LISTEN, |session, stopping| {
-                watch_variax(session, WINDOW, stopping, |event| {
-                    if let Event::Short(m) = event
-                        && m.len() == 3
-                        && m[0] & 0xf0 == 0xb0
-                    {
-                        match m[1] {
-                            7 => volume.add(m[2]),
-                            79 => tone.add(m[2]),
-                            _ => {}
-                        }
+                watch_variax(session, false, stopping, |update| {
+                    match update {
+                        FollowUpdate::Volume(value) => volume.add(value),
+                        FollowUpdate::TonePosition(value) => tone.add(value),
+                        _ => {}
                     }
-                    volume.swept() && tone.swept()
+                    volume.full_range() && tone.full_range()
                 })
             })?;
             ctx.rec.note(format!(
@@ -241,36 +213,73 @@ pub fn knobs(ctx: &mut Ctx<'_>) -> Result<(), String> {
     Ok(())
 }
 
-fn podxt_window(ctx: &mut Ctx<'_>, seen: impl FnMut(&Event) -> bool) -> Result<bool, String> {
+fn podxt_window(
+    ctx: &mut Ctx<'_>,
+    mut accepts: impl FnMut(podxt::ReadUpdate) -> bool,
+) -> Result<bool, String> {
     let op = &*ctx.op;
-    let stopping = || op.stop_requested();
     let step = ctx.rec.id;
-    let mode = ctx.mode;
     let mut lines = super::procedures::Lines::default();
+    let seen = Cell::new(false);
     let policy = super::procedures::StepPolicy {
         step,
-        mode,
+        mode: ctx.mode,
         ops: PODXT_LISTEN,
     };
     let result = match ctx.port.podxt(step) {
         Ok(link) => {
             let mut session = Session::new(link, &policy, &mut lines);
-            session.note("Listening window open: nothing is sent until it closes.");
-            watch(&mut session, WINDOW, &stopping, seen)
+            podxt::follow_window(
+                &mut session,
+                WINDOW,
+                || op.stop_requested() || seen.get(),
+                |update| {
+                    seen.set(accepts(update));
+                },
+            )
         }
         Err(error) => Err(error),
     };
-    ctx.rec.messages.extend(lines.0);
-    result
+    super::procedures::absorb(ctx, lines);
+    match result {
+        Ok(()) => Ok(seen.get()),
+        Err(error) if seen.get() && error == "PODxt read cancelled." => Ok(true),
+        Err(error) => Err(error),
+    }
 }
 
-fn channel_window(ctx: &mut Ctx<'_>, target: Location) -> Result<Option<()>, String> {
-    let index = target.index() as u8;
-    let seen = podxt_window(
-        ctx,
-        |event| matches!(event, Event::Short(m) if m.len() == 2 && m[0] & 0xf0 == 0xc0 && m[1] == index),
-    )?;
-    Ok(seen.then_some(()))
+fn channel_window(
+    ctx: &mut Ctx<'_>,
+    target: Location,
+    expected_name: &str,
+) -> Result<Option<podxt::EditBuffer>, String> {
+    let mut primed = false;
+    let mut matching_channel = false;
+    let mut readback = None;
+    podxt_window(ctx, |update| match update {
+        podxt::ReadUpdate::Channel(location) if primed => {
+            matching_channel = location == target;
+            false
+        }
+        podxt::ReadUpdate::Current(tone) => {
+            if primed && matching_channel {
+                readback = Some(tone);
+                true
+            } else {
+                primed = true;
+                false
+            }
+        }
+        _ => false,
+    })?;
+    match readback {
+        Some(tone) if tone.name() != expected_name => Err(format!(
+            "Follow re-read channel {} as {:?}, expected {expected_name:?}.",
+            target.label(),
+            tone.name()
+        )),
+        result => Ok(result),
+    }
 }
 
 /// 7.3: the person switches the PODxt Live to a named channel and back.
@@ -289,24 +298,22 @@ pub fn footswitch(ctx: &mut Ctx<'_>) -> Result<(), String> {
         (start.index() & !3) + (start.index() + 1) % 4,
     )
     .expect("same bank");
-    guided(
+    let stored = ctx
+        .data
+        .podxt_library
+        .iter()
+        .find(|(loc, _)| *loc == target)
+        .map(|(_, tone)| tone.clone())
+        .ok_or("The target channel is missing from the backup.")?;
+    let now = guided(
         ctx,
         &format!("Press the footswitch for channel {}.", target.label()),
         &format!("Channel {}.", target.label()),
         &format!("channel change to {}", target.label()),
         &[UserAction::PodxtFootswitch(target.index())],
-        |ctx| channel_window(ctx, target),
+        |ctx| channel_window(ctx, target, &stored.name()),
     )?;
-    let now = with_podxt(ctx, PODXT_LISTEN, |session| {
-        podxt::read_current(session).map(|current| current.tone)
-    })?;
-    let stored = ctx
-        .data
-        .podxt_library
-        .iter()
-        .find(|(l, _)| *l == target)
-        .map(|(_, t)| t.clone());
-    if !stored.is_some_and(|s| s.same_tone(&now)) {
+    if !stored.same_tone(&now) {
         return Err(format!(
             "Channel {} does not match the 2.5 backup.",
             target.label()
@@ -317,17 +324,14 @@ pub fn footswitch(ctx: &mut Ctx<'_>) -> Result<(), String> {
         target.label(),
         now.name()
     ));
-    guided(
+    let back = guided(
         ctx,
         &format!("Press the footswitch for channel {} again.", start.label()),
         &format!("Channel {}, your starting tone.", start.label()),
         &format!("channel change back to {}", start.label()),
         &[UserAction::PodxtFootswitch(start.index())],
-        |ctx| channel_window(ctx, start),
+        |ctx| channel_window(ctx, start, &start_tone.name()),
     )?;
-    let back = with_podxt(ctx, PODXT_LISTEN, |session| {
-        podxt::read_current(session).map(|current| current.tone)
-    })?;
     if !back.same_tone(&start_tone) {
         return Err(format!(
             "Back on {}, but the tone differs from the start.",
@@ -352,12 +356,12 @@ pub fn pedal(ctx: &mut Ctx<'_>) -> Result<(), String> {
         |ctx| {
             let mut range = Range::default();
             let seen = podxt_window(ctx, |event| {
-                if let Event::Short(m) = event
-                    && m.len() == 3
-                    && m[0] & 0xf0 == 0xb0
-                    && matches!(m[1], 7 | 4)
+                if let podxt::ReadUpdate::Controller {
+                    number: 7 | 4,
+                    value,
+                } = event
                 {
-                    range.add(m[2]);
+                    range.add(value);
                 }
                 range.swept()
             })?;
@@ -365,6 +369,66 @@ pub fn pedal(ctx: &mut Ctx<'_>) -> Result<(), String> {
         },
     )?;
     ctx.rec.show(format!("Pedal range seen: {}.", range.text()));
+    Ok(())
+}
+
+/// 7.5: confirm the editor's decoded controller update against the tone dump.
+pub fn podxt_knob(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    let cc = podxt::Control::Drive.cc();
+    let start = with_podxt(ctx, PODXT_LISTEN, |session| {
+        podxt::read_current(session).map(|current| current.tone)
+    })?;
+    let before = start.cc(cc);
+    let trial = if before > 64 {
+        before - 20
+    } else {
+        before + 20
+    };
+    let observe = |want_original: bool, ctx: &mut Ctx<'_>| {
+        let mut value = None;
+        podxt_window(ctx, |update| {
+            if let podxt::ReadUpdate::Controller {
+                number,
+                value: observed,
+            } = update
+                && number == cc
+                && (observed == before) == want_original
+            {
+                value = Some(observed);
+            }
+            value.is_some()
+        })?;
+        if let Some(value) = value {
+            let current = with_podxt(ctx, PODXT_LISTEN, |session| {
+                podxt::read_current(session).map(|current| current.tone)
+            })?;
+            if current.cc(cc) != value {
+                return Err("The Drive value read back differs from the Follow update.".into());
+            }
+        }
+        Ok(value)
+    };
+    let changed = guided(
+        ctx,
+        &format!("Turn Drive away from its starting value of {before}."),
+        "The drive setting changes.",
+        "a new Drive value",
+        &[UserAction::PodxtKnob(trial)],
+        |ctx| observe(false, ctx),
+    )?;
+    ctx.rec.show(format!(
+        "Drive changed from {before} to {changed}, verified in the tone."
+    ));
+    guided(
+        ctx,
+        &format!("Turn Drive back to {before}."),
+        "Your starting Drive setting.",
+        "the starting Drive value",
+        &[UserAction::PodxtKnob(before)],
+        |ctx| observe(true, ctx),
+    )?;
+    ctx.rec
+        .show(format!("Drive is back at {before}, verified in the tone."));
     Ok(())
 }
 
@@ -378,7 +442,13 @@ mod tests {
     use crate::rig_check::steps::RunData;
     use crate::rig_check::testing::Script;
 
-    const GUIDED: [StepId; 4] = [StepId(7, 1), StepId(7, 2), StepId(7, 3), StepId(7, 4)];
+    const GUIDED: [StepId; 5] = [
+        StepId(7, 1),
+        StepId(7, 2),
+        StepId(7, 3),
+        StepId(7, 4),
+        StepId(7, 5),
+    ];
 
     #[test]
     fn detection_completes_each_guided_step_without_sends_in_the_window() {
@@ -423,8 +493,8 @@ mod tests {
             .collect();
         assert_eq!(
             instructions.len(),
-            6,
-            "two windows each for 7.1 and 7.3, one for 7.2 and 7.4"
+            8,
+            "two windows each for selector, footswitch and Drive; one for knobs and pedal"
         );
         // The next step still showed its own card after each detection.
         for id in GUIDED {

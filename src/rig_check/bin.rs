@@ -1,9 +1,8 @@
 //! `rig-check`: the Rig Check app (#243).
 //!
 //! `rig-check --practice` rehearses every step against simulated devices.
-//! `rig-check --real` uses the real rig; in this build every device step is
-//! refused until the owner approves it (#267). There is no default mode, so
-//! the person always chooses.
+//! `rig-check --real` uses the connected rig under the released step approvals.
+//! The person confirms each step.
 
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;

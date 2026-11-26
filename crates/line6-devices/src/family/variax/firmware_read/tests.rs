@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     family::variax::{VariaxRequest, span_read::PresetSpan},
-    gate::GatePolicy,
+    gate::{AllClosed, GatePolicy},
     identity::{REQUEST, tests::VARIAX_600},
     session::{
         Path, Quiet, Request,
@@ -62,16 +62,16 @@ fn finish_buffer_script(script: &mut Script) {
 }
 
 #[test]
-fn closed_approval_refuses_before_any_traffic() {
+fn closed_policy_refuses_before_any_traffic() {
     let mut log = Quiet;
     let mut session = Session::new(
         Fake::from_bytes(Path::VariaxViaPodxt, vec![]),
-        &ReadOnly,
+        &AllClosed,
         &mut log,
     );
     assert!(matches!(
         read_current_program(&mut session, || false, |_| Ok(())),
-        Err(error) if error.contains("no owner approval")
+        Err(error) if error.contains("requires identity and read permission")
     ));
     assert!(session.link.writes.is_empty());
 }
@@ -98,7 +98,7 @@ fn reads_settings_and_all_35_chunks_for_verified_and_unverified_firmware() {
             &mut log,
         );
         let mut captured = Vec::new();
-        let read = read_on(
+        let read = read_current_program(
             &mut session,
             || false,
             |reply| {

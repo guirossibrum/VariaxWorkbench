@@ -45,6 +45,7 @@ pub fn slot(start: Preset) -> Result<Preset, String> {
 }
 
 pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    require_evidence(ctx)?;
     let start = ctx
         .data
         .start_preset
@@ -60,6 +61,7 @@ pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let backup_hash = super::record::sha256_hex(&program_bytes(&backup));
     // Pre-check: the slot still holds what the backup says.
     let before = with_variax(ctx, VARIAX_SAVE, |session, stopping| {
+        shared_variax::identify(session)?;
         variax_read_preset(session, preset, stopping)
     })?;
     if !same_program(&before.words, &backup) {
@@ -107,7 +109,9 @@ pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
     }
     let bytes = packed(&backup);
     let name = program_name(&backup);
+    let mut unknown = false;
     let acknowledged = with_variax(ctx, VARIAX_SAVE, |session, stopping| {
+        shared_variax::identify(session)?;
         let program = write::Program::new(&name, &bytes)?;
         let timeout_notice = format!(
             "No 0x71. Keeping the rig untouched for {} s; no more MIDI is sent. {SPARE_WARNING}",
@@ -117,14 +121,19 @@ pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
             shared_variax::store_once(session, preset, &program, stopping, &timeout_notice, || {});
         match result {
             Ok(()) => Ok(true),
-            Err(VerifiedStoreError::SilentTimeout) => Ok(false),
-            Err(
-                VerifiedStoreError::BeforeCommit(error)
-                | VerifiedStoreError::Unknown(error)
-                | VerifiedStoreError::Verification(error),
-            ) => Err(error),
+            Err(VerifiedStoreError::SilentTimeout) => {
+                unknown = true;
+                Ok(false)
+            }
+            Err(VerifiedStoreError::BeforeCommit(error)) => Err(error),
+            Err(error) => {
+                unknown = true;
+                Err(error.to_string())
+            }
         }
-    })?;
+    });
+    ctx.data.store_state_unknown |= unknown;
+    let acknowledged = acknowledged?;
     ctx.rec
         .note("The store command (0x61) was sent once. It is never repeated.");
     if !acknowledged {
@@ -164,6 +173,188 @@ pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
     Ok(())
 }
 
+pub fn edit_and_restore(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    require_evidence(ctx)?;
+    use super::variax_live::{AuditionEdit, edit_images};
+    let start = slot(
+        ctx.data
+            .start_preset
+            .ok_or("The starting preset is unknown.")?,
+    )?;
+    let backup = saved_program(ctx, start)?;
+    let (edited, _) = edit_images(ctx, &backup, AuditionEdit::Trim)?;
+    preflight(ctx, start, &backup)?;
+    confirm_batch(ctx, &[(start, backup)], "EDIT AND RESTORE VARIAX")?;
+    let name = program_name(&backup);
+    save_image(ctx, start, &name, &edited, true)?;
+    ctx.rec.show(format!(
+        "Saved and verified the quieter {}.",
+        preset_label(start)
+    ));
+    // Once the temporary store is verified, finish the approved restoration
+    // even if Stop was pressed during its acknowledged transaction.
+    save_image(ctx, start, &name, &packed(&backup), false)?;
+    ctx.rec.show(format!(
+        "Back on {} with the original backup verified.",
+        preset_label(start)
+    ));
+    Ok(())
+}
+
+pub fn sync_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    require_evidence(ctx)?;
+    let start = slot(
+        ctx.data
+            .start_preset
+            .ok_or("The starting preset is unknown.")?,
+    )?;
+    let other = slot(super::variax_reads::other_preset(start))?;
+    let original = saved_program(ctx, start)?;
+    let targets = [(start, original), (other, saved_program(ctx, other)?)];
+    confirm_batch(ctx, &targets, "SYNC VARIAX")?;
+    let result = (|| {
+        for (preset, words) in targets {
+            preflight(ctx, preset, &words)?;
+            save_image(ctx, preset, &program_name(&words), &packed(&words), true)?;
+            ctx.rec
+                .show(format!("Synced and verified {}.", preset_label(preset)));
+        }
+        Ok::<(), String>(())
+    })();
+    if ctx.data.store_state_unknown {
+        return result;
+    }
+    let returned = with_variax(ctx, VARIAX_SAVE, |session, _| {
+        shared_variax::return_to_preset(session, start, &packed(&original), |_| Ok(()))
+    });
+    match (result, returned) {
+        (Ok(()), Ok(())) => {
+            ctx.rec
+                .show(format!("Back on {}, verified.", preset_label(start)));
+            Ok(())
+        }
+        (Err(error), Ok(())) => Err(format!("{error} The starting preset was restored.")),
+        (Ok(()), Err(error)) => Err(format!("Could not verify the return: {error}")),
+        (Err(error), Err(restore)) => Err(format!("{error} Return also failed: {restore}")),
+    }
+}
+
+fn require_evidence(ctx: &Ctx<'_>) -> Result<(), String> {
+    if ctx.mode == super::record::Mode::Real {
+        let root = ctx
+            .data
+            .evidence_dir
+            .as_ref()
+            .ok_or("Run with --evidence before offering a real store.")?;
+        line6_devices::backup::verify_manifest(&root.join("variax-library"))?;
+    }
+    Ok(())
+}
+
+fn saved_program(ctx: &Ctx<'_>, preset: Preset) -> Result<Program, String> {
+    let words = ctx
+        .data
+        .variax_library
+        .iter()
+        .find(|(p, _)| *p == preset)
+        .map(|(_, words)| *words)
+        .ok_or("The preset is missing from the 3.4 backup.")?;
+    let bytes = packed(&words);
+    if shared_variax::expected_stored_image(&bytes) != bytes {
+        return Err(format!(
+            "The backup for {} would change when stamped by the firmware. Nothing was saved.",
+            preset_label(preset)
+        ));
+    }
+    Ok(words)
+}
+
+fn preflight(ctx: &mut Ctx<'_>, preset: Preset, expected: &Program) -> Result<(), String> {
+    with_variax(ctx, VARIAX_SAVE, |session, stopping| {
+        shared_variax::identify(session)?;
+        let actual = shared_variax::read_unmodified(session, preset, stopping, |_| Ok(()))?;
+        shared_variax::compare_image(
+            &actual,
+            &packed(expected),
+            "Saved position compared with the backup",
+        )
+    })
+}
+
+fn confirm_batch(
+    ctx: &mut Ctx<'_>,
+    targets: &[(Preset, Program)],
+    action: &str,
+) -> Result<(), String> {
+    let label = targets
+        .iter()
+        .map(|(preset, _)| preset_label(*preset))
+        .collect::<Vec<_>>()
+        .join(" and ");
+    let backup = targets
+        .iter()
+        .flat_map(|(_, words)| packed(words))
+        .collect::<Vec<_>>();
+    let notice = SaveNotice {
+        device: "Variax",
+        slot: label.clone(),
+        backup_step: StepId(3, 4),
+        backup_file: "variax-library backup for these slots".into(),
+        backup_sha256: super::record::sha256_hex(&backup),
+        confirmation: format!("{action} {label}"),
+    };
+    let answer = ctx
+        .op
+        .confirm_save(&notice)
+        .ok_or_else(|| format!("{SKIPPED}You skipped the save."))?;
+    ctx.rec.answers.push((
+        format!("Type {} to save", notice.confirmation),
+        answer.clone(),
+    ));
+    if answer != notice.confirmation {
+        return Err(format!(
+            "{SKIPPED}The typed confirmation did not match. Nothing was saved."
+        ));
+    }
+    Ok(())
+}
+
+fn save_image(
+    ctx: &mut Ctx<'_>,
+    target: Preset,
+    name: &str,
+    bytes: &shared_variax::Image,
+    allow_stop: bool,
+) -> Result<(), String> {
+    let warning = shared_variax::spare_warning(target);
+    let program = write::Program::new(name, bytes)?;
+    let outcome = with_variax(ctx, VARIAX_SAVE, |session, stopping| {
+        shared_variax::identify(session)?;
+        Ok(shared_variax::store_and_reload(
+            session,
+            target,
+            &program,
+            || allow_stop && stopping(),
+            |_| {},
+            |_| Ok(()),
+        ))
+    })?;
+    match outcome {
+        Ok(()) => {
+            ctx.rec.checksum(
+                format!("Stored {}", preset_label(target)),
+                &shared_variax::expected_stored_image(bytes),
+            );
+            Ok(())
+        }
+        Err(VerifiedStoreError::BeforeCommit(error)) => Err(error),
+        Err(error) => {
+            ctx.data.store_state_unknown = true;
+            Err(format!("{error} {warning}"))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,7 +385,7 @@ mod tests {
                 .any(|n| n.contains("Spank 1 (flash slot 14)") && n.contains("3.4"))
         );
         let rig = rig.borrow();
-        assert_eq!(rig.variax.stores, 1);
+        assert_eq!(rig.variax.stores, 5);
         assert_eq!(
             rig.variax.stored,
             SimRig::new(Faults::default()).variax.stored

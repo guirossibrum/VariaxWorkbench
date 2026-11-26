@@ -2,50 +2,35 @@
 
 Rig Check walks you through tests of a PODxt Live and Variax rig one
 explained, confirmed step at a time and writes a text report. Catalogue:
-[catalogue.md](catalogue.md) (version 1.0).
+[catalogue](catalogue.md) (version 1.2) and [device-message coverage](coverage.md).
 
-## This build (unreleased, 0.9.0, catalogue 1.0)
+## Owner release (0.9.0, catalogue 1.2)
 
-**What it tests**
-
-- Practice mode (`rig-check.sh --practice`, or choose Practice in the
-  window): every step of the catalogue against simulated devices. Nothing is
-  sent to a real rig.
-- Real rig (`--real`): this computer (0.1 system, 0.2 USB and drivers),
-  the engine check (0.3) and the audio device listing (8.1). **Every device
-  step is refused** with "not yet authorized by the owner (#267)" until the
-  owner approves each one for other people's rigs.
-
-**What it never does**
-
-- It never runs a step you did not confirm. The default answer is not to run.
-- It never repeats a save, never sends a store during a live step, and never
-  installs firmware.
-- It never opens an audio stream (steps 8.2-8.5 are "not available in this
-  version").
-- It never uses the network. Your user name, computer name, home folder and
-  serial numbers are removed from the report.
-- It writes only inside its own folder (`rig-check-output` next to the
-  program, or `--out DIR`), never over an existing file.
-
-## Planned releases (#243)
-
-| Version | Platform | Adds |
-| --- | --- | --- |
-| v1 | Linux | computer, engine check, connection, read-only device steps, guided actions, report |
-| v2 | Linux | live (unsaved) steps and saves of a slot's own bytes |
-| v3 | Windows, macOS | after the connection research (#262), packaged with #209 |
-| v4 | all | audio/DAW steps, after the owner's separate audio approval |
-
-Each version's device steps run on other people's rigs only after the
-owner records which steps, models and firmware are covered (#267).
+- Practice exercises the steps on simulated devices.
+- Real rig mode is released for the owner's first PODxt Live and Variax
+  run. Every device and guided step has its own Run confirmation. The
+  start notice, save notice, and unverified Variax firmware notice remain.
+- Reads and guided checks precede live edits and stores. All applicable
+  earlier steps must pass before a save is offered, and every save requires
+  its exact typed confirmation. A silent save waits two minutes following
+  the protocol cleanup and ends with USB release.
+- Audio streams (8.2–8.5) are unavailable. PODxt firmware evidence and a
+  physical action for Variax CC 84 are pending.
+- Use `--evidence` to capture the verified backups used by the write
+  checks. Supply `--engine-folder DIR` with your local model manifest and
+  verified reference files for the Variax audition and transition tests.
+  Start on an unedited electric preset with alternate tuning off and a
+  saved unedited PODxt channel.
+- The report is local and redacted. A passing run is the owner's approval
+  to test the corresponding writes in the app. Shared releases need a
+  separate owner decision.
 
 ## Building
 
 - **Linux (portable folder):** `packaging/rig-check/build-linux.sh OUT` builds
   the release binary with the git commit, compiler and target recorded, and
   assembles `OUT/rig-check-<version>-linux-<arch>/` with `rig-check.sh`, the
-  catalogue, these notes and `SHA256SUMS`. It refuses to replace an existing
+  catalogue, coverage, these notes and `SHA256SUMS`. It refuses to replace an existing
   folder and does not publish anything. The folder needs no installation; the
   window uses X11 or Wayland like Variax Workbench (see
   [linux-package.md](../linux-package.md)); `--text` runs in a terminal.

@@ -199,6 +199,16 @@ pub struct FullLibrary {
 }
 
 impl FullLibrary {
+    /// Completed captured programs, in capture order.
+    pub fn verified_programs(
+        &self,
+    ) -> impl Iterator<Item = (variax::Preset, &[u8; PROGRAM_BYTES])> {
+        self.programs
+            .programs
+            .iter()
+            .filter_map(|(preset, result)| result.as_ref().ok().map(|bytes| (*preset, bytes)))
+    }
+
     pub fn programs_read(&self) -> usize {
         self.programs
             .programs
@@ -222,6 +232,16 @@ impl FullLibrary {
 /// program after each metadata pair. Retain completed captures when a read fails.
 pub fn read_full_library<L: Link>(
     _rig: &DeviceLock,
+    session: &mut Session<L>,
+    cancelled: impl FnMut() -> bool,
+    progress: impl FnMut(&variax::StoredPreset),
+) -> Result<FullLibrary, String> {
+    read_full_library_in_session(session, cancelled, progress)
+}
+
+/// Use the full backup sweep on a session whose caller already owns the rig
+/// lock and is responsible for releasing the attached link.
+pub fn read_full_library_in_session<L: Link>(
     session: &mut Session<L>,
     cancelled: impl FnMut() -> bool,
     progress: impl FnMut(&variax::StoredPreset),

@@ -20,7 +20,7 @@ use std::time::Duration;
 pub const TONE_POSITION_WORDS: [usize; 3] = [871, 872, 1091];
 
 /// The operations one step may use. In real mode the step's owner approval
-/// and gates must also be open (they are all closed in this build).
+/// and gates must also be open.
 pub struct StepPolicy {
     pub step: StepId,
     pub mode: Mode,
@@ -62,6 +62,14 @@ pub fn with_podxt<T>(
     ops: &'static [Operation],
     body: impl FnOnce(&mut Session<&mut dyn Link>) -> Result<T, String>,
 ) -> Result<T, String> {
+    with_podxt_stopping(ctx, ops, |session, _| body(session))
+}
+
+pub fn with_podxt_stopping<T>(
+    ctx: &mut Ctx<'_>,
+    ops: &'static [Operation],
+    body: impl FnOnce(&mut Session<&mut dyn Link>, &dyn Fn() -> bool) -> Result<T, String>,
+) -> Result<T, String> {
     let policy = StepPolicy {
         step: ctx.step(),
         mode: ctx.mode,
@@ -69,10 +77,12 @@ pub fn with_podxt<T>(
     };
     let mut lines = Lines::default();
     let step = ctx.step();
+    let op = &*ctx.op;
+    let stopping = || op.stop_requested();
     let result = match ctx.port.podxt(step) {
         Ok(link) => {
             let mut session = Session::new(link, &policy, &mut lines);
-            body(&mut session)
+            body(&mut session, &stopping)
         }
         Err(error) => Err(error),
     };

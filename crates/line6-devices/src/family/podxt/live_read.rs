@@ -76,10 +76,52 @@ pub fn read_live<L: Link>(
     cancelled: impl Fn() -> bool,
     mut publish: impl FnMut(ReadUpdate),
 ) -> Result<(), String> {
+    read_live_on(session, command, None, cancelled, &mut publish)
+}
+
+/// Run the editor Follow reader for a bounded interval on the caller's locked link.
+pub fn follow_window<L: Link>(
+    session: &mut Session<L>,
+    window: Duration,
+    cancelled: impl Fn() -> bool,
+    mut publish: impl FnMut(ReadUpdate),
+) -> Result<(), String> {
+    read_live_on(
+        session,
+        ReadCommand::Follow,
+        Some(window),
+        cancelled,
+        &mut publish,
+    )
+}
+
+/// Run the editor tuner with a shorter diagnostic window, including cleanup.
+pub fn tuner_window<L: Link>(
+    session: &mut Session<L>,
+    window: Duration,
+    cancelled: impl Fn() -> bool,
+    mut publish: impl FnMut(ReadUpdate),
+) -> Result<(), String> {
+    read_live_on(
+        session,
+        ReadCommand::Tuner,
+        Some(window),
+        cancelled,
+        &mut publish,
+    )
+}
+
+fn read_live_on<L: Link>(
+    session: &mut Session<L>,
+    command: ReadCommand,
+    window: Option<Duration>,
+    cancelled: impl Fn() -> bool,
+    publish: &mut dyn FnMut(ReadUpdate),
+) -> Result<(), String> {
     let mut reader = Reader {
         session,
         cancelled: &cancelled,
-        publish: &mut publish,
+        publish,
         follow: command == ReadCommand::Follow,
         saves: VecDeque::new(),
         current_due: None,
@@ -92,8 +134,8 @@ pub fn read_live<L: Link>(
         ReadCommand::ToneBank => reader.library(&[BankKind::Tones]),
         ReadCommand::Packs => reader.packs(),
         ReadCommand::Globals => reader.globals(),
-        ReadCommand::Tuner => reader.tuner(),
-        ReadCommand::Follow => reader.follow(),
+        ReadCommand::Tuner => reader.tuner(window.unwrap_or(TUNER_MAX).min(TUNER_MAX)),
+        ReadCommand::Follow => reader.follow(window),
     }
 }
 
@@ -274,12 +316,12 @@ impl<L: Link> Reader<'_, '_, L> {
         Ok(())
     }
 
-    fn tuner(&mut self) -> Result<(), String> {
+    fn tuner(&mut self, window: Duration) -> Result<(), String> {
         self.check_cancel()?;
         let on = self.session.send(PodxtRequest::TunerMode(true));
         let start = self.session.link.elapsed();
         let result = on.and_then(|()| {
-            while self.remaining(start + TUNER_MAX).is_some() {
+            while self.remaining(start + window).is_some() {
                 let note = self.global(Global::TunerNote)?;
                 let deviation = self.global(Global::TunerDeviation)?;
                 (self.publish)(ReadUpdate::Tuner(TunerReading {
@@ -335,9 +377,15 @@ impl<L: Link> Reader<'_, '_, L> {
         }
     }
 
-    fn follow(&mut self) -> Result<(), String> {
+    fn follow(&mut self, window: Option<Duration>) -> Result<(), String> {
         self.current()?;
+        let start = self.session.link.elapsed();
         loop {
+            if window
+                .is_some_and(|limit| self.session.link.elapsed().saturating_sub(start) >= limit)
+            {
+                return Ok(());
+            }
             self.check_cancel()?;
             let now = self.session.link.elapsed();
             if self.current_due.is_some_and(|due| due <= now) {

@@ -31,6 +31,7 @@ fn audition(ctx: &mut Ctx<'_>, words: &Program, label: &str) -> Result<Program, 
     let name = program_name(words);
     let bytes = packed(words);
     let read = with_variax(ctx, VARIAX_LIVE, |session, stopping| {
+        shared_variax::identify(session)?;
         let program = write::Program::new(&name, &bytes)?;
         shared_variax::send_buffer(session, BufferEdit::Full(&program), stopping)?;
         variax_full_read(session, stopping)
@@ -210,6 +211,244 @@ pub fn variax_test_model(ctx: &mut Ctx<'_>) -> Result<(), String> {
     result
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum AuditionEdit {
+    Trim,
+    Tuning,
+}
+
+/// Build a selective edit of the captured program. Real candidates are rendered
+/// with the same host options as the editor. Only words verified against the
+/// unmodified render are carried over from the edited render.
+pub(super) fn edit_images(
+    ctx: &Ctx<'_>,
+    original: &Program,
+    edit: AuditionEdit,
+) -> Result<(shared_variax::Image, Option<shared_variax::Image>), String> {
+    if ctx.mode == super::record::Mode::Practice {
+        let mut next = *original;
+        return Ok(match edit {
+            AuditionEdit::Trim => {
+                next[10] ^= 0x1000;
+                seal(&mut next);
+                (packed(&next), None)
+            }
+            AuditionEdit::Tuning => {
+                next = test_model(original);
+                let mut muted = next;
+                muted[10] = 0;
+                seal(&mut muted);
+                (packed(&next), Some(packed(&muted)))
+            }
+        });
+    }
+
+    let root = ctx.data.engine_folder.as_deref().ok_or(
+        "Supply --engine-folder with a verified local models.tsv for the Variax edit checks.",
+    )?;
+    render_edits(root, original, edit)
+}
+
+fn render_edits(
+    root: &std::path::Path,
+    original: &Program,
+    edit: AuditionEdit,
+) -> Result<(shared_variax::Image, Option<shared_variax::Image>), String> {
+    use crate::{
+        ParameterValue, PresetMetadata, edit as field,
+        host::{HostEngine, HostOptions, HostParameters, ModelLibrary},
+        preset::PresetFile,
+    };
+    let original = packed(original);
+    let metadata = PresetMetadata::from_bytes(
+        original[shared_variax::METADATA]
+            .try_into()
+            .expect("settings size"),
+    )?;
+    let mut preset = PresetFile::from_metadata(&metadata, 0x0007_0004, 0x0310_0000)?;
+    let models = ModelLibrary::load_manifest(&root.join("models.tsv"))?;
+    let render = |preset: &PresetFile, muted| -> Result<shared_variax::Image, String> {
+        let parameters = HostParameters::from_preset(preset)?;
+        let settings = parameters.map(HostOptions {
+            muted,
+            ..HostOptions::default()
+        })?;
+        let result = HostEngine::new(&models).generate(&settings)?;
+        Ok(parameters.finish(preset.name(), &settings, result.packed()))
+    };
+    let before = render(&preset, false)?;
+    match edit {
+        AuditionEdit::Trim => {
+            let Some(ParameterValue::Float(trim)) = metadata.parameters.get("trim") else {
+                return Err("The starting preset has no output trim.".into());
+            };
+            preset.set_parameter(field::SYSTEM, 0x200000, 1, (trim - 6.0).to_bits())?;
+        }
+        AuditionEdit::Tuning => {
+            if metadata.parameters.get("alternate_tuning_enabled")
+                != Some(&ParameterValue::Boolean(false))
+            {
+                return Err("Start on an electric preset with alternate tuning disabled.".into());
+            }
+            for string in 0..6 {
+                let semitones = if string == 0 { -2i32 } else { 0 };
+                preset.set_parameter(field::TUNING, 0x200000 + string, 0, semitones as u32)?;
+            }
+            preset.set_enabled(field::TUNING, true)?;
+        }
+    }
+    let next = merge_rendered_words(&original, &before, &render(&preset, false)?)?;
+    let muted = if matches!(edit, AuditionEdit::Tuning) {
+        Some(merge_rendered_words(
+            &original,
+            &before,
+            &render(&preset, true)?,
+        )?)
+    } else {
+        None
+    };
+    Ok((next, muted))
+}
+
+fn merge_rendered_words(
+    original: &shared_variax::Image,
+    before: &shared_variax::Image,
+    after: &shared_variax::Image,
+) -> Result<shared_variax::Image, String> {
+    let mut candidate = *original;
+    for (index, (word, (old, new))) in candidate
+        .as_chunks_mut::<3>()
+        .0
+        .iter_mut()
+        .zip(
+            before
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .zip(after.as_chunks::<3>().0),
+        )
+        .take(1091)
+        .enumerate()
+    {
+        if old != new {
+            if word != old {
+                return Err(format!(
+                    "The starting program and its Workbench render differ at affected word {index}. Nothing was sent."
+                ));
+            }
+            *word = *new;
+        }
+    }
+    if candidate[..shared_variax::METADATA.start] == original[..shared_variax::METADATA.start] {
+        return Err("The edit did not change any DSP words. Nothing was sent.".into());
+    }
+    shared_variax::set_firmware_checksum(&mut candidate);
+    Ok(candidate)
+}
+
+pub fn trim(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    variant(
+        ctx,
+        AuditionEdit::Trim,
+        "Play the same short passage. Does it sound quieter?",
+    )
+}
+
+pub fn tuning(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    variant(
+        ctx,
+        AuditionEdit::Tuning,
+        "Play the low E string. Does it sound lower than before?",
+    )
+}
+
+fn variant(ctx: &mut Ctx<'_>, edit: AuditionEdit, question: &str) -> Result<(), String> {
+    let start = ctx.data.start_program.ok_or("No starting program (3.3).")?;
+    let preset = ctx
+        .data
+        .start_preset
+        .ok_or("No verified starting preset (3.4).")?;
+    let (next, muted) = edit_images(ctx, &start, edit)?;
+    let name = program_name(&start);
+    let next = write::Program::new(&name, &next)?;
+    let transition = muted
+        .as_ref()
+        .map(|bytes| write::Program::new(&name, bytes))
+        .transpose()?;
+    ctx.op.instruct(
+        ctx.rec.id,
+        "Listen for the change, then play when asked.",
+        "The starting sound changes temporarily.",
+    );
+    let mut attempted = false;
+    let sent = with_variax(ctx, VARIAX_LIVE, |session, stopping| {
+        shared_variax::identify(session)?;
+        let baseline = variax_full_read(session, stopping)?.words;
+        shared_variax::compare_image(&baseline, &packed(&start), "Starting program")?;
+        let previous = packed(&baseline);
+        let edit = match &transition {
+            Some(transition) => BufferEdit::AlternateTuning {
+                previous: &previous,
+                transition,
+                full: &next,
+            },
+            None => BufferEdit::Difference {
+                previous: &previous,
+                next: &next,
+            },
+        };
+        attempted = true;
+        shared_variax::send_buffer_verified(session, edit, "Audition read-back", stopping, || {
+            Ok(|_| Ok(()))
+        })?;
+        Ok(())
+    });
+    if sent.is_ok() {
+        ctx.rec.show("The edited working buffer was verified.");
+        let (answer, note) = ctx.op.ask(&Question {
+            step: ctx.rec.id,
+            text: question.into(),
+            verified_by_bytes: vec![
+                "The complete working buffer matched the expected edit.".into(),
+            ],
+        });
+        ctx.rec
+            .answers
+            .push((question.into(), format!("{} {note}", answer.label())));
+    }
+    if sent
+        .as_ref()
+        .is_err_and(|error| error.contains("Reopen the link"))
+    {
+        return Err(format!(
+            "{} Reselect {} by hand to discard any partial edit.",
+            sent.unwrap_err(),
+            preset_label(preset)
+        ));
+    }
+    if attempted {
+        let returned = with_variax(ctx, VARIAX_LIVE, |session, _| {
+            shared_variax::return_to_preset(session, preset, &packed(&start), |_| Ok(()))
+        });
+        match (sent, returned) {
+            (Ok(()), Ok(())) => ctx.rec.show(format!(
+                "Back on {}, original program verified.",
+                preset_label(preset)
+            )),
+            (Err(error), Ok(())) => {
+                return Err(format!("{error} The original preset was restored."));
+            }
+            (Ok(()), Err(error)) => return Err(format!("Could not verify the return: {error}")),
+            (Err(error), Err(restore)) => {
+                return Err(format!("{error} Return also failed: {restore}"));
+            }
+        }
+    } else {
+        sent?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,7 +480,13 @@ mod tests {
             &mut NoReport,
             RunData::default(),
         );
-        for id in [StepId(4, 1), StepId(4, 2), StepId(4, 3)] {
+        for id in [
+            StepId(4, 1),
+            StepId(4, 2),
+            StepId(4, 3),
+            StepId(4, 4),
+            StepId(4, 5),
+        ] {
             assert!(run.step(id).outcome.passed(), "{id}: {:?}", run.step(id));
             assert!(
                 !run.step(id)
@@ -265,8 +510,29 @@ mod tests {
         );
         assert_eq!(person.questions[0].verified_by_bytes.len(), 2);
         let rig = rig.borrow();
-        // Two auditions (4.2, 4.3) and the program sent before the 5.1 store.
-        assert_eq!(rig.variax.working_uploads, 3);
-        assert_eq!(rig.variax.stores, 1, "only the save step 5.1 stores");
+        // Three full live uploads (4.2, 4.3, 4.5) and five saves. The
+        // ordinary difference is a separate message.
+        assert_eq!(rig.variax.working_uploads, 8);
+        assert_eq!(rig.variax.stores, 5);
+    }
+    #[test]
+    #[ignore = "requires the owner's local Workbench manifest and verified slot-14 backup"]
+    fn private_spank_render_builds_trim_and_tuning_frames() {
+        let root = std::path::PathBuf::from(std::env::var_os("RIG_CHECK_REFERENCE_DIR").unwrap());
+        let backup = std::path::PathBuf::from(std::env::var_os("RIG_CHECK_SPANK_BACKUP").unwrap());
+        let bytes = std::fs::read(backup).unwrap();
+        let words = std::array::from_fn(|index| {
+            let [a, b, c] = bytes.as_chunks::<3>().0[index];
+            u32::from_be_bytes([0, a, b, c])
+        });
+        let name = program_name(&words);
+        for edit in [super::AuditionEdit::Trim, super::AuditionEdit::Tuning] {
+            let (next, muted) = super::render_edits(&root, &words, edit).unwrap();
+            write::Program::new(&name, &next).unwrap();
+            if let Some(muted) = muted {
+                assert_ne!(next, muted);
+                write::Program::new(&name, &muted).unwrap();
+            }
+        }
     }
 }

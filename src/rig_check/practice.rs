@@ -60,6 +60,7 @@ pub enum UserAction {
     SweepVariaxKnobs,
     PodxtFootswitch(u16),
     MovePedal,
+    PodxtKnob(u8),
     UnplugVdi,
     ReplugVdi,
 }
@@ -147,6 +148,9 @@ pub fn synthetic_program(name: &str, seed: u64) -> Program {
     for (i, chunk) in metadata.chunks(3).enumerate() {
         words[851 + i] = u32::from_be_bytes([0, chunk[0], chunk[1], chunk[2]]);
     }
+    for (word, version) in words[767..771].iter_mut().zip(*b"0310") {
+        *word = u32::from(version);
+    }
     seal(&mut words);
     words
 }
@@ -186,6 +190,16 @@ fn synthetic_tone(name: &str, seed: u64) -> [u8; TONE_BYTES] {
     let mut field = [b' '; 16];
     field[..name.len().min(16)].copy_from_slice(&name.as_bytes()[..name.len().min(16)]);
     tone[..16].copy_from_slice(&field);
+    for setting in line6_devices::family::podxt::Setting::ALL {
+        if setting.model_list().is_some() {
+            tone[32
+                + usize::from(
+                    line6_devices::family::podxt::LiveControl::Additional(setting).cc(),
+                )] = 0;
+        }
+    }
+    tone[32 + 89] = (1200 >> 7) as u8;
+    tone[32 + 90] = (1200 & 127) as u8;
     tone
 }
 
@@ -286,16 +300,20 @@ impl SimRig {
     fn queue(out: &mut VecDeque<Queued>, at: Duration, message: &[u8]) {
         let mut time = at;
         for chunk in message.chunks(PACKET) {
-            out.push_back(Queued {
-                at: time,
-                packet: chunk.to_vec(),
-            });
+            let index = out.partition_point(|queued| queued.at <= time);
+            out.insert(
+                index,
+                Queued {
+                    at: time,
+                    packet: chunk.to_vec(),
+                },
+            );
             time += PACKET_GAP;
         }
     }
 
     fn reply_podxt(&mut self, message: &[u8]) {
-        let at = self.last_time(true) + LATENCY;
+        let at = self.clock + LATENCY;
         Self::queue(&mut self.podxt_out, at, message);
     }
 
@@ -303,17 +321,8 @@ impl SimRig {
         if !self.variax.connected {
             return;
         }
-        let at = self.last_time(false) + LATENCY;
+        let at = self.clock + LATENCY;
         Self::queue(&mut self.variax_out, at, message);
-    }
-
-    fn last_time(&self, podxt: bool) -> Duration {
-        let queue = if podxt {
-            &self.podxt_out
-        } else {
-            &self.variax_out
-        };
-        queue.back().map_or(self.clock, |q| q.at.max(self.clock))
     }
 
     pub fn podxt_identity(&self) -> Vec<u8> {
@@ -381,6 +390,26 @@ impl SimRig {
                     self.reply_podxt(&dump);
                 }
             }
+            [0xf0, 0, 1, 0x0c, 3, 0x0e, 0, 0xf7] => {
+                self.reply_podxt(&[0xf0, 0, 1, 0x0c, 3, 0x0e, 0, 0x0f, 0xf7]);
+            }
+            [0xf0, 0, 1, 0x0c, 3, 0x57, id, 0xf7] => {
+                let value = match *id {
+                    17 => self.podxt.channel.unwrap_or(0),
+                    22 => 3,
+                    _ => 0,
+                };
+                let mut reply = vec![0xf0, 0, 1, 0x0c, 3, 0x56, *id];
+                reply.extend((0..4).rev().map(|n| ((value >> (n * 4)) & 15) as u8));
+                reply.push(0xf7);
+                self.reply_podxt(&reply);
+            }
+            [0xf0, 0, 1, 0x0c, 3, 0x74, 0x0a, payload @ .., 0xf7]
+                if payload.len() == TONE_BYTES =>
+            {
+                self.podxt.playing.copy_from_slice(payload);
+            }
+            [0xb0, 69, _] => {}
             [0xb0, cc, value] if *cc < 128 => {
                 self.podxt.playing[32 + usize::from(*cc)] = *value;
             }
@@ -448,6 +477,35 @@ impl SimRig {
                 }
                 self.reply_variax(&reply);
             }
+            [0xf0, 0, 1, 0x0c, 7, 0, 0x6d, 0xf7] => {
+                let mut reply = vec![0xf0, 0, 1, 0x0c, 7, 4, 0x6d];
+                let name = self
+                    .variax
+                    .selected
+                    .map_or("Practice", |preset| preset.bank_name());
+                reply.extend(name.bytes());
+                reply.resize(25, 0);
+                reply.push(0xf7);
+                self.reply_variax(&reply);
+            }
+            [0xf0, 0, 1, 0x0c, 7, 0, 0x3b, runs @ .., 0xf7] => {
+                let mut runs = runs;
+                while runs.len() >= 12 {
+                    let count = nibbles(&runs[..6]) as usize;
+                    let start = nibbles(&runs[6..12]) as usize;
+                    let Some(data) = runs.get(12..12 + 6 * count) else {
+                        return;
+                    };
+                    let Some(words) = self.variax.active.get_mut(start..start + count) else {
+                        return;
+                    };
+                    for (word, nibbles_on_wire) in words.iter_mut().zip(data.as_chunks::<6>().0) {
+                        *word = nibbles(nibbles_on_wire);
+                    }
+                    runs = &runs[12 + 6 * count..];
+                }
+                self.reply_variax(&[0xf0, 0, 1, 0x0c, 7, 4, 0x71, 0xf7]);
+            }
             [0xc0, program] => {
                 if let Some(preset) = preset_for_program_number(*program) {
                     self.variax.active = self.variax.stored[flash_index(preset)];
@@ -466,6 +524,10 @@ impl SimRig {
             [0xf0, 0x00, 0x01, 0x0c, 0x07, 0x00, 0x61, index, 0xf7] => {
                 let index = usize::from(*index);
                 if index < 60 {
+                    for (word, version) in self.variax.active[767..771].iter_mut().zip(*b"0310") {
+                        *word = u32::from(version);
+                    }
+                    seal(&mut self.variax.active);
                     self.variax.stored[index] = self.variax.active;
                     self.variax.stores += 1;
                     if !self.faults.silent_variax_store {
@@ -485,8 +547,10 @@ impl SimRig {
         let at = self.clock + after;
         match action {
             UserAction::TurnSelector(preset) => {
-                self.variax.active = self.variax.stored[flash_index(preset)];
-                self.variax.selected = Some(preset);
+                if after.is_zero() {
+                    self.variax.active = self.variax.stored[flash_index(preset)];
+                    self.variax.selected = Some(preset);
+                }
                 if self.variax.connected {
                     Self::queue(&mut self.variax_out, at, &[0xc0, preset.program_number()]);
                 }
@@ -501,8 +565,10 @@ impl SimRig {
                 }
             }
             UserAction::PodxtFootswitch(index) => {
-                self.podxt.playing = self.podxt.stored[usize::from(index)];
-                self.podxt.channel = Some(index);
+                if after.is_zero() {
+                    self.podxt.playing = self.podxt.stored[usize::from(index)];
+                    self.podxt.channel = Some(index);
+                }
                 Self::queue(&mut self.podxt_out, at, &[0xc0, index as u8]);
             }
             UserAction::MovePedal => {
@@ -512,8 +578,11 @@ impl SimRig {
                     time += Duration::from_millis(100);
                 }
             }
+            UserAction::PodxtKnob(value) => {
+                let cc = line6_devices::family::podxt::Control::Drive.cc();
+                Self::queue(&mut self.podxt_out, at, &[0xb0, cc, value]);
+            }
             UserAction::UnplugVdi => {
-                self.variax.connected = false;
                 self.variax_out.clear();
                 // The PODxt Live reports the guitar's connection state.
                 Self::queue(
@@ -523,7 +592,6 @@ impl SimRig {
                 );
             }
             UserAction::ReplugVdi => {
-                self.variax.connected = true;
                 Self::queue(
                     &mut self.variax_out,
                     at,
@@ -543,6 +611,27 @@ impl SimRig {
             Some(head) if head.at <= self.clock + wait => {
                 let head = queue.pop_front().expect("front exists");
                 self.clock = self.clock.max(head.at);
+                match (podxt, head.packet.as_slice()) {
+                    (true, [0xc0, index]) => {
+                        self.podxt.playing = self.podxt.stored[usize::from(*index)];
+                        self.podxt.channel = Some(u16::from(*index));
+                    }
+                    (true, [0xb0, cc, value])
+                        if *cc == line6_devices::family::podxt::Control::Drive.cc() =>
+                    {
+                        self.podxt.playing[32 + usize::from(*cc)] = *value;
+                    }
+                    (false, [0xc0, program]) => {
+                        if let Some(preset) = preset_for_program_number(*program) {
+                            self.variax.active = self.variax.stored[flash_index(preset)];
+                            self.variax.selected = Some(preset);
+                        }
+                    }
+                    (false, [0xf0, 0, 1, 0xc, 3, 0x11, _, _, _, state, 0xf7]) => {
+                        self.variax.connected = *state != 0;
+                    }
+                    _ => {}
+                }
                 Some(head.packet)
             }
             _ => {

@@ -10,6 +10,10 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] The owner released Rig Check device and guided approvals on 2026-11-25 (#267), including Variax firmware evidence. Offline tests verify the per-step approval matrix and continued audio refusal. The first real owner run is pending. [Release notes](rig-check/release-notes.md).
+
+- [x] Rig Check maps app device-message paths to practice-tested steps. New coverage includes Variax differences, tuning transition, two-slot Sync and edit/restore, PODxt editor Get, whole-tone send, recall and tuner, and decoded Follow including Drive read-back. Any unpassed earlier step prevents saves. [Coverage](rig-check/coverage.md).
+
 - [x] #271 Rig Check offers a separately confirmed evidence branch for unverified Variax 300/600 firmware. Practice tests with 3.09 cover the notice, Run card, raw replies, layout differences and release without a preset change. [Catalogue](rig-check/catalogue.md).
 - [x] The shell and Device check explain unverified Variax and PODxt Live identities in plain language, including the reported and verified firmware versions when the reply is readable. Unsupported connections keep file editing available. Synthetic tests cover the notice, the verified identity path and the Device check action restrictions. The Variax editor notice is tracked separately under [#270](https://github.com/guirossibrum/VariaxWorkbench/issues/270).
 

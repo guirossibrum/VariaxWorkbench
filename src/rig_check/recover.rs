@@ -17,26 +17,14 @@ use super::record::{Mode, Outcome, RunRecord, StepRecord, sha256_hex, utc_now};
 use super::runner::{Ctx, Decision, Operator, ReportSink, Retry, SKIPPED};
 use super::steps::RunData;
 use line6_devices::family::podxt::{self, BankKind, Location};
-use line6_devices::family::variax::{Preset, procedures as shared_variax};
+use line6_devices::family::variax::{FollowUpdate, Preset, procedures as shared_variax};
 use line6_devices::gate::Operation;
-use line6_devices::midi::Event;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 // ------------------------------------------------------------------ 6.1
 
 const VDI_OPS: &[Operation] = &[Operation::VariaxIdentity, Operation::VariaxRead];
-
-fn connection_notice(event: &Event) -> Option<bool> {
-    match event {
-        Event::Sysex(frame) => match frame.as_slice() {
-            [0xf0, 0, 1, 0x0c, 0x03, 0x11, _, _, _, state, 0xf7] => Some(*state != 0),
-            [0xf0, 0, 1, 0x0c, 0x7f, 0x03, _, _, _, _, _, 0xf7] => Some(false),
-            _ => None,
-        },
-        Event::Short(_) => None,
-    }
-}
 
 fn vdi_window(
     ctx: &mut Ctx<'_>,
@@ -62,8 +50,11 @@ fn vdi_window(
         ctx.port
             .user_acts(action.clone(), super::guided::PRACTICE_DELAY);
         let (seen, at) = with_variax(ctx, VDI_OPS, |session, stopping| {
-            let seen = watch_variax(session, WINDOW, stopping, |event| {
-                connection_notice(event) == Some(connected)
+            let seen = watch_variax(session, connected, stopping, |update| {
+                matches!(
+                    (connected, update),
+                    (true, FollowUpdate::Connected) | (false, FollowUpdate::Disconnected)
+                )
             })?;
             Ok((seen, session.link.elapsed()))
         })?;
