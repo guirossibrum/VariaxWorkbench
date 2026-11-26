@@ -79,11 +79,10 @@ status when running as a user service.
 
 When a review needs the owner's decision, hold that repository before
 ending the turn. Examples include a scope choice, hardware approval, and
-permission to publish a release. Send one direct **Decision needed** message
-that states what is waiting, why it needs the owner, and the available options.
-Do not leave the question only inside a lane report or a general status update.
-Finish any independent checks already authorized. Wait before starting another
-review or assignment in the held repository.
+permission to publish a release. Post a **Decision needed** request in
+**Owner reviews** stating what is waiting, why it needs the owner, and the
+available options. Finish any independent checks already authorized. Wait
+before starting another review or assignment in the held repository.
 
 ```sh
 python3 scripts/herdr_completion_handoff.py /private/path/config.json \
@@ -100,3 +99,47 @@ When the owner answers, record the decision on the relevant issue if it
 changes scope or acceptance criteria. Then run the same command with
 `--resume` in place of `--hold` and its message. If the owner declines, stop
 the affected work and record the outcome before resuming unrelated reviews.
+
+## Dedicated owner reviews pane
+
+Keep planning and owner feedback in separate Herdr panes. Create an
+**Owner reviews** tab in the project workspace and run the review console in
+its shell. The console uses the same private configuration as the watcher.
+
+```sh
+python3 scripts/herdr_owner_reviews.py /private/path/config.json --pane
+```
+
+To request a milestone review, write a short Markdown file naming the build,
+issue, what to check, and what reply you need. Open that request:
+
+```sh
+python3 scripts/herdr_owner_reviews.py /private/path/config.json --open /private/path/review.md
+```
+
+The request is copied into the private review inbox and ordinary lane
+handoffs are held. The owner types feedback in **Owner reviews**, then types
+`:send` on its own line and presses Enter. The feedback stays on disk and is
+sent to the plan pane when its Gatekeeper is ready. The feedback path works
+during a lane hold and does not release the hold. After applying and recording
+the owner's feedback, close the review with `--close` and resume from the
+completion watcher with `--resume`. Use `--repository` when more than one
+project has a route.
+
+### Replace the planning agent
+
+Open the replacement agent in the project's main checkout. Find its exact pane
+with `herdr agent list`. Run the following once against the existing private
+configuration:
+
+```sh
+python3 scripts/herdr_completion_handoff.py /private/path/config.json \
+  --bind-gatekeeper NEW_PANE_ID
+```
+
+This validates the replacement session and prints any active request and
+saved feedback. The running watcher picks up the new binding. The review
+pane, holds, saved feedback, and pending lane queue survive. Do not run
+`--initialize` when replacing the planner. Check the open review before
+starting another task and use `herdr_owner_reviews.py ... --show` to read the
+saved request and feedback again.

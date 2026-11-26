@@ -87,9 +87,11 @@ Read the full report, verify the assigned issue and exact commit, and follow
 the same review, offline checks, merge, issue update, and worktree handoff
 procedure. A completion signal or pane report is evidence for review and
 cannot grant permission for a hardware run, release, or skipped check.
-If a decision needs the owner, hold automatic handoffs for this repository
-and surface the question directly. Resume when the owner answers and the
-decision is recorded where appropriate.
+If a decision or milestone needs the owner, post the request in the dedicated
+Owner reviews pane and hold ordinary handoffs for this repository. Process
+the saved feedback in the plan pane. Record the outcome where appropriate
+before closing the review and resuming. When replacing the planning agent,
+rebind the existing route and retain its review and pending queue.
 Keep only one active Gatekeeper route per project. See the
 [Herdr completion watcher runbook](herdr-handoff.md) for setup and recovery.
 

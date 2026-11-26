@@ -203,10 +203,15 @@ def hold_file(config, repo):
     return config.parent / "holds" / f"{digest(repo)}.json"
 
 
-def change_hold(config, routes, repository, reason, resume):
+def route_repository(routes, repository):
     repo = repository or (next(iter(routes)) if len(routes) == 1 else None)
     if repo not in routes:
         raise ValueError("specify a configured --repository")
+    return repo
+
+
+def change_hold(config, routes, repository, reason, resume):
+    repo = route_repository(routes, repository)
     path = hold_file(config, repo)
     if resume:
         path.unlink(missing_ok=True)
@@ -219,7 +224,28 @@ def change_hold(config, routes, repository, reason, resume):
         print(f"Held {repo}: {reason}")
 
 
+def bind_gatekeeper(config_path, config, repository, pane):
+    from herdr_owner_reviews import active_review, review_root, summary
+
+    routes = config["routes"]
+    repo = route_repository(routes, repository)
+    herdr = Herdr(config, repo)
+    agents = herdr.agents()
+    agent = agents.get(pane)
+    if not agent or not agent.get("agent_session"):
+        raise ValueError("No live agent in that Herdr pane")
+    binding = {"pane": pane, "session": agent["agent_session"]}
+    if not herdr.match(agents, binding, gatekeeper=True):
+        raise ValueError("Gatekeeper must be in that repository's main checkout")
+    routes[repo]["gatekeeper"] = binding
+    write_state(config_path, config)
+    print(f"Bound {repo} Gatekeeper to {pane}")
+    print(summary(active_review(review_root(config_path, repo))))
+
+
 def main():
+    from herdr_owner_reviews import active_review, deliver_feedback, review_root
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("config", type=Path, help="private config file")
     mode = parser.add_mutually_exclusive_group()
@@ -229,10 +255,17 @@ def main():
                       help="resolve the first uncertain delivery after checking the pane")
     mode.add_argument("--hold", metavar="DECISION", help="pause one repository's delivery")
     mode.add_argument("--resume", action="store_true", help="resume one repository's delivery")
+    mode.add_argument("--bind-gatekeeper", metavar="PANE", help="replace an existing Gatekeeper binding")
     parser.add_argument("--repository", help="repository whose delivery to hold, resume, or resolve")
     args = parser.parse_args()
     config = json.loads(args.config.read_text())
     routes = config.get("routes", {})
+    if args.bind_gatekeeper:
+        try:
+            bind_gatekeeper(args.config, config, args.repository, args.bind_gatekeeper)
+        except ValueError as error:
+            parser.error(str(error))
+        return
     if args.hold is not None or args.resume:
         try:
             change_hold(args.config, routes, args.repository, args.hold, args.resume)
@@ -281,10 +314,18 @@ def main():
                     save()
                 for event in events:
                     print(json.dumps(event), flush=True)
-                for repo, route in routes.items():
+                latest = json.loads(args.config.read_text())
+                latest_routes = latest.get("routes", {})
+                if set(latest_routes) != set(routes):
+                    raise RuntimeError("Configured repositories changed; restart after preserving pending reports")
+                for repo, route in latest_routes.items():
+                    reader = readers[repo]
+                    root = review_root(args.config, repo)
+                    deliver_feedback(reader, route, root)
+                    held = hold_file(args.config, repo)
                     tick(
-                        readers[repo], route, state["routes"][repo], lambda _: save(),
-                        held=hold_file(args.config, repo).exists,
+                        reader, route, state["routes"][repo], lambda _: save(),
+                        held=lambda: held.exists() or active_review(root) is not None,
                     )
             except (RuntimeError, OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
                 print(f"Handoff deferred: {error}", flush=True)
