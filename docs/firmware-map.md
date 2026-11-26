@@ -192,8 +192,9 @@ The tracked archive checks below can be rerun against an authorized local
 copy of the firmware. The additional component verifiers, result logs and
 checksum index are retained locally under the ignored
 `backups/podxt-301-audit/` area. See its `SHA256SUMS` entries for the Room
-graph, panel data and flash geometry checkpoints. The Room sample-path and
-second-child checkpoints each have a private checksum index in the same area.
+graph, panel data and flash geometry checkpoints. The Room sample-path,
+second-child and third-child checkpoints each have a private checksum index
+in the same area.
 
 #### Room sample path
 
@@ -240,10 +241,29 @@ output. Two address interpretations for the final lookahead produced the
 same samples and saved state because the lookahead value is discarded. The
 physical read address, DSP precision and interrupt timing remain unverified.
 
-The comparison bounds the stock 16-sample entry. The alternate entry and
-the third child's arithmetic still need replay. Route-labelled interrupt
-state and matching input, state and output vectors are still needed for
-whole-graph verification and audio equivalence.
+The comparison bounds the stock 16-sample entry. The adjacent entry uses a
+different step and sample count.
+
+#### Room third child and composed sample path
+
+The third child mixes the original input with a scaled copy of the adjacent
+processed block. It writes 16 words into the original input span and leaves
+the processed span intact. The mixer matched a separate binary32 reference
+in seven synthetic cases. Varying the word beyond the processed span showed
+that the final prefetch does not enter the mix.
+
+The three callbacks also matched composed scalar models in 66 comparisons
+across 33 synthetic blocks and two address interpretations. The comparisons
+covered mixed output, first-child filter history, and second-child delay
+state over consecutive blocks. The bounded post-load fixture has only the
+Room row active in the main dispatch table.
+
+Separate archived control-table entries reach a helper that selects either
+Room buffer as the output pointer for other graph rows and copies the new
+pointer into the dispatch table. Their archived callbacks are zero. The
+control path establishes that those pointers can change. The identity of the
+live input producer, active downstream consumer, route-labelled interrupt
+state, DSP precision and matching input/output vectors remain open.
 
 ### PODxt Live 3.01 factory channels
 
