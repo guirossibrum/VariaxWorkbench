@@ -148,11 +148,14 @@ pub fn card_text(step: &Step, mode: Mode) -> String {
             .join(", ")
     };
     format!(
-        "\n=== Step {id}: {title} ===\nWhat it does: {does}\nYou do: {you}\nSEE:  {see}\nHEAR: {hear}\nRisk: {risk} · Gate: {gates} · Needs: {needs} · Mode: {mode}\nRecords: {evidence}",
+        "\n=== Step {id}: {title} ===\nWhat it does: {does}\nYou do: {you}{starting_buffer}\nSEE:  {see}\nHEAR: {hear}\nRisk: {risk} · Gate: {gates} · Needs: {needs} · Mode: {mode}\nRecords: {evidence}",
         id = step.id,
         title = step.title,
         does = step.does,
         you = step.you_do,
+        starting_buffer = step
+            .starting_buffer_note()
+            .map_or(String::new(), |note| format!("\n{note}")),
         see = step.see.to_uppercase(),
         hear = step.hear.to_uppercase(),
         risk = step.risk.label(),
@@ -258,6 +261,12 @@ impl<R: BufRead, W: Write> Operator for Terminal<R, W> {
             }
             advanced.get() || stop.get()
         })
+    }
+
+    fn variax_connected(&mut self) -> bool {
+        self.say("No guitar answered. Is a Variax connected by its VDI cable?");
+        self.say("[n] No Variax   [t] Try again");
+        matches!(self.line().to_ascii_lowercase().as_str(), "t" | "try again")
     }
 
     fn not_seen(&mut self, step: StepId, what: &str) -> Retry {

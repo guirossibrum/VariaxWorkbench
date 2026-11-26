@@ -2,15 +2,16 @@
 
 use super::catalogue::StepId;
 use super::computer::{self, UsbView};
+use super::differences::{self, Severity};
 use super::evidence;
 use super::practice::{Program, preset_label};
 use super::procedures::{
-    self, GUARD, PODXT_IDENTITY, PODXT_LIBRARY, PODXT_READ, VARIAX_IDENTITY, VARIAX_SELECT,
-    program_bytes, same_program, variax_full_read, variax_read_preset, with_podxt, with_variax,
+    self, GUARD, PODXT_IDENTITY, PODXT_LIBRARY, VARIAX_IDENTITY, VARIAX_SELECT, program_bytes,
+    same_program, variax_full_read, variax_read_preset, with_podxt, with_variax,
     with_variax_progress,
 };
 use super::record::Mode;
-use super::runner::{Ctx, Progress};
+use super::runner::{Ctx, NOT_APPLICABLE, Progress};
 use line6_devices::family::podxt::{self, BankKind, EditBuffer, Location};
 use line6_devices::family::variax::{self, Preset, procedures as shared_variax};
 use line6_devices::identity::Identity;
@@ -27,10 +28,13 @@ pub struct RunData {
     pub evidence_dir: Option<PathBuf>,
     pub podxt_identity: Option<Identity>,
     pub podxt_verified: Option<bool>,
+    pub no_podxt: bool,
+    pub no_variax: bool,
     pub variax_identity: Option<Identity>,
     pub variax_verified: Option<bool>,
     pub start_tone: Option<EditBuffer>,
     pub start_channel: Option<Location>,
+    pub podxt_unsaved: bool,
     pub podxt_library: Vec<(Location, EditBuffer)>,
     /// Reads from steps 2.3 and 2.4, compared with the backup in 2.5.
     pub podxt_reads: Vec<super::podxt_reads::ChannelRead>,
@@ -38,6 +42,7 @@ pub struct RunData {
     /// The 192 settings bytes from step 3.2.
     pub start_settings: Option<[u8; 192]>,
     pub start_preset: Option<Preset>,
+    pub variax_unsaved: bool,
     pub variax_library: Vec<(Preset, Program)>,
     pub variax_backup_folder: Option<String>,
     pub touched_podxt: bool,
@@ -61,6 +66,53 @@ pub struct RunData {
 }
 
 impl RunData {
+    // Tests that recall a slot use its stored program. The 6.2 guard retains
+    // the original captured buffer separately, including unsaved edits.
+    pub fn exercise_program(&self) -> Option<Program> {
+        if !self.variax_unsaved {
+            return self.start_program;
+        }
+        let preset = self.start_preset?;
+        self.variax_library
+            .iter()
+            .find(|(slot, _)| *slot == preset)
+            .map(|(_, program)| *program)
+    }
+
+    pub fn rig_description(&self) -> String {
+        let pod = if self.no_podxt {
+            "No PODxt Live found".into()
+        } else if let Some(identity) = &self.podxt_identity {
+            format!(
+                "PODxt Live {} ({})",
+                identity.version_text(),
+                if self.podxt_verified == Some(true) {
+                    "tested"
+                } else {
+                    "other firmware"
+                }
+            )
+        } else {
+            "PODxt Live: not identified".into()
+        };
+        let guitar = if self.no_variax {
+            "Variax: not connected".into()
+        } else if let Some(identity) = &self.variax_identity {
+            format!(
+                "Variax {} ({})",
+                identity.version_text(),
+                if self.variax_verified == Some(true) {
+                    "tested"
+                } else {
+                    "other firmware"
+                }
+            )
+        } else {
+            "Variax: not identified".into()
+        };
+        format!("{pod}, {guitar}")
+    }
+
     /// Why a live or save step must not run on these devices, if so.
     pub fn unverified_reason(&self, step: StepId) -> Option<String> {
         let podxt_step = matches!(
@@ -103,6 +155,7 @@ pub fn execute(ctx: &mut Ctx<'_>) -> Result<(), String> {
         (2, 4) => super::podxt_reads::one_bank(ctx),
         (2, 5) => podxt_library(ctx),
         (2, 6) => super::live::podxt_editor_get(ctx),
+        (2, 7) => podxt_version_comparison(ctx),
         (3, 1) => variax_identity(ctx),
         (3, 2) => super::variax_reads::current_settings(ctx),
         (3, 3) => variax_current_program(ctx),
@@ -222,11 +275,12 @@ fn engine_check(ctx: &mut Ctx<'_>) -> Result<(), String> {
                 .checksums
                 .push((format!("{} (built here)", result.name), hash.clone()));
         }
-        if !result.diffs.is_empty() {
-            ctx.rec.note(format!("{} — word detail:", result.name));
-            for line in result.details() {
-                ctx.rec.note(line);
-            }
+        if !result.identical() {
+            ctx.rec.difference(
+                Severity::Report,
+                result.summary(),
+                result.diffs.iter().map(differences::word_line).collect(),
+            );
         }
     }
     ctx.data.engine_summary = summary;
@@ -242,14 +296,7 @@ fn engine_check(ctx: &mut Ctx<'_>) -> Result<(), String> {
             Some((r.name.clone(), words.try_into().ok()?, r.question.clone()))
         })
         .collect();
-    let different = results.iter().filter(|r| !r.identical()).count();
-    if different == 0 {
-        Ok(())
-    } else {
-        Err(format!(
-            "{different} reference program(s) differ on this computer. The word, bit and sound-part detail is in the report."
-        ))
-    }
+    Ok(())
 }
 
 /// Windows/macOS lines that belong to step 0.2 rather than 0.1.
@@ -317,8 +364,18 @@ fn podxt_identity(ctx: &mut Ctx<'_>) -> Result<(), String> {
         podxt::listen(session, Duration::ZERO)
     })?;
     let identity = Identity::parse(&reply).ok_or("The PODxt identity reply did not parse.")?;
+    if !identity.is_line6()
+        || identity.family != podxt::IDENTITY_FAMILY
+        || identity.member != podxt::PODXT_LIVE_MEMBER
+    {
+        return Err("The reply is not the identity of a PODxt Live.".into());
+    }
     let verified = podxt::check_live_identity(&identity).is_ok();
     let model = podxt::member_name(identity.member);
+    if let Some(root) = &ctx.data.evidence_dir {
+        let folder = ctx.rec.evidence_folder("podxt-identity");
+        evidence::save_folder(root, &folder, &[("identity.bin".into(), reply.clone())])?;
+    }
     ctx.rec.note(format!("Identity reply: {}", hex(&reply)));
     ctx.rec.show(format!(
         "{model}, firmware {}{}",
@@ -342,11 +399,40 @@ fn podxt_identity(ctx: &mut Ctx<'_>) -> Result<(), String> {
     Ok(())
 }
 
+fn podxt_version_comparison(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    let identity = ctx
+        .data
+        .podxt_identity
+        .as_ref()
+        .ok_or("No PODxt Live identity from step 2.1.")?;
+    let details = [0u8, 3, 0, 1].into_iter().zip(identity.version).enumerate()
+        .filter(|(_, (expected, actual))| expected != actual)
+        .map(|(offset, (expected, actual))| {
+            let xor = expected ^ actual;
+            format!("identity byte {} (PODxt firmware) · expected 0x{expected:02X} · actual 0x{actual:02X} · XOR 0x{xor:02X} · {} bit(s)", 12 + offset, xor.count_ones())
+        })
+        .collect();
+    ctx.rec.difference(
+        Severity::Report,
+        format!(
+            "PODxt Live reports {}, tested version 3.01",
+            identity.version_text()
+        ),
+        details,
+    );
+    Ok(())
+}
+
 fn podxt_current_tone(ctx: &mut Ctx<'_>) -> Result<(), String> {
-    // A closure, not the function path: the session's link lifetime is generic.
-    #[allow(clippy::redundant_closure)]
-    let current = with_podxt(ctx, PODXT_READ, |session| podxt::read_current(session))?;
-    let tone = current.tone;
+    let (tone, channel) = with_podxt(ctx, procedures::PODXT_CHANNEL, |session| {
+        let tone = podxt::read_current(session)?.tone;
+        Ok((tone, podxt::playing_channel(session)?))
+    })?;
+    ctx.data.start_channel = Some(channel);
+    ctx.rec.show(format!(
+        "Starting channel reported by the PODxt Live: {}",
+        channel.label()
+    ));
     ctx.rec.show(format!("Current tone: {}", tone.name()));
     ctx.rec.look_at(
         "Does the PODxt Live display show the same current tone name?",
@@ -360,13 +446,24 @@ fn podxt_current_tone(ctx: &mut Ctx<'_>) -> Result<(), String> {
         .checksum("PODxt current tone (168 bytes)", &tone.raw);
     ctx.rec
         .note(format!("Dump SHA-256 {hash}: {}", hex(&tone.raw)));
+    if let Some(root) = &ctx.data.evidence_dir {
+        let folder = ctx.rec.evidence_folder("podxt-start");
+        evidence::save_folder(
+            root,
+            &folder,
+            &[("edit-buffer.bin".into(), tone.raw.clone())],
+        )?;
+        ctx.rec
+            .note(format!("Captured starting PODxt edit buffer in {folder}."));
+    }
     ctx.data.start_tone = Some(tone);
     Ok(())
 }
 
 fn podxt_library(ctx: &mut Ctx<'_>) -> Result<(), String> {
+    let practice = ctx.mode == Mode::Practice;
     let library = procedures::with_podxt_progress(ctx, PODXT_LIBRARY, |session, _, progress| {
-        session.log_packets = false;
+        session.log_packets = !practice;
         let mut locations = Location::all(&BankKind::ALL);
         let mut advance = |done| {
             let action = locations.next().map_or_else(
@@ -397,9 +494,19 @@ fn podxt_library(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let hash = ctx.rec.checksum("PODxt library (299 dumps)", &all);
     ctx.rec.note(format!("Library SHA-256 {hash}"));
     match &library.after {
-        Ok(after) if after.raw == library.before.raw => ctx
-            .rec
-            .show("The playing tone is unchanged after the library read."),
+        Ok(after)
+            if differences::tone(
+                ctx.rec,
+                "Current PODxt tone before and after backup",
+                &library.before.raw,
+                &after.raw,
+                Severity::Stop,
+                true,
+            ) == 0 =>
+        {
+            ctx.rec
+                .show("The playing tone is unchanged after the library read.")
+        }
         Ok(_) => return Err("The playing tone changed during the library read.".into()),
         Err(error) => return Err(format!("The closing current-tone read failed: {error}")),
     }
@@ -449,34 +556,47 @@ fn podxt_library(ctx: &mut Ctx<'_>) -> Result<(), String> {
             "{content} earlier channel read(s) differ in content from the backup."
         ));
     }
-    ctx.data.start_channel = None;
-    if let Some(start) = &ctx.data.start_tone {
-        let matches: Vec<Location> = ctx
+    if let (Some(channel), Some(start)) = (ctx.data.start_channel, &ctx.data.start_tone) {
+        let saved = ctx
             .data
             .podxt_library
             .iter()
-            .filter(|(location, tone)| location.kind() == BankKind::Tones && tone.same_tone(start))
-            .map(|(location, _)| *location)
-            .collect();
-        match matches[..] {
-            [channel] => {
-                ctx.rec
-                    .show(format!("Starting channel: {}", channel.label()));
-                ctx.data.start_channel = Some(channel);
-            }
-            _ => ctx.rec.note(format!(
-                "The playing tone matches {} stored channels; the starting channel is unknown.",
-                matches.len()
-            )),
-        }
+            .find(|(location, _)| *location == channel)
+            .ok_or("The reported starting channel is missing from the backup.")?;
+        ctx.rec
+            .show(format!("Starting channel: {}", channel.label()));
+        ctx.data.podxt_unsaved = super::differences::tone(
+            ctx.rec,
+            &format!("Channel {}", channel.label()),
+            &saved.1.raw,
+            &start.raw,
+            super::differences::Severity::Report,
+            true,
+        ) > 0;
     }
     Ok(())
 }
 
 fn variax_identity(ctx: &mut Ctx<'_>) -> Result<(), String> {
-    let identified = with_variax(ctx, VARIAX_IDENTITY, |session, _| {
-        shared_variax::identify_reported(session)
-    })?;
+    let identified = loop {
+        let attempt = with_variax(ctx, VARIAX_IDENTITY, |session, _| {
+            variax::identify_if_present_retrying_silence(session, Duration::from_secs(2))
+        })?;
+        if let Some(identified) = attempt {
+            break identified;
+        }
+        if !ctx.op.variax_connected() {
+            ctx.data.no_variax = true;
+            return Err(format!(
+                "{NOT_APPLICABLE}Not applicable: no Variax connected"
+            ));
+        }
+        super::guided::play_phrase(
+            ctx,
+            "Check the VDI cable at the guitar and PODxt Live, then press Continue.",
+            "The guitar may come back after the cable is connected.",
+        )?;
+    };
     let identity = identified.identity;
     if !identity.is_line6() || identity.family != variax::IDENTITY_FAMILY {
         return Err("The reply is not a Variax identity.".into());
@@ -527,7 +647,29 @@ fn variax_current_program(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let mut checked = image;
     shared_variax::set_firmware_checksum(&mut checked);
     if image != checked {
+        super::differences::program(
+            ctx.rec,
+            "Variax checksum",
+            &procedures::unpack_program(&checked),
+            &read.words,
+            super::differences::Severity::Stop,
+            false,
+        );
         return Err("The Variax current program failed the firmware checksum check.".into());
+    }
+    if let Some(root) = &ctx.data.evidence_dir {
+        let mut files = vec![("program.bin".into(), image.to_vec())];
+        files.extend(
+            read.raw_replies
+                .iter()
+                .enumerate()
+                .map(|(index, reply)| (format!("reply-{:02}.bin", index + 1), reply.clone())),
+        );
+        let folder = ctx.rec.evidence_folder("variax-start");
+        evidence::save_folder(root, &folder, &files)?;
+        ctx.rec.note(format!(
+            "Captured starting Variax program and raw replies in {folder}."
+        ));
     }
     ctx.rec.show(format!(
         "Progress {} of 35 chunks, 1,092 words, checksum OK.",
@@ -547,7 +689,7 @@ fn variax_current_program(ctx: &mut Ctx<'_>) -> Result<(), String> {
         super::practice::program_name(&read.words),
         read.words[1091]
     ));
-    super::variax_reads::after_full_read(ctx, &read.words);
+    super::variax_reads::after_full_read(ctx, &read.words)?;
     ctx.data.start_program = Some(read.words);
     Ok(())
 }
@@ -563,8 +705,13 @@ fn variax_all_presets(ctx: &mut Ctx<'_>) -> Result<(), String> {
         Operation::VariaxLibraryBridge,
         Operation::VariaxBankNameRead,
     ];
+    let practice_start = ctx
+        .port
+        .simulation()
+        .and_then(|rig| rig.borrow().variax.selected);
+    let practice = ctx.mode == Mode::Practice;
     let read = with_variax_progress(ctx, BACKUP, |session, stopping, progress| {
-        session.log_packets = false;
+        session.log_packets = !practice;
         let mut presets = Preset::all();
         let mut advance = |done| {
             let action = presets.next().map_or_else(
@@ -600,6 +747,9 @@ fn variax_all_presets(ctx: &mut Ctx<'_>) -> Result<(), String> {
         .stopped
         .clone()
         .or(read.settings.release_error.clone());
+    if failure.is_none() && !read.complete() {
+        return Err("The Variax library backup did not contain 60 complete programs.".into());
+    }
     if !read.complete() || read.settings.bank_names.len() != 12 {
         ctx.rec.note(format!(
             "Partial backup: {} programs and {} bank names.",
@@ -620,43 +770,6 @@ fn variax_all_presets(ctx: &mut Ctx<'_>) -> Result<(), String> {
             &hash[..16]
         ));
     }
-    let matches: Vec<Preset> = library
-        .iter()
-        .filter(|(_, words)| same_program(words, &start))
-        .map(|(preset, _)| *preset)
-        .collect();
-    let back = match matches[..] {
-        [preset] => {
-            ctx.rec
-                .show(format!("Starting preset: {}", preset_label(preset)));
-            ctx.data.start_preset = Some(preset);
-            let read = with_variax_progress(ctx, VARIAX_SELECT, |session, stopping, progress| {
-                variax_read_preset(
-                    session,
-                    preset,
-                    stopping,
-                    progress,
-                    &format!("Verifying return to {}", preset_label(preset)),
-                )
-            })?;
-            if same_program(&read.words, &start) {
-                ctx.rec.show(format!(
-                    "Back on {}: all 1,092 words match the start.",
-                    preset_label(preset)
-                ));
-                Ok(())
-            } else {
-                Err(format!(
-                    "Switched back to {}, but the program differs from the start.",
-                    preset_label(preset)
-                ))
-            }
-        }
-        _ => Err(format!(
-            "The starting program matches {} stored presets; Rig Check cannot switch back. Select your preset with the guitar's selector.",
-            matches.len()
-        )),
-    };
     if let Some(root) = ctx.data.evidence_dir.clone() {
         let files: Vec<(String, Vec<u8>)> = library
             .iter()
@@ -679,6 +792,79 @@ fn variax_all_presets(ctx: &mut Ctx<'_>) -> Result<(), String> {
             files.len()
         ));
     }
+    let matches: Vec<Preset> = library
+        .iter()
+        .filter(|(_, words)| *words == start)
+        .map(|(preset, _)| *preset)
+        .collect();
+    let picked = match matches[..] {
+        [preset] => preset,
+        _ if failure.is_some() => return Err(failure.unwrap()),
+        _ => {
+            ctx.rec.note(format!(
+                "The captured starting buffer matched {} slots. Checking the physical selector.",
+                matches.len()
+            ));
+            let reported = super::guided::starting_variax_selector(ctx, practice_start)?;
+            if !matches.is_empty() && !matches.contains(&reported) {
+                return Err(
+                    "The reported selector position is outside the matching saved slots.".into(),
+                );
+            }
+            reported
+        }
+    };
+    let stored = library
+        .iter()
+        .find(|(preset, _)| *preset == picked)
+        .ok_or("The reported starting preset is missing from the backup.")?
+        .1;
+    ctx.data.variax_unsaved = !super::differences::program(
+        ctx.rec,
+        &format!("{} starting buffer (unsaved changes)", preset_label(picked)),
+        &stored,
+        &start,
+        super::differences::Severity::Report,
+        true,
+    );
+    ctx.data.start_preset = Some(picked);
+    ctx.rec
+        .show(format!("Starting preset: {}", preset_label(picked)));
+    let read = with_variax_progress(ctx, VARIAX_SELECT, |session, stopping, progress| {
+        variax_read_preset(
+            session,
+            picked,
+            stopping,
+            progress,
+            &format!("Verifying return to {}", preset_label(picked)),
+        )
+    })?;
+    let back = if super::differences::program(
+        ctx.rec,
+        "Variax return to the stored preset",
+        &stored,
+        &read.words,
+        super::differences::Severity::Stop,
+        true,
+    ) {
+        if ctx.data.variax_unsaved {
+            ctx.rec.show(format!(
+                "Back on the saved {}. Rig Check will restore your captured edits in step 6.2.",
+                preset_label(picked)
+            ));
+        } else {
+            ctx.rec.show(format!(
+                "Back on {}: all 1,092 words match the start.",
+                preset_label(picked)
+            ));
+        }
+        Ok(())
+    } else {
+        Err(format!(
+            "Switched back to {}, but it differs from the backup.",
+            preset_label(picked)
+        ))
+    };
     ctx.data.variax_library = library;
     if let Some(failure) = failure {
         return Err(match back {
@@ -697,37 +883,59 @@ fn rig_guard(ctx: &mut Ctx<'_>) -> Result<(), String> {
     }
     let mut problems = Vec::new();
     if let Some(start) = ctx.data.start_tone.clone() {
-        let now = with_podxt(ctx, GUARD, |session| {
-            podxt::read_current(session).map(|current| current.tone)
+        let (now, channel) = with_podxt(ctx, procedures::PODXT_CHANNEL, |session| {
+            let now = podxt::read_current(session)?.tone;
+            Ok((now, podxt::playing_channel(session)?))
         })?;
-        if now.raw == start.raw {
+        let stable = differences::same_podxt_tone(&start.raw, &now.raw);
+        if Some(channel) == ctx.data.start_channel && stable {
+            super::differences::tone(
+                ctx.rec,
+                "PODxt starting tone",
+                &start.raw,
+                &now.raw,
+                super::differences::Severity::Stop,
+                true,
+            );
             ctx.rec
                 .show("Rig: the PODxt Live tone is the starting tone (all 168 bytes).");
-        } else if now.same_tone(&start) {
-            ctx.rec.show(format!(
-                "Rig: the PODxt Live tone is the starting tone; only live pedal/knob values differ {:?}.",
-                start.differences(&now)
-            ));
+        } else if ctx.data.podxt_unsaved && ctx.data.start_channel.is_some() {
+            if let Err(error) = super::live::restore_podxt_playing(ctx) {
+                problems.push(error);
+            }
         } else if let Some(channel) = ctx.data.start_channel.filter(|_| !ctx.data.read_only) {
-            let switch = with_podxt(ctx, GUARD, |session| {
-                podxt::switch_channel(session, channel, None, false)
+            let back = with_podxt(ctx, GUARD, |session| {
+                podxt::restore_channel(session, channel)
             })?;
-            if switch.switched() && switch.target_stored.same_tone(&start) {
+            if super::differences::tone(
+                ctx.rec,
+                "PODxt return",
+                &start.raw,
+                &back.tone.raw,
+                super::differences::Severity::Stop,
+                true,
+            ) == 0
+            {
                 ctx.rec.show(format!(
-                    "Rig: the PODxt Live was switched back to channel {} and verified.",
+                    "Rig: the PODxt Live was switched back to {} and verified.",
                     channel.label()
                 ));
             } else {
                 problems.push(format!(
-                    "The PODxt Live could not be verified on channel {}.",
+                    "The PODxt Live could not be verified on {}.",
                     channel.label()
                 ));
             }
         } else {
-            problems.push(
-                "The PODxt Live tone differs from the start and the starting channel is unknown."
-                    .to_string(),
+            super::differences::tone(
+                ctx.rec,
+                "PODxt starting tone",
+                &start.raw,
+                &now.raw,
+                super::differences::Severity::Stop,
+                true,
             );
+            problems.push("The PODxt Live tone or channel differs from the start.".into());
         }
     } else if ctx.data.touched_podxt {
         ctx.rec
@@ -743,8 +951,71 @@ fn rig_guard(ctx: &mut Ctx<'_>) -> Result<(), String> {
             variax_full_read(session, stopping, progress, "Checking the starting program")
         })?;
         if same_program(&now.words, &start) {
+            differences::program(
+                ctx.rec,
+                "Variax starting program",
+                &start,
+                &now.words,
+                Severity::Stop,
+                true,
+            );
             ctx.rec
                 .show("Rig: the Variax plays the starting program (1,092 words).");
+        } else if ctx.data.variax_unsaved && ctx.data.start_preset.is_some() {
+            let stored = ctx
+                .data
+                .exercise_program()
+                .ok_or("The starting Variax preset is missing from the backup.")?;
+            let preset = ctx.data.start_preset.expect("checked starting preset");
+            let restore = with_variax_progress(
+                ctx,
+                super::variax_live::VARIAX_LIVE,
+                |session, _, progress| {
+                    shared_variax::identify(session)?;
+                    let selected = variax_read_preset(
+                        session,
+                        preset,
+                        &|| false,
+                        progress,
+                        "Selecting the verified starting slot",
+                    )?;
+                    if !same_program(&selected.words, &stored) {
+                        return Err("Saved starting slot differs from the verified backup. The captured edits were not sent.".into());
+                    }
+                    let bytes = shared_variax::pack(&start);
+                    let name = super::practice::program_name(&start);
+                    let program = variax::write::Program::new(&name, &bytes)?;
+                    shared_variax::send_buffer(
+                        session,
+                        shared_variax::BufferEdit::Full(&program),
+                        || false,
+                    )?;
+                    variax_full_read(
+                        session,
+                        &|| false,
+                        progress,
+                        "Verifying restored starting edit buffer",
+                    )
+                },
+            );
+            match restore {
+                Ok(back)
+                    if super::differences::program(
+                        ctx.rec,
+                        "Restored Variax edit buffer",
+                        &start,
+                        &back.words,
+                        super::differences::Severity::Stop,
+                        false,
+                    ) =>
+                {
+                    ctx.rec.show("Rig: the Variax starting working buffer was restored with your unsaved edits.");
+                }
+                Ok(_) => problems.push(
+                    "The restored Variax working buffer differs from the starting snapshot.".into(),
+                ),
+                Err(error) => problems.push(error),
+            }
         } else if let Some(preset) = ctx.data.start_preset.filter(|_| !ctx.data.read_only) {
             let back = with_variax_progress(ctx, VARIAX_SELECT, |session, stopping, progress| {
                 variax_read_preset(
@@ -755,7 +1026,14 @@ fn rig_guard(ctx: &mut Ctx<'_>) -> Result<(), String> {
                     &format!("Verifying return to {}", preset_label(preset)),
                 )
             })?;
-            if same_program(&back.words, &start) {
+            if differences::program(
+                ctx.rec,
+                "Variax switch-back",
+                &start,
+                &back.words,
+                Severity::Stop,
+                true,
+            ) {
                 ctx.rec.show(format!(
                     "Rig: the Variax was switched back to {} and verified.",
                     preset_label(preset)
@@ -767,6 +1045,14 @@ fn rig_guard(ctx: &mut Ctx<'_>) -> Result<(), String> {
                 ));
             }
         } else {
+            differences::program(
+                ctx.rec,
+                "Variax starting program",
+                &start,
+                &now.words,
+                Severity::Stop,
+                true,
+            );
             problems.push(
                 "The Variax program differs from the start and the starting preset is unknown."
                     .into(),

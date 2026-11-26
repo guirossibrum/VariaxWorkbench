@@ -2,6 +2,7 @@
 //! and their comparison with the library backup from step 2.5.
 
 use super::catalogue::StepId;
+use super::differences::{self, Severity};
 use super::procedures::{PODXT_LIBRARY, podxt_read_stored, with_podxt_progress};
 use super::runner::{Ctx, Progress};
 use line6_devices::family::podxt::{BankKind, EditBuffer, Location};
@@ -142,6 +143,14 @@ pub fn compare_with_backup(ctx: &mut Ctx<'_>) -> usize {
                 location.label()
             ),
             (Ok(read), Some(backup)) => {
+                differences::tone(
+                    ctx.rec,
+                    &format!("Channel {} stored reads", location.label()),
+                    &read.raw,
+                    &backup.raw,
+                    Severity::Stop,
+                    false,
+                );
                 content += 1;
                 format!(
                     "Channel {}: CONTENT DIFFERS from the backup at controllers {:?} (the channel changed between reads, or a byte was corrupted).",

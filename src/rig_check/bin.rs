@@ -19,7 +19,7 @@ const USAGE: &str = "Usage: rig-check [--practice | --real] [--text] [--out DIR]
   --practice  rehearse every step with simulated devices (nothing is sent to real hardware)
   --real      use the connected PODxt Live and Variax (device steps need the owner's approval)
   --out DIR   folder for the report (default: rig-check-output next to this program)
-  --evidence  also save backups and captures in a separate evidence folder
+  --evidence  save raw evidence in practice (always saved for real runs)
   --engine-folder DIR  your own reference models for step 0.3 (models.tsv, NAME.vwm, NAME.packed or NAME.sha256)";
 
 struct Options {
@@ -167,7 +167,7 @@ fn window(options: Options) {
             engine_folder,
             ..RunData::default()
         };
-        if evidence {
+        if evidence || mode == Mode::Real {
             let stem = sink
                 .path
                 .file_stem()
@@ -253,7 +253,7 @@ fn main() {
         engine_folder: options.engine_folder.clone(),
         ..RunData::default()
     };
-    if options.evidence {
+    if options.evidence || options.practice != Some(true) {
         let stem = sink
             .path
             .file_stem()
@@ -291,6 +291,10 @@ fn main() {
         let state_file = sink.path.with_extension("state");
         rig_check::run_with_state(&mut port, &mut person, &mut sink, data, state_file).0
     };
+    println!("{}", run.rig_description);
+    for difference in run.report_differences() {
+        println!("{difference}");
+    }
     for mismatch in run.look_mismatches() {
         println!("{mismatch}");
     }
@@ -298,7 +302,10 @@ fn main() {
         "\nRig Check finished: {} passed, {} failed, {} skipped. {}\nWorking report: {}",
         run.count("passed"),
         run.count("failed"),
-        run.count("skipped") + run.count("skipped_verified_firmware") + run.count("skipped_needs"),
+        run.count("skipped")
+            + run.count("skipped_verified_firmware")
+            + run.count("skipped_not_applicable")
+            + run.count("skipped_needs"),
         rig_check::record::plain_result(&run.rig_state),
         sink.path.display()
     );

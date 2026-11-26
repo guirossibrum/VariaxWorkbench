@@ -177,8 +177,16 @@ fn require_identity<L: Link>(
     session: &mut Session<L>,
     silence_delay: Option<Duration>,
 ) -> Result<Identified, String> {
-    identify_exchange(session, silence_delay)?
+    identify_exchange(session, silence_delay, false)?
         .ok_or_else(|| "No reply to the identity request: nothing arrived from the guitar.".into())
+}
+
+/// Retry silence once, preserving the distinction between silence and lost data.
+pub fn identify_if_present_retrying_silence<L: Link>(
+    session: &mut Session<L>,
+    delay: Duration,
+) -> Result<Option<Identified>, String> {
+    identify_exchange(session, Some(delay), true)
 }
 
 /// The same bounded identity exchange as [`identify`]. A timeout without
@@ -187,12 +195,13 @@ fn require_identity<L: Link>(
 pub fn identify_if_present<L: Link>(
     session: &mut Session<L>,
 ) -> Result<Option<Identified>, String> {
-    identify_exchange(session, None)
+    identify_exchange(session, None, false)
 }
 
 fn identify_exchange<L: Link>(
     session: &mut Session<L>,
     silence_delay: Option<Duration>,
+    distinguish_silence: bool,
 ) -> Result<Option<Identified>, String> {
     let orphans_before = session.assembler.orphans;
     let packets_before = session.packets_in;
@@ -201,6 +210,7 @@ fn identify_exchange<L: Link>(
         Wait::Found(reply) => (reply, 1),
         _ => {
             let lost = session.assembler.orphans - orphans_before;
+            let first_silent = session.packets_in == packets_before;
             if lost != 0 {
                 session.note(format!(
                     "reply tail without its start ({lost} orphan bytes): first packet lost. \
@@ -214,12 +224,18 @@ fn identify_exchange<L: Link>(
                     delay.as_millis(),
                 ));
                 session.link.pause(delay);
+            } else if distinguish_silence && !first_silent {
+                return Err("The guitar sent data without a valid Variax identity reply.".into());
             } else {
                 return Ok(None);
             }
+            let retry_packets = session.packets_in;
             session.send(VariaxRequest::Identity)?;
             match session.wait_for(WINDOW, is_identity_reply, false)? {
                 Wait::Found(reply) => (reply, 2),
+                _ if distinguish_silence && first_silent && session.packets_in == retry_packets => {
+                    return Ok(None);
+                }
                 _ => return Err("No complete identity reply after the second request.".into()),
             }
         }

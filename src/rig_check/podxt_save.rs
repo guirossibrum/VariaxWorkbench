@@ -8,6 +8,7 @@
 //! save is never repeated; a missing receipt follows the 2-minute procedure.
 
 use super::catalogue::{SaveNotice, StepId};
+use super::differences::{self, Severity};
 use super::procedures::with_podxt_progress;
 use super::record::sha256_hex;
 use super::runner::{Ctx, Progress, SKIPPED};
@@ -26,9 +27,11 @@ pub const PODXT_SAVE: &[Operation] = &[
 pub const AFTER_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
-    let dir = ctx.data.podxt_backup_dir.clone().ok_or(
-        "This step needs the 2.5 backup on disk: run Rig Check with the evidence folder (--evidence).",
-    )?;
+    let dir = ctx
+        .data
+        .podxt_backup_dir
+        .clone()
+        .ok_or("The 2.5 backup is missing from the evidence folder. No store is offered.")?;
     let slot = ctx
         .data
         .start_channel
@@ -40,7 +43,10 @@ pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
         device: "PODxt Live",
         slot: format!("{} ({:?})", slot.slot_name(), prepared.original_name()),
         backup_step: StepId(2, 5),
-        backup_file: format!("podxt-library/{entry}"),
+        backup_file: format!(
+            "{}/{entry}",
+            dir.file_name().unwrap_or_default().to_string_lossy()
+        ),
         backup_sha256: sha256_hex(&entry_bytes),
         confirmation: prepared.confirmation(),
     };
@@ -87,6 +93,20 @@ pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
             session.link.pause(AFTER_TIMEOUT);
         }
         Ok(result)
+    });
+    let result = result.inspect_err(|reason| {
+        if reason.contains("match the backup")
+            && let Some(actual) = differences::last_podxt_dump(&ctx.rec.messages)
+        {
+            differences::tone(
+                ctx.rec,
+                "PODxt stored preflight",
+                &entry_bytes,
+                &actual,
+                Severity::Stop,
+                false,
+            );
+        }
     })?;
     if control.started() {
         ctx.rec
@@ -98,7 +118,15 @@ pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
                 format!("PODxt channel {} after save", slot.label()),
                 &tone.raw,
             );
-            if tone.raw != entry_bytes {
+            if differences::tone(
+                ctx.rec,
+                "PODxt stored read-back",
+                &entry_bytes,
+                &tone.raw,
+                Severity::Stop,
+                false,
+            ) != 0
+            {
                 return Err(format!(
                     "Channel {} read back differently from its backup entry.",
                     slot.label()
@@ -116,6 +144,18 @@ pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
             Ok(())
         }
         StoreResult::SlotStateUnknown { slot, reason } => {
+            if reason.contains("stored slot did not read back")
+                && let Some(actual) = differences::last_podxt_dump(&ctx.rec.messages)
+            {
+                differences::tone(
+                    ctx.rec,
+                    "PODxt stored read-back",
+                    &entry_bytes,
+                    &actual,
+                    Severity::Stop,
+                    false,
+                );
+            }
             ctx.data.store_state_unknown = true;
             ctx.op.instruct(
                 ctx.rec.id,

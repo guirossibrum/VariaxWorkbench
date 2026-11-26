@@ -26,6 +26,7 @@ pub enum Outcome {
     Failed(String),
     SkippedByPerson,
     SkippedVerifiedFirmware(String),
+    SkippedNotApplicable(String),
     /// A step it needs did not pass.
     SkippedNeeds(String),
     NotAuthorized(String),
@@ -53,7 +54,7 @@ impl Outcome {
             Outcome::Passed => "PASSED",
             Outcome::Failed(_) => "FAILED",
             Outcome::SkippedByPerson => "SKIPPED (by you)",
-            Outcome::SkippedVerifiedFirmware(_) => "SKIPPED",
+            Outcome::SkippedVerifiedFirmware(_) | Outcome::SkippedNotApplicable(_) => "SKIPPED",
             Outcome::SkippedNeeds(_) => "SKIPPED (needs an earlier step)",
             Outcome::NotAuthorized(_) => "NOT AUTHORIZED",
             Outcome::NotAvailable(_) => "NOT AVAILABLE",
@@ -69,6 +70,7 @@ impl Outcome {
             Outcome::Failed(_) => "failed",
             Outcome::SkippedByPerson => "skipped",
             Outcome::SkippedVerifiedFirmware(_) => "skipped_verified_firmware",
+            Outcome::SkippedNotApplicable(_) => "skipped_not_applicable",
             Outcome::SkippedNeeds(_) => "skipped_needs",
             Outcome::NotAuthorized(_) => "not_authorized",
             Outcome::NotAvailable(_) => "not_available",
@@ -82,6 +84,7 @@ impl Outcome {
             Outcome::Failed(reason)
             | Outcome::SkippedNeeds(reason)
             | Outcome::SkippedVerifiedFirmware(reason)
+            | Outcome::SkippedNotApplicable(reason)
             | Outcome::NotAuthorized(reason)
             | Outcome::NotAvailable(reason)
             | Outcome::UnverifiedDevice(reason)
@@ -131,6 +134,7 @@ pub struct StepRecord {
     pub result: Vec<String>,
     /// Full observations, including byte details, for the report.
     pub evidence: Vec<String>,
+    pub comparisons: Vec<super::differences::Comparison>,
     /// Every message sent and received, with link time stamps.
     pub messages: Vec<MessageLine>,
     pub retries: u32,
@@ -153,6 +157,7 @@ impl StepRecord {
             look: None,
             result: Vec::new(),
             evidence: Vec::new(),
+            comparisons: Vec::new(),
             messages: Vec::new(),
             retries: 0,
             checksums: Vec::new(),
@@ -177,6 +182,19 @@ impl StepRecord {
             lines.push(plain_result(reason));
         }
         lines.extend(
+            self.comparisons.iter().map(|comparison| {
+                format!("{} · {}", comparison.severity.label(), comparison.summary)
+            }),
+        );
+        if matches!(self.outcome, Outcome::Failed(_))
+            && !self
+                .comparisons
+                .iter()
+                .any(|comparison| comparison.severity == super::differences::Severity::Stop)
+        {
+            lines.push("Stops the test".into());
+        }
+        lines.extend(
             self.hints
                 .iter()
                 .map(|hint| format!("Hint: {}", plain_result(hint))),
@@ -196,6 +214,23 @@ impl StepRecord {
             Some(number) if number > 1 => format!("{base}-attempt-{number}"),
             _ => base.into(),
         }
+    }
+
+    pub fn technical_lines(&self) -> impl Iterator<Item = String> + '_ {
+        std::iter::once(format!(
+            "Messages: {} · Retries: {} · Missing bytes in retried replies: {}",
+            self.messages.len(),
+            self.retries,
+            super::variax_reads::lost_bytes(&self.messages)
+        ))
+        .chain(self.comparisons.iter().flat_map(|comparison| {
+            std::iter::once(format!(
+                "{} · {}",
+                comparison.severity.code(),
+                comparison.summary
+            ))
+            .chain(comparison.details.iter().cloned())
+        }))
     }
 
     pub fn can_repeat(&self) -> bool {
@@ -284,6 +319,7 @@ pub struct RunRecord {
     pub prior_attempts: Vec<StepRecord>,
     /// Final statement about the rig's state (from step 6.2).
     pub rig_state: String,
+    pub rig_description: String,
     pub finished: bool,
     pub stopped_at: Option<StepId>,
     /// The step running right now (written before it starts).
@@ -311,6 +347,7 @@ impl RunRecord {
                 .collect(),
             prior_attempts: Vec::new(),
             rig_state: "Not checked yet.".into(),
+            rig_description: "Rig not identified yet".into(),
             finished: false,
             stopped_at: None,
             current: None,
@@ -329,6 +366,15 @@ impl RunRecord {
             .iter_mut()
             .find(|s| s.id == id)
             .expect("every catalogue step has a record")
+    }
+
+    pub fn report_differences(&self) -> impl Iterator<Item = String> + '_ {
+        self.steps.iter().flat_map(|step| {
+            step.comparisons
+                .iter()
+                .filter(|comparison| comparison.severity == super::differences::Severity::Report)
+                .map(move |comparison| format!("Step {} — {}", step.id, comparison.summary))
+        })
     }
 
     pub fn look_mismatches(&self) -> impl Iterator<Item = String> + '_ {

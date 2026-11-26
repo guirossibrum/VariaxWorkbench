@@ -33,6 +33,7 @@ pub struct Faults {
     pub drop_first_variax_identity_packet: bool,
     /// Drop one byte of the n-th Variax `0x3C` reply (1-based), once.
     pub damage_span_reply: Option<usize>,
+    pub change_uploaded_words_once: bool,
     /// The Variax never answers (VDI unplugged from the start).
     pub variax_silent: bool,
     /// The Variax store is not confirmed with `0x71`.
@@ -44,7 +45,7 @@ pub struct Faults {
     pub guided_action_delay: Option<Duration>,
     /// Report the Variax as firmware 3.09 (unverified).
     pub unverified_variax: bool,
-    /// Report the PODxt Live as firmware 2.00 (unverified).
+    /// Report the PODxt Live as firmware 2.07 (unverified).
     pub unverified_podxt: bool,
     /// Suppress the PODxt identity reply without removing it from USB.
     pub podxt_identity_silent: bool,
@@ -265,7 +266,7 @@ impl SimRig {
             clock: Duration::ZERO,
             podxt: PodxtModel {
                 firmware: if faults.unverified_podxt {
-                    [0, 2, 0, 0]
+                    [0, 2, 0, 7]
                 } else {
                     [0, 3, 0, 1]
                 },
@@ -524,6 +525,10 @@ impl SimRig {
                         self.variax.active[i] = nibbles(chunk);
                     }
                     self.variax.working_uploads += 1;
+                    if std::mem::take(&mut self.faults.change_uploaded_words_once) {
+                        self.variax.active[2] ^= 1;
+                        self.variax.active[680] ^= 3;
+                    }
                 }
             }
             [0xf0, 0x00, 0x01, 0x0c, 0x07, 0x00, 0x61, index, 0xf7] => {

@@ -1,9 +1,10 @@
 //! Variax read steps 3.2 and 3.5 (#255), plus byte-loss accounting for
 //! the 35-chunk reads. Steps 3.1, 3.3 and 3.4 are in `steps.rs`.
 
+use super::differences::{self, Severity};
 use super::practice::{Program, preset_label};
 use super::procedures::{
-    self, VARIAX_READ, VARIAX_SELECT, program_bytes, same_program, variax_read_preset, with_variax,
+    self, VARIAX_READ, VARIAX_SELECT, program_bytes, variax_read_preset, with_variax,
     with_variax_progress,
 };
 use super::runner::{Ctx, Progress};
@@ -66,7 +67,7 @@ pub fn current_settings(ctx: &mut Ctx<'_>) -> Result<(), String> {
 }
 
 /// Extra evidence for step 3.3: lost bytes and the settings cross-check.
-pub fn after_full_read(ctx: &mut Ctx<'_>, words: &Program) {
+pub fn after_full_read(ctx: &mut Ctx<'_>, words: &Program) -> Result<(), String> {
     flag_unverified(ctx);
     let lost = lost_bytes(&ctx.rec.messages);
     ctx.rec.note(format!(
@@ -75,13 +76,47 @@ pub fn after_full_read(ctx: &mut Ctx<'_>, words: &Program) {
     ));
     if let Some(settings) = ctx.data.start_settings {
         let from_program = procedures::settings_of(words);
-        let same = settings[..61] == from_program[..61] && settings[64..] == from_program[64..];
-        ctx.rec.note(if same {
-            "Words 851-914 match the settings read in 3.2 (tone-position bytes 61-63 excepted)."
-        } else {
-            "Words 851-914 DIFFER from the settings read in 3.2: the preset changed between the two reads."
-        });
+        let mut content = Vec::new();
+        let mut live = Vec::new();
+        for (index, (&expected, &actual)) in settings.iter().zip(&from_program).enumerate() {
+            if expected == actual {
+                continue;
+            }
+            let xor = expected ^ actual;
+            let line = format!(
+                "settings byte {index} (word {}) · expected 0x{expected:02X} · actual 0x{actual:02X} · XOR 0x{xor:02X} · {} bit(s)",
+                851 + index / 3,
+                xor.count_ones()
+            );
+            if (61..64).contains(&index) {
+                live.push(line);
+            } else {
+                content.push(line);
+            }
+        }
+        if !live.is_empty() {
+            ctx.rec.difference(
+                Severity::Info,
+                "Variax tone position moved between reads",
+                live,
+            );
+        }
+        if !content.is_empty() {
+            ctx.rec.difference(
+                Severity::Stop,
+                format!(
+                    "{} settings bytes differ between 3.2 and 3.3",
+                    content.len()
+                ),
+                content,
+            );
+            return Err("The Variax settings changed during the starting snapshot.".into());
+        }
+        ctx.rec.note(
+            "Words 851-914 match the settings read in 3.2 (tone-position bytes 61-63 excepted).",
+        );
     }
+    Ok(())
 }
 
 fn backup_of(ctx: &Ctx<'_>, preset: Preset) -> Option<Program> {
@@ -99,7 +134,10 @@ pub fn one_preset(ctx: &mut Ctx<'_>) -> Result<(), String> {
         .data
         .start_preset
         .ok_or("The starting preset is unknown (3.4).")?;
-    let start_program = ctx.data.start_program.ok_or("No starting program (3.3).")?;
+    let start_program = ctx
+        .data
+        .exercise_program()
+        .ok_or("No starting program (3.3).")?;
     let preset = other_preset(start);
     let label = preset_label(preset);
     let mut problems = Vec::new();
@@ -128,7 +166,16 @@ pub fn one_preset(ctx: &mut Ctx<'_>) -> Result<(), String> {
                     format!("Variax {label} (1,092 words)"),
                     &program_bytes(&read.words),
                 );
-                let matches = backup_of(ctx, preset).is_some_and(|b| b == read.words);
+                let matches = backup_of(ctx, preset).is_some_and(|stored| {
+                    differences::program(
+                        ctx.rec,
+                        &label,
+                        &stored,
+                        &read.words,
+                        Severity::Stop,
+                        false,
+                    )
+                });
                 let observation = if matches {
                     "matches the backup"
                 } else {
@@ -168,10 +215,21 @@ pub fn one_preset(ctx: &mut Ctx<'_>) -> Result<(), String> {
         )
     });
     match back {
-        Ok(back) if same_program(&back.words, &start_program) => ctx.rec.show(format!(
-            "Back on {}: all 1,092 words match the start.",
-            preset_label(start)
-        )),
+        Ok(back)
+            if differences::program(
+                ctx.rec,
+                "Variax read-unmodified return",
+                &start_program,
+                &back.words,
+                Severity::Stop,
+                true,
+            ) =>
+        {
+            ctx.rec.show(format!(
+                "Back on {}: all 1,092 words match the start.",
+                preset_label(start)
+            ))
+        }
         Ok(_) => problems.push(format!(
             "Switched back to {}, but the program differs from the start.",
             preset_label(start)
@@ -297,7 +355,17 @@ mod tests {
         };
         let (run, _, rig) = run_practice(faults, &mut person, &mut NoReport, RunData::default());
         assert!(run.step(StepId(2, 1)).outcome.passed());
-        assert!(run.step(StepId(2, 5)).outcome.passed());
+        assert!(run.step(StepId(2, 7)).outcome.passed());
+        assert!(run.step(StepId(2, 7)).messages.is_empty());
+        assert!(
+            run.step(StepId(2, 7))
+                .technical_lines()
+                .any(|line| line.contains("XOR 0x06"))
+        );
+        assert!(matches!(
+            run.step(StepId(2, 5)).outcome,
+            Outcome::SkippedNotApplicable(_)
+        ));
         let evidence = run.step(VARIAX_EVIDENCE);
         assert!(evidence.outcome.passed(), "{:?}", evidence.outcome);
         assert!(
@@ -310,7 +378,7 @@ mod tests {
             evidence
                 .evidence
                 .iter()
-                .any(|line| line.contains("PODxt Live firmware 2.00") && line.contains("3.01"))
+                .any(|line| line.contains("PODxt Live firmware 2.07") && line.contains("3.01"))
         );
         assert!(
             evidence
@@ -324,7 +392,7 @@ mod tests {
         {
             assert!(matches!(
                 run.step(step.id).outcome,
-                Outcome::UnverifiedDevice(_) | Outcome::SkippedNeeds(_)
+                Outcome::SkippedNotApplicable(_) | Outcome::SkippedNeeds(_)
             ));
             assert!(!person.cards.contains(&step.id));
         }

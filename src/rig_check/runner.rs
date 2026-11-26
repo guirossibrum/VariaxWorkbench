@@ -10,8 +10,8 @@
 
 use super::approvals;
 use super::catalogue::{
-    self, Kind, MAC_START_NOTICE, RIG_GUARD, RUN_ORDER, Risk, START_NOTICE, SaveNotice, Step,
-    StepId, VARIAX_EVIDENCE,
+    self, Kind, MAC_START_NOTICE, PODXT_COMPATIBILITY, RIG_GUARD, RUN_ORDER, Risk, START_NOTICE,
+    SaveNotice, Step, StepId, VARIAX_EVIDENCE,
 };
 use super::port::RigPort;
 use super::record::{Mode, Outcome, RunRecord, StepRecord, utc_now};
@@ -32,6 +32,7 @@ pub const DEFAULT_DECISION: Decision = Decision::Skip;
 /// inside the step (for example the typed save confirmation). Nothing ran.
 pub const SKIPPED: &str = "SKIPPED: ";
 pub const STOPPED: &str = "STOPPED: ";
+pub const NOT_APPLICABLE: &str = "NOT APPLICABLE: ";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Retry {
@@ -135,6 +136,7 @@ pub trait Operator {
     fn instruct(&mut self, step: StepId, see: &str, hear: &str);
     /// A guided action was not seen in time.
     fn not_seen(&mut self, step: StepId, what: &str) -> Retry;
+    fn variax_connected(&mut self) -> bool;
     /// Confirm the specific movement before opening the listener.
     fn prepare_action(&mut self, step: StepId, see: &str, hear: &str) -> Decision;
     /// Start watching. The returned check lets the person end this action.
@@ -257,15 +259,15 @@ impl<'a> Runner<'a> {
                 break;
             }
             if id == VARIAX_EVIDENCE && self.variax_evidence_applicable() {
-                self.run_variax_evidence();
-                break;
+                stopped = self.run_variax_evidence();
+                continue;
             }
             stopped = self.step(id);
             if stopped {
                 self.write_report();
             }
         }
-        if self.variax_evidence_applicable() || self.data.store_state_unknown {
+        if self.unverified_podxt_relay() || self.data.store_state_unknown {
             self.release_without_midi();
         } else {
             // The usual guard is offered last, also after Stop.
@@ -294,32 +296,17 @@ impl<'a> Runner<'a> {
                 && super::variax_evidence::applicable(self.data.variax_identity.as_ref()))
     }
 
-    fn run_variax_evidence(&mut self) {
-        let relay = self.unverified_podxt_relay();
-        let notice = if relay {
+    fn run_variax_evidence(&mut self) -> bool {
+        let notice = if self.unverified_podxt_relay() {
             super::variax_evidence::RELAY_NOTICE
         } else {
             super::variax_evidence::NOTICE
         };
         if self.op.accept_start(notice) {
-            self.step(VARIAX_EVIDENCE);
+            self.step(VARIAX_EVIDENCE)
         } else {
             self.finish(VARIAX_EVIDENCE, Outcome::SkippedByPerson, None, None);
-        }
-        if relay {
-            for &id in RUN_ORDER
-                .iter()
-                .filter(|&&id| catalogue::is_variax_step(id) && id != VARIAX_EVIDENCE)
-            {
-                if matches!(self.run.step(id).outcome, Outcome::NotReached) {
-                    self.finish(
-                        id,
-                        Outcome::UnverifiedDevice(super::variax_evidence::RELAY_REASON.into()),
-                        None,
-                        None,
-                    );
-                }
-            }
+            false
         }
     }
 
@@ -397,6 +384,11 @@ impl<'a> Runner<'a> {
                             .is_err_and(|reason| reason.starts_with(STOPPED));
                     let outcome = match result {
                         Ok(()) => Outcome::Passed,
+                        Err(reason) if reason.starts_with(NOT_APPLICABLE) => {
+                            Outcome::SkippedNotApplicable(
+                                reason.trim_start_matches(NOT_APPLICABLE).into(),
+                            )
+                        }
                         Err(reason) if reason.starts_with(SKIPPED) => {
                             rec.show(reason.trim_start_matches(SKIPPED));
                             Outcome::SkippedByPerson
@@ -420,6 +412,7 @@ impl<'a> Runner<'a> {
                     *self.run.step_mut(id) = rec;
                     self.run.computer = self.data.computer.clone();
                     self.run.devices = self.data.devices.clone();
+                    self.run.rig_description = self.data.rig_description();
                     let decision = self.finish(
                         id,
                         outcome,
@@ -458,6 +451,40 @@ impl<'a> Runner<'a> {
         if let Some(reason) = step.not_in_this_version {
             return Some(Outcome::NotAvailable(reason.into()));
         }
+        if step.id == PODXT_COMPATIBILITY {
+            if self.data.no_podxt {
+                return Some(Outcome::SkippedNotApplicable("No PODxt Live found".into()));
+            }
+            if self.data.podxt_verified == Some(true) {
+                return Some(Outcome::verified_firmware_skip("PODxt Live", "3.01"));
+            }
+        }
+        if step.needs_device_approval() {
+            if self.data.no_podxt {
+                return Some(Outcome::SkippedNotApplicable("No PODxt Live found".into()));
+            }
+            if self.unverified_podxt_relay() && step.id != VARIAX_EVIDENCE {
+                return Some(Outcome::SkippedNotApplicable(
+                    "Not applicable: PODxt Live firmware is not the tested version".into(),
+                ));
+            }
+            if catalogue::is_variax_step(step.id) {
+                if self.data.no_variax {
+                    return Some(Outcome::SkippedNotApplicable(
+                        "Not applicable: no Variax connected".into(),
+                    ));
+                }
+                if step.id != VARIAX_EVIDENCE
+                    && self.data.variax_verified == Some(false)
+                    && let Some(identity) = &self.data.variax_identity
+                {
+                    return Some(Outcome::SkippedNotApplicable(format!(
+                        "Not applicable: Variax firmware {} isn't the tested version",
+                        identity.version_text()
+                    )));
+                }
+            }
+        }
         let earlier = || {
             RUN_ORDER
                 .iter()
@@ -466,7 +493,7 @@ impl<'a> Runner<'a> {
                 .filter(|&id| {
                     !matches!(
                         self.run.step(id).outcome,
-                        Outcome::SkippedVerifiedFirmware(_)
+                        Outcome::SkippedVerifiedFirmware(_) | Outcome::SkippedNotApplicable(_)
                     )
                 })
         };

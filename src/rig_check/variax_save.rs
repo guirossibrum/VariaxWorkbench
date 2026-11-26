@@ -9,9 +9,10 @@
 //! no more MIDI, the rig kept untouched for 2 minutes, then instructions.
 
 use super::catalogue::{SaveNotice, StepId};
+use super::differences::{self, Severity};
 use super::practice::{Program, flash_index, packed, preset_label, program_name};
 use super::procedures::{
-    program_bytes, program_progress, same_program, variax_read_preset, with_variax_progress,
+    program_bytes, program_progress, variax_read_preset, with_variax_progress,
 };
 use super::runner::{Ctx, Progress, SKIPPED};
 use line6_devices::family::variax::{
@@ -86,7 +87,14 @@ pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
             "Checking the save target",
         )
     })?;
-    if !same_program(&before.words, &backup) {
+    if !differences::program(
+        ctx.rec,
+        "Variax store preflight",
+        &backup,
+        &before.words,
+        Severity::Stop,
+        true,
+    ) {
         return Err(format!(
             "{} no longer matches the 3.4 backup. Nothing was saved.",
             preset_label(preset)
@@ -194,7 +202,14 @@ pub fn save_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
         "Variax slot after save (read back)",
         &program_bytes(&after.words),
     );
-    if !same_program(&after.words, &backup) {
+    if !differences::program(
+        ctx.rec,
+        "Variax stored read-back",
+        &backup,
+        &after.words,
+        Severity::Stop,
+        true,
+    ) {
         return Err(format!(
             "The read-back of {} differs from the bytes that were saved. Keep the evidence folder.",
             preset_label(preset)
@@ -278,12 +293,27 @@ pub fn sync_own_bytes(ctx: &mut Ctx<'_>) -> Result<(), String> {
         ));
     }
     let returned = with_variax_progress(ctx, VARIAX_SAVE, |session, _, progress| {
-        let mut advance =
-            program_progress(progress, "Verifying the return to your starting preset");
-        shared_variax::return_to_preset(session, start, &packed(&original), |_| {
-            advance();
+        variax_read_preset(
+            session,
+            start,
+            &|| false,
+            progress,
+            "Verifying the return to your starting preset",
+        )
+    })
+    .and_then(|actual| {
+        if differences::program(
+            ctx.rec,
+            "Variax Sync return",
+            &original,
+            &actual.words,
+            Severity::Stop,
+            false,
+        ) {
             Ok(())
-        })
+        } else {
+            Err("The starting slot differs from its verified backup.".into())
+        }
     });
     match (result, returned) {
         (Ok(()), Ok(())) => {
@@ -303,7 +333,7 @@ fn require_evidence(ctx: &Ctx<'_>) -> Result<(), String> {
             .data
             .evidence_dir
             .as_ref()
-            .ok_or("Run with --evidence before offering a real store.")?;
+            .ok_or("The raw evidence folder is missing. No store is offered.")?;
         line6_devices::backup::verify_manifest(&root.join(backup_folder(ctx)))?;
     }
     Ok(())
@@ -335,20 +365,28 @@ fn saved_program(ctx: &Ctx<'_>, preset: Preset) -> Result<Program, String> {
 }
 
 fn preflight(ctx: &mut Ctx<'_>, preset: Preset, expected: &Program) -> Result<(), String> {
-    with_variax_progress(ctx, VARIAX_SAVE, |session, stopping, progress| {
+    let actual = with_variax_progress(ctx, VARIAX_SAVE, |session, stopping, progress| {
         shared_variax::identify(session)?;
-        let action = format!("Checking {} against its backup", preset_label(preset));
-        let mut advance = program_progress(progress, &action);
-        let actual = shared_variax::read_unmodified(session, preset, stopping, |_| {
-            advance();
-            Ok(())
-        })?;
-        shared_variax::compare_image(
-            &actual,
-            &packed(expected),
-            "Saved position compared with the backup",
+        variax_read_preset(
+            session,
+            preset,
+            stopping,
+            progress,
+            "Checking the saved slot against the backup",
         )
-    })
+    })?;
+    if differences::program(
+        ctx.rec,
+        "Stored slot before save",
+        expected,
+        &actual.words,
+        Severity::Stop,
+        false,
+    ) {
+        Ok(())
+    } else {
+        Err("The stored slot differs from its backup. Nothing was saved.".into())
+    }
 }
 
 fn confirm_batch(
@@ -398,6 +436,8 @@ fn save_image(
 ) -> Result<(), String> {
     let warning = shared_variax::spare_warning(target);
     let program = write::Program::new(name, bytes)?;
+    let mut stored = [0; super::practice::PROGRAM_WORDS];
+    let mut replies = 0;
     let outcome = with_variax_progress(ctx, VARIAX_SAVE, |session, stopping, progress| {
         shared_variax::identify(session)?;
         progress(Progress::action(format!(
@@ -412,12 +452,27 @@ fn save_image(
             &program,
             || allow_stop && stopping(),
             |wait| store_progress(progress, wait),
-            |_| {
+            |reply| {
+                let start = usize::from(reply.span.start());
+                stored[start..start + reply.words.len()].copy_from_slice(&reply.words);
+                replies += 1;
                 advance.get_or_insert_with(|| program_progress(progress, &action))();
                 Ok(())
             },
         ))
     })?;
+    if replies == shared_variax::CHUNK_COUNT {
+        let expected =
+            super::procedures::unpack_program(&shared_variax::expected_stored_image(bytes));
+        differences::program(
+            ctx.rec,
+            "Variax stored image",
+            &expected,
+            &stored,
+            Severity::Stop,
+            false,
+        );
+    }
     match outcome {
         Ok(()) => {
             ctx.rec.checksum(

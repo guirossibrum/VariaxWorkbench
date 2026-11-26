@@ -84,6 +84,18 @@ pub struct Step {
 }
 
 impl Step {
+    pub fn starting_buffer_note(&self) -> Option<&'static str> {
+        match (self.id.0, self.id.1) {
+            (3, 4 | 5) | (4, 2..=5) | (5, 1 | 3 | 4) | (7, 1) => {
+                Some("Rig Check keeps your captured Variax edits and puts them back in step 6.2.")
+            }
+            (4, 1 | 6 | 7) | (7, 3) => Some(
+                "Rig Check puts back any captured PODxt Live edits after the check and verifies the starting sound in step 6.2.",
+            ),
+            _ => None,
+        }
+    }
+
     pub fn gate_labels(&self) -> String {
         if self.gates.is_empty() {
             return "none".into();
@@ -207,6 +219,10 @@ pub static STEPS: &[Step] = &[
         does: "Uses the editor Get procedure and reads installed packs and global values.",
         you_do: "Leave the footswitches and controls alone.", see: "The current channel, tone name and returned globals.", hear: "Your current tone.",
         evidence: "Channel, tone and global replies.", proof: "#246", verified_only: true),
+    step!((2, 7), "Compatibility check for other firmware versions", Computer, [(2, 1)], [], Read,
+        does: "Compares the PODxt Live identity already read in 2.1 with the tested version 3.01. The regular PODxt checks require 3.01.",
+        you_do: "Nothing.", see: "The reported version and the tested version.", hear: "Nothing changes.",
+        evidence: "Identity version field, expected and actual bytes, XOR and bit counts.", proof: "#277"),
     step!((3, 1), "Variax identity, model and firmware", Device, [(1, 2), (2, 1)], [G2], Read,
         does: "Asks the guitar who it is, through the PODxt Live. A lost first packet or a silent first try is retried once.",
         you_do: "Nothing.", see: "The reported Variax model family and firmware, with verification status.", hear: "Nothing.",
@@ -222,7 +238,7 @@ pub static STEPS: &[Step] = &[
         evidence: "Per read: request, reply, retries, lost bytes; SHA-256 and checksum word of the program.",
         proof: "#234, reso5-full-read-test-card.md"),
     step!((3, 4), "Variax all 60 presets (backup), and back", Device, [(3, 3), (2, 1)], [G5], Read,
-        does: "Reads all 60 stored presets (1,092 words each) into the evidence folder, finds the one you started on, switches back to it and checks all words. Start on a saved preset without unsaved changes: the first preset switch discards unsaved guitar edits.",
+        does: "Reads all 60 stored presets (1,092 words each) into the evidence folder, finds the one you started on, switches back to it and checks all words. Rig Check keeps the captured starting buffer for 6.2. If the bytes match no slot or multiple slots, it asks you to move the selector away and back so it can identify the original position.",
         you_do: "Nothing. Takes about 4 minutes.", see: "The number of presets read out of 60 and whether the guitar returned to its starting preset.", hear: "The sound changes 60 times, then comes back.",
         evidence: "60 SHA-256 values, manifest, the starting preset, return check.", proof: "#236, variax-backup-test-card.md"),
     step!((3, 5), "Editor: Read unmodified from device", Device, [(3, 4), (2, 1)], [G5], Read,
@@ -264,7 +280,7 @@ pub static STEPS: &[Step] = &[
         you_do: "Leave the footswitches and controls alone.", see: "The full tone verified on your original channel.", hear: "Your original sound throughout.",
         evidence: "Whole-tone write and exact read-back.", proof: "#246", verified_only: true),
     step!((4, 7), "PODxt Live: recall another channel and return", Device, [(2, 5), (2, 6)], [G6], Live,
-        does: "Recalls the next saved channel using the editor procedure, verifies it, then recalls and verifies the original.",
+        does: "Recalls the next saved channel using the editor procedure, verifies it, then recalls and verifies the original and puts back captured unsaved edits.",
         you_do: "Leave the footswitches and controls alone.", see: "The recalled channel and the verified return.", hear: "The other channel briefly, then your original tone.",
         evidence: "Both program changes and their read-backs.", proof: "#246", verified_only: true),
     step!((4, 8), "PODxt Live: tuner on, read, then off", Device, [(2, 6)], [G3], Live,
@@ -294,7 +310,7 @@ pub static STEPS: &[Step] = &[
         you_do: "Unplug the VDI cable, wait for the screen, plug it back in.", see: "The observed disconnect and reconnect, and the guitar firmware after reconnecting.", hear: "The guitar goes silent while unplugged.",
         evidence: "Times of loss and return, identity after.", proof: "#235", verified_only: true),
     step!((6, 2), "Rig back to its starting state, driver given back", Device, [], [G1, G3, G6], Read,
-        does: "Reads the PODxt Live tone and the Variax program again and compares them with the start. If the channel or preset differs it switches back and checks again. Then it gives the guitar interface back to the operating system and checks the driver.",
+        does: "Reads the PODxt Live tone and the Variax program again and compares them with the start. If the channel or preset differs it switches back and checks again. It restores captured unsaved edits to the working buffers, then gives the guitar interface back to the operating system and checks the driver.",
         you_do: "Nothing.", see: "What matched the starting state, and the guitar driver status if checked.", hear: "Your starting sound.",
         evidence: "Start and end SHA-256, any switch-back, driver binding.", proof: "#239, #238"),
     step!((7, 1), "Turn the Variax selector to a named preset", Guided, [(3, 4), (2, 1)], [G3], Read,
@@ -305,8 +321,8 @@ pub static STEPS: &[Step] = &[
         does: "Opens a listening window and watches the volume (CC 7) and tone (CC 79) knobs.",
         you_do: "Turn the volume knob down and up, then the tone knob down and up. Leave them where they were.", see: "Volume and tone ranges.", hear: "The volume and tone change while you turn.",
         evidence: "Lowest and highest value seen per knob.", proof: "live-control-midi (CC 7, CC 79)", verified_only: true),
-    step!((7, 3), "Switch the PODxt Live to a named channel", Guided, [(2, 5)], [G3], Read,
-        does: "Opens a listening window and waits for the channel change, checks the new tone against the library backup, then waits for you to switch back.",
+    step!((7, 3), "Switch the PODxt Live to a named channel", Guided, [(2, 5)], [G3, G6], Read,
+        does: "Opens a listening window and waits for the channel change, checks the new tone against the library backup, then waits for you to switch back and restores any captured unsaved PODxt edits.",
         you_do: "Press the footswitch for the named channel, then switch back.", see: "The channel and tone the PODxt Live reported and the return to the starting channel.", hear: "The named channel, then your start tone.",
         evidence: "Program change seen, tone matched, return seen.", proof: "#220", verified_only: true),
     step!((7, 4), "Move the PODxt Live pedal", Guided, [(2, 1)], [G3], Read,
@@ -345,6 +361,7 @@ pub const RUN_ORDER: &[StepId] = &[
     StepId(0, 3),
     StepId(1, 1),
     StepId(2, 1),
+    PODXT_COMPATIBILITY,
     StepId(1, 2),
     StepId(2, 2),
     StepId(2, 3),
@@ -390,6 +407,8 @@ pub const fn is_variax_step(id: StepId) -> bool {
         (1, 2) | (3, _) | (4, 2..=5) | (5, 1 | 3 | 4) | (6, 1) | (7, 1 | 2)
     )
 }
+
+pub const PODXT_COMPATIBILITY: StepId = StepId(2, 7);
 
 /// Evidence branch for an unverified Variax 300/600 or PODxt Live relay.
 pub const VARIAX_EVIDENCE: StepId = StepId(3, 7);

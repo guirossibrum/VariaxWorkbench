@@ -111,6 +111,7 @@ owner-rig issue or card that proved the procedure.
 | 2.3 | PODxt Live one stored channel | 2.2 | G5 | Read | #220 |
 | 2.4 | PODxt Live one bank (A–D) | 2.3 | G5 | Read | #220 |
 | 2.5 | PODxt Live full library backup | 2.2 | G5 | Read | #220, #222 |
+| 2.7 | Compatibility check for other firmware versions (PODxt Live) | 2.1 | None, uses captured identity | Read | #277 |
 | 3.1 | Variax identity, model and firmware | 1.2, 2.1 | G2 | Read | #213 |
 | 3.2 | Variax current settings | 3.1 | G3 | Read | #176, #225 |
 | 3.3 | Variax full current program (35 reads) | 3.1 | G3 | Read | #234, [full-read card](../reso5-full-read-test-card.md) |
@@ -148,7 +149,7 @@ device**. For a Variax 300/600 with unverified firmware, Rig Check offers
 step 3.7 after 3.1 and ends the normal sequence. If 2.1 fails, all Variax
 steps are skipped. If a PODxt Live reports unverified firmware, the only
 Variax step offered is 3.7 because the relay was verified on PODxt 3.01.
-The PODxt read checks may still run before the evidence branch. When the
+On an unverified PODxt Live, Rig Check records its identity result and offers the read-only Variax evidence branch; regular PODxt checks are skipped. When the
 guitar and relay report the tested firmware, the compatibility check shows
 SKIP. This automatic skip permits live edits and saves to continue.
 
@@ -272,6 +273,12 @@ firmware, and step 3.1 checks the Variax firmware.
 - **Risk:** Read. **Evidence:** entry count, SHA-256 per entry and of the
   manifest, before/after current tone.
 
+### 2.7 Compatibility check for other firmware versions (PODxt Live)
+
+Compares the identity already captured in 2.1 with firmware 3.01 and lists
+each differing firmware byte. It sends no additional request. The normal
+PODxt Live checks require 3.01.
+
 ### 3.1 Variax identity, model and firmware
 - **What it does:** Asks the guitar who it is, through the PODxt Live. A
   lost first packet or a silent first try is retried once.
@@ -300,9 +307,12 @@ firmware, and step 3.1 checks the Variax firmware.
 - **What it does:** Reads all 60 stored presets (1,092 words each) and saves
   them to the evidence folder. It finds the preset you started on (the one
   matching 3.3), switches back to it and checks all words.
-- **You do:** Start on a saved preset without unsaved changes. The first
-  preset switch discards unsaved guitar edits, and an edited sound matches
-  no stored preset, so Rig Check could not switch back to it.
+- **You do:** Leave the physical selector in its starting position during the
+  sweep. One exact byte match identifies the starting slot. For no match or
+  multiple matches, Rig Check asks you to move the physical selector away and
+  back. The selected slot comes from the guitar's program-change report.
+  The saved sounds are used during the checks. The captured starting buffer,
+  including unsaved edits, is restored and verified in 6.2.
 - **HEAR:** the sound changes 60 times, then comes back. About 4 minutes.
 - **SEE:** The number of presets read out of 60 and whether the guitar
   returned to its starting preset.
@@ -331,7 +341,8 @@ regular step card and its Run confirmation. Rig Check captures the
 identity, two settings replies, and 35 current-program replies. The
 report includes raw replies and available comparisons to the 3.10
 message sizes, version bytes and checksum word. The guitar remains on
-the current preset. This branch ends by releasing the USB interface.
+the current preset. An unverified Variax skips the other Variax steps. A tested PODxt Live
+continues through its regular checks.
 The Rig Check and device-crate Variax evidence approvals are open for the owner.
 
 ### 4.1 PODxt Live: change one control, read back, undo

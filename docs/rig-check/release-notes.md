@@ -16,7 +16,7 @@ explained, confirmed step at a time and writes a text report. Catalogue:
   the protocol cleanup and ends with USB release.
 - Audio streams (8.2–8.5) are unavailable. PODxt firmware evidence and a
   physical action for Variax CC 84 are pending.
-- Use `--evidence` to capture the verified backups used by the write
+- Real runs capture evidence automatically. In practice, use `--evidence` to save the verified backups used by the write
   checks. Supply `--engine-folder DIR` with your local model manifest and
   verified reference files for the Variax audition and transition tests.
   Start on an unedited electric preset with alternate tuning off and a

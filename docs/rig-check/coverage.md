@@ -39,3 +39,22 @@ saves. A failed step disables later live edits and stores. A skipped or
 otherwise unpassed earlier step also disables saves. A compatibility check skipped
 automatically on tested firmware permits later steps to proceed. If a
 store outcome is unknown, Rig Check ends with USB release only.
+
+
+## Comparison severity
+
+| Comparison | Severity |
+| --- | --- |
+| Computer engine output against a reference, including Windows or Mac differences | REPORT with every differing word |
+| PODxt reported starting channel against its stored tone and Variax captured working program against the identified stored slot | REPORT for unsaved changes. Step 6.2 verifies the captured buffers. |
+| USB rig identity, required firmware, malformed messages and unresolved checksum or missing replies | STOP. An absent device or a recognized alternate firmware follows its compatibility route. |
+| Repeated stored reads, backup preflight, post-send and post-store read-back, switch-back, and restored buffer | STOP if the expected data or state differs |
+| Physical Follow target, return and controller read-back | STOP on an unverified or wrong result |
+| Device display mismatches entered through Different | STOP |
+| Live pedal or tone-position changes in comparisons that admit them | INFO |
+| Retried reply damage that recovered | INFO in the technical details |
+| Store acknowledgement timeout or unknown stored state | STOP and USB release only |
+
+**Show technical details** displays expected and actual hex, the XOR, the number
+of differing bits, retries, missing bytes in retried replies and message counts.
+Real runs save raw evidence by default in the report's companion folder.
