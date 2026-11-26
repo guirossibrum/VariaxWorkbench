@@ -2,9 +2,11 @@
 //!
 //! The v1 folder records hashes and filenames but has no typed transport
 //! cleanup result, capture identifier or stable physical-unit identifier.
-//! Automatic eligibility requires the original in-memory sweep and a
-//! successful cleanup outcome from its owner. A log message cannot supply
-//! that provenance. Existing explicit backup imports use the legacy loader.
+//! The family sweep returns before transport release. Workbench drops the
+//! Linux ALSA handle and checks the Mac USB release outside the family sweep.
+//! A future publisher needs the locked capture orchestration to produce a
+//! receipt, constructible only there after that capture's link finalization
+//! succeeds. Existing explicit backup imports use the legacy loader.
 
 use super::{STORED_FOLDERS, podxt_entry_name};
 use crate::{
@@ -30,9 +32,19 @@ const AUXILIARY: [&str; 3] = ["index.txt", "log.txt", "RESTORE.txt"];
 const MANIFEST_LIMIT: usize = 64 * 1024;
 const AUXILIARY_LIMIT: usize = 16 * 1024 * 1024;
 
-/// Decoded, complete v1 snapshot. Automatic caching also requires capture
-/// evidence through [Self::check_cache_eligibility].
-pub struct ValidatedSnapshot {
+/// An offline report for a structurally complete v1 snapshot. It grants no
+/// automatic cache eligibility, even when all captured bytes compare equal.
+///
+/// A caller-provided cleanup result cannot authorize this report:
+///
+/// ```compile_fail,E0599
+/// use line6_devices::family::podxt::{Library, backup::SnapshotReport};
+///
+/// fn admit(report: &SnapshotReport, library: &Library) -> Result<(), String> {
+///     report.check_cache_eligibility(library, Some(&Ok(())))
+/// }
+/// ```
+pub struct SnapshotReport {
     identity: Identity,
     before: EditBuffer,
     after: EditBuffer,
@@ -40,7 +52,7 @@ pub struct ValidatedSnapshot {
     manifest_sha256: String,
 }
 
-impl ValidatedSnapshot {
+impl SnapshotReport {
     pub fn identity(&self) -> &Identity {
         &self.identity
     }
@@ -61,19 +73,10 @@ impl ValidatedSnapshot {
         &self.manifest_sha256
     }
 
-    /// The owner of the capture transaction supplies its sweep result and
-    /// the cleanup outcome from that same link. Disk files and log prose
-    /// cannot serve as cleanup evidence. Compare every captured reply to the
-    /// bytes that passed validation so a different capture cannot be paired
-    /// with this snapshot.
-    pub fn check_cache_eligibility(
-        &self,
-        capture: &Library,
-        link_cleanup: Option<&Result<(), String>>,
-    ) -> Result<(), String> {
-        if !matches!(link_cleanup, Some(Ok(()))) {
-            return Err("PODxt capture cleanup was not verified.".into());
-        }
+    /// Compare every reply with a supplied sweep for diagnostic use.
+    /// Equality shows byte agreement only. It establishes neither which
+    /// transaction produced the files nor whether its link was released.
+    pub fn check_capture_matches(&self, capture: &Library) -> Result<(), String> {
         if capture.stopped.is_some() {
             return Err("The PODxt capture stopped before completion.".into());
         }
@@ -114,11 +117,12 @@ impl ValidatedSnapshot {
 /// Each known address is represented by its canonical filename in the v1
 /// layout. The 03 74 reply itself carries no address. Playing-tone comparison
 /// uses the existing name and controller comparison, including its documented
-/// allowance for live-state controller drift.
+/// allowance for live-state controller drift. Validation creates a report
+/// only. The manifest cannot prove same-transaction cleanup.
 pub fn validate_snapshot(
     dir: &Path,
     expected_identity: &Identity,
-) -> Result<ValidatedSnapshot, String> {
+) -> Result<SnapshotReport, String> {
     check_live_identity(expected_identity)?;
     if dir.file_name().is_some_and(|name| {
         let name = name.to_string_lossy();
@@ -205,7 +209,7 @@ pub fn validate_snapshot(
             })
         })
         .collect::<Result<_, String>>()?;
-    Ok(ValidatedSnapshot {
+    Ok(SnapshotReport {
         identity,
         before,
         after,

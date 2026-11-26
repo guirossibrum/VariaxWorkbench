@@ -160,13 +160,11 @@ fn complete_v1_snapshot_checks_299_unique_addresses_and_allows_live_drift() {
         snapshot.manifest_sha256(),
         digest(&fs::read(dir.join(MANIFEST)).unwrap())
     );
-    snapshot
-        .check_cache_eligibility(&library, Some(&Ok(())))
-        .unwrap();
+    snapshot.check_capture_matches(&library).unwrap();
 }
 
 #[test]
-fn disk_only_or_failed_cleanup_cannot_admit_a_complete_legacy_backup() {
+fn legacy_backup_with_a_cleanup_log_still_produces_only_a_report() {
     let root = FixtureRoot::new();
     let library = capture();
     let dir = fixture(&root, "legacy", &library, true, |_, bytes| {
@@ -179,30 +177,22 @@ fn disk_only_or_failed_cleanup_cannot_admit_a_complete_legacy_backup() {
             .len(),
         299
     );
-    let snapshot = validate_snapshot(&dir, &identity()).unwrap();
-    for cleanup in [None, Some(&Err("release failed".into()))] {
-        assert!(
-            snapshot
-                .check_cache_eligibility(&library, cleanup)
-                .unwrap_err()
-                .contains("cleanup")
-        );
-    }
+    let report: SnapshotReport = validate_snapshot(&dir, &identity()).unwrap();
+    report.check_capture_matches(&library).unwrap();
 }
 
 #[test]
-fn stopped_ambiguous_or_different_captures_cannot_admit_the_snapshot() {
+fn comparison_rejects_stopped_ambiguous_or_different_sweeps() {
     let root = FixtureRoot::new();
     let mut library = capture();
     let dir = fixture(&root, "saved", &library, true, |_, bytes| {
         Some(bytes.to_vec())
     });
     let snapshot = validate_snapshot(&dir, &identity()).unwrap();
-    let cleanup = Some(&Ok(()));
     library.stopped = Some("interrupted".into());
     assert!(
         snapshot
-            .check_cache_eligibility(&library, cleanup)
+            .check_capture_matches(&library)
             .unwrap_err()
             .contains("stopped")
     );
@@ -210,7 +200,7 @@ fn stopped_ambiguous_or_different_captures_cannot_admit_the_snapshot() {
     let last = library.entries.pop().unwrap();
     assert!(
         snapshot
-            .check_cache_eligibility(&library, cleanup)
+            .check_capture_matches(&library)
             .unwrap_err()
             .contains("missing address")
     );
@@ -220,7 +210,7 @@ fn stopped_ambiguous_or_different_captures_cannot_admit_the_snapshot() {
     });
     assert!(
         snapshot
-            .check_cache_eligibility(&library, cleanup)
+            .check_capture_matches(&library)
             .unwrap_err()
             .contains("Duplicate")
     );
@@ -229,7 +219,7 @@ fn stopped_ambiguous_or_different_captures_cannot_admit_the_snapshot() {
     let original = std::mem::replace(&mut library.entries[0].tone, another_tone);
     assert!(
         snapshot
-            .check_cache_eligibility(&library, cleanup)
+            .check_capture_matches(&library)
             .unwrap_err()
             .contains("address 0 differs")
     );
@@ -238,7 +228,7 @@ fn stopped_ambiguous_or_different_captures_cannot_admit_the_snapshot() {
     *changed = 2; // Compatible but not the same raw reply.
     assert!(
         snapshot
-            .check_cache_eligibility(&library, cleanup)
+            .check_capture_matches(&library)
             .unwrap_err()
             .contains("playing-tone")
     );
@@ -246,7 +236,7 @@ fn stopped_ambiguous_or_different_captures_cannot_admit_the_snapshot() {
     library.identity_reply[15] = 2;
     assert!(
         snapshot
-            .check_cache_eligibility(&library, cleanup)
+            .check_capture_matches(&library)
             .unwrap_err()
             .contains("identity")
     );
