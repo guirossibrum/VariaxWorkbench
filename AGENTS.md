@@ -234,21 +234,31 @@ restore it. `AGENT_COORDINATOR.md` and `docs/roles/` are kept for history only;
 where they disagree with this section, this section applies.
 
 Lane agents work as described in `docs/parallel-work.md`: one worktree per issue
-from `origin/master`, local commits, no push, no PR, and a report when done. A
-Gatekeeper reviews the exact head against each acceptance criterion and this
+from `origin/master`, local commits, no push, no PR, and a report when done.
+Every Gatekeeper prompt to a lane, including a review follow-up, explicitly
+instructs the agent to reread `AGENTS.md` and `docs/parallel-work.md` from current
+`origin/master` before starting. Each prompt also repeats the worktree
+requirements for the final report.
+
+A Gatekeeper reviews the exact head against each acceptance criterion and this
 file. It then merges the branch onto current `origin/master` in a throwaway
 worktree, runs the checks listed under Implementation (plus the crate and probe
 checks when touched), and pushes that tested result to `origin/master`. It also
 updates the issues and the ledgers.
 
-After committing and checking the worktree, the lane agent leaves it and reports
-its path, branch, commit, and any local files that must be kept. If review needs
-changes, the Gatekeeper sends the agent back to the same worktree. After verifying
-the delivery is on `origin/master`, the Gatekeeper may remove that individual
-worktree with `git worktree remove` without force, once the lane has left, no
-process is using it, and its local files are verified disposable. Preserve active,
-unmerged, dirty, and owner-test worktrees, and any worktree with local evidence or
-other files to keep. Follow the checks in `docs/parallel-work.md`.
+After committing and checking the worktree, the lane agent leaves it. Its final
+report must give the absolute worktree path and explicitly confirm the agent has
+left it and stopped its worktree-local jobs. Report the branch, commit, any local
+files to keep, and any shared build path in use. If the agent cannot leave safely,
+it reports the reason and the worktree stays in place.
+
+If review needs changes, the Gatekeeper sends the agent back to the same
+worktree. After verifying the delivery is on `origin/master`, the Gatekeeper
+may remove that individual worktree with `git worktree remove` without force,
+once the lane has left, no process is using it, and its local files are verified
+disposable. Preserve active, unmerged, dirty, and owner-test worktrees, and any
+worktree with local evidence or other files to keep. Follow the checks in
+`docs/parallel-work.md`.
 
 Do not merge from, reset or switch the main checkout. Gatekeepers make no device
 runs; the owner runs every hardware check.

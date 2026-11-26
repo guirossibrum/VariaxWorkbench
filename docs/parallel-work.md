@@ -31,6 +31,11 @@ Component changes are requested from lane 2. Lane 2 never edits family editors.
 
 ## Worktrees and delivery
 
+- Every lane prompt must explicitly ask the agent to reread `AGENTS.md` and
+  `docs/parallel-work.md` from current `origin/master` before starting and must
+  repeat the final report requirements below. This includes review follow-ups.
+  Read the integration copies with `git show origin/master:AGENTS.md` and
+  `git show origin/master:docs/parallel-work.md` when the lane branch is older.
 - One worktree and branch per issue, created from `origin/master` under the
   ignored `.worktrees/` (for example
   `git worktree add .worktrees/212-detection -b lane1/212-detection origin/master`).
@@ -48,9 +53,12 @@ Component changes are requested from lane 2. Lane 2 never edits family editors.
 - At delivery, check the worktree for tracked changes, untracked files, and
   ignored files that need to be kept. Stop worktree-local builds or watchers
   you started and move your shell to a stable directory outside the worktree.
-  Report the worktree's absolute path, branch, commit, test counts, what
-  changed, device impact, and whether you and your processes have left. List
-  any local files to keep, including owner tools, evidence and private inputs.
+  The final report must name the absolute path of the worktree you used and
+  explicitly confirm that you have left it and stopped worktree-local jobs.
+  Include the branch, commit, test counts, what changed, and device impact.
+  List local files to keep, including owner tools, evidence and private inputs,
+  and any shared build path you used. If you cannot leave safely, report why so
+  the Gatekeeper can keep the worktree.
 - For review changes, return to the same worktree named by the Gatekeeper,
   then repeat the delivery check and report.
 - Keep one issue in progress per agent. Target 30–60 minutes of agent time per
@@ -84,7 +92,10 @@ to lane 2's `assets/ui/` only.
 
 ## Builds and scratch space
 
-Build in your worktree under `.worktrees/` or set `CARGO_TARGET_DIR` to a folder on
-`/home`. Do not build full copies of the project under `/tmp`: it is a 30 GB RAM disk
-shared by every agent, and a full link there crashed `rust-lld` with SIGBUS on
-2026-11-24 when it filled up. Delete your own scratch copies when you finish.
+Build in your worktree under `.worktrees/` or use a stable shared
+`CARGO_TARGET_DIR` under `/home` outside issue worktrees. Report any existing
+worktree that still supplies a shared build path so it can be kept until its
+users have moved. Do not build full copies of the project under `/tmp`. It is a
+30 GB RAM disk shared by every agent, and a full link there crashed `rust-lld`
+with SIGBUS on 2026-11-24 when it filled up. Delete your own scratch copies when
+you finish.
