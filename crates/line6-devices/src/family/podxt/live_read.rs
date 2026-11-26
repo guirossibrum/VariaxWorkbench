@@ -26,6 +26,7 @@ pub enum ReadUpdate {
     Packs(Packs),
     Globals(GlobalValues),
     Tuner(TunerReading),
+    TunerMode(bool),
     Controller { number: u8, value: u8 },
     Clip,
     Tap,
@@ -52,6 +53,10 @@ fn notice(event: &Event) -> Option<Notice> {
             _ => None,
         },
         Event::Sysex(frame) => match frame.as_slice() {
+            // Line 6 Edit's OnSysex passes the controller and value to OnCC.
+            [0xf0, 0x00, 0x01, 0x0c, 0x03, 0x10, _, number, value, 0xf7] => {
+                Some(Notice::Controller(*number, *value))
+            }
             [0xf0, 0x00, 0x01, 0x0c, 0x03, 0x0f, 0xf7] => Some(Notice::Clip),
             [0xf0, 0x00, 0x01, 0x0c, 0x03, 0x24, bank, slot, 0xf7] => {
                 let bank = BankKind::ALL.get(usize::from(bank.checked_sub(1)?))?;
@@ -62,7 +67,7 @@ fn notice(event: &Event) -> Option<Notice> {
     }
 }
 
-const SAVED_SETUP_SETTLE: Duration = Duration::from_millis(2500);
+const DEVICE_SAVE_SETTLE: Duration = Duration::from_millis(2500);
 const CURRENT_SETTLE: Duration = Duration::from_millis(100);
 const IDENTITY_WINDOW: Duration = Duration::from_secs(3);
 const IDENTITY_ORPHAN_QUIET: Duration = Duration::from_millis(300);
@@ -379,7 +384,14 @@ impl<L: Link> Reader<'_, '_, L> {
                 (self.publish)(ReadUpdate::Tap);
                 self.current_due = Some(now + CURRENT_SETTLE);
             }
-            Some(Notice::Controller(number, value)) if number != 69 => {
+            Some(Notice::Controller(TUNER_CC, value)) => {
+                (self.publish)(ReadUpdate::TunerMode(value > 63));
+            }
+            Some(Notice::Controller(19, _)) => {
+                // Line 6 Edit refreshes the edit buffer after an FX setup recall.
+                self.current_due = Some(now + CURRENT_SETTLE);
+            }
+            Some(Notice::Controller(number, value)) => {
                 (self.publish)(ReadUpdate::Controller { number, value });
                 if matches!(number, 11 | 12 | 37 | 58 | 71 | 75 | 88 | 91) {
                     // Model selection can change companion controls without
@@ -392,15 +404,11 @@ impl<L: Link> Reader<'_, '_, L> {
                 self.current_due = Some(now + CURRENT_SETTLE);
             }
             Some(Notice::Clip) => (self.publish)(ReadUpdate::Clip),
-            Some(Notice::Save(location)) => {
+            // Line 6 Edit does not request a stored dump for an amp-setup save.
+            Some(Notice::Save(location)) if location.kind() != BankKind::AmpSetups => {
                 // Repeated saves to one slot refresh its latest value once.
                 self.saves.retain(|(pending, _)| *pending != location);
-                let wait = if location.kind() == BankKind::Tones {
-                    STORED_GAP
-                } else {
-                    SAVED_SETUP_SETTLE
-                };
-                self.saves.push_back((location, now + wait));
+                self.saves.push_back((location, now + DEVICE_SAVE_SETTLE));
             }
             _ => {}
         }
@@ -408,21 +416,21 @@ impl<L: Link> Reader<'_, '_, L> {
 
     fn follow(&mut self, window: Option<Duration>) -> Result<(), String> {
         self.current()?;
-        let start = self.session.link.elapsed();
+        let end = window.map(|window| self.session.link.elapsed() + window);
         loop {
-            if window
-                .is_some_and(|limit| self.session.link.elapsed().saturating_sub(start) >= limit)
-            {
+            let now = self.session.link.elapsed();
+            if end.is_some_and(|end| end <= now) {
                 return Ok(());
             }
             self.check_cancel()?;
-            let now = self.session.link.elapsed();
             if self.current_due.is_some_and(|due| due <= now) {
                 self.current_due = None;
                 self.current()?;
             }
-            if let Some(index) = self.saves.iter().position(|&(_, due)| due <= now) {
-                let (location, _) = self.saves.remove(index).expect("position exists");
+            if let Some(&(location, due)) = self.saves.front()
+                && due <= now
+            {
+                self.saves.pop_front();
                 if self.session.allows(Operation::PodxtLibraryRead) {
                     self.stored(location)?;
                 } else {
@@ -431,8 +439,20 @@ impl<L: Link> Reader<'_, '_, L> {
                     ));
                 }
             }
-            for event in self.session.poll(POLL)?.into_iter().flatten() {
-                self.incoming(&event);
+            let now = self.session.link.elapsed();
+            let wait = self
+                .saves
+                .front()
+                .map(|&(_, due)| due)
+                .into_iter()
+                .chain(self.current_due)
+                .chain(end)
+                .min()
+                .map_or(POLL, |due| due.saturating_sub(now).min(POLL));
+            if !wait.is_zero() {
+                for event in self.session.poll(wait)?.into_iter().flatten() {
+                    self.incoming(&event);
+                }
             }
         }
     }
@@ -444,7 +464,7 @@ mod tests {
     use crate::gate::GatePolicy;
     use crate::identity::tests::PODXT_LIVE;
     use crate::session::{
-        Quiet,
+        Log, Quiet,
         testing::{Fake, packets},
     };
     use std::cell::Cell;
@@ -798,6 +818,137 @@ mod tests {
             ReadUpdate::Current(next), ReadUpdate::Stored(stored)
         ] if first.name() == "Current" && *channel == slot && next.name() == "New current"
             && stored.location == slot && stored.tone.name() == "Stored 80"));
+        fake.assert_finished();
+    }
+
+    #[test]
+    fn follow_decodes_plain_and_wrapped_cc_and_refreshes_after_fx_setup_recall() {
+        // Test plain and wrapped FX recall separately so each must request its own dump.
+        for fx_recall in [
+            vec![0xb4, 19, 3],
+            vec![0xf0, 0, 1, 0x0c, 3, 0x10, 5, 19, 3, 0xf7],
+        ] {
+            let mut current = tone(b"Before FX recall");
+            current.extend([0xb4, 69, 64, 0xb4, 69, 63]);
+            current.extend([0xf0, 0, 1, 0x0c, 3, 0x10, 2, 69, 127, 0xf7]);
+            current.extend([0xf0, 0, 1, 0x0c, 3, 0x10, 2, 69, 0, 0xf7]);
+            current.extend([0xf0, 0, 1, 0x0c, 3, 0x10, 2, 13, 21, 0xf7]);
+            // Wrong manufacturer or length is not a PODxt controller frame.
+            current.extend([0xf0, 0, 1, 0x0d, 3, 0x10, 2, 13, 99, 0xf7]);
+            current.extend([0xf0, 0, 1, 0x0c, 3, 0x10, 2, 13, 99, 0, 0xf7]);
+            current.extend(fx_recall);
+            let mut fake = Fake::new(
+                Path::PodxtMidi,
+                vec![
+                    (PodxtRequest::Identity, packets(&identity())),
+                    (PodxtRequest::EditBuffer, vec![current]),
+                    (PodxtRequest::EditBuffer, packets(&tone(b"After FX recall"))),
+                ],
+            );
+            let mut log = Quiet;
+            let mut session = Session::new(&mut fake, &ReadsOnly { stored: false }, &mut log);
+            let mut updates = Vec::new();
+            follow_window(
+                &mut session,
+                Duration::from_millis(400),
+                || false,
+                |update| updates.push(update),
+            )
+            .unwrap();
+            assert!(matches!(updates.as_slice(), [
+                ReadUpdate::Current(first),
+                ReadUpdate::TunerMode(true), ReadUpdate::TunerMode(false),
+                ReadUpdate::TunerMode(true), ReadUpdate::TunerMode(false),
+                ReadUpdate::Controller { number: 13, value: 21 },
+                ReadUpdate::Current(next),
+            ] if first.name() == "Before FX recall" && next.name() == "After FX recall"));
+            fake.assert_finished();
+        }
+    }
+
+    #[derive(Default)]
+    struct Traffic(Vec<String>);
+
+    impl Log for Traffic {
+        fn line(&mut self, line: String) {
+            self.0.push(line);
+        }
+    }
+
+    impl Traffic {
+        fn time_of(&self, kind: &str, bytes: &[u8]) -> Duration {
+            let message = format!("{kind} {}", crate::midi::hex(bytes));
+            self.0
+                .iter()
+                .find_map(|line| {
+                    let (timestamp, payload) = line.trim_start().split_once("s ")?;
+                    (payload == message)
+                        .then(|| Duration::from_secs_f64(timestamp.parse().unwrap()))
+                })
+                .unwrap_or_else(|| panic!("missing {message}: {:?}", self.0))
+        }
+    }
+
+    #[test]
+    fn follow_rereads_tone_and_fx_saves_at_2500ms_and_skips_amp_setup_saves() {
+        for (kind, bank, slot) in [(BankKind::Tones, 1, 80), (BankKind::FxSetups, 3, 11)] {
+            let location = Location::new(kind, slot.into()).unwrap();
+            let request = PodxtRequest::Stored(location);
+            let saved = [0xf0, 0, 1, 0x0c, 3, 0x24, bank, slot, 0xf7];
+            let amp_saved = [0xf0, 0, 1, 0x0c, 3, 0x24, 2, 12, 0xf7];
+            let mut current = packets(&tone(b"Current"));
+            current.extend([saved.to_vec(), amp_saved.to_vec()]);
+            let mut fake = Fake::new(
+                Path::PodxtMidi,
+                vec![
+                    (PodxtRequest::Identity, packets(&identity())),
+                    (PodxtRequest::EditBuffer, current),
+                    (request, packets(&tone(b"Saved"))),
+                ],
+            );
+            let mut log = Traffic::default();
+            let mut session = Session::new(&mut fake, &ReadsOnly { stored: true }, &mut log);
+            let mut updated_slots = Vec::new();
+            follow_window(
+                &mut session,
+                Duration::from_secs(3),
+                || false,
+                |update| {
+                    if let ReadUpdate::Stored(stored) = update {
+                        updated_slots.push(stored.location);
+                    }
+                },
+            )
+            .unwrap();
+            assert_eq!(updated_slots, [location]);
+            assert_eq!(
+                log.time_of("OUT", &request.bytes()) - log.time_of("IN ", &saved),
+                Duration::from_millis(2500)
+            );
+            fake.assert_finished();
+        }
+    }
+
+    #[test]
+    fn follow_window_ending_before_save_settles_sends_no_addressed_read() {
+        let mut current = tone(b"Current");
+        current.extend([0xf0, 0, 1, 0x0c, 3, 0x24, 1, 80, 0xf7]);
+        let mut fake = Fake::new(
+            Path::PodxtMidi,
+            vec![
+                (PodxtRequest::Identity, packets(&identity())),
+                (PodxtRequest::EditBuffer, vec![current]),
+            ],
+        );
+        let mut log = Quiet;
+        let mut session = Session::new(&mut fake, &ReadsOnly { stored: true }, &mut log);
+        follow_window(
+            &mut session,
+            Duration::from_millis(2499),
+            || false,
+            |update| assert!(matches!(update, ReadUpdate::Current(_))),
+        )
+        .unwrap();
         fake.assert_finished();
     }
 

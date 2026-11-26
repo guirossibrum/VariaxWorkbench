@@ -466,6 +466,27 @@ fn connected_stage_uses_current_tone_channel_and_librarian_and_follows_updates()
 }
 
 #[test]
+fn followed_tuner_mode_is_visible_without_changing_the_playing_tone() {
+    let ctx = egui::Context::default();
+    let (mut app, _) = connected_fixture(&ctx);
+    let now = Instant::now();
+    let before = app.podxt().live.snapshot.tone.clone();
+    app.podxt_mut()
+        .live
+        .snapshot
+        .apply(ReadUpdate::TunerMode(true), now);
+    assert!(stage_frame(&ctx, &mut app).contains("Tuner active on POD"));
+    assert_eq!(app.podxt().live.snapshot.tone, before);
+    app.podxt_mut()
+        .live
+        .snapshot
+        .apply(ReadUpdate::TunerMode(false), now);
+    assert!(!stage_frame(&ctx, &mut app).contains("Tuner active on POD"));
+    assert_eq!(app.podxt().live.snapshot.tone, before);
+    assert!(!app.podxt().dirty());
+}
+
+#[test]
 fn playing_view_does_not_substitute_a_file_when_the_dump_is_unreadable() {
     let ctx = egui::Context::default();
     let (mut app, _) = connected_fixture(&ctx);
