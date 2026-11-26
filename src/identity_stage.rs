@@ -60,10 +60,27 @@ pub struct IdentityPair {
 }
 
 /// An automatic identity can report unverified firmware without approving it
-/// for a live tab or any settings operation.
+/// for live access or any settings operation.
 pub enum DiscoveryIdentity {
     Verified,
-    Unverified(FirmwareNotice),
+    Unverified(UnverifiedGuitarReply),
+}
+
+/// Assessment of a complete reply received by the guitar identity exchange.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnverifiedGuitarReply {
+    pub notice: FirmwareNotice,
+    pub is_variax: bool,
+}
+
+impl UnverifiedGuitarReply {
+    pub fn from_identity(identity: &line6_devices::identity::Identity) -> Option<Self> {
+        Some(Self {
+            notice: FirmwareNotice::variax(identity)?,
+            is_variax: identity.is_line6()
+                && identity.family == line6_devices::family::variax::IDENTITY_FAMILY,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -180,7 +197,7 @@ pub struct IdentityExchange {
     /// not pass, and kept here so a report can name what was decoded.
     pub bridge: Option<CanonicalIdentity>,
     pub guitar: Option<CanonicalIdentity>,
-    firmware_notice: Option<FirmwareNotice>,
+    unverified_reply: Option<UnverifiedGuitarReply>,
     pub requests_sent: usize,
     pub release_attempted: bool,
     pub reattach_attempted: bool,
@@ -575,9 +592,9 @@ fn read_window(
     let Some(frame) = first else {
         return Err(IdentityFailure::TimedOut);
     };
-    exchange.firmware_notice = line6_devices::identity::Identity::parse(&frame)
+    exchange.unverified_reply = line6_devices::identity::Identity::parse(&frame)
         .as_ref()
-        .and_then(FirmwareNotice::variax);
+        .and_then(UnverifiedGuitarReply::from_identity);
     match classify(&frame)? {
         (identity, parsed) if identity.role == IdentityRole::Guitar => {
             remember(exchange, identity);
@@ -678,7 +695,7 @@ fn run_exchange(
         pair: None,
         bridge: None,
         guitar: None,
-        firmware_notice: None,
+        unverified_reply: None,
         requests_sent: 0,
         release_attempted: false,
         reattach_attempted: false,
@@ -701,9 +718,9 @@ pub(crate) fn discovery_result(
 ) -> Result<DiscoveryIdentity, IdentifyError> {
     if exchange.cleanup_failure.is_none()
         && exchange.pair.is_none()
-        && let Some(notice) = exchange.firmware_notice
+        && let Some(reply) = exchange.unverified_reply
     {
-        return Ok(DiscoveryIdentity::Unverified(notice));
+        return Ok(DiscoveryIdentity::Unverified(reply));
     }
     exchange_result(exchange).map(|_| DiscoveryIdentity::Verified)
 }
@@ -723,7 +740,7 @@ pub(crate) fn exchange_result(exchange: IdentityExchange) -> Result<IdentityPair
         reattach_failed: exchange.reattach_failed,
         bridge: exchange.bridge,
         guitar: exchange.guitar,
-        firmware_notice: exchange.firmware_notice,
+        firmware_notice: exchange.unverified_reply.map(|reply| reply.notice),
     }))
 }
 
@@ -806,11 +823,34 @@ mod tests {
             assert_eq!(transport.sent(), &[IDENTITY_REQUEST]);
             assert_full_cleanup(&exchange, &transport);
             assert!(exchange.pair.is_none());
-            let Ok(DiscoveryIdentity::Unverified(notice)) = discovery_result(exchange) else {
+            let Ok(DiscoveryIdentity::Unverified(reply)) = discovery_result(exchange) else {
                 panic!("expected unverified identity for {revision:?}");
             };
-            let notice = notice.message();
+            assert!(reply.is_variax);
+            let notice = reply.notice.message();
             assert!(notice.contains(reported) && notice.contains("3.10"));
+        }
+    }
+
+    #[test]
+    fn the_existing_exchange_distinguishes_unknown_variax_models_from_bridge_replies() {
+        let mut unknown_variax = guitar_reply();
+        unknown_variax[10] = 2;
+        for (frame, is_variax) in [(unknown_variax, true), (bridge_reply(), false)] {
+            let mut transport = ScriptedIdentity::new([frame]);
+            let exchange = run_discovery_exchange(&mut transport, &AtomicBool::new(false));
+            assert_eq!(transport.sent(), &[IDENTITY_REQUEST]);
+            assert_full_cleanup(&exchange, &transport);
+            let Ok(DiscoveryIdentity::Unverified(assessment)) = discovery_result(exchange) else {
+                panic!("expected a complete unverified identity");
+            };
+            assert_eq!(assessment.is_variax, is_variax);
+            assert!(
+                assessment
+                    .notice
+                    .message()
+                    .contains("model could not be verified")
+            );
         }
     }
 

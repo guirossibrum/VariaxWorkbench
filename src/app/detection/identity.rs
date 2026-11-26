@@ -4,7 +4,7 @@ use super::{AttachmentKey, notice::Notice};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
-use variax_workbench::firmware_notice::FirmwareNotice;
+use variax_workbench::{firmware_notice::FirmwareNotice, identity_stage::UnverifiedGuitarReply};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::editor) enum JobKind {
@@ -36,7 +36,7 @@ pub(in crate::editor) enum Guitar {
         not(any(test, all(feature = "usb", target_os = "linux"))),
         allow(dead_code)
     )]
-    Unverified(FirmwareNotice),
+    Unverified(UnverifiedGuitarReply),
     #[cfg_attr(
         not(any(test, all(feature = "usb", target_os = "linux"))),
         allow(dead_code)
@@ -318,7 +318,7 @@ mod live {
         }
         match usb::read_discovery_identity(rig, (path, address), cancel) {
             Ok(DiscoveryIdentity::Verified) => Guitar::Verified(GUITAR_VERSION),
-            Ok(DiscoveryIdentity::Unverified(notice)) => Guitar::Unverified(notice),
+            Ok(DiscoveryIdentity::Unverified(reply)) => Guitar::Unverified(reply),
             Err(IdentifyError::Locked) => {
                 Guitar::Unavailable("The guitar identity gate is closed.".into())
             }

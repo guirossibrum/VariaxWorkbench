@@ -10,6 +10,8 @@ Detailed evidence and limitations: [body interpolation](body-definitions.md),
 
 ## Verified and passing
 
+- [x] A complete Line 6 Variax identity with unverified firmware opens an offline-only tab and passes the reported and tested firmware versions to its editor through the attachment notice. File editing and saving work while the live attachment is withheld. Synthetic identity and headless tab tests cover a PODxt reply on the guitar link, two independent attachments, reconnect, and re-verification with unsaved edits intact. Editor placement of the notice is lane 3's follow-up. [#270](https://github.com/guirossibrum/VariaxWorkbench/issues/270).
+
 - [x] Variax Follow yields the rig lock to Device check, editing and library operations. It closes the listening session and returns the driver before the foreground operation starts, then checks the same USB attachment and guitar identity again. Fake-link and headless tests cover the handoff order, resumed verification after an ordinary foreground failure, refusal after failed Follow cleanup and no restart after an unknown store outcome. Automatic Follow startup and hardware verification are pending. [#275](https://github.com/guirossibrum/VariaxWorkbench/issues/275).
 
 - [x] Rig Check records STOP, REPORT and INFO with bit-level evidence. Practice covers a STOP read-back, REPORT engine differences, starting edits restored to both buffers, and automatic skips for missing or unverified devices. Real runs save raw evidence by default. [#277](https://github.com/guirossibrum/VariaxWorkbench/issues/277).

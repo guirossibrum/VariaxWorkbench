@@ -2,6 +2,7 @@ use super::detection::{AttachmentKey, DetectedDevice, DeviceKey, DeviceSupport};
 use super::{FileDialogs, PickRequest, Picker, PickerAction, egui};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use variax_workbench::firmware_notice::FirmwareNotice;
 
 pub(super) struct EditorDefaults {
     pub artwork: PathBuf,
@@ -119,7 +120,8 @@ pub(super) trait FamilyTab: std::any::Any {
     fn undo(&mut self) {}
     fn redo(&mut self) {}
     /// Called before polling the editor, with the tab's current device.
-    /// Use `DeviceTab::verified_attachment` for attachment-scoped USB work.
+    /// Use `DeviceTab::verified_attachment` for attachment-scoped USB work
+    /// and `DeviceTab::guitar_firmware_notice` for an unverified Variax reply.
     /// UI actions can request an identity refresh through `EditorServices`.
     fn observe_device(&mut self, _device: Option<&DeviceTab>) {}
     fn poll(&mut self, _ctx: &egui::Context) {}
@@ -179,6 +181,14 @@ impl DeviceTab {
         None
     }
 
+    /// The current Variax attachment's notice, for display in its offline editor.
+    pub fn guitar_firmware_notice(&self) -> Option<FirmwareNotice> {
+        match (&self.connection, &self.device.support) {
+            (Connection::Present, DeviceSupport::UnverifiedGuitarFirmware(notice)) => Some(*notice),
+            _ => None,
+        }
+    }
+
     pub(super) fn guitar_refresh_attachment(&self) -> Option<&AttachmentKey> {
         (self.connection == Connection::Present && self.device.refresh_guitar)
             .then_some(&self.device.key.attachment)
@@ -196,6 +206,9 @@ impl DeviceTab {
                 }
                 DeviceSupport::Refreshing(firmware) => {
                     format!("Checking connection · last verified firmware {firmware}")
+                }
+                DeviceSupport::UnverifiedGuitarFirmware(_) => {
+                    "Unverified firmware · offline editing".into()
                 }
                 DeviceSupport::FileEditingOnly => "Live connection not supported yet".into(),
             },
@@ -223,6 +236,9 @@ impl TabEntry {
                     if matches!(device.device.support, DeviceSupport::Refreshing(_)) =>
                 {
                     format!("{name} · checking")
+                }
+                Connection::Present if device.guitar_firmware_notice().is_some() => {
+                    format!("{name} · offline only")
                 }
                 Connection::Present => name.into(),
                 Connection::Uncertain => format!("{name} · presence unknown"),
@@ -358,13 +374,15 @@ impl Tabs {
                 })
                 .max_by_key(|(sequence, _)| *sequence);
             if let Some((_, entry)) = recent {
-                if matches!(
-                    device.support,
-                    DeviceSupport::Verified(_) | DeviceSupport::FileEditingOnly
-                ) {
-                    entry.device = Some(DeviceTab::present(device, entry.editor.dirty()));
-                }
-                // Keep the old tab offline while an automatic identity is pending.
+                let with_edits = match device.support {
+                    DeviceSupport::Verified(_) | DeviceSupport::FileEditingOnly => {
+                        entry.editor.dirty()
+                    }
+                    DeviceSupport::UnverifiedGuitarFirmware(_) => false,
+                    // Keep the old tab offline while an automatic identity is pending.
+                    _ => continue,
+                };
+                entry.device = Some(DeviceTab::present(device, with_edits));
                 continue;
             }
             let Some(&family) = families
