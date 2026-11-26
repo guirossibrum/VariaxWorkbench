@@ -62,6 +62,8 @@ fn the_step_card_shows_its_sections_and_enter_skips() {
     let (mut wizard, rx) = wired(Prompt::Card(StepId(2, 1), Mode::Practice, None));
     let texts = frame(&ctx, &mut wizard, Vec::new());
     for expected in [
+        "Step 5 of 37",
+        "Catalogue ID 2.1",
         "What it does",
         "What you'll see and hear",
         "Risk",
@@ -79,6 +81,74 @@ fn the_step_card_shows_its_sections_and_enter_skips() {
     frame(&ctx, &mut wizard, vec![key(Key::Enter)]);
     frame(&ctx, &mut wizard, Vec::new());
     assert!(matches!(rx.try_recv(), Ok(Reply::Decision(Decision::Skip))));
+}
+
+#[test]
+fn cards_follow_run_order_after_firmware_checks_are_skipped() {
+    let ctx = egui::Context::default();
+    let (to_ui, from_runner) = channel();
+    let mut wizard = Wizard {
+        mode: Some(Mode::Practice),
+        from_runner: Some(from_runner),
+        ..Wizard::default()
+    };
+    let mut podxt = StepRecord::new(catalogue::PODXT_COMPATIBILITY);
+    podxt.outcome = Outcome::verified_firmware_skip("PODxt Live", "3.01");
+    to_ui.send(Prompt::Finished(Box::new(podxt))).unwrap();
+    let mut variax = StepRecord::new(catalogue::VARIAX_EVIDENCE);
+    variax.outcome = Outcome::verified_firmware_skip("Variax", "3.10");
+    variax.reused = true;
+    to_ui.send(Prompt::Reused(Box::new(variax))).unwrap();
+
+    for (id, ordinal, catalogue_id) in [
+        (StepId(7, 5), "Step 19 of 35", "Catalogue ID 7.5"),
+        (StepId(7, 3), "Step 20 of 35", "Catalogue ID 7.3"),
+        (StepId(7, 4), "Step 21 of 35", "Catalogue ID 7.4"),
+        (StepId(4, 7), "Step 29 of 35", "Catalogue ID 4.7"),
+    ] {
+        to_ui.send(Prompt::Card(id, Mode::Practice, None)).unwrap();
+        let texts = frame(&ctx, &mut wizard, Vec::new());
+        assert!(texts.iter().any(|line| line == ordinal), "{texts:?}");
+        assert!(texts.iter().any(|line| line == catalogue_id), "{texts:?}");
+        assert!(matches!(wizard.prompt, Some(Prompt::Card(active, ..)) if active == id));
+    }
+    assert_eq!(wizard.progress[0].id, catalogue::PODXT_COMPATIBILITY);
+    assert_eq!(wizard.progress[1].id, catalogue::VARIAX_EVIDENCE);
+    assert!(wizard.progress[1].reused);
+}
+
+#[test]
+fn running_and_result_keep_the_card_position_across_an_attempt() {
+    let ctx = egui::Context::default();
+    let step = StepId(4, 7);
+    let (mut wizard, replies) = wired(Prompt::Card(step, Mode::Practice, None));
+    let (to_ui, from_runner) = channel();
+    wizard.from_runner = Some(from_runner);
+    let mut skipped = StepRecord::new(StepId(7, 4));
+    skipped.outcome = Outcome::SkippedByPerson;
+    to_ui.send(Prompt::Finished(Box::new(skipped))).unwrap();
+    let texts = frame(&ctx, &mut wizard, Vec::new());
+    assert!(texts.iter().any(|line| line == "Step 31 of 37"));
+    frame(&ctx, &mut wizard, vec![key(Key::R)]);
+    assert!(matches!(
+        replies.try_recv(),
+        Ok(Reply::Decision(Decision::Run))
+    ));
+    let texts = frame(&ctx, &mut wizard, Vec::new());
+    for expected in ["Step 31 of 37", "Running", "Catalogue ID 4.7"] {
+        assert!(texts.iter().any(|line| line == expected), "{texts:?}");
+    }
+
+    let mut record = StepRecord::new(step);
+    record.attempt = Some(2);
+    record.started = Some("practice".into());
+    record.outcome = Outcome::SkippedNotApplicable("Discovered after Run".into());
+    to_ui.send(Prompt::Finished(Box::new(record))).unwrap();
+    let texts = frame(&ctx, &mut wizard, Vec::new());
+    for expected in ["Step 31 of 37", "Result · attempt 2", "Catalogue ID 4.7"] {
+        assert!(texts.iter().any(|line| line == expected), "{texts:?}");
+    }
+    assert!(replies.try_recv().is_err());
 }
 
 #[test]
@@ -490,24 +560,28 @@ fn backspace_reviews_previous_results_and_c_resumes_the_same_card() {
     let pending = StepId(2, 2);
     let (mut wizard, replies) = wired(Prompt::Card(pending, Mode::Practice, None));
     wizard.start_accepted = Some(catalogue::START_NOTICE);
-    for id in [StepId(1, 2), StepId(2, 1)] {
+    for id in [StepId(2, 1), StepId(1, 2)] {
         let mut record = StepRecord::new(id);
         record.outcome = Outcome::Passed;
         wizard.progress.push(record);
     }
     frame(&ctx, &mut wizard, Vec::new());
     let lines = frame(&ctx, &mut wizard, vec![key(Key::Backspace)]);
-    assert!(lines.iter().any(|line| line == "Step 2.1 result"));
+    assert!(lines.iter().any(|line| line == "Step 7 of 37"));
+    assert!(lines.iter().any(|line| line == "Catalogue ID 1.2"));
+    assert!(lines.iter().any(|line| line == "Result"));
     assert!(lines.iter().any(|line| line == "Return to current step"));
     assert!(!lines.iter().any(|line| line == "Run  (R)"));
     frame(&ctx, &mut wizard, Vec::new());
     let lines = frame(&ctx, &mut wizard, vec![key(Key::Backspace)]);
-    assert!(lines.iter().any(|line| line == "Step 1.2 result"));
+    assert!(lines.iter().any(|line| line == "Step 5 of 37"));
+    assert!(lines.iter().any(|line| line == "Catalogue ID 2.1"));
     frame(&ctx, &mut wizard, vec![key(Key::R)]);
     assert!(replies.try_recv().is_err());
     frame(&ctx, &mut wizard, vec![key(Key::C)]);
     let lines = frame(&ctx, &mut wizard, Vec::new());
-    assert!(lines.iter().any(|line| line == "Step 2.2"));
+    assert!(lines.iter().any(|line| line == "Step 8 of 37"));
+    assert!(lines.iter().any(|line| line == "Catalogue ID 2.2"));
     assert!(matches!(wizard.prompt, Some(Prompt::Card(id, ..)) if id == pending));
     assert_eq!(wizard.progress.len(), 2);
     assert!(wizard.progress.iter().all(|record| record.outcome.passed()));

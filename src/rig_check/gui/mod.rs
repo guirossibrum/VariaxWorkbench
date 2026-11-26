@@ -497,6 +497,64 @@ impl Wizard {
         });
     }
 
+    fn run_position(&self, id: StepId) -> Option<(usize, usize)> {
+        let mut position = None;
+        let mut total = 0;
+        for &candidate in catalogue::RUN_ORDER {
+            let step = catalogue::step(candidate).expect("catalogue step");
+            if step.not_in_this_version.is_some()
+                || (self.mode == Some(Mode::Real)
+                    && crate::offline_device_notice().is_some()
+                    && step.needs_device_approval())
+            {
+                continue;
+            }
+            // Count an offered card even if the person skipped it or the
+            // step discovered it was inapplicable after it started.
+            if self.progress.iter().any(|record| {
+                record.id == candidate
+                    && record.started.is_none()
+                    && matches!(
+                        record.outcome,
+                        Outcome::SkippedVerifiedFirmware(_)
+                            | Outcome::SkippedNotApplicable(_)
+                            | Outcome::SkippedNeeds(_)
+                            | Outcome::NotAuthorized(_)
+                            | Outcome::NotAvailable(_)
+                            | Outcome::UnverifiedDevice(_)
+                    )
+            }) {
+                continue;
+            }
+            total += 1;
+            if candidate == id {
+                position = Some(total);
+            }
+        }
+        position.map(|position| (position, total))
+    }
+
+    fn step_heading(&self, ui: &mut egui::Ui, id: StepId, phase: Option<&str>) {
+        ui.horizontal(|ui| {
+            if let Some((position, total)) = self.run_position(id) {
+                ui.label(
+                    RichText::new(format!("Step {position} of {total}"))
+                        .size(SECTION)
+                        .strong()
+                        .color(TEXT),
+                );
+            }
+            if let Some(phase) = phase {
+                ui.label(RichText::new(phase).size(SECTION).color(MUTED));
+            }
+        });
+        ui.label(
+            RichText::new(format!("Catalogue ID {id}"))
+                .size(BODY)
+                .color(MUTED),
+        );
+    }
+
     fn focus_once(&mut self, response: &egui::Response) {
         if self.focus_armed {
             response.request_focus();
@@ -618,11 +676,7 @@ impl Wizard {
         if let Some((step, see, hear)) = self.instruction.clone()
             && self.prompt.is_none()
         {
-            ui.label(
-                RichText::new(format!("Step {step}: in progress"))
-                    .size(SECTION)
-                    .color(MUTED),
-            );
+            self.step_heading(ui, step, Some("In progress"));
             ui.add_space(SPACE_12);
             big(ui, "SEE ", &see);
             ui.add_space(SPACE_12);
@@ -661,6 +715,9 @@ impl Wizard {
                 self.prepare_action(ui, step, &see, &hear)
             }
             Some(Prompt::VariaxConnected) => {
+                if let Some(step) = self.running {
+                    self.step_heading(ui, step, None);
+                }
                 ui.label(
                     RichText::new("No guitar answered. Is a Variax connected by its VDI cable?")
                         .size(TITLE)
@@ -686,17 +743,12 @@ impl Wizard {
 
     fn result(&mut self, ui: &mut egui::Ui, record: &StepRecord, awaiting: bool) {
         let (_, colour) = outcome_tag(&record.outcome);
-        ui.label(
-            RichText::new(
-                if let Some(attempt) = record.attempt.filter(|attempt| *attempt > 1) {
-                    format!("Step {} result · attempt {attempt}", record.id)
-                } else {
-                    format!("Step {} result", record.id)
-                },
-            )
-            .size(SECTION)
-            .color(MUTED),
-        );
+        let phase = if let Some(attempt) = record.attempt.filter(|attempt| *attempt > 1) {
+            format!("Result · attempt {attempt}")
+        } else {
+            "Result".into()
+        };
+        self.step_heading(ui, record.id, Some(&phase));
         ui.label(
             RichText::new(&record.title)
                 .size(TITLE + 6.0)
@@ -803,11 +855,8 @@ impl Wizard {
         match self.running {
             Some(step) => {
                 let title = catalogue::step(step).map_or("", |s| s.title);
-                ui.label(
-                    RichText::new(format!("Running step {step}: {title}"))
-                        .size(TITLE)
-                        .color(TEXT),
-                );
+                self.step_heading(ui, step, Some("Running"));
+                ui.label(RichText::new(title).size(TITLE).color(TEXT));
                 self.live_progress(ui);
                 if !catalogue::step(step).is_some_and(|s| s.kind == catalogue::Kind::Computer) {
                     ui.label(RichText::new(CONTROLS_NOTICE).size(BODY).color(TEXT));
@@ -923,11 +972,7 @@ impl Wizard {
 
     fn card(&mut self, ui: &mut egui::Ui, id: StepId, mode: Mode, note: Option<&str>) {
         let step = catalogue::step(id).expect("catalogue step");
-        ui.label(
-            RichText::new(format!("Step {id}"))
-                .size(SECTION)
-                .color(MUTED),
-        );
+        self.step_heading(ui, id, None);
         ui.label(
             RichText::new(step.title)
                 .size(TITLE + 6.0)
@@ -1025,6 +1070,9 @@ impl Wizard {
     }
 
     fn save(&mut self, ui: &mut egui::Ui, text: &str, confirmation: &str) {
+        if let Some(step) = self.running {
+            self.step_heading(ui, step, None);
+        }
         ui.label(
             RichText::new("This step saves to your device")
                 .size(TITLE + 4.0)
@@ -1070,11 +1118,8 @@ impl Wizard {
     }
 
     fn prepare_action(&mut self, ui: &mut egui::Ui, step: StepId, see: &str, hear: &str) {
-        ui.label(
-            RichText::new(format!("Step {step}: get ready"))
-                .size(TITLE)
-                .color(TEXT),
-        );
+        self.step_heading(ui, step, None);
+        ui.label(RichText::new("Get ready").size(TITLE).color(TEXT));
         big(ui, "SEE ", see);
         big(ui, "HEAR ", hear);
         ui.label("Press OK when you’re ready. A short countdown tells you when to start.");
@@ -1092,8 +1137,9 @@ impl Wizard {
     }
 
     fn not_seen(&mut self, ui: &mut egui::Ui, step: StepId, what: &str) {
+        self.step_heading(ui, step, None);
         ui.label(
-            RichText::new(format!("Step {step}: didn't see it"))
+            RichText::new("Didn't see it")
                 .size(TITLE + 4.0)
                 .strong()
                 .color(AMBER),
@@ -1116,11 +1162,7 @@ impl Wizard {
     }
 
     fn question(&mut self, ui: &mut egui::Ui, question: &Question) {
-        ui.label(
-            RichText::new(format!("Step {}: listen", question.step))
-                .size(SECTION)
-                .color(MUTED),
-        );
+        self.step_heading(ui, question.step, Some("Listen"));
         ui.label(
             RichText::new(&question.text)
                 .size(BIG - 8.0)
