@@ -53,3 +53,20 @@ keep the rig powered and untouched during the full two-minute wait. Stop
 on silence, uncertain status, or any mismatch. Report which slots were
 verified. Follow the result’s spare-group instructions before attempting
 another write or restore.
+
+## Offline close and quit checkpoint
+
+The headless checks use a simulated verified attachment and a synthetic
+library. They exercise both closing the Variax tab and quitting the app.
+
+- With pending positions in a library downloaded on the current
+  attachment, the warning counts those positions. The count includes a
+  pasted position whose model bytes match its previous contents.
+  **Keep editing** cancels and preserves the document, pending markers
+  and attachment. **Save a copy…** saves the library bytes to a new file
+  and keeps the warning open. **Discard changes** allows closing with
+  positions still pending.
+- An edited historical library uses the file prompt. **Keep editing**
+  preserves its edits. A clean library or standalone preset closes directly.
+- Close and quit never start a guitar store. **Write to device** and
+  **Sync** have separate confirmations in the procedures above.

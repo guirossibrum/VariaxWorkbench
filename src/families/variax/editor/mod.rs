@@ -1195,27 +1195,38 @@ impl VariaxEditor {
         if self.pending.is_some() || self.new_file.is_some() {
             let save_open =
                 matches!(self.pending, Some(GuitarPending::Open(_))) && self.source_path.is_some();
+            let modified_positions = match self.pending {
+                #[cfg(feature = "usb")]
+                Some(GuitarPending::Quit) => self.modified_guitar_positions().len(),
+                _ => 0,
+            };
             let mut discard = false;
-            let mut save_continue = false;
+            let mut save = false;
             let mut cancel = false;
             egui::Window::new("Unsaved changes")
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
                 .show(ctx, |ui| {
-                    ui.label("Save or discard your changes before continuing.");
-                    #[cfg(feature = "usb")]
-                    if matches!(self.pending, Some(GuitarPending::Quit)) {
-                        let count = self.modified_guitar_positions().len();
-                        if count != 0 {
-                            ui.label(format!("There are {count} modified Models. Closing the library discards these pending guitar changes."));
-                        }
+                    if modified_positions == 0 {
+                        ui.label("Save or discard your changes before continuing.");
+                    } else {
+                        let positions = if modified_positions == 1 {
+                            "position"
+                        } else {
+                            "positions"
+                        };
+                        ui.label(format!(
+                            "Closing the library discards pending changes at {modified_positions} guitar {positions}."
+                        ));
                     }
                     if let Some(error) = &self.error {
                         ui.label(error);
                     }
                     ui.horizontal(|ui| {
-                        let response = ui.button(if save_open {
+                        let response = ui.button(if modified_positions != 0 {
+                            "Save a copy…"
+                        } else if save_open {
                             "Save and continue"
                         } else {
                             "Save As and continue…"
@@ -1223,7 +1234,7 @@ impl VariaxEditor {
                         #[cfg(test)]
                         services.prompt_buttons.insert("save", response.rect);
                         if response.clicked() {
-                            save_continue = true;
+                            save = true;
                         }
                         if save_open {
                             let save_as = ui.button("Save As…");
@@ -1255,11 +1266,11 @@ impl VariaxEditor {
                 self.new_file = None;
                 self.library_import = None;
             }
-            if save_continue {
+            if save {
                 if save_open {
                     self.save_file(ctx, services, true);
                 } else {
-                    self.save_dialog(ctx, services, true);
+                    self.save_dialog(ctx, services, modified_positions == 0);
                 }
             }
             if discard {
